@@ -21,7 +21,14 @@ client = [
     "kube/runtime",
     "kube/rustls-tls",
 ]
-bolero = ["dep:bolero", "dep:net", "dep:lpm", "net/test_buffer", "net/bolero"]
+bolero = [
+    "dep:bolero",
+    "dep:net",
+    "dep:lpm",
+    "dep:strum",
+    "net/test_buffer",
+    "net/bolero",
+]
 
 [dependencies]
 # internal
@@ -43,13 +50,17 @@ schemars = { workspace = true, features = ["derive", "std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
+strum = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+# `pub mod bolero` is gated on `any(test, feature = "bolero")`, so everything the module
+# needs has to be reachable in a plain `cargo test` too, not only behind the feature.
 bolero = { workspace = true }
 lpm = { workspace = true, features = [] }
 net = { workspace = true, features = ["bolero", "test_buffer"] }
+strum = { workspace = true, features = ["derive"] }
 
 [build-dependencies]
 dpdk-sysroot-helper = { workspace = true }

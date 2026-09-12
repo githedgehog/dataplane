@@ -93,6 +93,48 @@ impl ExternalConfig {
         Ok(())
     }
 
+    /// Refuse a peering *this* gateway would have to render and cannot.
+    ///
+    /// The routing configuration built from a peering is IPv4-only: its prefix lists and
+    /// route-maps are `IpVer::V4` throughout and nothing in the builder has a v6
+    /// counterpart. `build_internal_config` will error out at apply time, after the
+    /// config was accepted. Anything accepted here has to apply cleanly, so the refusal
+    /// belongs here where the validator can call it and reject early.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Unsupported`] if a peering this gateway renders carries
+    /// IPv6 prefixes.
+    fn check_rendered_peerings_are_ipv4(
+        gwname: &str,
+        overlay: &ValidatedOverlay,
+        underlay: &Underlay,
+        gwgroups: &GwGroupTable,
+        communities: &PriorityCommunityTable,
+    ) -> ConfigResult {
+        if underlay.vrf.bgp.is_none() {
+            // No underlay BGP means no overlay routing configuration is built at all.
+            return Ok(());
+        }
+        let renders = |peering: &ValidatedPeering| {
+            gwgroups
+                .get_group_member_rank(peering.gwgroup(), gwname)
+                .is_some_and(|rank| communities.get_community(rank).is_some())
+        };
+        if overlay
+            .vpc_table()
+            .peerings()
+            .filter(|peering| renders(peering))
+            .all(ValidatedPeering::is_v4)
+        {
+            return Ok(());
+        }
+        Err(ConfigError::Unsupported(
+            "IPv6 prefixes in a vpc peering: the routing configuration built from a peering is \
+             IPv4-only, so such a peering cannot be rendered",
+        ))
+    }
+
     /// Validate the external configuration.
     /// This method consumes `ExternalConfig` and outputs a `ValidatedGwConfig` on success.
     ///
@@ -107,6 +149,13 @@ impl ExternalConfig {
         let overlay = self.overlay.validate()?;
         let peerings = overlay.vpc_table().peerings();
         self.check_peering_gwgroups_exist(peerings)?;
+        Self::check_rendered_peerings_are_ipv4(
+            &self.gwname,
+            &overlay,
+            &underlay,
+            &self.gwgroups,
+            &self.communities,
+        )?;
 
         // if there are vpcs configured, there MUST be a vtep configured
         if !overlay.vpc_table().is_empty() && underlay.vtep.is_none() {

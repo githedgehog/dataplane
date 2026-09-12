@@ -555,14 +555,14 @@ fn ipv6_lookup() {
         &[("vpc1", 100), ("vpc2", 200)],
         vec![peering(
             "vpc1-to-vpc2",
-            ("vpc1", vec![expose("2001:db8::/32")]),
+            ("vpc1", vec![expose(net::ipv6_doc!())]),
             ("vpc2", vec![expose("2001:db9::/32")]),
         )],
     );
     let r = route(
         &ctx,
         vpcd(100),
-        &build_tcp_packet_v6(v6("2001:db8::1"), v6("2001:db9::1"), 1234, 5678),
+        &build_tcp_packet_v6(v6(net::ipv6_doc!("::1")), v6("2001:db9::1"), 1234, 5678),
     )
     .expect("IPv6 packet should be allowed");
     assert_eq!(r.dst_vpcd, vpcd(200));
@@ -572,7 +572,7 @@ fn ipv6_lookup() {
         route(
             &ctx,
             vpcd(100),
-            &build_tcp_packet_v6(v6("2001:db8::1"), v6("2001:dba::1"), 1234, 5678),
+            &build_tcp_packet_v6(v6(net::ipv6_doc!("::1")), v6("2001:dba::1"), 1234, 5678),
         ),
         None,
     );
@@ -687,7 +687,7 @@ fn reference_and_dpdk_backends_agree() {
             ),
             peering(
                 "vpc1-to-vpc3",
-                ("vpc1", vec![expose("2001:db8::/32")]),
+                ("vpc1", vec![expose(net::ipv6_doc!())]),
                 ("vpc3", vec![expose("2001:db9::/32")]),
             ),
         ],
@@ -771,14 +771,14 @@ fn reference_and_dpdk_backends_agree() {
         // v6 hit + miss.
         (
             100,
-            ip("2001:db8::1"),
+            ip(net::ipv6_doc!("::1")),
             ip("2001:db9::1"),
             NextHeader::TCP,
             Some((1234, 5678)),
         ),
         (
             100,
-            ip("2001:db8::1"),
+            ip(net::ipv6_doc!("::1")),
             ip("2001:dba::1"),
             NextHeader::TCP,
             Some((1234, 5678)),

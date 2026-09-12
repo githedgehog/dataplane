@@ -240,7 +240,7 @@ fn ipv6_context() -> FlowFilterContext {
         &[("vpc1", 100), ("vpc2", 200)],
         vec![peering(
             "vpc1-to-vpc2",
-            ("vpc1", vec![expose("2001:db8::/32")]),
+            ("vpc1", vec![expose(net::ipv6_doc!())]),
             ("vpc2", vec![expose("2001:db9::/32")]),
         )],
     )
@@ -464,7 +464,7 @@ fn ipv6_packet_through_the_nf() {
         &mut flow_filter,
         packet(
             Some(vpcd(100)),
-            build_tcp_packet_v6(v6("2001:db8::1"), v6("2001:db9::1"), 1234, 5678),
+            build_tcp_packet_v6(v6(net::ipv6_doc!("::1")), v6("2001:db9::1"), 1234, 5678),
         ),
     );
     assert!(!out.is_done(), "{:?}", out.get_done());
@@ -1139,7 +1139,7 @@ fn mixed_v4_v6_burst_partitions_by_version_and_preserves_order() {
             ),
             peering(
                 "vpc1-to-vpc3",
-                ("vpc1", vec![expose("2001:db8::/32")]),
+                ("vpc1", vec![expose(net::ipv6_doc!())]),
                 ("vpc3", vec![expose("2001:db9::/32")]),
             ),
         ],
@@ -1156,7 +1156,7 @@ fn mixed_v4_v6_burst_partitions_by_version_and_preserves_order() {
             } else {
                 packet(
                     Some(vpcd(100)),
-                    build_tcp_packet_v6(v6("2001:db8::1"), v6("2001:db9::1"), 1234, 5678),
+                    build_tcp_packet_v6(v6(net::ipv6_doc!("::1")), v6("2001:db9::1"), 1234, 5678),
                 )
             }
         })
@@ -1671,7 +1671,7 @@ mod adversarial_headers {
                 ),
                 peering(
                     "vpc1-to-vpc3",
-                    ("vpc1", vec![expose("2001:db8::/32")]),
+                    ("vpc1", vec![expose(net::ipv6_doc!())]),
                     ("vpc3", vec![expose("2001:db9::/32")]),
                 ),
             ],
@@ -1697,15 +1697,8 @@ mod adversarial_headers {
     fn pin_v6(ip: &mut net::ipv6::Ipv6) {
         let src = ip.source().inner().octets();
         ip.set_source(
-            UnicastIpv6Addr::new(Ipv6Addr::new(
-                0x2001,
-                0x0db8,
-                0,
-                0,
-                0,
-                0,
-                0,
-                u16::from(src[15]),
+            UnicastIpv6Addr::new(Ipv6Addr::from_bits(
+                net::ipv6::DOC_PREFIX_BITS | u128::from(src[15]),
             ))
             .unwrap_or_else(|e| unreachable!("pinned v6 source is unicast: {e:?}")),
         );
@@ -1969,7 +1962,7 @@ fn ipv6_extension_header_masks_the_transport_protocol() {
         HeaderStack::new()
             .eth(|_| {})
             .ipv6(|ip| {
-                ip.set_source(UnicastIpv6Addr::new(v6("2001:db8::1")).unwrap());
+                ip.set_source(UnicastIpv6Addr::new(v6(net::ipv6_doc!("::1"))).unwrap());
                 ip.set_destination(v6("2001:db9::5"));
             })
             .hop_by_hop(|_| {})
@@ -2003,7 +1996,7 @@ fn ipv6_extension_header_masks_the_transport_protocol() {
         &[("vpc1", 100), ("vpc2", 200)],
         vec![peering(
             "vpc1-to-vpc2",
-            ("vpc1", vec![expose("2001:db8::/32")]),
+            ("vpc1", vec![expose(net::ipv6_doc!())]),
             (
                 "vpc2",
                 vec![expose_port_forwarding(
@@ -2029,7 +2022,7 @@ fn ipv6_extension_header_masks_the_transport_protocol() {
         &[("vpc1", 100), ("vpc2", 200)],
         vec![peering(
             "vpc1-to-vpc2",
-            ("vpc1", vec![expose("2001:db8::/32")]),
+            ("vpc1", vec![expose(net::ipv6_doc!())]),
             ("vpc2", vec![expose("2001:db9::/32")]),
         )],
     );

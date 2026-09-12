@@ -81,7 +81,7 @@ mod bench {
         install_table(&format!("bench_dpdk_v4_{n}"), max_rules, specs).expect("install_table")
     }
     fn build_table_v6(n: usize) -> FiveTuple6Table<u32> {
-        let src: Ipv6Addr = "2001:db8::".parse().expect("v6 literal");
+        let src: Ipv6Addr = net::ipv6::DOC_PREFIX_NETWORK;
         let specs: Vec<RuleSpec<FiveTuple6, u32>> = (0..n)
             .map(|i| {
                 let prio = i32::try_from(i + 1).unwrap_or(i32::MAX);
@@ -165,7 +165,7 @@ mod bench {
     }
 
     fn bench_v6(c: &mut Criterion) {
-        let in_prefix: Ipv6Addr = "2001:db8::1".parse().expect("v6 literal");
+        let in_prefix: Ipv6Addr = net::ipv6_doc!("::1").parse().expect("v6 literal");
         let dst: Ipv6Addr = "::1".parse().expect("v6 literal");
         let batch: Vec<FiveTuple6> = (0..BATCH)
             .map(|j| FiveTuple6 {

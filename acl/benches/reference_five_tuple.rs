@@ -116,9 +116,9 @@ fn benches(c: &mut Criterion) {
     bench_width::<Ipv6Addr>(
         c,
         "reference_five_tuple_v6",
-        "2001:db8::".parse().unwrap(),
-        32,
-        "2001:db8::1".parse().unwrap(),
+        net::ipv6::DOC_PREFIX_NETWORK,
+        net::ipv6::DOC_PREFIX_LEN,
+        net::ipv6_doc!("::1").parse().unwrap(),
         "::1".parse().unwrap(),
     );
 }
