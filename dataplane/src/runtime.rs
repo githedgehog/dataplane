@@ -407,7 +407,14 @@ fn bring_up_ports<'eal>(
             .claim(index)
             .map_err(|e| DriverError::PortSetup(format!("cannot use port {index}: {e}")))?;
 
-        ports.push(Port::bring_up(eal, port, name, num_workers, interface.mtu)?);
+        ports.push(Port::bring_up(
+            eal,
+            port,
+            name,
+            num_workers,
+            interface.mtu,
+            interface.rx_descriptors,
+        )?);
     }
     report_links(&ports, num_workers);
 
