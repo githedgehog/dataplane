@@ -287,6 +287,41 @@ pub struct PoolParams {
     pub socket_id: SocketId,
 }
 
+/// Bytes per cache line on every CPU this runs on (x86-64 and aarch64 alike).
+pub const CACHE_LINE_BYTES: usize = 64;
+
+/// Cache lines of packet head that [`Mbuf::prefetch_head`] fetches.
+///
+/// Two, because VXLAN pushes the inner IPv4 header to byte 64 -- exactly past the first line.
+/// See [`Mbuf::prefetch_head`].
+pub const PREFETCH_HEAD_LINES: usize = 2;
+
+/// Prefetch the cache line holding `addr` into every cache level (`_MM_HINT_T0`, `PLDL1KEEP`).
+/// A no-op on architectures without a stable prefetch.
+///
+/// # Safety
+///
+/// None needed beyond a valid `addr` computation: a prefetch neither faults nor reads.
+#[inline(always)]
+#[allow(unused_variables)] // `addr` is unused on other architectures
+unsafe fn prefetch_line(addr: *const u8) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: `_mm_prefetch` is a hint and cannot fault.
+    unsafe {
+        use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+        _mm_prefetch::<_MM_HINT_T0>(addr.cast());
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: `prfm` is a hint and cannot fault; it touches no registers but its operand.
+    unsafe {
+        core::arch::asm!(
+            "prfm pldl1keep, [{0}]",
+            in(reg) addr,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
 impl Default for PoolParams {
     // TODO: not sure if these defaults are sensible.
     fn default() -> PoolParams {
@@ -718,6 +753,24 @@ impl<'eal> Mbuf<'eal> {
         let raw = self.raw.as_ptr();
         core::mem::forget(self);
         raw
+    }
+
+    /// Prefetch two cache lines at the packet head before parsing a burst.
+    ///
+    /// VXLAN places the inner IPv4 header at byte 64, so it needs the second line.
+    /// The temporal hint keeps headers cached for serialization later in the pipeline.
+    #[inline(always)]
+    pub fn prefetch_head(&self) {
+        // SAFETY: `self.raw` is live. The prefetch hints do not dereference their addresses.
+        // Use wrapping arithmetic because a small or trimmed buffer may end before the
+        // second hint. This needs no packet-length load or bounds check.
+        unsafe {
+            let head = (self.raw.as_ref().buf_addr as *const u8)
+                .offset(self.raw.as_ref().annon1.annon1.data_off as isize);
+            for line in 0..PREFETCH_HEAD_LINES {
+                prefetch_line(head.wrapping_add(line * CACHE_LINE_BYTES));
+            }
+        }
     }
 
     /// Get the contiguous bytes of the head segment.
@@ -1170,5 +1223,43 @@ mod pool_tests {
         }
         let ok = pool.alloc_bulk(15).expect("pool should still be full");
         assert_eq!(ok.len(), 15);
+    }
+}
+#[cfg(test)]
+mod prefetch_budget {
+    use super::{CACHE_LINE_BYTES, PREFETCH_HEAD_LINES};
+    use net::eth::Eth;
+    use net::ipv4::Ipv4;
+    use net::udp::Udp;
+    use net::vxlan::Vxlan;
+
+    /// Byte offset at which the *inner* IPv4 header of a VXLAN frame begins.
+    ///
+    /// Derived from the header types rather than written down, so that if any of them changes
+    /// the budget below is re-checked instead of quietly going stale.
+    const INNER_IP_OFFSET: usize = Eth::HEADER_LEN.get() as usize      // outer ethernet
+        + Ipv4::MIN_LEN.get() as usize                                  // outer IPv4
+        + Udp::MIN_LENGTH.get() as usize                                // outer UDP
+        + Vxlan::MIN_LENGTH.get() as usize                              // VXLAN
+        + Eth::HEADER_LEN.get() as usize; // inner ethernet
+
+    /// The prefetch has to reach the headers the pipeline actually reads.
+    ///
+    /// This is the whole reason `PREFETCH_HEAD_LINES` is 2. The inner IPv4 header of a VXLAN
+    /// frame starts at byte 64 -- exactly one cache line in -- so a single-line prefetch warms
+    /// the encapsulation and leaves the addresses NAT rewrites and forwarding reads cold.
+    #[test]
+    fn prefetch_span_covers_the_inner_ip_header() {
+        assert_eq!(
+            INNER_IP_OFFSET, 64,
+            "VXLAN inner IP is expected to land exactly on the second cache line"
+        );
+        let span = PREFETCH_HEAD_LINES * CACHE_LINE_BYTES;
+        let needed = INNER_IP_OFFSET + Ipv4::MIN_LEN.get() as usize;
+        assert!(
+            span >= needed,
+            "prefetch covers {span} B but the inner IPv4 header ends at {needed} B; raise \
+             PREFETCH_HEAD_LINES"
+        );
     }
 }
