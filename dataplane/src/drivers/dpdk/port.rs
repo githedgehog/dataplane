@@ -168,7 +168,8 @@ fn pool_shape(
     rx_descriptors: u16,
 ) -> (u32, u16) {
     let data_room = dpdk::mem::mbuf_data_room(dev.mtu().unwrap_or(1500));
-    let pool_mbufs = POOL_MBUFS_PER_RX_DESCRIPTOR * u32::from(rx_descriptors) * u32::from(num_workers);
+    let pool_mbufs =
+        POOL_MBUFS_PER_RX_DESCRIPTOR * u32::from(rx_descriptors) * u32::from(num_workers);
     info!(
         "port {index} ({name}) receive pool: {pool_mbufs} mbufs of {data_room} B = {} MiB",
         (u64::from(pool_mbufs) * u64::from(data_room)) / (1024 * 1024)
@@ -279,7 +280,7 @@ impl<'eal> Port<'eal> {
                 PoolConfig::new(
                     format!("rx_{index}"),
                     PoolParams {
-                        size: POOL_MBUFS_PER_RX_DESCRIPTOR * u32::from(rx_descriptors) * u32::from(num_workers),
+                        size: pool_mbufs,
                         data_size: data_room,
                         ..Default::default()
                     },

@@ -1748,7 +1748,11 @@ where
     /// not -- if the ICMP message is not an error (e.g. echo request),
     /// `embedded_ip` will be `None` and the match simply fails.
     pub fn embedded(mut self) -> EmbeddedMatcherMut<'a, EmbeddedStart, Acc, ()> {
-        let embedded = self.fields.embedded.take().and_then(|opt| opt.as_deref_mut());
+        let embedded = self
+            .fields
+            .embedded
+            .take()
+            .and_then(|opt| opt.as_deref_mut());
         match embedded {
             Some(e) => EmbeddedMatcherMut {
                 outer_acc: self.acc,
