@@ -95,12 +95,13 @@ pub struct InterfaceArg {
     ///
     /// Spelled `/rxd=N`, for the same reason as `/mtu=N`.
     ///
-    /// This is how much traffic a queue can absorb while nothing is polling it. The default is
-    /// 4096, which at a worker's ~1.2 Mpps is roughly 3.4 ms; the 1024 it used to be was 850
-    /// microseconds, and a dataplane hosted in a VM does not get to assume it will be scheduled
-    /// that promptly. A ring that overruns drops a *run* of consecutive frames before any DPDK
-    /// queue sees them, which appears in `imissed` and in no pipeline counter -- and reaches TCP
-    /// as bursty loss with no reordering, which is exactly what the bench showed.
+    /// This is how much traffic a queue can absorb while nothing is polling it: at a worker's
+    /// ~1.2 Mpps, the default 1024 is about 850 microseconds.
+    ///
+    /// Worth reaching for only with evidence. Sweeping 512, 1024 and 4096 on the bench, at both
+    /// 16 and 128 streams, moved throughput by 1.5% -- inside noise -- with the receive path
+    /// never above 2.2% of cycles. Depth is not free either: the mbuf pool scales with it, and at
+    /// a 9100 MTU 4096 descriptors is ~610 MB per port at four workers.
     ///
     /// Clamped to what the device reports it can take.
     pub rx_descriptors: Option<u16>,

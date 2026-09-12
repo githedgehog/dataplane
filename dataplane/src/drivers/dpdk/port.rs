@@ -28,19 +28,23 @@ use crate::drivers::cpbridge::{DatapathEnds, Frame};
 /// [`rx_offloads`](Port::bring_up).
 /// Receive descriptors per queue, unless `/rxd=N` says otherwise.
 ///
-/// This is how long a queue can go unpolled before the NIC starts discarding. At the ~1.2 Mpps
-/// a worker carries on the bench, 4096 is about 3.4 ms; the 1024 this used to be was 850
-/// microseconds. A dataplane in a VM does not get to assume it will be scheduled within 850
-/// microseconds, and when it is not, the ring overruns and the NIC drops a *run* of consecutive
-/// frames -- before any DPDK queue sees them, so `show driver status` reports nothing and only
-/// `imissed` moves. That reaches TCP as bursty loss with no reordering, which is what the bench
-/// measured: 0.73% retransmits, 19 segments per recovery episode, one reorder event in 270
-/// million packets.
+/// This is how long a queue can go unpolled before the NIC starts discarding: at the ~1.2 Mpps a
+/// worker carried on the bench, 1024 is about 850 microseconds.
 ///
-/// The mbuf pool scales with this (`POOL_MBUFS_PER_WORKER`), so raising it costs memory
-/// proportionally: at a 9100 MTU each mbuf is ~9.3 KB, so 4096 descriptors is roughly 150 MB
-/// per worker.
-const RX_DESCRIPTORS: u16 = 4096;
+/// It was briefly raised to 4096 on the theory that a dataplane in a VM cannot assume it will be
+/// scheduled within 850 microseconds, and that an overrun -- which drops a *run* of consecutive
+/// frames before any DPDK queue sees them, so it appears only in `imissed` -- was behind the
+/// bursty TCP loss the bench was showing. **Measurement did not support it.** Sweeping 512, 1024
+/// and 4096 at both 16 and 128 streams moved throughput by 1.5%, inside run-to-run noise, with
+/// the receive path at 0.3-2.2% of cycles throughout: the ring was never the constraint at this
+/// rate. The loss turned out to be elsewhere.
+///
+/// So it stays at 1024, because the depth is not free. The mbuf pool scales with it
+/// (`POOL_MBUFS_PER_RX_DESCRIPTOR`), and at a 9100 MTU each mbuf is ~9.3 KB -- 4096 descriptors
+/// is ~610 MB per port at four workers and ~3.7 GB at twenty-four, which is enough to fail
+/// against a modest hugepage grant. Use `/rxd=N` if a deployment's scheduling really does need
+/// the headroom; do not pay for it everywhere on a hypothesis.
+const RX_DESCRIPTORS: u16 = 1024;
 
 /// Transmit descriptors per queue.
 const TX_DESCRIPTORS: u16 = 1024;
