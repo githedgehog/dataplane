@@ -196,6 +196,9 @@ impl<'p> Worker<'p> {
             return injected;
         }
         let rx_if = self.ports[slot].queues.if_index;
+        for mbuf in rx_mbufs.iter() {
+            mbuf.prefetch_head();
+        }
         process_burst(rx_mbufs.drain_all(), rx_if, pipeline, burst, counters);
 
         // Borrowed for the packet loop rather than cloned per poll: an `mpsc::Sender` clone is an
