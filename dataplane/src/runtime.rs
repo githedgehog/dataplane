@@ -403,7 +403,14 @@ fn bring_up_ports<'eal>(
             .map_err(|e| DriverError::PortSetup(format!("cannot use port {index}: {e}")))?;
 
         // Configure, queue and start the device; this is where the port actually comes up.
-        let started = Port::bring_up(eal, port, name, num_workers, interface.mtu)?;
+        let started = Port::bring_up(
+            eal,
+            port,
+            name,
+            num_workers,
+            interface.mtu,
+            interface.rx_descriptors,
+        )?;
         ports.push(started);
     }
     report_links(&ports, num_workers);

@@ -28,7 +28,10 @@ const RX_DESCRIPTORS: u16 = 1024;
 const TX_DESCRIPTORS: u16 = 1024;
 
 /// Mbufs per worker, covering RX descriptors, pipeline processing, and pending TX.
-const POOL_MBUFS_PER_WORKER: u32 = 4 * RX_DESCRIPTORS as u32;
+const POOL_MBUFS_PER_RX_DESCRIPTOR: u32 = 4;
+
+/// `sizeof(struct rte_mbuf)`, for estimating a pool's footprint in error messages.
+const MBUF_HEADER_BYTES: u64 = 128;
 
 /// Decide the RSS configuration for a port, warning if the device cannot spread at all.
 ///
@@ -123,6 +126,46 @@ pub(crate) fn report_links(ports: &[Port<'_>], num_workers: u16) {
     }
 }
 
+/// Honor `/rxd=N`, fitted to the device's advertised minimum, maximum and alignment.
+fn rx_descriptor_count(
+    info: &DevInfo<'_>,
+    index: dpdk::dev::DevIndex,
+    name: &str,
+    asked: Option<u16>,
+) -> u16 {
+    let asked = asked.unwrap_or(RX_DESCRIPTORS);
+    let limits = info.rx_desc_limits();
+    let fitted = fit_descriptors(asked, limits.nb_min, limits.nb_max, limits.nb_align);
+    if fitted != asked {
+        warn!(
+            "port {index} ({name}) needs between {min} and {max} rx descriptors per queue in \
+             multiples of {align}; using {fitted} rather than the {asked} asked for",
+            min = limits.nb_min,
+            max = limits.nb_max,
+            align = limits.nb_align,
+        );
+    }
+    fitted
+}
+
+/// The descriptor count nearest `asked` that `rte_eth_rx_queue_setup` accepts.
+///
+/// Rounds up to a multiple of `align`, or down when rounding up would pass `max`. A zero `max` or
+/// `align` is treated as unconstrained.
+fn fit_descriptors(asked: u16, min: u16, max: u16, align: u16) -> u16 {
+    let max = if max == 0 { u16::MAX } else { max };
+    let align = u32::from(align.max(1));
+    let clamped = u32::from(asked.clamp(min.min(max), max));
+    let up = clamped.div_ceil(align) * align;
+    let fitted = if up <= u32::from(max) {
+        up
+    } else {
+        u32::from(max) / align * align
+    };
+    // `fitted <= max`, so the fallback is never taken.
+    u16::try_from(fitted).unwrap_or(max)
+}
+
 /// A started port and its receive pool. Workers borrow its queue handles.
 pub(crate) struct Port<'eal> {
     /// The started device. Kept so the port can be stopped and closed explicitly at shutdown.
@@ -159,9 +202,12 @@ impl<'eal> Port<'eal> {
         name: String,
         num_workers: u16,
         mtu: Option<u16>,
+        rx_descriptors: Option<u16>,
     ) -> Result<Self, DriverError> {
         let info = port.info();
         let index = info.index();
+
+        let rx_descriptors = rx_descriptor_count(info, index, &name, rx_descriptors);
 
         let rss = rss_for(info, &name, num_workers);
 
@@ -198,30 +244,42 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
+        // Checked: `/rxd` times the worker count can pass `u32` for absurd worker counts, and a
+        // wrapped product would make a uselessly small pool rather than an error.
+        let pool_mbufs = POOL_MBUFS_PER_RX_DESCRIPTOR
+            .checked_mul(u32::from(rx_descriptors))
+            .and_then(|n| n.checked_mul(u32::from(num_workers)))
+            .ok_or_else(|| {
+                DriverError::PortSetup(format!(
+                    "port {index} ({name}): {rx_descriptors} rx descriptors for each of \
+                     {num_workers} workers needs more mbufs than one pool can hold"
+                ))
+            })?;
+        let params = PoolParams {
+            size: pool_mbufs,
+            ..Default::default()
+        };
+        let pool_mib = u64::from(pool_mbufs)
+            * (u64::from(params.data_size) + u64::from(params.private_size) + MBUF_HEADER_BYTES)
+            / (1 << 20);
         let rx_pool = eal
             .mem
-            .new_pkt_pool(
-                PoolConfig::new(
-                    format!("rx_{index}"),
-                    PoolParams {
-                        size: POOL_MBUFS_PER_WORKER * u32::from(num_workers),
-                        ..Default::default()
-                    },
-                )
-                .map_err(|e| {
-                    DriverError::PortSetup(format!(
-                        "invalid rx pool config for port {index}: {e:?}"
-                    ))
-                })?,
-            )
+            .new_pkt_pool(PoolConfig::new(format!("rx_{index}"), params).map_err(|e| {
+                DriverError::PortSetup(format!("invalid rx pool config for port {index}: {e:?}"))
+            })?)
             .map_err(|e| {
-                DriverError::PortSetup(format!("failed to create rx pool for port {index}: {e:?}"))
+                DriverError::PortSetup(format!(
+                    "failed to create the rx pool for port {index} ({name}): {e:?}. It holds \
+                     {pool_mbufs} mbufs (about {pool_mib} MiB of hugepages), sized as \
+                     {POOL_MBUFS_PER_RX_DESCRIPTOR} per rx descriptor x {rx_descriptors} \
+                     descriptors x {num_workers} workers; lower /rxd or reserve more hugepages"
+                ))
             })?;
 
         for queue in 0..num_workers {
             dev.new_rx_queue(RxQueueConfig {
                 queue_index: RxQueueIndex(queue),
-                num_descriptors: RX_DESCRIPTORS,
+                num_descriptors: rx_descriptors,
                 socket_preference: socket::Preference::Dev(index),
                 offloads: RxOffload::NONE,
                 pool: rx_pool.clone(),
@@ -419,4 +477,37 @@ pub(crate) fn deal_queues<'p>(
     }
 
     Ok(per_worker)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_descriptors;
+
+    #[test]
+    fn a_fitting_count_is_kept() {
+        assert_eq!(fit_descriptors(1024, 64, 4096, 32), 1024);
+    }
+
+    #[test]
+    fn a_misaligned_count_rounds_up() {
+        // i40e: 32-descriptor alignment.
+        assert_eq!(fit_descriptors(1000, 64, 4096, 32), 1024);
+    }
+
+    #[test]
+    fn rounding_up_past_the_maximum_rounds_down_instead() {
+        assert_eq!(fit_descriptors(4090, 64, 4095, 32), 4064);
+    }
+
+    #[test]
+    fn counts_are_clamped_into_range() {
+        assert_eq!(fit_descriptors(8, 64, 4096, 32), 64);
+        assert_eq!(fit_descriptors(8192, 64, 4096, 32), 4096);
+    }
+
+    #[test]
+    fn zero_limits_are_unconstrained() {
+        assert_eq!(fit_descriptors(1000, 0, 0, 0), 1000);
+        assert_eq!(fit_descriptors(u16::MAX, 0, 0, 0), u16::MAX);
+    }
 }
