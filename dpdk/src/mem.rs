@@ -851,6 +851,51 @@ impl<'eal> Mbuf<'eal> {
         raw
     }
 
+    /// Ask the hardware to start fetching this packet's first cache line.
+    ///
+    /// The NIC DMA'd these bytes into memory and nothing has read them since, so the first touch
+    /// is a cold miss -- and that touch is the parser, which is why `Ipv4::parse` and
+    /// `Headers::parse` sit at the top of a profile where they have barely any instructions to
+    /// run. A burst gives a worker every packet it is about to handle before it handles any of
+    /// them, so the misses can be overlapped instead of taken one at a time.
+    ///
+    /// One line is enough: ethernet, IPv4 and TCP headers together are 54 bytes, so the whole
+    /// parse usually lives in the first 64. Payload is never read by the CPU.
+    ///
+    /// # Temporality
+    ///
+    /// `T0`, deliberately, and not `NTA`. It looks like a read-once stream -- parse the header,
+    /// never look at the packet again -- but it is not: `Packet::serialize` writes the rewritten
+    /// headers back into this same memory at the end of the pipeline, hitting the same line.
+    /// `NTA` marks a line to be evicted first, so it would likely be gone by then, and the
+    /// write-back would take a read-for-ownership miss instead. That trades a miss at parse for a
+    /// miss at serialize.
+    ///
+    /// It is a question for measurement rather than argument, though, so
+    /// [`Mbuf::prefetch_head_non_temporal`] exists to make testing the other choice a one-word
+    /// change.
+    pub fn prefetch_head(&self) {
+        self.prefetch_head_with::<{ core::arch::x86_64::_MM_HINT_T0 }>();
+    }
+
+    /// [`Mbuf::prefetch_head`] with the non-temporal hint, for measuring the other side of the
+    /// choice described there.
+    pub fn prefetch_head_non_temporal(&self) {
+        self.prefetch_head_with::<{ core::arch::x86_64::_MM_HINT_NTA }>();
+    }
+
+    #[inline(always)]
+    fn prefetch_head_with<const HINT: i32>(&self) {
+        // SAFETY: `buf_addr + data_off` is where the PMD placed this packet, and `_mm_prefetch`
+        // is a hint: it faults on nothing and reads nothing, so even a wild pointer would be
+        // architecturally inert. `self.raw` is a live mbuf for the lifetime of `&self`.
+        unsafe {
+            let head = (self.raw.as_ref().buf_addr as *const u8)
+                .offset(self.raw.as_ref().annon1.annon1.data_off as isize);
+            core::arch::x86_64::_mm_prefetch(head.cast::<i8>(), HINT);
+        }
+    }
+
     /// Get an immutable ref to the raw data of an Mbuf
     ///
     /// TODO: deal with multi segment packets

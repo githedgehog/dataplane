@@ -215,6 +215,24 @@ impl<'p> Worker<'p> {
         // Parse, stamping each packet with the interface it arrived on -- the pipeline's ingress
         // stage keys everything off `iif`. A frame that does not parse is dropped here and counted;
         // its mbuf is freed by the `Packet::new` error path dropping the buffer.
+        // Start the misses before the parser needs them.
+        //
+        // The PMD just handed back mbufs whose data the NIC wrote by DMA; nothing has read those
+        // bytes, so every packet's first header touch is a cold miss and it lands on the parser.
+        // That is why `Ipv4::parse` and `Headers::parse` were 37% of cycles in a profile where
+        // between them they have perhaps a hundred instructions to run: the time is memory, not
+        // work.
+        //
+        // Issued for the whole burst in one pass rather than at a fixed distance ahead of the
+        // parse loop. A burst is at most `MBUF_BURST` (64) lines -- 4 KiB, which L1 holds -- and
+        // asking for all of them lets the memory system overlap as many as it has miss slots for.
+        // A prefetch is a hint, so the ones it cannot track are dropped rather than stalling. If
+        // this proves too eager, a windowed distance is the alternative; that would need the
+        // parse loop to index rather than drain.
+        for mbuf in rx_mbufs.iter() {
+            mbuf.prefetch_head();
+        }
+
         let parse_errors = &mut counters.parse_errors;
         burst.clear();
         burst.extend(rx_mbufs.drain_all().filter_map(|mbuf| match Packet::new(mbuf) {
