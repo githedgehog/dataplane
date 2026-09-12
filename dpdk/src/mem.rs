@@ -325,6 +325,59 @@ pub struct PoolParams {
 /// What [`PoolParams::default`] offers for a data room, and the floor [`mbuf_data_room`] keeps.
 pub const DEFAULT_MBUF_DATA_ROOM: u16 = 2048;
 
+/// Bytes per cache line on every CPU this runs on (x86-64 and aarch64 alike).
+pub const CACHE_LINE_BYTES: usize = 64;
+
+/// Cache lines of packet head that [`Mbuf::prefetch_head`] fetches.
+///
+/// Two, because VXLAN pushes the inner IPv4 header to byte 64 -- exactly past the first line.
+/// See [`Mbuf::prefetch_head`].
+pub const PREFETCH_HEAD_LINES: usize = 2;
+
+/// How long a prefetched line should stay cached.
+#[derive(Clone, Copy)]
+enum Locality {
+    /// Keep the line in every cache level (`_MM_HINT_T0`, `PLDL1KEEP`).
+    Keep,
+    /// The line is read once; evict it first (`_MM_HINT_NTA`, `PLDL1STRM`).
+    Stream,
+}
+
+/// Prefetch the cache line holding `addr`. A no-op on architectures without a stable prefetch.
+///
+/// # Safety
+///
+/// None needed beyond a valid `addr` computation: a prefetch neither faults nor reads.
+#[inline(always)]
+#[allow(unused_variables)] // both arguments are unused on other architectures
+unsafe fn prefetch_line(addr: *const u8, locality: Locality) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: `_mm_prefetch` is a hint and cannot fault.
+    unsafe {
+        use core::arch::x86_64::{_MM_HINT_NTA, _MM_HINT_T0, _mm_prefetch};
+        match locality {
+            Locality::Keep => _mm_prefetch::<_MM_HINT_T0>(addr.cast()),
+            Locality::Stream => _mm_prefetch::<_MM_HINT_NTA>(addr.cast()),
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: `prfm` is a hint and cannot fault; it touches no registers but its operand.
+    unsafe {
+        match locality {
+            Locality::Keep => core::arch::asm!(
+                "prfm pldl1keep, [{0}]",
+                in(reg) addr,
+                options(nostack, preserves_flags)
+            ),
+            Locality::Stream => core::arch::asm!(
+                "prfm pldl1strm, [{0}]",
+                in(reg) addr,
+                options(nostack, preserves_flags)
+            ),
+        }
+    }
+}
+
 /// The mbuf data room a port needs to receive a full frame at `mtu` in a single buffer.
 ///
 /// A receive queue is set up against a pool, and the driver checks that the pool's mbufs can hold
@@ -721,6 +774,73 @@ impl<'eal> Mbuf<'eal> {
         let raw = self.raw.as_ptr();
         core::mem::forget(self);
         raw
+    }
+
+    /// Ask the hardware to start fetching the cache lines this packet's headers live in.
+    ///
+    /// The NIC DMA'd these bytes into memory and nothing has read them since, so the first touch
+    /// is a cold miss -- and that touch is the parser. A burst gives a worker every packet it is
+    /// about to handle before it handles any of them, so the misses can be overlapped instead of
+    /// taken one at a time.
+    ///
+    /// # Why two lines and not one
+    ///
+    /// One line is enough for a bare ethernet + IPv4 + TCP frame, which is 54 bytes. It is *not*
+    /// enough for the traffic a gateway actually sees, because VXLAN puts a second set of headers
+    /// in front of the ones that matter:
+    ///
+    /// ```text
+    /// outer ethernet  14   0..14
+    /// outer IPv4      20  14..34
+    /// outer UDP        8  34..42
+    /// VXLAN            8  42..50
+    /// inner ethernet  14  50..64   <- first cache line ends exactly here
+    /// inner IPv4      20  64..84   <- second line
+    /// ```
+    ///
+    /// The inner IPv4 header -- the one NAT rewrites and forwarding reads -- begins at byte 64,
+    /// precisely where a one-line prefetch stops. So the encapsulation headers were being
+    /// prefetched and the interesting ones were not. `prefetch_span_covers_the_inner_ip_header`
+    /// pins that arithmetic against the real header constants.
+    ///
+    /// # Temporality
+    ///
+    /// `T0`, deliberately, and not `NTA`. It looks like a read-once stream -- parse the header,
+    /// never look at the packet again -- but it is not: `Packet::serialize` writes the rewritten
+    /// headers back into this same memory at the end of the pipeline, hitting the same lines.
+    /// `NTA` marks a line to be evicted first, so it would likely be gone by then, and the
+    /// write-back would take a read-for-ownership miss instead. That trades a miss at parse for a
+    /// miss at serialize.
+    ///
+    /// It is a question for measurement rather than argument, though, so
+    /// [`Mbuf::prefetch_head_non_temporal`] exists to make testing the other choice a one-word
+    /// change.
+    pub fn prefetch_head(&self) {
+        self.prefetch_head_with(Locality::Keep);
+    }
+
+    /// [`Mbuf::prefetch_head`] with the non-temporal hint, for measuring the other side of the
+    /// choice described there.
+    pub fn prefetch_head_non_temporal(&self) {
+        self.prefetch_head_with(Locality::Stream);
+    }
+
+    #[inline(always)]
+    fn prefetch_head_with(&self, locality: Locality) {
+        // SAFETY: `buf_addr + data_off` is where the PMD placed this packet, and a prefetch is a
+        // hint: it faults on nothing and reads nothing, so even a wild pointer would be
+        // architecturally inert. `self.raw` is a live mbuf for the lifetime of `&self`.
+        //
+        // The second line may lie past the end of a short frame, which is harmless: it is still
+        // inside the mbuf's own data room (see `prefetch_stays_inside_the_data_room`), so the
+        // hint can only pull in a line this mbuf already owns.
+        unsafe {
+            let head = (self.raw.as_ref().buf_addr as *const u8)
+                .offset(self.raw.as_ref().annon1.annon1.data_off as isize);
+            for line in 0..PREFETCH_HEAD_LINES {
+                prefetch_line(head.add(line * CACHE_LINE_BYTES), locality);
+            }
+        }
     }
 
     /// Get the contiguous bytes of the head segment.
@@ -1234,5 +1354,55 @@ mod mbuf_data_room_test {
         // Wrapping here would hand the pool a tiny room and fail queue setup in a way that looks
         // like the bug this function exists to prevent.
         assert_eq!(mbuf_data_room(u16::MAX), u16::MAX);
+    }
+}
+
+#[cfg(test)]
+mod prefetch_budget {
+    use super::{CACHE_LINE_BYTES, DEFAULT_MBUF_DATA_ROOM, PREFETCH_HEAD_LINES};
+    use net::eth::Eth;
+    use net::ipv4::Ipv4;
+    use net::udp::Udp;
+    use net::vxlan::Vxlan;
+
+    /// Byte offset at which the *inner* IPv4 header of a VXLAN frame begins.
+    ///
+    /// Derived from the header types rather than written down, so that if any of them changes
+    /// the budget below is re-checked instead of quietly going stale.
+    const INNER_IP_OFFSET: usize = Eth::HEADER_LEN.get() as usize      // outer ethernet
+        + Ipv4::MIN_LEN.get() as usize                                  // outer IPv4
+        + Udp::MIN_LENGTH.get() as usize                                // outer UDP
+        + Vxlan::MIN_LENGTH.get() as usize                              // VXLAN
+        + Eth::HEADER_LEN.get() as usize; // inner ethernet
+
+    /// The prefetch has to reach the headers the pipeline actually reads.
+    ///
+    /// This is the whole reason `PREFETCH_HEAD_LINES` is 2. The inner IPv4 header of a VXLAN
+    /// frame starts at byte 64 -- exactly one cache line in -- so a single-line prefetch warms
+    /// the encapsulation and leaves the addresses NAT rewrites and forwarding reads cold.
+    #[test]
+    fn prefetch_span_covers_the_inner_ip_header() {
+        assert_eq!(
+            INNER_IP_OFFSET, 64,
+            "VXLAN inner IP is expected to land exactly on the second cache line"
+        );
+        let span = PREFETCH_HEAD_LINES * CACHE_LINE_BYTES;
+        let needed = INNER_IP_OFFSET + Ipv4::MIN_LEN.get() as usize;
+        assert!(
+            span >= needed,
+            "prefetch covers {span} B but the inner IPv4 header ends at {needed} B; raise \
+             PREFETCH_HEAD_LINES"
+        );
+    }
+
+    /// Prefetching past a short frame is only harmless while it stays inside the mbuf's own
+    /// data room -- otherwise the hint reaches into memory this mbuf does not own.
+    #[test]
+    fn prefetch_stays_inside_the_data_room() {
+        let span = PREFETCH_HEAD_LINES * CACHE_LINE_BYTES;
+        assert!(
+            span <= DEFAULT_MBUF_DATA_ROOM as usize,
+            "prefetch span {span} B exceeds the smallest data room {DEFAULT_MBUF_DATA_ROOM} B"
+        );
     }
 }
