@@ -171,7 +171,9 @@ impl FromStr for InterfaceArg {
                     .parse::<u16>()
                     .map_err(|e| format!("Bad rxd '{value}': {e}"))?;
                 if count < 64 {
-                    return Err(format!("Bad rxd {count}: fewer than 64 is not a useful ring"));
+                    return Err(format!(
+                        "Bad rxd {count}: fewer than 64 is not a useful ring"
+                    ));
                 }
                 (format!("{head}{rest}"), Some(count))
             }

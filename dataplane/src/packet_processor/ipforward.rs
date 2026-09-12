@@ -458,7 +458,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
 
 #[cfg(test)]
 mod fib_memo_test {
-    use super::{FibMemo, FibKey};
+    use super::{FibKey, FibMemo};
     use routing::testing::RouterTables;
 
     /// The memo has to be transparent: for any key it must hand back the same FIB the table
@@ -490,7 +490,11 @@ mod fib_memo_test {
         assert_eq!(id(&mut memo, k1), Some(1), "first lookup");
         assert_eq!(id(&mut memo, k1), Some(1), "repeat hits slot 0");
         assert_eq!(id(&mut memo, k2), Some(2), "new key evicts into slot 1");
-        assert_eq!(id(&mut memo, k1), Some(1), "old key still served, from slot 1");
+        assert_eq!(
+            id(&mut memo, k1),
+            Some(1),
+            "old key still served, from slot 1"
+        );
         assert_eq!(id(&mut memo, k2), Some(2), "and back again");
 
         assert_eq!(id(&mut memo, absent), None, "a key the table lacks");

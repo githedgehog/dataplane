@@ -1349,9 +1349,7 @@ fn check_packet_with_vpcd_lookup(
     let packets_from_flow_lookup: Vec<_> = if let Some(stage) = flow_lookup_stage {
         // Use dedicated stage, which attaches the destination VPC discriminant to the packet,
         // if any is found from the flow table.
-        stage
-            .process(vec![packet])
-            .collect()
+        stage.process(vec![packet]).collect()
     } else {
         // Simple flow lookup, without attaching the destination VPC discriminant to the packet.
         flow_lookup(nat.sessions(), &mut packet.deep_copy().unwrap());
@@ -1359,14 +1357,10 @@ fn check_packet_with_vpcd_lookup(
     };
 
     // VPC discriminant lookup
-    let packets_from_vpcd_lookup: Vec<_> = vpcdlookup
-        .process(packets_from_flow_lookup)
-        .collect();
+    let packets_from_vpcd_lookup: Vec<_> = vpcdlookup.process(packets_from_flow_lookup).collect();
 
     // NAT
-    let packets_out: Vec<_> = nat
-        .process(packets_from_vpcd_lookup)
-        .collect();
+    let packets_out: Vec<_> = nat.process(packets_from_vpcd_lookup).collect();
 
     let dst_vpcd = packets_out[0].meta().dst_vpcd;
     let hdr_out = packets_out[0].try_ipv4().unwrap();

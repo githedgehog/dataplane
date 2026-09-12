@@ -232,4 +232,3 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketStatsNF {
         self.pkt_stats.incr_batch(&counts);
     }
 }
-
