@@ -235,17 +235,21 @@ impl<'p> Worker<'p> {
 
         let parse_errors = &mut counters.parse_errors;
         burst.clear();
-        burst.extend(rx_mbufs.drain_all().filter_map(|mbuf| match Packet::new(mbuf) {
-            Ok(mut packet) => {
-                packet.meta_mut().iif = Some(rx_if);
-                Some(packet)
-            }
-            Err(e) => {
-                *parse_errors += 1;
-                trace!("failed to parse a received frame: {e:?}");
-                None
-            }
-        }));
+        burst.extend(
+            rx_mbufs
+                .drain_all()
+                .filter_map(|mbuf| match Packet::new(mbuf) {
+                    Ok(mut packet) => {
+                        packet.meta_mut().iif = Some(rx_if);
+                        Some(packet)
+                    }
+                    Err(e) => {
+                        *parse_errors += 1;
+                        trace!("failed to parse a received frame: {e:?}");
+                        None
+                    }
+                }),
+        );
 
         pipeline.process_burst(burst);
         // Drops are counted below, by verdict, rather than derived from how many packets the
