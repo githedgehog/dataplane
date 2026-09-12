@@ -26,7 +26,21 @@ use crate::drivers::cpbridge::{DatapathEnds, Frame};
 /// receive-offload capability mask enables LRO, which reserves enough descriptors per packet to
 /// return a 64 KiB coalesced segment and so cuts the usable depth by a factor of 32. See
 /// [`rx_offloads`](Port::bring_up).
-const RX_DESCRIPTORS: u16 = 1024;
+/// Receive descriptors per queue, unless `/rxd=N` says otherwise.
+///
+/// This is how long a queue can go unpolled before the NIC starts discarding. At the ~1.2 Mpps
+/// a worker carries on the bench, 4096 is about 3.4 ms; the 1024 this used to be was 850
+/// microseconds. A dataplane in a VM does not get to assume it will be scheduled within 850
+/// microseconds, and when it is not, the ring overruns and the NIC drops a *run* of consecutive
+/// frames -- before any DPDK queue sees them, so `show driver status` reports nothing and only
+/// `imissed` moves. That reaches TCP as bursty loss with no reordering, which is what the bench
+/// measured: 0.73% retransmits, 19 segments per recovery episode, one reorder event in 270
+/// million packets.
+///
+/// The mbuf pool scales with this (`POOL_MBUFS_PER_WORKER`), so raising it costs memory
+/// proportionally: at a 9100 MTU each mbuf is ~9.3 KB, so 4096 descriptors is roughly 150 MB
+/// per worker.
+const RX_DESCRIPTORS: u16 = 4096;
 
 /// Transmit descriptors per queue.
 const TX_DESCRIPTORS: u16 = 1024;
@@ -37,7 +51,12 @@ const TX_DESCRIPTORS: u16 = 1024;
 /// this has to exceed that with room to spare: the surplus is what covers mbufs in flight through
 /// the pipeline and mbufs sitting in a transmit ring waiting to be reclaimed. Too small shows up as
 /// `rx_nombuf` on the port, not as an allocation error here.
-const POOL_MBUFS_PER_WORKER: u32 = 4 * RX_DESCRIPTORS as u32;
+/// Mbufs per worker in a port's receive pool, as a multiple of the queue's descriptor count.
+///
+/// Four rings' worth: one parked in the ring, one in flight through the pipeline, and headroom
+/// so a burst never finds the pool empty (which the NIC reports as `rx_nombuf`, the other way a
+/// frame can arrive and never reach a worker).
+const POOL_MBUFS_PER_RX_DESCRIPTOR: u32 = 4;
 
 /// Decide the RSS configuration for a port, warning if the device cannot spread at all.
 ///
@@ -104,6 +123,31 @@ fn report_link(
     }
 }
 
+/// How deep to make each receive queue, honouring `/rxd=N` and the device's own ceiling.
+///
+/// Split out to keep `bring_up` within its line budget, as `pool_shape` was.
+///
+/// `rte_eth_rx_queue_setup` rejects a count above `rx_desc_lim.nb_max` outright, so a port would
+/// fail to come up rather than run with a shallower ring -- which is the worse of the two
+/// outcomes, since a shallow ring drops frames and a port that never starts drops all of them.
+fn rx_descriptor_count(
+    info: &DevInfo<'_>,
+    index: dpdk::dev::DevIndex,
+    name: &str,
+    asked: Option<u16>,
+) -> u16 {
+    let asked = asked.unwrap_or(RX_DESCRIPTORS);
+    let most = info.rx_desc_limits().nb_max;
+    if most != 0 && asked > most {
+        warn!(
+            "port {index} ({name}) accepts at most {most} rx descriptors per queue; using that \
+             rather than the {asked} asked for"
+        );
+        return most;
+    }
+    asked
+}
+
 /// How many mbufs a port's receive pool holds and how big each one's data room is.
 ///
 /// Split out to keep `bring_up` within its line budget; it belongs to it.
@@ -117,9 +161,10 @@ fn pool_shape(
     index: dpdk::dev::DevIndex,
     name: &str,
     num_workers: u16,
+    rx_descriptors: u16,
 ) -> (u32, u16) {
     let data_room = dpdk::mem::mbuf_data_room(dev.mtu().unwrap_or(1500));
-    let pool_mbufs = POOL_MBUFS_PER_WORKER * u32::from(num_workers);
+    let pool_mbufs = POOL_MBUFS_PER_RX_DESCRIPTOR * u32::from(rx_descriptors) * u32::from(num_workers);
     info!(
         "port {index} ({name}) receive pool: {pool_mbufs} mbufs of {data_room} B = {} MiB",
         (u64::from(pool_mbufs) * u64::from(data_room)) / (1024 * 1024)
@@ -166,8 +211,11 @@ impl<'eal> Port<'eal> {
         name: String,
         num_workers: u16,
         mtu: Option<u16>,
+        rx_descriptors: Option<u16>,
     ) -> Result<Self, DriverError> {
         let index = info.index();
+
+        let rx_descriptors = rx_descriptor_count(&info, index, &name, rx_descriptors);
 
         let rss = rss_for(&info, &name, num_workers);
 
@@ -220,14 +268,14 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
-        let (pool_mbufs, data_room) = pool_shape(&dev, index, &name, num_workers);
+        let (pool_mbufs, data_room) = pool_shape(&dev, index, &name, num_workers, rx_descriptors);
         let rx_pool = eal
             .mem
             .new_pkt_pool(
                 PoolConfig::new(
                     format!("rx_{index}"),
                     PoolParams {
-                        size: POOL_MBUFS_PER_WORKER * u32::from(num_workers),
+                        size: POOL_MBUFS_PER_RX_DESCRIPTOR * u32::from(rx_descriptors) * u32::from(num_workers),
                         data_size: data_room,
                         ..Default::default()
                     },
@@ -246,7 +294,7 @@ impl<'eal> Port<'eal> {
             dev.new_rx_queue(RxQueueConfig {
                 dev: index,
                 queue_index: RxQueueIndex(queue),
-                num_descriptors: RX_DESCRIPTORS,
+                num_descriptors: rx_descriptors,
                 socket_preference: socket::Preference::Dev(index),
                 offloads: RxOffload::NONE,
                 pool: rx_pool,

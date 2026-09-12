@@ -430,6 +430,7 @@ fn bring_up_ports<'eal>(
             interface.interface.to_string(),
             num_workers,
             interface.mtu,
+            interface.rx_descriptors,
         )?);
     }
 
