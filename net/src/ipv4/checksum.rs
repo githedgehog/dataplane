@@ -64,7 +64,7 @@ impl Checksum for Ipv4 {
     ///
     /// Always returns `Some`.
     fn checksum(&self) -> Option<Ipv4Checksum> {
-        Some(Ipv4Checksum(self.0.header_checksum))
+        Some(Ipv4Checksum(self.header_checksum))
     }
 
     /// Compute the ipv4 header's checksum based on the supplied payload.
@@ -78,7 +78,7 @@ impl Checksum for Ipv4 {
         &self,
         _payload: &Self::Payload<'_>,
     ) -> Result<Self::Checksum, Self::Error> {
-        Ok(Ipv4Checksum(self.0.calc_header_checksum()))
+        Ok(Ipv4Checksum(self.compute_header_checksum()))
     }
 
     /// Set the checksum field of the header.
@@ -89,7 +89,7 @@ impl Checksum for Ipv4 {
     ///
     /// Always returns `Ok`.
     fn set_checksum(&mut self, checksum: Self::Checksum) -> Result<&mut Self, Self::Error> {
-        self.0.header_checksum = checksum.0;
+        self.header_checksum = checksum.0;
         Ok(self)
     }
 }

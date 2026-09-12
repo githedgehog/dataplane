@@ -225,8 +225,8 @@ mod tests {
 
         // Update 16-bit "total length" field
         let checksum = ipv4.checksum().unwrap();
-        let old_value = ipv4.0.total_len;
-        ipv4.0.total_len = new_len_value;
+        let old_value = ipv4.total_len();
+        ipv4.total_len = new_len_value;
 
         // Update and validate checksum
         let new_checksum = ipv4.increment_update_checksum(checksum, old_value, new_len_value);
