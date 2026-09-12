@@ -181,7 +181,7 @@ impl EmbeddedHeaders {
                 return;
             }
             Some(Net::Ipv4(ip)) => {
-                let Ok(ipv4_payload_length) = ip.0.payload_len().map(usize::from) else {
+                let Some(ipv4_payload_length) = ip.payload_len().map(usize::from) else {
                     return;
                 };
                 ipv4_payload_length

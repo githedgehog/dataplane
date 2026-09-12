@@ -1181,7 +1181,7 @@ impl Headers {
 
     pub(crate) fn transport_payload_len(&self) -> Option<usize> {
         let ip_payload_len = match self.net.as_ref()? {
-            Net::Ipv4(ip) => usize::from(ip.0.payload_len().ok()?),
+            Net::Ipv4(ip) => usize::from(ip.payload_len()?),
             Net::Ipv6(ip) => usize::from(ip.0.payload_length),
         };
         let after_net = self
