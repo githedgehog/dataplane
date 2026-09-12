@@ -17,7 +17,7 @@ use crate::parse::{
 };
 use crate::tcp::{Tcp, TruncatedTcp};
 use crate::udp::{TruncatedUdp, Udp};
-use etherparse::{IpDscp, IpEcn, IpFragOffset, IpNumber, Ipv4Header};
+use etherparse::{IpDscp, IpEcn, IpFragOffset, IpNumber, Ipv4Options};
 use std::net::Ipv4Addr;
 use std::num::NonZero;
 use tracing::trace;
@@ -32,10 +32,46 @@ pub use checksum::*;
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
-/// An IPv4 header
-#[repr(transparent)]
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Ipv4(pub(crate) Ipv4Header);
+/// An IPv4 header with inline fixed fields and boxed options.
+///
+/// Empty options are stored as `None` so equality matches the wire representation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ipv4 {
+    pub(crate) source: [u8; 4],
+    pub(crate) destination: [u8; 4],
+    pub(crate) options: Option<Box<Ipv4Options>>,
+    pub(crate) total_len: u16,
+    pub(crate) identification: u16,
+    pub(crate) fragment_offset: IpFragOffset,
+    pub(crate) header_checksum: u16,
+    pub(crate) dscp: IpDscp,
+    pub(crate) ecn: IpEcn,
+    pub(crate) time_to_live: u8,
+    pub(crate) protocol: IpNumber,
+    pub(crate) dont_fragment: bool,
+    pub(crate) more_fragments: bool,
+}
+
+/// Matches [`etherparse::Ipv4Header::default`], including the DF bit used by VXLAN.
+impl Default for Ipv4 {
+    fn default() -> Self {
+        Self {
+            source: [0; 4],
+            destination: [0; 4],
+            options: None,
+            total_len: 0,
+            identification: 0,
+            fragment_offset: IpFragOffset::default(),
+            header_checksum: 0,
+            dscp: IpDscp::default(),
+            ecn: IpEcn::default(),
+            time_to_live: 0,
+            protocol: IpNumber(255),
+            dont_fragment: true,
+            more_fragments: false,
+        }
+    }
+}
 
 /// Error describing illegal length in an IPv4 header
 #[derive(Debug, thiserror::Error)]
@@ -63,30 +99,122 @@ impl Ipv4 {
     #[allow(clippy::unwrap_used)] // const-eval and trivially safe
     pub const MAX_LEN: NonZero<u16> = NonZero::new(60).unwrap();
 
-    /// Create a new IPv4 header
-    pub(crate) fn new(header: Ipv4Header) -> Result<Self, Ipv4Error> {
-        UnicastIpv4Addr::new(Ipv4Addr::from(header.source))
-            .map_err(Ipv4Error::InvalidSourceAddr)?;
-        Ok(Self(header))
+    /// Read fields directly to avoid building an intermediate owned header.
+    fn from_header_slice(slice: &etherparse::Ipv4HeaderSlice<'_>) -> Result<Self, Ipv4Error> {
+        UnicastIpv4Addr::new(slice.source_addr()).map_err(Ipv4Error::InvalidSourceAddr)?;
+        let options = slice.options();
+        Ok(Self {
+            source: slice.source(),
+            destination: slice.destination(),
+            options: if options.is_empty() {
+                None
+            } else {
+                Some(Box::new(
+                    Ipv4Options::try_from(options).unwrap_or_else(|_| unreachable!()),
+                ))
+            },
+            total_len: slice.total_len(),
+            identification: slice.identification(),
+            fragment_offset: slice.fragments_offset(),
+            header_checksum: slice.header_checksum(),
+            dscp: slice.dcp(),
+            ecn: slice.ecn(),
+            time_to_live: slice.ttl(),
+            protocol: slice.protocol(),
+            dont_fragment: slice.dont_fragment(),
+            more_fragments: slice.more_fragments(),
+        })
+    }
+
+    /// Length of the options in bytes (zero when there are none).
+    fn options_len(&self) -> usize {
+        self.options.as_deref().map_or(0, Ipv4Options::len)
+    }
+
+    /// The IHL field: header length in 32-bit words.
+    #[allow(clippy::cast_possible_truncation)] // options are at most 40 bytes
+    fn ihl(&self) -> u8 {
+        (self.options_len() / 4) as u8 + 5
+    }
+
+    /// Pack the flags and fragment offset, with the reserved bit cleared.
+    fn flags_and_fragment_offset(&self) -> [u8; 2] {
+        let frag = self.fragment_offset.value().to_be_bytes();
+        let mut flags = 0u8;
+        if self.dont_fragment {
+            flags |= 0b0100_0000;
+        }
+        if self.more_fragments {
+            flags |= 0b0010_0000;
+        }
+        [flags | (frag[0] & 0x1f), frag[1]]
+    }
+
+    /// Write the header into `buf`, which must be exactly [`Ipv4::header_len`] bytes.
+    fn write_header(&self, buf: &mut [u8]) {
+        debug_assert_eq!(
+            buf.len(),
+            self.header_len(),
+            "buffer is not the header's size"
+        );
+        let total_len = self.total_len.to_be_bytes();
+        let id = self.identification.to_be_bytes();
+        let frag = self.flags_and_fragment_offset();
+        let checksum = self.header_checksum.to_be_bytes();
+        buf[0] = (4 << 4) | self.ihl();
+        buf[1] = (self.dscp.value() << 2) | self.ecn.value();
+        buf[2] = total_len[0];
+        buf[3] = total_len[1];
+        buf[4] = id[0];
+        buf[5] = id[1];
+        buf[6] = frag[0];
+        buf[7] = frag[1];
+        buf[8] = self.time_to_live;
+        buf[9] = self.protocol.0;
+        buf[10] = checksum[0];
+        buf[11] = checksum[1];
+        buf[12..16].copy_from_slice(&self.source);
+        buf[16..20].copy_from_slice(&self.destination);
+        buf[20..].copy_from_slice(self.options());
+    }
+
+    /// Compute the IPv4 header checksum using etherparse's accumulator.
+    pub(crate) fn compute_header_checksum(&self) -> u16 {
+        etherparse::checksum::Sum16BitWords::new()
+            .add_2bytes([
+                (4 << 4) | self.ihl(),
+                (self.dscp.value() << 2) | self.ecn.value(),
+            ])
+            .add_2bytes(self.total_len.to_be_bytes())
+            .add_2bytes(self.identification.to_be_bytes())
+            .add_2bytes(self.flags_and_fragment_offset())
+            .add_2bytes([self.time_to_live, self.protocol.0])
+            .add_4bytes(self.source)
+            .add_4bytes(self.destination)
+            .add_slice(self.options())
+            .ones_complement()
+            .to_be()
     }
 
     /// Get the source ip address of the header
     #[must_use]
     pub fn source(&self) -> UnicastIpv4Addr {
-        UnicastIpv4Addr::new(Ipv4Addr::from(self.0.source)).unwrap_or_else(|_| unreachable!())
+        UnicastIpv4Addr::new(Ipv4Addr::from(self.source)).unwrap_or_else(|_| unreachable!())
     }
 
     /// Get the destination ip address of the header
     #[must_use]
     pub fn destination(&self) -> Ipv4Addr {
-        Ipv4Addr::from(self.0.destination)
+        Ipv4Addr::from(self.destination)
     }
 
     // TODO: proper wrapper type
     /// Get the options for this header (as a byte slice)
     #[must_use]
     pub fn options(&self) -> &[u8] {
-        self.0.options.as_slice()
+        self.options
+            .as_deref()
+            .map_or(&[][..], Ipv4Options::as_slice)
     }
 
     /// Set this header's options to `data`.
@@ -106,11 +234,17 @@ impl Ipv4 {
     /// this setter's contract is about the options, and the caller is about to set a length
     /// anyway.
     pub fn set_options(&mut self, data: &[u8]) -> Result<&mut Self, Ipv4OptionsLenError> {
-        let payload_len = self.0.payload_len().unwrap_or(0);
-        self.0.options = data
-            .try_into()
-            .map_err(|_| Ipv4OptionsLenError { len: data.len() })?;
+        // Preserve payload length when the options change the header length.
+        let payload_len = self.payload_len().unwrap_or(0);
+        if data.is_empty() {
+            self.options = None;
+        } else {
+            let options =
+                Ipv4Options::try_from(data).map_err(|_| Ipv4OptionsLenError { len: data.len() })?;
+            self.options = Some(Box::new(options));
+        }
         if self.set_payload_len(payload_len).is_err() {
+            // Clamp the payload if the larger header exceeds the total-length limit.
             let headroom = u16::try_from(self.header_len()).unwrap_or(u16::MAX);
             let _ = self.set_payload_len(u16::MAX - headroom);
         }
@@ -121,13 +255,13 @@ impl Ipv4 {
     /// Get the next layer protocol which follows this header.
     #[must_use]
     pub fn protocol(&self) -> IpNumber {
-        self.0.protocol
+        self.protocol
     }
 
     /// The IP protocol / next-header field as a [`NextHeader`].
     #[must_use]
     pub fn next_header(&self) -> NextHeader {
-        self.0.protocol.into()
+        self.protocol.into()
     }
 
     /// Length of the header (includes options) in bytes.
@@ -137,19 +271,27 @@ impl Ipv4 {
     /// </div>
     #[must_use]
     pub fn header_len(&self) -> usize {
-        self.0.header_len()
+        Self::MIN_LEN.get() as usize + self.options_len()
     }
 
     /// Value of total length ip header field
     #[must_use]
     pub fn total_len(&self) -> u16 {
-        self.0.total_len
+        self.total_len
+    }
+
+    /// Payload length, or `None` if `total_len` is smaller than the header.
+    #[must_use]
+    pub fn payload_len(&self) -> Option<u16> {
+        #[allow(clippy::cast_possible_truncation)] // header_len() is at most 60
+        let header_len = self.header_len() as u16;
+        self.total_len.checked_sub(header_len)
     }
 
     /// The number of routing hops the packet is allowed to take.
     #[must_use]
     pub fn ttl(&self) -> u8 {
-        self.0.time_to_live
+        self.time_to_live
     }
 
     // TODO: proper wrapper type (low priority)
@@ -158,7 +300,7 @@ impl Ipv4 {
     /// [differentiated services code point]: https://en.wikipedia.org/wiki/Differentiated_services
     #[must_use]
     pub fn dscp(&self) -> IpDscp {
-        self.0.dscp
+        self.dscp
     }
 
     // TODO: proper wrapper type (low priority)
@@ -167,19 +309,19 @@ impl Ipv4 {
     /// [explicit congestion notification]: https://en.wikipedia.org/wiki/Explicit_Congestion_Notification
     #[must_use]
     pub fn ecn(&self) -> IpEcn {
-        self.0.ecn
+        self.ecn
     }
 
     /// Returns true if the "don't fragment" bit is set in this header.
     #[must_use]
     pub fn dont_fragment(&self) -> bool {
-        self.0.dont_fragment
+        self.dont_fragment
     }
 
     /// Returns true if the "more-fragments" bit is set in this header.
     #[must_use]
     pub fn more_fragments(&self) -> bool {
-        self.0.more_fragments
+        self.more_fragments
     }
 
     // TODO: proper wrapper type (low priority)
@@ -187,7 +329,7 @@ impl Ipv4 {
     /// offset of payload the current message relative to the original payload of the message.
     #[must_use]
     pub fn fragment_offset(&self) -> IpFragOffset {
-        self.0.fragment_offset
+        self.fragment_offset
     }
 
     /// Return the headers "identification".
@@ -196,12 +338,12 @@ impl Ipv4 {
     /// [IP Fragmentation]: https://en.wikipedia.org/wiki/IP_fragmentation
     #[must_use]
     pub fn identification(&self) -> u16 {
-        self.0.identification
+        self.identification
     }
 
     /// Set the source ip of the header.
     pub fn set_source(&mut self, source: UnicastIpv4Addr) -> &mut Self {
-        self.0.source = source.inner().octets();
+        self.source = source.inner().octets();
         self
     }
 
@@ -215,20 +357,20 @@ impl Ipv4 {
     /// Note(manish) Why do we even have this function?
     #[allow(unsafe_code)]
     pub unsafe fn set_source_unchecked(&mut self, source: impl Into<Ipv4Addr>) -> &mut Self {
-        self.0.source = source.into().octets();
+        self.source = source.into().octets();
         self
     }
 
     /// Set the destination ip address for this header.
     pub fn set_destination(&mut self, dest: Ipv4Addr) -> &mut Self {
-        self.0.destination = dest.octets();
+        self.destination = dest.octets();
         self
     }
 
     /// Set the header's time to live
     /// (i.e., the maximum number of routing hops it can traverse without being dropped).
     pub fn set_ttl(&mut self, ttl: u8) -> &mut Self {
-        self.0.time_to_live = ttl;
+        self.time_to_live = ttl;
         self
     }
 
@@ -239,10 +381,10 @@ impl Ipv4 {
     /// Returns a [`TtlAlreadyZero`] if the ttl is already at zero.
     /// This outcome usually indicated the need to drop the packet in a routing stack.
     pub fn decrement_ttl(&mut self) -> Result<(), TtlAlreadyZero> {
-        if self.0.time_to_live == 0 {
+        if self.time_to_live == 0 {
             return Err(TtlAlreadyZero);
         }
-        self.0.time_to_live -= 1;
+        self.time_to_live -= 1;
         Ok(())
     }
 
@@ -250,7 +392,7 @@ impl Ipv4 {
     ///
     /// [explicit congestion notification]: https://en.wikipedia.org/wiki/Explicit_Congestion_Notification
     pub fn set_ecn(&mut self, ecn: Ecn) -> &mut Self {
-        self.0.ecn = ecn.0;
+        self.ecn = ecn.0;
         self
     }
 
@@ -258,7 +400,7 @@ impl Ipv4 {
     ///
     /// [differentiated services code point]: https://en.wikipedia.org/wiki/Differentiated_services
     pub fn set_dscp(&mut self, dscp: Dscp) -> &mut Self {
-        self.0.dscp = dscp.0;
+        self.dscp = dscp.0;
         self
     }
 
@@ -266,13 +408,13 @@ impl Ipv4 {
     /// of this packet i.e., the number used to identify packets that contain an originally
     /// fragmented packet.
     pub fn set_identification(&mut self, id: u16) -> &mut Self {
-        self.0.identification = id;
+        self.identification = id;
         self
     }
 
     /// Set the "don't fragment" bit of the header
     pub fn set_dont_fragment(&mut self, dont_fragment: bool) -> &mut Self {
-        self.0.dont_fragment = dont_fragment;
+        self.dont_fragment = dont_fragment;
         self
     }
 
@@ -283,7 +425,7 @@ impl Ipv4 {
     /// This function does not (and can-not)
     /// check if there are actually more fragments to the packet.
     pub fn set_more_fragments(&mut self, more_fragments: bool) -> &mut Self {
-        self.0.more_fragments = more_fragments;
+        self.more_fragments = more_fragments;
         self
     }
 
@@ -294,7 +436,7 @@ impl Ipv4 {
     /// This function does not (and can-not) check if the assigned fragment offset is valid or even
     /// reasonable.
     pub fn set_fragment_offset(&mut self, fragment_offset: FragOffset) -> &mut Self {
-        self.0.fragment_offset = fragment_offset.0;
+        self.fragment_offset = fragment_offset.0;
         self
     }
 
@@ -305,7 +447,7 @@ impl Ipv4 {
     /// This function does not (and can-not)
     /// check if the assigned [`IpNumber`] is valid for this packet.
     pub fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
-        self.0.protocol = next_header.0;
+        self.protocol = next_header.0;
         self
     }
 
@@ -318,13 +460,17 @@ impl Ipv4 {
     /// # Errors
     ///    This method returns [`Ipv4LengthError`] if the value is too big
     pub fn set_payload_len(&mut self, payload_len: u16) -> Result<(), Ipv4LengthError> {
-        match self.0.set_payload_len(payload_len as usize) {
-            Ok(()) => Ok(()),
-            Err(err) => Err(Ipv4LengthError {
-                requested: payload_len as usize + self.header_len(),
-                max: err.max_allowed,
-            }),
+        let header_len = self.header_len();
+        let max = usize::from(u16::MAX) - self.options_len() - Self::MIN_LEN.get() as usize;
+        let requested = payload_len as usize + header_len;
+        if payload_len as usize > max {
+            return Err(Ipv4LengthError { requested, max });
         }
+        #[allow(clippy::cast_possible_truncation)] // bounded by the check above
+        {
+            self.total_len = requested as u16;
+        }
+        Ok(())
     }
 
     /// Parse the payload of the ipv4 packet.
@@ -334,13 +480,13 @@ impl Ipv4 {
     /// * `Some(Ipv4Next)` if the payload is a supported protocol
     /// * `None` if the payload is not a supported protocol
     pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<Ipv4Next> {
-        match self.0.protocol {
+        match self.protocol {
             IpNumber::TCP => cursor.parse_header::<Tcp, Ipv4Next>(),
             IpNumber::UDP => cursor.parse_header::<Udp, Ipv4Next>(),
             IpNumber::ICMP => cursor.parse_header::<Icmp4, Ipv4Next>(),
             IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<Ipv4Auth, Ipv4Next>(),
             _ => {
-                trace!("unsupported protocol: {:?}", self.0.protocol);
+                trace!("unsupported protocol: {:?}", self.protocol);
                 None
             }
         }
@@ -353,13 +499,13 @@ impl Ipv4 {
     /// * `Some(EmbeddedIpv4Next)` if the payload is a supported protocol
     /// * `None` if the payload is not a supported protocol
     pub(crate) fn parse_embedded_payload(&self, cursor: &mut Reader) -> Option<EmbeddedIpv4Next> {
-        match self.0.protocol {
+        match self.protocol {
             IpNumber::TCP => cursor.parse_header::<TruncatedTcp, EmbeddedIpv4Next>(),
             IpNumber::UDP => cursor.parse_header::<TruncatedUdp, EmbeddedIpv4Next>(),
             IpNumber::ICMP => cursor.parse_header::<TruncatedIcmp4, EmbeddedIpv4Next>(),
             IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<Ipv4Auth, EmbeddedIpv4Next>(),
             _ => {
-                trace!("unsupported protocol: {:?}", self.0.protocol);
+                trace!("unsupported protocol: {:?}", self.protocol);
                 None
             }
         }
@@ -389,19 +535,13 @@ impl Parse for Ipv4 {
         if buf.len() > u16::MAX as usize {
             return Err(ParseError::BufferTooLong(buf.len()));
         }
-        let (etherparse_header, rest) =
-            Ipv4Header::from_slice(buf).map_err(|e| ParseError::Invalid(Ipv4Error::Invalid(e)))?;
-        assert!(
-            rest.len() < buf.len(),
-            "rest.len() >= buf.len() ({rest} >= {buf})",
-            rest = rest.len(),
-            buf = buf.len()
-        );
+        let slice = etherparse::Ipv4HeaderSlice::from_slice(buf)
+            .map_err(|e| ParseError::Invalid(Ipv4Error::Invalid(e)))?;
+        // The validated header is nonempty and fits in the buffer.
         #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
-        let consumed =
-            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
+        let consumed = NonZero::new(slice.slice().len() as u16).ok_or_else(|| unreachable!())?;
         Ok((
-            Self::new(etherparse_header).map_err(ParseError::Invalid)?,
+            Self::from_header_slice(&slice).map_err(ParseError::Invalid)?,
             consumed,
         ))
     }
@@ -412,7 +552,7 @@ impl DeParse for Ipv4 {
 
     fn size(&self) -> NonZero<u16> {
         #[allow(clippy::cast_possible_truncation)] // ipv4 headers have safe upper bound on length
-        NonZero::new(self.0.header_len() as u16).unwrap_or_else(|| unreachable!())
+        NonZero::new(self.header_len() as u16).unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
@@ -426,7 +566,7 @@ impl DeParse for Ipv4 {
                 actual: len,
             }));
         }
-        buf[..(self.size().get() as usize)].copy_from_slice(&self.0.to_bytes());
+        self.write_header(&mut buf[..(self.size().get() as usize)]);
         Ok(self.size())
     }
 }
@@ -489,7 +629,6 @@ mod contract {
     use crate::ipv4::Ipv4;
     use bolero::generator::bolero_generator::bounded::BoundedValue;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
-    use etherparse::Ipv4Header;
     use std::collections::Bound;
     use std::net::Ipv4Addr;
 
@@ -522,7 +661,7 @@ mod contract {
 
         /// Generates an arbitrary [`Ipv4`] header with the [`NextHeader`] specified in `self`.
         fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
-            let mut header = Ipv4(Ipv4Header::default());
+            let mut header = Ipv4::default();
             let option_words = u8::gen_bounded(u, Bound::Included(&0), Bound::Included(&10))?;
             let mut options = [0u8; (Ipv4::MAX_LEN.get() - Ipv4::MIN_LEN.get()) as usize];
             let options = &mut options[..(option_words as usize) * 4];
@@ -576,6 +715,20 @@ mod test {
 
     const MIN_LEN_USIZE: usize = 20;
     const MAX_LEN_USIZE: usize = 60;
+
+    #[test]
+    fn default_matches_etherparse() {
+        let mut ours = [0u8; MIN_LEN_USIZE];
+        let written = Ipv4::default()
+            .deparse(&mut ours)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        assert_eq!(written.get() as usize, MIN_LEN_USIZE);
+        assert_eq!(
+            ours.as_slice(),
+            etherparse::Ipv4Header::default().to_bytes().as_slice()
+        );
+        assert!(Ipv4::default().dont_fragment());
+    }
 
     #[test]
     fn parse_back() {
