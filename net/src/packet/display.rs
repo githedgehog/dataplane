@@ -403,7 +403,6 @@ impl Display for PacketMeta {
         fmt_opt(f, "    src-vpcd", self.src_vpcd, false)?;
         fmt_opt(f, "    dst-vpcd", self.dst_vpcd, true)?;
         fmt_opt(f, "    vrf", self.vrf, false)?;
-        fmt_opt(f, "    bd", self.bridge, true)?;
         fmt_opt(f, "    next-hop", self.nh_addr, true)?;
         fmt_opt(f, "    flowinfo", self.flow_info.as_ref(), true)?;
         fmt_opt(f, "    dscp", self.dscp, false)?;

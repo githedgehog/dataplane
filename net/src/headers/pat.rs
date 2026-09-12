@@ -2928,7 +2928,7 @@ mod tests {
         let h = HeadersBuilder::default()
             .eth(Some(crate::headers::builder::Blank::blank()))
             .vlan({
-                let mut v = arrayvec::ArrayVec::new();
+                let mut v = crate::headers::Stack::default();
                 v.push(crate::headers::builder::Blank::blank());
                 v
             })
