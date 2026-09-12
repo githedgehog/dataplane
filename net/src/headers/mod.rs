@@ -972,7 +972,7 @@ impl Headers {
 
     pub(crate) fn transport_payload_len(&self) -> Option<usize> {
         let ip_payload_len = match self.net.as_ref()? {
-            Net::Ipv4(ip) => usize::from(ip.0.payload_len().ok()?),
+            Net::Ipv4(ip) => usize::from(ip.payload_len()?),
             Net::Ipv6(ip) => usize::from(ip.0.payload_length),
         };
         let after_net = self
@@ -2709,11 +2709,16 @@ mod size_budget {
     /// every packet to serve the ICMP-error quote path alone. Boxing that field took `Headers` to
     /// 248 and `Packet<Mbuf>` from 528 to 336.
     ///
+    /// The 2026-09-12 saturation profile then found the same pathology one level down, in
+    /// `Ipv4`: 41 of its 64 bytes were an inline IPv4 options buffer, and `Ipv4::parse` was
+    /// burning 79% of its own samples on a single stack-copy instruction. Boxing those options
+    /// took `Ipv4` to 32 bytes and `Headers` from 248 to 232. See `ipv4::size_budget`.
+    ///
     /// This bound is a budget, not a law of nature -- raise it deliberately if a field has to
     /// grow, and prefer boxing a cold field over paying for it on the fast path.
     #[test]
     fn headers_stays_small() {
-        const BUDGET: usize = 248;
+        const BUDGET: usize = 232;
         assert!(
             size_of::<Headers>() <= BUDGET,
             "Headers is {} bytes, over the {BUDGET}-byte budget; it is moved by value at every \
