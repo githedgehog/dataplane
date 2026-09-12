@@ -26,7 +26,7 @@ const RX_DESCRIPTORS: u16 = 1024;
 const TX_DESCRIPTORS: u16 = 1024;
 
 /// Mbufs per worker, covering RX descriptors, pipeline processing, and pending TX.
-const POOL_MBUFS_PER_WORKER: u32 = 4 * RX_DESCRIPTORS as u32;
+const POOL_MBUFS_PER_RX_DESCRIPTOR: u32 = 4;
 
 /// Decide the RSS configuration for a port, warning if the device cannot spread at all.
 ///
@@ -93,6 +93,31 @@ fn report_link(
     }
 }
 
+/// How deep to make each receive queue, honouring `/rxd=N` and the device's own ceiling.
+///
+/// Split out to keep `bring_up` within its line budget, as `pool_shape` was.
+///
+/// `rte_eth_rx_queue_setup` rejects a count above `rx_desc_lim.nb_max` outright, so a port would
+/// fail to come up rather than run with a shallower ring -- which is the worse of the two
+/// outcomes, since a shallow ring drops frames and a port that never starts drops all of them.
+fn rx_descriptor_count(
+    info: &DevInfo<'_>,
+    index: dpdk::dev::DevIndex,
+    name: &str,
+    asked: Option<u16>,
+) -> u16 {
+    let asked = asked.unwrap_or(RX_DESCRIPTORS);
+    let most = info.rx_desc_limits().nb_max;
+    if most != 0 && asked > most {
+        warn!(
+            "port {index} ({name}) accepts at most {most} rx descriptors per queue; using that \
+             rather than the {asked} asked for"
+        );
+        return most;
+    }
+    asked
+}
+
 /// A started port and its receive pool. Workers borrow its queue handles.
 pub(crate) struct Port<'eal> {
     /// The started device. Kept so the port can be stopped and closed explicitly at shutdown.
@@ -129,9 +154,12 @@ impl<'eal> Port<'eal> {
         name: String,
         num_workers: u16,
         mtu: Option<u16>,
+        rx_descriptors: Option<u16>,
     ) -> Result<Self, DriverError> {
         let info = port.info();
         let index = info.index();
+
+        let rx_descriptors = rx_descriptor_count(info, index, &name, rx_descriptors);
 
         let rss = rss_for(info, &name, num_workers);
 
@@ -168,13 +196,15 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
+        let pool_mbufs =
+            POOL_MBUFS_PER_RX_DESCRIPTOR * u32::from(rx_descriptors) * u32::from(num_workers);
         let rx_pool = eal
             .mem
             .new_pkt_pool(
                 PoolConfig::new(
                     format!("rx_{index}"),
                     PoolParams {
-                        size: POOL_MBUFS_PER_WORKER * u32::from(num_workers),
+                        size: pool_mbufs,
                         ..Default::default()
                     },
                 )
@@ -191,7 +221,7 @@ impl<'eal> Port<'eal> {
         for queue in 0..num_workers {
             dev.new_rx_queue(RxQueueConfig {
                 queue_index: RxQueueIndex(queue),
-                num_descriptors: RX_DESCRIPTORS,
+                num_descriptors: rx_descriptors,
                 socket_preference: socket::Preference::Dev(index),
                 offloads: RxOffload::NONE,
                 pool: rx_pool.clone(),
@@ -236,7 +266,7 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
-        report_link(&dev, index, &name, if_index, mac, mtu, num_workers);
+        report_link(&dev, index, &name, if_index, mac.into(), mtu, num_workers);
 
         Ok(Port {
             dev,
