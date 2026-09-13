@@ -567,6 +567,23 @@ _refuse-instrumented-artifact:
       printf 'real; if you need that for %s too, give it a version of its own first.\n' '{{ instrument }}' >&2
       exit 1
     fi
+    # `version_instr` only applies to a *computed* version: `version := env("VERSION", ...)`, so an
+    # explicit VERSION= silently bypasses it -- and that is the path any deploy script takes. Check
+    # the version we are actually about to tag with, not the one we would have derived.
+    case '{{ instrument }}' in
+      ''|none) ;;
+      *)
+        case '{{ version }}' in
+          *'{{ instrument }}'*) ;;
+          *)
+            printf 'refusing to tag an instrument=%s image as `%s`: the version does not name the\n' '{{ instrument }}' '{{ version }}' >&2
+            printf 'instrumentation, so this image would take a clean tag and replace it. Either drop\n' >&2
+            printf 'VERSION= and let it be derived, or put %s in the one you pass.\n' '{{ instrument }}' >&2
+            exit 1
+            ;;
+        esac
+        ;;
+    esac
 
 # Build the dataplane container image
 [script]
