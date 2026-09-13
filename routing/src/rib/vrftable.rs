@@ -251,6 +251,28 @@ impl VrfTable {
         self.by_id.get(&vrfid).ok_or(RouterError::NoSuchVrf)
     }
 
+    //////////////////////////////////////////////////////////////////
+    /// Immutably access a [`Vrf`] from its id.
+    //////////////////////////////////////////////////////////////////
+    pub fn get_vrf_by_vni(&self, vni: Vni) -> Result<&Vrf, RouterError> {
+        self.by_vni
+            .get(&vni)
+            .ok_or(RouterError::NoSuchVrf)
+            .and_then(|vrfid| self.by_id.get(vrfid).ok_or(RouterError::NoSuchVrf))
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Immutably access a [`Vrf`] from its description.
+    /// For vpcs, the description matches the name of the vpc.
+    //////////////////////////////////////////////////////////////////
+    #[allow(unused)]
+    pub fn get_vrf_by_descr(&self, description: &str) -> Result<&Vrf, RouterError> {
+        self.by_id
+            .values()
+            .find(|vrf| vrf.description.as_deref() == Some(description))
+            .ok_or(RouterError::NoSuchVrf)
+    }
+
     #[allow(unused)]
     pub fn get_default_vrf(&self) -> &Vrf {
         self.by_id
@@ -270,14 +292,6 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     pub fn get_vrf_mut(&mut self, vrfid: VrfId) -> Result<&mut Vrf, RouterError> {
         self.by_id.get_mut(&vrfid).ok_or(RouterError::NoSuchVrf)
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Access a VRF from its vni.
-    //////////////////////////////////////////////////////////////////
-    pub fn get_vrf_by_vni(&self, vni: Vni) -> Result<&Vrf, RouterError> {
-        let vrfid = self.by_vni.get(&vni).ok_or(RouterError::NoSuchVrf)?;
-        self.get_vrf(*vrfid)
     }
 
     //////////////////////////////////////////////////////////////////
