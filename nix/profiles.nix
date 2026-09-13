@@ -58,6 +58,9 @@ let
     # but bolero stops on wall-clock, so the *sample* is small either way and a
     # coverage guard reading it is judging the sanitizer, not the code.
     "--check-cfg=cfg(sanitized)"
+    # Set only by `instrumentation=pgo`, so the on-demand counter dump cannot be compiled
+    # without the profiling runtime that provides the symbol it calls.
+    "--check-cfg=cfg(profile_generate)"
     "-Cdebuginfo=full"
     "-Cdwarf-version=5"
     "-Csymbol-mangling-version=v0"
@@ -85,6 +88,7 @@ let
   ++ (if is-emulated-test then [ "--cfg=emulated" ] else [ ])
   ++ (if builtins.elem "coverage" instrumentations then [ "--cfg=instrumented" ] else [ ])
   ++ (if sanitizers != [ ] then [ "--cfg=sanitized" ] else [ ])
+  ++ (if builtins.elem "pgo" instrumentations then [ "--cfg=profile_generate" ] else [ ])
   ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
   optimize-for.debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"
@@ -304,6 +308,16 @@ let
     "-Zcoverage-options=branch"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") instrument.coverage.NIX_CFLAGS_LINK);
+  # Instrumented PGO: collect a profile from a real run, to be fed back with `-Cprofile-use`.
+  # Where the counters land is left to `LLVM_PROFILE_FILE` at runtime rather than baked in here,
+  # because the useful profile comes off the test bench, not off the build machine.
+  instrument.pgo.NIX_CFLAGS_COMPILE = [ "-fprofile-generate" ];
+  instrument.pgo.NIX_CXXFLAGS_COMPILE = instrument.pgo.NIX_CFLAGS_COMPILE;
+  instrument.pgo.NIX_CFLAGS_LINK = instrument.pgo.NIX_CFLAGS_COMPILE;
+  instrument.pgo.RUSTFLAGS = [
+    "-Cprofile-generate"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") instrument.pgo.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
