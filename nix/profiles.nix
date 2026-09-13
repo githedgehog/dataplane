@@ -327,6 +327,32 @@ let
   instrument.pgo.RUSTFLAGS = [
     "-Cprofile-generate=/var/run/dataplane"
   ];
+  # Consume a profile collected by `instrumentation=pgo`. The path is fixed rather than passed in
+  # so that no new argument has to be threaded through the three `profiles.nix` call sites; nix
+  # copies the file into the store, so editing it correctly rebuilds what depends on it, and a
+  # missing file fails evaluation with the path in the message rather than silently building
+  # something unoptimised.
+  instrument.pgo-use.NIX_CFLAGS_COMPILE = [ ];
+  instrument.pgo-use.NIX_CXXFLAGS_COMPILE = [ ];
+  instrument.pgo-use.NIX_CFLAGS_LINK = [ ];
+  instrument.pgo-use.RUSTFLAGS = [
+    "-Cprofile-use=${../.pgo/dataplane.profdata}"
+    # A profile that does not match the code is the failure mode worth being loud about: by
+    # default rustc warns and carries on, which reads exactly like a successful PGO build.
+    "-Cllvm-args=-pgo-warn-missing-function"
+  ];
+  # BOLT rewrites the linked binary, so it needs the relocations the linker would otherwise drop.
+  # This only *prepares* a binary for BOLT; `just bolt` does the rewriting. Kept separate from
+  # `pgo` because the two compose -- a PGO build is a perfectly good BOLT input.
+  instrument.bolt.NIX_CFLAGS_COMPILE = [ ];
+  instrument.bolt.NIX_CXXFLAGS_COMPILE = [ ];
+  instrument.bolt.NIX_CFLAGS_LINK = [ ];
+  # `-z now` matters to BOLT too, since it moves code and lazy PLT resolution must not be relied
+  # on -- but `secure` already passes it, and saying it twice only makes the flag list harder to
+  # read. If that ever changes, add it back here.
+  instrument.bolt.RUSTFLAGS = [
+    "-Clink-arg=-Wl,--emit-relocs"
+  ];
   combine-profiles =
     features:
     builtins.foldl' (

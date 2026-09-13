@@ -211,6 +211,7 @@ let
       jq
       just
       kopium
+      llvmPackages'.bolt # llvm-bolt/perf2bolt, for `just bolt`
       llvmPackages'.clang # you need the host compiler in order to link proc macros
       llvmPackages'.llvm # needed for coverage
       markdownlint-cli2
