@@ -63,6 +63,16 @@ impl DriverKernel {
     pub(crate) const TASK_CHECK_PERIOD: u16 = Self::TASK_PAT_PERIOD + Self::TASK_GRACE_PERIOD;
 
     /// Interval, in seconds, at which the supervisor checks rx task activity, ignoring watchdogs
+    /// What this driver reports in `show driver status`.
+    fn limits() -> crate::drivers::status::DriverLimits {
+        crate::drivers::status::DriverLimits {
+            max_rx_batch: Self::MAX_RX_PKT_BATCH,
+            poll_period_s: Self::TASK_POLL_PERIOD,
+            pat_period_s: Self::TASK_PAT_PERIOD,
+            check_period_s: Self::TASK_CHECK_PERIOD,
+        }
+    }
+
     pub(crate) const TASK_POLL_PERIOD: u16 = 1;
 
     /// Max number of packets that a RX task will attempt to read in one go
@@ -429,6 +439,7 @@ impl DriverKernel {
                 // publish the status of the driver
                 status_writer.publish(DriverStatus {
                     workers: workers_status.clone(),
+                    limits: Self::limits(),
                 });
 
                 // sleep for the poll period
@@ -439,6 +450,7 @@ impl DriverKernel {
             // want to log the last state
             let last = DriverStatus {
                 workers: workers_status.clone(),
+                limits: Self::limits(),
             };
             status_writer.publish(last);
 

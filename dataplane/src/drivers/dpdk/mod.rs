@@ -86,6 +86,16 @@ pub struct DriverDpdk;
 #[allow(clippy::cast_precision_loss)]
 impl DriverDpdk {
     /// Interval, in seconds, at which the supervisor samples worker liveness.
+    /// What this driver reports in `show driver status`.
+    fn limits() -> crate::drivers::status::DriverLimits {
+        crate::drivers::status::DriverLimits {
+            max_rx_batch: dpdk::mem::MBUF_BURST,
+            poll_period_s: Self::TASK_POLL_PERIOD,
+            pat_period_s: Self::TASK_PAT_PERIOD,
+            check_period_s: Self::TASK_CHECK_PERIOD,
+        }
+    }
+
     pub(crate) const TASK_POLL_PERIOD: u16 = 1;
 
     /// How often, in seconds, a worker is expected to record activity even when idle.
@@ -316,6 +326,7 @@ impl DriverDpdk {
 
                     status_writer.publish(DriverStatus {
                         workers: statuses.clone(),
+                        limits: Self::limits(),
                     });
                     thread::sleep(poll_period);
                 }
@@ -327,6 +338,7 @@ impl DriverDpdk {
 
                 status_writer.publish(DriverStatus {
                     workers: statuses.clone(),
+                    limits: Self::limits(),
                 });
                 info!("DPDK worker supervisor terminated");
             })
