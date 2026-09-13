@@ -21,6 +21,8 @@ mod drivers;
 #[cfg(not(feature = "loom"))]
 mod packet_processor;
 #[cfg(not(feature = "loom"))]
+mod profile;
+#[cfg(not(feature = "loom"))]
 mod runtime;
 #[cfg(not(feature = "loom"))]
 mod statistics;
