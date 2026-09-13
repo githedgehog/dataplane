@@ -315,13 +315,18 @@ let
   # off the build machine. It still has to be written -- rustc rejects a bare `-Cprofile-generate`
   # with "must have a value" -- so it names the same place `dataplane-init` puts a perf profile,
   # which is the one directory in the container that outlives the container.
-  instrument.pgo.NIX_CFLAGS_COMPILE = [ "-fprofile-generate" ];
+  # Rust only, deliberately: `-fprofile-generate` reaches DPDK, and a counter update in the middle
+  # of `rte_eth_rx_burst` is ruinous. Measured on env-5: the C-instrumented build forwarded 0.03
+  # Mpps against 14.56 clean, ~400x down, with `port_rx_missed` climbing by 488M. A profile taken
+  # at 30 Kpps describes the instrumentation, not the dataplane. `-Cprofile-use` consumes the Rust
+  # side anyway; C would need its own `-fprofile-use` and is not what we are asking the compiler
+  # about. rustc links the profiling runtime itself, so no link flag is needed here.
+  instrument.pgo.NIX_CFLAGS_COMPILE = [ ];
   instrument.pgo.NIX_CXXFLAGS_COMPILE = instrument.pgo.NIX_CFLAGS_COMPILE;
   instrument.pgo.NIX_CFLAGS_LINK = instrument.pgo.NIX_CFLAGS_COMPILE;
   instrument.pgo.RUSTFLAGS = [
     "-Cprofile-generate=/var/run/dataplane"
-  ]
-  ++ (map (flag: "-Clink-arg=${flag}") instrument.pgo.NIX_CFLAGS_LINK);
+  ];
   combine-profiles =
     features:
     builtins.foldl' (
