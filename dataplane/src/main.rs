@@ -25,6 +25,8 @@ mod packet_processor;
 #[cfg(not(feature = "loom"))]
 mod phy_agent;
 #[cfg(not(feature = "loom"))]
+mod profile;
+#[cfg(not(feature = "loom"))]
 mod runtime;
 #[cfg(not(feature = "loom"))]
 mod statistics;
