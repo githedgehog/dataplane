@@ -69,6 +69,7 @@ pub enum RouteProtocol {
 pub struct RequestArgs {
     pub address: Option<IpAddr>,         /* an IP address */
     pub prefix: Option<(IpAddr, u8)>,    /* an IP prefix */
+    pub vpc: Option<String>,             /* vpc name */
     pub vrfid: Option<u32>,              /* Id of a VRF */
     pub vni: Option<u32>,                /* Vxlan vni */
     pub ifname: Option<String>,          /* name of interface */
@@ -372,6 +373,7 @@ mod tests {
             RequestArgs {
                 address: Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
                 prefix: Some((IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 24)),
+                vpc: Some("vpc-1".into()),
                 vrfid: Some(42),
                 vni: Some(10_100),
                 ifname: Some("eth0".into()),
