@@ -14,18 +14,25 @@ use thiserror::Error;
 pub enum ArgsError {
     #[error("Parse failure: {0}")]
     ParseFailure(String),
+
     #[error("Bad prefix: {0}")]
     BadPrefix(String),
+
     #[error("Wrong prefix length {0}")]
     BadPrefixLength(u8),
+
     #[error("Bad prefix format: {0}")]
     BadPrefixFormat(String),
+
     #[error("Unrecognized arguments")]
     UnrecognizedArgs(HashMap<String, String>),
+
     #[error("Missing value for {0}")]
     MissingValue(&'static str),
+
     #[error("Bad value {0}")]
     BadValue(String),
+
     #[error("Unknown protocol '{0}'")]
     UnknownProtocol(String),
 }
@@ -89,6 +96,12 @@ impl CliArgs {
                     .parse::<u32>()
                     .map_err(|_| ArgsError::BadValue(vrfid))?,
             );
+        }
+        if let Some(vpcname) = args_map.remove("vpc") {
+            if vpcname.is_empty() {
+                return Err(ArgsError::MissingValue("vpc"));
+            }
+            args.remote.vpc = Some(vpcname);
         }
         if let Some(vni) = args_map.remove("vni") {
             if vni.is_empty() {
