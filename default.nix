@@ -1053,10 +1053,25 @@ let
                       # `.debug_str`) into the shipped binary, so the scanner finds far more
                       # runtime references than before and `closure-check` has more to say. That
                       # is part of why this is a hack and not a default.
-                      ${objcopy} --remove-section=.debug_names \
-                                 --remove-section=.debug_loclists \
-                                 "$debug/bin/$(basename "$f")" "$f"
-                      ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
+                      ${
+                        # A BOLT input keeps everything. `instrumentation=bolt` asks the linker
+                        # for `--emit-relocs`, which also emits `.rela.debug_*` referring to the
+                        # debug sections -- so removing `.debug_loclists` here leaves a relocation
+                        # pointing at a section that is gone, and objcopy stops with "symbol
+                        # `.debug_loclists' required but not present". BOLT wants the debug info
+                        # intact regardless, to update it as it moves code.
+                        if builtins.elem "bolt" instrumentations then
+                          ''
+                            cp "$debug/bin/$(basename "$f")" "$f"
+                          ''
+                        else
+                          ''
+                            ${objcopy} --remove-section=.debug_names \
+                                       --remove-section=.debug_loclists \
+                                       "$debug/bin/$(basename "$f")" "$f"
+                            ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
+                          ''
+                      }
                     done
 
                     # DPDK's `dev` output is headers, pkg-config files and static

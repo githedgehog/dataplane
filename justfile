@@ -1726,10 +1726,15 @@ bolt-fdata binary perf_data=".pgo/perf.data":
     # `-nl` because the bench gateway is a KVM guest with no LBR (the host has amd_lbr_v2, the
     # guest is not given it). With branch records the profile is far better; without them BOLT
     # infers edge counts from IP samples alone and says so.
+    # Read the recording's own sample_type: with `perf record -j`, it gains BRANCH. Grepping the
+    # report text for "branch" instead looks plausible and is wrong -- it says "no branch stacks"
+    # for a recording that plainly has them, and silently drops you into degraded mode.
     declare -a nl=()
-    if ! perf report -i '{{ perf_data }}' --stdio -F overhead 2>/dev/null | grep -q 'branch'; then
+    if ! perf report -i '{{ perf_data }}' --header-only 2>/dev/null | grep -qE 'sample_type = .*BRANCH'; then
       nl=(-nl)
-      printf 'no branch stacks in {{ perf_data }}; using -nl (degraded, but the only option here)\n' >&2
+      printf 'no branch stacks in {{ perf_data }}; using -nl. BOLT then infers edge counts from\n' >&2
+      printf 'IP samples alone, which is much weaker. Re-record with `perf record -j any,u` if the\n' >&2
+      printf 'machine has LBR; the env-5 gateway guest does not, though its host does.\n' >&2
     fi
     perf2bolt "${nl[@]}" -p '{{ perf_data }}' -o .pgo/dataplane.fdata "${bin}"
     printf 'wrote .pgo/dataplane.fdata\n'
