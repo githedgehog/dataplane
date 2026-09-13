@@ -27,3 +27,9 @@ vmroot
 
 # n-vm host share (see `n_vm_host_share` in the justfile)
 .n-vm-share
+
+# PGO/BOLT profiles: machine-specific, large, and stale within days (see .pgo/README.md)
+.pgo/*.profdata
+.pgo/*.profraw
+.pgo/*.fdata
+.pgo/perf.data*
