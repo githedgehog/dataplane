@@ -112,7 +112,7 @@ _cargo_profile_flag := if profile == "debug" { "" } else { "--profile " + profil
 # Other workspace tests would fail spuriously without this filter.
 filter := if features =~ "^shuttle" { "shuttle" } else if features =~ "^loom" { "::concurrency_model::loom" } else { "" }
 
-# instrumentation mode (none/coverage)
+# instrumentation mode (none/coverage/fuzz/pgo)
 instrument := "none"
 
 # target platform (x86-64-v3/bluefield2)
@@ -122,8 +122,12 @@ version_extra := ""
 version_platform := if platform == "x86-64-v3" { "" } else { "-" + platform }
 version_profile := if profile == "release" { "" } else { "-" + profile }
 version_san := if sanitize == "" { "" } else { "-san." + replace(sanitize, ",", ".") }
+# Instrumentation belongs in the version for the same reason sanitizers do: an instrumented
+# binary performs nothing like a clean one, and a tag that does not say so is a trap for whoever
+# pulls it next.
+version_instr := if instrument == "" { "" } else if instrument == "none" { "" } else { "-instr." + replace(instrument, ",", ".") }
 version_feat := if features == "" { "" } else { "-feat." + replace(features, ",", ".") }
-version := env("VERSION", `git describe --tags --dirty --always` + version_platform + version_profile + version_san + version_feat + version_extra)
+version := env("VERSION", `git describe --tags --dirty --always` + version_platform + version_profile + version_san + version_instr + version_feat + version_extra)
 
 # Print version that will be used in the build
 version:
@@ -552,10 +556,15 @@ export-scratch-roots:
 [private]
 [script]
 _refuse-instrumented-artifact:
-    if [ -n '{{ instrument }}' ] && [ '{{ instrument }}' != "none" ]; then
+    # `pgo` is exempt. A profile is only worth collecting from a real run under real traffic, so
+    # an instrumented build that cannot be containerised cannot reach the test bench, and the mode
+    # would be useless from the start. The tag collision the rest of this guard is about does not
+    # arise: `version_instr` puts the instrumentation in the version, so a pgo image is named
+    # `-instr.pgo` and cannot occupy the clean tag.
+    if [ -n '{{ instrument }}' ] && [ '{{ instrument }}' != "none" ] && [ '{{ instrument }}' != "pgo" ]; then
       printf 'refusing to build a container at instrument=%s: an instrumented build is a diagnostic,\n' '{{ instrument }}' >&2
-      printf 'not an artifact, and instrumentation is not part of the version -- so this image would\n' >&2
-      printf 'take a clean image tag and replace it.\n' >&2
+      printf 'not an artifact. `pgo` is the exception, because its whole purpose is to run somewhere\n' >&2
+      printf 'real; if you need that for %s too, give it a version of its own first.\n' '{{ instrument }}' >&2
       exit 1
     fi
 

@@ -309,13 +309,17 @@ let
   ]
   ++ (map (flag: "-Clink-arg=${flag}") instrument.coverage.NIX_CFLAGS_LINK);
   # Instrumented PGO: collect a profile from a real run, to be fed back with `-Cprofile-use`.
-  # Where the counters land is left to `LLVM_PROFILE_FILE` at runtime rather than baked in here,
-  # because the useful profile comes off the test bench, not off the build machine.
+  #
+  # The directory is only a default: `LLVM_PROFILE_FILE` overrides it at runtime, and that is how
+  # the profile actually gets placed, because the useful profile comes off the test bench and not
+  # off the build machine. It still has to be written -- rustc rejects a bare `-Cprofile-generate`
+  # with "must have a value" -- so it names the same place `dataplane-init` puts a perf profile,
+  # which is the one directory in the container that outlives the container.
   instrument.pgo.NIX_CFLAGS_COMPILE = [ "-fprofile-generate" ];
   instrument.pgo.NIX_CXXFLAGS_COMPILE = instrument.pgo.NIX_CFLAGS_COMPILE;
   instrument.pgo.NIX_CFLAGS_LINK = instrument.pgo.NIX_CFLAGS_COMPILE;
   instrument.pgo.RUSTFLAGS = [
-    "-Cprofile-generate"
+    "-Cprofile-generate=/var/run/dataplane"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") instrument.pgo.NIX_CFLAGS_LINK);
   combine-profiles =
