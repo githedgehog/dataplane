@@ -93,10 +93,13 @@ fn cmd_show_ip() -> Node {
     let mut routes = Node::new("route")
         .desc("Display IPv4 routes")
         .action(CliAction::ShowRouterIpv4Routes)
-        .arg("prefix");
+        .arg("prefix")
+        .arg("vpc")
+        .arg("vni");
 
     let arg = NodeArg::new("vrfid").prefetcher(vrf_prefetcher);
     routes = routes.arg_add(arg);
+
     let mut arg = NodeArg::new("protocol");
     RouteProtocol::iter().for_each(|proto| arg.add_choice(proto.as_ref()));
     routes = routes.arg_add(arg);
@@ -108,17 +111,22 @@ fn cmd_show_ip() -> Node {
     root += Node::new("next-hop")
         .desc("Display IPv4 next-hops")
         .action(CliAction::ShowRouterIpv4NextHops)
-        .arg("address");
+        .arg("vrfid")
+        .arg("vpc")
+        .arg("vni");
 
     let mut fib = Node::new("fib")
         .desc("Display IPv4 forwarding entries")
         .action(CliAction::ShowRouterIpv4FibEntries)
         .arg("prefix")
-        .arg("vrfid");
+        .arg("vrfid")
+        .arg("vni")
+        .arg("vpc");
 
     fib += Node::new("group")
         .desc("Display IPv4 FIB groups")
-        .action(CliAction::ShowRouterIpv4FibGroups);
+        .action(CliAction::ShowRouterIpv4FibGroups)
+        .arg("vpc");
 
     root += fib;
 
@@ -130,6 +138,8 @@ fn cmd_show_ipv6() -> Node {
         .desc("Display IPv6 routes")
         .action(CliAction::ShowRouterIpv6Routes)
         .arg("prefix")
+        .arg("vni")
+        .arg("vpc")
         .arg("vrfid");
 
     let mut arg = NodeArg::new("protocol");
@@ -140,13 +150,17 @@ fn cmd_show_ipv6() -> Node {
     root += Node::new("next-hop")
         .desc("Display IPv6 next-hops")
         .action(CliAction::ShowRouterIpv6NextHops)
-        .arg("address");
+        .arg("vrfid")
+        .arg("vpc")
+        .arg("vni");
 
     let mut fib = Node::new("fib")
         .desc("Display IPv6 forwarding entries")
         .action(CliAction::ShowRouterIpv6FibEntries)
         .arg("prefix")
-        .arg("vrfid");
+        .arg("vrfid")
+        .arg("vni")
+        .arg("vpc");
 
     fib += Node::new("group")
         .desc("Display IPv6 FIB groups")
