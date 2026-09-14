@@ -72,26 +72,43 @@ fn flow() -> FlowInfo {
     info
 }
 
-fn with_paused_clock<F: Future<Output = ()>>(body: impl FnOnce() -> F) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
+fn paused_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)
         .build()
-        .unwrap_or_else(|e| unreachable!("{e}"));
-    runtime.block_on(body());
+        .unwrap_or_else(|e| unreachable!("{e}"))
 }
 
+fn with_paused_clock<F: Future<Output = ()>>(body: impl FnOnce() -> F) {
+    paused_runtime().block_on(body());
+}
+
+/// The clock is driven from *outside* the runtime, one `block_on` per case, rather than
+/// running the whole check inside one `block_on`.
+///
+/// `tokio::time::advance` is async and `for_each` hands us a synchronous closure, so a case
+/// body that lives inside an outer `block_on` has no way to await it -- which is why
+/// [`Op::Advance`] used to be a no-op arm. Entering the runtime per case instead puts the ops
+/// in an async context, so `Advance` advances and the deadline arithmetic that
+/// `reset_expiry`/`extend_expiry` do against `clock::now()` is computed at more than one
+/// instant. Without it every deadline in a case came from the same frozen `now`, and a
+/// seventh of the generated ops did nothing at all.
 #[test]
 fn expiry_never_moves_backwards() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<Vec<Op>>()
-            .for_each(|ops: &Vec<Op>| {
+    let runtime = paused_runtime();
+    bolero::check!()
+        .with_type::<Vec<Op>>()
+        .for_each(|ops: &Vec<Op>| {
+            runtime.block_on(async {
                 let entry = flow();
                 let mut high_water = entry.expires_at();
 
                 for op in ops.iter().take(32) {
-                    apply(&entry, *op);
+                    match op {
+                        Op::Advance(d) => tokio::time::advance(d.duration()).await,
+                        other => apply(&entry, *other),
+                    }
                     let now = entry.expires_at();
                     assert!(
                         now >= high_water,
@@ -100,7 +117,7 @@ fn expiry_never_moves_backwards() {
                     high_water = now;
                 }
             });
-    });
+        });
 }
 
 fn apply(flow: &FlowInfo, op: Op) {
@@ -111,7 +128,9 @@ fn apply(flow: &FlowInfo, op: Op) {
         Op::ResetUnchecked(d) => drop(flow.reset_expiry_unchecked(d.duration())),
         Op::SetStatus(s) => drop(flow.update_status(s.into())),
         Op::Invalidate => flow.invalidate(),
-        Op::Advance(_) => {}
+        // Advancing the clock is async, so it is handled by the caller, which is inside the
+        // runtime. Reaching it here means a caller drove ops without one.
+        Op::Advance(_) => unreachable!("Op::Advance must be applied inside the paused runtime"),
     }
 }
 
