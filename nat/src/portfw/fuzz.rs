@@ -311,8 +311,11 @@ fn nothing_is_forwarded_that_was_not_published() {
                             "a packet to {before:?} was forwarded although {stray:?} meant no rule \
                              published it"
                         );
+                        // Counted here rather than outside the guard: a dropped packet skips the
+                        // assertion, so counting it would let the yield check pass on a run where
+                        // nothing was ever actually checked.
+                        tally.reached.fetch_add(1, Ordering::Relaxed);
                     }
-                    tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
             });
     });
