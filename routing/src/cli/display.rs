@@ -15,7 +15,7 @@
 use crate::atable::adjacency::{Adjacency, AdjacencyTable};
 use crate::fib::fibgroupstore::FibRoute;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
-use crate::fib::fibtype::{Fib, FibKey};
+use crate::fib::fibtype::{Fib, FibKey, FibRouteV4Filter, FibRouteV6Filter};
 use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 use crate::router::cpi::{CpiStats, CpiStatus, StatsRow};
 
@@ -23,6 +23,7 @@ use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore, Visited};
 use crate::rib::vrf::{Route, RouteFlags, RouteOrigin, ShimNhop, Vrf, VrfStatus};
+use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::Attachment;
@@ -34,7 +35,7 @@ use crate::evpn::{RmacEntry, RmacStore, Vtep};
 use chrono::DateTime;
 use common::cliprovider::{Heading, line};
 
-use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
+use lpm::prefix::IpPrefix;
 use lpm::trie::{PrefixMapTrie, TrieMap};
 use net::vxlan::Vni;
 use std::fmt::Display;
@@ -337,14 +338,11 @@ impl Display for Vrf {
     }
 }
 
-pub struct VrfViewV4<'a, F>
-where
-    F: Fn(&(Ipv4Prefix, &Route)) -> bool,
-{
+pub struct VrfViewV4<'a> {
     pub vrf: &'a Vrf,
-    pub filter: &'a F,
+    pub filter: &'a RouteV4Filter,
 }
-impl<F: for<'a> Fn(&'a (Ipv4Prefix, &Route)) -> bool> Display for VrfViewV4<'_, F> {
+impl Display for VrfViewV4<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // apply the filter
         let rt_iter = self.vrf.iter_v4().filter(&self.filter);
@@ -372,14 +370,11 @@ impl<F: for<'a> Fn(&'a (Ipv4Prefix, &Route)) -> bool> Display for VrfViewV4<'_, 
     }
 }
 
-pub struct VrfViewV6<'a, F>
-where
-    F: Fn(&(Ipv6Prefix, &Route)) -> bool,
-{
+pub struct VrfViewV6<'a> {
     pub vrf: &'a Vrf,
-    pub filter: &'a F,
+    pub filter: &'a RouteV6Filter,
 }
-impl<F: for<'a> Fn(&'a (Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_, F> {
+impl Display for VrfViewV6<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // apply the filter
         let rt_iter = self.vrf.iter_v6().filter(&self.filter);
@@ -662,6 +657,7 @@ impl Display for RmacEntry {
         )
     }
 }
+
 impl Display for RmacStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!(
@@ -814,14 +810,11 @@ impl Display for Fib {
     }
 }
 
-pub struct FibViewV4<'a, F>
-where
-    F: Fn(&(Ipv4Prefix, &FibRoute)) -> bool,
-{
+pub struct FibViewV4<'a> {
     pub vrf: &'a Vrf,
-    pub filter: &'a F,
+    pub filter: &'a FibRouteV4Filter,
 }
-impl<F: for<'a> Fn(&'a (Ipv4Prefix, &FibRoute)) -> bool> Display for FibViewV4<'_, F> {
+impl Display for FibViewV4<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Some(fibw) = &self.vrf.fibw else {
             return writeln!(f, "No fib");
@@ -852,14 +845,11 @@ impl<F: for<'a> Fn(&'a (Ipv4Prefix, &FibRoute)) -> bool> Display for FibViewV4<'
     }
 }
 
-pub struct FibViewV6<'a, F>
-where
-    F: Fn(&(Ipv6Prefix, &FibRoute)) -> bool,
-{
+pub struct FibViewV6<'a> {
     pub vrf: &'a Vrf,
-    pub filter: &'a F,
+    pub filter: &'a FibRouteV6Filter,
 }
-impl<F: for<'a> Fn(&'a (Ipv6Prefix, &FibRoute)) -> bool> Display for FibViewV6<'_, F> {
+impl Display for FibViewV6<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Some(fibw) = &self.vrf.fibw else {
             return writeln!(f, "No fib");
