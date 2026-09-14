@@ -4,17 +4,18 @@
 //! Adds command completions
 
 use crate::cmdtree::Node;
+use crate::terminal::SharedSession;
 use concurrency::sync::Arc;
 use reedline::{Completer, CompletionResult, Span, Suggestion};
 
-#[derive(Default)]
 pub struct CmdCompleter {
     cmdtree: Arc<Node>,
+    session: SharedSession,
 }
 #[allow(unused)]
 impl CmdCompleter {
-    pub fn new(cmdtree: Arc<Node>) -> Self {
-        Self { cmdtree }
+    pub fn new(cmdtree: Arc<Node>, session: SharedSession) -> Self {
+        Self { cmdtree, session }
     }
     #[allow(unused)]
     pub fn get_commands(&self) -> &Node {
@@ -80,9 +81,11 @@ impl CmdCompleter {
                     let mut choices: Vec<_> = arg.choices.clone();
                     candidates.append(&mut choices);
                 }
-                if let Some(prefetch) = &arg.prefetcher {
-                    let mut values = prefetch();
-                    candidates.append(&mut values);
+                if let Some(selector) = arg.selector {
+                    // N.B. reedline calls us on every keystroke while the menu is open.
+                    // prefetch keeps a cache (emptied later) from which it pulls the competion
+                    // data without re-asking dataplane.
+                    candidates.extend(self.session.lock().prefetch(selector).iter().cloned());
                 }
                 // input is arg=fragment
                 if !value.is_empty() {
