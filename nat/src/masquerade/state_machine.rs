@@ -62,6 +62,21 @@ fn udp_packet(source_port: u16) -> Packet<TestBuffer> {
     build_test_udp_ipv4_packet("1.1.1.1", "2.2.2.2", source_port, 80)
 }
 
+/// A second copy of [`next_flow_status_tcp`]'s table, arm for arm.
+///
+/// Be clear about what the test below it is worth: this is a **regression lock, not an
+/// oracle**. It restates the implementation rather than deriving the answer from anything
+/// independent, so it cannot tell you the table is *right* -- only that it has not changed
+/// without someone editing both copies. In particular it blesses two behaviours that fall out
+/// of arm ordering rather than intent: a RST arriving in `LastAck` alongside an ACK is read as
+/// a clean close (`Closed`) because the `LastAck if ack` arm precedes the catch-all
+/// `_ if rst`, and a RST arriving in `Closed` reopens it as `Reset`.
+///
+/// The claims with real content are the ones that do not transcribe anything:
+/// [`a_segment_with_no_flags_moves_nothing`], [`reset_and_closed_absorb`],
+/// [`the_tcp_lifecycle_never_runs_backwards`] and
+/// [`each_direction_owns_its_half_of_the_close`]. A transposition of the client and server
+/// close arms, for instance, is invisible here and caught there.
 #[allow(clippy::match_same_arms)]
 fn expected_tcp(action: NatAction, status: NatFlowStatus, f: Flags) -> NatFlowStatus {
     use NatFlowStatus as S;
@@ -93,6 +108,8 @@ fn expected_tcp(action: NatAction, status: NatFlowStatus, f: Flags) -> NatFlowSt
     }
 }
 
+/// Exhaustive over all 320 (direction, status, flag) triples -- but against a transcription,
+/// so read it as a change detector. See [`expected_tcp`].
 #[test]
 fn the_tcp_state_machine_follows_the_close_sequence() {
     for action in [NatAction::SrcNat, NatAction::DstNat] {
@@ -223,6 +240,82 @@ fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
                 status,
                 "an inbound icmp packet moved a flow in {status:?}"
             );
+        }
+    }
+}
+
+/// Where each status sits in the connection's life, which is deliberately *not* the enum's
+/// discriminant order -- `Reset` is 3, between `Established` and `CClosing`. Writing the order
+/// out by hand is the point: it states the shape the machine is meant to have instead of
+/// reading that shape back out of the type it is testing.
+fn rank(status: NatFlowStatus) -> u8 {
+    use NatFlowStatus as S;
+    match status {
+        S::OneWay => 0,
+        S::TwoWay => 1,
+        S::Established => 2,
+        S::CClosing | S::SClosing => 3,
+        S::CHalfClose | S::SHalfClose => 4,
+        S::LastAck => 5,
+        S::Closed => 6,
+        S::Reset => 7,
+    }
+}
+
+/// A connection only ever moves further through its life, never back towards being open.
+///
+/// Independent of the transition table: it constrains the table's shape rather than repeating
+/// its contents, so it catches an arm that sends a closing flow back to `Established` -- which
+/// a transcription of that same arm would happily agree with.
+#[test]
+fn the_tcp_lifecycle_never_runs_backwards() {
+    for action in [NatAction::SrcNat, NatAction::DstNat] {
+        for status in STATUSES {
+            for bits in 0..16u8 {
+                let flags = Flags::from_bits(bits);
+                let got = next_flow_status(&tcp_packet(flags), action, status);
+                assert!(
+                    rank(got) >= rank(status),
+                    "{action} from {status:?} with {flags:?} went backwards to {got:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Neither direction invents the other's half of the close.
+///
+/// `SrcNat` carries the client's segments, so it may reach the data phase, start the client's
+/// close and acknowledge the server's; it must never be the thing that produces the server's
+/// closing states. `DstNat` is the mirror. A transposition of the two close arms leaves the
+/// machine self-consistent and passes a transcription, and fails here.
+#[test]
+fn each_direction_owns_its_half_of_the_close() {
+    use NatFlowStatus as S;
+    for status in STATUSES {
+        for bits in 0..16u8 {
+            let flags = Flags::from_bits(bits);
+
+            let got = next_flow_status(&tcp_packet(flags), NatAction::SrcNat, status);
+            if got != status {
+                assert!(
+                    !matches!(got, S::OneWay | S::TwoWay | S::SClosing | S::CHalfClose),
+                    "SrcNat from {status:?} with {flags:?} produced {got:?}, which belongs to \
+                     the server's side of the close"
+                );
+            }
+
+            let got = next_flow_status(&tcp_packet(flags), NatAction::DstNat, status);
+            if got != status {
+                assert!(
+                    !matches!(
+                        got,
+                        S::OneWay | S::Established | S::CClosing | S::SHalfClose
+                    ),
+                    "DstNat from {status:?} with {flags:?} produced {got:?}, which belongs to \
+                     the client's side of the close"
+                );
+            }
         }
     }
 }
