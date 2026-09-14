@@ -225,12 +225,23 @@ fn swapping_the_intervals_swaps_the_halves() {
             if window.duration() == Duration::ZERO || sample.duration() == Duration::ZERO {
                 return;
             }
+            let sample = if window.start() == sample.start() {
+                let nudge = Duration::from_millis(1);
+                Slice {
+                    start: sample.start() + nudge,
+                    end: sample.end() + nudge,
+                }
+            } else {
+                sample
+            };
+
             let forward = window.split_count(&sample, *count);
             let reverse = sample.split_count(&window, *count);
             assert_eq!(
-                forward.inside + forward.outside,
-                reverse.inside + reverse.outside,
-                "the two directions conserve different totals"
+                (forward.inside, forward.outside),
+                (reverse.outside, reverse.inside),
+                "{window:?} against {sample:?} split {count} as {forward:?}, but reversing the \
+                 two gave {reverse:?} rather than its mirror"
             );
         });
 }
