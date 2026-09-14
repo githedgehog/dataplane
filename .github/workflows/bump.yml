@@ -46,7 +46,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: "./.github/actions/nix-shell"
+      - uses: "./.github/actions/nix-shell" # zizmor: ignore[self-repository] -- actionlint and p/default do not support $/ yet
         with:
           cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
           cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -71,7 +71,7 @@ jobs:
         # not detected at release time by the upstream project.
         # We run our "pre" check with `continue-on-error` set to true because it is equally possible that the upgrade
         # _resolves_ the license / security issue we have had / would have had without the upgrade.
-        uses: &just "./.github/actions/just"
+        uses: &just "./.github/actions/just" # zizmor: ignore[self-repository] -- actionlint and p/default do not support $/ yet
         with:
           recipe: "check-dependencies"
         continue-on-error: true

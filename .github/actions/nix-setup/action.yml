@@ -27,7 +27,7 @@ runs:
         username: "${{ github.actor }}"
         password: "${{ github.token }}"
 
-    - uses: "./.github/actions/nix-shell"
+    - uses: "./.github/actions/nix-shell" # zizmor: ignore[self-repository] -- actionlint and p/default do not support $/ yet
       with:
         cachix_signing_key: "${{ inputs.cachix_signing_key }}"
         cachix_auth_token: "${{ inputs.cachix_auth_token }}"
