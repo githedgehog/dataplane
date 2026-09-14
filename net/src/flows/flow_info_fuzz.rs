@@ -72,26 +72,33 @@ fn flow() -> FlowInfo {
     info
 }
 
-fn with_paused_clock<F: Future<Output = ()>>(body: impl FnOnce() -> F) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
+fn paused_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)
         .build()
-        .unwrap_or_else(|e| unreachable!("{e}"));
-    runtime.block_on(body());
+        .unwrap_or_else(|e| unreachable!("{e}"))
+}
+
+fn with_paused_clock<F: Future<Output = ()>>(body: impl FnOnce() -> F) {
+    paused_runtime().block_on(body());
 }
 
 #[test]
 fn expiry_never_moves_backwards() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<Vec<Op>>()
-            .for_each(|ops: &Vec<Op>| {
+    let runtime = paused_runtime();
+    bolero::check!()
+        .with_type::<Vec<Op>>()
+        .for_each(|ops: &Vec<Op>| {
+            runtime.block_on(async {
                 let entry = flow();
                 let mut high_water = entry.expires_at();
 
                 for op in ops.iter().take(32) {
-                    apply(&entry, *op);
+                    match op {
+                        Op::Advance(d) => tokio::time::advance(d.duration()).await,
+                        other => apply(&entry, *other),
+                    }
                     let now = entry.expires_at();
                     assert!(
                         now >= high_water,
@@ -100,7 +107,7 @@ fn expiry_never_moves_backwards() {
                     high_water = now;
                 }
             });
-    });
+        });
 }
 
 fn apply(flow: &FlowInfo, op: Op) {
@@ -111,7 +118,7 @@ fn apply(flow: &FlowInfo, op: Op) {
         Op::ResetUnchecked(d) => drop(flow.reset_expiry_unchecked(d.duration())),
         Op::SetStatus(s) => drop(flow.update_status(s.into())),
         Op::Invalidate => flow.invalidate(),
-        Op::Advance(_) => {}
+        Op::Advance(_) => unreachable!("Op::Advance must be applied inside the paused runtime"),
     }
 }
 
