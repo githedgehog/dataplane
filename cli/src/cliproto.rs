@@ -134,12 +134,14 @@ impl CliSerialize for CliResponse {
 
 #[derive(Error, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum CliError {
-    #[error("Internal error")]
-    InternalError,
+    #[error("Internal error: {0}")]
+    InternalError(String),
     #[error("Could not find: {0}")]
     NotFound(String),
     #[error("Not supported: {0}")]
     NotSupported(String),
+    #[error("Inacessible")]
+    Inacessible,
 }
 
 #[derive(Error, Debug)]
