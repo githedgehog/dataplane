@@ -4,14 +4,10 @@
 //! Builds our command tree for dataplane
 
 use crate::cmdtree::{Node, NodeArg};
-use dataplane_cli::cliproto::{CliAction, RouteProtocol};
+
+use dataplane_cli::cliproto::{CliAction, PrefetchSelector, RouteProtocol};
 use std::convert::AsRef;
 use strum::IntoEnumIterator;
-
-fn vrf_prefetcher() -> Vec<String> {
-    // todo
-    vec![]
-}
 
 fn cmd_show_router_cpi() -> Node {
     let mut root = Node::new("cpi");
@@ -88,17 +84,30 @@ fn cmd_show_vpc() -> Node {
 
     root
 }
+
+fn vpc_arg() -> NodeArg {
+    NodeArg::new("vpc").selector(PrefetchSelector::Vpcs)
+}
+fn vni_arg() -> NodeArg {
+    NodeArg::new("vni").selector(PrefetchSelector::Vnis)
+}
+fn rmacaddr_arg() -> NodeArg {
+    NodeArg::new("address").selector(PrefetchSelector::RmacAddr)
+}
+#[allow(unused)]
+fn ifname_arg() -> NodeArg {
+    NodeArg::new("ifname").selector(PrefetchSelector::Interfaces)
+}
+
 fn cmd_show_ip() -> Node {
     let mut root = Node::new("ip");
     let mut routes = Node::new("route")
         .desc("Display IPv4 routes")
         .action(CliAction::ShowRouterIpv4Routes)
+        .arg("vrfid")
         .arg("prefix")
-        .arg("vpc")
-        .arg("vni");
-
-    let arg = NodeArg::new("vrfid").prefetcher(vrf_prefetcher);
-    routes = routes.arg_add(arg);
+        .arg_add(vni_arg())
+        .arg_add(vpc_arg());
 
     let mut arg = NodeArg::new("protocol");
     RouteProtocol::iter().for_each(|proto| arg.add_choice(proto.as_ref()));
@@ -112,21 +121,22 @@ fn cmd_show_ip() -> Node {
         .desc("Display IPv4 next-hops")
         .action(CliAction::ShowRouterIpv4NextHops)
         .arg("vrfid")
-        .arg("vpc")
-        .arg("vni");
+        .arg_add(vni_arg())
+        .arg_add(vpc_arg());
 
     let mut fib = Node::new("fib")
         .desc("Display IPv4 forwarding entries")
         .action(CliAction::ShowRouterIpv4FibEntries)
         .arg("prefix")
         .arg("vrfid")
-        .arg("vni")
-        .arg("vpc");
+        .arg_add(vni_arg())
+        .arg_add(vpc_arg());
 
     fib += Node::new("group")
         .desc("Display IPv4 FIB groups")
         .action(CliAction::ShowRouterIpv4FibGroups)
-        .arg("vpc");
+        .arg_add(vni_arg())
+        .arg_add(vpc_arg());
 
     root += fib;
 
@@ -137,10 +147,10 @@ fn cmd_show_ipv6() -> Node {
     let mut routes = Node::new("route")
         .desc("Display IPv6 routes")
         .action(CliAction::ShowRouterIpv6Routes)
+        .arg("vrfid")
         .arg("prefix")
-        .arg("vni")
-        .arg("vpc")
-        .arg("vrfid");
+        .arg_add(vni_arg())
+        .arg_add(vpc_arg());
 
     let mut arg = NodeArg::new("protocol");
     RouteProtocol::iter().for_each(|proto| arg.add_choice(proto.as_ref()));
@@ -151,20 +161,22 @@ fn cmd_show_ipv6() -> Node {
         .desc("Display IPv6 next-hops")
         .action(CliAction::ShowRouterIpv6NextHops)
         .arg("vrfid")
-        .arg("vpc")
-        .arg("vni");
+        .arg_add(vni_arg())
+        .arg_add(vpc_arg());
 
     let mut fib = Node::new("fib")
         .desc("Display IPv6 forwarding entries")
         .action(CliAction::ShowRouterIpv6FibEntries)
         .arg("prefix")
         .arg("vrfid")
-        .arg("vni")
-        .arg("vpc");
+        .arg_add(vni_arg())
+        .arg_add(vpc_arg());
 
     fib += Node::new("group")
         .desc("Display IPv6 FIB groups")
-        .action(CliAction::ShowRouterIpv6FibGroups);
+        .action(CliAction::ShowRouterIpv6FibGroups)
+        .arg_add(vni_arg())
+        .arg_add(vpc_arg());
 
     root += fib;
 
@@ -185,8 +197,8 @@ fn cmd_show_evpn() -> Node {
     root += Node::new("rmac")
         .desc("Show the EVPN router macs")
         .action(CliAction::ShowRouterEvpnRmacStore)
-        .arg("address")
-        .arg("vni");
+        .arg_add(rmacaddr_arg())
+        .arg_add(vni_arg());
 
     root += Node::new("vtep")
         .desc("Show EVPN VTEP configuration")
@@ -209,12 +221,12 @@ fn cmd_show_interface() -> Node {
         .choice("ethernet")
         .choice("vlan")
         .choice("vxlan");
+
     root = root.arg_add(arg);
 
     root += Node::new("address")
         .desc("Display interface IP addresses")
-        .action(CliAction::ShowRouterInterfaceAddresses)
-        .arg("address");
+        .action(CliAction::ShowRouterInterfaceAddresses);
 
     root
 }
