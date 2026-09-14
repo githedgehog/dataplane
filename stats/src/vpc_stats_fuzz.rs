@@ -106,7 +106,7 @@ fn counters_only_ever_increase() {
         .for_each(|ops: Vec<Op>| {
             rt.block_on(async {
                 let store = VpcStatsStore::new();
-                let mut high: std::collections::HashMap<(VpcId, VpcId), (u64, u64, u64)> =
+                let mut high: std::collections::HashMap<(VpcId, VpcId), (u64, u64, u64, u64)> =
                     std::collections::HashMap::new();
 
                 for op in ops.iter().take(24) {
@@ -116,11 +116,17 @@ fn counters_only_ever_increase() {
                         assert!(
                             stats.ctr.packets >= seen.0
                                 && stats.ctr.bytes >= seen.1
-                                && stats.drops.packets >= seen.2,
+                                && stats.drops.packets >= seen.2
+                                && stats.drops.bytes >= seen.3,
                             "a counter for {key:?} went backwards after {op:?}: \
                                  {stats:?} against a high water mark of {seen:?}"
                         );
-                        *seen = (stats.ctr.packets, stats.ctr.bytes, stats.drops.packets);
+                        *seen = (
+                            stats.ctr.packets,
+                            stats.ctr.bytes,
+                            stats.drops.packets,
+                            stats.drops.bytes,
+                        );
                     }
                 }
             });
@@ -296,7 +302,12 @@ fn counters_saturate_rather_than_wrap() {
         let (_, stats) = pairs.first().unwrap_or_else(|| unreachable!());
         assert_eq!(stats.ctr.packets, u64::MAX, "a packet counter wrapped");
         assert_eq!(stats.ctr.bytes, u64::MAX, "a byte counter wrapped");
-        assert_eq!(stats.drops.packets, u64::MAX, "a drop counter wrapped");
+        assert_eq!(
+            stats.drops.packets,
+            u64::MAX,
+            "a drop packet counter wrapped"
+        );
+        assert_eq!(stats.drops.bytes, u64::MAX, "a drop byte counter wrapped");
     });
 }
 
