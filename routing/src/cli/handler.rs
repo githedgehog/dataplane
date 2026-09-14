@@ -9,7 +9,10 @@ use super::display::IfTableAddress;
 use super::display::{FibGroups, FibViewV4, FibViewV6};
 use super::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
 
+use crate::Vtep;
+use crate::evpn::RmacStore;
 use crate::fib::fibtype::{FibRouteV4Filter, FibRouteV6Filter};
+use crate::frr::frrmi::Frrmi;
 use crate::rib::vrf::{Route, RouteOrigin, Vrf};
 use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 use crate::rib::vrftable::VrfTable;
@@ -224,25 +227,6 @@ fn show_vrf_nexthops(
     Ok(response)
 }
 
-fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
-    let vrftable = &db.vrftable;
-    if let Some(vni) = request.args.vni {
-        let Ok(checked_vni) = Vni::try_from(vni) else {
-            return Err(CliError::NotFound(format!("Invalid vni value: {vni}")));
-        };
-        if let Ok(vrf) = vrftable.get_vrf_by_vni(checked_vni) {
-            Ok(CliResponse::from_request_ok(request, format!("\n{vrf}")))
-        } else {
-            Err(CliError::NotFound(format!("VRF with vni {checked_vni}")))
-        }
-    } else {
-        Ok(CliResponse::from_request_ok(
-            request,
-            format!("\n{vrftable}"),
-        ))
-    }
-}
-
 fn show_fib_ipv4(vrf: &Vrf, filter: &FibRouteV4Filter) -> String {
     let view = FibViewV4 { vrf, filter };
     format!("{view}")
@@ -388,6 +372,56 @@ fn show_config_summary(request: CliRequest, summary: &[GwConfigMeta]) -> CliResp
     CliResponse::from_request_ok(request, ConfigSummary(summary).to_string())
 }
 
+fn show_tracing_targets(request: CliRequest) -> CliResponse {
+    match get_trace_ctl().as_string() {
+        Ok(out) => CliResponse::from_request_ok(request, format!("\n {out}")),
+        Err(e) => CliResponse::from_request_fail(request, CliError::InternalError(e.to_string())),
+    }
+}
+fn show_tracing_tags(request: CliRequest) -> CliResponse {
+    match get_trace_ctl().as_string_by_tag() {
+        Ok(out) => CliResponse::from_request_ok(request, format!("\n {out}")),
+        Err(e) => CliResponse::from_request_fail(request, CliError::InternalError(e.to_string())),
+    }
+}
+fn show_vrfs(request: CliRequest, vrftable: &VrfTable) -> CliResponse {
+    CliResponse::from_request_ok(request, vrftable.to_string())
+}
+fn show_rmac_store(request: CliRequest, rmac_store: &RmacStore) -> CliResponse {
+    CliResponse::from_request_ok(request, rmac_store.to_string())
+}
+fn show_vtep(request: CliRequest, vtep: &Vtep) -> CliResponse {
+    CliResponse::from_request_ok(request, vtep.to_string())
+}
+fn show_adjacency_table(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
+    let atable = db.atabler.enter().ok_or(CliError::Inacessible)?;
+    Ok(CliResponse::from_request_ok(request, atable.to_string()))
+}
+fn show_interfaces(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
+    let iftable = db.iftw.enter().ok_or(CliError::Inacessible)?;
+    Ok(CliResponse::from_request_ok(request, iftable.to_string()))
+}
+fn show_interface_addresses(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
+    let iftable = db.iftw.enter().ok_or(CliError::Inacessible)?;
+    let iftable_addrs = IfTableAddress(&iftable);
+    Ok(CliResponse::from_request_ok(
+        request,
+        iftable_addrs.to_string(),
+    ))
+}
+fn show_frr_last_applied_config(request: CliRequest, frrmi: &Frrmi) -> CliResponse {
+    match frrmi.get_applied_cfg() {
+        Some(cfg) => CliResponse::from_request_ok(request, format!("\n{cfg}")),
+        None => CliResponse::from_request_ok(request, "\n No config is applied".to_string()),
+    }
+}
+fn show_router_events(request: CliRequest) -> CliResponse {
+    ROUTER_EVENTS.with(|el| {
+        let el = el.borrow();
+        CliResponse::from_request_ok(request, format!("{el}"))
+    })
+}
+
 fn show_tech(
     request: CliRequest,
     db: &RoutingDb,
@@ -415,7 +449,25 @@ fn show_tech(
     CliResponse::from_request_ok(request, data)
 }
 
-#[allow(clippy::too_many_lines)]
+fn reapply_frr_config(request: CliRequest, db: &RoutingDb, rio: &mut Rio) -> CliResponse {
+    if let Some(genid) = db.current_config() {
+        rio.reapply_frr_config(db);
+        CliResponse::from_request_ok(
+            request,
+            format!("Requested to apply config for gen {genid}"),
+        )
+    } else {
+        CliResponse::from_request_ok(request, "There is no configuration".to_string())
+    }
+}
+fn request_refresh(request: CliRequest, rio: &mut Rio) -> CliResponse {
+    let Some(peer) = &rio.cpistats.peer else {
+        return CliResponse::from_request_ok(request, "No connection over CPI".to_string());
+    };
+    rpc_send_control(&mut rio.cpi_sock, peer, true);
+    CliResponse::from_request_ok(request, "Requested refresh...".to_string())
+}
+
 fn do_handle_cli_request(
     request: CliRequest,
     db: &RoutingDb,
@@ -433,67 +485,20 @@ fn do_handle_cli_request(
         | CliAction::ShowGatewayGroups
         | CliAction::ShowConfigInternal => show_config(request, rio.gwconfig.as_ref()),
         CliAction::ShowConfigSummary => show_config_summary(request, rio.cfg_history.as_ref()),
-        CliAction::ShowTracingTargets => match get_trace_ctl().as_string() {
-            Ok(out) => CliResponse::from_request_ok(request, format!("\n {out}")),
-            Err(_) => CliResponse::from_request_fail(request, CliError::InternalError),
-        },
-        CliAction::ShowTracingTagGroups => match get_trace_ctl().as_string_by_tag() {
-            Ok(out) => CliResponse::from_request_ok(request, format!("\n {out}")),
-            Err(_) => CliResponse::from_request_fail(request, CliError::InternalError),
-        },
+        CliAction::ShowTracingTargets => show_tracing_targets(request),
+        CliAction::ShowTracingTagGroups => show_tracing_tags(request),
         CliAction::ShowCpiStats => CliResponse::from_request_ok(request, format!("\n {cpi_s}")),
         CliAction::ShowFrrmiStats => CliResponse::from_request_ok(request, format!("\n{frrmi}")),
-        CliAction::ShowFrrmiLastConfig => match frrmi.get_applied_cfg() {
-            Some(cfg) => CliResponse::from_request_ok(request, format!("\n{cfg}")),
-            None => CliResponse::from_request_ok(request, "\n No config is applied".to_string()),
-        },
-        CliAction::FrrmiApplyLastConfig => {
-            if let Some(genid) = db.current_config() {
-                rio.reapply_frr_config(db);
-                CliResponse::from_request_ok(
-                    request,
-                    format!("Requested to apply config for gen {genid}"),
-                )
-            } else {
-                CliResponse::from_request_ok(request, "There is no configuration".to_string())
-            }
-        }
-        CliAction::CpiRequestRefresh => {
-            let Some(peer) = &rio.cpistats.peer else {
-                return Ok(CliResponse::from_request_ok(
-                    request,
-                    "No connection over CPI".to_string(),
-                ));
-            };
-            rpc_send_control(&mut rio.cpi_sock, peer, true);
-            CliResponse::from_request_ok(request, "Requested refresh...".to_string())
-        }
-        CliAction::RouterEventLog => ROUTER_EVENTS.with(|el| {
-            let el = el.borrow();
-            CliResponse::from_request_ok(request, format!("{el}"))
-        }),
-        CliAction::ShowRouterInterfaces => {
-            let iftable = db.iftw.enter().ok_or(CliError::InternalError)?;
-            CliResponse::from_request_ok(request, format!("\n{}", *iftable))
-        }
-        CliAction::ShowRouterInterfaceAddresses => {
-            let iftable = db.iftw.enter().ok_or(CliError::InternalError)?;
-            let iftable_addrs = IfTableAddress(&iftable);
-            CliResponse::from_request_ok(request, format!("\n{iftable_addrs}"))
-        }
-        CliAction::ShowRouterVrfs => return show_vrfs(request, db),
-        CliAction::ShowRouterEvpnRmacStore => {
-            let rmac_store = &db.rmac_store;
-            CliResponse::from_request_ok(request, format!("\n{rmac_store}"))
-        }
-        CliAction::ShowRouterEvpnVtep => {
-            let vtep = &db.vtep;
-            CliResponse::from_request_ok(request, format!("{vtep}"))
-        }
-        CliAction::ShowAdjacencies => {
-            let atable = db.atabler.enter().ok_or(CliError::InternalError)?;
-            CliResponse::from_request_ok(request, format!("\n{}", *atable))
-        }
+        CliAction::ShowFrrmiLastConfig => show_frr_last_applied_config(request, frrmi),
+        CliAction::FrrmiApplyLastConfig => reapply_frr_config(request, db, rio),
+        CliAction::CpiRequestRefresh => request_refresh(request, rio),
+        CliAction::RouterEventLog => show_router_events(request),
+        CliAction::ShowRouterInterfaces => show_interfaces(request, db)?,
+        CliAction::ShowRouterInterfaceAddresses => show_interface_addresses(request, db)?,
+        CliAction::ShowRouterVrfs => show_vrfs(request, &db.vrftable),
+        CliAction::ShowRouterEvpnRmacStore => show_rmac_store(request, &db.rmac_store),
+        CliAction::ShowRouterEvpnVtep => show_vtep(request, &db.vtep),
+        CliAction::ShowAdjacencies => show_adjacency_table(request, db)?,
         CliAction::ShowRouterIpv4Routes => show_vrf_routes(request, db, true)?,
         CliAction::ShowRouterIpv6Routes => show_vrf_routes(request, db, false)?,
         CliAction::ShowRouterIpv4NextHops => show_vrf_nexthops(request, db, true)?,
