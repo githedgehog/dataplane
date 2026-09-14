@@ -32,7 +32,7 @@ use crate::interfaces::interface::Attachment;
 use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet};
 use crate::interfaces::interface::{IfState, IfType, Interface};
 
-use crate::evpn::{RmacEntry, RmacStore, Vtep};
+use crate::evpn::{RmacEntry, RmacStore, Vtep, rmac::RmacFilter};
 
 use chrono::DateTime;
 use common::cliprovider::{Heading, line};
@@ -647,6 +647,38 @@ impl Display for RmacEntry {
                 valid
             )
         )
+    }
+}
+
+pub struct RmacStoreView<'a> {
+    pub rmac_store: &'a RmacStore,
+    pub filter: &'a RmacFilter,
+}
+impl Display for RmacStoreView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let store = self.rmac_store;
+        Heading(format!(
+            "Router macs (entries: {} stale: {})",
+            store.len(),
+            store.stale()
+        ))
+        .fmt(f)?;
+
+        fmt_rmac_heading(f)?;
+
+        let total_entries = store.len();
+        let mut displayed = 0;
+        for entry in store.values().filter(|entry| (self.filter)(entry)) {
+            writeln!(f, "{entry}")?;
+            displayed += 1;
+        }
+        if displayed != total_entries {
+            writeln!(
+                f,
+                "\n  (Displayed {displayed} entries out of {total_entries})"
+            )?;
+        }
+        Ok(())
     }
 }
 
