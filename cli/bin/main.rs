@@ -26,6 +26,7 @@ mod cmdtree;
 mod cmdtree_dp;
 mod completions;
 mod filters;
+mod prefetch;
 mod terminal;
 
 #[rustfmt::skip]
@@ -70,24 +71,25 @@ fn execute_remote_action(
     terminal: &mut Terminal, // this terminal
     input: &TermInput,       // user input
 ) {
-    if !terminal.is_connected() {
+    let mut session = terminal.session.lock();
+    let Some(sock) = session.sock() else {
         print_err!("Not connnected to dataplane.");
         return;
-    }
+    };
+
     // build request
     let request = CliRequest::new(action, args.remote.clone());
 
     // serialize it and send it
-    if let Err(e) = request.send(&terminal.sock) {
+    if let Err(e) = request.send(sock) {
         print_err!("Error issuing request: {e}");
         if matches!(e, CliLocalError::IoError(_)) {
-            terminal.connected(false);
+            session.disconnect();
         }
         return;
     }
 
-    // receive and deserialize response, synchronously
-    match process_cli_response(&terminal.sock) {
+    match process_cli_response(sock) {
         Ok(data) => {
             let out = filter_output(&data, input.get_filters());
             println!("{out}");
