@@ -225,12 +225,34 @@ fn swapping_the_intervals_swaps_the_halves() {
             if window.duration() == Duration::ZERO || sample.duration() == Duration::ZERO {
                 return;
             }
+            // Equal starts are excluded by construction rather than skipped, because the two
+            // starts are independent `u16` draws and bolero leans hard on edge values: filtering
+            // would drop a large share of cases and leave the guard measuring nothing. Shifting
+            // one slice by a millisecond keeps every case exercising the swap.
+            //
+            // They have to be excluded at all because the symmetry genuinely does *not* hold
+            // there. For window [0,10] and sample [0,5] the forward direction takes
+            // `split_count`'s "wholly inside" branch and answers {count, 0}, while the reverse
+            // falls through to the proportional branch and answers {count/2, count/2}. Only a
+            // pair with distinct starts reaches the recursion that mirrors the halves, which is
+            // the thing this property is here to pin.
+            let sample = if window.start() == sample.start() {
+                let nudge = Duration::from_millis(1);
+                Slice {
+                    start: sample.start() + nudge,
+                    end: sample.end() + nudge,
+                }
+            } else {
+                sample
+            };
+
             let forward = window.split_count(&sample, *count);
             let reverse = sample.split_count(&window, *count);
             assert_eq!(
-                forward.inside + forward.outside,
-                reverse.inside + reverse.outside,
-                "the two directions conserve different totals"
+                (forward.inside, forward.outside),
+                (reverse.outside, reverse.inside),
+                "{window:?} against {sample:?} split {count} as {forward:?}, but reversing the \
+                 two gave {reverse:?} rather than its mirror"
             );
         });
 }
