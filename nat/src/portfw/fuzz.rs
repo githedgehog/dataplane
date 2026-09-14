@@ -299,8 +299,8 @@ fn nothing_is_forwarded_that_was_not_published() {
                             "a packet to {before:?} was forwarded although {stray:?} meant no rule \
                              published it"
                         );
+                        tally.reached.fetch_add(1, Ordering::Relaxed);
                     }
-                    tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
             });
     });
