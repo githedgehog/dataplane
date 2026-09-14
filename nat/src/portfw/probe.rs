@@ -71,7 +71,17 @@ impl Side {
             .max(1);
         let ports = u32::from(self.last_port - self.first_port) + 1;
         let total = u64::from(hosts) * u64::from(ports);
-        let stride = (total / CAP as u64).max(1);
+        let mut stride = (total / CAP as u64).max(1);
+        // A stride that is a whole number of ports walks the same port on every host, because
+        // `index % ports` then never changes. That is not a corner case: it is what happens
+        // whenever the host count is a multiple of CAP, so a side with 256 addresses -- one
+        // expose shape in nine -- probes `first_port` and nothing else, and a rule that sends
+        // two ports of one address to different backends cannot be observed. Nudging the stride
+        // off the multiple leaves `stride % ports == 1`, so the port advances by one per sample
+        // while the host still advances, and the sample count stays near CAP.
+        if u64::from(ports) > 1 && stride.is_multiple_of(u64::from(ports)) {
+            stride += 1;
+        }
 
         let mut out = Vec::new();
         let mut index = 0u64;
@@ -317,3 +327,46 @@ impl ProbeSpec {
 }
 
 pub(crate) const PAST_ANY_TIMEOUT: Duration = Duration::from_mins(30);
+
+#[cfg(test)]
+mod every_covers_both_dimensions {
+    use super::Side;
+    use std::collections::BTreeSet;
+
+    fn side(prefix: &str, first_port: u16, last_port: u16) -> Side {
+        Side {
+            prefix: prefix.parse().unwrap_or_else(|_| unreachable!()),
+            first_port,
+            last_port,
+        }
+    }
+
+    /// A /24 has exactly `CAP` hosts, which is the shape that used to collapse the stride onto a
+    /// whole number of ports and probe `first_port` and nothing else.
+    #[test]
+    fn a_full_cap_of_hosts_still_varies_the_port() {
+        let probes = side("10.0.0.0/24", 1000, 1007).every();
+        let ports: BTreeSet<u16> = probes.iter().map(|(_, port)| *port).collect();
+        assert!(
+            ports.len() > 1,
+            "every() probed only {ports:?}, so two ports of one address can never collide"
+        );
+    }
+
+    #[test]
+    fn it_still_varies_the_address() {
+        let probes = side("10.0.0.0/24", 1000, 1007).every();
+        let addrs: BTreeSet<_> = probes.iter().map(|(addr, _)| *addr).collect();
+        assert!(addrs.len() > 1, "every() probed only {addrs:?}");
+    }
+
+    /// The stride nudge must not fire when there is a single port to walk: the modulus is then
+    /// 1, every index maps to the same port legitimately, and shifting would only skip hosts.
+    #[test]
+    fn a_single_port_side_is_left_alone() {
+        let probes = side("10.0.0.0/24", 1000, 1000).every();
+        let ports: BTreeSet<u16> = probes.iter().map(|(_, port)| *port).collect();
+        assert_eq!(ports.len(), 1, "a one-port side cannot vary its port");
+        assert!(probes.len() > 1, "but it should still walk the addresses");
+    }
+}
