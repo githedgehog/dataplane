@@ -11,6 +11,7 @@ use super::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
 
 use crate::Vtep;
 use crate::evpn::RmacStore;
+use crate::fib::fibgroupstore::FibRoute;
 use crate::fib::fibtype::{FibRouteV4Filter, FibRouteV6Filter};
 use crate::frr::frrmi::Frrmi;
 use crate::rib::vrf::{Route, RouteOrigin, Vrf};
@@ -27,7 +28,7 @@ use chrono::Local;
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, RequestArgs, RouteProtocol};
 use concurrency::sync::Arc;
 use config::{ConfigSummary, GwConfigMeta, ValidatedGwConfig};
-use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
+use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
 
@@ -113,23 +114,61 @@ fn show_ipv6_routes_multi(
     CliResponse::from_request_ok(request, out)
 }
 
-fn route_filter_v4(request: &CliRequest) -> RouteV4Filter {
-    let filter: RouteV4Filter = if let Some(protocol) = &request.args.protocol {
+fn route_filter_v4(request: &CliRequest) -> Result<RouteV4Filter, CliError> {
+    let mut constraints: Vec<RouteV4Filter> = vec![];
+
+    // filter by protocol
+    if let Some(protocol) = &request.args.protocol {
         let origin = RouteOrigin::from(protocol);
-        Box::new(move |(_, route): &(Ipv4Prefix, &Route)| route.origin == origin)
-    } else {
-        Box::new(|(_, _)| true)
-    };
-    filter
+        constraints.push(Box::new(move |(_, route)| route.origin == origin));
+    }
+    // filter by prefix
+    if let Some((addr, plen)) = &request.args.prefix {
+        let prefix =
+            Prefix::try_from((*addr, *plen)).map_err(|e| CliError::WrongFilter(e.to_string()))?;
+        if !prefix.is_ipv4() {
+            return Err(CliError::WrongFilter("prefix is not ipv4".to_string()));
+        }
+        constraints.push(Box::new(move |(p, _)| Prefix::from(*p) == prefix));
+    }
+    // show everything if no filter is present
+    if constraints.is_empty() {
+        constraints.push(Box::new(|(_, _)| true));
+    }
+
+    // build composite filter
+    let filter =
+        move |item: &(Ipv4Prefix, &Route)| constraints.iter().all(|condition| condition(item));
+
+    Ok(Box::new(move |item: &(Ipv4Prefix, &Route)| filter(item)))
 }
-fn route_filter_v6(request: &CliRequest) -> RouteV6Filter {
-    let filter: RouteV6Filter = if let Some(protocol) = &request.args.protocol {
+fn route_filter_v6(request: &CliRequest) -> Result<RouteV6Filter, CliError> {
+    let mut constraints: Vec<RouteV6Filter> = vec![];
+
+    // filter by protocol
+    if let Some(protocol) = &request.args.protocol {
         let origin = RouteOrigin::from(protocol);
-        Box::new(move |(_, route): &(Ipv6Prefix, &Route)| route.origin == origin)
-    } else {
-        Box::new(|(_, _)| true)
-    };
-    filter
+        constraints.push(Box::new(move |(_, route)| route.origin == origin));
+    }
+    // filter by prefix
+    if let Some((addr, plen)) = &request.args.prefix {
+        let prefix =
+            Prefix::try_from((*addr, *plen)).map_err(|e| CliError::WrongFilter(e.to_string()))?;
+        if !prefix.is_ipv6() {
+            return Err(CliError::WrongFilter("prefix is not ipv6".to_string()));
+        }
+        constraints.push(Box::new(move |(p, _)| Prefix::from(*p) == prefix));
+    }
+    // show everything if no filter is present
+    if constraints.is_empty() {
+        constraints.push(Box::new(|(_, _)| true));
+    }
+
+    // build composite filter
+    let filter =
+        move |item: &(Ipv6Prefix, &Route)| constraints.iter().all(|condition| condition(item));
+
+    Ok(Box::new(move |item: &(Ipv6Prefix, &Route)| filter(item)))
 }
 
 // Look up a vrf depending on the request. A particular vrf can be looked up from
@@ -174,14 +213,14 @@ fn show_vrf_routes(
     let vrf_found = lookup_vrf(vrftable, &request)?;
 
     let response = if ipv4 {
-        let filter = route_filter_v4(&request);
+        let filter = route_filter_v4(&request)?;
         if let Some(vrf) = vrf_found {
             show_ipv4_routes_single_vrf(request, vrf, &filter)
         } else {
             show_ipv4_routes_multi(request, vrftable, &filter)
         }
     } else {
-        let filter = route_filter_v6(&request);
+        let filter = route_filter_v6(&request)?;
         if let Some(vrf) = vrf_found {
             show_ipv6_routes_single_vrf(request, vrf, &filter)
         } else {
@@ -236,15 +275,51 @@ fn show_fib_ipv6(vrf: &Vrf, filter: &FibRouteV6Filter) -> String {
     format!("{view}")
 }
 
-fn fibgroup_filter_v4(_request: &CliRequest) -> FibRouteV4Filter {
-    // Todo(fredi): filter by prefix, next-hop, interface and encap
-    let filter: FibRouteV4Filter = Box::new(|(_, _)| true);
-    filter
+fn fibgroup_filter_v4(request: &CliRequest) -> Result<FibRouteV4Filter, CliError> {
+    let mut constraints: Vec<FibRouteV4Filter> = vec![];
+
+    // filter by prefix
+    if let Some((addr, plen)) = &request.args.prefix {
+        let prefix =
+            Prefix::try_from((*addr, *plen)).map_err(|e| CliError::WrongFilter(e.to_string()))?;
+        if !prefix.is_ipv4() {
+            return Err(CliError::WrongFilter("prefix is not ipv4".to_string()));
+        }
+        constraints.push(Box::new(move |(p, _)| Prefix::from(*p) == prefix));
+    }
+    // show everything if no filter is present
+    if constraints.is_empty() {
+        constraints.push(Box::new(|(_, _)| true));
+    }
+
+    // build composite filter
+    let filter =
+        move |item: &(Ipv4Prefix, &FibRoute)| constraints.iter().all(|condition| condition(item));
+
+    Ok(Box::new(move |item: &(Ipv4Prefix, &FibRoute)| filter(item)))
 }
-fn fibgroup_filter_v6(_request: &CliRequest) -> FibRouteV6Filter {
-    // Todo(fredi): filter by prefix, next-hop, interface and encap
-    let filter: FibRouteV6Filter = Box::new(|(_, _)| true);
-    filter
+fn fibgroup_filter_v6(request: &CliRequest) -> Result<FibRouteV6Filter, CliError> {
+    let mut constraints: Vec<FibRouteV6Filter> = vec![];
+
+    // filter by prefix
+    if let Some((addr, plen)) = &request.args.prefix {
+        let prefix =
+            Prefix::try_from((*addr, *plen)).map_err(|e| CliError::WrongFilter(e.to_string()))?;
+        if !prefix.is_ipv6() {
+            return Err(CliError::WrongFilter("prefix is not ipv6".to_string()));
+        }
+        constraints.push(Box::new(move |(p, _)| Prefix::from(*p) == prefix));
+    }
+    // show everything if no filter is present
+    if constraints.is_empty() {
+        constraints.push(Box::new(|(_, _)| true));
+    }
+
+    // build composite filter
+    let filter =
+        move |item: &(Ipv6Prefix, &FibRoute)| constraints.iter().all(|condition| condition(item));
+
+    Ok(Box::new(move |item: &(Ipv6Prefix, &FibRoute)| filter(item)))
 }
 
 fn show_single_fib_v4(request: CliRequest, vrf: &Vrf, filter: &FibRouteV4Filter) -> CliResponse {
@@ -284,14 +359,14 @@ fn show_ip_fib(request: CliRequest, db: &RoutingDb, ipv4: bool) -> Result<CliRes
     let vrf_found = lookup_vrf(vrftable, &request)?;
 
     let response = if ipv4 {
-        let filter = fibgroup_filter_v4(&request);
+        let filter = fibgroup_filter_v4(&request)?;
         if let Some(vrf) = vrf_found {
             show_single_fib_v4(request, vrf, &filter)
         } else {
             show_multi_fib_v4(request, vrftable, &filter)
         }
     } else {
-        let filter = fibgroup_filter_v6(&request);
+        let filter = fibgroup_filter_v6(&request)?;
         if let Some(vrf) = vrf_found {
             show_single_fib_v6(request, vrf, &filter)
         } else {
