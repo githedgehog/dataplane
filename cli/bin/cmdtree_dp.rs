@@ -182,9 +182,11 @@ fn cmd_show_evpn() -> Node {
         .desc("Show EVPN VRFs")
         .action(CliAction::ShowRouterEvpnVrfs);
 
-    root += Node::new("rmac-store")
-        .desc("Show the contents of the router mac store")
-        .action(CliAction::ShowRouterEvpnRmacStore);
+    root += Node::new("rmac")
+        .desc("Show the EVPN router macs")
+        .action(CliAction::ShowRouterEvpnRmacStore)
+        .arg("address")
+        .arg("vni");
 
     root += Node::new("vtep")
         .desc("Show EVPN VTEP configuration")
