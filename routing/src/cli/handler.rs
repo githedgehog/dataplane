@@ -27,7 +27,10 @@ use crate::router::rio::Rio;
 use crate::routingdb::RoutingDb;
 
 use chrono::Local;
-use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, RequestArgs, RouteProtocol};
+use cli::cliproto::{
+    CliAction, CliError, CliRequest, CliResponse, PrefetchSelector, PrefetchedData, RequestArgs,
+    RouteProtocol,
+};
 use concurrency::sync::Arc;
 use config::{ConfigSummary, GwConfigMeta, ValidatedGwConfig};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
@@ -570,6 +573,69 @@ fn request_refresh(request: CliRequest, rio: &mut Rio) -> CliResponse {
     CliResponse::from_request_ok(request, "Requested refresh...".to_string())
 }
 
+/* prefetch handling */
+fn prefetch_vpcs(cfg: Option<&Arc<ValidatedGwConfig>>) -> PrefetchedData {
+    let vpcs = if let Some(cfg) = cfg {
+        cfg.external()
+            .overlay()
+            .vpc_table()
+            .values()
+            .map(|vpc| vpc.name().to_string())
+            .collect()
+    } else {
+        vec![]
+    };
+    PrefetchedData::with_data(PrefetchSelector::Vpcs, vpcs)
+}
+fn prefetch_vnis(cfg: Option<&Arc<ValidatedGwConfig>>) -> PrefetchedData {
+    let vpcs = if let Some(cfg) = cfg {
+        cfg.external()
+            .overlay()
+            .vpc_table()
+            .values()
+            .map(|vpc| vpc.vni().to_string())
+            .collect()
+    } else {
+        vec![]
+    };
+    PrefetchedData::with_data(PrefetchSelector::Vnis, vpcs)
+}
+fn prefetch_interfaces(db: &RoutingDb) -> PrefetchedData {
+    let interfaces: Vec<String> = if let Some(iftable) = db.iftw.enter() {
+        iftable
+            .values()
+            .map(|iface| iface.name.to_string())
+            .collect()
+    } else {
+        vec![]
+    };
+    PrefetchedData::with_data(PrefetchSelector::Interfaces, interfaces)
+}
+fn prefetch_rmac_addrs(db: &RoutingDb) -> PrefetchedData {
+    let mut rmacs: Vec<String> = db
+        .rmac_store
+        .values()
+        .map(|e| e.address.to_string())
+        .collect();
+
+    rmacs.sort_unstable();
+    rmacs.dedup();
+    PrefetchedData::with_data(PrefetchSelector::RmacAddr, rmacs)
+}
+
+fn prefetch(request: CliRequest, rio: &Rio, db: &RoutingDb) -> CliResponse {
+    let Some(selector) = request.args.selector else {
+        return CliResponse::with_prefetch_data(request, PrefetchedData::default());
+    };
+    let data = match selector {
+        PrefetchSelector::Vpcs => prefetch_vpcs(rio.gwconfig.as_ref()),
+        PrefetchSelector::Vnis => prefetch_vnis(rio.gwconfig.as_ref()),
+        PrefetchSelector::Interfaces => prefetch_interfaces(db),
+        PrefetchSelector::RmacAddr => prefetch_rmac_addrs(db),
+    };
+    CliResponse::with_prefetch_data(request, data)
+}
+
 fn do_handle_cli_request(
     request: CliRequest,
     db: &RoutingDb,
@@ -616,6 +682,10 @@ fn do_handle_cli_request(
         CliAction::ShowMasquerading => show_provider(request, sources.masquerade_state.as_deref()),
         CliAction::ShowPacketStats => show_provider(request, sources.pkt_stats.as_deref()),
         CliAction::ShowDriverStatus => show_provider(request, sources.driver_status.as_deref()),
+
+        /* prefetching */
+        CliAction::Prefetch => prefetch(request, rio, db),
+
         _ => Err(CliError::NotSupported("Not implemented yet".to_string()))?,
     };
     Ok(response)
