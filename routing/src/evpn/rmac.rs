@@ -34,6 +34,8 @@ impl RmacEntry {
     }
 }
 
+pub type RmacFilter = Box<dyn Fn(&RmacEntry) -> bool>;
+
 /// Type that represents a collection of EVPN Rmac - IP mappings, per Vni
 pub struct RmacStore {
     table: HashMap<(IpAddr, Vni), RmacEntry, RandomState>,
