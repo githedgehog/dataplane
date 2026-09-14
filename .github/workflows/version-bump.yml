@@ -54,7 +54,7 @@ jobs:
           persist-credentials: "false"
           fetch-depth: "0"
 
-      - uses: "./.github/actions/nix-shell"
+      - uses: "./.github/actions/nix-shell" # zizmor: ignore[self-repository] -- actionlint and p/default do not support $/ yet
         with:
           cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
           cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"

@@ -96,7 +96,7 @@ jobs:
           printf 'value=%s\n' "${value}" >>"${GITHUB_OUTPUT}"
 
       - id: "miri"
-        uses: &gate "./.github/actions/ci-gate"
+        uses: &gate "./.github/actions/ci-gate" # zizmor: ignore[self-repository] -- actionlint and p/default do not support $/ yet
         with:
           labels: "miri"
 
@@ -209,13 +209,13 @@ jobs:
       - *checkout
 
       - &nix-setup
-        uses: "./.github/actions/nix-setup"
+        uses: "./.github/actions/nix-setup" # zizmor: ignore[self-repository] -- actionlint and p/default do not support $/ yet
         with:
           cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
           cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: "fmt"
-        uses: &just "./.github/actions/just"
+        uses: &just "./.github/actions/just" # zizmor: ignore[self-repository] -- actionlint and p/default do not support $/ yet
         with:
           recipe: "ci::check-fmt"
 
@@ -917,7 +917,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: "./.github/actions/nix-shell"
+      - uses: "./.github/actions/nix-shell" # zizmor: ignore[self-repository] -- actionlint and p/default do not support $/ yet
         with:
           cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
           cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
