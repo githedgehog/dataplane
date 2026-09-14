@@ -13,6 +13,7 @@ use config::external::overlay::vpcpeering::contract::{
 use flow_entry::flow_table::{FlowLookup, FlowTable};
 use lpm::prefix::Prefix;
 use net::buffer::TestBuffer;
+use net::flows::FlowStatus;
 use net::packet::{Packet, VpcDiscriminant};
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
@@ -96,10 +97,18 @@ impl Fabric {
         )
     }
 
+    /// How many entries in the table are still usable for packet processing.
+    ///
+    /// Counts `Active` entries only. An entry that has been cancelled or has timed out stays
+    /// in the table until the expiry machinery removes it, so counting every entry the shards
+    /// yield would report a dead pair as live -- which is exactly the failure the callers of
+    /// this function assert against.
     pub(crate) fn live_flows(&self) -> usize {
         let count = concurrency::sync::atomic::AtomicUsize::new(0);
-        self.flow_table.for_each_flow_sharded(|_, _| {
-            count.fetch_add(1, concurrency::sync::atomic::Ordering::Relaxed);
+        self.flow_table.for_each_flow_sharded(|_, info| {
+            if info.status() == FlowStatus::Active {
+                count.fetch_add(1, concurrency::sync::atomic::Ordering::Relaxed);
+            }
         });
         count.load(concurrency::sync::atomic::Ordering::Relaxed)
     }
