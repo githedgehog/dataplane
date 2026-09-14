@@ -140,6 +140,8 @@ pub enum CliError {
     NotSupported(String),
     #[error("Inacessible")]
     Inacessible,
+    #[error("Wrong filter: {0}")]
+    WrongFilter(String),
 }
 
 #[derive(Error, Debug)]
