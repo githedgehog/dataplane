@@ -62,14 +62,11 @@ fn show_vrf_ipv4_routes(vrf: &Vrf, filter: &RouteV4Filter) -> String {
       Alternatively, call vrf.iter_v4() or vrf.filter_v4() to yield
       iterators over the (prefix, Routes).
     */
-
-    let view = VrfViewV4 { vrf, filter };
-    format!("{view}")
+    VrfViewV4 { vrf, filter }.to_string()
 }
 
 fn show_vrf_ipv6_routes(vrf: &Vrf, filter: &RouteV6Filter) -> String {
-    let view = VrfViewV6 { vrf, filter };
-    format!("{view}")
+    VrfViewV6 { vrf, filter }.to_string()
 }
 
 fn show_ipv4_routes_single_vrf(
@@ -232,9 +229,9 @@ fn show_vrf_routes(
 
 fn show_vrf_nexthops_single(request: CliRequest, vrf: &Vrf, ipv4: bool) -> CliResponse {
     let out = if ipv4 {
-        format!("{}", VrfV4Nexthops(vrf))
+        VrfV4Nexthops(vrf).to_string()
     } else {
-        format!("{}", VrfV6Nexthops(vrf))
+        VrfV6Nexthops(vrf).to_string()
     };
     CliResponse::from_request_ok(request, out)
 }
@@ -243,9 +240,9 @@ fn show_vrf_nexthops_multi(request: CliRequest, vrftable: &VrfTable, ipv4: bool)
     let mut out = String::new();
     for vrf in vrftable.values() {
         if ipv4 {
-            out += format!("{}", VrfV4Nexthops(vrf)).as_ref();
+            out += VrfV4Nexthops(vrf).to_string().as_str();
         } else {
-            out += format!("{}", VrfV6Nexthops(vrf)).as_ref();
+            out += VrfV6Nexthops(vrf).to_string().as_str();
         }
     }
     CliResponse::from_request_ok(request, out)
@@ -267,12 +264,10 @@ fn show_vrf_nexthops(
 }
 
 fn show_fib_ipv4(vrf: &Vrf, filter: &FibRouteV4Filter) -> String {
-    let view = FibViewV4 { vrf, filter };
-    format!("{view}")
+    FibViewV4 { vrf, filter }.to_string()
 }
 fn show_fib_ipv6(vrf: &Vrf, filter: &FibRouteV6Filter) -> String {
-    let view = FibViewV6 { vrf, filter };
-    format!("{view}")
+    FibViewV6 { vrf, filter }.to_string()
 }
 
 fn fibgroup_filter_v4(request: &CliRequest) -> Result<FibRouteV4Filter, CliError> {
@@ -379,9 +374,9 @@ fn show_ip_fib(request: CliRequest, db: &RoutingDb, ipv4: bool) -> Result<CliRes
 fn show_ip_fib_groups_single(request: CliRequest, vrf: &Vrf, ipv4: bool) -> CliResponse {
     #[allow(clippy::if_same_then_else)]
     let out = if ipv4 {
-        format!("{}", FibGroups(vrf)) // for the time being we show all
+        FibGroups(vrf).to_string() // for the time being we show all
     } else {
-        format!("{}", FibGroups(vrf)) // for the time being we show all
+        FibGroups(vrf).to_string() // for the time being we show all
     };
     CliResponse::from_request_ok(request, out)
 }
@@ -390,9 +385,9 @@ fn show_ip_fib_groups_multi(request: CliRequest, vrftable: &VrfTable, ipv4: bool
     for vrf in vrftable.values() {
         #[allow(clippy::if_same_then_else)]
         if ipv4 {
-            out += format!("{}", FibGroups(vrf)).as_ref();
+            out += FibGroups(vrf).to_string().as_str();
         } else {
-            out += format!("{}", FibGroups(vrf)).as_ref();
+            out += FibGroups(vrf).to_string().as_str();
         }
     }
     CliResponse::from_request_ok(request, out)
@@ -493,7 +488,7 @@ fn show_frr_last_applied_config(request: CliRequest, frrmi: &Frrmi) -> CliRespon
 fn show_router_events(request: CliRequest) -> CliResponse {
     ROUTER_EVENTS.with(|el| {
         let el = el.borrow();
-        CliResponse::from_request_ok(request, format!("{el}"))
+        CliResponse::from_request_ok(request, el.to_string())
     })
 }
 
