@@ -226,3 +226,64 @@ fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
         }
     }
 }
+
+fn rank(status: NatFlowStatus) -> u8 {
+    use NatFlowStatus as S;
+    match status {
+        S::OneWay => 0,
+        S::TwoWay => 1,
+        S::Established => 2,
+        S::CClosing | S::SClosing => 3,
+        S::CHalfClose | S::SHalfClose => 4,
+        S::LastAck => 5,
+        S::Closed => 6,
+        S::Reset => 7,
+    }
+}
+
+#[test]
+fn the_tcp_lifecycle_never_runs_backwards() {
+    for action in [NatAction::SrcNat, NatAction::DstNat] {
+        for status in STATUSES {
+            for bits in 0..16u8 {
+                let flags = Flags::from_bits(bits);
+                let got = next_flow_status(&tcp_packet(flags), action, status);
+                assert!(
+                    rank(got) >= rank(status),
+                    "{action} from {status:?} with {flags:?} went backwards to {got:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn each_direction_owns_its_half_of_the_close() {
+    use NatFlowStatus as S;
+    for status in STATUSES {
+        for bits in 0..16u8 {
+            let flags = Flags::from_bits(bits);
+
+            let got = next_flow_status(&tcp_packet(flags), NatAction::SrcNat, status);
+            if got != status {
+                assert!(
+                    !matches!(got, S::OneWay | S::TwoWay | S::SClosing | S::CHalfClose),
+                    "SrcNat from {status:?} with {flags:?} produced {got:?}, which belongs to \
+                     the server's side of the close"
+                );
+            }
+
+            let got = next_flow_status(&tcp_packet(flags), NatAction::DstNat, status);
+            if got != status {
+                assert!(
+                    !matches!(
+                        got,
+                        S::OneWay | S::Established | S::CClosing | S::SHalfClose
+                    ),
+                    "DstNat from {status:?} with {flags:?} produced {got:?}, which belongs to \
+                     the client's side of the close"
+                );
+            }
+        }
+    }
+}
