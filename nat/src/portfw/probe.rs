@@ -71,7 +71,10 @@ impl Side {
             .max(1);
         let ports = u32::from(self.last_port - self.first_port) + 1;
         let total = u64::from(hosts) * u64::from(ports);
-        let stride = (total / CAP as u64).max(1);
+        let mut stride = (total / CAP as u64).max(1);
+        if u64::from(ports) > 1 && stride.is_multiple_of(u64::from(ports)) {
+            stride += 1;
+        }
 
         let mut out = Vec::new();
         let mut index = 0u64;
@@ -317,3 +320,42 @@ impl ProbeSpec {
 }
 
 pub(crate) const PAST_ANY_TIMEOUT: Duration = Duration::from_mins(30);
+
+#[cfg(test)]
+mod every_covers_both_dimensions {
+    use super::Side;
+    use std::collections::BTreeSet;
+
+    fn side(prefix: &str, first_port: u16, last_port: u16) -> Side {
+        Side {
+            prefix: prefix.parse().unwrap_or_else(|_| unreachable!()),
+            first_port,
+            last_port,
+        }
+    }
+
+    #[test]
+    fn a_full_cap_of_hosts_still_varies_the_port() {
+        let probes = side("10.0.0.0/24", 1000, 1007).every();
+        let ports: BTreeSet<u16> = probes.iter().map(|(_, port)| *port).collect();
+        assert!(
+            ports.len() > 1,
+            "every() probed only {ports:?}, so two ports of one address can never collide"
+        );
+    }
+
+    #[test]
+    fn it_still_varies_the_address() {
+        let probes = side("10.0.0.0/24", 1000, 1007).every();
+        let addrs: BTreeSet<_> = probes.iter().map(|(addr, _)| *addr).collect();
+        assert!(addrs.len() > 1, "every() probed only {addrs:?}");
+    }
+
+    #[test]
+    fn a_single_port_side_is_left_alone() {
+        let probes = side("10.0.0.0/24", 1000, 1000).every();
+        let ports: BTreeSet<u16> = probes.iter().map(|(_, port)| *port).collect();
+        assert_eq!(ports.len(), 1, "a one-port side cannot vary its port");
+        assert!(probes.len() > 1, "but it should still walk the addresses");
+    }
+}
