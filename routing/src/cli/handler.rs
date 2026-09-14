@@ -10,7 +10,7 @@ use super::display::{FibGroups, FibViewV4, FibViewV6};
 use super::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
 
 use crate::fib::fibtype::{FibRouteV4Filter, FibRouteV6Filter};
-use crate::rib::vrf::{Route, RouteOrigin, Vrf, VrfId};
+use crate::rib::vrf::{Route, RouteOrigin, Vrf};
 use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 use crate::rib::vrftable::VrfTable;
 
@@ -70,56 +70,44 @@ fn show_vrf_ipv6_routes(vrf: &Vrf, filter: &RouteV6Filter) -> String {
 
 fn show_ipv4_routes_single_vrf(
     request: CliRequest,
-    vrftable: &VrfTable,
-    vrfid: VrfId,
+    vrf: &Vrf,
     filter: &RouteV4Filter,
-) -> Result<CliResponse, CliError> {
-    let out;
-    if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-        out = show_vrf_ipv4_routes(vrf, filter);
-    } else {
-        return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
-    }
-    Ok(CliResponse::from_request_ok(request, out))
+) -> CliResponse {
+    let out = show_vrf_ipv4_routes(vrf, filter);
+    CliResponse::from_request_ok(request, out)
 }
 
 fn show_ipv4_routes_multi(
     request: CliRequest,
     vrftable: &VrfTable,
     filter: &RouteV4Filter,
-) -> Result<CliResponse, CliError> {
+) -> CliResponse {
     let mut out = String::new();
     for vrf in vrftable.values() {
         out += show_vrf_ipv4_routes(vrf, filter).as_str();
     }
-    Ok(CliResponse::from_request_ok(request, out))
+    CliResponse::from_request_ok(request, out)
 }
 
 fn show_ipv6_routes_single_vrf(
     request: CliRequest,
-    vrftable: &VrfTable,
-    vrfid: VrfId,
+    vrf: &Vrf,
     filter: &RouteV6Filter,
-) -> Result<CliResponse, CliError> {
-    let out;
-    if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-        out = show_vrf_ipv6_routes(vrf, filter);
-    } else {
-        return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
-    }
-    Ok(CliResponse::from_request_ok(request, out))
+) -> CliResponse {
+    let out = show_vrf_ipv6_routes(vrf, filter);
+    CliResponse::from_request_ok(request, out)
 }
 
 fn show_ipv6_routes_multi(
     request: CliRequest,
     vrftable: &VrfTable,
     filter: &RouteV6Filter,
-) -> Result<CliResponse, CliError> {
+) -> CliResponse {
     let mut out = String::new();
     for vrf in vrftable.values() {
         out += show_vrf_ipv6_routes(vrf, filter).as_str();
     }
-    Ok(CliResponse::from_request_ok(request, out))
+    CliResponse::from_request_ok(request, out)
 }
 
 fn route_filter_v4(request: &CliRequest) -> RouteV4Filter {
@@ -140,54 +128,76 @@ fn route_filter_v6(request: &CliRequest) -> RouteV6Filter {
     };
     filter
 }
+
+// Look up a vrf depending on the request. A particular vrf can be looked up from
+// vpc name, vrfid and vni. Multiple of these fields may be specified. The precedence
+// is: 1) vpc name 2) vrfid 3) vni.
+fn lookup_vrf<'a>(
+    vrftable: &'a VrfTable,
+    request: &CliRequest,
+) -> Result<Option<&'a Vrf>, CliError> {
+    if let Some(vpc) = &request.args.vpc {
+        let vrf = vrftable
+            .get_vrf_by_descr(vpc.as_str())
+            .map_err(|_| CliError::NotFound(format!("VRF with with descr {vpc}")))?;
+
+        Ok(Some(vrf))
+    } else if let Some(vrfid) = request.args.vrfid {
+        let vrf = vrftable
+            .get_vrf(vrfid)
+            .map_err(|_| CliError::NotFound(format!("VRF with id {vrfid}")))?;
+
+        Ok(Some(vrf))
+    } else if let Some(vni) = &request.args.vni {
+        let checked_vni = Vni::try_from(*vni)
+            .map_err(|_| CliError::NotFound(format!("Invalid vni value: {vni}")))?;
+
+        let vrf = vrftable
+            .get_vrf_by_vni(checked_vni)
+            .map_err(|_| CliError::NotFound(format!("VRF with vni {checked_vni}")))?;
+
+        Ok(Some(vrf))
+    } else {
+        Ok(None)
+    }
+}
+
 fn show_vrf_routes(
     request: CliRequest,
     db: &RoutingDb,
     ipv4: bool,
 ) -> Result<CliResponse, CliError> {
     let vrftable = &db.vrftable;
+    let vrf_found = lookup_vrf(vrftable, &request)?;
 
-    if ipv4 {
+    let response = if ipv4 {
         let filter = route_filter_v4(&request);
-        if let Some(vrfid) = request.args.vrfid {
-            show_ipv4_routes_single_vrf(request, vrftable, vrfid, &filter)
+        if let Some(vrf) = vrf_found {
+            show_ipv4_routes_single_vrf(request, vrf, &filter)
         } else {
             show_ipv4_routes_multi(request, vrftable, &filter)
         }
     } else {
         let filter = route_filter_v6(&request);
-        if let Some(vrfid) = request.args.vrfid {
-            show_ipv6_routes_single_vrf(request, vrftable, vrfid, &filter)
+        if let Some(vrf) = vrf_found {
+            show_ipv6_routes_single_vrf(request, vrf, &filter)
         } else {
             show_ipv6_routes_multi(request, vrftable, &filter)
         }
-    }
+    };
+    Ok(response)
 }
 
-fn show_vrf_nexthops_single(
-    request: CliRequest,
-    vrftable: &VrfTable,
-    vrfid: VrfId,
-    ipv4: bool,
-) -> Result<CliResponse, CliError> {
-    let out: String;
-    if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-        if ipv4 {
-            out = format!("{}", VrfV4Nexthops(vrf));
-        } else {
-            out = format!("{}", VrfV6Nexthops(vrf));
-        }
+fn show_vrf_nexthops_single(request: CliRequest, vrf: &Vrf, ipv4: bool) -> CliResponse {
+    let out = if ipv4 {
+        format!("{}", VrfV4Nexthops(vrf))
     } else {
-        return Err(CliError::NotFound(format!("with id {vrfid}")));
-    }
-    Ok(CliResponse::from_request_ok(request, out))
+        format!("{}", VrfV6Nexthops(vrf))
+    };
+    CliResponse::from_request_ok(request, out)
 }
 
-fn show_vrf_nexthops_multi(
-    request: CliRequest,
-    vrftable: &VrfTable,
-    ipv4: bool,
-) -> Result<CliResponse, CliError> {
+fn show_vrf_nexthops_multi(request: CliRequest, vrftable: &VrfTable, ipv4: bool) -> CliResponse {
     let mut out = String::new();
     for vrf in vrftable.values() {
         if ipv4 {
@@ -196,7 +206,7 @@ fn show_vrf_nexthops_multi(
             out += format!("{}", VrfV6Nexthops(vrf)).as_ref();
         }
     }
-    Ok(CliResponse::from_request_ok(request, out))
+    CliResponse::from_request_ok(request, out)
 }
 
 fn show_vrf_nexthops(
@@ -205,12 +215,13 @@ fn show_vrf_nexthops(
     ipv4: bool,
 ) -> Result<CliResponse, CliError> {
     let vrftable = &db.vrftable;
-
-    if let Some(vrfid) = request.args.vrfid {
-        show_vrf_nexthops_single(request, vrftable, vrfid, ipv4)
+    let vrf_found = lookup_vrf(vrftable, &request)?;
+    let response = if let Some(vrf) = vrf_found {
+        show_vrf_nexthops_single(request, vrf, ipv4)
     } else {
         show_vrf_nexthops_multi(request, vrftable, ipv4)
-    }
+    };
+    Ok(response)
 }
 
 fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
@@ -232,11 +243,11 @@ fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliErro
     }
 }
 
-fn show_fibgroups_ipv4(vrf: &Vrf, filter: &FibRouteV4Filter) -> String {
+fn show_fib_ipv4(vrf: &Vrf, filter: &FibRouteV4Filter) -> String {
     let view = FibViewV4 { vrf, filter };
     format!("{view}")
 }
-fn show_fibgroups_ipv6(vrf: &Vrf, filter: &FibRouteV6Filter) -> String {
+fn show_fib_ipv6(vrf: &Vrf, filter: &FibRouteV6Filter) -> String {
     let view = FibViewV6 { vrf, filter };
     format!("{view}")
 }
@@ -252,102 +263,70 @@ fn fibgroup_filter_v6(_request: &CliRequest) -> FibRouteV6Filter {
     filter
 }
 
-fn show_single_fib_v4(
-    request: CliRequest,
-    vrftable: &VrfTable,
-    vrfid: VrfId,
-    filter: &FibRouteV4Filter,
-) -> Result<CliResponse, CliError> {
-    let out;
-    if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-        out = show_fibgroups_ipv4(vrf, filter);
-    } else {
-        return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
-    }
-    Ok(CliResponse::from_request_ok(request, out))
+fn show_single_fib_v4(request: CliRequest, vrf: &Vrf, filter: &FibRouteV4Filter) -> CliResponse {
+    let out = show_fib_ipv4(vrf, filter);
+    CliResponse::from_request_ok(request, out)
 }
-
-fn show_single_fib_v6(
-    request: CliRequest,
-    vrftable: &VrfTable,
-    vrfid: VrfId,
-    filter: &FibRouteV6Filter,
-) -> Result<CliResponse, CliError> {
-    let out;
-    if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-        out = show_fibgroups_ipv6(vrf, filter);
-    } else {
-        return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
-    }
-    Ok(CliResponse::from_request_ok(request, out))
+fn show_single_fib_v6(request: CliRequest, vrf: &Vrf, filter: &FibRouteV6Filter) -> CliResponse {
+    let out = show_fib_ipv6(vrf, filter);
+    CliResponse::from_request_ok(request, out)
 }
 
 fn show_multi_fib_v4(
     request: CliRequest,
     vrftable: &VrfTable,
     filter: &FibRouteV4Filter,
-) -> Result<CliResponse, CliError> {
+) -> CliResponse {
     let mut out = String::new();
     for vrf in vrftable.values() {
-        out += show_fibgroups_ipv4(vrf, filter).as_str();
+        out += show_fib_ipv4(vrf, filter).as_str();
     }
-    Ok(CliResponse::from_request_ok(request, out))
+    CliResponse::from_request_ok(request, out)
 }
 fn show_multi_fib_v6(
     request: CliRequest,
     vrftable: &VrfTable,
     filter: &FibRouteV6Filter,
-) -> Result<CliResponse, CliError> {
+) -> CliResponse {
     let mut out = String::new();
     for vrf in vrftable.values() {
-        out += show_fibgroups_ipv6(vrf, filter).as_str();
+        out += show_fib_ipv6(vrf, filter).as_str();
     }
-    Ok(CliResponse::from_request_ok(request, out))
+    CliResponse::from_request_ok(request, out)
 }
 
 fn show_ip_fib(request: CliRequest, db: &RoutingDb, ipv4: bool) -> Result<CliResponse, CliError> {
     let vrftable = &db.vrftable;
-    if ipv4 {
+    let vrf_found = lookup_vrf(vrftable, &request)?;
+
+    let response = if ipv4 {
         let filter = fibgroup_filter_v4(&request);
-        if let Some(vrfid) = request.args.vrfid {
-            show_single_fib_v4(request, vrftable, vrfid, &filter)
+        if let Some(vrf) = vrf_found {
+            show_single_fib_v4(request, vrf, &filter)
         } else {
             show_multi_fib_v4(request, vrftable, &filter)
         }
     } else {
         let filter = fibgroup_filter_v6(&request);
-        if let Some(vrfid) = request.args.vrfid {
-            show_single_fib_v6(request, vrftable, vrfid, &filter)
+        if let Some(vrf) = vrf_found {
+            show_single_fib_v6(request, vrf, &filter)
         } else {
             show_multi_fib_v6(request, vrftable, &filter)
         }
-    }
+    };
+    Ok(response)
 }
 
-fn show_ip_fib_groups_single(
-    request: CliRequest,
-    vrftable: &VrfTable,
-    vrfid: VrfId,
-    ipv4: bool,
-) -> Result<CliResponse, CliError> {
-    let out: String;
-    if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-        #[allow(clippy::if_same_then_else)]
-        if ipv4 {
-            out = format!("{}", FibGroups(vrf)); // for the time being we show all
-        } else {
-            out = format!("{}", FibGroups(vrf)); // for the time being we show all
-        }
+fn show_ip_fib_groups_single(request: CliRequest, vrf: &Vrf, ipv4: bool) -> CliResponse {
+    #[allow(clippy::if_same_then_else)]
+    let out = if ipv4 {
+        format!("{}", FibGroups(vrf)) // for the time being we show all
     } else {
-        return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
-    }
-    Ok(CliResponse::from_request_ok(request, out))
+        format!("{}", FibGroups(vrf)) // for the time being we show all
+    };
+    CliResponse::from_request_ok(request, out)
 }
-fn show_ip_fib_groups_multi(
-    request: CliRequest,
-    vrftable: &VrfTable,
-    ipv4: bool,
-) -> Result<CliResponse, CliError> {
+fn show_ip_fib_groups_multi(request: CliRequest, vrftable: &VrfTable, ipv4: bool) -> CliResponse {
     let mut out = String::new();
     for vrf in vrftable.values() {
         #[allow(clippy::if_same_then_else)]
@@ -357,7 +336,7 @@ fn show_ip_fib_groups_multi(
             out += format!("{}", FibGroups(vrf)).as_ref();
         }
     }
-    Ok(CliResponse::from_request_ok(request, out))
+    CliResponse::from_request_ok(request, out)
 }
 
 fn show_ip_fib_groups(
@@ -366,11 +345,13 @@ fn show_ip_fib_groups(
     ipv4: bool,
 ) -> Result<CliResponse, CliError> {
     let vrftable = &db.vrftable;
-    if let Some(vrfid) = request.args.vrfid {
-        show_ip_fib_groups_single(request, vrftable, vrfid, ipv4)
+    let vrf_found = lookup_vrf(vrftable, &request)?;
+    let response = if let Some(vrf) = vrf_found {
+        show_ip_fib_groups_single(request, vrf, ipv4)
     } else {
         show_ip_fib_groups_multi(request, vrftable, ipv4)
-    }
+    };
+    Ok(response)
 }
 
 fn show_provider(
