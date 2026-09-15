@@ -464,15 +464,18 @@ pub(crate) fn start_rio(
                         }
                         if event.is_writable() && !rio.frozen {
                             rio.cpi_sock.flush_out_fast();
-                            if !rio.cpi_sock.interests().is_writable() {
-                                let _ = rio.reregister(
-                                    CPSOCK,
-                                    rio.cpi_sock.get_raw_fd(),
-                                    rio.cpi_sock.interests(),
-                                );
-                            }
                         }
                         rio.cpi_status_check(&mut db);
+                        // Receiving requests can queue replies after writable interest was removed.
+                        if !rio.frozen
+                            && (event.is_writable() || rio.cpi_sock.interests().is_writable())
+                        {
+                            let _ = rio.reregister(
+                                CPSOCK,
+                                rio.cpi_sock.get_raw_fd(),
+                                rio.cpi_sock.interests(),
+                            );
+                        }
                     }
                     CLISOCK => {
                         if event.is_writable() {
