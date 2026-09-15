@@ -236,6 +236,10 @@ mod rpc_properties {
     const NUM_ADDRESSES: u8 = 3;
     const NUM_IFINDEXES: u8 = 4;
     const NUM_VNIS: u8 = 3;
+    /// Next-hop VRF ids to draw from. The pool has to contain something other than the
+    /// default: with `vrfid` pinned to 0 the round-trip assertion on it was `0 == 0`, so the
+    /// cross-VRF field this conversion carries was never actually exercised.
+    const NHOP_VRFIDS: [VrfId; 3] = [0, 1, 42];
     const NUM_RTYPES: u8 = 7;
     const MAX_NHOPS: u8 = 3;
 
@@ -337,7 +341,10 @@ mod rpc_properties {
                     address: index(driver, NUM_ADDRESSES)?,
                     ifindex: index(driver, NUM_IFINDEXES)?,
                     vni: index(driver, NUM_VNIS)?,
-                    vrfid: 0,
+                    vrfid: NHOP_VRFIDS[index(
+                        driver,
+                        u8::try_from(NHOP_VRFIDS.len()).unwrap_or_else(|_| unreachable!()),
+                    )?],
                 });
             }
             Some(RouteSpec {
