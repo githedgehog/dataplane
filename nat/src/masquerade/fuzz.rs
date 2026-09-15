@@ -163,6 +163,7 @@ impl Tally {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "full-flow fuzz probe is too slow under Miri")]
 fn a_masqueraded_flow_comes_back() {
     let tally = Tally::default();
 
@@ -261,6 +262,7 @@ fn out_unchanged(out: &[Packet<TestBuffer>], before: (IpAddr, u16)) -> bool {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "full-flow fuzz probe is too slow under Miri")]
 fn distinct_flows_do_not_share_a_translation() {
     let tally = Tally::default();
 
@@ -396,6 +398,7 @@ fn nothing_is_masqueraded_without_permission() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "full-flow fuzz probe is too slow under Miri")]
 fn a_flow_that_cannot_be_masqueraded_says_so() {
     let tally = Tally::default();
 
