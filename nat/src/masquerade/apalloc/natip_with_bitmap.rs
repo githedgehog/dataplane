@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! bitmap-based NAT allocator requires this trait to be implementated for the type parameters
-//! (`Ipv4Addr` and `Ipv6Addr`) that it works with.
+//! [`NatIpWithBitmap`], the address capability the bitmap allocator needs on top of
+//! [`IpAddress`].
+//!
+//! The bitmap-based NAT allocator requires this trait to be implemented for the type
+//! parameters (`Ipv4Addr` and `Ipv6Addr`) that it works with.
 
 use super::super::allocation::AllocatorError;
 use super::alloc::{map_address, map_offset};
