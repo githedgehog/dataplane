@@ -80,6 +80,7 @@ pub use shuttle_backend::*;
     not(feature = "shuttle"),
     feature = "parking_lot",
     not(feature = "_strict_provenance"),
+    not(miri),
 ))]
 mod parking_lot_backend;
 #[cfg(all(
@@ -87,19 +88,20 @@ mod parking_lot_backend;
     not(feature = "shuttle"),
     feature = "parking_lot",
     not(feature = "_strict_provenance"),
+    not(miri),
 ))]
 pub use parking_lot_backend::*;
 
 #[cfg(all(
     not(feature = "loom"),
     not(feature = "shuttle"),
-    any(not(feature = "parking_lot"), feature = "_strict_provenance"),
+    any(not(feature = "parking_lot"), feature = "_strict_provenance", miri),
 ))]
 mod std_backend;
 #[cfg(all(
     not(feature = "loom"),
     not(feature = "shuttle"),
-    any(not(feature = "parking_lot"), feature = "_strict_provenance"),
+    any(not(feature = "parking_lot"), feature = "_strict_provenance", miri),
 ))]
 pub use std_backend::*;
 
