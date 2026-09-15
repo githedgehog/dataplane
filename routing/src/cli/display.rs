@@ -309,12 +309,8 @@ impl Display for VrfStatus {
 }
 
 fn fmt_vrf_oneline(vrf: &Vrf, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let description = vrf.description.clone().unwrap_or_else(|| "--".to_string());
-    writeln!(
-        f,
-        " Vrf: '{}' (id: {}) description: {description}\n",
-        vrf.name, vrf.vrfid
-    )?;
+    let vpc = vrf.vpcname.clone().unwrap_or_else(|| "--".to_string());
+    writeln!(f, " Vrf: '{}' (id: {}) VPC: {vpc}\n", vrf.name, vrf.vrfid)?;
     Ok(())
 }
 
@@ -445,7 +441,7 @@ fn fmt_vrf_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result 
         "{}",
         format_args!(
             VRF_TBL_FMT!(),
-            "name", "id", "vni", "Ipv4-routes", "Ipv6-routes", "status", "table-id", "description"
+            "name", "id", "vni", "Ipv4-routes", "Ipv6-routes", "status", "table-id", "vpc"
         )
     )
 }
@@ -463,7 +459,7 @@ fn fmt_vrf_summary(f: &mut std::fmt::Formatter<'_>, vrf: &Vrf) -> std::fmt::Resu
             vrf.status.to_string(),
             vrf.tableid
                 .map_or_else(|| "--".to_owned(), |t| t.to_string()),
-            &vrf.description.as_ref().map_or_else(|| "", |t| t.as_str())
+            &vrf.vpcname.as_ref().map_or_else(|| "", |t| t.as_str())
         )
     )
 }

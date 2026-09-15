@@ -325,7 +325,7 @@ fn vpc_vrf_config(vpc: &ValidatedVpc) -> Result<VrfConfig, ConfigError> {
     /* build vrf config */
     let mut vrf_cfg = VrfConfig::new(&vpc.vrf_name(), Some(vpc.vni()), false)
         .set_vpc_id(vpc.id().clone())
-        .set_description(vpc.name());
+        .set_vpcname(vpc.name());
 
     // Here we set the table-id for the VRF. This is the table-id that will be used to create a VRF net device.
     // Table ids should be unique per VRF. We could track them and pick unused ones. Alternatively, we need
@@ -681,11 +681,7 @@ mod chain_properties {
 
                     assert_eq!(vrf.name, vpc.vrf_name(), "vrf name");
                     assert_eq!(vrf.vpc_id.as_ref(), Some(vpc.id()), "vrf vpc id");
-                    assert_eq!(
-                        vrf.description.as_deref(),
-                        Some(vpc.name()),
-                        "vrf description"
-                    );
+                    assert_eq!(vrf.vpcname.as_deref(), Some(vpc.name()), "vpc name");
 
                     // A vrf's route table is the vpc's vni, so that an operator can reach
                     // it by the number they already know. The exception is a vni that

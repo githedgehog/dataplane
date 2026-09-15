@@ -173,9 +173,9 @@ impl ReconfigVrfPlan {
                 if vrf.name != cfg.name {
                     vrf.name.clone_from(&cfg.name);
                 }
-                // update description if needed
-                if vrf.description != cfg.description {
-                    vrf.description.clone_from(&cfg.description);
+                // update vpcname if needed
+                if vrf.vpcname != cfg.vpcname {
+                    vrf.vpcname.clone_from(&cfg.vpcname);
                 }
                 // update table-id id needed
                 if vrf.tableid != cfg.tableid {
@@ -216,10 +216,10 @@ impl ReconfigVrfPlan {
         for cfg in &self.to_add {
             vrftable.add_vrf(cfg)?;
             if let Ok(vrf) = vrftable.get_vrf_mut(cfg.vrfid) {
-                if let Some(descr) = &cfg.description {
-                    vrf.set_description(descr);
+                if let Some(descr) = &cfg.vpcname {
+                    vrf.set_vpcname(descr);
                 } else {
-                    vrf.description.take();
+                    vrf.vpcname.take();
                 }
                 if let Some(tableid) = cfg.tableid {
                     vrf.set_tableid(tableid);
@@ -255,7 +255,7 @@ impl Vrf {
         RouterVrfConfig {
             vrfid: self.vrfid,
             name: self.name.clone(),
-            description: self.description.clone(),
+            vpcname: self.vpcname.clone(),
             tableid: self.tableid,
             vni: self.vni,
         }

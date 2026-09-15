@@ -175,14 +175,14 @@ fn route_filter_v6(request: &CliRequest) -> Result<RouteV6Filter, CliError> {
 
 // Look up a vrf depending on the request. A particular vrf can be looked up from
 // vpc name, vrfid and vni. Multiple of these fields may be specified. The precedence
-// is: 1) vpc name 2) vrfid 3) vni.
+// is: 1) vpc 2) vrfid 3) vni.
 fn lookup_vrf<'a>(
     vrftable: &'a VrfTable,
     request: &CliRequest,
 ) -> Result<Option<&'a Vrf>, CliError> {
     if let Some(vpc) = &request.args.vpc {
         let vrf = vrftable
-            .get_vrf_by_descr(vpc.as_str())
+            .get_vrf_by_vpc_name(vpc.as_str())
             .map_err(|_| CliError::NotFound(format!("VRF with with descr {vpc}")))?;
 
         Ok(Some(vrf))
