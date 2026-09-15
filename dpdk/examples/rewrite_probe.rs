@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use dataplane_dpdk::dev::{DevConfig, RxOffload};
 use dataplane_dpdk::eal;
-use dataplane_dpdk::mem::{Pool, PoolConfig, PoolParams};
+use dataplane_dpdk::mem::{PoolConfig, PoolParams};
 use dataplane_dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dataplane_dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dataplane_dpdk::socket::Preference;
@@ -153,10 +153,13 @@ fn main() -> Result<(), Err> {
         "--no-telemetry",
     ]);
     let info = eal.dev.iter().next().ok_or("no DPDK port probed")?;
-    let pool = Pool::new_pkt_pool(
-        PoolConfig::new("rw_pool", PoolParams::default()).map_err(|e| format!("pool: {e:?}"))?,
-    )
-    .map_err(|e| format!("pool create: {e:?}"))?;
+    let pool = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new("rw_pool", PoolParams::default())
+                .map_err(|e| format!("pool: {e:?}"))?,
+        )
+        .map_err(|e| format!("pool create: {e:?}"))?;
     let cfg = DevConfig {
         num_rx_queues: 1,
         num_tx_queues: 1,
@@ -244,7 +247,10 @@ fn main() -> Result<(), Err> {
         )?;
     }
 
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling {secs}s -- inject IPv4/UDP now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let (mut total, mut dst_ok, mut port_ok, mut ipck_ok, mut udpck_ok) =

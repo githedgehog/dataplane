@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use dataplane_dpdk::dev::{DevConfig, RxOffload};
 use dataplane_dpdk::eal;
-use dataplane_dpdk::mem::{Pool, PoolConfig, PoolParams};
+use dataplane_dpdk::mem::{PoolConfig, PoolParams};
 use dataplane_dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dataplane_dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dataplane_dpdk::socket::Preference;
@@ -128,10 +128,13 @@ fn main() -> Result<(), Err> {
     println!("dv_xmeta_en={xmeta}; metadata dynfield registered");
 
     let info = eal.dev.iter().next().ok_or("no DPDK port probed")?;
-    let pool = Pool::new_pkt_pool(
-        PoolConfig::new("meta_pool", PoolParams::default()).map_err(|e| format!("pool: {e:?}"))?,
-    )
-    .map_err(|e| format!("pool: {e:?}"))?;
+    let pool = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new("meta_pool", PoolParams::default())
+                .map_err(|e| format!("pool: {e:?}"))?,
+        )
+        .map_err(|e| format!("pool: {e:?}"))?;
     let cfg = DevConfig {
         num_rx_queues: 1,
         num_tx_queues: 1,
@@ -360,7 +363,10 @@ fn main() -> Result<(), Err> {
     println!("rule installed: eth -> SET_META({META_VALUE:#010x}) + QUEUE0");
 
     // ---- inject; read META off each frame ----
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling {secs}s -- inject IPv4 from the peer now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let (mut total, mut with_meta) = (0u64, 0u64);

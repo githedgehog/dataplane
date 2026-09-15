@@ -319,7 +319,7 @@ fn build_encap(e: &VxlanEncap) -> Box<EncapDef> {
 ///   available.
 #[must_use = "a FlowBuilder does nothing until create() or validate() is called"]
 pub struct FlowBuilder<'dev, D: Domain, Pos> {
-    dev: &'dev Dev<Started>,
+    dev: &'dev Dev<'dev, Started>,
     group: u32,
     priority: u32,
     items: Vec<MatchItem>,
@@ -329,7 +329,7 @@ pub struct FlowBuilder<'dev, D: Domain, Pos> {
 }
 
 impl<'dev, D: Domain> FlowBuilder<'dev, D, ()> {
-    pub(crate) fn start(dev: &'dev Dev<Started>) -> FlowBuilder<'dev, D, ()> {
+    pub(crate) fn start(dev: &'dev Dev<'dev, Started>) -> FlowBuilder<'dev, D, ()> {
         FlowBuilder {
             dev,
             group: 0,

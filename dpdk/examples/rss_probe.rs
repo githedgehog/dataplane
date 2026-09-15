@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use dataplane_dpdk::dev::{DevConfig, RssConf, RxOffload};
 use dataplane_dpdk::eal;
-use dataplane_dpdk::mem::{Pool, PoolConfig, PoolParams};
+use dataplane_dpdk::mem::{PoolConfig, PoolParams};
 use dataplane_dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dataplane_dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dataplane_dpdk::socket::Preference;
@@ -106,11 +106,13 @@ fn main() -> Result<(), Err> {
     println!("port {bdf} probed as dpdk index {port}; bringing up {N_RXQ} rx + 1 tx queue");
 
     for q in 0..N_RXQ {
-        let pool = Pool::new_pkt_pool(
-            PoolConfig::new(format!("rss_pool_{q}"), PoolParams::default())
-                .map_err(|e| format!("pool config: {e:?}"))?,
-        )
-        .map_err(|e| format!("pool create: {e:?}"))?;
+        let pool = eal
+            .mem
+            .new_pkt_pool(
+                PoolConfig::new(format!("rss_pool_{q}"), PoolParams::default())
+                    .map_err(|e| format!("pool config: {e:?}"))?,
+            )
+            .map_err(|e| format!("pool create: {e:?}"))?;
         dev.new_rx_queue(RxQueueConfig {
             dev: idx,
             queue_index: RxQueueIndex(q),
@@ -149,12 +151,17 @@ fn main() -> Result<(), Err> {
     let mut samples = 0u32;
     println!("polling {N_RXQ} rx queues for {secs}s -- inject varied IPv4 now...");
 
+    // Each queue is owned for the duration of the poll loop.  Previously this looked the queue up
+    // from the device on every iteration, which handed out an alias per lookup -- exactly what
+    // `take_rx` now prevents.
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxqs: Vec<_> = (0..N_RXQ)
+        .filter_map(|q| queues.take_rx(RxQueueIndex(q)))
+        .collect();
+
     while Instant::now() < deadline {
         let mut idle = true;
-        for q in 0..N_RXQ {
-            let Some(rxq) = dev.rx_queue(RxQueueIndex(q)) else {
-                continue;
-            };
+        for rxq in &mut rxqs {
             let burst = rxq.receive();
             if burst.is_empty() {
                 continue;

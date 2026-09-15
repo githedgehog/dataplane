@@ -18,7 +18,7 @@ use core::ptr::null;
 
 use dataplane_dpdk::dev::{DevConfig, RxOffload};
 use dataplane_dpdk::eal;
-use dataplane_dpdk::mem::{Pool, PoolConfig, PoolParams};
+use dataplane_dpdk::mem::{PoolConfig, PoolParams};
 use dataplane_dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dataplane_dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dataplane_dpdk::socket::Preference;
@@ -126,11 +126,13 @@ fn main() -> Result<(), Err> {
     };
     let mut devs = Vec::new();
     for (n, info) in infos.into_iter().take(2).enumerate() {
-        let pool = Pool::new_pkt_pool(
-            PoolConfig::new(format!("xhp_pool_{n}"), PoolParams::default())
-                .map_err(|e| format!("pool cfg: {e:?}"))?,
-        )
-        .map_err(|e| format!("pool: {e:?}"))?;
+        let pool = eal
+            .mem
+            .new_pkt_pool(
+                PoolConfig::new(format!("xhp_pool_{n}"), PoolParams::default())
+                    .map_err(|e| format!("pool cfg: {e:?}"))?,
+            )
+            .map_err(|e| format!("pool: {e:?}"))?;
         let mut dev = cfg
             .apply(info)
             .map_err(|e| format!("configure port {n}: {e:?}"))?;
@@ -284,8 +286,11 @@ fn main() -> Result<(), Err> {
          Workstation host rx queue 0 on A should stay ~0 (traffic went into the hairpin, not the host)."
     );
 
-    let rxq = started_a
-        .rx_queue(RxQueueIndex(0))
+    let mut queues_a = started_a
+        .take_queues()
+        .ok_or("A device queues already taken")?;
+    let mut rxq = queues_a
+        .take_rx(RxQueueIndex(0))
         .ok_or("A host rx queue 0 missing")?;
     let deadline = Instant::now() + Duration::from_secs(secs);
     let mut host_rx = 0u64;

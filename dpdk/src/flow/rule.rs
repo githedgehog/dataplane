@@ -23,7 +23,7 @@ use crate::flow::error::FlowError;
 pub struct FlowRule<'dev> {
     flow: NonNull<rte_flow>,
     port: DevIndex,
-    dev: PhantomData<&'dev Dev<Started>>,
+    dev: PhantomData<&'dev Dev<'dev, Started>>,
 }
 
 impl<'dev> FlowRule<'dev> {

@@ -122,10 +122,8 @@ mod test {
 
     use super::kubeless_watch_gateway_agent_crd;
     use tracing::debug;
-    use tracing_test::traced_test;
 
     #[tokio::test]
-    #[cfg_attr(not(emulated), traced_test)]
     #[ignore = "test is incorrect and needs reworked"]
     async fn test_kubeless() {
         let path = "/tmp/kubeless-dir";

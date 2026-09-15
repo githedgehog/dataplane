@@ -4,20 +4,20 @@
 //! Ethernet device management.
 
 use alloc::format;
-use alloc::vec::Vec;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
 use core::marker::PhantomData;
-use core::mem::ManuallyDrop;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use tracing::{debug, error, info};
 
 use crate::eal::Eal;
 use crate::queue;
 use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue};
-use crate::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
-use crate::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
+use crate::queue::rx::{RxQueue, RxQueueConfig};
+use crate::queue::tx::{TxQueue, TxQueueConfig};
+use crate::queue::{QueueStore, Queues};
 use crate::socket::SocketId;
+use concurrency::sync::Mutex;
 use dpdk_sys::rte_eth_rx_mq_mode::{RTE_ETH_MQ_RX_NONE, RTE_ETH_MQ_RX_RSS};
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
@@ -81,8 +81,15 @@ impl DevIndex {
     /// # Safety
     ///
     /// This function should never panic assuming DPDK is correctly implemented.
+    /// Crate-private, and returns an unbranded `DevInfo<'static>`.
+    ///
+    /// A `DevIndex` is a bare `u16` with nothing to derive an EAL brand from, so this cannot
+    /// produce one honestly. The public routes ([`Manager::info`], [`Manager::iter`]) take
+    /// `&'eal self` and shorten the result, which is a safe covariant coercion -- and being
+    /// crate-private is what stops external code reaching the unbranded form and manufacturing a
+    /// `Dev<'static, _>`.
     #[tracing::instrument(level = "trace", ret)]
-    pub fn info(&self) -> Result<DevInfo, DevInfoError> {
+    pub(crate) fn info(&self) -> Result<DevInfo<'static>, DevInfoError> {
         let mut dev_info = rte_eth_dev_info::default();
 
         let ret = unsafe { rte_eth_dev_info_get(self.0, &mut dev_info) };
@@ -135,6 +142,7 @@ impl DevIndex {
         Ok(DevInfo {
             index: DevIndex(self.0),
             inner: dev_info,
+            eal: PhantomData,
         })
     }
 
@@ -289,7 +297,14 @@ impl DevConfig {
     }
 
     /// Apply the configuration to the device.
-    pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
+    /// # Note on the lifetime
+    ///
+    /// `'eal` is derived from `dev`, never chosen by the caller. An unconstrained
+    /// `apply<'eal>(&self, dev: DevInfo)` would let a caller name `'static` and manufacture a
+    /// `Dev<'static, _>` out of nothing, which would make the brand -- and every guarantee resting
+    /// on it -- vacuous. [`DevInfo`] carries the brand because it can only be obtained from the
+    /// EAL's device manager.
+    pub fn apply<'eal>(&self, dev: DevInfo<'eal>) -> Result<Dev<'eal, Stopped>, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
         // Resolve and validate the MTU against what the device actually supports before building
         // the configuration.
@@ -379,11 +394,13 @@ impl DevConfig {
             return Err(DevConfigError::DriverSpecificError(rte_error));
         }
         Ok(Dev {
+            lifecycle: PortLifecycle {
+                port: dev.index(),
+                stage: Stage::Stopped,
+            },
             info: dev,
             config: *self,
-            rx_queues: Vec::with_capacity(self.num_rx_queues as usize),
-            tx_queues: Vec::with_capacity(self.num_tx_queues as usize),
-            hairpin_queues: Vec::with_capacity(self.num_hairpin_queues as usize),
+            queues: Mutex::new(Some(QueueStore::default())),
             state: PhantomData,
         })
     }
@@ -691,26 +708,26 @@ impl BitXorAssign for TxOffload {
 ///
 /// This struct is a wrapper around the `rte_eth_dev_info` struct from DPDK.
 #[derive(Debug)]
-pub struct DevInfo {
+pub struct DevInfo<'eal> {
     pub(crate) index: DevIndex,
     pub(crate) inner: rte_eth_dev_info,
+    pub(crate) eal: PhantomData<&'eal ()>,
 }
 
-unsafe impl Send for DevInfo {}
-unsafe impl Sync for DevInfo {}
+unsafe impl Send for DevInfo<'_> {}
+unsafe impl Sync for DevInfo<'_> {}
 
-#[repr(transparent)]
 #[derive(Debug)]
-struct DevIterator {
+struct DevIterator<'eal> {
     cursor: DevIndex,
+    /// Carries the brand so the yielded [`DevInfo`]s have one; see [`DevIndex::info`].
+    eal: PhantomData<&'eal ()>,
 }
 
-impl DevIterator {}
+impl<'eal> Iterator for DevIterator<'eal> {
+    type Item = DevInfo<'eal>;
 
-impl Iterator for DevIterator {
-    type Item = DevInfo;
-
-    fn next(&mut self) -> Option<DevInfo> {
+    fn next(&mut self) -> Option<DevInfo<'eal>> {
         let cursor = self.cursor;
 
         debug!("Checking port {cursor}");
@@ -767,9 +784,10 @@ impl Manager {
 
     /// Iterate over all available DPDK ethernet devices and return information about each one.
     #[tracing::instrument(level = "trace")]
-    pub fn iter(&self) -> impl Iterator<Item = DevInfo> {
+    pub fn iter(&self) -> impl Iterator<Item = DevInfo<'_>> {
         DevIterator {
             cursor: DevIndex(0),
+            eal: PhantomData,
         }
     }
 
@@ -788,7 +806,7 @@ impl Manager {
     ///
     /// This function should never panic assuming DPDK is correctly implemented.
     #[tracing::instrument(level = "trace", ret)]
-    pub fn info(&self, index: DevIndex) -> Result<DevInfo, DevInfoError> {
+    pub fn info(&self, index: DevIndex) -> Result<DevInfo<'_>, DevInfoError> {
         index.info()
     }
 
@@ -801,7 +819,7 @@ impl Manager {
     }
 }
 
-impl DevInfo {
+impl DevInfo<'_> {
     /// Get the port index of the device.
     #[must_use]
     pub fn index(&self) -> DevIndex {
@@ -883,25 +901,47 @@ impl DevInfo {
     }
 }
 
-/// Sealed marker trait for the valid [`Dev`] lifecycle typestates: [`Stopped`] and [`Started`].
+/// The lifecycle stage of a port, as a runtime value.
+///
+/// This is the term-level mirror of the [`DevState`] typestate. It exists because [`Drop`] cannot
+/// be specialized per typestate: the guard that actually stops and closes the port
+/// ([`PortLifecycle`]) is not generic, so it records the stage it is responsible for.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Stage {
+    /// Configured, not running. Queues may be (re)configured.
+    Stopped,
+    /// Running. Packets flow; the queue set is fixed.
+    Started,
+    /// Closed. All port resources have been released and the port cannot be restarted.
+    Closed,
+}
+
+/// Sealed marker trait for the [`Dev`] lifecycle typestates: [`Stopped`], [`Started`], [`Closed`].
 ///
 /// This mirrors the typestate approach already used by the ACL context in this crate: operations
 /// that are illegal in a given state are simply absent from that state's `impl` block, so
 /// configuring a queue on a running device -- or receiving on a stopped one -- is a compile error
 /// rather than a runtime check.
 pub trait DevState: dev_state::Sealed {
-    /// Whether a device in this state is running, and therefore must be stopped when it is dropped.
-    ///
-    /// `Drop` cannot be specialized per typestate, so the single `impl<S: DevState> Drop` consults
-    /// this compile-time constant instead.
-    const RUNNING: bool;
+    /// The [`Stage`] this typestate denotes, recorded in [`PortLifecycle`] on every transition so
+    /// that the non-generic `Drop` knows what teardown the port still owes.
+    const STAGE: Stage;
 }
+
+/// Sealed marker trait for the typestates in which the port's resources still exist, and so can
+/// still be queried or reconfigured: [`Stopped`] and [`Started`], but not [`Closed`].
+///
+/// `rte_eth_dev_close` "frees all port resources", so a port operation on a [`Closed`] device is a
+/// use-after-free in the PMD. Bounding those methods on `Open` rather than [`DevState`] makes that
+/// a compile error instead.
+pub trait Open: DevState {}
 
 mod dev_state {
     /// Sealed-trait support for [`super::DevState`]; external crates cannot add new typestates.
     pub trait Sealed {}
     impl Sealed for super::Stopped {}
     impl Sealed for super::Started {}
+    impl Sealed for super::Closed {}
 }
 
 /// Typestate marker: the device is configured but not running.  Its queues may be (re)configured;
@@ -913,11 +953,93 @@ pub struct Stopped;
 #[derive(Debug)]
 pub struct Started;
 
+/// Typestate marker: the device has been closed and all of its port resources released.
+///
+/// This is a terminal state. Per [`rte_eth_dev_close`]'s contract the device "cannot be
+/// restarted", so there is no transition out of it -- a [`Dev<Closed>`] can only be dropped.
+///
+/// A closed device cannot be restarted:
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::dev::{Dev, Closed};
+/// fn restart(dev: Dev<Closed>) { let _ = dev.start(); }
+/// ```
+///
+/// nor stopped again:
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::dev::{Dev, Closed};
+/// fn stop_again(dev: Dev<Closed>) { let _ = dev.stop(); }
+/// ```
+///
+/// and its port resources are gone, so it cannot be queried -- [`Closed`] is the one typestate
+/// that does not implement [`Open`]:
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::dev::{Dev, Closed};
+/// fn query(dev: Dev<Closed>) { let _ = dev.mac_address(); }
+/// ```
+#[derive(Debug)]
+pub struct Closed;
+
 impl DevState for Stopped {
-    const RUNNING: bool = false;
+    const STAGE: Stage = Stage::Stopped;
 }
 impl DevState for Started {
-    const RUNNING: bool = true;
+    const STAGE: Stage = Stage::Started;
+}
+impl DevState for Closed {
+    const STAGE: Stage = Stage::Closed;
+}
+
+impl Open for Stopped {}
+impl Open for Started {}
+
+/// The stop-and-close obligation for a port, as an owned value.
+///
+/// Holding the teardown here rather than in a `Drop` on [`Dev`] itself is what lets `Dev` move
+/// between typestates safely: a type that implements `Drop` cannot have its fields moved out, so
+/// with the `Drop` on `Dev` every transition needed a `ManuallyDrop` plus a `ptr::read` per field.
+/// With the obligation isolated in this guard, `Dev` implements no `Drop` of its own and
+/// [`Dev::transition`] is an ordinary move.
+#[derive(Debug)]
+struct PortLifecycle {
+    port: DevIndex,
+    stage: Stage,
+}
+
+impl Drop for PortLifecycle {
+    /// Stop the port if it is running, then close it, releasing its resources.
+    ///
+    /// This is a backstop, not the intended path: [`Dev::stop`] and [`Dev::close`] return the
+    /// driver's error, whereas here it can only be logged. It runs regardless, because Rust cannot
+    /// forbid dropping a value -- without it, a device dropped without an explicit `close` would
+    /// leak its queue rings and leave the port unusable for the rest of the process.
+    fn drop(&mut self) {
+        if self.stage == Stage::Closed {
+            return;
+        }
+        if self.stage == Stage::Started {
+            info!("Stopping DPDK ethernet device {port}", port = self.port);
+            let ret = unsafe { rte_eth_dev_stop(self.port.as_u16()) };
+            if ret != 0 {
+                error!(
+                    "Failed to stop device {port} on drop, error code: {ret}",
+                    port = self.port,
+                );
+                // Closing an un-stopped port is not valid; there is nothing further to try.
+                return;
+            }
+        }
+        info!("Closing DPDK ethernet device {port}", port = self.port);
+        let ret = unsafe { rte_eth_dev_close(self.port.as_u16()) };
+        if ret != 0 {
+            error!(
+                "Failed to close device {port} on drop, error code: {ret}",
+                port = self.port,
+            );
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -926,42 +1048,157 @@ impl DevState for Started {
 /// A freshly [`applied`][DevConfig::apply] device is [`Stopped`] (the default); call
 /// [`start`][Dev::<Stopped>::start] to transition it to [`Started`] and back with
 /// [`stop`][Dev::<Started>::stop].
-pub struct Dev<S: DevState = Stopped> {
+pub struct Dev<'eal, S: DevState = Stopped> {
+    /// Owns the port's stop/close obligation -- the only field here with a `Drop` that does
+    /// anything to the device.
+    ///
+    /// Declared first, so it also happens to drop first, but unlike
+    /// [`Consigned`](crate::mem::Consigned) that ordering is *not* load-bearing and this type
+    /// deliberately has no `Drop` of its own to enforce it. `Dev` implementing `Drop` is exactly
+    /// what would forbid moving its fields out, which is what makes [`transition`](Self::transition)
+    /// an ordinary safe move instead of a `ManuallyDrop` plus a `ptr::read` per field.
+    ///
+    /// It is not load-bearing because no other field has a teardown effect on DPDK state. `info`
+    /// and `config` are plain data; the only reachable `Drop` is the [`Pool`](crate::mem::Pool)
+    /// clone held by each queue's config, and that can free a mempool only if it is the *last*
+    /// handle -- which the crate's pool registry prevents by holding one until EAL teardown. If
+    /// that floor ever goes away, the ordering here becomes real and this type will need the
+    /// obligation restructured (most likely by having `PortLifecycle` own the queue store) rather
+    /// than a `Drop` bolted on.
+    lifecycle: PortLifecycle,
     /// The device info
-    pub info: DevInfo,
+    pub info: DevInfo<'eal>,
     /// The configuration of the device.
     pub config: DevConfig,
-    pub(crate) rx_queues: Vec<RxQueue>,
-    pub(crate) tx_queues: Vec<TxQueue>,
-    pub(crate) hairpin_queues: Vec<HairpinQueue>,
+    /// The device's queues, until they are taken for distribution to workers.
+    ///
+    /// Stored with a `'static` brand and handed out shortened to the borrow of the device.  The
+    /// brand is covariant, so that shortening is an ordinary safe coercion; it is only the other
+    /// direction that would be unsound.
+    ///
+    /// Behind a `Mutex` rather than a `Cell` so that `Dev` stays `Sync`: a queue handle is branded
+    /// with `&Dev`, so making the device `!Sync` would make every handle `!Send` and no worker
+    /// thread could be given one.  The lock is taken at queue setup and once at hand-off, never on
+    /// the datapath.
+    queues: Mutex<Option<QueueStore<'eal>>>,
     state: PhantomData<S>,
 }
 
-impl<S: DevState> Dev<S> {
+impl<'eal, S: DevState> Dev<'eal, S> {
     /// Move all owned device state into a `Dev` of a different typestate.
     ///
-    /// [`Dev<Started>`] has a [`Drop`] that stops the device, so this uses [`ManuallyDrop`] to keep
-    /// that drop from firing mid-transition (which would stop a device we are about to keep
-    /// running, or double-stop one we just stopped).
-    fn transition<T: DevState>(self) -> Dev<T> {
-        let this = ManuallyDrop::new(self);
-        // SAFETY: `this` is wrapped in `ManuallyDrop`, so the source's `Drop` never runs.  Each
-        // field is moved out exactly once via `ptr::read`, leaving the returned `Dev` the sole
-        // owner of every field.
-        unsafe {
-            Dev {
-                info: core::ptr::read(&this.info),
-                config: core::ptr::read(&this.config),
-                rx_queues: core::ptr::read(&this.rx_queues),
-                tx_queues: core::ptr::read(&this.tx_queues),
-                hairpin_queues: core::ptr::read(&this.hairpin_queues),
-                state: PhantomData,
-            }
+    /// `Dev` deliberately implements no `Drop` of its own -- the teardown lives in the
+    /// [`PortLifecycle`] field -- so this is an ordinary move of every field, with no `unsafe`.
+    /// Updating `lifecycle.stage` is what keeps the guard's view of the port in step with the
+    /// typestate.
+    fn transition<T: DevState>(mut self) -> Dev<'eal, T> {
+        self.lifecycle.stage = T::STAGE;
+        Dev {
+            lifecycle: self.lifecycle,
+            info: self.info,
+            config: self.config,
+            queues: self.queues,
+            state: PhantomData,
         }
     }
 }
 
-impl<S: DevState> Dev<S> {
+/// A port's I/O counters, as returned by [`Dev::stats`].
+///
+/// A plain owned snapshot rather than a borrow of DPDK's `rte_eth_stats`: the counters are read by
+/// value at a point in time, and copying eight `u64`s is cheaper than reasoning about when the
+/// driver may rewrite them.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PortStats {
+    /// Packets successfully received.
+    pub ipackets: u64,
+    /// Packets successfully transmitted.
+    pub opackets: u64,
+    /// Bytes successfully received.
+    pub ibytes: u64,
+    /// Bytes successfully transmitted.
+    pub obytes: u64,
+    /// Packets dropped by the hardware because no receive descriptor was free.
+    ///
+    /// This is the counter for "the port had it and the application was not keeping up".
+    pub imissed: u64,
+    /// Erroneous packets received.
+    pub ierrors: u64,
+    /// Packets that failed to transmit.
+    pub oerrors: u64,
+    /// Receive mbuf allocation failures.
+    ///
+    /// Non-zero means the receive mempool ran dry: the PMD could not refill a descriptor, so the
+    /// port dropped traffic it had otherwise accepted. Distinct from [`imissed`](Self::imissed),
+    /// which is the application being too slow rather than the pool being too small.
+    pub rx_nombuf: u64,
+}
+
+impl<'eal, S: Open> Dev<'eal, S> {
+    /// The device's primary MAC address, as the PMD reports it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's [`ErrorCode`] if the address could not be read.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn mac_address(&self) -> Result<net::eth::mac::Mac, ErrorCode> {
+        let mut addr: rte_ether_addr = unsafe { core::mem::zeroed() };
+        let ret = unsafe { rte_eth_macaddr_get(self.info.index().as_u16(), &raw mut addr) };
+        if ret == 0 {
+            Ok(net::eth::mac::Mac(addr.addr_bytes))
+        } else {
+            Err(ErrorCode::parse_i32(ret))
+        }
+    }
+
+    /// The device's I/O statistics, as the PMD reports them.
+    ///
+    /// These are the counters that separate "the wire lost it" from "we lost it", and there is no
+    /// other way to tell those apart: the kernel's `ethtool -S` sees only its own queues, so on a
+    /// bifurcated driver such as mlx5 it reports a frame delivered to the port while saying nothing
+    /// about whether any DPDK queue received it. [`PortStats::imissed`] and
+    /// [`PortStats::rx_nombuf`] are where a frame that reached the port and never reached a
+    /// receive burst is accounted for.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's [`ErrorCode`] if the counters could not be read; PMDs that do not
+    /// implement statistics report `ENOTSUP`.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn stats(&self) -> Result<PortStats, ErrorCode> {
+        let mut raw: dpdk_sys::rte_eth_stats = unsafe { core::mem::zeroed() };
+        let ret = unsafe { dpdk_sys::rte_eth_stats_get(self.info.index().as_u16(), &raw mut raw) };
+        if ret != 0 {
+            return Err(ErrorCode::parse_i32(ret));
+        }
+        Ok(PortStats {
+            ipackets: raw.ipackets,
+            opackets: raw.opackets,
+            ibytes: raw.ibytes,
+            obytes: raw.obytes,
+            imissed: raw.imissed,
+            ierrors: raw.ierrors,
+            oerrors: raw.oerrors,
+            rx_nombuf: raw.rx_nombuf,
+        })
+    }
+
+    /// Reset the device's I/O statistics.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's [`ErrorCode`] if the reset failed; PMDs that do not implement
+    /// statistics report `ENOTSUP`.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn reset_stats(&mut self) -> Result<(), ErrorCode> {
+        let ret = unsafe { dpdk_sys::rte_eth_stats_reset(self.info.index().as_u16()) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(ErrorCode::parse_i32(ret))
+        }
+    }
+
     /// Enable or disable promiscuous mode on the device.
     ///
     /// # Errors
@@ -988,12 +1225,33 @@ impl<S: DevState> Dev<S> {
     }
 }
 
-impl Dev<Stopped> {
+impl<'eal> Dev<'eal, Stopped> {
+    /// Run `f` against the queue store.
+    ///
+    /// Deliberately closure-based rather than returning a mapped guard: `MutexGuard::map` exists
+    /// only on `concurrency`'s parking_lot backend, and the std and loom backends wrap the guard in
+    /// their own newtype without it. Using it here would build on the default backend and break
+    /// under `--features loom`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the queues have already been taken. Unreachable: taking them requires a
+    /// [`Dev<Started>`], and this is only callable on a [`Dev<Stopped>`], which cannot have been
+    /// started yet.
+    #[allow(clippy::expect_used)]
+    fn with_store<R>(&mut self, f: impl FnOnce(&mut QueueStore<'eal>) -> R) -> R {
+        let mut guard = self.queues.lock();
+        let store = guard
+            .as_mut()
+            .expect("a stopped device cannot have had its queues taken");
+        f(store)
+    }
+
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`RxQueue`]
-    pub fn new_rx_queue(&mut self, config: RxQueueConfig) -> Result<(), rx::ConfigFailure> {
+    pub fn new_rx_queue(&mut self, config: RxQueueConfig<'eal>) -> Result<(), rx::ConfigFailure> {
         let rx_queue = RxQueue::setup(self, config)?;
-        self.rx_queues.push(rx_queue);
+        self.with_store(|store| store.rx.push(rx_queue));
         Ok(())
     }
 
@@ -1001,7 +1259,7 @@ impl Dev<Stopped> {
     /// Configure a new [`TxQueue`]
     pub fn new_tx_queue(&mut self, config: TxQueueConfig) -> Result<(), tx::ConfigFailure> {
         let tx_queue = TxQueue::setup(self, config)?;
-        self.tx_queues.push(tx_queue);
+        self.with_store(|store| store.tx.push(tx_queue));
         Ok(())
     }
 
@@ -1009,13 +1267,13 @@ impl Dev<Stopped> {
     /// Configure a new [`HairpinQueue`]
     pub fn new_hairpin_queue(
         &mut self,
-        rx: RxQueueConfig,
+        rx: RxQueueConfig<'eal>,
         tx: TxQueueConfig,
     ) -> Result<(), HairpinConfigFailure> {
         let rx = RxQueue::setup(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
         let tx = TxQueue::setup(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
         let hairpin = HairpinQueue::new(self, rx, tx)?;
-        self.hairpin_queues.push(hairpin);
+        self.with_store(|store| store.hairpin.push(hairpin));
         Ok(())
     }
 
@@ -1029,7 +1287,7 @@ impl Dev<Stopped> {
     // (large) device anyway, so the `Result` is large by design, and this is a cold, once-per-device
     // path.
     #[allow(clippy::result_large_err)]
-    pub fn start(self) -> Result<Dev<Started>, DevStartFailure> {
+    pub fn start(self) -> Result<Dev<'eal, Started>, DevStartFailure<'eal>> {
         let ret = unsafe { rte_eth_dev_start(self.info.index().as_u16()) };
         if ret != 0 {
             error!(
@@ -1044,9 +1302,50 @@ impl Dev<Stopped> {
         info!("Device {port} started", port = self.info.index());
         Ok(self.transition())
     }
+
+    /// Close the device, releasing all of its port resources, and transition it to the terminal
+    /// [`Closed`] state.
+    ///
+    /// Only a stopped device can be closed, which is why this lives here and not on
+    /// [`Dev<Started>`]; and per [`rte_eth_dev_close`]'s contract the port "cannot be restarted"
+    /// afterwards, so [`Closed`] has no transition out of it.
+    ///
+    /// Closing is what returns the mbufs still held in the device's queue rings to their
+    /// [`Pool`](crate::mem::Pool), so it must happen before those pools are released at EAL
+    /// teardown. Dropping the device closes it too; prefer this when you want to observe the
+    /// error.
+    ///
+    /// A running device has no `close`; it must be stopped first:
+    ///
+    /// ```compile_fail,E0599
+    /// # use dataplane_dpdk::dev::{Dev, Started};
+    /// fn close_running(dev: Dev<Started>) { let _ = dev.close(); }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DevCloseFailure`] -- which hands the still-[`Stopped`] device back -- if the
+    /// device could not be closed.
+    // See the note on `start`: the `Result` is large by design and this is a cold path.
+    #[allow(clippy::result_large_err)]
+    pub fn close(self) -> Result<Dev<'eal, Closed>, DevCloseFailure<'eal>> {
+        let ret = unsafe { rte_eth_dev_close(self.info.index().as_u16()) };
+        if ret != 0 {
+            error!(
+                "Failed to close port {port}, error code: {ret}",
+                port = self.info.index(),
+            );
+            return Err(DevCloseFailure {
+                error: ErrorCode::parse_i32(ret),
+                dev: self,
+            });
+        }
+        info!("Device {port} closed", port = self.info.index());
+        Ok(self.transition())
+    }
 }
 
-impl Dev<Started> {
+impl<'eal> Dev<'eal, Started> {
     /// Stop the device, transitioning it back to the [`Stopped`] state.
     ///
     /// # Errors
@@ -1055,7 +1354,7 @@ impl Dev<Started> {
     /// device could not be stopped.
     // See the note on `start`: the `Result` is large by design and this is a cold path.
     #[allow(clippy::result_large_err)]
-    pub fn stop(self) -> Result<Dev<Stopped>, DevStopFailure> {
+    pub fn stop(self) -> Result<Dev<'eal, Stopped>, DevStopFailure<'eal>> {
         let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
         if ret != 0 {
             error!(
@@ -1071,20 +1370,41 @@ impl Dev<Started> {
         Ok(self.transition())
     }
 
-    /// Find a configured receive queue by index.
-    #[tracing::instrument(level = "trace")]
-    pub fn rx_queue(&self, index: RxQueueIndex) -> Option<&RxQueue> {
-        self.rx_queues
-            .iter()
-            .find(|x| x.config.queue_index == index)
-    }
-
-    /// Find a configured transmit queue by index.
-    #[tracing::instrument(level = "trace")]
-    pub fn tx_queue(&self, index: TxQueueIndex) -> Option<&TxQueue> {
-        self.tx_queues
-            .iter()
-            .find(|x| x.config.queue_index == index)
+    /// Take the device's queues, for distribution to the workers that will drive them.
+    ///
+    /// Returns `None` if they have already been taken -- the set is handed out exactly once. That
+    /// is the point: DPDK requires one queue to be driven by one thread, so a queue handed to two
+    /// callers would be a data race no amount of care downstream could fix. Handing the set out
+    /// once, and each queue out of it by value, makes that rule a property of the type system.
+    ///
+    /// The returned [`Queues`] borrows the device, so no queue can outlive it -- and since
+    /// [`stop`](Self::stop) consumes the device by value, using a queue after the device stops does
+    /// not compile:
+    ///
+    /// ```compile_fail,E0505
+    /// # use dataplane_dpdk::dev::{Dev, Started};
+    /// # use dataplane_dpdk::queue::rx::RxQueueIndex;
+    /// fn use_after_stop(dev: Dev<Started>) {
+    ///     let mut queues = dev.take_queues().expect("queues");
+    ///     let mut rxq = queues.take_rx(RxQueueIndex(0)).expect("rx 0");
+    ///     let _stopped = dev.stop();
+    ///     let _burst = rxq.receive();
+    /// }
+    /// ```
+    ///
+    /// Nor can a queue be polled through a shared reference, since `rte_eth_rx_burst` is not safe
+    /// to call concurrently for one queue:
+    ///
+    /// ```compile_fail,E0596
+    /// # use dataplane_dpdk::queue::rx::RxQueue;
+    /// fn poll_shared(rxq: &RxQueue<'_>) {
+    ///     let _burst = rxq.receive();
+    /// }
+    /// ```
+    pub fn take_queues(&self) -> Option<Queues<'_>> {
+        let store = self.queues.lock().take()?;
+        // `RxQueue<'static>` shortens to `RxQueue<'_>` by covariance -- a safe coercion.
+        Some(Queues::new(store.rx, store.tx, store.hairpin))
     }
 }
 
@@ -1094,12 +1414,12 @@ impl Dev<Started> {
 /// drop it.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to start device {}: {error}", self.dev.info.index())]
-pub struct DevStartFailure {
+pub struct DevStartFailure<'eal> {
     /// The error that caused the start to fail.
     #[source]
     pub error: ErrorCode,
     /// The device, still in its [`Stopped`] state.
-    pub dev: Dev<Stopped>,
+    pub dev: Dev<'eal, Stopped>,
 }
 
 /// Returned when [`Dev::<Started>::stop`] fails.
@@ -1108,34 +1428,26 @@ pub struct DevStartFailure {
 /// drop it.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to stop device {}: {error}", self.dev.info.index())]
-pub struct DevStopFailure {
+pub struct DevStopFailure<'eal> {
     /// The error that caused the stop to fail.
     #[source]
     pub error: ErrorCode,
     /// The device, still in its [`Started`] state.
-    pub dev: Dev<Started>,
+    pub dev: Dev<'eal, Started>,
 }
 
-impl<S: DevState> Drop for Dev<S> {
-    /// Stop the device when it is dropped, but only if it is running ([`Started`]); a [`Stopped`]
-    /// device has nothing to stop.  (`Drop` cannot be written for just one typestate, so this is
-    /// generic and gated on [`DevState::RUNNING`].)
-    fn drop(&mut self) {
-        if !S::RUNNING {
-            return;
-        }
-        info!(
-            "Closing DPDK ethernet device {port}",
-            port = self.info.index()
-        );
-        let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
-        if ret != 0 {
-            error!(
-                "Failed to stop device {port} on drop, error code: {ret}",
-                port = self.info.index(),
-            );
-        }
-    }
+/// Returned when [`Dev::<Stopped>::close`] fails.
+///
+/// Carries the error and the device, returned in its [`Stopped`] state so the caller can retry or
+/// drop it.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to close device {}: {error}", self.dev.info.index())]
+pub struct DevCloseFailure<'eal> {
+    /// The error that caused the close to fail.
+    #[source]
+    pub error: ErrorCode,
+    /// The device, still in its [`Stopped`] state.
+    pub dev: Dev<'eal, Stopped>,
 }
 
 #[derive(Debug, thiserror::Error)]

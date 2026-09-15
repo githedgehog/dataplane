@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use dataplane_dpdk::dev::{DevConfig, RxOffload};
 use dataplane_dpdk::eal;
-use dataplane_dpdk::mem::{Pool, PoolConfig, PoolParams};
+use dataplane_dpdk::mem::{PoolConfig, PoolParams};
 use dataplane_dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dataplane_dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dataplane_dpdk::socket::Preference;
@@ -139,14 +139,20 @@ fn main() -> Result<(), Err> {
         "--no-telemetry",
     ]);
     let info = eal.dev.iter().next().ok_or("no DPDK port probed")?;
-    let pool0 = Pool::new_pkt_pool(
-        PoolConfig::new("rss_pool0", PoolParams::default()).map_err(|e| format!("pool: {e:?}"))?,
-    )
-    .map_err(|e| format!("pool0: {e:?}"))?;
-    let pool1 = Pool::new_pkt_pool(
-        PoolConfig::new("rss_pool1", PoolParams::default()).map_err(|e| format!("pool: {e:?}"))?,
-    )
-    .map_err(|e| format!("pool1: {e:?}"))?;
+    let pool0 = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new("rss_pool0", PoolParams::default())
+                .map_err(|e| format!("pool: {e:?}"))?,
+        )
+        .map_err(|e| format!("pool0: {e:?}"))?;
+    let pool1 = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new("rss_pool1", PoolParams::default())
+                .map_err(|e| format!("pool: {e:?}"))?,
+        )
+        .map_err(|e| format!("pool1: {e:?}"))?;
     let cfg = DevConfig {
         num_rx_queues: 2,
         num_tx_queues: 1,
@@ -402,8 +408,9 @@ fn main() -> Result<(), Err> {
     println!("installed {created} group-1 rules -> the ONE indirect RSS handle");
 
     // ---- stream, flip the handle to queue 1 at half-time, watch all rules re-steer ----
-    let rxq0 = dev.rx_queue(RxQueueIndex(0)).ok_or("rx q0 missing")?;
-    let rxq1 = dev.rx_queue(RxQueueIndex(1)).ok_or("rx q1 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq0 = queues.take_rx(RxQueueIndex(0)).ok_or("rx q0 missing")?;
+    let mut rxq1 = queues.take_rx(RxQueueIndex(1)).ok_or("rx q1 missing")?;
     println!(
         "streaming {secs}s; will flip RSS -> queue 1 at {}s. Inject now...",
         secs / 2
@@ -437,7 +444,7 @@ fn main() -> Result<(), Err> {
             updated = true;
             println!("    *** handle_update: RSS -> queue 1 (one update, all rules) ***");
         }
-        for (rxq, is_q0) in [(&rxq0, true), (&rxq1, false)] {
+        for (rxq, is_q0) in [(&mut rxq0, true), (&mut rxq1, false)] {
             for m in &rxq.receive() {
                 if !is_ours(m.as_ref()) {
                     continue;
