@@ -10,7 +10,9 @@ use net::ip::NextHeader;
 use net::packet::Packet;
 use net::packet::test_utils::build_test_ipv4_packet_with_transport;
 
-use dataplane_routing::testing::{Fib, FibGroup, FibWriter, FwAction, NhopKey, RouteOrigin};
+use dataplane_routing::testing::{
+    Fib, FibGroup, FibReader, FibWriter, FwAction, NhopKey, RouteOrigin,
+};
 use dataplane_routing::{EgressObject, FibEntry, PktInstruction};
 
 pub const ROUTE_ADDR: (&str, u8) = ("5.0.0.0", 8);
@@ -31,7 +33,9 @@ macro_rules! for_each_shape {
 }
 
 pub struct Fixture {
+    /// Keeps the FIB alive while the reader is used.
     pub writer: FibWriter,
+    pub reader: FibReader,
     pub packet: Packet<TestBuffer>,
 }
 
@@ -64,7 +68,7 @@ pub fn packet() -> Packet<TestBuffer> {
 }
 
 pub fn fixture(groups: u8, entries_per_group: u8) -> &'static Fixture {
-    let (mut writer, _reader) = FibWriter::new(0);
+    let (mut writer, reader) = FibWriter::new(0);
     let keys: Vec<NhopKey> = (0..groups).map(nhop_key).collect();
     for (n, key) in keys.iter().enumerate() {
         let n = u8::try_from(n).expect("group count fits a byte");
@@ -75,7 +79,7 @@ pub fn fixture(groups: u8, entries_per_group: u8) -> &'static Fixture {
     let packet = packet();
 
     {
-        let fib = writer.enter().expect("fib is readable");
+        let fib = reader.enter().expect("fib is readable");
         let (hit, _) = Fib::lpm_entry_prefix(&fib, &packet);
         assert_eq!(
             hit,
@@ -84,12 +88,17 @@ pub fn fixture(groups: u8, entries_per_group: u8) -> &'static Fixture {
         );
     }
 
-    Box::leak(Box::new(Fixture { writer, packet }))
+    Box::leak(Box::new(Fixture {
+        writer,
+        reader,
+        packet,
+    }))
 }
 
 #[inline(always)]
 pub fn lookup(fixture: &Fixture) {
-    let fib = fixture.writer.enter().expect("fib is readable");
+    // Include the validity check used by production readers.
+    let fib = fixture.reader.enter().expect("fib is readable");
     let (prefix, entry) = Fib::lpm_entry_prefix(&fib, std::hint::black_box(&fixture.packet));
     std::hint::black_box((prefix, entry));
 }
