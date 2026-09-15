@@ -21,6 +21,13 @@ use tracing::error;
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;
 
+/// A bridge domain identifier.
+///
+/// Not currently carried on [`PacketMeta`]: nothing ever wrote that field, and
+/// `Ingress` answers `Attachment::BridgeDomain` with `DoneReason::InterfaceUnsupported`,
+/// so it cost eight bytes on every packet to hold a value that was always `None`
+/// (`Option<BridgeDomain>` is 8, not 4 -- a `u32` has no niche). Put it back when
+/// bridging is actually implemented.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct BridgeDomain(u32);
 #[allow(unused)]
@@ -146,7 +153,6 @@ pub struct PacketMeta {
     pub oif: Option<InterfaceIndex>, /* outgoing interface - set by IO manager for outgoing traffic or forwarding functions */
     pub nh_addr: Option<IpAddr>,     /* IP address of next-hop */
     pub vrf: Option<VrfId>,          /* for IP packet, the VRF to use to route it */
-    pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a received encapsulated packet */
     pub dst_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a packet to be (or already) re-encapsulated by the gateway */
@@ -302,5 +308,28 @@ impl Drop for PacketMeta {
         if self.done.is_none() && self.is_initialized() {
             error!("Attempted to drop packet with unspecified verdict!");
         }
+    }
+}
+
+#[cfg(test)]
+mod size_budget {
+    use super::PacketMeta;
+
+    /// `PacketMeta` rides in every `Packet` and is moved with it at every pipeline stage.
+    ///
+    /// Dropping the never-written `bridge` field took it from 80 to 72. Note that
+    /// `Option<VrfId>` and `Option<BridgeDomain>` cost 8 bytes each, not 4: both wrap a plain
+    /// `u32`, which has no niche. Making `VrfId` a `NonZero` would recover four of those --
+    /// except that VRF id 0 is the *default* VRF and is in active use (`routing/src/rib/vrf.rs`),
+    /// so zero is a legitimate value and the niche is not available.
+    #[test]
+    fn meta_stays_small() {
+        const BUDGET: usize = 72;
+        assert!(
+            size_of::<PacketMeta>() <= BUDGET,
+            "PacketMeta is {} bytes, over the {BUDGET}-byte budget; it is carried by every \
+             packet. Drop or shrink a field rather than raising this.",
+            size_of::<PacketMeta>()
+        );
     }
 }

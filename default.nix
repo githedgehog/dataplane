@@ -1807,6 +1807,56 @@ let
     }).overrideAttrs
       source-volatile;
 
+  # A load generator for the test bench, not part of the gateway.
+  #
+  # The TCP generator we had been using could not offer more than ~50 Gb/s, which is roughly what
+  # the dataplane could forward, so every measurement above that was really measuring iperf3. The
+  # perftest tools push traffic from the NIC's own engine instead of from a socket, so the
+  # generating host spends almost no CPU and the offered load stops being the thing under test.
+  #
+  # `ib_send_bw -q N` opens N queue pairs, each with its own RoCEv2 UDP source port, which is what
+  # gives the receiving side's RSS something to spread on. `raw_ethernet_bw` is also here: it
+  # builds frames directly rather than speaking RoCE, so it can aim arbitrary L2/L3 headers at a
+  # gateway that has no RDMA peer on the far side.
+  #
+  # Running it needs more than the binaries. Memory registration wants `IPC_LOCK` and an unlimited
+  # locked-memory rlimit, and the verbs library needs the device nodes, so this image is useless
+  # without `--cap-add=IPC_LOCK --ulimit memlock=-1:-1 --device /dev/infiniband`. `ibv_devinfo`
+  # from rdma-core is included precisely so that "did the container see the HCA at all" is one
+  # command rather than a guess.
+  containers.perftest =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "ghcr.io/githedgehog/dataplane/perftest";
+      inherit tag;
+      contents = pkgs.buildEnv {
+        name = "perftest-env";
+        pathsToLink = [
+          "/bin"
+          "/etc"
+          "/lib"
+          "/share"
+        ];
+        paths = [
+          pkgs.fancy.perftest
+          # `ibv_devinfo`, `ibv_devices`, `rdma`: proving the HCA is visible before blaming the
+          # measurement.
+          pkgs.pkgsBuildHost.rdma-core
+          pkgs.pkgsBuildHost.iproute2
+          pkgs.pkgsBuildHost.ethtool
+          # Enough shell to script a sweep across message sizes or queue-pair counts.
+          pkgs.pkgsBuildHost.bashInteractive
+          pkgs.pkgsBuildHost.coreutils
+          pkgs.pkgsBuildHost.gawk
+          pkgs.pkgsBuildHost.gnugrep
+          pkgs.pkgsBuildHost.procps
+          pkgs.pkgsHostHost.dockerTools.usrBinEnv
+          pkgs.pkgsHostHost.dockerTools.fakeNss
+        ];
+      };
+      config.Entrypoint = [ "/bin/bash" ];
+    }).overrideAttrs
+      source-volatile;
+
   debug-tools =
     pkgs:
     [

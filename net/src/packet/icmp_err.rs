@@ -243,7 +243,7 @@ mod tests {
         headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Icmp4(icmp)));
-        headers.embedded_ip(Some(embedded_headers));
+        headers.embedded_ip(Some(Box::new(embedded_headers)));
 
         let headers = headers.build().unwrap();
         let mut buffer = TestBuffer::new();
@@ -302,7 +302,7 @@ mod tests {
         headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Icmp4(icmp)));
-        headers.embedded_ip(Some(embedded_headers));
+        headers.embedded_ip(Some(Box::new(embedded_headers)));
 
         let headers = headers.build().unwrap();
         let mut buffer = get_buffer_for_checksum_test(&headers);
@@ -410,7 +410,7 @@ mod req3_properties {
                     let payload: Vec<u8> = inner_broken.payload.as_ref().to_vec();
                     let headers = &mut inner_broken.headers;
                     let net = headers.net.clone().unwrap_or_else(|| unreachable!());
-                    let embedded = headers.embedded_ip.clone();
+                    let embedded = headers.embedded_ip.as_deref().cloned();
                     headers
                         .transport
                         .as_mut()

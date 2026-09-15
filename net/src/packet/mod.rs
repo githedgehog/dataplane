@@ -416,13 +416,13 @@ impl<Buf: PacketBufferMut> TryHeadersMut for Packet<Buf> {
 
 impl<Buf: PacketBufferMut> TryEmbeddedHeaders for Packet<Buf> {
     fn embedded_headers(&self) -> Option<&EmbeddedHeaders> {
-        self.headers.embedded_ip.as_ref()
+        self.headers.embedded_ip.as_deref()
     }
 }
 
 impl<Buf: PacketBufferMut> TryEmbeddedHeadersMut for Packet<Buf> {
     fn embedded_headers_mut(&mut self) -> Option<&mut EmbeddedHeaders> {
-        self.headers.embedded_ip.as_mut()
+        self.headers.embedded_ip.as_deref_mut()
     }
 }
 
@@ -539,7 +539,6 @@ pub mod contract {
     use crate::parse::DeParse;
     use crate::tcp::TruncatedTcp;
     use crate::udp::TruncatedUdp;
-    use arrayvec::ArrayVec;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
 
     impl TypeGenerator for Packet<TestBuffer> {
@@ -615,12 +614,12 @@ pub mod contract {
                     let embedded_ip = inner_ip_generator.generate(driver).unwrap();
                     Headers {
                         eth: Some(eth),
-                        vlan: ArrayVec::default(),
+                        vlan: crate::headers::Stack::default(),
                         net: Some(Net::Ipv4(ipv4)),
-                        net_ext: ArrayVec::default(),
+                        net_ext: crate::headers::Stack::default(),
                         transport: Some(Transport::Icmp4(icmp4)),
                         udp_encap: None,
-                        embedded_ip: Some(embedded_ip),
+                        embedded_ip: Some(Box::new(embedded_ip)),
                     }
                 }
                 CommonEthType::Ipv6 => {
@@ -633,12 +632,12 @@ pub mod contract {
                     let embedded_ip = inner_ip_generator.generate(driver).unwrap();
                     Headers {
                         eth: Some(eth),
-                        vlan: ArrayVec::default(),
+                        vlan: crate::headers::Stack::default(),
                         net: Some(Net::Ipv6(ipv6)),
-                        net_ext: ArrayVec::default(),
+                        net_ext: crate::headers::Stack::default(),
                         transport: Some(Transport::Icmp6(icmp6)),
                         udp_encap: None,
-                        embedded_ip: Some(embedded_ip),
+                        embedded_ip: Some(Box::new(embedded_ip)),
                     }
                 }
             };
@@ -703,13 +702,13 @@ pub mod contract {
             // Payload size for inner IP header
             let inner_network_header_size = headers
                 .embedded_ip
-                .as_ref()
+                .as_deref()
                 .map_or(0, EmbeddedHeaders::net_headers_len)
                 as usize;
             // Payload size for inner TCP/UDP header
             let inner_transport_header_size = headers
                 .embedded_ip
-                .as_ref()
+                .as_deref()
                 .map_or(0, EmbeddedHeaders::transport_headers_len)
                 as usize;
             // Theoretical payload size for inner TCP/UDP (inner packet may be truncated)
@@ -760,12 +759,12 @@ pub mod contract {
             }
             // Set inner IP payload/total length
             #[allow(clippy::cast_possible_truncation)] // bounded size
-            headers.embedded_ip.as_mut().map(|embedded_ip| {
+            headers.embedded_ip.as_deref_mut().map(|embedded_ip| {
                 embedded_ip.set_network_payload_length(theoretical_inner_net_payload_size as u16)
             });
             // Set inner transport length
             #[allow(clippy::cast_possible_truncation)] // bounded size
-            headers.embedded_ip.as_mut().map(|embedded_ip| {
+            headers.embedded_ip.as_deref_mut().map(|embedded_ip| {
                 embedded_ip.set_transport_payload_length(theoretical_inner_payload_size as u16)
             });
 
@@ -829,7 +828,6 @@ mod qos_roundtrip_tests {
     };
     use crate::udp::UdpEncap;
     use crate::vxlan::{Vni, Vxlan, VxlanEncap};
-    use arrayvec::ArrayVec;
 
     fn make_vxlan_encap_headers_ipv4() -> VxlanEncap {
         let mut ip = crate::ipv4::Ipv4::default();
@@ -842,9 +840,9 @@ mod qos_roundtrip_tests {
 
         let headers = Headers {
             eth: None,
-            vlan: ArrayVec::default(),
+            vlan: crate::headers::Stack::default(),
             net: Some(Net::Ipv4(ip)),
-            net_ext: ArrayVec::default(),
+            net_ext: crate::headers::Stack::default(),
             transport: None,
             udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(200).unwrap()))),
             embedded_ip: None,
@@ -863,9 +861,9 @@ mod qos_roundtrip_tests {
 
         let headers = Headers {
             eth: None,
-            vlan: ArrayVec::default(),
+            vlan: crate::headers::Stack::default(),
             net: Some(Net::Ipv6(ip)),
-            net_ext: ArrayVec::default(),
+            net_ext: crate::headers::Stack::default(),
             transport: None,
             udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(200).unwrap()))),
             embedded_ip: None,
@@ -982,7 +980,6 @@ mod padding_tests {
     use crate::udp::UdpChecksumPayload;
     use crate::udp::UdpEncap;
     use crate::vxlan::{Vni, Vxlan, VxlanEncap};
-    use arrayvec::ArrayVec;
 
     const MIN_ETHERNET_FRAME: usize = 60;
 
@@ -1131,9 +1128,9 @@ mod padding_tests {
 
         let headers = Headers {
             eth: Some(make_default_for_eth(EthType::IPV4)),
-            vlan: ArrayVec::default(),
+            vlan: crate::headers::Stack::default(),
             net: Some(Net::Ipv4(ip)),
-            net_ext: ArrayVec::default(),
+            net_ext: crate::headers::Stack::default(),
             transport: None,
             udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(42).unwrap()))),
             embedded_ip: None,

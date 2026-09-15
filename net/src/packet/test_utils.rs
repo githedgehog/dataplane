@@ -454,7 +454,7 @@ pub fn build_test_icmp4_destination_unreachable_packet_with_code(
     // Headers
     headers.net(Some(outer_net));
     headers.transport(Some(icmp_transport));
-    headers.embedded_ip(Some(embedded_headers));
+    headers.embedded_ip(Some(Box::new(embedded_headers)));
     let headers = headers.build().unwrap();
 
     // Packet
@@ -746,7 +746,7 @@ pub fn build_test_icmp6_error_packet(
 
     headers.net(Some(outer_net));
     headers.transport(Some(icmp_transport));
-    headers.embedded_ip(Some(embedded_headers));
+    headers.embedded_ip(Some(Box::new(embedded_headers)));
     let headers = headers.build().unwrap();
 
     let data = vec![0u8; headers.size().get() as usize];

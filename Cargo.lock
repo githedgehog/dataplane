@@ -1212,7 +1212,6 @@ dependencies = [
  "dataplane-test-utils",
  "dataplane-tracectl",
  "dataplane-vpcmap",
- "dyn-iter",
  "fixin",
  "futures",
  "hyper",
@@ -1864,7 +1863,6 @@ dependencies = [
  "dataplane-id",
  "dataplane-net",
  "dataplane-tracectl",
- "dyn-iter",
  "linkme",
  "ordermap",
  "strum",
@@ -2231,12 +2229,6 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
-
-[[package]]
-name = "dyn-iter"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e49983f6f9b2e40db2416bacd643ec482f29e5438bcd1bf587ff142558322b81"
 
 [[package]]
 name = "educe"

@@ -906,11 +906,8 @@ impl Stats {
 
 // TODO: compute drop stats
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
-    #[tracing::instrument(level = "trace", skip(self, input))]
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+    #[tracing::instrument(level = "trace", skip(self, burst))]
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
         // amount of spare room in hash table.  Padding a little bit will hopefully save us some
         // reallocations
         const CAPACITY_PAD: usize = 16;
@@ -938,7 +935,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                 }
             }
         }
-        input.map(|mut packet| {
+        for packet in burst.iter_mut() {
             let sdisc = packet.meta().src_vpcd;
             let ddisc = packet.meta().dst_vpcd;
             // A packet must always carry a verdict by the time it reaches this stage. If it does
@@ -1029,9 +1026,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             // the driver decides. It is the only layer that knows whether there is a kernel to hand
             // a packet to. Both drivers already keyed off `DoneReason::Delivered` for transmission,
             // so what reaches the wire is unchanged; what changes is that a packet the datapath
-            // declined is now the driver's to dispose of.
-            packet
-        })
+            // declined is now the driver's to dispose of. Nothing is removed here.
+        }
     }
 }
 
@@ -1238,7 +1234,7 @@ mod drop_stats_tests {
     /// Drive packets through the NF and drop the (lazy) output so accumulation runs and the
     /// mutable borrow of `stats` ends.
     fn run(stats: &mut Stats, packets: Vec<Packet<TestBuffer>>) {
-        let _drained: Vec<_> = stats.process(packets.into_iter()).collect();
+        let _drained: Vec<_> = stats.process(packets).collect();
     }
 
     /// Every packet must leave this stage, whatever its verdict.

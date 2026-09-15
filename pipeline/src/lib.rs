@@ -41,7 +41,7 @@
 //! /// IP packet.
 //! let mut pipeline = InspectHeaders.chain(BroadcastMacs).chain(DecrementTtl);
 //! let pkts: Vec<Packet<TestBuffer>> = vec![];
-//! pipeline.process(pkts.into_iter());
+//! pipeline.process(pkts);
 //! ```
 //! Note that `pipeline` implements the [`NetworkFunction`] trait and can be used anywhere a
 //! network function is expected.
@@ -71,8 +71,8 @@
 //! pipeline = pipeline.add_stage(DecrementTtl);
 //! ```
 //! Here the pipeline has exactly the same functionality as the statically chained pipeline in the
-//! previous example, but using [`dyn_iter::DynIter`] and [`DynNetworkFunction`] to allow for
-//! dynamic chaining, including at runtime.
+//! previous example, but the stages are boxed as [`DynNetworkFunction`], which allows for dynamic
+//! chaining, including at runtime.
 //!
 //! Note again that `pipeline` is of type [`NetworkFunction`] and can be used anywhere a network
 //! function is expected.
@@ -97,11 +97,14 @@
 //!
 //! ## Performance Considerations
 //!
-//! Static chaining results in longer compile times (due mainly to linker memory usage) but faster
-//! runtime since the compiler (as of this writing) seems to inline and co-optimize statically
-//! chained functions. If combining a few small network functions, static chaining is more efficient.
-//! It is always possible to then dynamically chain the statically chained stages as shown in the
-//! example.
+//! Static chaining still compiles to a direct call per stage and a dynamic one to a virtual call,
+//! so a static chain of a few small functions remains the cheaper arrangement, and statically
+//! chained stages can be added to a dynamic pipeline as shown above.
+//!
+//! The gap used to be much wider. A stage took an iterator and returned an opaque one, so a
+//! dynamic pipeline had to erase the iterator type at every boundary, and that erasure stopped
+//! the optimiser dead -- each stage moved every packet by value across it. Stages now borrow the
+//! burst, so the only thing a stage boundary costs is the call itself.
 //!
 
 mod dyn_nf;

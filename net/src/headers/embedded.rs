@@ -3,6 +3,7 @@
 
 use crate::checksum::Checksum;
 use crate::eth::EthError;
+use crate::headers::Stack;
 use crate::headers::{MAX_NET_EXTENSIONS, Net, NetExt};
 use crate::icmp_any::TruncatedIcmpAny;
 use crate::icmp4::{Icmp4Checksum, TruncatedIcmp4};
@@ -44,7 +45,7 @@ pub enum EmbeddedIpVersion {
 #[builder(default)]
 pub struct EmbeddedHeaders {
     pub(super) net: Option<Net>,
-    pub(super) net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
+    pub(super) net_ext: Stack<NetExt, MAX_NET_EXTENSIONS>,
     pub(super) transport: Option<EmbeddedTransport>,
     full_payload_length: Option<u16>,
 }
@@ -66,7 +67,7 @@ impl EmbeddedHeaders {
     pub fn new(
         net: Option<Net>,
         transport: Option<EmbeddedTransport>,
-        net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
+        net_ext: Stack<NetExt, MAX_NET_EXTENSIONS>,
         full_payload_length: Option<u16>,
     ) -> Self {
         Self {
@@ -192,7 +193,7 @@ impl EmbeddedHeaders {
                 return;
             }
             Some(Net::Ipv4(ip)) => {
-                let Ok(ipv4_payload_length) = ip.0.payload_len().map(usize::from) else {
+                let Some(ipv4_payload_length) = ip.payload_len().map(usize::from) else {
                     return;
                 };
                 ipv4_payload_length

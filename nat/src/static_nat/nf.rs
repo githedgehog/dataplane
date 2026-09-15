@@ -424,11 +424,8 @@ impl From<&StaticNatError> for DoneReason {
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StaticNat {
     #[allow(clippy::if_not_else)]
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(|mut packet| {
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        for packet in burst.iter_mut() {
             if !packet.is_done()
                 && packet.meta().requires_static_nat()
                 // Skip if the packet was already NAT-ed; although, in the case of ICMP Error
@@ -438,9 +435,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StaticNat {
             {
                 // Packet should never be marked for NAT and reach this point if it is not overlay
                 debug_assert!(packet.meta().is_overlay());
-                self.process_packet(&mut packet);
+                self.process_packet(packet);
             }
-            packet.enforce()
-        })
+        }
     }
 }

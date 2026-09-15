@@ -957,6 +957,15 @@ impl Manager {
 impl DevInfo<'_> {
     /// Get the port index of the device.
     #[must_use]
+    /// The device's limits on receive descriptors per queue.
+    ///
+    /// `rte_eth_rx_queue_setup` rejects a count outside `[nb_min, nb_max]` outright, so a caller
+    /// sizing a ring against load has to clamp against this rather than guess.
+    #[must_use]
+    pub fn rx_desc_limits(&self) -> dpdk_sys::rte_eth_desc_lim {
+        self.inner.rx_desc_lim
+    }
+
     pub fn index(&self) -> DevIndex {
         self.index
     }

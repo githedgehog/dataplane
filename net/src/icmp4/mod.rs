@@ -1052,7 +1052,8 @@ mod contract {
                     }
                 }
             };
-            let headers = EmbeddedHeaders::new(net, transport, ArrayVec::default(), None);
+            let headers =
+                EmbeddedHeaders::new(net, transport, crate::headers::Stack::default(), None);
             Some(headers)
         }
     }

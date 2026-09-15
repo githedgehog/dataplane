@@ -74,11 +74,8 @@ impl TestFlowFilter {
     }
 }
 impl NetworkFunction<TestBuffer> for TestFlowFilter {
-    fn process<'a, Input: Iterator<Item = Packet<TestBuffer>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<TestBuffer>> + 'a {
-        input.map(|mut packet| {
+    fn process_burst(&mut self, burst: &mut Vec<Packet<TestBuffer>>) {
+        for packet in burst.iter_mut() {
             let src_vpcd = packet.meta().src_vpcd.unwrap(); // packets must have src vpcd
             debug!("packet comes from {src_vpcd}");
             let Some(dst_vpcd) = self.0.get(&src_vpcd) else {
@@ -86,8 +83,7 @@ impl NetworkFunction<TestBuffer> for TestFlowFilter {
             };
             debug!(" ... and goes to {dst_vpcd}");
             packet.meta_mut().dst_vpcd = Some(*dst_vpcd);
-            packet
-        })
+        }
     }
 }
 
@@ -612,7 +608,7 @@ fn check_packet(
     // its input.
     packet.update_checksums();
 
-    let mut packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    let mut packets_out: Vec<_> = nat.process(vec![packet]).collect();
     assert_masquerade_checksum_is_incremental(&mut packets_out[0]);
     let hdr_out = packets_out[0].try_ipv4().unwrap();
     let udp_out = packets_out[0].try_udp().unwrap();
@@ -834,7 +830,7 @@ fn check_packet_icmp_echo(
 
     flow_lookup(nat.sessions(), &mut packet);
 
-    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    let packets_out: Vec<_> = nat.process(vec![packet]).collect();
     let hdr_out = packets_out[0].try_ipv4().unwrap();
     let icmp_out = packets_out[0].try_icmp4().unwrap();
     let done_reason = packets_out[0].get_done();
@@ -861,7 +857,7 @@ fn check_packet_icmp_echo_new(
     packet.meta_mut().set_masquerade(true);
     packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
 
-    let packets_out: Vec<_> = pipeline.process(vec![packet].into_iter()).collect();
+    let packets_out: Vec<_> = pipeline.process(vec![packet]).collect();
     let hdr_out = packets_out[0].try_ipv4().unwrap();
     let icmp_out = packets_out[0].try_icmp4().unwrap();
     let done_reason = packets_out[0].get_done();
@@ -1353,9 +1349,7 @@ fn check_packet_with_vpcd_lookup(
     let packets_from_flow_lookup: Vec<_> = if let Some(stage) = flow_lookup_stage {
         // Use dedicated stage, which attaches the destination VPC discriminant to the packet,
         // if any is found from the flow table.
-        stage
-            .process::<std::vec::IntoIter<Packet<TestBuffer>>>(vec![packet].into_iter())
-            .collect()
+        stage.process(vec![packet]).collect()
     } else {
         // Simple flow lookup, without attaching the destination VPC discriminant to the packet.
         flow_lookup(nat.sessions(), &mut packet.deep_copy().unwrap());
@@ -1363,14 +1357,10 @@ fn check_packet_with_vpcd_lookup(
     };
 
     // VPC discriminant lookup
-    let packets_from_vpcd_lookup: Vec<_> = vpcdlookup
-        .process::<std::vec::IntoIter<Packet<TestBuffer>>>(packets_from_flow_lookup.into_iter())
-        .collect();
+    let packets_from_vpcd_lookup: Vec<_> = vpcdlookup.process(packets_from_flow_lookup).collect();
 
     // NAT
-    let packets_out: Vec<_> = nat
-        .process::<std::vec::IntoIter<Packet<TestBuffer>>>(packets_from_vpcd_lookup.into_iter())
-        .collect();
+    let packets_out: Vec<_> = nat.process(packets_from_vpcd_lookup).collect();
 
     let dst_vpcd = packets_out[0].meta().dst_vpcd;
     let hdr_out = packets_out[0].try_ipv4().unwrap();
