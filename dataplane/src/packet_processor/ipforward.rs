@@ -5,7 +5,7 @@
 
 #![allow(clippy::similar_names)]
 
-use net::headers::{TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
+use net::headers::{TryHeaders, TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
 use net::packet::{DoneReason, Packet};
 use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
@@ -154,8 +154,16 @@ impl IpForwarder {
                 debug!("Next fib/vrf is {next_vrf}");
 
                 /* At this point decapsulation has already happened and `Packet` refers to
-                the innner packet. Annotate the incoming vni and the corresponding vrf to
-                make lookups from */
+                the innner packet. */
+
+                if !packet.headers().vlan().is_empty() {
+                    debug!(
+                        "{nfi}: Decapsulated frame carries a VLAN tag, which nothing downstream is equipped to carry"
+                    );
+                    packet.done(DoneReason::Unhandled);
+                    return;
+                }
+
                 packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni));
                 packet.meta_mut().vrf = Some(next_vrf);
                 packet.meta_mut().set_overlay(true);

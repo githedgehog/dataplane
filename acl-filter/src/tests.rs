@@ -263,6 +263,27 @@ fn build_tcp_packet_v6(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: u16) -> 
         .unwrap()
 }
 
+fn build_tcp_packet_v6_with_hop_by_hop(
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    sport: u16,
+    dport: u16,
+) -> Headers {
+    HeaderStack::new()
+        .eth(|_| {})
+        .ipv6(|ip| {
+            ip.set_source(UnicastIpv6Addr::new(src).unwrap());
+            ip.set_destination(dst);
+        })
+        .hop_by_hop(|_| {})
+        .tcp(|tcp| {
+            tcp.set_source(TcpPort::try_from(sport).unwrap());
+            tcp.set_destination(TcpPort::try_from(dport).unwrap());
+        })
+        .build_headers()
+        .unwrap()
+}
+
 // ICMP (IP protocol 1): a non-TCP/UDP protocol, used to exercise the `Other(n)` and `Any` tables.
 fn build_icmp_packet(src: Ipv4Addr, dst: Ipv4Addr) -> Headers {
     HeaderStack::new()
@@ -1213,4 +1234,145 @@ mod dpdk_backend {
             )
         });
     }
+}
+
+#[test]
+fn a_vlan_tagged_overlay_frame_is_refused() {
+    use net::vlan::Vid;
+
+    let acl = Acl::new(
+        AclAction::Deny,
+        vec![rule(
+            "allow-tcp",
+            AclAction::Allow,
+            AclScope::Packet,
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+        )],
+    );
+    let mut filter = build_filter_v4(Some(acl));
+
+    let plain = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        build_tcp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80),
+    );
+    assert!(is_allowed(&run(&mut filter, plain)));
+
+    let tagged = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|v| {
+                v.set_vid(Vid::new(4000).unwrap());
+            })
+            .ipv4(|ip| {
+                ip.set_source(UnicastIpv4Addr::new(v4("10.0.0.5")).unwrap());
+                ip.set_destination(v4("20.0.0.5"));
+            })
+            .tcp(|tcp| {
+                tcp.set_source(TcpPort::try_from(1234u16).unwrap());
+                tcp.set_destination(TcpPort::try_from(80u16).unwrap());
+            })
+            .build_headers()
+            .unwrap(),
+    );
+    let out = run(&mut filter, tagged);
+    assert_eq!(
+        out.get_done(),
+        Some(DoneReason::Unhandled),
+        "a VLAN-tagged overlay frame was forwarded on the strength of its inner headers"
+    );
+}
+
+#[test]
+fn an_extension_header_does_not_evade_a_protocol_rule() {
+    let acl = Acl::new(
+        AclAction::Allow,
+        vec![rule(
+            "deny-tcp",
+            AclAction::Deny,
+            AclScope::Packet,
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+        )],
+    );
+    let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
+
+    let plain = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        build_tcp_packet_v6(v6("2001:db8::5"), v6("2001:db9::5"), 1234, 80),
+    );
+    assert!(is_denied(&run(&mut filter, plain)));
+
+    let stuffed = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        build_tcp_packet_v6_with_hop_by_hop(v6("2001:db8::5"), v6("2001:db9::5"), 1234, 80),
+    );
+    assert!(
+        is_denied(&run(&mut filter, stuffed)),
+        "a Hop-by-Hop header carried TCP past a rule denying TCP"
+    );
+}
+
+#[test]
+fn a_chain_past_the_parser_limit_is_dropped_rather_than_guessed() {
+    const HOP_BY_HOP: u8 = 0;
+    const TCP: u8 = 6;
+
+    let mut chain = Vec::new();
+    for i in 0..4 {
+        let next = if i == 3 { TCP } else { HOP_BY_HOP };
+        chain.extend_from_slice(&[next, 0, 1, 4, 0, 0, 0, 0]);
+    }
+
+    let mut tcp = vec![0u8; 20];
+    tcp[0..2].copy_from_slice(&1234u16.to_be_bytes());
+    tcp[2..4].copy_from_slice(&80u16.to_be_bytes());
+    tcp[12] = 0x50;
+    tcp[13] = 0x02;
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]);
+    bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+    bytes.extend_from_slice(&0x86DDu16.to_be_bytes());
+    bytes.extend_from_slice(&[0x60, 0, 0, 0]);
+    #[allow(clippy::cast_possible_truncation)]
+    bytes.extend_from_slice(&((chain.len() + tcp.len()) as u16).to_be_bytes());
+    bytes.push(HOP_BY_HOP);
+    bytes.push(64);
+    bytes.extend_from_slice(&v6("2001:db8::5").octets());
+    bytes.extend_from_slice(&v6("2001:db9::5").octets());
+    bytes.extend_from_slice(&chain);
+    bytes.extend_from_slice(&tcp);
+
+    let mut buffer = TestBuffer::from_raw_data(&bytes);
+    let mut over_limit = Packet::new(buffer.clone()).unwrap();
+    assert_eq!(
+        over_limit.upper_layer_proto(),
+        None,
+        "the parser stopped mid-chain but a protocol was reported anyway"
+    );
+    let _ = &mut buffer;
+
+    over_limit.meta_mut().set_overlay(true);
+    over_limit.meta_mut().src_vpcd = Some(vpcd(VNI1));
+    over_limit.meta_mut().dst_vpcd = Some(vpcd(VNI2));
+
+    let acl = Acl::new(
+        AclAction::Allow,
+        vec![rule(
+            "allow-tcp",
+            AclAction::Allow,
+            AclScope::Packet,
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+        )],
+    );
+    let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
+    let out = run(&mut filter, over_limit);
+    assert!(
+        out.is_done(),
+        "a packet whose header chain was never fully read went through"
+    );
 }

@@ -47,6 +47,13 @@ pub struct Ipv4LengthError {
     max: usize,
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq, Clone, Copy)]
+#[error("invalid IPv4 options length {len}: must be a multiple of 4 and at most 40 bytes")]
+#[allow(missing_docs)]
+pub struct Ipv4OptionsLenError {
+    len: usize,
+}
+
 impl Ipv4 {
     /// The minimum length of an IPv4 header (i.e., a header with no options)
     #[allow(clippy::unwrap_used)] // const-eval and trivially safe
@@ -80,6 +87,34 @@ impl Ipv4 {
     #[must_use]
     pub fn options(&self) -> &[u8] {
         self.0.options.as_slice()
+    }
+
+    /// Set this header's options to `data`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ipv4OptionsLenError`] if `data` is longer than the options field can hold.
+    ///
+    /// The payload length is preserved: `total_len` counts the header *and* the payload, so
+    /// changing the options without adjusting it silently reinterprets that many bytes of
+    /// payload as header, or underflows. `Headers::transport_payload_len` then answers `None`
+    /// and `update_checksums` checksums the rest of the buffer instead of the datagram. That
+    /// was previously safe only because the one caller happened to call
+    /// [`Ipv4::set_payload_len`] afterwards.
+    ///
+    /// A payload that no longer fits beside larger options is clamped rather than rejected:
+    /// this setter's contract is about the options, and the caller is about to set a length
+    /// anyway.
+    pub fn set_options(&mut self, data: &[u8]) -> Result<&mut Self, Ipv4OptionsLenError> {
+        let payload_len = self.0.payload_len().unwrap_or(0);
+        self.0.options = data
+            .try_into()
+            .map_err(|_| Ipv4OptionsLenError { len: data.len() })?;
+        if self.set_payload_len(payload_len).is_err() {
+            let headroom = u16::try_from(self.header_len()).unwrap_or(u16::MAX);
+            let _ = self.set_payload_len(u16::MAX - headroom);
+        }
+        Ok(self)
     }
 
     // TODO: proper wrapper type for [`IpNumber`] (low priority)
@@ -488,6 +523,13 @@ mod contract {
         /// Generates an arbitrary [`Ipv4`] header with the [`NextHeader`] specified in `self`.
         fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
             let mut header = Ipv4(Ipv4Header::default());
+            let option_words = u8::gen_bounded(u, Bound::Included(&0), Bound::Included(&10))?;
+            let mut options = [0u8; (Ipv4::MAX_LEN.get() - Ipv4::MIN_LEN.get()) as usize];
+            let options = &mut options[..(option_words as usize) * 4];
+            for byte in options.iter_mut() {
+                *byte = u.produce()?;
+            }
+            header.set_options(options).ok()?;
             header.set_source(u.produce()?);
             header.set_destination(Ipv4Addr::from(u.produce::<u32>()?));
             header.set_next_header(self.0);
@@ -520,7 +562,6 @@ mod contract {
         /// reach the set of all [`Ipv4`] (as should be true with any implementation of
         /// [`TypeGenerator`]).
         ///
-        /// Unfortunately, the current implementation does not cover [`Ipv4::options`].
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             GenWithNextHeader(u.produce()?).generate(u)
         }
@@ -539,13 +580,15 @@ mod test {
     #[test]
     fn parse_back() {
         bolero::check!().with_type().for_each(|header: &Ipv4| {
-            let mut buffer = [0u8; MIN_LEN_USIZE];
+            let mut buffer = [0u8; MAX_LEN_USIZE];
             let bytes_written = header
                 .deparse(&mut buffer)
                 .unwrap_or_else(|e| unreachable!("{e:?}"));
-            assert_eq!(bytes_written, Ipv4::MIN_LEN);
+            assert_eq!(bytes_written.get() as usize, header.header_len());
+            assert!(bytes_written >= Ipv4::MIN_LEN && bytes_written <= Ipv4::MAX_LEN);
             let (parse_back, bytes_read) = Ipv4::parse(&buffer[..(bytes_written.get() as usize)])
                 .unwrap_or_else(|e| unreachable!("{e:?}"));
+            assert_eq!(header.options(), parse_back.options());
             assert_eq!(header.source(), parse_back.source());
             assert_eq!(header.destination(), parse_back.destination());
             assert_eq!(header.protocol(), parse_back.protocol());
@@ -597,5 +640,56 @@ mod test {
                     },
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod options_preserve_payload_len {
+    use super::Ipv4;
+
+    /// `total_len` counts header + payload, so growing the options must move it. Otherwise
+    /// the same `total_len` now describes a shorter payload, and every length derived from
+    /// it is wrong by the size of the options.
+    #[test]
+    fn growing_the_options_keeps_the_payload_length() {
+        let mut header = Ipv4::default();
+        header
+            .set_payload_len(100)
+            .unwrap_or_else(|_| unreachable!());
+        let before = header.header_len();
+
+        header
+            .set_options(&[0u8; 8])
+            .unwrap_or_else(|_| unreachable!());
+
+        assert_eq!(
+            header.header_len(),
+            before + 8,
+            "the options did not grow the header"
+        );
+        assert_eq!(
+            header.total_len(),
+            u16::try_from(header.header_len()).unwrap_or_else(|_| unreachable!()) + 100,
+            "total_len no longer describes a 100 byte payload"
+        );
+    }
+
+    #[test]
+    fn shrinking_the_options_keeps_the_payload_length() {
+        let mut header = Ipv4::default();
+        header
+            .set_options(&[0u8; 8])
+            .unwrap_or_else(|_| unreachable!());
+        header
+            .set_payload_len(100)
+            .unwrap_or_else(|_| unreachable!());
+
+        header.set_options(&[]).unwrap_or_else(|_| unreachable!());
+
+        assert_eq!(
+            header.total_len(),
+            u16::try_from(header.header_len()).unwrap_or_else(|_| unreachable!()) + 100,
+            "total_len no longer describes a 100 byte payload"
+        );
     }
 }
