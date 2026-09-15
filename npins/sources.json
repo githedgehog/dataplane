@@ -101,6 +101,23 @@
       "hash": "sha256-/pF/MXy33jc33CRUcOjfZ4uL33TDfPzDpQ3ZoZsdc9A=",
       "frozen": true
     },
+    "fabricator": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "fabricator"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.49.3",
+      "revision": "6c12b05c3a6d2a8994fd242462ca75605070b9be",
+      "url": "https://api.github.com/repos/githedgehog/fabricator/tarball/refs/tags/v0.49.3",
+      "hash": "sha256-Np2P6Ej/EdEdWpCKoxEKwXd9cbkbJfPaLGlT1dH2WmE=",
+      "frozen": true
+    },
     "frr": {
       "type": "Git",
       "repository": {
@@ -249,6 +266,22 @@
       "revision": "89e26eeaafa88a2ede4778734acc794ff0299beb",
       "url": "https://github.com/oxalica/rust-overlay/archive/89e26eeaafa88a2ede4778734acc794ff0299beb.tar.gz",
       "hash": "sha256-c20YZQKzQ27qC6Wh729fWRTpI7oV4+7Ur4icKssD4Wc="
+    },
+    "zot": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "project-zot",
+        "repo": "zot"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v2.1.15",
+      "revision": "ace12e2a12d0e104f6fb0aecf162b29e8c67b8a9",
+      "url": "https://api.github.com/repos/project-zot/zot/tarball/refs/tags/v2.1.15",
+      "hash": "sha256-PhPhlifLU0kOGPqH1kqKxikt+DtJO+MWEv1w6/7sZ6E="
     }
   },
   "version": 8

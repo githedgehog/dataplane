@@ -25,3 +25,6 @@ vmroot
 
 # n-vm host share (see `n_vm_host_share` in the justfile)
 .n-vm-share
+
+# ghcr.io token pasted into `just vlab-up`; lives in a docker volume, never here
+creds.json

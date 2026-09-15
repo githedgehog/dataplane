@@ -11,17 +11,26 @@ sysroot = ["dep:dpdk-sysroot-helper"]
 
 [dependencies]
 # internal
+args = { workspace = true }
 hardware = { workspace = true, features = ["serde", "scan"] }
 id = { workspace = true }
 sysfs = { workspace = true }
 
 # external
-nix = { workspace = true, features = ["mount", "fs"] }
+command-fds = { workspace = true }
+# Moving an mlx5 device into a network namespace is a devlink reload and nothing
+# else; `ip link set netns` moves the netdev but leaves the RDMA device, which is
+# the half DPDK attaches through.
+devlink = { workspace = true }
+futures = { workspace = true }
+nix = { workspace = true, features = ["mount", "fs", "process", "signal"] }
 procfs = { workspace = true, features = [] }
 strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true, features = [] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
+rtnetlink = { workspace = true, features = ["default", "tokio"] }
+tokio = { workspace = true, features = ["macros", "process", "rt", "signal", "time"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [dev-dependencies]

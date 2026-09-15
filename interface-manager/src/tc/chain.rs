@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::Manager;
 use crate::tc::block::BlockIndex;
 use crate::tc::qdisc::{Qdisc, QdiscHandle};
+use crate::{Manager, manager_of};
 use derive_builder::Builder;
 use futures::TryStreamExt;
 use multi_index_map::MultiIndexMap;
@@ -308,7 +308,7 @@ impl Observe for Manager<Chain> {
 
     async fn observe<'a>(&self) -> Self::Observation<'a> {
         let mut chains: Vec<Chain> = vec![];
-        let qdisc_manager = Manager::<Qdisc>::new(self.handle.clone());
+        let qdisc_manager = manager_of::<Qdisc>(self);
         let qdiscs = qdisc_manager.observe().await;
         let blocks: BTreeSet<BlockIndex> = qdiscs
             .iter()

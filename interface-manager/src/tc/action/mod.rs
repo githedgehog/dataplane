@@ -10,7 +10,6 @@ pub mod gact;
 pub mod mirred;
 pub mod tunnel_key;
 
-use crate::Manager;
 use crate::tc::action::gact::{
     GenericAction, GenericActionSpec, MultiIndexGenericActionMap, MultiIndexGenericActionSpecMap,
 };
@@ -18,6 +17,7 @@ use crate::tc::action::mirred::{Mirred, MirredSpec, MultiIndexMirredMap, MultiIn
 use crate::tc::action::tunnel_key::{
     MultiIndexTunnelKeyMap, MultiIndexTunnelKeySpecMap, TunnelKey, TunnelKeySpec,
 };
+use crate::{Manager, manager_of};
 use derive_builder::Builder;
 use rekon::{AsRequirement, Create, Observe, Reconcile, Remove, Update};
 use rtnetlink::packet_route::tc::TcAction;
@@ -253,19 +253,11 @@ impl Create for Manager<Action> {
     async fn create<'a>(&self, requirement: Self::Requirement<'a>) -> Self::Outcome<'a> {
         match requirement.details {
             ActionDetailsSpec::TunnelKey(action) => {
-                Manager::<TunnelKey>::new(self.handle.clone())
-                    .create(&action)
-                    .await
+                manager_of::<TunnelKey>(self).create(&action).await
             }
-            ActionDetailsSpec::Mirred(action) => {
-                Manager::<Mirred>::new(self.handle.clone())
-                    .create(&action)
-                    .await
-            }
+            ActionDetailsSpec::Mirred(action) => manager_of::<Mirred>(self).create(&action).await,
             ActionDetailsSpec::Generic(action) => {
-                Manager::<GenericAction>::new(self.handle.clone())
-                    .create(&action)
-                    .await
+                manager_of::<GenericAction>(self).create(&action).await
             }
         }
     }
@@ -283,20 +275,12 @@ impl Remove for Manager<Action> {
 
     async fn remove<'a>(&self, observation: Self::Observation<'a>) -> Self::Outcome<'a> {
         match observation.details {
-            ActionDetails::Mirred(mirred) => {
-                Manager::<Mirred>::new(self.handle.clone())
-                    .remove(&mirred)
-                    .await
-            }
+            ActionDetails::Mirred(mirred) => manager_of::<Mirred>(self).remove(&mirred).await,
             ActionDetails::Generic(generic) => {
-                Manager::<GenericAction>::new(self.handle.clone())
-                    .remove(&generic)
-                    .await
+                manager_of::<GenericAction>(self).remove(&generic).await
             }
             ActionDetails::TunnelKey(tunnel_key) => {
-                Manager::<TunnelKey>::new(self.handle.clone())
-                    .remove(tunnel_key.index)
-                    .await
+                manager_of::<TunnelKey>(self).remove(tunnel_key.index).await
             }
         }
     }
@@ -380,9 +364,9 @@ impl Observe for Manager<Action> {
             pub tunnel_key: Manager<TunnelKey>,
         }
         let managers = Managers {
-            gact: Manager::<GenericAction>::new(self.handle.clone()),
-            mirred: Manager::<Mirred>::new(self.handle.clone()),
-            tunnel_key: Manager::<TunnelKey>::new(self.handle.clone()),
+            gact: manager_of::<GenericAction>(self),
+            mirred: manager_of::<Mirred>(self),
+            tunnel_key: manager_of::<TunnelKey>(self),
         };
         let mut actions = ActionBase::default();
         for action in managers.gact.observe().await {

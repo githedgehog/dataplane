@@ -3,15 +3,27 @@
 
 use crate::packet_processor::start_router;
 use crate::statistics::spawn_metrics;
-use args::{CmdArgs, Parser};
+use args::{
+    CmdArgs, DriverConfigSection, LaunchConfiguration, Parser, PortArg, TracingDisplayOption,
+};
 
+use crate::drivers::DriverError;
+use crate::drivers::dpdk::{CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity};
 use crate::drivers::kernel::DriverKernel;
-use crate::drivers::status::driver_status_access;
+use crate::drivers::status::{DriverStatusWriter, driver_status_access};
+use crate::packet_processor::PipelineIngredients;
+use concurrency::thread;
+#[allow(unused_imports)] // used under the loom/shuttle backends
+use concurrency::thread::BuilderExt;
+use hardware::netns::NetworkNamespace;
 use lifecycle::{
     CancellationToken, DpSignal, Shutdown, default_deadlines, spawn_shutdown_watchdog,
 };
 use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 
+use dpdk::dev::DevInfo;
+use dpdk::eal::Eal;
+use hardware::pci::address::PciAddress;
 use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
 use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeConfig};
@@ -20,7 +32,7 @@ use tracectl::{
     TracingControl, TracingRateLimitConfig, custom_target, get_trace_ctl, trace_target,
 };
 
-use tracing::{error, info, level_filters::LevelFilter};
+use tracing::{error, info, level_filters::LevelFilter, warn};
 
 use concurrency::sync::Arc;
 use config::internal::routing::bmp::BmpOptions;
@@ -37,8 +49,8 @@ custom_target!("tower", LevelFilter::WARN, &["third-party"]);
 
 const PYROSCOPE_APP_NAME: &str = "hedgehog-dataplane";
 
-fn init_name(args: &CmdArgs) -> Result<String, String> {
-    if let Some(name) = args.get_name() {
+fn init_name(config: &LaunchConfiguration) -> Result<String, String> {
+    if let Some(name) = &config.general.name {
         Ok(name.clone())
     } else {
         let hostname =
@@ -49,17 +61,16 @@ fn init_name(args: &CmdArgs) -> Result<String, String> {
         Ok(name.to_string())
     }
 }
-fn init_logging(args: &CmdArgs, gwname: &str) {
+fn init_logging(config: &LaunchConfiguration, gwname: &str) {
     // Log throttling is on by default; a missing --tracing-rate-limit uses the
     // default. It can be disabled at runtime via the dataplane CLI.
-    let rate_limit =
-        args.tracing_rate_limit()
-            .map_or_else(TracingRateLimitConfig::default, |rate_limit| {
-                TracingRateLimitConfig {
-                    burst: rate_limit.burst,
-                    replenish_per_second: rate_limit.replenish_per_second,
-                }
-            });
+    let rate_limit = config.tracing.rate_limit.as_ref().map_or_else(
+        TracingRateLimitConfig::default,
+        |rate_limit| TracingRateLimitConfig {
+            burst: rate_limit.burst,
+            replenish_per_second: rate_limit.replenish_per_second,
+        },
+    );
     TracingControl::init_with_rate_limit(Some(rate_limit));
 
     let tctl = get_trace_ctl();
@@ -68,34 +79,42 @@ fn init_logging(args: &CmdArgs, gwname: &str) {
         option_env!("VERSION").unwrap_or("dev").to_string()
     );
 
-    if args.tracing().is_none() {
+    if config.tracing.config.is_none() {
         tctl.set_default_level(LevelFilter::DEBUG)
             .expect("Setting default loglevel failed");
     }
 }
 
-fn process_tracing_cmds(args: &CmdArgs) {
-    if let Some(tracing) = args.tracing()
+fn process_tracing_cmds(config: &LaunchConfiguration) {
+    if let Some(tracing) = &config.tracing.config
         && let Err(e) = get_trace_ctl().setup_from_string(tracing)
     {
         error!("Invalid tracing configuration: {e}");
         panic!("Invalid tracing configuration: {e}");
     }
-    if args.show_tracing_tags() {
+    if config.tracing.show.tags == TracingDisplayOption::Show {
         let out = get_trace_ctl()
             .as_string_by_tag()
             .unwrap_or_else(|e| e.to_string());
         println!("{out}");
         std::process::exit(0);
     }
-    if args.show_tracing_targets() {
+    if config.tracing.show.targets == TracingDisplayOption::Show {
         let out = get_trace_ctl()
             .as_string()
             .unwrap_or_else(|e| e.to_string());
         println!("{out}");
         std::process::exit(0);
     }
+}
+
+/// Emit the generated tracing configuration and exit, if asked for.
+///
+/// Only reachable from a command line: it is a developer convenience, not something a launch
+/// configuration can express, so it is handled before the arguments become one.
+fn process_tracing_cmdline_only(args: &CmdArgs) {
     if args.tracing_config_generate() {
+        TracingControl::init_with_rate_limit(None);
         let out = get_trace_ctl()
             .as_config_string()
             .unwrap_or_else(|e| e.to_string());
@@ -104,10 +123,10 @@ fn process_tracing_cmds(args: &CmdArgs) {
     }
 }
 
-fn parse_bmp_params(args: &CmdArgs) -> (Option<BmpServerParams>, Option<BmpOptions>) {
-    if args.bmp_enabled() {
-        let bind_addr = args.bmp_address();
-        let interval: Duration = args.bmp_interval();
+fn parse_bmp_params(config: &LaunchConfiguration) -> (Option<BmpServerParams>, Option<BmpOptions>) {
+    if let Some(bmp) = &config.bmp {
+        let bind_addr = bmp.address;
+        let interval: Duration = bmp.interval;
 
         info!("BMP: required. Bind-address: {bind_addr}, interval={interval:?}");
 
@@ -165,46 +184,349 @@ fn spawn_signal_handler(
     });
 }
 
+/// Bring up the EAL with arguments appropriate to the configured driver.
+///
+/// Only ever called once: `rte_eal_init` is process-global and a second call fails.
+fn init_eal(config: &LaunchConfiguration) -> dpdk::eal::Eal {
+    let main_lcore_arg = dpdk::eal::main_lcore_arg();
+
+    let mut eal_args: Vec<String> = vec![
+        "dataplane".to_string(),
+        "--in-memory".to_string(),
+        "--no-telemetry".to_string(),
+        "--no-shconf".to_string(),
+        "--iova-mode=va".to_string(),
+        "--lcores".to_string(),
+        main_lcore_arg.clone(),
+    ];
+
+    if let DriverConfigSection::Dpdk(dpdk) = &config.driver {
+        // Allow exactly the devices named in the configuration. Without an allowlist the EAL probes
+        // every PCI device it recognises, which on a host with more than one NIC means attaching to
+        // one the operator did not offer us -- including, potentially, the management uplink.
+        for interface in &dpdk.interfaces {
+            if let Some(PortArg::PCI(addr)) = &interface.port {
+                eal_args.push("-a".to_string());
+                eal_args.push(addr.to_string());
+            }
+        }
+    } else {
+        // Classifier-only: rte_acl needs the memory subsystem and nothing else.
+        eal_args.push("--no-huge".to_string());
+        eal_args.push("--no-pci".to_string());
+    }
+
+    info!("Initializing DPDK EAL with: {}", eal_args.join(" "));
+    dpdk::eal::init(eal_args)
+}
+
+/// Configure and start every DPDK port named on the command line.
+///
+/// Ports must already be *bound* to a driver DPDK can attach to. That is `dataplane-init`'s job,
+/// not this one: for most NICs it means unbinding from the kernel driver and binding to `vfio-pci`,
+/// and for mlx5 it means deliberately leaving the kernel driver in place, because that driver is
+/// bifurcated and DPDK attaches alongside it. By the time this runs the EAL has already probed
+/// whatever was bound, so a port missing here was missing then.
+///
+/// Ports are matched to configuration by **PCI address**, using the same
+/// [`PciAddress`] type `dataplane-init` binds them with, so the two agree on what
+/// `0000:02:00.1` means rather than each parsing the string their own way.
+fn bring_up_ports<'eal>(
+    eal: &'eal Eal,
+    config: &LaunchConfiguration,
+) -> Result<Vec<Port<'eal>>, DriverError> {
+    let workers = config.driver.num_workers();
+    let num_workers = u16::try_from(workers)
+        .map_err(|_| DriverError::PortSetup(format!("{workers} workers is too many")))?;
+
+    // What the EAL actually probed, keyed by PCI address. `DevInfo::name` is the device's bus-level
+    // name, which for a PCI device is its extended BDF whatever driver it is bound to -- unlike
+    // `if_index`, which is 0 for a `vfio-pci` device because it has no netdev, and unlike the port
+    // index, which is only the order the EAL happened to probe in.
+    let mut probed: Vec<(PciAddress, DevInfo<'eal>)> = Vec::new();
+    for info in eal.dev.iter() {
+        let index = info.index();
+        let name = info.name().map_err(|e| {
+            DriverError::PortSetup(format!("could not read the name of DPDK port {index}: {e}"))
+        })?;
+        match PciAddress::try_from(name.as_str()) {
+            Ok(addr) => probed.push((addr, info)),
+            // Not every DPDK device is a PCI device: SoC and virtual devices are named differently.
+            // None of those can be named by the configuration, so skipping them is right.
+            Err(e) => warn!("DPDK port {index} is named '{name}', which is not a PCI address: {e}"),
+        }
+    }
+    info!(
+        "EAL probed {} DPDK port(s): {}",
+        probed.len(),
+        probed
+            .iter()
+            .map(|(addr, _)| addr.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let mut ports = Vec::new();
+    for interface in config.driver.interfaces() {
+        let Some(PortArg::PCI(ebdf)) = &interface.port else {
+            return Err(DriverError::PortSetup(format!(
+                "interface '{}' has no PCI address; the DPDK driver needs one \
+                 (--interface {}=pci@0000:xx:yy.z)",
+                interface.interface, interface.interface
+            )));
+        };
+
+        let wanted = PciAddress::try_from(ebdf.to_string().as_str()).map_err(|e| {
+            DriverError::PortSetup(format!(
+                "interface '{}' names '{ebdf}', which is not a valid PCI address: {e}",
+                interface.interface
+            ))
+        })?;
+
+        let at = probed.iter().position(|(addr, _)| *addr == wanted).ok_or_else(|| {
+            DriverError::PortSetup(format!(
+                "interface '{}' names PCI device {wanted}, which the EAL did not probe. Either it \
+                 was not passed to the EAL, or it is not bound to a driver DPDK can attach to -- \
+                 binding is dataplane-init's job.",
+                interface.interface
+            ))
+        })?;
+        // Removed rather than borrowed, so a device named twice is caught by the lookup above
+        // failing the second time rather than quietly producing two ports on one device.
+        let (_, info) = probed.remove(at);
+
+        ports.push(Port::bring_up(
+            eal,
+            info,
+            interface.interface.to_string(),
+            num_workers,
+        )?);
+    }
+
+    if !probed.is_empty() {
+        warn!(
+            "{} probed DPDK port(s) were not named by any interface and will carry no traffic: {}",
+            probed.len(),
+            probed
+                .iter()
+                .map(|(addr, _)| addr.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    Ok(ports)
+}
+
+/// The two handshakes between `main` and the datapath thread.
+///
+/// Grouped because they are one protocol in two parts, and because they are meaningless apart: see
+/// "Why it stops twice" on [`run_dpdk_datapath`].
+struct DatapathHandshake {
+    /// How the datapath reports that the EAL exists, which management must not serve without.
+    eal_ready: std::sync::mpsc::Sender<Result<(), String>>,
+    /// How the datapath is told management is running and the hardware may come up.
+    go: std::sync::mpsc::Receiver<()>,
+}
+
+/// Everything that has to happen on the datapath's own thread, in the order it has to happen in.
+///
+/// # Why this is a thread and not just more of `main`
+///
+/// The dataplane spans two network namespaces, and neither of them is the host's. `dataplane-init`
+/// puts the whole process into a **control** namespace -- where FRR lives, and where the taps that
+/// stand in for the ports are created -- and moves the NICs into a **datapath** namespace of their
+/// own. This thread is the one that jumps into the second. `setns` affects the calling thread
+/// alone, so the jump has to happen somewhere that is not `main`, or the control plane would go
+/// with it.
+///
+/// (The host's namespace still has tenants -- Kubernetes and the metrics endpoint reach out of the
+/// container -- but nothing in this process is in it any more. Giving those their own runtime is
+/// the next split, and the reason this configuration is `--config-dir` only.)
+///
+/// The DPDK objects then pin themselves to this side. `rte_eal_init` only finds devices belonging
+/// to the namespace it runs in, so it must run *after* the jump; [`Eal`] is `!Send`; ports borrow
+/// the EAL and queues borrow the ports. Once the EAL is created here, everything descended from it
+/// has to stay here, which is why this function owns the whole sequence rather than handing pieces
+/// back.
+///
+/// Threads created after the jump inherit the namespace, so the workers spawned below land in it
+/// without doing anything themselves.
+///
+/// # Why it stops twice
+///
+/// Startup is interleaved with `main`, because the EAL and the packet path are wanted at different
+/// moments:
+///
+/// 1. Enter the namespace and create the EAL, then report through `eal_ready`. `main` waits for
+///    that before letting the management plane serve, because applying a configuration builds
+///    `rte_acl` classifiers and those need the EAL -- a configuration arriving first would meet a
+///    process that cannot compile it.
+/// 2. Wait on `go` before touching the hardware, so ports come up and workers start only once
+///    management is running. This is where the driver has always started; moving the EAL earlier
+///    should not drag the packet path along with it.
+///
+/// # What it reports back
+///
+/// A port's MAC and MTU are properties of the running device, so they are only knowable here, after
+/// the ports are up -- and the control plane needs both, to dress each tap as the port it stands
+/// for. `bridge` is the channel that carries them back.
+fn run_dpdk_datapath(
+    config: &LaunchConfiguration,
+    netns: Option<&NetworkNamespace>,
+    workers: &lifecycle::Subsystem,
+    ingredients: PipelineIngredients,
+    status_writer: DriverStatusWriter,
+    mut bridge: Option<DatapathEnds>,
+    handshake: &DatapathHandshake,
+) {
+    let DatapathHandshake { eal_ready, go } = handshake;
+    if let Some(netns) = netns {
+        // Both halves matter, and the second is the one that is easy to miss: `setns` gets access
+        // to the devices, and the fresh sysfs is what lets them be *enumerated*. Without it the EAL
+        // below probes nothing and reports only that no device matched.
+        if let Err(e) = netns.enter_with_sysfs() {
+            let detail = format!("failed to enter the datapath network namespace: {e}");
+            error!("{detail}");
+            // Only fails if `main` has already given up, in which case there is nobody to tell.
+            drop(eal_ready.send(Err(detail)));
+            return;
+        }
+        info!(
+            "Datapath thread is in network namespace {}",
+            hardware::netns::current()
+        );
+    }
+
+    let eal = init_eal(config);
+
+    if eal_ready.send(Ok(())).is_err() {
+        info!("The EAL is up but nothing is waiting for it; stopping");
+        return;
+    }
+
+    // `main` sends nothing and drops this when management fails to start, so a disconnect is the
+    // ordinary way to be told to stand down rather than an error.
+    if go.recv().is_err() {
+        info!("Datapath was told to stand down before starting");
+        return;
+    }
+
+    let ports = match bring_up_ports(&eal, config) {
+        Ok(ports) => ports,
+        Err(e) => {
+            error!("Failed to bring up DPDK ports: {e}");
+            workers.report_fatal("DPDK ports could not be brought up");
+            return;
+        }
+    };
+
+    // Tell the control plane what each port turned out to be, so it can give the matching tap the
+    // port's MAC and MTU. Without the MAC the peer resolves the wrong address for us and every
+    // frame it sends back is dropped as `MacNotForUs`, which looks like a link problem rather than
+    // an addressing one.
+    if let Some(bridge) = &bridge {
+        for port in &ports {
+            bridge.report(PortIdentity {
+                name: port.name.clone(),
+                mac: port.mac,
+                mtu: port.mtu,
+            });
+        }
+    }
+
+    // An inner scope, because the queue handles the workers own borrow these ports: the ports have
+    // to outlive every thread that touches one, and the scope is what proves they do. It returns
+    // when the supervisor has joined every worker, which happens once `workers` is cancelled.
+    concurrency::thread::scope(|scope| {
+        info!("Using driver DPDK...");
+        if let Err(e) = DriverDpdk::start(
+            scope,
+            workers,
+            &ports,
+            config.driver.num_workers(),
+            &ingredients.factory(),
+            status_writer,
+            bridge.as_mut(),
+        ) {
+            error!("Failed to start driver: {e}");
+            workers.report_fatal("the DPDK driver could not be started");
+        }
+    });
+
+    if let Some(bridge) = &bridge {
+        // Anything left in here is a tap the bridge made for an interface no DPDK port claimed,
+        // which means the configuration named a device the EAL did not probe -- already an error at
+        // bring-up, but worth naming again from the side that would have carried its traffic.
+        bridge.report_unclaimed();
+    }
+
+    // Every worker has been joined, so the queue handles that borrowed these ports are gone and the
+    // ports can be stopped. Explicitly, rather than leaving it to `PortLifecycle`'s `Drop`
+    // backstop, so a device that refuses to stop is reported.
+    for port in ports {
+        port.shutdown();
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn main() {
-    let args = CmdArgs::parse();
-    let gwname = match init_name(&args) {
+    // Either `dataplane-init` handed us a sealed configuration over the standard descriptors, or we
+    // were run directly and have to build one from the command line ourselves. Everything below
+    // sees only the configuration, so the two paths differ in exactly one place.
+    let config = if LaunchConfiguration::was_inherited() {
+        LaunchConfiguration::inherit()
+    } else {
+        let args = CmdArgs::parse();
+        process_tracing_cmdline_only(&args);
+        match LaunchConfiguration::try_from(args) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("Invalid command line arguments: {e}");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let gwname = match init_name(&config) {
         Ok(name) => name,
         Err(e) => {
             eprintln!("Failed to set gateway name: {e}");
             std::process::exit(1);
         }
     };
-    init_logging(&args, &gwname);
+    init_logging(&config, &gwname);
 
-    // Initialize a minimal EAL as early as possible. Stages such as the ACL filter and the
-    // flow-filter build rte_acl classifiers when configuration is applied (which happens before any
-    // packet driver starts), and rte_acl needs the EAL memory subsystem up. These are the
-    // lightweight, classifier-only args (no hugepages / no PCI). NOTE: there can be only one
-    // `rte_eal_init` per process, so the real DPDK datapath driver (currently `todo!()`) must
-    // eventually take over EAL ownership with device-appropriate args rather than adding a second
-    // init. The guard is held for the life of the process.
+    // Initialize the EAL as early as possible, and exactly once.
+    //
+    // Two things need it and they want different arguments. Stages such as the ACL filter and the
+    // flow-filter build rte_acl classifiers when configuration is applied -- which happens before
+    // any packet driver starts -- and rte_acl needs only the EAL memory subsystem. The DPDK
+    // datapath driver needs hugepages and its devices probed. There can be only one
+    // `rte_eal_init` per process, so the driver decides: with `--driver dpdk` the EAL comes up
+    // device-capable and rte_acl uses it happily, and otherwise it comes up in the lightweight
+    // classifier-only form. The guard is held for the life of the process.
     //
     // `--lcores` pins DPDK's main lcore to every CPU currently allowed for this process rather
     // than letting `rte_eal_init` default it to a single CPU; see `main_lcore_arg` for why that
     // default matters here (it otherwise pins every thread spawned after EAL init, not just DPDK's).
-    let main_lcore_arg = dpdk::eal::main_lcore_arg();
-    let _eal = dpdk::eal::init([
-        "--no-huge",
-        "--no-pci",
-        "--in-memory",
-        "--no-telemetry",
-        "--no-shconf",
-        "--iova-mode=va",
-        "--lcores",
-        main_lcore_arg.as_str(),
-    ]);
+    //
+    // Which *thread* initializes it is not a free choice. With the DPDK driver the EAL is created
+    // on the datapath thread instead of here, because that thread may first have moved into
+    // another network namespace and `rte_eal_init` only finds devices belonging to the namespace
+    // it runs in. Everything the EAL hands out is branded with its lifetime and `Eal` is `!Send`,
+    // so the EAL, the ports and the workers all have to live on that side together. See
+    // `run_dpdk_datapath`.
+    let _eal = match config.driver {
+        DriverConfigSection::Dpdk(_) => None,
+        DriverConfigSection::Kernel(_) => Some(init_eal(&config)),
+    };
 
-    let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&args);
+    let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&config);
 
     let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
 
-    let agent_running = args.pyroscope_url().and_then(|url| {
+    let agent_running = config.profiling.pyroscope_url.as_ref().and_then(|url| {
         let pyroscope_config = PyroscopeConfig::default();
         let sample_rate = pyroscope_config.sample_rate;
 
@@ -238,7 +560,7 @@ pub fn main() {
         }
     });
 
-    process_tracing_cmds(&args);
+    process_tracing_cmds(&config);
 
     let (driver_status_writer, driver_status_reader) = driver_status_access();
 
@@ -262,9 +584,9 @@ pub fn main() {
     // assemble router parameters
     let mut binding = RouterParamsBuilder::default();
     let rp_builder = binding
-        .cli_sock_path(args.cli_sock_path())
-        .cpi_sock_path(args.cpi_sock_path())
-        .frr_agent_path(args.frr_agent_path());
+        .cli_sock_path(config.cli.cli_sock_path.clone())
+        .cpi_sock_path(config.routing.control_plane_socket.clone())
+        .frr_agent_path(config.routing.frr_agent_socket.clone());
 
     let Ok(router_params) = rp_builder.build() else {
         error!("Bad router configuration");
@@ -292,23 +614,149 @@ pub fn main() {
     spawn_metrics(
         &shutdown.metrics,
         &mgmt_handle,
-        args.metrics_address(),
+        config.metrics.address,
         setup.stats,
     );
 
-    let pipeline_factory = setup.pipeline;
+    let ingredients = setup.pipeline;
+    let pipeline_data = ingredients.data();
+
+    // The namespace `dataplane-init` made for the datapath, if it made one. It arrives as a
+    // descriptor rather than a name, which is what keeps it alive: there is no bind mount to
+    // outlive this process and nothing to clean up, and when the last descriptor closes the kernel
+    // destroys the namespace and returns the devices to the host.
+    let datapath_netns = LaunchConfiguration::inherit_netns().map(NetworkNamespace::from_fd);
+    if datapath_netns.is_some() {
+        info!("Inherited a network namespace for the datapath");
+    }
+
+    // The control-plane bridge, built here and not on the datapath thread.
+    //
+    // `TUNSETIFF` creates a tap in the network namespace of the calling thread, so this has to
+    // happen while every thread in the process is still in the control namespace -- before the
+    // datapath thread below jumps into the one that owns the NICs. Afterwards the taps are only
+    // descriptors, which work from anywhere.
+    //
+    // # When there is one
+    //
+    // Exactly when `dataplane-init` handed over a datapath namespace, which is the only
+    // circumstance in which the taps have names free to take. The taps are named after the
+    // configured interfaces, so they can only exist somewhere the physical devices are not; a
+    // namespace for the datapath is what makes that true, and `dataplane-init` enters a control
+    // namespace whenever it makes one.
+    //
+    // Without it -- a DPDK dataplane run directly, or one whose devices stayed put -- the kernel
+    // still has the netdevs on a bifurcated driver and carries the control plane itself, exactly as
+    // it did before this existed. Making taps there would collide with those very devices.
+    //
+    // The kernel driver never gets one: its interfaces *are* the real ones.
+    let want_bridge =
+        matches!(config.driver, DriverConfigSection::Dpdk(_)) && datapath_netns.is_some();
+    let (_cp_bridge, cp_ends) = if want_bridge {
+        match CpBridge::create(
+            &mgmt_handle,
+            &shutdown.mgmt,
+            config.driver.interfaces().map(|i| &i.interface),
+        ) {
+            Ok((bridge, ends)) => (Some(bridge), Some(ends)),
+            Err(e) => {
+                // Fatal, and not because the bridge is a nicety: with the NICs in a namespace of
+                // their own this is the control plane's *only* path to the wire, so the dataplane
+                // would come up, forward nothing it had not been told about, and never learn a
+                // route.
+                error!("Failed to build the control-plane bridge: {e}");
+                shutdown.fail();
+                (None, None)
+            }
+        }
+    } else {
+        if matches!(config.driver, DriverConfigSection::Dpdk(_)) {
+            info!(
+                "No datapath network namespace, so no control-plane bridge: the kernel keeps the \
+                 netdevs and carries the control plane itself"
+            );
+        }
+        (None, None)
+    };
 
     concurrency::thread::scope(|scope| {
+        // Two handshakes with the datapath thread. `eal_ready` is how it reports that the EAL
+        // exists, which management must not serve without; `go` is how it is told management is
+        // running and the hardware can come up. See `run_dpdk_datapath`.
+        let (eal_ready_tx, eal_ready_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel();
+        let handshake = DatapathHandshake {
+            eal_ready: eal_ready_tx,
+            go: go_rx,
+        };
+
+        // Only one driver ever runs, but the compiler cannot see that this arm and the kernel arm
+        // further down are exclusive, so ownership of the pipeline factory and the status writer
+        // goes to whichever one claims it here.
+        let kernel_driver = match config.driver {
+            DriverConfigSection::Dpdk(_) => {
+                let spawned = thread::Builder::new()
+                    .name("dpdk-datapath".to_string())
+                    .spawn_scoped(scope, {
+                        let config = &config;
+                        let netns = datapath_netns.as_ref();
+                        let workers = &shutdown.workers;
+                        move || {
+                            run_dpdk_datapath(
+                                config,
+                                netns,
+                                workers,
+                                ingredients,
+                                driver_status_writer,
+                                cp_ends,
+                                &handshake,
+                            );
+                        }
+                    });
+                // A failure here is fatal but not a reason to leave by a different door: tripping
+                // the root token makes `run_mgmt` below report `Cancelled`, and the shutdown then
+                // drains in the usual order. Returning early instead would skip that drain.
+                if let Err(e) = spawned {
+                    error!("Failed to spawn the datapath thread: {e}");
+                    shutdown.fail();
+                } else {
+                    // Nothing below may serve a configuration until the EAL exists.
+                    match eal_ready_rx.recv() {
+                        Ok(Ok(())) => info!("The EAL is up; starting management"),
+                        Ok(Err(e)) => {
+                            error!("The datapath failed to start: {e}");
+                            shutdown.fail();
+                        }
+                        Err(_) => {
+                            error!("The datapath thread stopped without reporting why");
+                            shutdown.fail();
+                        }
+                    }
+                }
+                None
+            }
+            // The kernel driver has no namespace to enter and its EAL is already up, so it starts
+            // below in this scope exactly as it always has.
+            DriverConfigSection::Kernel(_) => Some((ingredients, driver_status_writer)),
+        };
+
         let mgmt_result = run_mgmt(
             &mgmt_handle,
             &shutdown.mgmt,
             MgmtParams {
-                config_dir: args.config_dir().cloned(),
+                config_dir: config
+                    .config_server
+                    .as_ref()
+                    .and_then(|c| c.config_dir.clone()),
                 hostname: gwname.clone(),
-                interfaces: args.interfaces().map(|i| i.interface).collect(),
+                interfaces: config
+                    .driver
+                    .interfaces()
+                    .map(|i| i.interface.clone())
+                    .collect(),
                 processor_params: ConfigProcessorParams {
                     router_ctl: setup.router.get_ctl_tx(),
-                    pipeline_data: pipeline_factory().get_data(),
+                    pipeline_data,
                     flow_table: setup.flow_table,
                     vpcmapw: setup.vpcmapw,
                     nattablesw: setup.nattablesw,
@@ -327,32 +775,33 @@ pub fn main() {
             Ok(()) => {
                 info!("Management is running now");
 
-                let driver_result = match args.driver_name() {
-                    "dpdk" => {
-                        info!("Using driver DPDK...");
-                        todo!();
-                    }
-                    "kernel" => {
+                match kernel_driver {
+                    Some((ingredients, driver_status_writer)) => {
                         info!("Using driver kernel...");
-                        Some(DriverKernel::start(
+                        if let Err(e) = DriverKernel::start(
                             scope,
                             &shutdown.workers,
-                            args.kernel_interfaces(),
-                            args.kernel_num_workers(),
-                            &pipeline_factory,
+                            config
+                                .driver
+                                .interfaces()
+                                .map(|i| i.interface.to_string())
+                                .collect::<Vec<_>>(),
+                            config.driver.num_workers(),
+                            &ingredients.factory(),
                             driver_status_writer,
-                        ))
+                        ) {
+                            error!("Failed to start driver: {e}");
+                            shutdown.fail();
+                        }
                     }
-                    other => {
-                        error!("Unknown driver '{other}'. Stopping dataplane...");
-                        shutdown.fail();
-                        None
+                    // The DPDK datapath is already waiting on its own thread with the EAL up. This
+                    // releases it to bring the ports up and start polling.
+                    None => {
+                        if go_tx.send(()).is_err() {
+                            error!("The datapath thread is gone; cannot start the packet path");
+                            shutdown.fail();
+                        }
                     }
-                };
-
-                if let Some(Err(e)) = driver_result {
-                    error!("Failed to start driver: {e}");
-                    shutdown.fail();
                 }
             }
             Err(LaunchError::Cancelled) => {

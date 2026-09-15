@@ -89,6 +89,7 @@ let
     .${profile};
   overlays = import ./nix/overlays {
     inherit
+      instrumentation
       libc
       nightly
       sanitizers
@@ -213,6 +214,7 @@ let
       llvmPackages'.clang # you need the host compiler in order to link proc macros
       llvmPackages'.llvm # needed for coverage
       markdownlint-cli2
+      mcp-grafana
       nixfmt
       npins
       opengrep
@@ -830,16 +832,20 @@ let
     outputHashes = {
       "git+https://github.com/githedgehog/bolero.git?rev=2fa595633a72e9b30721f9d37f0014a6ae8f77d4#2fa595633a72e9b30721f9d37f0014a6ae8f77d4" =
         "sha256-ipue/XsDxOeO4lThRcIdpQsztC5AbAkgwUHDYWTH9qY=";
+      "git+https://github.com/githedgehog/devlink.git?branch=main#11bb53b4a60fe1fbc206b5f48e65ec8127a47216" =
+        "sha256-wa/dm8G2AvRp12pjUrQI8BowB55IPkZq4sNcg7NGqnk=";
       "git+https://github.com/githedgehog/dplane-rpc.git?branch=pr/daniel-noland/bumps#6c84b7aff35abb4e94fbb0d09870a0b4a2322913" =
         "sha256-YOCcWOynWN49KKY17KfP31QBK1ZM6x6Xl4/tdfNwgIs=";
       "git+https://github.com/githedgehog/fixin?branch=main#5e0de31606466b17372f8a2cff090cc0461d572c" =
         "sha256-GfBnaL6ke3ekm+HbV34yXdF4ArYHismxbPHF5/M94yk=";
       "git+https://github.com/githedgehog/left-right.git?branch=fredi/fix-writehandle-drop#765813aa25c8328746e93a7a5ccc75deb57b1d80" =
         "sha256-GVP11hLRmHip5+MH9U1bD4bANxDpdnkN9cvMo6RDFfY=";
-      "git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr/daniel-noland/swing6#9a257c60e25bc5db50a1cd14aa493d6ec294c23d" =
-        "sha256-w5dK1IfqR1kJDa4ugbvEC4VIASwGlKU6oxEd9USUwMw=";
-      "git+https://github.com/githedgehog/rtnetlink.git?branch=hh/tc-actions4#c6b8d9865858c458e7f27fa67469f2171e1644a4" =
-        "sha256-u14ugCKWU4nwXkQdlleThJLYU4Ft/LJNTKywMUlwxPM=";
+      "git+https://github.com/githedgehog/netlink-packet-devlink.git?branch=main#4c920fa98461432a7386dc98463e846f8902ba1a" =
+        "sha256-7hFrrFUtoz0exuxgGgVuWiFMP+1Pi76eHOhd2Ga9AUI=";
+      "git+https://github.com/githedgehog/netlink-packet-route.git?branch=hh/tc-blocks-and-gact#8bfd4aa6337b9ae260316fc3bd808e74ca2c40fa" =
+        "sha256-2+t79vfKhlxWQtutYl9WziTQSbVPu63tNbkCPCf2iPk=";
+      "git+https://github.com/githedgehog/rtnetlink.git?branch=hh/tc-actions5#93f43a949f83d771d6635acc80d83b24587555d9" =
+        "sha256-k3adHrxnMADLFkat7AZy/+DCObGmHe1UzO8//nJll5w=";
     };
   };
   # Rename per-revision images so the CI push filter keeps them out of Cachix;
@@ -1031,6 +1037,28 @@ let
                       mv "$f" "$debug/bin/$(basename "$f")"
                       ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
                       ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
+                    done
+
+                    # DPDK's `dev` output is headers, pkg-config files and static
+                    # archives -- build inputs with nothing to offer a running
+                    # binary. It reaches the runtime closure anyway, through a
+                    # single `.rodata` string: DPDK's inline headers carry
+                    # assertions, and the C preprocessor bakes `__FILE__` into
+                    # them, so a stripped binary still spells out
+                    # `.../dpdk-*-dev/include/generic/rte_pause.h`. One string,
+                    # 2.6 MB of closure.
+                    #
+                    # Blanked rather than deleted: `remove-references-to`
+                    # overwrites the hash in place and leaves the length alone, so
+                    # the ELF stays valid and an assertion that fires still names
+                    # its header -- just not at a resolvable path. The debug output
+                    # is untouched and keeps the real one.
+                    #
+                    # Done after the debuglink: `--add-gnu-debuglink` records a CRC
+                    # of the *debug* file, which editing `$out` does not disturb.
+                    for f in $out/bin/*; do
+                      ${pkgs.pkgsBuildHost.removeReferencesTo}/bin/remove-references-to \
+                        -t ${pkgs.pkgsHostHost.fancy.dpdk.dev} "$f"
                     done
                   ''
                 else
@@ -1798,6 +1826,209 @@ let
     }).overrideAttrs
       source-volatile;
 
+  # Local dev-only container image for the vlab test environment.  Replaces
+  # the old Ubuntu-based scripts/vlab/Dockerfile: every tool the vlab runtime
+  # needs comes from nix (pinned via npins), not apt + wget + `curl | bash`,
+  # so there is no unverified download in the image build.
+  #
+  # The hhfab CLI is still fetched at runtime via i.hhdev.io/hhfab -- it is
+  # a fast-moving test tool that we intentionally track against master rather
+  # than pin into the image closure.
+  #
+  # Not subject to `closure-check`, which examines `dataplane.tar` alone. This
+  # image is a developer's toolbox and is never shipped, so a compiler or a
+  # source tree in it is not a leak.
+  #
+  # Fixed tag "latest" so scripts/vlab/run.sh can refer to `vlab` unambiguously
+  # without threading the dataplane's `tag` argstr through.
+  # Telemetry sink for the lab: Loki, Prometheus, Pyroscope and Grafana in one image.
+  #
+  # Built here rather than composed from upstream container images so it pins with everything else
+  # and so the components run as root against a single volume -- the off-the-shelf images disagree
+  # about uids, and half of them are distroless, which turns a volume permission fix into an
+  # exercise in finding an image that has a shell.
+  #
+  # Fixed tag "latest": nothing versions this against the dataplane, and scripts/telemetry/run.sh
+  # refers to it by name.
+  containers.lgtm = pkgs.dockerTools.buildLayeredImage {
+    name = "lgtm";
+    tag = "latest";
+    contents = pkgs.buildEnv {
+      name = "lgtm-env";
+      pathsToLink = [ "/" ];
+      paths = with pkgs.pkgsHostHost; [
+        bashInteractive
+        cacert
+        coreutils
+        curl
+        dockerTools.binSh
+        dockerTools.fakeNss
+        dockerTools.usrBinEnv
+        grafana
+        grafana-loki
+        prometheus
+        pyroscope
+
+        (writeTextDir "etc/loki/config.yaml" (
+          builtins.readFile ./scripts/telemetry/root/etc/loki/config.yaml
+        ))
+        (writeTextDir "etc/prometheus/prometheus.yml" (
+          builtins.readFile ./scripts/telemetry/root/etc/prometheus/prometheus.yml
+        ))
+        (writeTextDir "etc/pyroscope/config.yaml" (
+          builtins.readFile ./scripts/telemetry/root/etc/pyroscope/config.yaml
+        ))
+        (writeTextDir "etc/grafana/grafana.ini" (
+          builtins.readFile ./scripts/telemetry/root/etc/grafana/grafana.ini
+        ))
+        (writeTextDir "etc/grafana/provisioning/datasources/datasources.yaml" (
+          builtins.readFile ./scripts/telemetry/root/etc/grafana/provisioning/datasources/datasources.yaml
+        ))
+        (writeTextDir "etc/grafana/provisioning/dashboards/dashboards.yaml" (
+          builtins.readFile ./scripts/telemetry/root/etc/grafana/provisioning/dashboards/dashboards.yaml
+        ))
+        (writeTextDir "etc/grafana/dashboards/dataplane-nat.json" (
+          builtins.readFile ./scripts/telemetry/root/etc/grafana/dashboards/dataplane-nat.json
+        ))
+
+        (writeShellApplication {
+          name = "lgtm-entrypoint";
+          runtimeInputs = [
+            coreutils
+            grafana
+            grafana-loki
+            prometheus
+            pyroscope
+          ];
+          text = builtins.readFile ./scripts/telemetry/entrypoint.sh;
+        })
+      ];
+    };
+
+    # The volume mounts over /telemetry at run time; /tmp is not in the closure and Grafana's
+    # provisioning walk wants it.
+    extraCommands = ''
+      mkdir -p tmp telemetry
+      chmod 1777 tmp
+    '';
+
+    config = {
+      WorkingDir = "/telemetry";
+      Volumes."/telemetry" = { };
+      ExposedPorts = {
+        "3000/tcp" = { };
+        "3100/tcp" = { };
+        "4040/tcp" = { };
+        "9090/tcp" = { };
+      };
+      Env = [
+        "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+        # Grafana's static assets live in the store, so its home path is only knowable from nix.
+        "GF_PATHS_HOME=${pkgs.grafana}/share/grafana"
+        "GF_PATHS_DATA=/telemetry/grafana"
+        "GF_PATHS_PROVISIONING=/etc/grafana/provisioning"
+      ];
+      Entrypoint = [ "/bin/lgtm-entrypoint" ];
+    };
+  };
+
+  containers.vlab = pkgs.dockerTools.buildLayeredImage {
+    name = "vlab";
+    tag = "latest";
+    contents = pkgs.buildEnv {
+      name = "vlab-env";
+      pathsToLink = [ "/" ];
+      paths = with pkgs.pkgsHostHost; [
+        bashInteractive
+        cacert
+        coreutils
+        curl
+        docker-client
+        dockerTools.binSh
+        dockerTools.fakeNss
+        dockerTools.usrBinEnv
+        findutils
+        gawk
+        git
+        gnugrep
+        gnused
+        gnutar
+        gzip
+        iproute2
+        jq
+        less
+        neovim
+        openssh
+        openssl
+        oras
+        qemu_kvm
+        socat
+        sudo
+        wget
+        # Python's kislyuk yq (supports the `-y` flag used by run.sh);
+        # nixpkgs.yq-go is mikefarah's Go port with a different CLI surface.
+        yq
+        zot
+
+        # nixpkgs' sudo is always built with PAM on linux, so we need to ship
+        # a /etc/pam.d/sudo config or sudo aborts with "unable to initialize
+        # PAM: Critical error - immediate abort" the moment hhfab vlab up
+        # shells out to it.  The container runs as root in a privileged
+        # sandbox, so we use pam_permit.so for every stage; absolute module
+        # paths sidestep libpam's compiled-in module search path.
+        (writeTextDir "etc/pam.d/sudo" ''
+          auth     sufficient   ${pam}/lib/security/pam_permit.so
+          account  sufficient   ${pam}/lib/security/pam_permit.so
+          password sufficient   ${pam}/lib/security/pam_permit.so
+          session  sufficient   ${pam}/lib/security/pam_permit.so
+        '')
+
+        # zot config and cert.ini are immutable across runs, so they live
+        # in the image rather than in any mount or bind-mount.
+        (writeTextDir "etc/zot/config.json" (builtins.readFile ./scripts/vlab/root/etc/zot/config.json))
+        (writeTextDir "etc/zot/cert.ini" (builtins.readFile ./scripts/vlab/root/etc/zot/cert.ini))
+
+        # Entrypoint script: generates TLS material into a tmpfs, validates
+        # or provisions ghcr.io credentials in a persistent docker volume,
+        # then execs zot.  See scripts/vlab/entrypoint.sh for modes.
+        (writeShellApplication {
+          name = "vlab-entrypoint";
+          runtimeInputs = [
+            cacert
+            coreutils
+            curl
+            jq
+            openssl
+            zot
+          ];
+          text = builtins.readFile ./scripts/vlab/entrypoint.sh;
+        })
+      ];
+    };
+
+    # /tmp and the /vlab working dir don't exist in the pure nix closure;
+    # pre-create them so docker exec commands can write to them.  The tmpfs
+    # at /run/vlab and the vlab-secrets volume at /var/lib/vlab are created
+    # by docker at container start.
+    extraCommands = ''
+      mkdir -p tmp vlab
+      chmod 1777 tmp
+    '';
+
+    config = {
+      WorkingDir = "/vlab";
+      Volumes."/vlab" = { };
+      Env = [
+        # Go (and hhfab) read SSL_CERT_FILE; the entrypoint writes the merged
+        # bundle (nixpkgs system CAs + the freshly-minted zot CA) to this path
+        # before exec'ing zot.
+        "SSL_CERT_FILE=/run/vlab/ca-bundle.pem"
+      ];
+      Entrypoint = [ "/bin/vlab-entrypoint" ];
+      Cmd = [ "run" ];
+    };
+  };
+
   containers.frr.host =
     (pkgs.dockerTools.buildLayeredImage {
       name = "ghcr.io/githedgehog/dataplane/frr-host";
@@ -1855,11 +2086,191 @@ let
     }).overrideAttrs
       source-volatile;
 
+  # What ships, checked against what has no business shipping.
+  #
+  # A container image's contents are decided by nix's reference scanner, which
+  # reads store hashes out of file *contents* -- so a single path in a debug
+  # string, a libtool archive or a `__FILE__` quietly adds that path's whole
+  # closure. Nothing warns, and the damage does not show up in review: it shows
+  # up months later as an image that is inexplicably a few hundred megabytes
+  # larger than the binaries in it. Two measured instances, both of them one
+  # file reaching for one small thing:
+  #
+  #   * FRR's `-latomic` resolved through `libgccjit`, whose other 137 MB came
+  #     along for a 20 KB library (nix/overlays/frr.nix, `libatomic`).
+  #   * `rte_pause.h` named in an assertion string dragged in DPDK's `dev`
+  #     output -- headers, at runtime (see the `remove-references-to` note in
+  #     the crane `postInstall` above).
+  #
+  # So this is a gate rather than a report. Once a build tool is out of the
+  # image, the way to keep it out is to make its return a build failure at the
+  # commit that causes it, not a size graph somebody notices later.
+  #
+  # Deliberately matched on path *names* rather than on a pinned set of
+  # derivations: the point is to catch a toolchain arriving by a route nobody
+  # anticipated, and naming the routes we already know about would only catch
+  # the ones we have already fixed.
+  closure-check =
+    let
+      # Extended regexes, matched against the name half of each store path.
+      forbidden = [
+        {
+          pattern = "(^|-)(clang|llvm|libclang)";
+          why = "a compiler; reaches an image through debug info or an assertion string";
+        }
+        {
+          pattern = "(^|-)(rustc|rust-minimal|rust-toolchain)";
+          why = "the Rust toolchain; `removeReferencesToRustToolchain` should have blanked this";
+        }
+        {
+          pattern = "(^|-)(vendor-cargo-deps|cargo-)";
+          why = "vendored crate sources; `removeReferencesToVendorDir` should have blanked this";
+        }
+        {
+          pattern = "(^|-)python3";
+          why = "an interpreter the dataplane does not use and should not offer an attacker";
+        }
+        {
+          pattern = "(^|-)(binutils|gcc-wrapper|cmake|meson|ninja|pkg-config|autoconf|automake)";
+          why = "a build tool";
+        }
+        {
+          pattern = "-dev$";
+          why = "a `dev` output: headers, pkg-config files and static archives, none of which a running binary reads";
+        }
+        {
+          pattern = "^source$|-source$";
+          why = "a source tree, usually via `-ffile-prefix-map` landing in a runtime string";
+        }
+      ];
+
+      # Names that every one of these rules must agree are bad.
+      #
+      # A matcher that matches nothing passes this check silently, and a
+      # gate that cannot fail is worse than no gate: it reports a clean
+      # image forever. This ran vacuously once already -- the patterns were
+      # escaped for a shell they were never passed to, so every comparison
+      # was against a quoted string that no name could equal -- and the
+      # build said "clean" over a closure with two source trees in it. So
+      # the check now proves it can fail before it is allowed to pass.
+      canaries = [
+        "clang-19.1.7"
+        "rust-minimal-1.98.0"
+        "vendor-cargo-deps"
+        "python3-minimal-3.14.7"
+        "cmake-3.31.7"
+        "dpdk-v26.07-hh-dev"
+        "source"
+      ];
+
+      # Names that must *not* trip any rule, so a pattern cannot be widened
+      # into one that flags the whole image.
+      allowed = [
+        "glibc-2.42-84"
+        "gcc-15.3.0-lib"
+        "gcc-15.3.0-libgcc"
+        "dpdk-v26.07-hh"
+        "dataplane-0.27.0"
+        "busybox-1.37.0"
+        "rdma-core-fix-lto-64.0"
+        "libnl-3.12.0"
+      ];
+
+      # Tab-separated, and *not* shell-escaped: this is read by `read`, which
+      # would take the quotes as part of the value.
+      #
+      # Every line is newline-*terminated*, not newline-separated. `while read`
+      # returns non-zero at EOF, so a final line without a newline is read into
+      # the variable and then dropped by the loop condition. `concatStringsSep`
+      # produces exactly that shape, and it cost a silent false pass here: the
+      # last rule and the last canary were both discarded, so the check proved
+      # itself working and then failed to look for a source tree.
+      lines = f: xs: pkgs.lib.concatMapStrings (x: "${f x}\n") xs;
+      rules = lines (r: "${r.pattern}\t${r.why}") forbidden;
+    in
+    pkgs.runCommandLocal "dataplane-closure-check"
+      {
+        closure = pkgs.closureInfo { rootPaths = [ dataplane.tar ]; };
+        inherit rules;
+        canaries = lines (c: c) canaries;
+        allowed = lines (a: a) allowed;
+        passAsFile = [
+          "rules"
+          "canaries"
+          "allowed"
+        ];
+      }
+      ''
+        set -euo pipefail
+
+        # Prints every rule the given name trips, one "pattern<TAB>why" per line.
+        matches() {
+          local name="$1"
+          while IFS=$'\t' read -r pattern why; do
+            [ -n "$pattern" ] || continue
+            # `-e`, because a pattern may legitimately begin with `-`
+            # (`-dev$`), which grep would otherwise read as an option.
+            if printf '%s' "$name" | grep -Eq -e "$pattern"; then
+              printf '%s\t%s\n' "$pattern" "$why"
+            fi
+          done < "$rulesPath"
+        }
+
+        # Prove the matcher works before trusting it to say "clean".
+        while read -r canary; do
+          [ -n "$canary" ] || continue
+          if [ -z "$(matches "$canary")" ]; then
+            echo "closure-check is broken: '$canary' should have been flagged and was not." >&2
+            exit 1
+          fi
+        done < "$canariesPath"
+
+        while read -r ok; do
+          [ -n "$ok" ] || continue
+          hit="$(matches "$ok" || true)"
+          if [ -n "$hit" ]; then
+            echo "closure-check is too greedy: '$ok' is legitimate but matched:" >&2
+            printf '%s\n' "$hit" >&2
+            exit 1
+          fi
+        done < "$allowedPath"
+
+        status=0
+        count=0
+        while read -r path; do
+          count=$((count + 1))
+          rest="''${path#/nix/store/}"
+          name="''${rest#*-}"
+          hit="$(matches "$name" || true)"
+          if [ -n "$hit" ]; then
+            status=1
+            echo "forbidden in the runtime closure: $name" >&2
+            printf '%s\n' "$hit" | while IFS=$'\t' read -r _ why; do
+              echo "    $why" >&2
+            done
+            echo "    $path" >&2
+            echo >&2
+          fi
+        done < "$closure/store-paths"
+
+        if [ "$status" -ne 0 ]; then
+          echo "dataplane.tar's runtime closure contains build-only paths (listed above)." >&2
+          echo "To find who pulled one in:" >&2
+          echo "    nix why-depends --all \$(nix build -f default.nix dataplane.tar --print-out-paths --no-link) <path>" >&2
+          echo "Then either stop creating the reference, or blank it with remove-references-to." >&2
+          exit 1
+        fi
+
+        echo "runtime closure clean: $count paths, none build-only"
+        touch "$out"
+      '';
+
 in
 {
   inherit
     benches
     check
+    closure-check
     clippy
     containers
     dataplane

@@ -63,6 +63,15 @@ fuzz_len_control := env("FUZZ_LEN_CONTROL", "0")
 # whether to include default cargo features for this workspace (set to "false" to disable)
 default_features := "true"
 
+# pyroscope server the dataplane image should push profiles to (empty = profiling off)
+pyroscope_url := ""
+
+# HTTP proxy baked into the dataplane image. Gateway nodes have no route off the fabric, so
+# anything the dataplane pushes outward -- profiles today -- has to go through the control proxy.
+# Alloy gets the equivalent injected into its config by fabricator; the dataplane has no such
+# machinery, and without this its pushes simply time out.
+dataplane_proxy_url := ""
+
 # Private computed cargo flag groups for consistent invocations.
 # Recipes should compose these as needed (not all cargo subcommands accept all flags).
 [private]
@@ -134,6 +143,8 @@ oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
 
 [private]
 _skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" } else { "" }
+[private]
+_oras_insecure := if oci_insecure == "true" { "--insecure" } else { "" }
 
 [private]
 nightly := "false"
@@ -565,7 +576,20 @@ build-container target="dataplane" *args: _refuse-instrumented-artifact (build (
             esac
             declare -r docker_platform
             declare img
-            img="$(docker import --platform "${docker_platform}" --change 'ENTRYPOINT ["/bin/dataplane"]' ./results/dataplane.tar)"
+            # The rootfs tarball carries no image config; everything the runtime sees is set
+            # here. A controller owns the dataplane's argv in a fabric, so an environment
+            # variable baked in at import is the only way to reach an option like the pyroscope
+            # endpoint.
+            declare -a import_changes=(--change 'ENTRYPOINT ["/bin/dataplane"]')
+            if [ -n "{{ pyroscope_url }}" ]; then
+                import_changes+=(--change 'ENV DATAPLANE_PYROSCOPE_URL={{ pyroscope_url }}')
+            fi
+            if [ -n "{{ dataplane_proxy_url }}" ]; then
+                # Both spellings: reqwest reads the lowercase one, most other clients the upper.
+                import_changes+=(--change 'ENV HTTP_PROXY={{ dataplane_proxy_url }}')
+                import_changes+=(--change 'ENV http_proxy={{ dataplane_proxy_url }}')
+            fi
+            img="$(docker import --platform "${docker_platform}" "${import_changes[@]}" ./results/dataplane.tar)"
             declare -r img
             docker tag "${img}" "{{oci_image_dataplane}}"
             echo "imported {{ oci_image_dataplane }} (${docker_platform})"
@@ -697,7 +721,7 @@ push-container target="dataplane" *args: (build-container target args) && versio
             fi
             pushd ./results/workspace.validator/bin
             retry "push of {{ oci_image_dataplane_validator }}" \
-                oras push --annotation version="{{ version }}" "{{ oci_image_dataplane_validator }}" ./validator.wasm
+                oras push {{ _oras_insecure }} --annotation version="{{ version }}" "{{ oci_image_dataplane_validator }}" ./validator.wasm
             popd
             echo "Pushed {{ oci_image_dataplane_validator }}"
             ;;
@@ -1409,3 +1433,215 @@ shell:
       --argstr profile '{{ profile }}' \
       --argstr sanitize '{{ sanitize }}' \
       --argstr tag '{{version}}'
+
+# OCI repo used by the vlab Zot registry
+[private]
+vlab_oci_repo := "192.168.19.1:30000"
+
+# Start the vlab environment
+[script]
+vlab-up: (build "containers.vlab")
+    {{ _just_debuggable_ }}
+    docker load < ./results/containers.vlab
+    pushd ./scripts/vlab
+    ./run.sh
+    popd
+
+# Open a shell or run a command on the vlab control plane
+[script]
+vlab-control *args:
+    {{ _just_debuggable_ }}
+    pushd ./scripts/vlab
+    ./control.sh {{ args }}
+    popd
+
+# Stop the vlab container and remove the docker network
+[confirm]
+[script]
+vlab-down:
+    {{ _just_debuggable_ }}
+    docker stop vlab || true
+    docker rm vlab || true
+    docker network rm zot || true
+
+# Stop vlab and remove all associated docker volumes
+[confirm]
+[script]
+vlab-purge: vlab-down
+    {{ _just_debuggable_ }}
+    docker volume rm vlab || true
+    docker volume rm zot || true
+    docker volume rm vlab-secrets || true
+
+# Address the vlab control node reaches the telemetry stack on: the gateway of the docker bridge
+# the vlab container sits on, i.e. this host. Gateway nodes get there via control-proxy, which
+# fabricator wires into the generated Alloy config on its own.
+[private]
+telemetry_host := "192.168.19.0"
+
+# Start the persisted telemetry stack (Loki, Prometheus, Pyroscope, Grafana)
+[script]
+telemetry-up: (build "containers.lgtm")
+    {{ _just_debuggable_ }}
+    docker load < ./results/containers.lgtm
+    docker rm -f lgtm 2>/dev/null || true
+    docker volume create dataplane-telemetry
+    docker run --detach --name lgtm --restart unless-stopped \
+        --publish 3000:3000 \
+        --publish 3100:3100 \
+        --publish 4040:4040 \
+        --publish 9099:9090 \
+        --mount type=volume,source=dataplane-telemetry,target=/telemetry \
+        lgtm:latest
+    # Printing 127.0.0.1 is no help from another machine, which is where whoever wants to look at
+    # a graph usually is. List every address this host actually answers on.
+    echo
+    echo "telemetry stack up. reachable at:"
+    for addr in $(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//') \
+                $(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
+        printf '  grafana    http://%s:3000\n' "${addr}"
+    done
+    printf '  prometheus http://<host>:9099   loki http://<host>:3100   pyroscope http://<host>:4040\n'
+
+# Point the running fabric's Alloy at the telemetry stack
+[script]
+telemetry-wire:
+    {{ _just_debuggable_ }}
+    pushd ./scripts/vlab
+    ./control.sh kubectl -n fab patch fab/default --type=merge -p '{"spec":{"config":{"observability":{"targets":{"loki":{"lab":{"url":"http://{{ telemetry_host }}:3100/loki/api/v1/push"}},"prometheus":{"lab":{"url":"http://{{ telemetry_host }}:9099/api/v1/write","sendIntervalSeconds":15}},"pyroscope":{"lab":{"url":"http://{{ telemetry_host }}:4040"}}}},"gateway":{"observability":{"dataplane":{"metrics":true,"metricsInterval":15}}},"control":{"observability":{"kubePodLogs":true,"kubeEvents":true}}}}}'
+    popd
+
+# Stop the telemetry stack, keeping its data
+[script]
+telemetry-down:
+    {{ _just_debuggable_ }}
+    docker rm -f lgtm || true
+
+# Stop the telemetry stack and delete everything it has collected
+[confirm]
+[script]
+telemetry-purge: telemetry-down
+    {{ _just_debuggable_ }}
+    docker volume rm dataplane-telemetry || true
+
+# Build, push the dataplane image to the vlab registry, and patch the running fabric
+[script]
+vlab-patch-dataplane:
+    {{ _just_debuggable_ }}
+    just pyroscope_url="{{ pyroscope_url }}" dataplane_proxy_url="{{ dataplane_proxy_url }}" oci_insecure=true oci_repo="{{ vlab_oci_repo }}" push-container dataplane
+    # The fabric ties the validator's tag to the dataplane's (`DataplaneValidatorRef` takes
+    # `Versions.Gateway.Dataplane`), so patching one without pushing the other points the
+    # fabric at a validator image that does not exist.
+    VERSION="{{ version }}" just platform=wasm32-wasip1 oci_insecure=true oci_repo="{{ vlab_oci_repo }}" push-container validator
+    # Patching the fabric to a tag the registry does not have takes the dataplane down with
+    # ImagePullBackOff, and the resulting silence looks like a dataplane that is running and
+    # simply has nothing to say. Confirm both images are actually there before pointing the
+    # fabric at them.
+    #
+    # Built from `vlab_oci_repo` rather than reusing `oci_image_dataplane`, which is derived
+    # from the default `oci_repo` (127.0.0.1) -- not the bridge address the push above used.
+    #
+    # `--raw`, because the validator is an OCI artifact rather than an image: oras pushes it with
+    # artifactType `application/vnd.unknown.artifact.v1`, and plain `skopeo inspect` refuses that
+    # with "unsupported image-specific operation" no matter that the push just reported success.
+    # A guard that says "not in the registry" about something it is looking straight at sends you
+    # hunting the push. `--raw` fetches the manifest, which is the whole question here.
+    for image in "{{ vlab_oci_repo }}/{{ oci_name }}:{{ version }}" "{{ vlab_oci_repo }}/{{ oci_name }}/validator:{{ version }}"; do
+        if ! skopeo inspect --raw --tls-verify=false "docker://${image}" >/dev/null 2>&1; then
+            >&2 echo "vlab-patch-dataplane: ${image} is not in the registry; refusing to patch"
+            exit 1
+        fi
+    done
+    pushd ./scripts/vlab
+    ./control.sh kubectl -n fab patch fab/default --type=merge -p '{"spec":{"overrides":{"versions":{"gateway":{"dataplane":"{{version}}"}}}}}'
+    popd
+
+# Build, push the FRR image to the vlab registry, and patch the running fabric
+[script]
+vlab-patch-frr:
+    {{ _just_debuggable_ }}
+    just oci_insecure=true oci_repo="{{ vlab_oci_repo }}" push-container frr.dataplane
+    pushd ./scripts/vlab
+    ./control.sh kubectl -n fab patch fab/default --type=merge -p '{"spec":{"overrides":{"versions":{"gateway":{"frr":"{{version}}"}}}}}'
+    popd
+
+# Checkout of github.com/githedgehog/fabric, which is where the gateway DaemonSets are built.
+#
+# Not the `gateway` repo, which carries a copy of `pkg/ctrl/gateway_ctrl.go` that no longer runs:
+# fabricator wires `DataplaneRef` into `fabric/api/meta`'s FabricConfig and never reads
+# `Versions.Gateway.Controller`, so it is the fabric controller that reconciles the dataplane pod.
+[private]
+fabric_repo := env("FABRIC_REPO", "")
+
+# Build, push the fabric controller to the vlab registry, and patch the running fabric
+[script]
+vlab-patch-fabric:
+    {{ _just_debuggable_ }}
+    # This is how a change to the way the dataplane is *launched* -- its command, its arguments,
+    # the volumes and namespaces it gets -- reaches vlab. `vlab-patch-dataplane` replaces the
+    # image; this replaces the controller that decides what to run out of it.
+    repo="{{ fabric_repo }}"
+    if [ -z "${repo}" ]; then
+        >&2 echo "vlab-patch-fabric: set FABRIC_REPO to a checkout of github.com/githedgehog/fabric"
+        exit 1
+    fi
+    if [ ! -d "${repo}/pkg/ctrl" ]; then
+        >&2 echo "vlab-patch-fabric: ${repo} does not look like the fabric repository"
+        exit 1
+    fi
+    # Fabric builds with the system Go, which this dev shell deliberately does not carry -- it is
+    # not a dataplane dependency and does not belong in the shipped shell. Borrow one from the
+    # ambient nixpkgs rather than failing: fabric's own toolchain is unpinned anyway (it `go
+    # install`s kustomize, helm, helmify and skopeo at fixed versions into its `bin/`), so the
+    # compiler is the one thing here nobody has an opinion about.
+    declare -a with_go=(bash -c)
+    if ! command -v go >/dev/null 2>&1; then
+        if ! command -v nix-shell >/dev/null 2>&1; then
+            >&2 echo "vlab-patch-fabric: no go and no nix-shell on PATH; fabric needs a Go toolchain"
+            exit 1
+        fi
+        echo "vlab-patch-fabric: no go on PATH, borrowing one from nixpkgs"
+        with_go=(nix-shell -p go --run)
+    fi
+    # Pinned once and passed to every invocation. Fabric derives its own version from
+    # `git describe` plus, on a dirty tree, two random characters -- so two `just` runs in that
+    # repo disagree about what they are building, and the image would land under a tag the chart
+    # does not name. The timestamp is what makes each push a new tag, which is what makes the
+    # controller pod actually roll.
+    fabric_version="$(git -C "${repo}" describe --tags --dirty --always)-dp$(date -u +%H%M%S)"
+    echo "vlab-patch-fabric: building fabric ${fabric_version}"
+    # Only the controller: `Versions.Fabric.Controller` names both the `fabric` image and the
+    # `fabric` chart, and nothing else. Leaving api/agent/boot/dhcpd alone avoids reloading the
+    # agent on every switch in the lab for a change that does not touch them.
+    # `oci=http` and an override, because fabric's two settings for it disagree. That one knob
+    # gives skopeo `--dest-tls-verify=false` -- HTTPS, unverified -- and helm `--plain-http`,
+    # cleartext. The vlab zot is TLS with a self-signed certificate, so skopeo is right and helm
+    # talks cleartext at a TLS listener: `curl http://.../v2/` answers 400 where `curl -k
+    # https://` answers 200, and helm reports that 400 as an unexpected status from a blob HEAD
+    # with no hint that the scheme is what is wrong. Nothing reaches zot, so its log is silent.
+    for recipe in "_docker-build fabric" "_helm-fabric" "_docker-push fabric" "_helm-push fabric"; do
+        # Both forms of `with_go` take the command as one string, so it stays quoted here: the
+        # nix-shell branch is `--run <string>` and would otherwise swallow only the first word.
+        (cd "${repo}" && "${with_go[@]}" "just version=${fabric_version} oci=http helm_insecure_push=--insecure-skip-tls-verify oci_repo={{ vlab_oci_repo }} ${recipe}")
+    done
+    # Same reasoning as vlab-patch-dataplane: pointing the fabric at a tag the registry does not
+    # have takes the controller down with ImagePullBackOff, and a controller that is not running
+    # looks exactly like a controller with nothing to do.
+    #
+    # Both artifacts, because `Versions.Fabric.Controller` names both and either one missing is
+    # equally fatal. Checking only the image is how a chart push that failed on its own gets
+    # mistaken for a successful patch.
+    #
+    # `--raw`, because a helm chart is an OCI artifact and not an image: plain `skopeo inspect`
+    # refuses it with "unsupported image-specific operation on artifact with type
+    # application/vnd.cncf.helm.config.v1+json" even when the chart is sitting right there.
+    # `--raw` just fetches the manifest, which is all this needs and works for both.
+    for artifact in "fabric" "charts/fabric"; do
+        if ! skopeo inspect --raw --tls-verify=false "docker://{{ vlab_oci_repo }}/githedgehog/fabric/${artifact}:${fabric_version}" >/dev/null 2>&1; then
+            >&2 echo "vlab-patch-fabric: ${artifact}:${fabric_version} is not in the registry; refusing to patch"
+            exit 1
+        fi
+    done
+    pushd ./scripts/vlab
+    ./control.sh kubectl -n fab patch fab/default --type=merge -p "{\"spec\":{\"overrides\":{\"versions\":{\"fabric\":{\"controller\":\"${fabric_version}\"}}}}}"
+    popd

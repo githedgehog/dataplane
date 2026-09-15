@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
+
+# Alloy remote-writes into this instance; it scrapes nothing itself. See the
+# --web.enable-remote-write-receiver flag in the entrypoint, which is off by default.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+storage:
+  tsdb:
+    # Samples arrive from several Alloy instances whose clocks and send intervals do not agree.
+    # Without a window, Prometheus rejects the out-of-order ones outright.
+    out_of_order_time_window: 30m
+
+scrape_configs: []

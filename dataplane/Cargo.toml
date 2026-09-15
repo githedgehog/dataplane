@@ -29,9 +29,13 @@ dyn-iter = { workspace = true }
 flow-entry = { workspace = true }
 flow-filter = { workspace = true }
 futures = { workspace = true }
+# Shares the PCI address type with `dataplane-init`, which is what binds these
+# devices for DPDK in the first place: one parser, one notion of equality.
+hardware = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 id = { workspace = true }
+interface-manager = { workspace = true }
 lifecycle = { workspace = true }
 linkme = { workspace = true }
 metrics = { workspace = true }
@@ -51,7 +55,7 @@ rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["derive"] }
 stats = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync"] }
 tracectl = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, default-features = true }
@@ -64,9 +68,16 @@ config = { workspace = true, features = ["bolero"] }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero", "builder", "test_buffer", "test_meta"] }
 routing = { workspace = true, features = ["testing"] }
+# Only in tests: `DoneReason::COUNT` is what makes the punt policy table fail when a
+# verdict is added without a decision about what the control plane should see.
+strum = { workspace = true }
+
+test-utils = { workspace = true }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
+caps = { workspace = true, default-features = false, features = [] }
+fixin = { workspace = true }
 n-vm = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 tracectl = { workspace = true, features = ["evidence"] }

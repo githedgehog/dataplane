@@ -69,3 +69,12 @@ npins add github githedgehog duvet --branch v0.4.3-hh # floats with branch on pi
 npins add github opengrep opengrep
 npins add github mermaid-js mermaid --release-prefix "mermaid@"
 npins add github KaTeX KaTeX
+
+npins add github project-zot zot
+# hhfab is pulled from ghcr by tag when vlab starts (see scripts/vlab/run.sh).  Builds from master
+# are published as `v0-master-<rev>` and get rotated out of the registry after a few months, so a
+# master pin stops resolving even though its git revision stays perfectly valid.  Track releases
+# instead, and freeze for the same reason fabric is frozen: a vlab that came up yesterday should
+# still come up today.
+npins add github githedgehog fabricator # Will pick highest tagged version on pin bump
+npins freeze fabricator

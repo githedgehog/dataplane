@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "grafana": {
+      "command": "devroot/bin/mcp-grafana",
+      "args": ["-t", "stdio"],
+      "env": {
+        "GRAFANA_URL": "http://127.0.0.1:3000"
+      }
+    }
+  }
+}
