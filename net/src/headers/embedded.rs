@@ -663,7 +663,11 @@ impl EmbeddedTransport {
     }
 }
 
-fn address_words(addr: IpAddr) -> ArrayVec<u16, 8> {
+/// Split an IP address into the 16-bit words a one's-complement checksum is computed over.
+///
+/// Shared with the non-embedded `Transport` incremental update in the parent module: both need to
+/// walk an address a checksum word at a time, and having two copies of this is how they would drift.
+pub(super) fn address_words(addr: IpAddr) -> ArrayVec<u16, 8> {
     match addr {
         IpAddr::V4(addr) => {
             let [a, b, c, d] = addr.octets();
