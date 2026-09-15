@@ -142,8 +142,16 @@ impl IcmpErrorHandler {
             return;
         }
 
-        let flow_info_locked = flow.locked.read();
-        let Some(dst_vpcd) = flow_info_locked.dst_vpcd else {
+        let (dst_vpcd, masquerading, port_forwarding) = {
+            let flow_info_locked = flow.locked.read();
+            (
+                flow_info_locked.dst_vpcd,
+                flow_info_locked.nat_state.is_some(),
+                flow_info_locked.port_fw_state.is_some(),
+            )
+        };
+
+        let Some(dst_vpcd) = dst_vpcd else {
             warn!("Flow for {rev_flow_key} has no dst VPC discriminant set. This is a bug");
             packet.done(DoneReason::InternalFailure);
             return;
@@ -153,10 +161,10 @@ impl IcmpErrorHandler {
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
 
         // process the packet depending on the flow info
-        let result = if flow_info_locked.nat_state.is_some() {
+        let result = if masquerading {
             debug!("Icmp error is for vpc {dst_vpcd}. Will process with masquerade state");
             handle_icmp_error_masquerading(packet, flow.as_ref())
-        } else if flow_info_locked.port_fw_state.is_some() {
+        } else if port_forwarding {
             debug!("Icmp error is for vpc {dst_vpcd}. Will process with port-forwarding state");
             handle_icmp_error_port_forwarding(packet, flow.as_ref())
         } else {
