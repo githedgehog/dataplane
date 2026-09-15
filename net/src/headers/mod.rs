@@ -762,7 +762,22 @@ impl Headers {
             Some(NetExt::HopByHop(h)) => h.next_header(),
             Some(NetExt::DestOpts(h)) => h.next_header(),
             Some(NetExt::Routing(h)) => h.next_header(),
-            Some(NetExt::Fragment(h)) => h.next_header(),
+            // Only the *first* fragment carries the upper-layer header. A non-first
+            // fragment's payload is a slice of the original datagram's body, so the
+            // next-header value names a protocol whose header is simply not here, and the
+            // bytes the parser decoded as one are payload. Reporting it as TCP or UDP let
+            // port forwarding DNAT such a fragment -- overwriting two bytes of payload --
+            // and let ACLs match it against port-scoped rules. Before this accessor existed,
+            // proto 44 matched nothing at all.
+            //
+            // `is_fragmenting_payload()` is the wrong test here: it is also true for the
+            // first fragment, which does have the header. Offset is the question.
+            Some(NetExt::Fragment(h)) => {
+                if h.fragment_offset().value() != 0 {
+                    return None;
+                }
+                h.next_header()
+            }
             Some(NetExt::Ipv4Auth(h)) => h.next_header(),
             Some(NetExt::Ipv6Auth(h)) => h.next_header(),
             None => self.net.as_ref()?.next_header(),
@@ -2420,6 +2435,67 @@ mod test {
             headers.size().get(),
             14 + 40 + 8 + 20,
             "size must include extension header"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fragment_upper_layer_proto {
+    use super::{Headers, Net, NetExt};
+    use crate::ipv6::Ipv6;
+    use crate::ipv6::fragment::Fragment;
+    use etherparse::{IpFragOffset, IpNumber, Ipv6FragmentHeader};
+
+    fn headers_with_fragment(offset: u16, more: bool) -> Headers {
+        let mut headers = Headers::new();
+        headers.set_net(Some(Net::Ipv6(Ipv6::default())));
+        let raw = Ipv6FragmentHeader::new(
+            IpNumber::TCP,
+            IpFragOffset::try_new(offset).unwrap_or_else(|_| unreachable!()),
+            more,
+            0,
+        );
+        #[allow(unsafe_code)]
+        // SAFETY: built here as a fragment header, which is what `from_raw_unchecked` asks.
+        let fragment = unsafe { Fragment::from_raw_unchecked(raw) };
+        headers.net_ext.push(NetExt::Fragment(fragment));
+        headers
+    }
+
+    /// The first fragment does carry the transport header, so it must still classify. The
+    /// tempting guard here is `is_fragmenting_payload()`, which is *also* true for this one
+    /// and would wrongly suppress it.
+    #[test]
+    fn the_first_fragment_still_reports_its_protocol() {
+        let headers = headers_with_fragment(0, true);
+        assert_eq!(
+            headers.upper_layer_proto(),
+            Some(crate::ip::NextHeader::TCP),
+            "the first fragment carries the transport header and must classify"
+        );
+    }
+
+    /// A non-first fragment carries payload bytes where the header would be. Reporting a
+    /// protocol here let port forwarding DNAT it and overwrite two bytes of that payload.
+    #[test]
+    fn a_non_first_fragment_reports_no_protocol() {
+        for (offset, more) in [(1u16, true), (1, false), (185, false)] {
+            let headers = headers_with_fragment(offset, more);
+            assert_eq!(
+                headers.upper_layer_proto(),
+                None,
+                "offset {offset} more={more} named a protocol whose header is not present"
+            );
+        }
+    }
+
+    /// Offset 0 with no more fragments is not a fragment at all (RFC 6946); it must classify.
+    #[test]
+    fn an_atomic_fragment_still_reports_its_protocol() {
+        let headers = headers_with_fragment(0, false);
+        assert_eq!(
+            headers.upper_layer_proto(),
+            Some(crate::ip::NextHeader::TCP)
         );
     }
 }
