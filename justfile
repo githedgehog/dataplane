@@ -194,8 +194,10 @@ fuzz target time="60s" *args="":
     # libfuzzer wants a nightly compiler for its sanitizer coverage flags, while the
     # pinned toolchain is stable; --rustc-bootstrap bridges that. cargo-bolero already
     # builds with the fuzz profile and links AddressSanitizer unless told otherwise, so
-    # a plain `just fuzz` is already an asan run. Findings land in a gitignored
-    # `__fuzz__` directory beside the test.
+    # a plain `just fuzz` is already an asan run. Findings land under
+    # `{{ fuzz_corpus_root }}` (`.fuzz-corpus` unless `FUZZ_CORPUS_ROOT` says otherwise),
+    # not in a `__fuzz__` directory beside the test -- that moved when the coverage corpora
+    # were isolated from the unit tests.
     #
     # `sanitize=thread` additionally rebuilds std: thread instrumentation changes the
     # ABI, so a std left uninstrumented fails the build on a mismatch against `core`.
