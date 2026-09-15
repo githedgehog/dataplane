@@ -112,7 +112,7 @@ _cargo_profile_flag := if profile == "debug" { "" } else { "--profile " + profil
 # Other workspace tests would fail spuriously without this filter.
 filter := if features =~ "^shuttle" { "shuttle" } else if features =~ "^loom" { "::concurrency_model::loom" } else { "" }
 
-# instrumentation mode (none/coverage)
+# instrumentation mode (none/coverage/fuzz/pgo)
 instrument := "none"
 
 # target platform (x86-64-v3/bluefield2)
@@ -122,8 +122,12 @@ version_extra := ""
 version_platform := if platform == "x86-64-v3" { "" } else { "-" + platform }
 version_profile := if profile == "release" { "" } else { "-" + profile }
 version_san := if sanitize == "" { "" } else { "-san." + replace(sanitize, ",", ".") }
+# Instrumentation belongs in the version for the same reason sanitizers do: an instrumented
+# binary performs nothing like a clean one, and a tag that does not say so is a trap for whoever
+# pulls it next.
+version_instr := if instrument == "" { "" } else if instrument == "none" { "" } else { "-instr." + replace(instrument, ",", ".") }
 version_feat := if features == "" { "" } else { "-feat." + replace(features, ",", ".") }
-version := env("VERSION", `git describe --tags --dirty --always` + version_platform + version_profile + version_san + version_feat + version_extra)
+version := env("VERSION", `git describe --tags --dirty --always` + version_platform + version_profile + version_san + version_instr + version_feat + version_extra)
 
 # Print version that will be used in the build
 version:
@@ -552,12 +556,38 @@ export-scratch-roots:
 [private]
 [script]
 _refuse-instrumented-artifact:
-    if [ -n '{{ instrument }}' ] && [ '{{ instrument }}' != "none" ]; then
-      printf 'refusing to build a container at instrument=%s: an instrumented build is a diagnostic,\n' '{{ instrument }}' >&2
-      printf 'not an artifact, and instrumentation is not part of the version -- so this image would\n' >&2
-      printf 'take a clean image tag and replace it.\n' >&2
-      exit 1
-    fi
+    # Refuse by name rather than "anything that is not none", because most of these modes produce
+    # artifacts you positively want to ship or run:
+    #   pgo      -- instrumented, but its whole purpose is to run somewhere real and be profiled,
+    #               so a build that cannot be containerised is useless from the start
+    #   pgo-use  -- not instrumented at all; this is the optimised output PGO exists to produce
+    #   bolt     -- only adds relocations for `just bolt` to consume; otherwise a normal binary
+    # What is left really is diagnostic and never wants to ship.
+    case '{{ instrument }}' in
+      coverage|fuzz)
+        printf 'refusing to build a container at instrument=%s: that is a diagnostic build, not an\n' '{{ instrument }}' >&2
+        printf 'artifact. pgo, pgo-use and bolt are allowed; if you need %s in a container too,\n' '{{ instrument }}' >&2
+        printf 'say why here rather than widening the case silently.\n' >&2
+        exit 1
+        ;;
+    esac
+    # `version_instr` only applies to a *computed* version: `version := env("VERSION", ...)`, so an
+    # explicit VERSION= silently bypasses it -- and that is the path any deploy script takes. Check
+    # the version we are actually about to tag with, not the one we would have derived.
+    case '{{ instrument }}' in
+      ''|none) ;;
+      *)
+        case '{{ version }}' in
+          *'{{ instrument }}'*) ;;
+          *)
+            printf 'refusing to tag an instrument=%s image as `%s`: the version does not name the\n' '{{ instrument }}' '{{ version }}' >&2
+            printf 'instrumentation, so this image would take a clean tag and replace it. Either drop\n' >&2
+            printf 'VERSION= and let it be derived, or put %s in the one you pass.\n' '{{ instrument }}' >&2
+            exit 1
+            ;;
+        esac
+        ;;
+    esac
 
 # Build the dataplane container image
 [script]
@@ -1662,3 +1692,69 @@ vlab-patch-fabric:
     pushd ./scripts/vlab
     ./control.sh kubectl -n fab patch fab/default --type=merge -p "{\"spec\":{\"overrides\":{\"versions\":{\"fabric\":{\"controller\":\"${fabric_version}\"}}}}}"
     popd
+
+# Merge collected .profraw files into the .profdata that `instrument=pgo-use` reads
+[script]
+pgo-merge:
+    {{ _just_debuggable_ }}
+    shopt -s nullglob
+    declare -a raw=(.pgo/*.profraw)
+    if [ ${#raw[@]} -eq 0 ]; then
+      printf 'no .pgo/*.profraw to merge. Collect one first:\n' >&2
+      printf '  1. build and deploy with instrument=pgo\n' >&2
+      printf '  2. set DATAPLANE_DEV_PROFILE_DUMP=dataplane in the pod\n' >&2
+      printf '  3. signal init: kill -USR1 1\n' >&2
+      printf '  4. copy /var/run/dataplane/dataplane.profraw into .pgo/\n' >&2
+      printf 'Collect at 1-2 workers: the counters are process-global, and at 16 workers the\n' >&2
+      printf 'cache-line contention between them costs ~400x, which distorts what you measure.\n' >&2
+      exit 1
+    fi
+    llvm-profdata merge -output=.pgo/dataplane.profdata "${raw[@]}"
+    printf 'merged %d file(s) into .pgo/dataplane.profdata\n' "${#raw[@]}"
+    llvm-profdata show .pgo/dataplane.profdata | head -6
+
+# Convert a perf.data recorded against an instrument=bolt build into BOLT's own profile
+[script]
+bolt-fdata binary perf_data=".pgo/perf.data":
+    {{ _just_debuggable_ }}
+    declare -r bin='{{ binary }}'
+    if ! readelf -S "${bin}" 2>/dev/null | grep -q '\.rela\.text'; then
+      printf '%s has no .rela.text: BOLT needs the relocations the linker normally drops.\n' "${bin}" >&2
+      printf 'Rebuild with `just instrument=bolt build dataplane`.\n' >&2
+      exit 1
+    fi
+    # `-nl` because the bench gateway is a KVM guest with no LBR (the host has amd_lbr_v2, the
+    # guest is not given it). With branch records the profile is far better; without them BOLT
+    # infers edge counts from IP samples alone and says so.
+    # Read the recording's own sample_type: with `perf record -j`, it gains BRANCH. Grepping the
+    # report text for "branch" instead looks plausible and is wrong -- it says "no branch stacks"
+    # for a recording that plainly has them, and silently drops you into degraded mode.
+    declare -a nl=()
+    if ! perf report -i '{{ perf_data }}' --header-only 2>/dev/null | grep -qE 'sample_type = .*BRANCH'; then
+      nl=(-nl)
+      printf 'no branch stacks in {{ perf_data }}; using -nl. BOLT then infers edge counts from\n' >&2
+      printf 'IP samples alone, which is much weaker. Re-record with `perf record -j any,u` if the\n' >&2
+      printf 'machine has LBR; the env-5 gateway guest does not, though its host does.\n' >&2
+    fi
+    perf2bolt "${nl[@]}" -p '{{ perf_data }}' -o .pgo/dataplane.fdata "${bin}"
+    printf 'wrote .pgo/dataplane.fdata\n'
+
+# Rewrite a binary with BOLT using .pgo/dataplane.fdata
+[script]
+bolt binary output="":
+    {{ _just_debuggable_ }}
+    declare -r bin='{{ binary }}'
+    declare out='{{ output }}'
+    [ -n "${out}" ] || out="${bin}.bolt"
+    [ -f .pgo/dataplane.fdata ] || { printf 'no .pgo/dataplane.fdata; run `just bolt-fdata` first\n' >&2; exit 1; }
+    # ext-tsp lays out blocks by the extended TSP model, hfsort+ groups hot functions together,
+    # and splitting moves cold code out of the hot text so it stops occupying i-cache lines.
+    llvm-bolt "${bin}" -o "${out}" \
+      -data=.pgo/dataplane.fdata \
+      -reorder-blocks=ext-tsp \
+      -reorder-functions=hfsort+ \
+      -split-functions \
+      -split-all-cold \
+      -icf=1 \
+      -dyno-stats
+    printf 'wrote %s\n' "${out}"

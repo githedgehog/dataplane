@@ -28,3 +28,9 @@ vmroot
 
 # ghcr.io token pasted into `just vlab-up`; lives in a docker volume, never here
 creds.json
+
+# PGO/BOLT profiles: machine-specific, large, and stale within days (see .pgo/README.md)
+.pgo/*.profdata
+.pgo/*.profraw
+.pgo/*.fdata
+.pgo/perf.data*

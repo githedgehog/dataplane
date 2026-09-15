@@ -58,6 +58,9 @@ let
     # but bolero stops on wall-clock, so the *sample* is small either way and a
     # coverage guard reading it is judging the sanitizer, not the code.
     "--check-cfg=cfg(sanitized)"
+    # Set only by `instrumentation=pgo`, so the on-demand counter dump cannot be compiled
+    # without the profiling runtime that provides the symbol it calls.
+    "--check-cfg=cfg(profile_generate)"
     "-Cdebuginfo=full"
     "-Cdwarf-version=5"
     "-Csymbol-mangling-version=v0"
@@ -85,6 +88,7 @@ let
   ++ (if is-emulated-test then [ "--cfg=emulated" ] else [ ])
   ++ (if builtins.elem "coverage" instrumentations then [ "--cfg=instrumented" ] else [ ])
   ++ (if sanitizers != [ ] then [ "--cfg=sanitized" ] else [ ])
+  ++ (if builtins.elem "pgo" instrumentations then [ "--cfg=profile_generate" ] else [ ])
   ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
   optimize-for.debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"
@@ -304,6 +308,51 @@ let
     "-Zcoverage-options=branch"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") instrument.coverage.NIX_CFLAGS_LINK);
+  # Instrumented PGO: collect a profile from a real run, to be fed back with `-Cprofile-use`.
+  #
+  # The directory is only a default: `LLVM_PROFILE_FILE` overrides it at runtime, and that is how
+  # the profile actually gets placed, because the useful profile comes off the test bench and not
+  # off the build machine. It still has to be written -- rustc rejects a bare `-Cprofile-generate`
+  # with "must have a value" -- so it names the same place `dataplane-init` puts a perf profile,
+  # which is the one directory in the container that outlives the container.
+  # Rust only, deliberately: `-fprofile-generate` reaches DPDK, and a counter update in the middle
+  # of `rte_eth_rx_burst` is ruinous. Measured on env-5: the C-instrumented build forwarded 0.03
+  # Mpps against 14.56 clean, ~400x down, with `port_rx_missed` climbing by 488M. A profile taken
+  # at 30 Kpps describes the instrumentation, not the dataplane. `-Cprofile-use` consumes the Rust
+  # side anyway; C would need its own `-fprofile-use` and is not what we are asking the compiler
+  # about. rustc links the profiling runtime itself, so no link flag is needed here.
+  instrument.pgo.NIX_CFLAGS_COMPILE = [ ];
+  instrument.pgo.NIX_CXXFLAGS_COMPILE = instrument.pgo.NIX_CFLAGS_COMPILE;
+  instrument.pgo.NIX_CFLAGS_LINK = instrument.pgo.NIX_CFLAGS_COMPILE;
+  instrument.pgo.RUSTFLAGS = [
+    "-Cprofile-generate=/var/run/dataplane"
+  ];
+  # Consume a profile collected by `instrumentation=pgo`. The path is fixed rather than passed in
+  # so that no new argument has to be threaded through the three `profiles.nix` call sites; nix
+  # copies the file into the store, so editing it correctly rebuilds what depends on it, and a
+  # missing file fails evaluation with the path in the message rather than silently building
+  # something unoptimised.
+  instrument.pgo-use.NIX_CFLAGS_COMPILE = [ ];
+  instrument.pgo-use.NIX_CXXFLAGS_COMPILE = [ ];
+  instrument.pgo-use.NIX_CFLAGS_LINK = [ ];
+  instrument.pgo-use.RUSTFLAGS = [
+    "-Cprofile-use=${../.pgo/dataplane.profdata}"
+    # A profile that does not match the code is the failure mode worth being loud about: by
+    # default rustc warns and carries on, which reads exactly like a successful PGO build.
+    "-Cllvm-args=-pgo-warn-missing-function"
+  ];
+  # BOLT rewrites the linked binary, so it needs the relocations the linker would otherwise drop.
+  # This only *prepares* a binary for BOLT; `just bolt` does the rewriting. Kept separate from
+  # `pgo` because the two compose -- a PGO build is a perfectly good BOLT input.
+  instrument.bolt.NIX_CFLAGS_COMPILE = [ ];
+  instrument.bolt.NIX_CXXFLAGS_COMPILE = [ ];
+  instrument.bolt.NIX_CFLAGS_LINK = [ ];
+  # `-z now` matters to BOLT too, since it moves code and lazy PLT resolution must not be relied
+  # on -- but `secure` already passes it, and saying it twice only makes the flag list harder to
+  # read. If that ever changes, add it back here.
+  instrument.bolt.RUSTFLAGS = [
+    "-Clink-arg=-Wl,--emit-relocs"
+  ];
   combine-profiles =
     features:
     builtins.foldl' (

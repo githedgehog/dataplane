@@ -284,7 +284,9 @@ fn spawn_signal_handler(
                     info!("Processing signal {sig:?} from signal catcher");
                     match sig {
                         DpSignal::SIGTERM | DpSignal::SIGINT | DpSignal::SIGQUIT => root.cancel(),
-                        DpSignal::SIGUSR1 | DpSignal::SIGUSR2 | DpSignal::SIGHUP | DpSignal::SIGALRM | DpSignal::SIGPIPE => {},
+                        // Deliberately does not cancel: this asks for data, not for a shutdown.
+                        DpSignal::SIGUSR1 => crate::profile::dump(),
+                        DpSignal::SIGUSR2 | DpSignal::SIGHUP | DpSignal::SIGALRM | DpSignal::SIGPIPE => {},
                     }
                 }
                 () = root.cancelled() => {
