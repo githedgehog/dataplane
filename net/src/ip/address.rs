@@ -301,3 +301,38 @@ mod tests {
         assert_eq!(<UnicastIpv6Addr as IpAddress>::BITS, 128);
     }
 }
+
+#[cfg(test)]
+mod narrowing_rejects_non_unicast {
+    use crate::ipv4::UnicastIpv4Addr;
+    use crate::ipv6::UnicastIpv6Addr;
+    use std::net::IpAddr;
+
+    #[test]
+    fn a_multicast_v6_address_does_not_narrow() {
+        let addr: IpAddr = "ff02::1".parse().unwrap_or_else(|_| unreachable!());
+        assert!(
+            UnicastIpv6Addr::try_from(addr).is_err(),
+            "ff02::1 narrowed to a unicast address"
+        );
+    }
+
+    #[test]
+    fn a_multicast_or_broadcast_v4_address_does_not_narrow() {
+        for text in ["224.0.0.1", "255.255.255.255"] {
+            let addr: IpAddr = text.parse().unwrap_or_else(|_| unreachable!());
+            assert!(
+                UnicastIpv4Addr::try_from(addr).is_err(),
+                "{text} narrowed to a unicast address"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_unicast_still_narrows() {
+        let v6: IpAddr = "2001:db8::1".parse().unwrap_or_else(|_| unreachable!());
+        let v4: IpAddr = "10.0.0.1".parse().unwrap_or_else(|_| unreachable!());
+        assert!(UnicastIpv6Addr::try_from(v6).is_ok());
+        assert!(UnicastIpv4Addr::try_from(v4).is_ok());
+    }
+}
