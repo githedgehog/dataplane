@@ -60,7 +60,7 @@ unsafe impl Sync for PoolPtr {}
 
 fn look(pool: PoolPtr) -> Seen {
     let pool = pool.0;
-    let lcore_id = unsafe { dpdk_sys::rte_lcore_id_w() };
+    let lcore_id = unsafe { dpdk_sys::rte_lcore_id() };
     let in_range = lcore_id < dpdk_sys::RTE_MAX_LCORE;
 
     let listed_by_foreach = in_range && {
@@ -86,7 +86,7 @@ fn look(pool: PoolPtr) -> Seen {
         cpu_id: unsafe { dpdk_sys::rte_lcore_to_cpu_id(-1) },
         // The payoff. `rte_mempool_default_cache` returns NULL for `LCORE_ID_ANY`, and a NULL cache
         // means every get/put goes to the shared ring under atomics.
-        has_mempool_cache: !unsafe { dpdk_sys::rte_mempool_default_cache_w(pool, lcore_id) }
+        has_mempool_cache: !unsafe { dpdk_sys::rte_mempool_default_cache(pool, lcore_id) }
             .is_null(),
     }
 }

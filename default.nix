@@ -43,7 +43,7 @@ let
       cargo-features
       host-arch
       ;
-    inherit (platform') arch;
+    inherit (platform') arch target-cpu;
   };
   # The same flag table with the sanitizer left out, which is how
   # `sanitizer-rustflags` below works out what the sanitizer added.  Cheap:
@@ -77,7 +77,7 @@ let
       cargo-features
       host-arch
       ;
-    inherit (platform') arch;
+    inherit (platform') arch target-cpu;
     for-tests = true;
   };
   cargo-profile =
@@ -1035,7 +1035,26 @@ let
                     mkdir -p $debug/bin
                     for f in $out/bin/*; do
                       mv "$f" "$debug/bin/$(basename "$f")"
-                      ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
+                      # HACK (profiling): keep enough DWARF in the shipped binary for perf to
+                      # report `file:line`, instead of `${strip} --strip-debug`.
+                      #
+                      # Line tables alone do not do it. `.debug_line` holds the line programs but
+                      # not the map from an address to the compilation unit that owns one, so
+                      # addr2line against a binary carrying only `.debug_line` answers `??:0` --
+                      # measured, not assumed. `.debug_info` has to stay, and with it `.debug_str`.
+                      #
+                      # What can go is the part that is not about lines: `.debug_names` is a
+                      # lookup accelerator and `.debug_loclists` describes where variables live,
+                      # which is gdb's business and gdb has the `$debug` output. Dropping those
+                      # two saves 41.5 MB of 109 MB and still resolves.
+                      #
+                      # Note this puts build-time paths (`/build/source/...`, and store paths in
+                      # `.debug_str`) into the shipped binary, so the scanner finds far more
+                      # runtime references than before and `closure-check` has more to say. That
+                      # is part of why this is a hack and not a default.
+                      ${objcopy} --remove-section=.debug_names \
+                                 --remove-section=.debug_loclists \
+                                 "$debug/bin/$(basename "$f")" "$f"
                       ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
                     done
 
@@ -1590,6 +1609,18 @@ let
           # python interpreter, which nothing links against and which `frr-reload.py` reaches only
           # through its `#!` line.
           frr-closure = pkgs.closureInfo { rootPaths = [ frr-env ]; };
+          # HACK (profiling): perf in the shipped image, so `dataplane-init` can wrap the
+          # dataplane in `perf record` -- see `DATAPLANE_DEV_PERF` in `init/src/main.rs`.
+          # Attaching from a sidecar needs `hostPID` and a pid search; being the parent needs
+          # perf here. Its closure is large and drags an interpreter in behind it, so this is
+          # not something to leave switched on: `closure-check` is expected to fail while it is,
+          # and that failure is the reminder to take it out again.
+          # `withPython = false` halves it: perf links libpython only for `perf script`'s
+          # scripting bindings, and that pulled a whole 209 MiB interpreter into the image for
+          # a feature none of record/report/stat/c2c uses. The AMD metric groups and the IBS
+          # events are compiled into the tool either way -- checked, not assumed.
+          perf-hack = pkgs.pkgsHostHost.perf.override { withPython = false; };
+          perf-closure = pkgs.closureInfo { rootPaths = [ perf-hack ]; };
         in
         ''
           tmp="$(mktemp -d)"
@@ -1601,6 +1632,8 @@ let
           cd "$tmp"
           ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/bin/dataplane"
           ln -s "${workspace.cli}/bin/cli" "$tmp/bin/cli"
+          # HACK (profiling): `DEV_PERF_BINARY` in `init/src/main.rs` looks here.
+          ln -s "${perf-hack}/bin/perf" "$tmp/bin/perf"
           ln -s "${workspace.init}/bin/dataplane-init" "$tmp/bin/dataplane-init"
           for i in "${pkgs.pkgsHostHost.busybox}/bin/"*; do
               ln -s "${pkgs.pkgsHostHost.busybox}/bin/busybox" "$tmp/bin/$(basename "$i")"
@@ -1642,6 +1675,7 @@ let
               ${workspace.cli} \
               ${pkgs.pkgsHostHost.busybox}
             cat "${frr-closure}/store-paths"
+            cat "${perf-closure}/store-paths"
           } | sed '/^$/d' | sort -u > "$inputs"
 
           # we take some care to make the tar file reproducible here
@@ -1750,6 +1784,14 @@ let
         paths = [
           pkgs.pkgsBuildHost.gdb
           pkgs.pkgsBuildHost.rr
+          # Profiling, not just debugging. The vendor event tables are compiled in, so this is
+          # where `perf stat -M PipelineL1` and the `ibs_op` filters come from; a distro perf
+          # that predates the target's microarchitecture does not error, it silently reports no
+          # metrics. Pairs with the `.debug` outputs below, which are what let it resolve
+          # symbols in a binary whose DWARF was split out at install time.
+          pkgs.pkgsBuildHost.perf
+          # `pgrep`/`ps`, to find the dataplane to attach to.
+          pkgs.pkgsBuildHost.procps
           pkgs.pkgsBuildHost.coreutils
           pkgs.pkgsBuildHost.bashInteractive
           pkgs.pkgsBuildHost.iproute2

@@ -125,7 +125,7 @@ struct Driven {
 
 /// Run a full async create/push/pull cycle on `queue`, entirely from the calling thread.
 fn drive(port: u16, table: Table, queue: u32) -> Driven {
-    let lcore_id = unsafe { dpdk_sys::rte_lcore_id_w() };
+    let lcore_id = unsafe { dpdk_sys::rte_lcore_id() };
     let mut err: rte_flow_error = unsafe { core::mem::zeroed() };
     let mut op_attr: rte_flow_op_attr = unsafe { core::mem::zeroed() };
     // Postpone every op, so the whole batch is submitted to hardware by the single `push` below --

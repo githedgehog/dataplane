@@ -68,6 +68,65 @@ fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
     rss
 }
 
+/// Say what the port's link is doing, loudly when it is down.
+///
+/// Separate from `bring_up` only to keep that function within its line budget; it belongs to it.
+///
+/// A port with no carrier is otherwise indistinguishable from a working one: every configuration
+/// step succeeds, the driver reports "started", the workers poll happily, and nothing arrives.
+/// Nothing is wrong from DPDK's side, so nothing in the driver complains. For a bifurcated device
+/// the usual cause is the kernel netdev being administratively down -- the port follows the netdev,
+/// and moving an interface between network namespaces clears `IFF_UP`.
+fn report_link(
+    dev: &Dev<'_, Started>,
+    index: dpdk::dev::DevIndex,
+    name: &str,
+    if_index: InterfaceIndex,
+    mac: Mac,
+    mtu: u16,
+    num_workers: u16,
+) {
+    match dev.link() {
+        Ok(link) if link.up => info!(
+            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+             {num_workers} rx/tx queue pair(s), link {link}"
+        ),
+        Ok(link) => warn!(
+            "DPDK port {index} ({name}) is configured and started but its link is {link}: \
+             ifindex {if_index}, mac {mac}, mtu {mtu}, {num_workers} rx/tx queue pair(s). No \
+             traffic will pass. For a bifurcated device such as mlx5 the port follows its kernel \
+             netdev, so check that the netdev is up inside the datapath network namespace."
+        ),
+        Err(e) => info!(
+            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+             {num_workers} rx/tx queue pair(s); link state unavailable ({e:?})"
+        ),
+    }
+}
+
+/// How many mbufs a port's receive pool holds and how big each one's data room is.
+///
+/// Split out to keep `bring_up` within its line budget; it belongs to it.
+///
+/// The room is sized against the MTU the device was just configured with, not against
+/// `PoolParams::default()`. The cost is logged because it multiplies: one room per mbuf and a
+/// 24-worker port wants ~98k of them, so this is the difference between ~200 MiB and ~900 MiB of
+/// hugepages on a single port, and a port reserving most of a grant should say so.
+fn pool_shape(
+    dev: &Dev<'_, dpdk::dev::Stopped>,
+    index: dpdk::dev::DevIndex,
+    name: &str,
+    num_workers: u16,
+) -> (u32, u16) {
+    let data_room = dpdk::mem::mbuf_data_room(dev.mtu().unwrap_or(1500));
+    let pool_mbufs = POOL_MBUFS_PER_WORKER * u32::from(num_workers);
+    info!(
+        "port {index} ({name}) receive pool: {pool_mbufs} mbufs of {data_room} B = {} MiB",
+        (u64::from(pool_mbufs) * u64::from(data_room)) / (1024 * 1024)
+    );
+    (pool_mbufs, data_room)
+}
+
 /// A port that has been configured and started, with the pool its receive queues draw from.
 ///
 /// Held by the driver for the whole run. Workers borrow nothing from this; they are handed owned
@@ -106,6 +165,7 @@ impl<'eal> Port<'eal> {
         info: DevInfo<'eal>,
         name: String,
         num_workers: u16,
+        mtu: Option<u16>,
     ) -> Result<Self, DriverError> {
         let index = info.index();
 
@@ -135,7 +195,10 @@ impl<'eal> Port<'eal> {
                 RxOffload::NONE
             }),
             tx_offloads: Some(TxOffloadConfig::default()),
-            mtu: None,
+            // From the configuration when it named one. Left `None` the device takes DPDK's
+            // default of 1500, which on a 9036 fabric stops every connection the moment slow
+            // start reaches a full-size segment.
+            mtu,
             rss,
         };
 
@@ -157,6 +220,7 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
+        let (pool_mbufs, data_room) = pool_shape(&dev, index, &name, num_workers);
         let rx_pool = eal
             .mem
             .new_pkt_pool(
@@ -164,6 +228,7 @@ impl<'eal> Port<'eal> {
                     format!("rx_{index}"),
                     PoolParams {
                         size: POOL_MBUFS_PER_WORKER * u32::from(num_workers),
+                        data_size: data_room,
                         ..Default::default()
                     },
                 )
@@ -226,10 +291,7 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
-        info!(
-            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
-             {num_workers} rx/tx queue pair(s)"
-        );
+        report_link(&dev, index, &name, if_index, mac, mtu, num_workers);
 
         Ok(Port {
             dev,

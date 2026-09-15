@@ -10,6 +10,7 @@ use ahash::RandomState;
 use net::interface::address::IfAddr;
 use std::collections::HashMap;
 
+use net::eth::mac::SourceMac;
 use net::interface::InterfaceIndex;
 #[allow(unused)]
 use tracing::{debug, error, info};
@@ -221,6 +222,18 @@ impl IfTable {
     pub(super) fn set_iface_admin_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
         if let Some(ifr) = self.get_interface_mut(ifindex) {
             ifr.set_admin_state(state);
+        }
+    }
+
+    //////////////////////////////////////////////////////////////////////
+    /// Update the link-layer address of an interface
+    ///
+    /// Only meaningful for interface types that have one: setting a MAC on a loopback would be
+    /// changing its type, which an address change is not entitled to do.
+    //////////////////////////////////////////////////////////////////////
+    pub(super) fn set_iface_mac(&mut self, ifindex: InterfaceIndex, mac: SourceMac) {
+        if let Some(ifr) = self.get_interface_mut(ifindex) {
+            ifr.set_mac(mac);
         }
     }
 }
