@@ -132,7 +132,7 @@ pub struct Vrf {
     pub name: String,
     pub vrfid: VrfId,
     pub tableid: Option<RouteTableId>,
-    pub description: Option<String>,
+    pub vpcname: Option<String>,
     pub(crate) status: VrfStatus,
     pub(crate) routesv4: PrefixMapTrie<Ipv4Prefix, Route>,
     pub(crate) routesv6: PrefixMapTrie<Ipv6Prefix, Route>,
@@ -148,7 +148,7 @@ pub struct Vrf {
 pub struct RouterVrfConfig {
     pub vrfid: VrfId,                  /* Id of VRF - may equate to ifindex */
     pub name: String,                  /* name of kernel interface */
-    pub description: Option<String>,   /* VRF description - may get from cfg or add ourselves */
+    pub vpcname: Option<String>,       /* Name of VPC this vrf corresponds to */
     pub tableid: Option<RouteTableId>, /* kernel table-id */
     pub vni: Option<Vni>,              /* vni */
 }
@@ -158,7 +158,7 @@ impl RouterVrfConfig {
         Self {
             vrfid,
             name: name.to_string(),
-            description: None,
+            vpcname: None,
             tableid: None,
             vni: None,
         }
@@ -167,8 +167,8 @@ impl RouterVrfConfig {
         self.name = name.to_string();
     }
     #[must_use]
-    pub fn set_description(mut self, description: &str) -> Self {
-        self.description = Some(description.to_owned());
+    pub fn set_vpcname(mut self, vpcname: &str) -> Self {
+        self.vpcname = Some(vpcname.to_owned());
         self
     }
     #[must_use]
@@ -204,7 +204,7 @@ impl Vrf {
             name: config.name.clone(),
             vrfid: config.vrfid,
             tableid: config.tableid,
-            description: config.description.clone(),
+            vpcname: config.vpcname.clone(),
             vni: config.vni,
             status: VrfStatus::Active,
             routesv4,
@@ -248,10 +248,10 @@ impl Vrf {
     }
 
     ////////////////////////////////////////////////////////////////////////
-    /// Set a description for a [`Vrf`]
+    /// Set the name of the VPC that a [`Vrf`] corresponds to
     /////////////////////////////////////////////////////////////////////////
-    pub fn set_description(&mut self, description: &str) {
-        self.description = Some(description.to_owned());
+    pub fn set_vpcname(&mut self, description: &str) {
+        self.vpcname = Some(description.to_owned());
     }
 
     ////////////////////////////////////////////////////////////////////////
