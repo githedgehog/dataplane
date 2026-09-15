@@ -71,7 +71,9 @@ use super::rule::Rule;
 /// `loom`/`shuttle` model-checker backends, `concurrency::sync::Mutex::new`
 /// is not `const fn` (each instance registers with the scheduler), so a
 /// `static M: Mutex<()> = Mutex::new(())` would fail to typecheck on those
-///
+/// backends. `OnceLock` defers construction to first use, which is inside a
+/// model-checked execution, so the same declaration compiles and behaves under
+/// all three backends.
 ///
 /// # Tracing reentrancy
 ///
