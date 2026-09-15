@@ -1451,7 +1451,6 @@ fn expected_outcome(result: LookupResult) -> NfOutcome {
 /// Returns `None` for packets without an IP layer.
 fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Option<Probe> {
     use net::headers::{TryIp, TryTransport};
-    use std::num::NonZero;
 
     let net = pkt.try_ip()?;
     Some(Probe {
@@ -1462,11 +1461,9 @@ fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Opt
         src_ip: net.src_addr(),
         dst_ip: net.dst_addr(),
         proto: net.next_header(),
-        ports: pkt.try_transport().and_then(|t| {
-            t.src_port()
-                .map(NonZero::get)
-                .zip(t.dst_port().map(NonZero::get))
-        }),
+        ports: pkt
+            .try_transport()
+            .and_then(|t| t.src_port().zip(t.dst_port())),
     })
 }
 
@@ -1497,15 +1494,15 @@ fn probe_packet(probe: &Probe) -> Option<(Packet<TestBuffer>, Probe)> {
     // that the NF cannot see, so we clear revalidation info.
     probe.dst_vpcd = None;
     probe.gate = SourceGate::Ungated;
-    if let Some((sport, dport)) = probe.ports.as_mut() {
-        *sport = (*sport).max(1);
-        *dport = (*dport).max(1);
-    }
 
     let headers = match (probe.src_ip, probe.dst_ip) {
         (std::net::IpAddr::V4(src), std::net::IpAddr::V4(dst)) => match probe.ports {
-            Some((sp, dp)) if probe.proto == NextHeader::TCP => build_tcp_packet(src, dst, sp, dp),
-            Some((sp, dp)) if probe.proto == NextHeader::UDP => build_udp_packet(src, dst, sp, dp),
+            Some((sp, dp)) if probe.proto == NextHeader::TCP => {
+                build_tcp_packet(src, dst, sp.get(), dp.get())
+            }
+            Some((sp, dp)) if probe.proto == NextHeader::UDP => {
+                build_udp_packet(src, dst, sp.get(), dp.get())
+            }
             _ => {
                 probe.proto = NextHeader::ICMP;
                 probe.ports = None;
@@ -1514,10 +1511,10 @@ fn probe_packet(probe: &Probe) -> Option<(Packet<TestBuffer>, Probe)> {
         },
         (std::net::IpAddr::V6(src), std::net::IpAddr::V6(dst)) => match probe.ports {
             Some((sp, dp)) if probe.proto == NextHeader::TCP => {
-                build_tcp_packet_v6(src, dst, sp, dp)
+                build_tcp_packet_v6(src, dst, sp.get(), dp.get())
             }
             Some((sp, dp)) if probe.proto == NextHeader::UDP => {
-                build_udp_packet_v6(src, dst, sp, dp)
+                build_udp_packet_v6(src, dst, sp.get(), dp.get())
             }
             _ => {
                 probe.proto = NextHeader::ICMP6;

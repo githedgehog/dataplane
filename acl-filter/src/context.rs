@@ -17,9 +17,10 @@ use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, ValidatedAclRule};
 use dpdk::acl::{CategoryMask, Priority};
 use lookup::Lookup;
+use lpm::prefix::with_ports::KeyPort;
 use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
-use match_action::{Erased, ExactSpec, FieldPredicate, FixedSize, MatchKey, PrefixSpec, RangeSpec};
-use net::ip::NextHeader;
+use match_action::{Erased, ExactSpec, FieldPredicate, MatchKey, PrefixSpec, RangeSpec};
+use net::ip::{IpAddress, NextHeader};
 use net::vxlan::Vni;
 use std::collections::HashMap;
 use std::fmt;
@@ -33,8 +34,8 @@ struct PeeringAclRule {
     dst_vni: Vni,
     src_ip_range: Option<Prefix>,
     dst_ip_range: Option<Prefix>,
-    src_port_range: Option<RangeSpec<u16>>,
-    dst_port_range: Option<RangeSpec<u16>>,
+    src_port_range: Option<RangeSpec<KeyPort>>,
+    dst_port_range: Option<RangeSpec<KeyPort>>,
     log: bool,
     scope: AclScope,
     action: AclAction,
@@ -183,10 +184,10 @@ pub(super) struct AclKey<I> {
     dst_ip_range: I,
     #[range]
     #[cli(column_name = "src-port")]
-    src_port_range: u16,
+    src_port_range: KeyPort,
     #[range]
     #[cli(column_name = "dst-port")]
-    dst_port_range: u16,
+    dst_port_range: KeyPort,
 }
 
 impl<I> AclKey<I> {
@@ -197,8 +198,8 @@ impl<I> AclKey<I> {
         dst_vni: Vni,
         src_ip: I,
         dst_ip: I,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
+        src_port: Option<NonZero<u16>>,
+        dst_port: Option<NonZero<u16>>,
     ) -> Self {
         Self {
             proto,
@@ -206,8 +207,8 @@ impl<I> AclKey<I> {
             dst_vni,
             src_ip_range: src_ip,
             dst_ip_range: dst_ip,
-            src_port_range: src_port.unwrap_or(0),
-            dst_port_range: dst_port.unwrap_or(0),
+            src_port_range: KeyPort::new(src_port),
+            dst_port_range: KeyPort::new(dst_port),
         }
     }
 }
@@ -220,8 +221,8 @@ fn rule_predicates<T: IpVersion>(
     dst_vni: Vni,
     src_ip_range: Prefix,
     dst_ip_range: Prefix,
-    src_port_range: RangeSpec<u16>,
-    dst_port_range: RangeSpec<u16>,
+    src_port_range: RangeSpec<KeyPort>,
+    dst_port_range: RangeSpec<KeyPort>,
 ) -> Option<(AclKeyRule<T>, Vec<FieldPredicate>)> {
     let rule = AclKeyRule {
         proto: proto.into(),
@@ -238,7 +239,7 @@ fn rule_predicates<T: IpVersion>(
 /// Per-IP-version behaviour for the address key fields: the wildcard prefix, and narrowing a
 /// version-agnostic [`Prefix`] to this version. `prefix_spec` returns `None` for the other
 /// version, which is what keeps each table to a single address width.
-pub(super) trait IpVersion: FixedSize {
+pub(super) trait IpVersion: IpAddress {
     fn wildcard() -> Prefix;
     fn prefix_spec(prefix: Prefix) -> Option<PrefixSpec<Self>>;
 }

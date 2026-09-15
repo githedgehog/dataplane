@@ -20,7 +20,9 @@ use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 use crate::router::cpi::{CpiStats, CpiStatus, StatsRow};
 
 use crate::rib::VrfTable;
-use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
+use crate::rib::encapsulation::{
+    Encapsulation, ResolvedEncapsulation, ResolvedVxlan, VxlanEncapsulation,
+};
 use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore, Visited};
 use crate::rib::vrf::{Route, RouteFlags, RouteOrigin, ShimNhop, Vrf, VrfStatus};
 
@@ -66,8 +68,26 @@ impl Display for VxlanEncapsulation {
             "Vxlan (vni {}), remote {}",
             self.vni.as_u32(),
             self.remote
-        )?;
-        fmt_opt_value(f, " dmac", self.dmac.as_ref(), false)
+        )
+    }
+}
+impl Display for ResolvedVxlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Vxlan (vni {}), remote {} dmac {}",
+            self.vni.as_u32(),
+            self.remote,
+            self.dmac
+        )
+    }
+}
+impl Display for ResolvedEncapsulation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolvedEncapsulation::Vxlan(encap) => encap.fmt(f),
+            ResolvedEncapsulation::Mpls(label) => write!(f, "MPLS (label:{label})"),
+        }
     }
 }
 impl Display for Encapsulation {
@@ -98,9 +118,6 @@ impl Display for NhopKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(address) = self.address {
             write!(f, " via {address}")?;
-        }
-        if let Some(ifname) = &self.ifname {
-            write!(f, " interface {ifname}")?;
         }
         if let Some(ifindex) = self.ifindex {
             write!(f, " (idx {ifindex})")?;
@@ -723,14 +740,12 @@ impl Display for FibKey {
         match self {
             FibKey::Id(vrfid) => write!(f, "vrfid: {vrfid}")?,
             FibKey::Vni(vni) => write!(f, "vni: {vni:?}")?,
-            FibKey::Unset => write!(f, "Unset!")?,
         }
         Ok(())
     }
 }
 impl Display for EgressObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        fmt_opt_value(f, " interface", self.ifname.as_ref(), false)?;
         fmt_opt_value(f, " idx", self.ifindex.as_ref(), false)?;
         fmt_opt_value(f, " addr", self.address.as_ref(), false)
     }

@@ -3,7 +3,7 @@
 
 //! Module that contains definitions and methods for fib objects
 
-use crate::rib::encapsulation::Encapsulation;
+use crate::rib::encapsulation::ResolvedEncapsulation;
 use net::interface::InterfaceIndex;
 use net::vxlan::Vni;
 use std::net::IpAddr;
@@ -16,21 +16,12 @@ use std::net::IpAddr;
 pub struct EgressObject {
     pub(crate) ifindex: Option<InterfaceIndex>,
     pub(crate) address: Option<IpAddr>,
-    pub(crate) ifname: Option<String>,
 }
 
 impl EgressObject {
     #[must_use]
-    pub fn new(
-        ifindex: Option<InterfaceIndex>,
-        address: Option<IpAddr>,
-        ifname: Option<String>,
-    ) -> Self {
-        Self {
-            ifindex,
-            address,
-            ifname,
-        }
+    pub fn new(ifindex: Option<InterfaceIndex>, address: Option<IpAddr>) -> Self {
+        Self { ifindex, address }
     }
     #[must_use]
     pub fn ifindex(&self) -> &Option<InterfaceIndex> {
@@ -40,10 +31,6 @@ impl EgressObject {
     pub fn address(&self) -> &Option<IpAddr> {
         &self.address
     }
-    #[must_use]
-    pub fn ifname(&self) -> &Option<String> {
-        &self.ifname
-    }
     /// merge two egress objects appearing in a next-hop or a Fib entry. This is used as part
     /// of the resolution to ensure correctness
     pub fn merge(&mut self, other: &Self) {
@@ -52,9 +39,6 @@ impl EgressObject {
         }
         if other.address.is_some() {
             self.address = other.address;
-        }
-        if self.ifname.is_none() && other.ifname.is_some() {
-            self.ifname.clone_from(&other.ifname);
         }
     }
 }
@@ -234,7 +218,7 @@ impl FibEntry {
     #[must_use]
     pub fn is_vxlan(&self) -> Option<Vni> {
         for inst in &self.instructions {
-            if let PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) = inst {
+            if let PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan)) = inst {
                 return Some(vxlan.vni);
             }
         }
@@ -243,7 +227,7 @@ impl FibEntry {
     #[must_use]
     pub fn is_vxlan_with_vni(&self, vni: Vni) -> bool {
         for inst in &self.instructions {
-            if let PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) = inst {
+            if let PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan)) = inst {
                 return vxlan.vni == vni;
             }
         }
@@ -258,16 +242,17 @@ impl FibEntry {
 pub enum PktInstruction {
     #[default]
     Drop, /* drop the packet */
-    Local(InterfaceIndex), /* packet is destined to gw */
-    Encap(Encapsulation),  /* encapsulate the packet */
-    Egress(EgressObject),  /* send the packet over interface to some ip */
+    Local(InterfaceIndex),
+    Encap(ResolvedEncapsulation),
+    Egress(EgressObject),
 }
 
 #[cfg(test)]
 mod squash_properties {
     use super::*;
-    use crate::rib::encapsulation::VxlanEncapsulation;
+    use crate::rib::encapsulation::ResolvedVxlan;
     use bolero::{Driver, ValueGenerator};
+    use net::eth::mac::Mac;
     use std::net::Ipv4Addr;
     use std::num::NonZero;
     use std::ops::Bound::Included;
@@ -277,7 +262,6 @@ mod squash_properties {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)),
     ];
-    const IFNAMES: [&str; 2] = ["eth0", "eth1"];
 
     fn index(raw: u8) -> InterfaceIndex {
         InterfaceIndex::new(NonZero::new(u32::from(raw)).unwrap_or_else(|| unreachable!()))
@@ -290,11 +274,9 @@ mod squash_properties {
     fn egress<D: Driver>(driver: &mut D) -> Option<EgressObject> {
         let ifindex = driver.gen_u8(Included(&0), Included(&3))?;
         let address = driver.gen_u8(Included(&0), Included(&3))?;
-        let ifname = driver.gen_u8(Included(&0), Included(&2))?;
         Some(EgressObject::new(
             choose(ifindex, &[index(1), index(2), index(3)]),
             choose(address, &ADDRESSES),
-            choose(ifname, &IFNAMES).map(str::to_string),
         ))
     }
 
@@ -302,11 +284,12 @@ mod squash_properties {
         Some(match driver.gen_u8(Included(&0), Included(&3))? {
             0 => PktInstruction::Local(index(driver.gen_u8(Included(&1), Included(&3))?)),
             1 => PktInstruction::Drop,
-            2 => PktInstruction::Encap(Encapsulation::Vxlan(VxlanEncapsulation::new(
-                Vni::new_checked(u32::from(driver.gen_u8(Included(&1), Included(&3))?))
+            2 => PktInstruction::Encap(ResolvedEncapsulation::Vxlan(ResolvedVxlan {
+                vni: Vni::new_checked(u32::from(driver.gen_u8(Included(&1), Included(&3))?))
                     .unwrap_or_else(|_| unreachable!()),
-                ADDRESSES[0],
-            ))),
+                remote: ADDRESSES[0],
+                dmac: Mac::from([0x02, 0, 0, 0, 0, 1]),
+            })),
             _ => PktInstruction::Egress(egress(driver)?),
         })
     }
@@ -396,7 +379,6 @@ mod squash_properties {
                 let inputs = egresses(&entry);
                 let ifindex = inputs.iter().find_map(|e| *e.ifindex());
                 let address = inputs.iter().rev().find_map(|e| *e.address());
-                let ifname = inputs.iter().find_map(|e| e.ifname().clone());
 
                 let mut squashed = entry.clone();
                 squashed.squash();
@@ -405,7 +387,6 @@ mod squash_properties {
                     Some(merged) => {
                         assert_eq!(*merged.ifindex(), ifindex, "interface, for {entry:?}");
                         assert_eq!(*merged.address(), address, "address, for {entry:?}");
-                        assert_eq!(*merged.ifname(), ifname, "name, for {entry:?}");
                     }
                     None => assert!(ifindex.is_none(), "for {entry:?}"),
                 }
