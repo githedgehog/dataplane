@@ -774,12 +774,22 @@ duvet-check:
     # working tree dirty is a trap anywhere; in a repo with worktrees and a shared stash
     # stack it is a trap that costs someone else's work.
     committed="$(mktemp -d)"
+    # Two traps, in this order, and the order is the whole point. The restore trap must not
+    # be armed until the thing it restores *from* exists: armed first, a `cp` that fails --
+    # `.duvet/requirements` absent, a full disk -- fires a handler that deletes the working
+    # copies and then cannot put anything back, so the check destroys the committed state it
+    # was meant to protect. Until the backup is made, the only safe handler is one that
+    # removes the temporary directory.
+    trap 'rm -rf "${committed}"' EXIT
+    # `-a` so mtimes survive the round trip. `.duvet/requirements/**` is `include_str!`d by
+    # nat's RFC contract, so restoring it with a fresh timestamp makes cargo rebuild that
+    # crate and everything downstream on every `just lint`.
+    cp -a .duvet/requirements "${committed}/requirements"
+    cp -a .duvet/snapshot.txt "${committed}/snapshot.txt"
     trap 'rm -rf .duvet/requirements .duvet/snapshot.txt; \
           mv "${committed}/requirements" .duvet/requirements; \
           mv "${committed}/snapshot.txt" .duvet/snapshot.txt; \
           rmdir "${committed}"' EXIT
-    cp -r .duvet/requirements "${committed}/requirements"
-    cp .duvet/snapshot.txt "${committed}/snapshot.txt"
     duvet report
     stale=0
     diff -u "${committed}/snapshot.txt" .duvet/snapshot.txt || stale=1
