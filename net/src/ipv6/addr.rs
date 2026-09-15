@@ -71,7 +71,7 @@ impl TryFrom<IpAddr> for UnicastIpv6Addr {
     type Error = IpAddr;
     fn try_from(value: IpAddr) -> Result<Self, Self::Error> {
         match value {
-            IpAddr::V6(addr) => Ok(UnicastIpv6Addr(addr)),
+            IpAddr::V6(addr) => Self::new(addr).map_err(IpAddr::V6),
             IpAddr::V4(_) => Err(value),
         }
     }
