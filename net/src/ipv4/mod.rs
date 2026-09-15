@@ -94,10 +94,26 @@ impl Ipv4 {
     /// # Errors
     ///
     /// Returns [`Ipv4OptionsLenError`] if `data` is longer than the options field can hold.
+    ///
+    /// The payload length is preserved: `total_len` counts the header *and* the payload, so
+    /// changing the options without adjusting it silently reinterprets that many bytes of
+    /// payload as header, or underflows. `Headers::transport_payload_len` then answers `None`
+    /// and `update_checksums` checksums the rest of the buffer instead of the datagram. That
+    /// was previously safe only because the one caller happened to call
+    /// [`Ipv4::set_payload_len`] afterwards.
+    ///
+    /// A payload that no longer fits beside larger options is clamped rather than rejected:
+    /// this setter's contract is about the options, and the caller is about to set a length
+    /// anyway.
     pub fn set_options(&mut self, data: &[u8]) -> Result<&mut Self, Ipv4OptionsLenError> {
+        let payload_len = self.0.payload_len().unwrap_or(0);
         self.0.options = data
             .try_into()
             .map_err(|_| Ipv4OptionsLenError { len: data.len() })?;
+        if self.set_payload_len(payload_len).is_err() {
+            let headroom = u16::try_from(self.header_len()).unwrap_or(u16::MAX);
+            let _ = self.set_payload_len(u16::MAX - headroom);
+        }
         Ok(self)
     }
 
@@ -624,5 +640,56 @@ mod test {
                     },
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod options_preserve_payload_len {
+    use super::Ipv4;
+
+    /// `total_len` counts header + payload, so growing the options must move it. Otherwise
+    /// the same `total_len` now describes a shorter payload, and every length derived from
+    /// it is wrong by the size of the options.
+    #[test]
+    fn growing_the_options_keeps_the_payload_length() {
+        let mut header = Ipv4::default();
+        header
+            .set_payload_len(100)
+            .unwrap_or_else(|_| unreachable!());
+        let before = header.header_len();
+
+        header
+            .set_options(&[0u8; 8])
+            .unwrap_or_else(|_| unreachable!());
+
+        assert_eq!(
+            header.header_len(),
+            before + 8,
+            "the options did not grow the header"
+        );
+        assert_eq!(
+            header.total_len(),
+            u16::try_from(header.header_len()).unwrap_or_else(|_| unreachable!()) + 100,
+            "total_len no longer describes a 100 byte payload"
+        );
+    }
+
+    #[test]
+    fn shrinking_the_options_keeps_the_payload_length() {
+        let mut header = Ipv4::default();
+        header
+            .set_options(&[0u8; 8])
+            .unwrap_or_else(|_| unreachable!());
+        header
+            .set_payload_len(100)
+            .unwrap_or_else(|_| unreachable!());
+
+        header.set_options(&[]).unwrap_or_else(|_| unreachable!());
+
+        assert_eq!(
+            header.total_len(),
+            u16::try_from(header.header_len()).unwrap_or_else(|_| unreachable!()) + 100,
+            "total_len no longer describes a 100 byte payload"
+        );
     }
 }
