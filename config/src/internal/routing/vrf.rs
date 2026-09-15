@@ -31,7 +31,7 @@ pub struct VrfConfig {
     pub ospf: Option<Ospf>,
     #[multi_index(ordered_unique)]
     pub vpc_id: Option<VpcId>,
-    pub description: Option<String>, /* informational */
+    pub vpcname: Option<String>,
 }
 
 impl Default for VrfConfig {
@@ -46,7 +46,7 @@ impl Default for VrfConfig {
             interfaces: InterfaceConfigTable::new(),
             vpc_id: None,
             ospf: None,
-            description: None,
+            vpcname: None,
         }
     }
 }
@@ -70,8 +70,8 @@ impl VrfConfig {
         self
     }
     #[must_use]
-    pub fn set_description(mut self, description: &str) -> Self {
-        self.description = Some(description.to_owned());
+    pub fn set_vpcname(mut self, vpcname: &str) -> Self {
+        self.vpcname = Some(vpcname.to_owned());
         self
     }
     #[must_use]
