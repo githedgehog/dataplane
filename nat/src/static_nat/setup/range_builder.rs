@@ -1270,6 +1270,7 @@ mod bolero_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "the range builder sweep is 59s under miri")]
     fn test_bolero() {
         let generator = PrefixListsGenerator {};
         bolero::check!().with_generator(generator).for_each(

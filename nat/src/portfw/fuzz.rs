@@ -222,6 +222,7 @@ fn a_forwarded_packet_lands_inside_the_published_target() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "one configuration is minutes under miri")]
 fn distinct_published_tuples_reach_distinct_targets() {
     let tally = Tally::default();
 
