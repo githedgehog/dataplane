@@ -76,7 +76,7 @@ impl Default for Route {
             distance: 0,
             metric: 0,
             s_nhops: Vec::with_capacity(1),
-            tstamp: Instant::now(),
+            tstamp: clock::now(),
         }
     }
 }
@@ -807,7 +807,7 @@ pub mod tests {
             distance,
             metric,
             s_nhops: vec![],
-            tstamp: Instant::now(),
+            tstamp: clock::now(),
         }
     }
 

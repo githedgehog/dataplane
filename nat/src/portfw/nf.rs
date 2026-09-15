@@ -14,7 +14,6 @@ use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
-use std::time::Instant;
 
 use crate::common::NatAction;
 use crate::portfw::flow_state::build_portfw_flow_keys;
@@ -114,7 +113,7 @@ impl PortForwarder {
         };
 
         // create a pair of related flow entries (outside the flow table). Timeout is set according to the rule matched
-        let timeout = Instant::now() + entry.init_timeout();
+        let timeout = clock::now() + entry.init_timeout();
         let Ok((fw_flow, rev_flow)) = FlowInfo::related_pair(
             timeout,
             fw_key,

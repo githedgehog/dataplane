@@ -31,8 +31,10 @@ use std::{net::IpAddr, os::unix::net::UnixDatagram};
 use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
 
-// Size of a chunk. Messages may be split into chunks of this size if they exceed it
-const CLI_MSG_CHUNK_SIZE: usize = 2048;
+// Size of a chunk. Messages may be split into chunks of this size if they exceed it.
+// Public so that a test asserting an answer spans several chunks measures the real size
+// rather than a copy of the number that silently stops tracking it.
+pub const CLI_MSG_CHUNK_SIZE: usize = 2048;
 
 // Socket snd/rx size. This is a recommendation as it can't be enforced 100%
 pub const CLI_RX_BUFF_SIZE: usize = CLI_MSG_CHUNK_SIZE * 8192;

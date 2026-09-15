@@ -18,7 +18,7 @@ mod sockstats;
 mod worker;
 
 use std::ops::Add;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use concurrency::sync::Arc;
 use concurrency::thread;
@@ -252,7 +252,7 @@ impl DriverKernel {
                 .collect();
 
             // the next instant when the rx tasks watchdogs should be checked.
-            let mut next_watchdog_check = Instant::now().add(check_period);
+            let mut next_watchdog_check = clock::now().add(check_period);
 
             loop {
                 // check if we must run. Otherwise (got cancelled) join all workers
@@ -262,7 +262,7 @@ impl DriverKernel {
 
                 // check the current time and decide if we should check whether the rx tasks patted the watchdogs.
                 // If so, compute the next time we should check them again in the future.
-                let now = Instant::now();
+                let now = clock::now();
                 let check_watchdog = now >= next_watchdog_check;
                 if check_watchdog {
                     while next_watchdog_check <= now {

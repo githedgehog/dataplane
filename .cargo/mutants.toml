@@ -1,0 +1,26 @@
+# Configuration for `cargo mutants`, which `just mutants` runs.
+#
+# cargo-mutants measures how much the tests actually check, rather than how much they merely
+# execute. It makes one small change to the source at a time -- replacing a function body with
+# a default value, flipping a comparison -- and reruns the suite. A mutant which does not
+# generate a test failure is an indication that the test is not testing that code path properly
+# even though it is being executed.
+#
+# The lists below keep code out of that scoring because a mutant is a false positive
+# either because the mutant accidentally computes the right thing, or multiple
+# behaviors are correct, etc.  The glob exclusions are different: that code is not
+# scored because the tests cannot reach it at all, as sysfs access needs privileges
+# the test environment does not have.
+
+exclude_re = [
+    "<impl Display for",
+    "<impl Debug for",
+    "<impl std::fmt::Display for",
+    "<impl std::fmt::Debug for",
+
+    "contract::",
+]
+
+exclude_globs = [
+    "sysfs/**",
+]

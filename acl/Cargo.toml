@@ -12,6 +12,7 @@ reference = []
 
 [dependencies]
 arrayvec = { workspace = true, default-features = true }
+clock = { workspace = true }
 concurrency = { workspace = true, features = [] }
 dpdk = { workspace = true, optional = true }
 lookup = { workspace = true, features = [] }
@@ -20,6 +21,7 @@ net = { workspace = true, features = [] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+clock = { workspace = true, features = ["virtual"] }
 # Enable the "reference" backend for this crate's own tests and benches. It is a non-default feature
 # (production links only the rte_acl backend), but the integration tests and benches
 # differential-test against it, so make it available whenever test/bench targets are built.

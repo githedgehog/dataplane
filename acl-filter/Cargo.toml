@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 acl = { workspace = true }
+clock = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
@@ -22,6 +23,7 @@ tracectl = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+clock = { workspace = true, features = ["virtual"] }
 # The reference (linear-scan) ACL backend is the differential-test oracle and drives the fast,
 # EAL-free semantic suite. It is `cfg(test)`-gated in the source, so it is never part of a
 # production build; this dev-dep just makes `acl::reference` available to test builds.

@@ -13,6 +13,7 @@ use crate::masquerade::flows::check_masquerading_flow;
 use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
 use crate::masquerade::protocol::next_flow_status;
 use crate::masquerade::state::MasqueradeState;
+use clock::Duration;
 use concurrency::sync::{Arc, Weak};
 use config::GenId;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError, Insertion};
@@ -26,7 +27,6 @@ use net::{FlowKey, IpProtoKey};
 use pipeline::{NetworkFunction, PipelineData};
 use std::fmt::Debug;
 use std::net::IpAddr;
-use std::time::{Duration, Instant};
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
@@ -320,7 +320,7 @@ impl Masquerade {
             MasqueradeState::new_pair(alloc.allocation, src_ip, src_port, idle_timeout);
 
         // build a flow pair from the keys (without NAT state)
-        let expires_at = Instant::now() + Self::MASQUERADE_ONEWAY_TIMEOUT;
+        let expires_at = clock::now() + Self::MASQUERADE_ONEWAY_TIMEOUT;
         let (forward, reverse) = FlowInfo::related_pair(
             expires_at,
             *initial_flow_key,

@@ -8,7 +8,6 @@ use super::flow_key::FlowKey;
 
 use concurrency::sync::Weak;
 use std::fmt::Display;
-use std::time::Instant;
 
 impl Display for FlowKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -49,7 +48,7 @@ impl Display for FlowInfoLocked {
 impl Display for FlowInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let expires_at = self.expires_at();
-        let expires_in = expires_at.saturating_duration_since(Instant::now());
+        let expires_in = expires_at.saturating_duration_since(clock::now());
         let genid = self.genid();
         let info = self.locked.read();
         let has_related = self

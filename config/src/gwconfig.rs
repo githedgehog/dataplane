@@ -36,7 +36,7 @@ impl GwConfigMeta {
     fn new(genid: GenId) -> Self {
         Self {
             genid,
-            create_t: SystemTime::now(),
+            create_t: clock::system_now(),
             apply_t: None,
             error: None,
             is_rollback: false,
@@ -46,7 +46,7 @@ impl GwConfigMeta {
     /// Set the time when attempting to apply a configuration finished.
     ////////////////////////////////////////////////////////////////////////////////
     pub fn apply_time(&mut self) {
-        self.apply_t = Some(SystemTime::now());
+        self.apply_t = Some(clock::system_now());
     }
 
     ////////////////////////////////////////////////////////////////////////////////
