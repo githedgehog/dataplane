@@ -137,7 +137,9 @@ function main() {
   // change beyond NaN%" for every run rather than failing.
   if (!Number.isFinite(threshold)) {
     console.error(`error: --threshold=${rawThreshold} is not a number`);
-    return 1;
+    // `Deno.exit`, not `return`: `main()` is called as a bare statement, so a returned code
+    // is discarded and the process still exits 0. The usage error below already does this.
+    Deno.exit(1);
   }
   const headlineOnly = flags.includes("--headline-only");
 
