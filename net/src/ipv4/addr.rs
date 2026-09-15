@@ -71,7 +71,11 @@ impl TryFrom<IpAddr> for UnicastIpv4Addr {
     type Error = IpAddr;
     fn try_from(value: IpAddr) -> Result<Self, Self::Error> {
         match value {
-            IpAddr::V4(addr) => Ok(UnicastIpv4Addr(addr)),
+            // Through `new`, not the tuple constructor. Building `UnicastIpv4Addr` directly here
+            // skipped the only check that makes the type mean anything, so a multicast
+            // address narrowed successfully and then tripped an `unreachable!` further
+            // down the packet path when something asked for it as a source.
+            IpAddr::V4(addr) => Self::new(addr).map_err(IpAddr::V4),
             IpAddr::V6(_) => Err(value),
         }
     }
