@@ -860,7 +860,11 @@ mod fib_properties {
                 // or not anything was ever published. The claim with content is the negative one
                 // -- that the reader does *not* see work the writer has only staged -- so stage
                 // the changes first and check that nothing moved.
-                if !forces_publish(&changes) {
+                if forces_publish(&changes) {
+                    for change in &changes {
+                        apply_to_fib(&mut writer, change, &pool, &keys, true);
+                    }
+                } else {
                     let before = reader_view(&reader, &probes);
                     for change in &changes {
                         apply_to_fib(&mut writer, change, &pool, &keys, false);
@@ -871,10 +875,6 @@ mod fib_properties {
                         "the reader saw changes that were never published, after {changes:?}"
                     );
                     writer.publish();
-                } else {
-                    for change in &changes {
-                        apply_to_fib(&mut writer, change, &pool, &keys, true);
-                    }
                 }
 
                 for probe in &probes {
