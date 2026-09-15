@@ -218,6 +218,19 @@ fuzz target time="60s" *args="":
           "{{ sanitize }}" "{{ sanitize }}" >&2
         exit 1
       fi
+    elif [ -n "{{ sanitize }}" ] && [ "{{ sanitize }}" != "NONE" ]; then
+      # Without the stamp there is nothing to compare, and the check above would simply not
+      # run -- so a request for instrumentation would quietly get a sysroot that may have
+      # none, which is the failure the check exists to prevent. Refuse only when a sanitizer
+      # was actually asked for; an uninstrumented run has nothing to be wrong about.
+      printf 'refusing to fuzz: sanitize=%s was asked for, but this sysroot carries no\n' \
+        "{{ sanitize }}" >&2
+      printf '.sanitize stamp (DATAPLANE_SYSROOT=%s), so it cannot be shown to be\n' \
+        "${sysroot:-<unset>}" >&2
+      printf 'instrumented. Re-enter the shell with:\n' >&2
+      printf '  just sanitize=%s setup-roots && nix-shell --argstr sanitize %s\n' \
+        "{{ sanitize }}" "{{ sanitize }}" >&2
+      exit 1
     fi
     corpus_dir="{{ fuzz_corpus_root }}/$(printf '%s' '{{ target }}' | tr -c 'A-Za-z0-9_.-' '_')"
     mkdir -p "${corpus_dir}"
