@@ -316,8 +316,16 @@ impl Display for VrfStatus {
 }
 
 fn fmt_vrf_oneline(vrf: &Vrf, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let vpc = vrf.vpcname.clone().unwrap_or_else(|| "--".to_string());
-    writeln!(f, " Vrf: '{}' (id: {}) VPC: {vpc}\n", vrf.name, vrf.vrfid)?;
+    let vpc = vrf.vpcname.as_deref().unwrap_or("--");
+    let vni = vrf
+        .vni
+        .map_or_else(|| "--".to_string(), |vni| vni.to_string());
+
+    writeln!(
+        f,
+        " Vrf: '{}' (id: {}) VPC: {vpc} vni: {vni}\n",
+        vrf.name, vrf.vrfid
+    )?;
     Ok(())
 }
 
