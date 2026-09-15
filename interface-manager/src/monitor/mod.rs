@@ -119,6 +119,9 @@ impl InterfaceMonitor {
     ///
     /// # Errors
     ///
+    /// Returns the underlying [`std::io::Error`] if the netlink connection cannot be opened.
+    /// Once the monitor is running, a failure to read a single message is logged and the loop
+    /// continues, so this only returns on a failure to start.
     pub async fn run(monitor: Arc<Self>) -> std::io::Result<()> {
         info!("Starting interface monitor");
         for i in &monitor.tracked {
