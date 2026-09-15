@@ -18,7 +18,9 @@ mod test;
 pub use flow_state::PortFwState;
 pub use nf::PortForwarder;
 pub use portfwtable::PortFwTableError;
-pub use portfwtable::access::{PortFwTableReader, PortFwTableReaderFactory, PortFwTableWriter};
+pub use portfwtable::access::{
+    PortFwTableReader, PortFwTableReaderFactory, PortFwTableWriter, validate_ruleset,
+};
 pub use portfwtable::objects::{PortFwEntry, PortFwKey, PortFwTable};
 pub use portfwtable::portrange::PortRange;
 pub use portfwtable::setup::build_port_forwarding_configuration;

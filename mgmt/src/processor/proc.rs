@@ -543,6 +543,22 @@ fn apply_masquerade_config(
     debug!("Updated masquerade NAT allocator");
 }
 
+/// Check the port-forwarding ruleset the way [`apply_port_forwarding_config`] will, but without
+/// touching any table.
+///
+/// `apply_config` swaps the flow-filter, ACL, static-NAT and masquerade tables before it reaches
+/// port forwarding. Those swaps are not undone on a later error and the generation id is only
+/// advanced at the very end, so a ruleset rejected at that point leaves four tables live under a
+/// generation that is never published. Running the same validation up front turns that into a
+/// clean refusal before anything has been committed.
+///
+/// This narrows the window rather than closing the class: `apply_router_config` still runs after
+/// every swap and can still fail late. Closing that properly needs a real two-phase apply.
+fn precheck_port_forwarding_config(vpc_table: &ValidatedVpcTable) -> ConfigResult {
+    let ruleset = build_port_forwarding_configuration(vpc_table)?;
+    nat::portfw::validate_ruleset(&ruleset).map_err(|e| ConfigError::PortForwarding(e.to_string()))
+}
+
 fn apply_port_forwarding_config(
     vpc_table: &ValidatedVpcTable,
     portfw_w: &mut PortFwTableWriter,
@@ -632,6 +648,9 @@ impl ConfigProcessor {
         let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
         let overlay = config.external().overlay();
+
+        /* reject a port-forwarding ruleset the table cannot hold *before* anything is swapped */
+        precheck_port_forwarding_config(overlay.vpc_table())?;
 
         /* apply flow-filter config */
         apply_flow_filter_config(config.external().overlay(), flow_filter_writer)?;
