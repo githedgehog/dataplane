@@ -65,12 +65,35 @@ pub enum RouteProtocol {
 )]
 #[allow(unused)]
 pub struct RequestArgs {
-    pub address: Option<IpAddr>,         /* an IP address */
-    pub prefix: Option<(IpAddr, u8)>,    /* an IP prefix */
-    pub vrfid: Option<u32>,              /* Id of a VRF */
-    pub vni: Option<u32>,                /* Vxlan vni */
-    pub ifname: Option<String>,          /* name of interface */
-    pub protocol: Option<RouteProtocol>, /* a type of route or routing protocol */
+    pub address: Option<IpAddr>,            /* an IP address */
+    pub prefix: Option<(IpAddr, u8)>,       /* an IP prefix */
+    pub vpc: Option<String>,                /* vpc name */
+    pub vrfid: Option<u32>,                 /* Id of a VRF */
+    pub vni: Option<u32>,                   /* Vxlan vni */
+    pub ifname: Option<String>,             /* name of interface */
+    pub protocol: Option<RouteProtocol>,    /* a type of route or routing protocol */
+    pub selector: Option<PrefetchSelector>, /* selector to prefetch data for completion */
+}
+impl RequestArgs {
+    #[must_use]
+    pub fn with_selector(selector: PrefetchSelector) -> Self {
+        Self {
+            selector: Some(selector),
+            ..Default::default()
+        }
+    }
+}
+
+/// The kind of identifiers requested by a prefetch. `Hash` is required because
+/// the prefetched data is cached.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+pub enum PrefetchSelector {
+    Vpcs,
+    Vnis,
+    Interfaces,
+    RmacAddr,
 }
 
 /// A Cli request
@@ -131,12 +154,16 @@ impl CliSerialize for CliResponse {
 
 #[derive(Error, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum CliError {
-    #[error("Internal error")]
-    InternalError,
+    #[error("Internal error: {0}")]
+    InternalError(String),
     #[error("Could not find: {0}")]
     NotFound(String),
     #[error("Not supported: {0}")]
     NotSupported(String),
+    #[error("Inacessible")]
+    Inacessible,
+    #[error("Wrong filter: {0}")]
+    WrongFilter(String),
 }
 
 #[derive(Error, Debug)]
@@ -154,6 +181,25 @@ pub struct CliResponse {
     // TODO: replace this String with a proper enum of response types
     // once all CLI-visible objects derive the rkyv traits.
     pub result: Result<String, CliError>,
+    pub prefetched: PrefetchedData,
+}
+
+/// A struct conveying pre-fetched data for autocompletion.
+/// A single vector is used at the moment since we get only one type of ids,
+/// for a single selector. The selector is, therefore, informational.
+#[derive(Debug, Default, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct PrefetchedData {
+    pub selector: Option<PrefetchSelector>,
+    pub data: Vec<String>,
+}
+impl PrefetchedData {
+    #[must_use]
+    pub fn with_data(selector: PrefetchSelector, data: Vec<String>) -> Self {
+        Self {
+            selector: Some(selector),
+            data,
+        }
+    }
 }
 
 #[allow(unused)]
@@ -181,6 +227,7 @@ impl CliResponse {
         Self {
             request,
             result: Ok(data),
+            prefetched: PrefetchedData::default(),
         }
     }
 
@@ -189,6 +236,16 @@ impl CliResponse {
         Self {
             request,
             result: Err(error),
+            prefetched: PrefetchedData::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_prefetch_data(request: CliRequest, prefetched: PrefetchedData) -> Self {
+        Self {
+            request,
+            result: Ok("".into()),
+            prefetched,
         }
     }
 
@@ -351,6 +408,9 @@ pub enum CliAction {
     // DPDK
     ShowDpdkPort,
     ShowDpdkPortStats,
+
+    // auto Prefetch
+    Prefetch,
 }
 
 #[cfg(test)]
@@ -370,10 +430,12 @@ mod tests {
             RequestArgs {
                 address: Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
                 prefix: Some((IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 24)),
+                vpc: Some("vpc-1".into()),
                 vrfid: Some(42),
                 vni: Some(10_100),
                 ifname: Some("eth0".into()),
                 protocol: Some(RouteProtocol::Bgp),
+                selector: Some(PrefetchSelector::Vpcs),
             },
         )
     }
