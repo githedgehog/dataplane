@@ -29,7 +29,14 @@ impl Absorb<PortFwTableChange> for PortFwTable {
 pub struct PortFwTableWriter(WriteHandle<PortFwTable, PortFwTableChange>);
 pub struct PortFwTableReader(ReadHandle<PortFwTable>);
 
-fn validate_ruleset(ruleset: &[PortFwEntry]) -> Result<(), PortFwTableError> {
+/// Answer whether `update_table` would accept this ruleset, without touching the table.
+///
+/// Exposed so that a caller applying several tables can find out *before* it commits any of
+/// them. `update_table` validates first and so never half-updates the port-forwarding table
+/// itself, but it is applied after the flow-filter, ACL, static-NAT and masquerade tables have
+/// already been swapped, and a failure there leaves those four live under a generation that is
+/// never published.
+pub fn validate_ruleset(ruleset: &[PortFwEntry]) -> Result<(), PortFwTableError> {
     PortFwTable::dry_run(ruleset)
 }
 
