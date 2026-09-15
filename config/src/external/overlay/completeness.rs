@@ -52,6 +52,15 @@ const REACH: &[(&str, Reach)] = &[
         Reach::Determined("`PeeringHandle::name`"),
     ),
     (
+        "VpcPeering.no_multipath",
+        Reach::Fixed(
+            "false. Every `VpcPeering` constructor sets it false and no operation flips it; \
+             the only writer is the k8s converter, from `GatewayAgentPeerings::no_multi_path`. \
+             So no generated configuration disables multipath, and any property about \
+             stateless peering is currently unreachable from the algebra.",
+        ),
+    ),
+    (
         "VpcPeering.left",
         Reach::Determined("the peering's left handle"),
     ),
@@ -210,6 +219,7 @@ fn survey(overlay: &Overlay, seen: &mut Observed) {
             right,
             gwgroup,
             acl,
+            no_multipath,
         } = peering;
         seen.note("VpcPeering.name", name.clone());
         seen.note("VpcPeering.gwgroup", gwgroup.clone());
@@ -217,6 +227,7 @@ fn survey(overlay: &Overlay, seen: &mut Observed) {
             "VpcPeering.acl",
             if acl.is_some() { "present" } else { "absent" },
         );
+        seen.note("VpcPeering.no_multipath", no_multipath.to_string());
         for (side, manifest) in [("VpcPeering.left", left), ("VpcPeering.right", right)] {
             seen.note(side, manifest.name.clone());
             survey_manifest(manifest, seen);
