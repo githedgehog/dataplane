@@ -125,9 +125,24 @@ impl Guard {
                 denial.name = format!("{}-except", denial.name);
                 denial.action = AclAction::Deny;
                 let named = PrefixPortsSet::from([PrefixWithOptionalPorts::from(prefix)]);
+                // Clearing the matching `*_any_ports` is what makes the narrowing narrow.
+                // Those ranges mean "any address within the peering, restricted to these
+                // ports" and `AclRule::validate_patterns_coverage` materializes them back
+                // into `src`/`dst`. `PermitByProtocol` inherits `EVERY_PORT` on both sides
+                // from `rule`, so leaving them set unions the whole manifest back over the
+                // excepted prefix and the denial matches every TCP packet across the
+                // peering rather than the one prefix it names. `PermitExcept` carries empty
+                // vectors already, so this only bites the protocol-narrowed guard -- and it
+                // was invisible because every derived load is UDP.
                 match which {
-                    Narrowing::Source => denial.pattern.src = named,
-                    Narrowing::Destination => denial.pattern.dst = named,
+                    Narrowing::Source => {
+                        denial.pattern.src = named;
+                        denial.pattern.src_any_ports = Vec::new();
+                    }
+                    Narrowing::Destination => {
+                        denial.pattern.dst = named;
+                        denial.pattern.dst_any_ports = Vec::new();
+                    }
                 }
                 if self == Guard::PermitByProtocol {
                     denial.pattern.proto = AclProtoMatch::Tcp;
@@ -1632,6 +1647,35 @@ mod tests {
                         handle,
                         spec.guard()
                     );
+                    // A `-except` denial that names a prefix must not also carry
+                    // `*_any_ports` on that side. Those mean "any address within the
+                    // peering, restricted to these ports" and `validate_patterns_coverage`
+                    // materializes them back into `src`/`dst`, so keeping them unions the
+                    // whole manifest over the prefix and the rule denies its entire protocol
+                    // across the peering rather than the exception it was built to express.
+                    for rule in acl.iter().flat_map(|acl| acl.rules()) {
+                        if rule.action != AclAction::Deny || !rule.name.ends_with("-except") {
+                            continue;
+                        }
+                        assert!(
+                            rule.pattern.src.is_empty() || rule.pattern.src_any_ports.is_empty(),
+                            "{:?}: the -except denial narrows its source to {:?} but keeps \
+                             src_any_ports {:?}, which validation unions back to the whole \
+                             peering",
+                            handle,
+                            rule.pattern.src,
+                            rule.pattern.src_any_ports
+                        );
+                        assert!(
+                            rule.pattern.dst.is_empty() || rule.pattern.dst_any_ports.is_empty(),
+                            "{:?}: the -except denial narrows its destination to {:?} but keeps \
+                             dst_any_ports {:?}, which validation unions back to the whole \
+                             peering",
+                            handle,
+                            rule.pattern.dst,
+                            rule.pattern.dst_any_ports
+                        );
+                    }
                     guards[match observed {
                         Guard::Open => 0,
                         Guard::Permit => 1,
