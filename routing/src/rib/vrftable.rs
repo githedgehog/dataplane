@@ -276,13 +276,19 @@ impl VrfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Immutably access a [`Vrf`] from its vpc name.
+    /// Get a reference to all [`Vrf`]s with the same vpc name.
     //////////////////////////////////////////////////////////////////
-    pub fn get_vrf_by_vpc_name(&self, vpcname: &str) -> Result<&Vrf, RouterError> {
-        self.by_id
+    pub fn get_vrfs_by_vpc(&self, vpcname: &str) -> Result<Vec<&Vrf>, RouterError> {
+        let vrfs: Vec<_> = self
+            .by_id
             .values()
-            .find(|vrf| vrf.vpcname.as_deref() == Some(vpcname))
-            .ok_or(RouterError::NoSuchVrf)
+            .filter(|vrf| vrf.vpcname.as_deref() == Some(vpcname))
+            .collect();
+
+        if vrfs.is_empty() {
+            return Err(RouterError::NoSuchVrf);
+        }
+        Ok(vrfs)
     }
 
     #[allow(unused)]
