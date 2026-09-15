@@ -542,6 +542,48 @@ fn translation(packet: &Packet<TestBuffer>) -> (Ipv4Addr, u16) {
     )
 }
 
+/// Every masqueraded packet must leave with a correct checksum **and** without asking for a full
+/// payload recompute.
+///
+/// Folded into the shared helper so that every NF-level masquerade test is a guard for it. It
+/// exists because the incremental conversion was, for a while, entirely wasted: `snat`/`dnat` did
+/// the delta correctly and then `Masquerade::process` set `checksum_refresh` unconditionally,
+/// reinstating the full sum. Nothing failed -- the packets were correct, just needlessly
+/// expensive -- and the unit tests missed it because they call `snat`/`dnat` directly rather than
+/// through the network function.
+fn assert_masquerade_checksum_is_incremental(packet: &mut Packet<TestBuffer>) {
+    use net::checksum::Checksum;
+    use net::headers::{Transport, TryHeaders, TryTransport};
+
+    if packet.get_done().is_some() {
+        return; // dropped or filtered; nothing was translated
+    }
+    if !packet.meta().is_src_natted() && !packet.meta().is_dst_natted() {
+        return; // no translation happened, so there is no delta to check
+    }
+    let checksum_of = |p: &Packet<TestBuffer>| -> Option<u16> {
+        TryHeaders::headers(p)
+            .try_transport()
+            .and_then(|tp| match tp {
+                Transport::Tcp(tcp) => tcp.checksum().map(u16::from),
+                Transport::Udp(udp) => udp.checksum().map(u16::from),
+                _ => None,
+            })
+    };
+    assert!(
+        !packet.meta().checksum_refresh(),
+        "a masqueraded packet asked for a full payload recompute; the incremental path was \
+         overridden somewhere above `snat`/`dnat`"
+    );
+    let incremental = checksum_of(packet);
+    packet.update_checksums();
+    assert_eq!(
+        incremental,
+        checksum_of(packet),
+        "a masqueraded packet's incremental checksum disagrees with a full recompute"
+    );
+}
+
 fn check_packet(
     nat: &mut Masquerade,
     src_vni: Vni,
@@ -565,8 +607,13 @@ fn check_packet(
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
     flow_lookup(nat.sessions(), &mut packet);
+    // Start from a correct checksum, so the assertion below is about this code and not about a
+    // malformed test packet: an incremental update is a delta and faithfully preserves an error in
+    // its input.
+    packet.update_checksums();
 
-    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    let mut packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    assert_masquerade_checksum_is_incremental(&mut packets_out[0]);
     let hdr_out = packets_out[0].try_ipv4().unwrap();
     let udp_out = packets_out[0].try_udp().unwrap();
     let done_reason = packets_out[0].get_done();

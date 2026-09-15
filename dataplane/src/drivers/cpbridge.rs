@@ -1,19 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! The control-plane bridge: what carries a control packet between a DPDK port and the kernel.
+//! The control-plane bridge: what carries a control packet between a port and the kernel.
 //!
 //! # Why this has to exist at all
 //!
-//! With the kernel driver, FRR and the dataplane share a namespace with the real NIC. FRR peers
-//! through the kernel's own stack and `AF_PACKET` hands the dataplane a copy; nothing has to be
-//! carried anywhere.
+//! The dataplane puts the interfaces it drives into a network namespace of their own, and the
+//! control plane -- FRR, the routing tables, the interface manager -- into another. Nothing in the
+//! control plane's namespace is a real NIC, so the kernel's end of every port is a **tap**, and
+//! *every* control frame -- BGP, BFD, ARP, LLDP -- has to be carried across by the dataplane.
+//! Without that the control plane is not merely degraded; it never forms an adjacency.
 //!
-//! With DPDK there is no NIC on the kernel's side of the fence. On a bifurcated driver the netdev
-//! exists, but it was moved into the datapath's network namespace, and on `vfio-pci` it does not
-//! exist at all. So the kernel's end of every port is a **tap**, and *every* control frame -- BGP,
-//! BFD, ARP, LLDP -- has to be carried across by the dataplane. Without that the control plane is
-//! not merely degraded; it never forms an adjacency.
+//! # Why both drivers, and not just DPDK
+//!
+//! Under DPDK the separation is forced: on `vfio-pci` there is no netdev at all, and on a
+//! bifurcated driver the netdev was moved away. The kernel driver could in principle leave its
+//! interfaces where the control plane can see them and let `AF_PACKET` hand the dataplane a copy,
+//! which is what it used to do. Three things argue against it:
+//!
+//! - **The host stack answers behind the dataplane's back.** An interface the kernel still owns is
+//!   an interface the kernel will route, ARP for and terminate connections on, with no dataplane
+//!   involvement. Keeping VXLAN traffic away from it took netfilter rules; moving the device out
+//!   of that namespace removes the thing those rules were defending against.
+//! - **One punt policy instead of two.** With both drivers punting through the same channels, the
+//!   decision about what the kernel should see lives in [`disposition`] alone, and a new
+//!   [`DoneReason`] forces that decision once rather than in two places that can disagree.
+//! - **The control plane stops caring which driver is running.** It configures taps either way.
+//!
+//! So the shape below is symmetric, and the driver-specific part is only how a frame gets in and
+//! out of the datapath's own buffers.
 //!
 //! # Shape
 //!
@@ -24,22 +39,24 @@
 //!
 //! Each tap gets a bounded pair of channels of owned byte buffers:
 //!
-//! - **punt**: datapath to kernel. A worker copies the frame out of its mbuf and hands it over.
-//! - **inject**: kernel to datapath. Worker 0 drains the queue, copies into a fresh mbuf, and adds
-//!   it to that port's transmit batch, bypassing the pipeline entirely -- FRR has already made the
-//!   forwarding decision.
+//! - **punt**: datapath to kernel. A worker copies the frame out of its own buffer and hands it
+//!   over.
+//! - **inject**: kernel to datapath. One worker per port drains the queue and transmits, bypassing
+//!   the pipeline entirely -- FRR has already made the forwarding decision.
 //!
-//! The buffers are copies. An `Mbuf` is `!Send` and branded with the EAL's lifetime, so it cannot
-//! cross to the management runtime under any circumstances, and control-plane volume does not
-//! justify anything cleverer than a `Vec<u8>` per frame. This is PoC-grade and deliberately so: it
-//! allocates per frame, on both paths. Fixing that means a pool of reusable buffers on each side,
-//! which is a change worth making when there is a measurement saying it matters.
+//! The buffers are copies. Under DPDK an `Mbuf` is `!Send` and branded with the EAL's lifetime, so
+//! it cannot cross to the management runtime under any circumstances; the kernel driver has no such
+//! constraint but shares the channel type rather than growing a second one. Control-plane volume
+//! does not justify anything cleverer than a `Vec<u8>` per frame. This is PoC-grade and
+//! deliberately so: it allocates per frame, on both paths. Fixing that means a pool of reusable
+//! buffers on each side, which is a change worth making when there is a measurement saying it
+//! matters.
 //!
 //! # Where the taps are created, and why it matters
 //!
 //! `TUNSETIFF` creates the device in the network namespace of the **calling thread**, and no later
 //! `setns` moves it. The bridge is therefore built on the management runtime, in the control
-//! namespace the whole process was launched into, *before* the datapath thread is spawned and jumps
+//! namespace the whole process was launched into, *before* any datapath thread is spawned and jumps
 //! into the namespace that owns the NICs. The descriptors work from anywhere afterwards; only the
 //! moment of creation is namespace-sensitive.
 
@@ -49,12 +66,12 @@ use concurrency::sync::Arc;
 use interface_manager::interface::{TapDevice, TapRegistry};
 use lifecycle::{CancellationToken, Subsystem};
 use net::eth::mac::Mac;
-use net::interface::InterfaceName;
+use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::DoneReason;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-/// One control-plane frame, copied out of (or destined for) an mbuf.
+/// One control-plane frame, copied out of (or destined for) a driver's own buffer.
 pub(crate) type Frame = Vec<u8>;
 
 /// How many frames one direction of one port's bridge will hold before it starts dropping.
@@ -82,6 +99,21 @@ pub(crate) struct PortIdentity {
 
 /// The datapath's end of one port's bridge.
 pub(crate) struct PortCpQueues {
+    /// The **tap's** interface index, which is the identity the rest of the dataplane uses.
+    ///
+    /// Not the port's own index, and the difference is the whole point. Interface indices are
+    /// per-namespace: the port has one in the datapath namespace and the tap standing in for it has
+    /// an unrelated one in the control namespace. Everything above the driver -- the configuration,
+    /// the interface table the ingress stage looks packets up in, the `oif` the router picks -- was
+    /// built by looking interfaces up **by name in the control namespace**, so all of it speaks in
+    /// tap indices. A driver that stamped its own index instead would have every packet rejected as
+    /// `InterfaceUnknown`, and every transmit fail to find its interface.
+    ///
+    /// The two can coincide, which is worse than if they never did: two freshly created namespaces
+    /// both number upwards from `lo`, so a single-port dataplane in fresh namespaces gets `2` on
+    /// both sides and works by accident. A control plane in a namespace that has other interfaces
+    /// in it -- the host's, say -- immediately does not.
+    pub(crate) index: InterfaceIndex,
     /// Frames the datapath is handing to the kernel.
     pub(crate) punt: mpsc::Sender<Frame>,
     /// Frames the kernel wants transmitted, present on exactly one worker.
@@ -255,6 +287,17 @@ pub(crate) enum BridgeError {
         #[source]
         source: std::io::Error,
     },
+    /// A tap was created but the kernel would not say what index it got.
+    ///
+    /// Fatal rather than skipped: without the index the datapath has no name for this interface
+    /// that the rest of the dataplane would recognise.
+    #[error("could not learn the interface index of the tap for {name}: {problem}")]
+    TapIndex {
+        /// The interface whose tap could not be identified.
+        name: InterfaceName,
+        /// What went wrong.
+        problem: String,
+    },
 }
 
 /// The control plane's end of the bridge: the taps, and the tasks which pump them.
@@ -305,6 +348,15 @@ impl CpBridge {
                 source,
             })?;
 
+            // Asked for now, on the thread that made it and in the namespace it lives in. This
+            // index is what the whole dataplane above the driver will call this interface -- see
+            // `PortCpQueues::index` -- so a bridge that could not learn it has not built a usable
+            // port.
+            let index = tap_index(name).map_err(|problem| BridgeError::TapIndex {
+                name: name.clone(),
+                problem,
+            })?;
+
             let (punt_tx, punt_rx) = mpsc::channel(QUEUE_DEPTH);
             let (inject_tx, inject_rx) = mpsc::channel(QUEUE_DEPTH);
 
@@ -316,9 +368,11 @@ impl CpBridge {
                 cancel.clone(),
             ));
 
+            debug!("tap {name} is interface index {index}");
             ports.insert(
                 name.to_string(),
                 PortCpQueues {
+                    index,
                     punt: punt_tx,
                     inject: Some(inject_rx),
                 },
@@ -469,6 +523,22 @@ async fn dress_taps(
         }
     }
     debug!("tap identity applier stopped");
+}
+
+/// Ask the kernel what index it gave a tap.
+///
+/// By name, because that is the only handle we have: `TUNSETIFF` reports the name it settled on but
+/// not an index, and the device has only just appeared.
+///
+/// `if_nametoindex` rather than netlink, and not merely because it is shorter. The bridge is built
+/// with the management runtime *entered* on this thread, and `Handle::enter` is enough to make
+/// `Handle::block_on` panic with "Cannot start a runtime from within a runtime" -- so an `async`
+/// lookup here has no way to be awaited. A synchronous syscall has no such problem, and it resolves
+/// in the calling thread's namespace, which is exactly the one the tap was just created in.
+fn tap_index(name: &InterfaceName) -> Result<InterfaceIndex, String> {
+    let raw = nix::net::if_::if_nametoindex(name.to_string().as_str())
+        .map_err(|e| format!("if_nametoindex: {e}"))?;
+    InterfaceIndex::try_new(raw).map_err(|e| e.to_string())
 }
 
 /// Apply one port's identity to its tap.

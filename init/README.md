@@ -97,7 +97,7 @@ frr-agent --sock-path <--frr-agent-path>
 ```
 
 which is what `/libexec/frr/docker-start` used to do. Two things that script did are gone. The `wait -n` is replaced
-by the shared fate above. The sweep of stale zebra nexthops is unnecessary, because it was cleanup after a *previous*
+by the shared fate above. The sweep of stale zebra nexthops is unnecessary, because it was cleanup after a _previous_
 container in a namespace that outlived it — and the control namespace is now created per start.
 
 Startup is ordered rather than raced: the dataplane is waited for until its control-plane socket exists, because

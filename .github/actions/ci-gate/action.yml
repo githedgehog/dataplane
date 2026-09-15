@@ -50,7 +50,15 @@ runs:
 
         on=false
         case "${EVENT}" in
-          push | merge_group | workflow_dispatch)
+          # EXPERIMENT (dpdk in vlab): `workflow_dispatch` used to be here.
+          #
+          # A dispatch is how the gateway work is being iterated, and turning every gate on makes
+          # each attempt pay for miri, the sanitizers, cross, concurrency, wasm and all three
+          # profiles before the lab it is actually asking about even starts. Off, a dispatch looks
+          # like an unlabelled pull request: the minimum needed to build an image.
+          #
+          # Restore this line with the rest of the experimental scaffolding.
+          push | merge_group)
             on=true
             ;;
           *)

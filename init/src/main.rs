@@ -5,6 +5,7 @@
 #![deny(clippy::pedantic, missing_docs)]
 
 mod frr;
+mod hugepages;
 mod supervisor;
 
 use std::collections::BTreeMap;
@@ -29,15 +30,22 @@ use tracing::{Level, debug, error, info, span, warn};
 /// Where the dataplane is installed.
 const DATAPLANE_BINARY: &str = "/bin/dataplane";
 
-/// Hugetlbfs mount points, and how much to back each with.
+/// Hugetlbfs mount points.
 ///
 /// Mounting these is best-effort. The dataplane asks the EAL for `--in-memory`, which backs its
 /// hugepages with memfd rather than files under a mount, so it starts without them; a mount is
 /// what a multi-process DPDK setup would need, and what makes the pages visible to an operator
 /// looking at the filesystem.
+///
+/// **Deliberately no `size=`.** hugetlbfs treats that option as a hard ceiling on the mount, not
+/// as a reservation, so a figure here silently caps what DPDK can take however many pages the
+/// kernel actually has. The 2 MiB mount carried `size=128M`, which is far below what a datapath
+/// asks for -- and the symptom is an allocation failure blamed on the host being short of pages,
+/// on a host with thousands of them free. Left off, the mount is bounded by the pool, which is the
+/// only limit that should apply.
 const HUGETLBFS_MOUNTS: &[(&str, &str)] = &[
-    ("/dev/hugepages/1G", "pagesize=1G,size=20G,rw"),
-    ("/dev/hugepages/2M", "pagesize=2M,size=128M,rw"),
+    ("/dev/hugepages/1G", "pagesize=1G,rw"),
+    ("/dev/hugepages/2M", "pagesize=2M,rw"),
 ];
 
 /// A device named in the configuration, resolved against the hardware actually present.
@@ -220,6 +228,50 @@ fn prepare_devices(devices: &[ResolvedDevice]) -> Result<(), String> {
 /// `init_net` -- and DPDK would then find nothing from inside the namespace. That is a boot-time
 /// setting, `ib_core.netns_mode=0`, and it is checked here so the failure is reported where it can
 /// be understood rather than as an empty device list much later.
+/// Whether the RDMA subsystem will let a network namespace own a device.
+///
+/// `ib_core`'s `netns_mode` is a bool parameter: `Y` is *shared* (the kernel default) and `N` is
+/// *exclusive*. It is settable at boot as `ib_core.netns_mode=0`, and effectively only at boot --
+/// `rdma system set netns exclusive` is permitted only while no network namespace other than the
+/// initial one exists, which on a node running containers is never.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RdmaNetnsMode {
+    /// A device can be moved into a namespace and is invisible outside it. What the design needs.
+    Exclusive,
+    /// Devices are visible everywhere and a namespace cannot own one.
+    Shared,
+    /// `ib_core` is not loaded, or the parameter is not where it is expected.
+    Unknown,
+}
+
+/// Where the kernel exposes the RDMA namespace mode.
+const IB_CORE_NETNS_MODE: &str = "/sys/module/ib_core/parameters/netns_mode";
+
+/// Interpret the contents of [`IB_CORE_NETNS_MODE`].
+///
+/// Split from the read so both answers can be tested on a machine that can only be in one of them.
+fn parse_netns_mode(raw: &str) -> RdmaNetnsMode {
+    match raw.trim() {
+        "N" | "0" => RdmaNetnsMode::Exclusive,
+        "Y" | "1" => RdmaNetnsMode::Shared,
+        other => {
+            warn!("{IB_CORE_NETNS_MODE} contained {other:?}, which is neither Y nor N");
+            RdmaNetnsMode::Unknown
+        }
+    }
+}
+
+/// Read the RDMA namespace mode from the `ib_core` module parameter.
+fn rdma_netns_mode() -> RdmaNetnsMode {
+    match std::fs::read_to_string(IB_CORE_NETNS_MODE) {
+        Ok(raw) => parse_netns_mode(&raw),
+        Err(e) => {
+            debug!("could not read {IB_CORE_NETNS_MODE}: {e}");
+            RdmaNetnsMode::Unknown
+        }
+    }
+}
+
 async fn move_devices_to_netns(
     devices: &[ResolvedDevice],
     netns: &NetworkNamespace,
@@ -233,6 +285,48 @@ async fn move_devices_to_netns(
             )
         })
         .collect();
+
+    // Say so here rather than let this surface only as an empty device list.
+    //
+    // This warns; it used to refuse, and refusing was wrong. In shared mode `_ib_alloc_device`
+    // discards the requested net, so the devlink instance moves while the RDMA device -- the half
+    // the mlx5 PMD attaches through -- stays in `init_net`. That says where the device *lives*,
+    // not whether it can be reached: shared mode also means every RDMA device is visible from
+    // every namespace, and if the kernel does not namespace-tag them in that mode, the datapath
+    // finds it exactly as it would have in `init_net` and the arrangement works.
+    //
+    // What could be measured was: on an *exclusive*-mode host, a fresh network namespace with a
+    // fresh sysfs lists no infiniband devices, so the class is tagged and visibility follows the
+    // device's net. Whether that tagging still applies under shared mode is the part that decides
+    // this, and it cannot be answered on a machine that is not in shared mode.
+    //
+    // A refusal would stop the only kind of host that could settle it from starting at all, to
+    // prevent a failure that is now understood and reported when it happens.
+    // `hardware/tests/dpdk_in_netns.rs` is the probe that answers it properly.
+    if !bifurcated.is_empty() {
+        match rdma_netns_mode() {
+            RdmaNetnsMode::Exclusive => {}
+            RdmaNetnsMode::Shared => warn!(
+                "the RDMA subsystem is in shared mode, so {} cannot be given to a namespace: the \
+                 devlink instance moves while the RDMA device stays in init_net. Whether the \
+                 datapath can still reach it there is what this run will find out. If it reports \
+                 no devices, that is the answer, and the fix is to boot with \
+                 `ib_core.netns_mode=0` (`rdma system show` should then say `netns exclusive`) or \
+                 to run without --datapath-netns -- it cannot be changed at runtime, because \
+                 `rdma system set netns exclusive` is permitted only while no network namespace \
+                 but the initial one exists.",
+                bifurcated
+                    .iter()
+                    .map(|d| d.address.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            RdmaNetnsMode::Unknown => warn!(
+                "could not determine the RDMA namespace mode; if the datapath finds no device, \
+                 check `rdma system show` for `netns exclusive`"
+            ),
+        }
+    }
 
     for device in devices {
         if matches!(
@@ -313,6 +407,147 @@ fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, Strin
     Ok(netns)
 }
 
+/// Move the kernel driver's interfaces into a network namespace of their own.
+///
+/// The counterpart of [`move_devices_to_netns`], and much the simpler of the two. A netdev the
+/// kernel drives moves with one `RTM_NEWLINK` carrying `IFLA_NET_NS_FD`; there is no driver to
+/// reinitialize, no devlink instance to find, and no RDMA subsystem to have an opinion about it.
+///
+/// # What moving them buys
+///
+/// Not merely symmetry with DPDK. An interface the kernel still owns is an interface the kernel
+/// will route through, answer ARP on and terminate connections on, all without the dataplane
+/// knowing -- which is what the netfilter rules that kept VXLAN traffic away from the host stack
+/// were defending against. With the device somewhere the host stack is not, there is nothing to
+/// defend.
+///
+/// # What it costs
+///
+/// The interface **loses its addresses and routes**, as any interface does when it changes
+/// namespace, and it comes back administratively down. Nothing here restores them, and nothing
+/// should: the dataplane drives these interfaces with `AF_PACKET` and does not want the kernel
+/// configuring them, and the addresses the control plane cares about belong on the taps that take
+/// their names.
+async fn move_interfaces_to_netns(
+    interfaces: &[String],
+    netns: &NetworkNamespace,
+) -> Result<(), String> {
+    let (connection, handle, _) =
+        rtnetlink::new_connection().map_err(|e| format!("could not open a netlink socket: {e}"))?;
+    let connection = tokio::spawn(connection);
+
+    let result = async {
+        let mut problems = Vec::new();
+        for name in interfaces {
+            // Looked up by name and moved by index. The name is what the configuration gives, but
+            // it is also what a tap is about to take in the control namespace, so resolving to an
+            // index first means the move cannot be redirected by a later name collision.
+            let link = match handle
+                .link()
+                .get()
+                .match_name(name.clone())
+                .execute()
+                .try_next()
+                .await
+            {
+                Ok(Some(link)) => link,
+                Ok(None) => {
+                    problems.push(format!("interface '{name}' does not exist"));
+                    continue;
+                }
+                Err(e) => {
+                    problems.push(format!("could not look up interface '{name}': {e}"));
+                    continue;
+                }
+            };
+
+            info!("moving {name} into the datapath network namespace");
+            // The descriptor is borrowed for this call only; the kernel resolves it during the
+            // request and takes its own reference to the namespace.
+            if let Err(e) = handle
+                .link()
+                .set(
+                    rtnetlink::LinkUnspec::new_with_index(link.header.index)
+                        .setns_by_fd(netns.as_raw().as_raw_fd())
+                        .build(),
+                )
+                .execute()
+                .await
+            {
+                problems.push(format!("could not move '{name}' into the namespace: {e}"));
+                continue;
+            }
+            info!("{name} is now in the datapath network namespace");
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems.join("\n  "))
+        }
+    }
+    .await;
+
+    connection.abort();
+    result
+}
+
+/// Create the datapath's network namespace and move the kernel driver's interfaces into it.
+///
+/// The kernel-driver twin of [`isolate_devices`], with the same ownership rule: the descriptor
+/// alone keeps the namespace alive, nothing is registered under `/run/netns`, and when this process
+/// exits the kernel returns the interfaces to where they came from.
+fn isolate_interfaces(interfaces: &[String]) -> Result<NetworkNamespace, String> {
+    let netns = NetworkNamespace::create()
+        .map_err(|e| format!("could not create a network namespace for the datapath: {e}"))?;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("could not build a runtime to talk to netlink: {e}"))?;
+
+    runtime.block_on(move_interfaces_to_netns(interfaces, &netns))?;
+    Ok(netns)
+}
+
+/// Decide where the control plane runs, and put this process there.
+///
+/// Returns the namespace this process was in beforehand when it moved, and `None` when it stayed.
+/// `None` is not a failure: it says the control plane is already where it belongs, so nothing needs
+/// a way back and the dataplane needs no second runtime.
+///
+/// # The rule
+///
+/// **A private control namespace is only correct when FRR is ours to place.** FRR has to see the
+/// taps -- it is configured by looking each interface up in the kernel, and it peers through them
+/// -- so it must share this namespace. When `--supervise-frr` says we start it, that is
+/// automatic, because it inherits ours. When FRR is a container of its own, it is somewhere we do
+/// not control, and moving out of that namespace would leave it looking at an empty one: config
+/// applies fail with "Unable to find kernel interface", and no session ever comes up.
+///
+/// `--control-netns` overrides both: it names a namespace an operator arranged for the two to
+/// share, and taking it at face value is the point of having the flag.
+///
+/// # Why staying put is still worth having a datapath namespace for
+///
+/// The two namespaces answer different questions. The datapath's takes the interfaces away from
+/// the host stack, which is what stops the kernel routing and answering ARP behind the dataplane's
+/// back. The control plane's separates FRR from everything else in the host, which only matters
+/// once FRR is ours. The first is useful on its own; the taps take the names the real interfaces
+/// just vacated.
+fn place_control_plane(
+    path: Option<&String>,
+    supervise_frr: bool,
+) -> Result<Option<NetworkNamespace>, String> {
+    if path.is_none() && !supervise_frr {
+        info!(
+            "the control plane stays in the namespace this process started in: FRR is not ours to \
+             start, so it is somewhere we cannot follow, and it has to see the taps"
+        );
+        return Ok(None);
+    }
+    enter_control_netns(path).map(Some)
+}
+
 /// Put this process into the network namespace the control plane will run in.
 ///
 /// # Why the control plane needs one at all
@@ -346,7 +581,20 @@ fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, Strin
 /// Every process started from here inherits it, because namespaces are inherited at `fork` -- which
 /// is also why this has to happen before anything is started rather than after. A namespace opened
 /// by path (the `--control-netns` case) was somebody else's to begin with and stays theirs.
-fn enter_control_netns(path: Option<&String>) -> Result<(), String> {
+///
+/// # Returns
+///
+/// The namespace this process was in **before** the move, so the dataplane can be handed a way
+/// back. This one does have to be held: nothing else in this process refers to it any more.
+fn enter_control_netns(path: Option<&String>) -> Result<NetworkNamespace, String> {
+    // Opened *before* the move, because afterwards there is no way to name it. `/proc/self/ns/net`
+    // always means "the namespace this thread is in now", so asking after `setns` returns the
+    // control namespace and the way back is lost. The dataplane needs it: its Kubernetes client,
+    // its metrics endpoint and its Pyroscope pushes all reach outside the fabric, and the control
+    // namespace is a place with no route anywhere.
+    let host = NetworkNamespace::open("/proc/self/ns/net")
+        .map_err(|e| format!("could not open the current network namespace: {e}"))?;
+
     let netns = if let Some(path) = path {
         info!("entering the control network namespace at {path}");
         NetworkNamespace::open(path)
@@ -395,7 +643,7 @@ fn enter_control_netns(path: Option<&String>) -> Result<(), String> {
 
     // Dropped rather than kept: this process is in the namespace, which is what holds it open.
     drop(netns);
-    Ok(())
+    Ok(host)
 }
 
 /// Bring `lo` up in the calling thread's network namespace.
@@ -472,6 +720,7 @@ enum HandoffError {
 fn dataplane_process(
     config: LaunchConfiguration,
     netns: Option<&NetworkNamespace>,
+    host_netns: Option<&NetworkNamespace>,
 ) -> Result<Process, HandoffError> {
     let mut config_file = config.finalize();
     let integrity_check = config_file.integrity_check().finalize().to_owned_fd();
@@ -499,12 +748,43 @@ fn dataplane_process(
         });
     }
 
+    // The namespace this process started in, when the control plane was moved out of it. Also
+    // duplicated rather than handed over, and for a different reason than the datapath's: this
+    // process keeps its own copy because it is the only thing still referring to that namespace on
+    // our side, and a supervisor that outlives one dataplane has to be able to hand the next one
+    // the same way back.
+    if let Some(host_netns) = host_netns {
+        let duplicate = host_netns
+            .as_raw()
+            .try_clone_to_owned()
+            .map_err(HandoffError::DuplicateNetns)?;
+        mappings.push(FdMapping {
+            parent_fd: duplicate,
+            child_fd: LaunchConfiguration::STANDARD_HOST_NETNS_FD,
+        });
+    }
+
     let mut command = std::process::Command::new(DATAPLANE_BINARY);
     command
         .fd_mappings(mappings)
-        .map_err(HandoffError::PlaceDescriptors)?
-        .env_clear()
-        .env("RUST_BACKTRACE", "full");
+        .map_err(HandoffError::PlaceDescriptors)?;
+
+    // The environment is inherited, not cleared. Sealing the *configuration* into a memfd is what
+    // stops the dataplane being reconfigured behind our back; it says nothing about the ambient
+    // environment, and the dataplane needs that environment to do its job.
+    //
+    // Clearing it broke three things at once, all silently. `KUBERNETES_SERVICE_HOST` and
+    // `KUBERNETES_SERVICE_PORT` are how an in-cluster client finds the API server, so the k8s
+    // client failed to infer any configuration at all and the gateway never reported its status.
+    // `HOME` is how it finds a kubeconfig to fall back on, so the error named `/var/empty/.kube/
+    // config`, a path belonging to nobody. And `DATAPLANE_PYROSCOPE_URL` exists precisely because
+    // a controller owns argv here -- a flag with no environment fallback is a flag nobody can set
+    // -- so clearing the environment took away the only way to turn profiling on.
+    //
+    // Set only if the launcher did not, so an operator who chose a backtrace level keeps it.
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        command.env("RUST_BACKTRACE", "full");
+    }
 
     Ok(Process::new("dataplane", command))
 }
@@ -524,6 +804,7 @@ fn dataplane_process(
 async fn run_gateway(
     config: LaunchConfiguration,
     netns: Option<NetworkNamespace>,
+    host_netns: Option<NetworkNamespace>,
     supervise_frr: bool,
 ) -> Result<Outcome, HandoffError> {
     // Taken before the configuration is consumed below.
@@ -532,7 +813,28 @@ async fn run_gateway(
 
     let mut supervisor = Supervisor::new();
 
-    let dataplane = dataplane_process(config, netns.as_ref())?;
+    // Everything FRR needs decided *before* anything starts, because the dataplane is first out of
+    // the gate and it already depends on one of these answers.
+    //
+    // The state directory is the reason this is not merely tidy. `/run/frr` is a volume that
+    // outlives the pod and arrives empty on a fresh install, and the dataplane binds its
+    // control-plane socket *inside* it, at `<state>/hh`. Prepare it afterwards and the dataplane
+    // dies on startup with a bind failure -- which is what happened, and which only a lab built
+    // from scratch could show: a machine that has run the old two-container gateway already has
+    // the directory, left behind by the `init-frr` container this replaces.
+    //
+    // Reading the daemon list early is worth having for its own sake: an FRR install missing zebra
+    // should be a refusal to start, not a discovery made after the datapath is already up.
+    let daemons = if supervise_frr {
+        let (config_dir, daemon_dir) = frr::install();
+        let daemons = frr::enabled_daemons(&config_dir, &daemon_dir)?;
+        frr::prepare_state_dir(&frr::state_dir())?;
+        Some(daemons)
+    } else {
+        None
+    };
+
+    let dataplane = dataplane_process(config, netns.as_ref(), host_netns.as_ref())?;
     let dataplane = if supervise_frr {
         dataplane.ready_when_path_exists(control_plane_socket)
     } else {
@@ -542,9 +844,7 @@ async fn run_gateway(
     };
     supervisor.start(dataplane).await?;
 
-    if supervise_frr {
-        let (config_dir, daemon_dir) = frr::install();
-        let daemons = frr::enabled_daemons(&config_dir, &daemon_dir)?;
+    if let Some(daemons) = daemons {
         supervisor.start(frr::watchfrr(&daemons)).await?;
         supervisor.start(frr::agent(&agent_socket)).await?;
     }
@@ -562,6 +862,7 @@ async fn run_gateway(
 fn supervise_gateway(
     config: LaunchConfiguration,
     netns: Option<NetworkNamespace>,
+    host_netns: Option<NetworkNamespace>,
     supervise_frr: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -573,7 +874,7 @@ fn supervise_gateway(
         Err(e) => fail("could not start the gateway", &e.to_string()),
     };
 
-    match runtime.block_on(run_gateway(config, netns, supervise_frr)) {
+    match runtime.block_on(run_gateway(config, netns, host_netns, supervise_frr)) {
         Ok(Outcome::Exited { name, report }) => {
             error!("{name} {report}");
             report.as_exit_code()
@@ -611,7 +912,7 @@ fn main() {
     let wants_datapath_netns = args.datapath_netns();
     let supervise_frr = args.supervise_frr();
 
-    let config = match LaunchConfiguration::try_from(args) {
+    let mut config = match LaunchConfiguration::try_from(args) {
         Ok(config) => config,
         Err(e) => fail("invalid command line arguments", &e.to_string()),
     };
@@ -628,13 +929,22 @@ fn main() {
         );
     }
 
-    let netns = match &config.driver {
+    // Declared out here because the match borrows `config.driver`, and the plan has to be written
+    // back into it afterwards -- before `dataplane_process` seals it into the memfd.
+    let mut hugepage_plan = None;
+    let (netns, host_netns) = match &config.driver {
         DriverConfigSection::Dpdk(dpdk) => {
             mount_hugepages();
             let devices = match resolve_devices(dpdk) {
                 Ok(devices) => devices,
                 Err(problems) => fail("cannot use the requested network devices", &problems),
             };
+            // Reserved here, after the devices are resolved, because the whole point is to put the
+            // pages on the node the NIC is attached to -- which is not knowable until we have the
+            // PCI addresses in hand. The result rides to the dataplane in the launch
+            // configuration; see `hugepages` for why the EAL cannot be left to do this itself.
+            hugepage_plan =
+                hugepages::reserve_for(&devices.iter().map(|d| d.address).collect::<Vec<_>>());
             if devices.is_empty() {
                 fail(
                     "no network devices to drive",
@@ -658,34 +968,15 @@ fn main() {
                 };
 
                 // Last, because it is one-way: after this the process is somewhere the devlink
-                // instances above are not, and there is no going back.
-                if let Err(e) = enter_control_netns(control_netns.as_ref()) {
-                    fail("failed to enter the control network namespace", &e);
-                }
+                // instances above are not, and there is no going back. It hands back the namespace
+                // we are leaving, which is the dataplane's way out to Kubernetes, its metrics
+                // scraper and Pyroscope.
+                let host_netns = match place_control_plane(control_netns.as_ref(), supervise_frr) {
+                    Ok(host_netns) => host_netns,
+                    Err(e) => fail("failed to enter the control network namespace", &e),
+                };
 
-                // Named rather than left to be discovered. The k8s client and the metrics endpoint
-                // reach *out* of this process, and a fresh control namespace has no route to
-                // anywhere; they have not been split onto a runtime that stays in the host's
-                // namespace yet. Without `--config-dir` the dataplane will retry k8s init ten times
-                // and give up, which says nothing about why.
-                //
-                // A warning rather than an error, because `--control-netns` names a namespace the
-                // operator built, and they may well have given it a path out.
-                if config
-                    .config_server
-                    .as_ref()
-                    .and_then(|c| c.config_dir.as_ref())
-                    .is_none()
-                {
-                    warn!(
-                        "the control plane is in a network namespace of its own and no \
-                         --config-dir was given, so the dataplane will try to reach Kubernetes \
-                         from in there. Until the host-namespace split lands, this configuration \
-                         is --config-dir only."
-                    );
-                }
-
-                Some(netns)
+                (Some(netns), host_netns)
             } else {
                 // Without a datapath namespace the physical devices are still here, so there is
                 // nowhere for the taps to go that is not on top of them. The dataplane runs where
@@ -694,17 +985,93 @@ fn main() {
                     "the packet path was not asked for a namespace of its own; the control plane \
                      stays where this process started"
                 );
-                None
+                (None, None)
             }
         }
-        DriverConfigSection::Kernel(_) => {
-            // The kernel driver uses interfaces exactly as the kernel presents them, so there is no
-            // hardware to prepare and nothing here to do but hand over. It must *not* get a control
-            // namespace: its `AF_PACKET` sockets are opened on the real interfaces, which are here.
+        DriverConfigSection::Kernel(kernel) => {
+            // No hardware to prepare -- these are interfaces the kernel already drives -- but the
+            // namespace work is the same as DPDK's, and for the same reasons. See
+            // `move_interfaces_to_netns` for what moving them buys and what it costs.
             info!("kernel driver selected; no device preparation required");
-            None
+            if kernel.netns {
+                let names: Vec<String> = kernel
+                    .interfaces
+                    .iter()
+                    .map(|i| i.interface.to_string())
+                    .collect();
+                let netns = match isolate_interfaces(&names) {
+                    Ok(netns) => {
+                        info!("datapath network namespace ready");
+                        netns
+                    }
+                    Err(e) => fail("failed to isolate the network interfaces", &e),
+                };
+
+                let host_netns = match place_control_plane(control_netns.as_ref(), supervise_frr) {
+                    Ok(host_netns) => host_netns,
+                    Err(e) => fail("failed to enter the control network namespace", &e),
+                };
+
+                (Some(netns), host_netns)
+            } else {
+                // The interfaces stay where they are, and so does the control plane. The taps the
+                // bridge would create are named after those interfaces, so there is nowhere to put
+                // them that is not on top of the real ones.
+                info!(
+                    "the packet path was not asked for a namespace of its own; the control plane \
+                     stays where this process started"
+                );
+                (None, None)
+            }
         }
     };
 
-    std::process::exit(supervise_gateway(config, netns, supervise_frr));
+    // Recorded before the configuration is sealed. The dataplane turns this into `--numa-mem`,
+    // which makes the EAL fail loudly if the memory is not where we said it would be, instead of
+    // falling back to another node without a word.
+    if let DriverConfigSection::Dpdk(dpdk) = &mut config.driver {
+        dpdk.hugepages = hugepage_plan;
+    }
+
+    std::process::exit(supervise_gateway(config, netns, host_netns, supervise_frr));
+}
+
+#[cfg(test)]
+mod rdma_netns_mode_test {
+    use super::{IB_CORE_NETNS_MODE, RdmaNetnsMode, parse_netns_mode, rdma_netns_mode};
+
+    /// Both answers, on a machine that can only be in one of them.
+    ///
+    /// The host-reading test below can only exercise whichever mode this machine happens to be in,
+    /// so a mistake in the other arm would go unnoticed -- and the arm that matters is `Y`, the
+    /// kernel default, which is what a misconfigured lab host reports.
+    #[test]
+    fn shared_and_exclusive_are_both_recognised() {
+        assert_eq!(parse_netns_mode("Y"), RdmaNetnsMode::Shared);
+        assert_eq!(parse_netns_mode("1"), RdmaNetnsMode::Shared);
+        assert_eq!(parse_netns_mode("Y\n"), RdmaNetnsMode::Shared);
+        assert_eq!(parse_netns_mode("N"), RdmaNetnsMode::Exclusive);
+        assert_eq!(parse_netns_mode("0"), RdmaNetnsMode::Exclusive);
+        assert_eq!(parse_netns_mode("N\n"), RdmaNetnsMode::Exclusive);
+        // Anything else is not guessed at: an unrecognised value warns and only warns, which is
+        // the right way round -- refusing to start over a parameter we cannot read would be worse.
+        assert_eq!(parse_netns_mode("maybe"), RdmaNetnsMode::Unknown);
+        assert_eq!(parse_netns_mode(""), RdmaNetnsMode::Unknown);
+    }
+
+    /// And the reader must agree with what this machine actually reports.
+    #[test]
+    fn a_readable_parameter_is_never_reported_unknown() {
+        let Ok(raw) = std::fs::read_to_string(IB_CORE_NETNS_MODE) else {
+            // No ib_core here; Unknown is the honest answer and the guard only warns.
+            assert_eq!(rdma_netns_mode(), RdmaNetnsMode::Unknown);
+            return;
+        };
+        assert_eq!(rdma_netns_mode(), parse_netns_mode(&raw));
+        assert_ne!(
+            rdma_netns_mode(),
+            RdmaNetnsMode::Unknown,
+            "{IB_CORE_NETNS_MODE} is readable ({raw:?}), so the mode must be decided, not guessed"
+        );
+    }
 }
