@@ -1,7 +1,9 @@
 **.profraw
 **/__fuzz__/**
 .fuzz-corpus/
-# libfuzzer writes one of these per worker into the working directory when
+# libfuzzer writes one of these per worker into the working directory when a run crashes,
+# and names them after the worker rather than the target, so they cannot be scoped to a
+# corpus directory.
 fuzz-*.log
 # qemu-user core dumps from SIGABRT under emulated tests.
 **/qemu_*.core
