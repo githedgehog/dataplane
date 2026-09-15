@@ -529,10 +529,14 @@ mod iftable_properties {
         let vrfs = vrf_ids();
         let addrs = addresses();
 
-        for view in [
-            world.iftw.enter().unwrap_or_else(|| unreachable!()),
-            world.iftr.enter().unwrap_or_else(|| unreachable!()),
-        ] {
+        // One observer, not two. `world.iftw.enter()` and `world.iftr.enter()` return the same
+        // published copy -- `WriteHandle` derefs to `ReadHandle` -- and every `IfTableWriter`
+        // mutator publishes unconditionally, so there is no unpublished state for a second view
+        // to disagree about. Iterating both ran every assertion twice and proved nothing extra.
+        // If a staged-write path is ever added here, the claim worth making is the negative one:
+        // that the reader does *not* see work that has not been published.
+        let view = world.iftr.enter().unwrap_or_else(|| unreachable!());
+        {
             assert_eq!(view.len(), model.interfaces.len(), "interface count {at}");
 
             for (index, ifindex) in ifaces.iter().enumerate() {
