@@ -133,7 +133,7 @@ function main() {
   const threshold = Number(rawThreshold);
   if (!Number.isFinite(threshold)) {
     console.error(`error: --threshold=${rawThreshold} is not a number`);
-    return 1;
+    Deno.exit(1);
   }
   const headlineOnly = flags.includes("--headline-only");
 
