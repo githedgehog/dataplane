@@ -709,23 +709,54 @@ mod fib_properties {
         }
     }
 
-    fn apply_to_fib(writer: &mut FibWriter, change: &Change, pool: &[FibEntry], keys: &[NhopKey]) {
+    /// Apply one change. `publish` is honoured by every variant except `DelRoute`, whose
+    /// `del_fibroute` publishes unconditionally -- see [`forces_publish`].
+    fn apply_to_fib(
+        writer: &mut FibWriter,
+        change: &Change,
+        pool: &[FibEntry],
+        keys: &[NhopKey],
+        publish: bool,
+    ) {
         let prefixes = prefixes();
         match change {
             Change::RegisterGroup { key, entries } => {
                 let entries: Vec<FibEntry> = entries.iter().map(|i| pool[*i].clone()).collect();
-                writer.register_fibgroup(&keys[*key], &build_fibgroup(&entries), true);
+                writer.register_fibgroup(&keys[*key], &build_fibgroup(&entries), publish);
             }
-            Change::UnregisterGroup { key } => writer.unregister_fibgroup(&keys[*key], true),
+            Change::UnregisterGroup { key } => writer.unregister_fibgroup(&keys[*key], publish),
             Change::AddRoute {
                 prefix,
                 keys: route,
             } => {
                 let route = route.iter().map(|k| keys[*k].clone()).collect();
-                writer.add_fibroute(prefixes[*prefix], route, true);
+                writer.add_fibroute(prefixes[*prefix], route, publish);
             }
             Change::DelRoute { prefix } => writer.del_fibroute(prefixes[*prefix]),
         }
+    }
+
+    /// `del_fibroute` takes no `publish` flag and publishes on every call, so a sequence
+    /// containing one cannot be used to observe the unpublished state.
+    fn forces_publish(changes: &[Change]) -> bool {
+        changes.iter().any(|c| matches!(c, Change::DelRoute { .. }))
+    }
+
+    /// Everything the reader can currently see, for the probe set.
+    fn reader_view(reader: &FibReader, probes: &[IpAddr]) -> Vec<(Prefix, Vec<FibEntry>)> {
+        probes
+            .iter()
+            .map(|probe| {
+                let (prefix, route) = reader
+                    .lpm_route_with_prefix(*probe)
+                    .unwrap_or_else(|| unreachable!());
+                let entries = route
+                    .iter()
+                    .flat_map(|group| group.entries().iter().cloned())
+                    .collect();
+                (prefix, entries)
+            })
+            .collect()
     }
 
     #[test]
@@ -759,7 +790,7 @@ mod fib_properties {
                 let mut model = Model::new();
 
                 for (step, change) in changes.iter().enumerate() {
-                    apply_to_fib(&mut writer, change, &pool, &keys);
+                    apply_to_fib(&mut writer, change, &pool, &keys, true);
                     model.apply(change, &pool);
 
                     let fib = writer.enter().unwrap_or_else(|| unreachable!());
@@ -797,7 +828,7 @@ mod fib_properties {
             .for_each(|changes: Vec<Change>| {
                 let (mut writer, _reader) = FibWriter::new(FibKey::from_vrfid(1));
                 for change in &changes {
-                    apply_to_fib(&mut writer, change, &pool, &keys);
+                    apply_to_fib(&mut writer, change, &pool, &keys, true);
                 }
 
                 let fib = writer.enter().unwrap_or_else(|| unreachable!());
@@ -822,8 +853,28 @@ mod fib_properties {
             .cloned()
             .for_each(|changes: Vec<Change>| {
                 let (mut writer, reader) = FibWriter::new(FibKey::from_vrfid(1));
-                for change in &changes {
-                    apply_to_fib(&mut writer, change, &pool, &keys);
+
+                // The post-publish comparison below is, on its own, a comparison of the read
+                // copy with itself: `WriteHandle` derefs to `ReadHandle`, so `writer.enter()`
+                // and `reader` are the same published snapshot, and the assertions hold whether
+                // or not anything was ever published. The claim with content is the negative one
+                // -- that the reader does *not* see work the writer has only staged -- so stage
+                // the changes first and check that nothing moved.
+                if !forces_publish(&changes) {
+                    let before = reader_view(&reader, &probes);
+                    for change in &changes {
+                        apply_to_fib(&mut writer, change, &pool, &keys, false);
+                    }
+                    assert_eq!(
+                        reader_view(&reader, &probes),
+                        before,
+                        "the reader saw changes that were never published, after {changes:?}"
+                    );
+                    writer.publish();
+                } else {
+                    for change in &changes {
+                        apply_to_fib(&mut writer, change, &pool, &keys, true);
+                    }
                 }
 
                 for probe in &probes {
