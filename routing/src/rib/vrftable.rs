@@ -255,14 +255,12 @@ impl VrfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Immutably access a [`Vrf`] from its description.
-    /// For vpcs, the description matches the name of the vpc.
+    /// Immutably access a [`Vrf`] from its vpc name.
     //////////////////////////////////////////////////////////////////
-    #[allow(unused)]
-    pub fn get_vrf_by_descr(&self, description: &str) -> Result<&Vrf, RouterError> {
+    pub fn get_vrf_by_vpc_name(&self, vpcname: &str) -> Result<&Vrf, RouterError> {
         self.by_id
             .values()
-            .find(|vrf| vrf.description.as_deref() == Some(description))
+            .find(|vrf| vrf.vpcname.as_deref() == Some(vpcname))
             .ok_or(RouterError::NoSuchVrf)
     }
 
@@ -675,7 +673,7 @@ mod tests {
         {
             let vrf = vrftable.get_vrf_mut(vrfid).expect("Should be there");
             vrf.set_tableid(1234.try_into().expect("Should succeed"));
-            vrf.set_description("This is the vrf for VPC-1 ACME");
+            vrf.set_vpcname("VPC-ACME");
         }
 
         debug!("━━━━Test: set vni {vni} to the vrf");
