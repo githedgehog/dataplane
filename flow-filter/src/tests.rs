@@ -1448,19 +1448,28 @@ fn expected_outcome(result: LookupResult) -> NfOutcome {
 }
 
 /// Extract the lookup key seen by `FlowFilter::classify`.
-/// Returns `None` for packets without an IP layer.
-fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Option<Probe> {
+///
+/// Returns the [`DoneReason`] the NF would answer with when no key can be built. The two
+/// failures are *not* the same and used to be collapsed into one `None`, which made the
+/// caller expect `NotIp` for a packet that has an IP header: a non-first IPv6 fragment
+/// carries datagram body where a transport header would be, so nothing names a usable
+/// upper-layer protocol and the NF answers `Malformed`.
+fn probe_from_packet(
+    pkt: &Packet<TestBuffer>,
+    src_vpcd: VpcDiscriminant,
+) -> Result<Probe, DoneReason> {
     use net::headers::{TryIp, TryTransport};
 
-    let net = pkt.try_ip()?;
-    Some(Probe {
+    let net = pkt.try_ip().ok_or(DoneReason::NotIp)?;
+    let proto = pkt.upper_layer_proto().ok_or(DoneReason::Malformed)?;
+    Ok(Probe {
         src_vpcd,
         // These packets belong to no flow, so they don't need flow revalidation info.
         dst_vpcd: None,
         gate: SourceGate::Ungated,
         src_ip: net.src_addr(),
         dst_ip: net.dst_addr(),
-        proto: pkt.upper_layer_proto()?,
+        proto,
         ports: pkt
             .try_transport()
             .and_then(|t| t.src_port().zip(t.dst_port())),
@@ -1876,7 +1885,7 @@ mod adversarial_headers {
                 // Extract the key before the NF consumes the packet.
                 let probe = probe_from_packet(&packet, src_vpcd());
                 let unaccounted = carries_unaccounted_layers(&packet);
-                if let Some(probe) = probe.as_ref() {
+                if let Ok(probe) = probe.as_ref() {
                     if probe.ports.is_none() {
                         PORTLESS.fetch_add(1, Ordering::Relaxed);
                     }
@@ -1886,7 +1895,7 @@ mod adversarial_headers {
                     ) {
                         EXOTIC_PROTO.fetch_add(1, Ordering::Relaxed);
                     }
-                } else {
+                } else if matches!(probe, Err(DoneReason::NotIp)) {
                     NOT_IP.fetch_add(1, Ordering::Relaxed);
                 }
 
@@ -1895,11 +1904,15 @@ mod adversarial_headers {
                     .next()
                     .unwrap_or_else(|| unreachable!("enforce keeps Filtered and NotIp packets"));
 
+                // Mirrors the NF's own order: it resolves the header chain first, so a
+                // chain it cannot account for is `Unhandled` even when no upper-layer
+                // protocol could have been named either.
                 let expected = match probe.as_ref() {
                     // No IP layer: dropped before any table is consulted.
-                    None => NfOutcome::Dropped(Some(DoneReason::NotIp)),
-                    Some(_) if unaccounted => NfOutcome::Dropped(Some(DoneReason::Unhandled)),
-                    Some(probe) => expected_outcome(oracle_lookup(&overlay, probe)),
+                    Err(DoneReason::NotIp) => NfOutcome::Dropped(Some(DoneReason::NotIp)),
+                    _ if unaccounted => NfOutcome::Dropped(Some(DoneReason::Unhandled)),
+                    Err(reason) => NfOutcome::Dropped(Some(*reason)),
+                    Ok(probe) => expected_outcome(oracle_lookup(&overlay, probe)),
                 };
                 assert_eq!(
                     observed_outcome(&out),
