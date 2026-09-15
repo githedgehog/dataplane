@@ -7,6 +7,8 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
+use core::marker::PhantomData;
+use core::mem::ManuallyDrop;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use tracing::{debug, error, info};
 
@@ -16,19 +18,16 @@ use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue};
 use crate::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use crate::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use crate::socket::SocketId;
-use dpdk_sys::rte_eth_rx_mq_mode::RTE_ETH_MQ_RX_RSS;
+use dpdk_sys::rte_eth_rx_mq_mode::{RTE_ETH_MQ_RX_NONE, RTE_ETH_MQ_RX_RSS};
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
 use queue::{rx, tx};
 
-/// Defaults for the RX queue
-pub(crate) mod rx_queue_defaults {
-    /// Default MTU of an RX queue
-    pub(crate) const RX_MTU: u32 = 1514;
-    /// Default max LRO packet size for RX queue
-    pub(crate) const MAX_LRO: u32 = 8192;
-}
+/// The MTU applied when [`DevConfig::mtu`] is `None`: the standard Ethernet MTU
+/// ([`dpdk_sys::RTE_ETHER_MTU`], 1500).  It is clamped into the device's advertised
+/// `[min_mtu, max_mtu]` range at configuration time.
+pub const DEFAULT_MTU: u16 = 1500;
 
 /// A DPDK Ethernet port index.
 ///
@@ -196,6 +195,20 @@ impl From<DevIndex> for u16 {
     }
 }
 
+/// RSS hashing parameters applied at device-configure time.
+///
+/// RSS must be configured before the receive queues are set up so the PMD builds each queue's RSS
+/// context with hash delivery enabled; a runtime `rte_eth_dev_rss_hash_update` after queue setup
+/// does not retrofit this on mlx5.  Carrying it on [`DevConfig`] threads it into the single
+/// `rte_eth_dev_configure` call.
+#[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
+pub struct RssConf {
+    /// The Toeplitz RSS key.  mlx5 expects exactly 40 bytes (its `hash_key_size`).
+    pub key: [u8; 40],
+    /// The set of `RTE_ETH_RSS_*` hash types to hash over (e.g. `RTE_ETH_RSS_IPV4`).
+    pub hf: u64,
+}
+
 #[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
 /// TODO: add `rx_offloads` support
 pub struct DevConfig {
@@ -219,6 +232,16 @@ pub struct DevConfig {
     pub tx_offloads: Option<TxOffloadConfig>,
     // TODO: more reasonable type for [`RxOffload`] here (similar to [`TxOffloadConfig`])
     pub rx_offloads: Option<RxOffload>,
+    /// The MTU to request on the device.
+    ///
+    /// If `None`, the standard Ethernet MTU ([`DEFAULT_MTU`]) is used, clamped into the device's
+    /// advertised range.  If `Some`, the value is validated against the device's
+    /// `[min_mtu, max_mtu]` range and rejected with [`DevConfigError::MtuOutOfRange`] when the
+    /// device does not support it.
+    pub mtu: Option<u16>,
+    /// RSS hashing configuration applied at configure time.  `None` leaves RSS hashing off
+    /// (`rss_hf = 0`), so the NIC computes no hash and reports none in the mbuf.
+    pub rss: Option<RssConf>,
 }
 
 #[derive(Debug)]
@@ -226,13 +249,63 @@ pub struct DevConfig {
 pub enum DevConfigError {
     /// A driver-specific error occurred when configuring the ethernet device.
     DriverSpecificError(&'static str),
+    /// The requested MTU is outside the device's advertised `[min, max]` range.
+    MtuOutOfRange {
+        /// The MTU that was requested.
+        requested: u16,
+        /// The device's minimum supported MTU.
+        min: u16,
+        /// The device's maximum supported MTU.
+        max: u16,
+    },
+    /// RSS hashing was requested but the device advertises no RSS hash functions.
+    RssUnsupported,
 }
 
 impl DevConfig {
+    /// Resolve the configured MTU against the device's advertised `[min_mtu, max_mtu]` range.
+    ///
+    /// A `None` request uses [`DEFAULT_MTU`] clamped into the supported range.  An explicit request
+    /// outside the range is rejected (rather than silently clamped) so that misconfiguration is
+    /// visible.  Devices that leave their range unset (`max_mtu == 0`) fall back to the
+    /// requested-or-default value and let device start reject it if it is genuinely unsupported.
+    fn resolve_mtu(&self, dev: &DevInfo) -> Result<u16, DevConfigError> {
+        let min = dev.inner.min_mtu;
+        let max = dev.inner.max_mtu;
+        if max == 0 || min > max {
+            return Ok(self.mtu.unwrap_or(DEFAULT_MTU));
+        }
+        match self.mtu {
+            Some(requested) if requested < min || requested > max => {
+                Err(DevConfigError::MtuOutOfRange {
+                    requested,
+                    min,
+                    max,
+                })
+            }
+            Some(requested) => Ok(requested),
+            None => Ok(DEFAULT_MTU.clamp(min, max)),
+        }
+    }
+
     /// Apply the configuration to the device.
     pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
-        let eth_conf = rte_eth_conf {
+        // Resolve and validate the MTU against what the device actually supports before building
+        // the configuration.
+        let mtu = self.resolve_mtu(&dev)?;
+        // Reject an RSS request the device cannot honor rather than silently dropping it, for the
+        // same reason `resolve_mtu` rejects an out-of-range MTU: a misconfiguration that only
+        // shows up as traffic landing on the wrong queue is far harder to diagnose than an error
+        // at configure time.
+        if self.rss.is_some() && !dev.supports_rss() {
+            return Err(DevConfigError::RssUnsupported);
+        }
+        // The RSS key must outlive the `rte_eth_dev_configure` call below (the PMD copies it).
+        // Left uninitialized: it is written and used only on the `self.rss.is_some()` path, so a
+        // dummy initializer would be a dead store.
+        let mut rss_key_buf: [u8; 40];
+        let mut eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
                 offloads: {
@@ -245,9 +318,22 @@ impl DevConfig {
                 ..Default::default()
             },
             rxmode: rte_eth_rxmode {
-                mtu: rx_queue_defaults::RX_MTU,
-                mq_mode: RTE_ETH_MQ_RX_RSS,
-                max_lro_pkt_size: rx_queue_defaults::MAX_LRO,
+                mtu: u32::from(mtu),
+                // Only ask for RSS distribution on a device that advertises RSS hash functions.
+                // Emulated NICs (e1000, e1000e, and virtio without a multi-queue feature
+                // negotiation) report `flow_type_rss_offloads == 0` and fail
+                // `rte_eth_dev_configure` outright when handed `RTE_ETH_MQ_RX_RSS`.  Devices that
+                // do support RSS keep the previous behavior unconditionally, whether or not
+                // `rss` requests a hash: `rss_hf = 0` under `RTE_ETH_MQ_RX_RSS` is how this
+                // crate has always configured mlx5.
+                mq_mode: if dev.supports_rss() {
+                    RTE_ETH_MQ_RX_RSS
+                } else {
+                    RTE_ETH_MQ_RX_NONE
+                },
+                // The device's advertised maximum LRO size.  DPDK ignores this unless the TCP LRO
+                // offload is enabled, and `0` (no LRO support) requests the driver's default.
+                max_lro_pkt_size: dev.inner.max_lro_pkt_size,
                 offloads: {
                     let requested = self.rx_offloads.unwrap_or(RxOffload(ANY_SUPPORTED));
                     let supported = dev.rx_offload_caps();
@@ -257,6 +343,18 @@ impl DevConfig {
             },
             ..Default::default()
         };
+
+        // Configure RSS here, at device-configure time, so the PMD builds each rx queue's RSS
+        // context with hash delivery enabled.  A runtime `rss_hash_update` after queue setup does
+        // not retrofit this on mlx5.  `None` leaves `rss_hf = 0` (no hashing, the prior behavior).
+        if let Some(rss) = self.rss {
+            rss_key_buf = rss.key;
+            let mut rss_conf: rte_eth_rss_conf = unsafe { core::mem::zeroed() };
+            rss_conf.rss_key = rss_key_buf.as_mut_ptr();
+            rss_conf.rss_key_len = rss_key_buf.len() as u8;
+            rss_conf.rss_hf = rss.hf;
+            eth_conf.rx_adv_conf.rss_conf = rss_conf;
+        }
 
         let nb_rx_queues = self.num_rx_queues + self.num_hairpin_queues;
         let nb_tx_queues = self.num_tx_queues + self.num_hairpin_queues;
@@ -286,6 +384,7 @@ impl DevConfig {
             rx_queues: Vec::with_capacity(self.num_rx_queues as usize),
             tx_queues: Vec::with_capacity(self.num_tx_queues as usize),
             hairpin_queues: Vec::with_capacity(self.num_hairpin_queues as usize),
+            state: PhantomData,
         })
     }
 }
@@ -479,6 +578,12 @@ impl From<TxOffload> for TxOffloadConfig {
 }
 
 impl TxOffload {
+    /// The empty set: no transmit offloads requested.
+    ///
+    /// Distinct from a `None` [`DevConfig::tx_offloads`], which asks for *every* offload the
+    /// device supports.
+    pub const NONE: TxOffload = TxOffload(0);
+
     /// GENEVE tunnel segmentation offload.
     pub const GENEVE_TNL_TSO: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_GENEVE_TNL_TSO);
     /// GRE tunnel segmentation offload.
@@ -529,6 +634,15 @@ impl TxOffload {
                 | TX_OFFLOAD_VXLAN_TNL_TSO,
         )
     };
+}
+
+impl RxOffload {
+    /// The empty set: no receive offloads requested.
+    ///
+    /// Distinct from a `None` [`DevConfig::rx_offloads`], which asks for *every* offload the
+    /// device supports -- including LRO, which drags DPDK's `max_lro_pkt_size` validation into
+    /// configurations that have no use for it.
+    pub const NONE: RxOffload = RxOffload(0);
 }
 
 impl BitOr for TxOffload {
@@ -726,11 +840,93 @@ impl DevInfo {
     pub fn rx_offload_caps(&self) -> RxOffload {
         self.inner.rx_offload_capa.into()
     }
+
+    #[tracing::instrument(level = "trace")]
+    /// Get the set of rx offloads that can be enabled on a *per-queue* basis.
+    ///
+    /// This is a subset of [`DevInfo::rx_offload_caps`], which also counts offloads that can only
+    /// be set port-wide at configure time.  Requesting a port-only offload in a queue's setup
+    /// configuration is rejected by DPDK, so queue setup must be given this mask rather than the
+    /// port mask.
+    pub fn rx_queue_offload_caps(&self) -> RxOffload {
+        self.inner.rx_queue_offload_capa.into()
+    }
+
+    #[tracing::instrument(level = "trace")]
+    /// Get the set of tx offloads that can be enabled on a *per-queue* basis.
+    ///
+    /// See [`DevInfo::rx_queue_offload_caps`] for why this differs from
+    /// [`DevInfo::tx_offload_caps`].
+    pub fn tx_queue_offload_caps(&self) -> TxOffload {
+        self.inner.tx_queue_offload_capa.into()
+    }
+
+    /// The largest MTU the device advertises support for, or `0` if it advertises no range.
+    #[must_use]
+    pub fn max_mtu(&self) -> u16 {
+        self.inner.max_mtu
+    }
+
+    /// The smallest MTU the device advertises support for.
+    #[must_use]
+    pub fn min_mtu(&self) -> u16 {
+        self.inner.min_mtu
+    }
+
+    /// Whether the device advertises any RSS hash function.
+    ///
+    /// Emulated NICs report none, and handing such a device `RTE_ETH_MQ_RX_RSS` makes
+    /// `rte_eth_dev_configure` fail.
+    #[must_use]
+    pub fn supports_rss(&self) -> bool {
+        self.inner.flow_type_rss_offloads != 0
+    }
+}
+
+/// Sealed marker trait for the valid [`Dev`] lifecycle typestates: [`Stopped`] and [`Started`].
+///
+/// This mirrors the typestate approach already used by the ACL context in this crate: operations
+/// that are illegal in a given state are simply absent from that state's `impl` block, so
+/// configuring a queue on a running device -- or receiving on a stopped one -- is a compile error
+/// rather than a runtime check.
+pub trait DevState: dev_state::Sealed {
+    /// Whether a device in this state is running, and therefore must be stopped when it is dropped.
+    ///
+    /// `Drop` cannot be specialized per typestate, so the single `impl<S: DevState> Drop` consults
+    /// this compile-time constant instead.
+    const RUNNING: bool;
+}
+
+mod dev_state {
+    /// Sealed-trait support for [`super::DevState`]; external crates cannot add new typestates.
+    pub trait Sealed {}
+    impl Sealed for super::Stopped {}
+    impl Sealed for super::Started {}
+}
+
+/// Typestate marker: the device is configured but not running.  Its queues may be (re)configured;
+/// it cannot receive or transmit.
+#[derive(Debug)]
+pub struct Stopped;
+
+/// Typestate marker: the device is running.  It can receive and transmit; its queue set is fixed.
+#[derive(Debug)]
+pub struct Started;
+
+impl DevState for Stopped {
+    const RUNNING: bool = false;
+}
+impl DevState for Started {
+    const RUNNING: bool = true;
 }
 
 #[derive(Debug)]
-/// A DPDK ethernet device.
-pub struct Dev {
+/// A DPDK ethernet device, parameterized by its lifecycle [`DevState`].
+///
+/// A freshly [`applied`][DevConfig::apply] device is [`Stopped`] (the default); call
+/// [`start`][Dev::<Stopped>::start] to transition it to [`Started`] and back with
+/// [`stop`][Dev::<Started>::stop].
+pub struct Dev<S: DevState = Stopped> {
     /// The device info
     pub info: DevInfo,
     /// The configuration of the device.
@@ -738,9 +934,61 @@ pub struct Dev {
     pub(crate) rx_queues: Vec<RxQueue>,
     pub(crate) tx_queues: Vec<TxQueue>,
     pub(crate) hairpin_queues: Vec<HairpinQueue>,
+    state: PhantomData<S>,
 }
 
-impl Dev {
+impl<S: DevState> Dev<S> {
+    /// Move all owned device state into a `Dev` of a different typestate.
+    ///
+    /// [`Dev<Started>`] has a [`Drop`] that stops the device, so this uses [`ManuallyDrop`] to keep
+    /// that drop from firing mid-transition (which would stop a device we are about to keep
+    /// running, or double-stop one we just stopped).
+    fn transition<T: DevState>(self) -> Dev<T> {
+        let this = ManuallyDrop::new(self);
+        // SAFETY: `this` is wrapped in `ManuallyDrop`, so the source's `Drop` never runs.  Each
+        // field is moved out exactly once via `ptr::read`, leaving the returned `Dev` the sole
+        // owner of every field.
+        unsafe {
+            Dev {
+                info: core::ptr::read(&this.info),
+                config: core::ptr::read(&this.config),
+                rx_queues: core::ptr::read(&this.rx_queues),
+                tx_queues: core::ptr::read(&this.tx_queues),
+                hairpin_queues: core::ptr::read(&this.hairpin_queues),
+                state: PhantomData,
+            }
+        }
+    }
+}
+
+impl<S: DevState> Dev<S> {
+    /// Enable or disable promiscuous mode on the device.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's [`ErrorCode`] if the request failed.  Not every PMD implements
+    /// promiscuous mode; those that do not report `ENOTSUP`.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn set_promiscuous(&mut self, enable: bool) -> Result<(), ErrorCode> {
+        let port = self.info.index().as_u16();
+        let ret = if enable {
+            unsafe { rte_eth_promiscuous_enable(port) }
+        } else {
+            unsafe { rte_eth_promiscuous_disable(port) }
+        };
+        if ret == 0 {
+            debug!(
+                "Promiscuous mode {state} on port {port}",
+                state = if enable { "enabled" } else { "disabled" }
+            );
+            Ok(())
+        } else {
+            Err(ErrorCode::parse_i32(ret))
+        }
+    }
+}
+
+impl Dev<Stopped> {
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`RxQueue`]
     pub fn new_rx_queue(&mut self, config: RxQueueConfig) -> Result<(), rx::ConfigFailure> {
@@ -771,31 +1019,59 @@ impl Dev {
         Ok(())
     }
 
-    /// Start the device.
-    pub fn start(&mut self) -> Result<(), ErrorCode> {
+    /// Start the device, transitioning it to the [`Started`] state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DevStartFailure`] -- which hands the still-[`Stopped`] device back so it can be
+    /// retried or dropped -- if the device could not be started.
+    // The error intentionally carries the device back for retry; the `Ok` variant carries the same
+    // (large) device anyway, so the `Result` is large by design, and this is a cold, once-per-device
+    // path.
+    #[allow(clippy::result_large_err)]
+    pub fn start(self) -> Result<Dev<Started>, DevStartFailure> {
         let ret = unsafe { rte_eth_dev_start(self.info.index().as_u16()) };
+        if ret != 0 {
+            error!(
+                "Failed to start port {port}, error code: {ret}",
+                port = self.info.index(),
+            );
+            return Err(DevStartFailure {
+                error: ErrorCode::parse_i32(ret),
+                dev: self,
+            });
+        }
+        info!("Device {port} started", port = self.info.index());
+        Ok(self.transition())
+    }
+}
 
-        match ret {
-            errno::NEG_EAGAIN => {
-                error!("Device is not ready to start");
-                // TODO:
-                return Err(ErrorCode::parse_i32(errno::NEG_EAGAIN));
-            }
-            0 => {
-                info!("Device {0} started", self.info.index());
-            }
-            _ => {
-                error!(
-                    "Failed to start port {port}, error code: {code}",
-                    port = self.info.index(),
-                    code = ret
-                );
-                return Err(ErrorCode::parse_i32(ret));
-            }
-        };
-        Ok(())
+impl Dev<Started> {
+    /// Stop the device, transitioning it back to the [`Stopped`] state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DevStopFailure`] -- which hands the still-[`Started`] device back -- if the
+    /// device could not be stopped.
+    // See the note on `start`: the `Result` is large by design and this is a cold path.
+    #[allow(clippy::result_large_err)]
+    pub fn stop(self) -> Result<Dev<Stopped>, DevStopFailure> {
+        let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
+        if ret != 0 {
+            error!(
+                "Failed to stop port {port}, error code: {ret}",
+                port = self.info.index(),
+            );
+            return Err(DevStopFailure {
+                error: ErrorCode::parse_i32(ret),
+                dev: self,
+            });
+        }
+        info!("Device {port} stopped", port = self.info.index());
+        Ok(self.transition())
     }
 
+    /// Find a configured receive queue by index.
     #[tracing::instrument(level = "trace")]
     pub fn rx_queue(&self, index: RxQueueIndex) -> Option<&RxQueue> {
         self.rx_queues
@@ -803,6 +1079,7 @@ impl Dev {
             .find(|x| x.config.queue_index == index)
     }
 
+    /// Find a configured transmit queue by index.
     #[tracing::instrument(level = "trace")]
     pub fn tx_queue(&self, index: TxQueueIndex) -> Option<&TxQueue> {
         self.tx_queues
@@ -811,74 +1088,52 @@ impl Dev {
     }
 }
 
-pub struct StartedDev {
-    /// The device info
-    pub info: DevInfo,
-    /// The configuration of the device.
-    pub config: DevConfig,
-    pub rx_queues: Vec<RxQueue>,
-    pub tx_queues: Vec<TxQueue>,
-    pub hairpin_queues: Vec<HairpinQueue>,
+/// Returned when [`Dev::<Stopped>::start`] fails.
+///
+/// Carries the error and the device, returned in its [`Stopped`] state so the caller can retry or
+/// drop it.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to start device {}: {error}", self.dev.info.index())]
+pub struct DevStartFailure {
+    /// The error that caused the start to fail.
+    #[source]
+    pub error: ErrorCode,
+    /// The device, still in its [`Stopped`] state.
+    pub dev: Dev<Stopped>,
 }
 
-impl Dev {
-    pub fn stop(&mut self) -> Result<(), ErrorCode> {
-        info!("Stopping device {port}", port = self.info.index());
-        let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
-
-        match ret {
-            0 => {
-                info!("Device {port} stopped", port = self.info.index());
-                Ok(())
-            }
-            errno::NEG_EBUSY => {
-                // TODO, implement retry?
-                error!(
-                    "Cannot stop device {port}, port is busy",
-                    port = self.info.index()
-                );
-                Err(ErrorCode::parse_i32(errno::NEG_EBUSY))
-            }
-            _ => {
-                error!(
-                    "Failed to stop port {port}, error code: {code}",
-                    port = self.info.index(),
-                    code = ret
-                );
-                Err(ErrorCode::parse_i32(ret))
-            }
-        }
-    }
+/// Returned when [`Dev::<Started>::stop`] fails.
+///
+/// Carries the error and the device, returned in its [`Started`] state so the caller can retry or
+/// drop it.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to stop device {}: {error}", self.dev.info.index())]
+pub struct DevStopFailure {
+    /// The error that caused the stop to fail.
+    #[source]
+    pub error: ErrorCode,
+    /// The device, still in its [`Started`] state.
+    pub dev: Dev<Started>,
 }
 
-/// The state of a [`Dev`]
-#[derive(Debug, PartialEq)]
-pub enum State {
-    /// A device in the [`Stopped`][State::Stopped] state is not usable for packet processing but
-    /// can be re-configured in ways that a [`Started`][State::Started] device generally cannot.
-    Stopped,
-    /// A device in the [`Started`][State::Started] state is usable for packet processing but can
-    /// generally not be re-configured while [`Started`][State::Started].
-    Started,
-}
-
-impl Drop for Dev {
+impl<S: DevState> Drop for Dev<S> {
+    /// Stop the device when it is dropped, but only if it is running ([`Started`]); a [`Stopped`]
+    /// device has nothing to stop.  (`Drop` cannot be written for just one typestate, so this is
+    /// generic and gated on [`DevState::RUNNING`].)
     fn drop(&mut self) {
+        if !S::RUNNING {
+            return;
+        }
         info!(
             "Closing DPDK ethernet device {port}",
             port = self.info.index()
         );
-        match self.stop() {
-            Ok(()) => {
-                info!("Device {port} stopped", port = self.info.index());
-            }
-            Err(err) => {
-                error!(
-                    "Failed to stop device {port}: {err}",
-                    port = self.info.index(),
-                    err = err
-                );
-            }
+        let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
+        if ret != 0 {
+            error!(
+                "Failed to stop device {port} on drop, error code: {ret}",
+                port = self.info.index(),
+            );
         }
     }
 }

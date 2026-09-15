@@ -21,7 +21,7 @@ pub use contract::*;
 #[cfg(any(doc, test, feature = "test_buffer"))]
 pub mod test_utils;
 
-use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
+use crate::buffer::{DeepCopy, Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
 use crate::eth::Eth;
 use crate::eth::EthError;
 use crate::flows::{FlowInfo, FlowStatus};
@@ -45,12 +45,35 @@ use std::num::NonZero;
 pub mod utils;
 
 /// A parsed (see [`Parse`]) ethernet packet.
-#[derive(Debug, Clone)]
+///
+/// `Packet` deliberately does not implement [`Clone`]: duplicating the payload buffer is a deep,
+/// fallible operation (see [`DeepCopy`]).  Use [`Packet::deep_copy`] to duplicate a packet.
+#[derive(Debug)]
 pub struct Packet<Buf: PacketBufferMut> {
     headers: Headers,
     payload: Buf,
     /// packet metadata added by stages to drive other stages down the pipeline
     pub(crate) meta: PacketMeta,
+}
+
+impl<Buf: PacketBufferMut + DeepCopy> Packet<Buf> {
+    /// Produce an independent deep copy of this packet: the parsed headers and metadata are cloned
+    /// and the payload buffer is deep-copied (see [`DeepCopy`]).
+    ///
+    /// This is the explicit replacement for `Clone`, which `Packet` does not implement because
+    /// duplicating an `Mbuf`-backed payload is a fallible, allocating operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the payload buffer's [`DeepCopy::Error`] if the buffer could not be copied (for an
+    /// `Mbuf`, this means the backing pool was exhausted).
+    pub fn deep_copy(&self) -> Result<Packet<Buf>, <Buf as DeepCopy>::Error> {
+        Ok(Packet {
+            headers: self.headers.clone(),
+            payload: self.payload.deep_copy()?,
+            meta: self.meta.clone(),
+        })
+    }
 }
 
 /// Errors which may occur when failing to produce a [`Packet`]
@@ -113,7 +136,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     #[allow(clippy::cast_possible_truncation)] // checked in ctor
     #[must_use]
     pub fn payload_len(&self) -> u16 {
-        self.payload.as_ref().len() as u16
+        self.payload.packet_len() as u16
     }
 
     /// Get the length of the packet's current headers.
@@ -290,8 +313,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             .deparse(buf)
             .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
 
-        let len = self.payload.as_ref().len()
-            + (Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()) as usize;
+        let len =
+            self.payload.packet_len() + (Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()) as usize;
         assert!(
             u16::try_from(len).is_ok(),
             "encap would result in frame larger than 2^16 bytes"
@@ -797,6 +820,7 @@ pub mod contract {
 
 #[cfg(test)]
 mod qos_roundtrip_tests {
+    use crate::buffer::TryAsMut;
     use crate::headers::{Headers, Net};
     use crate::ip::dscp::Dscp;
     use crate::ip::ecn::Ecn;
@@ -877,7 +901,7 @@ mod qos_roundtrip_tests {
             .build_headers()
             .unwrap();
         let mut buffer = TestBuffer::new();
-        tagged.deparse(buffer.as_mut()).unwrap();
+        tagged.deparse(buffer.try_as_mut().unwrap()).unwrap();
         let inner = Packet::new(buffer).unwrap();
         let inner_buf = inner.serialize().unwrap();
 
