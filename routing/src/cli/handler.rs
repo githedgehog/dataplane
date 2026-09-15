@@ -152,10 +152,10 @@ fn route_filter_v6(request: &CliRequest) -> Result<RouteV6Filter, CliError> {
 fn lookup_vrfs<'a>(vrftable: &'a VrfTable, request: &CliRequest) -> Result<Vec<&'a Vrf>, CliError> {
     if let Some(vpc) = &request.args.vpc {
         let vrfs = vrftable
-            .get_vrf_by_vpc_name(vpc.as_str())
+            .get_vrfs_by_vpc(vpc.as_str())
             .map_err(|_| CliError::NotFound(format!("VRF with with descr {vpc}")))?;
 
-        Ok(vec![vrfs])
+        Ok(vrfs)
     } else if let Some(vrfid) = request.args.vrfid {
         let vrf = vrftable
             .get_vrf(vrfid)
