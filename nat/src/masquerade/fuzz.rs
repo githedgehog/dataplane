@@ -216,6 +216,7 @@ fn a_masqueraded_flow_comes_back() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "full-flow fuzz probe is too slow under Miri")]
 fn a_flow_keeps_its_translation() {
     let tally = Tally::default();
 
@@ -306,6 +307,7 @@ fn distinct_flows_do_not_share_a_translation() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "full-flow fuzz probe is too slow under Miri")]
 fn a_translation_stays_inside_the_public_range() {
     let tally = Tally::default();
 
@@ -350,6 +352,7 @@ fn a_translation_stays_inside_the_public_range() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "full-flow fuzz probe is too slow under Miri")]
 fn nothing_is_masqueraded_without_permission() {
     let tally = Tally::default();
 
