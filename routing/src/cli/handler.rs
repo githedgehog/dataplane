@@ -15,7 +15,7 @@ use crate::evpn::{RmacFilter, RmacStore};
 use crate::fib::fibgroupstore::FibRoute;
 use crate::fib::fibtype::{FibRouteV4Filter, FibRouteV6Filter};
 use crate::frr::frrmi::Frrmi;
-use crate::rib::vrf::{Route, RouteOrigin, Vrf};
+use crate::rib::vrf::{RouteOrigin, Vrf};
 use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 use crate::rib::vrftable::VrfTable;
 
@@ -89,60 +89,55 @@ fn show_ipv6_routes(request: CliRequest, vrfs: &[&Vrf], filter: &RouteV6Filter) 
 }
 
 fn route_filter_v4(request: &CliRequest) -> Result<RouteV4Filter, CliError> {
-    let mut constraints: Vec<RouteV4Filter> = vec![];
+    // filter by prefix
+    let prefix = request
+        .args
+        .prefix
+        .map(|(addr, plen)| {
+            let prefix =
+                Prefix::try_from((addr, plen)).map_err(|e| CliError::WrongFilter(e.to_string()))?;
+
+            let ipv4_prefix = match prefix {
+                Prefix::IPV4(ipv4) => ipv4,
+                Prefix::IPV6(_) => {
+                    return Err(CliError::WrongFilter("prefix is not ipv4".to_string()));
+                }
+            };
+            Ok(ipv4_prefix)
+        })
+        .transpose()?;
 
     // filter by protocol
-    if let Some(protocol) = &request.args.protocol {
-        let origin = RouteOrigin::from(protocol);
-        constraints.push(Box::new(move |(_, route)| route.origin == origin));
-    }
-    // filter by prefix
-    if let Some((addr, plen)) = &request.args.prefix {
-        let prefix =
-            Prefix::try_from((*addr, *plen)).map_err(|e| CliError::WrongFilter(e.to_string()))?;
-        if !prefix.is_ipv4() {
-            return Err(CliError::WrongFilter("prefix is not ipv4".to_string()));
-        }
-        constraints.push(Box::new(move |(p, _)| Prefix::from(*p) == prefix));
-    }
-    // show everything if no filter is present
-    if constraints.is_empty() {
-        constraints.push(Box::new(|(_, _)| true));
-    }
+    let protocol = request.args.protocol.as_ref().map(RouteOrigin::from);
 
-    // build composite filter
-    let filter =
-        move |item: &(Ipv4Prefix, &Route)| constraints.iter().all(|condition| condition(item));
-
-    Ok(Box::new(move |item: &(Ipv4Prefix, &Route)| filter(item)))
+    // build filter
+    Ok(RouteV4Filter::new(prefix, protocol))
 }
+
 fn route_filter_v6(request: &CliRequest) -> Result<RouteV6Filter, CliError> {
-    let mut constraints: Vec<RouteV6Filter> = vec![];
+    // filter by prefix
+    let prefix = request
+        .args
+        .prefix
+        .map(|(addr, plen)| {
+            let prefix =
+                Prefix::try_from((addr, plen)).map_err(|e| CliError::WrongFilter(e.to_string()))?;
+
+            let ipv4_prefix = match prefix {
+                Prefix::IPV4(_) => {
+                    return Err(CliError::WrongFilter("prefix is not ipv6".to_string()));
+                }
+                Prefix::IPV6(ipv6) => ipv6,
+            };
+            Ok(ipv4_prefix)
+        })
+        .transpose()?;
 
     // filter by protocol
-    if let Some(protocol) = &request.args.protocol {
-        let origin = RouteOrigin::from(protocol);
-        constraints.push(Box::new(move |(_, route)| route.origin == origin));
-    }
-    // filter by prefix
-    if let Some((addr, plen)) = &request.args.prefix {
-        let prefix =
-            Prefix::try_from((*addr, *plen)).map_err(|e| CliError::WrongFilter(e.to_string()))?;
-        if !prefix.is_ipv6() {
-            return Err(CliError::WrongFilter("prefix is not ipv6".to_string()));
-        }
-        constraints.push(Box::new(move |(p, _)| Prefix::from(*p) == prefix));
-    }
-    // show everything if no filter is present
-    if constraints.is_empty() {
-        constraints.push(Box::new(|(_, _)| true));
-    }
+    let protocol = request.args.protocol.as_ref().map(RouteOrigin::from);
 
-    // build composite filter
-    let filter =
-        move |item: &(Ipv6Prefix, &Route)| constraints.iter().all(|condition| condition(item));
-
-    Ok(Box::new(move |item: &(Ipv6Prefix, &Route)| filter(item)))
+    // build filter
+    Ok(RouteV6Filter::new(prefix, protocol))
 }
 
 // Look up vrf(s) depending on the request. A particular vrf can be looked up from
