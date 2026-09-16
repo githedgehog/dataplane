@@ -343,7 +343,7 @@ pub struct VrfViewV4<'a> {
 impl Display for VrfViewV4<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // apply the filter
-        let rt_iter = self.vrf.iter_v4().filter(&self.filter);
+        let rt_iter = self.vrf.filtered_ipv4(self.filter);
 
         // total number of routes
         let total_routes = self.vrf.len_v4();
@@ -372,10 +372,11 @@ pub struct VrfViewV6<'a> {
     pub vrf: &'a Vrf,
     pub filter: &'a RouteV6Filter,
 }
+
 impl Display for VrfViewV6<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // apply the filter
-        let rt_iter = self.vrf.iter_v6().filter(&self.filter);
+        let rt_iter = self.vrf.filtered_ipv6(self.filter);
 
         // total number of routes
         let total_routes = self.vrf.len_v6();
