@@ -729,7 +729,8 @@ lint: \
     (nixfmt) \
     (check-lint-wiring) \
     (check-push-filter) \
-    (license-headers)
+    (license-headers) \
+    (duvet-check)
     {{ _just_debuggable_ }}
 
 # Cargo cannot archive doctests, so run them inside the Nix sandbox.
@@ -768,10 +769,33 @@ duvet-check:
         exit 1
       fi
     done
+    # `duvet report` rewrites the snapshot *and* every requirement TOML in place, so the
+    # committed copies are set aside and put back either way. A check that leaves the
+    # working tree dirty is a trap anywhere; in a repo with worktrees and a shared stash
+    # stack it is a trap that costs someone else's work.
+    committed="$(mktemp -d)"
+    # Two traps, in this order, and the order is the whole point. The restore trap must not
+    # be armed until the thing it restores *from* exists: armed first, a `cp` that fails --
+    # `.duvet/requirements` absent, a full disk -- fires a handler that deletes the working
+    # copies and then cannot put anything back, so the check destroys the committed state it
+    # was meant to protect. Until the backup is made, the only safe handler is one that
+    # removes the temporary directory.
+    trap 'rm -rf "${committed}"' EXIT
+    # `-a` so mtimes survive the round trip. `.duvet/requirements/**` is `include_str!`d by
+    # nat's RFC contract, so restoring it with a fresh timestamp makes cargo rebuild that
+    # crate and everything downstream on every `just lint`.
+    cp -a .duvet/requirements "${committed}/requirements"
+    cp -a .duvet/snapshot.txt "${committed}/snapshot.txt"
+    trap 'rm -rf .duvet/requirements .duvet/snapshot.txt; \
+          mv "${committed}/requirements" .duvet/requirements; \
+          mv "${committed}/snapshot.txt" .duvet/snapshot.txt; \
+          rmdir "${committed}"' EXIT
     duvet report
-    if ! git diff --quiet -- .duvet/snapshot.txt; then
-      echo "error: .duvet/snapshot.txt is stale; run \`just duvet\` and commit the result" >&2
-      git --no-pager diff -- .duvet/snapshot.txt >&2
+    stale=0
+    diff -u "${committed}/snapshot.txt" .duvet/snapshot.txt || stale=1
+    diff -ru "${committed}/requirements" .duvet/requirements || stale=1
+    if [ "${stale}" != 0 ]; then
+      echo "error: the duvet report is stale; run \`just duvet\` and commit the result" >&2
       exit 1
     fi
 

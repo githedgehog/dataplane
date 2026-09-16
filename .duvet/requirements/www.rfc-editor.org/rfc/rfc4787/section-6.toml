@@ -1,0 +1,66 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-6"
+
+# Hairpinning Behavior
+#
+#    If two hosts (called X1 and X2) are behind the same NAT and
+#    exchanging traffic, the NAT may allocate an address on the outside of
+#    the NAT for X2, called X2':x2'.  If X1 sends traffic to X2':x2', it
+#    goes to the NAT, which must relay the traffic from X1 to X2.  This is
+#    referred to as hairpinning and is illustrated below.
+# 
+#      NAT
+#    +----+ from X1:x1 to X2':x2'   +-----+ X1':x1'
+#    | X1 |>>>>>>>>>>>>>>>>>>>>>>>>>>>>>--+---
+#    +----+                         |  v  |
+#                                   |  v  |
+#                                   |  v  |
+#                                   |  v  |
+#    +----+ from X1':x1' to X2:x2   |  v  | X2':x2'
+#    | X2 |<<<<<<<<<<<<<<<<<<<<<<<<<<<<<--+---
+#    +----+                         +-----+
+# 
+#                            Hairpinning Behavior
+# 
+#    Hairpinning allows two endpoints on the internal side of the NAT to
+#    communicate even if they only use each other's external IP addresses
+#    and ports.
+# 
+#    More formally, a NAT that supports hairpinning forwards packets
+#    originating from an internal address, X1:x1, destined for an external
+#    address X2':x2' that has an active mapping to an internal address
+#    X2:x2, back to that internal address, X2:x2.  Note that typically X1'
+#    is the same as X2'.
+# 
+#    Furthermore, the NAT may present the hairpinned packet with either an
+#    internal (X1:x1) or an external (X1':x1') source IP address and port.
+#    Therefore, the hairpinning NAT behavior can be either "External
+#    source IP address and port" or "Internal source IP address and port".
+#    "Internal source IP address and port" may cause problems by confusing
+#    implementations that expect an external IP address and port.
+# 
+#    REQ-9:  A NAT MUST support "Hairpinning".
+# 
+#       a) A NAT Hairpinning behavior MUST be "External source IP address
+#          and port".
+# 
+#    Justification:  This requirement is to allow communications between
+#       two endpoints behind the same NAT when they are trying each
+#       other's external IP addresses.
+# 
+#       a) Using the external source IP address is necessary for
+#          applications with a restrictive policy of not accepting packets
+#          from IP addresses that differ from what is expected.
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-9:  A NAT MUST support "Hairpinning".
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) A NAT Hairpinning behavior MUST be "External source IP address
+and port".
+'''
+

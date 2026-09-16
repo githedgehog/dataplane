@@ -1,0 +1,50 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-4.1"
+
+# Address and Port Mapping Behavior
+#
+#    A NAT uses a mapping to translate packets for each TCP connection.  A
+#    mapping is dynamically allocated for connections initiated from the
+#    internal side, and potentially reused for certain subsequent
+#    connections.  NAT behavior regarding when a mapping can be reused
+#    differs for different NATs as described in [BEHAVE-UDP].
+# 
+#    Consider an internal IP address and TCP port (X:x) that initiates a
+#    TCP connection to an external (Y1:y1) tuple.  Let the mapping
+#    allocated by the NAT for this connection be (X1':x1').  Shortly
+#    thereafter, the endpoint initiates a connection from the same (X:x)
+#    to an external address (Y2:y2) and gets the mapping (X2':x2') on the
+#    NAT.  As per [BEHAVE-UDP], if (X1':x1') equals (X2':x2') for all
+#    values of (Y2:y2), then the NAT is defined to have "Endpoint-
+#    Independent Mapping" behavior.  If (X1':x1') equals (X2':x2') only
+#    when Y2 equals Y1, then the NAT is defined to have "Address-Dependent
+#    Mapping" behavior.  If (X1':x1') equals (X2':x2') only when (Y2:y2)
+#    equals (Y1:y1), possible only for consecutive connections to the same
+#    external address shortly after the first is terminated and if the NAT
+#    retains state for connections in TIME_WAIT state, then the NAT is
+#    defined to have "Address and Port-Dependent Mapping" behavior.  This
+#    document introduces one additional behavior where (X1':x1') never
+#    equals (X2':x2'), that is, for each connection a new mapping is
+#    allocated; in such a case, the NAT is defined to have "Connection-
+#    Dependent Mapping" behavior.
+# 
+#    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
+#       for TCP.
+# 
+#    Justification:  REQ-1 is necessary for UNSAF methods to work.
+#       Endpoint-Independent Mapping behavior allows peer-to-peer
+#       applications to learn and advertise the external IP address and
+#       port allocated to an internal endpoint such that external peers
+#       can contact it (subject to the NAT's security policy).  The
+#       security policy of a NAT is independent of its mapping behavior
+#       and is discussed later in Section 4.3.  Having Endpoint-
+#       Independent Mapping behavior allows peer-to-peer applications to
+#       work consistently without compromising the security benefits of
+#       the NAT.
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
+for TCP.
+'''
+

@@ -1,0 +1,46 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-7"
+
+# Application Level Gateways
+#
+#    Certain NATs have implemented Application Level Gateways (ALGs) for
+#    various protocols, including protocols for negotiating peer-to-peer
+#    sessions, such as SIP.
+# 
+#    Certain NATs have these ALGs turned on permanently, others have them
+#    turned on by default but allow them to be turned off, and others have
+#    them turned off by default but allow them be turned on.
+# 
+#    NAT ALGs may interfere with UNSAF methods or protocols that try to be
+#    NAT-aware and therefore must be used with extreme caution.
+# 
+#    REQ-10:  To eliminate interference with UNSAF NAT traversal
+#       mechanisms and allow integrity protection of UDP communications,
+#       NAT ALGs for UDP-based protocols SHOULD be turned off.  Future
+#       standards track specifications that define ALGs can update this to
+#       recommend the defaults for the ALGs that they define.
+# 
+#       a) If a NAT includes ALGs, it is RECOMMENDED that the NAT allow
+#          the NAT administrator to enable or disable each ALG separately.
+# 
+#    Justification:  NAT ALGs may interfere with UNSAF methods.
+# 
+#       a) This requirement allows the user to enable those ALGs that are
+#          necessary to aid in the operation of some applications without
+#          enabling ALGs, which interfere with the operation of other
+#          applications.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-10:  To eliminate interference with UNSAF NAT traversal
+mechanisms and allow integrity protection of UDP communications,
+NAT ALGs for UDP-based protocols SHOULD be turned off.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) If a NAT includes ALGs, it is RECOMMENDED that the NAT allow
+the NAT administrator to enable or disable each ALG separately.
+'''
+

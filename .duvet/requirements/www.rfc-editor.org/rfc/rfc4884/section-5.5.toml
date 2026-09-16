@@ -1,0 +1,39 @@
+target = "https://www.rfc-editor.org/rfc/rfc4884#section-5.5"
+
+# Compliant Application Receives ICMP Message with Non-Compliant
+#
+#       Extensions
+# 
+#    When a compliant application receives an ICMP message, it examines
+#    the length attribute that is associated with the "original datagram"
+#    field.  If the length attribute is zero, the compliant application
+#    MUST determine that the message contains no extensions.  In this
+#    case, that determination is technically correct, but not backwards
+#    compatible with the non-compliant implementation that originated the
+#    ICMP message.
+# 
+#    So, to ease transition yet encourage compliant implementation,
+#    compliant TRACEROUTE implementations MUST include a non-default
+#    operation mode to also interpret non-compliant responses.
+#    Specifically, when a TRACEROUTE application operating in non-
+#    compliant mode receives a sufficiently long ICMP message that does
+#    not specify a length attribute, it will parse for a valid extension
+#    header at a fixed location, assuming a 128-octet "original datagram"
+#    field.  If the application detects a valid version and checksum, it
+#    will treat the octets that follow as an extension structure.
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the length attribute is zero, the compliant application
+MUST determine that the message contains no extensions.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+So, to ease transition yet encourage compliant implementation,
+compliant TRACEROUTE implementations MUST include a non-default
+operation mode to also interpret non-compliant responses.
+'''
+

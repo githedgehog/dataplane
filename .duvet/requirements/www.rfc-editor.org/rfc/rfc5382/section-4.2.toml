@@ -1,0 +1,75 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-4.2"
+
+# Internally Initiated Connections
+#
+#    An internal endpoint initiates a TCP connection through a NAT by
+#    sending a SYN packet.  The NAT allocates (or reuses) a mapping for
+#    the connection, as described in the previous section.  The mapping
+#    defines the external IP address and port used for translation of all
+#    packets for that connection.  In particular, for client-server
+# 
+#    applications where an internal client initiates the connection to an
+#    external server, the mapping is used to translate the outbound SYN,
+#    the resulting inbound SYN-ACK response, the subsequent outbound ACK,
+#    and other packets for the connection.  This method of connection
+#    initiation corresponds to the 3-way handshake (defined in [RFC0793])
+#    and is supported by all NATs.
+# 
+#    Peer-to-peer applications use an alternate method of connection
+#    initiation termed simultaneous-open (Fig. 8, [RFC0793]) to traverse
+#    NATs.  In the simultaneous-open mode of operation, both peers send
+#    SYN packets for the same TCP connection.  The SYN packets cross in
+#    the network.  Upon receiving the other end's SYN packet, each end
+#    responds with a SYN-ACK packet, which also cross in the network.  The
+#    connection is considered established once the SYN-ACKs are received.
+#    From the perspective of the NAT, the internal host's SYN packet is
+#    met by an inbound SYN packet for the same connection (as opposed to a
+#    SYN-ACK packet during a 3-way handshake).  Subsequent to this
+#    exchange, both an outbound and an inbound SYN-ACK are seen for the
+#    connection.  Some NATs erroneously block the inbound SYN for the
+#    connection in progress.  Some NATs block or incorrectly translate the
+#    outbound SYN-ACK.  Such behavior breaks TCP simultaneous-open and
+#    prevents peer-to-peer applications from functioning correctly behind
+#    a NAT.
+# 
+#    In order to provide network address translation service for TCP, it
+#    is necessary for a NAT to correctly receive, translate, and forward
+#    all packets for a connection that conform to valid transitions of the
+#    TCP State-Machine (Fig. 6, [RFC0793]).
+# 
+#    REQ-2:  A NAT MUST support all valid sequences of TCP packets
+#       (defined in [RFC0793]) for connections initiated both internally
+#       as well as externally when the connection is permitted by the NAT.
+#       In particular:
+#       a) In addition to handling the TCP 3-way handshake mode of
+#          connection initiation, A NAT MUST handle the TCP simultaneous-
+#          open mode of connection initiation.
+# 
+#    Justification:  The intent of this requirement is to allow standards
+#       compliant TCP stacks to traverse NATs no matter what path the
+#       stacks take through the TCP state-machine and no matter which end
+#       initiates the connection as long as the connection is permitted by
+#       the filtering policy of the NAT (filtering policy is described in
+#       the following section).
+#       a) In addition to TCP packets for a 3-way handshake, A NAT must be
+#          prepared to accept an inbound SYN and an outbound SYN-ACK for
+#          an internally initiated connection in order to support
+#          simultaneous-open.
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-2:  A NAT MUST support all valid sequences of TCP packets
+(defined in [RFC0793]) for connections initiated both internally
+as well as externally when the connection is permitted by the NAT.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In particular:
+a) In addition to handling the TCP 3-way handshake mode of
+connection initiation, A NAT MUST handle the TCP simultaneous-
+open mode of connection initiation.
+'''
+
