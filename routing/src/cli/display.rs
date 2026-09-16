@@ -32,7 +32,8 @@ use crate::interfaces::interface::Attachment;
 use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet};
 use crate::interfaces::interface::{IfState, IfType, Interface};
 
-use crate::evpn::{RmacEntry, RmacStore, Vtep, rmac::RmacFilter};
+use crate::evpn::rmac::RmacFilter;
+use crate::evpn::{RmacEntry, RmacStore, Vtep};
 
 use chrono::DateTime;
 use common::cliprovider::{Heading, line};
@@ -656,7 +657,7 @@ impl Display for RmacEntry {
 
 pub struct RmacStoreView<'a> {
     pub rmac_store: &'a RmacStore,
-    pub filter: &'a RmacFilter,
+    pub filter: RmacFilter,
 }
 impl Display for RmacStoreView<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -672,7 +673,7 @@ impl Display for RmacStoreView<'_> {
 
         let total_entries = store.len();
         let mut displayed = 0;
-        for entry in store.values().filter(|entry| (self.filter)(entry)) {
+        for entry in store.filtered(&self.filter) {
             writeln!(f, "{entry}")?;
             displayed += 1;
         }
