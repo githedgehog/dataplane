@@ -6,7 +6,11 @@ This repository contains the Dataplane for [Hedgehog's Open Network Fabric][fabr
 This component acts as a gateway between different VPCs managed by the Fabric, or to communicate with endpoints outside
 of the Fabric.
 
+If you are working on the code, start with the [development guide]: it covers the code, testing, and documentation
+guidelines this repository expects.
+
 [fabric-docs]: https://docs.githedgehog.com
+[development guide]: ./development/README.md
 
 ## Build instructions
 
