@@ -32,6 +32,7 @@ use cli::cliproto::{
 use concurrency::sync::Arc;
 use config::{ConfigSummary, GwConfigMeta, ValidatedGwConfig};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
+use net::eth::mac::Mac;
 use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
 
@@ -329,7 +330,14 @@ fn rmac_filter(request: &CliRequest) -> Result<RmacFilter, CliError> {
         .map(|vni| Vni::new_checked(vni).map_err(|e| CliError::WrongFilter(e.to_string())))
         .transpose()?;
 
-    let filter = RmacFilter::new(vni, request.args.address, None);
+    let mac = request
+        .args
+        .mac
+        .as_ref()
+        .map(|m| Mac::try_from(m.as_str()).map_err(|e| CliError::WrongFilter(e.to_string())))
+        .transpose()?;
+
+    let filter = RmacFilter::new(vni, request.args.address, mac);
     Ok(filter)
 }
 
@@ -456,7 +464,7 @@ fn prefetch_interfaces(db: &RoutingDb) -> PrefetchedData {
     };
     PrefetchedData::with_data(PrefetchSelector::Interfaces, interfaces)
 }
-fn prefetch_rmac_addrs(db: &RoutingDb) -> PrefetchedData {
+fn prefetch_rmac_ips(db: &RoutingDb) -> PrefetchedData {
     let mut rmacs: Vec<String> = db
         .rmac_store
         .values()
@@ -465,7 +473,14 @@ fn prefetch_rmac_addrs(db: &RoutingDb) -> PrefetchedData {
 
     rmacs.sort_unstable();
     rmacs.dedup();
-    PrefetchedData::with_data(PrefetchSelector::RmacAddr, rmacs)
+    PrefetchedData::with_data(PrefetchSelector::RmacIp, rmacs)
+}
+fn prefetch_rmac_macs(db: &RoutingDb) -> PrefetchedData {
+    let mut rmacs: Vec<String> = db.rmac_store.values().map(|e| e.mac.to_string()).collect();
+
+    rmacs.sort_unstable();
+    rmacs.dedup();
+    PrefetchedData::with_data(PrefetchSelector::RmacIp, rmacs)
 }
 
 fn prefetch(request: CliRequest, rio: &Rio, db: &RoutingDb) -> CliResponse {
@@ -476,7 +491,8 @@ fn prefetch(request: CliRequest, rio: &Rio, db: &RoutingDb) -> CliResponse {
         PrefetchSelector::Vpcs => prefetch_vpcs(rio.gwconfig.as_ref()),
         PrefetchSelector::Vnis => prefetch_vnis(rio.gwconfig.as_ref()),
         PrefetchSelector::Interfaces => prefetch_interfaces(db),
-        PrefetchSelector::RmacAddr => prefetch_rmac_addrs(db),
+        PrefetchSelector::RmacIp => prefetch_rmac_ips(db),
+        PrefetchSelector::RmacMac => prefetch_rmac_macs(db),
     };
     CliResponse::with_prefetch_data(request, data)
 }
