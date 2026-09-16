@@ -56,6 +56,9 @@ impl CliArgs {
                 IpAddr::from_str(addr).map_err(|_| ArgsError::BadPrefix(addr.to_owned()))?;
             args.remote.address = Some(address);
         }
+        if let Some(mac) = &args_map.remove("mac-address") {
+            args.remote.mac = Some(mac.to_owned());
+        }
         if let Some(prefix) = args_map.remove("prefix") {
             if let Some((addr, len)) = prefix.split_once('/') {
                 let pfx =
