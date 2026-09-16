@@ -4,6 +4,7 @@
 //! The error results used by this library.
 
 use crate::fib::fibtype::FibKey;
+use net::eth::mac::Mac;
 use net::interface::InterfaceIndex;
 use net::interface::address::{IfAddr, IfAddrError};
 use thiserror::Error;
@@ -27,6 +28,9 @@ pub enum RouterError {
 
     #[error("Invalid VNI value: {0}")]
     VniInvalid(u32),
+
+    #[error("Invalid router MAC {0}: expected a nonzero unicast address")]
+    InvalidRouterMac(Mac),
 
     #[error("An interface with ifindex {0} already exists")]
     InterfaceExists(InterfaceIndex),

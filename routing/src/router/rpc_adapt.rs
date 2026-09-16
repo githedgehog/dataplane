@@ -19,7 +19,7 @@ use dplane_rpc::msg::{
     ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, RouteTableId, RouteType, VxlanEncap,
 };
 use lpm::prefix::Prefix;
-use net::eth::mac::Mac;
+use net::eth::mac::{Mac, SourceMac};
 use net::interface::InterfaceIndex;
 use net::vxlan::Vni;
 use std::net::{IpAddr, Ipv4Addr};
@@ -77,9 +77,13 @@ impl TryFrom<&Rmac> for RmacEntry {
     type Error = RouterError;
 
     fn try_from(value: &Rmac) -> Result<Self, Self::Error> {
+        let mac = Mac::from(value.mac.bytes());
         Ok(Self {
             address: value.address,
-            mac: Mac::from(value.mac.bytes()),
+            mac: SourceMac::new(mac).map_err(|e| {
+                error!("Received invalid router mac {mac}: {e}");
+                RouterError::InvalidRouterMac(mac)
+            })?,
             vni: Vni::new_checked(value.vni).map_err(|_| {
                 error!("Received router mac with invalid vni {}", value.vni);
                 RouterError::VniInvalid(value.vni)
@@ -215,5 +219,37 @@ impl Vrf {
             return;
         };
         self.del_route(prefix, vrf0, rstore);
+    }
+}
+
+#[cfg(test)]
+mod rmac_properties {
+    use super::*;
+
+    #[test]
+    fn router_mac_conversion_requires_a_nonzero_unicast_address() {
+        bolero::check!().with_type::<[u8; 6]>().for_each(|bytes| {
+            for bytes in [*bytes, [0; 6], [0xff; 6]] {
+                let msg = Rmac {
+                    address: "7.0.0.1".parse().unwrap(),
+                    mac: dplane_rpc::objects::MacAddress::new(bytes),
+                    vni: 3000,
+                };
+                let result = RmacEntry::try_from(&msg);
+                let valid = bytes != [0; 6] && bytes[0] & 1 == 0;
+                assert_eq!(result.is_ok(), valid, "router MAC {bytes:02x?}");
+                match result {
+                    Ok(entry) => {
+                        assert_eq!(entry.mac.inner(), Mac::from(bytes));
+                        assert_eq!(entry.address, msg.address);
+                        assert_eq!(entry.vni.as_u32(), msg.vni);
+                        assert!(!entry.is_stale());
+                    }
+                    Err(error) => {
+                        assert_eq!(error, RouterError::InvalidRouterMac(Mac::from(bytes)));
+                    }
+                }
+            }
+        });
     }
 }

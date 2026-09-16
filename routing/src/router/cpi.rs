@@ -497,3 +497,161 @@ pub fn process_cpi_data(rio: &mut Rio, peer: &SocketAddr, data: &mut Bytes, db: 
         }
     }
 }
+
+#[cfg(test)]
+mod rmac_properties {
+    use super::*;
+    use crate::atable::atablerw::AtableWriter;
+    use crate::evpn::RmacStore;
+    use crate::fib::fibobjects::{FibEntry, PktInstruction};
+    use crate::fib::fibtable::FibTableWriter;
+    use crate::interfaces::iftablerw::IfTableWriter;
+    use crate::interfaces::tests::build_test_iftable;
+    use crate::rib::encapsulation::ResolvedEncapsulation;
+    use crate::rib::vrf::tests::{build_test_nhop, build_test_route};
+    use crate::rib::vrf::{RouteOrigin, RouterVrfConfig};
+    use dplane_rpc::msg::{ForwardAction, NextHop, VxlanEncap};
+    use dplane_rpc::objects::MacAddress;
+    use lpm::prefix::Prefix;
+    use net::vxlan::Vni;
+    use std::net::IpAddr;
+    use std::str::FromStr;
+
+    const OVERLAY_VRF: VrfId = 7;
+    const OVERLAY_VNI: u32 = 3000;
+    const UNDERLAY_IFINDEX: u32 = 2;
+
+    fn addr(a: &str) -> IpAddr {
+        IpAddr::from_str(a).unwrap_or_else(|_| unreachable!())
+    }
+
+    fn vteps() -> Vec<IpAddr> {
+        vec![addr("7.0.0.1"), addr("7.0.0.2")]
+    }
+
+    fn macs() -> Vec<[u8; 6]> {
+        vec![
+            [0x00, 0xaa, 0x00, 0x00, 0x00, 0x01],
+            [0x00, 0xbb, 0x00, 0x00, 0x00, 0x02],
+        ]
+    }
+
+    /// Returns the `AtableWriter` alongside the db, and callers must keep it.
+    ///
+    /// Dropping it here left `db.atabler` with no live writer, so `db.atabler.enter()` was
+    /// permanently `None`. Nothing in this module reads adjacencies today, so it cost nothing
+    /// yet -- but the next test that does would have got an empty table and a passing
+    /// assertion rather than a failure.
+    fn fabric() -> (RoutingDb, AtableWriter) {
+        let (fibtw, _fibtr) = FibTableWriter::new();
+        let (iftw, _iftr) = IfTableWriter::new_with_data(build_test_iftable());
+        let (atw, atabler) = AtableWriter::new();
+        let mut db = RoutingDb::new(fibtw, iftw, atabler);
+
+        let vrf0 = db
+            .vrftable
+            .get_vrf_mut(Vrf::DEFAULT_VRFID)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        vrf0.add_route_complete(
+            &Prefix::from_str("7.0.0.0/8").unwrap_or_else(|_| unreachable!()),
+            build_test_route(RouteOrigin::Connected, 0, 0),
+            &[build_test_nhop(None, Some(UNDERLAY_IFINDEX), 0, None)],
+            None,
+            &RmacStore::new(),
+        );
+
+        let vni = Vni::new_checked(OVERLAY_VNI).unwrap_or_else(|_| unreachable!());
+        let config = RouterVrfConfig::new(OVERLAY_VRF, "overlay").set_vni(Some(vni));
+        db.vrftable
+            .add_vrf(&config)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        (db, atw)
+    }
+
+    fn overlay_route(vrfid: VrfId, prefix: &str, vtep: IpAddr) -> IpRoute {
+        let (address, len) = prefix.split_once('/').unwrap_or_else(|| unreachable!());
+        IpRoute {
+            prefix: addr(address),
+            prefix_len: len.parse().unwrap_or_else(|_| unreachable!()),
+            vrfid,
+            tableid: 254,
+            rtype: RouteType::Bgp,
+            distance: 20,
+            metric: 100,
+            nhops: vec![NextHop {
+                fwaction: ForwardAction::Forward,
+                address: Some(vtep),
+                ifindex: None,
+                vrfid,
+                encap: Some(NextHopEncap::VXLAN(VxlanEncap { vni: OVERLAY_VNI })),
+            }],
+        }
+    }
+
+    fn rmac_msg(vtep: IpAddr, mac: [u8; 6]) -> Rmac {
+        Rmac {
+            address: vtep,
+            mac: MacAddress::new(mac),
+            vni: OVERLAY_VNI,
+        }
+    }
+
+    fn fib_entries(db: &RoutingDb, vrfid: VrfId, prefix: &str) -> Vec<FibEntry> {
+        let prefix = Prefix::from_str(prefix).unwrap_or_else(|_| unreachable!());
+        let Prefix::IPV4(wanted) = prefix else {
+            unreachable!()
+        };
+        let vrf = db
+            .vrftable
+            .get_vrf(vrfid)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        let fibw = vrf.fibw.as_ref().unwrap_or_else(|| unreachable!());
+        let fib = fibw.enter().unwrap_or_else(|| unreachable!());
+        fib.iter_v4()
+            .find(|(p, _)| *p == wanted)
+            .map(|(_, route)| {
+                route
+                    .iter()
+                    .flat_map(|group| group.entries().iter().cloned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn invalid_router_mac_updates_preserve_the_mapping_and_fib() {
+        bolero::check!().with_type::<[u8; 6]>().for_each(|bytes| {
+            let mut multicast = *bytes;
+            multicast[0] |= 1;
+            let (mut db, _atw) = fabric();
+            let vtep = vteps()[0];
+            let vni = Vni::new_checked(OVERLAY_VNI).unwrap();
+            let prefix = "10.0.0.0/24";
+            assert_eq!(
+                overlay_route(OVERLAY_VRF, prefix, vtep).add(&mut db),
+                RpcResultCode::Ok
+            );
+            assert_eq!(rmac_msg(vtep, macs()[0]).add(&mut db), RpcResultCode::Ok);
+            let original = db.rmac_store.get_rmac(vni, vtep).unwrap().clone();
+            let before = fib_entries(&db, OVERLAY_VRF, prefix);
+            assert!(before.iter().any(|entry| matches!(
+                entry.iter().next(),
+                Some(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(_)))
+            )));
+
+            for bytes in [[0; 6], [0xff; 6], multicast] {
+                let invalid = rmac_msg(vtep, bytes);
+                for op in [RpcOp::Add, RpcOp::Del] {
+                    let result = match op {
+                        RpcOp::Add => invalid.add(&mut db),
+                        RpcOp::Del => invalid.del(&mut db),
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(result, RpcResultCode::Failure, "router MAC {bytes:02x?}");
+                    assert!(db.rmac_store.get_rmac(vni, vtep) == Some(&original));
+                    assert_eq!(fib_entries(&db, OVERLAY_VRF, prefix), before);
+                }
+            }
+        });
+    }
+}
