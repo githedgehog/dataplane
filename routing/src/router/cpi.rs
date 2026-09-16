@@ -515,7 +515,7 @@ mod cpi_properties {
     use dplane_rpc::msg::{ForwardAction, NextHop, VxlanEncap};
     use dplane_rpc::objects::MacAddress;
     use lpm::prefix::Prefix;
-    use net::eth::mac::Mac;
+    use net::eth::mac::{Mac, SourceMac};
     use net::vxlan::Vni;
     use std::net::IpAddr;
     use std::ops::Bound::Included;
@@ -686,7 +686,8 @@ mod cpi_properties {
 
                 let after = fib_entries(&db, OVERLAY_VRF, prefix);
                 entries_are_well_formed(&after, "after the rmac");
-                let expected_mac = Mac::from(macs()[mac]);
+                let expected_mac = SourceMac::try_from(Mac::from(macs()[mac])).expect("Bad mac");
+
                 for entry in &after {
                     let mut instructions = entry.iter();
                     match instructions.next() {
@@ -854,5 +855,42 @@ mod cpi_properties {
         assert!(nonlocal_nhop(&route), "another vrf is nonlocal");
         route.nhops.clear();
         assert!(!nonlocal_nhop(&route), "no next-hops, nothing nonlocal");
+    }
+
+    #[test]
+    fn invalid_router_mac_updates_preserve_the_mapping_and_fib() {
+        bolero::check!().with_type::<[u8; 6]>().for_each(|bytes| {
+            let mut multicast = *bytes;
+            multicast[0] |= 1;
+            let (mut db, _atw) = fabric();
+            let vtep = vteps()[0];
+            let vni = Vni::new_checked(OVERLAY_VNI).unwrap();
+            let prefix = "10.0.0.0/24";
+            assert_eq!(
+                overlay_route(OVERLAY_VRF, prefix, vtep).add(&mut db),
+                RpcResultCode::Ok
+            );
+            assert_eq!(rmac_msg(vtep, macs()[0]).add(&mut db), RpcResultCode::Ok);
+            let original = db.rmac_store.get_rmac(vni, vtep).unwrap().clone();
+            let before = fib_entries(&db, OVERLAY_VRF, prefix);
+            assert!(before.iter().any(|entry| matches!(
+                entry.iter().next(),
+                Some(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(_)))
+            )));
+
+            for bytes in [[0; 6], [0xff; 6], multicast] {
+                let invalid = rmac_msg(vtep, bytes);
+                for op in [RpcOp::Add, RpcOp::Del] {
+                    let result = match op {
+                        RpcOp::Add => invalid.add(&mut db),
+                        RpcOp::Del => invalid.del(&mut db),
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(result, RpcResultCode::Failure, "router MAC {bytes:02x?}");
+                    assert!(db.rmac_store.get_rmac(vni, vtep) == Some(&original));
+                    assert_eq!(fib_entries(&db, OVERLAY_VRF, prefix), before);
+                }
+            }
+        });
     }
 }

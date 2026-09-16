@@ -4,7 +4,7 @@
 //! Submodule to implement a table of EVPN router macs.
 
 use ahash::RandomState;
-use net::eth::mac::Mac;
+use net::eth::mac::SourceMac;
 use net::vxlan::Vni;
 use std::collections::{HashMap, hash_map::Entry};
 use std::net::IpAddr;
@@ -14,13 +14,13 @@ use tracing::{debug, warn};
 #[derive(Eq, PartialEq, Clone)]
 pub struct RmacEntry {
     pub address: IpAddr,
-    pub mac: Mac,
+    pub mac: SourceMac,
     pub vni: Vni,
     pub stale_t: Option<Instant>, // instant when the rmac was deleted
 }
 impl RmacEntry {
     #[allow(unused)]
-    fn new(vni: Vni, address: IpAddr, mac: Mac) -> Self {
+    fn new(vni: Vni, address: IpAddr, mac: SourceMac) -> Self {
         Self {
             address,
             mac,
@@ -59,7 +59,7 @@ impl RmacStore {
     /// Add an rmac entry. Returns an [`RmacEntry`] if some was before
     //////////////////////////////////////////////////////////////////
     #[cfg(test)]
-    fn add_rmac(&mut self, vni: Vni, address: IpAddr, mac: Mac) -> Option<RmacEntry> {
+    fn add_rmac(&mut self, vni: Vni, address: IpAddr, mac: SourceMac) -> Option<RmacEntry> {
         let rmac = RmacEntry::new(vni, address, mac);
         self.table.insert((address, vni), rmac)
     }
@@ -232,21 +232,9 @@ pub(crate) mod tests {
     pub fn build_sample_rmac_store() -> RmacStore {
         let mut store = RmacStore::new();
         let remote = mk_addr("7.0.0.1");
-        store.add_rmac(
-            new_vni(3000),
-            remote,
-            Mac::from([0x02, 0x0, 0x0, 0x0, 0x0, 0xaa]),
-        );
-        store.add_rmac(
-            new_vni(3001),
-            remote,
-            Mac::from([0x02, 0x0, 0x0, 0x0, 0x0, 0xbb]),
-        );
-        store.add_rmac(
-            new_vni(3002),
-            remote,
-            Mac::from([0x02, 0x0, 0x0, 0x0, 0x0, 0xcc]),
-        );
+        store.add_rmac(new_vni(3000), remote, "02:00:00:00:00:aa".parse().unwrap());
+        store.add_rmac(new_vni(3001), remote, "02:00:00:00:00:bb".parse().unwrap());
+        store.add_rmac(new_vni(3002), remote, "02:00:00:00:00:cc".parse().unwrap());
         store
     }
     #[allow(unused)] // fixme: add test
@@ -263,21 +251,9 @@ pub(crate) mod tests {
         let remote = mk_addr("7.0.0.1");
 
         // create 3 rmacs
-        let rmac1 = RmacEntry::new(
-            new_vni(3001),
-            remote,
-            Mac::from([0x0, 0x0, 0x0, 0x0, 0x0, 0x01]),
-        );
-        let rmac2 = RmacEntry::new(
-            new_vni(3002),
-            remote,
-            Mac::from([0x0, 0x0, 0x0, 0x0, 0x0, 0x02]),
-        );
-        let rmac3 = RmacEntry::new(
-            new_vni(3003),
-            remote,
-            Mac::from([0x0, 0x0, 0x0, 0x0, 0x0, 0x03]),
-        );
+        let rmac1 = RmacEntry::new(new_vni(3001), remote, "00:00:00:00:00:01".parse().unwrap());
+        let rmac2 = RmacEntry::new(new_vni(3002), remote, "00:00:00:00:00:02".parse().unwrap());
+        let rmac3 = RmacEntry::new(new_vni(3003), remote, "00:00:00:00:00:03".parse().unwrap());
 
         // add to store
         assert!(store.add_rmac_entry(rmac1.clone()));
@@ -315,7 +291,7 @@ pub(crate) mod tests {
 
         // replace/update second: mac should be changed and entry no longer be invalid
         let mut rmac2_modified_mac = rmac2.clone();
-        rmac2_modified_mac.mac = Mac::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        rmac2_modified_mac.mac = "10:22:33:44:55:66".parse().unwrap();
         assert!(store.add_rmac_entry(rmac2_modified_mac.clone()));
         assert_eq!(store.stale(), 0);
 

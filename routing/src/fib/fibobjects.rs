@@ -252,7 +252,6 @@ mod squash_properties {
     use super::*;
     use crate::rib::encapsulation::ResolvedVxlan;
     use bolero::{Driver, ValueGenerator};
-    use net::eth::mac::Mac;
     use std::net::Ipv4Addr;
     use std::num::NonZero;
     use std::ops::Bound::Included;
@@ -288,7 +287,7 @@ mod squash_properties {
                 vni: Vni::new_checked(u32::from(driver.gen_u8(Included(&1), Included(&3))?))
                     .unwrap_or_else(|_| unreachable!()),
                 remote: ADDRESSES[0],
-                dmac: Mac::from([0x02, 0, 0, 0, 0, 1]),
+                dmac: "02:00:00:00:00:01".parse().unwrap(),
             })),
             _ => PktInstruction::Egress(egress(driver)?),
         })
