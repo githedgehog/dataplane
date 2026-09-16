@@ -29,12 +29,10 @@ impl RmacEntry {
         }
     }
     #[must_use]
-    pub fn is_stale(&self) -> bool {
+    pub(crate) fn is_stale(&self) -> bool {
         self.stale_t.is_some()
     }
 }
-
-pub type RmacFilter = Box<dyn Fn(&RmacEntry) -> bool>;
 
 /// Type that represents a collection of EVPN Rmac - IP mappings, per Vni
 pub struct RmacStore {
@@ -217,18 +215,65 @@ impl RmacStore {
         debug!("Removed rmacs for vnis: {vnis:?}");
         vnis
     }
+
+    /// Provide an iterator over all `RmacEntry` allowed by filter `RmacFilter`
+    pub fn filtered(&self, filter: &RmacFilter) -> impl Iterator<Item = &RmacEntry> {
+        self.table.values().filter(|e| {
+            filter.vni.is_none_or(|vni| e.vni == vni)
+                && filter.address.is_none_or(|a| e.address == a)
+                && filter.mac.is_none_or(|mac| e.mac == mac)
+        })
+    }
+}
+
+/// A type that represents a filter for rmacs
+#[derive(Default)]
+pub struct RmacFilter {
+    vni: Option<Vni>,
+    address: Option<IpAddr>,
+    mac: Option<SourceMac>,
+}
+
+impl RmacFilter {
+    #[must_use]
+    pub fn new(vni: Option<Vni>, address: Option<IpAddr>, mac: Option<SourceMac>) -> Self {
+        Self { vni, address, mac }
+    }
+}
+
+#[cfg(test)]
+impl RmacFilter {
+    #[must_use]
+    pub fn address(mut self, address: IpAddr) -> Self {
+        self.address = Some(address);
+        self
+    }
+
+    #[must_use]
+    pub fn vni(mut self, vni: Vni) -> Self {
+        self.vni = Some(vni);
+        self
+    }
+
+    #[must_use]
+    pub fn mac(mut self, mac: SourceMac) -> Self {
+        self.mac = Some(mac);
+        self
+    }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{RmacEntry, RmacStore};
+    use super::{RmacEntry, RmacFilter, RmacStore};
     use crate::evpn::vtep::Vtep;
     use crate::rib::vrf::tests::mk_addr;
-    use net::eth::mac::Mac;
+    use net::eth::mac::{Mac, SourceMac};
     use net::vxlan::Vni;
+    use std::net::IpAddr;
+    use std::str::FromStr;
 
     fn new_vni(value: u32) -> Vni {
-        Vni::new_checked(value).unwrap()
+        Vni::new_checked(value).expect("Bad vni value")
     }
 
     pub fn build_sample_rmac_store() -> RmacStore {
@@ -317,5 +362,154 @@ pub(crate) mod tests {
         vtep.unset_mac();
         assert_eq!(vtep.get_ip(), None);
         assert_eq!(vtep.get_mac(), None);
+    }
+
+    #[track_caller]
+    fn source_mac(mac: &str) -> SourceMac {
+        SourceMac::try_from(mac).expect("Bad mac address")
+    }
+
+    // create a test rmac entry
+    #[track_caller]
+    fn rmac(vni: u32, addr: &str, mac: &str) -> RmacEntry {
+        RmacEntry::new(
+            Vni::new_checked(vni).expect("Bad vni"),
+            IpAddr::from_str(addr).expect("Bad IP address"),
+            source_mac(mac),
+        )
+    }
+
+    // add a test rmac entry to a store
+    fn rmac_add(store: &mut RmacStore, vni: u32, addr: &str, mac: &str) -> bool {
+        let entry = rmac(vni, addr, mac);
+        store.add_rmac_entry(entry)
+    }
+
+    // build sample rmac store
+    fn sample_rmac_store() -> RmacStore {
+        let mut store = RmacStore::new();
+
+        // 4 entries with the same vni = 1000
+        rmac_add(&mut store, 1000, "172.16.1.1", "02:00:00:00:00:01");
+        rmac_add(&mut store, 1000, "172.16.1.2", "02:00:00:00:00:02");
+        rmac_add(&mut store, 1000, "172.16.1.3", "02:00:00:00:00:03");
+        rmac_add(&mut store, 1000, "172.16.1.4", "02:00:00:00:00:04");
+
+        // 3 entries with the same ip address and mac
+        rmac_add(&mut store, 2000, "172.16.1.5", "02:00:00:00:00:05");
+        rmac_add(&mut store, 2001, "172.16.1.5", "02:00:00:00:00:05");
+        rmac_add(&mut store, 2002, "172.16.1.5", "02:00:00:00:00:05");
+
+        println!("{store}");
+        store
+    }
+
+    #[test]
+    // Test filtering rmac entries by vni
+    fn test_rmac_filter_by_vni() {
+        let store = sample_rmac_store();
+        let target_vni = new_vni(1000);
+        let filter = RmacFilter::default().vni(target_vni);
+
+        // apply filter to the store, collecting in a vec for testing
+        let out: Vec<RmacEntry> = store.filtered(&filter).cloned().collect();
+
+        // check that all entries with that vni are output
+        for e in store.values() {
+            if e.vni == target_vni {
+                assert!(out.contains(e));
+            }
+        }
+        // check that no entry with vni != target_vni is output
+        for e in &out {
+            assert_eq!(e.vni, target_vni);
+        }
+    }
+
+    #[test]
+    // Test filtering rmac entries by ip address
+    fn test_rmac_filter_by_address() {
+        let store = sample_rmac_store();
+        let target_address = IpAddr::from_str("172.16.1.5").expect("Bad IP address");
+        let filter = RmacFilter::default().address(target_address);
+
+        // apply filter to the store, collecting in a vec for testing
+        let out: Vec<RmacEntry> = store.filtered(&filter).cloned().collect();
+
+        // check that all entries with that address are output
+        for e in store.values() {
+            if e.address == target_address {
+                assert!(out.contains(e));
+            }
+        }
+        // check that no entry with address != target_address is output
+        for e in &out {
+            assert_eq!(e.address, target_address);
+        }
+    }
+
+    #[test]
+    // Test filtering rmac entries by vni and ip address
+    fn test_rmac_filter_by_address_and_vni() {
+        let store = sample_rmac_store();
+        let target_address = IpAddr::from_str("172.16.1.5").expect("Bad IP address");
+        let target_vni = new_vni(1000);
+        let filter = RmacFilter::default()
+            .address(target_address)
+            .vni(target_vni);
+
+        // apply filter to the store, collecting in a vec for testing
+        let out: Vec<RmacEntry> = store.filtered(&filter).cloned().collect();
+
+        // check that all entries with that address are output
+        for e in store.values() {
+            if e.address == target_address && e.vni == target_vni {
+                assert!(out.contains(e));
+            }
+        }
+        // check that all entries output satisfy the filter
+        for e in &out {
+            assert_eq!(e.address, target_address);
+            assert_eq!(e.vni, target_vni);
+        }
+    }
+
+    #[test]
+    // Test filtering rmac entries by mac
+    fn test_rmac_filter_by_mac() {
+        let store = sample_rmac_store();
+        let target_mac = source_mac("02:00:00:00:00:05");
+        let filter = RmacFilter::default().mac(target_mac);
+
+        // apply filter to the store, collecting in a vec for testing
+        let out: Vec<RmacEntry> = store.filtered(&filter).cloned().collect();
+
+        // check that all entries with that mac are output
+        for e in store.values() {
+            if e.mac == target_mac {
+                assert!(out.contains(e));
+            }
+        }
+
+        // check that no entry with mac != target_mac is output
+        for e in &out {
+            assert_eq!(e.mac, target_mac);
+        }
+    }
+
+    #[test]
+    // Test that if no constraint is put on the filter, all elements are provided
+    fn test_rmac_filter_pass_through() {
+        let store = sample_rmac_store();
+        let filter = RmacFilter::default();
+
+        // apply filter to the store, collecting in a vec for testing
+        let out: Vec<RmacEntry> = store.filtered(&filter).cloned().collect();
+
+        // all should be output
+        assert_eq!(out.len(), store.len());
+        for e in store.values() {
+            assert!(out.contains(e));
+        }
     }
 }
