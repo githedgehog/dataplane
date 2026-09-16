@@ -48,15 +48,12 @@ pub struct EmbeddedHeaders {
     full_payload_length: Option<u16>,
 }
 
-/// RFC 4884 section 4's backwards-compatibility floor for the "original datagram" field.
+/// Minimum original-datagram field length for RFC 4884 section 4 compatibility.
 ///
-/// The errata were read before this shipped, because the vendored corpus carries only the
-/// base RFC and the project had recorded the constant as written without them. RFC 4884 has
-/// exactly one erratum -- ID 3, Verified, Technical, against section 7 -- and it replaces
-/// "the data structure" with "the ICMP Extension Structure" in the description of the
-/// extension checksum. Nothing touches section 3, section 4, this floor, or the padding and
-/// length-attribute rules cited in `check_full_payload`. Checked 2026-09-06 against
-/// <https://errata.rfc-editor.org/rfc4884>; re-check if a second erratum appears.
+/// Errata checked 2026-09-06: <https://errata.rfc-editor.org/rfc4884>. The only erratum,
+/// ID 3 (Verified, Technical), clarifies the section 7 extension checksum. It does not
+/// change this minimum or the length and padding rules in `check_full_payload`.
+/// The vendored RFC omits errata; recheck if new ones are published.
 const MIN_ORIGINAL_DATAGRAM_OCTETS: usize = 128;
 
 impl EmbeddedHeaders {
@@ -262,22 +259,12 @@ impl EmbeddedHeaders {
             if icmp_length < MIN_ORIGINAL_DATAGRAM_OCTETS {
                 return;
             }
-            // The two alignment requirements below are satisfied by construction rather
-            // than by a check here, and that is the whole argument for citing them: the
-            // length attribute is not measured in octets. `icmp_length` is the field
-            // value multiplied by four for ICMPv4 and by eight for ICMPv6, so every value
-            // this parser can produce is already on the boundary the RFC names. An
-            // explicit `is_multiple_of` test would be a tautology -- the earlier
-            // `!icmp_length.is_multiple_of(32)` was worse than that, comparing an octet
-            // count against a bit count.
+            // `icmp_length` is the length attribute multiplied by four for ICMPv4 or
+            // eight for ICMPv6, so parsed lengths already satisfy the alignment rules.
             //
-            // What is checked is that the surplus over the original datagram is zero.
-            // A conformant sender pads to exactly `max(128, round_up(len, alignment))`,
-            // and a longer field is out of spec -- but a receiver has no reason to
-            // discard a determination it can make: the original datagram really is all
-            // present, and the surplus really is padding, because the extension structure
-            // starts after the declared field. Being generous about the length and strict
-            // about the content is the direction that loses nothing.
+            // Senders must pad to `max(128, round_up(len, alignment))`. As a receiver,
+            // we also accept longer fields if all bytes after the datagram are zero:
+            // the datagram is complete and the extension starts after the declared field.
             //= https://www.rfc-editor.org/rfc/rfc4884#section-3
             //# When the ICMP Extension Structure is appended to an ICMPv4 message
             //# and that ICMPv4 message contains an "original datagram" field, the
@@ -1389,17 +1376,11 @@ mod tests {
         );
     }
 
-    /// Over-padding past the minimum is accepted, not treated as a short quote.
+    /// Accept a complete datagram with extra zero padding.
     ///
-    /// A conformant `ICMPv4` sender pads a 120-octet datagram to exactly 128 -- the nearest
-    /// 32-bit boundary, then the 128-octet floor. Nothing here checks that, deliberately:
-    /// this exercise is the receiver's side of the leniency argued at `check_full_payload`,
-    /// where a longer field still carries the whole original datagram and the surplus is
-    /// still padding. It is named for what it asserts rather than for the requirement,
-    /// because the alignment requirement holds by construction and no test can see it: the
-    /// length attribute is in 32-bit words, so `check_full_payload` cannot be handed an
-    /// unaligned length by the parser, and handing it one directly proves nothing about the
-    /// parser.
+    /// A conformant sender pads this 120-octet datagram to 128 octets. The receiver
+    /// also accepts longer fields, as explained in `check_full_payload`. Parsed lengths
+    /// are always aligned because the ICMPv4 length attribute counts 32-bit words.
     #[test]
     fn a_field_padded_past_the_minimum_is_still_a_full_quote() {
         for field_len in [128usize, 132, 136, 140, 144, 148, 152, 156] {

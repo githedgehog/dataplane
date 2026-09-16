@@ -80,9 +80,8 @@ pub(crate) mod rfc4787 {
         }
     }
 
-    // A distinctive fragment of the quote as well as the bare identifier. Section 9 holds
-    // six requirements, so `contains(SECTION_9, "REQ-12")` alone keeps passing if the text
-    // beside REQ-12 drifts -- which is the drift a build failure is worth having.
+    // Check both the requirement ID and a distinctive phrase. The ID alone would not
+    // detect changes to the requirement's text.
     const _: () = assert!(
         contains(SECTION_9, <Req12 as Requirement>::ID),
         "rfc4787#section-9 does not state REQ-12"

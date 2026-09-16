@@ -122,17 +122,13 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         //= reason=the address reused is whichever one the pool is currently drawing from, not the one this internal host already holds, so a host whose sessions straddle a port-capacity boundary is split across two public addresses
         //# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
         //# behavior of "Paired".
-        // Draw a fresh address only when the addresses already in use are exhausted. Other errors
-        // describe allocator failure and must be preserved.
+        // Allocate a new address only when all addresses in use are exhausted. Propagate
+        // other allocator errors.
         //
-        // Reuse-before-draw gives a host one public address for as long as the pool does not
-        // move on, which is why this reads as Paired in the common case -- but the identity
-        // that would make it Paired is not carried: `allocate` never sees the internal IP, so
-        // it cannot return to an address this host already holds. Interleave two hosts across
-        // an exhaustion boundary and both spill;
-        // `expiry::pool_exhaustion_splits_a_host_across_public_addresses` measures 254 of 254
-        // hosts split. Implementing REQ-2 means keying the choice on the internal IP for the
-        // lifetime of its mappings.
+        // `allocate` does not receive the internal IP, so it cannot keep each host on one
+        // public address when the pool moves to a new address. See
+        // `expiry::pool_exhaustion_splits_a_host_across_public_addresses`. REQ-2 requires
+        // selecting the public address by internal IP for the lifetime of its mappings.
         match self.reuse_allocated_ip(allow_null) {
             Ok(port) => Ok(port),
             Err(e) if e.is_exhaustion() => self.allocate_from_new_ip(allow_null),

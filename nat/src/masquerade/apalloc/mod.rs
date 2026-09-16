@@ -99,7 +99,7 @@ mod setup;
 mod test_alloc;
 
 pub use port_alloc::AllocatedPort;
-// `expiry` is `#![cfg(test)]`, so this is dead in a shipping build.
+// `expiry` is compiled only for tests.
 #[cfg(test)]
 pub(crate) use setup::DEFAULT_MASQUERADE_IDLE_TIMEOUT;
 

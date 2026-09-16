@@ -543,17 +543,14 @@ fn apply_masquerade_config(
     debug!("Updated masquerade NAT allocator");
 }
 
-/// Check the port-forwarding ruleset the way [`apply_port_forwarding_config`] will, but without
-/// touching any table.
+/// Validate port-forwarding rules without modifying any tables.
 ///
-/// `apply_config` swaps the flow-filter, ACL, static-NAT and masquerade tables before it reaches
-/// port forwarding. Those swaps are not undone on a later error and the generation id is only
-/// advanced at the very end, so a ruleset rejected at that point leaves four tables live under a
-/// generation that is never published. Running the same validation up front turns that into a
-/// clean refusal before anything has been committed.
+/// `apply_config` updates four other tables before calling [`apply_port_forwarding_config`].
+/// A failure there leaves those changes applied without publishing their generation ID.
+/// Validating first prevents that partial update when port-forwarding rules are rejected.
 ///
-/// This narrows the window rather than closing the class: `apply_router_config` still runs after
-/// every swap and can still fail late. Closing that properly needs a real two-phase apply.
+/// `apply_router_config` can still fail after the table updates. Making the entire operation
+/// atomic requires a two-phase apply.
 fn precheck_port_forwarding_config(vpc_table: &ValidatedVpcTable) -> ConfigResult {
     let ruleset = build_port_forwarding_configuration(vpc_table)?;
     nat::portfw::validate_ruleset(&ruleset).map_err(|e| ConfigError::PortForwarding(e.to_string()))

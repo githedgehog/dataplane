@@ -57,11 +57,10 @@ fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStat
     }
 }
 
-// No arm of this machine reaches a terminal state, so an ICMP *query* -- an Echo or its
-// reply -- never ends the flow it belongs to. That is half of RFC 5382 REQ-10 and RFC 4787
-// REQ-12, and it is not the half a reader assumes: an ICMP *error* does not come through
-// here at all. It goes to `IcmpErrorHandler`, which does tear a one-way mapping down on a
-// hard error, so neither requirement is met and neither is recorded here.
+// Echo requests and replies never terminate a flow here. ICMP errors go through
+// `IcmpErrorHandler`, which can remove a one-way mapping on a hard error. RFC 5382
+// REQ-10 and RFC 4787 REQ-12 cover errors too, so this function cannot establish
+// compliance with either requirement.
 #[allow(clippy::match_single_binding)]
 fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
     let next = match action {

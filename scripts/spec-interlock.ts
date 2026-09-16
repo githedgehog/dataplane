@@ -620,8 +620,8 @@ function parseArgs(argv: string[]) {
     only: [] as string[],
     jobs: 4,
     output: join(REPO, "target", "spec-interlock"),
-    // Under the repo rather than /tmp, for the same reason as `output` above: the lab
-    // runner shares /tmp between concurrent jobs.
+    // Keep output in this checkout to avoid collisions between concurrent CI jobs
+    // sharing the runner's /tmp.
     json: join(REPO, "target", "duvet-interlock.json"),
     results: "",
   };

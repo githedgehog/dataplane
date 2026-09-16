@@ -397,10 +397,8 @@ jobs:
         with:
           recipe: "duvet-check"
 
-      # Deliberately no `id`. `check-lint-wiring` requires every lint step that has one to
-      # have its outcome read below, and reading it is what would make this a required
-      # check -- the aggregator fails on any outcome that is not success or skipped. This
-      # step formats tables into the job summary; `duvet-check` above is the gate.
+      # Omit `id` to keep this summary out of the required lint checks enforced by
+      # `check-lint-wiring`. `duvet-check` above enforces compliance.
       - name: "duvet-summary"
         if: always()
         continue-on-error: true

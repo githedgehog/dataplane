@@ -170,8 +170,7 @@ fn fmt_nhop_instruction(f: &mut std::fmt::Formatter<'_>, rc: &Nhop) -> std::fmt:
     Ok(())
 }
 
-// formats nhop using the display of the key, recurring over resolvers
-// Does not use Nhop::fmt().
+// Format the next-hop key and recursively format its resolvers, bypassing `Nhop::fmt`.
 fn fmt_nhop_rec(
     f: &mut std::fmt::Formatter<'_>,
     rc: &Rc<Nhop>,

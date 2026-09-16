@@ -197,11 +197,9 @@ fn ordinary_udp_opens_and_settles() {
     }
 }
 
-// This is an Echo Reply, so what it exercises is the ICMP *query* machine. RFC 5382 REQ-10
-// and RFC 4787 REQ-12 are about any ICMP message including errors, and errors do not come
-// through here -- they go to `icmp_handler::nf`, which is where either requirement stands
-// or falls. Citing them from a query test is how a compliance report comes to say a
-// requirement is tested by something that cannot reach the code that breaks it.
+// This tests Echo Reply transitions. RFC 5382 REQ-10 and RFC 4787 REQ-12 also cover
+// ICMP errors, which go through `icmp_handler::nf`. This test alone cannot verify
+// either requirement.
 #[test]
 fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
     let packet = build_test_icmp4_echo(

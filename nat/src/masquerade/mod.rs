@@ -18,12 +18,9 @@ mod state;
 mod test;
 mod test_state_machine;
 
-// A todo has to be anchored somewhere and hairpinning has no code yet, so it sits at the
-// crate root. Where it will go when it is written: `nf::Masquerade`, in the source-NAT
-// direction, has to recognise that the destination it is about to translate is one of its
-// own public addresses and turn the packet back inward with both halves translated. The
-// pieces it needs are the pool (`apalloc`, to answer "is this mine") and the reverse
-// lookup the inbound path already does.
+// Hairpinning belongs in the source-NAT path of `nf::Masquerade`. It must detect
+// destinations in its own public address pool and translate both source and destination
+// to send the packet back inward. This needs `apalloc` and the inbound reverse lookup.
 //= https://www.rfc-editor.org/rfc/rfc4787#section-6
 //= type=todo
 //# REQ-9:  A NAT MUST support "Hairpinning".

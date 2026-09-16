@@ -64,20 +64,17 @@ function record(stats: Stats, status: Record<string, number | number[]>) {
   if (status.todo) stats.todos += 1;
 }
 
-// Sections that restate requirements stated normatively elsewhere in the same document.
-// duvet keys by section anchor and has no notion of "the same requirement twice", so each
-// of these copies counts in the denominator and can never be cited: the convention, which
-// `.duvet/config.toml` records, is to annotate the normative section. Without saying so the
-// headline percentage reads as roughly half of what it is.
+// Summary sections repeat requirements from the normative sections we cite. Duvet counts
+// each copy separately, leaving the summary copies uncovered. Report them separately so
+// they do not obscure coverage of the normative sections; see `.duvet/config.toml`.
 const SUMMARY_SECTIONS: Record<string, string> = {
   "https://www.rfc-editor.org/rfc/rfc4787": "section-12",
   "https://www.rfc-editor.org/rfc/rfc5382": "section-8",
   "https://www.rfc-editor.org/rfc/rfc5508": "section-9",
 };
 
-// Counted from the extracted requirements rather than the report, which does not say which
-// section a requirement came from. Returns 0 for a spec with no summary section, and for
-// one whose file has moved -- an over-count in the honest direction.
+// The report omits section origins, so count duplicates in the extracted requirements.
+// Missing summary sections or files return zero, leaving the coverage denominator unchanged.
 async function summaryRequirements(id: string): Promise<number> {
   const section = SUMMARY_SECTIONS[id];
   if (!section) return 0;
@@ -137,8 +134,8 @@ async function run(cmd: string, args: string[]): Promise<number> {
 }
 
 function parseArgs(argv: string[]) {
-  // Under the repo rather than /tmp: `lint` runs on a self-hosted runner where /tmp is
-  // shared between concurrent jobs and the nix sandbox's private /tmp does not apply.
+  // Keep output in this checkout to avoid collisions between concurrent CI jobs
+  // sharing the runner's /tmp.
   const args = {
     json: `${REPO}/target/duvet-summary.json`,
     results: "",
