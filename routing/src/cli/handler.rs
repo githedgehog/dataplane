@@ -11,8 +11,7 @@ use super::display::{FibGroups, FibViewV4, FibViewV6};
 use super::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
 
 use crate::Vtep;
-use crate::evpn::rmac::RmacFilter;
-use crate::evpn::{RmacEntry, RmacStore};
+use crate::evpn::{RmacFilter, RmacStore};
 use crate::fib::fibgroupstore::FibRoute;
 use crate::fib::fibtype::{FibRouteV4Filter, FibRouteV6Filter};
 use crate::frr::frrmi::Frrmi;
@@ -377,37 +376,23 @@ fn show_vrfs(request: CliRequest, vrftable: &VrfTable) -> CliResponse {
 }
 
 fn rmac_filter(request: &CliRequest) -> Result<RmacFilter, CliError> {
-    let mut constraints: Vec<RmacFilter> = vec![];
+    let vni = request
+        .args
+        .vni
+        .map(|vni| Vni::new_checked(vni).map_err(|e| CliError::WrongFilter(e.to_string())))
+        .transpose()?;
 
-    // filter by vni
-    if let Some(vni) = &request.args.vni {
-        let cvni = Vni::new_checked(*vni).map_err(|e| CliError::WrongFilter(e.to_string()))?;
-        constraints.push(Box::new(move |entry| entry.vni == cvni));
-    }
-    // filter by address
-    if let Some(address) = request.args.address {
-        constraints.push(Box::new(move |entry| entry.address == address));
-    }
-
-    // show everything if no filter is present
-    if constraints.is_empty() {
-        constraints.push(Box::new(|_| true));
-    }
-
-    // build composite filter
-    Ok(Box::new(move |item: &RmacEntry| {
-        constraints.iter().all(|condition| condition(item))
-    }))
+    let filter = RmacFilter::new(vni, request.args.address, None);
+    Ok(filter)
 }
 
 fn show_rmac_store(request: CliRequest, rmac_store: &RmacStore) -> Result<CliResponse, CliError> {
     let filter = rmac_filter(&request)?;
-    let out = RmacStoreView {
-        rmac_store,
-        filter: &filter,
-    };
+    let out = RmacStoreView { rmac_store, filter };
+
     Ok(CliResponse::from_request_ok(request, out.to_string()))
 }
+
 fn show_vtep(request: CliRequest, vtep: &Vtep) -> CliResponse {
     CliResponse::from_request_ok(request, vtep.to_string())
 }
