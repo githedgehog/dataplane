@@ -3,7 +3,7 @@
 
 //! Objects to model packet encapsulations
 
-use net::eth::mac::Mac;
+use net::eth::mac::SourceMac;
 use net::vxlan::Vni;
 use std::net::IpAddr;
 
@@ -28,7 +28,7 @@ impl VxlanEncapsulation {
 pub struct ResolvedVxlan {
     pub vni: Vni,
     pub remote: IpAddr,
-    pub dmac: Mac,
+    pub dmac: SourceMac,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy, Hash, PartialOrd, Ord)]

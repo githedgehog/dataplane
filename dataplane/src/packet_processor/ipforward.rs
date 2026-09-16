@@ -241,7 +241,7 @@ impl IpForwarder {
         }
 
         // set current packet dst mac (inner)
-        if let Err(e) = packet.set_eth_destination(*dst_mac) {
+        if let Err(e) = packet.set_eth_destination(dst_mac.inner()) {
             error!("{nfi}: VxLAN encap FAILED: can't set dst mac '{dst_mac}': {e}");
             packet.done(DoneReason::VxlanEncapFailure);
             return;
