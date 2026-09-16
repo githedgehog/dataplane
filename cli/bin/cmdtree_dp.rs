@@ -5,6 +5,7 @@
 
 use crate::cmdtree::{Node, NodeArg};
 
+use crate::argsparse::CliArgId;
 use dataplane_cli::cliproto::{CliAction, PrefetchSelector, RouteProtocol};
 use std::convert::AsRef;
 use strum::IntoEnumIterator;
@@ -86,21 +87,20 @@ fn cmd_show_vpc() -> Node {
 }
 
 fn vpc_arg() -> NodeArg {
-    NodeArg::new("vpc").selector(PrefetchSelector::Vpcs)
+    NodeArg::new(CliArgId::Vpc.as_str()).selector(PrefetchSelector::Vpcs)
 }
 fn vni_arg() -> NodeArg {
-    NodeArg::new("vni").selector(PrefetchSelector::Vnis)
+    NodeArg::new(CliArgId::Vni.as_str()).selector(PrefetchSelector::Vnis)
 }
 fn rmac_ip_arg() -> NodeArg {
-    NodeArg::new("address").selector(PrefetchSelector::RmacIp)
+    NodeArg::new(CliArgId::Address.as_str()).selector(PrefetchSelector::RmacIp)
 }
 fn rmac_mac_arg() -> NodeArg {
-    NodeArg::new("mac-address").selector(PrefetchSelector::RmacMac)
+    NodeArg::new(CliArgId::Mac.as_str()).selector(PrefetchSelector::RmacMac)
 }
-
 #[allow(unused)]
 fn ifname_arg() -> NodeArg {
-    NodeArg::new("ifname").selector(PrefetchSelector::Interfaces)
+    NodeArg::new(CliArgId::Ifname.as_str()).selector(PrefetchSelector::Interfaces)
 }
 
 fn cmd_show_ip() -> Node {
@@ -108,12 +108,12 @@ fn cmd_show_ip() -> Node {
     let mut routes = Node::new("route")
         .desc("Display IPv4 routes")
         .action(CliAction::ShowRouterIpv4Routes)
-        .arg("vrfid")
-        .arg("prefix")
+        .arg(CliArgId::VrfId.as_str())
+        .arg(CliArgId::Prefix.as_str())
         .arg_add(vni_arg())
         .arg_add(vpc_arg());
 
-    let mut arg = NodeArg::new("protocol");
+    let mut arg = NodeArg::new(CliArgId::Protocol.as_str());
     RouteProtocol::iter().for_each(|proto| arg.add_choice(proto.as_ref()));
     routes = routes.arg_add(arg);
 
@@ -124,15 +124,15 @@ fn cmd_show_ip() -> Node {
     root += Node::new("next-hop")
         .desc("Display IPv4 next-hops")
         .action(CliAction::ShowRouterIpv4NextHops)
-        .arg("vrfid")
+        .arg(CliArgId::VrfId.as_str())
         .arg_add(vni_arg())
         .arg_add(vpc_arg());
 
     let mut fib = Node::new("fib")
         .desc("Display IPv4 forwarding entries")
         .action(CliAction::ShowRouterIpv4FibEntries)
-        .arg("prefix")
-        .arg("vrfid")
+        .arg(CliArgId::VrfId.as_str())
+        .arg(CliArgId::Prefix.as_str())
         .arg_add(vni_arg())
         .arg_add(vpc_arg());
 
@@ -151,12 +151,12 @@ fn cmd_show_ipv6() -> Node {
     let mut routes = Node::new("route")
         .desc("Display IPv6 routes")
         .action(CliAction::ShowRouterIpv6Routes)
-        .arg("vrfid")
-        .arg("prefix")
+        .arg(CliArgId::VrfId.as_str())
+        .arg(CliArgId::Prefix.as_str())
         .arg_add(vni_arg())
         .arg_add(vpc_arg());
 
-    let mut arg = NodeArg::new("protocol");
+    let mut arg = NodeArg::new(CliArgId::Protocol.as_str());
     RouteProtocol::iter().for_each(|proto| arg.add_choice(proto.as_ref()));
     routes = routes.arg_add(arg);
     root += routes;
@@ -164,15 +164,15 @@ fn cmd_show_ipv6() -> Node {
     root += Node::new("next-hop")
         .desc("Display IPv6 next-hops")
         .action(CliAction::ShowRouterIpv6NextHops)
-        .arg("vrfid")
+        .arg(CliArgId::VrfId.as_str())
         .arg_add(vni_arg())
         .arg_add(vpc_arg());
 
     let mut fib = Node::new("fib")
         .desc("Display IPv6 forwarding entries")
         .action(CliAction::ShowRouterIpv6FibEntries)
-        .arg("prefix")
-        .arg("vrfid")
+        .arg(CliArgId::VrfId.as_str())
+        .arg(CliArgId::Prefix.as_str())
         .arg_add(vni_arg())
         .arg_add(vpc_arg());
 
@@ -220,14 +220,7 @@ fn cmd_show_interface() -> Node {
     let mut root = Node::new("interface")
         .desc("show network interfaces")
         .action(CliAction::ShowRouterInterfaces)
-        .arg("ifname");
-
-    let arg = NodeArg::new("iftype")
-        .choice("ethernet")
-        .choice("vlan")
-        .choice("vxlan");
-
-    root = root.arg_add(arg);
+        .arg(CliArgId::Ifname.as_str());
 
     root += Node::new("address")
         .desc("Display interface IP addresses")
@@ -375,8 +368,8 @@ fn cmd_local() -> Node {
     root += Node::new("connect")
         .desc("Connect to dataplane")
         .action(CliAction::Connect)
-        .arg("path")
-        .arg("bind-address");
+        .arg(CliArgId::Path.as_str())
+        .arg(CliArgId::BindAddr.as_str());
     root += Node::new("disconnect")
         .desc("Disconnect from dataplane")
         .action(CliAction::Disconnect);
