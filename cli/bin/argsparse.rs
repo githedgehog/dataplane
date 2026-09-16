@@ -19,6 +19,7 @@ pub enum CliArgId {
     Vni,
     Address,
     Prefix,
+    PrefixLen,
     Mac,
     Ifname,
     VrfId,
@@ -32,6 +33,7 @@ impl CliArgId {
     pub const ARG_VNI: &str = "vni";
     pub const ARG_ADDRESS: &str = "address";
     pub const ARG_PREFIX: &str = "prefix";
+    pub const ARG_PREFIX_LEN: &str = "prefix-len";
     pub const ARG_MAC: &str = "mac-address";
     pub const ARG_IFNAME: &str = "interface";
     pub const ARG_VRFID: &str = "vrfid";
@@ -45,6 +47,7 @@ impl CliArgId {
             Self::Vni => Self::ARG_VNI,
             Self::Address => Self::ARG_ADDRESS,
             Self::Prefix => Self::ARG_PREFIX,
+            Self::PrefixLen => Self::ARG_PREFIX_LEN,
             Self::Mac => Self::ARG_MAC,
             Self::Ifname => Self::ARG_IFNAME,
             Self::VrfId => Self::ARG_VRFID,
@@ -63,6 +66,7 @@ impl FromStr for CliArgId {
             Self::ARG_VNI => Ok(Self::Vni),
             Self::ARG_ADDRESS => Ok(Self::Address),
             Self::ARG_PREFIX => Ok(Self::Prefix),
+            Self::ARG_PREFIX_LEN => Ok(Self::PrefixLen),
             Self::ARG_MAC => Ok(Self::Mac),
             Self::ARG_IFNAME => Ok(Self::Ifname),
             Self::ARG_VRFID => Ok(Self::VrfId),
@@ -106,17 +110,20 @@ pub enum ArgsError {
     #[error("Bad prefix: {0}")]
     BadPrefix(String),
 
+    #[error("Bad address: {0}")]
+    BadAddress(String),
+
     #[error("Wrong prefix length {0}")]
     BadPrefixLength(u8),
+
+    #[error("Invalid prefix length {0}")]
+    InvalidPrefixLength(String),
 
     #[error("Bad prefix format: {0}")]
     BadPrefixFormat(String),
 
     #[error("Unknown argument: {0}")]
     UnknownArgument(String),
-
-    #[error("Unrecognized arguments")]
-    UnrecognizedArgs(HashMap<String, String>),
 
     #[error("Missing value for {0}")]
     MissingValue(&'static str),
@@ -135,93 +142,86 @@ pub struct CliArgs {
     pub remote: RequestArgs,          /* args to send to remote. These get serialized */
 }
 
+fn parse_string(value: &str) -> String {
+    value.to_owned()
+}
+fn parse_address(value: &String) -> Result<IpAddr, ArgsError> {
+    let address = IpAddr::from_str(value).map_err(|_| ArgsError::BadAddress(value.to_owned()))?;
+    Ok(address)
+}
+fn parse_prefix(value: &str) -> Result<(IpAddr, u8), ArgsError> {
+    if let Some((addr, len)) = value.split_once('/') {
+        let pfx = IpAddr::from_str(addr).map_err(|_| ArgsError::BadPrefix(addr.to_owned()))?;
+        let max_len = match pfx {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+        let pxf_len: u8 = len
+            .parse::<u8>()
+            .map_err(|_| ArgsError::ParseFailure(len.to_owned()))?;
+        if pxf_len > max_len {
+            return Err(ArgsError::BadPrefixLength(pxf_len));
+        }
+        Ok((pfx, pxf_len))
+    } else {
+        Err(ArgsError::BadPrefixFormat(value.to_owned()))
+    }
+}
+fn parse_prefix_len(value: &str) -> Result<u8, ArgsError> {
+    let plen = value
+        .parse::<u8>()
+        .map_err(|_| ArgsError::InvalidPrefixLength(value.to_owned()))?;
+
+    // we don't know the version here (but surely this can't exceed 128)
+    // Dataplane will complain if len > 32 and version is  ipv4
+    if plen > 128 {
+        return Err(ArgsError::InvalidPrefixLength(value.to_owned()));
+    }
+    Ok(plen)
+}
+fn parse_u32(value: &str) -> Result<u32, ArgsError> {
+    value
+        .parse::<u32>()
+        .map_err(|_| ArgsError::BadValue(value.to_owned()))
+}
+fn parse_protocol(value: &str) -> Result<RouteProtocol, ArgsError> {
+    RouteProtocol::from_str(value).map_err(|_| ArgsError::UnknownProtocol(value.to_owned()))
+}
+
 #[allow(unused)]
 impl CliArgs {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn from_args_map(mut args_map: HashMap<String, String>) -> Result<CliArgs, ArgsError> {
+    pub fn from_args_map(args_map: &HashMap<String, String>) -> Result<CliArgs, ArgsError> {
         let mut args = CliArgs::new();
-        if let Some(addr) = &args_map.remove(CliArgId::ARG_ADDRESS) {
-            let address =
-                IpAddr::from_str(addr).map_err(|_| ArgsError::BadPrefix(addr.to_owned()))?;
-            args.remote.address = Some(address);
-        }
-        if let Some(mac) = &args_map.remove(CliArgId::ARG_MAC) {
-            args.remote.mac = Some(mac.to_owned());
-        }
-        if let Some(prefix) = args_map.remove(CliArgId::ARG_PREFIX) {
-            if let Some((addr, len)) = prefix.split_once('/') {
-                let pfx =
-                    IpAddr::from_str(addr).map_err(|_| ArgsError::BadPrefix(addr.to_owned()))?;
-                let max_len = match pfx {
-                    IpAddr::V4(_) => 32,
-                    IpAddr::V6(_) => 128,
-                };
-                let pxf_len: u8 = len
-                    .parse::<u8>()
-                    .map_err(|_| ArgsError::ParseFailure(len.to_owned()))?;
-                if pxf_len > max_len {
-                    return Err(ArgsError::BadPrefixLength(pxf_len));
-                }
-                args.remote.prefix = Some((pfx, pxf_len));
-            } else {
-                return Err(ArgsError::BadPrefixFormat(prefix.clone()));
+
+        // parse each of the args in the input map and, on success, fill in the args for the request
+        for (arg_name, value) in args_map {
+            // convert arg name to code
+            let argid = CliArgId::from_str(arg_name.as_str())?;
+
+            // complain if value is empty
+            if value.is_empty() {
+                return Err(ArgsError::MissingValue(argid.as_str()));
+            }
+
+            // parse value and fill args
+            match argid {
+                CliArgId::Path => args.connpath = Some(parse_string(value)),
+                CliArgId::BindAddr => args.bind_address = Some(parse_string(value)),
+                CliArgId::Vpc => args.remote.vpc = Some(parse_string(value)),
+                CliArgId::Ifname => args.remote.ifname = Some(parse_string(value)),
+                CliArgId::Mac => args.remote.mac = Some(parse_string(value)),
+
+                CliArgId::Address => args.remote.address = Some(parse_address(value)?),
+                CliArgId::Prefix => args.remote.prefix = Some(parse_prefix(value)?),
+                CliArgId::PrefixLen => args.remote.prefix_len = Some(parse_prefix_len(value)?),
+                CliArgId::VrfId => args.remote.vrfid = Some(parse_u32(value)?),
+                CliArgId::Vni => args.remote.vni = Some(parse_u32(value)?),
+                CliArgId::Protocol => args.remote.protocol = Some(parse_protocol(value)?),
             }
         }
-        if let Some(path) = args_map.remove(CliArgId::ARG_PATH) {
-            if path.is_empty() {
-                return Err(ArgsError::MissingValue(CliArgId::ARG_PATH));
-            }
-            args.connpath = Some(path.clone());
-        }
-        if let Some(path) = args_map.remove(CliArgId::ARG_BIND_ADDR) {
-            if path.is_empty() {
-                return Err(ArgsError::MissingValue(CliArgId::ARG_BIND_ADDR));
-            }
-            args.bind_address = Some(path.clone());
-        }
-        if let Some(vrfid) = args_map.remove(CliArgId::ARG_VRFID) {
-            if vrfid.is_empty() {
-                return Err(ArgsError::MissingValue(CliArgId::ARG_VRFID));
-            }
-            args.remote.vrfid = Some(
-                vrfid
-                    .parse::<u32>()
-                    .map_err(|_| ArgsError::BadValue(vrfid))?,
-            );
-        }
-        if let Some(vpcname) = args_map.remove(CliArgId::ARG_VPC) {
-            if vpcname.is_empty() {
-                return Err(ArgsError::MissingValue(CliArgId::ARG_VPC));
-            }
-            args.remote.vpc = Some(vpcname);
-        }
-        if let Some(vni) = args_map.remove(CliArgId::ARG_VNI) {
-            if vni.is_empty() {
-                return Err(ArgsError::MissingValue(CliArgId::ARG_VNI));
-            }
-            args.remote.vni = Some(vni.parse::<u32>().map_err(|_| ArgsError::BadValue(vni))?);
-        }
-        if let Some(ifname) = args_map.remove(CliArgId::ARG_IFNAME) {
-            if ifname.is_empty() {
-                return Err(ArgsError::MissingValue(CliArgId::ARG_IFNAME));
-            }
-            args.remote.ifname.clone_from(&Some(ifname));
-        }
-        if let Some(protocol) = args_map.remove(CliArgId::ARG_PROTOCOL) {
-            if protocol.is_empty() {
-                return Err(ArgsError::MissingValue(CliArgId::ARG_PROTOCOL));
-            }
-            args.remote.protocol = Some(
-                RouteProtocol::from_str(&protocol)
-                    .map_err(|_| ArgsError::UnknownProtocol(protocol))?,
-            );
-        }
-        if args_map.is_empty() {
-            Ok(args)
-        } else {
-            Err(ArgsError::UnrecognizedArgs(args_map))
-        }
+        Ok(args)
     }
 }

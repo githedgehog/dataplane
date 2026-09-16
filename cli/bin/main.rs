@@ -6,8 +6,8 @@
 #![deny(clippy::all, clippy::pedantic)]
 #![allow(clippy::collapsible_if)]
 
+use crate::argsparse::CliArgs;
 use crate::filters::filter_output;
-use argsparse::{ArgsError, CliArgs};
 use clap::Parser;
 use cmdline::Cmdline;
 use cmdtree::Node;
@@ -132,28 +132,15 @@ fn execute_action(
     }
 }
 
-fn show_bad_arg(input_line: &str, argname: &str) {
-    if let Some((good, _bad)) = input_line.split_once(argname) {
-        println!(" {}{} {}", good, argname.red(), "??".red());
-    }
-}
-
 /// Build arguments from map of arguments
 fn process_args(input: &TermInput) -> Result<CliArgs, ()> {
-    let args = CliArgs::from_args_map(input.get_args().clone());
+    let args = CliArgs::from_args_map(input.get_args());
     match args {
-        Err(ArgsError::UnrecognizedArgs(args_map)) => {
-            print_err!(" Unrecognized arguments");
-            for arg in args_map.keys() {
-                show_bad_arg(input.get_line(), arg);
-            }
-            Err(())
-        }
+        Ok(args) => Ok(args),
         Err(e) => {
             print_err!(" {}", e);
             Err(())
         }
-        Ok(args) => Ok(args),
     }
 }
 
