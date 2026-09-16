@@ -91,9 +91,13 @@ fn vpc_arg() -> NodeArg {
 fn vni_arg() -> NodeArg {
     NodeArg::new("vni").selector(PrefetchSelector::Vnis)
 }
-fn rmacaddr_arg() -> NodeArg {
-    NodeArg::new("address").selector(PrefetchSelector::RmacAddr)
+fn rmac_ip_arg() -> NodeArg {
+    NodeArg::new("address").selector(PrefetchSelector::RmacIp)
 }
+fn rmac_mac_arg() -> NodeArg {
+    NodeArg::new("mac-address").selector(PrefetchSelector::RmacMac)
+}
+
 #[allow(unused)]
 fn ifname_arg() -> NodeArg {
     NodeArg::new("ifname").selector(PrefetchSelector::Interfaces)
@@ -197,8 +201,9 @@ fn cmd_show_evpn() -> Node {
     root += Node::new("rmac")
         .desc("Show the EVPN router macs")
         .action(CliAction::ShowRouterEvpnRmacStore)
-        .arg_add(rmacaddr_arg())
-        .arg_add(vni_arg());
+        .arg_add(rmac_ip_arg())
+        .arg_add(vni_arg())
+        .arg_add(rmac_mac_arg());
 
     root += Node::new("vtep")
         .desc("Show EVPN VTEP configuration")

@@ -74,6 +74,7 @@ pub struct RequestArgs {
     pub vni: Option<u32>,                   /* Vxlan vni */
     pub ifname: Option<String>,             /* name of interface */
     pub protocol: Option<RouteProtocol>,    /* a type of route or routing protocol */
+    pub mac: Option<String>,                /* a eth MAC address as a string */
     pub selector: Option<PrefetchSelector>, /* selector to prefetch data for completion */
 }
 impl RequestArgs {
@@ -95,7 +96,8 @@ pub enum PrefetchSelector {
     Vpcs,
     Vnis,
     Interfaces,
-    RmacAddr,
+    RmacIp,
+    RmacMac,
 }
 
 /// A Cli request
@@ -437,6 +439,7 @@ mod tests {
                 vni: Some(10_100),
                 ifname: Some("eth0".into()),
                 protocol: Some(RouteProtocol::Bgp),
+                mac: Some("02:00:00:00:00:01".into()),
                 selector: Some(PrefetchSelector::Vpcs),
             },
         )
