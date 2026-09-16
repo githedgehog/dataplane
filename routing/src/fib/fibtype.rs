@@ -91,9 +91,6 @@ impl Default for Fib {
     }
 }
 
-pub type FibRouteV4Filter = Box<dyn Fn(&(Ipv4Prefix, &FibRoute)) -> bool>;
-pub type FibRouteV6Filter = Box<dyn Fn(&(Ipv6Prefix, &FibRoute)) -> bool>;
-
 impl Fib {
     /// Set the id for this [`Fib`]
     fn set_id(&mut self, id: FibKey) {
@@ -285,6 +282,48 @@ impl Fib {
             error!("Failed to get destination IP address!");
             unreachable!()
         }
+    }
+
+    /// Provide iterator of the IPv4 routes matching a `FibRouteV4Filter`
+    pub fn filtered_v4(
+        &self,
+        filter: &FibRouteV4Filter,
+    ) -> impl Iterator<Item = (Ipv4Prefix, &FibRoute)> {
+        self.routesv4
+            .iter()
+            .filter(|(prefix, _route)| filter.prefix.is_none_or(|target| *prefix == target))
+    }
+
+    /// Provide iterator of the IPv6 routes matching a `FibRouteV6Filter`
+    pub fn filtered_v6(
+        &self,
+        filter: &FibRouteV6Filter,
+    ) -> impl Iterator<Item = (Ipv6Prefix, &FibRoute)> {
+        self.routesv6
+            .iter()
+            .filter(|(prefix, _route)| filter.prefix.is_none_or(|target| *prefix == target))
+    }
+}
+
+// A type that represents a filter for Ipv4 fib routes
+pub struct FibRouteV4Filter {
+    prefix: Option<Ipv4Prefix>,
+}
+impl FibRouteV4Filter {
+    #[must_use]
+    pub fn new(prefix: Option<Ipv4Prefix>) -> Self {
+        Self { prefix }
+    }
+}
+
+// A type that represents a filter for Ipv6 fib routes
+pub struct FibRouteV6Filter {
+    prefix: Option<Ipv6Prefix>,
+}
+impl FibRouteV6Filter {
+    #[must_use]
+    pub fn new(prefix: Option<Ipv6Prefix>) -> Self {
+        Self { prefix }
     }
 }
 
