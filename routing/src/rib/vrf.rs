@@ -186,9 +186,6 @@ impl RouterVrfConfig {
     }
 }
 
-pub type RouteV4Filter = Box<dyn Fn(&(Ipv4Prefix, &Route)) -> bool>;
-pub type RouteV6Filter = Box<dyn Fn(&(Ipv6Prefix, &Route)) -> bool>;
-
 impl Vrf {
     /// The `VrfId` of the default `Vrf`.
     pub const DEFAULT_VRFID: VrfId = 0;
@@ -592,9 +589,11 @@ impl Vrf {
     // ///////////////////////////////////////////////////////////////////////
     // iterators, filters and counts
     // //////////////////////////////////////////////////////////////////////
+    #[allow(unused)]
     pub fn iter_v4(&self) -> impl Iterator<Item = (Ipv4Prefix, &Route)> {
         self.routesv4.iter()
     }
+    #[allow(unused)]
     pub fn iter_v6(&self) -> impl Iterator<Item = (Ipv6Prefix, &Route)> {
         self.routesv6.iter()
     }
@@ -698,6 +697,55 @@ impl Vrf {
         debug!("Removing stale routes from vrf {}..", self.name);
         self.remove_stale_routes_v4(vrf0, rstore);
         self.remove_stale_routes_v6(vrf0, rstore);
+    }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Provide an iterator of `IpV4` routes that match the filter
+    /////////////////////////////////////////////////////////////////////////
+    pub fn filtered_ipv4(
+        &self,
+        filter: &RouteV4Filter,
+    ) -> impl Iterator<Item = (Ipv4Prefix, &Route)> {
+        self.routesv4.iter().filter(|(prefix, route)| {
+            filter.prefix.is_none_or(|target| *prefix == target)
+                && filter.protocol.is_none_or(|origin| route.origin == origin)
+        })
+    }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Provide an iterator of `IpV6` routes that match the filter
+    /////////////////////////////////////////////////////////////////////////
+    pub fn filtered_ipv6(
+        &self,
+        filter: &RouteV6Filter,
+    ) -> impl Iterator<Item = (Ipv6Prefix, &Route)> {
+        self.routesv6.iter().filter(|(prefix, route)| {
+            filter.prefix.is_none_or(|target| *prefix == target)
+                && filter.protocol.is_none_or(|origin| route.origin == origin)
+        })
+    }
+}
+
+/// A struct that represents a filter for Ipv4 routes
+#[derive(Default)]
+pub struct RouteV4Filter {
+    prefix: Option<Ipv4Prefix>,
+    protocol: Option<RouteOrigin>,
+}
+impl RouteV4Filter {
+    #[must_use]
+    pub fn new(prefix: Option<Ipv4Prefix>, protocol: Option<RouteOrigin>) -> Self {
+        Self { prefix, protocol }
+    }
+}
+pub struct RouteV6Filter {
+    prefix: Option<Ipv6Prefix>,
+    protocol: Option<RouteOrigin>,
+}
+impl RouteV6Filter {
+    #[must_use]
+    pub fn new(prefix: Option<Ipv6Prefix>, protocol: Option<RouteOrigin>) -> Self {
+        Self { prefix, protocol }
     }
 }
 
@@ -930,35 +978,6 @@ pub mod tests {
 
     }
 
-
-    #[test]
-    fn test_route_filtering() {
-        let vrf_cfg = RouterVrfConfig::new(0, "default");
-        let mut vrf = Vrf::new(&vrf_cfg);
-
-        /* connected */
-        let nh = build_test_nhop(None, Some(1), 0, None);
-        let connected = build_test_route(RouteOrigin::Connected, 0, 1);
-        let prefix = Prefix::expect_from(("10.0.0.0", 24));
-        vrf.add_route(&prefix, connected.clone() /* only test */, &[nh], None);
-
-        /* ospf */
-        let nh1 = build_test_nhop(Some("10.0.0.1"), Some(1), 0, None);
-        let nh2 = build_test_nhop(Some("10.0.0.2"), Some(2), 0, None);
-        let ospf = build_test_route(RouteOrigin::Ospf, 110, 20);
-        let prefix = Prefix::expect_from(("7.0.0.1", 32));
-        vrf.add_route(&prefix, ospf.clone() /* only test */, &[nh1, nh2], None);
-
-        /* bgp */
-        let nh = build_test_nhop(Some("7.0.0.1"), None, 0, None);
-        let bgp = build_test_route(RouteOrigin::Bgp, 20, 100);
-        let prefix = Prefix::expect_from(("192.168.1.0", 24));
-        vrf.add_route(&prefix, bgp.clone() /* only test */, &[nh], None);
-
-        assert_eq!(vrf.len_v4(), 4, "There are 3 routes + drop");
-
-    }
-
     fn add_vxlan_route(vrf: &mut Vrf, dst: (&str, u8), vni: u32) {
         let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
         let nhop = build_test_nhop(
@@ -1129,6 +1148,55 @@ pub mod tests {
 
         vrf.dump(Some("VRF with partially resolved nexthops, resolved on addition"));
         vrf
+    }
+
+    #[test]
+    fn test_route_filter_by_prefix() {
+        let vrf = build_test_vrf();
+        for (prefix, route) in vrf.iter_v4() {
+            let filter = RouteV4Filter::new(Some(prefix), Some(route.origin));
+            let out = vrf.filtered_ipv4(&filter);
+            for (pselected, _rselected) in out {
+                assert_eq!(pselected, prefix);
+            }
+        }
+    }
+
+        #[test]
+    fn test_route_filter_by_protocol() {
+        let vrf = build_test_vrf();
+        for (_prefix, route) in vrf.iter_v4() {
+            let filter = RouteV4Filter::new(None, Some(route.origin));
+            let out = vrf.filtered_ipv4(&filter);
+            for (_pselected, rselected) in out {
+                assert_eq!(rselected.origin, route.origin);
+            }
+        }
+    }
+
+    #[test]
+    fn test_route_filter_by_prefix_and_protocol() {
+        let vrf = build_test_vrf();
+        for (prefix, route) in vrf.iter_v4() {
+            let filter = RouteV4Filter::new(Some(prefix), Some(route.origin));
+            let out = vrf.filtered_ipv4(&filter);
+            for (pselected, rselected) in out {
+                assert_eq!(pselected, prefix);
+                assert_eq!(rselected.origin, route.origin);
+            }
+        }
+    }
+
+    #[test]
+    fn test_route_filter_pass_through() {
+        let vrf = build_test_vrf();
+        let filter = RouteV4Filter::default();
+        let out: Vec<(Ipv4Prefix, &Route)> = vrf.filtered_ipv4(&filter).collect();
+
+        for (prefix, route) in vrf.iter_v4() {
+            assert!(out.contains(&(prefix, route)));
+        }
+        assert_eq!(out.len(), vrf.len_v4());
     }
 
 }
