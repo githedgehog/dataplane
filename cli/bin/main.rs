@@ -6,8 +6,8 @@
 #![deny(clippy::all, clippy::pedantic)]
 #![allow(clippy::collapsible_if)]
 
+use crate::argsparse::{ArgsError, CliArgs};
 use crate::filters::filter_output;
-use argsparse::{ArgsError, CliArgs};
 use clap::Parser;
 use cmdline::Cmdline;
 use cmdtree::Node;
@@ -127,28 +127,9 @@ fn execute_action(
     }
 }
 
-fn show_bad_arg(input_line: &str, argname: &str) {
-    if let Some((good, _bad)) = input_line.split_once(argname) {
-        println!(" {}{} {}", good, argname.red(), "??".red());
-    }
-}
-
-fn process_args(input: &TermInput) -> Option<CliArgs> {
-    let args = CliArgs::from_args_map(input.get_args().clone());
-    match args {
-        Err(ArgsError::UnrecognizedArgs(args_map)) => {
-            print_err!(" Unrecognized arguments");
-            for arg in args_map.keys() {
-                show_bad_arg(input.get_line(), arg);
-            }
-            None
-        }
-        Err(e) => {
-            print_err!(" {}", e);
-            None
-        }
-        Ok(args) => Some(args),
-    }
+/// Build arguments from map of arguments
+fn process_args(input: &TermInput) -> Result<CliArgs, ArgsError> {
+    CliArgs::from_args_map(input.get_args()).inspect_err(|e| print_err!(" {e}"))
 }
 
 fn process_command(
@@ -159,7 +140,7 @@ fn process_command(
 ) {
     if let Some(node) = cmds.find_best(input.get_tokens()) {
         if let Some(action) = &node.action {
-            if let Some(args) = process_args(input) {
+            if let Ok(args) = process_args(input) {
                 execute_action(*action, &args, cmdline, terminal, input);
             }
         } else if node.depth > 0 {
