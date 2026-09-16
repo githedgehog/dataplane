@@ -848,7 +848,7 @@ impl Display for FibViewV4<'_> {
             return writeln!(f, "Unable to read fib!");
         };
 
-        let rt_iter = fibr.iter_v4().filter(&self.filter);
+        let rt_iter = fibr.filtered_v4(self.filter);
         let total_entries = fibr.len_v4();
         let mut displayed = 0;
 
@@ -865,7 +865,6 @@ impl Display for FibViewV4<'_> {
                 "\n  (Displayed {displayed} destinations out of {total_entries})",
             )?;
         }
-
         Ok(())
     }
 }
@@ -874,13 +873,14 @@ pub struct FibViewV6<'a> {
     pub vrf: &'a Vrf,
     pub filter: &'a FibRouteV6Filter,
 }
+
 impl Display for FibViewV6<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Some(fibr) = self.vrf.fibw.enter() else {
             return writeln!(f, "Unable to read fib!");
         };
 
-        let rt_iter = fibr.iter_v6().filter(&self.filter);
+        let rt_iter = fibr.filtered_v6(self.filter);
         let total_entries = fibr.len_v6();
         let mut displayed = 0;
 
