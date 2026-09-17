@@ -298,10 +298,19 @@ impl CliResponse {
     }
 
     pub fn recv_sync(sock: &UnixDatagram) -> Result<Self, CliLocalError> {
+        // receive a chunk of data. Each chunk is followed by an octet indicating
+        // if more chunks follow.
         fn recv_chunk(sock: &UnixDatagram) -> Result<(Vec<u8>, bool), std::io::Error> {
             let mut rx_buff = vec![0u8; CLI_MSG_CHUNK_SIZE + 1];
             let rx_len = sock.recv(rx_buff.as_mut())?;
-            Ok((rx_buff[..rx_len - 1].to_vec(), rx_buff[rx_len - 1] != 0))
+            // fail if we get zero data
+            let last = rx_len.checked_sub(1).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "empty datagram carries no continuation flag",
+                )
+            })?;
+            Ok((rx_buff[..last].to_vec(), rx_buff[last] != 0))
         }
 
         let mut raw_data = vec![];
