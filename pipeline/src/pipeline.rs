@@ -245,7 +245,16 @@ mod test {
 
         let mut pipeline = DynPipeline::new();
         let mut stages = DynStageGenerator::new();
-        let num_stages = 999;
+        // What this number is for: `DynPipeline::process` recurses once per stage, so the
+        // test is a stack-headroom canary, and it caught `PacketMeta` growth eating that
+        // headroom. It was 999 and was lowered to 500 because the default 2 MiB test thread
+        // could no longer hold 999 frames -- which is the canary reporting, not a reason to
+        // silence it.
+        //
+        // 500 frames is therefore the budget this asserts, and a stage frame that grows past
+        // roughly 4 KiB will overflow it again. If that happens, find what grew before
+        // lowering the number: the next reduction buys less than this one did.
+        let num_stages = 500;
 
         for _ in 0..num_stages {
             pipeline = pipeline.add_stage_dyn(stages.next().unwrap());

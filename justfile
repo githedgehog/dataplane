@@ -49,6 +49,14 @@ bolero_coverage_test_time_ms := env("BOLERO_COVERAGE_TEST_TIME_MS", "15000")
 # comma-separated list of cargo features to enable (e.g. "shuttle")
 features := ""
 
+fuzz_max_input_length := env("FUZZ_MAX_INPUT_LENGTH", "65536")
+
+fuzz_corpus_root := env("FUZZ_CORPUS_ROOT", justfile_directory() / ".fuzz-corpus")
+
+fuzz_jobs := env("FUZZ_JOBS", `echo $(( ($(nproc) + 1) / 2 ))`)
+
+fuzz_len_control := env("FUZZ_LEN_CONTROL", "0")
+
 # whether to include default cargo features for this workspace (set to "false" to disable)
 default_features := "true"
 
@@ -186,15 +194,23 @@ fuzz target time="60s" *args="":
     # libfuzzer wants a nightly compiler for its sanitizer coverage flags, while the
     # pinned toolchain is stable; --rustc-bootstrap bridges that. cargo-bolero already
     # builds with the fuzz profile and links AddressSanitizer unless told otherwise, so
-    # a plain `just fuzz` is already an asan run. Findings land in a gitignored
-    # `__fuzz__` directory beside the test.
+    # a plain `just fuzz` is already an asan run. Findings land under
+    # `{{ fuzz_corpus_root }}` (`.fuzz-corpus` unless `FUZZ_CORPUS_ROOT` says otherwise),
+    # not in a `__fuzz__` directory beside the test -- that moved when the coverage corpora
+    # were isolated from the unit tests.
     #
     # `sanitize=thread` additionally rebuilds std: thread instrumentation changes the
     # ABI, so a std left uninstrumented fails the build on a mismatch against `core`.
     # asan does not need that, and skipping the std rebuild keeps it far quicker.
     # `sanitize=NONE` drops instrumentation altogether, which buys roughly four times
     # the executions per second in exchange for only catching what the test asserts.
+    corpus_dir="{{ fuzz_corpus_root }}/$(printf '%s' '{{ target }}' | tr -c 'A-Za-z0-9_.-' '_')"
+    mkdir -p "${corpus_dir}"
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
+        --corpus-dir "${corpus_dir}" \
+        -l '{{ fuzz_max_input_length }}' \
+        -E='-len_control={{ fuzz_len_control }}' \
+        -j '{{ fuzz_jobs }}' \
         {{ if sanitize != "" { "--sanitizer " + sanitize } else { "" } }} \
         {{ if sanitize == "thread" { "--build-std" } else { "" } }} \
         {{ _cargo_feature_flags }} {{ args }}
