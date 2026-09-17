@@ -12,6 +12,7 @@ use crate::CliResponse;
 use dataplane_cli::cliproto::{CliAction, CliRequest, RequestArgs};
 use dataplane_cli::cliproto::{PrefetchSelector, PrefetchedData};
 use std::os::unix::net::UnixDatagram;
+use std::time::Duration;
 
 /// Send a prefetch request. `PrefetchSelector` indicates the type of data to prefetch.
 fn do_prefetch(sock: &UnixDatagram, selector: PrefetchSelector) -> Option<PrefetchedData> {
@@ -20,7 +21,8 @@ fn do_prefetch(sock: &UnixDatagram, selector: PrefetchSelector) -> Option<Prefet
     if request.send(sock).is_err() {
         return None;
     }
-    CliResponse::recv_sync(sock)
+    let timeout = Duration::from_secs(4);
+    CliResponse::recv_sync_timeout(sock, timeout)
         .ok()
         .map(|response| response.prefetched)
 }
