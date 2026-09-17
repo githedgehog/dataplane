@@ -758,26 +758,22 @@ impl Headers {
 
     #[must_use]
     pub fn upper_layer_proto(&self) -> Option<NextHeader> {
+        // A non-first fragment has no transport header. Check the whole chain:
+        // the parser can mistake its body for more extensions and a transport.
+        // Offset zero still carries the header, even when more fragments follow.
+        if self
+            .net_ext
+            .iter()
+            .any(|ext| matches!(ext, NetExt::Fragment(h) if h.fragment_offset().value() != 0))
+        {
+            return None;
+        }
+
         let next = match self.net_ext.last() {
             Some(NetExt::HopByHop(h)) => h.next_header(),
             Some(NetExt::DestOpts(h)) => h.next_header(),
             Some(NetExt::Routing(h)) => h.next_header(),
-            // Only the *first* fragment carries the upper-layer header. A non-first
-            // fragment's payload is a slice of the original datagram's body, so the
-            // next-header value names a protocol whose header is simply not here, and the
-            // bytes the parser decoded as one are payload. Reporting it as TCP or UDP let
-            // port forwarding DNAT such a fragment -- overwriting two bytes of payload --
-            // and let ACLs match it against port-scoped rules. Before this accessor existed,
-            // proto 44 matched nothing at all.
-            //
-            // `is_fragmenting_payload()` is the wrong test here: it is also true for the
-            // first fragment, which does have the header. Offset is the question.
-            Some(NetExt::Fragment(h)) => {
-                if h.fragment_offset().value() != 0 {
-                    return None;
-                }
-                h.next_header()
-            }
+            Some(NetExt::Fragment(h)) => h.next_header(),
             Some(NetExt::Ipv4Auth(h)) => h.next_header(),
             Some(NetExt::Ipv6Auth(h)) => h.next_header(),
             None => self.net.as_ref()?.next_header(),
@@ -2442,9 +2438,12 @@ mod test {
 #[cfg(test)]
 mod fragment_upper_layer_proto {
     use super::{Headers, Net, NetExt};
+    use crate::ip::NextHeader;
     use crate::ipv6::Ipv6;
     use crate::ipv6::fragment::Fragment;
-    use etherparse::{IpFragOffset, IpNumber, Ipv6FragmentHeader};
+    use crate::parse::Parse;
+    use etherparse::{IpFragOffset, IpNumber, Ipv6FragmentHeader, Ipv6Header, TcpHeader};
+    use std::net::Ipv6Addr;
 
     fn headers_with_fragment(offset: u16, more: bool) -> Headers {
         let mut headers = Headers::new();
@@ -2496,6 +2495,59 @@ mod fragment_upper_layer_proto {
         assert_eq!(
             headers.upper_layer_proto(),
             Some(crate::ip::NextHeader::TCP)
+        );
+    }
+
+    #[test]
+    fn fragment_offsets_are_checked_before_following_extensions() {
+        bolero::check!().with_type::<(u16, bool, bool)>().for_each(
+            |&(raw_offset, more, hop_by_hop)| {
+                // Always compare a first/atomic fragment with a non-first fragment.
+                for offset in [0, 1 + raw_offset % IpFragOffset::MAX_U16] {
+                    let mut bytes = vec![2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x86, 0xdd];
+                    let ip = Ipv6Header {
+                        payload_length: if hop_by_hop { 44 } else { 36 },
+                        next_header: if hop_by_hop {
+                            IpNumber::IPV6_HEADER_HOP_BY_HOP
+                        } else {
+                            IpNumber::IPV6_FRAGMENTATION_HEADER
+                        },
+                        hop_limit: 64,
+                        source: Ipv6Addr::LOCALHOST.octets(),
+                        destination: Ipv6Addr::LOCALHOST.octets(),
+                        ..Ipv6Header::default()
+                    };
+                    ip.write(&mut bytes).unwrap_or_else(|_| unreachable!());
+                    if hop_by_hop {
+                        bytes.extend_from_slice(&[44, 0, 1, 4, 0, 0, 0, 0]);
+                    }
+                    let fragment = Ipv6FragmentHeader::new(
+                        IpNumber::IPV6_DESTINATION_OPTIONS,
+                        IpFragOffset::try_new(offset).unwrap_or_else(|_| unreachable!()),
+                        more,
+                        1,
+                    );
+                    bytes.extend_from_slice(&fragment.to_bytes());
+                    // Non-first fragments carry body bytes here, even if those bytes
+                    // happen to parse as Destination Options followed by TCP.
+                    bytes.extend_from_slice(&[6, 0, 1, 4, 0, 0, 0, 0]);
+                    TcpHeader::new(1234, 8001, 0, 0)
+                        .write(&mut bytes)
+                        .unwrap_or_else(|_| unreachable!());
+
+                    let (headers, _) =
+                        Headers::parse(&bytes).unwrap_or_else(|e| unreachable!("{e:?}"));
+                    assert!(matches!(
+                        headers.transport(),
+                        Some(super::Transport::Tcp(_))
+                    ));
+                    assert_eq!(
+                        headers.upper_layer_proto(),
+                        (offset == 0).then_some(NextHeader::TCP),
+                        "offset={offset}, more={more}, hop_by_hop={hop_by_hop}"
+                    );
+                }
+            },
         );
     }
 }
