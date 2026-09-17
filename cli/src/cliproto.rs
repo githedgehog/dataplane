@@ -656,4 +656,153 @@ mod tests {
         let data = response.result.unwrap();
         assert_eq!(data.len(), response_data_len);
     }
+
+    /// Build a directory to hold the sockets of a test, named after it so that
+    /// tests running in parallel can't collide.
+    fn sock_dir(test: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cliproto-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("sock dir should be creatable");
+        dir
+    }
+
+    /// Send `num` chunks, `every` apart, all flagged as "more chunks follow",
+    /// so that the receiver never sees the end of the message.
+    fn dribble_chunks(sock: UnixDatagram, num: usize, every: Duration) {
+        thread::spawn(move || {
+            for _ in 0..num {
+                let mut raw = vec![0xAAu8; 16];
+                raw.push(1);
+                if sock.send(&raw).is_err() {
+                    break;
+                }
+                thread::sleep(every);
+            }
+        });
+    }
+
+    /// Nobody ever answers: the call must give up once the budget is spent
+    /// rather than block the cli forever.
+    #[test]
+    #[cfg_attr(
+        emulated,
+        ignore = "Unix sockets unsupported under miri / flaky under qemu-user"
+    )]
+    fn recv_timeout_expires_when_unanswered() {
+        let dir = sock_dir("unanswered");
+        let sock = UnixDatagram::bind(dir.join("cli.sock")).expect("cli sock should bind");
+        let budget = Duration::from_millis(200);
+
+        let start = Instant::now();
+        let err = CliResponse::recv_sync_timeout(&sock, budget).expect_err("should time out");
+        let elapsed = start.elapsed();
+
+        assert!(matches!(err, CliLocalError::TimedOut), "got {err}");
+        assert!(elapsed >= budget, "gave up after only {elapsed:?}");
+        assert!(elapsed < budget * 10, "overshot the budget: {elapsed:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The budget covers the whole message, not each chunk: a peer that keeps
+    /// sending "more chunks follow" just under the timeout must not be able to
+    /// stretch the call indefinitely.  It also must not disturb the read
+    /// timeout the socket already carried.
+    #[test]
+    #[cfg_attr(
+        emulated,
+        ignore = "Unix sockets unsupported under miri / flaky under qemu-user"
+    )]
+    fn recv_timeout_budget_is_not_renewed_per_chunk() {
+        const PREVIOUS: Duration = Duration::from_secs(7);
+        let dir = sock_dir("per-chunk");
+        let cli_path = dir.join("cli.sock");
+        let clisock = UnixDatagram::bind(&cli_path).expect("cli sock should bind");
+        clisock
+            .set_read_timeout(Some(PREVIOUS))
+            .expect("read timeout should be settable");
+
+        let peer = UnixDatagram::unbound().expect("peer sock should open");
+        peer.connect(&cli_path).expect("peer should connect");
+        // 1s worth of chunks against a 350ms budget: were the budget renewed
+        // per chunk, the call would last past the last one instead.
+        dribble_chunks(peer, 10, Duration::from_millis(100));
+
+        let budget = Duration::from_millis(350);
+        let start = Instant::now();
+        let err = CliResponse::recv_sync_timeout(&clisock, budget).expect_err("should time out");
+        let elapsed = start.elapsed();
+
+        assert!(matches!(err, CliLocalError::TimedOut), "got {err}");
+        assert!(elapsed >= budget, "gave up after only {elapsed:?}");
+        assert!(
+            elapsed < budget * 2,
+            "budget renewed per chunk: {elapsed:?}"
+        );
+        assert_eq!(
+            clisock.read_timeout().expect("read timeout should be read"),
+            Some(PREVIOUS),
+            "the read timeout of the socket should be restored"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A multi-chunk response that arrives inside the budget is returned whole,
+    /// and the socket is left without a read timeout, as it was found.
+    #[test]
+    #[cfg_attr(
+        emulated,
+        ignore = "Unix sockets unsupported under miri / flaky under qemu-user"
+    )]
+    fn recv_timeout_returns_response_within_budget() {
+        let dir = sock_dir("within-budget");
+        let cli_path = dir.join("cli.sock");
+        let clisock = UnixDatagram::bind(&cli_path).expect("cli sock should bind");
+        let dpsock = UnixDatagram::bind(dir.join("dp.sock")).expect("dp sock should bind");
+        let peer = SocketAddr::from_pathname(&cli_path).expect("cli path should be addressable");
+
+        let response_data = generate_big_response_data(10 * CLI_MSG_CHUNK_SIZE);
+        let response_data_len = response_data.len();
+        thread::spawn(move || {
+            let mut cache = IoCache::new();
+            generate_big_response(response_data)
+                .send(&peer, &dpsock, &mut cache)
+                .expect("response should be sent");
+        });
+
+        let response = CliResponse::recv_sync_timeout(&clisock, Duration::from_secs(10))
+            .expect("response should arrive within the budget");
+        assert_eq!(
+            response.result.expect("ok response").len(),
+            response_data_len
+        );
+        assert_eq!(
+            clisock.read_timeout().expect("read timeout should be read"),
+            None,
+            "the socket should be left as it was found"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The read timeout only bites on a blocking socket, which is the invariant
+    /// the doc comment of `recv_sync_timeout` states: on a non-blocking socket
+    /// every recv fails at once and no waiting happens at all.
+    #[test]
+    #[cfg_attr(
+        emulated,
+        ignore = "Unix sockets unsupported under miri / flaky under qemu-user"
+    )]
+    fn recv_timeout_does_not_wait_on_a_non_blocking_socket() {
+        let dir = sock_dir("non-blocking");
+        let sock = UnixDatagram::bind(dir.join("cli.sock")).expect("cli sock should bind");
+        sock.set_nonblocking(true).expect("sock should be settable");
+        let budget = Duration::from_secs(30);
+
+        let start = Instant::now();
+        let err = CliResponse::recv_sync_timeout(&sock, budget).expect_err("should time out");
+        let elapsed = start.elapsed();
+
+        assert!(matches!(err, CliLocalError::TimedOut), "got {err}");
+        assert!(elapsed < Duration::from_secs(1), "it did wait: {elapsed:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
