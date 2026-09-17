@@ -521,6 +521,56 @@ mod race {
     }
 
     #[tokio::test]
+    async fn a_non_first_fragment_with_transport_shaped_body_is_not_forwarded() {
+        use etherparse::{IpFragOffset, IpNumber, Ipv6FragmentHeader, Ipv6Header, TcpHeader};
+        use std::net::Ipv6Addr;
+
+        let fabric = v6_fabric();
+        let (mut lookup, mut pfw) = fabric.stages();
+        let arrival = Arrival::inbound();
+
+        let mut bytes = vec![2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x86, 0xdd];
+        let ip = Ipv6Header {
+            payload_length: 36,
+            next_header: IpNumber::IPV6_FRAGMENTATION_HEADER,
+            hop_limit: 64,
+            source: "2001:db8:ffff::1".parse::<Ipv6Addr>().unwrap().octets(),
+            destination: "2001:db8:1::1".parse::<Ipv6Addr>().unwrap().octets(),
+            ..Ipv6Header::default()
+        };
+        ip.write(&mut bytes).unwrap();
+        let fragment = Ipv6FragmentHeader::new(
+            IpNumber::IPV6_DESTINATION_OPTIONS,
+            IpFragOffset::try_new(1).unwrap(),
+            false,
+            1,
+        );
+        bytes.extend_from_slice(&fragment.to_bytes());
+        // These are fragment body bytes, not headers, despite what the parser sees.
+        bytes.extend_from_slice(&[6, 0, 1, 4, 0, 0, 0, 0]);
+        let mut body = TcpHeader::new(1234, 8001, 0, 0);
+        body.syn = true;
+        body.write(&mut bytes).unwrap();
+        let mut packet = Packet::new(TestBuffer::from_raw_data(&bytes)).unwrap();
+        assert_eq!(packet.transport_dst_port().map(NonZero::get), Some(8001));
+        let original_headers = packet.headers().clone();
+        arrival.stamp(&mut packet);
+
+        let mut stamped = lookup.process(std::iter::once(packet));
+        let mut packet = stamped.next().unwrap();
+        drop(stamped);
+        packet.meta_mut().dst_vpcd = arrival.dst_vpcd.map(VpcDiscriminant::from_vni);
+
+        let out = pfw.process(std::iter::once(packet)).next().unwrap();
+        assert_eq!(out.get_done(), Some(DoneReason::NatNotPortForwarded));
+        assert!(
+            entries(&fabric).is_empty(),
+            "fragment body created a TCP flow"
+        );
+        assert_eq!(out.headers(), &original_headers);
+    }
+
+    #[tokio::test]
     async fn a_second_packet_of_one_burst_keeps_the_first_packets_flow() {
         let fabric = fabric();
         let (mut lookup, mut pfw) = fabric.stages();
