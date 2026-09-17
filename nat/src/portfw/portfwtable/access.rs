@@ -6,9 +6,11 @@
 
 use super::super::build_port_forwarding_configuration;
 use super::PortFwTableError;
-use super::objects::{PortFwEntry, PortFwTable};
+use super::lpmmap::LpmMap;
+use super::objects::{PortFwEntry, PortFwKey, PortFwTable};
 use config::external::overlay::vpc::ValidatedVpcTable;
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
+use std::collections::HashMap;
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
@@ -29,10 +31,20 @@ impl Absorb<PortFwTableChange> for PortFwTable {
 pub struct PortFwTableWriter(WriteHandle<PortFwTable, PortFwTableChange>);
 pub struct PortFwTableReader(ReadHandle<PortFwTable>);
 
-#[allow(clippy::unnecessary_wraps)]
-fn validate_ruleset(_ruleset: &[PortFwEntry]) -> Result<(), PortFwTableError> {
-    // deferring the implementation of this since it will change
-    // when we introduce port ranges
+pub fn validate_ruleset(ruleset: &[PortFwEntry]) -> Result<(), PortFwTableError> {
+    let mut mappings: HashMap<PortFwKey, LpmMap<&PortFwEntry>> = HashMap::new();
+    for rule in ruleset {
+        let ranges = mappings.entry(rule.key).or_default();
+        if ranges
+            .get(rule.ext_prefix, rule.ext_ports)
+            .is_some_and(|existing| existing.matches(rule))
+        {
+            continue;
+        }
+        ranges
+            .insert(rule.ext_prefix, rule.ext_ports, rule)
+            .map_err(|e| PortFwTableError::OverlappingRange(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -95,7 +107,7 @@ impl PortFwTableReader {
 
 #[cfg(test)]
 mod test {
-    use crate::portfw::portfwtable::access::PortFwTableWriter;
+    use crate::portfw::portfwtable::access::{PortFwTableWriter, validate_ruleset};
     use crate::portfw::{PortFwEntry, PortFwKey};
     use lpm::prefix::Prefix;
     use net::ip::NextHeader;
@@ -120,6 +132,118 @@ mod test {
             None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_ruleset_the_table_cannot_hold_is_refused() {
+        let rule = |ext: (u16, u16), int: (u16, u16)| {
+            PortFwEntry::new(
+                PortFwKey::new(
+                    VpcDiscriminant::VNI(2000.try_into().unwrap()),
+                    NextHeader::TCP,
+                ),
+                VpcDiscriminant::VNI(3000.try_into().unwrap()),
+                Prefix::from_str("70.71.72.73/32").unwrap(),
+                Prefix::from_str("192.168.1.1/32").unwrap(),
+                ext,
+                int,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        let mut writer = PortFwTableWriter::new();
+        writer
+            .update_table(&[rule((3000, 3009), (30, 39)), rule((3010, 3019), (40, 49))])
+            .expect("rules that do not overlap are installable together");
+
+        let refused =
+            writer.update_table(&[rule((3000, 3009), (30, 39)), rule((3005, 3014), (50, 59))]);
+        assert!(
+            refused.is_err(),
+            "a ruleset whose rules claim overlapping external ports was accepted by the writer, \
+             so the table now holds fewer rules than the caller believes it asked for"
+        );
+    }
+
+    #[test]
+    fn ruleset_validation_preserves_timeouts() {
+        bolero::check!()
+            .with_type::<(u16, u16)>()
+            .for_each(|&(initial, established)| {
+                let rules = [
+                    build_sample_port_forwarding_rule(22),
+                    build_sample_port_forwarding_rule(22),
+                ];
+                rules[0].set_init_timeout(Duration::from_secs(u64::from(initial) + 1));
+                rules[0].set_estab_timeout(Duration::from_secs(u64::from(established) + 3));
+                rules[1].set_init_timeout(rules[0].init_timeout() + Duration::from_secs(1));
+                rules[1].set_estab_timeout(rules[0].estab_timeout() + Duration::from_secs(1));
+                let before = rules
+                    .each_ref()
+                    .map(|rule| (rule.init_timeout(), rule.estab_timeout()));
+
+                validate_ruleset(&rules).expect("matching mappings are accepted");
+
+                assert_eq!(
+                    rules
+                        .each_ref()
+                        .map(|rule| (rule.init_timeout(), rule.estab_timeout())),
+                    before,
+                    "validation must not update the supplied rules' shared timeouts"
+                );
+            });
+    }
+
+    #[test]
+    fn rejected_ruleset_preserves_published_timeouts() {
+        let original = build_sample_port_forwarding_rule(22);
+        let replacement = build_sample_port_forwarding_rule(22);
+        replacement.set_init_timeout(original.init_timeout() + Duration::from_secs(1));
+        replacement.set_estab_timeout(original.estab_timeout() + Duration::from_secs(1));
+        let mut conflicting = build_sample_port_forwarding_rule(22);
+        conflicting.int_prefix = "192.168.1.2/32".parse().unwrap();
+        let rules = [original.clone(), replacement, conflicting];
+        let before = rules
+            .each_ref()
+            .map(|rule| (rule.init_timeout(), rule.estab_timeout()));
+        let mut writer = PortFwTableWriter::new();
+        writer
+            .update_table(std::slice::from_ref(&original))
+            .unwrap();
+        let reader = writer.reader();
+
+        assert!(writer.update_table(&rules).is_err());
+
+        let published = reader.enter().unwrap();
+        assert_eq!(published.values().count(), 1);
+        let stored = published.lookup_rule(&original).unwrap();
+        assert_eq!((stored.init_timeout(), stored.estab_timeout()), before[0]);
+        assert_eq!(
+            rules
+                .each_ref()
+                .map(|rule| (rule.init_timeout(), rule.estab_timeout())),
+            before
+        );
+    }
+
+    #[test]
+    fn ruleset_validation_scopes_conflicts_by_key_and_prefix() {
+        let original = build_sample_port_forwarding_rule(22);
+        let mut different_protocol = original.clone();
+        different_protocol.key = PortFwKey::new(original.key.src_vpcd(), NextHeader::UDP);
+        let mut different_vpc = original.clone();
+        different_vpc.key = PortFwKey::new(
+            VpcDiscriminant::VNI(4000.try_into().unwrap()),
+            NextHeader::TCP,
+        );
+        let mut covering_prefix = original.clone();
+        covering_prefix.ext_prefix = "70.71.72.0/24".parse().unwrap();
+        covering_prefix.int_prefix = "192.168.1.0/24".parse().unwrap();
+
+        validate_ruleset(&[original, different_protocol, different_vpc, covering_prefix])
+            .expect("port ranges in different keys or prefixes do not conflict");
     }
 
     #[test]
