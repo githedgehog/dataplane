@@ -9,7 +9,7 @@ use std::hash::Hash;
 use std::net::IpAddr;
 use std::rc::Rc;
 
-use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
+use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
@@ -289,9 +289,10 @@ impl Fib {
         &self,
         filter: &FibRouteV4Filter,
     ) -> impl Iterator<Item = (Ipv4Prefix, &FibRoute)> {
-        self.routesv4
-            .iter()
-            .filter(|(prefix, _route)| filter.prefix.is_none_or(|target| *prefix == target))
+        self.routesv4.iter().filter(|(prefix, _route)| {
+            filter.prefix.is_none_or(|target| *prefix == target)
+                && filter.prefix_len.is_none_or(|len| prefix.len() == len)
+        })
     }
 
     /// Provide iterator of the IPv6 routes matching a `FibRouteV6Filter`
@@ -299,31 +300,33 @@ impl Fib {
         &self,
         filter: &FibRouteV6Filter,
     ) -> impl Iterator<Item = (Ipv6Prefix, &FibRoute)> {
-        self.routesv6
-            .iter()
-            .filter(|(prefix, _route)| filter.prefix.is_none_or(|target| *prefix == target))
+        self.routesv6.iter().filter(|(prefix, _route)| {
+            filter.prefix.is_none_or(|target| *prefix == target)
+                && filter.prefix_len.is_none_or(|len| prefix.len() == len)
+        })
     }
 }
 
 // A type that represents a filter for Ipv4 fib routes
 pub struct FibRouteV4Filter {
     prefix: Option<Ipv4Prefix>,
+    prefix_len: Option<u8>,
 }
 impl FibRouteV4Filter {
-    #[must_use]
-    pub fn new(prefix: Option<Ipv4Prefix>) -> Self {
-        Self { prefix }
+    pub fn new(prefix: Option<Ipv4Prefix>, prefix_len: Option<u8>) -> Self {
+        Self { prefix, prefix_len }
     }
 }
 
 // A type that represents a filter for Ipv6 fib routes
 pub struct FibRouteV6Filter {
     prefix: Option<Ipv6Prefix>,
+    prefix_len: Option<u8>,
 }
 impl FibRouteV6Filter {
     #[must_use]
-    pub fn new(prefix: Option<Ipv6Prefix>) -> Self {
-        Self { prefix }
+    pub fn new(prefix: Option<Ipv6Prefix>, prefix_len: Option<u8>) -> Self {
+        Self { prefix, prefix_len }
     }
 }
 
