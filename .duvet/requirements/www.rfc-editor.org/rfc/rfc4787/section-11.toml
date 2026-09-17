@@ -1,0 +1,51 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-11"
+
+# Receiving Fragmented Packets
+#
+#    For a variety of reasons, a NAT may receive a fragmented packet.  The
+#    IP packet containing the header could arrive in any fragment,
+#    depending on network conditions, packet ordering, and the
+#    implementation of the IP stack that generated the fragments.
+# 
+#    A NAT that is capable only of receiving fragments in order (that is,
+#    with the header in the first packet) and forwarding each of the
+#    fragments to the internal host is described as "Received Fragments
+#    Ordered".
+# 
+#    A NAT that is capable of receiving fragments in or out of order and
+#    forwarding the individual fragments (or a reassembled packet) to the
+#    internal host is referred to as "Receive Fragments Out of Order".
+#    See the Security Considerations section of this document for a
+#    discussion of this behavior.
+# 
+#    A NAT that is neither of these is referred to as "Receive Fragments
+#    None".
+# 
+#    REQ-14:  A NAT MUST support receiving in-order and out-of-order
+#       fragments, so it MUST have "Received Fragment Out of Order"
+#       behavior.
+# 
+#       a) A NAT's out-of-order fragment processing mechanism MUST be
+#          designed so that fragmentation-based DoS attacks do not
+#          compromise the NAT's ability to process in-order and
+#          unfragmented IP packets.
+# 
+#    Justification:  See Security Considerations.
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-14:  A NAT MUST support receiving in-order and out-of-order
+fragments, so it MUST have "Received Fragment Out of Order"
+behavior.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) A NAT's out-of-order fragment processing mechanism MUST be
+designed so that fragmentation-based DoS attacks do not
+compromise the NAT's ability to process in-order and
+unfragmented IP packets.
+'''
+

@@ -14,6 +14,11 @@ use net::packet::Packet;
 use net::tcp::Tcp;
 
 impl NatFlowStatus {
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+    //# a) For specific destination ports in the well-known port range
+    //# (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
+    //# are specific to the IANA-registered application running over
+    //# that specific destination port.
     fn udp_status_patch_dnat<Buf: PacketBufferMut>(self, packet: &Packet<Buf>) -> NatFlowStatus {
         match packet.headers().pat().eth().net().udp().done() {
             Some((_, _, udp)) => match udp.source().as_u16() {

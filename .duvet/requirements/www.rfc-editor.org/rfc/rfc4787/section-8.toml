@@ -1,0 +1,65 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-8"
+
+# Deterministic Properties
+#
+#    The classification of NATs is further complicated by the fact that,
+#    under some conditions, the same NAT will exhibit different behaviors.
+#    This has been seen on NATs that preserve ports or have specific
+#    algorithms for selecting a port other than a free one.  If the
+#    external port that the NAT wishes to use is already in use by another
+#    session, the NAT must select a different port.  This results in
+#    different code paths for this conflict case, which results in
+#    different behavior.
+# 
+#    For example, if three hosts X1, X2, and X3 all send from the same
+#    port x, through a port preserving NAT with only one external IP
+#    address, called X1', the first one to send (i.e., X1) will get an
+#    external port of x, but the next two will get x2' and x3' (where
+#    these are not equal to x).  There are NATs where the External NAT
+#    mapping characteristics and the External Filter characteristics
+#    change between the X1:x and the X2:x mapping.  To make matters worse,
+#    there are NATs where the behavior may be the same on the X1:x and
+#    X2:x mappings, but different on the third X3:x mapping.
+# 
+#    Another example is that some NATs have an "Endpoint-Independent
+#    Mapping", combined with "Port Overloading", as long as two endpoints
+#    are not establishing sessions to the same external direction, but
+#    then switch their behavior to "Address and Port-Dependent Mapping"
+# 
+#    without "Port Preservation" upon detection of these conflicting
+#    sessions establishments.
+# 
+#    Any NAT that changes the NAT Mapping or the Filtering behavior
+#    without configuration changes, at any point in time, under any
+#    particular conditions, is referred to as a "non-deterministic" NAT.
+#    NATs that don't are called "deterministic".
+# 
+#    Non-deterministic NATs generally change behavior when a conflict of
+#    some sort happens, i.e., when the port that would normally be used is
+#    already in use by another mapping.  The NAT mapping and External
+#    Filtering in the absence of conflict is referred to as the Primary
+#    behavior.  The behavior after the first conflict is referred to as
+#    Secondary and after the second conflict is referred to as Tertiary.
+#    No NATs have been observed that change on further conflicts, but it
+#    is certainly possible that they exist.
+# 
+#    REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
+#       change the NAT translation (Section 4) or the Filtering
+#       (Section 5) Behavior at any point in time, or under any particular
+#       conditions.
+# 
+#    Justification:  Non-deterministic NATs are very difficult to
+#       troubleshoot because they require more intensive testing.  This
+#       non-deterministic behavior is the root cause of much of the
+#       uncertainty that NATs introduce about whether or not applications
+#       will work.
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
+change the NAT translation (Section 4) or the Filtering
+(Section 5) Behavior at any point in time, or under any particular
+conditions.
+'''
+

@@ -1,0 +1,38 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-4.2.2"
+
+# Port Parity
+#
+#    Some NATs preserve the parity of the UDP port, i.e., an even port
+#    will be mapped to an even port, and an odd port will be mapped to an
+#    odd port.  This behavior respects the [RFC3550] rule that RTP use
+#    even ports, and RTCP use odd ports.  RFC 3550 allows any port numbers
+#    to be used for RTP and RTCP if the two numbers are specified
+#    separately; for example, using [RFC3605].  However, some
+#    implementations do not include RFC 3605, and do not recognize when
+#    the peer has specified the RTCP port separately using RFC 3605.  If
+#    such an implementation receives an odd RTP port number from the peer
+#    (perhaps after having been translated by a NAT), and then follows the
+#    RFC 3550 rule to change the RTP port to the next lower even number,
+#    this would obviously result in the loss of RTP.  NAT-friendly
+#    application aspects are outside the scope of this document.  It is
+#    expected that this issue will fade away with time, as implementations
+#    improve.  Preserving the port parity allows for supporting
+#    communication with peers that do not support explicit specification
+#    of both RTP and RTCP port numbers.
+# 
+#    REQ-4:  It is RECOMMENDED that a NAT have a "Port parity
+#       preservation" behavior of "Yes".
+# 
+#    Justification:  This is to avoid breaking peer-to-peer applications
+#       that do not explicitly and separately specify RTP and RTCP port
+#       numbers and that follow the RFC 3550 rule to decrement an odd RTP
+#       port to make it even.  The same considerations apply, as per the
+#       IP address pooling requirement.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-4:  It is RECOMMENDED that a NAT have a "Port parity
+preservation" behavior of "Yes".
+'''
+

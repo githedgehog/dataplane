@@ -285,6 +285,9 @@ impl NatAllocator {
     //= type=todo
     //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
     //# for TCP.
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+    //= type=todo
+    //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
     fn allocate_v4(
         &self,
         src_vpcd: VpcDiscriminant,
