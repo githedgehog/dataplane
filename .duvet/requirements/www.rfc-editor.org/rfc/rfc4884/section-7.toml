@@ -1,0 +1,59 @@
+target = "https://www.rfc-editor.org/rfc/rfc4884#section-7"
+
+# The ICMP Extension Structure
+#
+#    This memo proposes an optional ICMP Extension Structure that can be
+#    appended to the ICMP messages referenced in Section 4.6 of this
+#    document.
+# 
+#    The Extension Structure contains exactly one Extension Header
+#    followed by one or more objects.  Having received an ICMP message
+#    with extensions, application software MAY process selected objects
+#    while ignoring others.  The presence of an unrecognized object does
+#    not imply that an ICMP message is malformed.
+# 
+#    As stated above, the total length of the ICMP message, including
+#    extensions, MUST NOT exceed the minimum reassembly buffer size.
+#    Figure 6 depicts the ICMP Extension Header.
+# 
+#        0                   1                   2                   3
+#        0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+#       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#       |Version|      (Reserved)       |           Checksum            |
+#       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#                       Figure 6: ICMP Extension Header
+# 
+#    The fields of the ICMP Extension Header are as follows:
+# 
+#    Version: 4 bits
+# 
+#       ICMP extension version number.  This is version 2.
+# 
+#    Reserved: 12 bits
+# 
+#       Must be set to 0.
+# 
+#    Checksum: 16 bits
+# 
+#       The one's complement of the one's complement sum of the data
+#       structure, with the checksum field replaced by zero for the
+#       purpose of computing the checksum.  An all-zero value means that
+#       no checksum was transmitted.  See Section 5.2 for a description of
+#       how this field is used.
+
+[[spec]]
+level = "MAY"
+quote = '''
+Having received an ICMP message
+with extensions, application software MAY process selected objects
+while ignoring others.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+As stated above, the total length of the ICMP message, including
+extensions, MUST NOT exceed the minimum reassembly buffer size.
+'''
+

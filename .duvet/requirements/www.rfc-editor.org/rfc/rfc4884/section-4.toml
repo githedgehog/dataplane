@@ -1,0 +1,166 @@
+target = "https://www.rfc-editor.org/rfc/rfc4884#section-4"
+
+# ICMP Extensibility
+#
+#    RFC 792 defines the following ICMPv4 message types:
+# 
+#       - Destination Unreachable
+# 
+#       - Time Exceeded
+# 
+#       - Parameter Problem
+# 
+#       - Source Quench
+# 
+#       - Redirect
+# 
+#       - Echo Request/Reply
+# 
+#       - Timestamp/Timestamp Reply
+# 
+#       - Information Request/Information Reply
+# 
+#    [RFC1191] reserves bits for the "Next-Hop MTU" field in the
+#    Destination Unreachable message.
+# 
+#    RFC 4443 defines the following ICMPv6 message types:
+# 
+#       - Destination Unreachable
+# 
+#       - Packet Too Big
+# 
+#       - Time Exceeded
+# 
+#       - Parameter Problem
+# 
+#       - Echo Request/Reply
+# 
+#    Many ICMP messages are extensible as currently defined.  Protocol
+#    designers can extend ICMP messages by simply appending fields or data
+#    structures to them.
+# 
+#    However, the following ICMP messages are not extensible as currently
+#    defined:
+# 
+#       - ICMPv4 Destination Unreachable (type = 3)
+# 
+#       - ICMPv4 Time Exceeded (type = 11)
+# 
+#       - ICMPv4 Parameter Problem (type = 12)
+# 
+#       - ICMPv6 Destination Unreachable (type = 1)
+# 
+#       - ICMPv6 Packet Too Big (type = 2)
+# 
+#       - ICMPv6 Time Exceeded (type = 3)
+# 
+#       - ICMPv6 Parameter Problem (type = 4)
+# 
+#    These messages contain an "original datagram" field which represents
+#    the leading octets of the datagram to which the ICMP message is a
+#    response.  RFC 792 defines the "original datagram" field for ICMPv4
+#    messages.  In RFC 792, the "original datagram" field includes the IP
+#    header plus the next eight octets of the original datagram.
+#    [RFC1812] extends the "original datagram" field to contain as many
+#    octets as possible without causing the ICMP message to exceed the
+#    minimum IPv4 reassembly buffer size (i.e., 576 octets).  RFC 4443
+#    defines the "original datagram" field for ICMPv6 messages.  In RFC
+#    4443, the "original datagram" field always contained as many octets
+#    as possible without causing the ICMP message to exceed the minimum
+#    IPv6 MTU (i.e., 1280 octets).
+# 
+#    Unfortunately, the "original datagram" field lacks a length
+#    attribute.  Application software infers the length of this field from
+#    the total length of the ICMP message.  If an extension structure were
+#    appended to the message without adding a length attribute for the
+#    "original datagram" field, the message would become unparsable.
+#    Specifically, application software would not be able to determine
+#    where the "original datagram" field ends and where the extension
+#    structure begins.
+# 
+#    In order to solve this problem, this memo introduces an 8-bit length
+#    attribute to the following ICMPv4 messages.
+# 
+#       - Destination Unreachable (type = 3)
+# 
+#       - Time Exceeded (type = 11)
+# 
+#       - Parameter Problem (type = 12)
+# 
+#    It also introduces an 8-bit length attribute to the following ICMPv6
+#    messages.
+# 
+#       - Destination Unreachable (type = 1)
+# 
+#       - Time Exceeded (type = 3)
+# 
+#    The length attribute MUST be specified when the ICMP Extension
+#    Structure is appended to the above mentioned ICMP messages.
+# 
+#    The length attribute represents the length of the "original datagram"
+#    field.  Space for the length attribute is claimed from reserved
+#    octets, whose value was previously required to be zero.
+# 
+#    For ICMPv4 messages, the length attribute represents 32-bit words.
+#    When the length attribute is specified, the "original datagram" field
+#    MUST be zero padded to the nearest 32-bit boundary.  Because the
+# 
+#    sixth octet of each of the impacted ICMPv4 messages was reserved for
+#    future use, this octet was selected as the location of the length
+#    attribute in ICMPv4.
+# 
+#    For ICMPv6 messages, the length attribute represents 64-bit words.
+#    When the length attribute is specified, the "original datagram" field
+#    MUST be zero padded to the nearest 64-bit boundary.  Because the
+#    fifth octet of each of the impacted ICMPv6 messages was reserved for
+#    future use, this octet was selected as the location of the length
+#    attribute in ICMPv6.
+# 
+#    In order to achieve backwards compatibility, when the ICMP Extension
+#    Structure is appended to an ICMP message and that ICMP message
+#    contains an "original datagram" field, the "original datagram" field
+#    MUST contain at least 128 octets.  If the original datagram did not
+#    contain 128 octets, the "original datagram" field MUST be zero padded
+#    to 128 octets.  (See Section 5.1 for rationale.)
+# 
+#    The following sub-sections depict length attribute as it has been
+#    introduced to selected ICMP messages.
+
+[[spec]]
+level = "MUST"
+quote = '''
+The length attribute MUST be specified when the ICMP Extension
+Structure is appended to the above mentioned ICMP messages.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the length attribute is specified, the "original datagram" field
+MUST be zero padded to the nearest 32-bit boundary.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the length attribute is specified, the "original datagram" field
+MUST be zero padded to the nearest 64-bit boundary.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In order to achieve backwards compatibility, when the ICMP Extension
+Structure is appended to an ICMP message and that ICMP message
+contains an "original datagram" field, the "original datagram" field
+MUST contain at least 128 octets.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the original datagram did not
+contain 128 octets, the "original datagram" field MUST be zero padded
+to 128 octets.
+'''
+
