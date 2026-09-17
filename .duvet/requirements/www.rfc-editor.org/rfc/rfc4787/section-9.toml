@@ -1,0 +1,80 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-9"
+
+# ICMP Destination Unreachable Behavior
+#
+#    When a NAT sends a packet toward a host on the other side of the NAT,
+#    an ICMP message may be sent in response to that packet.  That ICMP
+#    message may be sent by the destination host or by any router along
+#    the network path.  The NAT's default configuration SHOULD NOT filter
+#    ICMP messages based on their source IP address.  Such ICMP messages
+#    SHOULD be rewritten by the NAT (specifically, the IP headers and the
+#    ICMP payload) and forwarded to the appropriate internal or external
+#    host.  The NAT needs to perform this function for as long as the UDP
+#    mapping is active.  Receipt of any sort of ICMP message MUST NOT
+#    destroy the NAT mapping.  A NAT that performs the functions described
+#    in the paragraph above is referred to as "support ICMP Processing".
+# 
+#    There is no significant security advantage to blocking ICMP
+#    Destination Unreachable packets.  Additionally, blocking ICMP
+#    Destination Unreachable packets can interfere with application
+#    failover, UDP Path MTU Discovery (see [RFC1191] and [RFC1435]), and
+#    traceroute.  Blocking any ICMP message is discouraged, and blocking
+#    ICMP Destination Unreachable is strongly discouraged.
+# 
+#    REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
+#       NAT mapping.
+# 
+#       a) The NAT's default configuration SHOULD NOT filter ICMP messages
+#          based on their source IP address.
+# 
+#       b) It is RECOMMENDED that a NAT support ICMP Destination
+#          Unreachable messages.
+# 
+#    Justification:  This is easy to do and is used for many things
+#       including MTU discovery and rapid detection of error conditions,
+#       and has no negative consequences.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The NAT's default configuration SHOULD NOT filter
+ICMP messages based on their source IP address.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Such ICMP messages
+SHOULD be rewritten by the NAT (specifically, the IP headers and the
+ICMP payload) and forwarded to the appropriate internal or external
+host.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Receipt of any sort of ICMP message MUST NOT
+destroy the NAT mapping.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
+NAT mapping.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) The NAT's default configuration SHOULD NOT filter ICMP messages
+based on their source IP address.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+b) It is RECOMMENDED that a NAT support ICMP Destination
+Unreachable messages.
+'''
+

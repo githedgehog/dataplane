@@ -17,3 +17,6 @@ enabled = true
 
 [report.snapshot]
 enabled = true
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc4787"
