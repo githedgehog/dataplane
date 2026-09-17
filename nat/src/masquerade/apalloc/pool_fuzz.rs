@@ -259,6 +259,10 @@ fn re_reservation_after_a_config_change_is_honoured() {
         });
 }
 
+//= https://www.rfc-editor.org/rfc/rfc5382#section-7.1
+//= type=test
+//# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+//# overloading" for TCP.
 #[test]
 #[cfg_attr(miri, ignore = "exhaustive allocator walk is too slow under miri")]
 fn a_region_can_be_allocated_dry() {

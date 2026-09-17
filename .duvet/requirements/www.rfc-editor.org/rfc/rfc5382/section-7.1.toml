@@ -1,0 +1,37 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-7.1"
+
+# Port Assignment
+#
+#    NATs that allow different internal endpoints to simultaneously use
+#    the same mapping are defined in [BEHAVE-UDP] to have a "Port
+#    assignment" behavior of "Port overloading".  Such behavior is
+#    undesirable, as it prevents two internal endpoints sharing the same
+#    mapping from establishing simultaneous connections to a common
+#    external endpoint.
+# 
+#    REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+#       overloading" for TCP.
+# 
+#    Justification:  This requirement allows two applications on the
+#       internal side of the NAT to consistently communicate with the same
+#       destination.
+# 
+#    NAT behavior for preserving the source TCP port range for connections
+#    is left unspecified.  Some applications expect the source TCP port to
+#    be in the well-known range (TCP ports from 0 to 1023).  The "r"
+#    series of commands (rsh, rcp, rlogin, etc.) are an example.  NATs
+#    that preserve the range from which the source port is picked allow
+#    such applications to function properly through the NAT; however, by
+#    doing so the NAT may compromise the security of the application in
+#    certain situations; applications that depend only on the IP address
+#    and source TCP port range for security (the "r" commands, for
+#    example) cannot distinguish between an attacker and a legitimate user
+#    behind the same NAT.
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+overloading" for TCP.
+'''
+

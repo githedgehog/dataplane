@@ -35,7 +35,7 @@ const ACCEPTED: Accepted[] = [
   },
   ...[
     "https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1",
-    "https://www.rfc-editor.org/rfc/rfc5382#section-8",
+    "https://www.rfc-editor.org/rfc/rfc5382#section-7.1",
   ].map((requirement) => ({
     requirement,
     mutant:
