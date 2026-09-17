@@ -93,6 +93,105 @@ fn reply_to(
         .flatten()
 }
 
+//= https://www.rfc-editor.org/rfc/rfc4787#section-8
+//= type=exception
+//= reason=the pool spills a host onto a second public address at a port-capacity boundary, so the mapping behaviour under exhaustion is not the behaviour before it; measured here
+//# REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
+//# change the NAT translation (Section 4) or the Filtering
+//# (Section 5) Behavior at any point in time, or under any particular
+//# conditions.
+#[test]
+#[cfg_attr(miri, ignore = "the 65k-session pool walk is too slow under miri")]
+fn pool_exhaustion_splits_a_host_across_public_addresses() {
+    use std::collections::{BTreeMap, BTreeSet};
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let mut given: BTreeMap<IpAddr, BTreeSet<IpAddr>> = BTreeMap::new();
+
+        for sport in 1024..1024 + 256u16 {
+            for host in 1..=254u16 {
+                let source: IpAddr = format!("10.0.0.{host}")
+                    .parse()
+                    .unwrap_or_else(|_| unreachable!());
+                if let Some((public, _)) = open_flow(&mut lookup, &mut masq, source, peer, sport) {
+                    given.entry(source).or_default().insert(public);
+                }
+            }
+        }
+
+        let publics: BTreeSet<_> = given.values().flatten().copied().collect();
+        let split = given.values().filter(|a| a.len() > 1).count();
+        println!(
+            "{} hosts, {} public addresses in use, {split} hosts split",
+            given.len(),
+            publics.len()
+        );
+        assert!(
+            publics.len() > 1,
+            "the pool never spilled to a second address, so this measured nothing about pairing"
+        );
+        assert_eq!(
+            split,
+            given.len(),
+            "some host kept a single public address across the spill. If pooling has been made \
+             Paired, delete this test and the REQ-2 and REQ-11 exceptions it is named by"
+        );
+    });
+}
+
+fn inbound_from(
+    lookup: &mut FlowLookup,
+    masq: &mut Masquerade,
+    from: IpAddr,
+    sport: u16,
+    translated: (IpAddr, u16),
+) -> bool {
+    let mut packet = build(from, translated.0, false, sport, translated.1);
+    Arrival::inbound().stamp(&mut packet);
+    let out: Vec<Packet<TestBuffer>> = run(lookup, masq, vec![packet], Some(vni(LOCAL_VNI)));
+    !out[0].is_done()
+}
+
+//= https://www.rfc-editor.org/rfc/rfc4787#section-5
+//= type=todo
+//# REQ-8:  If application transparency is most important, it is
+//# RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
+//# behavior.  If a more stringent filtering behavior is most
+//# important, it is RECOMMENDED that a NAT have an "Address-Dependent
+//# Filtering" behavior.
+#[test]
+fn only_the_endpoint_a_flow_addressed_can_reply() {
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let elsewhere = *fabric
+            .peer
+            .iter()
+            .find(|a| **a != peer)
+            .unwrap_or_else(|| unreachable!("the fixture offers two peer addresses"));
+        let source: IpAddr = "10.0.0.7".parse().unwrap_or_else(|_| unreachable!());
+
+        let translated = open_flow(&mut lookup, &mut masq, source, peer, 1234)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+
+        assert!(
+            inbound_from(&mut lookup, &mut masq, peer, 80, translated),
+            "the endpoint the flow addressed could not answer it"
+        );
+        assert!(
+            !inbound_from(&mut lookup, &mut masq, peer, 81, translated),
+            "a packet from the right address on the wrong port reached the tenant"
+        );
+        assert!(
+            !inbound_from(&mut lookup, &mut masq, elsewhere, 80, translated),
+            "a packet from an address the flow never addressed reached the tenant"
+        );
+    });
+}
+
 #[test]
 fn a_flow_inside_its_lifetime_survives() {
     with_paused_clock(|| async {
