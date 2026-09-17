@@ -64,6 +64,26 @@ function record(stats: Stats, status: Record<string, number | number[]>) {
   if (status.todo) stats.todos += 1;
 }
 
+const SUMMARY_SECTIONS: Record<string, string> = {
+  "https://www.rfc-editor.org/rfc/rfc4787": "section-12",
+  "https://www.rfc-editor.org/rfc/rfc5382": "section-8",
+  "https://www.rfc-editor.org/rfc/rfc5508": "section-9",
+};
+
+async function summaryRequirements(id: string): Promise<number> {
+  const section = SUMMARY_SECTIONS[id];
+  if (!section) return 0;
+  const path = `${REPO}/.duvet/requirements/${
+    id.replace(/^https?:\/\//, "")
+  }/${section}.toml`;
+  try {
+    const text = await Deno.readTextFile(path);
+    return text.split("\n").filter((line) => line === "[[spec]]").length;
+  } catch {
+    return 0;
+  }
+}
+
 const BANDS = [
   { from: 0.75, cell: "🟩" },
   { from: 0.5, cell: "🟨" },
@@ -109,7 +129,13 @@ async function run(cmd: string, args: string[]): Promise<number> {
 }
 
 function parseArgs(argv: string[]) {
-  const args = { json: "/tmp/duvet-summary.json", results: "", help: false };
+  // Keep output in this checkout to avoid collisions between concurrent CI jobs
+  // sharing the runner's /tmp.
+  const args = {
+    json: `${REPO}/target/duvet-summary.json`,
+    results: "",
+    help: false,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const value = () => {
@@ -157,7 +183,9 @@ async function main(): Promise<number> {
 
   const total = EMPTY();
   const rows: string[] = [];
+  let restated = 0;
   for (const [id, spec] of Object.entries(report.specifications)) {
+    restated += await summaryRequirements(id);
     const stats = EMPTY();
     for (const requirement of spec.requirements) {
       const status = report.statuses[String(requirement)];
@@ -196,6 +224,16 @@ async function main(): Promise<number> {
     } |`,
   );
   out();
+  if (restated) {
+    const share = (100 * restated / total.total).toFixed(0);
+    out(
+      `> ${restated} of the ${total.total} requirements above (${share}%) are the summary-section ` +
+        `restatements. They are uncitable by convention -- the ` +
+        `normative copy carries the annotation -- so they are a permanent floor under every ` +
+        `"incomplete" count here, not work outstanding.`,
+    );
+    out();
+  }
 
   out("## Citation interlock");
   out();
