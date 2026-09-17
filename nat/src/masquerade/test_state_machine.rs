@@ -195,6 +195,9 @@ fn ordinary_udp_opens_and_settles() {
     }
 }
 
+// This tests Echo Reply transitions. RFC 5382 REQ-10 and RFC 4787 REQ-12 also cover
+// ICMP errors, which go through `icmp_handler::nf`. This test alone cannot verify
+// either requirement.
 #[test]
 fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
     let packet = build_test_icmp4_echo(
@@ -212,16 +215,14 @@ fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
     );
 
     for status in STATUSES {
-        assert_eq!(
-            next_flow_status(&packet, NatAction::SrcNat, status),
-            status,
-            "an outbound icmp packet moved a flow in {status:?}"
-        );
-        if status != NatFlowStatus::OneWay {
+        for action in [NatAction::SrcNat, NatAction::DstNat] {
+            let next = next_flow_status(&packet, action, status);
+            if action == NatAction::DstNat && status == NatFlowStatus::OneWay {
+                continue;
+            }
             assert_eq!(
-                next_flow_status(&packet, NatAction::DstNat, status),
-                status,
-                "an inbound icmp packet moved a flow in {status:?}"
+                next, status,
+                "an {action} icmp packet moved a flow in {status:?}"
             );
         }
     }

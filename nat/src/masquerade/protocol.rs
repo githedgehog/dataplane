@@ -55,9 +55,13 @@ fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStat
     }
 }
 
+// Echo requests and replies never terminate a flow here. ICMP errors go through
+// `IcmpErrorHandler`, which can remove a one-way mapping on a hard error. RFC 5382
+// REQ-10 and RFC 4787 REQ-12 cover errors too, so this function cannot establish
+// compliance with either requirement.
 #[allow(clippy::match_single_binding)]
 fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
-    match action {
+    let next = match action {
         NatAction::SrcNat => match status {
             _ => status,
         },
@@ -65,7 +69,14 @@ fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowSta
             NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
             _ => status,
         },
+    };
+    if cfg!(debug_assertions)
+        && matches!(next, NatFlowStatus::Closed | NatFlowStatus::Reset)
+        && !matches!(status, NatFlowStatus::Closed | NatFlowStatus::Reset)
+    {
+        unreachable!("an ICMP query moved a live flow from {status:?} to {next:?} ({action})");
     }
+    next
 }
 
 fn next_flow_status_tcp(action: NatAction, status: NatFlowStatus, tcp: &Tcp) -> NatFlowStatus {
