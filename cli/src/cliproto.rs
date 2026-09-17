@@ -27,9 +27,9 @@ const _: () = {
     use rkyv::bytecheck::CheckBytes as _;
 };
 
+use clock::Duration;
 use std::net::IpAddr;
 use std::os::unix::net::UnixDatagram;
-use std::time::{Duration, Instant};
 
 use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
@@ -346,7 +346,7 @@ impl CliResponse {
             return Err(CliLocalError::TimedOut);
         }
         // reject a timeout so large that it has no deadline
-        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        let deadline = clock::now().checked_add(timeout).ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "timeout too large")
         })?;
         let guard = ReadTimeout::arm(sock, timeout)?;
@@ -367,7 +367,7 @@ impl CliResponse {
             if !more {
                 break;
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.saturating_duration_since(clock::now());
             if remaining.is_zero() {
                 return Err(CliLocalError::TimedOut);
             }
@@ -513,6 +513,7 @@ mod tests {
     use super::*;
     use rand::RngExt;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::os::linux::net::SocketAddrExt;
     use std::{thread, time::Duration};
 
     /// Build a `CliRequest` that exercises every `RequestArgs` field so the
@@ -656,5 +657,116 @@ mod tests {
         let response = CliResponse::recv_sync(&clisock).unwrap();
         let data = response.result.unwrap();
         assert_eq!(data.len(), response_data_len);
+    }
+
+    /// Send `num` chunks, `every` apart, all flagged as "more chunks follow",
+    /// so that the receiver never sees the end of the message.
+    fn chunk_sender(sock: UnixDatagram, num: usize, every: Duration) {
+        thread::spawn(move || {
+            for _ in 0..num {
+                let mut raw = vec![0xAAu8; 16];
+                raw.push(1);
+                if sock.send(&raw).is_err() {
+                    break;
+                }
+                thread::sleep(every);
+            }
+        });
+    }
+
+    #[test]
+    #[cfg_attr(emulated, ignore = "Unix sockets unsupported under miri")]
+    // Test that recv with timeout expires after the timeout and not before
+    fn recv_with_timeout_unblocks_on_timeout() {
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name("sock-1").unwrap();
+        let sock = UnixDatagram::bind_addr(&addr).expect("cli sock should bind");
+        let timeout = Duration::from_millis(200);
+
+        let start = clock::now();
+        let err = CliResponse::recv_sync_timeout(&sock, timeout).expect_err("should time out");
+        let elapsed = clock::elapsed(start);
+
+        assert!(matches!(err, CliLocalError::TimedOut));
+        assert!(elapsed >= timeout, "gave up after only {elapsed:?}");
+        assert!(elapsed < timeout * 10, "overshot the budget: {elapsed:?}");
+    }
+
+    /// The budget covers the whole message, not each chunk: a peer that keeps
+    /// sending "more chunks follow" just under the timeout must not be able to
+    /// stretch the call indefinitely.  It also must not disturb the read
+    /// timeout the socket already carried.
+    #[test]
+    #[cfg_attr(emulated, ignore = "Unix sockets unsupported under miri")]
+    fn recv_timeout_budget_is_not_renewed_per_chunk() {
+        const PREVIOUS: Duration = Duration::from_secs(7); // initial timeout set on receiving socket
+
+        let cli_addr = std::os::unix::net::SocketAddr::from_abstract_name("sock-2").unwrap();
+        let clisock = UnixDatagram::bind_addr(&cli_addr).expect("cli sock should bind");
+        clisock
+            .set_read_timeout(Some(PREVIOUS))
+            .expect("should succeed");
+
+        let dataplane = UnixDatagram::unbound().expect("peer sock should open");
+        dataplane
+            .connect_addr(&cli_addr)
+            .expect("peer should connect");
+
+        thread::scope(|_| {
+            chunk_sender(dataplane, 10, Duration::from_millis(100));
+        });
+
+        let timeout = Duration::from_millis(350);
+        let start = clock::now();
+        let err = CliResponse::recv_sync_timeout(&clisock, timeout).expect_err("should time out");
+        let elapsed = clock::elapsed(start);
+
+        assert!(matches!(err, CliLocalError::TimedOut), "got {err}");
+        assert!(elapsed >= timeout, "gave up after only {elapsed:?}");
+        assert!(
+            elapsed < timeout * 2,
+            "budget renewed per chunk: {elapsed:?}"
+        );
+        assert_eq!(
+            clisock.read_timeout().expect("read timeout should be read"),
+            Some(PREVIOUS),
+            "the read timeout of the socket should be restored"
+        );
+    }
+
+    /// A multi-chunk response that arrives inside the budget is returned whole,
+    /// and the socket is left without a read timeout, as it was found.
+    #[test]
+    #[cfg_attr(emulated, ignore = "Unix sockets unsupported under miri")]
+    fn recv_timeout_returns_response_within_budget() {
+        let cli_addr = std::os::unix::net::SocketAddr::from_abstract_name("sock-3").unwrap();
+        let dp_addr = std::os::unix::net::SocketAddr::from_abstract_name("dpsock").unwrap();
+
+        let clisock = UnixDatagram::bind_addr(&cli_addr).expect("cli sock should bind");
+        let dpsock = UnixDatagram::bind_addr(&dp_addr).expect("dp sock should bind");
+
+        let response_data = generate_big_response_data(10 * CLI_MSG_CHUNK_SIZE);
+        let response_data_len = response_data.len();
+
+        thread::scope(|_| {
+            thread::spawn(move || {
+                let mut cache = IoCache::new();
+                generate_big_response(response_data)
+                    .send(&cli_addr, &dpsock, &mut cache)
+                    .expect("response should be sent");
+            });
+        });
+
+        let response = CliResponse::recv_sync_timeout(&clisock, Duration::from_secs(10))
+            .expect("response should arrive within the budget");
+
+        assert_eq!(
+            response.result.expect("ok response").len(),
+            response_data_len
+        );
+
+        assert_eq!(
+            clisock.read_timeout().expect("read timeout should be read"),
+            None,
+        );
     }
 }
