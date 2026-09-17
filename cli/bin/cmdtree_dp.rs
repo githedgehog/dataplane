@@ -110,6 +110,7 @@ fn cmd_show_ip() -> Node {
         .action(CliAction::ShowRouterIpv4Routes)
         .arg(CliArgId::VrfId.as_str())
         .arg(CliArgId::Prefix.as_str())
+        .arg(CliArgId::PrefixLen.as_str())
         .arg_add(vni_arg())
         .arg_add(vpc_arg());
 
@@ -133,6 +134,7 @@ fn cmd_show_ip() -> Node {
         .action(CliAction::ShowRouterIpv4FibEntries)
         .arg(CliArgId::VrfId.as_str())
         .arg(CliArgId::Prefix.as_str())
+        .arg(CliArgId::PrefixLen.as_str())
         .arg_add(vni_arg())
         .arg_add(vpc_arg());
 
@@ -153,6 +155,7 @@ fn cmd_show_ipv6() -> Node {
         .action(CliAction::ShowRouterIpv6Routes)
         .arg(CliArgId::VrfId.as_str())
         .arg(CliArgId::Prefix.as_str())
+        .arg(CliArgId::PrefixLen.as_str())
         .arg_add(vni_arg())
         .arg_add(vpc_arg());
 
@@ -173,6 +176,7 @@ fn cmd_show_ipv6() -> Node {
         .action(CliAction::ShowRouterIpv6FibEntries)
         .arg(CliArgId::VrfId.as_str())
         .arg(CliArgId::Prefix.as_str())
+        .arg(CliArgId::PrefixLen.as_str())
         .arg_add(vni_arg())
         .arg_add(vpc_arg());
 

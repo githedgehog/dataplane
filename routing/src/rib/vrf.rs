@@ -15,7 +15,7 @@ use common::cliprovider::Frame;
 use super::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibtype::FibWriter;
-use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
+use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use net::route::RouteTableId;
 use net::vxlan::Vni;
@@ -665,6 +665,7 @@ impl Vrf {
     ) -> impl Iterator<Item = (Ipv4Prefix, &Route)> {
         self.routesv4.iter().filter(|(prefix, route)| {
             filter.prefix.is_none_or(|target| *prefix == target)
+                && filter.prefix_len.is_none_or(|len| prefix.len() == len)
                 && filter.protocol.is_none_or(|origin| route.origin == origin)
         })
     }
@@ -678,6 +679,7 @@ impl Vrf {
     ) -> impl Iterator<Item = (Ipv6Prefix, &Route)> {
         self.routesv6.iter().filter(|(prefix, route)| {
             filter.prefix.is_none_or(|target| *prefix == target)
+                && filter.prefix_len.is_none_or(|len| prefix.len() == len)
                 && filter.protocol.is_none_or(|origin| route.origin == origin)
         })
     }
@@ -687,22 +689,40 @@ impl Vrf {
 #[derive(Default)]
 pub struct RouteV4Filter {
     prefix: Option<Ipv4Prefix>,
+    prefix_len: Option<u8>,
     protocol: Option<RouteOrigin>,
 }
 impl RouteV4Filter {
     #[must_use]
-    pub fn new(prefix: Option<Ipv4Prefix>, protocol: Option<RouteOrigin>) -> Self {
-        Self { prefix, protocol }
+    pub fn new(
+        prefix: Option<Ipv4Prefix>,
+        prefix_len: Option<u8>,
+        protocol: Option<RouteOrigin>,
+    ) -> Self {
+        Self {
+            prefix,
+            prefix_len,
+            protocol,
+        }
     }
 }
 pub struct RouteV6Filter {
     prefix: Option<Ipv6Prefix>,
+    prefix_len: Option<u8>,
     protocol: Option<RouteOrigin>,
 }
 impl RouteV6Filter {
     #[must_use]
-    pub fn new(prefix: Option<Ipv6Prefix>, protocol: Option<RouteOrigin>) -> Self {
-        Self { prefix, protocol }
+    pub fn new(
+        prefix: Option<Ipv6Prefix>,
+        prefix_len: Option<u8>,
+        protocol: Option<RouteOrigin>,
+    ) -> Self {
+        Self {
+            prefix,
+            prefix_len,
+            protocol,
+        }
     }
 }
 
@@ -710,7 +730,8 @@ impl RouteV6Filter {
 #[rustfmt::skip]
 #[allow(clippy::cast_sign_loss)]
 pub mod tests {
-    use net::interface::InterfaceIndex;
+    use lpm::prefix::IpPrefix;
+use net::interface::InterfaceIndex;
     use common::cliprovider::Frame;
 
     use super::*;
@@ -1112,8 +1133,8 @@ pub mod tests {
     #[test]
     fn test_route_filter_by_prefix() {
         let vrf = build_test_vrf();
-        for (prefix, route) in vrf.iter_v4() {
-            let filter = RouteV4Filter::new(Some(prefix), Some(route.origin));
+        for (prefix, _route) in vrf.iter_v4() {
+            let filter = RouteV4Filter::new(Some(prefix), None, None);
             let out = vrf.filtered_ipv4(&filter);
             for (pselected, _rselected) in out {
                 assert_eq!(pselected, prefix);
@@ -1125,7 +1146,7 @@ pub mod tests {
     fn test_route_filter_by_protocol() {
         let vrf = build_test_vrf();
         for (_prefix, route) in vrf.iter_v4() {
-            let filter = RouteV4Filter::new(None, Some(route.origin));
+            let filter = RouteV4Filter::new(None, None, Some(route.origin));
             let out = vrf.filtered_ipv4(&filter);
             for (_pselected, rselected) in out {
                 assert_eq!(rselected.origin, route.origin);
@@ -1137,11 +1158,24 @@ pub mod tests {
     fn test_route_filter_by_prefix_and_protocol() {
         let vrf = build_test_vrf();
         for (prefix, route) in vrf.iter_v4() {
-            let filter = RouteV4Filter::new(Some(prefix), Some(route.origin));
+            let filter = RouteV4Filter::new(Some(prefix), None, Some(route.origin));
             let out = vrf.filtered_ipv4(&filter);
             for (pselected, rselected) in out {
                 assert_eq!(pselected, prefix);
                 assert_eq!(rselected.origin, route.origin);
+            }
+        }
+    }
+
+    #[test]
+    fn test_route_filter_by_prefix_len() {
+        let vrf = build_test_vrf();
+        for (prefix, _route) in vrf.iter_v4() {
+            let plen = prefix.len();
+            let filter = RouteV4Filter::new( None, Some(plen), None,);
+            let out = vrf.filtered_ipv4(&filter);
+            for (pselected, _rselected) in out {
+                assert_eq!(pselected.len(), plen);
             }
         }
     }

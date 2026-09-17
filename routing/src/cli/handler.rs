@@ -114,21 +114,37 @@ fn route_filter_v4(request: &CliRequest) -> Result<RouteV4Filter, CliError> {
     // filter by ipv4 prefix
     let prefix = get_ipv4_prefix(request)?;
 
+    // filter by prefix length
+    let prefix_len = request.args.prefix_len;
+    if let Some(len) = prefix_len
+        && len > 32
+    {
+        return Err(CliError::InvalidPrefixLength(len));
+    }
+
     // filter by protocol
     let protocol = request.args.protocol.as_ref().map(RouteOrigin::from);
 
     // build filter
-    Ok(RouteV4Filter::new(prefix, protocol))
+    Ok(RouteV4Filter::new(prefix, prefix_len, protocol))
 }
 fn route_filter_v6(request: &CliRequest) -> Result<RouteV6Filter, CliError> {
     // filter by ipv6 prefix
     let prefix = get_ipv6_prefix(request)?;
 
+    // filter by prefix length
+    let prefix_len = request.args.prefix_len;
+    if let Some(len) = prefix_len
+        && len > 128
+    {
+        return Err(CliError::InvalidPrefixLength(len));
+    }
+
     // filter by protocol
     let protocol = request.args.protocol.as_ref().map(RouteOrigin::from);
 
     // build filter
-    Ok(RouteV6Filter::new(prefix, protocol))
+    Ok(RouteV6Filter::new(prefix, prefix_len, protocol))
 }
 
 // Look up vrf(s) depending on the request. A particular vrf can be looked up from
@@ -213,11 +229,13 @@ fn show_fib_ipv6(vrf: &Vrf, filter: &FibRouteV6Filter) -> String {
 
 fn fibgroup_filter_v4(request: &CliRequest) -> Result<FibRouteV4Filter, CliError> {
     let prefix = get_ipv4_prefix(request)?;
-    Ok(FibRouteV4Filter::new(prefix))
+    let filter = FibRouteV4Filter::new(prefix, request.args.prefix_len);
+    Ok(filter)
 }
 fn fibgroup_filter_v6(request: &CliRequest) -> Result<FibRouteV6Filter, CliError> {
     let prefix = get_ipv6_prefix(request)?;
-    Ok(FibRouteV6Filter::new(prefix))
+    let filter = FibRouteV6Filter::new(prefix, request.args.prefix_len);
+    Ok(filter)
 }
 
 fn show_ip_fib_v4(request: CliRequest, vrfs: &[&Vrf], filter: &FibRouteV4Filter) -> CliResponse {
