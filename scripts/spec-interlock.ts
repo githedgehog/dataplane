@@ -620,7 +620,7 @@ function parseArgs(argv: string[]) {
     only: [] as string[],
     jobs: 4,
     output: join(REPO, "target", "spec-interlock"),
-    json: "/tmp/duvet-interlock.json",
+    json: join(REPO, "target", "duvet-interlock.json"),
     results: "",
   };
   for (let i = 0; i < argv.length; i += 1) {
