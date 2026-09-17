@@ -235,49 +235,25 @@ impl EmbeddedHeaders {
             //
             // From RFC 4884: The length attribute represents the length of the padded "original
             // datagram" field.
-            match self.net {
-                Some(Net::Ipv4(_)) => {
-                    if icmp_length < full_packet_length {
-                        // The embedded message is shorter than the original packet
-                        return;
-                    }
-                    if icmp_length > buf.len() || !icmp_length.is_multiple_of(32) {
-                        // Embedded payload is larger than our buffer? Or the size is not a multiple
-                        // of 32? Something's wrong
-                        return;
-                    }
-                    let padding_length = icmp_length - full_packet_length;
-                    // ICMPv4: Padding is on 32-bit boundaries
-                    if padding_length < 32
-                        && buf[full_packet_length..icmp_length].iter().all(|b| *b == 0)
-                    {
-                        self.full_payload_length = Some(transport_payload_length as u16);
-                    }
-                    return;
-                }
-                Some(Net::Ipv6(_)) => {
-                    if icmp_length < full_packet_length {
-                        // The embedded message is shorter than the original packet
-                        return;
-                    }
-                    if icmp_length > buf.len() || !icmp_length.is_multiple_of(64) {
-                        // Embedded payload is larger than our buffer? Or the size is not a multiple
-                        // of 64? Something's wrong
-                        return;
-                    }
-                    let padding_length = icmp_length - full_packet_length;
-                    // ICMPv6: Padding is on 64-bit boundaries
-                    if padding_length < 64
-                        && buf[full_packet_length..icmp_length].iter().all(|b| *b == 0)
-                    {
-                        self.full_payload_length = Some(transport_payload_length as u16);
-                    }
-                    return;
-                }
-                None => {
-                    unreachable!() // Checked earlier in the function
-                }
+            debug_assert!(self.net.is_some(), "checked earlier in the function");
+
+            if icmp_length < full_packet_length {
+                // The embedded message is shorter than the original packet
+                return;
             }
+            if icmp_length > buf.len() {
+                return;
+            }
+            //= https://www.rfc-editor.org/rfc/rfc4884#section-4
+            //# When the length attribute is specified, the "original datagram" field
+            //# MUST be zero padded to the nearest 32-bit boundary.
+            //= https://www.rfc-editor.org/rfc/rfc4884#section-4
+            //# When the length attribute is specified, the "original datagram" field
+            //# MUST be zero padded to the nearest 64-bit boundary.
+            if buf[full_packet_length..icmp_length].iter().all(|b| *b == 0) {
+                self.full_payload_length = Some(transport_payload_length as u16);
+            }
+            return;
         }
 
         // Check that the full headers + payload are present
@@ -954,6 +930,28 @@ mod tests {
         buf
     }
 
+    fn create_full_ipv6_tcp_packet_with_payload() -> Vec<u8> {
+        let ipv6_header = Ipv6Header {
+            traffic_class: 0,
+            flow_label: 0.try_into().unwrap(),
+            payload_length: 80,
+            next_header: IpNumber::TCP,
+            hop_limit: 64,
+            source: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            destination: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+        };
+
+        let mut buf = Vec::new();
+        ipv6_header.write(&mut buf).unwrap();
+
+        let tcp_header = etherparse::TcpHeader::new(80, 443, 1000, 0);
+        tcp_header.write(&mut buf).unwrap();
+
+        buf.extend_from_slice(&[1u8; 60]);
+
+        buf
+    }
+
     // Basic parsing, deparsing checks
 
     #[test]
@@ -1298,18 +1296,220 @@ mod tests {
         assert!(!headers.is_full_payload());
     }
 
+    // Version 2, checksum 0xddb5, one MPLS object containing a single label.
+    // https://www.iana.org/assignments/icmp-parameters#icmp-parameters-ext-class-1
+    const ICMP_EXTENSION: [u8; 12] = [0x20, 0, 0xdd, 0xb5, 0, 8, 1, 1, 0, 1, 1, 64];
+
+    fn parse_icmp_quote(
+        ipv6: bool,
+        field_len: usize,
+        padding_byte: u8,
+        extensions: &[u8],
+        specify_length: bool,
+    ) -> EmbeddedHeaders {
+        use crate::headers::Headers;
+        use crate::parse::Parse;
+        use etherparse::checksum::Sum16BitWords;
+        use etherparse::{EtherType, Ethernet2Header};
+
+        let mut quote = if ipv6 {
+            create_full_ipv6_tcp_packet_with_payload()
+        } else {
+            create_full_ipv4_tcp_packet_with_payload()
+        };
+        assert_eq!(quote.len(), 120);
+        quote.resize(field_len, padding_byte);
+
+        let mut icmp = vec![0; 8];
+        icmp[0] = if ipv6 { 3 } else { 11 }; // Time Exceeded
+        if specify_length {
+            let (offset, unit) = if ipv6 { (4, 8) } else { (5, 4) };
+            assert_eq!(field_len % unit, 0);
+            icmp[offset] = u8::try_from(field_len / unit).unwrap();
+        }
+        icmp.extend_from_slice(&quote);
+        icmp.extend_from_slice(extensions);
+
+        let mut frame = Vec::new();
+        Ethernet2Header {
+            source: [2, 0, 0, 0, 0, 1],
+            destination: [2, 0, 0, 0, 0, 2],
+            ether_type: if ipv6 {
+                EtherType::IPV6
+            } else {
+                EtherType::IPV4
+            },
+        }
+        .write(&mut frame)
+        .unwrap();
+        let checksum = if ipv6 {
+            let ip = Ipv6Header {
+                payload_length: u16::try_from(icmp.len()).unwrap(),
+                next_header: IpNumber::IPV6_ICMP,
+                hop_limit: 64,
+                source: [0x20, 1, 0xdb, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                destination: [0x20, 1, 0xdb, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+                ..Ipv6Header::default()
+            };
+            ip.write(&mut frame).unwrap();
+            Sum16BitWords::new()
+                .add_slice(&ip.source)
+                .add_slice(&ip.destination)
+                .add_slice(&u32::try_from(icmp.len()).unwrap().to_be_bytes())
+                .add_slice(&[0, 0, 0, 58])
+                .add_slice(&icmp)
+                .ones_complement()
+        } else {
+            Ipv4Header::new(
+                u16::try_from(icmp.len()).unwrap(),
+                64,
+                IpNumber::ICMP,
+                [192, 0, 2, 1],
+                [192, 0, 2, 2],
+            )
+            .unwrap()
+            .write(&mut frame)
+            .unwrap();
+            Sum16BitWords::new().add_slice(&icmp).ones_complement()
+        };
+        icmp[2..4].copy_from_slice(&checksum.to_ne_bytes());
+        frame.extend_from_slice(&icmp);
+
+        let (headers, _) = Headers::parse(&frame).unwrap();
+        headers
+            .embedded_ip
+            .expect("ICMP error contains a quoted packet")
+    }
+
+    #[test]
+    fn an_icmp_error_from_the_wire_reports_a_full_payload() {
+        use crate::headers::TryEmbeddedHeaders;
+        use crate::ip::NextHeader;
+        use crate::packet::test_utils::build_test_icmp4_destination_unreachable_packet;
+
+        let packet = build_test_icmp4_destination_unreachable_packet(
+            "10.0.0.1".parse().unwrap_or_else(|_| unreachable!()),
+            "10.0.0.2".parse().unwrap_or_else(|_| unreachable!()),
+            "192.168.0.1".parse().unwrap_or_else(|_| unreachable!()),
+            "192.168.0.2".parse().unwrap_or_else(|_| unreachable!()),
+            NextHeader::UDP,
+            1234,
+            80,
+        )
+        .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let embedded = packet
+            .embedded_headers()
+            .unwrap_or_else(|| unreachable!("an icmp error carries embedded headers"));
+        assert!(
+            embedded.is_full_payload(),
+            "the quoted datagram is complete and nothing follows it, so the whole payload is \
+             present -- reading this as truncated means the window handed to check_full_payload \
+             does not start where the lengths it compares are measured from"
+        );
+        assert_eq!(
+            embedded.payload_length(),
+            Some(0),
+            "the quoted UDP datagram carries no payload beyond its header"
+        );
+    }
+
+    #[test]
+    fn a_field_padded_past_the_minimum_is_still_a_full_quote() {
+        for ipv6 in [false, true] {
+            let unit = if ipv6 { 8 } else { 4 };
+            for field_len in (128..=160).step_by(unit) {
+                let headers = parse_icmp_quote(ipv6, field_len, 0, &ICMP_EXTENSION, true);
+                assert!(headers.is_full_payload(), "ipv6={ipv6}, length={field_len}");
+                assert_eq!(headers.payload_length(), Some(if ipv6 { 60 } else { 80 }));
+            }
+        }
+    }
+
+    #[test]
+    fn a_quote_below_128_octets_can_be_complete_with_extensions() {
+        for ipv6 in [false, true] {
+            let unit = if ipv6 { 8 } else { 4 };
+            for field_len in (120..=128).step_by(unit) {
+                let headers = parse_icmp_quote(ipv6, field_len, 0, &ICMP_EXTENSION, true);
+                assert_eq!(
+                    headers.payload_length(),
+                    Some(if ipv6 { 60 } else { 80 }),
+                    "ipv6={ipv6}, length={field_len}"
+                );
+            }
+        }
+    }
+
+    //= https://www.rfc-editor.org/rfc/rfc4884#section-4
+    //= type=test
+    //# When the length attribute is specified, the "original datagram" field
+    //# MUST be zero padded to the nearest 32-bit boundary.
+    //= https://www.rfc-editor.org/rfc/rfc4884#section-4
+    //= type=test
+    //# When the length attribute is specified, the "original datagram" field
+    //# MUST be zero padded to the nearest 64-bit boundary.
+    #[test]
+    fn a_field_padded_with_anything_but_zeroes_is_refused() {
+        for ipv6 in [false, true] {
+            for extensions in [&[][..], &ICMP_EXTENSION[..]] {
+                assert!(parse_icmp_quote(ipv6, 136, 0, extensions, true).is_full_payload());
+                assert!(!parse_icmp_quote(ipv6, 136, 0xab, extensions, true).is_full_payload());
+            }
+        }
+    }
+
+    #[test]
+    fn a_short_quote_without_extensions_can_be_complete() {
+        for ipv6 in [false, true] {
+            for specify_length in [false, true] {
+                let headers = parse_icmp_quote(ipv6, 120, 0, &[], specify_length);
+                assert!(
+                    headers.is_full_payload(),
+                    "ipv6={ipv6}, length={specify_length}"
+                );
+                assert_eq!(headers.payload_length(), Some(if ipv6 { 60 } else { 80 }));
+            }
+        }
+    }
+
+    #[test]
+    fn a_zero_length_does_not_enable_extension_detection() {
+        for ipv6 in [false, true] {
+            let headers = parse_icmp_quote(ipv6, 128, 0, &ICMP_EXTENSION, false);
+            assert!(!headers.is_full_payload());
+        }
+    }
+
+    #[test]
+    fn trailing_bytes_do_not_change_quote_completeness() {
+        bolero::check!()
+            .with_type::<(u16, [u8; 2048])>()
+            .for_each(|(length, bytes)| {
+                let trailing = &bytes[..usize::from(*length) % (bytes.len() + 1)];
+                for ipv6 in [false, true] {
+                    for field_len in [112, 128] {
+                        let headers = parse_icmp_quote(ipv6, field_len, 0, trailing, true);
+                        let expected = (field_len >= 120).then_some(if ipv6 { 60 } else { 80 });
+                        assert_eq!(
+                            headers.payload_length(),
+                            expected,
+                            "ipv6={ipv6}, length={field_len}, trailing={}",
+                            trailing.len()
+                        );
+                    }
+                }
+            });
+    }
+
     #[test]
     fn test_check_full_payload_with_icmp_extensions() {
         let mut buf = create_full_ipv4_tcp_packet_with_payload();
 
-        // We need to pad on a 32-bit word boundary. We have 120 bytes (20 for the IP header, 20 for
-        // the TCP header, 80 for the payload), add 8 to reach 128 bytes.
         buf.extend_from_slice(&[0u8; 8]);
         let icmp_payload_length = buf.len();
 
-        // Add fake extension trailers
-        buf.extend_from_slice(&[0x55u8; 32]);
-        buf.extend_from_slice(&[0xffu8; 32]);
+        buf.extend_from_slice(&ICMP_EXTENSION);
 
         let (mut headers, consumed) =
             EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
@@ -1326,17 +1526,14 @@ mod tests {
         assert!(headers.is_full_payload());
         assert_eq!(headers.payload_length(), Some(80));
 
-        // Try again by passing a smaller value for the ICMP payload length, not a multiple of 32
         headers.check_full_payload(
             &buf,
             buf.len(),
             consumed.get() as usize,
-            icmp_payload_length - 1,
+            icmp_payload_length - 4,
         );
-        assert!(!headers.is_full_payload());
+        assert!(headers.is_full_payload());
 
-        // Try again with a value too small for the ICMP payload length: a valid payload size, but
-        // the padding area does not contain zeroed bytes
         headers.check_full_payload(
             &buf,
             buf.len(),
@@ -1345,7 +1542,7 @@ mod tests {
         );
         assert!(!headers.is_full_payload());
 
-        // Try again with a value too large for the ICMP payload length
+        // The declared field cannot exceed the available buffer.
         headers.check_full_payload(
             &buf,
             buf.len(),

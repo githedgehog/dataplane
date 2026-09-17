@@ -619,7 +619,9 @@ impl Icmp4 {
         if !self.supports_extensions() {
             return 0;
         }
-        let payload_length = buf[5];
+        let Some(&payload_length) = buf.get(5) else {
+            return 0;
+        };
         payload_length as usize * 4
     }
 
@@ -627,19 +629,28 @@ impl Icmp4 {
         if !self.is_error_message() {
             return None;
         }
+
+        let icmp_payload_start = cursor.inner.len() - cursor.remaining as usize;
+        let icmp_payload_length = {
+            let icmp_header_start = icmp_payload_start.checked_sub(self.size().get() as usize)?;
+            self.payload_length(&cursor.inner[icmp_header_start..icmp_payload_start])
+        };
+
+        let icmp_payload_remaining = cursor.remaining as usize;
+
         let (mut headers, consumed) = EmbeddedHeaders::parse_with(
             EmbeddedIpVersion::Ipv4,
-            &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
+            &cursor.inner[icmp_payload_start..],
         )
         .ok()?;
         cursor.consume(consumed).ok()?;
 
         // Mark whether the payload of the embedded IP packet is full
         headers.check_full_payload(
-            &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
-            cursor.remaining as usize,
+            &cursor.inner[icmp_payload_start..],
+            icmp_payload_remaining,
             consumed.get() as usize,
-            self.payload_length(cursor.inner),
+            icmp_payload_length,
         );
 
         Some(headers)
