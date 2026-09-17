@@ -169,6 +169,8 @@ pub enum CliError {
     Inacessible,
     #[error("Wrong filter: {0}")]
     WrongFilter(String),
+    #[error("Invalid prefix lenth: {0}")]
+    InvalidPrefixLength(u8),
 }
 
 #[derive(Error, Debug)]
