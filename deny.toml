@@ -25,6 +25,9 @@ ignore = [
     "RUSTSEC-2024-0436",
     # proc-macro-error2 is unmaintained but is needed by multi_index_map_derive, and our own fixin; ignore until both dependencies have migrated away from it.
     "RUSTSEC-2026-0173",
+    # bincode is unmaintained and is used only by the routing benchmark harness.
+    # Revisit this exception if it becomes a runtime dependency.
+    "RUSTSEC-2025-0141",
 ]
 
 [licenses]

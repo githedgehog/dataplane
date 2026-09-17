@@ -1039,6 +1039,7 @@ mod std_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "a subnet-sized v6 pool is too slow under miri")]
     fn a_v6_subnet_sized_pool_can_be_printed() {
         let base = net::ipv6::DOC_PREFIX_BITS;
         let pool = NatPool::<std::net::Ipv6Addr>::for_range(

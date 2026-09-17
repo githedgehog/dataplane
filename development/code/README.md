@@ -9,7 +9,7 @@
 - Enforce invariants at compile time when the language or framework supports it.
 - Require runtime validation and for invariants which cannot be compile-time enforced
 - Performance is important, but it is less important than correctness; it does not matter how quickly you can do the
-  wrong thing.
+  wrong thing. See [benchmarking] for performance measurements.
 
 If you need to write a test, prefer [property-based tests] over simple unit tests.
 If you need to handle errors, prefer `Result` types over panics in general, but see the
@@ -21,6 +21,7 @@ If you need to [handle an error][error], follow the guidelines.
 
 [avoid-global-reasoning]: ./avoid-global-reasoning.md
 [property-based tests]: ./property-testing.md
+[benchmarking]: ./benchmarking.md
 [error]: ./error-handling.md
 
 ## Testing instructions

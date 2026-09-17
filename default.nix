@@ -170,6 +170,7 @@ let
       duvet
       gateway-crd
       gettext
+      iai-callgrind-runner
       jq
       just
       kopium
@@ -188,6 +189,8 @@ let
       rust-toolchain
       shellcheck
       skopeo
+      static-web-server
+      valgrind
       wasmtime
       wget
       yq
