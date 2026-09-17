@@ -15,7 +15,7 @@
 use crate::atable::adjacency::{Adjacency, AdjacencyTable};
 use crate::fib::fibgroupstore::FibRoute;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
-use crate::fib::fibtype::{Fib, FibKey};
+use crate::fib::fibtype::{Fib, FibKey, FibRouteV4Filter, FibRouteV6Filter};
 use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 use crate::router::cpi::{CpiStats, CpiStatus, StatsRow};
 
@@ -23,19 +23,21 @@ use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::rib::vrf::{Route, RouteFlags, RouteOrigin, ShimNhop, Vrf, VrfStatus};
+use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::Attachment;
 use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet};
 use crate::interfaces::interface::{IfState, IfType, Interface};
 
+use crate::evpn::rmac::RmacFilter;
 use crate::evpn::{RmacEntry, RmacStore, Vtep};
 
 use chrono::DateTime;
 use common::cliprovider::{Heading, line};
 
 use clock::Instant;
-use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
+use lpm::prefix::IpPrefix;
 use lpm::trie::{PrefixMapTrie, TrieMap};
 use net::vxlan::Vni;
 use std::fmt::Display;
@@ -306,10 +308,14 @@ impl Display for VrfStatus {
 }
 
 fn fmt_vrf_oneline(vrf: &Vrf, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let description = vrf.description.clone().unwrap_or_else(|| "--".to_string());
+    let vpc = vrf.vpcname.as_deref().unwrap_or("--");
+    let vni = vrf
+        .vni
+        .map_or_else(|| "--".to_string(), |vni| vni.to_string());
+
     writeln!(
         f,
-        " Vrf: '{}' (id: {}) description: {description}\n",
+        " Vrf: '{}' (id: {}) VPC: {vpc} vni: {vni}\n",
         vrf.name, vrf.vrfid
     )?;
     Ok(())
@@ -328,17 +334,14 @@ impl Display for Vrf {
     }
 }
 
-pub struct VrfViewV4<'a, F>
-where
-    F: Fn(&(Ipv4Prefix, &Route)) -> bool,
-{
+pub struct VrfViewV4<'a> {
     pub vrf: &'a Vrf,
-    pub filter: &'a F,
+    pub filter: &'a RouteV4Filter,
 }
-impl<F: for<'a> Fn(&'a (Ipv4Prefix, &Route)) -> bool> Display for VrfViewV4<'_, F> {
+impl Display for VrfViewV4<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // apply the filter
-        let rt_iter = self.vrf.iter_v4().filter(&self.filter);
+        let rt_iter = self.vrf.filtered_ipv4(self.filter);
 
         // total number of routes
         let total_routes = self.vrf.len_v4();
@@ -363,17 +366,15 @@ impl<F: for<'a> Fn(&'a (Ipv4Prefix, &Route)) -> bool> Display for VrfViewV4<'_, 
     }
 }
 
-pub struct VrfViewV6<'a, F>
-where
-    F: Fn(&(Ipv6Prefix, &Route)) -> bool,
-{
+pub struct VrfViewV6<'a> {
     pub vrf: &'a Vrf,
-    pub filter: &'a F,
+    pub filter: &'a RouteV6Filter,
 }
-impl<F: for<'a> Fn(&'a (Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_, F> {
+
+impl Display for VrfViewV6<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // apply the filter
-        let rt_iter = self.vrf.iter_v6().filter(&self.filter);
+        let rt_iter = self.vrf.filtered_ipv6(self.filter);
 
         // total number of routes
         let total_routes = self.vrf.len_v6();
@@ -448,7 +449,7 @@ fn fmt_vrf_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result 
         "{}",
         format_args!(
             VRF_TBL_FMT!(),
-            "name", "id", "vni", "Ipv4-routes", "Ipv6-routes", "status", "table-id", "description"
+            "name", "id", "vni", "Ipv4-routes", "Ipv6-routes", "status", "table-id", "vpc"
         )
     )
 }
@@ -466,7 +467,7 @@ fn fmt_vrf_summary(f: &mut std::fmt::Formatter<'_>, vrf: &Vrf) -> std::fmt::Resu
             vrf.status.to_string(),
             vrf.tableid
                 .map_or_else(|| "--".to_owned(), |t| t.to_string()),
-            &vrf.description.as_ref().map_or_else(|| "", |t| t.as_str())
+            &vrf.vpcname.as_ref().map_or_else(|| "", |t| t.as_str())
         )
     )
 }
@@ -653,6 +654,39 @@ impl Display for RmacEntry {
         )
     }
 }
+
+pub struct RmacStoreView<'a> {
+    pub rmac_store: &'a RmacStore,
+    pub filter: RmacFilter,
+}
+impl Display for RmacStoreView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let store = self.rmac_store;
+        Heading(format!(
+            "Router macs (entries: {} stale: {})",
+            store.len(),
+            store.stale()
+        ))
+        .fmt(f)?;
+
+        fmt_rmac_heading(f)?;
+
+        let total_entries = store.len();
+        let mut displayed = 0;
+        for entry in store.filtered(&self.filter) {
+            writeln!(f, "{entry}")?;
+            displayed += 1;
+        }
+        if displayed != total_entries {
+            writeln!(
+                f,
+                "\n  (Displayed {displayed} entries out of {total_entries})"
+            )?;
+        }
+        Ok(())
+    }
+}
+
 impl Display for RmacStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!(
@@ -805,14 +839,11 @@ impl Display for Fib {
     }
 }
 
-pub struct FibViewV4<'a, F>
-where
-    F: Fn(&(Ipv4Prefix, &FibRoute)) -> bool,
-{
+pub struct FibViewV4<'a> {
     pub vrf: &'a Vrf,
-    pub filter: &'a F,
+    pub filter: &'a FibRouteV4Filter,
 }
-impl<F: for<'a> Fn(&'a (Ipv4Prefix, &FibRoute)) -> bool> Display for FibViewV4<'_, F> {
+impl Display for FibViewV4<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Some(fibw) = &self.vrf.fibw else {
             return writeln!(f, "No fib");
@@ -821,7 +852,7 @@ impl<F: for<'a> Fn(&'a (Ipv4Prefix, &FibRoute)) -> bool> Display for FibViewV4<'
             return writeln!(f, "Unable to read fib!");
         };
 
-        let rt_iter = fibr.iter_v4().filter(&self.filter);
+        let rt_iter = fibr.filtered_v4(self.filter);
         let total_entries = fibr.len_v4();
         let mut displayed = 0;
 
@@ -838,19 +869,16 @@ impl<F: for<'a> Fn(&'a (Ipv4Prefix, &FibRoute)) -> bool> Display for FibViewV4<'
                 "\n  (Displayed {displayed} destinations out of {total_entries})",
             )?;
         }
-
         Ok(())
     }
 }
 
-pub struct FibViewV6<'a, F>
-where
-    F: Fn(&(Ipv6Prefix, &FibRoute)) -> bool,
-{
+pub struct FibViewV6<'a> {
     pub vrf: &'a Vrf,
-    pub filter: &'a F,
+    pub filter: &'a FibRouteV6Filter,
 }
-impl<F: for<'a> Fn(&'a (Ipv6Prefix, &FibRoute)) -> bool> Display for FibViewV6<'_, F> {
+
+impl Display for FibViewV6<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Some(fibw) = &self.vrf.fibw else {
             return writeln!(f, "No fib");
@@ -859,7 +887,7 @@ impl<F: for<'a> Fn(&'a (Ipv6Prefix, &FibRoute)) -> bool> Display for FibViewV6<'
             return writeln!(f, "Unable to read fib!");
         };
 
-        let rt_iter = fibr.iter_v6().filter(&self.filter);
+        let rt_iter = fibr.filtered_v6(self.filter);
         let total_entries = fibr.len_v6();
         let mut displayed = 0;
 

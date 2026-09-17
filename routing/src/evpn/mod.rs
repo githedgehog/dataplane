@@ -7,5 +7,6 @@ pub(crate) mod rmac;
 pub(crate) mod vtep;
 
 pub use rmac::RmacEntry;
+pub use rmac::RmacFilter;
 pub use rmac::RmacStore;
 pub use vtep::Vtep;

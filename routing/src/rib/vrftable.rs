@@ -251,6 +251,32 @@ impl VrfTable {
         self.by_id.get(&vrfid).ok_or(RouterError::NoSuchVrf)
     }
 
+    //////////////////////////////////////////////////////////////////
+    /// Immutably access a [`Vrf`] from its id.
+    //////////////////////////////////////////////////////////////////
+    pub fn get_vrf_by_vni(&self, vni: Vni) -> Result<&Vrf, RouterError> {
+        self.by_vni
+            .get(&vni)
+            .ok_or(RouterError::NoSuchVrf)
+            .and_then(|vrfid| self.by_id.get(vrfid).ok_or(RouterError::NoSuchVrf))
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Get a reference to all [`Vrf`]s with the same vpc name.
+    //////////////////////////////////////////////////////////////////
+    pub fn get_vrfs_by_vpc(&self, vpcname: &str) -> Result<Vec<&Vrf>, RouterError> {
+        let vrfs: Vec<_> = self
+            .by_id
+            .values()
+            .filter(|vrf| vrf.vpcname.as_deref() == Some(vpcname))
+            .collect();
+
+        if vrfs.is_empty() {
+            return Err(RouterError::NoSuchVrf);
+        }
+        Ok(vrfs)
+    }
+
     #[allow(unused)]
     pub fn get_default_vrf(&self) -> &Vrf {
         self.by_id
@@ -270,14 +296,6 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     pub fn get_vrf_mut(&mut self, vrfid: VrfId) -> Result<&mut Vrf, RouterError> {
         self.by_id.get_mut(&vrfid).ok_or(RouterError::NoSuchVrf)
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Access a VRF from its vni.
-    //////////////////////////////////////////////////////////////////
-    pub fn get_vrf_by_vni(&self, vni: Vni) -> Result<&Vrf, RouterError> {
-        let vrfid = self.by_vni.get(&vni).ok_or(RouterError::NoSuchVrf)?;
-        self.get_vrf(*vrfid)
     }
 
     //////////////////////////////////////////////////////////////////
@@ -668,7 +686,7 @@ mod tests {
         {
             let vrf = vrftable.get_vrf_mut(vrfid).expect("Should be there");
             vrf.set_tableid(1234.try_into().expect("Should succeed"));
-            vrf.set_description("This is the vrf for VPC-1 ACME");
+            vrf.set_vpcname("VPC-ACME");
         }
 
         debug!("━━━━Test: set vni {vni} to the vrf");

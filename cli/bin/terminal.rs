@@ -4,15 +4,16 @@
 //! User terminal frontend
 
 use crate::cmdtree::Node;
+use crate::prefetch::prefetch;
 use colored::Colorize;
-use dataplane_cli::cliproto::CLI_RX_BUFF_SIZE;
+use dataplane_cli::cliproto::{CLI_RX_BUFF_SIZE, PrefetchSelector};
 use nix::sys::socket::{setsockopt, sockopt::RcvBuf};
 use reedline::{
     Emacs, IdeMenu, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
     PromptHistorySearch, Reedline, ReedlineEvent, ReedlineMenu, Signal, default_emacs_keybindings,
 };
 
-use concurrency::sync::Arc;
+use concurrency::sync::{Arc, Mutex};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -67,6 +68,47 @@ impl Prompt for CliPrompt {
     }
 }
 
+/// State shared between the terminal and the completer: the socket to send
+/// user requests and prefecth requests and the values prefetched for a line
+/// for autocompletion
+#[derive(Default)]
+pub struct Session {
+    sock: Option<UnixDatagram>,
+    prefetched: HashMap<PrefetchSelector, Vec<String>>,
+}
+
+impl Session {
+    /// Prefetch completion values for `selector`.
+    /// Prefetching happens at most once per line, since we cache the reply
+    /// data.
+    ///
+    /// When invoked for the first time, no value exists for selector and
+    /// an empty vector is stored so that we can differentiate between no values
+    /// available or not attempted to pre-fetch.
+    pub fn prefetch(&mut self, selector: PrefetchSelector) -> &[String] {
+        let sock = &self.sock;
+        self.prefetched.entry(selector).or_insert_with(|| {
+            sock.as_ref()
+                .map(|sock| prefetch(sock, selector))
+                .unwrap_or_default()
+        })
+    }
+
+    /// Forget all prefetched values
+    pub fn invalidate(&mut self) {
+        self.prefetched.clear();
+    }
+}
+
+pub type SharedSession = Arc<Mutex<Session>>;
+
+/// Run `f` over the shared socket, if one has been opened, holding the lock
+/// for the whole call so that a request and its response are not interleaved
+/// with another user of the socket. Returns `None` if there is no socket.
+pub fn with_sock<R>(session: &SharedSession, f: impl FnOnce(&UnixDatagram) -> R) -> Option<R> {
+    session.lock().sock.as_ref().map(f)
+}
+
 pub struct Terminal {
     prompt: String,
     prompt_name: String,
@@ -74,7 +116,7 @@ pub struct Terminal {
     editor: Reedline,
     run: bool,
     connected: bool,
-    pub sock: UnixDatagram,
+    pub session: SharedSession,
 }
 
 #[derive(Debug, Default)]
@@ -106,7 +148,8 @@ impl TermInput {
 #[allow(unused)]
 impl Terminal {
     pub fn new(prompt: &str, cmdtree: &Arc<Node>) -> Self {
-        let completer = Box::new(CmdCompleter::new(cmdtree.clone()));
+        let session: SharedSession = Arc::new(Mutex::new(Session::default()));
+        let completer = Box::new(CmdCompleter::new(cmdtree.clone(), session.clone()));
         let completion_menu = Box::new(IdeMenu::default().with_name("completion_menu"));
 
         let mut keybindings = default_emacs_keybindings();
@@ -134,7 +177,7 @@ impl Terminal {
             editor,
             run: true,
             connected: false,
-            sock: UnixDatagram::unbound().expect("Failed to create unix socket"),
+            session,
         };
         term.set_prompt();
         term
@@ -197,7 +240,11 @@ impl Terminal {
             let cli_prompt = CliPrompt {
                 text: self.prompt.clone(),
             };
-            match self.editor.read_line(&cli_prompt) {
+            let signal = self.editor.read_line(&cli_prompt);
+            // The line edit is over: values prefetched for it must not be
+            // offered as completions for the next one.
+            self.session.lock().invalidate();
+            match signal {
                 Ok(Signal::Success(line)) => {
                     let line = line.trim();
                     if line.is_empty() {
@@ -243,7 +290,15 @@ impl Terminal {
     }
 
     pub fn disconnect(&mut self) {
-        if let Ok(()) = self.sock.shutdown(Shutdown::Both) {
+        let shut = {
+            let mut session = self.session.lock();
+            session.invalidate();
+            session
+                .sock
+                .as_ref()
+                .map(|sock| sock.shutdown(Shutdown::Both).is_ok())
+        };
+        if shut == Some(true) {
             self.connected(false);
         }
     }
@@ -252,16 +307,33 @@ impl Terminal {
         if self.is_connected() {
             self.disconnect();
         }
-        if let Ok(new_sock) = Self::open_unix_sock(local_addr) {
-            self.sock = new_sock;
-        }
-        if let Err(error) = self.sock.connect(remote_addr) {
-            print_err!(
-                "Failed to connect to '{:?}': {}",
-                remote_addr.as_ref(),
-                error
-            );
-        } else {
+        let connected = {
+            // replace the socket in place: the completer shares this handle
+            let mut shared = self.session.lock();
+            if let Ok(new_sock) = Self::open_unix_sock(local_addr) {
+                shared.sock = Some(new_sock);
+            }
+            // the peer may not be the one the cached values came from
+            shared.invalidate();
+            if let Some(sock) = shared.sock.as_ref() {
+                sock.connect(remote_addr)
+                    .inspect_err(|error| {
+                        print_err!(
+                            "Failed to connect to '{:?}': {}",
+                            remote_addr.as_ref(),
+                            error
+                        );
+                    })
+                    .is_ok()
+            } else {
+                print_err!(
+                    "Failed to connect to '{:?}': no local socket",
+                    remote_addr.as_ref()
+                );
+                false
+            }
+        };
+        if connected {
             self.connected(true);
         }
     }

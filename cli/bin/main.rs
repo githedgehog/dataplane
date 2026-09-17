@@ -6,8 +6,8 @@
 #![deny(clippy::all, clippy::pedantic)]
 #![allow(clippy::collapsible_if)]
 
+use crate::argsparse::CliArgs;
 use crate::filters::filter_output;
-use argsparse::{ArgsError, CliArgs};
 use clap::Parser;
 use cmdline::Cmdline;
 use cmdtree::Node;
@@ -26,7 +26,10 @@ mod cmdtree;
 mod cmdtree_dp;
 mod completions;
 mod filters;
+mod prefetch;
 mod terminal;
+
+use terminal::with_sock;
 
 #[rustfmt::skip]
 fn greetings() {
@@ -77,22 +80,26 @@ fn execute_remote_action(
     // build request
     let request = CliRequest::new(action, args.remote.clone());
 
-    // serialize it and send it
-    if let Err(e) = request.send(&terminal.sock) {
-        print_err!("Error issuing request: {e}");
-        if matches!(e, CliLocalError::IoError(_)) {
-            terminal.connected(false);
-        }
-        return;
-    }
+    // serialize it, send it and receive the response, synchronously, holding
+    // the socket for the whole exchange so that no other user of it (e.g. the
+    // completer prefetching) can consume our response.
+    let exchange = with_sock(&terminal.session, |sock| {
+        request.send(sock).map(|_| process_cli_response(sock))
+    });
 
-    // receive and deserialize response, synchronously
-    match process_cli_response(&terminal.sock) {
-        Ok(data) => {
+    match exchange {
+        None => print_err!("Not connnected to dataplane."),
+        Some(Err(e)) => {
+            print_err!("Error issuing request: {e}");
+            if matches!(e, CliLocalError::IoError(_)) {
+                terminal.connected(false);
+            }
+        }
+        Some(Ok(Ok(data))) => {
             let out = filter_output(&data, input.get_filters());
             println!("{out}");
         }
-        Err(e) => print_err!("{e}"),
+        Some(Ok(Err(e))) => print_err!("{e}"),
     }
 }
 
@@ -125,28 +132,15 @@ fn execute_action(
     }
 }
 
-fn show_bad_arg(input_line: &str, argname: &str) {
-    if let Some((good, _bad)) = input_line.split_once(argname) {
-        println!(" {}{} {}", good, argname.red(), "??".red());
-    }
-}
-
 /// Build arguments from map of arguments
 fn process_args(input: &TermInput) -> Result<CliArgs, ()> {
-    let args = CliArgs::from_args_map(input.get_args().clone());
+    let args = CliArgs::from_args_map(input.get_args());
     match args {
-        Err(ArgsError::UnrecognizedArgs(args_map)) => {
-            print_err!(" Unrecognized arguments");
-            for arg in args_map.keys() {
-                show_bad_arg(input.get_line(), arg);
-            }
-            Err(())
-        }
+        Ok(args) => Ok(args),
         Err(e) => {
             print_err!(" {}", e);
             Err(())
         }
-        Ok(args) => Ok(args),
     }
 }
 

@@ -27,7 +27,10 @@ const _: () = {
     use rkyv::bytecheck::CheckBytes as _;
 };
 
-use std::{net::IpAddr, os::unix::net::UnixDatagram};
+use std::net::IpAddr;
+use std::os::unix::net::UnixDatagram;
+use std::time::{Duration, Instant};
+
 use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
 
@@ -67,12 +70,38 @@ pub enum RouteProtocol {
 )]
 #[allow(unused)]
 pub struct RequestArgs {
-    pub address: Option<IpAddr>,         /* an IP address */
-    pub prefix: Option<(IpAddr, u8)>,    /* an IP prefix */
-    pub vrfid: Option<u32>,              /* Id of a VRF */
-    pub vni: Option<u32>,                /* Vxlan vni */
-    pub ifname: Option<String>,          /* name of interface */
-    pub protocol: Option<RouteProtocol>, /* a type of route or routing protocol */
+    pub address: Option<IpAddr>,            /* an IP address */
+    pub prefix: Option<(IpAddr, u8)>,       /* an IP prefix */
+    pub prefix_len: Option<u8>,             /* an IP prefix length */
+    pub vpc: Option<String>,                /* vpc name */
+    pub vrfid: Option<u32>,                 /* Id of a VRF */
+    pub vni: Option<u32>,                   /* Vxlan vni */
+    pub ifname: Option<String>,             /* name of interface */
+    pub protocol: Option<RouteProtocol>,    /* a type of route or routing protocol */
+    pub mac: Option<String>,                /* a eth MAC address as a string */
+    pub selector: Option<PrefetchSelector>, /* selector to prefetch data for completion */
+}
+impl RequestArgs {
+    #[must_use]
+    pub fn with_selector(selector: PrefetchSelector) -> Self {
+        Self {
+            selector: Some(selector),
+            ..Default::default()
+        }
+    }
+}
+
+/// The kind of identifiers requested by a prefetch. `Hash` is required because
+/// the prefetched data is cached.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+pub enum PrefetchSelector {
+    Vpcs,
+    Vnis,
+    Interfaces,
+    RmacIp,
+    RmacMac,
 }
 
 /// A Cli request
@@ -133,12 +162,18 @@ impl CliSerialize for CliResponse {
 
 #[derive(Error, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum CliError {
-    #[error("Internal error")]
-    InternalError,
+    #[error("Internal error: {0}")]
+    InternalError(String),
     #[error("Could not find: {0}")]
     NotFound(String),
     #[error("Not supported: {0}")]
     NotSupported(String),
+    #[error("Inacessible")]
+    Inacessible,
+    #[error("Wrong filter: {0}")]
+    WrongFilter(String),
+    #[error("Invalid prefix lenth: {0}")]
+    InvalidPrefixLength(u8),
 }
 
 #[derive(Error, Debug)]
@@ -147,6 +182,8 @@ pub enum CliLocalError {
     Serialization(#[from] CliSerdeError),
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+    #[error("Timed out")]
+    TimedOut,
 }
 
 /// A Cli response
@@ -156,6 +193,25 @@ pub struct CliResponse {
     // TODO: replace this String with a proper enum of response types
     // once all CLI-visible objects derive the rkyv traits.
     pub result: Result<String, CliError>,
+    pub prefetched: PrefetchedData,
+}
+
+/// A struct conveying pre-fetched data for autocompletion.
+/// A single vector is used at the moment since we get only one type of ids,
+/// for a single selector. The selector is, therefore, informational.
+#[derive(Debug, Default, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct PrefetchedData {
+    pub selector: Option<PrefetchSelector>,
+    pub data: Vec<String>,
+}
+impl PrefetchedData {
+    #[must_use]
+    pub fn with_data(selector: PrefetchSelector, data: Vec<String>) -> Self {
+        Self {
+            selector: Some(selector),
+            data,
+        }
+    }
 }
 
 #[allow(unused)]
@@ -183,6 +239,7 @@ impl CliResponse {
         Self {
             request,
             result: Ok(data),
+            prefetched: PrefetchedData::default(),
         }
     }
 
@@ -191,6 +248,16 @@ impl CliResponse {
         Self {
             request,
             result: Err(error),
+            prefetched: PrefetchedData::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_prefetch_data(request: CliRequest, prefetched: PrefetchedData) -> Self {
+        Self {
+            request,
+            result: Ok("".into()),
+            prefetched,
         }
     }
 
@@ -235,22 +302,104 @@ impl CliResponse {
         Ok(())
     }
 
-    pub fn recv_sync(sock: &UnixDatagram) -> Result<Self, CliLocalError> {
-        fn recv_chunk(sock: &UnixDatagram) -> Result<(Vec<u8>, bool), std::io::Error> {
-            let mut rx_buff = vec![0u8; CLI_MSG_CHUNK_SIZE + 1];
-            let rx_len = sock.recv(rx_buff.as_mut())?;
-            Ok((rx_buff[..rx_len - 1].to_vec(), rx_buff[rx_len - 1] != 0))
-        }
+    // receive a chunk of data and the following "more" octet
+    fn recv_chunk(sock: &UnixDatagram) -> Result<(Vec<u8>, bool), std::io::Error> {
+        let mut rx_buff = vec![0u8; CLI_MSG_CHUNK_SIZE + 1];
+        let rx_len = sock.recv(rx_buff.as_mut())?;
+        // fail if we get zero data
+        let last = rx_len.checked_sub(1).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "empty datagram carries no continuation flag",
+            )
+        })?;
+        Ok((rx_buff[..last].to_vec(), rx_buff[last] != 0))
+    }
 
+    // receive data from the socket until a message is complete. Data is made
+    // of chunks, each followed by an octet indicating if more chunks follow.
+    // This blocks the caller until a full message is received.
+    pub fn recv_sync(sock: &UnixDatagram) -> Result<Self, CliLocalError> {
         let mut raw_data = vec![];
         loop {
-            let (chunk, more) = recv_chunk(sock)?;
+            let (chunk, more) = Self::recv_chunk(sock)?;
             raw_data.extend(chunk);
             if !more {
                 break;
             }
         }
         Ok(CliResponse::deserialize(raw_data.as_slice())?)
+    }
+
+    /// Same as [`CliResponse::recv_sync`], but fails with [`CliLocalError::TimedOut`]
+    /// if the complete message does not arrive after `timeout`.
+    /// The socket must be blocking: on a non-blocking socket the read timeout is
+    /// ignored and every recv fails at once, so this returns without waiting.
+    /// A message may be split into chunks, each of which needs a timeout.
+    /// We track the amount of time left with `ReadTimeout`. On exit, dropping of the
+    /// `ReadTimeout` restores the original timeout (None) in the socket
+    pub fn recv_sync_timeout(
+        sock: &UnixDatagram,
+        timeout: Duration,
+    ) -> Result<Self, CliLocalError> {
+        if timeout.is_zero() {
+            return Err(CliLocalError::TimedOut);
+        }
+        // reject a timeout so large that it has no deadline
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "timeout too large")
+        })?;
+        let guard = ReadTimeout::arm(sock, timeout)?;
+
+        let mut raw_data = vec![];
+        loop {
+            let (chunk, more) = match Self::recv_chunk(sock) {
+                Ok(chunk) => chunk,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Err(CliLocalError::TimedOut);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    return Err(CliLocalError::TimedOut);
+                }
+                Err(e) => return Err(e.into()),
+            };
+            raw_data.extend(chunk);
+            if !more {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(CliLocalError::TimedOut);
+            }
+            guard.rearm(remaining)?;
+        }
+        Ok(CliResponse::deserialize(raw_data.as_slice())?)
+    }
+}
+
+/// Auxiliary type to support recv timeouts.
+struct ReadTimeout<'a> {
+    sock: &'a UnixDatagram,
+    previous: Option<Duration>,
+}
+impl<'a> ReadTimeout<'a> {
+    /// Build a `ReadTimeout` that recalls the current socket read timeout sets
+    /// the provided timeout in the socket. Passing `None` to set_read_timeout
+    /// disables the timeout.
+    fn arm(sock: &'a UnixDatagram, timeout: Duration) -> Result<Self, std::io::Error> {
+        let previous = sock.read_timeout()?;
+        sock.set_read_timeout(Some(timeout))?;
+        Ok(Self { sock, previous })
+    }
+    /// Adjust the socket read timeout, depending on the time left
+    fn rearm(&self, timeout: Duration) -> Result<(), std::io::Error> {
+        self.sock.set_read_timeout(Some(timeout))
+    }
+}
+impl Drop for ReadTimeout<'_> {
+    fn drop(&mut self) {
+        // restore original value
+        let _ = self.sock.set_read_timeout(self.previous);
     }
 }
 
@@ -353,6 +502,9 @@ pub enum CliAction {
     // DPDK
     ShowDpdkPort,
     ShowDpdkPortStats,
+
+    // auto Prefetch
+    Prefetch,
 }
 
 #[cfg(test)]
@@ -372,10 +524,14 @@ mod tests {
             RequestArgs {
                 address: Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
                 prefix: Some((IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 24)),
+                prefix_len: Some(24),
+                vpc: Some("vpc-1".into()),
                 vrfid: Some(42),
                 vni: Some(10_100),
                 ifname: Some("eth0".into()),
                 protocol: Some(RouteProtocol::Bgp),
+                mac: Some("02:00:00:00:00:01".into()),
+                selector: Some(PrefetchSelector::Vpcs),
             },
         )
     }
@@ -499,5 +655,154 @@ mod tests {
         let response = CliResponse::recv_sync(&clisock).unwrap();
         let data = response.result.unwrap();
         assert_eq!(data.len(), response_data_len);
+    }
+
+    /// Build a directory to hold the sockets of a test, named after it so that
+    /// tests running in parallel can't collide.
+    fn sock_dir(test: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cliproto-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("sock dir should be creatable");
+        dir
+    }
+
+    /// Send `num` chunks, `every` apart, all flagged as "more chunks follow",
+    /// so that the receiver never sees the end of the message.
+    fn dribble_chunks(sock: UnixDatagram, num: usize, every: Duration) {
+        thread::spawn(move || {
+            for _ in 0..num {
+                let mut raw = vec![0xAAu8; 16];
+                raw.push(1);
+                if sock.send(&raw).is_err() {
+                    break;
+                }
+                thread::sleep(every);
+            }
+        });
+    }
+
+    /// Nobody ever answers: the call must give up once the budget is spent
+    /// rather than block the cli forever.
+    #[test]
+    #[cfg_attr(
+        emulated,
+        ignore = "Unix sockets unsupported under miri / flaky under qemu-user"
+    )]
+    fn recv_timeout_expires_when_unanswered() {
+        let dir = sock_dir("unanswered");
+        let sock = UnixDatagram::bind(dir.join("cli.sock")).expect("cli sock should bind");
+        let budget = Duration::from_millis(200);
+
+        let start = Instant::now();
+        let err = CliResponse::recv_sync_timeout(&sock, budget).expect_err("should time out");
+        let elapsed = start.elapsed();
+
+        assert!(matches!(err, CliLocalError::TimedOut), "got {err}");
+        assert!(elapsed >= budget, "gave up after only {elapsed:?}");
+        assert!(elapsed < budget * 10, "overshot the budget: {elapsed:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The budget covers the whole message, not each chunk: a peer that keeps
+    /// sending "more chunks follow" just under the timeout must not be able to
+    /// stretch the call indefinitely.  It also must not disturb the read
+    /// timeout the socket already carried.
+    #[test]
+    #[cfg_attr(
+        emulated,
+        ignore = "Unix sockets unsupported under miri / flaky under qemu-user"
+    )]
+    fn recv_timeout_budget_is_not_renewed_per_chunk() {
+        const PREVIOUS: Duration = Duration::from_secs(7);
+        let dir = sock_dir("per-chunk");
+        let cli_path = dir.join("cli.sock");
+        let clisock = UnixDatagram::bind(&cli_path).expect("cli sock should bind");
+        clisock
+            .set_read_timeout(Some(PREVIOUS))
+            .expect("read timeout should be settable");
+
+        let peer = UnixDatagram::unbound().expect("peer sock should open");
+        peer.connect(&cli_path).expect("peer should connect");
+        // 1s worth of chunks against a 350ms budget: were the budget renewed
+        // per chunk, the call would last past the last one instead.
+        dribble_chunks(peer, 10, Duration::from_millis(100));
+
+        let budget = Duration::from_millis(350);
+        let start = Instant::now();
+        let err = CliResponse::recv_sync_timeout(&clisock, budget).expect_err("should time out");
+        let elapsed = start.elapsed();
+
+        assert!(matches!(err, CliLocalError::TimedOut), "got {err}");
+        assert!(elapsed >= budget, "gave up after only {elapsed:?}");
+        assert!(
+            elapsed < budget * 2,
+            "budget renewed per chunk: {elapsed:?}"
+        );
+        assert_eq!(
+            clisock.read_timeout().expect("read timeout should be read"),
+            Some(PREVIOUS),
+            "the read timeout of the socket should be restored"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A multi-chunk response that arrives inside the budget is returned whole,
+    /// and the socket is left without a read timeout, as it was found.
+    #[test]
+    #[cfg_attr(
+        emulated,
+        ignore = "Unix sockets unsupported under miri / flaky under qemu-user"
+    )]
+    fn recv_timeout_returns_response_within_budget() {
+        let dir = sock_dir("within-budget");
+        let cli_path = dir.join("cli.sock");
+        let clisock = UnixDatagram::bind(&cli_path).expect("cli sock should bind");
+        let dpsock = UnixDatagram::bind(dir.join("dp.sock")).expect("dp sock should bind");
+        let peer = SocketAddr::from_pathname(&cli_path).expect("cli path should be addressable");
+
+        let response_data = generate_big_response_data(10 * CLI_MSG_CHUNK_SIZE);
+        let response_data_len = response_data.len();
+        thread::spawn(move || {
+            let mut cache = IoCache::new();
+            generate_big_response(response_data)
+                .send(&peer, &dpsock, &mut cache)
+                .expect("response should be sent");
+        });
+
+        let response = CliResponse::recv_sync_timeout(&clisock, Duration::from_secs(10))
+            .expect("response should arrive within the budget");
+        assert_eq!(
+            response.result.expect("ok response").len(),
+            response_data_len
+        );
+        assert_eq!(
+            clisock.read_timeout().expect("read timeout should be read"),
+            None,
+            "the socket should be left as it was found"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The read timeout only bites on a blocking socket, which is the invariant
+    /// the doc comment of `recv_sync_timeout` states: on a non-blocking socket
+    /// every recv fails at once and no waiting happens at all.
+    #[test]
+    #[cfg_attr(
+        emulated,
+        ignore = "Unix sockets unsupported under miri / flaky under qemu-user"
+    )]
+    fn recv_timeout_does_not_wait_on_a_non_blocking_socket() {
+        let dir = sock_dir("non-blocking");
+        let sock = UnixDatagram::bind(dir.join("cli.sock")).expect("cli sock should bind");
+        sock.set_nonblocking(true).expect("sock should be settable");
+        let budget = Duration::from_secs(30);
+
+        let start = Instant::now();
+        let err = CliResponse::recv_sync_timeout(&sock, budget).expect_err("should time out");
+        let elapsed = start.elapsed();
+
+        assert!(matches!(err, CliLocalError::TimedOut), "got {err}");
+        assert!(elapsed < Duration::from_secs(1), "it did wait: {elapsed:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
