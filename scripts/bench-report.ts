@@ -65,10 +65,8 @@ function rows(records: Record_[]): Row[] {
         const entry = summary[metric];
         if (!entry) continue;
         const m = entry.metrics;
-        // `Both` is [new, baseline]. `Left` is new-only -- a benchmark that did not exist in
-        // the baseline. `Right` is baseline-only, i.e. a benchmark that has been *removed*;
-        // reporting it as `now` with no `before` renders it as an addition, which is the
-        // wrong way round but is the only shape this table has for it.
+        // Both: [new, baseline]; Left: new only; Right: baseline only.
+        // Baseline-only rows currently appear in the "after" column.
         const now = "Both" in m
           ? value(m.Both[0])
           : "Left" in m
@@ -133,12 +131,8 @@ function main() {
   const rawThreshold = flags.find((f) => f.startsWith("--threshold="))
     ?.split("=")[1] ?? "5";
   const threshold = Number(rawThreshold);
-  // `Math.abs(p) >= NaN` is false for every p, so a typo here would silently report "no
-  // change beyond NaN%" for every run rather than failing.
   if (!Number.isFinite(threshold)) {
     console.error(`error: --threshold=${rawThreshold} is not a number`);
-    // `Deno.exit`, not `return`: `main()` is called as a bare statement, so a returned code
-    // is discarded and the process still exits 0. The usage error below already does this.
     Deno.exit(1);
   }
   const headlineOnly = flags.includes("--headline-only");

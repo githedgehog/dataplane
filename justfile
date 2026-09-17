@@ -239,17 +239,8 @@ bench-callgrind *args:
 bench-compare baseline="base" *args:
     {{ _just_debuggable_ }}
     mkdir -p results/bench
-    # Decide save-or-compare *before* running, and scope the question to this suite's own
-    # output directory. Two things went wrong when this was one condition. A file anywhere
-    # under `target/iai` -- another package, another benchmark -- answered "a baseline
-    # exists", and the run then found none for any benchmark here, succeeded, and reported a
-    # new baseline it had not written; every repeat did the same. And with the comparison run
-    # inside the `if`, any non-zero exit (a compile error, a panicking benchmark, a runner
-    # version mismatch) fell through to the `else` and overwrote the baseline being compared
-    # against -- with stderr discarded, so nothing said why.
-    # iai-callgrind writes to `target/iai[/<triple>]/<CARGO_PKG_NAME>/<module path>/<bench>`,
-    # so match on the two components that identify this suite and stay agnostic about the
-    # optional target triple above them and the group nesting below.
+    # Scope baseline detection to this suite, allowing an optional target triple.
+    # Keep benchmark failures out of the save-baseline path.
     scope="*/${callgrind_package}/${callgrind_bench}/*"
     if find target/iai -type f -path "${scope}" -name '*base@{{ baseline }}*' -print -quit 2>/dev/null | grep -q .; then
       cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" -- \

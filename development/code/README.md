@@ -9,8 +9,7 @@
 - Enforce invariants at compile time when the language or framework supports it.
 - Require runtime validation and for invariants which cannot be compile-time enforced
 - Performance is important, but it is less important than correctness; it does not matter how quickly you can do the
-  wrong thing. When it does matter, measure it: see the [benchmarking note][benchmarking] for the
-  two harnesses, and for how far apart their answers can be.
+  wrong thing. See [benchmarking] for performance measurements.
 
 If you need to write a test, prefer [property-based tests] over simple unit tests.
 If you need to handle errors, prefer `Result` types over panics in general, but see the

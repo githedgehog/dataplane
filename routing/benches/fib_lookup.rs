@@ -37,9 +37,7 @@ fn bench_trie_floor(c: &mut Criterion) {
         .ip_destination()
         .expect("the test packet has a destination");
 
-    // A control rather than a measurement: `lpm_with_prefix` returns the `FibRoute` without
-    // touching its groups, so these two shapes must report the same number. A difference means
-    // the trie lookup has started depending on what the route holds.
+    // Trie lookup should be independent of the route's group count.
     for &(groups, entries) in &[(1u8, 1u8), (16, 1)] {
         let fixture = fixture(groups, entries);
         group.bench_function(

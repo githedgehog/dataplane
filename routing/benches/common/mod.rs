@@ -33,7 +33,7 @@ macro_rules! for_each_shape {
 }
 
 pub struct Fixture {
-    /// Kept only to own the write side; reads go through [`Fixture::reader`].
+    /// Keeps the FIB alive while the reader is used.
     pub writer: FibWriter,
     pub reader: FibReader,
     pub packet: Packet<TestBuffer>,
@@ -97,10 +97,7 @@ pub fn fixture(groups: u8, entries_per_group: u8) -> &'static Fixture {
 
 #[inline(always)]
 pub fn lookup(fixture: &Fixture) {
-    // Through the *reader*. `FibWriter::enter` is a bare `ReadHandle::enter`, while
-    // `FibReader::enter` additionally loads and branches on `fib.valid` -- which is the path
-    // every production lookup takes. Measuring the writer's understated the cost of a lookup
-    // by that load and branch, against a floor of 27 instructions.
+    // Include the validity check used by production readers.
     let fib = fixture.reader.enter().expect("fib is readable");
     let (prefix, entry) = Fib::lpm_entry_prefix(&fib, std::hint::black_box(&fixture.packet));
     std::hint::black_box((prefix, entry));
