@@ -99,6 +99,8 @@ mod setup;
 mod test_alloc;
 
 pub use port_alloc::AllocatedPort;
+#[cfg(test)]
+pub(crate) use setup::DEFAULT_MASQUERADE_IDLE_TIMEOUT;
 
 ///////////////////////////////////////////////////////////////////////////////
 // PoolTableKey
