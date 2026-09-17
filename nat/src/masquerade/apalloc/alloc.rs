@@ -117,8 +117,13 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         // FIXME: Should we clean up every time??
         self.cleanup_used_ips();
 
-        // Draw a fresh address only when the addresses already in use are exhausted. Other errors
-        // describe allocator failure and must be preserved.
+        //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+        //= type=exception
+        //= reason=the address reused is whichever one the pool is currently drawing from, not the one this internal host already holds, so a host whose sessions straddle a port-capacity boundary is split across two public addresses
+        //# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+        //# behavior of "Paired".
+        // Allocate a new address only when all addresses in use are exhausted. Propagate
+        // other allocator errors.
         match self.reuse_allocated_ip(allow_null) {
             Ok(port) => Ok(port),
             Err(e) if e.is_exhaustion() => self.allocate_from_new_ip(allow_null),
