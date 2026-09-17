@@ -543,6 +543,11 @@ fn apply_masquerade_config(
     debug!("Updated masquerade NAT allocator");
 }
 
+fn precheck_port_forwarding_config(vpc_table: &ValidatedVpcTable) -> ConfigResult {
+    let ruleset = build_port_forwarding_configuration(vpc_table)?;
+    nat::portfw::validate_ruleset(&ruleset).map_err(|e| ConfigError::PortForwarding(e.to_string()))
+}
+
 fn apply_port_forwarding_config(
     vpc_table: &ValidatedVpcTable,
     portfw_w: &mut PortFwTableWriter,
@@ -632,6 +637,8 @@ impl ConfigProcessor {
         let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
         let overlay = config.external().overlay();
+
+        precheck_port_forwarding_config(overlay.vpc_table())?;
 
         /* apply flow-filter config */
         apply_flow_filter_config(config.external().overlay(), flow_filter_writer)?;

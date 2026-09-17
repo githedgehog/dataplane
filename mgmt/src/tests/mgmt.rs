@@ -1152,9 +1152,6 @@ mod validator_completeness {
         let ruleset = build_port_forwarding_configuration(vpc_table).unwrap_or_else(|e| {
             panic!("{mutation:?}: validator accepted a config port forwarding rejects: {e}")
         });
-        // Cannot fire yet: `validate_ruleset` is a stub returning `Ok`, so `update_table`
-        // is infallible. The (04) PR in this stack gives it a real `PortFwTable::dry_run`,
-        // at which point this starts checking something. Left in place for that.
         PortFwTableWriter::new()
             .update_table(&ruleset)
             .unwrap_or_else(|e| {
