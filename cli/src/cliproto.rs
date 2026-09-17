@@ -27,7 +27,10 @@ const _: () = {
     use rkyv::bytecheck::CheckBytes as _;
 };
 
-use std::{net::IpAddr, os::unix::net::UnixDatagram};
+use std::net::IpAddr;
+use std::os::unix::net::UnixDatagram;
+use std::time::{Duration, Instant};
+
 use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
 
@@ -179,6 +182,8 @@ pub enum CliLocalError {
     Serialization(#[from] CliSerdeError),
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+    #[error("Timed out")]
+    TimedOut,
 }
 
 /// A Cli response
@@ -297,31 +302,104 @@ impl CliResponse {
         Ok(())
     }
 
-    pub fn recv_sync(sock: &UnixDatagram) -> Result<Self, CliLocalError> {
-        // receive a chunk of data. Each chunk is followed by an octet indicating
-        // if more chunks follow.
-        fn recv_chunk(sock: &UnixDatagram) -> Result<(Vec<u8>, bool), std::io::Error> {
-            let mut rx_buff = vec![0u8; CLI_MSG_CHUNK_SIZE + 1];
-            let rx_len = sock.recv(rx_buff.as_mut())?;
-            // fail if we get zero data
-            let last = rx_len.checked_sub(1).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "empty datagram carries no continuation flag",
-                )
-            })?;
-            Ok((rx_buff[..last].to_vec(), rx_buff[last] != 0))
-        }
+    // receive a chunk of data and the following "more" octet
+    fn recv_chunk(sock: &UnixDatagram) -> Result<(Vec<u8>, bool), std::io::Error> {
+        let mut rx_buff = vec![0u8; CLI_MSG_CHUNK_SIZE + 1];
+        let rx_len = sock.recv(rx_buff.as_mut())?;
+        // fail if we get zero data
+        let last = rx_len.checked_sub(1).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "empty datagram carries no continuation flag",
+            )
+        })?;
+        Ok((rx_buff[..last].to_vec(), rx_buff[last] != 0))
+    }
 
+    // receive data from the socket until a message is complete. Data is made
+    // of chunks, each followed by an octet indicating if more chunks follow.
+    // This blocks the caller until a full message is received.
+    pub fn recv_sync(sock: &UnixDatagram) -> Result<Self, CliLocalError> {
         let mut raw_data = vec![];
         loop {
-            let (chunk, more) = recv_chunk(sock)?;
+            let (chunk, more) = Self::recv_chunk(sock)?;
             raw_data.extend(chunk);
             if !more {
                 break;
             }
         }
         Ok(CliResponse::deserialize(raw_data.as_slice())?)
+    }
+
+    /// Same as [`CliResponse::recv_sync`], but fails with [`CliLocalError::TimedOut`]
+    /// if the complete message does not arrive after `timeout`.
+    /// The socket must be blocking: on a non-blocking socket the read timeout is
+    /// ignored and every recv fails at once, so this returns without waiting.
+    /// A message may be split into chunks, each of which needs a timeout.
+    /// We track the amount of time left with `ReadTimeout`. On exit, dropping of the
+    /// `ReadTimeout` restores the original timeout (None) in the socket
+    pub fn recv_sync_timeout(
+        sock: &UnixDatagram,
+        timeout: Duration,
+    ) -> Result<Self, CliLocalError> {
+        if timeout.is_zero() {
+            return Err(CliLocalError::TimedOut);
+        }
+        // reject a timeout so large that it has no deadline
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "timeout too large")
+        })?;
+        let guard = ReadTimeout::arm(sock, timeout)?;
+
+        let mut raw_data = vec![];
+        loop {
+            let (chunk, more) = match Self::recv_chunk(sock) {
+                Ok(chunk) => chunk,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Err(CliLocalError::TimedOut);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    return Err(CliLocalError::TimedOut);
+                }
+                Err(e) => return Err(e.into()),
+            };
+            raw_data.extend(chunk);
+            if !more {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(CliLocalError::TimedOut);
+            }
+            guard.rearm(remaining)?;
+        }
+        Ok(CliResponse::deserialize(raw_data.as_slice())?)
+    }
+}
+
+/// Auxiliary type to support recv timeouts.
+struct ReadTimeout<'a> {
+    sock: &'a UnixDatagram,
+    previous: Option<Duration>,
+}
+impl<'a> ReadTimeout<'a> {
+    /// Build a `ReadTimeout` that recalls the current socket read timeout sets
+    /// the provided timeout in the socket. Passing `None` to set_read_timeout
+    /// disables the timeout.
+    fn arm(sock: &'a UnixDatagram, timeout: Duration) -> Result<Self, std::io::Error> {
+        let previous = sock.read_timeout()?;
+        sock.set_read_timeout(Some(timeout))?;
+        Ok(Self { sock, previous })
+    }
+    /// Adjust the socket read timeout, depending on the time left
+    fn rearm(&self, timeout: Duration) -> Result<(), std::io::Error> {
+        self.sock.set_read_timeout(Some(timeout))
+    }
+}
+impl Drop for ReadTimeout<'_> {
+    fn drop(&mut self) {
+        // restore original value
+        let _ = self.sock.set_read_timeout(self.previous);
     }
 }
 
