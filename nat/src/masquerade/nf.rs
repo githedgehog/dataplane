@@ -951,13 +951,17 @@ mod race {
         };
         let winning = allocate();
         let losing = allocate();
-        let losing_tuple = (losing.allocation.ip(), losing.allocation.port());
-        assert_ne!(
+        // Same private tuple toward the same peer: under Endpoint-Independent Mapping the
+        // allocator itself dedupes on that, so both racers share one mapping before either touches
+        // the flow table. What's racing below is which packet's flow gets installed (not which
+        // allocation "wins").
+        assert_eq!(
             (winning.allocation.ip(), winning.allocation.port()),
-            losing_tuple,
-            "the two racers drew the same tuple, so this races nothing"
+            (losing.allocation.ip(), losing.allocation.port()),
+            "the two racers should share one EIM mapping for the same private tuple"
         );
-        let losing_reverse = Masquerade::new_reverse_session(&key, &losing, dst_vpcd)
+        let shared_tuple = (winning.allocation.ip(), winning.allocation.port());
+        let reverse_key = Masquerade::new_reverse_session(&key, &losing, dst_vpcd)
             .unwrap_or_else(|e| unreachable!("{e}"));
 
         let winner = masq
@@ -978,16 +982,32 @@ mod race {
             "the loser was handed a flow that is not the one holding the key"
         );
 
+        // Sharing one mapping means the loser's would-be reverse key is the winner's own reverse
+        // key, not a distinct, dangling one. The table must hold exactly the winner's pair, no
+        // phantom duplicate that the loser's abandoned (never-inserted) flow pair would have left
+        // behind.
+        let winner_reverse = winner
+            .related
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .unwrap_or_else(|| unreachable!("the winner has a related reverse flow"));
+        let found_reverse = masq
+            .flow_table
+            .lookup(&reverse_key)
+            .unwrap_or_else(|| unreachable!("the winner's reverse flow must be in the table"));
         assert!(
-            masq.flow_table.lookup(&losing_reverse).is_none(),
-            "the loser's reverse half was left in the table, mapping a tuple about to be reused"
+            Arc::ptr_eq(&found_reverse, &winner_reverse),
+            "the table's reverse entry is not the winner's own: the loser left something behind"
         );
 
+        // The shared mapping is still exactly the one both racers drew: the loser's redundant,
+        // never-installed reference to it dropped harmlessly (the winner's flow and the
+        // subscriber table still hold it) rather than corrupting or freeing it.
         let next = allocate();
         assert_eq!(
             (next.allocation.ip(), next.allocation.port()),
-            losing_tuple,
-            "the loser's allocation never went back to the pool"
+            shared_tuple,
+            "the mapping did not survive the race intact"
         );
     }
 }
