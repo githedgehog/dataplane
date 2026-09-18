@@ -103,6 +103,7 @@ impl<I: NatIpWithBitmap> MappingKey<I> {
 pub struct Mapping<I: NatIpWithBitmap> {
     allocation: AllocatedPort<I>,
     expires_at: AtomicInstant,
+    idle_timeout: Duration,
 }
 
 impl<I: NatIpWithBitmap> Mapping<I> {
@@ -110,6 +111,7 @@ impl<I: NatIpWithBitmap> Mapping<I> {
         Self {
             allocation,
             expires_at: AtomicInstant::new(clock::now() + idle_timeout),
+            idle_timeout,
         }
     }
 
@@ -139,8 +141,8 @@ impl<I: NatIpWithBitmap> Mapping<I> {
     // From RFC 4787 REQ-6, any outbound packet on any flow sharing a mapping refreshes it,
     // independent of that flow's own idle timer. The clock is monotonic, given that several flows
     // on different cores may refresh concurrently, and we must never make it go backwards.
-    pub(crate) fn refresh(&self, idle_timeout: Duration) {
-        let new = clock::now() + idle_timeout;
+    pub(crate) fn refresh(&self) {
+        let new = clock::now() + self.idle_timeout;
         self.expires_at.fetch_max(new, Ordering::Relaxed);
     }
 }
