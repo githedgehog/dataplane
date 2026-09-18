@@ -69,9 +69,26 @@ fn reject_special_use(prefixes: &PrefixPortsSet) -> ConfigResult {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeStaticNat;
 
+/// NAT mapping behavior for masquerade, see definitions in RFC 4787 Section 4.1.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MappingPolicy {
+    /// A private tuple reuses the same allocated public tuple regardless of destination IP/port.
+    /// RFC 4787 Section 4.1 (UDP) and RFC 5382 Section 4.1 (TCP) make it the required behaviour,
+    /// so we make it the default.
+    #[default]
+    EndpointIndependent,
+    /// A private tuple reuses the same allocated public tuple for a given destination address
+    /// regardless of destination port, but not for a different destination address.
+    AddressDependent,
+    /// A private tuple reuses the same allocated public tuple for a given destination address and
+    /// port, but not for a different destination address or port.
+    AddressAndPortDependent,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeMasquerade {
     pub idle_timeout: Option<Duration>,
+    pub mapping_policy: MappingPolicy,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -162,12 +179,34 @@ impl VpcExpose {
 
     /// Make the [`VpcExpose`] use masquerade, with the given idle timeout, if provided.
     /// If the [`VpcExpose`] is already in masquerade mode, the idle timeout is overwritten.
+    /// The mapping behaviour is retained, or set to the default variant.
     ///
     /// # Errors
     ///
     /// Returns an error if the [`VpcExpose`] already has a different NAT mode.
-    pub fn make_masquerade(mut self, idle_timeout: Option<Duration>) -> Result<Self, ConfigError> {
-        let options = VpcExposeMasquerade { idle_timeout };
+    pub fn make_masquerade(self, idle_timeout: Option<Duration>) -> Result<Self, ConfigError> {
+        let policy = match self.nat.as_ref().map(|nat| &nat.config) {
+            Some(VpcExposeNatConfig::Masquerade(existing)) => existing.mapping_policy,
+            _ => MappingPolicy::default(),
+        };
+        self.make_masquerade_with_policy(idle_timeout, policy)
+    }
+
+    /// Make the [`VpcExpose`] use masquerade, with the given idle timeout, if provided, and
+    /// mapping policy. If the [`VpcExpose`] is already in masquerade mode, both are overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the [`VpcExpose`] already has a different NAT mode.
+    pub fn make_masquerade_with_policy(
+        mut self,
+        idle_timeout: Option<Duration>,
+        mapping_policy: MappingPolicy,
+    ) -> Result<Self, ConfigError> {
+        let options = VpcExposeMasquerade {
+            idle_timeout,
+            mapping_policy,
+        };
         match self.nat.as_mut() {
             Some(nat) if nat.is_masquerade() => {
                 nat.config = VpcExposeNatConfig::Masquerade(options);
@@ -729,6 +768,14 @@ impl ValidatedExpose {
     /// Default exposes aren't stateful nor are those statically NAT-ed.
     pub fn is_stateful(&self) -> bool {
         !self.default && self.nat().is_some_and(VpcExposeNat::is_stateful)
+    }
+
+    #[must_use]
+    pub fn mapping_policy(&self) -> Option<MappingPolicy> {
+        match self.nat_config()? {
+            VpcExposeNatConfig::Masquerade(config) => Some(config.mapping_policy),
+            VpcExposeNatConfig::PortForwarding(_) | VpcExposeNatConfig::Static(_) => None,
+        }
     }
 }
 

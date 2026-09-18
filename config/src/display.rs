@@ -12,8 +12,8 @@ use crate::external::overlay::vpc::{
     Peering, ValidatedPeering, ValidatedVpc, ValidatedVpcTable, Vpc, VpcId, VpcTable,
 };
 use crate::external::overlay::vpcpeering::{
-    ValidatedExpose, ValidatedManifest, VpcExpose, VpcExposeMasquerade, VpcExposeNatConfig,
-    VpcExposePortForwarding, VpcExposeStaticNat,
+    MappingPolicy, ValidatedExpose, ValidatedManifest, VpcExpose, VpcExposeMasquerade,
+    VpcExposeNatConfig, VpcExposePortForwarding, VpcExposeStaticNat,
 };
 use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering, VpcPeeringTable};
 use crate::external::overlay::vpcrouting::{ExposeAction, VpcRoute, VpcRouteTable};
@@ -25,12 +25,27 @@ use net::vxlan::Vni;
 use common::cliprovider::Heading;
 const SEP: &str = "       ";
 
+impl Display for MappingPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            MappingPolicy::EndpointIndependent => "endpoint-independent",
+            MappingPolicy::AddressDependent => "address-dependent",
+            MappingPolicy::AddressAndPortDependent => "address-and-port-dependent",
+        };
+        write!(f, "{s}")
+    }
+}
+
 impl Display for VpcExposeMasquerade {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let idle_timeout = self
             .idle_timeout
             .map_or("default".to_string(), |t| t.as_secs().to_string());
-        write!(f, "masquerade, idle timeout: {idle_timeout}")
+        let mapping_policy = self.mapping_policy;
+        write!(
+            f,
+            "masquerade, idle timeout: {idle_timeout}, mapping policy: {mapping_policy}"
+        )
     }
 }
 impl Display for VpcExposeStaticNat {

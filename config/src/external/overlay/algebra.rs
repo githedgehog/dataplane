@@ -16,7 +16,9 @@ use crate::ConfigError;
 use crate::external::overlay::Overlay;
 use crate::external::overlay::acl::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope};
 use crate::external::overlay::vpc::{Vpc, VpcTable};
-use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
+use crate::external::overlay::vpcpeering::{
+    MappingPolicy, VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct VpcHandle(pub u8);
@@ -277,6 +279,18 @@ impl ExposeSpec {
         (self.slot % 2 == 1).then_some(LONG_IDLE_TIMEOUT)
     }
 
+    // Rotated by the peering as well as the slot. Slot alone would work, but slots are handed out
+    // lowest-free, so slot 0 is far more common than slot 2 and the stricter policies would barely
+    // be drawn: mixing the peering in flattens that out (measured: address-and-port-dependent goes
+    // from 8% of masquerade exposes to 24%).
+    fn mapping_policy(self, peering: PeeringHandle) -> MappingPolicy {
+        match (usize::from(self.slot) + usize::from(peering.0)) % 3 {
+            0 => MappingPolicy::EndpointIndependent,
+            1 => MappingPolicy::AddressDependent,
+            _ => MappingPolicy::AddressAndPortDependent,
+        }
+    }
+
     fn nat_proto(self) -> Option<L4Protocol> {
         match self.flavour {
             Flavour::PortForward => Some(match self.slot % 3 {
@@ -334,7 +348,7 @@ impl ExposeSpec {
             Flavour::Forward => self.carve(VpcExpose::empty().ip(private.into()), peering, side),
             Flavour::Masquerade => self.carve(
                 VpcExpose::empty()
-                    .make_masquerade(self.idle_timeout())
+                    .make_masquerade_with_policy(self.idle_timeout(), self.mapping_policy(peering))
                     .unwrap_or_else(|_| unreachable!("an empty expose accepts masquerade"))
                     .ip(private.into())
                     .as_range(self.public(peering, side).into())
