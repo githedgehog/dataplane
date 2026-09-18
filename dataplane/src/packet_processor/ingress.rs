@@ -46,15 +46,14 @@ impl Ingress {
         let nfi = self.name();
         let ifname = &interface.name;
         match &interface.attachment {
-            Some(Attachment::Vrf(fibkey)) => {
+            Some(Attachment::Vrf(vrfid)) => {
                 if packet.try_ip().is_none() {
                     debug!("{nfi}: Processing of non-ip traffic on {ifname} is not supported");
                     packet.done(DoneReason::NotIp);
                     return;
                 }
-                let vrfid = fibkey.as_u32();
-                debug!("{nfi}: Packet is for VRF {vrfid}");
-                packet.meta_mut().vrf = Some(vrfid);
+                debug!("{nfi}: Packet is for FIB {vrfid}");
+                packet.meta_mut().vrf = Some(*vrfid);
             }
             Some(Attachment::BridgeDomain) => {
                 debug!("{nfi}: Bridge domains are not supported");

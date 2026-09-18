@@ -21,9 +21,9 @@ enum IfTableChange {
     Add(RouterInterfaceConfig),
     Mod(RouterInterfaceConfig),
     Del(InterfaceIndex),
-    Attach((InterfaceIndex, FibKey)),
+    Attach((InterfaceIndex, VrfId)),
     Detach(InterfaceIndex),
-    DetachFromVrf(FibKey),
+    DetachFromVrf(VrfId),
     AddIpAddress((InterfaceIndex, IfAddr)),
     DelIpAddress((InterfaceIndex, IfAddr)),
     UpdateOpState((InterfaceIndex, IfState)),
@@ -39,11 +39,11 @@ impl Absorb<IfTableChange> for IfTable {
                 let _ = self.mod_interface(ifconfig);
             }
             IfTableChange::Del(ifindex) => self.del_interface(*ifindex),
-            IfTableChange::Attach((ifindex, fibkey)) => {
-                self.attach_interface_to_vrf(*ifindex, *fibkey);
+            IfTableChange::Attach((ifindex, vrfid)) => {
+                self.attach_interface_to_vrf(*ifindex, *vrfid);
             }
             IfTableChange::Detach(ifindex) => self.detach_interface_from_vrf(*ifindex),
-            IfTableChange::DetachFromVrf(fibid) => self.detach_interfaces_from_vrf(*fibid),
+            IfTableChange::DetachFromVrf(vrfid) => self.detach_interfaces_from_vrf(*vrfid),
             IfTableChange::AddIpAddress((ifindex, ifaddr)) => {
                 if let Err(e) = self.add_ifaddr(*ifindex, *ifaddr) {
                     warn!("Could not add interface address {ifaddr}: {e}");
@@ -128,62 +128,65 @@ impl IfTableWriter {
         self.0.publish();
     }
 
-    fn get_vrf_fibr(vrftable: &VrfTable, vrfid: VrfId) -> Result<FibKey, RouterError> {
-        let Ok(vrf) = vrftable.get_vrf(vrfid) else {
-            return Err(RouterError::NoSuchVrf);
-        };
-        match &vrf.fibw {
-            None => Err(RouterError::Internal("No fib writer")),
-            Some(fibw) => fibw
-                .as_fibreader()
-                .get_id()
-                .ok_or(RouterError::Internal("Fib not accessible")),
-        }
+    // Check that the vrf exists and that it has a valid fib
+    fn get_vrf_fibr(vrftable: &VrfTable, vrfid: VrfId) -> Result<(), RouterError> {
+        let vrf = vrftable.get_vrf(vrfid)?;
+        let fibg = &vrf
+            .fibw
+            .as_ref()
+            .ok_or(RouterError::Internal("No fib writer"))?
+            .enter()
+            .ok_or(RouterError::Internal("Fib not accessible"))?;
+
+        debug_assert_eq!(fibg.get_id(), FibKey::Id(vrfid));
+        Ok(())
     }
 
+    // check that interface and vrf exist
     fn interface_attach_check(
         &mut self,
         ifindex: InterfaceIndex,
         vrfid: VrfId,
         vrftable: &VrfTable,
-    ) -> Result<FibKey, RouterError> {
-        let Some(iftr) = self.enter() else {
-            return Err(RouterError::Internal("Fail to read iftable"));
-        };
-        if iftr.get_interface(ifindex).is_none() {
-            Err(RouterError::NoSuchInterface(ifindex))
-        } else {
-            Self::get_vrf_fibr(vrftable, vrfid)
-        }
+    ) -> Result<(), RouterError> {
+        let _iftr = self
+            .enter()
+            .as_ref()
+            .ok_or(RouterError::Internal("Iftable not accesible"))?
+            .get_interface(ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        Self::get_vrf_fibr(vrftable, vrfid)
     }
     /// Attach an interface to a vrf
     ///
     /// # Errors
     ///
-    /// Fails if the interface is not found
+    /// Fails if the interface or the vrf are not found
     pub fn attach_interface_to_vrf(
         &mut self,
         ifindex: InterfaceIndex,
         vrfid: VrfId,
         vrftable: &VrfTable,
     ) -> Result<(), RouterError> {
-        // FIXME(fredi): this can be significantly simplified
-        let fibkey = self.interface_attach_check(ifindex, vrfid, vrftable)?;
-        self.attach_interface_to_fib(ifindex, fibkey);
+        self.interface_attach_check(ifindex, vrfid, vrftable)?;
+        self.0.append(IfTableChange::Attach((ifindex, vrfid)));
+        self.0.publish();
         Ok(())
     }
-    pub(crate) fn attach_interface_to_fib(&mut self, ifindex: InterfaceIndex, fibkey: FibKey) {
-        self.0.append(IfTableChange::Attach((ifindex, fibkey)));
+
+    pub(crate) fn attach_interface_to_fib(&mut self, ifindex: InterfaceIndex, vrfid: VrfId) {
+        self.0.append(IfTableChange::Attach((ifindex, vrfid)));
         self.0.publish();
     }
+
     pub fn detach_interface(&mut self, ifindex: InterfaceIndex) {
         self.0.append(IfTableChange::Detach(ifindex));
         self.0.publish();
     }
     pub fn detach_interfaces_from_vrf(&mut self, vrfid: VrfId) {
-        debug!("Scheduling detach of interfaces from vrf {vrfid}");
-        self.0
-            .append(IfTableChange::DetachFromVrf(FibKey::Id(vrfid)));
+        debug!("Detaching all interfaces interfaces from vrf {vrfid}");
+        self.0.append(IfTableChange::DetachFromVrf(vrfid));
         self.0.publish();
     }
 }
@@ -573,14 +576,14 @@ mod iftable_properties {
                 match (&iface.attachment, want.attached) {
                     (None, None) => (),
                     (Some(Attachment::Vrf(key)), Some(vrf)) => {
-                        assert_eq!(*key, FibKey::Id(vrfs[vrf]), "attachment of {index} {at}");
+                        assert_eq!(*key, vrfs[vrf], "attachment of {index} {at}");
                     }
                     (got, want) => {
                         panic!("attachment of {index} is {got:?}, expected {want:?} {at}")
                     }
                 }
 
-                if let Some(Attachment::Vrf(FibKey::Id(vrfid))) = &iface.attachment {
+                if let Some(Attachment::Vrf(vrfid)) = &iface.attachment {
                     assert!(
                         world.vrftable.contains(*vrfid),
                         "interface {index} is attached to vrf {vrfid}, which is gone {at}"

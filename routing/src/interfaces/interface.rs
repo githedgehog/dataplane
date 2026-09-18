@@ -3,7 +3,6 @@
 
 //! Network interface model
 
-use crate::fib::fibtype::FibKey;
 use crate::rib::vrf::VrfId;
 
 use net::eth::mac::SourceMac;
@@ -68,7 +67,7 @@ pub enum IfState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Attachment {
-    Vrf(FibKey),
+    Vrf(VrfId),
     BridgeDomain,
 }
 
@@ -188,17 +187,17 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Attach an [`Interface`] to the fib corresponding to a vrf
     //////////////////////////////////////////////////////////////////
-    pub(crate) fn attach_vrf(&mut self, fibkey: FibKey) {
-        self.attachment = Some(Attachment::Vrf(fibkey));
+    pub(crate) fn attach_vrf(&mut self, vrfid: VrfId) {
+        self.attachment = Some(Attachment::Vrf(vrfid));
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Tell if an [`Interface`] is attached to a Fib with the given Id
+    /// Tell if an [`Interface`] is attached to a Vrf/Fib with the given vrfid
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn is_attached_to_fib(&self, fibid: FibKey) -> bool {
+    pub(crate) fn is_attached_to_vrf(&self, vrfid: VrfId) -> bool {
         match &self.attachment {
-            Some(Attachment::Vrf(key)) => *key == fibid,
+            Some(Attachment::Vrf(value)) => *value == vrfid,
             _ => false,
         }
     }
