@@ -21,8 +21,13 @@ struct FibTableEntry {
     factory: FibReaderFactory,
 }
 impl FibTableEntry {
-    const fn new(id: FibKey, factory: FibReaderFactory) -> Self {
-        Self { id, factory }
+    // create a `FibTableEntry` for the given `vrf` and reader factory
+    // The `FibKey` we build an entry with always contains a vrfid.
+    const fn new(vrfid: VrfId, factory: FibReaderFactory) -> Self {
+        Self {
+            id: FibKey::from_vrfid(vrfid),
+            factory,
+        }
     }
 }
 
@@ -33,48 +38,48 @@ pub struct FibTable {
 }
 
 impl FibTable {
-    /// Register a `Fib` by adding a `FibTableEntry` for it, which contains a `FibReaderFactory`
-    fn add_fib(&mut self, id: FibKey, entry: Arc<FibTableEntry>) {
-        info!("Registering Fib with id {id} in the FibTable");
-        self.entries.insert(id, entry);
-    }
-    fn del_fib(&mut self, id: FibKey) {
-        info!("Unregistering Fib with id {id} from the FibTable");
-        self.entries.retain(|_, entry| entry.id != id);
-    }
-    /// Register an existing `Fib` with a given [`Vni`].
-    /// This allows looking up a Fib (`FibReaderFactory`) from a [`Vni`]
-    fn register_by_vni(&mut self, id: FibKey, vni: Vni) {
-        if let Some(entry) = self.get_entry(id) {
-            self.entries
-                .insert(FibKey::from_vni(vni), Arc::clone(entry));
-            info!("Registering Fib with id {id} in the FibTable with vni {vni}");
-        } else {
-            error!("Failed to register Fib {id} with vni {vni}: no fib with id {id} found");
-        }
-    }
-    /// Remove any entry keyed by a [`Vni`]
-    fn unregister_vni(&mut self, vni: Vni) {
-        let key = FibKey::from_vni(vni);
-        info!("Unregistered key = {key} from the FibTable");
-        self.entries.remove(&key);
+    // Register a `Fib` by adding a `FibTableEntry` for it, which contains a `FibReaderFactory`
+    fn register_fib(&mut self, entry: Arc<FibTableEntry>) {
+        self.entries.insert(entry.id, entry);
     }
 
-    /// Get the entry for the fib with the given [`FibKey`]
+    // Unregister a fib completely, including its access via vni
+    fn unregister_fib(&mut self, vrfid: VrfId) {
+        let id = FibKey::from_vrfid(vrfid);
+        self.entries.retain(|_, entry| entry.id != id);
+    }
+
+    // Unregister a fib entry by vni
+    fn unregister_by_vni(&mut self, vni: Vni) {
+        self.entries.remove(&FibKey::from_vni(vni));
+    }
+
+    // Register an existing `Fib` with a given [`Vni`] to make it searchable by vni
+    fn register_by_vni(&mut self, vrfid: VrfId, vni: Vni) {
+        let vrf_key = FibKey::from_vrfid(vrfid);
+        let vni_key = FibKey::from_vni(vni);
+        if let Some(entry) = self.get_entry(vrf_key) {
+            self.entries.insert(vni_key, Arc::clone(entry));
+        } else {
+            error!("Failed to register Fib {vrfid} with vni {vni}: no fib with id {vrfid} found");
+        }
+    }
+
+    // Get the entry for the fib with the given [`FibKey`]
     #[must_use]
     fn get_entry(&self, key: FibKey) -> Option<&Arc<FibTableEntry>> {
         self.entries.get(&key)
     }
 
-    /// Get a [`FibReader`] for the fib with the given [`FibKey`]. This method should only
-    /// be called in the existing tests, as it creates a new `FibReader` on every call.
+    // Get a [`FibReader`] for the fib with the given [`FibKey`]. This method should only
+    // be called in the existing tests, as it creates a new `FibReader` on every call.
     #[must_use]
     #[cfg(test)]
     pub fn get_fib(&self, key: FibKey) -> Option<FibReader> {
         self.get_entry(key).map(|entry| entry.factory.handle())
     }
 
-    /// Number of entries in this table
+    // Number of entries in this table
     #[must_use]
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
@@ -83,9 +88,9 @@ impl FibTable {
 }
 
 enum FibTableChange {
-    Add((FibKey, Arc<FibTableEntry>)),
-    Del(FibKey),
-    RegisterByVni((FibKey, Vni)),
+    Register(Arc<FibTableEntry>),
+    Unregister(VrfId),
+    RegisterByVni((VrfId, Vni)),
     UnRegisterVni(Vni),
 }
 
@@ -93,10 +98,10 @@ impl Absorb<FibTableChange> for FibTable {
     fn absorb_first(&mut self, change: &mut FibTableChange, _: &Self) {
         self.version = self.version.wrapping_add(1);
         match change {
-            FibTableChange::Add((id, entry)) => self.add_fib(*id, entry.clone()),
-            FibTableChange::Del(id) => self.del_fib(*id),
-            FibTableChange::RegisterByVni((id, vni)) => self.register_by_vni(*id, *vni),
-            FibTableChange::UnRegisterVni(vni) => self.unregister_vni(*vni),
+            FibTableChange::Register(entry) => self.register_fib(entry.clone()),
+            FibTableChange::Unregister(vrfid) => self.unregister_fib(*vrfid),
+            FibTableChange::RegisterByVni((vrfid, vni)) => self.register_by_vni(*vrfid, *vni),
+            FibTableChange::UnRegisterVni(vni) => self.unregister_by_vni(*vni),
         }
     }
     fn sync_with(&mut self, _first: &Self) {}
@@ -119,53 +124,47 @@ impl FibTableWriter {
     pub fn as_fibtable_reader(&self) -> FibTableReader {
         FibTableReader(self.0.clone())
     }
+
+    /// Creates a new fib and registers it in the fib table by vrf id and, optionally, vni.
     #[allow(clippy::arc_with_non_send_sync)]
     #[must_use]
     pub fn add_fib(&mut self, vrfid: VrfId, vni: Option<Vni>) -> FibWriter {
-        let fibid = FibKey::from_vrfid(vrfid);
+        info!("Creating fib for vrf {vrfid}..");
         let (fibw, fibr) = FibWriter::new(vrfid);
-        let entry = Arc::new(FibTableEntry::new(fibid, fibr.factory()));
-        self.0.append(FibTableChange::Add((fibid, entry)));
+        let entry = Arc::new(FibTableEntry::new(vrfid, fibr.factory()));
+        self.0.append(FibTableChange::Register(entry));
         if let Some(vni) = vni {
-            self.0.append(FibTableChange::RegisterByVni((fibid, vni)));
+            info!("Will register fib for vrf {vrfid} with vni {vni}.");
+            self.0.append(FibTableChange::RegisterByVni((vrfid, vni)));
         }
         self.0.publish();
         fibw
     }
-    pub fn register_fib_by_vni(&mut self, vrfid: VrfId, vni: Vni) {
-        let fibid = FibKey::from_vrfid(vrfid);
-        self.0.append(FibTableChange::RegisterByVni((fibid, vni)));
+
+    /// Registers a fib with some vni; i.e. makes it visible under that vni
+    pub fn register_by_vni(&mut self, vrfid: VrfId, vni: Vni) {
+        info!("Registering fib for vrfId {vrfid} with vni {vni} ...");
+        self.0.append(FibTableChange::RegisterByVni((vrfid, vni)));
         self.0.publish();
     }
-    /// Remove a vni alias, on both copies.
-    ///
-    /// The op is appended and published twice on purpose. `publish` swaps the two copies and
-    /// replays the oplog into the one that just retired, so a single publish leaves the *other*
-    /// copy still holding the `Arc<FibTableEntry>` -- and therefore a `FibReaderFactory` -- for
-    /// something the caller believes it has removed. Two publishes apply it to both.
-    pub fn unregister_vni(&mut self, vni: Vni) {
+
+    /// Remove entry from vni, on both copies.
+    /// The op is appended and published twice on purpose to flush the two copies.
+    pub fn unregister_by_vni(&mut self, vni: Vni) {
+        info!("Unregistering fib with vni {vni} ...");
         self.0.append(FibTableChange::UnRegisterVni(vni));
         self.0.publish();
         self.0.append(FibTableChange::UnRegisterVni(vni));
         self.0.publish();
     }
-    /// Remove a fib, on both copies.
-    ///
-    /// Double-published for the reason above, and this is the path
-    /// `feat(routing): force left-right publish on fib deletion` was written for -- it landed on
-    /// `unregister_vni` only, so the file asserted two answers to the same question. `remove_vrf`
-    /// calls this and then `FibWriter::destroy()` on the next line, so the retired copy has to
-    /// have let go of the entry before the writer goes away.
-    ///
-    /// It is hygiene rather than safety: `destroy` publishes an `Invalidate` before taking the
-    /// fib, so a reader reached through a surviving factory sees `is_valid() == false` rather
-    /// than a torn read. What the second publish buys is that there is no such reader.
-    pub fn del_fib(&mut self, vrfid: VrfId) {
-        self.0
-            .append(FibTableChange::Del(FibKey::from_vrfid(vrfid)));
+
+    /// Remove a fib and every key that reaches it, on both copies.
+    /// The op is appended and published twice on purpose to flush the two copies.
+    pub fn unregister_fib(&mut self, vrfid: VrfId) {
+        info!("Unregistering Fib with vrfid {vrfid} ...");
+        self.0.append(FibTableChange::Unregister(vrfid));
         self.0.publish();
-        self.0
-            .append(FibTableChange::Del(FibKey::from_vrfid(vrfid)));
+        self.0.append(FibTableChange::Unregister(vrfid));
         self.0.publish();
     }
 }
@@ -356,19 +355,19 @@ mod fibtable_properties {
             Change::RegisterByVni { vrf, vni } => {
                 let vrf = vrfs[*vrf];
                 let vni = all_vnis[*vni];
-                table.register_fib_by_vni(vrf, vni);
+                table.register_by_vni(vrf, vni);
                 if model.contains_key(&FibKey::from_vrfid(vrf)) {
                     model.insert(FibKey::from_vni(vni), vrf);
                 }
             }
             Change::UnregisterVni { vni } => {
                 let vni = all_vnis[*vni];
-                table.unregister_vni(vni);
+                table.unregister_by_vni(vni);
                 model.remove(&FibKey::from_vni(vni));
             }
             Change::DelFib { vrf } => {
                 let vrf = vrfs[*vrf];
-                table.del_fib(vrf);
+                table.unregister_fib(vrf);
                 model.retain(|_, named| *named != vrf);
                 if let Some(writer) = fibs.live.remove(&vrf) {
                     writer.destroy();
