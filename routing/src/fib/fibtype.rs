@@ -57,15 +57,6 @@ pub struct Fib {
     vtep: Vtep,
     valid: bool,
 }
-impl Hash for Fib {
-    // We implement explicitly `std::hash::Hash` for `Fib` instead of deriving it because:
-    //  - this avoids the need to implement/derive it for all internal components
-    //  - it is actually not possible to do so since some types are defined externally (prefixes)
-    //  - the Id suffices to identify them and the implementation is possibly faster.
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
-}
 impl Identity<FibKey> for Fib {
     fn identity(&self) -> FibKey {
         self.get_id()
