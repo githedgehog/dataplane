@@ -21,52 +21,59 @@
 //!       └─────────┬──┘
 //!                 │  which an expose may draw from
 //!         ┌───────▼─┐
-//!         │PoolSet  │  the regions this expose's ranges cover, exclusive ones first
-//!         └───────┬─┘
-//!                 │
-//!        ┌────────▼──┐        ┌───────────┐
-//!        │PoolRegion ├────────►AddrInterval│  the slice of public space it owns
-//!        └────────┬──┘        └───────────┘
-//!                 │  one allocator per region, shared by every expose over it
-//!       ┌─────────▼─┐
-//!       │IpAllocator│◄───────────────────────────────┐
-//!       └─────────┬─┘                                │
-//!            ┌────▼──┐                               │
-//!    ┌───────┤NatPool├──────────┐                    │
-//!    │       └───────┘          │                    │
-//! ┌──▼──────────────┐  ┌────────▼───────────┐        │
-//! │<collection>     │  │PoolBitmap          │        │
-//! │(weak references)│  │(map free addresses)│        │
-//! └──┬──────────────┘  └────────────────────┘        │
-//! ┌──▼────────┐                                      │
-//! │AllocatedIp│──────────────────────────────────────┘
-//! └─▲───────┬─┘         back-reference, for deallocation
-//!   │ ┌─────▼───────┐
-//!   │ │PortAllocator│
-//!   │ └─────┬───────┘
-//!  *│       │
-//!   │ ┌─────▼───────────────┐           ┌─────────────────────┐
-//!   │ │AllocatedPortBlockMap├───────────►AllocatorPortBlock   │
-//!   │ │(weak references)    │           │(metadata for blocks)│
-//!   │ └─────────────────────┘           └─────────────────────┘
-//!   │       │
-//! ┌─┴───────▼────────┐              ┌──────────────────────────┐
-//! │AllocatedPortBlock├──────────────►Bitmap256                 │
-//! └─▲───────┬────────┘              │(map ports within a block)│
-//!  *│       │                       └──────────────────────────┘
-//! ┌─┴───────▼─────┐
-//! │┌─────────────┐│
-//! ││AllocatedPort││                           *: back references
-//! │└─────────────┘│
+//!         │PoolSet│ │    PoolSet: the regions this expose's ranges cover,
+//!         └───────┼─┘    exclusive ones first;
+//!                 ├─────────────────────────────────────┐
+//!        ┌────────▼──┐  ┌────────────┐                ┌─▼───────────────┐
+//!        │PoolRegion ├──►AddrInterval│                │SubscribersTable │
+//!        └────────┬──┘  └────────────┘                └─┬───────────────┘
+//!                 │                                     │  keyed by private address
+//!                 │  one allocator per region,        ┌─▼─────────┐
+//!                 │  shared by every expose over it   │Subscriber │  one per private address
+//!       ┌─────────▼─┐                                 └─┬───────┬─┘
+//!       │IpAllocator│◄──────────────────────────┐       │       │
+//!       └─────────┬─┘                           │       │       │
+//!            ┌────▼──┐                          │       │       │
+//!    ┌───────┤NatPool├──────────┐               │       │       │
+//!    │       └───────┘          │               │       │       │
+//! ┌──▼──────────────┐  ┌────────▼───────────┐   │       │       │
+//! │<collection>     │  │PoolBitmap          │   │       │       │
+//! │(weak references)│  │(map free addresses)│   │       │       │
+//! └──┬──────────────┘  └────────────────────┘   │       │       │
+//!    │                                          │       │       │
+//! ┌──▼────────┐ back-reference, for deallocation│       │       │
+//! │           ├─────────────────────────────────┘  ┌────▼──────┐│
+//! │AllocatedIp│                                    │addresses  ││
+//! │           │◄───────────────────────────────────┤(SmallVec) ││
+//! └─▲───────┬─┘        holds Arc<> references      └───────────┘│
+//!   │ ┌─────▼───────┐                              pinned public│
+//!   │ │PortAllocator│                              IPs, ordered │
+//!   │ └─────┬───────┘                                           │
+//!  *│       │                                                   │
+//!   │ ┌─────▼───────────────┐ ┌─────────────────────┐           │
+//!   │ │AllocatedPortBlockMap├─►AllocatorPortBlock   │           │
+//!   │ │(weak references)    │ │(metadata for blocks)│           │
+//!   │ └─────┬───────────────┘ └─────────────────────┘           │
+//!   │       │                                                   │
+//! ┌─┴───────▼────────┐   ┌──────────────────────────┐  ┌────────▼─┐
+//! │AllocatedPortBlock├───►Bitmap256                 │  │mappings  │  keyed by private port
+//! └─▲───────┬────────┘   │(map ports within a block)│  │(HashMap) │  + destination scope
+//!  *│       │            └──────────────────────────┘  └─┬────────┘
+//! ┌─┴───────▼─────┐                                      │
+//! │┌─────────────┐│                                    ┌─▼──────┐
+//! ││AllocatedPort││◄───────────────────────────────────┤Mapping │  owns one AllocatedPort plus
+//! │└─────────────┘│                                    └────────┘  its own expiry timer
 //! └───────────────┘
-//! Returned object
+//! Returned object (as `Allocation`)                 *: back references
 //! ```
 //!
 //! Overlapping public ranges are divided into disjoint [`PoolRegion`](alloc::PoolRegion)s. Exposes
 //! share the allocator for each common region, ensuring a public tuple is leased only once.
 //!
-//! Allocation objects hold back-references to their owning block, address, and pool. Dropping the
-//! outer allocation therefore releases the tuple.
+//! A [`Mapping`](mapping::Mapping) owns an `AllocatedPort`: several flows may share one
+//! `Arc<Mapping>`, so dropping a single flow's handle to a mapping does not necessarily release the
+//! tuple. It is released once the mapping has been reaped and every flow still holding a reference
+//! has dropped its own.
 
 #![allow(rustdoc::private_intra_doc_links)]
 
@@ -89,6 +96,7 @@ trace_target!("nat-allocation", LevelFilter::ERROR, &["masquerade"]);
 mod alloc;
 mod concurrent_fuzz;
 mod display;
+mod mapping;
 mod natip_with_bitmap;
 mod pool_fuzz;
 mod port_alloc;
@@ -492,6 +500,7 @@ fn max_range<I: NatIpWithBitmap>() -> I {
 mod bolero_tests {
     use super::*;
     use bolero::{Driver, TypeGenerator};
+    use config::external::overlay::vpcpeering::MappingPolicy;
     use net::vxlan::Vni;
     use std::time::Duration;
 
@@ -570,7 +579,10 @@ mod bolero_tests {
                         Ipv4Addr::from(start),
                         Ipv4Addr::from(end),
                     ),
-                    alloc::PoolSet::new(Duration::from_secs(u64::from(marker(start, end)))),
+                    alloc::PoolSet::new(
+                        Duration::from_secs(u64::from(marker(start, end))),
+                        MappingPolicy::default(),
+                    ),
                 );
             }
             table
@@ -618,6 +630,7 @@ mod tests {
     #![allow(clippy::ip_constant)]
 
     use super::*;
+    use config::external::overlay::vpcpeering::MappingPolicy;
     use net::vxlan::Vni;
 
     fn vpcd(vpc_id: u32) -> VpcDiscriminant {
@@ -636,7 +649,10 @@ mod tests {
     // A pool set carrying nothing but a distinguishable idle timeout, so a lookup can be told
     // which entry it landed on.
     fn marked_pool_set(marker: u64) -> alloc::PoolSet<Ipv4Addr> {
-        alloc::PoolSet::new(std::time::Duration::from_secs(marker))
+        alloc::PoolSet::new(
+            std::time::Duration::from_secs(marker),
+            MappingPolicy::default(),
+        )
     }
 
     // Not the lowest group, so boundary tests can place foreign entries before it.

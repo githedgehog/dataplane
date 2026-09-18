@@ -9,6 +9,7 @@
 #![cfg(test)]
 
 use super::alloc::{PoolSet, map_address};
+use super::port_alloc::AllocatedPort;
 use super::region::AddrInterval;
 use super::setup::{PoolSpec, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
@@ -102,7 +103,7 @@ fn declares(ranges: &[AddrInterval], ip: Ipv4Addr) -> bool {
 fn allocate_round_robin(
     pool_sets: &[PoolSet<Ipv4Addr>],
     count: usize,
-) -> Vec<(usize, super::AllocatedPort<Ipv4Addr>)> {
+) -> Vec<(usize, AllocatedPort<Ipv4Addr>)> {
     let mut held = Vec::new();
     for step in 0..count {
         let owner = step % pool_sets.len();

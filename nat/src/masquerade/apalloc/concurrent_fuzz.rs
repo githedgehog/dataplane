@@ -17,8 +17,8 @@
 #![cfg(test)]
 #![cfg(not(feature = "loom"))]
 
-use super::AllocatedPort;
 use super::alloc::PoolSet;
+use super::port_alloc::AllocatedPort;
 use super::region::AddrInterval;
 use super::setup::{PoolSpec, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
