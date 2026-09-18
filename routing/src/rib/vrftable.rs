@@ -545,7 +545,7 @@ mod tests {
             .expect("Should succeed");
         let ift = iftr.enter().unwrap();
         let eth0 = ift.get_interface(idx2).expect("Should find interface");
-        assert!(eth0.is_attached_to_fib(FibKey::Id(vrfid)));
+        assert!(eth0.is_attached_to_vrf(vrfid));
         println!("{}", *ift);
         drop(ift);
 
@@ -557,7 +557,7 @@ mod tests {
             .expect("Should succeed");
         let ift = iftr.enter().unwrap();
         let eth1 = ift.get_interface(idx3).expect("Should find interface");
-        assert!(eth1.is_attached_to_fib(FibKey::Id(vrfid)));
+        assert!(eth1.is_attached_to_vrf(vrfid));
         println!("{}", *ift);
         drop(ift);
 
@@ -569,7 +569,7 @@ mod tests {
             .expect("Should succeed");
         let ift = iftr.enter().unwrap();
         let eth2 = ift.get_interface(idx4).expect("Should find interface");
-        assert!(eth2.is_attached_to_fib(FibKey::Id(vrfid)));
+        assert!(eth2.is_attached_to_vrf(vrfid));
         println!("{}", *ift);
         drop(ift);
 
@@ -581,7 +581,7 @@ mod tests {
             .expect("Should succeed");
         let ift = iftr.enter().unwrap();
         let iface = ift.get_interface(idx5).expect("Should find interface");
-        assert!(iface.is_attached_to_fib(FibKey::Id(vrfid)));
+        assert!(iface.is_attached_to_vrf(vrfid));
         println!("{}", *ift);
         drop(ift);
 
@@ -599,10 +599,10 @@ mod tests {
         println!("{vrftable}");
         let ift = iftr.enter().unwrap();
         let iface = ift.get_interface(idx4).expect("Should be there");
-        assert!(!iface.is_attached_to_fib(FibKey::Id(vrfid)));
+        assert!(!iface.is_attached_to_vrf(vrfid));
         assert!(iface.attachment.is_none());
         let iface = ift.get_interface(idx5).expect("Should be there");
-        assert!(!iface.is_attached_to_fib(FibKey::Id(vrfid)));
+        assert!(!iface.is_attached_to_vrf(vrfid));
         assert!(iface.attachment.is_none());
         println!("{}", *ift);
         drop(ift);
@@ -631,10 +631,10 @@ mod tests {
         );
         let ift = iftr.enter().unwrap();
         let eth0 = ift.get_interface(idx2).expect("Should be there");
-        assert!(!eth0.is_attached_to_fib(FibKey::Id(vrfid)));
+        assert!(!eth0.is_attached_to_vrf(vrfid));
         assert!(eth0.attachment.is_none());
         let eth1 = ift.get_interface(idx3).expect("Should be there");
-        assert!(!eth1.is_attached_to_fib(FibKey::Id(vrfid)));
+        assert!(!eth1.is_attached_to_vrf(vrfid));
         assert!(eth1.attachment.is_none());
         println!("{}", *ift);
         drop(ift);

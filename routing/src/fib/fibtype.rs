@@ -364,10 +364,6 @@ impl FibWriter {
     pub fn publish(&mut self) {
         self.0.publish();
     }
-    #[must_use]
-    pub fn as_fibreader(&self) -> FibReader {
-        FibReader::new(self.0.clone())
-    }
     pub fn destroy(mut self) {
         // writer (self) is alive, so enter() can't fail
         let id = self.enter().map_or_else(|| unreachable!(), |fib| fib.id);

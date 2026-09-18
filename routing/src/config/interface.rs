@@ -140,8 +140,7 @@ impl Attachment {
     #[must_use]
     pub(crate) fn as_config(&self) -> AttachConfig {
         match self {
-            // FIXME: this should always be FibKey::Id
-            Attachment::Vrf(fibkey) => AttachConfig::Vrf(fibkey.as_u32()),
+            Attachment::Vrf(vrfid) => AttachConfig::Vrf(*vrfid),
             Attachment::BridgeDomain => AttachConfig::BridgeDomain,
         }
     }

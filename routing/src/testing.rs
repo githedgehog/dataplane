@@ -17,8 +17,8 @@ use net::vxlan::Vni;
 use crate::atable::adjacency::Adjacency;
 use crate::atable::atablerw::{AtableReader, AtableReaderFactory, AtableWriter};
 use crate::evpn::Vtep;
+
 use crate::fib::fibtable::{FibTableReader, FibTableReaderFactory, FibTableWriter};
-use crate::fib::fibtype::FibKey;
 use crate::interfaces::iftablerw::{IfTableReader, IfTableReaderFactory, IfTableWriter};
 use crate::interfaces::interface::{IfDataEthernet, IfState, IfType, RouterInterfaceConfig};
 use crate::rib::vrf::VrfId;
@@ -123,8 +123,7 @@ impl RouterTables {
             self.fibs.contains_key(&vrfid),
             "no fib for vrf {vrfid}: call `vrf` before `attach`"
         );
-        self.interfaces
-            .attach_interface_to_fib(ifindex, FibKey::from_vrfid(vrfid));
+        self.interfaces.attach_interface_to_fib(ifindex, vrfid);
         self
     }
 
