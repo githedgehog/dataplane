@@ -423,8 +423,8 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
     }
 
     #[must_use]
-    pub(crate) fn ip_arc(&self) -> Arc<AllocatedIp<I>> {
-        self.ip.clone()
+    pub(crate) fn ip_arc(&self) -> &Arc<AllocatedIp<I>> {
+        &self.ip
     }
 
     fn is_full(&self) -> bool {
@@ -563,7 +563,7 @@ impl<I: NatIpWithBitmap> AllocatedPort<I> {
     }
 
     #[must_use]
-    pub(crate) fn allocated_ip(&self) -> Arc<AllocatedIp<I>> {
+    pub(crate) fn allocated_ip(&self) -> &Arc<AllocatedIp<I>> {
         self.block_allocator.ip_arc()
     }
 }

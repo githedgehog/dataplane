@@ -12,7 +12,7 @@ use super::region::{AddrInterval, Region, decompose, regions_by_owner};
 use super::reserved::ReservedPorts;
 use super::{NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
 use crate::masquerade::allocator_writer::MasqueradeConfig;
-use config::external::overlay::vpcpeering::{ValidatedExpose, ValidatedManifest};
+use config::external::overlay::vpcpeering::{MappingPolicy, ValidatedExpose, ValidatedManifest};
 use lpm::prefix::{L4Protocol, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::IpAddress;
 use net::ip::NextHeader;
@@ -55,6 +55,7 @@ struct GatheredExpose<'a> {
     // The public range this expose allocates from, as raw address intervals.
     public_ranges: Vec<AddrInterval>,
     idle_timeout: Duration,
+    mapping_policy: MappingPolicy,
     // The port-forwarding exposes of the same peering, whose public tuples this expose's pools must
     // leave alone.
     port_forwarding: Vec<&'a ValidatedExpose>,
@@ -128,6 +129,7 @@ where
                     idle_timeout: expose
                         .idle_timeout()
                         .unwrap_or(DEFAULT_MASQUERADE_IDLE_TIMEOUT),
+                    mapping_policy: expose.mapping_policy().unwrap_or_default(),
                     port_forwarding: port_forwarding.clone(),
                 });
         }
@@ -184,6 +186,7 @@ where
                     public_ranges: expose.public_ranges.clone(),
                     claimed: claims_for(protocol, &expose.port_forwarding),
                     idle_timeout: expose.idle_timeout,
+                    mapping_policy: expose.mapping_policy,
                 })
                 .collect();
 
@@ -211,6 +214,7 @@ pub(crate) struct PoolSpec {
     /// pools are being built for.
     pub(crate) claimed: PrefixPortsSet,
     pub(crate) idle_timeout: Duration,
+    pub(crate) mapping_policy: MappingPolicy,
 }
 
 impl PoolSpec {
@@ -262,7 +266,7 @@ pub(crate) fn pool_sets_for_specs<J: NatIpWithBitmap>(
         .iter()
         .enumerate()
         .map(|(owner, spec)| {
-            let mut pool_set = PoolSet::new(spec.idle_timeout);
+            let mut pool_set = PoolSet::new(spec.idle_timeout, spec.mapping_policy);
             for &region_index in by_owner.get(&owner).map_or(&[][..], Vec::as_slice) {
                 pool_set.push_region(
                     regions[region_index].range,

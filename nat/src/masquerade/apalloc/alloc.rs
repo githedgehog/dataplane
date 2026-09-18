@@ -3,6 +3,7 @@
 
 //! Masquerade IP allocation. See the architecture diagram in `mod.rs`.
 
+use super::mapping::{Mapping, MappingKey, Subscriber, SubscribersTable};
 use super::region::AddrInterval;
 use super::reserved::{ReservedForAddr, ReservedPorts};
 use super::{NatIpWithBitmap, port_alloc};
@@ -10,6 +11,7 @@ use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use crate::ranges::IpRange;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
+use config::external::overlay::vpcpeering::MappingPolicy;
 use net::ip::IpAddress;
 use port_alloc::PortAllocator;
 use roaring::RoaringBitmap;
@@ -187,13 +189,17 @@ impl<I: NatIpWithBitmap> PoolRegion<I> {
 pub(crate) struct PoolSet<I: NatIpWithBitmap> {
     regions: Vec<PoolRegion<I>>,
     idle_timeout: Duration,
+    mapping_policy: MappingPolicy,
+    subscribers: SubscribersTable<I>,
 }
 
 impl<I: NatIpWithBitmap> PoolSet<I> {
-    pub(crate) fn new(idle_timeout: Duration) -> Self {
+    pub(crate) fn new(idle_timeout: Duration, mapping_policy: MappingPolicy) -> Self {
         Self {
             regions: Vec::new(),
             idle_timeout,
+            mapping_policy,
+            subscribers: SubscribersTable::new(),
         }
     }
 
@@ -201,12 +207,20 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
         self.regions.push(PoolRegion { range, allocator });
     }
 
+    pub(crate) fn regions(&self) -> impl Iterator<Item = &PoolRegion<I>> {
+        self.regions.iter()
+    }
+
     pub(crate) fn idle_timeout(&self) -> Duration {
         self.idle_timeout
     }
 
-    pub(crate) fn regions(&self) -> impl Iterator<Item = &PoolRegion<I>> {
-        self.regions.iter()
+    pub(crate) fn mapping_policy(&self) -> MappingPolicy {
+        self.mapping_policy
+    }
+
+    pub(crate) fn subscribers(&self) -> &SubscribersTable<I> {
+        &self.subscribers
     }
 
     /// Allocate from the first region with room, preserving non-exhaustion errors.
@@ -241,6 +255,46 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
             .find(|region| region.range.contains(bits))
             .ok_or(AllocatorError::NoPoolFound)?;
         region.allocator.reserve(ip, port)
+    }
+
+    // Reap a subscriber that just failed to insert properly. This method is meant to be called
+    // right after a create attempt, because nothing else would clean up the empty subscriber
+    // otherwise: cleanup is triggered by mapping reapers, and a subscriber with no mappings has no
+    // reaper to trigger it.
+    fn reap_if_still_empty(&self, src_ip: I, subscriber: &Arc<Subscriber<I>>) {
+        self.subscribers.remove_if_empty(src_ip, subscriber);
+    }
+
+    fn with_subscriber(
+        &self,
+        src_ip: I,
+        insert: impl FnOnce(&Arc<Subscriber<I>>) -> Result<Arc<Mapping<I>>, AllocatorError>,
+    ) -> Result<Arc<Mapping<I>>, AllocatorError> {
+        let subscriber = self.subscribers.get_or_default(src_ip);
+        insert(&subscriber).inspect_err(|_| self.reap_if_still_empty(src_ip, &subscriber))
+    }
+
+    pub(crate) fn get_or_create_mapping(
+        &self,
+        src_ip: I,
+        key: MappingKey<I>,
+        allow_null: bool,
+    ) -> Result<Arc<Mapping<I>>, AllocatorError> {
+        self.with_subscriber(src_ip, |subscriber| {
+            subscriber.get_or_create(src_ip, key, self, allow_null)
+        })
+    }
+
+    pub(crate) fn reserve_mapping(
+        &self,
+        src_ip: I,
+        key: MappingKey<I>,
+        ip: I,
+        port: NatPort,
+    ) -> Result<Arc<Mapping<I>>, AllocatorError> {
+        self.with_subscriber(src_ip, |subscriber| {
+            subscriber.get_or_reserve(src_ip, key, self, ip, port)
+        })
     }
 }
 
