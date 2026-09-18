@@ -13,7 +13,9 @@ use concurrency::sync::{Arc, Weak};
 use config::GenId;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Vpc, VpcTable};
-use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
+use config::external::overlay::vpcpeering::{
+    MappingPolicy, VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
+};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
 // The real flow-filter links dpdk-sys, which cannot build under miri; it is only used by tests with
 // #[dpdk::with_eal] below. The miri-eligible tests use the local TestFlowFilter mock instead.
@@ -295,18 +297,23 @@ fn build_overlay_4vpcs() -> Overlay {
     Overlay::new(vpc_table, peering_table)
 }
 
-fn build_overlay_2vpcs() -> Overlay {
+fn build_overlay_2vpcs_with(
+    policy: MappingPolicy,
+    private: &str,
+    public: &str,
+    peer: &str,
+) -> Overlay {
     let mut vpc_table = VpcTable::new();
     let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
     let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
 
     let expose121 = VpcExpose::empty()
-        .make_masquerade(None)
+        .make_masquerade_with_policy(None, policy)
         .unwrap()
-        .ip("1.1.0.0/16".into())
-        .as_range("2.2.0.0/16".into())
+        .ip(private.into())
+        .as_range(public.into())
         .unwrap();
-    let expose211 = VpcExpose::empty().ip("3.3.3.0/24".into());
+    let expose211 = VpcExpose::empty().ip(peer.into());
 
     let manifest12 = VpcManifest::new("VPC-1").exposing(expose121);
     let manifest21 = VpcManifest::new("VPC-2").exposing(expose211);
@@ -318,28 +325,22 @@ fn build_overlay_2vpcs() -> Overlay {
     Overlay::new(vpc_table, peering_table)
 }
 
-// identical to build_overlay_2vpcs() but masquerading with 4.4.0.0/16
+fn build_overlay_2vpcs() -> Overlay {
+    build_overlay_2vpcs_with(
+        MappingPolicy::default(),
+        "1.1.0.0/16",
+        "2.2.0.0/16",
+        "3.3.3.0/24",
+    )
+}
+
 fn build_overlay_2vpcs_v6() -> Overlay {
-    let mut vpc_table = VpcTable::new();
-    let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
-    let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
-
-    let expose121 = VpcExpose::empty()
-        .make_masquerade(None)
-        .unwrap()
-        .ip("2001:db8:1::/48".into())
-        .as_range("2001:db8:2::/48".into())
-        .unwrap();
-    let expose211 = VpcExpose::empty().ip("2001:db8:3::/48".into());
-
-    let manifest12 = VpcManifest::new("VPC-1").exposing(expose121);
-    let manifest21 = VpcManifest::new("VPC-2").exposing(expose211);
-    let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
-
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table.add(peering12).expect("Failed to add peering");
-
-    Overlay::new(vpc_table, peering_table)
+    build_overlay_2vpcs_with(
+        MappingPolicy::default(),
+        "2001:db8:1::/48",
+        "2001:db8:2::/48",
+        "2001:db8:3::/48",
+    )
 }
 
 fn build_overlay_2vpcs_modified() -> Overlay {
@@ -2999,5 +3000,147 @@ mod fragments {
                 assert_eq!(nat.sessions().active_len(), Some(2));
             }
         }
+    }
+}
+
+// Otherwise identical to build_overlay_2vpcs(), masquerading with Address-Dependent Mapping
+fn build_overlay_2vpcs_address_dependent() -> Overlay {
+    build_overlay_2vpcs_with(
+        MappingPolicy::AddressDependent,
+        "1.1.0.0/16",
+        "2.2.0.0/16",
+        "3.3.3.0/24",
+    )
+}
+
+// Two separate connections from one private IP must land on the same public IP, even though each
+// draws its own port (RFC 4787 "Paired" IP address pooling)
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_paired_pooling_reuses_the_same_public_ip() {
+    let (mut nat, mut allocw) = Masquerade::new_with_defaults();
+    let flow_table = nat.sessions().clone();
+    let overlay = build_overlay_2vpcs().validate().unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table());
+    allocw.update_nat_allocator(nat_config, 1, &flow_table);
+
+    let (src_a, _, _, _, done_a) =
+        check_packet(&mut nat, vni(100), vni(200), "1.1.0.1", "3.3.3.1", 1111, 80);
+    assert_eq!(done_a, None);
+    let (src_b, _, _, _, done_b) =
+        check_packet(&mut nat, vni(100), vni(200), "1.1.0.1", "3.3.3.1", 2222, 80);
+    assert_eq!(done_b, None);
+
+    assert_eq!(
+        src_a, src_b,
+        "two connections from the same private IP were not paired onto the same public IP"
+    );
+}
+
+// EIM, Endpoint-Independent Mapping: the same private tuple must reuse the same public tuple
+// regardless of destination
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_endpoint_independent_mapping_reuses_the_same_public_tuple_toward_two_peers()
+ {
+    let (mut nat, mut allocw) = Masquerade::new_with_defaults();
+    let flow_table = nat.sessions().clone();
+    let overlay = build_overlay_2vpcs().validate().unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table());
+    allocw.update_nat_allocator(nat_config, 1, &flow_table);
+
+    let (src_a, _, port_a, _, done_a) =
+        check_packet(&mut nat, vni(100), vni(200), "1.1.0.1", "3.3.3.1", 4321, 80);
+    assert_eq!(done_a, None);
+    let (src_b, _, port_b, _, done_b) =
+        check_packet(&mut nat, vni(100), vni(200), "1.1.0.1", "3.3.3.2", 4321, 80);
+    assert_eq!(done_b, None);
+
+    assert_eq!(
+        (src_a, port_a),
+        (src_b, port_b),
+        "Endpoint-Independent Mapping must reuse the same public tuple toward a different peer"
+    );
+}
+
+// ADM, Address-Dependent Mapping: a different destination address must draw a distinct mapping,
+// even though "Paired" pooling still keeps both on the same public IP
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_address_dependent_mapping_creates_distinct_mappings_per_peer_address() {
+    let (mut nat, mut allocw) = Masquerade::new_with_defaults();
+    let flow_table = nat.sessions().clone();
+    let overlay = build_overlay_2vpcs_address_dependent().validate().unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table());
+    allocw.update_nat_allocator(nat_config, 1, &flow_table);
+
+    let (src_a, _, port_a, _, done_a) =
+        check_packet(&mut nat, vni(100), vni(200), "1.1.0.1", "3.3.3.1", 4321, 80);
+    assert_eq!(done_a, None);
+    let (src_b, _, port_b, _, done_b) =
+        check_packet(&mut nat, vni(100), vni(200), "1.1.0.1", "3.3.3.2", 4321, 80);
+    assert_eq!(done_b, None);
+
+    assert_ne!(
+        (src_a, port_a),
+        (src_b, port_b),
+        "AddressDependent must draw a distinct mapping for a different peer address"
+    );
+    assert_eq!(
+        src_a, src_b,
+        "Paired pooling should still keep both mappings on the same public IP"
+    );
+}
+
+// Two flows sharing one EIM mapping must both survive a config change that keeps their public
+// tuple valid. Naive per-flow re-reservation of a shared mapping would fail the second flow with
+// PortReservationFailed, since the tuple is already reserved by the first.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_config_migration_two_flows_sharing_one_mapping_both_survive() {
+    let genid = 1;
+    let (mut nat, mut allocw) = Masquerade::new_with_defaults();
+    let flow_table = nat.sessions().clone();
+    let overlay = build_overlay_shared_private_prefix().validate().unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table());
+    allocw.update_nat_allocator(nat_config, genid, &flow_table);
+
+    // Two flows from the same private tuple toward two different peers behind VPC-3 share one
+    // EIM mapping: only the first draws a fresh public tuple, the second joins it.
+    let peers = ["3.3.3.1", "3.3.3.2"];
+    let mut before = Vec::new();
+    for peer in peers {
+        let (src, dst, port, _, done) =
+            check_packet(&mut nat, vni(100), vni(300), "1.1.0.1", peer, 4321, 80);
+        assert_eq!(done, None);
+        before.push((src, dst, port));
+    }
+    assert_eq!(
+        before[0].0, before[1].0,
+        "both flows should share one EIM mapping before the migration"
+    );
+    assert_eq!(before[0].2, before[1].2);
+
+    // Adding an unrelated expose forces the allocator to be rebuilt (rather than reused in
+    // place), exercising check_masquerading_flow/re-reservation for both flows.
+    let new_overlay = build_overlay_shared_private_prefix_extended()
+        .validate()
+        .unwrap();
+    let new_nat_config = MasqueradeConfig::new(new_overlay.vpc_table());
+    allocw.update_nat_allocator(new_nat_config, genid + 1, &flow_table);
+
+    for (peer, (src, dst, port)) in peers.into_iter().zip(before) {
+        let (new_src, new_dst, new_port, _, done) =
+            check_packet(&mut nat, vni(100), vni(300), "1.1.0.1", peer, 4321, 80);
+        assert_eq!(
+            done, None,
+            "the flow toward {peer} did not survive the config migration"
+        );
+        assert_eq!(
+            (new_src, new_port),
+            (src, port),
+            "the flow toward {peer}'s public tuple changed across the config migration"
+        );
+        assert_eq!(new_dst, dst);
     }
 }
