@@ -300,7 +300,7 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
         self.port_allocator.deallocate_block(index);
     }
 
-    fn allocate_port_for_ip(
+    pub(crate) fn allocate_port_for_ip(
         self: Arc<Self>,
         allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
@@ -316,7 +316,7 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
         Ok(alloc_port)
     }
 
-    fn reserve_port_for_ip(
+    pub(crate) fn reserve_port_for_ip(
         self: Arc<Self>,
         port: NatPort,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
