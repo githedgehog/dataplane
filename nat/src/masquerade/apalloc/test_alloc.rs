@@ -7,9 +7,11 @@ use concurrency::concurrency_mode;
 
 // This module does not contain tests, but helpers to build the context (VpcTable, allocator) used
 // by tests in other modules. These helpers are not to be used outside of tests.
-mod context {
+pub(super) mod context {
+    use crate::NatPort;
     use crate::masquerade::allocator_writer::MasqueradeConfig;
     use crate::masquerade::apalloc::alloc::{IpAllocator, PoolSet};
+    pub(crate) use crate::masquerade::apalloc::mapping::PrivateTuple;
     use crate::masquerade::apalloc::{NatAllocator, PoolTable, PoolTableKey};
     use config::external::overlay::vpc::{Peering, ValidatedVpcTable, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
@@ -20,6 +22,7 @@ mod context {
     use net::vxlan::Vni;
     use net::{IpProtoKey, UdpProtoKey};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::num::NonZero;
     use std::str::FromStr;
 
     #[allow(dead_code)]
@@ -33,6 +36,20 @@ mod context {
     #[allow(dead_code)]
     pub fn ipaddr(ip: &str) -> IpAddr {
         IpAddr::from_str(ip).unwrap()
+    }
+
+    #[allow(dead_code)]
+    pub fn port(n: u16) -> NatPort {
+        NatPort::new_port(NonZero::new(n).unwrap())
+    }
+
+    #[allow(dead_code)]
+    pub fn dst_v4() -> Ipv4Addr {
+        addr_v4("9.9.9.9")
+    }
+    #[allow(dead_code)]
+    pub fn dst_v6() -> Ipv6Addr {
+        addr_v6("2001:db8:9::9")
     }
 
     pub fn vni1() -> Vni {
@@ -471,19 +488,35 @@ mod tests {
 
         let mut handles = vec![];
 
+        // Distinct source ports, so each thread draws a distinct mapping
         handles.push(thread::spawn(move || {
             let _allocation1 = allocator1
-                .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .allocate_typed(
+                    vpcd1(),
+                    vpcd2(),
+                    PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
+                    NextHeader::TCP,
+                )
                 .unwrap();
         }));
         handles.push(thread::spawn(move || {
             let _allocation2 = allocator2
-                .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .allocate_typed(
+                    vpcd1(),
+                    vpcd2(),
+                    PrivateTuple::new(addr_v4("1.1.0.0"), port(2), dst_v4(), None),
+                    NextHeader::TCP,
+                )
                 .unwrap();
         }));
         handles.push(thread::spawn(move || {
             let _allocation3 = allocator3
-                .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .allocate_typed(
+                    vpcd1(),
+                    vpcd2(),
+                    PrivateTuple::new(addr_v4("1.1.0.0"), port(3), dst_v4(), None),
+                    NextHeader::TCP,
+                )
                 .unwrap();
         }));
 
@@ -492,8 +525,8 @@ mod tests {
             .map(|handle| handle.join().unwrap())
             .collect();
 
-        // All allocations got out of scope and dropped when the threads terminated.
-
+        // Each thread's local Allocation handle went out of scope when its thread terminated, but
+        // the mapping table owns each of the three mappings, so weak references still resolve
         let mut allocator_again = Arc::try_unwrap(allocator_arc).unwrap();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator_again.pools_src44,
@@ -503,8 +536,9 @@ mod tests {
             addr_v4("1.1.0.0"),
         )
         .get_pool_clone_for_tests();
-        assert_eq!(bitmap.len(), 3); // 3 IP addresses available to NAT 1.1.0.0
-        assert!(in_use.front().unwrap().upgrade().is_none()); // Weak references in list no longer resolve
+        assert_eq!(bitmap.len(), 2); // one IP consumed by all three mappings, Paired
+        assert_eq!(in_use.len(), 1);
+        assert!(in_use.front().unwrap().upgrade().is_some());
     }
 }
 
@@ -584,8 +618,7 @@ mod std_tests {
     }
 
     // Allocate IP addresses and ports for running NAT on a tuple from a simple packet. Ensure that
-    // the expected IPs are allocated, and then that the allocator frees them when the allocated
-    // objects are dropped.
+    // the expected IP is allocated.
     #[test]
     fn test_allocate() {
         let mut allocator = build_allocator();
@@ -601,7 +634,12 @@ mod std_tests {
         assert_eq!(in_use.len(), 0); // None allocated yet
 
         let alloc_result = allocator
-            .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
             .unwrap();
         println!("{alloc_result}");
 
@@ -621,6 +659,8 @@ mod std_tests {
         drop(alloc_result);
         println!("Dropped allocation");
 
+        // We dropped alloc_result but the IP stays reserved, because the allocation remains held by
+        // the mapping table.
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
             vpcd1(),
@@ -629,9 +669,9 @@ mod std_tests {
             addr_v4("1.1.0.0"),
         )
         .get_pool_clone_for_tests();
-        assert_eq!(bitmap.len(), 3); // 3 IP addresses available to NAT 1.1.0.0
-        assert_eq!(in_use.len(), 1); // One weak reference still in the list
-        assert!(in_use.front().unwrap().upgrade().is_none()); // But it no longer resolves
+        assert_eq!(bitmap.len(), 2);
+        assert_eq!(in_use.len(), 1);
+        assert!(in_use.front().unwrap().upgrade().is_some()); // still resolves: mapping holds it
     }
 
     // Allocate an IP for a TCP packet, then for a UDP packet.
@@ -662,7 +702,12 @@ mod std_tests {
 
         // Allocate for TCP
         let tcp_allocation = allocator
-            .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
             .unwrap();
         println!("{tcp_allocation}");
 
@@ -692,7 +737,12 @@ mod std_tests {
 
         // Allocate for UDP
         let udp_allocation = allocator
-            .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::UDP)
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
+                NextHeader::UDP,
+            )
             .unwrap();
         println!("{udp_allocation}");
 
@@ -729,10 +779,20 @@ mod std_tests {
         let allocator = build_allocator_shared_public_range();
 
         let alloc_a = allocator
-            .allocate_v4(vpcd1(), vpcd3(), addr_v4("1.1.0.1"), NextHeader::TCP)
+            .allocate_typed(
+                vpcd1(),
+                vpcd3(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
             .unwrap();
         let alloc_b = allocator
-            .allocate_v4(vpcd2(), vpcd3(), addr_v4("2.1.0.1"), NextHeader::TCP)
+            .allocate_typed(
+                vpcd2(),
+                vpcd3(),
+                PrivateTuple::new(addr_v4("2.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
             .unwrap();
 
         assert_ne!(
@@ -785,10 +845,20 @@ mod std_tests {
         let allocator = build_allocator_overlapping_private_prefixes();
 
         let from_vpc1 = allocator
-            .allocate_v4(vpcd1(), vpcd3(), addr_v4("192.168.0.1"), NextHeader::TCP)
+            .allocate_typed(
+                vpcd1(),
+                vpcd3(),
+                PrivateTuple::new(addr_v4("192.168.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
             .unwrap();
         let from_vpc2 = allocator
-            .allocate_v4(vpcd2(), vpcd3(), addr_v4("192.168.0.1"), NextHeader::TCP)
+            .allocate_typed(
+                vpcd2(),
+                vpcd3(),
+                PrivateTuple::new(addr_v4("192.168.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
             .unwrap();
 
         assert_eq!(
@@ -850,7 +920,12 @@ mod std_tests {
         let allocator = build_allocator_partial_overlap();
 
         let taken = allocator
-            .allocate_v4(vpcd2(), vpcd3(), addr_v4("2.1.0.1"), NextHeader::TCP)
+            .allocate_typed(
+                vpcd2(),
+                vpcd3(),
+                PrivateTuple::new(addr_v4("2.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
             .unwrap();
         // VPC-2 can only allocate from the shared region.
         assert_eq!(taken.allocation.ip(), addr_v4("10.1.0.2"));
@@ -878,7 +953,12 @@ mod std_tests {
         let allocator = build_allocator_partial_overlap();
 
         let from_vpc1 = allocator
-            .allocate_v4(vpcd1(), vpcd3(), addr_v4("1.1.0.1"), NextHeader::TCP)
+            .allocate_typed(
+                vpcd1(),
+                vpcd3(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
             .unwrap();
         assert_eq!(
             from_vpc1.allocation.ip(),
@@ -887,7 +967,12 @@ mod std_tests {
         );
 
         let from_vpc2 = allocator
-            .allocate_v4(vpcd2(), vpcd3(), addr_v4("2.1.0.1"), NextHeader::TCP)
+            .allocate_typed(
+                vpcd2(),
+                vpcd3(),
+                PrivateTuple::new(addr_v4("2.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
             .unwrap();
         assert_ne!(
             (
@@ -908,9 +993,14 @@ mod std_tests {
         let allocator = build_allocator_partial_overlap();
 
         let mut held = Vec::new();
-        for _ in 0..16 {
+        for i in 0..16u16 {
             let allocation = allocator
-                .allocate_v4(vpcd2(), vpcd3(), addr_v4("2.1.0.1"), NextHeader::TCP)
+                .allocate_typed(
+                    vpcd2(),
+                    vpcd3(),
+                    PrivateTuple::new(addr_v4("2.1.0.1"), port(i + 1), dst_v4(), None),
+                    NextHeader::TCP,
+                )
                 .unwrap();
             let ip = allocation.allocation.ip();
             assert!(
@@ -929,12 +1019,15 @@ mod std_tests {
 
         let mut held = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
-        for step in 0..8 {
+        for step in 0..8u16 {
             let allocation = allocator
                 .allocate(
                     vpcd1(),
                     vpcd2(),
                     IpAddr::V6(addr_v6(net::ipv6_doc!(":1::1"))),
+                    port(step + 1),
+                    IpAddr::V6(dst_v6()),
+                    None,
                     NextHeader::TCP,
                 )
                 .expect("the v6 pool has room");
@@ -959,41 +1052,57 @@ mod std_tests {
     #[test]
     fn test_masquerade_v6_reserves_a_carried_address() {
         let allocator = build_allocator_v6();
+        let src_port = port(1);
+        let dst_ip = IpAddr::V6(dst_v6());
         let allocation = allocator
             .allocate(
                 vpcd1(),
                 vpcd2(),
                 IpAddr::V6(addr_v6(net::ipv6_doc!(":1::1"))),
+                src_port,
+                dst_ip,
+                None,
                 NextHeader::TCP,
             )
             .expect("the v6 pool has room");
         let held = allocation.allocation.ip();
-        let port = allocation.allocation.port();
+        let held_port = allocation.allocation.port();
 
         let next = build_allocator_v6();
+        // Re-reserve, using the same src_port and dst_ip as the original allocation (as we would do
+        // during config migration)
         let carried = next
-            .reserve_port(
-                NextHeader::TCP,
+            .reserve_mapping(
                 vpcd1(),
                 vpcd2(),
-                AnyReservation::new(IpAddr::V6(addr_v6(net::ipv6_doc!(":1::1"))), held)
-                    .expect("a v6 private source and a v6 allocation"),
-                port,
+                AnyReservation::new(
+                    IpAddr::V6(addr_v6(net::ipv6_doc!(":1::1"))),
+                    src_port,
+                    dst_ip,
+                    None,
+                    held,
+                )
+                .expect("a v6 private source and a v6 allocation"),
+                NextHeader::TCP,
+                held_port,
             )
             .expect("the next config still serves the tuple");
-        assert_eq!((carried.ip(), carried.port()), (held, port));
+        assert_eq!((carried.ip(), carried.port()), (held, held_port));
 
         let fresh = next
             .allocate(
                 vpcd1(),
                 vpcd2(),
                 IpAddr::V6(addr_v6(net::ipv6_doc!(":1::2"))),
+                port(1),
+                dst_ip,
+                None,
                 NextHeader::TCP,
             )
             .expect("the v6 pool has room");
         assert_ne!(
             (fresh.allocation.ip(), fresh.allocation.port()),
-            (held, port)
+            (held, held_port)
         );
     }
 
@@ -1099,38 +1208,63 @@ mod std_tests {
         let v4 = ipaddr("1.1.0.1");
         let v6 = IpAddr::V6(addr_v6("2001:db8:1::1"));
 
-        for (private, public) in [(v4, v6), (v6, v4)] {
+        let src_port = port(1111);
+        let dst_port = None;
+
+        for (private_src_ip, private_dst_ip, public_src_ip) in [
+            (v4, v4, v6),
+            (v4, v6, v6),
+            (v4, v6, v4),
+            (v6, v4, v4),
+            (v6, v4, v6),
+            (v6, v6, v4),
+        ] {
             assert!(
                 matches!(
-                    AnyReservation::new(private, public),
+                    AnyReservation::new(
+                        private_src_ip,
+                        src_port,
+                        private_dst_ip,
+                        dst_port,
+                        public_src_ip
+                    ),
                     Err(AllocatorError::InternalIssue(_))
                 ),
-                "{private} paired with {public} names no pool"
+                "{private_src_ip} paired with {public_src_ip} names no pool"
             );
         }
 
-        for private in [ipaddr("255.255.255.255"), ipaddr("224.0.0.1")] {
+        for private_src_ip in [ipaddr("255.255.255.255"), ipaddr("224.0.0.1")] {
             assert!(
                 matches!(
-                    AnyReservation::new(private, v4),
+                    AnyReservation::new(private_src_ip, src_port, v4, dst_port, v4,),
                     Err(AllocatorError::InternalIssue(_))
                 ),
-                "{private} is not a source address"
+                "{private_src_ip} is not a source address"
             );
         }
 
-        assert!(AnyReservation::new(v4, v4).is_ok());
-        assert!(AnyReservation::new(v6, v6).is_ok());
+        assert!(AnyReservation::new(v4, src_port, v4, dst_port, v4).is_ok());
+        assert!(AnyReservation::new(v6, src_port, v6, dst_port, v6).is_ok());
     }
 
     /// A forwarding rule claims tuples of the protocol it forwards. The address's other protocols
     /// have their own port space, which no flow of the forwarded protocol can collide with.
     #[test]
     fn a_claim_is_confined_to_the_protocol_it_forwards() {
-        let port = NatPort::new_port(NonZero::new(8080).unwrap());
-        let public = ipaddr("10.1.0.0");
-        let private = ipaddr("1.1.0.1");
-        let reservation = AnyReservation::new(private, public).expect("a v4 pair, unicast source");
+        let claimed_port = NatPort::new_port(NonZero::new(8080).unwrap());
+        let public_ip = ipaddr("10.1.0.0");
+        let private_src_ip = ipaddr("1.1.0.1");
+        let private_src_port = port(1);
+        let private_dst_ip = ipaddr("9.9.9.9");
+        let reservation = AnyReservation::new(
+            private_src_ip,
+            private_src_port,
+            private_dst_ip,
+            None,
+            public_ip,
+        )
+        .expect("a v4 pair, unicast source");
 
         for (forwarded, claimed, untouched) in [
             (L4Protocol::Tcp, NextHeader::TCP, NextHeader::UDP),
@@ -1139,13 +1273,13 @@ mod std_tests {
             let allocator = build_allocator_port_forward_for(forwarded);
             assert!(
                 matches!(
-                    allocator.reserve_port(claimed, vpcd1(), vpcd2(), reservation, port),
+                    allocator.reserve_mapping(vpcd1(), vpcd2(), reservation, claimed, claimed_port),
                     Err(AllocatorError::Denied)
                 ),
                 "a {forwarded:?} rule must claim the {claimed} tuple"
             );
             allocator
-                .reserve_port(untouched, vpcd1(), vpcd2(), reservation, port)
+                .reserve_mapping(vpcd1(), vpcd2(), reservation, untouched, claimed_port)
                 .unwrap_or_else(|e| {
                     panic!("a {forwarded:?} rule must claim nothing from {untouched}: {e}")
                 });
@@ -1192,12 +1326,22 @@ mod concurrency_tests {
 
         let t1 = thread::spawn(move || {
             let _allocation1 = allocator1
-                .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .allocate_typed(
+                    vpcd1(),
+                    vpcd2(),
+                    PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
+                    NextHeader::TCP,
+                )
                 .unwrap();
         });
         let t2 = thread::spawn(move || {
             let _allocation2 = allocator2
-                .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.2.0.0"), NextHeader::TCP)
+                .allocate_typed(
+                    vpcd1(),
+                    vpcd2(),
+                    PrivateTuple::new(addr_v4("1.2.0.0"), port(1), dst_v4(), None),
+                    NextHeader::TCP,
+                )
                 .unwrap();
         });
         t1.join().unwrap();

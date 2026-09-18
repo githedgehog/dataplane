@@ -58,6 +58,26 @@ impl<I: NatIpWithBitmap> MappingScope<I> {
     }
 }
 
+// The private side of a flow, as the allocator sees it: what private endpoing is talking, to whom
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PrivateTuple<I: NatIpWithBitmap> {
+    pub(crate) src_ip: I,
+    pub(crate) src_port: NatPort,
+    pub(crate) dst_ip: I,
+    pub(crate) dst_port: Option<NatPort>,
+}
+
+impl<I: NatIpWithBitmap> PrivateTuple<I> {
+    pub(crate) fn new(src_ip: I, src_port: NatPort, dst_ip: I, dst_port: Option<NatPort>) -> Self {
+        Self {
+            src_ip,
+            src_port,
+            dst_ip,
+            dst_port,
+        }
+    }
+}
+
 // The key to identify one mapping within a Subscriber
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct MappingKey<I: NatIpWithBitmap> {

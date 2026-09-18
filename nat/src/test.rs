@@ -227,12 +227,18 @@ async fn a_claimed_tuple_cannot_be_reserved_for_masquerade() {
     // replacement because the replacement withholds it too.
     let tuple_is_withheld = |allocator: &NatAllocatorWriter| {
         matches!(
-            allocator.get_reader().get().unwrap().reserve_port(
-                NextHeader::UDP,
+            allocator.get_reader().get().unwrap().reserve_mapping(
                 vni(200).into(),
                 vni(100).into(),
-                AnyReservation::new(addr("192.168.0.9"), addr("5.6.7.8"))
-                    .expect("a v4 pair, unicast source"),
+                AnyReservation::new(
+                    addr("192.168.0.9"),
+                    NatPort::new_port_checked(4000).unwrap(),
+                    addr("5.6.7.8"),
+                    None,
+                    addr("5.6.7.8")
+                )
+                .expect("a v4 pair, unicast source"),
+                NextHeader::UDP,
                 NatPort::new_port_checked(1024).unwrap(),
             ),
             Err(AllocatorError::Denied)
