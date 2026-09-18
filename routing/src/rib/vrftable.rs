@@ -68,7 +68,7 @@ impl VrfTable {
             vrf.set_vni(vni);
         }
 
-        /* create fib */
+        /* create fib and register it in the fibtable */
         let fibw = self.fibtablew.add_fib(vrf.vrfid, vrf.vni);
         vrf.set_fibw(fibw);
 
@@ -106,7 +106,7 @@ impl VrfTable {
         self.by_vni.insert(vni, vrfid);
 
         /* make fib accessible from vni in the fib table */
-        self.fibtablew.register_fib_by_vni(vrfid, vni);
+        self.fibtablew.register_by_vni(vrfid, vni);
         Ok(())
     }
 
@@ -123,7 +123,7 @@ impl VrfTable {
             debug!("Vrf {vrfid} has vni {vni} associated. Removing...");
             vrf.vni.take();
             self.by_vni.remove(&vni);
-            self.fibtablew.unregister_vni(vni);
+            self.fibtablew.unregister_by_vni(vni);
             debug!("Vrf with Id {vrfid} no longer has a vni {vni} associated");
         } else {
             debug!("Vrf {vrfid} has no vni configured");
@@ -193,16 +193,20 @@ impl VrfTable {
         // detach interfaces
         iftablew.detach_interfaces_from_vrf(vrfid);
 
-        // delete the corresponding fib
+        // unregister a fib from the fib table, including its access via vni
+        // if any, and destroy the fib if there
         if let Some(fibw) = vrf.fibw.take() {
             debug!("Deleting Fib for vrf {vrfid} from the FibTable");
-            self.fibtablew.del_fib(vrfid);
+            self.fibtablew.unregister_fib(vrfid);
             fibw.destroy();
         }
 
-        // if the VRF had a vni assigned, unregister it
+        // if the VRF had a vni assigned, unregister it from vrf table
         if let Some(vni) = vrf.vni {
             debug!("Unregistering vni {vni}");
+            // No need to unregister the fib by vni using
+            // self.fibtablew.unregister_by_vni(vni);
+            // since unregister_fib() does both
             self.by_vni.remove(&vni);
         }
         debug!("Vrf {vrfid} has been removed");

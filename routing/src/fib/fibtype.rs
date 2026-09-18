@@ -33,11 +33,11 @@ pub enum FibKey {
 }
 impl FibKey {
     #[must_use]
-    pub fn from_vrfid(vrfid: VrfId) -> Self {
+    pub const fn from_vrfid(vrfid: VrfId) -> Self {
         FibKey::Id(vrfid)
     }
     #[must_use]
-    pub fn from_vni(vni: Vni) -> Self {
+    pub const fn from_vni(vni: Vni) -> Self {
         FibKey::Vni(vni)
     }
     #[must_use]
@@ -377,14 +377,14 @@ impl FibWriter {
     pub fn as_fibreader(&self) -> FibReader {
         FibReader::new(self.0.clone())
     }
-    /// # Panics
-    ///
-    /// Panics if the fib is still marked valid after the invalidation is taken.
     pub fn destroy(mut self) {
+        // writer (self) is alive, so enter() can't fail
+        let id = self.enter().map_or_else(|| unreachable!(), |fib| fib.id);
         self.0.append(FibChange::Invalidate);
         self.0.publish();
         let taken_fib = self.0.take();
-        assert!(!taken_fib.valid);
+        debug_assert!(!taken_fib.valid);
+        info!("Destroyed Fib with id {id:?}");
     }
 }
 
