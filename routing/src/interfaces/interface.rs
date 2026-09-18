@@ -8,7 +8,7 @@ use crate::rib::vrf::VrfId;
 
 use net::eth::mac::SourceMac;
 use net::interface::address::IfAddr;
-use net::interface::{InterfaceIndex, Mtu};
+use net::interface::{InterfaceIndex, InterfaceName, Mtu};
 use net::vlan::Vid;
 
 use std::collections::HashSet;
@@ -82,7 +82,7 @@ pub enum AttachConfig {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouterInterfaceConfig {
     pub ifindex: InterfaceIndex,     /* ifindex of kernel interface (key) */
-    pub name: String,                /* name of interface */
+    pub name: InterfaceName,         /* name of interface */
     pub description: Option<String>, /* description - informational */
     pub iftype: IfType,              /* type of interface */
     pub admin_state: IfState,        /* admin state */
@@ -91,10 +91,10 @@ pub struct RouterInterfaceConfig {
 }
 impl RouterInterfaceConfig {
     #[must_use]
-    pub fn new(name: &str, ifindex: InterfaceIndex) -> Self {
+    pub fn new(name: InterfaceName, ifindex: InterfaceIndex) -> Self {
         Self {
             ifindex,
-            name: name.to_owned(),
+            name,
             description: None,
             iftype: IfType::Unknown,
             admin_state: IfState::Up,
@@ -102,8 +102,8 @@ impl RouterInterfaceConfig {
             mtu: None,
         }
     }
-    pub fn set_name(&mut self, name: &str) {
-        self.name = name.to_string();
+    pub fn set_name(&mut self, name: &InterfaceName) {
+        self.name = name.clone();
     }
     pub fn set_description(&mut self, description: &str) {
         self.description = Some(description.to_string());
@@ -125,7 +125,7 @@ impl RouterInterfaceConfig {
 #[derive(Debug, Clone)]
 /// An object representing a network interface and its state
 pub struct Interface {
-    pub name: String,
+    pub name: InterfaceName,
     pub description: Option<String>,
     pub ifindex: InterfaceIndex,
     pub iftype: IfType,

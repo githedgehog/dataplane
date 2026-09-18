@@ -44,6 +44,7 @@ mio = { workspace = true, features = ["os-ext", "net"] }
 netgauze-bgp-pkt = { workspace = true }
 netgauze-bmp-pkt = { workspace = true, features = ["codec"] }
 nix = { workspace = true, features = ["socket"] }
+ordermap = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 strum =  { workspace = true }
 thiserror = { workspace = true }
