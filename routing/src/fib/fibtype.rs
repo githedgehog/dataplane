@@ -387,10 +387,13 @@ impl FibWriter {
     ///
     /// Panics if the fib is still marked valid after the invalidation is taken.
     pub fn destroy(mut self) {
+        // writer is alive (self), so enter can't fail
+        let id = self.enter().map_or_else(|| unreachable!(), |fib| fib.id);
         self.0.append(FibChange::Invalidate);
         self.0.publish();
         let taken_fib = self.0.take();
         assert!(!taken_fib.valid);
+        info!("Destroyed Fib with id {id}");
     }
 }
 
