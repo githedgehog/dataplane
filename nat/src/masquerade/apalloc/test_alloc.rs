@@ -43,6 +43,16 @@ pub(super) mod context {
         NatPort::new_port(NonZero::new(n).unwrap())
     }
 
+    /// Move virtual time forward and then let the runtime actually poll what that woke. Advancing
+    /// the clock only makes a spawned reaper ready, it does not run it.
+    #[allow(dead_code)]
+    pub async fn advance(by: std::time::Duration) {
+        tokio::time::advance(by).await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[allow(dead_code)]
     pub fn dst_v4() -> Ipv4Addr {
         addr_v4("9.9.9.9")
@@ -174,6 +184,43 @@ pub(super) mod context {
     pub fn build_allocator() -> NatAllocator {
         let vpc_table = build_context();
         let config = MasqueradeConfig::new(&vpc_table);
+        NatAllocator::new(config, 1)
+    }
+
+    // A single-address pool with a short mapping idle timeout, for tests that need to observe a
+    // mapping (and the subscriber pinning it) actually get reaped.
+    #[allow(dead_code)]
+    pub fn build_allocator_short_timeout(idle_timeout: std::time::Duration) -> NatAllocator {
+        let expose1 = VpcExpose::empty()
+            .make_masquerade(Some(idle_timeout))
+            .unwrap()
+            .ip("1.1.0.0/16".into())
+            .as_range("10.5.0.0/32".into())
+            .unwrap();
+        let expose2 = VpcExpose::empty().ip("2.0.0.0/16".into());
+        let manifest1 = VpcManifest::with_exposes("VPC-1", vec![expose1, expose2]);
+        let manifest2 =
+            VpcManifest::with_exposes("VPC-2", vec![VpcExpose::empty().ip("3.0.0.0/24".into())]);
+
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
+        let vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
+        vpc1.peerings.push(Peering {
+            name: "short_timeout_peering".into(),
+            local: manifest1,
+            remote: manifest2,
+            remote_id: "12345".try_into().unwrap(),
+            remote_vni: vpc2.vni,
+            gwgroup: "default".into(),
+            acl: None,
+            no_multipath: false,
+        });
+
+        let mut vpctable = VpcTable::new();
+        vpctable.add(vpc1).unwrap();
+        vpctable.add(vpc2).unwrap();
+        let validated = vpctable.validate().unwrap();
+
+        let config = MasqueradeConfig::new(&validated);
         NatAllocator::new(config, 1)
     }
 
@@ -1306,6 +1353,139 @@ mod std_tests {
         allocator
             .reserve(address, free)
             .expect("an unclaimed port is reservable");
+    }
+
+    // A subscriber must not pin its public address forever once it has no live mappings, or the
+    // address leaks and no other subscriber can ever reuse it. Reaping is driven off the last
+    // mapping's own expiry (not an independent subscriber's timer).
+    #[tokio::test]
+    async fn a_reaped_mapping_frees_its_pinned_address_for_reuse() {
+        tokio::time::pause();
+        let mut allocator = build_allocator_short_timeout(std::time::Duration::from_millis(50));
+
+        let alloc = allocator
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
+            .unwrap();
+        drop(alloc);
+
+        // Dropping the caller's handle alone changes nothing: the mapping table still owns it.
+        let (bitmap, in_use) = get_ip_allocator_v4(
+            &mut allocator.pools_src44,
+            vpcd1(),
+            vpcd2(),
+            NextHeader::TCP,
+            addr_v4("1.1.0.1"),
+        )
+        .get_pool_clone_for_tests();
+        assert_eq!(bitmap.len(), 0, "the sole address should still be reserved");
+        assert_eq!(in_use.len(), 1);
+        assert!(in_use.front().unwrap().upgrade().is_some());
+
+        // Let the reaper expire the mapping and reap the now-empty subscriber (this runs on the
+        // paused clock).
+        advance(std::time::Duration::from_millis(500)).await;
+
+        let (bitmap, in_use) = get_ip_allocator_v4(
+            &mut allocator.pools_src44,
+            vpcd1(),
+            vpcd2(),
+            NextHeader::TCP,
+            addr_v4("1.1.0.1"),
+        )
+        .get_pool_clone_for_tests();
+        assert_eq!(
+            bitmap.len(),
+            1,
+            "the address was not freed once its last mapping expired"
+        );
+        assert!(
+            in_use.is_empty() || in_use.front().unwrap().upgrade().is_none(),
+            "the subscriber pinning the address should have been reaped"
+        );
+    }
+
+    // Mapping::{is_expired,refresh} must read the clock through the "clock" façade, not
+    // std::time::Instant::now() directly: production behaves identically either way, but under a
+    // paused clock the two diverge. Split into two parts: first that virtual time running out
+    // without a refresh does expire the mapping (rules out "never expires"), then that refreshing
+    // does keep it alive across the same span (rules out "expires regardless of refresh"). Either
+    // half alone is not able to tell a wall-clock read from a working one.
+    #[tokio::test]
+    async fn an_unrefreshed_mapping_expires_in_virtual_time() {
+        tokio::time::pause();
+        let idle_timeout = std::time::Duration::from_secs(120);
+        let allocator = build_allocator_short_timeout(idle_timeout);
+
+        let alloc = allocator
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
+            .unwrap();
+        let tuple = (alloc.allocation.ip(), alloc.allocation.port());
+
+        tokio::time::advance(idle_timeout + std::time::Duration::from_secs(1)).await;
+
+        let next = allocator
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
+            .unwrap();
+        assert_ne!(
+            (next.allocation.ip(), next.allocation.port()),
+            tuple,
+            "an unrefreshed mapping was still considered live 121s after a 120s idle timeout: \
+             expiry is not reading virtual time, so this suite's timeouts prove nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn refreshing_a_mapping_extends_it_in_virtual_time_not_wall_time() {
+        tokio::time::pause();
+        let idle_timeout = std::time::Duration::from_secs(120);
+        let allocator = build_allocator_short_timeout(idle_timeout);
+
+        let alloc = allocator
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
+            .unwrap();
+        let tuple = (alloc.allocation.ip(), alloc.allocation.port());
+
+        // Three half-timeout advances put virtual time at 1.5x the original deadline; refreshing
+        // at each step should keep pushing the deadline out from that point.
+        for _ in 0..3 {
+            tokio::time::advance(idle_timeout / 2).await;
+            alloc.allocation.refresh();
+        }
+
+        let still_live = allocator
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
+            .unwrap();
+        assert_eq!(
+            (still_live.allocation.ip(), still_live.allocation.port()),
+            tuple,
+            "the mapping was not found live after 180s of virtual time despite being refreshed every 60s: \
+             refresh must be extending the deadline from the wall clock instead of the (paused) virtual one"
+        );
     }
 }
 
