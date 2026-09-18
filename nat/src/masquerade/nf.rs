@@ -503,7 +503,12 @@ impl Masquerade {
 
         // allocate an ip and port for this flow
         let src_ip = initial_flow_key.src_ip();
-        let alloc = match allocator.allocate(src_vpcd, dst_vpcd, src_ip, proto) {
+        let src_port = src_nat_port(&initial_flow_key)?;
+        let dst_ip = initial_flow_key.dst_ip();
+        let dst_port = dst_nat_port(&initial_flow_key);
+        let alloc = match allocator.allocate(
+            src_vpcd, dst_vpcd, src_ip, src_port, dst_ip, dst_port, proto,
+        ) {
             Ok(alloc) => alloc,
             Err(e) => {
                 warn!(
@@ -672,6 +677,32 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Masquerade {
     }
 }
 
+// The private port/identifier a mapping is keyed on: the source port for TCP/UDP, the query
+// identifier for ICMP.
+//
+// This and dst_nat_port are the only derivations of a MappingKey's port halves. Both the
+// allocation path (Masquerade) and the config-migration path (flows) go through them, so a flow
+// cannot be re-reserved under a different key than the one it was allocated under.
+pub(crate) fn src_nat_port(flow_key: &FlowKey) -> Result<NatPort, MasqueradeError> {
+    Ok(match flow_key.proto_key_info() {
+        IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
+        IpProtoKey::Udp(udp) => udp.src_port.into(),
+        IpProtoKey::Icmp(icmp) => NatPort::Identifier(Masquerade::get_icmp_query_id(icmp)?),
+    })
+}
+
+// The destination port/identifier for mapping-scope purposes (RFC 4787 Address-Dependent /
+// Address-and-Port-Dependent Mapping). For traffic with no port or identifier, the mapping scope
+// is address-only (under APDM).
+pub(crate) fn dst_nat_port(flow_key: &FlowKey) -> Option<NatPort> {
+    match flow_key.proto_key_info() {
+        IpProtoKey::Tcp(tcp) => Some(tcp.dst_port.into()),
+        IpProtoKey::Udp(udp) => Some(udp.dst_port.into()),
+        IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(id)) => Some(NatPort::Identifier(*id)),
+        IpProtoKey::Icmp(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::NatPort;
@@ -795,13 +826,29 @@ mod race {
             Masquerade::discriminants(&first).unwrap_or_else(|_| unreachable!());
 
         let held = running
-            .allocate(src_vpcd, dst_vpcd, first_key.src_ip(), first_key.proto())
+            .allocate(
+                src_vpcd,
+                dst_vpcd,
+                first_key.src_ip(),
+                first_key.src_port().map(NatPort::new_port).unwrap(),
+                first_key.dst_ip(),
+                first_key.dst_port().map(NatPort::new_port),
+                first_key.proto(),
+            )
             .unwrap_or_else(|e| unreachable!("the pool has room: {e}"));
 
         // Build a replacement with no reservations to model a migration that missed this flow.
         let replacement = NatAllocator::new(running.config().clone(), running.genid() + 1);
         let reissued = replacement
-            .allocate(src_vpcd, dst_vpcd, second_key.src_ip(), second_key.proto())
+            .allocate(
+                src_vpcd,
+                dst_vpcd,
+                second_key.src_ip(),
+                second_key.src_port().map(NatPort::new_port).unwrap(),
+                second_key.dst_ip(),
+                second_key.dst_port().map(NatPort::new_port),
+                second_key.proto(),
+            )
             .unwrap_or_else(|e| unreachable!("the pool has room: {e}"));
 
         let tuple = (held.allocation.ip(), held.allocation.port());
@@ -891,7 +938,15 @@ mod race {
 
         let allocate = || {
             allocator
-                .allocate(src_vpcd, dst_vpcd, key.src_ip(), key.proto())
+                .allocate(
+                    src_vpcd,
+                    dst_vpcd,
+                    key.src_ip(),
+                    key.src_port().map(NatPort::new_port).unwrap(),
+                    key.dst_ip(),
+                    key.dst_port().map(NatPort::new_port),
+                    key.proto(),
+                )
                 .unwrap_or_else(|e| unreachable!("the pool has room: {e}"))
         };
         let winning = allocate();

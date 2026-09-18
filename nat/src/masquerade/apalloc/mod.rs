@@ -81,8 +81,10 @@ use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
 use crate::masquerade::MasqueradeConfig;
 pub use crate::masquerade::apalloc::natip_with_bitmap::NatIpWithBitmap;
+use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicI64, Ordering};
 use config::GenId;
+use mapping::{MappingKey, MappingScope, PrivateTuple};
 use net::ip::{IpAddress, NextHeader, Unicast};
 use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
@@ -103,9 +105,9 @@ mod port_alloc;
 mod region;
 mod reserved;
 mod setup;
-mod test_alloc;
+pub(super) mod test_alloc;
 
-pub use port_alloc::AllocatedPort;
+pub use mapping::Mapping;
 #[cfg(test)]
 pub(crate) use setup::DEFAULT_MASQUERADE_IDLE_TIMEOUT;
 
@@ -217,8 +219,8 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
 /// [`Allocation`] is the non-generic object representing an allocation, be it IPv4 or IPv6
 #[derive(Debug)]
 pub enum Allocation {
-    V4(AllocatedPort<Ipv4Addr>),
-    V6(AllocatedPort<Ipv6Addr>),
+    V4(Arc<Mapping<Ipv4Addr>>),
+    V6(Arc<Mapping<Ipv6Addr>>),
 }
 
 impl Allocation {
@@ -241,14 +243,14 @@ impl Allocation {
 
 trait MasqueradePools: NatIpWithBitmap {
     fn pools(allocator: &NatAllocator) -> &PoolTable<Self, Self>;
-    fn into_allocation(port: AllocatedPort<Self>) -> Allocation;
+    fn into_allocation(port: Arc<Mapping<Self>>) -> Allocation;
 }
 
 impl MasqueradePools for Ipv4Addr {
     fn pools(allocator: &NatAllocator) -> &PoolTable<Self, Self> {
         &allocator.pools_src44
     }
-    fn into_allocation(port: AllocatedPort<Self>) -> Allocation {
+    fn into_allocation(port: Arc<Mapping<Self>>) -> Allocation {
         Allocation::V4(port)
     }
 }
@@ -257,15 +259,18 @@ impl MasqueradePools for Ipv6Addr {
     fn pools(allocator: &NatAllocator) -> &PoolTable<Self, Self> {
         &allocator.pools_src66
     }
-    fn into_allocation(port: AllocatedPort<Self>) -> Allocation {
+    fn into_allocation(port: Arc<Mapping<Self>>) -> Allocation {
         Allocation::V6(port)
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Reservation<Ip: IpAddress> {
-    private: Unicast<Ip>,
-    public: Ip,
+    private_src_ip: Unicast<Ip>,
+    private_src_port: NatPort,
+    private_dst_ip: Ip,
+    private_dst_port: Option<NatPort>,
+    public_ip: Ip,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -275,21 +280,39 @@ pub(crate) enum AnyReservation {
 }
 
 impl AnyReservation {
-    pub(crate) fn new(private: IpAddr, public: IpAddr) -> Result<Self, AllocatorError> {
-        let unicast = |private: IpAddr| {
-            AllocatorError::InternalIssue(format!("private source {private} is not unicast"))
+    pub(crate) fn new(
+        private_src_ip: IpAddr,
+        private_src_port: NatPort,
+        private_dst_ip: IpAddr,
+        private_dst_port: Option<NatPort>,
+        public_ip: IpAddr,
+    ) -> Result<Self, AllocatorError> {
+        let unicast = |private_src: IpAddr| {
+            AllocatorError::InternalIssue(format!("private source {private_src} is not unicast"))
         };
-        match (private, public) {
-            (IpAddr::V4(v4_private), IpAddr::V4(public)) => Ok(Self::V4(Reservation {
-                private: Unicast::<Ipv4Addr>::new(v4_private).map_err(|_| unicast(private))?,
-                public,
-            })),
-            (IpAddr::V6(v6_private), IpAddr::V6(public)) => Ok(Self::V6(Reservation {
-                private: Unicast::<Ipv6Addr>::new(v6_private).map_err(|_| unicast(private))?,
-                public,
-            })),
+        match (private_src_ip, private_dst_ip, public_ip) {
+            (IpAddr::V4(private_src), IpAddr::V4(private_dst_ip), IpAddr::V4(public_ip)) => {
+                Ok(Self::V4(Reservation {
+                    private_src_ip: Unicast::<Ipv4Addr>::new(private_src)
+                        .map_err(|_| unicast(private_src_ip))?,
+                    private_src_port,
+                    private_dst_ip,
+                    private_dst_port,
+                    public_ip,
+                }))
+            }
+            (IpAddr::V6(v6_private), IpAddr::V6(private_dst_ip), IpAddr::V6(public_ip)) => {
+                Ok(Self::V6(Reservation {
+                    private_src_ip: Unicast::<Ipv6Addr>::new(v6_private)
+                        .map_err(|_| unicast(private_src_ip))?,
+                    private_src_port,
+                    private_dst_ip,
+                    private_dst_port,
+                    public_ip,
+                }))
+            }
             _ => Err(AllocatorError::InternalIssue(format!(
-                "IP version mismatch: src={private} allocated={public}"
+                "IP version mismatch: src={private_src_ip}, dst={private_dst_ip}, allocated={public_ip}"
             ))),
         }
     }
@@ -344,83 +367,84 @@ impl NatAllocator {
     //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
     //= type=todo
     //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
-    fn allocate_v4(
+    fn allocate_typed<I: MasqueradePools>(
         &self,
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
-        src_ip: Ipv4Addr,
+        tuple: PrivateTuple<I>,
         next_header: NextHeader,
-    ) -> Result<AllocationResult<AllocatedPort<Ipv4Addr>>, AllocatorError> {
-        Self::allocate_from_tables(
-            src_ip.into(),
-            src_vpcd,
-            dst_vpcd,
-            next_header,
-            &self.pools_src44,
-        )
+    ) -> Result<AllocationResult<Arc<Mapping<I>>>, AllocatorError> {
+        Self::allocate_from_tables(src_vpcd, dst_vpcd, tuple, next_header, I::pools(self))
     }
 
-    fn allocate_v6(
+    // Calls allocate_typed(), with the result erased back to the non-generic Allocation
+    fn allocate_any<I: MasqueradePools>(
         &self,
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
-        src_ip: Ipv6Addr,
+        tuple: PrivateTuple<I>,
         next_header: NextHeader,
-    ) -> Result<AllocationResult<AllocatedPort<Ipv6Addr>>, AllocatorError> {
-        Self::allocate_from_tables(
-            src_ip.into(),
-            src_vpcd,
-            dst_vpcd,
-            next_header,
-            &self.pools_src66,
-        )
+    ) -> Result<AllocationResult<Allocation>, AllocatorError> {
+        self.allocate_typed(src_vpcd, dst_vpcd, tuple, next_header)
+            .map(|r| AllocationResult {
+                allocation: I::into_allocation(r.allocation),
+                idle_timeout: r.idle_timeout,
+            })
     }
 
-    /// Allocate an IP address and port for the given source IP, dispatching on IP version.
+    /// Get or create the mapping for the given private tuple, dispatching on IP version.
+    /// The destination IP and port may participate in the mapping key, depending on the
+    /// [`MappingPolicy`] in use.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn allocate(
         &self,
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         src_ip: IpAddr,
+        src_port: NatPort,
+        dst_ip: IpAddr,
+        dst_port: Option<NatPort>,
         next_header: NextHeader,
     ) -> Result<AllocationResult<Allocation>, AllocatorError> {
-        match src_ip {
-            IpAddr::V4(ip) => self
-                .allocate_v4(src_vpcd, dst_vpcd, ip, next_header)
-                .map(|r| AllocationResult {
-                    allocation: Allocation::V4(r.allocation),
-                    idle_timeout: r.idle_timeout,
-                }),
-            IpAddr::V6(ip) => self
-                .allocate_v6(src_vpcd, dst_vpcd, ip, next_header)
-                .map(|r| AllocationResult {
-                    allocation: Allocation::V6(r.allocation),
-                    idle_timeout: r.idle_timeout,
-                }),
+        match (src_ip, dst_ip) {
+            (IpAddr::V4(src), IpAddr::V4(dst)) => self.allocate_any(
+                src_vpcd,
+                dst_vpcd,
+                PrivateTuple::new(src, src_port, dst, dst_port),
+                next_header,
+            ),
+            (IpAddr::V6(src), IpAddr::V6(dst)) => self.allocate_any(
+                src_vpcd,
+                dst_vpcd,
+                PrivateTuple::new(src, src_port, dst, dst_port),
+                next_header,
+            ),
+            _ => Err(AllocatorError::InternalIssue(format!(
+                "IP version mismatch between src={src_ip} and dst={dst_ip}"
+            ))),
         }
     }
 
     fn allocate_from_tables<I: NatIpWithBitmap>(
-        src_ip: IpAddr,
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
+        tuple: PrivateTuple<I>,
         next_header: NextHeader,
         pools_src: &PoolTable<I, I>,
-    ) -> Result<AllocationResult<AllocatedPort<I>>, AllocatorError> {
+    ) -> Result<AllocationResult<Arc<Mapping<I>>>, AllocatorError> {
+        let PrivateTuple {
+            src_ip,
+            src_port,
+            dst_ip,
+            dst_port,
+        } = tuple;
         // TODO: here we should only allow next-header to be TCP/UDP/ICMP/ICMP6 as a SANITY.
         // This can be done by a transparent wrapper of NextHeader that can only exist for that set
 
         // If we could not find an address pool for the source address, the user has not exposed
         // and configured NAT for that source address. Drop the packet instead of creating a session.
         let pool = pools_src
-            .get_entry(
-                next_header,
-                src_vpcd,
-                dst_vpcd,
-                IpAddress::try_from_addr(src_ip).map_err(|_| {
-                    AllocatorError::InternalIssue("Failed to convert src IP address".to_string())
-                })?,
-            )
+            .get_entry(next_header, src_vpcd, dst_vpcd, src_ip)
             .ok_or_else(|| {
                 // Given that we mark packets that require NAT, this case should never happen.
                 error!("No address pool found for src ip {src_ip}. This is a bug");
@@ -428,7 +452,9 @@ impl NatAllocator {
             })?;
 
         let allow_null = next_header == NextHeader::ICMP || next_header == NextHeader::ICMP6;
-        let allocation = pool.allocate(allow_null)?;
+        let scope = MappingScope::new(pool.mapping_policy(), dst_ip, dst_port);
+        let allocation =
+            pool.get_or_create_mapping(src_ip, MappingKey::new(src_port, scope), allow_null)?;
         let idle_timeout = pool.idle_timeout();
 
         Ok(AllocationResult {
@@ -437,47 +463,62 @@ impl NatAllocator {
         })
     }
 
-    pub(crate) fn reserve_port(
+    pub(crate) fn reserve_mapping(
         &self,
-        protocol: NextHeader,
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         reservation: AnyReservation,
+        protocol: NextHeader,
         port: NatPort,
     ) -> Result<Allocation, AllocatorError> {
         match reservation {
             AnyReservation::V4(reservation) => {
-                self.reserve(protocol, src_vpcd, dst_vpcd, reservation, port)
+                self.reserve(src_vpcd, dst_vpcd, reservation, protocol, port)
             }
             AnyReservation::V6(reservation) => {
-                self.reserve(protocol, src_vpcd, dst_vpcd, reservation, port)
+                self.reserve(src_vpcd, dst_vpcd, reservation, protocol, port)
             }
         }
     }
 
     fn reserve<I: MasqueradePools>(
         &self,
-        protocol: NextHeader,
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         reservation: Reservation<I>,
+        protocol: NextHeader,
         port: NatPort,
     ) -> Result<Allocation, AllocatorError> {
-        let Reservation { private, public } = reservation;
-        let private = private.into();
-        debug!("Re-reserving {public} {protocol}:{port}, src_vpcd:{src_vpcd} dst_vpcd:{dst_vpcd}");
+        let Reservation {
+            private_src_ip,
+            private_src_port,
+            private_dst_ip,
+            private_dst_port,
+            public_ip,
+        } = reservation;
+        let private_src_ip = private_src_ip.into();
+        debug!(
+            "Re-reserving {public_ip} {protocol}:{port}, src_vpcd:{src_vpcd} dst_vpcd:{dst_vpcd} (src: {private_src_ip}:{private_src_port}, dst: {private_dst_ip}:{private_dst_port:?})"
+        );
 
-        let Some(pool) = I::pools(self).get_entry(protocol, src_vpcd, dst_vpcd, private) else {
+        let Some(pool) = I::pools(self).get_entry(protocol, src_vpcd, dst_vpcd, private_src_ip)
+        else {
             warn!(
-                "No pool found for proto:{protocol} src-vpcd:{src_vpcd} dst-vpcd:{dst_vpcd} and src:{private}"
+                "No pool found for proto:{protocol} src-vpcd:{src_vpcd} dst-vpcd:{dst_vpcd} and src:{private_src_ip}"
             );
             return Err(AllocatorError::NoPoolFound);
         };
+        debug!("Pool found for {protocol} {src_vpcd} {dst_vpcd} {private_src_ip}");
 
-        debug!("Pool found for {protocol} {src_vpcd} {dst_vpcd} {private}");
-        pool.reserve(public, port)
-            .inspect_err(|e| error!("Failed to reserve ip {public} port {port}: {e}"))
-            .map(I::into_allocation)
+        let scope = MappingScope::new(pool.mapping_policy(), private_dst_ip, private_dst_port);
+        pool.reserve_mapping(
+            private_src_ip,
+            MappingKey::new(private_src_port, scope),
+            public_ip,
+            port,
+        )
+        .inspect_err(|e| error!("Failed to reserve ip {public_ip} port {port}: {e}"))
+        .map(I::into_allocation)
     }
 }
 

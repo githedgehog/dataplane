@@ -5,6 +5,7 @@ use crate::NatPort;
 use crate::common::NatAction;
 use crate::masquerade::allocation::AllocatorError;
 use crate::masquerade::apalloc::{AnyReservation, NatAllocator};
+use crate::masquerade::nf::{dst_nat_port, src_nat_port};
 use crate::masquerade::state::MasqueradeState;
 
 use config::GenId;
@@ -61,6 +62,10 @@ enum ReReserveError {
     MissingDiscriminant,
     #[error("{0}")]
     Allocator(#[from] AllocatorError),
+    #[error(
+        "flow key {0} has no usable source port/identifier, cannot be carried over. This is a bug"
+    )]
+    NoSrcPortOrId(FlowKey),
     #[error("flow has no NAT state to re-associate. This is a bug")]
     NoNatState,
     #[error("flow's NAT state is not masquerade. This is a bug")]
@@ -80,11 +85,16 @@ fn re_reserve_ip_and_port(
         return Err(ReReserveError::MissingDiscriminant);
     };
     let src_ip = flow_key.src_ip();
+    let Ok(src_port) = src_nat_port(flow_key) else {
+        return Err(ReReserveError::NoSrcPortOrId(*flow_key));
+    };
+    let dst_ip = flow_key.dst_ip();
+    let dst_port = dst_nat_port(flow_key);
     let port_u16 = port.as_u16();
     debug!("Attempting to re-reserve {ip} {proto}:{port_u16} for flow {flow_key}");
 
-    let reservation = AnyReservation::new(src_ip, ip)?;
-    let alloc = new_allocator.reserve_port(proto, src_vpcd, dst_vpcd, reservation, port)?;
+    let reservation = AnyReservation::new(src_ip, src_port, dst_ip, dst_port, ip)?;
+    let alloc = new_allocator.reserve_mapping(src_vpcd, dst_vpcd, reservation, proto, port)?;
 
     debug!("Successfully re-reserved ip {ip} port/Id {port_u16} ({proto})");
     let mut guard = flow_info.locked.write();
