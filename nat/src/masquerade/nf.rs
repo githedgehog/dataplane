@@ -192,6 +192,12 @@ impl Masquerade {
         flow_info: &FlowInfo,
         state: &MasqueradeState,
     ) {
+        // RFC 4787 REQ-6: any outbound packet on any flow sharing a mapping refreshes it,
+        // TODO: duvet
+        if let Some(allocation) = state.allocation() {
+            allocation.refresh();
+        }
+
         let key = flow_info.flowkey();
         let current = state.status.load();
         let new_status = next_flow_status(packet, state.action(), current);
@@ -303,13 +309,7 @@ impl Masquerade {
     fn get_reverse_mapping(
         flow_key: &FlowKey,
     ) -> Result<(UnicastIpAddr, NatPort), MasqueradeError> {
-        let src_ip = flow_key.addrs().src_unicast();
-        let src_port = match flow_key.proto_key_info() {
-            IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
-            IpProtoKey::Udp(udp) => udp.src_port.into(),
-            IpProtoKey::Icmp(icmp) => NatPort::Identifier(Self::get_icmp_query_id(icmp)?),
-        };
-        Ok((src_ip, src_port))
+        Ok((flow_key.addrs().src_unicast(), src_nat_port(flow_key)?))
     }
 
     fn get_icmp_query_id(key: &IcmpProtoKey) -> Result<u16, MasqueradeError> {

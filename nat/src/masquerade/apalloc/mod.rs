@@ -239,6 +239,13 @@ impl Allocation {
             Self::V6(a) => a.port(),
         }
     }
+
+    pub fn refresh(&self) {
+        match self {
+            Self::V4(a) => a.refresh(),
+            Self::V6(a) => a.refresh(),
+        }
+    }
 }
 
 trait MasqueradePools: NatIpWithBitmap {
