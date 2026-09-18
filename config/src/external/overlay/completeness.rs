@@ -11,8 +11,8 @@ use super::acl::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope};
 use super::algebra::Sequence;
 use super::vpc::Vpc;
 use super::vpcpeering::{
-    VpcExpose, VpcExposeMasquerade, VpcExposeNat, VpcExposeNatConfig, VpcExposePortForwarding,
-    VpcExposeStaticNat, VpcManifest, VpcPeering,
+    MappingPolicy, VpcExpose, VpcExposeMasquerade, VpcExposeNat, VpcExposeNatConfig,
+    VpcExposePortForwarding, VpcExposeStaticNat, VpcManifest, VpcPeering,
 };
 
 #[derive(Debug)]
@@ -150,6 +150,14 @@ const REACH: &[(&str, Reach)] = &[
     (
         "VpcExposeMasquerade.idle_timeout",
         Reach::Spans(&["absent", "present"]),
+    ),
+    (
+        "VpcExposeMasquerade.mapping_policy",
+        Reach::Spans(&[
+            "address-and-port-dependent",
+            "address-dependent",
+            "endpoint-independent",
+        ]),
     ),
     ("VpcExposeStaticNat", Reach::Spans(&["constructed"])),
     (
@@ -340,7 +348,10 @@ fn survey_nat(nat: &VpcExposeNat, seen: &mut Observed) {
         },
     );
     match config {
-        VpcExposeNatConfig::Masquerade(VpcExposeMasquerade { idle_timeout }) => {
+        VpcExposeNatConfig::Masquerade(VpcExposeMasquerade {
+            idle_timeout,
+            mapping_policy,
+        }) => {
             seen.note("VpcExposeNat.config", "masquerade");
             seen.note(
                 "VpcExposeMasquerade.idle_timeout",
@@ -348,6 +359,14 @@ fn survey_nat(nat: &VpcExposeNat, seen: &mut Observed) {
                     "present"
                 } else {
                     "absent"
+                },
+            );
+            seen.note(
+                "VpcExposeMasquerade.mapping_policy",
+                match mapping_policy {
+                    MappingPolicy::EndpointIndependent => "endpoint-independent",
+                    MappingPolicy::AddressDependent => "address-dependent",
+                    MappingPolicy::AddressAndPortDependent => "address-and-port-dependent",
                 },
             );
         }
