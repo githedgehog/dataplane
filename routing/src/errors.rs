@@ -4,6 +4,7 @@
 //! The error results used by this library.
 
 use crate::fib::fibtype::FibKey;
+
 use net::eth::mac::Mac;
 use net::interface::InterfaceIndex;
 use net::interface::address::{IfAddr, IfAddrError};
@@ -61,4 +62,7 @@ pub enum RouterError {
 
     #[error("Invalid next-hop: {0}")]
     InvalidNexthop(&'static str),
+
+    #[error("Interface is not attached: {0}")]
+    NotAttached(InterfaceIndex),
 }

@@ -174,7 +174,7 @@ pub mod tests {
         assert_eq!(iftable.len(), 1, "Only eth0 should be there");
 
         /* Delete eth0 by index */
-        iftable.del_interface(eth0_idx);
+        iftable.del_interface(eth0_idx).unwrap();
         assert_eq!(iftable.len(), 0, "No interface should be there");
     }
 }

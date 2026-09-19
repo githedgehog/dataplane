@@ -276,8 +276,8 @@ fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
             revent!(RouterEvent::IfOperChange(ev, iface.oper_state, oper_state));
         }
     }
-    iftw.set_iface_admin_state(ifindex, adm_state);
-    iftw.set_iface_oper_state(ifindex, oper_state);
+    let _ = iftw.set_iface_admin_state(ifindex, adm_state);
+    let _ = iftw.set_iface_oper_state(ifindex, oper_state);
 }
 
 fn handle_bgp_peer_status_change(bgp_ev: BgpNeighEvent) {
