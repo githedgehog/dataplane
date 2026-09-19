@@ -57,12 +57,12 @@ npins add github kube-rs kopium
 npins add github githedgehog fabric # Will pick highest tagged version on pin bump
 npins freeze fabric
 
-npins add github FRRouting frr --branch stable/10.6 # floats with branch on pin bump
-npins add github --name frr-dp githedgehog frr --branch hh-master-10.6 # floats with branch on pin bump
+npins add github FRRouting frr --upper-bound 10.8 --release-prefix frr- # floats within 10.7.x on pin bump
+npins add github --name frr-dp githedgehog frr --branch hh-master-10.7.1 # floats with branch on pin bump
 
 npins add github githedgehog frr-agent --branch master # floats with branch on pin bump
 npins add github githedgehog dplane-rpc --branch master # floats with branch on pin bump
-npins add github githedgehog dplane-plugin --branch hh-master-10.6 # floats with branch on pin bump
+npins add github githedgehog dplane-plugin --branch hh-master-10.7.1 # floats with branch on pin bump
 
 npins add github githedgehog duvet --branch v0.4.3-hh # floats with branch on pin bump
 
