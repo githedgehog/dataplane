@@ -33,68 +33,77 @@ pub mod tests {
         RouterInterfaceConfig::new(ifname, ifindex)
     }
 
-    // create a test interface table
-    fn populate_test_iftable() -> IfTable {
-        let mut iftable = IfTable::new();
+    // build sample interface configs to build a sample iftable
+    fn build_interface_configs() -> Vec<RouterInterfaceConfig> {
+        let mut configs = vec![];
 
         /* create loopback */
-        let mut lo = build_test_interface_cfg("Loopback", 1);
-        lo.set_admin_state(IfState::Up);
-        lo.set_description("Main loopback interface");
-        lo.set_iftype(IfType::Loopback);
+        let mut ifconfig = build_test_interface_cfg("Loopback", 1);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("Main loopback interface");
+        ifconfig.set_iftype(IfType::Loopback);
+        configs.push(ifconfig);
 
         /* create Eth0 */
-        let mut eth0 = build_test_interface_cfg("eth0", 2);
-        eth0.set_admin_state(IfState::Up);
-        eth0.set_description("Uplink to the Moon");
-        eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
+        let mut ifconfig = build_test_interface_cfg("eth0", 2);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("Uplink to the Moon");
+        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
         }));
+        configs.push(ifconfig);
 
         /* create Eth1 */
-        let mut eth1 = build_test_interface_cfg("eth1", 3);
-        eth1.set_admin_state(IfState::Up);
-        eth1.set_description("Downlink from Mars");
-        eth1.set_iftype(IfType::Ethernet(IfDataEthernet {
+        let mut ifconfig = build_test_interface_cfg("eth1", 3);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("Downlink from Mars");
+        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
         }));
+        configs.push(ifconfig);
 
         /* create Eth2 */
-        let mut eth2 = build_test_interface_cfg("eth2", 4);
-        eth2.set_admin_state(IfState::Up);
-        eth2.set_description("Downlink from Sun");
-        eth2.set_iftype(IfType::Ethernet(IfDataEthernet {
+        let mut ifconfig = build_test_interface_cfg("eth2", 4);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("Downlink from Sun");
+        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: SourceMac::try_from("00:cc:00:00:00:03").unwrap(),
         }));
+        configs.push(ifconfig);
 
         /* create vlan.100 */
-        let mut vlan100 = build_test_interface_cfg("eth1.100", 5);
-        vlan100.set_admin_state(IfState::Up);
-        vlan100.set_description("External customer 1");
-        vlan100.set_iftype(IfType::Dot1q(IfDataDot1q {
+        let mut ifconfig = build_test_interface_cfg("eth1.100", 5);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("External customer 1");
+        ifconfig.set_iftype(IfType::Dot1q(IfDataDot1q {
             mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
             vlanid: Vid::new(100).unwrap(),
         }));
+        configs.push(ifconfig);
 
         /* create vlan.200 */
-        let mut vlan200 = build_test_interface_cfg("eth1.200", 6);
-        vlan200.set_admin_state(IfState::Up);
-        vlan200.set_description("External customer 2");
-        vlan200.set_iftype(IfType::Dot1q(IfDataDot1q {
+        let mut ifconfig = build_test_interface_cfg("eth1.200", 6);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("External customer 2");
+        ifconfig.set_iftype(IfType::Dot1q(IfDataDot1q {
             mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
             vlanid: Vid::new(200).unwrap(),
         }));
+        configs.push(ifconfig);
 
-        /* Add the interfaces to the iftable */
-        iftable.add_interface(&lo).expect("Should not fail");
-        iftable.add_interface(&eth0).expect("Should not fail");
-        iftable.add_interface(&eth1).expect("Should not fail");
-        iftable.add_interface(&eth2).expect("Should not fail");
-        iftable.add_interface(&vlan100).expect("Should not fail");
-        iftable.add_interface(&vlan200).expect("Should not fail");
+        configs
+    }
 
-        assert_eq!(iftable.len(), 6);
+    // create a test interface table
+    fn populate_test_iftable() -> IfTable {
+        let mut iftable = IfTable::new();
+        let ifconfigs = build_interface_configs();
 
+        // add the interfaces to the iftable from the configs
+        for config in &ifconfigs {
+            iftable.add_interface(config).expect("Should not fail");
+        }
+        assert_eq!(iftable.len(), ifconfigs.len());
         iftable
     }
 
@@ -334,5 +343,24 @@ pub mod tests {
         let r2 = iftw.mod_interface(config.clone());
         assert_eq!(r1, r2);
         compare(&iftable, &iftr);
+    }
+
+    #[test]
+    fn test_interface_config_from_interface() {
+        use std::collections::HashMap;
+
+        let iftable = populate_test_iftable();
+        let recovered: HashMap<InterfaceIndex, RouterInterfaceConfig> = iftable
+            .values()
+            .map(|iface| (iface.ifindex, iface.as_config()))
+            .collect();
+
+        // the configs used to populate the iftable
+        let original: HashMap<InterfaceIndex, RouterInterfaceConfig> = build_interface_configs()
+            .iter()
+            .map(|conf| (conf.ifindex, conf.clone()))
+            .collect();
+
+        similar_asserts::assert_eq!(original, recovered);
     }
 }
