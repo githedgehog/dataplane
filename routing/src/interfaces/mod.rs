@@ -205,7 +205,7 @@ pub mod tests {
     #[track_caller]
     fn compare(reference: &IfTable, reader: &IfTableReader) {
         let wrapped = reader.enter().unwrap();
-        assert_eq!(&*wrapped, reference);
+        similar_asserts::assert_eq!(&*wrapped, reference);
     }
 
     #[test]
