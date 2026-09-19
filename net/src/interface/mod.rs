@@ -137,7 +137,7 @@ pub struct InterfaceName(String);
 
 impl Display for InterfaceName {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        f.pad(&self.0)
     }
 }
 
