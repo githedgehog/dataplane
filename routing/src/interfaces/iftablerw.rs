@@ -12,8 +12,8 @@ use crate::rib::vrf::VrfId;
 use crate::rib::vrftable::VrfTable;
 use left_right::ReadHandleFactory;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
-use net::interface::InterfaceIndex;
 use net::interface::address::IfAddr;
+use net::interface::{InterfaceIndex, InterfaceName};
 
 use tracing::{debug, error};
 
@@ -284,6 +284,30 @@ impl IfTableWriter {
         debug!("Detaching all interfaces interfaces from vrf {vrfid}");
         self.0.append(IfTableChange::DetachFromVrf(vrfid));
         self.0.publish();
+    }
+
+    #[allow(dead_code)]
+    pub fn update_name(
+        &mut self,
+        ifindex: InterfaceIndex,
+        new_name: &InterfaceName,
+    ) -> Result<(), RouterError> {
+        let mut ifconfig = self
+            .enter()
+            .unwrap_or_else(|| unreachable!("self is alive"))
+            .get_interface(ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?
+            .as_config();
+
+        if ifconfig.name == *new_name {
+            return Ok(());
+        }
+        ifconfig.set_name(new_name);
+
+        self.0.append(IfTableChange::Mod(ifconfig));
+        self.0.publish();
+        debug!("Changed the name of interface with ifindex {ifindex} to {new_name}");
+        Ok(())
     }
 }
 
