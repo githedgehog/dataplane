@@ -29,11 +29,15 @@ use test_utils::with_caps;
 use tracing::info;
 use tracing_test::traced_test;
 
-#[test]
-#[n_vm::in_vm]
+#[n_vm::test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
 #[cfg_attr(not(emulated), traced_test)]
 fn reconcile_fuzz() {
+    #[n_vm::config]
+    const _: _ = n_vm::VmConfigBuilder::default()
+        .corpus(n_vm::CorpusPolicy::Fuzz)
+        .build();
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
@@ -125,7 +129,7 @@ where
 /// The flannel VTEP here deliberately shares a VNI with a VPC of ours (flannel defaults to vni 1)
 /// while terminating on flannel's own UDP port.  That is legal in the kernel, and the reconciler
 /// must not confuse the two.
-#[test]
+#[n_vm::test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
 #[cfg_attr(not(emulated), traced_test)]
 fn foreign_cni_devices_are_not_removed() {
@@ -286,7 +290,7 @@ fn foreign_cni_devices_are_not_removed() {
 }
 
 #[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
-#[tokio::test]
+#[n_vm::test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
 #[cfg_attr(not(emulated), traced_test)]
 async fn reconcile_demo() {

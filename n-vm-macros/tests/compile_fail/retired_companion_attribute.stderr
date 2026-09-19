@@ -1,0 +1,9 @@
+error: #[hypervisor] has been replaced by a `const VmConfig`; declare one and name it with `config = ...`, e.g.
+
+       const MY_VM: n_vm::VmConfig = n_vm::VmConfig { iommu: true, ..n_vm::VmConfig::DEFAULT };
+
+       #[n_vm::test(config = MY_VM)]
+  --> tests/compile_fail/retired_companion_attribute.rs:13:1
+   |
+13 | #[hypervisor(iommu)]
+   | ^^^^^^^^^^^^^^^^^^^^

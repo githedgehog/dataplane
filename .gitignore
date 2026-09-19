@@ -20,3 +20,8 @@ result*/**
 /bin
 sysroot
 devroot
+testroot
+vmroot
+
+# n-vm host share (see `n_vm_host_share` in the justfile)
+.n-vm-share

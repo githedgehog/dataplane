@@ -1,0 +1,5 @@
+error: #[n_vm::test] already provides the test harness and the guest tokio runtime: remove #[tokio::test] and move its options into #[n_vm::test(...)] (e.g. `#[n_vm::test(multi_thread, worker_threads = 4)]`)
+ --> tests/compile_fail/redundant_tokio_test_attr.rs:8:1
+  |
+8 | #[tokio::test(flavor = "multi_thread")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
