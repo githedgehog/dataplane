@@ -100,7 +100,7 @@ impl RouterTables {
         self.interfaces
             .add_interface(config)
             .expect("interface index is already in use");
-        self.interfaces.set_iface_oper_state(ifindex, IfState::Up);
+        let _ = self.interfaces.set_iface_oper_state(ifindex, IfState::Up);
         self
     }
 
@@ -110,8 +110,8 @@ impl RouterTables {
         admin: IfState,
         oper: IfState,
     ) -> &mut Self {
-        self.interfaces.set_iface_admin_state(ifindex, admin);
-        self.interfaces.set_iface_oper_state(ifindex, oper);
+        let _ = self.interfaces.set_iface_admin_state(ifindex, admin);
+        let _ = self.interfaces.set_iface_oper_state(ifindex, oper);
         self
     }
 

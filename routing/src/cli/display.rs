@@ -569,7 +569,6 @@ impl Display for IfType {
                 fmt_iftype_name(f, "802.1q")?;
                 e.fmt(f)
             }
-            IfType::Vxlan => fmt_iftype_name(f, "VxLAN"),
         }
     }
 }

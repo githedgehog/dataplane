@@ -296,7 +296,7 @@ impl RpcOperation for IfAddress {
                 return RpcResultCode::InvalidRequest;
             }
         };
-        db.iftw.add_ip_address(ifindex, ifaddr);
+        let _ = db.iftw.add_ip_address(ifindex, ifaddr);
         RpcResultCode::Ok
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
@@ -311,7 +311,7 @@ impl RpcOperation for IfAddress {
                 return RpcResultCode::InvalidRequest;
             }
         };
-        db.iftw.del_ip_address(ifindex, ifaddr);
+        let _ = db.iftw.del_ip_address(ifindex, ifaddr);
         RpcResultCode::Ok
     }
 }
