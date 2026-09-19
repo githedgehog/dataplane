@@ -756,6 +756,31 @@ impl Headers {
         &self.net_ext
     }
 
+    #[must_use]
+    pub fn upper_layer_proto(&self) -> Option<NextHeader> {
+        // A non-first fragment has no transport header. Check the whole chain:
+        // the parser can mistake its body for more extensions and a transport.
+        // Offset zero still carries the header, even when more fragments follow.
+        if self
+            .net_ext
+            .iter()
+            .any(|ext| matches!(ext, NetExt::Fragment(h) if h.fragment_offset().value() != 0))
+        {
+            return None;
+        }
+
+        let next = match self.net_ext.last() {
+            Some(NetExt::HopByHop(h)) => h.next_header(),
+            Some(NetExt::DestOpts(h)) => h.next_header(),
+            Some(NetExt::Routing(h)) => h.next_header(),
+            Some(NetExt::Fragment(h)) => h.next_header(),
+            Some(NetExt::Ipv4Auth(h)) => h.next_header(),
+            Some(NetExt::Ipv6Auth(h)) => h.next_header(),
+            None => self.net.as_ref()?.next_header(),
+        };
+        (!next.is_ipv6_extension()).then_some(next)
+    }
+
     /// Get a reference to the transport header, if present.
     #[must_use]
     pub fn transport(&self) -> Option<&Transport> {
@@ -2406,6 +2431,123 @@ mod test {
             headers.size().get(),
             14 + 40 + 8 + 20,
             "size must include extension header"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fragment_upper_layer_proto {
+    use super::{Headers, Net, NetExt};
+    use crate::ip::NextHeader;
+    use crate::ipv6::Ipv6;
+    use crate::ipv6::fragment::Fragment;
+    use crate::parse::Parse;
+    use etherparse::{IpFragOffset, IpNumber, Ipv6FragmentHeader, Ipv6Header, TcpHeader};
+    use std::net::Ipv6Addr;
+
+    fn headers_with_fragment(offset: u16, more: bool) -> Headers {
+        let mut headers = Headers::new();
+        headers.set_net(Some(Net::Ipv6(Ipv6::default())));
+        let raw = Ipv6FragmentHeader::new(
+            IpNumber::TCP,
+            IpFragOffset::try_new(offset).unwrap_or_else(|_| unreachable!()),
+            more,
+            0,
+        );
+        #[allow(unsafe_code)]
+        // SAFETY: built here as a fragment header, which is what `from_raw_unchecked` asks.
+        let fragment = unsafe { Fragment::from_raw_unchecked(raw) };
+        headers.net_ext.push(NetExt::Fragment(fragment));
+        headers
+    }
+
+    /// The first fragment does carry the transport header, so it must still classify. The
+    /// tempting guard here is `is_fragmenting_payload()`, which is *also* true for this one
+    /// and would wrongly suppress it.
+    #[test]
+    fn the_first_fragment_still_reports_its_protocol() {
+        let headers = headers_with_fragment(0, true);
+        assert_eq!(
+            headers.upper_layer_proto(),
+            Some(crate::ip::NextHeader::TCP),
+            "the first fragment carries the transport header and must classify"
+        );
+    }
+
+    /// A non-first fragment carries payload bytes where the header would be. Reporting a
+    /// protocol here let port forwarding DNAT it and overwrite two bytes of that payload.
+    #[test]
+    fn a_non_first_fragment_reports_no_protocol() {
+        for (offset, more) in [(1u16, true), (1, false), (185, false)] {
+            let headers = headers_with_fragment(offset, more);
+            assert_eq!(
+                headers.upper_layer_proto(),
+                None,
+                "offset {offset} more={more} named a protocol whose header is not present"
+            );
+        }
+    }
+
+    /// Offset 0 with no more fragments is not a fragment at all (RFC 6946); it must classify.
+    #[test]
+    fn an_atomic_fragment_still_reports_its_protocol() {
+        let headers = headers_with_fragment(0, false);
+        assert_eq!(
+            headers.upper_layer_proto(),
+            Some(crate::ip::NextHeader::TCP)
+        );
+    }
+
+    #[test]
+    fn fragment_offsets_are_checked_before_following_extensions() {
+        bolero::check!().with_type::<(u16, bool, bool)>().for_each(
+            |&(raw_offset, more, hop_by_hop)| {
+                // Always compare a first/atomic fragment with a non-first fragment.
+                for offset in [0, 1 + raw_offset % IpFragOffset::MAX_U16] {
+                    let mut bytes = vec![2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x86, 0xdd];
+                    let ip = Ipv6Header {
+                        payload_length: if hop_by_hop { 44 } else { 36 },
+                        next_header: if hop_by_hop {
+                            IpNumber::IPV6_HEADER_HOP_BY_HOP
+                        } else {
+                            IpNumber::IPV6_FRAGMENTATION_HEADER
+                        },
+                        hop_limit: 64,
+                        source: Ipv6Addr::LOCALHOST.octets(),
+                        destination: Ipv6Addr::LOCALHOST.octets(),
+                        ..Ipv6Header::default()
+                    };
+                    ip.write(&mut bytes).unwrap_or_else(|_| unreachable!());
+                    if hop_by_hop {
+                        bytes.extend_from_slice(&[44, 0, 1, 4, 0, 0, 0, 0]);
+                    }
+                    let fragment = Ipv6FragmentHeader::new(
+                        IpNumber::IPV6_DESTINATION_OPTIONS,
+                        IpFragOffset::try_new(offset).unwrap_or_else(|_| unreachable!()),
+                        more,
+                        1,
+                    );
+                    bytes.extend_from_slice(&fragment.to_bytes());
+                    // Non-first fragments carry body bytes here, even if those bytes
+                    // happen to parse as Destination Options followed by TCP.
+                    bytes.extend_from_slice(&[6, 0, 1, 4, 0, 0, 0, 0]);
+                    TcpHeader::new(1234, 8001, 0, 0)
+                        .write(&mut bytes)
+                        .unwrap_or_else(|_| unreachable!());
+
+                    let (headers, _) =
+                        Headers::parse(&bytes).unwrap_or_else(|e| unreachable!("{e:?}"));
+                    assert!(matches!(
+                        headers.transport(),
+                        Some(super::Transport::Tcp(_))
+                    ));
+                    assert_eq!(
+                        headers.upper_layer_proto(),
+                        (offset == 0).then_some(NextHeader::TCP),
+                        "offset={offset}, more={more}, hop_by_hop={hop_by_hop}"
+                    );
+                }
+            },
         );
     }
 }

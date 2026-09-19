@@ -74,6 +74,18 @@ impl<'a> IcmpErrorPacket<'a> {
     /// - If the ICMP checksum is not valid, returns `IcmpErrorPacketError::BadChecksumIcmp`.
     /// - If the inner IPv4 checksum is not valid, returns
     ///   `IcmpErrorPacketError::BadChecksumInnerIpv4`.
+    //= https://www.rfc-editor.org/rfc/rfc5508#section-4.1
+    //# REQ-3: When an ICMP Error packet is received, if the ICMP checksum
+    //#        fails to validate, the NAT SHOULD silently drop the ICMP Error
+    //#        packet.
+    //= https://www.rfc-editor.org/rfc/rfc5508#section-4.1
+    //#        a) If the IP checksum of the embedded packet fails to
+    //#           validate, the NAT SHOULD silently drop the Error packet;
+    //#           and
+    //= https://www.rfc-editor.org/rfc/rfc5508#section-4.1
+    //#        c) The NAT device SHOULD NOT validate the transport checksum
+    //#           of the embedded packet within an ICMP Error message, even
+    //#           when it is possible to do so; and
     pub fn validate_checksums(&self) -> Result<(), IcmpErrorPacketError> {
         self.icmp
             .validate_checksum(&self.checksum_payload())
@@ -299,5 +311,122 @@ mod tests {
 
         let icmp_error_packet = IcmpErrorPacket::new(&packet).unwrap();
         icmp_error_packet.validate_checksums().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod req3_properties {
+    use super::*;
+    use crate::buffer::TestBuffer;
+    use crate::checksum::Checksum;
+    use crate::headers::{
+        EmbeddedIpVersion, TryEmbeddedTransportMut, TryIcmpAny, TryIcmpAnyMut, TryInnerIpv4Mut,
+    };
+    use crate::icmp_any::IcmpAnyChecksum;
+    use crate::ipv4::Ipv4Checksum;
+    use crate::packet::{IcmpErrorMsg, Packet};
+
+    //= https://www.rfc-editor.org/rfc/rfc5508#section-4.1
+    //= type=test
+    //# REQ-3: When an ICMP Error packet is received, if the ICMP checksum
+    //#        fails to validate, the NAT SHOULD silently drop the ICMP Error
+    //#        packet.
+    //= https://www.rfc-editor.org/rfc/rfc5508#section-4.1
+    //= type=test
+    //#        a) If the IP checksum of the embedded packet fails to
+    //#           validate, the NAT SHOULD silently drop the Error packet;
+    //#           and
+    //= https://www.rfc-editor.org/rfc/rfc5508#section-4.1
+    //= type=test
+    //#        c) The NAT device SHOULD NOT validate the transport checksum
+    //#           of the embedded packet within an ICMP Error message, even
+    //#           when it is possible to do so; and
+    #[test]
+    fn only_the_icmp_and_embedded_ip_checksums_decide_an_icmp_error() {
+        bolero::check!().with_generator(IcmpErrorMsg {}).for_each(
+            |generated: &Packet<TestBuffer>| {
+                let mut good = generated.clone();
+                good.update_checksums();
+                if IcmpErrorPacket::new(&good).is_none() {
+                    return;
+                }
+                assert!(
+                    IcmpErrorPacket::new(&good)
+                        .unwrap_or_else(|| unreachable!())
+                        .validate_checksums()
+                        .is_ok(),
+                    "a packet with every checksum set does not validate"
+                );
+
+                let mut transport_broken = good.clone();
+                let quoted = match transport_broken.try_inner_ip() {
+                    None => unreachable!(),
+                    Some(Net::Ipv4(_)) => EmbeddedIpVersion::Ipv4,
+                    Some(Net::Ipv6(_)) => EmbeddedIpVersion::Ipv6,
+                };
+                if let Some(transport) = transport_broken.try_embedded_transport_mut()
+                    && let Some(current) = transport.checksum()
+                {
+                    transport.update_checksum(quoted, current, 0, 1);
+                    if transport.checksum() != Some(current) {
+                        transport_broken.update_checksums();
+                        assert!(
+                            IcmpErrorPacket::new(&transport_broken)
+                                .unwrap_or_else(|| unreachable!())
+                                .validate_checksums()
+                                .is_ok(),
+                            "the embedded transport checksum was consulted"
+                        );
+                    }
+                }
+
+                let mut icmp_broken = good.clone();
+                let current = u16::from(
+                    icmp_broken
+                        .try_icmp_any()
+                        .unwrap_or_else(|| unreachable!())
+                        .checksum()
+                        .unwrap_or_else(|| unreachable!()),
+                );
+                let _ = icmp_broken
+                    .try_icmp_any_mut()
+                    .unwrap_or_else(|| unreachable!())
+                    .set_checksum(IcmpAnyChecksum::new(current ^ 1));
+                assert!(
+                    matches!(
+                        IcmpErrorPacket::new(&icmp_broken)
+                            .unwrap_or_else(|| unreachable!())
+                            .validate_checksums(),
+                        Err(IcmpErrorPacketError::BadChecksumIcmp(_))
+                    ),
+                    "a wrong ICMP checksum was accepted"
+                );
+
+                let mut inner_broken = good.clone();
+                if let Some(inner) = inner_broken.try_inner_ipv4_mut()
+                    && let Some(current) = inner.checksum().map(u16::from)
+                {
+                    let _ = inner.set_checksum(Ipv4Checksum::new(current ^ 1));
+                    let payload: Vec<u8> = inner_broken.payload.as_ref().to_vec();
+                    let headers = &mut inner_broken.headers;
+                    let net = headers.net.clone().unwrap_or_else(|| unreachable!());
+                    let embedded = headers.embedded_ip.clone();
+                    headers
+                        .transport
+                        .as_mut()
+                        .unwrap_or_else(|| unreachable!())
+                        .update_checksum(&net, embedded.as_ref(), payload.as_slice());
+                    assert!(
+                        matches!(
+                            IcmpErrorPacket::new(&inner_broken)
+                                .unwrap_or_else(|| unreachable!())
+                                .validate_checksums(),
+                            Err(IcmpErrorPacketError::BadChecksumInnerIpv4(_))
+                        ),
+                        "a wrong embedded IP checksum was accepted"
+                    );
+                }
+            },
+        );
     }
 }

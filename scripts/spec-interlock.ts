@@ -50,6 +50,20 @@ const ACCEPTED: Accepted[] = [
       "half is caught, and correctly: a block with the first half full and the second free is " +
       "ordinary, so `ones == 128` is reachable there and `1u128 << 128` overflows.",
   })),
+  {
+    requirement: "https://www.rfc-editor.org/rfc/rfc5508#section-4.3",
+    mutant:
+      "nat/src/icmp_handler/nf.rs: replace embeds_icmp_query -> bool with true",
+    reason:
+      "Equivalent with respect to REQ-6, and only with respect to REQ-6. The requirement is " +
+      "one-sided -- it forbids deleting a session whose embedded payload is a Query, and asks " +
+      "nothing of any other payload -- so a NAT that deleted nothing would conform. A predicate " +
+      "forced to `true` is exactly that NAT. What it loses is the invalidation optimization, " +
+      "which is ours rather than the RFC's, and which the crate does test: " +
+      "`an_icmp_error_about_a_tcp_flow_still_tears_it_down` fails with the mutant applied by " +
+      "hand, the rest of the 213-test nat suite passes. Deliberately not cited as a REQ-6 test, " +
+      "because it checks the behaviour the requirement declines to constrain.",
+  },
 ];
 
 function stableName(mutant: string): string {

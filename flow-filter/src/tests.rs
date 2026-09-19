@@ -1448,23 +1448,37 @@ fn expected_outcome(result: LookupResult) -> NfOutcome {
 }
 
 /// Extract the lookup key seen by `FlowFilter::classify`.
-/// Returns `None` for packets without an IP layer.
-fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Option<Probe> {
+///
+/// Returns the [`DoneReason`] the NF would answer with when no key can be built. The two
+/// failures are *not* the same and used to be collapsed into one `None`, which made the
+/// caller expect `NotIp` for a packet that has an IP header: a non-first IPv6 fragment
+/// carries datagram body where a transport header would be, so nothing names a usable
+/// upper-layer protocol and the NF answers `Malformed`.
+fn probe_from_packet(
+    pkt: &Packet<TestBuffer>,
+    src_vpcd: VpcDiscriminant,
+) -> Result<Probe, DoneReason> {
     use net::headers::{TryIp, TryTransport};
 
-    let net = pkt.try_ip()?;
-    Some(Probe {
+    let net = pkt.try_ip().ok_or(DoneReason::NotIp)?;
+    let proto = pkt.upper_layer_proto().ok_or(DoneReason::Malformed)?;
+    Ok(Probe {
         src_vpcd,
         // These packets belong to no flow, so they don't need flow revalidation info.
         dst_vpcd: None,
         gate: SourceGate::Ungated,
         src_ip: net.src_addr(),
         dst_ip: net.dst_addr(),
-        proto: net.next_header(),
+        proto,
         ports: pkt
             .try_transport()
             .and_then(|t| t.src_port().zip(t.dst_port())),
     })
+}
+
+fn carries_unaccounted_layers(pkt: &Packet<TestBuffer>) -> bool {
+    use net::headers::TryHeaders;
+    !pkt.headers().vlan().is_empty()
 }
 
 fn observed_outcome(pkt: &Packet<TestBuffer>) -> NfOutcome {
@@ -1624,7 +1638,8 @@ fn nf_metadata_matches_config_oracle() {
 
 mod adversarial_headers {
     use super::{
-        NfOutcome, expected_outcome, make_flow_filter, observed_outcome, probe_from_packet,
+        NfOutcome, carries_unaccounted_layers, expected_outcome, make_flow_filter,
+        observed_outcome, probe_from_packet,
     };
     use crate::context::FlowFilterContext;
     use crate::context::fuzz::oracle_lookup;
@@ -1728,6 +1743,7 @@ mod adversarial_headers {
         V4Icmp,
         /// A VLAN tag between the Ethernet and IP layers.
         VlanV4Tcp,
+        V4ExoticProto,
         /// An IPv4 authentication header ahead of the transport.
         V4AuthTcp,
         V6Tcp,
@@ -1739,12 +1755,13 @@ mod adversarial_headers {
 
     impl Shape {
         /// Every shape, in selector and counter order.
-        const ALL: [Shape; 10] = [
+        const ALL: [Shape; 11] = [
             Shape::NoIp,
             Shape::V4Tcp,
             Shape::V4Udp,
             Shape::V4Icmp,
             Shape::VlanV4Tcp,
+            Shape::V4ExoticProto,
             Shape::V4AuthTcp,
             Shape::V6Tcp,
             Shape::V6Udp,
@@ -1785,6 +1802,13 @@ mod adversarial_headers {
                     .vlan(|_| {})
                     .ipv4(pin_v4)
                     .tcp(|_| {})
+                    .generate(driver),
+                Shape::V4ExoticProto => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv4(|ip| {
+                        pin_v4(ip);
+                        ip.set_next_header(net::ip::NextHeader::new(132));
+                    })
                     .generate(driver),
                 Shape::V4AuthTcp => ChainBase::new()
                     .eth(|_| {})
@@ -1860,7 +1884,8 @@ mod adversarial_headers {
 
                 // Extract the key before the NF consumes the packet.
                 let probe = probe_from_packet(&packet, src_vpcd());
-                if let Some(probe) = probe.as_ref() {
+                let unaccounted = carries_unaccounted_layers(&packet);
+                if let Ok(probe) = probe.as_ref() {
                     if probe.ports.is_none() {
                         PORTLESS.fetch_add(1, Ordering::Relaxed);
                     }
@@ -1870,7 +1895,7 @@ mod adversarial_headers {
                     ) {
                         EXOTIC_PROTO.fetch_add(1, Ordering::Relaxed);
                     }
-                } else {
+                } else if matches!(probe, Err(DoneReason::NotIp)) {
                     NOT_IP.fetch_add(1, Ordering::Relaxed);
                 }
 
@@ -1879,10 +1904,15 @@ mod adversarial_headers {
                     .next()
                     .unwrap_or_else(|| unreachable!("enforce keeps Filtered and NotIp packets"));
 
+                // Mirrors the NF's own order: it resolves the header chain first, so a
+                // chain it cannot account for is `Unhandled` even when no upper-layer
+                // protocol could have been named either.
                 let expected = match probe.as_ref() {
                     // No IP layer: dropped before any table is consulted.
-                    None => NfOutcome::Dropped(Some(DoneReason::NotIp)),
-                    Some(probe) => expected_outcome(oracle_lookup(&overlay, probe)),
+                    Err(DoneReason::NotIp) => NfOutcome::Dropped(Some(DoneReason::NotIp)),
+                    _ if unaccounted => NfOutcome::Dropped(Some(DoneReason::Unhandled)),
+                    Err(reason) => NfOutcome::Dropped(Some(*reason)),
+                    Ok(probe) => expected_outcome(oracle_lookup(&overlay, probe)),
                 };
                 assert_eq!(
                     observed_outcome(&out),
@@ -1946,10 +1976,8 @@ mod adversarial_headers {
 
 // Protocol, port, and flow-generation edge cases.
 
-/// IPv6 extension headers occupy `Net::next_header()`, while `try_transport()` still finds the TCP
-/// ports. Protocol-restricted exposes therefore do not match TCP behind an extension header.
 #[test]
-fn ipv6_extension_header_masks_the_transport_protocol() {
+fn ipv6_extension_header_does_not_mask_the_transport_protocol() {
     use net::headers::builder::HeaderStack;
     use net::headers::{TryIp, TryTransport};
     use net::ipv6::UnicastIpv6Addr;
@@ -1980,6 +2008,11 @@ fn ipv6_extension_header_masks_the_transport_protocol() {
         "an extension header should occupy the next-header field",
     );
     assert_eq!(
+        probe_packet.upper_layer_proto(),
+        Some(net::ip::NextHeader::TCP),
+        "the protocol the packet carries is TCP, whatever the IP header's field says",
+    );
+    assert_eq!(
         probe_packet
             .try_transport()
             .and_then(|t| t.dst_port())
@@ -2008,11 +2041,12 @@ fn ipv6_extension_header_masks_the_transport_protocol() {
     );
     let (mut flow_filter, _writer) = make_flow_filter(tcp_only);
     let out = run(&mut flow_filter, packet(Some(vpcd(100)), with_hop_by_hop()));
-    assert_eq!(
-        out.get_done(),
-        Some(DoneReason::Filtered),
-        "a TCP-restricted expose does not see this packet as TCP, so nothing covers it",
+    assert!(
+        !out.is_done(),
+        "a TCP-restricted expose did not see this packet as TCP: {:?}",
+        out.get_done()
     );
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
 
     // An unrestricted expose confirms that the address remains routable.
     let any_proto = context(

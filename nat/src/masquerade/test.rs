@@ -9,7 +9,7 @@ use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use crate::{IcmpErrorHandler, Masquerade, NatPort};
 use ahash::HashMap;
 use common::cliprovider::Frame;
-use concurrency::sync::Arc;
+use concurrency::sync::{Arc, Weak};
 use config::GenId;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Vpc, VpcTable};
@@ -23,17 +23,22 @@ use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::Mac;
 use net::flows::flow_info_item::ExtractRef;
 use net::flows::{FlowInfo, FlowStatus};
-use net::headers::TryTcpMut;
 use net::headers::{
     EmbeddedTransport, TryEmbeddedTransport as _, TryIcmp4, TryInnerIpv4, TryIpv4, TryUdp,
 };
-use net::icmp4::Icmp4Type;
+use net::headers::{TryIcmp6, TryTcpMut};
 use net::icmp4::TruncatedIcmp4;
+use net::icmp4::{Icmp4DestUnreachable, Icmp4Type};
+use net::icmp6::{Icmp6DestUnreachable, Icmp6PacketTooBig, Icmp6Type};
 use net::ip::NextHeader;
+use net::packet::test_utils::build_test_ipv6_packet_with_transport;
 use net::packet::test_utils::build_test_tcp_ipv4_packet;
 use net::packet::test_utils::{
-    IcmpEchoDirection, build_test_icmp4_destination_unreachable_packet, build_test_icmp4_echo,
-    build_test_udp_ipv4_frame, build_test_udp_ipv4_packet,
+    Icmp6ErrorAddrs, IcmpEchoDirection, IcmpErrorAddrs,
+    build_test_icmp4_destination_unreachable_packet,
+    build_test_icmp4_destination_unreachable_packet_with_code, build_test_icmp4_echo,
+    build_test_icmp6_echo, build_test_icmp6_error_packet, build_test_udp_ipv4_frame,
+    build_test_udp_ipv4_packet,
 };
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::tcp::TruncatedTcp;
@@ -42,7 +47,7 @@ use net::vxlan::Vni;
 use net::{FlowKey, IpProtoKey, UdpProtoKey};
 use pipeline::DynPipeline;
 use pipeline::NetworkFunction;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::time::Duration;
 use tracectl::get_trace_ctl;
@@ -314,6 +319,29 @@ fn build_overlay_2vpcs() -> Overlay {
 }
 
 // identical to build_overlay_2vpcs() but masquerading with 4.4.0.0/16
+fn build_overlay_2vpcs_v6() -> Overlay {
+    let mut vpc_table = VpcTable::new();
+    let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
+
+    let expose121 = VpcExpose::empty()
+        .make_masquerade(None)
+        .unwrap()
+        .ip("2001:db8:1::/48".into())
+        .as_range("2001:db8:2::/48".into())
+        .unwrap();
+    let expose211 = VpcExpose::empty().ip("2001:db8:3::/48".into());
+
+    let manifest12 = VpcManifest::new("VPC-1").exposing(expose121);
+    let manifest21 = VpcManifest::new("VPC-2").exposing(expose211);
+    let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
+
+    let mut peering_table = VpcPeeringTable::new();
+    peering_table.add(peering12).expect("Failed to add peering");
+
+    Overlay::new(vpc_table, peering_table)
+}
+
 fn build_overlay_2vpcs_modified() -> Overlay {
     let mut vpc_table = VpcTable::new();
     let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
@@ -1779,6 +1807,89 @@ async fn test_masquerade_tcp_reset() {
     assert_eq!(flow_table.active_len(), Some(0));
 }
 
+fn one_way_tcp_flow(
+    pipeline: &mut DynPipeline<TestBuffer>,
+) -> (Arc<FlowInfo>, Ipv4Addr, u16, Ipv4Addr) {
+    let mut syn = tcp_packet_to_masquerade();
+    syn.try_tcp_mut().unwrap().set_syn(true);
+    let out = process_packet(pipeline, syn);
+    assert!(!out.is_done());
+    let (public, public_port) = translation(&out);
+    let target = out.try_ipv4().unwrap().destination();
+
+    let mut syn = tcp_packet_to_masquerade();
+    syn.try_tcp_mut().unwrap().set_syn(true);
+    let out = process_packet(pipeline, syn);
+    let flow = out.meta().flow_info.clone().expect("no flow for the SYN");
+    assert!(flow.is_active());
+    assert_eq!(nat_flow_status(&out), Some(NatFlowStatus::OneWay));
+
+    (flow, public, public_port, target)
+}
+
+fn icmp_unreachable_about_tcp(
+    pipeline: &mut DynPipeline<TestBuffer>,
+    unreachable: Icmp4DestUnreachable,
+    public: Ipv4Addr,
+    public_port: u16,
+    target: Ipv4Addr,
+) -> Option<DoneReason> {
+    let mut packet = build_test_icmp4_destination_unreachable_packet_with_code(
+        unreachable,
+        IcmpErrorAddrs {
+            outer_src: addr_v4("1.2.2.18"),
+            outer_dst: public,
+            inner_src: public,
+            inner_dst: target,
+        },
+        NextHeader::TCP,
+        public_port,
+        80,
+    )
+    .unwrap();
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().set_masquerade(false);
+    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+
+    let out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
+    out[0].get_done()
+}
+
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn path_mtu_discovery_does_not_tear_down_the_flow_that_triggered_it() {
+    let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
+    let (flow, public, public_port, target) = one_way_tcp_flow(&mut pipeline);
+
+    let done = icmp_unreachable_about_tcp(
+        &mut pipeline,
+        Icmp4DestUnreachable::FragmentationNeeded {
+            next_hop_mtu: Some(1400.try_into().unwrap()),
+        },
+        public,
+        public_port,
+        target,
+    );
+    assert_eq!(done, None);
+    assert!(
+        flow.is_active(),
+        "Fragmentation Needed tore down the flow that is about to retry"
+    );
+
+    let done = icmp_unreachable_about_tcp(
+        &mut pipeline,
+        Icmp4DestUnreachable::Network,
+        public,
+        public_port,
+        target,
+    );
+    assert_eq!(done, None);
+    assert!(
+        !flow.is_active(),
+        "Network Unreachable no longer tears the flow down"
+    );
+}
+
 // Walk the client-initiated graceful-close states.
 #[tokio::test]
 #[cfg_attr(not(emulated), traced_test)]
@@ -2287,4 +2398,349 @@ async fn test_recheck_flow_when_allocator_is_kept() {
     test_case("Done (logs beyond this point are irrelevant)");
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(flow_table.active_len(), Some(2));
+}
+
+fn icmp_echo_through(
+    pipeline: &mut DynPipeline<TestBuffer>,
+    src_vni: Vni,
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    direction: IcmpEchoDirection,
+    identifier: u16,
+) -> Packet<TestBuffer> {
+    let mut packet: Packet<TestBuffer> =
+        build_test_icmp4_echo(src_ip, dst_ip, identifier, direction).unwrap();
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().set_masquerade(true);
+    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+
+    let packets_out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
+    packets_out.into_iter().next().unwrap()
+}
+
+//= https://www.rfc-editor.org/rfc/rfc5508#section-4.3
+//= type=test
+//# REQ-6: While processing an ICMP Error packet pertaining to an ICMP
+//# Query or Query response message, a NAT device MUST NOT refresh
+//# or delete the NAT Session that pertains to the embedded
+//# payload within the ICMP Error packet.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn an_icmp_error_does_not_tear_down_the_query_session_it_reports_on() {
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
+
+    let (host, target) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"));
+    let identifier = 1337;
+
+    let echo = icmp_echo_through(
+        &mut pipeline,
+        vni(100),
+        host,
+        target,
+        IcmpEchoDirection::Request,
+        identifier,
+    );
+    let public = echo.try_ipv4().unwrap().source().inner();
+    let translated_identifier = echo.try_icmp4().unwrap().identifier().unwrap();
+
+    let echo = icmp_echo_through(
+        &mut pipeline,
+        vni(100),
+        host,
+        target,
+        IcmpEchoDirection::Request,
+        identifier,
+    );
+    let flow = echo
+        .meta()
+        .flow_info
+        .clone()
+        .expect("no flow for the Query");
+    assert_eq!(flow_status(&echo), Some(FlowStatus::Active));
+
+    let (_, _, _, _, _, _, done_reason) = check_packet_icmp_error(
+        &mut pipeline,
+        vni(200),
+        vni(100),
+        addr_v4("1.2.2.18"),
+        public,
+        public,
+        target,
+        NextHeader::ICMP,
+        translated_identifier,
+        0,
+    );
+    assert_eq!(done_reason, None);
+
+    assert!(
+        flow.is_active(),
+        "the Query session was torn down by the Error message reporting on it"
+    );
+    let related = flow.related.as_ref().and_then(Weak::upgrade);
+    assert!(
+        related.is_none_or(|related| related.is_active()),
+        "the Query session's reverse flow was torn down by the Error message"
+    );
+    assert_eq!(flow_table.active_len(), Some(2));
+}
+
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn an_icmp_error_about_a_tcp_flow_still_tears_it_down() {
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
+
+    let mut syn = tcp_packet_to_masquerade();
+    syn.try_tcp_mut().unwrap().set_syn(true);
+    let out = process_packet(&mut pipeline, syn);
+    assert!(!out.is_done());
+    let (public, public_port) = translation(&out);
+    let target = out.try_ipv4().unwrap().destination();
+
+    let mut syn = tcp_packet_to_masquerade();
+    syn.try_tcp_mut().unwrap().set_syn(true);
+    let out = process_packet(&mut pipeline, syn);
+    let flow = out.meta().flow_info.clone().expect("no flow for the SYN");
+    assert!(flow.is_active());
+    assert_eq!(nat_flow_status(&out), Some(NatFlowStatus::OneWay));
+
+    let (_, _, _, _, _, _, done_reason) = check_packet_icmp_error(
+        &mut pipeline,
+        vni(200),
+        vni(100),
+        addr_v4("1.2.2.18"),
+        public,
+        public,
+        target,
+        NextHeader::TCP,
+        public_port,
+        80,
+    );
+    assert_eq!(done_reason, None);
+
+    assert!(
+        !flow.is_active(),
+        "an ICMP error about a one-way TCP flow no longer invalidates it"
+    );
+    assert_eq!(flow_table.active_len(), Some(0));
+}
+
+fn addr_v6(addr: &str) -> Ipv6Addr {
+    Ipv6Addr::from_str(addr).expect("Failed to create IPv6 address")
+}
+
+fn tcp_v6_to_masquerade(
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    sport: u16,
+    dport: u16,
+) -> Packet<TestBuffer> {
+    let mut packet =
+        build_test_ipv6_packet_with_transport(64, Some(NextHeader::TCP)).expect("bad fixture");
+    packet
+        .set_ip_source(IpAddr::V6(src).try_into().unwrap())
+        .unwrap();
+    packet.set_ip_destination(IpAddr::V6(dst)).unwrap();
+    packet.set_source_port(sport.try_into().unwrap()).unwrap();
+    packet
+        .set_destination_port(dport.try_into().unwrap())
+        .unwrap();
+
+    let tcp = packet.try_tcp_mut().unwrap();
+    tcp.set_syn(true);
+    tcp.set_ack(false);
+    tcp.set_fin(false);
+    tcp.set_rst(false);
+
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().src_vpcd = Some(vpcd(100));
+    packet.meta_mut().set_masquerade(true);
+    packet
+}
+
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn masquerade_translates_ipv6() {
+    let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs_v6());
+
+    let (host, target) = (addr_v6("2001:db8:1::1"), addr_v6("2001:db8:3::1"));
+    let public_range = "2001:db8:2::".parse::<Ipv6Addr>().unwrap();
+
+    let out = process_packet(&mut pipeline, tcp_v6_to_masquerade(host, target, 4321, 80));
+    assert!(
+        !out.is_done(),
+        "the packet was dropped: {:?}",
+        out.get_done()
+    );
+
+    let IpAddr::V6(src) = out.ip_source().unwrap() else {
+        panic!("the packet came out IPv4");
+    };
+    let IpAddr::V6(dst) = out.ip_destination().unwrap() else {
+        panic!("the packet came out IPv4");
+    };
+
+    assert_ne!(src, host, "the source was not translated");
+    assert_eq!(
+        src.segments()[..3],
+        public_range.segments()[..3],
+        "the source was translated outside the configured public range"
+    );
+    assert_eq!(dst, target, "the destination was translated");
+
+    let reply = build_reply(&out);
+    let back = process_packet(&mut pipeline, reply);
+    assert!(!back.is_done());
+    assert_eq!(back.ip_destination().unwrap(), IpAddr::V6(host));
+    assert_eq!(back.ip_source().unwrap(), IpAddr::V6(target));
+    assert_eq!(nat_flow_status(&back), Some(NatFlowStatus::TwoWay));
+}
+
+fn icmp6_echo_through(
+    pipeline: &mut DynPipeline<TestBuffer>,
+    src_vni: Vni,
+    src_ip: Ipv6Addr,
+    dst_ip: Ipv6Addr,
+    identifier: u16,
+) -> Packet<TestBuffer> {
+    let mut packet: Packet<TestBuffer> =
+        build_test_icmp6_echo(src_ip, dst_ip, identifier, IcmpEchoDirection::Request).unwrap();
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().set_masquerade(true);
+    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+    pipeline
+        .process(std::iter::once(packet))
+        .next()
+        .unwrap_or_else(|| unreachable!())
+}
+
+fn icmp6_error_through(
+    pipeline: &mut DynPipeline<TestBuffer>,
+    src_vni: Vni,
+    icmp_type: Icmp6Type,
+    addrs: Icmp6ErrorAddrs,
+    next_header: NextHeader,
+    inner_param_1: u16,
+    inner_param_2: u16,
+) -> Packet<TestBuffer> {
+    let mut packet =
+        build_test_icmp6_error_packet(icmp_type, addrs, next_header, inner_param_1, inner_param_2)
+            .unwrap();
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().set_masquerade(false);
+    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+    pipeline
+        .process(std::iter::once(packet))
+        .next()
+        .unwrap_or_else(|| unreachable!())
+}
+
+//= https://www.rfc-editor.org/rfc/rfc5508#section-4.3
+//= type=test
+//# REQ-6: While processing an ICMP Error packet pertaining to an ICMP
+//# Query or Query response message, a NAT device MUST NOT refresh
+//# or delete the NAT Session that pertains to the embedded
+//# payload within the ICMP Error packet.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn an_icmp6_error_does_not_tear_down_the_query_session_it_reports_on() {
+    let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs_v6());
+
+    let (host, target) = (addr_v6("2001:db8:1::1"), addr_v6("2001:db8:3::1"));
+    let identifier = 1337;
+
+    let echo = icmp6_echo_through(&mut pipeline, vni(100), host, target, identifier);
+    assert!(
+        !echo.is_done(),
+        "the echo was dropped: {:?}",
+        echo.get_done()
+    );
+    let IpAddr::V6(public) = echo.ip_source().unwrap() else {
+        panic!("the echo came out IPv4");
+    };
+    let translated_identifier = echo.try_icmp6().unwrap().identifier().unwrap();
+
+    let echo = icmp6_echo_through(&mut pipeline, vni(100), host, target, identifier);
+    let flow = echo
+        .meta()
+        .flow_info
+        .clone()
+        .expect("no flow for the Query");
+    assert!(flow.is_active());
+
+    let out = icmp6_error_through(
+        &mut pipeline,
+        vni(200),
+        Icmp6Type::DestUnreachable(Icmp6DestUnreachable::Address),
+        Icmp6ErrorAddrs {
+            outer_src: addr_v6("2001:db8:3::fe"),
+            outer_dst: public,
+            inner_src: public,
+            inner_dst: target,
+        },
+        NextHeader::ICMP6,
+        translated_identifier,
+        0,
+    );
+    assert_eq!(out.get_done(), None, "the error was dropped");
+
+    assert!(
+        flow.is_active(),
+        "the Query session was torn down by the Error message reporting on it"
+    );
+}
+
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn ipv6_path_mtu_discovery_does_not_tear_down_the_flow_that_triggered_it() {
+    let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs_v6());
+
+    let (host, target) = (addr_v6("2001:db8:1::1"), addr_v6("2001:db8:3::1"));
+    let out = process_packet(&mut pipeline, tcp_v6_to_masquerade(host, target, 4321, 80));
+    assert!(!out.is_done());
+    let IpAddr::V6(public) = out.ip_source().unwrap() else {
+        panic!("the packet came out IPv4");
+    };
+    let public_port: u16 = out.transport_src_port().unwrap().into();
+
+    let out = process_packet(&mut pipeline, tcp_v6_to_masquerade(host, target, 4321, 80));
+    let flow = out.meta().flow_info.clone().expect("no flow for the SYN");
+    assert!(flow.is_active());
+    assert_eq!(nat_flow_status(&out), Some(NatFlowStatus::OneWay));
+
+    let addrs = Icmp6ErrorAddrs {
+        outer_src: addr_v6("2001:db8:3::fe"),
+        outer_dst: public,
+        inner_src: public,
+        inner_dst: target,
+    };
+
+    let out = icmp6_error_through(
+        &mut pipeline,
+        vni(200),
+        Icmp6Type::PacketTooBig(Icmp6PacketTooBig::new(1400).unwrap()),
+        addrs,
+        NextHeader::TCP,
+        public_port,
+        80,
+    );
+    assert_eq!(out.get_done(), None);
+    assert!(
+        flow.is_active(),
+        "Packet Too Big tore down the flow that is about to retry"
+    );
+
+    let out = icmp6_error_through(
+        &mut pipeline,
+        vni(200),
+        Icmp6Type::DestUnreachable(Icmp6DestUnreachable::Address),
+        addrs,
+        NextHeader::TCP,
+        public_port,
+        80,
+    );
+    assert_eq!(out.get_done(), None);
+    assert!(
+        !flow.is_active(),
+        "Address Unreachable no longer tears the flow down"
+    );
 }
