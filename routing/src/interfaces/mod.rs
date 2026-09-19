@@ -211,7 +211,8 @@ pub mod tests {
     #[test]
     fn test_iftable_wrapped() {
         const VRFID: VrfId = 123;
-        const IF_NAME: &str = "ethernet";
+        const IF_NAME: &str = "ethernet-1";
+        const IF_NAME_MOD: &str = "FastEthernet-1";
         const IF_DESC: &str = "My interface";
         const IF_ADDRESS: &str = "10.0.1.1";
         const IF_MAC: &str = "00:aa:00:00:00:01";
@@ -301,6 +302,15 @@ pub mod tests {
         iftw.detach_interface(ifindex).unwrap();
         compare(&iftable, &iftr);
 
+        // test update of interface name
+        let new_name = InterfaceName::try_from(IF_NAME_MOD).expect("Illegal ifname");
+        // refresh the config since we updated admin state without modifying the config
+        let mut config = iftable.get_interface(ifindex).unwrap().as_config();
+        config.set_name(&new_name);
+        iftable.mod_interface(&config).unwrap();
+        iftw.update_name(ifindex, &new_name).unwrap();
+        compare(&iftable, &iftr);
+
         // test detach reject
         let r1 = iftable.detach_from_vrf(ifindex);
         let r2 = iftw.detach_interface(ifindex);
@@ -320,8 +330,8 @@ pub mod tests {
         compare(&iftable, &iftr);
 
         // test non existent interface update
-        let r1 = iftw.mod_interface(config.clone());
-        let r2 = iftable.mod_interface(&config);
+        let r1 = iftable.mod_interface(&config);
+        let r2 = iftw.mod_interface(config.clone());
         assert_eq!(r1, r2);
         compare(&iftable, &iftr);
     }
