@@ -1449,19 +1449,28 @@ fn expected_outcome(result: LookupResult) -> NfOutcome {
 
 /// Extract the lookup key seen by `FlowFilter::classify`.
 ///
-/// Returns the [`DoneReason`] the NF would answer with when no key can be built. The two
-/// failures are *not* the same and used to be collapsed into one `None`, which made the
-/// caller expect `NotIp` for a packet that has an IP header: a non-first IPv6 fragment
-/// carries datagram body where a transport header would be, so nothing names a usable
-/// upper-layer protocol and the NF answers `Malformed`.
+/// Returns the [`DoneReason`] the NF would answer with when no key can be built. The
+/// three answers are *not* interchangeable and used to be collapsed into one `None`:
+///
+/// * no IP layer at all is `NotIp`;
+/// * a chain that could not be walked to an upper-layer protocol is `Malformed`;
+/// * a non-first fragment is neither. It is a well-formed packet whose transport header
+///   lives in fragment zero, so it is classified on its addresses with the fragment
+///   protocol number and no ports -- dropping it here would strand every fragment after
+///   the first and stop the datagram ever reassembling.
 fn probe_from_packet(
     pkt: &Packet<TestBuffer>,
     src_vpcd: VpcDiscriminant,
 ) -> Result<Probe, DoneReason> {
-    use net::headers::{TryIp, TryTransport};
+    use net::headers::{TryIp, TryTransport, UpperLayerProto};
 
     let net = pkt.try_ip().ok_or(DoneReason::NotIp)?;
-    let proto = pkt.upper_layer_proto().ok_or(DoneReason::Malformed)?;
+    let upper = pkt.upper_layer_proto();
+    let proto = match upper {
+        UpperLayerProto::Carried(proto) => proto,
+        UpperLayerProto::NonFirstFragment => net::ip::NextHeader::FRAGMENT,
+        UpperLayerProto::Indeterminate => return Err(DoneReason::Malformed),
+    };
     Ok(Probe {
         src_vpcd,
         // These packets belong to no flow, so they don't need flow revalidation info.
@@ -1470,9 +1479,12 @@ fn probe_from_packet(
         src_ip: net.src_addr(),
         dst_ip: net.dst_addr(),
         proto,
-        ports: pkt
-            .try_transport()
-            .and_then(|t| t.src_port().zip(t.dst_port())),
+        ports: match upper {
+            UpperLayerProto::NonFirstFragment => None,
+            _ => pkt
+                .try_transport()
+                .and_then(|t| t.src_port().zip(t.dst_port())),
+        },
     })
 }
 
@@ -2009,7 +2021,7 @@ fn ipv6_extension_header_does_not_mask_the_transport_protocol() {
     );
     assert_eq!(
         probe_packet.upper_layer_proto(),
-        Some(net::ip::NextHeader::TCP),
+        net::headers::UpperLayerProto::Carried(net::ip::NextHeader::TCP),
         "the protocol the packet carries is TCP, whatever the IP header's field says",
     );
     assert_eq!(

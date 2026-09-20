@@ -284,6 +284,58 @@ fn build_tcp_packet_v6_with_hop_by_hop(
         .unwrap()
 }
 
+// A non-first IPv6 fragment, assembled from octets because the header builder has no way to
+// set a fragment offset. The 20 bytes after the Fragment header are datagram body, however
+// much they are shaped like the TCP header this chain names.
+fn non_first_fragment_v6_bytes(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: u16) -> Vec<u8> {
+    const FRAGMENT: u8 = 44;
+    const TCP: u8 = 6;
+    // offset 185 (in 8-octet units) in the top 13 bits, and no more fragments.
+    const OFFSET_AND_FLAGS: u16 = 185 << 3;
+
+    let mut fragment = Vec::new();
+    fragment.push(TCP);
+    fragment.push(0);
+    fragment.extend_from_slice(&OFFSET_AND_FLAGS.to_be_bytes());
+    fragment.extend_from_slice(&1u32.to_be_bytes());
+
+    let mut body = vec![0u8; 20];
+    body[0..2].copy_from_slice(&sport.to_be_bytes());
+    body[2..4].copy_from_slice(&dport.to_be_bytes());
+    body[12] = 0x50;
+    body[13] = 0x02;
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]);
+    bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+    bytes.extend_from_slice(&0x86DDu16.to_be_bytes());
+    bytes.extend_from_slice(&[0x60, 0, 0, 0]);
+    #[allow(clippy::cast_possible_truncation)]
+    bytes.extend_from_slice(&((fragment.len() + body.len()) as u16).to_be_bytes());
+    bytes.push(FRAGMENT);
+    bytes.push(64);
+    bytes.extend_from_slice(&src.octets());
+    bytes.extend_from_slice(&dst.octets());
+    bytes.extend_from_slice(&fragment);
+    bytes.extend_from_slice(&body);
+    bytes
+}
+
+// Wrap raw octets as an overlay packet with both VPC discriminants set, the way `packet` does
+// for built headers.
+fn packet_from_bytes(
+    src_vpcd: VpcDiscriminant,
+    dst_vpcd: Option<VpcDiscriminant>,
+    bytes: &[u8],
+) -> Packet<TestBuffer> {
+    let buffer = TestBuffer::from_raw_data(bytes);
+    let mut packet = Packet::new(buffer).unwrap();
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().src_vpcd = Some(src_vpcd);
+    packet.meta_mut().dst_vpcd = dst_vpcd;
+    packet
+}
+
 // ICMP (IP protocol 1): a non-TCP/UDP protocol, used to exercise the `Other(n)` and `Any` tables.
 fn build_icmp_packet(src: Ipv4Addr, dst: Ipv4Addr) -> Headers {
     HeaderStack::new()
@@ -1351,7 +1403,7 @@ fn a_chain_past_the_parser_limit_is_dropped_rather_than_guessed() {
     let mut over_limit = Packet::new(buffer.clone()).unwrap();
     assert_eq!(
         over_limit.upper_layer_proto(),
-        None,
+        net::headers::UpperLayerProto::Indeterminate,
         "the parser stopped mid-chain but a protocol was reported anyway"
     );
     let _ = &mut buffer;
@@ -1374,5 +1426,57 @@ fn a_chain_past_the_parser_limit_is_dropped_rather_than_guessed() {
     assert!(
         out.is_done(),
         "a packet whose header chain was never fully read went through"
+    );
+}
+
+/// A non-first fragment must survive a peering that does not restrict protocol.
+///
+/// This is the regression: reading the chain for an upper-layer protocol correctly finds
+/// none here, and answering "unknown" made the filter drop the packet as `Malformed`. Every
+/// fragment after the first was lost, so fragmented IPv6 between VPCs never reassembled --
+/// traffic that an unrestricted peering had carried fine until the chain walk arrived.
+#[test]
+fn a_non_first_fragment_survives_an_unrestricted_peering() {
+    let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, None);
+
+    let fragment = packet_from_bytes(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        &non_first_fragment_v6_bytes(v6(net::ipv6_doc!("::5")), v6("2001:db9::5"), 1234, 80),
+    );
+    let out = run(&mut filter, fragment);
+    assert!(
+        !out.is_done(),
+        "a non-first fragment was dropped ({:?}) by a peering that restricts nothing",
+        out.get_done()
+    );
+}
+
+/// ...and it must not thereby evade a rule it cannot be shown to satisfy.
+///
+/// Forwarding a fragment on its addresses is only safe if protocol-constrained rules still
+/// fail to match it. A rule permitting only TCP must not admit a fragment whose transport
+/// header is in another packet; the datagram was already judged on fragment zero.
+#[test]
+fn a_non_first_fragment_does_not_match_a_protocol_rule() {
+    let acl = Acl::new(
+        AclAction::Deny,
+        vec![rule(
+            "permit-tcp",
+            AclAction::Allow,
+            AclScope::Packet,
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+        )],
+    );
+    let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
+
+    let fragment = packet_from_bytes(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        &non_first_fragment_v6_bytes(v6(net::ipv6_doc!("::5")), v6("2001:db9::5"), 1234, 80),
+    );
+    assert!(
+        is_denied(&run(&mut filter, fragment)),
+        "a fragment carrying no TCP header was admitted by a TCP-only permit"
     );
 }

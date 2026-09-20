@@ -6,7 +6,7 @@ use config::external::overlay::acl::{AclAction, AclScope};
 use net::buffer::PacketBufferMut;
 use net::flows::FlowInfo;
 use net::flows::FlowStatus;
-use net::headers::{TryHeaders, TryIp};
+use net::headers::{TryHeaders, TryIp, UpperLayerProto};
 use net::ip::NextHeader;
 use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
 use net::vxlan::Vni;
@@ -197,11 +197,27 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
 
         let src_ip = net.src_addr();
         let dst_ip = net.dst_addr();
-        let Some(proto) = packet.upper_layer_proto() else {
-            debug!("Could not determine the upper-layer protocol, dropping packet");
-            return Err(DoneReason::Malformed);
+        let upper = packet.upper_layer_proto();
+        let proto = match upper {
+            UpperLayerProto::Carried(proto) => proto,
+            // A non-first fragment is matched on its addresses alone. It carries no
+            // transport header, so protocol- and port-constrained rules must not match
+            // it; the datagram's policy was decided on fragment zero, and without that
+            // fragment nothing reassembles. `NextHeader::FRAGMENT` is the key byte that
+            // says exactly this: wildcard rules still match, transport rules do not, and
+            // an operator who wants fragment policy can still ask for protocol 44.
+            UpperLayerProto::NonFirstFragment => NextHeader::FRAGMENT,
+            UpperLayerProto::Indeterminate => {
+                debug!("Could not determine the upper-layer protocol, dropping packet");
+                return Err(DoneReason::Malformed);
+            }
         };
-        let ports = transport.and_then(|t| t.src_port().zip(t.dst_port()));
+        let ports = match upper {
+            // A non-first fragment has no ports, even when the IPv4 parser read something
+            // port-shaped out of its payload.
+            UpperLayerProto::NonFirstFragment => None,
+            _ => transport.and_then(|t| t.src_port().zip(t.dst_port())),
+        };
 
         Ok(Self {
             src_vni,

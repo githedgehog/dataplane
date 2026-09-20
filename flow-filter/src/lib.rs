@@ -8,7 +8,8 @@ use config::external::overlay::vpcpeering::{ValidatedExpose, VpcExposeNatConfig}
 use net::FlowKey;
 use net::buffer::PacketBufferMut;
 use net::flows::{FlowInfo, FlowStatus};
-use net::headers::{TryHeaders, TryIp};
+use net::headers::{TryHeaders, TryIp, UpperLayerProto};
+use net::ip::NextHeader;
 use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
 use tracectl::trace_target;
@@ -152,10 +153,19 @@ impl FlowFilter {
             return Classification::Drop;
         };
 
-        let Some(proto) = packet.upper_layer_proto() else {
-            debug!("{nfi}: Could not determine the upper-layer protocol, dropping packet");
-            packet.done(DoneReason::Malformed);
-            return Classification::Drop;
+        let upper = packet.upper_layer_proto();
+        let proto = match upper {
+            UpperLayerProto::Carried(proto) => proto,
+            // A non-first fragment is routed on its addresses alone: it carries no
+            // transport header, so a protocol-restricted expose cannot claim it, and an
+            // unrestricted one still can. Dropping it here would strand every fragment
+            // after the first and stop the datagram reassembling at all.
+            UpperLayerProto::NonFirstFragment => NextHeader::FRAGMENT,
+            UpperLayerProto::Indeterminate => {
+                debug!("{nfi}: Could not determine the upper-layer protocol, dropping packet");
+                packet.done(DoneReason::Malformed);
+                return Classification::Drop;
+            }
         };
 
         let input = LookupInput {
@@ -164,7 +174,12 @@ impl FlowFilter {
             src_ip: net.src_addr(),
             dst_ip: net.dst_addr(),
             proto,
-            ports: transport.and_then(|t| t.src_port().zip(t.dst_port())),
+            // A non-first fragment has no ports of its own; anything port-shaped in an
+            // IPv4 fragment's payload was read by a parser that ignored the offset.
+            ports: match upper {
+                UpperLayerProto::NonFirstFragment => None,
+                _ => transport.and_then(|t| t.src_port().zip(t.dst_port())),
+            },
             gate: revalidation_gate,
         };
         Classification::Lookup {

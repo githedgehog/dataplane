@@ -11,7 +11,7 @@ use crate::masquerade::allocator_writer::NatAllocatorReader;
 use crate::masquerade::apalloc::{Allocation, NatAllocator};
 use crate::masquerade::flows::check_masquerading_flow;
 use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
-use crate::masquerade::protocol::next_flow_status;
+use crate::masquerade::protocol::{next_flow_status, transport_proto};
 use crate::masquerade::state::MasqueradeState;
 use clock::Duration;
 use concurrency::sync::{Arc, Weak};
@@ -179,12 +179,14 @@ impl Masquerade {
     }
 
     fn refreshes_while_unanswered<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-        packet.try_ip().is_some_and(|ip| {
-            matches!(
-                ip.next_header(),
-                NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6
-            )
-        })
+        // `transport_proto`, not the raw next-header field: for IPv6 that field names the
+        // first extension header, so a UDP flow behind a single Hop-by-Hop header used to
+        // advance the UDP state machine here and then refresh nothing, expiring at the
+        // one-way timeout no matter how much the sender sent.
+        matches!(
+            transport_proto(packet),
+            Some(NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6)
+        )
     }
 
     /// Update the `FlowStatus` of a masqueraded flow with a packet, depending on the direction of the

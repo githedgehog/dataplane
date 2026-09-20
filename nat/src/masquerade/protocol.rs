@@ -7,7 +7,7 @@
 
 use crate::common::{NatAction, NatFlowStatus};
 use net::buffer::PacketBufferMut;
-use net::headers::{TryHeaders, TryIp, TryTcp};
+use net::headers::{TryHeaders, TryTcp};
 
 use net::ip::NextHeader;
 use net::packet::Packet;
@@ -104,21 +104,23 @@ fn next_flow_status_tcp(action: NatAction, status: NatFlowStatus, tcp: &Tcp) -> 
     }
 }
 
-/// The transport protocol the packet actually carries, or `None` without an IP header.
+/// The transport protocol the packet actually carries, if it carries one.
 ///
 /// `Net::next_header()` names the *first* header after the IP header, which for IPv6 is
 /// whatever extension header the sender chose to insert. `upper_layer_proto` walks the
-/// chain, fragment header included, and answers the transport; the fallback keeps the old
-/// answer for a chain that ran past `MAX_NET_EXTENSIONS`.
+/// chain, fragment header included, and answers the transport.
+///
+/// There is deliberately no fallback to the raw field. Reading it when the chain could
+/// not be walked is the bypass this function exists to close, and a fragment has no
+/// transport of its own to name at all -- callers get `None` and must decide what that
+/// means for them.
 ///
 /// One function rather than the same three lines at each call site: two callers deciding
 /// "which protocol is this" independently is a drift waiting to happen, and the two that
 /// exist have to agree for the flow a state machine advances and the flow that gets
 /// refreshed to be the same flow.
 pub(crate) fn transport_proto<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NextHeader> {
-    packet
-        .upper_layer_proto()
-        .or_else(|| packet.try_ip().map(net::headers::Net::next_header))
+    packet.upper_layer_proto().carried()
 }
 
 // Compute the next `NatFlowStatus` of a flow, given the current, the received packet and
@@ -128,8 +130,13 @@ pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
     action: NatAction,     // action of the flow hit
     status: NatFlowStatus, // current status
 ) -> NatFlowStatus {
-    // A packet without an IP header should not make it here.
-    let proto = transport_proto(packet).unwrap_or_else(|| unreachable!());
+    // A fragment carries no transport header of its own, and an unreadable chain names
+    // no protocol: neither can advance a protocol state machine, so the flow keeps the
+    // status it had. Non-first fragments reach this point now that the filters forward
+    // them instead of dropping them, so this is a live path, not a defensive branch.
+    let Some(proto) = transport_proto(packet) else {
+        return status;
+    };
 
     match proto {
         NextHeader::UDP => next_flow_status_udp(action, status).udp_status_patch(packet, action),

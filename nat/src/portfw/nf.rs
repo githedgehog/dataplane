@@ -61,8 +61,11 @@ impl PortForwarder {
             return None;
         };
 
-        let Some(proto) = packet.upper_layer_proto() else {
-            debug!("Ignoring packet: header chain was never walked to a transport");
+        let Some(proto) = packet.upper_layer_proto().carried() else {
+            // Fragments are never port-forwarded. The ports live in fragment zero, and
+            // for IPv4 anything port-shaped here was read out of fragment payload --
+            // rewriting it would corrupt the datagram rather than translate it.
+            debug!("Ignoring packet: no upper-layer protocol to port-forward on");
             return None;
         };
 
@@ -226,7 +229,7 @@ impl PortForwarder {
     ) -> Option<Arc<PortFwEntry>> {
         // These could be retrieved from the FlowKey, but we don't have it :( ...
         let src_vpcd = packet.meta().src_vpcd?;
-        let proto = packet.upper_layer_proto()?;
+        let proto = packet.upper_layer_proto().carried()?;
         let net = packet.try_ip()?;
         let dst_ip = net.dst_addr();
         let dst_port = packet.transport_dst_port()?;
@@ -266,7 +269,7 @@ impl PortForwarder {
     ) -> Option<Arc<PortFwEntry>> {
         // get required properties from packet
         let src_vpcd = packet.meta().src_vpcd?;
-        let proto = packet.upper_layer_proto()?;
+        let proto = packet.upper_layer_proto().carried()?;
         let net = packet.try_ip()?;
         let src_ip = net.src_addr();
         let src_port = packet.transport_src_port()?;
@@ -568,6 +571,74 @@ mod race {
             "fragment body created a TCP flow"
         );
         assert_eq!(out.headers(), &original_headers);
+    }
+
+    /// The same thing for IPv4, where it is easier to hit and was never guarded.
+    ///
+    /// IPv4 keeps the fragment offset in the base header and `Ipv4::parse_payload`
+    /// dispatches on the protocol byte alone, so a non-first fragment arrives with a fully
+    /// parsed "TCP header" that is really the middle of somebody's datagram -- ports and
+    /// all. Port forwarding used to match on it and rewrite four bytes of that payload.
+    #[tokio::test]
+    async fn a_non_first_ipv4_fragment_with_transport_shaped_body_is_not_forwarded() {
+        use etherparse::{IpNumber, Ipv4Header, TcpHeader};
+
+        let fabric = fabric();
+        let (mut lookup, mut pfw) = fabric.stages();
+        let arrival = Arrival::inbound();
+
+        let mut tcp = TcpHeader::new(1234, 8001, 0, 0);
+        tcp.syn = true;
+        let mut payload = Vec::new();
+        tcp.write(&mut payload).unwrap();
+
+        let mut ip = Ipv4Header::new(
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                payload.len() as u16
+            },
+            64,
+            IpNumber::TCP,
+            // Addressed at the public side of the expose, port 8001, so a rule really does
+            // match it on addresses and ports: without that this test would pass whether or
+            // not fragments are recognised.
+            [203, 0, 113, 1],
+            [172, 16, 0, 1],
+        )
+        .unwrap();
+        // The bytes above are body, not headers: this is fragment 185.
+        ip.fragment_offset = etherparse::IpFragOffset::try_new(185).unwrap();
+        ip.more_fragments = false;
+
+        let mut bytes = vec![2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x08, 0x00];
+        ip.write(&mut bytes).unwrap();
+        bytes.extend_from_slice(&payload);
+
+        let mut packet = Packet::new(TestBuffer::from_raw_data(&bytes)).unwrap();
+        assert_eq!(
+            packet.transport_dst_port().map(NonZero::get),
+            Some(8001),
+            "fixture is wrong: the parser must read a port out of the fragment body, \
+             which is the whole hazard"
+        );
+        let original_headers = packet.headers().clone();
+        arrival.stamp(&mut packet);
+
+        let mut stamped = lookup.process(std::iter::once(packet));
+        let mut packet = stamped.next().unwrap();
+        drop(stamped);
+        packet.meta_mut().dst_vpcd = arrival.dst_vpcd.map(VpcDiscriminant::from_vni);
+
+        let out = pfw.process(std::iter::once(packet)).next().unwrap();
+        assert!(
+            entries(&fabric).is_empty(),
+            "an IPv4 fragment body created a TCP flow"
+        );
+        assert_eq!(
+            out.headers(),
+            &original_headers,
+            "port forwarding rewrote bytes of an IPv4 fragment's payload"
+        );
     }
 
     #[tokio::test]
