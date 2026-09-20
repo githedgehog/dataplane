@@ -188,6 +188,43 @@ pub enum NetExt {
     Ipv6Auth(Ipv6Auth),
 }
 
+/// What a parsed header chain can say about the protocol above the network layer.
+///
+/// Three answers rather than two, because the callers have to tell them apart. A
+/// transport this packet carries, a fragment whose transport header is in a different
+/// packet, and a chain this parser could not follow are three different situations, and
+/// collapsing the last two into one "unknown" forces every caller to choose between
+/// dropping legitimate fragments and trusting a chain it could not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpperLayerProto {
+    /// The chain names an upper-layer protocol and this packet carries its header.
+    Carried(NextHeader),
+    /// A non-first fragment of a larger datagram.
+    ///
+    /// The upper-layer header belongs to fragment zero, so this packet has none: its
+    /// addresses are meaningful, its protocol and ports are not. Policy that constrains
+    /// protocol or ports was applied to fragment zero, and without that fragment the
+    /// datagram never reassembles.
+    NonFirstFragment,
+    /// The chain could not be followed to an upper-layer protocol: it ran past
+    /// `MAX_NET_EXTENSIONS`, or it names a transport whose header is not present.
+    Indeterminate,
+}
+
+impl UpperLayerProto {
+    /// The protocol this packet carries, if it carries one.
+    ///
+    /// For callers that have nothing useful to do with a fragment or an unreadable
+    /// chain. Callers that must distinguish them should match instead.
+    #[must_use]
+    pub fn carried(self) -> Option<NextHeader> {
+        match self {
+            UpperLayerProto::Carried(proto) => Some(proto),
+            UpperLayerProto::NonFirstFragment | UpperLayerProto::Indeterminate => None,
+        }
+    }
+}
+
 impl DeParse for NetExt {
     type Error = ();
 
@@ -756,19 +793,38 @@ impl Headers {
         &self.net_ext
     }
 
+    /// Whether this packet is a non-first fragment of a larger datagram.
+    ///
+    /// Both families, which is the point: IPv6 keeps the offset in a Fragment extension
+    /// header, IPv4 keeps it in the base header's own fields, and only checking the
+    /// former leaves IPv4 fragments indistinguishable from whole datagrams.
     #[must_use]
-    pub fn upper_layer_proto(&self) -> Option<NextHeader> {
-        // A non-first fragment has no transport header. Check the whole chain:
-        // the parser can mistake its body for more extensions and a transport.
-        // Offset zero still carries the header, even when more fragments follow.
+    pub fn is_non_first_fragment(&self) -> bool {
         if self
             .net_ext
             .iter()
             .any(|ext| matches!(ext, NetExt::Fragment(h) if h.fragment_offset().value() != 0))
         {
-            return None;
+            return true;
+        }
+        matches!(self.net.as_ref(), Some(Net::Ipv4(ip)) if ip.fragment_offset().value() != 0)
+    }
+
+    /// What this header chain says about the protocol above the network layer.
+    #[must_use]
+    pub fn upper_layer_proto(&self) -> UpperLayerProto {
+        // A non-first fragment carries payload, not headers, whatever the chain claims.
+        // Ask first: `parse` cannot tell on its own. For IPv4 it dispatches on the
+        // protocol byte alone and will read a "transport header" straight out of fragment
+        // payload; for IPv6 it can mistake that payload for further extensions. Offset
+        // zero still carries the real header, even when more fragments follow.
+        if self.is_non_first_fragment() {
+            return UpperLayerProto::NonFirstFragment;
         }
 
+        let Some(base) = self.net.as_ref() else {
+            return UpperLayerProto::Indeterminate;
+        };
         let next = match self.net_ext.last() {
             Some(NetExt::HopByHop(h)) => h.next_header(),
             Some(NetExt::DestOpts(h)) => h.next_header(),
@@ -776,9 +832,29 @@ impl Headers {
             Some(NetExt::Fragment(h)) => h.next_header(),
             Some(NetExt::Ipv4Auth(h)) => h.next_header(),
             Some(NetExt::Ipv6Auth(h)) => h.next_header(),
-            None => self.net.as_ref()?.next_header(),
+            None => base.next_header(),
         };
-        (!next.is_ipv6_extension()).then_some(next)
+
+        // Still an extension header: the chain ran past `MAX_NET_EXTENSIONS` and `parse`
+        // stopped before it reached a transport. Nothing here names the upper layer.
+        if next.is_ipv6_extension() {
+            return UpperLayerProto::Indeterminate;
+        }
+
+        // The chain names a transport this parser knows how to read, but no transport was
+        // parsed, so the bytes that header would occupy are not on the wire. Answering
+        // with the name anyway would let a `permit tcp` rule admit a packet carrying no
+        // TCP header. Only the parseable protocols are checked: ESP and other opaque
+        // payloads legitimately parse no transport and keep their own protocol number.
+        if matches!(
+            next,
+            NextHeader::TCP | NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6
+        ) && self.transport.is_none()
+        {
+            return UpperLayerProto::Indeterminate;
+        }
+
+        UpperLayerProto::Carried(next)
     }
 
     /// Get a reference to the transport header, if present.
@@ -2437,11 +2513,14 @@ mod test {
 
 #[cfg(test)]
 mod fragment_upper_layer_proto {
-    use super::{Headers, Net, NetExt};
+    use super::{Headers, Net, NetExt, Transport, UpperLayerProto};
     use crate::ip::NextHeader;
+    use crate::ipv4::Ipv4;
+    use crate::ipv4::frag_offset::FragOffset;
     use crate::ipv6::Ipv6;
     use crate::ipv6::fragment::Fragment;
     use crate::parse::Parse;
+    use crate::tcp::{Tcp, TcpPort};
     use etherparse::{IpFragOffset, IpNumber, Ipv6FragmentHeader, Ipv6Header, TcpHeader};
     use std::net::Ipv6Addr;
 
@@ -2458,6 +2537,13 @@ mod fragment_upper_layer_proto {
         // SAFETY: built here as a fragment header, which is what `from_raw_unchecked` asks.
         let fragment = unsafe { Fragment::from_raw_unchecked(raw) };
         headers.net_ext.push(NetExt::Fragment(fragment));
+        // A chain that names TCP has to actually carry it: a named-but-absent transport is
+        // its own answer now (`Indeterminate`), so leaving this out would test that instead
+        // of what these cases are about.
+        headers.set_transport(Some(Transport::Tcp(Tcp::new(
+            TcpPort::new_checked(1234).unwrap_or_else(|_| unreachable!()),
+            TcpPort::new_checked(8001).unwrap_or_else(|_| unreachable!()),
+        ))));
         headers
     }
 
@@ -2469,20 +2555,24 @@ mod fragment_upper_layer_proto {
         let headers = headers_with_fragment(0, true);
         assert_eq!(
             headers.upper_layer_proto(),
-            Some(crate::ip::NextHeader::TCP),
+            UpperLayerProto::Carried(NextHeader::TCP),
             "the first fragment carries the transport header and must classify"
         );
     }
 
     /// A non-first fragment carries payload bytes where the header would be. Reporting a
     /// protocol here let port forwarding DNAT it and overwrite two bytes of that payload.
+    ///
+    /// It answers `NonFirstFragment` rather than `Indeterminate`: the two are not the same
+    /// and the callers do different things with them. This one is a well-formed packet that
+    /// must still be forwarded on its addresses.
     #[test]
-    fn a_non_first_fragment_reports_no_protocol() {
+    fn a_non_first_fragment_is_reported_as_a_fragment() {
         for (offset, more) in [(1u16, true), (1, false), (185, false)] {
             let headers = headers_with_fragment(offset, more);
             assert_eq!(
                 headers.upper_layer_proto(),
-                None,
+                UpperLayerProto::NonFirstFragment,
                 "offset {offset} more={more} named a protocol whose header is not present"
             );
         }
@@ -2494,7 +2584,7 @@ mod fragment_upper_layer_proto {
         let headers = headers_with_fragment(0, false);
         assert_eq!(
             headers.upper_layer_proto(),
-            Some(crate::ip::NextHeader::TCP)
+            UpperLayerProto::Carried(NextHeader::TCP)
         );
     }
 
@@ -2543,11 +2633,109 @@ mod fragment_upper_layer_proto {
                     ));
                     assert_eq!(
                         headers.upper_layer_proto(),
-                        (offset == 0).then_some(NextHeader::TCP),
+                        if offset == 0 {
+                            UpperLayerProto::Carried(NextHeader::TCP)
+                        } else {
+                            UpperLayerProto::NonFirstFragment
+                        },
                         "offset={offset}, more={more}, hop_by_hop={hop_by_hop}"
                     );
                 }
             },
+        );
+    }
+
+    /// IPv4 keeps the fragment offset in the base header, where the pre-existing check did
+    /// not look. `Ipv4::parse_payload` dispatches on the protocol byte alone and ignores
+    /// the offset, so a non-first UDP fragment arrives with a "UDP header" read straight
+    /// out of another datagram's payload -- and port forwarding rewrote four bytes of it.
+    #[test]
+    fn a_non_first_ipv4_fragment_is_reported_as_a_fragment() {
+        for (offset, more) in [(1u16, true), (1, false), (185, false)] {
+            let mut headers = Headers::new();
+            let mut ip = Ipv4::default();
+            ip.set_fragment_offset(FragOffset::new(offset).unwrap_or_else(|_| unreachable!()));
+            ip.set_more_fragments(more);
+            ip.set_next_header(NextHeader::UDP);
+            headers.set_net(Some(Net::Ipv4(ip)));
+
+            assert_eq!(
+                headers.upper_layer_proto(),
+                UpperLayerProto::NonFirstFragment,
+                "IPv4 offset {offset} more={more} was not recognised as a fragment"
+            );
+        }
+    }
+
+    /// The first IPv4 fragment does carry its transport header and must still classify,
+    /// the same way offset zero does for IPv6.
+    #[test]
+    fn the_first_ipv4_fragment_still_reports_its_protocol() {
+        let mut headers = Headers::new();
+        let mut ip = Ipv4::default();
+        ip.set_more_fragments(true);
+        ip.set_next_header(NextHeader::TCP);
+        headers.set_net(Some(Net::Ipv4(ip)));
+        headers.set_transport(Some(Transport::Tcp(Tcp::new(
+            TcpPort::new_checked(1234).unwrap_or_else(|_| unreachable!()),
+            TcpPort::new_checked(8001).unwrap_or_else(|_| unreachable!()),
+        ))));
+
+        assert_eq!(
+            headers.upper_layer_proto(),
+            UpperLayerProto::Carried(NextHeader::TCP)
+        );
+    }
+
+    /// A chain that names a transport whose header is not on the wire is indeterminate,
+    /// not "that transport".
+    ///
+    /// `eth + ipv6(payload_len 8) + HopByHop(next=TCP)` and nothing after: walking the
+    /// chain finds the name TCP, but `parse` produced no transport because the bytes are
+    /// not there. Answering `Carried(TCP)` let a `permit tcp any any` rule admit a packet
+    /// with no TCP header -- a rule that did not match this packet before the chain walk
+    /// was introduced.
+    #[test]
+    fn a_chain_naming_an_absent_transport_is_indeterminate() {
+        let mut bytes = vec![2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x86, 0xdd];
+        let ip = Ipv6Header {
+            payload_length: 8,
+            next_header: IpNumber::IPV6_HEADER_HOP_BY_HOP,
+            hop_limit: 64,
+            source: Ipv6Addr::LOCALHOST.octets(),
+            destination: Ipv6Addr::LOCALHOST.octets(),
+            ..Ipv6Header::default()
+        };
+        ip.write(&mut bytes).unwrap_or_else(|_| unreachable!());
+        // One 8-octet Hop-by-Hop header naming TCP, and then the packet ends.
+        bytes.extend_from_slice(&[6, 0, 1, 4, 0, 0, 0, 0]);
+
+        let (headers, _) = Headers::parse(&bytes).unwrap_or_else(|e| unreachable!("{e:?}"));
+        assert!(
+            headers.transport().is_none(),
+            "fixture is wrong: this chain must parse no transport"
+        );
+        assert_eq!(
+            headers.upper_layer_proto(),
+            UpperLayerProto::Indeterminate,
+            "a named but absent transport must not be answered with its name"
+        );
+    }
+
+    /// An opaque protocol legitimately parses no transport and must keep its own number.
+    /// The absent-transport check above has to be narrow enough not to swallow it.
+    #[test]
+    fn an_opaque_protocol_keeps_its_protocol_number() {
+        const ESP: u8 = 50;
+        let mut headers = Headers::new();
+        let mut ip = Ipv6::default();
+        ip.set_next_header(NextHeader::new(ESP));
+        headers.set_net(Some(Net::Ipv6(ip)));
+
+        assert_eq!(
+            headers.upper_layer_proto(),
+            UpperLayerProto::Carried(NextHeader::new(ESP)),
+            "ESP parses no transport but its protocol number is still the answer"
         );
     }
 }

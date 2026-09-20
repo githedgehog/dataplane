@@ -15,6 +15,7 @@ use crate::headers::Net::{Ipv4, Ipv6};
 use crate::headers::{
     EmbeddedTransport, Transport, TryEmbeddedHeaders, TryEmbeddedTransportMut, TryEth, TryEthMut,
     TryIcmpAny, TryInnerIpMut, TryIp, TryIpMut, TryTcp, TryTransport, TryTransportMut, TryUdp,
+    UpperLayerProto,
 };
 use crate::icmp_any::TruncatedIcmpAny;
 use crate::ip::{NextHeader, UnicastIpAddr};
@@ -145,9 +146,9 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             .map_err(|_| PacketUtilError::IpVersionMismatch(ip))
     }
 
+    /// What this packet's header chain says about the protocol above the network layer.
     #[must_use]
-    #[allow(missing_docs)]
-    pub fn upper_layer_proto(&self) -> Option<NextHeader> {
+    pub fn upper_layer_proto(&self) -> UpperLayerProto {
         self.headers.upper_layer_proto()
     }
 

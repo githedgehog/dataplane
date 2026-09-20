@@ -7,7 +7,7 @@
 
 use net::buffer::PacketBufferMut;
 use net::headers::Net;
-use net::headers::{NetError, Transport, TransportError, TryHeadersMut};
+use net::headers::{NetError, Transport, TransportError, TryHeadersMut, UpperLayerProto};
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::Packet;
 use std::net::IpAddr;
@@ -27,15 +27,21 @@ pub(crate) enum NatPacketError {
 }
 
 #[inline]
-fn is_port_forwardable(proto: Option<NextHeader>) -> bool {
-    matches!(proto, Some(NextHeader::UDP | NextHeader::TCP))
+fn is_port_forwardable(proto: UpperLayerProto) -> bool {
+    // Only a carried transport qualifies: a fragment has no ports of its own, and an
+    // unreadable chain names nothing we are entitled to rewrite.
+    matches!(
+        proto,
+        UpperLayerProto::Carried(NextHeader::UDP | NextHeader::TCP)
+    )
 }
 
 #[inline]
-fn is_icmp(proto: Option<NextHeader>, net: &Net) -> bool {
+fn is_icmp(proto: UpperLayerProto, net: &Net) -> bool {
     matches!(
         (proto, net),
-        (Some(NextHeader::ICMP), Net::Ipv4(_)) | (Some(NextHeader::ICMP6), Net::Ipv6(_))
+        (UpperLayerProto::Carried(NextHeader::ICMP), Net::Ipv4(_))
+            | (UpperLayerProto::Carried(NextHeader::ICMP6), Net::Ipv6(_))
     )
 }
 
