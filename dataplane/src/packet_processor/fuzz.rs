@@ -950,6 +950,7 @@ mod shapes {
     use net::headers::builder::ChainBase;
     use net::headers::{Headers, TryIpv4Mut, TryIpv6Mut};
     use net::ipv4::UnicastIpv4Addr;
+    use net::ipv4::frag_offset::FragOffset;
     use net::ipv6::UnicastIpv6Addr;
     use net::parse::DeParse;
     use std::net::{Ipv4Addr, Ipv6Addr};
@@ -961,6 +962,7 @@ mod shapes {
         V4Tcp,
         V4Udp,
         V4Icmp,
+        V4FragmentUdp,
         VlanV4Tcp,
         V4ExoticProto,
         V6Tcp,
@@ -970,10 +972,11 @@ mod shapes {
     }
 
     impl Shape {
-        pub(super) const ALL: [Shape; 9] = [
+        pub(super) const ALL: [Shape; 10] = [
             Shape::V4Tcp,
             Shape::V4Udp,
             Shape::V4Icmp,
+            Shape::V4FragmentUdp,
             Shape::VlanV4Tcp,
             Shape::V4ExoticProto,
             Shape::V6Tcp,
@@ -981,6 +984,21 @@ mod shapes {
             Shape::V6FragmentUdp,
             Shape::NoIp,
         ];
+    }
+
+    /// Pin a generated IPv4 header to a whole datagram.
+    ///
+    /// `Ipv4`'s generator randomises `fragment_offset` and `more_fragments`, and a 13-bit
+    /// offset draws zero about once in 8192 -- so an unconstrained `.ipv4(|_| {})` builds a
+    /// *non-first fragment* almost every time. That is not what shapes named `V4Tcp` or
+    /// `V4Icmp` are claiming to be, and a non-first fragment carries no transport header at
+    /// all: what the parser reads there is the middle of another datagram.
+    ///
+    /// `V4FragmentUdp` is the shape that means to be a fragment, the way `V6FragmentUdp`
+    /// does for IPv6.
+    fn whole_datagram(ip: &mut net::ipv4::Ipv4) {
+        ip.set_fragment_offset(FragOffset::MIN);
+        ip.set_more_fragments(false);
     }
 
     const STACKS_PER_FABRIC: usize = 16;
@@ -996,28 +1014,38 @@ mod shapes {
                 Shape::NoIp => ChainBase::new().eth(|_| {}).generate(driver),
                 Shape::V4Tcp => ChainBase::new()
                     .eth(|_| {})
-                    .ipv4(|_| {})
+                    .ipv4(whole_datagram)
                     .tcp(|_| {})
                     .generate(driver),
                 Shape::V4Udp => ChainBase::new()
                     .eth(|_| {})
-                    .ipv4(|_| {})
+                    .ipv4(whole_datagram)
                     .udp(|_| {})
                     .generate(driver),
                 Shape::V4Icmp => ChainBase::new()
                     .eth(|_| {})
-                    .ipv4(|_| {})
+                    .ipv4(whole_datagram)
                     .icmp4(|_| {})
+                    .generate(driver),
+                Shape::V4FragmentUdp => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv4(|ip| {
+                        ip.set_fragment_offset(FragOffset::MAX);
+                        ip.set_more_fragments(false);
+                        ip.set_next_header(net::ip::NextHeader::UDP);
+                    })
+                    .udp(|_| {})
                     .generate(driver),
                 Shape::VlanV4Tcp => ChainBase::new()
                     .eth(|_| {})
                     .vlan(|_| {})
-                    .ipv4(|_| {})
+                    .ipv4(whole_datagram)
                     .tcp(|_| {})
                     .generate(driver),
                 Shape::V4ExoticProto => ChainBase::new()
                     .eth(|_| {})
                     .ipv4(|ip| {
+                        whole_datagram(ip);
                         ip.set_next_header(net::ip::NextHeader::new(132));
                     })
                     .generate(driver),
@@ -1411,6 +1439,7 @@ mod acl {
     use net::headers::{Headers, TryIpv4Mut, TryIpv6Mut};
     use net::ip::NextHeader;
     use net::ipv4::UnicastIpv4Addr;
+    use net::ipv4::frag_offset::FragOffset;
     use net::ipv6::UnicastIpv6Addr;
     use net::parse::DeParse;
     use std::net::{Ipv4Addr, Ipv6Addr};
@@ -1496,6 +1525,22 @@ mod acl {
         matches!(rule, AclProtoMatch::Any) || rule == carried
     }
 
+    /// Pin a generated IPv4 header to a whole datagram.
+    ///
+    /// `Ipv4`'s generator randomises `fragment_offset` and `more_fragments`, and a 13-bit
+    /// offset draws zero about once in 8192 -- so left alone, nearly every packet this
+    /// property builds is a *non-first fragment*. Such a packet carries no transport
+    /// header at all: what the parser reads there is the middle of somebody else's
+    /// datagram, ports included.
+    ///
+    /// This property is about the verdict following the protocol the packet carries, so
+    /// the packets have to actually carry one. Fragment classification is a separate
+    /// question, tested against the filters directly.
+    fn whole_datagram(ip: &mut net::ipv4::Ipv4) {
+        ip.set_fragment_offset(FragOffset::MIN);
+        ip.set_more_fragments(false);
+    }
+
     fn stack<D: Driver>(driver: &mut D, spec: PacketSpec, v6: bool) -> Option<Headers> {
         if v6 {
             let chain = ChainBase::new().eth(|_| {}).ipv6(|_| {});
@@ -1514,7 +1559,7 @@ mod acl {
                 }
             }
         } else {
-            let chain = ChainBase::new().eth(|_| {}).ipv4(|_| {});
+            let chain = ChainBase::new().eth(|_| {}).ipv4(whole_datagram);
             if spec.behind_extension {
                 let chain = chain.ipv4_auth(|_| {});
                 match spec.proto {
