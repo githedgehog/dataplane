@@ -531,10 +531,31 @@ check-deps-reuse:
         exit 1
     fi
 
+# `--config auto` is deliberately absent; do not add it back.
+#
+# It is a live, unauthenticated fetch of https://semgrep.dev/c/p/default, and
+# that URL serves two different documents: the YAML rule file opengrep wants,
+# or a JSON API envelope `{"missed": 1856, "rules": [...]}`. `missed` is a
+# count of rules withheld from the free pack, not a rule-file property, so
+# drawing the envelope fails the entire scan with exit 7 and
+# `Unknown or duplicate properties found in YAML object: missed`. Which
+# variant you get is not ours to control -- it tracks neither User-Agent nor
+# Accept -- so the step was a coin flip, and it lost twice in CI.
+#
+# Little is given up. Of the 1074 rules in that pack, 3 target rust and 3
+# bash; the rest are python/javascript/java/terraform and friends, which is
+# why it had never produced a finding here. What does fire is `.semgrep/rules`
+# below -- rules we wrote, versioned in this tree, reviewed like any other
+# code. Rust and supply-chain coverage is `cargo deny` (check-dependencies),
+# clippy, miri and the fuzzers; workflow coverage is zizmor.
+#
+# Pinning the pack was considered and rejected: it is Semgrep Rules License
+# v1.0, which grants use but forbids distribution, so it could be neither
+# vendored here nor pushed to the public `hedgehog` Cachix cache.
 [script]
 opengrep:
     {{ _just_debuggable_ }}
-    opengrep scan --experimental --verbose --error --config auto --config .semgrep/rules
+    opengrep scan --experimental --verbose --error --config .semgrep/rules
 
 [script]
 pinact *args="--check --verify":
