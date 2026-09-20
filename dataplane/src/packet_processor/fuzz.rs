@@ -655,8 +655,15 @@ mod contract {
     // once at the end of the run; they model nothing. Built through the concurrency facade
     // they are shuttle primitives constructed outside any shuttle execution, so under
     // `--features shuttle` the first `fetch_add` aborts with "`ExecutionState` is not set"
-    // and takes every property in this file with it. The `Mutex` above is a different case:
-    // it is a runtime value inside the harness, not a `static`.
+    // and takes every property in this file with it.
+    //
+    // The `Arc<Mutex<Translations>>` above is still on `concurrency::sync`, and being a
+    // runtime value rather than a `static` is *not* what makes that safe: under a shuttle
+    // backend `lock()` needs an active execution whether the lock is a static or not. What
+    // keeps it from aborting is the justfile's `filter := "shuttle"`, which runs only tests
+    // whose name matches `shuttle` under that backend -- none of these do. Nothing here
+    // models concurrency, so if that filter ever stops being the guard, this wants moving
+    // off the facade too.
     use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
 
@@ -1169,7 +1176,34 @@ mod shapes {
                             );
                             FORWARDED.fetch_add(1, Ordering::Relaxed);
                         }
-                        Verdict::Dropped(_) => {
+                        Verdict::Dropped(reason) => {
+                            // The three chain-walking shapes must never be `Malformed`.
+                            // Each is a well-formed packet whose protocol can only be found
+                            // by following the header chain, which is exactly what broke:
+                            // non-first fragments answered "unknown" and were dropped here,
+                            // and this arm scored it a pass for as long as it ignored the
+                            // reason.
+                            //
+                            // The assertion stops there rather than covering every shape,
+                            // because `Malformed` is not only used for malformed packets:
+                            // masquerade maps both `FlowKeyError` and `InvalidPort` to it
+                            // (`nat/src/masquerade/nf.rs`), so protocol 132, which has no
+                            // ports, and an ICMP type that is neither query nor error reach
+                            // it while being perfectly well-formed. Declining to NAT those
+                            // is right; calling them malformed is not, and
+                            // `NatUnsupportedProto` already exists for the protocol case.
+                            // Widen this once that reason is corrected.
+                            if matches!(
+                                shape,
+                                Shape::V6FragmentUdp | Shape::V4FragmentUdp | Shape::V6HopByHopTcp
+                            ) {
+                                assert_ne!(
+                                    reason,
+                                    DoneReason::Malformed,
+                                    "a well-formed {shape:?} stack was dropped as malformed: \
+                                     a stage could not follow a header chain it should read"
+                                );
+                            }
                             DROPPED.fetch_add(1, Ordering::Relaxed);
                         }
                         Verdict::Delivered { .. } => {

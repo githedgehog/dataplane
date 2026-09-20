@@ -239,41 +239,57 @@ mod test {
 
     type TestStageId = StageId<TestBuffer>;
 
+    /// A stack-headroom canary: `DynPipeline::process` recurses once per stage, so this
+    /// asserts a per-stage frame budget and nothing else.
+    ///
+    /// The budget is `STACK_BYTES / NUM_STAGES`, about 4 KiB a frame. It is spelled out
+    /// here rather than inherited from whatever stack the harness happens to give a test
+    /// thread: that default is 2 MiB on Linux but is neither guaranteed nor the same
+    /// everywhere, so a canary reading it would assert a different budget per platform and
+    /// could pass on one while overflowing on another.
+    ///
+    /// The count was 999 against the ambient default until `PacketMeta` grew and 999 frames
+    /// stopped fitting -- the canary reporting, not a reason to silence it. If this
+    /// overflows again, find what grew before lowering the number: each reduction buys less
+    /// than the one before it, and the budget above is what actually moves.
     #[test]
     fn long_dyn_pipeline() {
         const MAX_TTL: u8 = u8::MAX;
+        const NUM_STAGES: usize = 500;
+        const STACK_BYTES: usize = 2 * 1024 * 1024;
 
-        let mut pipeline = DynPipeline::new();
-        let mut stages = DynStageGenerator::new();
-        // What this number is for: `DynPipeline::process` recurses once per stage, so the
-        // test is a stack-headroom canary, and it caught `PacketMeta` growth eating that
-        // headroom. It was 999 and was lowered to 500 because the default 2 MiB test thread
-        // could no longer hold 999 frames -- which is the canary reporting, not a reason to
-        // silence it.
-        //
-        // 500 frames is therefore the budget this asserts, and a stage frame that grows past
-        // roughly 4 KiB will overflow it again. If that happens, find what grew before
-        // lowering the number: the next reduction buys less than this one did.
-        let num_stages = 500;
+        std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn(|| {
+                let mut pipeline = DynPipeline::new();
+                let mut stages = DynStageGenerator::new();
 
-        for _ in 0..num_stages {
-            pipeline = pipeline.add_stage_dyn(stages.next().unwrap());
-        }
+                for _ in 0..NUM_STAGES {
+                    pipeline = pipeline.add_stage_dyn(stages.next().unwrap());
+                }
 
-        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
-        let packets_out: Vec<_> = pipeline.process(packets).collect();
+                let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+                let packets_out: Vec<_> = pipeline.process(packets).collect();
 
-        assert_eq!(packets_out.len(), 1);
+                assert_eq!(packets_out.len(), 1);
 
-        let p0_out = &packets_out[0];
-        assert_eq!(
-            DestinationMac::new(Mac::BROADCAST).unwrap(),
-            p0_out.try_eth().unwrap().destination()
-        );
-        assert_eq!(
-            (MAX_TTL as usize) - DynStageGenerator::num_ttl_decs(num_stages),
-            p0_out.try_ipv4().unwrap().ttl() as usize
-        );
+                let p0_out = &packets_out[0];
+                assert_eq!(
+                    DestinationMac::new(Mac::BROADCAST).unwrap(),
+                    p0_out.try_eth().unwrap().destination()
+                );
+                assert_eq!(
+                    (MAX_TTL as usize) - DynStageGenerator::num_ttl_decs(NUM_STAGES),
+                    p0_out.try_ipv4().unwrap().ttl() as usize
+                );
+            })
+            .expect("spawn the canary thread")
+            .join()
+            // Only reached if the body panicked. Blowing the budget does not panic: a stack
+            // overflow aborts the process with "fatal runtime error: stack overflow", which
+            // no message here can dress up. That abort *is* the canary firing -- if CI shows
+            // it for this test, a stage frame outgrew STACK_BYTES / NUM_STAGES.
+            .expect("the canary body panicked");
     }
 
     // Allow clippy::similar_names for packet[12] and packets, cannot allow per line
