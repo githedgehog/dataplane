@@ -550,7 +550,7 @@ check-deps-reuse:
 [script]
 opengrep:
     {{ _just_debuggable_ }}
-    opengrep scan --experimental --verbose --error --config auto --config .semgrep/rules
+    opengrep scan --experimental --verbose --error --config .semgrep/rules
 
 [script]
 pinact *args="--check --verify":
