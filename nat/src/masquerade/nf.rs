@@ -20,7 +20,7 @@ use flow_entry::flow_table::table::{FlowTable, FlowTableError, Insertion};
 use net::buffer::PacketBufferMut;
 use net::flow_key::{FlowAddrs, IcmpProtoKey};
 use net::flows::{ExtractRef, FlowInfo, FlowInfoError};
-use net::headers::{TryIp, TryTcp};
+use net::headers::{TryHeaders, TryIp, TryTcp};
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
@@ -179,10 +179,7 @@ impl Masquerade {
     }
 
     fn refreshes_while_unanswered<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-        // `transport_proto`, not the raw next-header field: for IPv6 that field names the
-        // first extension header, so a UDP flow behind a single Hop-by-Hop header used to
-        // advance the UDP state machine here and then refresh nothing, expiring at the
-        // one-way timeout no matter how much the sender sent.
+        // Resolve extension headers as in `next_flow_status`.
         matches!(
             transport_proto(packet),
             Some(NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6)
@@ -460,6 +457,11 @@ impl Masquerade {
     ) -> Result<(), MasqueradeError> {
         let nfi = self.name();
 
+        // Fragment payload must not reuse or create a transport flow.
+        if packet.headers().is_non_first_fragment() {
+            return Err(MasqueradeError::BadTransportHeader);
+        }
+
         // Hot path: if we have a session with masquerade state, translate the packet
         if let Some(translate) = self.get_masquerade_state(packet) {
             return Ok(masquerade(packet, &translate)?);
@@ -612,7 +614,7 @@ impl Masquerade {
         //# REQ-14:  A NAT MUST support receiving in-order and out-of-order
         //# fragments, so it MUST have "Received Fragment Out of Order"
         //# behavior.
-        // TODO: Check whether the packet is fragmented
+        // TODO: Support fragmented datagrams through reassembly or fragment tracking.
         if let Err(error) = self.masquerade_packet(packet) {
             packet.done((&error).into());
             debug!("Did not masquerade packet: {error}");

@@ -28,8 +28,6 @@ pub(crate) enum NatPacketError {
 
 #[inline]
 fn is_port_forwardable(proto: UpperLayerProto) -> bool {
-    // Only a carried transport qualifies: a fragment has no ports of its own, and an
-    // unreadable chain names nothing we are entitled to rewrite.
     matches!(
         proto,
         UpperLayerProto::Carried(NextHeader::UDP | NextHeader::TCP)

@@ -284,9 +284,7 @@ fn build_tcp_packet_v6_with_hop_by_hop(
         .unwrap()
 }
 
-// A non-first IPv6 fragment, assembled from octets because the header builder has no way to
-// set a fragment offset. The 20 bytes after the Fragment header are datagram body, however
-// much they are shaped like the TCP header this chain names.
+// Build a non-first fragment with TCP-shaped payload; the builder cannot set its offset.
 fn non_first_fragment_v6_bytes(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: u16) -> Vec<u8> {
     const FRAGMENT: u8 = 44;
     const TCP: u8 = 6;
@@ -321,8 +319,6 @@ fn non_first_fragment_v6_bytes(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: 
     bytes
 }
 
-// Wrap raw octets as an overlay packet with both VPC discriminants set, the way `packet` does
-// for built headers.
 fn packet_from_bytes(
     src_vpcd: VpcDiscriminant,
     dst_vpcd: Option<VpcDiscriminant>,
@@ -1429,12 +1425,6 @@ fn a_chain_past_the_parser_limit_is_dropped_rather_than_guessed() {
     );
 }
 
-/// A non-first fragment must survive a peering that does not restrict protocol.
-///
-/// This is the regression: reading the chain for an upper-layer protocol correctly finds
-/// none here, and answering "unknown" made the filter drop the packet as `Malformed`. Every
-/// fragment after the first was lost, so fragmented IPv6 between VPCs never reassembled --
-/// traffic that an unrestricted peering had carried fine until the chain walk arrived.
 #[test]
 fn a_non_first_fragment_survives_an_unrestricted_peering() {
     let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, None);
@@ -1452,11 +1442,6 @@ fn a_non_first_fragment_survives_an_unrestricted_peering() {
     );
 }
 
-/// ...and it must not thereby evade a rule it cannot be shown to satisfy.
-///
-/// Forwarding a fragment on its addresses is only safe if protocol-constrained rules still
-/// fail to match it. A rule permitting only TCP must not admit a fragment whose transport
-/// header is in another packet; the datagram was already judged on fragment zero.
 #[test]
 fn a_non_first_fragment_does_not_match_a_protocol_rule() {
     let acl = Acl::new(

@@ -156,10 +156,7 @@ impl FlowFilter {
         let upper = packet.upper_layer_proto();
         let proto = match upper {
             UpperLayerProto::Carried(proto) => proto,
-            // A non-first fragment is routed on its addresses alone: it carries no
-            // transport header, so a protocol-restricted expose cannot claim it, and an
-            // unrestricted one still can. Dropping it here would strand every fragment
-            // after the first and stop the datagram reassembling at all.
+            // Allow unrestricted exposes to match without inferring a transport.
             UpperLayerProto::NonFirstFragment => NextHeader::FRAGMENT,
             UpperLayerProto::Indeterminate => {
                 debug!("{nfi}: Could not determine the upper-layer protocol, dropping packet");
@@ -174,8 +171,7 @@ impl FlowFilter {
             src_ip: net.src_addr(),
             dst_ip: net.dst_addr(),
             proto,
-            // A non-first fragment has no ports of its own; anything port-shaped in an
-            // IPv4 fragment's payload was read by a parser that ignored the offset.
+            // The parser may have read ports from fragment payload.
             ports: match upper {
                 UpperLayerProto::NonFirstFragment => None,
                 _ => transport.and_then(|t| t.src_port().zip(t.dst_port())),

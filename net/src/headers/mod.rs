@@ -188,34 +188,19 @@ pub enum NetExt {
     Ipv6Auth(Ipv6Auth),
 }
 
-/// What a parsed header chain can say about the protocol above the network layer.
-///
-/// Three answers rather than two, because the callers have to tell them apart. A
-/// transport this packet carries, a fragment whose transport header is in a different
-/// packet, and a chain this parser could not follow are three different situations, and
-/// collapsing the last two into one "unknown" forces every caller to choose between
-/// dropping legitimate fragments and trusting a chain it could not read.
+/// Upper-layer protocol classification for a parsed packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpperLayerProto {
-    /// The chain names an upper-layer protocol and this packet carries its header.
+    /// The resolved protocol. Supported transport headers must be present.
     Carried(NextHeader),
-    /// A non-first fragment of a larger datagram.
-    ///
-    /// The upper-layer header belongs to fragment zero, so this packet has none: its
-    /// addresses are meaningful, its protocol and ports are not. Policy that constrains
-    /// protocol or ports was applied to fragment zero, and without that fragment the
-    /// datagram never reassembles.
+    /// A non-first fragment, with no upper-layer header.
     NonFirstFragment,
-    /// The chain could not be followed to an upper-layer protocol: it ran past
-    /// `MAX_NET_EXTENSIONS`, or it names a transport whose header is not present.
+    /// Missing IP header, incomplete extension chain, or unparsed transport header.
     Indeterminate,
 }
 
 impl UpperLayerProto {
-    /// The protocol this packet carries, if it carries one.
-    ///
-    /// For callers that have nothing useful to do with a fragment or an unreadable
-    /// chain. Callers that must distinguish them should match instead.
+    /// Return the resolved protocol, excluding non-first fragments and incomplete chains.
     #[must_use]
     pub fn carried(self) -> Option<NextHeader> {
         match self {
@@ -793,11 +778,7 @@ impl Headers {
         &self.net_ext
     }
 
-    /// Whether this packet is a non-first fragment of a larger datagram.
-    ///
-    /// Both families, which is the point: IPv6 keeps the offset in a Fragment extension
-    /// header, IPv4 keeps it in the base header's own fields, and only checking the
-    /// former leaves IPv4 fragments indistinguishable from whole datagrams.
+    /// Whether this IPv4 or IPv6 packet has a nonzero fragment offset.
     #[must_use]
     pub fn is_non_first_fragment(&self) -> bool {
         if self
@@ -810,14 +791,10 @@ impl Headers {
         matches!(self.net.as_ref(), Some(Net::Ipv4(ip)) if ip.fragment_offset().value() != 0)
     }
 
-    /// What this header chain says about the protocol above the network layer.
+    /// Resolve the upper-layer protocol through the parsed extension headers.
     #[must_use]
     pub fn upper_layer_proto(&self) -> UpperLayerProto {
-        // A non-first fragment carries payload, not headers, whatever the chain claims.
-        // Ask first: `parse` cannot tell on its own. For IPv4 it dispatches on the
-        // protocol byte alone and will read a "transport header" straight out of fragment
-        // payload; for IPv6 it can mistake that payload for further extensions. Offset
-        // zero still carries the real header, even when more fragments follow.
+        // Check first: the parser may interpret fragment payload as headers.
         if self.is_non_first_fragment() {
             return UpperLayerProto::NonFirstFragment;
         }
@@ -835,17 +812,12 @@ impl Headers {
             None => base.next_header(),
         };
 
-        // Still an extension header: the chain ran past `MAX_NET_EXTENSIONS` and `parse`
-        // stopped before it reached a transport. Nothing here names the upper layer.
+        // Parsing stopped before the end of the extension chain.
         if next.is_ipv6_extension() {
             return UpperLayerProto::Indeterminate;
         }
 
-        // The chain names a transport this parser knows how to read, but no transport was
-        // parsed, so the bytes that header would occupy are not on the wire. Answering
-        // with the name anyway would let a `permit tcp` rule admit a packet carrying no
-        // TCP header. Only the parseable protocols are checked: ESP and other opaque
-        // payloads legitimately parse no transport and keep their own protocol number.
+        // Known transports require a parsed header. Opaque protocols such as ESP do not.
         if matches!(
             next,
             NextHeader::TCP | NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6
@@ -2537,9 +2509,7 @@ mod fragment_upper_layer_proto {
         // SAFETY: built here as a fragment header, which is what `from_raw_unchecked` asks.
         let fragment = unsafe { Fragment::from_raw_unchecked(raw) };
         headers.net_ext.push(NetExt::Fragment(fragment));
-        // A chain that names TCP has to actually carry it: a named-but-absent transport is
-        // its own answer now (`Indeterminate`), so leaving this out would test that instead
-        // of what these cases are about.
+        // Include TCP so offset-zero cases have a complete header chain.
         headers.set_transport(Some(Transport::Tcp(Tcp::new(
             TcpPort::new_checked(1234).unwrap_or_else(|_| unreachable!()),
             TcpPort::new_checked(8001).unwrap_or_else(|_| unreachable!()),
@@ -2560,12 +2530,6 @@ mod fragment_upper_layer_proto {
         );
     }
 
-    /// A non-first fragment carries payload bytes where the header would be. Reporting a
-    /// protocol here let port forwarding DNAT it and overwrite two bytes of that payload.
-    ///
-    /// It answers `NonFirstFragment` rather than `Indeterminate`: the two are not the same
-    /// and the callers do different things with them. This one is a well-formed packet that
-    /// must still be forwarded on its addresses.
     #[test]
     fn a_non_first_fragment_is_reported_as_a_fragment() {
         for (offset, more) in [(1u16, true), (1, false), (185, false)] {
@@ -2645,10 +2609,6 @@ mod fragment_upper_layer_proto {
         );
     }
 
-    /// IPv4 keeps the fragment offset in the base header, where the pre-existing check did
-    /// not look. `Ipv4::parse_payload` dispatches on the protocol byte alone and ignores
-    /// the offset, so a non-first UDP fragment arrives with a "UDP header" read straight
-    /// out of another datagram's payload -- and port forwarding rewrote four bytes of it.
     #[test]
     fn a_non_first_ipv4_fragment_is_reported_as_a_fragment() {
         for (offset, more) in [(1u16, true), (1, false), (185, false)] {
@@ -2667,8 +2627,6 @@ mod fragment_upper_layer_proto {
         }
     }
 
-    /// The first IPv4 fragment does carry its transport header and must still classify,
-    /// the same way offset zero does for IPv6.
     #[test]
     fn the_first_ipv4_fragment_still_reports_its_protocol() {
         let mut headers = Headers::new();
@@ -2687,14 +2645,6 @@ mod fragment_upper_layer_proto {
         );
     }
 
-    /// A chain that names a transport whose header is not on the wire is indeterminate,
-    /// not "that transport".
-    ///
-    /// `eth + ipv6(payload_len 8) + HopByHop(next=TCP)` and nothing after: walking the
-    /// chain finds the name TCP, but `parse` produced no transport because the bytes are
-    /// not there. Answering `Carried(TCP)` let a `permit tcp any any` rule admit a packet
-    /// with no TCP header -- a rule that did not match this packet before the chain walk
-    /// was introduced.
     #[test]
     fn a_chain_naming_an_absent_transport_is_indeterminate() {
         let mut bytes = vec![2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x86, 0xdd];
@@ -2722,8 +2672,6 @@ mod fragment_upper_layer_proto {
         );
     }
 
-    /// An opaque protocol legitimately parses no transport and must keep its own number.
-    /// The absent-transport check above has to be narrow enough not to swallow it.
     #[test]
     fn an_opaque_protocol_keeps_its_protocol_number() {
         const ESP: u8 = 50;

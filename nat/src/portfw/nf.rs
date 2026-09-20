@@ -62,9 +62,6 @@ impl PortForwarder {
         };
 
         let Some(proto) = packet.upper_layer_proto().carried() else {
-            // Fragments are never port-forwarded. The ports live in fragment zero, and
-            // for IPv4 anything port-shaped here was read out of fragment payload --
-            // rewriting it would corrupt the datagram rather than translate it.
             debug!("Ignoring packet: no upper-layer protocol to port-forward on");
             return None;
         };
@@ -573,12 +570,6 @@ mod race {
         assert_eq!(out.headers(), &original_headers);
     }
 
-    /// The same thing for IPv4, where it is easier to hit and was never guarded.
-    ///
-    /// IPv4 keeps the fragment offset in the base header and `Ipv4::parse_payload`
-    /// dispatches on the protocol byte alone, so a non-first fragment arrives with a fully
-    /// parsed "TCP header" that is really the middle of somebody's datagram -- ports and
-    /// all. Port forwarding used to match on it and rewrite four bytes of that payload.
     #[tokio::test]
     async fn a_non_first_ipv4_fragment_with_transport_shaped_body_is_not_forwarded() {
         use etherparse::{IpNumber, Ipv4Header, TcpHeader};
@@ -599,14 +590,11 @@ mod race {
             },
             64,
             IpNumber::TCP,
-            // Addressed at the public side of the expose, port 8001, so a rule really does
-            // match it on addresses and ports: without that this test would pass whether or
-            // not fragments are recognised.
+            // Match the expose's public address and port.
             [203, 0, 113, 1],
             [172, 16, 0, 1],
         )
         .unwrap();
-        // The bytes above are body, not headers: this is fragment 185.
         ip.fragment_offset = etherparse::IpFragOffset::try_new(185).unwrap();
         ip.more_fragments = false;
 
@@ -618,8 +606,7 @@ mod race {
         assert_eq!(
             packet.transport_dst_port().map(NonZero::get),
             Some(8001),
-            "fixture is wrong: the parser must read a port out of the fragment body, \
-             which is the whole hazard"
+            "the parser must read the destination port from the fragment payload"
         );
         let original_headers = packet.headers().clone();
         arrival.stamp(&mut packet);

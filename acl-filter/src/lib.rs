@@ -200,12 +200,7 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
         let upper = packet.upper_layer_proto();
         let proto = match upper {
             UpperLayerProto::Carried(proto) => proto,
-            // A non-first fragment is matched on its addresses alone. It carries no
-            // transport header, so protocol- and port-constrained rules must not match
-            // it; the datagram's policy was decided on fragment zero, and without that
-            // fragment nothing reassembles. `NextHeader::FRAGMENT` is the key byte that
-            // says exactly this: wildcard rules still match, transport rules do not, and
-            // an operator who wants fragment policy can still ask for protocol 44.
+            // Match wildcard and protocol-44 rules, without inferring a transport.
             UpperLayerProto::NonFirstFragment => NextHeader::FRAGMENT,
             UpperLayerProto::Indeterminate => {
                 debug!("Could not determine the upper-layer protocol, dropping packet");
@@ -213,8 +208,7 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
             }
         };
         let ports = match upper {
-            // A non-first fragment has no ports, even when the IPv4 parser read something
-            // port-shaped out of its payload.
+            // The parser may have read ports from fragment payload.
             UpperLayerProto::NonFirstFragment => None,
             _ => transport.and_then(|t| t.src_port().zip(t.dst_port())),
         };
