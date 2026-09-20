@@ -1449,15 +1449,8 @@ fn expected_outcome(result: LookupResult) -> NfOutcome {
 
 /// Extract the lookup key seen by `FlowFilter::classify`.
 ///
-/// Returns the [`DoneReason`] the NF would answer with when no key can be built. The
-/// three answers are *not* interchangeable and used to be collapsed into one `None`:
-///
-/// * no IP layer at all is `NotIp`;
-/// * a chain that could not be walked to an upper-layer protocol is `Malformed`;
-/// * a non-first fragment is neither. It is a well-formed packet whose transport header
-///   lives in fragment zero, so it is classified on its addresses with the fragment
-///   protocol number and no ports -- dropping it here would strand every fragment after
-///   the first and stop the datagram ever reassembling.
+/// Missing IP headers return `NotIp`; unresolved chains return `Malformed`.
+/// Non-first fragments use protocol 44 and no ports.
 fn probe_from_packet(
     pkt: &Packet<TestBuffer>,
     src_vpcd: VpcDiscriminant,

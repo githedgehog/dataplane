@@ -146,7 +146,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             .map_err(|_| PacketUtilError::IpVersionMismatch(ip))
     }
 
-    /// What this packet's header chain says about the protocol above the network layer.
+    /// Resolve the upper-layer protocol through the parsed extension headers.
     #[must_use]
     pub fn upper_layer_proto(&self) -> UpperLayerProto {
         self.headers.upper_layer_proto()

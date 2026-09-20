@@ -104,21 +104,8 @@ fn next_flow_status_tcp(action: NatAction, status: NatFlowStatus, tcp: &Tcp) -> 
     }
 }
 
-/// The transport protocol the packet actually carries, if it carries one.
-///
-/// `Net::next_header()` names the *first* header after the IP header, which for IPv6 is
-/// whatever extension header the sender chose to insert. `upper_layer_proto` walks the
-/// chain, fragment header included, and answers the transport.
-///
-/// There is deliberately no fallback to the raw field. Reading it when the chain could
-/// not be walked is the bypass this function exists to close, and a fragment has no
-/// transport of its own to name at all -- callers get `None` and must decide what that
-/// means for them.
-///
-/// One function rather than the same three lines at each call site: two callers deciding
-/// "which protocol is this" independently is a drift waiting to happen, and the two that
-/// exist have to agree for the flow a state machine advances and the flow that gets
-/// refreshed to be the same flow.
+/// Resolve the protocol for flow-state and timeout updates.
+/// Returns `None` for non-first fragments and incomplete header chains.
 pub(crate) fn transport_proto<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NextHeader> {
     packet.upper_layer_proto().carried()
 }
@@ -130,10 +117,7 @@ pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
     action: NatAction,     // action of the flow hit
     status: NatFlowStatus, // current status
 ) -> NatFlowStatus {
-    // A fragment carries no transport header of its own, and an unreadable chain names
-    // no protocol: neither can advance a protocol state machine, so the flow keeps the
-    // status it had. Non-first fragments reach this point now that the filters forward
-    // them instead of dropping them, so this is a live path, not a defensive branch.
+    // Leave the state unchanged without a resolved protocol.
     let Some(proto) = transport_proto(packet) else {
         return status;
     };
@@ -159,17 +143,6 @@ mod test {
     use net::ip::NextHeader;
     use net::packet::Packet;
 
-    /// The two masquerade callers must read the transport from the same place.
-    ///
-    /// For IPv6 the IP header's next-header field names the first *extension* header, and
-    /// the sender chooses whether to insert one. `next_flow_status` walks the chain and
-    /// `refreshes_while_unanswered` used to read the raw field, so a UDP flow behind a
-    /// single Hop-by-Hop header advanced the UDP state machine and then refreshed nothing
-    /// while unanswered -- the mapping expired at the one-way timeout no matter how much
-    /// the sender sent. Both ask `transport_proto` now; this pins what it must answer.
-    ///
-    /// Assembled from octets rather than through the header builder because the builder's
-    /// buffer API is a moving target across this series and the wire format is not.
     #[test]
     fn a_udp_flow_behind_an_extension_header_is_still_udp() {
         const HOP_BY_HOP: u8 = 0;

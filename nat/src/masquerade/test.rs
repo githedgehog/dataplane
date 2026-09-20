@@ -2744,3 +2744,212 @@ async fn ipv6_path_mtu_discovery_does_not_tear_down_the_flow_that_triggered_it()
         "Address Unreachable no longer tears the flow down"
     );
 }
+
+mod fragments {
+    use super::*;
+    use etherparse::{
+        IpFragOffset, IpNumber, Ipv4Header, Ipv6FragmentHeader, Ipv6Header, UdpHeader,
+    };
+    use net::headers::TryHeaders;
+
+    fn cases() -> [(Overlay, IpAddr, IpAddr); 2] {
+        [
+            (
+                build_overlay_2vpcs(),
+                "1.1.0.1".parse().unwrap(),
+                "3.3.3.1".parse().unwrap(),
+            ),
+            (
+                build_overlay_2vpcs_v6(),
+                "2001:db8:1::1".parse().unwrap(),
+                "2001:db8:3::1".parse().unwrap(),
+            ),
+        ]
+    }
+
+    // At nonzero offsets these UDP-shaped bytes are fragment payload.
+    fn packet(
+        src: IpAddr,
+        dst: IpAddr,
+        ports: (u16, u16),
+        offset: u16,
+        more: bool,
+    ) -> Packet<TestBuffer> {
+        let mut bytes = vec![2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1];
+        match (src, dst) {
+            (IpAddr::V4(src), IpAddr::V4(dst)) => {
+                bytes.extend_from_slice(&0x0800u16.to_be_bytes());
+                let mut ip =
+                    Ipv4Header::new(8, 64, IpNumber::UDP, src.octets(), dst.octets()).unwrap();
+                ip.dont_fragment = false;
+                ip.fragment_offset = IpFragOffset::try_new(offset).unwrap();
+                ip.more_fragments = more;
+                ip.write(&mut bytes).unwrap();
+            }
+            (IpAddr::V6(src), IpAddr::V6(dst)) => {
+                bytes.extend_from_slice(&0x86ddu16.to_be_bytes());
+                Ipv6Header {
+                    payload_length: 16,
+                    next_header: IpNumber::IPV6_FRAGMENTATION_HEADER,
+                    hop_limit: 64,
+                    source: src.octets(),
+                    destination: dst.octets(),
+                    ..Ipv6Header::default()
+                }
+                .write(&mut bytes)
+                .unwrap();
+                bytes.extend_from_slice(
+                    &Ipv6FragmentHeader::new(
+                        IpNumber::UDP,
+                        IpFragOffset::try_new(offset).unwrap(),
+                        more,
+                        1,
+                    )
+                    .to_bytes(),
+                );
+            }
+            _ => unreachable!(),
+        }
+        bytes.extend_from_slice(
+            &UdpHeader {
+                source_port: ports.0,
+                destination_port: ports.1,
+                length: 8,
+                checksum: 1,
+            }
+            .to_bytes(),
+        );
+        let mut packet = Packet::new(TestBuffer::from_raw_data(&bytes)).unwrap();
+        packet.meta_mut().set_overlay(true);
+        packet.meta_mut().src_vpcd = Some(vpcd(100));
+        packet
+    }
+
+    fn setup(overlay: &Overlay) -> (Masquerade, NatAllocatorWriter) {
+        let overlay = overlay.clone().validate().unwrap();
+        let (nat, mut allocator) = Masquerade::new_with_defaults();
+        allocator.update_nat_allocator(
+            MasqueradeConfig::new(overlay.vpc_table()),
+            1,
+            nat.sessions(),
+        );
+        (nat, allocator)
+    }
+
+    fn for_flow(flow: &FlowInfo, offset: u16) -> Packet<TestBuffer> {
+        let key = flow.flowkey();
+        let (sport, dport) = key.ports().unwrap();
+        let mut packet = packet(
+            key.src_ip(),
+            key.dst_ip(),
+            (sport.get(), dport.get()),
+            offset,
+            false,
+        );
+        packet.meta_mut().src_vpcd = key.src_vpcd();
+        packet.meta_mut().dst_vpcd = flow.locked.read().dst_vpcd;
+        packet.meta_mut().set_masquerade(true);
+        packet
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn non_first_fragments_do_not_create_masquerade_flows() {
+        for (overlay, src, dst) in cases() {
+            let (mut nat, _allocator) = setup(&overlay);
+            let overlay = overlay.validate().unwrap();
+            let writer = FlowFilterContextWriter::new();
+            writer.store(FlowFilterContext::try_from(&overlay).unwrap());
+            let mut filter = FlowFilter::new("flow-filter", writer.get_reader());
+
+            for (offset, more) in [(1, true), (1, false), (185, false)] {
+                let packet = packet(src, dst, (1234, 80), offset, more);
+                let original = packet.headers().clone();
+                let packet = filter.process(std::iter::once(packet)).next().unwrap();
+                assert!(!packet.is_done());
+                assert!(packet.meta().requires_masquerade());
+
+                let out = nat.process(std::iter::once(packet)).next().unwrap();
+                assert_eq!(out.get_done(), Some(DoneReason::NatUnsupportedProto));
+                assert_eq!(out.headers(), &original);
+                assert!(!out.meta().is_src_natted());
+                assert!(!out.meta().checksum_refresh());
+                assert_eq!(nat.sessions().snapshot(|_, _| true).count(), 0);
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn non_first_fragments_do_not_reuse_masquerade_flows() {
+        for (overlay, src, dst) in cases() {
+            let (mut nat, _allocator) = setup(&overlay);
+            let mut initial = packet(src, dst, (1234, 80), 0, false);
+            initial.meta_mut().dst_vpcd = Some(vpcd(200));
+            initial.meta_mut().set_masquerade(true);
+            let key = FlowKey::try_from(&initial).unwrap();
+            let out = nat.process(std::iter::once(initial)).next().unwrap();
+            assert!(!out.is_done());
+            let forward = nat.sessions().lookup(&key).unwrap();
+            let reverse = forward.related.as_ref().and_then(Weak::upgrade).unwrap();
+
+            // Establish the UDP flow so a misplaced guard could refresh its timeout.
+            for flow in [&reverse, &forward] {
+                let out = nat
+                    .process(std::iter::once(for_flow(flow, 0)))
+                    .next()
+                    .unwrap();
+                assert!(!out.is_done());
+            }
+            assert_eq!(
+                forward
+                    .locked
+                    .read()
+                    .nat_state
+                    .extract_ref::<MasqueradeState>()
+                    .unwrap()
+                    .status
+                    .load(),
+                NatFlowStatus::Established
+            );
+            let deadlines = (forward.expires_at(), reverse.expires_at());
+            tokio::time::advance(Duration::from_secs(1)).await;
+
+            for flow in [&forward, &reverse] {
+                for attached in [false, true] {
+                    let mut packet = for_flow(flow, 185);
+                    if attached {
+                        packet.meta_mut().flow_info = Some(flow.clone());
+                    }
+                    let original = packet.headers().clone();
+                    let out = nat.process(std::iter::once(packet)).next().unwrap();
+                    assert_eq!(out.get_done(), Some(DoneReason::NatUnsupportedProto));
+                    assert_eq!(out.headers(), &original);
+                    assert!(!out.meta().is_src_natted());
+                    assert!(!out.meta().is_dst_natted());
+                    assert!(!out.meta().checksum_refresh());
+                    assert_eq!((forward.expires_at(), reverse.expires_at()), deadlines);
+                    assert!(forward.is_active() && reverse.is_active());
+                    assert_eq!(nat.sessions().active_len(), Some(2));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn offset_zero_packets_can_still_be_masqueraded() {
+        for (overlay, src, dst) in cases() {
+            for more in [false, true] {
+                let (mut nat, _allocator) = setup(&overlay);
+                let mut packet = packet(src, dst, (1234, 80), 0, more);
+                packet.meta_mut().dst_vpcd = Some(vpcd(200));
+                packet.meta_mut().set_masquerade(true);
+                let out = nat.process(std::iter::once(packet)).next().unwrap();
+                assert!(!out.is_done());
+                assert_ne!(out.ip_source(), Some(src));
+                assert!(out.meta().is_src_natted());
+                assert_eq!(nat.sessions().active_len(), Some(2));
+            }
+        }
+    }
+}
