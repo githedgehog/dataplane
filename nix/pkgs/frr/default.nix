@@ -81,7 +81,12 @@
 
 stdenv.mkDerivation (finalAttrs: {
   pname = "frr";
-  version = frrSrc.branch;
+  # `frrSrc` is an npins pin, and npins names the tracked thing differently
+  # per pin type: a branch pin (our fork, `frr-dp`) carries `branch`, a
+  # release pin (upstream `frr`, pinned at a tag) carries `version`.  Either
+  # one names the FRR train this source came from, which is all this string
+  # is for, so take whichever the pin has rather than assuming a pin type.
+  version = lib.removePrefix "frr-" (frrSrc.version or frrSrc.branch);
   dontPatchShebangs = false;
   dontFixup = false;
   dontPatchElf = false;
