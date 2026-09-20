@@ -16,7 +16,8 @@
 
 stdenv.mkDerivation {
   pname = "frr-clippy-helper";
-  version = frrSrc.branch;
+  # Branch pin or release pin; see the note in ./default.nix.
+  version = lib.removePrefix "frr-" (frrSrc.version or frrSrc.branch);
   src = frrSrc.outPath;
 
   nativeBuildInputs = [
