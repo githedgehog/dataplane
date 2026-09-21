@@ -1302,7 +1302,7 @@ dependencies = [
  "colored",
  "dataplane-concurrency",
  "nix 0.31.3",
- "rand 0.10.2",
+ "rand 0.10.3",
  "reedline",
  "regex",
  "rkyv",
@@ -1730,7 +1730,7 @@ dependencies = [
  "indenter",
  "left-right 0.11.7",
  "linkme",
- "rand 0.10.2",
+ "rand 0.10.3",
  "roaring",
  "shuttle",
  "strum",
@@ -1827,7 +1827,7 @@ dependencies = [
  "netgauze-bmp-pkt",
  "nix 0.31.3",
  "procfs",
- "rand 0.10.2",
+ "rand 0.10.3",
  "serde",
  "strum",
  "thiserror",
@@ -1855,7 +1855,7 @@ dependencies = [
  "linkme",
  "metrics",
  "multi_index_map",
- "rand 0.10.2",
+ "rand 0.10.3",
  "serde",
  "small-map",
  "thiserror",
@@ -2835,9 +2835,9 @@ dependencies = [
 
 [[package]]
 name = "hyper-rustls"
-version = "0.27.9"
+version = "0.27.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
+checksum = "dfa8e654703247911e29c23fbeaa261834bd9bb74efba2f9acddc37bfb127f53"
 dependencies = [
  "http",
  "hyper",
@@ -4753,9 +4753,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.2"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
+checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
