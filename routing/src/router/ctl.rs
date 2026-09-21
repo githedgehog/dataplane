@@ -256,12 +256,17 @@ fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
 }
 
 fn determine_oper_state(ev: &EthEvent) -> IfState {
-    if let Some(state) = ev.oper_state() {
-        IfState::from(state == State::Up)
-    } else {
-        // kernel oper state may not always be reported.
-        // We don't consider iflowerup flag nor carrier
-        IfState::from(ev.ifrunning())
+    match ev.oper_state() {
+        Some(State::Up) => IfState::Up,
+        Some(State::Down | State::LowerLayerDown | State::Dormant | State::NotPresent) => {
+            IfState::Down
+        }
+        Some(_) | None => {
+            // kernel oper state may not always be reported (None case)
+            // and the other states don't actually tell us. So, fallback
+            // to the ifrunning flag. We don't consider iflowerup flag nor carrier here.
+            IfState::from(ev.ifrunning())
+        }
     }
 }
 pub(crate) fn handle_ifevent(ev: &EthEvent, iftw: &mut IfTableWriter) -> Result<(), RouterError> {
