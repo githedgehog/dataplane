@@ -284,11 +284,26 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         ip: I,
         port: NatPort,
     ) -> Result<Arc<Mapping<I>>, AllocatorError> {
-        self.get_or_insert_with(src_ip, key, pool, || {
+        let mapping = self.get_or_insert_with(src_ip, key, pool, || {
             let allocated = pool.reserve(ip, port)?;
             Self::pin_if_absent(&mut self.addresses.write(), allocated.allocated_ip());
             Ok(allocated)
-        })
+        })?;
+        // If a mapping is already associated to this key, attach to it, we attach to it, rather
+        // than reserving the mapping again. This is what lets two flows sharing one mapping both
+        // survive a config change. But we can only do that when the new and old mappings' tuple is
+        // exactly the same. Otherwise, we'd have an issue when a policy change merges two
+        // previously distinct keys into one (if moving from ADM to EIM behaviors, for example), and
+        // then the second flow would keep rewriting to a tuple that nothing reserved in the new
+        // allocator. So if the old and new tuples are not the same, we refuse to reserve, so the
+        // caller invalidates the flow rather than carrying a tuple it no longer owns.
+        if mapping.ip() != ip || mapping.port() != port {
+            return Err(AllocatorError::MappingTupleMismatch {
+                found: mapping.to_string(),
+                requested: format!("{ip}:{port}"),
+            });
+        }
+        Ok(mapping)
     }
 
     pub(crate) fn is_empty(&self) -> bool {

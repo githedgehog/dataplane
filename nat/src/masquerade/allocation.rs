@@ -21,6 +21,8 @@ pub enum AllocatorError {
     PortAllocationFailed(NatPortError),
     #[error("failed to reserve port: {0}")]
     PortReservationFailed(u16),
+    #[error("mapping for this flow's key already holds {found}, not the requested {requested}")]
+    MappingTupleMismatch { found: String, requested: String },
     #[error("unsupported protocol: {0:?}")]
     UnsupportedProtocol(NextHeader), // FIXME: remove this when possible
     #[error("missing VPC discriminant")]
@@ -47,6 +49,7 @@ impl AllocatorError {
             | AllocatorError::NoFreePort(_) => true,
             AllocatorError::PortAllocationFailed(_)
             | AllocatorError::PortReservationFailed(_)
+            | AllocatorError::MappingTupleMismatch { .. }
             | AllocatorError::UnsupportedProtocol(_)
             | AllocatorError::MissingDiscriminant
             | AllocatorError::InternalIssue(_)
@@ -65,6 +68,7 @@ impl From<&AllocatorError> for DoneReason {
             | AllocatorError::NoFreePort(_) => DoneReason::NatOutOfResources,
             AllocatorError::PortAllocationFailed(_)
             | AllocatorError::PortReservationFailed(_)
+            | AllocatorError::MappingTupleMismatch { .. }
             | AllocatorError::MissingDiscriminant => DoneReason::NatFailure,
             AllocatorError::InternalIssue(_) => DoneReason::InternalFailure,
             AllocatorError::Denied | AllocatorError::NoPoolFound => DoneReason::Filtered,
@@ -120,6 +124,11 @@ mod tests {
             AllocatorError::PortAllocationFailed(NatPortError::InvalidPort(0));
         AllocatorError::PortReservationFailed(_), "PortReservationFailed",
             AllocatorError::PortReservationFailed(8080);
+        AllocatorError::MappingTupleMismatch { .. }, "MappingTupleMismatch",
+            AllocatorError::MappingTupleMismatch {
+                found: "1.2.3.4:1024".to_string(),
+                requested: "1.2.3.4:2048".to_string(),
+            };
         AllocatorError::UnsupportedProtocol(_), "UnsupportedProtocol",
             AllocatorError::UnsupportedProtocol(NextHeader::TCP);
         AllocatorError::MissingDiscriminant, "MissingDiscriminant",
@@ -165,9 +174,10 @@ mod tests {
             let expected = match name(&error) {
                 "NoFreeIp" | "NoPortBlock" | "NoFreePort" => DoneReason::NatOutOfResources,
                 "UnsupportedProtocol" => DoneReason::NatUnsupportedProto,
-                "PortAllocationFailed" | "PortReservationFailed" | "MissingDiscriminant" => {
-                    DoneReason::NatFailure
-                }
+                "PortAllocationFailed"
+                | "PortReservationFailed"
+                | "MappingTupleMismatch"
+                | "MissingDiscriminant" => DoneReason::NatFailure,
                 "InternalIssue" => DoneReason::InternalFailure,
                 "Denied" | "NoPoolFound" => DoneReason::Filtered,
                 other => unreachable!("{other} has no expected outcome"),
