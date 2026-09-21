@@ -18,9 +18,11 @@
 #![cfg(not(feature = "loom"))]
 
 use super::alloc::PoolSet;
+use super::mapping::{MappingKey, MappingScope, reap_expired_mapping};
 use super::port_alloc::AllocatedPort;
 use super::region::AddrInterval;
 use super::setup::{PoolSpec, pool_sets_for_specs};
+use super::test_alloc::context::port;
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use concurrency::slot::SlotOption;
@@ -486,5 +488,66 @@ fn tidying_a_dead_block_entry_does_not_drop_a_live_one() {
                 "a block in use was dropped from the list: reserving into it gave {outcome:?}"
             );
         }
+    });
+}
+
+/// Test the race `spawn_mapping_reaper`'s own docs accept: a mapping's reaper racing a fresh
+/// `get_or_create_mapping` call that lands on the very subscriber the reaper is emptying. The
+/// accepted outcome is self-healing degradation (the new mapping may end up on an orphaned
+/// `Subscriber` row, transiently losing Paired pinning until it too expires), not corruption. The
+/// fresh mapping must always succeed with a port distinct from the one being reaped.
+// FIXME: hangs in shuttle.
+#[cfg_attr(
+    feature = "shuttle",
+    ignore = "hangs in shuttle; DashMap entry()/remove_if() race under shuttle's scheduler, see note above"
+)]
+#[concurrency::model_test]
+fn reaping_a_subscriber_races_a_fresh_mapping_on_it_without_corruption() {
+    concurrency::stress(|| {
+        let specs = vec![PoolSpec::new(
+            vec![AddrInterval::new(BASE, BASE)],
+            IDLE_TIMEOUT,
+        )];
+        let pool = Arc::new(
+            pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| unreachable!()),
+        );
+
+        let subscriber_ip = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+        let key1 = MappingKey::new(port(1), MappingScope::Independent);
+        let key2 = MappingKey::new(port(2), MappingScope::Independent);
+
+        let mapping1 = pool
+            .get_or_create_mapping(subscriber_ip, key1, false)
+            .expect("room for the first mapping");
+        let subscriber = pool
+            .subscribers()
+            .get(subscriber_ip)
+            .expect("a subscriber row exists after the first mapping");
+
+        let reaper = {
+            let subscriber = subscriber.clone();
+            let subscribers = pool.subscribers().clone();
+            let mapping1 = mapping1.clone();
+            thread::spawn(move || {
+                reap_expired_mapping(&subscriber, subscriber_ip, key1, &mapping1, &subscribers);
+            })
+        };
+        let fresh = {
+            let pool = pool.clone();
+            thread::spawn(move || pool.get_or_create_mapping(subscriber_ip, key2, false))
+        };
+
+        reaper.join().expect("the reaper thread panicked");
+        let outcome = fresh.join().expect("the fresh-mapping thread panicked");
+
+        let mapping2 = outcome.expect("a fresh mapping must always succeed, even mid-race");
+        assert_ne!(
+            (mapping1.ip(), mapping1.port()),
+            (mapping2.ip(), mapping2.port()),
+            "the racing reap and fresh-mapping calls handed out the same tuple twice"
+        );
     });
 }
