@@ -1413,6 +1413,67 @@ mod std_tests {
         );
     }
 
+    // The reaper removing the table's own reference to a mapping, and the mapping's underlying port
+    // actually returning to the pool, are two different events: a flow that still holds its own
+    // Arc<Mapping> must keep that port reserved for as long as it does, however long after the
+    // mapping's own table entry was reaped.
+    #[tokio::test]
+    async fn a_flow_still_holding_a_mapping_blocks_its_port_from_reuse_after_reaping() {
+        tokio::time::pause();
+        let mut allocator = build_allocator_short_timeout(std::time::Duration::from_millis(50));
+
+        let alloc = allocator
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
+            .unwrap();
+        // Simulates a flow's MasqueradeState holding its own reference, independent of the table
+        let held_by_flow = alloc.allocation.clone();
+        let tuple = (held_by_flow.ip(), held_by_flow.port());
+        drop(alloc);
+
+        // Let the reaper expire the mapping and remove the table's own entry for it (this runs on
+        // the paused clock).
+        advance(std::time::Duration::from_millis(500)).await;
+
+        // The table's own reference is gone, but held_by_flow is not: the tuple it names must still
+        // be refused to anyone else trying to claim it directly
+        let still_blocked = get_ip_allocator_v4(
+            &mut allocator.pools_src44,
+            vpcd1(),
+            vpcd2(),
+            NextHeader::TCP,
+            addr_v4("1.1.0.1"),
+        )
+        .reserve(tuple.0, tuple.1);
+        assert!(
+            still_blocked.is_err(),
+            "{}:{} was reissued while a flow still held its mapping",
+            tuple.0,
+            tuple.1
+        );
+
+        // Once the flow is done with it too, the ordinary Drop chain releases it like any other
+        drop(held_by_flow);
+        let now_free = get_ip_allocator_v4(
+            &mut allocator.pools_src44,
+            vpcd1(),
+            vpcd2(),
+            NextHeader::TCP,
+            addr_v4("1.1.0.1"),
+        )
+        .reserve(tuple.0, tuple.1);
+        assert!(
+            now_free.is_ok(),
+            "{}:{} was not released once its last reference (the flow) was dropped",
+            tuple.0,
+            tuple.1
+        );
+    }
+
     // Mapping::{is_expired,refresh} must read the clock through the "clock" façade, not
     // std::time::Instant::now() directly: production behaves identically either way, but under a
     // paused clock the two diverge. Split into two parts: first that virtual time running out
