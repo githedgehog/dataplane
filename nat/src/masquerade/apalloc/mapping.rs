@@ -241,12 +241,14 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
     ) -> Result<Arc<Mapping<I>>, AllocatorError> {
         // Lazy staleness check (common path)
         if let Some(existing) = self.live_mapping(&key) {
+            existing.refresh();
             return Ok(existing);
         }
         let mut guard = self.mappings.write();
         // Now that we grabbed the write lock, check again in case a racing thread created an entry
         // in the meantime
         if let Some(existing) = guard.get(&key).filter(|m| !m.is_expired()) {
+            existing.refresh();
             return Ok(existing.clone());
         }
         let mapping = Arc::new(Mapping::new(draw()?, pool.idle_timeout()));
