@@ -12,6 +12,7 @@ test = ["dep:id", "dep:dpdk-test-macros"]
 
 [dependencies]
 
+arrayvec = { workspace = true }
 concurrency = { workspace = true }
 dpdk-sys = { workspace = true }
 dpdk-test-macros = { workspace = true, optional = true }
@@ -30,3 +31,4 @@ dpdk-sysroot-helper = { workspace = true }
 [dev-dependencies]
 bolero = { workspace = true, default-features = false, features = ["std"] }
 dataplane-dpdk = { path = ".", features = ["test"] }
+dpdk-sys = { workspace = true }

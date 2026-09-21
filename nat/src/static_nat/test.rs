@@ -284,7 +284,7 @@ fn test_dst_nat_static_44() {
     tablesw.update_nat_tables(nat_tables);
 
     let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
-    let mut packet_reply = packet.clone();
+    let mut packet_reply = packet.deep_copy().unwrap();
     packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
     packet_reply.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(200)));

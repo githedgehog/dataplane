@@ -4,7 +4,7 @@
 //! Receive queue configuration and management.
 
 use crate::dev::{DevIndex, RxOffload};
-use crate::mem::Mbuf;
+use crate::mem::{MBUF_BURST, MbufArray};
 use crate::socket::SocketId;
 use crate::{dev, mem, socket};
 use errno::Errno;
@@ -107,15 +107,33 @@ impl RxQueue {
     pub(crate) fn setup(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
         let socket_id = SocketId::try_from(config.socket_preference)
             .map_err(|_| ConfigFailure::InvalidSocket(Errno(errno::NEG_EINVAL)))?;
+
+        // Clamp the requested ring size to the driver's min/max/alignment limits rather than
+        // passing a possibly-illegal raw value.  DPDK adjusts both the rx and tx counts in a single
+        // call; we only consume the rx result here (`nb_tx_desc` is required by the API but unused).
+        let mut nb_rx_desc = config.num_descriptors;
+        let mut nb_tx_desc = config.num_descriptors;
+        if let Some(err) = ConfigFailure::check(unsafe {
+            dpdk_sys::rte_eth_dev_adjust_nb_rx_tx_desc(
+                dev.info.index().as_u16(),
+                &mut nb_rx_desc,
+                &mut nb_tx_desc,
+            )
+        }) {
+            return Err(err);
+        }
+
         let rx_conf = dpdk_sys::rte_eth_rxconf {
             offloads: config.offloads.into(),
+            // The remaining fields (threshold registers, `rx_free_thresh`, `rx_drop_en`) are left
+            // zeroed on purpose: DPDK reads zero here as "use the PMD's per-driver defaults".
             ..Default::default()
         };
         match ConfigFailure::check(unsafe {
             dpdk_sys::rte_eth_rx_queue_setup(
                 dev.info.index().as_u16(),
                 config.queue_index.as_u16(),
-                config.num_descriptors,
+                nb_rx_desc,
                 socket_id.as_c_uint(),
                 &rx_conf,
                 config.pool.inner().as_mut_ptr(),
@@ -170,14 +188,14 @@ impl RxQueue {
         }
     }
 
-    // TODO: make configurable
-    pub(crate) const PKT_BURST_SIZE: usize = 64;
-
-    /// Receive a burst of packets from the queue
+    /// Receive a burst of packets from the queue.
+    ///
+    /// The returned [`MbufArray`] owns the received mbufs and frees any that are not consumed when
+    /// it is dropped, so a partially-processed or ignored burst can never leak.  At most
+    /// [`MBUF_BURST`] packets are returned per call.
     #[tracing::instrument(level = "trace")]
-    pub fn receive(&self) -> impl Iterator<Item = Mbuf> {
-        let mut pkts: [*mut dpdk_sys::rte_mbuf; RxQueue::PKT_BURST_SIZE] =
-            [null_mut(); RxQueue::PKT_BURST_SIZE];
+    pub fn receive(&self) -> MbufArray {
+        let mut pkts = [null_mut::<dpdk_sys::rte_mbuf>(); MBUF_BURST];
         trace!(
             "Polling for packets from rx queue {queue} on dev {dev}",
             queue = self.config.queue_index.as_u16(),
@@ -188,17 +206,17 @@ impl RxQueue {
                 self.dev.as_u16(),
                 self.config.queue_index.as_u16(),
                 pkts.as_mut_ptr(),
-                RxQueue::PKT_BURST_SIZE as u16,
+                MBUF_BURST as u16,
             )
-        };
+        } as usize;
         trace!(
             "Received {nb_rx} packets from rx queue {queue} on dev {dev}",
             queue = self.config.queue_index.as_u16(),
             dev = self.dev.as_u16()
         );
-        // SAFETY: we should never get a null pointer for anything inside the advertised bounds
-        // of the receive buffer
-        (0..nb_rx).map(move |i| unsafe { Mbuf::new_from_raw_unchecked(pkts[i as usize]) })
+        // SAFETY: the first `nb_rx` entries are valid, non-null mbufs handed to us by the PMD, and
+        // `nb_rx <= MBUF_BURST` is the array capacity.
+        unsafe { MbufArray::from_raw_ptrs(&pkts[..nb_rx]) }
     }
 }
 
