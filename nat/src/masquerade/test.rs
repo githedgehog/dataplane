@@ -1815,6 +1815,52 @@ async fn test_masquerade_check() {
     assert_eq!(flow_table.active_len(), Some(2));
 }
 
+fn mapping_deadline(packet: &Packet<TestBuffer>) -> Option<std::time::Instant> {
+    with_masquerade_state(packet, |state| {
+        state
+            .allocation()
+            .map(crate::masquerade::apalloc::Allocation::expires_at)
+    })
+    .flatten()
+}
+
+// A packet that tears a flow down must not extend the mapping it is tearing down. The flow
+// declines to extend its own expiry there, and holding the public tuple for a further idle
+// timeout past every close is how a pool is exhausted by connection churn rather than by
+// concurrent flows.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_teardown_does_not_extend_the_mapping() {
+    tokio::time::pause();
+    let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
+    establish_tcp_connection(&mut pipeline);
+
+    let out = process_packet(&mut pipeline, tcp_packet_to_masquerade());
+    let first = mapping_deadline(&out).expect("the forward flow holds the allocation");
+
+    // Control: an ordinary outbound packet does push the deadline out (RFC 4787 REQ-6)
+    tokio::time::advance(Duration::from_secs(30)).await;
+    let out = process_packet(&mut pipeline, tcp_packet_to_masquerade());
+    let refreshed = mapping_deadline(&out).expect("the forward flow holds the allocation");
+    assert!(
+        refreshed > first,
+        "an ordinary outbound packet should refresh the mapping, so this test cannot tell the teardown case apart"
+    );
+
+    // The packet under test: an outbound RST, which tears the flow down
+    tokio::time::advance(Duration::from_secs(30)).await;
+    let mut rst = tcp_packet_to_masquerade();
+    rst.try_tcp_mut().unwrap().set_rst(true);
+    let out = process_packet(&mut pipeline, rst);
+    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Reset);
+
+    let after_teardown = mapping_deadline(&out).expect("the forward flow holds the allocation");
+    assert_eq!(
+        after_teardown, refreshed,
+        "the RST that tore the flow down also extended its mapping by a full idle timeout"
+    );
+}
+
 #[tokio::test]
 #[cfg_attr(not(emulated), traced_test)]
 async fn test_masquerade_tcp_reset() {
