@@ -369,7 +369,7 @@ impl IfTableWriter {
             })?;
 
         let Some(mac) = iftype.get_mac() else {
-            // This should only happen if we modelled incorrectlty the interface
+            // This should only happen if we modelled the interface incorrectly
             error!("Can't update mac of interface with index {ifindex}: it has no mac");
             return Err(RouterError::HasNoMac(ifindex));
         };
