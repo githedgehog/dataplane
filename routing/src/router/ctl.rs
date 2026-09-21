@@ -253,19 +253,23 @@ fn handle_config(rio: &mut Rio, config: Arc<ValidatedGwConfig>) {
 fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
     rio.cfg_history = history;
 }
-pub(crate) fn handle_ifevent(ev: EthEvent, iftw: &mut IfTableWriter) {
-    let adm_state = if ev.ifup { IfState::Up } else { IfState::Down };
-    let oper_state = if ev.iflowerup && ev.ifrunning && ev.carrier {
+pub(crate) fn handle_ifevent(ev: &EthEvent, iftw: &mut IfTableWriter) {
+    let adm_state = if ev.ifup() {
         IfState::Up
     } else {
         IfState::Down
     };
-    let ifindex = ev.ifindex;
+    let oper_state = if ev.ifrunning() {
+        IfState::Up
+    } else {
+        IfState::Down
+    };
+    let ifindex = ev.ifindex();
     if let Some(iftable) = iftw.enter() {
         let Some(iface) = iftable.get_interface(ifindex) else {
             warn!(
-                "Got event for interface {} {} not in iftable",
-                ev.ifindex, ev.name
+                "Got event for interface {ifindex} {} not in iftable",
+                ev.name()
             );
             return;
         };
@@ -283,13 +287,13 @@ pub(crate) fn handle_ifevent(ev: EthEvent, iftw: &mut IfTableWriter) {
                 oper_state
             ));
         }
-        if iface.name != ev.name {
+        if iface.name != *ev.name() {
             revent!(RouterEvent::IfNameChange(ev.clone(), iface.name.clone()));
         }
     }
     let _ = iftw.set_iface_admin_state(ifindex, adm_state);
     let _ = iftw.set_iface_oper_state(ifindex, oper_state);
-    let _ = iftw.update_name(ifindex, &ev.name);
+    let _ = iftw.update_name(ifindex, ev.name());
 }
 
 fn handle_bgp_peer_status_change(bgp_ev: BgpNeighEvent) {
@@ -316,7 +320,7 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
             }
             Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
             Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
-            Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(ev, &mut db.iftw),
+            Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(&ev, &mut db.iftw),
             Ok(RouterCtlMsg::BgpNeighStatus(bgp_ev)) => handle_bgp_peer_status_change(bgp_ev),
             Err(TryRecvError::Empty) => break,
             Err(e) => {

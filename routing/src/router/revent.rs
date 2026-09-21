@@ -71,25 +71,40 @@ impl Display for RouterEvent {
                 write!(f, "FRR configuration for generation {genid} FAILED")?;
             }
             RouterEvent::IfOperChange(ev, old, new) => {
-                let ifc = &ev.name;
+                let ifc = &ev.name();
+                let carrier = ev.carrier().map_or("--", |v| if v { "yes" } else { "no" });
+                let ifloup = if ev.iflowerup() { "yes" } else { "no" };
                 write!(
                     f,
-                    "{ifc}: oper state changed {old} -> {new} (carrier:{:#?}, carrier-up:{} carrier-down:{})",
-                    ev.carrier, ev.carrierup, ev.carrierdown
+                    "{ifc}: oper state changed {old} -> {new}, lowerup: {ifloup} carrier:{carrier}"
                 )?;
+                if let Some(carrierup) = ev.carrierup() {
+                    write!(f, " carrier-up:{carrierup}")?;
+                }
+                if let Some(carrierdown) = ev.carrierdown() {
+                    write!(f, " carrier-down:{carrierdown}")?;
+                }
             }
             RouterEvent::IfAdmChange(ev, old, new) => {
-                let ifc = &ev.name;
+                let ifc = &ev.name();
+                let carrier = ev.carrier().map_or("--", |v| if v { "yes" } else { "no" });
+                let ifloup = if ev.iflowerup() { "yes" } else { "no" };
                 write!(
                     f,
-                    "{ifc}: admin state changed {old} -> {new} (carrier:{:#?}, carrier-up:{} carrier-down:{})",
-                    ev.carrier, ev.carrierup, ev.carrierdown
+                    "{ifc}: admin state changed {old} -> {new}, lowerup: {ifloup} carrier:{carrier}"
                 )?;
+                if let Some(carrierup) = ev.carrierup() {
+                    write!(f, " carrier-up:{carrierup}")?;
+                }
+                if let Some(carrierdown) = ev.carrierdown() {
+                    write!(f, " carrier-down:{carrierdown}")?;
+                }
             }
             RouterEvent::IfNameChange(ev, old_name) => write!(
                 f,
                 "Interface with ifindex {} was renamed {old_name} -> {}",
-                ev.ifindex, ev.name
+                ev.ifindex(),
+                ev.name()
             )?,
             RouterEvent::BgpNeighStateChange(bgp_ev) => {
                 let peer_key = &bgp_ev.peer_key;

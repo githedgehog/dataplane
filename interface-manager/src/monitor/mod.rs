@@ -22,26 +22,102 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct EthEvent {
-    pub name: InterfaceName,
-    pub ifindex: InterfaceIndex,
-    pub ifup: bool,
-    pub iflowerup: bool,
-    pub ifrunning: bool,
-    pub carrier: bool,
-    pub carrierup: u32,
-    pub carrierdown: u32,
+    ifindex: InterfaceIndex,
+    name: InterfaceName,
+    ifup: bool,
+    iflowerup: bool,
+    ifrunning: bool,
+    carrier: Option<bool>,
+    carrierup: Option<u32>,   // stats
+    carrierdown: Option<u32>, // stats
+}
+impl EthEvent {
+    #[must_use]
+    pub fn new(
+        ifindex: InterfaceIndex,
+        name: InterfaceName,
+        ifup: bool,
+        iflowerup: bool,
+        ifrunning: bool,
+    ) -> Self {
+        Self {
+            ifindex,
+            name,
+            ifup,
+            iflowerup,
+            ifrunning,
+            carrier: None,
+            carrierup: None,
+            carrierdown: None,
+        }
+    }
+    #[must_use]
+    pub fn set_carrier(mut self, carrier: Option<bool>) -> Self {
+        self.carrier = carrier;
+        self
+    }
+    #[must_use]
+    pub fn set_carrierup(mut self, carrierup: Option<u32>) -> Self {
+        self.carrierup = carrierup;
+        self
+    }
+    #[must_use]
+    pub fn set_carrierdown(mut self, carrierdown: Option<u32>) -> Self {
+        self.carrierdown = carrierdown;
+        self
+    }
+    #[must_use]
+    pub fn ifindex(&self) -> InterfaceIndex {
+        self.ifindex
+    }
+    #[must_use]
+    pub fn name(&self) -> &InterfaceName {
+        &self.name
+    }
+    #[must_use]
+    pub fn ifup(&self) -> bool {
+        self.ifup
+    }
+    #[must_use]
+    pub fn iflowerup(&self) -> bool {
+        self.iflowerup
+    }
+    #[must_use]
+    pub fn ifrunning(&self) -> bool {
+        self.ifrunning
+    }
+    #[must_use]
+    pub fn carrier(&self) -> Option<bool> {
+        self.carrier
+    }
+    #[must_use]
+    pub fn carrierup(&self) -> Option<u32> {
+        self.carrierup
+    }
+    #[must_use]
+    pub fn carrierdown(&self) -> Option<u32> {
+        self.carrierdown
+    }
 }
 impl std::fmt::Display for EthEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let ifup = if self.ifup { "yes" } else { "no" };
         let ifloup = if self.iflowerup { "yes" } else { "no" };
         let ifrun = if self.ifrunning { "yes" } else { "no" };
-        let carrier = if self.carrier { "yes" } else { "no" };
+        let carrier = self.carrier.map_or("--", |v| if v { "yes" } else { "no" });
+
         write!(
             f,
-            "ifname:{} ({}) ifup:{ifup} iflowerup:{ifloup} ifrun:{ifrun} carrier:{carrier} carrierup:{} carrierdown:{}",
-            self.name, self.ifindex, self.carrierup, self.carrierdown
-        )
+            "ifname:{} ({}) ifup:{ifup} iflowerup:{ifloup} ifrun:{ifrun} carrier:{carrier}",
+            self.name, self.ifindex
+        )?;
+        if let Some(value) = self.carrierup {
+            write!(f, " carrierup:{value}")?;
+        }
+        if let Some(value) = self.carrierdown {
+            write!(f, " carrierdown:{value}")?;
+        }
+        Ok(())
     }
 }
 
@@ -67,6 +143,8 @@ impl InterfaceMonitor {
     }
 
     /// Convert a netlink message to an `EthEvent` if it is a `NewLink` message for a tracked interface
+    /// N.B. we don't assume that all of the info will be reported.
+    /// FIXME(fredi): name should not be considered mandatory, but we do here
     fn netlink_to_event(&self, msg: NetlinkMessage<RouteNetlinkMessage>) -> Option<EthEvent> {
         let (_hdr, payload) = msg.into_parts();
 
@@ -74,43 +152,54 @@ impl InterfaceMonitor {
             return None;
         };
         let ifindex = link_msg.header.index;
+        let Ok(ifindex) = InterfaceIndex::try_from(ifindex) else {
+            error!("Received kernel event with invalid interface index: {ifindex}");
+            return None;
+        };
         let ifup = link_msg.header.flags.contains(LinkFlags::Up);
         let iflowerup = link_msg.header.flags.contains(LinkFlags::LowerUp);
         let ifrunning = link_msg.header.flags.contains(LinkFlags::Running);
-        let ifname = link_msg.attributes.iter().find_map(|a| match a {
+
+        // interface name: strictly speaking, this is optional but we count on it for filtering.
+        // In practice we should always get it, but log otherwise
+        // FIXME(fredi)
+        let Some(name) = link_msg.attributes.iter().find_map(|a| match a {
             LinkAttribute::IfName(name) => Some(name.clone()),
             _ => None,
-        })?;
-        let ifname = InterfaceName::try_from(ifname).ok()?;
+        }) else {
+            error!("Received kernel event for ifindex {ifindex} without name!");
+            return None;
+        };
+        let Ok(ifname) = InterfaceName::try_from(name.clone()) else {
+            error!("Received kernel event for ifindex {ifindex} with invalid name {name}");
+            return None;
+        };
         if !self.tracked.contains(&ifname) {
             return None;
         }
+
+        // optional
         let carrier = link_msg.attributes.iter().find_map(|a| match a {
-            LinkAttribute::Carrier(value) => Some(value),
+            LinkAttribute::Carrier(value) => Some(*value != 0),
             _ => None,
-        })?;
+        });
         let carrierup = link_msg.attributes.iter().find_map(|a| match a {
             LinkAttribute::CarrierUpCount(value) => Some(*value),
             _ => None,
-        })?;
+        });
         let carrierdown = link_msg.attributes.iter().find_map(|a| match a {
             LinkAttribute::CarrierDownCount(value) => Some(*value),
             _ => None,
-        })?;
+        });
         // `LinkAttribute::OperState` is not reliable for events, so we ignore it.
         // N.B. the above attributes are required (watch the ?)
 
-        // construct the event object
-        let event = EthEvent {
-            name: ifname,
-            ifindex: InterfaceIndex::new(ifindex.try_into().ok()?),
-            ifup,
-            iflowerup,
-            ifrunning,
-            carrier: *carrier != 0,
-            carrierup,
-            carrierdown,
-        };
+        // build event object
+        let event = EthEvent::new(ifindex, ifname, ifup, iflowerup, ifrunning)
+            .set_carrier(carrier)
+            .set_carrierdown(carrierdown)
+            .set_carrierup(carrierup);
+
         info!("Got event for {event}");
         Some(event)
     }
