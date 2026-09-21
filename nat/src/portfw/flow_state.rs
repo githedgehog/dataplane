@@ -7,7 +7,7 @@
 
 use net::buffer::PacketBufferMut;
 use net::flow_key::FlowKeyError;
-use net::flows::{ExtractRef, FlowStatus};
+use net::flows::{ExtractMut, ExtractRef, FlowStatus};
 use net::ip::UnicastIpAddr;
 use net::packet::{Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
@@ -187,6 +187,19 @@ pub(crate) fn setup_reverse_flow(
         write_guard.dst_vpcd = Some(entry.key.src_vpcd());
     }
     debug!("Set up REVERSE flow for port-forwarding;\nkey={reverse_key}\ninfo={reverse_flow}");
+}
+
+/// Point a flow's port-forwarding state at `entry`, so that subsequent packets are
+/// fast-forwarded instead of taking the stale-rule path.
+///
+/// Shared by the two callers that establish which rule a live flow belongs to: the datapath,
+/// when a packet arrives on a flow whose rule has been dropped, and the migration in
+/// [`crate::portfw::flows`], which answers the same question for every flow at enactment.
+pub(crate) fn reassign_port_fw_rule(flow_info: &FlowInfo, entry: &Arc<PortFwEntry>) {
+    let mut flow_info_locked = flow_info.locked.write();
+    if let Some(state) = flow_info_locked.port_fw_state.extract_mut::<PortFwState>() {
+        state.rule = Arc::downgrade(entry);
+    }
 }
 
 /// Check if the flow entry that a packet was annotated with contains any _VALID_

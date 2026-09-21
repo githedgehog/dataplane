@@ -4,8 +4,8 @@
 #![cfg(feature = "dpdk")]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use concurrency::process_global::atomic::{AtomicU32, AtomicU64, Ordering};
 use concurrency::sync::LazyLock;
-use concurrency::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use core::net::{Ipv4Addr, Ipv6Addr};
 use core::num::NonZero;
 use core::ops::Bound;

@@ -47,9 +47,12 @@ impl PartialEq for PortFwEntry {
 }
 
 impl PortFwEntry {
-    pub const DEFAULT_INITIAL_TOUT: Duration = Duration::from_secs(10);
-    pub const DEFAULT_ESTABLISHED_TOUT_TCP: Duration = Duration::from_mins(30);
-    pub const DEFAULT_ESTABLISHED_TOUT_UDP: Duration = Duration::from_secs(30);
+    pub const DEFAULT_INITIAL_TOUT: Duration =
+        Duration::from_secs(10 * crate::common::TIMEOUT_SCALE);
+    pub const DEFAULT_ESTABLISHED_TOUT_TCP: Duration =
+        Duration::from_secs(30 * 60 * crate::common::TIMEOUT_SCALE);
+    pub const DEFAULT_ESTABLISHED_TOUT_UDP: Duration =
+        Duration::from_secs(30 * crate::common::TIMEOUT_SCALE);
 
     /// Provide the default established timeout for flows in port-forwarding,
     /// according to protocol

@@ -18,10 +18,20 @@ use std::any::Any;
 pub type StageId<Buf> = Id<Box<dyn DynNetworkFunction<Buf>>>;
 
 /// Data associated to a `Pipeline`
+///
+/// The generation id has two jobs that a single counter cannot do at once, so it is kept as two.
+/// `genid` is the generation the pipeline *enforces*: a flow stamped older than it has not been
+/// validated against the configuration in force, and the stages that check generations refuse it.
+/// `staging` is the generation a flow validated *right now* belongs to. Applying a configuration
+/// opens the new generation for stamping first and enforces it last, so that a flow created while
+/// the apply is in flight -- too late for the migration walks to see, too early to stamp itself
+/// from the published generation -- is not born stale.
 #[derive(Default, Debug)]
 pub struct PipelineData {
-    /// Current generation Id
-    pub genid: AtomicI64,
+    /// Generation Id enforced by the stages that check flows
+    genid: AtomicI64,
+    /// Generation Id stamped onto flows as they are created or revalidated
+    staging: AtomicI64,
 }
 impl PipelineData {
     #[must_use]
@@ -29,14 +39,30 @@ impl PipelineData {
     pub fn new(genid: i64) -> Self {
         Self {
             genid: AtomicI64::new(genid),
+            staging: AtomicI64::new(genid),
         }
     }
-    /// Read the generation id
+    /// Read the generation id the pipeline enforces
     pub fn genid(&self) -> i64 {
         self.genid.load(Ordering::Relaxed)
     }
-    /// Set the generation id
+    /// Read the generation id to stamp onto a flow that has just been validated
+    pub fn staging_genid(&self) -> i64 {
+        self.staging.load(Ordering::Relaxed)
+    }
+    /// Open `genid` for stamping without enforcing it yet.
+    ///
+    /// Call this before migrating the flows of the previous generation, and [`Self::set_genid`]
+    /// once the whole configuration is installed.
+    pub fn open_generation(&self, genid: i64) {
+        self.staging.store(genid, Ordering::Relaxed);
+    }
+    /// Set the generation id, enforcing it from now on.
+    ///
+    /// Stamping is brought up to `genid` too, so a caller that never opened the generation still
+    /// leaves the two coherent.
     pub fn set_genid(&self, genid: i64) {
+        self.staging.store(genid, Ordering::Relaxed);
         self.genid.store(genid, Ordering::Relaxed);
     }
 }

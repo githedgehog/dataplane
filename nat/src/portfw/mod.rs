@@ -5,6 +5,7 @@
 
 mod expiry;
 mod flow_state;
+mod flows;
 mod fuzz;
 pub(crate) mod icmp_handling;
 mod nf;

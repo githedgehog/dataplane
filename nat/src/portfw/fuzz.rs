@@ -75,7 +75,7 @@ fn source_of(packet: &Packet<TestBuffer>) -> (IpAddr, u16) {
 /// Whether this run saw enough to judge the ratios below, or only to print them.
 fn judged(built: usize) -> bool {
     const ENOUGH_CONFIGURATIONS: usize = 2;
-    !cfg!(instrumented) && !cfg!(emulated) && built >= ENOUGH_CONFIGURATIONS
+    !cfg!(instrumented) && !cfg!(emulated) && !cfg!(sanitized) && built >= ENOUGH_CONFIGURATIONS
 }
 
 #[derive(Default)]
@@ -197,9 +197,10 @@ fn a_forwarded_packet_lands_inside_the_published_target() {
                     };
 
                     assert!(
-                        fabric.is_private(addr, port),
-                        "{published:?} was forwarded to {addr}:{port}, which no rule names as a \
-                         target; that address never published this service"
+                        fabric.is_target_of(published, addr, port),
+                        "{published:?} was forwarded to {addr}:{port}, which is not a target of \
+                         the rule that publishes {published:?}; the packet reached a backend \
+                         belonging to some other published service"
                     );
                     tally.reached.fetch_add(1, Ordering::Relaxed);
                 }

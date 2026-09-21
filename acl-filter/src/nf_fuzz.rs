@@ -91,7 +91,7 @@ fn filter(built: &crate::fuzz_gen::BuiltOverlay) -> AclFilter {
 fn judged(drawn: usize) -> bool {
     /// Sixteen cases' worth: far under any real run, far over a single replay.
     const ENOUGH_PROBES: usize = PROBES * 16;
-    !cfg!(instrumented) && !cfg!(emulated) && drawn >= ENOUGH_PROBES
+    !cfg!(instrumented) && !cfg!(emulated) && !cfg!(sanitized) && drawn >= ENOUGH_PROBES
 }
 
 #[derive(Default)]

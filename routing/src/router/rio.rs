@@ -596,7 +596,7 @@ mod tests {
     use std::time::Duration;
 
     const PATIENCE: Duration = Duration::from_secs(cfg_select! {
-        instrumented => 300,
+        any(instrumented, sanitized) => 300,
         _ => 120,
     });
 

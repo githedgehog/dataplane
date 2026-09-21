@@ -98,8 +98,8 @@ concurrency::with_std! {
 }
 
 concurrency::with_loom! {
-    // nosemgrep: rust-no-direct-std-sync-import
-    type RegistryMutex = std::sync::Mutex<()>;
+    #[allow(clippy::disallowed_types, reason = "DPDK's ACL registry outlives model executions")]
+    type RegistryMutex = concurrency::process_global::Mutex<()>;
 
     fn hold(lock: &'static RegistryMutex) -> impl Sized {
         lock.lock()
@@ -108,8 +108,8 @@ concurrency::with_loom! {
 }
 
 concurrency::with_shuttle! {
-    // nosemgrep: rust-no-direct-std-sync-import
-    type RegistryMutex = std::sync::Mutex<()>;
+    #[allow(clippy::disallowed_types, reason = "DPDK's ACL registry outlives model executions")]
+    type RegistryMutex = concurrency::process_global::Mutex<()>;
 
     fn hold(lock: &'static RegistryMutex) -> impl Sized {
         lock.lock()
