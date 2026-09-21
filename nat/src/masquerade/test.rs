@@ -2558,6 +2558,7 @@ fn tcp_v6_to_masquerade(
 }
 
 #[tokio::test]
+#[cfg_attr(emulated, ignore = "too slow under emulation")]
 #[cfg_attr(not(emulated), traced_test)]
 async fn masquerade_translates_ipv6() {
     let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs_v6());
@@ -2641,6 +2642,7 @@ fn icmp6_error_through(
 //# or delete the NAT Session that pertains to the embedded
 //# payload within the ICMP Error packet.
 #[tokio::test]
+#[cfg_attr(emulated, ignore = "too slow under emulation")]
 #[cfg_attr(not(emulated), traced_test)]
 async fn an_icmp6_error_does_not_tear_down_the_query_session_it_reports_on() {
     let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs_v6());
@@ -2690,6 +2692,7 @@ async fn an_icmp6_error_does_not_tear_down_the_query_session_it_reports_on() {
 }
 
 #[tokio::test]
+#[cfg_attr(emulated, ignore = "too slow under emulation")]
 #[cfg_attr(not(emulated), traced_test)]
 async fn ipv6_path_mtu_discovery_does_not_tear_down_the_flow_that_triggered_it() {
     let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs_v6());
@@ -2881,6 +2884,7 @@ mod fragments {
     }
 
     #[tokio::test(start_paused = true)]
+    #[cfg_attr(emulated, ignore = "too slow under emulation")]
     async fn non_first_fragments_do_not_reuse_masquerade_flows() {
         for (overlay, src, dst) in cases() {
             let (mut nat, _allocator) = setup(&overlay);
@@ -2937,6 +2941,7 @@ mod fragments {
     }
 
     #[tokio::test]
+    #[cfg_attr(emulated, ignore = "too slow under emulation")]
     async fn offset_zero_packets_can_still_be_masqueraded() {
         for (overlay, src, dst) in cases() {
             for more in [false, true] {
