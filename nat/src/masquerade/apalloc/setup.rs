@@ -237,6 +237,36 @@ impl PoolSpec {
     }
 }
 
+/// Two consecutive /32s whose per-address port budget is small enough that exhaustion is reachable
+/// in a handful of draws, by claiming away the rest of the usable range.
+///
+/// `base` is the first address, as raw bits; the pool covers it and its successor.
+#[cfg(test)]
+pub(crate) fn narrow_budget_specs(base: u128, budget: u16) -> Vec<PoolSpec> {
+    let address = |bits: u128| {
+        Ipv4Addr::from(u32::try_from(bits).unwrap_or_else(|_| unreachable!("{bits} is not a v4")))
+    };
+    let claimed_end = 65535 - budget;
+    let claim_all_but_budget = |bits: u128| {
+        PrefixWithOptionalPorts::new(
+            format!("{}/32", address(bits)).as_str().into(),
+            Some(
+                lpm::prefix::PortRange::new(1024, claimed_end)
+                    .unwrap_or_else(|_| unreachable!("1024..={claimed_end} is not a range")),
+            ),
+        )
+    };
+    let claimed =
+        PrefixPortsSet::from([claim_all_but_budget(base), claim_all_but_budget(base + 1)]);
+    vec![
+        PoolSpec::new(
+            vec![AddrInterval::new(base, base + 1)],
+            DEFAULT_MASQUERADE_IDLE_TIMEOUT,
+        )
+        .claiming(claimed),
+    ]
+}
+
 /// Cut the space the given exposes claim into disjoint regions, build one allocator per region,
 /// and return the pools each expose may allocate from, in the same order as `specs`.
 ///
