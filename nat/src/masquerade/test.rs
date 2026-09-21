@@ -3092,6 +3092,145 @@ async fn test_masquerade_address_dependent_mapping_creates_distinct_mappings_per
     );
 }
 
+// A config change can merge two mapping keys that used to be distinct (if the mapping policy moves
+// from ADM to EIM, for example), and then the second flow's tuple is not the one the merged mapping
+// names. Carrying it over anyway would leave that flow rewriting to a public tuple nothing reserved
+// in the replacement, that the allocator would hand over to the next subscriber that asks. The flow
+// has to be invalidated instead.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_config_migration_drops_a_flow_whose_tuple_the_merged_mapping_lost() {
+    let genid = 1;
+    let (mut nat, mut allocw) = Masquerade::new_with_defaults();
+    let flow_table = nat.sessions().clone();
+
+    // Address-Dependent Mapping: one private tuple toward two peers draws two distinct mappings
+    let overlay = build_overlay_2vpcs_address_dependent().validate().unwrap();
+    allocw.update_nat_allocator(
+        MasqueradeConfig::new(overlay.vpc_table()),
+        genid,
+        &flow_table,
+    );
+
+    let peers = ["3.3.3.1", "3.3.3.2"];
+    let mut before = Vec::new();
+    for peer in peers {
+        let (src, _, port, _, done) =
+            check_packet(&mut nat, vni(100), vni(200), "1.1.0.1", peer, 4321, 80);
+        assert_eq!(done, None);
+        before.push((src, port));
+    }
+    assert_ne!(
+        before[0], before[1],
+        "AddressDependent should give the two flows distinct public tuples"
+    );
+
+    // Switch the same exposes to Endpoint-Independent Mapping. Both flows now key on the same
+    // mapping, which can only name one of the two tuples, so exactly one of them survives.
+    let merged = build_overlay_2vpcs().validate().unwrap();
+    allocw.update_nat_allocator(
+        MasqueradeConfig::new(merged.vpc_table()),
+        genid + 1,
+        &flow_table,
+    );
+
+    let dropped = peers
+        .into_iter()
+        .zip(&before)
+        .filter(|(peer, (src, port))| {
+            let (new_src, _, new_port, _, done) =
+                check_packet(&mut nat, vni(100), vni(200), "1.1.0.1", peer, 4321, 80);
+            // A carried flow keeps answering on the very tuple it was carried with.
+            done.is_some() || (new_src, new_port) != (*src, *port)
+        })
+        .count();
+
+    assert_eq!(
+        dropped, 1,
+        "exactly one of the two flows should have been carried over; \
+         the other's tuple is not the one the merged mapping names, \
+         so carrying it would leave it rewriting to a tuple the replacement allocator considers free"
+    );
+}
+
+// Merging APDM into EIM: under APDM, one destination address splits into a mapping per destination
+// port, so moving to EIM collapses several mappings at once. The surviving flow keeps its tuple and
+// the rest are invalidated, for the same reason as above.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_config_migration_collapses_address_and_port_dependent_mappings() {
+    let genid = 1;
+    let (mut nat, mut allocw) = Masquerade::new_with_defaults();
+    let flow_table = nat.sessions().clone();
+
+    let overlay = build_overlay_2vpcs_with(
+        MappingPolicy::AddressAndPortDependent,
+        "1.1.0.0/16",
+        "2.2.0.0/16",
+        "3.3.3.0/24",
+    )
+    .validate()
+    .unwrap();
+    allocw.update_nat_allocator(
+        MasqueradeConfig::new(overlay.vpc_table()),
+        genid,
+        &flow_table,
+    );
+
+    // One private tuple toward one peer address, on 3 destination ports: only APDM tells them apart
+    let dports = [80u16, 443, 8080];
+    let mut before = Vec::new();
+    for dport in dports {
+        let (src, _, port, _, done) = check_packet(
+            &mut nat,
+            vni(100),
+            vni(200),
+            "1.1.0.1",
+            "3.3.3.1",
+            4321,
+            dport,
+        );
+        assert_eq!(done, None);
+        before.push((src, port));
+    }
+    let distinct: std::collections::BTreeSet<_> = before.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        dports.len(),
+        "AddressAndPortDependent should give a distinct public tuple per destination port"
+    );
+
+    let merged = build_overlay_2vpcs().validate().unwrap();
+    allocw.update_nat_allocator(
+        MasqueradeConfig::new(merged.vpc_table()),
+        genid + 1,
+        &flow_table,
+    );
+
+    let carried = dports
+        .into_iter()
+        .zip(&before)
+        .filter(|(dport, (src, port))| {
+            let (new_src, _, new_port, _, done) = check_packet(
+                &mut nat,
+                vni(100),
+                vni(200),
+                "1.1.0.1",
+                "3.3.3.1",
+                4321,
+                *dport,
+            );
+            done.is_none() && (new_src, new_port) == (*src, *port)
+        })
+        .count();
+
+    assert_eq!(
+        carried, 1,
+        "the merged mapping names one tuple, so exactly one of the three flows can be carried; \
+         the others must be invalidated rather than left rewriting to a tuple the replacement allocator considers free"
+    );
+}
+
 // Two flows sharing one EIM mapping must both survive a config change that keeps their public
 // tuple valid. Naive per-flow re-reservation of a shared mapping would fail the second flow with
 // PortReservationFailed, since the tuple is already reserved by the first.

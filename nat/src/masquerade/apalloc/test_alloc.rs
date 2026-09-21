@@ -1359,6 +1359,64 @@ mod std_tests {
             .expect("an unclaimed port is reservable");
     }
 
+    // A config change can merge two previously distinct mapping keys into one (an expose moving
+    // from Address-Dependent to the default Endpoint-Independent policy, for example). When it
+    // does, the second flow's re-reservation finds the mapping the first flow already created under
+    // the now-shared key. Attaching to it would leave the second flow translating to a tuple
+    // nothing reserved in the replacement, which would be free from the allocator's point of view,
+    // and handed to the next subscriber that asks. The re-reservation has to refuse instead, so the
+    // flow is invalidated.
+    #[test]
+    fn re_reserving_onto_a_mapping_with_a_different_tuple_is_refused() {
+        let allocator = build_allocator();
+        let private_src = IpAddr::V4(addr_v4("1.1.0.1"));
+        let src_port = port(1);
+
+        let first = allocator
+            .allocate(
+                vpcd1(),
+                vpcd2(),
+                private_src,
+                src_port,
+                IpAddr::V4(dst_v4()),
+                None,
+                NextHeader::TCP,
+            )
+            .expect("the pool has room");
+        let (held, held_port) = (first.allocation.ip(), first.allocation.port());
+
+        let next = build_allocator();
+        // The first flow carries over normally and reserves its tuple
+        next.reserve_mapping(
+            vpcd1(),
+            vpcd2(),
+            AnyReservation::new(private_src, src_port, IpAddr::V4(dst_v4()), None, held)
+                .expect("a v4 private source and a v4 allocation"),
+            NextHeader::TCP,
+            held_port,
+        )
+        .expect("the replacement still serves the first flow's tuple");
+
+        // The second flow presents the same key (under EIM the destination is not part of it) but
+        // a different public tuple: the one it is still translating to
+        let other_port = NatPort::new_port_checked(held_port.as_u16() + 1)
+            .unwrap_or_else(|_| unreachable!("a port one above a drawn port is valid"));
+        let clash = next
+            .reserve_mapping(
+                vpcd1(),
+                vpcd2(),
+                AnyReservation::new(private_src, src_port, IpAddr::V4(dst_v4()), None, held)
+                    .expect("a v4 private source and a v4 allocation"),
+                NextHeader::TCP,
+                other_port,
+            )
+            .expect_err("a mapping holding a different tuple must not be handed back");
+        assert!(
+            matches!(clash, AllocatorError::MappingTupleMismatch { .. }),
+            "expected a tuple mismatch, got {clash}"
+        );
+    }
+
     // A subscriber must not pin its public address forever once it has no live mappings, or the
     // address leaks and no other subscriber can ever reuse it. Reaping is driven off the last
     // mapping's own expiry (not an independent subscriber's timer).
