@@ -253,47 +253,23 @@ fn handle_config(rio: &mut Rio, config: Arc<ValidatedGwConfig>) {
 fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
     rio.cfg_history = history;
 }
-pub(crate) fn handle_ifevent(ev: &EthEvent, iftw: &mut IfTableWriter) {
-    let adm_state = if ev.ifup() {
-        IfState::Up
-    } else {
-        IfState::Down
-    };
-    let oper_state = if ev.ifrunning() {
-        IfState::Up
-    } else {
-        IfState::Down
-    };
+
+pub(crate) fn handle_ifevent(ev: &EthEvent, iftw: &mut IfTableWriter) -> Result<(), RouterError> {
     let ifindex = ev.ifindex();
-    if let Some(iftable) = iftw.enter() {
-        let Some(iface) = iftable.get_interface(ifindex) else {
-            warn!(
-                "Got event for interface {ifindex} {} not in iftable",
-                ev.name()
-            );
-            return;
-        };
-        if iface.admin_state != adm_state {
-            revent!(RouterEvent::IfAdmChange(
-                ev.clone(),
-                iface.admin_state,
-                adm_state
-            ));
-        }
-        if iface.oper_state != oper_state {
-            revent!(RouterEvent::IfOperChange(
-                ev.clone(),
-                iface.oper_state,
-                oper_state
-            ));
-        }
-        if iface.name != *ev.name() {
-            revent!(RouterEvent::IfNameChange(ev.clone(), iface.name.clone()));
-        }
+    let adm_state = IfState::from(ev.ifup());
+    let heuristic = ev.ifrunning() && ev.iflowerup() && ev.carrier().unwrap_or(true);
+    let oper_state = IfState::from(heuristic);
+
+    if let Some(old_state) = iftw.set_iface_admin_state(ifindex, adm_state)? {
+        revent!(RouterEvent::IfAdmChange(ev.clone(), old_state, adm_state));
     }
-    let _ = iftw.set_iface_admin_state(ifindex, adm_state);
-    let _ = iftw.set_iface_oper_state(ifindex, oper_state);
-    let _ = iftw.update_name(ifindex, ev.name());
+    if let Some(old_state) = iftw.set_iface_oper_state(ifindex, oper_state)? {
+        revent!(RouterEvent::IfOperChange(ev.clone(), old_state, oper_state));
+    }
+    if let Some(old_name) = iftw.update_name(ifindex, ev.name())? {
+        revent!(RouterEvent::IfNameChange(ev.clone(), old_name));
+    }
+    Ok(())
 }
 
 fn handle_bgp_peer_status_change(bgp_ev: BgpNeighEvent) {
@@ -320,7 +296,9 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
             }
             Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
             Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
-            Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(&ev, &mut db.iftw),
+            Ok(RouterCtlMsg::IfEvent(ev)) => {
+                let _ = handle_ifevent(&ev, &mut db.iftw);
+            }
             Ok(RouterCtlMsg::BgpNeighStatus(bgp_ev)) => handle_bgp_peer_status_change(bgp_ev),
             Err(TryRecvError::Empty) => break,
             Err(e) => {
