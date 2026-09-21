@@ -1417,6 +1417,49 @@ mod std_tests {
         );
     }
 
+    // The outbound packet that opens a second flow on an existing mapping is itself traffic on that
+    // mapping, so it must refresh it. If it does not, the mapping can expire moments after the new
+    // flow attached, and the next flow for the same private tuple draws a different public tuple,
+    // causing the same private endpoint to be mapped to two public ones.
+    #[tokio::test]
+    async fn a_second_flow_joining_a_mapping_refreshes_it() {
+        tokio::time::pause();
+        let idle_timeout = std::time::Duration::from_secs(120);
+        let allocator = build_allocator_short_timeout(idle_timeout);
+        let draw = || {
+            let a = allocator
+                .allocate(
+                    vpcd1(),
+                    vpcd2(),
+                    IpAddr::V4(addr_v4("1.1.0.1")),
+                    port(1),
+                    IpAddr::V4(dst_v4()),
+                    None,
+                    NextHeader::TCP,
+                )
+                .expect("the pool has room");
+            (a.allocation.ip(), a.allocation.port())
+        };
+
+        let original = draw();
+
+        // Three quarters of the way to the deadline, a second flow joins the same mapping
+        advance(idle_timeout * 3 / 4).await;
+        assert_eq!(
+            draw(),
+            original,
+            "the second flow should share the first flow's mapping"
+        );
+
+        // Past the mapping's original deadline, but well inside the refreshed one
+        advance(idle_timeout * 3 / 4).await;
+        assert_eq!(
+            draw(),
+            original,
+            "the mapping expired despite a second flow joining it three quarters of the way in"
+        );
+    }
+
     // A subscriber must not pin its public address forever once it has no live mappings, or the
     // address leaks and no other subscriber can ever reuse it. Reaping is driven off the last
     // mapping's own expiry (not an independent subscriber's timer).
