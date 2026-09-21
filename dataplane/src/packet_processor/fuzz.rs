@@ -46,9 +46,10 @@ pub(crate) enum Enact {
     FlowFilter,
     Acl,
     StaticNat,
+    OpenGeneration,
     Masquerade,
     PortForward,
-    Generation,
+    PublishGeneration,
     Everything,
 }
 
@@ -166,13 +167,14 @@ impl Fleet {
             Enact::FlowFilter,
             Enact::Acl,
             Enact::StaticNat,
+            Enact::OpenGeneration,
             Enact::Masquerade,
             Enact::PortForward,
         ] {
             self.enact(overlay, step);
         }
         std::thread::sleep(gap);
-        self.enact(overlay, Enact::Generation);
+        self.enact(overlay, Enact::PublishGeneration);
     }
 
     pub(crate) fn randomizing(&self, on: bool) -> &Self {
@@ -198,11 +200,13 @@ impl Fleet {
                     .expect("a validated overlay lowers to nat"),
             );
         }
-        if doing(Enact::Masquerade) {
+        if doing(Enact::OpenGeneration) {
             self.genid.set(self.genid.get() + 1);
             // `mgmt` opens the generation for stamping here, immediately before the first walk
-            // that migrates flows into it and long before `Enact::Generation` enforces it.
+            // that migrates flows into it and long before `Enact::PublishGeneration` enforces it.
             self.blueprint.pipeline.open_generation(self.genid.get());
+        }
+        if doing(Enact::Masquerade) {
             self.masquerade.borrow_mut().update_nat_allocator(
                 MasqueradeConfig::new(overlay.vpc_table()).set_randomize(self.randomize.get()),
                 self.genid.get(),
@@ -219,7 +223,7 @@ impl Fleet {
                 )
                 .expect("a validated overlay lowers to port forwarding");
         }
-        if doing(Enact::Generation) {
+        if doing(Enact::PublishGeneration) {
             self.blueprint.pipeline.set_genid(self.genid.get());
         }
     }
@@ -2151,6 +2155,11 @@ mod acl {
         );
 
         fabric.fleet.enact(&overlay, Enact::Everything);
+        assert_eq!(fabric.fleet.blueprint.pipeline.genid(), FIRST_GENID + 1);
+        assert_eq!(
+            fabric.fleet.blueprint.pipeline.staging_genid(),
+            FIRST_GENID + 1
+        );
 
         let after = answer(&mut fabric);
         assert!(
@@ -2179,17 +2188,30 @@ mod acl {
             .expect("a port-forwarding side accepts a flow-scoped rule");
         let mut fabric = Fabric::over(&overlay, None, Arc::new(FlowTable::default()));
 
-        // Re-enact the running configuration, stopping short of publishing the generation. This
-        // is the state `mgmt` is in from its first table swap until its last statement.
+        // Open the next generation before either migration walk, without publishing it yet.
         for step in [
             Enact::FlowFilter,
             Enact::Acl,
             Enact::StaticNat,
-            Enact::Masquerade,
-            Enact::PortForward,
+            Enact::OpenGeneration,
         ] {
             fabric.fleet.enact(&overlay, step);
         }
+        assert_eq!(fabric.fleet.blueprint.pipeline.genid(), FIRST_GENID);
+        assert_eq!(
+            fabric.fleet.blueprint.pipeline.staging_genid(),
+            FIRST_GENID + 1
+        );
+
+        // Both migrations use the generation already opened for this apply.
+        for step in [Enact::Masquerade, Enact::PortForward] {
+            fabric.fleet.enact(&overlay, step);
+        }
+        assert_eq!(fabric.fleet.blueprint.pipeline.genid(), FIRST_GENID);
+        assert_eq!(
+            fabric.fleet.blueprint.pipeline.staging_genid(),
+            FIRST_GENID + 1
+        );
 
         let advertised: IpAddr = "172.16.0.5".parse().unwrap_or_else(|_| unreachable!());
         let outside = peer(advertised);
@@ -2213,7 +2235,8 @@ mod acl {
             .expect("a forwarded request has a destination port");
 
         // Close the apply.
-        fabric.fleet.enact(&overlay, Enact::Generation);
+        fabric.fleet.enact(&overlay, Enact::PublishGeneration);
+        assert_eq!(fabric.fleet.blueprint.pipeline.genid(), FIRST_GENID + 1);
 
         let mut answer = super::round_trip::udp(inside, outside, inside_port.get(), 40000)
             .expect("a well-formed answer");
@@ -5736,9 +5759,10 @@ mod model {
             Enact::FlowFilter,
             Enact::Acl,
             Enact::StaticNat,
+            Enact::OpenGeneration,
             Enact::Masquerade,
             Enact::PortForward,
-            Enact::Generation,
+            Enact::PublishGeneration,
             Enact::Everything,
         ];
         for (nth, part) in steps.into_iter().enumerate() {
@@ -5918,6 +5942,7 @@ mod model {
                     Fleet::lowering(&running, Some(&tables), Arc::new(FlowTable::default()));
                 fleet.randomizing(randomize);
                 if randomize {
+                    fleet.enact(&running, Enact::OpenGeneration);
                     fleet.enact(&running, Enact::Masquerade);
                 }
                 let blueprint = fleet.blueprint();
@@ -5994,6 +6019,7 @@ mod model {
                         });
                     }
                     gate.wait();
+                    fleet.enact(&enacted, Enact::OpenGeneration);
                     fleet.enact(&enacted, Enact::Masquerade);
                 });
 
