@@ -192,8 +192,13 @@ impl Masquerade {
         flow_info: &FlowInfo,
         state: &MasqueradeState,
     ) {
-        // RFC 4787 REQ-6: any outbound packet on any flow sharing a mapping refreshes it,
-        // TODO: duvet
+        //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+        //= type=implementation
+        //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+        //# refresh behavior" of "True".
+        //
+        // Any outbound packet on any flow sharing a mapping refreshes it, independent of that
+        // flow's own idle timer.
         if let Some(allocation) = state.allocation() {
             allocation.refresh();
         }

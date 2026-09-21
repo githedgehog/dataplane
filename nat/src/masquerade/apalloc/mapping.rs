@@ -47,7 +47,19 @@ pub(crate) enum MappingScope<I: NatIpWithBitmap> {
 impl<I: NatIpWithBitmap> MappingScope<I> {
     pub(crate) fn new(policy: MappingPolicy, dst_ip: I, dst_port: Option<NatPort>) -> Self {
         match (policy, dst_port) {
+            //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+            //= type=implementation
+            //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
             (MappingPolicy::EndpointIndependent, _) => Self::Independent,
+            //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+            //= type=exception
+            //= reason=an operator may opt a peering into Address-Dependent or Address-and-Port-Dependent Mapping, which folds the destination into the mapping key and so is deliberately not Endpoint-Independent for that peering; the default stays EndpointIndependent
+            //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
+            //= https://www.rfc-editor.org/rfc/rfc5382#section-4.1
+            //= type=exception
+            //= reason=the same operator opt-in applies to TCP: a peering configured for Address-Dependent or Address-and-Port-Dependent Mapping is deliberately not Endpoint-Independent for TCP either
+            //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
+            //# for TCP.
             (MappingPolicy::AddressAndPortDependent, Some(port)) => Self::AddressPort(dst_ip, port),
             // dst_port is None for traffic with no representable destination port/identifier (for
             // example, an ICMP error message, or an unsupported ICMP category). Under APDM, this
@@ -182,6 +194,13 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
     // Draw a port for a new mapping, preferring this subscriber's already-in-use addresses (Paired
     // pooling behavior) and only falling through to the parent pool's reuse-then-new-address path
     // once every associated address is exhausted (or if none exists yet).
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+    //= type=implementation
+    //# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+    //# behavior of "Paired".
+    //
+    // This is what closes the gap IpAllocator::allocate documents as its REQ-2 exception: the
+    // choice is keyed on the internal IP for the lifetime of its mappings.
     fn allocate_paired(
         &self,
         pool: &PoolSet<I>,
@@ -419,6 +438,9 @@ mod tests {
 
     // RFC 4787 Endpoint-Independent Mapping: the destination never enters the scope, so every
     // combination of destination address/port collapses to "Independent"
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+    //= type=test
+    //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
     #[test]
     fn endpoint_independent_ignores_the_destination() {
         for dst_port in [None, Some(a_port(80)), Some(a_port(443))] {

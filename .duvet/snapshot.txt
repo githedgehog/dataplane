@@ -1,8 +1,8 @@
 SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
   SECTION: [Address and Port Mapping](#section-4.1)
-    TEXT[!MUST,todo]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
-    TEXT[!SHOULD,test,exception]:    REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
-    TEXT[!SHOULD,test,exception]:       behavior of "Paired".
+    TEXT[!MUST,implementation,test,exception]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
+    TEXT[!SHOULD,implementation,test,exception]:    REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+    TEXT[!SHOULD,implementation,test,exception]:       behavior of "Paired".
 
   SECTION: [Port Assignment Behavior](#section-4.2.1)
     TEXT[!MUST,implementation,test]:    REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
@@ -233,8 +233,8 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4884
 
 SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5382
   SECTION: [Address and Port Mapping Behavior](#section-4.1)
-    TEXT[!MUST,todo]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
-    TEXT[!MUST,todo]:       for TCP.
+    TEXT[!MUST,implementation,exception]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
+    TEXT[!MUST,implementation,exception]:       for TCP.
 
   SECTION: [Internally Initiated Connections](#section-4.2)
     TEXT[!MUST]:    REQ-2:  A NAT MUST support all valid sequences of TCP packets
