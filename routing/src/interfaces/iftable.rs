@@ -43,6 +43,10 @@ impl IfTable {
     pub fn values(&self) -> impl Iterator<Item = &Interface> {
         self.by_index.values()
     }
+    #[cfg(test)]
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Interface> {
+        self.by_index.values_mut()
+    }
 
     /// Add an [`Interface`] to the table
     pub(crate) fn add_interface(

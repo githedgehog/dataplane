@@ -17,6 +17,9 @@ use net::interface::{InterfaceIndex, InterfaceName};
 
 use tracing::{debug, error};
 
+#[cfg(test)]
+use std::ptr::NonNull;
+
 #[allow(unused)]
 enum IfTableChange {
     Add(RouterInterfaceConfig),
@@ -70,6 +73,19 @@ impl IfTableWriter {
     #[must_use]
     pub fn enter(&self) -> Option<ReadGuard<'_, IfTable>> {
         self.0.enter()
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    // Not to be used outside tests; because it is unsafe to mutate with readers
+    // and, most importantly, because this API may change
+    pub(crate) fn raw_write_handle(&mut self) -> NonNull<IfTable> {
+        self.0.raw_write_handle()
+    }
+
+    #[cfg(test)]
+    pub fn publish(&mut self) {
+        self.0.publish();
     }
 
     // tell if there exists an interface with a given index

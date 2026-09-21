@@ -9,6 +9,7 @@ pub(crate) mod interface;
 
 #[cfg(test)]
 pub mod tests {
+
     use crate::RouterError;
     use crate::RouterVrfConfig;
     use crate::VrfId;
@@ -362,5 +363,121 @@ pub mod tests {
             .collect();
 
         similar_asserts::assert_eq!(original, recovered);
+    }
+}
+
+#[cfg(test)]
+mod event_processing {
+    use super::tests::build_test_iftable_left_right;
+    use crate::Interface;
+    use crate::interfaces::iftablerw::IfTableWriter;
+    use crate::interfaces::interface::IfState;
+    use crate::router::ctl::handle_ifevent;
+    use interface_manager::monitor::EthEvent;
+    use net::interface::InterfaceIndex;
+
+    // generate event with the admin / oper states of the given interface
+    fn gen_event(iface: &Interface) -> EthEvent {
+        let ifup = match iface.admin_state {
+            IfState::Up => true,
+            IfState::Down | IfState::Unknown => false,
+        };
+        let ifrunning = match iface.oper_state {
+            IfState::Up => true,
+            IfState::Down | IfState::Unknown => false,
+        };
+        let iflowerup = false; // informational
+        EthEvent::new(
+            iface.ifindex,
+            iface.name.clone(),
+            ifup,
+            iflowerup,
+            ifrunning,
+        )
+    }
+
+    // get interface (clone) from iftable reader
+    fn get_interface(iftw: &IfTableWriter, ifindex: InterfaceIndex) -> Interface {
+        iftw.enter()
+            .unwrap()
+            .get_interface(ifindex)
+            .expect("Not found")
+            .clone()
+    }
+
+    #[track_caller]
+    fn compare_interface(reference: &Interface, updated: &Interface) {
+        println!("Checking {reference}");
+        similar_asserts::assert_eq!(reference, updated);
+    }
+
+    fn toggle(state: IfState) -> IfState {
+        match state {
+            IfState::Up => IfState::Down,
+            IfState::Down => IfState::Up,
+            IfState::Unknown => unreachable!(),
+        }
+    }
+    fn toggle_adm(iface: &mut Interface) {
+        iface.set_admin_state(toggle(iface.admin_state));
+    }
+    fn toggle_oper(iface: &mut Interface) {
+        iface.set_oper_state(toggle(iface.oper_state));
+    }
+
+    // Initialize oper state of all interfaces to match their admin state
+    fn init_oper_state(iftw: &mut IfTableWriter) {
+        let iftable = unsafe { iftw.raw_write_handle().as_mut() };
+        iftable
+            .values_mut()
+            .for_each(|iface| iface.set_oper_state(iface.admin_state));
+        iftw.publish();
+        println!("Updated oper state of all interfaces");
+    }
+
+    #[test]
+    fn test_interface_event_process() {
+        let (mut iftw, _) = build_test_iftable_left_right();
+        init_oper_state(&mut iftw);
+
+        let mut reference: Vec<Interface> = iftw.enter().unwrap().values().cloned().collect();
+        let initial = reference.clone();
+
+        for iface in reference.iter_mut() {
+            // toggle admin state, generate event and check
+            toggle_adm(iface);
+            let event = gen_event(iface);
+            handle_ifevent(&event, &mut iftw);
+            let updated = get_interface(&iftw, iface.ifindex);
+            compare_interface(&iface, &updated);
+
+            // toggle admin state BACK
+            toggle_adm(iface);
+            let event = gen_event(iface);
+            handle_ifevent(&event, &mut iftw);
+            let updated = get_interface(&iftw, iface.ifindex);
+            compare_interface(&iface, &updated);
+
+            // toggle oper state, generate event and check
+            toggle_oper(iface);
+            let event = gen_event(iface);
+            handle_ifevent(&event, &mut iftw);
+            let updated = get_interface(&iftw, iface.ifindex);
+            compare_interface(&iface, &updated);
+
+            // toggle admin state BACK
+            toggle_oper(iface);
+            let event = gen_event(iface);
+            handle_ifevent(&event, &mut iftw);
+            let updated = get_interface(&iftw, iface.ifindex);
+            compare_interface(&iface, &updated);
+        }
+
+        // all interfaces should remain as they were (this is for test correctness)
+        similar_asserts::assert_eq!(initial, reference);
+
+        // also via writer
+        let last: Vec<Interface> = iftw.enter().unwrap().values().cloned().collect();
+        similar_asserts::assert_eq!(initial, last);
     }
 }
