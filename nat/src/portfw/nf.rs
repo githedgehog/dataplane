@@ -184,16 +184,26 @@ impl PortForwarder {
                 PortFwFlow::Held(held)
             }
             Ok(Insertion::Installed) => {
-                // The reverse insert is expected to always succeed: capacity enforcement
-                // recognises that rev_flow has a related flow (fw_flow) already in the table
-                // and admits it unconditionally.  Remove the forward entry on the unlikely
-                // event of failure to avoid leaving a one-sided flow.
-                if let Err(e) = self.flow_table.insert_from_arc(&rev_flow) {
-                    fw_flow.invalidate();
-                    warn!("Failed to insert flow (reverse) in the flow table: {e}");
-                    packet.done(DoneReason::FlowCapacityExceeded);
-                    debug_assert!(false, "reverse port-forwarding flow insert failed: {e:?}");
-                    return;
+                // Distinct public tuples can translate to the same backend tuple. Claim the
+                // reverse key without displacing its live owner. The related forward flow
+                // permits admission even when the table is at capacity.
+                match self.flow_table.insert_if_absent(&rev_flow) {
+                    Ok(Insertion::Installed) => {}
+                    Ok(Insertion::Occupied(_)) => {
+                        debug!(
+                            "Reverse port-forwarding tuple {rev_key} already serves a live flow"
+                        );
+                        fw_flow.invalidate_pair();
+                        packet.done(DoneReason::NatNotPortForwarded);
+                        return;
+                    }
+                    Err(e) => {
+                        fw_flow.invalidate();
+                        warn!("Failed to insert flow (reverse) in the flow table: {e}");
+                        packet.done(DoneReason::FlowCapacityExceeded);
+                        debug_assert!(false, "reverse port-forwarding flow insert failed: {e:?}");
+                        return;
+                    }
                 }
                 debug!("Inserted forward and reverse port-forwarding flow entries");
                 PortFwFlow::Installed(fw_flow)

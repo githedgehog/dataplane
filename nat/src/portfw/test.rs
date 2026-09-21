@@ -12,7 +12,7 @@ mod nf_test {
     use net::buffer::TestBuffer;
     use net::flows::FlowStatus;
     use net::flows::flow_info_item::ExtractRef;
-    use net::headers::TryTcpMut;
+    use net::headers::{TryHeaders, TryTcpMut};
     use net::ip::NextHeader;
     use net::packet::test_utils::{build_test_tcp_ipv4_packet, build_test_udp_ipv4_packet};
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -268,6 +268,74 @@ mod nf_test {
         assert!(
             flow_info.expires_at() >= before_repeated + PortFwEntry::DEFAULT_ESTABLISHED_TOUT_UDP
         );
+    }
+
+    #[tokio::test]
+    async fn test_nf_port_forwarding_reverse_tuple_collision() {
+        for tcp in [false, true] {
+            let mut ruleset = build_test_port_forwarding_ruleset();
+            // Both public addresses forward to the same backend address and port.
+            let aliases: Vec<_> = ruleset
+                .iter()
+                .cloned()
+                .map(|mut rule| {
+                    rule.ext_prefix = "70.71.72.74/32".parse().unwrap();
+                    rule
+                })
+                .collect();
+            ruleset.extend(aliases);
+            let (flow_table, mut pipeline, _writer) = setup_pipeline(&ruleset);
+
+            let mut first = if tcp {
+                let mut packet = tcp_packet_to_port_forward();
+                packet.try_tcp_mut().unwrap().set_syn(true);
+                packet
+            } else {
+                udp_packet_to_port_forward()
+            };
+            first.meta_mut().set_keep(true);
+            let first_key = net::FlowKey::try_from(&first).unwrap();
+            let mut conflicting = first.clone();
+            conflicting
+                .set_ip_destination("70.71.72.74".parse().unwrap())
+                .unwrap();
+            let conflicting_key = net::FlowKey::try_from(&conflicting).unwrap();
+            let original_headers = conflicting.headers().clone();
+
+            let forwarded = process_packet(&mut pipeline, first);
+            assert_eq!(forwarded.get_done(), None);
+            let forward = flow_table.lookup(&first_key).unwrap();
+            let reverse = forward.related.as_ref().unwrap().upgrade().unwrap();
+            assert_eq!(flow_table.active_len(), Some(2));
+
+            let rejected = process_packet(&mut pipeline, conflicting);
+            assert_eq!(rejected.get_done(), Some(DoneReason::NatNotPortForwarded));
+            assert_eq!(rejected.headers(), &original_headers);
+            assert!(
+                flow_table
+                    .lookup(&conflicting_key)
+                    .is_none_or(|flow| !flow.is_active()),
+                "the rejected connection left an active forward flow"
+            );
+            assert!(forward.is_active());
+            assert!(reverse.is_active());
+            assert!(Arc::ptr_eq(
+                &flow_table.lookup(reverse.flowkey()).unwrap(),
+                &reverse,
+            ));
+            assert_eq!(flow_table.active_len(), Some(2));
+
+            let reply = process_packet(&mut pipeline, build_reply(&forwarded));
+            assert_eq!(reply.get_done(), None);
+            assert_eq!(reply.ip_source().unwrap().to_string(), "70.71.72.73");
+            assert_eq!(reply.transport_src_port(), first_key.dst_port());
+            assert_eq!(reply.ip_destination(), Some(first_key.addrs().src()));
+            assert_eq!(reply.transport_dst_port(), first_key.src_port());
+            assert!(Arc::ptr_eq(
+                reply.meta().flow_info.as_ref().unwrap(),
+                &reverse
+            ));
+        }
     }
 
     #[cfg_attr(not(emulated), traced_test)]
