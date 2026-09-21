@@ -9,15 +9,10 @@ use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicU8, Ordering};
 use std::fmt::Display;
 
-/// How much longer a flow lives when the test is emulated.
+/// Timeout multiplier for flows in emulated tests.
 ///
-/// A qemu-user run interprets instructions a couple of orders of magnitude slower than native, so
-/// the wall-clock gap between two packet-driven refreshes of the same flow is correspondingly
-/// larger and a lifetime tuned for native expires mid-conversation. Masquerade has scaled its
-/// timeouts this way since they were written; port forwarding did not, and the two diverging is
-/// what let `time_passing_does_not_disturb_a_flow_inside_its_lifetime` draw a 30s wait -- bounded
-/// by the *masquerade* lifetime, 500s emulated -- against a port-forwarded flow still living the
-/// unscaled 10s. It lives here so the next timeout added to either flavour cannot miss it.
+/// Emulation increases the wall-clock time between packet refreshes. Masquerade and port
+/// forwarding share this multiplier so both scale their lifetimes under emulation.
 pub(crate) const TIMEOUT_SCALE: u64 = cfg_select! {
     emulated => 100,
     _ => 1,

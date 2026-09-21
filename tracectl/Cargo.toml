@@ -7,9 +7,7 @@ version.workspace = true
 
 [features]
 evidence = []
-# `evidence.rs` gates its tests on these, and a feature nothing declares is a
-# gate that never closes: without them the tests ran under shuttle and loom
-# anyway, and `-D unexpected-cfgs` in the nix build is what says so.
+# Forward model-checker features so evidence tests and capture use the correct backend.
 loom = ["concurrency/loom"]
 shuttle = ["concurrency/shuttle"]
 

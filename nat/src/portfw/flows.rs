@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Carrying live port-forwarded flows across a configuration change.
+//! Migrate live port-forwarded flows across configuration changes.
 
 use concurrency::sync::{Arc, Weak};
 use config::GenId;
@@ -17,20 +17,12 @@ use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable};
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
-/// Carry every live port-forwarded flow onto `genid`, dropping the ones the new table no longer
-/// opens.
+/// Revalidate live port-forwarded flows against `table` and advance them to `genid`. Invalidate
+/// pairs whose published tuple, backend, or VPC no longer matches.
 ///
-/// `PortForwarder` already revalidates a flow lazily, when the rule its state points at has been
-/// dropped -- but it does that in the port-forwarding stage, and the stages that care run before
-/// it. `AclFilter` refuses to honour a flow whose generation is older than the pipeline's, so a
-/// flow-scoped `Allow` -- the rule that says "this reply is permitted because something opened
-/// the flow" -- stopped applying the moment *any* configuration was enacted, however unrelated.
-/// Masquerade has owned this migration since it was written; port forwarding never did.
-///
-/// Revalidating every flow rather than taking a shortcut when the table is unchanged is the one
-/// difference from `check_masquerading_flows`, which splits the two cases because carrying a
-/// masquerade flow means re-reserving its address and port. Carrying a port-forwarded one is a
-/// lookup, so one path serves both and there is no "did it change" comparison to get wrong.
+/// Run before publishing the generation: the ACL stage checks it before port forwarding can
+/// revalidate a stale flow. Each pair needs only a rule lookup, so this also handles unchanged
+/// tables.
 pub(crate) fn migrate_port_forwarded_flows<'a>(
     flow_table: &'a FlowTable,
     table: &PortFwTable,
@@ -41,20 +33,15 @@ pub(crate) fn migrate_port_forwarded_flows<'a>(
     let guard = flow_table.for_each_flow_filtered(
         |_, flow_info| flow_info.is_active(),
         |flow_key, flow_info| {
-            // Visit the pair by its reverse half. Both halves hold a `PortFwState`, but only the
-            // reverse one holds the tuple the *rule* matched: `setup_reverse_flow` stores the
-            // published address and port there, while the forward half stores the backend. The
-            // forward half's key is no substitute -- with static NAT in play it is the tuple
-            // from before that translation, not the one port forwarding matched on. Acting on
-            // either half moves both, which is why `check_masquerading_flow` likewise skips the
-            // half that cannot answer for itself.
+            // Inspect the reverse half: its PortFwState stores the published tuple the rule
+            // matched. The forward state stores the backend, and its key may precede static NAT
+            // translation. Migrating either half updates the pair.
             let Some(state) = reverse_state(flow_info) else {
                 return;
             };
             if let Some(entry) = rule_for(&state, flow_key, flow_info, table) {
-                // The flow's `Weak` still names the entry from the configuration just replaced.
-                // Leaving it there sends the next packet of a flow we have just proved good
-                // down the stale-rule path.
+                // Replace the old rule reference to avoid stale-rule revalidation on the next
+                // packet.
                 reassign_port_fw_rule(flow_info, &entry);
                 if let Some(forward) = flow_info.related.as_ref().and_then(Weak::upgrade) {
                     reassign_port_fw_rule(&forward, &entry);
@@ -72,22 +59,18 @@ pub(crate) fn migrate_port_forwarded_flows<'a>(
     guard
 }
 
-/// This flow's port-forwarding state, if it is the reverse half of a pair.
-///
-/// Cloned out rather than borrowed: the caller goes on to take write guards on this very flow.
+/// Clone the reverse flow's port-forwarding state and release its read guard before migration
+/// takes write guards.
 fn reverse_state(flow_info: &FlowInfo) -> Option<PortFwState> {
     let locked = flow_info.locked.read();
     let state = locked.port_fw_state.extract_ref::<PortFwState>()?;
     (state.action() == NatAction::SrcNat).then(|| state.clone())
 }
 
-/// The rule in `table` that would open this flow again, if there is one.
+/// Find the new rule matching this flow's published tuple and backend.
 ///
-/// This is `PortForwarder::get_rule_from_pkt_rev_path` with the reverse flow's key standing in
-/// for the packet. A reply on this flow carries exactly those addresses, ports and
-/// discriminants, so asking the new table what it would do with one answers whether the flow may
-/// live on -- and answers it at enactment, before the pipeline generation moves, rather than
-/// when a reply arrives to find its permission already gone.
+/// Use the reverse flow's key as `PortForwarder::get_rule_from_pkt_rev_path` uses a reply
+/// packet, allowing migration before the new generation is published.
 fn rule_for(
     state: &PortFwState,
     reverse_key: &FlowKey,
@@ -100,9 +83,7 @@ fn rule_for(
     let key = PortFwKey::new(reverse_flow.get_dst_vpcd()?, reverse_key.proto());
     let entry = table.lookup_matching_rule(key, published_ip, published_port)?;
 
-    // A rule that matches the published tuple is not enough: it has to still send that tuple to
-    // the backend this flow is using, in the VPC this flow is using. Otherwise the flow's replies
-    // would be attributed to a service the new configuration points somewhere else.
+    // The matching rule must still target this flow's backend and VPC.
     let (target_ip, target_port) = entry.map_address_port(published_ip, published_port)?;
     (target_ip.inner() == reverse_key.src_ip()
         && Some(target_port) == reverse_key.src_port()
@@ -143,7 +124,7 @@ mod test {
         ]
     }
 
-    /// Drive one request in, so the fabric holds a live port-forwarded pair.
+    /// Send one request to create a live port-forwarded pair.
     fn open_a_flow(fabric: &Fabric, published: &str) {
         let (mut lookup, mut pfw) = fabric.stages();
         let arrival = Arrival::inbound();
@@ -161,7 +142,7 @@ mod test {
         assert_eq!(
             live(fabric).len(),
             2,
-            "the fixture did not open a port-forwarded pair, so nothing below is being tested"
+            "fixture failed to create a port-forwarded pair"
         );
     }
 
@@ -190,7 +171,7 @@ mod test {
             assert_eq!(
                 flow.genid(),
                 NEXT_GENID,
-                "a carried flow kept its old generation, so the acl will refuse its next packet"
+                "migrated flow kept its old generation and will fail the ACL check"
             );
         }
     }
@@ -201,15 +182,13 @@ mod test {
             .unwrap_or_else(|| unreachable!("a fixed expose builds"));
         open_a_flow(&fabric, "172.16.0.1");
 
-        // The same service, published somewhere else. Nothing now maps the tuple this flow was
-        // opened on, so carrying it would keep a withdrawn publication answering.
+        // Move the publication so no rule matches this flow's original public tuple.
         fabric.re_enact(&publishing("172.16.1.0/30"), NEXT_GENID);
 
         assert!(
             live(&fabric).is_empty(),
-            "a port-forwarded flow survived a configuration that no longer publishes its tuple. \
-             Re-stamping every flow is the cheap version of this migration and the wrong one -- \
-             `rule_for` has to actually find the flow's rule in the new table"
+            "flow survived removal of its published tuple; rule_for must match a rule in the \
+             new table"
         );
     }
 }

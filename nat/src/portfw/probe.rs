@@ -164,22 +164,15 @@ impl Fabric {
         )
     }
 
-    /// A second worker over someone else's flow table: this fabric's port-forwarding
-    /// snapshot, `flows`'s shared table.
+    /// Build a worker using this fabric's rules and the shared `flows` table.
     ///
-    /// Every worker builds its own pipeline and so holds its own left-right read guard on the
-    /// port-forwarding table, while the flow table is one `Arc` shared by all of them. A
-    /// configuration published between two workers' batches therefore leaves them translating
-    /// one public tuple to two different backends, racing to install the same forward key --
-    /// the key is the *pre*-translation tuple, so it collides however far apart the targets are.
+    /// This models workers with different rule snapshots racing to create the same flow.
     pub(crate) fn worker_over(&self, flows: &Arc<FlowTable>) -> PortForwarder {
         PortForwarder::new("port-forwarder-2", self.writer.reader(), flows.clone())
     }
 
-    /// Enact `exposes` over this fabric's live flow table, the way a configuration apply does:
-    /// install the new rules, then carry the flows they still open onto `genid` and invalidate
-    /// the rest. The rule *set* this fabric reports is deliberately left describing the fabric
-    /// as built, so a caller can still ask what the flows were opened by.
+    /// Install `exposes`, migrate matching flows to `genid`, and invalidate the rest. Keep the
+    /// fixture's original rule set for assertions about how the flows were opened.
     pub(crate) fn re_enact(&mut self, exposes: &[VpcExpose], genid: config::GenId) {
         let validated = overlay_with_exposes(exposes.to_vec())
             .ok()
@@ -198,25 +191,14 @@ impl Fabric {
         &self.flow_table
     }
 
-    /// Whether `addr:port` is a target of a rule that publishes `published`.
+    /// Whether `addr:port` belongs to the rule that publishes `published`.
     ///
-    /// The check this replaces asked only whether *some* rule names the address, which accepts a
-    /// packet delivered to a different tenant's backend so long as that backend is published
-    /// somewhere -- the containment failure actually worth finding. This binds the two ends
-    /// together: the rule that matched the packet's public tuple is the rule whose target it
-    /// has to land in.
+    /// Checking the matched rule prevents accepting another service's backend. The generator
+    /// currently gives rules disjoint address blocks; overlapping targets are needed to
+    /// exercise that distinction.
     ///
-    /// Measured 2026-09-07: over 8296 deliveries, half of them from two-rule overlays, the two
-    /// forms never disagree, and no case even *could* -- `port_forwarding_expose` gives each
-    /// expose its own address block, so a rule whose target covers the delivered address but
-    /// which did not publish the tuple does not exist. This closes the hole in the oracle; the
-    /// generator has to place two rules' targets in one block before it can bite.
-    ///
-    /// It deliberately checks membership of the matched rule's private side rather than
-    /// recomputing the exact address. The offset arithmetic lives in
-    /// `PortFwEntry::map_address_port`, and a test that reimplements it asserts the
-    /// reimplementation. `distinct_published_tuples_reach_distinct_targets` is what pins the
-    /// mapping itself down to one target per tuple.
+    /// Check range membership here. `distinct_published_tuples_reach_distinct_targets` checks
+    /// mapping uniqueness without repeating `PortFwEntry::map_address_port`'s arithmetic.
     pub(crate) fn is_target_of(&self, published: (IpAddr, u16), addr: IpAddr, port: u16) -> bool {
         self.rules.iter().any(|(public, private, _)| {
             public.covers(published.0, published.1) && private.covers(addr, port)

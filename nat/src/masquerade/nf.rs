@@ -94,9 +94,7 @@ pub struct Masquerade {
 }
 
 impl Masquerade {
-    // Slow emulated tests need more wall-clock time between packet-driven refreshes.
-    // Shared with port forwarding so the two cannot drift apart again; see
-    // `crate::common::TIMEOUT_SCALE`.
+    // Use the shared emulation timeout multiplier for masquerade and port forwarding.
     const TIMEOUT_SCALE: u64 = crate::common::TIMEOUT_SCALE;
 
     // Internal flow timeouts for masquerading
@@ -379,38 +377,19 @@ impl Masquerade {
             return Ok(MasqueradeFlow::Held(held));
         }
 
-        // The reverse insert is expected to succeed: capacity enforcement recognises that
-        // reverse has a related flow (forward) already in the table and admits it
-        // unconditionally.  Remove the forward entry on failure, of either kind, to avoid
-        // leaving a one-sided flow.
+        // Claim the reverse key without replacing a live flow. An allocator swap can issue the
+        // same public tuple twice: migration cannot see allocations held by workers that have
+        // not inserted their flows yet. Replacing the reverse entry would send the first flow's
+        // replies to the second flow's private address.
         //
-        // It is arbitrated rather than unconditional because an allocator swap can issue one
-        // public tuple twice. An allocation lives on the creating worker's stack between
-        // `allocate` and this insert, so `check_masquerading_flows` cannot see it: the
-        // replacement allocator is built with empty bitmaps, re-reserves only what the flow
-        // table already holds, and therefore believes a mid-create tuple is free to hand out
-        // again.
-        //
-        // Two flows so issued collide here and only here. Their forward keys differ -- they
-        // have different private sources -- and two flows sharing a public tuple towards
-        // *different* peers are still told apart correctly on the way back, which is ordinary
-        // endpoint-dependent mapping rather than a fault. It is precisely a collision on the
-        // reverse key that misdelivers, and an unconditional insert made that silent: it
-        // evicted the first flow's reverse half, returning the displaced entry as an ignored
-        // `Option`, after which the first flow's replies were translated to the second flow's
-        // private source, i.e. handed to another tenant.
-        //
-        // Refusing a live occupant costs the loser its first packet instead, which its retry
-        // re-allocates around. It does not make the tuple unique -- the allocator can still
-        // double-issue, and closing that needs the create path to be visible to the migration
-        // walk -- but it does mean a reply is never delivered to a conversation that did not
-        // originate it.
+        // Reject the collision and invalidate our forward entry so the rejected flow can retry.
+        // This protects existing mappings but does not prevent duplicate allocation. Capacity
+        // checks admit the reverse entry because its related forward entry is present.
         match self.flow_table.insert_if_absent(&reverse) {
             Ok(Insertion::Installed) => {}
             Ok(Insertion::Occupied(_)) => {
                 debug!(
-                    "Reverse tuple {} already serves a live flow; dropping rather than taking \
-                     over its replies",
+                    "Reverse tuple {} is occupied; dropping the new flow",
                     reverse.flowkey()
                 );
                 forward.invalidate();
@@ -669,8 +648,7 @@ impl From<&MasqueradeError> for DoneReason {
                 DoneReason::Malformed
             }
             MasqueradeError::CapacityExceeded => DoneReason::FlowCapacityExceeded,
-            // The allocator handed out a tuple that is already in service, so there is no
-            // usable resource for this flow -- not a filtering decision and not a bug here.
+            // The allocated tuple is occupied, so this flow has no usable resource.
             MasqueradeError::ReverseTupleInUse => DoneReason::NatOutOfResources,
             MasqueradeError::MissingDiscriminant => DoneReason::Unroutable,
             MasqueradeError::NoAllocator
@@ -807,19 +785,11 @@ mod race {
         packet
     }
 
-    /// A replacement allocator can hand out a public tuple that is already in service.
+    /// An allocator swap must not replace a live flow's reverse mapping.
     ///
-    /// `update_nat_allocator` builds the replacement with empty bitmaps and re-reserves into it
-    /// only what the flow table already holds. An allocation taken by a worker that has not
-    /// reached its insert yet is held nowhere but that worker's stack, so the replacement
-    /// believes the tuple is free. This drives that shape directly rather than racing for it:
-    /// one flow is installed from the running allocator, and a freshly built one then issues the
-    /// same tuple to a second conversation.
-    ///
-    /// The reverse key carries the public tuple and the remote endpoint, and no part of the
-    /// initiator, so the two flows collide there. That collision is the whole of the harm: an
-    /// unconditional insert evicted the first flow's reverse half and sent its replies to the
-    /// second flow's private source.
+    /// Model an allocation that migration missed: install a flow, then allocate from a fresh
+    /// allocator without reserving the first flow's tuple. The second flow receives the same
+    /// tuple. Its reverse-key collision must leave the first flow's replies intact.
     #[tokio::test]
     async fn a_reissued_public_tuple_does_not_take_over_the_replies_of_the_flow_holding_it() {
         let fabric = fabric();
@@ -843,9 +813,7 @@ mod race {
             .allocate(src_vpcd, dst_vpcd, first_key.src_ip(), first_key.proto())
             .unwrap_or_else(|e| unreachable!("the pool has room: {e}"));
 
-        // Built the way `update_nat_allocator` builds one: same configuration, next generation,
-        // and nothing re-reserved into it, because the flow it would have to see is not in the
-        // table yet.
+        // Build a replacement with no reservations to model a migration that missed this flow.
         let replacement = NatAllocator::new(running.config().clone(), running.genid() + 1);
         let reissued = replacement
             .allocate(src_vpcd, dst_vpcd, second_key.src_ip(), second_key.proto())
@@ -902,15 +870,14 @@ mod race {
                 first_key.src_ip(),
                 NatPort::new_port_checked(4000).unwrap_or_else(|_| unreachable!())
             ),
-            "a reply arriving on {tuple:?} would be handed to the conversation that did not \
-             open it"
+            "reply tuple {tuple:?} maps to a different conversation"
         );
 
         assert!(
             masq.flow_table
                 .lookup(&second_key)
                 .is_none_or(|forward| !forward.is_active()),
-            "the refused conversation left a live forward half behind, with no reverse to answer it"
+            "rejected flow left an active forward entry without a reverse entry"
         );
     }
 

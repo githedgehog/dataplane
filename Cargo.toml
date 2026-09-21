@@ -156,15 +156,8 @@ k8s-openapi = { version = "0.28.0", default-features = false, features = [] }
 kanal = { version = "0.1.1", default-features = false, features = [] }
 kube = { version = "4.2.0", default-features = false, features = [] }
 kube-core = { version = "4.2.0", default-features = false, features = [] }
-#left-right = { version = "0.11.7", default-features = false, features = [] }
-# `hh/shuttle`, which sits on upstream `main` and carries one commit: a shuttle arm in
-# `WriteHandle::wait`'s busy-wait. Without it the writer backs off to a bare `sched_yield`,
-# which shuttle does not instrument and so does not treat as a scheduling point, and the
-# reader whose epoch it waits on -- a green thread on the same OS thread -- can never run.
-# That livelocks `ci::shuttle` rather than failing it.
-#
-# It replaces `fredi/fix-writehandle-drop`, which is now dead weight: upstream `main` carries
-# that `WriteHandle::drop` fix character-for-character, and so does released 0.11.8.
+# The hh/shuttle fork makes WriteHandle::wait yield to Shuttle. Without it, the writer's
+# sched_yield loop blocks the scheduler thread, preventing the reader from releasing its epoch.
 left-right = { git = "https://github.com/githedgehog/left-right.git", branch = "hh/shuttle", default-features = false, features = [] }
 libc = { version = "0.2.189", default-features = false, features = [] }
 linkme = { version = "0.3.37", default-features = false, features = [] }

@@ -36,10 +36,7 @@ const REACH: &[(&str, Reach)] = &[
     ("Vpc.vni", Reach::Determined("`VpcHandle::vni`")),
     (
         "Vpc.interfaces",
-        Reach::Fixed(
-            "empty. No operation attaches an interface to a vpc, so no generated configuration \
-             has one. Reaching the interface-bearing paths at all needs a new operation.",
-        ),
+        Reach::Fixed("empty; the algebra has no operation that attaches VPC interfaces."),
     ),
     (
         "Vpc.peerings",
@@ -54,10 +51,8 @@ const REACH: &[(&str, Reach)] = &[
     (
         "VpcPeering.no_multipath",
         Reach::Fixed(
-            "false. Every `VpcPeering` constructor sets it false and no operation flips it; \
-             the only writer is the k8s converter, from `GatewayAgentPeerings::no_multi_path`. \
-             So no generated configuration disables multipath, and any property about \
-             stateless peering is currently unreachable from the algebra.",
+            "false; the algebra never disables multipath. Only the Kubernetes converter sets \
+             this from `GatewayAgentPeerings::no_multi_path`.",
         ),
     ),
     (
@@ -70,18 +65,11 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcPeering.gwgroup",
-        Reach::Fixed(
-            "the default group. `with_default_group` is the only constructor the algebra calls, \
-             so nothing generated ever splits vpcs across gateway groups.",
-        ),
+        Reach::Fixed("the default group; the algebra only calls `with_default_group`."),
     ),
     (
         "VpcPeering.acl",
-        Reach::Fixed(
-            "absent. Peering-scoped ACLs are not in the vocabulary, so no generated configuration \
-             carries one -- and an ACL is precisely a thing that changes a verdict, which is what \
-             every property here asserts over.",
-        ),
+        Reach::Fixed("absent; the algebra has no operation that adds peering ACLs."),
     ),
     (
         "VpcManifest.name",
@@ -93,7 +81,7 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExpose.default",
-        Reach::Fixed("false. `VpcExpose::empty` never sets it and no operation does either."),
+        Reach::Fixed("false; neither `VpcExpose::empty` nor any operation sets it."),
     ),
     (
         "VpcExpose.ips",
@@ -101,18 +89,11 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExpose.ips.ports",
-        Reach::Fixed(
-            "unset. The algebra exposes whole prefixes, so a port-restricted expose is \
-             unreachable, and with it every question about how ports partition an address.",
-        ),
+        Reach::Fixed("unset; the algebra exposes whole prefixes without port restrictions."),
     ),
     (
         "VpcExpose.nots",
-        Reach::Fixed(
-            "empty -- the survey renders it as no prefixes at all. An expose that carves holes out of its own range is unreachable, which is a \
-             real hole rather than a canonicalisation: an exclusion is what makes a prefix set \
-             non-contiguous, and non-contiguous is where a matcher goes wrong.",
-        ),
+        Reach::Fixed("empty; the algebra never excludes addresses from an expose."),
     ),
     ("VpcExpose.nat", Reach::Spans(&["absent", "present"])),
     (
@@ -129,22 +110,17 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposeNat.config",
-        Reach::Fixed(
-            "masquerade. `Flavour` has two members and only one of them makes a nat, so static \
-             nat and port forwarding are both unreachable -- which the design note already names \
-             as missing vocabulary.",
-        ),
+        Reach::Fixed("masquerade; the algebra has no static NAT or port-forwarding operations."),
     ),
     (
         "VpcExposeNat.proto",
-        Reach::Fixed("`Any`. No operation narrows an expose to tcp or udp."),
+        Reach::Fixed("`Any`; no operation restricts the protocol to TCP or UDP."),
     ),
     (
         "VpcExposeMasquerade.idle_timeout",
         Reach::Fixed(
-            "absent. `make_masquerade(None)` is the only call, so the timeout paths -- and every \
-             question about a flow ageing out under a configuration that set one -- are never \
-             entered.",
+            "absent; the algebra always calls `make_masquerade(None)`, leaving custom \
+             timeouts untested.",
         ),
     ),
     (
@@ -310,11 +286,9 @@ fn survey_nat(nat: &VpcExposeNat, seen: &mut Observed) {
 
 const CASES: usize = 512;
 
-/// Draw up to `CASES` configurations, survey each, and count how many were drawn.
+/// Survey up to `CASES` configurations and count the draws.
 ///
-/// The count is an out-parameter because `check!()` expands to a bare `return`,
-/// so this cannot have a return type of its own -- the same reason `census`
-/// exists.
+/// The count is an out-parameter because `check!()` can return early without a value.
 fn survey_drawn(seen: &RefCell<Observed>, drawn: &std::cell::Cell<usize>) {
     let seen = std::panic::AssertUnwindSafe(seen);
     let counter = std::panic::AssertUnwindSafe(drawn);
@@ -330,13 +304,10 @@ fn survey_drawn(seen: &RefCell<Observed>, drawn: &std::cell::Cell<usize>) {
         });
 }
 
-/// What the drawn configurations showed, and how many there were.
+/// Return the observed values and draw count.
 ///
-/// `with_iterations` is a ceiling, not a floor: bolero also stops at
-/// `BOLERO_RANDOM_TEST_TIME_MS`, and whichever comes first wins. Natively the 512
-/// take about 40ms and the budget never binds. Under miri the same draws run at
-/// under one a second, so a 30s budget buys about 27 -- and a claim about what 512
-/// draws reach, checked against 27, says nothing except how lucky the draw was.
+/// Bolero stops at either `CASES` or `BOLERO_RANDOM_TEST_TIME_MS`. Emulated runs may hit the
+/// time limit before collecting enough samples for coverage assertions.
 fn census() -> (Observed, usize) {
     let seen = RefCell::new(Observed::default());
     let drawn = std::cell::Cell::new(0usize);
@@ -344,22 +315,17 @@ fn census() -> (Observed, usize) {
     (seen.into_inner(), drawn.get())
 }
 
-/// Whether the survey saw enough configurations to be worth asserting against.
+/// Require the full sample count before asserting coverage.
 ///
-/// A short run is a different experiment, and one whose failures are all of the
-/// same shape: the rarer corners -- a `deny` default, a third ACL rule -- are
-/// simply not reached, and the assertion reports that as the generator having
-/// stopped varying. So say what happened and stand down. The draws still ran,
-/// which is the whole point of running this under an emulator; it is only the
-/// *completeness* claim that needs all of them.
+/// Short runs may miss rare values without indicating a generator regression. They still
+/// exercise the generator and survey.
 fn enough_draws(drawn: usize) -> bool {
     if drawn >= CASES {
         return true;
     }
     eprintln!(
-        "not asserted: bolero stopped after {drawn} of {CASES} draws, so what the table records \
-         as reachable had no chance to be reached. Raise BOLERO_RANDOM_TEST_TIME_MS if this is \
-         meant to be a real run."
+        "coverage assertions skipped: Bolero completed {drawn}/{CASES} draws. Increase \
+         BOLERO_RANDOM_TEST_TIME_MS to collect the full sample."
     );
     false
 }
@@ -373,10 +339,8 @@ fn every_surveyed_field_is_classified() {
     let unclassified: Vec<&&str> = surveyed.difference(&classified).collect();
     assert!(
         unclassified.is_empty(),
-        "the survey records fields with no verdict in `REACH`: {unclassified:?}. A field added to \
-         the overlay schema is not reachable by the algebra until an operation produces it, so say \
-         which it is -- `Fixed` is a perfectly good answer and is what most of the table already \
-         says."
+        "surveyed fields lack a REACH classification: {unclassified:?}; classify each as \
+         Spans, Determined, Derived, or Fixed"
     );
 
     let unreachable_by_construction: BTreeSet<&str> = REACH
@@ -390,14 +354,12 @@ fn every_surveyed_field_is_classified() {
         .difference(&surveyed)
         .filter(|field| !unreachable_by_construction.contains(**field))
         .collect();
-    // A field the survey never records may simply not have come up in a short
-    // run. The half above -- a field with no verdict at all -- is a schema change
-    // and does not depend on how many were drawn, so it always asserts.
+    // Short runs may miss classified fields. The unclassified-field check above is independent
+    // of sample size.
     assert!(
         missing.is_empty() || !enough_draws(drawn),
-        "`REACH` gives a verdict for fields the survey never records: {missing:?}. Either the \
-         field was removed from the schema, or the survey stopped visiting it -- and a survey that \
-         has stopped visiting a field is a ratchet that has come loose."
+        "classified fields were not surveyed: {missing:?}; check for removed fields or \
+         incomplete survey code"
     );
 }
 
@@ -416,22 +378,19 @@ fn the_algebra_reaches_what_it_is_recorded_to_reach() {
         match reach {
             Reach::Spans(expected) => assert_eq!(
                 rendered, *expected,
-                "`{field}` is recorded as spanning {expected:?} and {drawn} drawn configurations \
-                 show {rendered:?}"
+                "`{field}` expected {expected:?}; observed {rendered:?} in {drawn} draws"
             ),
             Reach::Determined(by) => assert!(
                 values.len() > 1,
-                "`{field}` is recorded as determined by {by}, which varies, and yet {drawn} drawn \
-                 configurations all show {rendered:?}. Either it is fixed after all, or the \
-                 generator has stopped varying what determines it"
+                "`{field}` should vary with {by}, but {drawn} draws produced only \
+                 {rendered:?}; check the generator and classification"
             ),
             Reach::Derived(_) => {}
             Reach::Fixed(why) => assert_eq!(
                 values.len(),
                 1,
-                "`{field}` is recorded as fixed -- {why} -- and yet {drawn} drawn configurations \
-                 show {rendered:?}. If the vocabulary grew, say so here: this table is what tells \
-                 a reader of a green run which configurations it did not cover"
+                "`{field}` is classified as fixed ({why}), but {drawn} draws produced \
+                 {rendered:?}; update the classification if the algebra changed"
             ),
         }
     }
@@ -443,8 +402,7 @@ fn report_what_the_algebra_reaches() {
         REACH.iter().filter(|(_, reach)| wanted(reach)).count()
     };
     eprintln!(
-        "of {} degrees of freedom in the overlay schema, the algebra spans {}, determines {}, \
-         leaves {} to be derived, and fixes {}:",
+        "overlay fields: {} total, {} spanning, {} determined, {} derived, {} fixed:",
         REACH.len(),
         counted(|reach| matches!(reach, Reach::Spans(_))),
         counted(|reach| matches!(reach, Reach::Determined(_))),

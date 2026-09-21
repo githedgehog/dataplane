@@ -189,12 +189,9 @@ pub(crate) fn setup_reverse_flow(
     debug!("Set up REVERSE flow for port-forwarding;\nkey={reverse_key}\ninfo={reverse_flow}");
 }
 
-/// Point a flow's port-forwarding state at `entry`, so that subsequent packets are
-/// fast-forwarded instead of taking the stale-rule path.
+/// Update a flow's port-forwarding rule for subsequent packets.
 ///
-/// Shared by the two callers that establish which rule a live flow belongs to: the datapath,
-/// when a packet arrives on a flow whose rule has been dropped, and the migration in
-/// [`crate::portfw::flows`], which answers the same question for every flow at enactment.
+/// Used by configuration migration and by packets that trigger stale-rule revalidation.
 pub(crate) fn reassign_port_fw_rule(flow_info: &FlowInfo, entry: &Arc<PortFwEntry>) {
     let mut flow_info_locked = flow_info.locked.write();
     if let Some(state) = flow_info_locked.port_fw_state.extract_mut::<PortFwState>() {

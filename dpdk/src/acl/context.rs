@@ -53,40 +53,20 @@ use super::error::{
 use super::field::FieldDef;
 use super::rule::Rule;
 
-/// Process-wide guard for any operation that touches DPDK's global ACL
-/// registry: [`AclContext::new`] (find_existing + create), [`Drop`] for
-/// [`AclContext`] (free), and [`dump_all_contexts`] (list dump).
+/// Serialize creation, deletion, and inspection of DPDK's global ACL registry.
 ///
-/// DPDK's `rte_acl_create` does not itself fail on duplicate names: it
-/// returns the **existing** context pointer for a matching name.  Without
-/// serialization, two threads can both observe
-/// `rte_acl_find_existing -> NULL` for the same name, both call
-/// `rte_acl_create`, and both receive the same pointer -- producing two
-/// [`AclContext`] wrappers that race to free the same DPDK handle on drop.
-/// Holding this mutex across the check-and-create sequence closes the TOCTOU.
-/// Drop and list-dump take the same lock so the "registry-touching
-/// operations are serialized" invariant holds at the wrapper seam.
+/// `rte_acl_create` returns an existing context for a duplicate name. Locking the
+/// check-and-create sequence prevents two wrappers from owning and freeing the same handle.
 ///
-/// Why [`OnceLock`] rather than a `static` initializer: under the
-/// `loom`/`shuttle` model-checker backends, `concurrency::sync::Mutex::new`
-/// is not `const fn` (each instance registers with the scheduler), so a
-/// `static M: Mutex<()> = Mutex::new(())` would fail to typecheck on those
-/// backends. `OnceLock` defers construction to first use, which is inside a
-/// model-checked execution, so the same declaration compiles and behaves under
-/// all three backends.
+/// Under Loom and Shuttle, use a process-global mutex because the registry survives model
+/// executions. A modeled mutex would remain tied to the execution that created it. [`OnceLock`]
+/// initializes the selected mutex on first use.
 ///
 /// # Tracing reentrancy
 ///
-/// The lock is **not** reentrant.  Anything that runs while a thread holds
-/// this lock -- including `tracing` layers invoked by the [`debug!`] /
-/// [`error!`] / `#[tracing::instrument]` macros sprinkled through the
-/// surrounding methods -- must not call back into any ACL wrapper API that
-/// would re-acquire it: [`AclContext::new`], [`dump_all_contexts`], or
-/// dropping any [`AclContext`].  Doing so deadlocks the calling thread on
-/// its own previously-acquired guard.  The default `tracing-subscriber`
-/// configuration never touches ACL, but custom layers (e.g. one that
-/// resolves the context name from a registry lookup for log enrichment)
-/// could trip this if added later.
+/// Tracing callbacks invoked while this lock is held must not call [`AclContext::new`],
+/// [`dump_all_contexts`], or drop an [`AclContext`]. These operations acquire the same
+/// non-reentrant lock and would deadlock.
 static ACL_CREATE_LOCK: OnceLock<RegistryMutex> = OnceLock::new();
 
 concurrency::with_std! {

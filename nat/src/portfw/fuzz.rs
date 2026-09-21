@@ -198,9 +198,8 @@ fn a_forwarded_packet_lands_inside_the_published_target() {
 
                     assert!(
                         fabric.is_target_of(published, addr, port),
-                        "{published:?} was forwarded to {addr}:{port}, which is not a target of \
-                         the rule that publishes {published:?}; the packet reached a backend \
-                         belonging to some other published service"
+                        "{published:?} was forwarded to {addr}:{port}, outside the matched \
+                         rule's backend range"
                     );
                     tally.reached.fetch_add(1, Ordering::Relaxed);
                 }

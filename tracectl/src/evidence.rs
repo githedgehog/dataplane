@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! Bounded per-thread trace capture for failure diagnostics.
+//! Capture is disabled under Loom and Shuttle to avoid scoped-dispatcher conflicts.
+
 #![allow(clippy::disallowed_types)]
 
 use std::collections::VecDeque;
@@ -338,15 +341,12 @@ impl Evidence {
         };
         if log.lines.is_empty() {
             let why = if RECORDS {
-                "Either the code under test emits no spans or events, or the level filter is above \
-                 them, or the targets were excluded -- see MACHINERY. Note that \
-                 `release_max_level_debug` compiles `trace!` out of release builds altogether, and \
-                 that a recording only sees the thread it was created on."
+                "Capture records only its creator thread. Check emitted events, level filters, and \
+                 excluded targets (MACHINERY). Release builds compile out trace! calls."
             } else {
-                "This is a model-checker build, where a recording deliberately installs nothing: \
-                 loom and shuttle multiplex their tasks onto one OS thread and would corrupt the \
-                 thread-local the scoped dispatcher lives in. Use the replayable schedule the \
-                 backend printed instead. See this module's docs."
+                "Capture is disabled under Loom and Shuttle to avoid scoped-dispatcher \
+                 conflicts during task switching. Replay the schedule printed by the model \
+                 checker."
             };
             eprintln!(
                 "==== trace evidence ({}): nothing captured ====\n{why}",
@@ -365,7 +365,7 @@ impl Evidence {
     }
 }
 
-#[must_use = "the guard must outlive the assertions it is meant to explain"]
+#[must_use = "keep the guard alive through the assertions to dump evidence on panic"]
 pub fn dump_on_panic(evidence: Vec<Evidence>) -> impl Sized {
     struct OnPanic(Vec<Evidence>);
     impl Drop for OnPanic {
@@ -526,7 +526,7 @@ mod tests {
         );
         assert!(
             rendered.contains("more bytes>"),
-            "the clip is not marked, so a reader cannot tell: {rendered}"
+            "missing truncation marker: {rendered}"
         );
     }
 }
