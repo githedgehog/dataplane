@@ -34,16 +34,23 @@ pub struct IfDataDot1q {
 /// Trait that interfaces having a mac address should implement.
 trait HasMac {
     fn get_mac(&self) -> &SourceMac;
+    fn set_mac(&mut self, mac: SourceMac);
 }
 
 impl HasMac for IfDataEthernet {
     fn get_mac(&self) -> &SourceMac {
         &self.mac
     }
+    fn set_mac(&mut self, mac: SourceMac) {
+        self.mac = mac;
+    }
 }
 impl HasMac for IfDataDot1q {
     fn get_mac(&self) -> &SourceMac {
         &self.mac
+    }
+    fn set_mac(&mut self, mac: SourceMac) {
+        self.mac = mac;
     }
 }
 
@@ -54,6 +61,23 @@ pub enum IfType {
     Ethernet(IfDataEthernet),
     Dot1q(IfDataDot1q),
     Loopback,
+}
+impl IfType {
+    #[must_use]
+    pub fn get_mac(&self) -> Option<SourceMac> {
+        match self {
+            IfType::Ethernet(inner) => Some(*inner.get_mac()),
+            IfType::Dot1q(inner) => Some(*inner.get_mac()),
+            _ => None,
+        }
+    }
+    pub fn set_mac(&mut self, mac: SourceMac) {
+        match self {
+            IfType::Ethernet(inner) => inner.set_mac(mac),
+            IfType::Dot1q(inner) => inner.set_mac(mac),
+            _ => {}
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -231,10 +255,6 @@ impl Interface {
     /// Get the MAC address of an [`Interface`], if it has one
     #[must_use]
     pub fn get_mac(&self) -> Option<SourceMac> {
-        match &self.iftype {
-            IfType::Ethernet(inner) => Some(*inner.get_mac()),
-            IfType::Dot1q(inner) => Some(*inner.get_mac()),
-            _ => None,
-        }
+        self.iftype.get_mac()
     }
 }
