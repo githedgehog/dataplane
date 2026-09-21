@@ -2230,7 +2230,7 @@ mod acl {
              ACL reverse lookup"
         );
 
-        fabric.fleet.enact(&overlay, Enact::Everything);
+        fabric.fleet().enact(&overlay, Enact::Everything);
         assert_eq!(fabric.fleet.blueprint.pipeline.genid(), FIRST_GENID + 1);
         assert_eq!(
             fabric.fleet.blueprint.pipeline.staging_genid(),
@@ -2265,7 +2265,7 @@ mod acl {
             Enact::StaticNat,
             Enact::OpenGeneration,
         ] {
-            fabric.fleet.enact(&overlay, step);
+            fabric.fleet().enact(&overlay, step);
         }
         assert_eq!(fabric.fleet.blueprint.pipeline.genid(), FIRST_GENID);
         assert_eq!(
@@ -2305,7 +2305,7 @@ mod acl {
             .expect("a forwarded request has a destination port");
 
         // Publish the new generation.
-        fabric.fleet.enact(&overlay, Enact::PublishGeneration);
+        fabric.fleet().enact(&overlay, Enact::PublishGeneration);
         assert_eq!(fabric.fleet.blueprint.pipeline.genid(), FIRST_GENID + 1);
 
         let mut answer = super::round_trip::udp(inside, outside, inside_port.get(), 40000)
