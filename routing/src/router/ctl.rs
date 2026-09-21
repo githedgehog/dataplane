@@ -7,6 +7,7 @@ use concurrency::sync::Arc;
 use config::{GwConfigMeta, ValidatedGwConfig};
 use interface_manager::monitor::EthEvent;
 use mio::{Interest, Waker};
+use rtnetlink::packet_route::link::State;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::oneshot;
@@ -254,11 +255,19 @@ fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
     rio.cfg_history = history;
 }
 
+fn determine_oper_state(ev: &EthEvent) -> IfState {
+    if let Some(state) = ev.oper_state() {
+        IfState::from(state == State::Up)
+    } else {
+        // kernel oper state may not always be reported.
+        // We don't consider iflowerup flag nor carrier
+        IfState::from(ev.ifrunning())
+    }
+}
 pub(crate) fn handle_ifevent(ev: &EthEvent, iftw: &mut IfTableWriter) -> Result<(), RouterError> {
     let ifindex = ev.ifindex();
     let adm_state = IfState::from(ev.ifup());
-    let heuristic = ev.ifrunning() && ev.iflowerup() && ev.carrier().unwrap_or(true);
-    let oper_state = IfState::from(heuristic);
+    let oper_state = determine_oper_state(ev);
 
     if let Some(old_state) = iftw.set_iface_admin_state(ifindex, adm_state)? {
         revent!(RouterEvent::IfAdmChange(ev.clone(), old_state, adm_state));

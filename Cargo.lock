@@ -1935,6 +1935,7 @@ dependencies = [
  "ordermap",
  "procfs",
  "rand 0.10.3",
+ "rtnetlink",
  "serde",
  "similar-asserts",
  "strum",

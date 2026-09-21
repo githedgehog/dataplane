@@ -74,33 +74,11 @@ impl Display for RouterEvent {
             }
             RouterEvent::IfOperChange(ev, old, new) => {
                 let ifc = &ev.name();
-                let carrier = ev.carrier().map_or("--", |v| if v { "yes" } else { "no" });
-                let ifloup = if ev.iflowerup() { "yes" } else { "no" };
-                write!(
-                    f,
-                    "{ifc}: oper state changed {old} -> {new}, lowerup: {ifloup} carrier:{carrier}"
-                )?;
-                if let Some(carrierup) = ev.carrierup() {
-                    write!(f, " carrier-up:{carrierup}")?;
-                }
-                if let Some(carrierdown) = ev.carrierdown() {
-                    write!(f, " carrier-down:{carrierdown}")?;
-                }
+                write!(f, "{ifc}: oper state changed {old} -> {new}; event: {ev}")?;
             }
             RouterEvent::IfAdmChange(ev, old, new) => {
                 let ifc = &ev.name();
-                let carrier = ev.carrier().map_or("--", |v| if v { "yes" } else { "no" });
-                let ifloup = if ev.iflowerup() { "yes" } else { "no" };
-                write!(
-                    f,
-                    "{ifc}: admin state changed {old} -> {new}, lowerup: {ifloup} carrier:{carrier}"
-                )?;
-                if let Some(carrierup) = ev.carrierup() {
-                    write!(f, " carrier-up:{carrierup}")?;
-                }
-                if let Some(carrierdown) = ev.carrierdown() {
-                    write!(f, " carrier-down:{carrierdown}")?;
-                }
+                write!(f, "{ifc}: adm state changed {old} -> {new}; event: {ev}")?;
             }
             RouterEvent::IfNameChange(ev, old_name) => write!(
                 f,

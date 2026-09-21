@@ -12,7 +12,7 @@ use net::interface::{InterfaceIndex, InterfaceName};
 use rtnetlink::MulticastGroup;
 use rtnetlink::packet_core::{NetlinkMessage, NetlinkPayload};
 use rtnetlink::packet_route::RouteNetlinkMessage;
-use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags};
+use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags, State};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -28,6 +28,7 @@ pub struct EthEvent {
     ifup: bool,
     iflowerup: bool,
     ifrunning: bool,
+    oper_state: Option<State>,
     carrier: Option<bool>,
     carrierup: Option<u32>,   // stats
     carrierdown: Option<u32>, // stats
@@ -48,6 +49,7 @@ impl EthEvent {
             ifup,
             iflowerup,
             ifrunning,
+            oper_state: None,
             carrier: None,
             carrierup: None,
             carrierdown: None,
@@ -67,6 +69,11 @@ impl EthEvent {
     #[must_use]
     pub fn set_carrierdown(mut self, carrierdown: Option<u32>) -> Self {
         self.carrierdown = carrierdown;
+        self
+    }
+    #[must_use]
+    pub fn set_oper_state(mut self, oper_state: Option<State>) -> Self {
+        self.oper_state = oper_state;
         self
     }
     #[must_use]
@@ -96,6 +103,10 @@ impl EthEvent {
         self.ifrunning
     }
     #[must_use]
+    pub fn oper_state(&self) -> Option<State> {
+        self.oper_state
+    }
+    #[must_use]
     pub fn carrier(&self) -> Option<bool> {
         self.carrier
     }
@@ -118,7 +129,6 @@ impl std::fmt::Display for EthEvent {
         let ifloup = if self.iflowerup { "yes" } else { "no" };
         let ifrun = if self.ifrunning { "yes" } else { "no" };
         let carrier = self.carrier.map_or("--", |v| if v { "yes" } else { "no" });
-
         write!(
             f,
             "ifname:{} ({}) ifup:{ifup} iflowerup:{ifloup} ifrun:{ifrun} carrier:{carrier}",
@@ -129,6 +139,9 @@ impl std::fmt::Display for EthEvent {
         }
         if let Some(value) = self.carrierdown {
             write!(f, " carrierdown:{value}")?;
+        }
+        if let Some(opstate) = self.oper_state {
+            write!(f, " opstate:{opstate:?}")?;
         }
         Ok(())
     }
@@ -214,12 +227,15 @@ impl InterfaceMonitor {
             },
             _ => None,
         });
-
-        // `LinkAttribute::OperState` is not reliable for events, so we ignore it.
-        // N.B. the above attributes are required (watch the ?)
+        // `LinkAttribute::OperState` is not reliable for events. We include it but don't use it
+        let oper_state = link_msg.attributes.iter().find_map(|a| match a {
+            LinkAttribute::OperState(value) => Some(*value),
+            _ => None,
+        });
 
         // build event object
         let event = EthEvent::new(ifindex, ifname, ifup, iflowerup, ifrunning)
+            .set_oper_state(oper_state)
             .set_carrier(carrier)
             .set_carrierdown(carrierdown)
             .set_carrierup(carrierup)
