@@ -5,7 +5,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use concurrency::process_global::atomic::{AtomicU32, AtomicU64, Ordering};
-use concurrency::sync::LazyLock;
 use core::net::{Ipv4Addr, Ipv6Addr};
 use core::num::NonZero;
 use core::ops::Bound;
@@ -180,8 +179,7 @@ enum Verdict {
     Drop,
 }
 
-// Lazily initialized so this compiles under the loom backend, whose AtomicU32::new is not const
-static CTX_SEQ: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
+static CTX_SEQ: AtomicU32 = AtomicU32::new(0);
 
 fn unique_name(prefix: &str) -> String {
     format!("{prefix}_{}", CTX_SEQ.fetch_add(1, Ordering::Relaxed))

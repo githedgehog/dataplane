@@ -2961,27 +2961,20 @@ mod tests {
 mod opt_properties {
     use super::*;
     use crate::headers::{Headers, ShapedIcmpError, ThinHeaders};
-    use concurrency::process_global::atomic::AtomicUsize;
-    use concurrency::sync::OnceLock;
     use std::cell::Cell;
-
-    // `AtomicUsize::new` is not const under loom, so counters init on first use.
-    fn counter(slot: &OnceLock<AtomicUsize>) -> &AtomicUsize {
-        slot.get_or_init(|| AtomicUsize::new(0))
-    }
 
     macro_rules! opt_is_weaker {
         ($read:ident, $mutable:ident, [$($pre:ident),*], $strict:ident, $opt:ident) => {
             #[test]
             fn $read() {
                 use concurrency::process_global::atomic::{AtomicUsize, Ordering};
-                static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
-                static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
-                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                static STRICT: AtomicUsize = AtomicUsize::new(0);
+                static OPT_ONLY: AtomicUsize = AtomicUsize::new(0);
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
                 bolero::check!()
                     .with_generator(ThinHeaders)
                     .for_each(|h: &Headers| {
-                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        SEEN.fetch_add(1, Ordering::Relaxed);
                         let strict = h.pat()$(.$pre())*.$strict().done().is_some();
                         let opt = h.pat()$(.$pre())*.$opt().done().is_some();
                         assert!(
@@ -2993,29 +2986,29 @@ mod opt_properties {
                             h
                         );
                         if strict {
-                            counter(&STRICT).fetch_add(1, Ordering::Relaxed);
+                            STRICT.fetch_add(1, Ordering::Relaxed);
                         } else if opt {
-                            counter(&OPT_ONLY).fetch_add(1, Ordering::Relaxed);
+                            OPT_ONLY.fetch_add(1, Ordering::Relaxed);
                         }
                     });
                 both_outcomes_seen(
                     concat!(stringify!($opt), " (read)"),
-                    counter(&SEEN).load(Ordering::Relaxed),
-                    counter(&STRICT).load(Ordering::Relaxed),
-                    counter(&OPT_ONLY).load(Ordering::Relaxed),
+                    SEEN.load(Ordering::Relaxed),
+                    STRICT.load(Ordering::Relaxed),
+                    OPT_ONLY.load(Ordering::Relaxed),
                 );
             }
 
             #[test]
             fn $mutable() {
                 use concurrency::process_global::atomic::{AtomicUsize, Ordering};
-                static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
-                static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
-                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                static STRICT: AtomicUsize = AtomicUsize::new(0);
+                static OPT_ONLY: AtomicUsize = AtomicUsize::new(0);
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
                 bolero::check!()
                     .with_generator(ThinHeaders)
                     .for_each(|h: &Headers| {
-                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        SEEN.fetch_add(1, Ordering::Relaxed);
                         let mut owned = h.clone();
                         let strict = owned.pat_mut()$(.$pre())*.$strict().done().is_some();
                         let opt = owned.pat_mut()$(.$pre())*.$opt().done().is_some();
@@ -3028,16 +3021,16 @@ mod opt_properties {
                             h
                         );
                         if strict {
-                            counter(&STRICT).fetch_add(1, Ordering::Relaxed);
+                            STRICT.fetch_add(1, Ordering::Relaxed);
                         } else if opt {
-                            counter(&OPT_ONLY).fetch_add(1, Ordering::Relaxed);
+                            OPT_ONLY.fetch_add(1, Ordering::Relaxed);
                         }
                     });
                 both_outcomes_seen(
                     concat!(stringify!($opt), " (mut)"),
-                    counter(&SEEN).load(Ordering::Relaxed),
-                    counter(&STRICT).load(Ordering::Relaxed),
-                    counter(&OPT_ONLY).load(Ordering::Relaxed),
+                    SEEN.load(Ordering::Relaxed),
+                    STRICT.load(Ordering::Relaxed),
+                    OPT_ONLY.load(Ordering::Relaxed),
                 );
             }
         };
@@ -3134,13 +3127,13 @@ mod opt_properties {
             #[test]
             fn $read() {
                 use concurrency::process_global::atomic::{AtomicUsize, Ordering};
-                static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
-                static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
-                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                static STRICT: AtomicUsize = AtomicUsize::new(0);
+                static OPT_ONLY: AtomicUsize = AtomicUsize::new(0);
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
                 bolero::check!()
                     .with_generator(ShapedIcmpError)
                     .for_each(|h: &Headers| {
-                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        SEEN.fetch_add(1, Ordering::Relaxed);
                         let strict = h.pat()$(.$o())*.embedded()$(.$i())*.$strict()
                             .done().is_some();
                         let opt = h.pat()$(.$o())*.embedded()$(.$i())*.$opt()
@@ -3154,29 +3147,29 @@ mod opt_properties {
                             h
                         );
                         if strict {
-                            counter(&STRICT).fetch_add(1, Ordering::Relaxed);
+                            STRICT.fetch_add(1, Ordering::Relaxed);
                         } else if opt {
-                            counter(&OPT_ONLY).fetch_add(1, Ordering::Relaxed);
+                            OPT_ONLY.fetch_add(1, Ordering::Relaxed);
                         }
                     });
                 both_outcomes_seen(
                     concat!("quoted ", stringify!($opt), " (read)"),
-                    counter(&SEEN).load(Ordering::Relaxed),
-                    counter(&STRICT).load(Ordering::Relaxed),
-                    counter(&OPT_ONLY).load(Ordering::Relaxed),
+                    SEEN.load(Ordering::Relaxed),
+                    STRICT.load(Ordering::Relaxed),
+                    OPT_ONLY.load(Ordering::Relaxed),
                 );
             }
 
             #[test]
             fn $mutable() {
                 use concurrency::process_global::atomic::{AtomicUsize, Ordering};
-                static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
-                static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
-                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                static STRICT: AtomicUsize = AtomicUsize::new(0);
+                static OPT_ONLY: AtomicUsize = AtomicUsize::new(0);
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
                 bolero::check!()
                     .with_generator(ShapedIcmpError)
                     .for_each(|h: &Headers| {
-                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        SEEN.fetch_add(1, Ordering::Relaxed);
                         let mut owned = h.clone();
                         let strict = owned.pat_mut()$(.$o())*.embedded()$(.$i())*.$strict()
                             .done().is_some();
@@ -3191,16 +3184,16 @@ mod opt_properties {
                             h
                         );
                         if strict {
-                            counter(&STRICT).fetch_add(1, Ordering::Relaxed);
+                            STRICT.fetch_add(1, Ordering::Relaxed);
                         } else if opt {
-                            counter(&OPT_ONLY).fetch_add(1, Ordering::Relaxed);
+                            OPT_ONLY.fetch_add(1, Ordering::Relaxed);
                         }
                     });
                 both_outcomes_seen(
                     concat!("quoted ", stringify!($opt), " (mut)"),
-                    counter(&SEEN).load(Ordering::Relaxed),
-                    counter(&STRICT).load(Ordering::Relaxed),
-                    counter(&OPT_ONLY).load(Ordering::Relaxed),
+                    SEEN.load(Ordering::Relaxed),
+                    STRICT.load(Ordering::Relaxed),
+                    OPT_ONLY.load(Ordering::Relaxed),
                 );
             }
         };
@@ -3502,7 +3495,7 @@ mod opt_properties {
     #[test]
     fn the_embedded_combinators_track_the_inner_match_only() {
         use concurrency::process_global::atomic::{AtomicUsize, Ordering};
-        static DIVERGED: OnceLock<AtomicUsize> = OnceLock::new();
+        static DIVERGED: AtomicUsize = AtomicUsize::new(0);
         bolero::check!()
             .with_generator(ShapedIcmpError)
             .for_each(|h: &Headers| {
@@ -3519,7 +3512,7 @@ mod opt_properties {
                 if whole == inner {
                     return;
                 }
-                counter(&DIVERGED).fetch_add(1, Ordering::Relaxed);
+                DIVERGED.fetch_add(1, Ordering::Relaxed);
                 assert!(
                     inner && !whole,
                     "the whole chain matched while the inner one did not, which `done` forbids: \
@@ -3541,7 +3534,7 @@ mod opt_properties {
                      documented here has been fixed, so this test should be deleted: {h:?}"
                 );
             });
-        let diverged = counter(&DIVERGED).load(Ordering::Relaxed);
+        let diverged = DIVERGED.load(Ordering::Relaxed);
         println!("outer failed while the quote matched: {diverged} packets");
         assert!(
             diverged > 0,

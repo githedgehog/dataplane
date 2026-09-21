@@ -2647,13 +2647,6 @@ mod view_mut_properties {
     use crate::eth::Eth;
     use crate::headers::view::{Look, LookMut};
     use crate::headers::{Headers, Net, ShapedHeaders, SometimesHeadless, Transport};
-    use concurrency::process_global::atomic::AtomicUsize;
-    use concurrency::sync::OnceLock;
-
-    // `AtomicUsize::new` is not const under loom, so counters init on first use.
-    fn counter(slot: &OnceLock<AtomicUsize>) -> &AtomicUsize {
-        slot.get_or_init(|| AtomicUsize::new(0))
-    }
 
     macro_rules! layer_ty {
         (eth) => {
@@ -2751,15 +2744,15 @@ mod view_mut_properties {
             fn $read() {
                 type Shape = shape_of!($($layer),+);
                 use concurrency::process_global::atomic::{AtomicUsize, Ordering};
-                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
-                static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
                 bolero::check!()
                     .with_generator($gen)
                     .for_each(|h: &Headers| {
-                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        SEEN.fetch_add(1, Ordering::Relaxed);
                         let licensed = h.as_view::<Shape>().is_some();
                         if licensed {
-                            counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                            HIT.fetch_add(1, Ordering::Relaxed);
                         }
                         let chain = h.pat()$(.$layer())+.done();
                         assert_eq!(
@@ -2785,8 +2778,8 @@ mod view_mut_properties {
                     });
                 agreement_is_not_vacuous(
                     stringify!(($($layer),+)),
-                    counter(&SEEN).load(Ordering::Relaxed),
-                    counter(&HIT).load(Ordering::Relaxed),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
                 );
             }
 
@@ -2794,16 +2787,16 @@ mod view_mut_properties {
             fn $mutable() {
                 type Shape = shape_of!($($layer),+);
                 use concurrency::process_global::atomic::{AtomicUsize, Ordering};
-                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
-                static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
                 bolero::check!()
                     .with_generator($gen)
                     .for_each(|h: &Headers| {
                         let mut owned = h.clone();
-                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        SEEN.fetch_add(1, Ordering::Relaxed);
                         let licensed = owned.as_view_mut::<Shape>().is_some();
                         if licensed {
-                            counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                            HIT.fetch_add(1, Ordering::Relaxed);
                         }
                         let chain = owned.pat_mut()$(.$layer())+.done().map(|t| t.addrs());
                         assert_eq!(
@@ -2829,8 +2822,8 @@ mod view_mut_properties {
                     });
                 agreement_is_not_vacuous(
                     stringify!(($($layer),+)),
-                    counter(&SEEN).load(Ordering::Relaxed),
-                    counter(&HIT).load(Ordering::Relaxed),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
                 );
             }
         };

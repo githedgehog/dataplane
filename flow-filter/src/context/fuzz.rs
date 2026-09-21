@@ -15,7 +15,6 @@ use super::tables::{Backend, FlowFilterContext, LookupInput, LookupResult, Sourc
 use crate::NatRequirement;
 use crate::fuzz_gen::{OverlaySpec, Probe, ProbeSpec, bogus_vpcd};
 use concurrency::process_global::atomic::{AtomicU64, Ordering};
-use concurrency::sync::LazyLock;
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc};
 use std::num::NonZero;
@@ -234,12 +233,10 @@ fn lookup_input(probe: &Probe) -> LookupInput {
 #[test]
 #[dpdk::with_eal]
 fn dpdk_backend_matches_reference_on_generated_overlays() {
-    // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not
-    // const (each instance registers with the loom executor).
-    static ROUTES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-    static REVALIDATED_ROUTES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-    static SOURCE_MISSES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-    static DESTINATION_MISSES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static ROUTES: AtomicU64 = AtomicU64::new(0);
+    static REVALIDATED_ROUTES: AtomicU64 = AtomicU64::new(0);
+    static SOURCE_MISSES: AtomicU64 = AtomicU64::new(0);
+    static DESTINATION_MISSES: AtomicU64 = AtomicU64::new(0);
 
     bolero::check!()
         .with_type::<(OverlaySpec, [ProbeSpec; 40])>()
@@ -409,8 +406,7 @@ fn reference_lookup_matches_config_oracle() {
 fn exclusions_reach_the_config_as_multi_length_prefix_fans() {
     use std::collections::BTreeSet;
 
-    // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const.
-    static WIDEST_SPREAD: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static WIDEST_SPREAD: AtomicU64 = AtomicU64::new(0);
 
     bolero::check!()
         .with_type::<OverlaySpec>()
