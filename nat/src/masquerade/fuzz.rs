@@ -267,6 +267,7 @@ fn out_unchanged(out: &[Packet<TestBuffer>], before: (IpAddr, u16)) -> bool {
 //# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
 //# behavior of "Paired".
 #[test]
+#[cfg_attr(miri, ignore = "full-flow fuzz probe is too slow under Miri")]
 fn an_internal_endpoint_keeps_one_public_address() {
     let tally = Tally::default();
 
