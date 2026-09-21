@@ -1553,16 +1553,14 @@ fn nf_metadata_matches_config_oracle() {
     use crate::context::fuzz::oracle_lookup;
     use crate::fuzz_gen::{OverlaySpec, ProbeSpec};
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
-    use concurrency::sync::LazyLock;
 
-    // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const.
-    static ROUTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-    static MASQUERADE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-    static STATIC_SRC: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-    static STATIC_DST: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-    static PORT_FORWARDING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-    static FLOW_KEYED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-    static DROPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static ROUTED: AtomicU64 = AtomicU64::new(0);
+    static MASQUERADE: AtomicU64 = AtomicU64::new(0);
+    static STATIC_SRC: AtomicU64 = AtomicU64::new(0);
+    static STATIC_DST: AtomicU64 = AtomicU64::new(0);
+    static PORT_FORWARDING: AtomicU64 = AtomicU64::new(0);
+    static FLOW_KEYED: AtomicU64 = AtomicU64::new(0);
+    static DROPPED: AtomicU64 = AtomicU64::new(0);
 
     bolero::check!()
         .with_type::<(OverlaySpec, [ProbeSpec; 8])>()
@@ -1651,7 +1649,6 @@ mod adversarial_headers {
     use crate::test_utils::{expose, expose_masquerade, expose_static, overlay, peering, vpcd};
     use bolero::{Driver, ValueGenerator};
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
-    use concurrency::sync::LazyLock;
     use config::external::overlay::ValidatedOverlay;
     use net::buffer::TestBuffer;
     use net::headers::Headers;
@@ -1861,17 +1858,15 @@ mod adversarial_headers {
     /// Check generated header stacks against the config oracle.
     #[test]
     fn arbitrary_header_stacks_uphold_the_config_contract() {
-        // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not
-        // const.
-        static UNPARSEABLE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static NOT_IP: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static PORTLESS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static EXOTIC_PROTO: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static ROUTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static DROPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static UNPARSEABLE: AtomicU64 = AtomicU64::new(0);
+        static NOT_IP: AtomicU64 = AtomicU64::new(0);
+        static PORTLESS: AtomicU64 = AtomicU64::new(0);
+        static EXOTIC_PROTO: AtomicU64 = AtomicU64::new(0);
+        static ROUTED: AtomicU64 = AtomicU64::new(0);
+        static DROPPED: AtomicU64 = AtomicU64::new(0);
         /// Packets reaching the NF, indexed by [`Shape`].
-        static BY_SHAPE: LazyLock<[AtomicU64; Shape::ALL.len()]> =
-            LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
+        static BY_SHAPE: [AtomicU64; Shape::ALL.len()] =
+            [const { AtomicU64::new(0) }; Shape::ALL.len()];
 
         let overlay = wire_overlay();
 

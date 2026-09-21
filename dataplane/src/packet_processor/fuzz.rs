@@ -946,11 +946,9 @@ mod contract {
     // whose name matches `shuttle` under that backend -- none of these do. Nothing here
     // models concurrency, so if that filter ever stops being the guard, this wants moving
     // off the facade too.
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
 
-    pub(super) static JUDGED: LazyLock<[AtomicU64; 4]> =
-        LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
+    pub(super) static JUDGED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
     pub(super) const DECAPSULATED: usize = 0;
     pub(super) const PLACED: usize = 1;
@@ -1232,7 +1230,6 @@ mod smoke {
 mod shapes {
     use super::*;
     use bolero::{Driver, ValueGenerator};
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::MasqueradeExposes;
     use lpm::prefix::Prefix;
@@ -1419,10 +1416,10 @@ mod shapes {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn every_shape_leaves_the_pipeline_with_a_verdict() {
-        static FORWARDED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static DROPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static BY_SHAPE: LazyLock<[AtomicU64; Shape::ALL.len()]> =
-            LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
+        static FORWARDED: AtomicU64 = AtomicU64::new(0);
+        static DROPPED: AtomicU64 = AtomicU64::new(0);
+        static BY_SHAPE: [AtomicU64; Shape::ALL.len()] =
+            [const { AtomicU64::new(0) }; Shape::ALL.len()];
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -1524,7 +1521,6 @@ mod shapes {
 mod round_trip {
     use super::*;
     use bolero::{Driver, ValueGenerator};
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::MasqueradeExposes;
     use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
@@ -1644,8 +1640,8 @@ mod round_trip {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_translated_flow_comes_back_to_where_it_started() {
-        static ROUND_TRIPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static NOT_FORWARDED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ROUND_TRIPPED: AtomicU64 = AtomicU64::new(0);
+        static NOT_FORWARDED: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -1746,7 +1742,6 @@ mod round_trip {
 mod acl {
     use super::*;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::acl::{
         Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
@@ -1957,11 +1952,11 @@ mod acl {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn the_acl_verdict_follows_the_protocol_the_packet_carries() {
-        static DENIED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static PERMITTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static BEHIND_EXT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static PERMITTED_OUT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static DENIED_BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DENIED: AtomicU64 = AtomicU64::new(0);
+        static PERMITTED: AtomicU64 = AtomicU64::new(0);
+        static BEHIND_EXT: AtomicU64 = AtomicU64::new(0);
+        static PERMITTED_OUT: AtomicU64 = AtomicU64::new(0);
+        static DENIED_BY_ACL: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -2257,7 +2252,6 @@ mod port_forward {
     use super::round_trip::udp;
     use super::routed::{inside, tunnelled_from};
     use super::*;
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::VpcExpose;
     use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
@@ -2378,9 +2372,9 @@ mod port_forward {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_forwarded_port_reaches_the_host_behind_it() {
-        static FORWARDED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static ANSWERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static FORWARDED: AtomicU64 = AtomicU64::new(0);
+        static ANSWERED: AtomicU64 = AtomicU64::new(0);
+        static REFUSED: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -2461,7 +2455,6 @@ mod port_forward {
 mod interleaved {
     use super::routed::{Blast, Conversation, Path, exposes};
     use super::*;
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use std::ops::Bound::Included;
 
@@ -2531,10 +2524,10 @@ mod interleaved {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn interleaved_traffic_is_each_satisfied() {
-        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MIXED_LOADS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MIXED_KINDS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static CHECKED: AtomicU64 = AtomicU64::new(0);
+        static ABANDONED: AtomicU64 = AtomicU64::new(0);
+        static MIXED_LOADS: AtomicU64 = AtomicU64::new(0);
+        static MIXED_KINDS: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -2621,7 +2614,6 @@ mod interleaved {
 mod offers {
     use super::derive::{Vary, loads_for};
     use super::*;
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::VpcExpose;
     use config::external::overlay::vpcpeering::contract::overlay_with_exposes;
@@ -2715,12 +2707,12 @@ mod offers {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_configuration_carries_everything_it_offers() {
-        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static OUTBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static CHECKED: AtomicU64 = AtomicU64::new(0);
+        static ABANDONED: AtomicU64 = AtomicU64::new(0);
+        static DERIVED: AtomicU64 = AtomicU64::new(0);
+        static MIXED: AtomicU64 = AtomicU64::new(0);
+        static INBOUND: AtomicU64 = AtomicU64::new(0);
+        static OUTBOUND: AtomicU64 = AtomicU64::new(0);
 
         let overlay = overlay();
 
@@ -2798,7 +2790,6 @@ mod generated {
     use super::derive::{Vary, loads_for};
     use super::*;
     use bolero::ValueGenerator;
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::algebra::{Op, Sequence};
     use std::ops::Bound::Included;
@@ -2853,11 +2844,11 @@ mod generated {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_generated_configuration_carries_its_own_traffic() {
-        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static CHECKED: AtomicU64 = AtomicU64::new(0);
+        static DERIVED: AtomicU64 = AtomicU64::new(0);
+        static MIXED: AtomicU64 = AtomicU64::new(0);
+        static PEERED: AtomicU64 = AtomicU64::new(0);
+        static MULTI: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -2946,7 +2937,6 @@ mod burst {
     use super::round_trip::udp;
     use super::routed::{exposes, inside, tunnelled};
     use super::*;
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use net::headers::TryVxlan;
 
@@ -3006,7 +2996,7 @@ mod burst {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_burst_of_one_flow_allocates_once() {
-        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static CHECKED: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -3071,8 +3061,8 @@ mod burst {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_burst_is_treated_the_same_as_one_packet_at_a_time() {
-        static COMPARED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static DELIVERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static COMPARED: AtomicU64 = AtomicU64::new(0);
+        static DELIVERED: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -3144,7 +3134,6 @@ mod destination {
     use super::round_trip::udp;
     use super::routed::{inside, tunnelled};
     use super::*;
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::{overlay_with_peers, peer_vni};
     use lpm::prefix::Prefix;
@@ -3198,9 +3187,8 @@ mod destination {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_packet_leaves_for_the_vpc_that_exposes_its_destination() {
-        static REACHED: LazyLock<[AtomicU64; PEERS as usize]> =
-            LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
-        static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static REACHED: [AtomicU64; PEERS as usize] = [const { AtomicU64::new(0) }; PEERS as usize];
+        static REFUSED: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -3282,7 +3270,6 @@ mod routed {
     use super::shapes::{Batch, Shape, aim, wire};
     use super::*;
     use super::{Load, drive};
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use net::buffer::TestBuffer;
     use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryIpv4, TryVxlan};
@@ -3482,7 +3469,7 @@ mod routed {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_tagged_shape_never_reaches_the_wire() {
-        static TAGGED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static TAGGED: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -3533,8 +3520,8 @@ mod routed {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_tunnelled_flow_comes_back_through_the_tunnel() {
-        static ROUND_TRIPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ROUND_TRIPPED: AtomicU64 = AtomicU64::new(0);
+        static ABANDONED: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -4047,7 +4034,6 @@ mod routed {
 mod icmp_error {
     use super::routed::{exposes, inside, tunnelled, tunnelled_from};
     use super::*;
-    use concurrency::process_global::LazyLock;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use net::flows::FlowInfo;
     use net::headers::{TryEth, TryHeaders};
@@ -4251,11 +4237,11 @@ mod icmp_error {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn an_icmp_error_quoting_a_live_flow_judges_that_flow_and_no_other() {
-        static HANDLED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static TORE_DOWN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static SPARED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static NAMED_NOBODY: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static HANDLED: AtomicU64 = AtomicU64::new(0);
+        static REFUSED: AtomicU64 = AtomicU64::new(0);
+        static TORE_DOWN: AtomicU64 = AtomicU64::new(0);
+        static SPARED: AtomicU64 = AtomicU64::new(0);
+        static NAMED_NOBODY: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -4321,8 +4307,8 @@ mod model {
     use super::derive::loads_for;
     use super::routed::{Conversation, exposes, inner, inside, tunnelled};
     use super::*;
+    use concurrency::process_global::OnceLock;
     use concurrency::process_global::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use concurrency::process_global::{LazyLock, OnceLock};
     use concurrency::sync::Mutex;
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
@@ -4545,8 +4531,8 @@ mod model {
     fn generated_traffic_survives_being_split_across_two_workers() {
         const CASES: usize = 64;
 
-        static SPLIT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static THIN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static SPLIT: AtomicU64 = AtomicU64::new(0);
+        static THIN: AtomicU64 = AtomicU64::new(0);
 
         let _eal = dpdk::test_support::start_eal();
 
@@ -4670,8 +4656,8 @@ mod model {
     fn a_reply_is_translated_by_a_worker_that_never_saw_the_request() {
         const FLOWS: u8 = 2;
 
-        static CLOSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static CLOSED: AtomicU64 = AtomicU64::new(0);
+        static ABANDONED: AtomicU64 = AtomicU64::new(0);
 
         let _eal = dpdk::test_support::start_eal();
 
@@ -4822,8 +4808,8 @@ mod model {
                   park the single thread shuttle schedules its green threads onto"
     )]
     fn an_icmp_teardown_leaves_another_workers_flow_alone() {
-        static REPORTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static SURVIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static REPORTED: AtomicU64 = AtomicU64::new(0);
+        static SURVIVED: AtomicU64 = AtomicU64::new(0);
 
         let _eal = dpdk::test_support::start_eal();
 
@@ -4987,8 +4973,8 @@ mod model {
         const FLOWS: u8 = 2;
         const CHURN: u8 = 6;
 
-        static COMPLETED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static PUBLISHED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static COMPLETED: AtomicU64 = AtomicU64::new(0);
+        static PUBLISHED: AtomicU64 = AtomicU64::new(0);
 
         let _eal = dpdk::test_support::start_eal();
 
@@ -5102,8 +5088,8 @@ mod model {
         const CHURN: u8 = 3;
         const PER_ROUND: u8 = 2;
 
-        static FRESH: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static STALE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static FRESH: AtomicU64 = AtomicU64::new(0);
+        static STALE: AtomicU64 = AtomicU64::new(0);
 
         type Seen = Result<u8, String>;
 
@@ -5322,8 +5308,8 @@ mod model {
         const FLOWS: u8 = 2;
         const APPLIES: u8 = 4;
 
-        static COMPLETED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static ENACTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static COMPLETED: AtomicU64 = AtomicU64::new(0);
+        static ENACTED: AtomicU64 = AtomicU64::new(0);
 
         let _eal = dpdk::test_support::start_eal();
 
@@ -5443,12 +5429,12 @@ mod model {
         const CASES: usize = 64;
         const ROUNDS: u8 = 3;
 
-        static FRAMED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static BARREN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static ENGULFED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static FRAMED_OUT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static RACED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static DISTURBED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static FRAMED: AtomicU64 = AtomicU64::new(0);
+        static BARREN: AtomicU64 = AtomicU64::new(0);
+        static ENGULFED: AtomicU64 = AtomicU64::new(0);
+        static FRAMED_OUT: AtomicU64 = AtomicU64::new(0);
+        static RACED: AtomicU64 = AtomicU64::new(0);
+        static DISTURBED: AtomicU64 = AtomicU64::new(0);
 
         fn separate(drawn: u16, round: u8, which: usize) -> u16 {
             let within = (drawn / 2).wrapping_add(u16::from(round).wrapping_mul(997)) % 32_000 + 1;

@@ -1836,13 +1836,6 @@ mod embedded_view_properties {
     use crate::icmp4::Icmp4;
     use crate::icmp6::Icmp6;
     use crate::vlan::Vlan;
-    use concurrency::process_global::atomic::AtomicUsize;
-    use concurrency::sync::OnceLock;
-
-    // `AtomicUsize::new` is not const under loom, so counters init on first use.
-    fn counter(slot: &OnceLock<AtomicUsize>) -> &AtomicUsize {
-        slot.get_or_init(|| AtomicUsize::new(0))
-    }
 
     macro_rules! embedded_agrees {
         (
@@ -1853,17 +1846,17 @@ mod embedded_view_properties {
             #[test]
             fn $read() {
                 use concurrency::process_global::atomic::{AtomicUsize, Ordering};
-                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
-                static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
                 bolero::check!()
                     .with_generator(ShapedIcmpError)
                     .for_each(|h: &Headers| {
-                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        SEEN.fetch_add(1, Ordering::Relaxed);
                         let licensed = h
                             .as_view::<$outer>()
                             .is_some_and(|w| w.as_embedded::<$inner>().is_some());
                         if licensed {
-                            counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                            HIT.fetch_add(1, Ordering::Relaxed);
                         }
                         let deliverable =
                             h.pat()$(.$ol())+.embedded()$(.$il())+.done().is_some();
@@ -1881,27 +1874,27 @@ mod embedded_view_properties {
                     });
                 agreement_is_not_vacuous(
                     concat!(stringify!($inner), " in ", stringify!($outer)),
-                    counter(&SEEN).load(Ordering::Relaxed),
-                    counter(&HIT).load(Ordering::Relaxed),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
                 );
             }
 
             #[test]
             fn $mutable() {
                 use concurrency::process_global::atomic::{AtomicUsize, Ordering};
-                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
-                static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
                 bolero::check!()
                     .with_generator(ShapedIcmpError)
                     .for_each(|h: &Headers| {
                         let mut owned = h.clone();
-                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        SEEN.fetch_add(1, Ordering::Relaxed);
                         let licensed = match owned.as_view_mut::<$outer>() {
                             Some(w) => w.as_embedded_mut::<$inner>().is_some(),
                             None => false,
                         };
                         if licensed {
-                            counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                            HIT.fetch_add(1, Ordering::Relaxed);
                         }
                         let deliverable =
                             owned.pat_mut()$(.$ol())+.embedded()$(.$il())+.done().is_some();
@@ -1919,8 +1912,8 @@ mod embedded_view_properties {
                     });
                 agreement_is_not_vacuous(
                     concat!(stringify!($inner), " in ", stringify!($outer)),
-                    counter(&SEEN).load(Ordering::Relaxed),
-                    counter(&HIT).load(Ordering::Relaxed),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
                 );
             }
         };
@@ -2064,19 +2057,19 @@ mod embedded_view_properties {
     #[test]
     fn mutable_inner_transport_enum() {
         use concurrency::process_global::atomic::{AtomicUsize, Ordering};
-        static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
-        static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        static HIT: AtomicUsize = AtomicUsize::new(0);
         bolero::check!()
             .with_generator(ShapedIcmpError)
             .for_each(|h: &Headers| {
                 let mut owned = h.clone();
-                counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                SEEN.fetch_add(1, Ordering::Relaxed);
                 let licensed = match owned.as_view_mut::<O4V4>() {
                     Some(w) => w.as_embedded_mut::<(&Net, &EmbeddedTransport)>().is_some(),
                     None => false,
                 };
                 if licensed {
-                    counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                    HIT.fetch_add(1, Ordering::Relaxed);
                 }
                 let deliverable = owned
                     .pat_mut()
@@ -2095,8 +2088,8 @@ mod embedded_view_properties {
             });
         agreement_is_not_vacuous(
             "(&Net, &EmbeddedTransport)",
-            counter(&SEEN).load(Ordering::Relaxed),
-            counter(&HIT).load(Ordering::Relaxed),
+            SEEN.load(Ordering::Relaxed),
+            HIT.load(Ordering::Relaxed),
         );
     }
 
@@ -2163,13 +2156,13 @@ mod embedded_view_properties {
             #[test]
             fn $name() {
                 use concurrency::process_global::atomic::{AtomicUsize, Ordering};
-                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
-                static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
                 bolero::check!()
                     .with_generator($gen)
                     .for_each(|h: &Headers| {
                         let mut owned = h.clone();
-                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        SEEN.fetch_add(1, Ordering::Relaxed);
                         let immutable = {
                             let Some(outer) = owned.as_view::<$outer>() else {
                                 return;
@@ -2180,7 +2173,7 @@ mod embedded_view_properties {
                             let ($($binding,)+) = ew.look();
                             ($(std::ptr::from_ref($binding),)+)
                         };
-                        counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                        HIT.fetch_add(1, Ordering::Relaxed);
                         let mutable = {
                             let outer = owned.as_view_mut::<$outer>().unwrap_or_else(|| {
                                 unreachable!("the same packet matched a moment ago")
@@ -2202,8 +2195,8 @@ mod embedded_view_properties {
                     });
                 agreement_is_not_vacuous(
                     concat!("look/look_mut ", stringify!($shape)),
-                    counter(&SEEN).load(Ordering::Relaxed),
-                    counter(&HIT).load(Ordering::Relaxed),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
                 );
             }
         };

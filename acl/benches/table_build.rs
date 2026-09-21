@@ -8,7 +8,6 @@ mod bench {
     use std::hint::black_box;
 
     use concurrency::process_global::atomic::{AtomicU32, Ordering};
-    use concurrency::sync::LazyLock;
     use core::net::{Ipv4Addr, Ipv6Addr};
     use core::num::NonZero;
 
@@ -54,8 +53,7 @@ mod bench {
     const RULE_COUNTS: [usize; 15] = [
         1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384,
     ];
-    // Lazily initialized so this compiles under the loom backend, whose AtomicU32::new is not const
-    static SEQ: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
+    static SEQ: AtomicU32 = AtomicU32::new(0);
 
     fn unique_name(prefix: &str) -> String {
         format!("{prefix}_{}", SEQ.fetch_add(1, Ordering::Relaxed))
