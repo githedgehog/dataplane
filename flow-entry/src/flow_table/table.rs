@@ -33,6 +33,26 @@ enum Found {
 
 type Table = DashMap<FlowKey, Arc<FlowInfo>, RandomState>;
 
+/// Counts an insertion before its entry can be removed. An unused reservation is returned.
+struct SlotReservation<'a> {
+    live: Option<&'a AtomicUsize>,
+}
+
+impl SlotReservation<'_> {
+    /// Transfer the count to a newly published entry; its remover will decrement it.
+    fn commit(mut self) {
+        self.live = None;
+    }
+}
+
+impl Drop for SlotReservation<'_> {
+    fn drop(&mut self) {
+        if let Some(live) = self.live {
+            live.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct FlowTable {
     // TODO(mvachhar) move this to a cross beam sharded lock
@@ -91,8 +111,9 @@ impl FlowTable {
 
     /// Set the hard capacity limit for the flow table.
     ///
-    /// When the table reaches this limit, new flow insertions will fail with
-    /// [`FlowTableError::CapacityExceeded`] after one drain attempt.
+    /// When entries and pending insertions reach this limit, new flow insertions will fail with
+    /// [`FlowTableError::CapacityExceeded`]. A flow related to an active entry may exceed the limit
+    /// so a forward/reverse pair can be completed.
     pub fn set_capacity(&self, capacity: usize) {
         self.capacity.store(capacity, Ordering::Relaxed);
     }
@@ -228,24 +249,31 @@ impl FlowTable {
         });
     }
 
-    fn admit(&self, val: &Arc<FlowInfo>) -> Result<(), FlowTableError> {
-        self.admit_at_len(self.live.load(Ordering::Relaxed), val)
-    }
-
-    fn admit_at_len(&self, len: usize, val: &Arc<FlowInfo>) -> Result<(), FlowTableError> {
-        if len < self.capacity.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-        let has_related_in_table = val
-            .related
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .is_some_and(|rel| rel.is_active());
-
-        if has_related_in_table {
-            Ok(())
-        } else {
-            Err(FlowTableError::CapacityExceeded)
+    fn reserve(&self, val: &Arc<FlowInfo>) -> Option<SlotReservation<'_>> {
+        let mut live = self.live.load(Ordering::Relaxed);
+        loop {
+            if live >= self.capacity.load(Ordering::Relaxed)
+                && !val
+                    .related
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|rel| rel.is_active())
+            {
+                return None;
+            }
+            match self.live.compare_exchange_weak(
+                live,
+                live.checked_add(1)?,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Some(SlotReservation {
+                        live: Some(&self.live),
+                    });
+                }
+                Err(current) => live = current,
+            }
         }
     }
 
@@ -266,11 +294,13 @@ impl FlowTable {
         let flow_key = val.flowkey();
         debug!("insert: inserting flow {flow_key}");
 
-        self.admit(val)?;
+        let reservation = self.reserve(val).ok_or(FlowTableError::CapacityExceeded)?;
 
         let result = table.insert(*flow_key, val.clone());
         if result.is_none() {
-            self.live.fetch_add(1, Ordering::Relaxed);
+            reservation.commit();
+        } else {
+            drop(reservation);
         }
         // Set Active only after the insert so that the invariant holds: Active iff in the
         // table.  The narrow window where the entry is in the DashMap but not yet Active is
@@ -303,17 +333,16 @@ impl FlowTable {
         let flow_key = val.flowkey();
         debug!("insert: inserting flow {flow_key} unless it is already held");
 
-        let len = self.live.load(Ordering::Relaxed);
+        // Reserve before publication so removal cannot decrement an uncounted entry. Even
+        // without a reservation, an occupied key can be returned or replaced without growing
+        // the table.
+        let reservation = self.reserve(val);
 
         let previous = val.update_status(FlowStatus::Active);
 
-        // `dashmap`'s entry guard is a real `parking_lot` shard lock, so nothing inside this
-        // block may be a scheduling point: under shuttle every green thread shares one OS
-        // thread, and a preemption while the shard is held leaves the next thread to want that
-        // shard parked on a futex with nobody able to release it. `self.live` is a *facade*
-        // atomic -- checkable, and therefore schedulable -- so the count is bumped after the
-        // guard drops rather than under it. The window that opens is a `live` that lags one
-        // insert, which `live_len` already documents as no less exact than `DashMap::len`.
+        // Keep admission and reservation updates outside DashMap's entry guard: the facade
+        // atomics can yield under Shuttle, while the shard lock is an unmodeled parking_lot
+        // lock that can block another green thread on the same OS thread.
         let mut counted = false;
         let found = match table.entry(*flow_key) {
             dashmap::Entry::Occupied(mut occupied) => {
@@ -324,17 +353,19 @@ impl FlowTable {
                 }
             }
             dashmap::Entry::Vacant(vacant) => {
-                if let Err(e) = self.admit_at_len(len, val) {
-                    Found::Refused(e)
-                } else {
+                if reservation.is_some() {
                     vacant.insert(val.clone());
                     counted = true;
                     Found::Inserted(None)
+                } else {
+                    Found::Refused(FlowTableError::CapacityExceeded)
                 }
             }
         };
-        if counted {
-            self.live.fetch_add(1, Ordering::Relaxed);
+        if let Some(reservation) = reservation
+            && counted
+        {
+            reservation.commit();
         }
         let displaced = match found {
             Found::Inserted(displaced) => displaced,
@@ -400,11 +431,12 @@ impl FlowTable {
     }
 
     #[allow(clippy::len_without_is_empty)]
-    /// The number of entries the table believes it holds, maintained alongside every insert and
-    /// removal so the capacity check does not have to read-lock every `DashMap` shard.
+    /// The number of entries and pending insertion reservations, used for capacity checks without
+    /// read-locking every `DashMap` shard.
     ///
-    /// `DashMap::len` sums the shards one at a time, so the figure it returns may never have
-    /// existed; this counter is no less exact and costs one atomic.
+    /// A reservation is counted before publication and returned if no new entry is added. Removal
+    /// decrements after deleting the entry, so the count can temporarily include unfinished
+    /// operations. It equals the physical entry count once all mutations finish.
     #[must_use]
     pub fn live_len(&self) -> usize {
         self.live.load(Ordering::Relaxed)
@@ -606,6 +638,7 @@ mod tests {
             // Wait another 2 seconds (total 3s) — flow expired. It should be gone
             tokio::time::sleep(two_seconds).await;
             assert!(flow_table.lookup(&flow_key).is_none());
+            assert_eq!(flow_table.live_len(), 0);
         }
 
         #[tokio::test]
@@ -758,6 +791,7 @@ mod tests {
 
             let () = tokio::time::sleep(Duration::from_secs(5)).await;
             assert_eq!(flow_table.active_len().unwrap(), 0);
+            assert_eq!(flow_table.live_len(), 0);
         }
 
         #[tokio::test]
@@ -834,6 +868,7 @@ mod tests {
                 panic!("a live flow was displaced by a second insertion: {outcome:?}");
             };
             assert!(Arc::ptr_eq(&held, &first), "the wrong flow was reported");
+            assert_eq!(flow_table.live_len(), 1);
 
             let found = flow_table.lookup(&key).expect("the key is still served");
             assert!(Arc::ptr_eq(&found, &first));
@@ -880,6 +915,7 @@ mod tests {
                 ),
                 "a full table grew for a key nobody held"
             );
+            assert_eq!(flow_table.live_len(), 1);
         }
 
         #[tokio::test]
@@ -891,6 +927,7 @@ mod tests {
             let first = Arc::new(FlowInfo::new(key, far_future));
             flow_table.insert_if_absent(&first).unwrap();
             first.invalidate();
+            flow_table.set_capacity(1);
 
             let second = Arc::new(FlowInfo::new(key, far_future));
             assert!(
@@ -902,6 +939,36 @@ mod tests {
             );
             let found = flow_table.lookup(&key).expect("the key is served");
             assert!(Arc::ptr_eq(&found, &second));
+            assert_eq!(flow_table.live_len(), 1);
+        }
+
+        #[tokio::test]
+        async fn a_related_pair_can_complete_at_capacity() {
+            for arbitrate in [false, true] {
+                let flow_table = FlowTable::new(2);
+                flow_table.set_capacity(1);
+                let (forward, reverse) = FlowInfo::related_pair(
+                    clock::now() + Duration::from_hours(1),
+                    key_for(1040),
+                    FlowInfoFlags::INITIATOR,
+                    key_for(1041),
+                    FlowInfoFlags::default(),
+                )
+                .unwrap();
+
+                for flow in [&forward, &reverse] {
+                    if arbitrate {
+                        assert!(matches!(
+                            flow_table.insert_if_absent(flow).unwrap(),
+                            Insertion::Installed
+                        ));
+                    } else {
+                        flow_table.insert_from_arc(flow).unwrap();
+                    }
+                }
+                assert_eq!(flow_table.live_len(), 2);
+                assert_eq!(flow_table.len(), Some(2));
+            }
         }
 
         #[tokio::test]
@@ -971,12 +1038,94 @@ mod tests {
     }
 
     // Shuttle-only: timers are bypassed there, and loom cannot clean up DashMap.
-    #[cfg(feature = "shuttle")]
+    #[cfg(all(feature = "shuttle", not(feature = "loom")))]
     mod concurrency_tests {
         use super::*;
         use crate::flow_table::FlowInfo;
         use concurrency::sync::Arc;
         use concurrency::thread;
+
+        fn check_live_count_during_insert_and_remove(arbitrate: bool) {
+            let scheduler = shuttle::scheduler::RandomScheduler::new_from_seed(0, 256);
+            shuttle::Runner::new(scheduler, concurrency::shuttle_config()).run(move || {
+                let flow_table = Arc::new(FlowTable::new(2));
+                flow_table.set_capacity(1);
+                let key = FlowKey::new(
+                    Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
+                    v4_addrs("1.2.3.4", "5.6.7.8"),
+                    IpProtoKey::Tcp(TcpProtoKey {
+                        src_port: TcpPort::new_checked(1025).unwrap(),
+                        dst_port: TcpPort::new_checked(2048).unwrap(),
+                    }),
+                );
+                let deadline = clock::now() + Duration::from_hours(1);
+                let inserting = flow_table.clone();
+                let worker = thread::spawn(move || {
+                    let flow = Arc::new(FlowInfo::new(key, deadline));
+                    if arbitrate {
+                        assert!(matches!(
+                            inserting.insert_if_absent(&flow).unwrap(),
+                            Insertion::Installed
+                        ));
+                    } else {
+                        inserting.insert_from_arc(&flow).unwrap();
+                    }
+                });
+
+                if flow_table.remove(&key).is_some() {
+                    assert_eq!(
+                        flow_table.live_len(),
+                        0,
+                        "removing the only entry must not wrap the live count"
+                    );
+                    let next = Arc::new(FlowInfo::new(key.reverse(None), deadline));
+                    assert!(matches!(
+                        flow_table.insert_if_absent(&next).unwrap(),
+                        Insertion::Installed
+                    ));
+                }
+
+                worker.join().unwrap();
+                assert_eq!(flow_table.live_len(), flow_table.len().unwrap());
+            });
+        }
+
+        #[test]
+        fn live_count_during_insert_and_remove_shuttle() {
+            check_live_count_during_insert_and_remove(false);
+        }
+
+        #[test]
+        fn live_count_during_insert_if_absent_and_remove_shuttle() {
+            check_live_count_during_insert_and_remove(true);
+        }
+
+        #[concurrency::test]
+        fn concurrent_insertions_reserve_the_last_slot() {
+            let flow_table = Arc::new(FlowTable::new(2));
+            flow_table.set_capacity(1);
+            let key = FlowKey::new(
+                Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
+                v4_addrs("1.2.3.4", "5.6.7.8"),
+                IpProtoKey::Tcp(TcpProtoKey {
+                    src_port: TcpPort::new_checked(1025).unwrap(),
+                    dst_port: TcpPort::new_checked(2048).unwrap(),
+                }),
+            );
+            let deadline = clock::now() + Duration::from_hours(1);
+            let inserting = flow_table.clone();
+            let worker =
+                thread::spawn(move || inserting.insert(FlowInfo::new(key, deadline)).is_ok());
+            let second = Arc::new(FlowInfo::new(key.reverse(None), deadline));
+            let second_admitted = flow_table.insert_if_absent(&second).is_ok();
+            assert_ne!(
+                worker.join().unwrap(),
+                second_admitted,
+                "exactly one insertion can claim the last slot"
+            );
+            assert_eq!(flow_table.live_len(), 1);
+            assert_eq!(flow_table.len(), Some(1));
+        }
 
         #[allow(clippy::too_many_lines)]
         #[concurrency::test]
