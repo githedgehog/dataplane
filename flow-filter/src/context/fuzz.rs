@@ -14,8 +14,8 @@
 use super::tables::{Backend, FlowFilterContext, LookupInput, LookupResult, SourceGate};
 use crate::NatRequirement;
 use crate::fuzz_gen::{OverlaySpec, Probe, ProbeSpec, bogus_vpcd};
+use concurrency::process_global::atomic::{AtomicU64, Ordering};
 use concurrency::sync::LazyLock;
-use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc};
 use std::num::NonZero;

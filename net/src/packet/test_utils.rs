@@ -785,3 +785,98 @@ pub fn build_test_icmp6_echo(
     headers.deparse(buffer.as_mut()).unwrap();
     Packet::new(buffer)
 }
+
+/// Build an `ICMPv4` error whose quoted datagram is `quote`, copied in verbatim.
+///
+/// The typed builders above assemble the quote from `EmbeddedTransport` values, which can only
+/// ever produce a quote the deparser agrees with. `quote` here is raw bytes -- the offending
+/// packet from its IP header onwards, at whatever length the caller chose -- so the receiver's
+/// parser has to make sense of it rather than being handed the answer. That is the whole point:
+/// everything a NAT decides about a short or malformed quote lives in that parse.
+///
+/// The ICMP checksum is computed over the quote as parsed, so the result is a *valid* error
+/// unless the caller corrupts it afterwards.
+///
+/// Returns `None` if the assembled packet does not parse, which a sufficiently mangled quote can
+/// legitimately cause -- a caller generating quotes is expected to skip those rather than treat
+/// them as failures.
+#[must_use]
+pub fn build_icmp4_error_quoting(
+    unreachable: Icmp4DestUnreachable,
+    outer_src: Ipv4Addr,
+    outer_dst: Ipv4Addr,
+    quote: &[u8],
+) -> Option<Packet<TestBuffer>> {
+    let icmp = Icmp4(Icmpv4Header::new(Icmpv4Type::DestinationUnreachable(
+        DestUnreachableHeader::from(unreachable),
+    )));
+
+    let mut outer = Ipv4::default();
+    outer.set_source(UnicastIpv4Addr::new(outer_src).ok()?);
+    outer.set_destination(outer_dst);
+    outer.set_ttl(8);
+    outer.set_next_header(NextHeader::ICMP);
+    outer
+        .set_payload_len(
+            icmp.size()
+                .get()
+                .checked_add(u16::try_from(quote.len()).ok()?)?,
+        )
+        .ok()?;
+    outer.update_checksum(&()).ok()?;
+
+    let mut headers = HeadersBuilder::default();
+    headers.eth(Some(make_default_for_eth(EthType::IPV4)));
+    headers.net(Some(Net::Ipv4(outer)));
+    headers.transport(Some(Transport::Icmp4(icmp)));
+    assemble_quoted(&headers, quote)
+}
+
+/// Build an `ICMPv6` error whose quoted datagram is `quote`, copied in verbatim.
+///
+/// See [`build_icmp4_error_quoting`]; this is the same construction over `ICMPv6`.
+#[must_use]
+pub fn build_icmp6_error_quoting(
+    icmp_type: Icmp6Type,
+    outer_src: Ipv6Addr,
+    outer_dst: Ipv6Addr,
+    quote: &[u8],
+) -> Option<Packet<TestBuffer>> {
+    let icmp = Icmp6(Icmpv6Header::new(icmp_type.into()));
+
+    let mut outer = Ipv6::default();
+    outer.set_source(UnicastIpv6Addr::new(outer_src).ok()?);
+    outer.set_destination(outer_dst);
+    outer.set_hop_limit(8);
+    outer.set_next_header(NextHeader::ICMP6);
+    outer.set_payload_length(
+        icmp.size()
+            .get()
+            .checked_add(u16::try_from(quote.len()).ok()?)?,
+    );
+
+    let mut headers = HeadersBuilder::default();
+    headers.eth(Some(make_default_for_eth(EthType::IPV6)));
+    headers.net(Some(Net::Ipv6(outer)));
+    headers.transport(Some(Transport::Icmp6(icmp)));
+    assemble_quoted(&headers, quote)
+}
+
+/// Lay `headers` down, append `quote` behind them, and re-parse the result.
+///
+/// Re-parsing rather than building the embedded headers directly is the point of these two
+/// constructors: the packet that comes back carries whatever the *parser* made of the quote,
+/// which for a truncated one is not necessarily what the caller put in.
+fn assemble_quoted(headers: &HeadersBuilder, quote: &[u8]) -> Option<Packet<TestBuffer>> {
+    let headers = headers.build().ok()?;
+    let front = headers.size().get() as usize;
+    let mut data = vec![0u8; front + quote.len()];
+    headers.deparse(&mut data[..front]).ok()?;
+    data[front..].copy_from_slice(quote);
+
+    let mut packet = Packet::new(TestBuffer::from_raw_data(&data)).ok()?;
+    // The ICMP checksum covers the quote, so it can only be computed once the quote is in place
+    // and the parser has said what it is.
+    packet.update_checksums();
+    Some(packet)
+}

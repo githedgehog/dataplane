@@ -1325,7 +1325,7 @@ version = "0.28.0"
 dependencies = [
  "arc-swap",
  "dataplane-concurrency",
- "left-right 0.11.7",
+ "left-right 0.11.8 (git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle)",
 ]
 
 [[package]]
@@ -1601,7 +1601,7 @@ version = "0.28.0"
 dependencies = [
  "ahash",
  "dataplane-concurrency",
- "left-right 0.11.7",
+ "left-right 0.11.8 (git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle)",
  "serial_test",
  "thiserror",
 ]
@@ -1730,7 +1730,7 @@ dependencies = [
  "etherparse",
  "fixin",
  "indenter",
- "left-right 0.11.7",
+ "left-right 0.11.8 (git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle)",
  "linkme",
  "rand 0.10.3",
  "roaring",
@@ -1821,7 +1821,7 @@ dependencies = [
  "futures-util",
  "inotify",
  "ipnet",
- "left-right 0.11.7",
+ "left-right 0.11.8 (git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle)",
  "linkme",
  "mio",
  "netdev",
@@ -1923,7 +1923,7 @@ dependencies = [
  "ahash",
  "bolero",
  "dataplane-net",
- "left-right 0.11.7",
+ "left-right 0.11.8 (git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle)",
  "serde",
  "thiserror",
 ]
@@ -2282,7 +2282,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b8874945f036109c72242964c1174cf99434e30cfa45bf45fedc983f50046f8"
 dependencies = [
  "hashbag",
- "left-right 0.11.8",
+ "left-right 0.11.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "smallvec",
 ]
 
@@ -3465,8 +3465,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "left-right"
-version = "0.11.7"
-source = "git+https://github.com/githedgehog/left-right.git?branch=fredi%2Ffix-writehandle-drop#765813aa25c8328746e93a7a5ccc75deb57b1d80"
+version = "0.11.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bc015ded5d9b3054dbbdb63332cdd6ee42352ccef19e911e25117490e2f48ee"
 dependencies = [
  "crossbeam-utils",
  "loom",
@@ -3476,11 +3477,11 @@ dependencies = [
 [[package]]
 name = "left-right"
 version = "0.11.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bc015ded5d9b3054dbbdb63332cdd6ee42352ccef19e911e25117490e2f48ee"
+source = "git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle#8e8d1eaef4f22220ac115e551541967c706b361f"
 dependencies = [
  "crossbeam-utils",
  "loom",
+ "shuttle",
  "slab",
 ]
 
