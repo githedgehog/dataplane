@@ -86,6 +86,23 @@ impl Fabric {
         })
     }
 
+    // Publish a replacement configuration over the same flow table, exactly as a config update
+    // does: the allocator is rebuilt and every live flow is checked against it, carried over or
+    // invalidated. Returns false when the set of expose objects does not validate, so a caller can
+    // skip.
+    pub(crate) fn reconfigure(&mut self, exposes: &[VpcExpose], genid: i64) -> bool {
+        let Ok(overlay) = overlay_with_exposes(exposes.to_vec()) else {
+            return false;
+        };
+        let Ok(validated) = overlay.validate() else {
+            return false;
+        };
+        let config = MasqueradeConfig::new(validated.vpc_table()).set_randomize(false);
+        self.allocator
+            .update_nat_allocator(config, genid, &self.flow_table);
+        true
+    }
+
     pub(crate) fn stages(&self) -> (FlowLookup, Masquerade) {
         (
             FlowLookup::new("flow-lookup", self.flow_table.clone()),

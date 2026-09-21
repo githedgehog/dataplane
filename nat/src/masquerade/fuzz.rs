@@ -518,6 +518,107 @@ fn mapping_reuse_matches_the_configured_policy() {
     tally.report("policy-scoped reuse");
 }
 
+// A generated configuration plus the policy a later config update switches it to
+#[derive(Debug, Clone, Copy)]
+struct MigrationScenario;
+
+impl ValueGenerator for MigrationScenario {
+    type Output = (Vec<VpcExpose>, Vec<ProbeSpec>, MappingPolicy);
+
+    fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+        let (exposes, probes, _) = PolicyScenario.generate(driver)?;
+        Some((exposes, probes, generate_policy(driver)?))
+    }
+}
+
+// No config update may leave two live private endpoints sharing one public tuple.
+//
+// A flow is carried across a migration only when the replacement allocator reserves the tuple it is
+// still translating to. If one were carried without that reservation, the allocator would consider
+// the tuple free and hand it to the next endpoint that asks; so this drives fresh allocations after
+// the update and checks that none of them lands on a tuple a carried flow is still using.
+#[test]
+#[cfg_attr(miri, ignore = "full-flow fuzz probe is too slow under Miri")]
+fn a_config_update_never_leaves_two_flows_on_one_tuple() {
+    let tally = Tally::default();
+
+    with_runtime(|| {
+        bolero::check!()
+        .with_test_time(TEST_TIME)
+        .with_generator(MigrationScenario)
+        .cloned()
+        .for_each(|(exposes, probes, next): (Vec<VpcExpose>, Vec<ProbeSpec>, MappingPolicy)| {
+            // One source port for every probe, so probes from the same private address toward
+            // different peers share a private tuple. That is the case a policy change re-keys:
+            // under Address-Dependent Mapping they hold distinct mappings, and switching to
+            // Endpoint-Independent merges them onto one.
+            const SHARED_SPORT: u16 = 1024;
+
+            tally.seen.fetch_add(1, Ordering::Relaxed);
+            let Some(mut fabric) = fabric(&exposes) else {
+                return;
+            };
+            tally.built.fetch_add(1, Ordering::Relaxed);
+
+            {
+                let (mut lookup, mut masq) = fabric.stages();
+                for spec in &probes {
+                    let mut probe = (*spec).resolve(&fabric);
+                    probe.sport = SHARED_SPORT;
+                    run(&mut lookup, &mut masq, vec![probe.packet()], probe.arrival.dst_vpcd);
+                }
+            }
+
+            if !fabric.reconfigure(&stamp_policy(exposes, next), 2) {
+                return;
+            }
+
+            // Everything the flow table still translates after the update, plus everything the
+            // replacement allocator hands out afterwards, has to stay one-to-one.
+            let (mut lookup, mut masq) = fabric.stages();
+            let mut taken: BTreeMap<(IpAddr, u16), (IpAddr, u16)> = BTreeMap::new();
+            // Returns whether it actually reached the assertion
+            let mut record = |before: (IpAddr, u16), out: &[Packet<TestBuffer>]| -> bool {
+                if out_unchanged(out, before) {
+                    return false;
+                }
+                let after = source_of(&out[0]);
+                if let Some(previous) = taken.insert(after, before) {
+                    assert_eq!(
+                        previous, before,
+                        "after a config update, flows from {previous:?} and {before:?} are both masqueraded to {after:?}, \
+                         so a reply can only reach one of them"
+                    );
+                }
+                true
+            };
+
+            for spec in &probes {
+                let mut probe = (*spec).resolve(&fabric);
+                probe.sport = SHARED_SPORT;
+                let before = (probe.source, probe.sport);
+                let out = run(&mut lookup, &mut masq, vec![probe.packet()], probe.arrival.dst_vpcd);
+                if record(before, &out) {
+                    tally.reached.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+
+            // Fresh endpoints, drawing from whatever the replacement allocator believes is free
+            for (index, spec) in probes.iter().enumerate() {
+                let mut probe = (*spec).resolve(&fabric);
+                probe.sport = u16::try_from(40000 + index).unwrap_or(40000);
+                let before = (probe.source, probe.sport);
+                let out = run(&mut lookup, &mut masq, vec![probe.packet()], probe.arrival.dst_vpcd);
+                if record(before, &out) {
+                    tally.reached.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+    });
+
+    tally.report("migration exclusivity");
+}
+
 //= https://www.rfc-editor.org/rfc/rfc5382#section-7.1
 //= type=test
 //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
