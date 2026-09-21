@@ -399,12 +399,15 @@ pub(crate) fn reap_expired_mapping<I: NatIpWithBitmap>(
     subscribers: &SubscribersTable<I>,
 ) {
     // Remove the mapping, verifying identity so a concurrently-inserted replacement under the same
-    // key survives.
+    // key survives, and re-checking expiry so a refresh that landed after the reaper last looked is
+    // not thrown away. The caller already checked expirty, but we need to double-check now we hold
+    // the lock, to avoid a race.
     {
         let mut guard = subscriber.mappings.write();
-        if guard
-            .get(&key)
-            .is_some_and(|current| Arc::ptr_eq(current, mapping))
+        if mapping.is_expired()
+            && guard
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, mapping))
         {
             guard.remove(&key);
         }
@@ -527,6 +530,46 @@ mod tests {
             .into_iter()
             .next()
             .unwrap_or_else(|| unreachable!())
+    }
+
+    // The reaper task re-reads the deadline before it decides to expire a mapping, but an outbound
+    // packet's refresh can still land between that read and the write lock. Reaping then would
+    // strand the flow holding this Arc on a tuple the next flow for the same private tuple no
+    // longer draws, so the removal has to re-check expiry under the lock, which means a mapping
+    // that is live by the time the reaper gets there survives.
+    #[test]
+    fn a_mapping_that_is_live_again_survives_its_reaper() {
+        let pool = narrow_budget_pool();
+        let subscriber_ip = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+        let key = MappingKey::new(port(1), MappingScope::Independent);
+
+        let mapping = pool
+            .get_or_create_mapping(subscriber_ip, key, false)
+            .expect("the pool has room");
+        let subscriber = pool
+            .subscribers()
+            .get(subscriber_ip)
+            .expect("a subscriber row exists after the first mapping");
+
+        // The pool's idle timeout is minutes, so this stands in for a refresh that landed while
+        // the reaper was on its way to the lock
+        assert!(!mapping.is_expired(), "sanity: the mapping is still live");
+        reap_expired_mapping(
+            &subscriber,
+            subscriber_ip,
+            key,
+            &mapping,
+            pool.subscribers(),
+        );
+
+        assert!(
+            subscriber.live_mapping(&key).is_some(),
+            "the reaper removed a mapping that was live again by the time it took the lock"
+        );
+        assert!(
+            pool.subscribers().get(subscriber_ip).is_some(),
+            "the subscriber was reaped although it still holds a live mapping"
+        );
     }
 
     //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1

@@ -506,7 +506,10 @@ fn reaping_a_subscriber_races_a_fresh_mapping_on_it_without_corruption() {
     concurrency::stress(|| {
         let specs = vec![PoolSpec::new(
             vec![AddrInterval::new(BASE, BASE)],
-            IDLE_TIMEOUT,
+            // Set a zero idle timeout, so every mapping this pool hands out is already expired by
+            // the time the reaper looks at it. Otherwise, reap_expired_mapping() refuses to reap a
+            // mapping that is still live and the race would never occur.
+            Duration::ZERO,
         )];
         let pool = Arc::new(
             pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false)
