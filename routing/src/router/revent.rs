@@ -8,6 +8,7 @@ use crate::bmp::bmp_render::BgpNeighEvent;
 use crate::cli::display::PrettyDuration;
 use crate::event::EventLog;
 use crate::router::cpi::CpiStatus;
+use net::interface::InterfaceName;
 
 use config::GenId;
 use config::internal::status::BgpNeighborSessionState;
@@ -34,6 +35,7 @@ pub enum RouterEvent {
 
     IfAdmChange(EthEvent, IfState, IfState),
     IfOperChange(EthEvent, IfState, IfState),
+    IfNameChange(EthEvent, InterfaceName),
 
     BgpNeighStateChange(BgpNeighEvent),
 }
@@ -84,6 +86,11 @@ impl Display for RouterEvent {
                     ev.carrier, ev.carrierup, ev.carrierdown
                 )?;
             }
+            RouterEvent::IfNameChange(ev, old_name) => write!(
+                f,
+                "Interface with ifindex {} was renamed {old_name} -> {}",
+                ev.ifindex, ev.name
+            )?,
             RouterEvent::BgpNeighStateChange(bgp_ev) => {
                 let peer_key = &bgp_ev.peer_key;
                 let peer_router_id = &bgp_ev.peer_router_id;

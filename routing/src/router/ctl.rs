@@ -19,6 +19,7 @@ use crate::RouterError;
 use crate::bmp::bmp_render::BgpNeighEvent;
 use crate::config::RouterConfig;
 use crate::frr::frrmi::FrrAppliedConfig;
+use crate::interfaces::iftablerw::IfTableWriter;
 use crate::interfaces::interface::IfState;
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::router::rio::{CPSOCK, Rio};
@@ -252,8 +253,7 @@ fn handle_config(rio: &mut Rio, config: Arc<ValidatedGwConfig>) {
 fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
     rio.cfg_history = history;
 }
-fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
-    let iftw = &mut db.iftw;
+pub(crate) fn handle_ifevent(ev: EthEvent, iftw: &mut IfTableWriter) {
     let adm_state = if ev.ifup { IfState::Up } else { IfState::Down };
     let oper_state = if ev.iflowerup && ev.ifrunning && ev.carrier {
         IfState::Up
@@ -263,6 +263,10 @@ fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
     let ifindex = ev.ifindex;
     if let Some(iftable) = iftw.enter() {
         let Some(iface) = iftable.get_interface(ifindex) else {
+            warn!(
+                "Got event for interface {} {} not in iftable",
+                ev.ifindex, ev.name
+            );
             return;
         };
         if iface.admin_state != adm_state {
@@ -273,11 +277,19 @@ fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
             ));
         }
         if iface.oper_state != oper_state {
-            revent!(RouterEvent::IfOperChange(ev, iface.oper_state, oper_state));
+            revent!(RouterEvent::IfOperChange(
+                ev.clone(),
+                iface.oper_state,
+                oper_state
+            ));
+        }
+        if iface.name != ev.name {
+            revent!(RouterEvent::IfNameChange(ev.clone(), iface.name.clone()));
         }
     }
     let _ = iftw.set_iface_admin_state(ifindex, adm_state);
     let _ = iftw.set_iface_oper_state(ifindex, oper_state);
+    let _ = iftw.update_name(ifindex, &ev.name);
 }
 
 fn handle_bgp_peer_status_change(bgp_ev: BgpNeighEvent) {
@@ -304,7 +316,7 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
             }
             Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
             Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
-            Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(ev, db),
+            Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(ev, &mut db.iftw),
             Ok(RouterCtlMsg::BgpNeighStatus(bgp_ev)) => handle_bgp_peer_status_change(bgp_ev),
             Err(TryRecvError::Empty) => break,
             Err(e) => {
