@@ -171,10 +171,7 @@ pub mod tests {
         assert_eq!(interface.name.to_string().as_str(), IF_NAME);
         assert_eq!(interface.admin_state, IfState::Down);
         assert_eq!(interface.oper_state, IfState::Up);
-        assert_eq!(
-            interface.description.as_ref().map(|d| d.as_str()),
-            Some(IF_DESC)
-        );
+        assert_eq!(interface.description.as_deref(), Some(IF_DESC));
         assert!(interface.has_address(ifaddr.address()));
         assert_eq!(&interface.get_mac().unwrap().to_string(), IF_MAC);
         assert!(interface.is_attached_to_vrf(VRFID));
@@ -264,7 +261,7 @@ pub mod tests {
         compare(&iftable, &iftr);
 
         // test modify interface config or properties
-        config.set_description("modified config".into());
+        config.set_description("modified config");
         config.set_mtu(Some(Mtu::MAX));
         config.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: SourceMac::try_from(IF_MAC_MOD).unwrap(),
@@ -444,34 +441,34 @@ mod event_processing {
         let mut reference: Vec<Interface> = iftw.enter().unwrap().values().cloned().collect();
         let initial = reference.clone();
 
-        for iface in reference.iter_mut() {
+        for iface in &mut reference {
             // toggle admin state, generate event and check
             toggle_adm(iface);
             let event = gen_event(iface);
             handle_ifevent(&event, &mut iftw).unwrap();
             let updated = get_interface(&iftw, iface.ifindex);
-            compare_interface(&iface, &updated);
+            compare_interface(iface, &updated);
 
             // toggle admin state BACK
             toggle_adm(iface);
             let event = gen_event(iface);
             handle_ifevent(&event, &mut iftw).unwrap();
             let updated = get_interface(&iftw, iface.ifindex);
-            compare_interface(&iface, &updated);
+            compare_interface(iface, &updated);
 
             // toggle oper state, generate event and check
             toggle_oper(iface);
             let event = gen_event(iface);
             handle_ifevent(&event, &mut iftw).unwrap();
             let updated = get_interface(&iftw, iface.ifindex);
-            compare_interface(&iface, &updated);
+            compare_interface(iface, &updated);
 
             // toggle admin state BACK
             toggle_oper(iface);
             let event = gen_event(iface);
             handle_ifevent(&event, &mut iftw).unwrap();
             let updated = get_interface(&iftw, iface.ifindex);
-            compare_interface(&iface, &updated);
+            compare_interface(iface, &updated);
         }
 
         // all interfaces should remain as they were (this is for test correctness)
@@ -482,8 +479,8 @@ mod event_processing {
         similar_asserts::assert_eq!(initial, last);
     }
 
-    fn change_mac(mac: &SourceMac) -> SourceMac {
-        let mut raw = mac.inner().as_mut().clone();
+    fn change_mac(mac: SourceMac) -> SourceMac {
+        let mut raw = *mac.inner().as_mut();
         raw[5] = 15 - raw[5];
         raw[0] = 0x02;
         let reversed = Mac::from(raw);
@@ -496,7 +493,7 @@ mod event_processing {
         let Some(mac) = iface.get_mac() else {
             return false;
         };
-        let changed = change_mac(&mac);
+        let changed = change_mac(mac);
         iface.iftype.set_mac(changed);
         true
     }
@@ -510,7 +507,7 @@ mod event_processing {
         // we include all interfaces in reference, even if they don't have a mac
         let mut reference: Vec<Interface> = iftw.enter().unwrap().values().cloned().collect();
 
-        for iface in reference.iter_mut() {
+        for iface in &mut reference {
             // change mac of reference interface
             if change_interface_mac(iface) {
                 // mac changed, generate event
