@@ -19,6 +19,7 @@ use crate::port::NatPort;
 use concurrency::sync::atomic::Ordering;
 use concurrency::sync::{Arc, RwLock};
 use config::external::overlay::vpcpeering::MappingPolicy;
+#[cfg(not(any(feature = "shuttle", feature = "loom")))]
 use dashmap::DashMap;
 use net::flows::atomic_instant::AtomicInstant;
 use smallvec::SmallVec;
@@ -234,9 +235,13 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         src_ip: I,
         key: MappingKey<I>,
         pool: &PoolSet<I>,
-        // `draw` produces the `AllocatedPort`, and is responsible for having whatever address it
+        // "draw" produces the AllocatedPort, and is responsible for having whatever address it
         // picks associated to a subscriber (so this differs between drawing a fresh port and
         // re-reserving a known one)
+        //
+        // Note that "draw" runs with this subscriber's "mappings" write lock held, so it must no
+        // reach the pool's subscriber table: reaping takes that table's lock and then a
+        // subscriber's mappings, so we'd risk a deadlock.
         draw: impl FnOnce() -> Result<AllocatedPort<I>, AllocatorError>,
     ) -> Result<Arc<Mapping<I>>, AllocatorError> {
         // Lazy staleness check (common path)
@@ -308,8 +313,15 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         Ok(mapping)
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.mappings.read().is_empty()
+    // Whether this subscriber holds no mappings; returns `None` when its map is locked by some
+    // other entity.
+    //
+    // Reaping calls this from inside the subscriber table's shard lock, where blocking on a second
+    // lock would pin the whole shard behind an unrelated subscriber's port draw (which holds
+    // "mappings" for its duration). A subscriber whose lock is held is in use by definition, so we
+    // just decline to reap it.
+    fn try_is_empty(&self) -> Option<bool> {
+        self.mappings.try_read().map(|m| m.is_empty())
     }
 }
 
@@ -319,8 +331,22 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
 
 // The per-pool table of Subscribers, keyed by private address
 #[derive(Debug, Clone)]
-pub(crate) struct SubscribersTable<I: NatIpWithBitmap>(Arc<DashMap<I, Arc<Subscriber<I>>>>);
+pub(crate) struct SubscribersTable<I: NatIpWithBitmap>(Arc<Backing<I>>);
 
+// In production, we use a sharded DashMap, for the concurrency a per-packet table needs. Its shard
+// locks come from dashmap's own RawRwLock, not from concurrency::sync, so a model checker cannot
+// see them. Under shuttle that is fatal rather than merely imprecise: DashMap::remove_if() runs its
+// closure while holding the shard lock, the closure touches a façade lock, and a façade lock
+// operation is a scheduling point; so shuttle suspends the task mid-closure with the real shard
+// lock still held, and the next task to touch any shard parks in a real futex that the
+// single-threaded executor can never wake. The model backends therefore get a façade-routed map
+// instead, at the cost of exploring one global lock where production shards.
+#[cfg(not(any(feature = "shuttle", feature = "loom")))]
+type Backing<I> = DashMap<I, Arc<Subscriber<I>>>;
+#[cfg(any(feature = "shuttle", feature = "loom"))]
+type Backing<I> = RwLock<HashMap<I, Arc<Subscriber<I>>>>;
+
+#[cfg(not(any(feature = "shuttle", feature = "loom")))]
 impl<I: NatIpWithBitmap> SubscribersTable<I> {
     pub(crate) fn new() -> Self {
         Self(Arc::new(DashMap::new()))
@@ -341,13 +367,49 @@ impl<I: NatIpWithBitmap> SubscribersTable<I> {
 
     // Drop subscriber's row if it is still that exact subscriber and still holds no mappings
     pub(crate) fn remove_if_empty(&self, ip: I, subscriber: &Arc<Subscriber<I>>) {
-        self.0
-            .remove_if(&ip, |_, v| Arc::ptr_eq(v, subscriber) && v.is_empty());
+        self.0.remove_if(&ip, |_, v| {
+            Arc::ptr_eq(v, subscriber) && v.try_is_empty().unwrap_or(false)
+        });
     }
 
     #[cfg(test)]
     pub(crate) fn get(&self, ip: I) -> Option<Arc<Subscriber<I>>> {
         self.0.get(&ip).map(|entry| entry.value().clone())
+    }
+}
+
+// The model-checked backing: one façade RwLock over a plain map. Same three operations, same
+// semantics: the emptiness test still runs under the map lock, so the reap stays race-free.
+#[cfg(any(feature = "shuttle", feature = "loom"))]
+impl<I: NatIpWithBitmap> SubscribersTable<I> {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(RwLock::new(HashMap::new())))
+    }
+
+    pub(crate) fn get_or_default(&self, ip: I) -> Arc<Subscriber<I>> {
+        if let Some(existing) = self.0.read().get(&ip) {
+            return existing.clone();
+        }
+        self.0
+            .write()
+            .entry(ip)
+            .or_insert_with(|| Arc::new(Subscriber::default()))
+            .clone()
+    }
+
+    pub(crate) fn remove_if_empty(&self, ip: I, subscriber: &Arc<Subscriber<I>>) {
+        let mut guard = self.0.write();
+        if guard
+            .get(&ip)
+            .is_some_and(|v| Arc::ptr_eq(v, subscriber) && v.try_is_empty().unwrap_or(false))
+        {
+            guard.remove(&ip);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get(&self, ip: I) -> Option<Arc<Subscriber<I>>> {
+        self.0.read().get(&ip).cloned()
     }
 }
 
