@@ -240,6 +240,14 @@ impl Allocation {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn expires_at(&self) -> std::time::Instant {
+        match self {
+            Self::V4(a) => a.expires_at(),
+            Self::V6(a) => a.expires_at(),
+        }
+    }
+
     pub fn refresh(&self) {
         match self {
             Self::V4(a) => a.refresh(),

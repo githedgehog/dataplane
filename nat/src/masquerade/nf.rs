@@ -192,23 +192,28 @@ impl Masquerade {
         flow_info: &FlowInfo,
         state: &MasqueradeState,
     ) {
-        //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
-        //= type=implementation
-        //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
-        //# refresh behavior" of "True".
-        //
-        // Any outbound packet on any flow sharing a mapping refreshes it, independent of that
-        // flow's own idle timer.
-        if let Some(allocation) = state.allocation() {
-            allocation.refresh();
-        }
-
         let key = flow_info.flowkey();
         let current = state.status.load();
         let new_status = next_flow_status(packet, state.action(), current);
         if new_status != current {
             debug!("Status of flow {key} changed: {current} -> {new_status}");
             state.status.store(new_status);
+        }
+
+        //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+        //= type=implementation
+        //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+        //# refresh behavior" of "True".
+        //
+        // Any outbound packet on any flow sharing a mapping refreshes it, independent of that
+        // flow's own idle timer. Not a packet that tears the flow down, though: the flow declines
+        // to extend its own expiry there, and extending the mapping's would hold the public tuple
+        // for a further idle timeout past the close, which is how a pool ends up exhausted by churn
+        // rather than by concurrent flows.
+        if !matches!(new_status, NatFlowStatus::Closed | NatFlowStatus::Reset)
+            && let Some(allocation) = state.allocation()
+        {
+            allocation.refresh();
         }
         let extend_by = match new_status {
             NatFlowStatus::TwoWay => Some(Self::MASQUERADE_TWOWAY_TIMEOUT),
