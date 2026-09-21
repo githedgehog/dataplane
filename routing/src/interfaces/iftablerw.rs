@@ -13,6 +13,7 @@ use crate::rib::vrf::VrfId;
 use crate::rib::vrftable::VrfTable;
 use left_right::ReadHandleFactory;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
+use net::eth::mac::SourceMac;
 use net::interface::address::IfAddr;
 use net::interface::{InterfaceIndex, InterfaceName};
 
@@ -349,6 +350,40 @@ impl IfTableWriter {
         self.0.publish();
         debug!("Changed the name of interface with ifindex {ifindex} to {new_name}");
         Ok(Some(old_name))
+    }
+
+    // Update the mac of an interface. Returns the previous mac if it changed
+    pub fn update_mac(
+        &mut self,
+        ifindex: InterfaceIndex,
+        new_mac: SourceMac,
+    ) -> Result<Option<SourceMac>, RouterError> {
+        let (mut config, mut iftype) = self
+            .enter()
+            .unwrap_or_else(|| unreachable!())
+            .get_interface(ifindex)
+            .map(|iface| (iface.as_config(), iface.iftype.clone()))
+            .ok_or(RouterError::NoSuchInterface(ifindex))
+            .inspect_err(|_| {
+                error!("Can't update mac of interface with index {ifindex}: no such interface");
+            })?;
+
+        let Some(mac) = iftype.get_mac() else {
+            // This should only happen if we modelled incorrectlty the interface
+            error!("Can't update mac of interface with index {ifindex}: it has no mac");
+            return Err(RouterError::HasNoMac(ifindex));
+        };
+        if mac == new_mac {
+            return Ok(None);
+        }
+        iftype.set_mac(new_mac);
+        config.set_iftype(iftype);
+
+        self.0.append(IfTableChange::Mod(config));
+        self.0.publish();
+
+        debug!("Changed the mac of interface with ifindex {ifindex} to {new_mac}");
+        Ok(Some(mac))
     }
 }
 

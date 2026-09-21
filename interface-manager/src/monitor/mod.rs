@@ -7,6 +7,7 @@
 //! For testing, it can be allowed to report events for other types of network devices.
 
 use concurrency::sync::Arc;
+use net::eth::mac::SourceMac;
 use net::interface::{InterfaceIndex, InterfaceName};
 use rtnetlink::MulticastGroup;
 use rtnetlink::packet_core::{NetlinkMessage, NetlinkPayload};
@@ -30,6 +31,7 @@ pub struct EthEvent {
     carrier: Option<bool>,
     carrierup: Option<u32>,   // stats
     carrierdown: Option<u32>, // stats
+    mac: Option<SourceMac>,
 }
 impl EthEvent {
     #[must_use]
@@ -49,6 +51,7 @@ impl EthEvent {
             carrier: None,
             carrierup: None,
             carrierdown: None,
+            mac: None,
         }
     }
     #[must_use]
@@ -66,6 +69,12 @@ impl EthEvent {
         self.carrierdown = carrierdown;
         self
     }
+    #[must_use]
+    pub fn set_mac(mut self, mac: Option<SourceMac>) -> Self {
+        self.mac = mac;
+        self
+    }
+
     #[must_use]
     pub fn ifindex(&self) -> InterfaceIndex {
         self.ifindex
@@ -97,6 +106,10 @@ impl EthEvent {
     #[must_use]
     pub fn carrierdown(&self) -> Option<u32> {
         self.carrierdown
+    }
+    #[must_use]
+    pub fn mac(&self) -> Option<SourceMac> {
+        self.mac
     }
 }
 impl std::fmt::Display for EthEvent {
@@ -191,6 +204,17 @@ impl InterfaceMonitor {
             LinkAttribute::CarrierDownCount(value) => Some(*value),
             _ => None,
         });
+        let mac = link_msg.attributes.iter().find_map(|a| match a {
+            LinkAttribute::Address(value) => match SourceMac::try_from(value) {
+                Ok(mac) => Some(mac),
+                Err(e) => {
+                    warn!("Got invalid mac {value:?}: {e}");
+                    None
+                }
+            },
+            _ => None,
+        });
+
         // `LinkAttribute::OperState` is not reliable for events, so we ignore it.
         // N.B. the above attributes are required (watch the ?)
 
@@ -198,7 +222,8 @@ impl InterfaceMonitor {
         let event = EthEvent::new(ifindex, ifname, ifup, iflowerup, ifrunning)
             .set_carrier(carrier)
             .set_carrierdown(carrierdown)
-            .set_carrierup(carrierup);
+            .set_carrierup(carrierup)
+            .set_mac(mac);
 
         info!("Got event for {event}");
         Some(event)

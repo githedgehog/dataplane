@@ -8,6 +8,7 @@ use crate::bmp::bmp_render::BgpNeighEvent;
 use crate::cli::display::PrettyDuration;
 use crate::event::EventLog;
 use crate::router::cpi::CpiStatus;
+use net::eth::mac::SourceMac;
 use net::interface::InterfaceName;
 
 use config::GenId;
@@ -36,6 +37,7 @@ pub enum RouterEvent {
     IfAdmChange(EthEvent, IfState, IfState),
     IfOperChange(EthEvent, IfState, IfState),
     IfNameChange(EthEvent, InterfaceName),
+    IfMacChange(EthEvent, SourceMac, SourceMac),
 
     BgpNeighStateChange(BgpNeighEvent),
 }
@@ -105,6 +107,12 @@ impl Display for RouterEvent {
                 "Interface with ifindex {} was renamed {old_name} -> {}",
                 ev.ifindex(),
                 ev.name()
+            )?,
+            RouterEvent::IfMacChange(ev, old_mac, new_mac) => write!(
+                f,
+                "Mac of interface {}, ifindex {} changed {old_mac} -> {new_mac}",
+                ev.name(),
+                ev.ifindex(),
             )?,
             RouterEvent::BgpNeighStateChange(bgp_ev) => {
                 let peer_key = &bgp_ev.peer_key;

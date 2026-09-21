@@ -269,6 +269,11 @@ pub(crate) fn handle_ifevent(ev: &EthEvent, iftw: &mut IfTableWriter) -> Result<
     if let Some(old_name) = iftw.update_name(ifindex, ev.name())? {
         revent!(RouterEvent::IfNameChange(ev.clone(), old_name));
     }
+    if let Some(mac) = ev.mac()
+        && let Some(old_mac) = iftw.update_mac(ifindex, mac)?
+    {
+        revent!(RouterEvent::IfMacChange(ev.clone(), old_mac, mac));
+    }
     Ok(())
 }
 
@@ -297,7 +302,14 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
             Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
             Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
             Ok(RouterCtlMsg::IfEvent(ev)) => {
-                let _ = handle_ifevent(&ev, &mut db.iftw);
+                info!("Got interface event {ev}");
+                if let Err(e) = handle_ifevent(&ev, &mut db.iftw) {
+                    if db.have_config() {
+                        warn!("Failed to process event: {e}");
+                    } else {
+                        debug!("Failed to process event: {e} (no config is applied)");
+                    }
+                }
             }
             Ok(RouterCtlMsg::BgpNeighStatus(bgp_ev)) => handle_bgp_peer_status_change(bgp_ev),
             Err(TryRecvError::Empty) => break,

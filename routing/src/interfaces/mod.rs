@@ -369,12 +369,14 @@ pub mod tests {
 #[cfg(test)]
 mod event_processing {
     use super::tests::build_test_iftable_left_right;
-    use crate::Interface;
     use crate::interfaces::iftablerw::IfTableWriter;
     use crate::interfaces::interface::IfState;
     use crate::router::ctl::handle_ifevent;
+    use crate::{Interface, RouterError};
     use interface_manager::monitor::EthEvent;
+    use net::eth::mac::{Mac, SourceMac};
     use net::interface::InterfaceIndex;
+    use tracing_test::traced_test;
 
     // generate event with the admin / oper states of the given interface
     fn gen_event(iface: &Interface) -> EthEvent {
@@ -407,7 +409,6 @@ mod event_processing {
 
     #[track_caller]
     fn compare_interface(reference: &Interface, updated: &Interface) {
-        println!("Checking {reference}");
         similar_asserts::assert_eq!(reference, updated);
     }
 
@@ -479,5 +480,55 @@ mod event_processing {
         // also via writer
         let last: Vec<Interface> = iftw.enter().unwrap().values().cloned().collect();
         similar_asserts::assert_eq!(initial, last);
+    }
+
+    fn change_mac(mac: &SourceMac) -> SourceMac {
+        let mut raw = mac.inner().as_mut().clone();
+        raw[5] = 15 - raw[5];
+        raw[0] = 0x02;
+        let reversed = Mac::from(raw);
+        SourceMac::try_from(reversed).unwrap()
+    }
+
+    // change the mac of an interface if it has one
+    // returns false if the interface has no mac (nothing changed)
+    fn change_interface_mac(iface: &mut Interface) -> bool {
+        let Some(mac) = iface.get_mac() else {
+            return false;
+        };
+        let changed = change_mac(&mac);
+        iface.iftype.set_mac(changed);
+        true
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_interface_change_mac_event() {
+        let (mut iftw, _) = build_test_iftable_left_right();
+        init_oper_state(&mut iftw);
+
+        // we include all interfaces in reference, even if they don't have a mac
+        let mut reference: Vec<Interface> = iftw.enter().unwrap().values().cloned().collect();
+
+        for iface in reference.iter_mut() {
+            // change mac of reference interface
+            if change_interface_mac(iface) {
+                // mac changed, generate event
+                let event = gen_event(iface).set_mac(iface.get_mac());
+                handle_ifevent(&event, &mut iftw).unwrap();
+            } else {
+                // reference iface has no mac. Generate wrong event that includes mac
+                let nobodys = Mac::try_from("02:01:02:02:04:05").unwrap();
+                let nobodys = SourceMac::try_from(nobodys).unwrap();
+                let event = gen_event(iface).set_mac(Some(nobodys));
+
+                // change should be rejected and error propagated
+                let r = handle_ifevent(&event, &mut iftw);
+                assert!(r.is_err_and(|e| matches!(e, RouterError::HasNoMac(_))));
+            }
+            // retrieve interface and compare to reference (already updated)
+            let updated = get_interface(&iftw, iface.ifindex);
+            compare_interface(iface, &updated);
+        }
     }
 }

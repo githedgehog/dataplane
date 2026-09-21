@@ -65,4 +65,7 @@ pub enum RouterError {
 
     #[error("Interface is not attached: {0}")]
     NotAttached(InterfaceIndex),
+
+    #[error("Interface {0} has no mac")]
+    HasNoMac(InterfaceIndex),
 }
