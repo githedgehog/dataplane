@@ -447,28 +447,28 @@ mod event_processing {
             // toggle admin state, generate event and check
             toggle_adm(iface);
             let event = gen_event(iface);
-            handle_ifevent(&event, &mut iftw);
+            handle_ifevent(&event, &mut iftw).unwrap();
             let updated = get_interface(&iftw, iface.ifindex);
             compare_interface(&iface, &updated);
 
             // toggle admin state BACK
             toggle_adm(iface);
             let event = gen_event(iface);
-            handle_ifevent(&event, &mut iftw);
+            handle_ifevent(&event, &mut iftw).unwrap();
             let updated = get_interface(&iftw, iface.ifindex);
             compare_interface(&iface, &updated);
 
             // toggle oper state, generate event and check
             toggle_oper(iface);
             let event = gen_event(iface);
-            handle_ifevent(&event, &mut iftw);
+            handle_ifevent(&event, &mut iftw).unwrap();
             let updated = get_interface(&iftw, iface.ifindex);
             compare_interface(&iface, &updated);
 
             // toggle admin state BACK
             toggle_oper(iface);
             let event = gen_event(iface);
-            handle_ifevent(&event, &mut iftw);
+            handle_ifevent(&event, &mut iftw).unwrap();
             let updated = get_interface(&iftw, iface.ifindex);
             compare_interface(&iface, &updated);
         }

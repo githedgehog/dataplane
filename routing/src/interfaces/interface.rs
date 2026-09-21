@@ -63,6 +63,11 @@ pub enum IfState {
     Down = 1,
     Up = 2,
 }
+impl From<bool> for IfState {
+    fn from(value: bool) -> Self {
+        if value { IfState::Up } else { IfState::Down }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Attachment {

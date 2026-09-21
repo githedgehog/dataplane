@@ -3,6 +3,7 @@
 
 //! Interface to the interfaces module
 
+use crate::Interface;
 use crate::errors::RouterError;
 use crate::fib::fibtype::FibKey;
 use crate::interfaces::iftable::IfTable;
@@ -227,36 +228,57 @@ impl IfTableWriter {
         Ok(())
     }
 
+    // Set the operational state to `state`. Returns the previous state if it changed
     pub fn set_iface_oper_state(
         &mut self,
         ifindex: InterfaceIndex,
         state: IfState,
-    ) -> Result<(), RouterError> {
-        if !self.interface_exists(ifindex) {
+    ) -> Result<Option<IfState>, RouterError> {
+        let Some(oper_state) = self
+            .enter()
+            .unwrap_or_else(|| unreachable!())
+            .get_interface(ifindex)
+            .map(|iface| iface.oper_state)
+        else {
             error!("Can't update oper state of interface with index {ifindex}: no such interface");
             return Err(RouterError::NoSuchInterface(ifindex));
-        }
+        };
 
+        if oper_state == state {
+            return Ok(None);
+        }
         self.0
             .append(IfTableChange::UpdateOpState((ifindex, state)));
         self.0.publish();
-        Ok(())
+
+        debug!("Updated operational state of {ifindex} {oper_state} -> {state}");
+        Ok(Some(oper_state))
     }
     pub fn set_iface_admin_state(
         &mut self,
         ifindex: InterfaceIndex,
         state: IfState,
-    ) -> Result<(), RouterError> {
-        if !self.interface_exists(ifindex) {
+    ) -> Result<Option<IfState>, RouterError> {
+        let Some(admin_state) = self
+            .enter()
+            .unwrap_or_else(|| unreachable!())
+            .get_interface(ifindex)
+            .map(|iface| iface.admin_state)
+        else {
             error!("Can't update admin state of interface with index {ifindex}: no such interface");
             return Err(RouterError::NoSuchInterface(ifindex));
+        };
+
+        if admin_state == state {
+            return Ok(None);
         }
 
         self.0
             .append(IfTableChange::UpdateAdmState((ifindex, state)));
         self.0.publish();
 
-        Ok(())
+        debug!("Updated admin state of interface {ifindex} to {admin_state} -> {state}");
+        Ok(Some(admin_state))
     }
 
     /// Attach an interface to a vrf
@@ -297,33 +319,36 @@ impl IfTableWriter {
     }
 
     pub fn detach_interfaces_from_vrf(&mut self, vrfid: VrfId) {
-        debug!("Detaching all interfaces interfaces from vrf {vrfid}");
+        debug!("Detaching all interfaces from vrf {vrfid}");
         self.0.append(IfTableChange::DetachFromVrf(vrfid));
         self.0.publish();
     }
 
-    #[allow(dead_code)]
+    // change the name of an interface. Returns the previous name if it changed
     pub fn update_name(
         &mut self,
         ifindex: InterfaceIndex,
         new_name: &InterfaceName,
-    ) -> Result<(), RouterError> {
-        let mut ifconfig = self
+    ) -> Result<Option<InterfaceName>, RouterError> {
+        let Some(mut ifconfig) = self
             .enter()
-            .unwrap_or_else(|| unreachable!("self is alive"))
+            .unwrap_or_else(|| unreachable!())
             .get_interface(ifindex)
-            .ok_or(RouterError::NoSuchInterface(ifindex))?
-            .as_config();
-
+            .map(Interface::as_config)
+        else {
+            error!("Can't update name of interface with index {ifindex}: no such interface");
+            return Err(RouterError::NoSuchInterface(ifindex));
+        };
         if ifconfig.name == *new_name {
-            return Ok(());
+            return Ok(None);
         }
+        let old_name = ifconfig.name.clone();
         ifconfig.set_name(new_name);
 
         self.0.append(IfTableChange::Mod(ifconfig));
         self.0.publish();
         debug!("Changed the name of interface with ifindex {ifindex} to {new_name}");
-        Ok(())
+        Ok(Some(old_name))
     }
 }
 
