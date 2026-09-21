@@ -496,11 +496,11 @@ fn tidying_a_dead_block_entry_does_not_drop_a_live_one() {
 /// accepted outcome is self-healing degradation (the new mapping may end up on an orphaned
 /// `Subscriber` row, transiently losing Paired pinning until it too expires), not corruption. The
 /// fresh mapping must always succeed with a port distinct from the one being reaped.
-// FIXME: hangs in shuttle.
-#[cfg_attr(
-    feature = "shuttle",
-    ignore = "hangs in shuttle; DashMap entry()/remove_if() race under shuttle's scheduler, see note above"
-)]
+//
+// This test also demonstrates why SubscribersTable cannot simply be a DashMap under the model
+// backends: remove_if runs its closure while holding a shard lock that shuttle cannot see, and the
+// closure touches a façade lock, which is a scheduling point. Shuttle would the task there with the
+// real lock held and the executor would get stuck in a futex it could never wake.
 #[concurrency::model_test]
 fn reaping_a_subscriber_races_a_fresh_mapping_on_it_without_corruption() {
     concurrency::stress(|| {

@@ -62,6 +62,21 @@
 //!   would allow is forbidden -- but lossy: the model checker never
 //!   explores the many-readers-plus-one-upgradable schedule that
 //!   `parking_lot` permits.
+//!
+//! * **A lock the model checker cannot see must never be held across
+//!   a facade operation.** Locks from outside this facade --
+//!   `dashmap`'s shard locks are the case in the tree -- stay real
+//!   futexes under `loom`/`shuttle*`, while every facade operation is
+//!   a scheduling point. Take one of those real locks and then call a
+//!   facade primitive, and the model suspends the task mid-critical-
+//!   section with the real lock still held; the single-threaded
+//!   executor then parks forever on it. Concretely: no `dashmap`
+//!   closure API (`remove_if`, `remove_if_mut`, `alter`, `retain`,
+//!   `entry().and_modify()`) may touch a facade lock from its
+//!   closure. This is an unconditional executor-wide deadlock, not a
+//!   flaky one -- `SubscribersTable` in `nat` routes its backing map
+//!   through the facade under the model backends for exactly this
+//!   reason.
 
 // loom takes priority so the model checker can drive its own internal
 // state (used for tests that opt loom in explicitly).
