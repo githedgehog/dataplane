@@ -388,7 +388,7 @@ mod event_processing {
             IfState::Up => true,
             IfState::Down | IfState::Unknown => false,
         };
-        let iflowerup = false; // informational
+        let iflowerup = true;
         EthEvent::new(
             iface.ifindex,
             iface.name.clone(),
