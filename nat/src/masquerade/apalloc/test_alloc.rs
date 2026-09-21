@@ -525,6 +525,10 @@ mod tests {
     use concurrency::thread;
     use net::ip::NextHeader;
 
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+    //= type=test
+    //# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+    //# behavior of "Paired".
     #[allow(dead_code)]
     pub(super) fn concurrent_allocations() {
         let allocator = build_allocator();
@@ -1449,6 +1453,10 @@ mod std_tests {
         );
     }
 
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+    //= type=test
+    //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+    //# refresh behavior" of "True".
     #[tokio::test]
     async fn refreshing_a_mapping_extends_it_in_virtual_time_not_wall_time() {
         tokio::time::pause();

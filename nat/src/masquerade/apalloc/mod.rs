@@ -367,13 +367,6 @@ impl NatAllocator {
         self.genid.store(genid, Ordering::Relaxed);
     }
 
-    //= https://www.rfc-editor.org/rfc/rfc5382#section-4.1
-    //= type=todo
-    //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
-    //# for TCP.
-    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
-    //= type=todo
-    //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
     fn allocate_typed<I: MasqueradePools>(
         &self,
         src_vpcd: VpcDiscriminant,
@@ -459,6 +452,16 @@ impl NatAllocator {
             })?;
 
         let allow_null = next_header == NextHeader::ICMP || next_header == NextHeader::ICMP6;
+        //= https://www.rfc-editor.org/rfc/rfc5382#section-4.1
+        //= type=implementation
+        //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
+        //# for TCP.
+        //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+        //= type=implementation
+        //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
+        //
+        // The default MappingPolicy is EndpointIndependent, which is what REQ-1 requires. We may
+        // choose to pick a different variant, which would be a deliberate departure from REQ-1.
         let scope = MappingScope::new(pool.mapping_policy(), dst_ip, dst_port);
         let allocation =
             pool.get_or_create_mapping(src_ip, MappingKey::new(src_port, scope), allow_null)?;
