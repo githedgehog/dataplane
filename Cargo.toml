@@ -187,7 +187,7 @@ proc-macro2 = { version = "1.0.107", default-features = false, features = [] }
 procfs = { version = "0.18.0", default-features = false, features = [] }
 pyroscope = { version = "2.1.1", default-features = false, features = [] }
 quote = { version = "1.0.47", default-features = false, features = [] }
-rand = { version = "0.10.2", default-features = false, features = [] }
+rand = { version = "0.10.3", default-features = false, features = [] }
 rapidhash = { version = "4.5.1", default-features = false, features = [] }
 reedline = { version = "0.51.0", default-features = false, features = [] }
 regex = { version = "1.13.1", default-features = false, features = [] }
