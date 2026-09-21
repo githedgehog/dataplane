@@ -3,16 +3,19 @@
 
 #![cfg(test)]
 
-use crate::masquerade::probe::{Arrival, Fabric, ProbeSpec, Stray, run};
+use crate::Masquerade;
+use crate::masquerade::probe::{Arrival, Fabric, Probe, ProbeSpec, Stray, run};
 use bolero::{Driver, TypeGenerator, ValueGenerator};
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
-use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::MasqueradeExposes;
+use config::external::overlay::vpcpeering::{MappingPolicy, VpcExpose, VpcExposeNatConfig};
+use flow_entry::flow_table::FlowLookup;
 use net::buffer::TestBuffer;
 use net::packet::Packet;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::num::NonZero;
+use std::ops::Bound::Included;
 
 const MAX_EXPOSES: u8 = 3;
 
@@ -29,7 +32,8 @@ impl ValueGenerator for Scenario {
     type Output = (Vec<VpcExpose>, Vec<ProbeSpec>);
 
     fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
-        let exposes = MasqueradeExposes(MAX_EXPOSES).generate(driver)?;
+        let policy = generate_policy(driver)?;
+        let exposes = stamp_policy(MasqueradeExposes(MAX_EXPOSES).generate(driver)?, policy);
 
         let mut probes = Vec::with_capacity(PROBES);
         for _ in 0..PROBES {
@@ -41,6 +45,56 @@ impl ValueGenerator for Scenario {
         }
         Some((exposes, probes))
     }
+}
+
+fn generate_policy<D: Driver>(driver: &mut D) -> Option<MappingPolicy> {
+    Some(match driver.gen_u8(Included(&0), Included(&2))? {
+        0 => MappingPolicy::EndpointIndependent,
+        1 => MappingPolicy::AddressDependent,
+        _ => MappingPolicy::AddressAndPortDependent,
+    })
+}
+
+// Overwrite every generated expose's mapping policy with the provided policy
+fn stamp_policy(mut exposes: Vec<VpcExpose>, policy: MappingPolicy) -> Vec<VpcExpose> {
+    for expose in &mut exposes {
+        if let Some(nat) = expose.nat.as_mut()
+            && let VpcExposeNatConfig::Masquerade(masquerade) = &mut nat.config
+        {
+            masquerade.mapping_policy = policy;
+        }
+    }
+    exposes
+}
+
+// Like Scenario, but hands the chosen policy back to the caller instead of only stamping it in
+#[derive(Debug, Clone, Copy)]
+struct PolicyScenario;
+
+impl ValueGenerator for PolicyScenario {
+    type Output = (Vec<VpcExpose>, Vec<ProbeSpec>, MappingPolicy);
+
+    fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+        let policy = generate_policy(driver)?;
+        let exposes = stamp_policy(MasqueradeExposes(MAX_EXPOSES).generate(driver)?, policy);
+
+        let mut probes = Vec::with_capacity(PROBES);
+        for _ in 0..PROBES {
+            let mut probe = ProbeSpec::generate(driver)?;
+            probe.clear_stray();
+            probes.push(probe);
+        }
+        Some((exposes, probes, policy))
+    }
+}
+
+fn with_runtime(body: impl FnOnce()) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap_or_else(|e| unreachable!("{e}"));
+    let _guard = runtime.enter();
+    body();
 }
 
 fn settled(body: impl FnOnce()) {
@@ -336,6 +390,132 @@ fn an_internal_endpoint_keeps_one_public_address() {
             }
         }));
     tally.report("address pairing");
+}
+
+// Independent restatement of RFC 4787 4.1's X1':x1'=X2':x2' definition
+fn should_reuse(
+    policy: MappingPolicy,
+    before_dst: (IpAddr, u16),
+    after_dst: (IpAddr, u16),
+) -> bool {
+    match policy {
+        MappingPolicy::EndpointIndependent => true,
+        MappingPolicy::AddressDependent => before_dst.0 == after_dst.0,
+        MappingPolicy::AddressAndPortDependent => before_dst == after_dst,
+    }
+}
+
+// Send "elsewhere" on the same flow that produced "before"/"before_tuple", and check that whether
+// the public tuple is reused matches what the policy says it should be
+#[allow(clippy::too_many_arguments)]
+fn check_policy_scoped_reuse(
+    lookup: &mut FlowLookup,
+    masq: &mut Masquerade,
+    elsewhere: &Probe,
+    before: (IpAddr, u16),
+    before_tuple: (IpAddr, u16),
+    before_dst: (IpAddr, u16),
+    policy: MappingPolicy,
+    tally: &Tally,
+) {
+    let second = run(
+        lookup,
+        masq,
+        vec![elsewhere.packet()],
+        elsewhere.arrival.dst_vpcd,
+    );
+    if out_unchanged(&second, before) {
+        return;
+    }
+    let after_tuple = source_of(&second[0]);
+    let after_dst = (elsewhere.destination, elsewhere.dport);
+    if after_dst == before_dst {
+        return;
+    }
+
+    let expected_reuse = should_reuse(policy, before_dst, after_dst);
+    let actual_reuse = after_tuple == before_tuple;
+    assert_eq!(
+        expected_reuse, actual_reuse,
+        "under {policy:?}, {before:?} talking to {before_dst:?} got {before_tuple:?}, and talking to {after_dst:?} got {after_tuple:?}; \
+         reuse should have been {expected_reuse}"
+    );
+    tally.reached.fetch_add(1, Ordering::Relaxed);
+}
+
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+//= type=test
+//# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
+#[test]
+#[cfg_attr(miri, ignore = "one configuration is ~15 min under miri")]
+fn mapping_reuse_matches_the_configured_policy() {
+    let tally = Tally::default();
+
+    with_runtime(|| {
+        bolero::check!()
+            .with_generator(PolicyScenario)
+            .cloned()
+            .for_each(
+                |(exposes, probes, policy): (Vec<VpcExpose>, Vec<ProbeSpec>, MappingPolicy)| {
+                    tally.seen.fetch_add(1, Ordering::Relaxed);
+                    let Some(fabric) = fabric(&exposes) else {
+                        return;
+                    };
+                    tally.built.fetch_add(1, Ordering::Relaxed);
+                    let (mut lookup, mut masq) = fabric.stages();
+
+                    for spec in &probes {
+                        let probe = (*spec).resolve(&fabric);
+                        let before = (probe.source, probe.sport);
+                        let first = run(
+                            &mut lookup,
+                            &mut masq,
+                            vec![probe.packet()],
+                            probe.arrival.dst_vpcd,
+                        );
+                        if out_unchanged(&first, before) {
+                            continue;
+                        }
+                        let before_tuple = source_of(&first[0]);
+                        let before_dst = (probe.destination, probe.dport);
+
+                        // Same destination address, different port: separates ADM (must reuse)
+                        // from APDM (must not).
+                        let mut same_addr = (*spec).resolve(&fabric);
+                        same_addr.dport = same_addr.dport.wrapping_add(1).max(1);
+                        check_policy_scoped_reuse(
+                            &mut lookup,
+                            &mut masq,
+                            &same_addr,
+                            before,
+                            before_tuple,
+                            before_dst,
+                            policy,
+                            &tally,
+                        );
+
+                        // A genuinely different destination address: EIM must still reuse; ADM and
+                        // APDM must not.
+                        if let Some(other) = fabric.peer.iter().find(|a| **a != probe.destination) {
+                            let mut other_addr = (*spec).resolve(&fabric);
+                            other_addr.destination = *other;
+                            check_policy_scoped_reuse(
+                                &mut lookup,
+                                &mut masq,
+                                &other_addr,
+                                before,
+                                before_tuple,
+                                before_dst,
+                                policy,
+                                &tally,
+                            );
+                        }
+                    }
+                },
+            );
+    });
+
+    tally.report("policy-scoped reuse");
 }
 
 //= https://www.rfc-editor.org/rfc/rfc5382#section-7.1
