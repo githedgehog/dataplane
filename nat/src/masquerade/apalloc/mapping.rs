@@ -421,7 +421,10 @@ fn spawn_mapping_reaper<I: NatIpWithBitmap>(
 
 #[cfg(test)]
 mod tests {
+    use super::super::setup::{narrow_budget_specs, pool_sets_for_specs};
+    use super::super::test_alloc::context::port;
     use super::*;
+    use net::ip::NextHeader;
     use std::net::Ipv4Addr;
 
     fn dst() -> Ipv4Addr {
@@ -432,10 +435,6 @@ mod tests {
         "8.8.8.8".parse().unwrap()
     }
 
-    fn a_port(n: u16) -> NatPort {
-        NatPort::new_port(std::num::NonZero::new(n).unwrap())
-    }
-
     // RFC 4787 Endpoint-Independent Mapping: the destination never enters the scope, so every
     // combination of destination address/port collapses to "Independent"
     //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
@@ -443,7 +442,7 @@ mod tests {
     //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
     #[test]
     fn endpoint_independent_ignores_the_destination() {
-        for dst_port in [None, Some(a_port(80)), Some(a_port(443))] {
+        for dst_port in [None, Some(port(80)), Some(port(443))] {
             assert_eq!(
                 MappingScope::new(MappingPolicy::EndpointIndependent, dst(), dst_port),
                 MappingScope::Independent
@@ -456,8 +455,8 @@ mod tests {
     #[test]
     fn address_dependent_ignores_the_destination_port() {
         assert_eq!(
-            MappingScope::new(MappingPolicy::AddressDependent, dst(), Some(a_port(80))),
-            MappingScope::new(MappingPolicy::AddressDependent, dst(), Some(a_port(443))),
+            MappingScope::new(MappingPolicy::AddressDependent, dst(), Some(port(80))),
+            MappingScope::new(MappingPolicy::AddressDependent, dst(), Some(port(443))),
         );
         assert_eq!(
             MappingScope::new(MappingPolicy::AddressDependent, dst(), None),
@@ -472,17 +471,17 @@ mod tests {
         let a = MappingScope::new(
             MappingPolicy::AddressAndPortDependent,
             dst(),
-            Some(a_port(80)),
+            Some(port(80)),
         );
         let b = MappingScope::new(
             MappingPolicy::AddressAndPortDependent,
             dst(),
-            Some(a_port(443)),
+            Some(port(443)),
         );
         let c = MappingScope::new(
             MappingPolicy::AddressAndPortDependent,
             other_dst(),
-            Some(a_port(80)),
+            Some(port(80)),
         );
         assert_ne!(a, b, "a different destination port must change the scope");
         assert_ne!(
@@ -498,6 +497,69 @@ mod tests {
         assert_eq!(
             MappingScope::new(MappingPolicy::AddressAndPortDependent, dst(), None),
             MappingScope::Address(dst())
+        );
+    }
+
+    const BASE: u128 = 0x0A02_0000; // 10.2.0.0, distinct from other apalloc test fixtures' ranges.
+    const BUDGET: u16 = 3;
+
+    // Two addresses, each with a per-address port budget small enough that exhaustion is reachable
+    // in a handful of draws, via the same claiming mechanism port forwarding uses to reserve space
+    fn narrow_budget_pool() -> PoolSet<Ipv4Addr> {
+        pool_sets_for_specs::<Ipv4Addr>(&narrow_budget_specs(BASE, BUDGET), NextHeader::TCP, false)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| unreachable!())
+    }
+
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+    //= type=test
+    //# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+    //# behavior of "Paired".
+    #[test]
+    fn a_subscriber_prefers_its_own_still_open_address_over_a_reopened_earlier_one() {
+        let pool = narrow_budget_pool();
+        let address_a = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+        let address_b = Ipv4Addr::from(u32::try_from(BASE + 1).unwrap_or_else(|_| unreachable!()));
+
+        // Exhaust address_a directly through the pool, simulating other subscribers' demand.
+        // We have bare AllocatedPort objects, so dropping one later in the test releases it.
+        let mut other_held = Vec::new();
+        for _ in 0..BUDGET {
+            let allocation = pool.allocate(false).expect("room for the other demand");
+            assert_eq!(
+                allocation.ip(),
+                address_a,
+                "sanity: exhausting address_a first"
+            );
+            other_held.push(allocation);
+        }
+
+        // The subscriber under test draws for the first time only after address_a is exhausted,
+        // so it is pushed to address_b and has never touched address_a
+        let subscriber = Subscriber::default();
+        let first = subscriber
+            .allocate_paired(&pool, false)
+            .expect("room on address_b");
+        assert_eq!(
+            first.ip(),
+            address_b,
+            "sanity: the subscriber under test should have spilled straight to address_b"
+        );
+
+        // Someone else's allocation on address_a ends, reopening capacity there
+        drop(other_held.remove(0));
+
+        // A new draw for the subscriber under test must stay on its own address_b, which still has
+        // room, rather than drifting onto the just-reopened address_a
+        let second = subscriber
+            .allocate_paired(&pool, false)
+            .expect("room on address_b");
+        assert_eq!(
+            second.ip(),
+            address_b,
+            "the subscriber drifted onto a reopened address it had never used instead of staying on its own still-open one: \
+             Paired pooling has regressed to plain pool-wide reuse"
         );
     }
 }

@@ -9,9 +9,10 @@
 #![cfg(test)]
 
 use super::alloc::{PoolSet, map_address};
+use super::mapping::{MappingKey, MappingScope};
 use super::port_alloc::AllocatedPort;
 use super::region::AddrInterval;
-use super::setup::{PoolSpec, pool_sets_for_specs};
+use super::setup::{PoolSpec, narrow_budget_specs, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use bolero::{Driver, TypeGenerator};
@@ -19,6 +20,7 @@ use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::num::NonZero;
 use std::time::Duration;
 
 // 10.1.0.0, with a window small enough that regions stay cheap to build.
@@ -306,6 +308,156 @@ fn a_region_can_be_allocated_dry() {
 
     drop(held);
     assert!(pool_sets[0].allocate(false).is_ok());
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Address pinning under exhaustion
+///////////////////////////////////////////////////////////////////////////////
+
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+//= type=test
+//# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+//# behavior of "Paired".
+//
+// A subscriber forced to spill by port exhaustion must pin exactly as many addresses as exhaustion
+// actually forced: one per address boundary crossed, never one per flow.
+#[test]
+#[cfg_attr(emulated, ignore = "exhaustive allocator walk is too slow to emulate")]
+fn a_subscriber_pins_only_as_many_addresses_as_exhaustion_forces() {
+    const PORTS_PER_ADDRESS: usize = 65536 - 1024;
+    const ADDRESSES: usize = 2;
+
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(BASE, BASE + ADDRESSES as u128 - 1)],
+        IDLE_TIMEOUT,
+    )];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+    let pool = &pool_sets[0];
+
+    let subscriber_ip =
+        Ipv4Addr::from(u32::try_from(BASE + 1000).unwrap_or_else(|_| unreachable!()));
+
+    let mut seen_ips: Vec<Ipv4Addr> = Vec::new();
+    let mut moved_at = None;
+    let mut held = Vec::new();
+
+    // The private port space is 16 bits, so one subscriber cannot generate more than 65k distinct
+    // mappings. As a consequence, it cannot drain two full addresses' worth of public ports (2 *
+    // 64512). So this can only ever force a single spill: the second address never comes close to
+    // exhaustion from one subscriber alone.
+    for draw in 1..=u16::MAX {
+        let key = MappingKey::new(
+            NatPort::new_port(NonZero::new(draw).unwrap_or_else(|| unreachable!())),
+            MappingScope::Independent,
+        );
+        let Ok(mapping) = pool.get_or_create_mapping(subscriber_ip, key, false) else {
+            break;
+        };
+        if !seen_ips.contains(&mapping.ip()) {
+            seen_ips.push(mapping.ip());
+            if seen_ips.len() == 2 && moved_at.is_none() {
+                moved_at = Some(held.len());
+            }
+        }
+        held.push(mapping);
+    }
+
+    assert_eq!(
+        seen_ips.len(),
+        2,
+        "{} draws pinned {} address(es) for one subscriber, not exactly the 2 that exhaustion forces; \
+         either it spilled too early (Paired pooling regressed) or kept spilling instead of stabilizing on its second address",
+        held.len(),
+        seen_ips.len()
+    );
+    assert_eq!(
+        moved_at,
+        Some(PORTS_PER_ADDRESS),
+        "the spill to a second address did not happen exactly at the first address's capacity"
+    );
+}
+
+const MIN_BUDGET: u16 = 4;
+const MAX_BUDGET: u16 = 32;
+
+// An interleaved sequence of draws between two subscribers sharing one narrow-budget pool.
+#[derive(Debug, Clone)]
+struct IsolationScenario {
+    budget: u16,
+    // "true" draws for subscriber A next, "false" for subscriber B.
+    plan: Vec<bool>,
+}
+
+impl TypeGenerator for IsolationScenario {
+    fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+        let budget =
+            MIN_BUDGET + u16::from(driver.produce::<u8>()?) % (MAX_BUDGET - MIN_BUDGET + 1);
+        let mut plan: Vec<bool> = driver.produce()?;
+        // Long enough to force each subscriber to spill a few times over, short enough to stay
+        // cheap regardless of how small `budget` came out.
+        plan.truncate(6 * usize::from(MAX_BUDGET));
+        Some(Self { budget, plan })
+    }
+}
+
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+//= type=test
+//# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+//# behavior of "Paired".
+//
+// One subscriber being forced to spill under exhaustion must never pin an extra address for a
+// different subscriber sharing the same pool
+#[test]
+fn one_subscriber_s_exhaustion_never_pins_an_extra_address_for_another() {
+    bolero::check!()
+        .with_type()
+        .cloned()
+        .for_each(|scenario: IsolationScenario| {
+            let specs = narrow_budget_specs(BASE, scenario.budget);
+            let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+            let pool = &pool_sets[0];
+
+            let subscriber_a =
+                Ipv4Addr::from(u32::try_from(BASE + 1000).unwrap_or_else(|_| unreachable!()));
+            let subscriber_b =
+                Ipv4Addr::from(u32::try_from(BASE + 1001).unwrap_or_else(|_| unreachable!()));
+
+            let mut seen: BTreeMap<Ipv4Addr, BTreeSet<Ipv4Addr>> = BTreeMap::new();
+            let mut held = Vec::new();
+
+            for (step, draws_a) in scenario.plan.iter().enumerate() {
+                let Ok(private_port) = u16::try_from(step + 1) else {
+                    break;
+                };
+                let (subscriber, other) = if *draws_a {
+                    (subscriber_a, subscriber_b)
+                } else {
+                    (subscriber_b, subscriber_a)
+                };
+                let before_other = seen.get(&other).cloned().unwrap_or_default();
+                let before_len = seen.get(&subscriber).map_or(0, BTreeSet::len);
+
+                let key = MappingKey::new(
+                    NatPort::new_port(NonZero::new(private_port).unwrap_or_else(|| unreachable!())),
+                    MappingScope::Independent,
+                );
+                if let Ok(mapping) = pool.get_or_create_mapping(subscriber, key, false) {
+                    seen.entry(subscriber).or_default().insert(mapping.ip());
+                    held.push(mapping);
+                }
+
+                assert_eq!(
+                    seen.get(&other).cloned().unwrap_or_default(),
+                    before_other,
+                    "subscriber {other}'s pinned addresses changed as a side effect of a draw for subscriber {subscriber}"
+                );
+                let after_len = seen.get(&subscriber).map_or(0, BTreeSet::len);
+                assert!(
+                    after_len <= before_len + 1,
+                    "subscriber {subscriber} pinned more than one new address from a single draw"
+                );
+            }
+        });
 }
 
 #[test]
