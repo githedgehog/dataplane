@@ -1016,10 +1016,8 @@ mod tests {
 
         assert!(
             SEEN.load(Relaxed) > 0,
-            "no drawn operation ever wrote a vpc while leaving one of its peerings unwritten. \
-             Either the vocabulary changed and a peering-only frame filter is now sound -- in \
-             which case say so where the filter is written -- or the generator stopped drawing \
-             `AddPeering` against a vpc that already had one"
+            "no generated operation wrote a VPC without writing all its peerings; check \
+             that AddPeering still targets VPCs with existing peerings"
         );
     }
 

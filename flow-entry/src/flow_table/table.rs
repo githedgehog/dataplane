@@ -450,8 +450,8 @@ impl FlowTable {
         Some(table.len())
     }
 
-    /// Tells whether the table physically stores no entries at all, expired ones included.
-    /// `None` when the lock is held, exactly as [`Self::len`].
+    /// Whether the table contains no entries, including expired entries. Returns `None` if a
+    /// table lock is unavailable, as [`Self::len`] does.
     #[must_use]
     pub fn is_empty(&self) -> Option<bool> {
         let table = self.table.try_read()?;
@@ -835,7 +835,7 @@ mod tests {
             assert_eq!(
                 flow_table.live_len(),
                 flow_table.len().unwrap(),
-                "standing aside for a live flow must not change the count"
+                "reusing a live flow must not change the count"
             );
         }
 

@@ -202,8 +202,7 @@ impl Fleet {
         }
         if doing(Enact::OpenGeneration) {
             self.genid.set(self.genid.get() + 1);
-            // `mgmt` opens the generation for stamping here, immediately before the first walk
-            // that migrates flows into it and long before `Enact::PublishGeneration` enforces it.
+            // Match `mgmt`: open the generation before migration and publish it after apply.
             self.blueprint.pipeline.open_generation(self.genid.get());
         }
         if doing(Enact::Masquerade) {
@@ -509,15 +508,8 @@ fn assert_within_budget<G: bolero::ValueGenerator>(name: &str, generator: &G) {
 #[cfg(test)]
 fn assert_covered(covered: bool, what: &str) {
     if (cfg!(instrumented) || cfg!(emulated) || cfg!(sanitized)) && !covered {
-        // Coverage, emulation and the sanitizers are all slow enough per case
-        // that bolero's budget buys a sample too small for "did anything reach
-        // this branch" to mean anything: qemu-user gets a couple of orders of
-        // magnitude fewer cases than a native run, and instrumentation is not
-        // far behind. A sanitizer keeps every iteration -- deliberately, races
-        // need them -- but bolero still stops on wall-clock, so the sample is
-        // just as small and this guard would be judging the sanitizer.
-        // Say so and carry on -- the point of those runs is the line counts and
-        // the target's own behaviour, and failing here loses both.
+        // Instrumentation and emulation reduce the samples collected within Bolero's time
+        // budget. Skip coverage assertions on these small samples; keep the per-case checks.
         eprintln!("{what} -- not asserted: too few cases under this build");
         return;
     }
@@ -583,9 +575,8 @@ impl Translations {
                 self.declared
                     .iter()
                     .any(|pool| pool.admits(before, source, towards)),
-                "{at}: masquerade rewrote {before} to {source} on the way to {towards:?}, which \
-                 is not a pool any expose publishing {before} declares towards that vpc; the \
-                 flow emerged on some other expose's pool"
+                "{at}: translation {before} -> {source} towards {towards:?} falls outside \
+                 the source expose's allowed pool"
             );
         }
     }
@@ -604,29 +595,21 @@ impl Translations {
     }
 }
 
-/// One expose's private side, and the public side a source from it may be rewritten to.
+/// An expose's private range and the public pool allowed to translate it.
 ///
-/// Kept as pairs rather than flattened into one list of public prefixes. Flattening asks only
-/// whether *some* expose in the overlay declares the address a source was rewritten to, which
-/// accepts a flow emerging on an unrelated tenant's pool -- the containment failure actually
-/// worth finding. Binding the two ends together means the pool has to be one the address being
-/// translated is entitled to.
+/// Keep them paired so the check rejects translations into another tenant's pool.
 #[cfg(test)]
 pub(crate) struct DeclaredPool {
     private: Vec<Prefix>,
     public: Vec<Prefix>,
-    /// The vpc this expose publishes *towards*. A vpc that exposes the same addresses to two
-    /// peers under two pools is entitled to only one of them per destination, so without this
-    /// the check would still accept a flow drawn from the pool meant for the other peer.
+    /// Destination VPC. The same private range may use different pools for different peers.
     towards: Option<VpcDiscriminant>,
 }
 
 #[cfg(test)]
 impl DeclaredPool {
-    /// Whether this expose is the one that would rewrite `private` to `public` on the way to
-    /// `towards`. An unknown destination falls back to the addresses alone -- it is the
-    /// flow-filter's job to place a packet, and a packet it has not placed is not this
-    /// assertion's to judge.
+    /// Whether this expose allows the translation from `private` to `public` towards `towards`.
+    /// If the flow filter has not assigned a destination, check only the address ranges.
     fn admits(&self, private: IpAddr, public: IpAddr, towards: Option<VpcDiscriminant>) -> bool {
         (towards.is_none() || self.towards.is_none() || self.towards == towards)
             && self.private.iter().any(|p| p.covers_addr(&private))
@@ -657,7 +640,7 @@ fn declared_pools(overlay: &ValidatedOverlay) -> Arc<[DeclaredPool]> {
     for vpc in overlay.vpc_table().values() {
         for peering in vpc.peerings() {
             let (local, remote) = (peering.local(), peering.remote());
-            // Each manifest publishes towards the vpc named by the *other* one.
+            // Each manifest exposes addresses to the other manifest's VPC.
             for (mine, theirs) in [(local, remote), (remote, local)] {
                 let towards = discriminant(theirs.name());
                 for expose in mine.valexp() {
@@ -2100,10 +2083,9 @@ mod acl {
         )
     }
 
-    /// Port forwarding did not migrate its own flows, so a port-forwarded connection lost its
-    /// flow-scoped `Allow` the moment *any* configuration was enacted -- however unrelated, a
-    /// byte-for-byte re-enactment included. `AclFilter` runs before `PortForwarder` and refuses a
-    /// flow a generation behind, so the stage that could have revalidated it never saw the reply.
+    /// Port-forwarded flows must retain their ACL permission across an unchanged configuration.
+    /// The ACL stage runs before port forwarding, so flows must migrate before the new
+    /// generation is published.
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_port_forwarded_flow_keeps_its_acl_permission_across_a_configuration_change() {
@@ -2144,9 +2126,8 @@ mod acl {
         let before = answer(&mut fabric);
         assert!(
             matches!(before, Verdict::Forwarded { .. }),
-            "the flow did not authorise the answer even before anything changed: {before:?}. \
-             Either the reverse lookup in `AclFilter::lookup` has stopped working or this fixture \
-             no longer opens a flow"
+            "reply failed before reconfiguration: {before:?}; check flow creation and the \
+             ACL reverse lookup"
         );
 
         fabric.fleet.enact(&overlay, Enact::Everything);
@@ -2159,20 +2140,14 @@ mod acl {
         let after = answer(&mut fabric);
         assert!(
             matches!(after, Verdict::Forwarded { .. }),
-            "a port-forwarded flow lost its acl permission to a configuration change that did \
-             not touch it: {after:?}. `migrate_port_forwarded_flows` is what carries it, and it \
-             runs from `PortFwTableWriter::update_table_and_flows` -- check the enactment still \
-             calls that rather than bare `update_table`"
+            "unchanged configuration invalidated a port-forwarded flow's ACL permission: \
+             {after:?}; check that apply calls update_table_and_flows"
         );
     }
 
-    /// A configuration apply is not atomic: `mgmt` installs every table, migrates the flows of
-    /// the previous generation, and only then publishes the new generation id. A flow opened in
-    /// between was admitted by the new tables but used to stamp itself from the generation still
-    /// published, so the publish immediately made it look like a leftover of the generation
-    /// before -- and the ACL dropped its reply. Nothing rescues a port-forwarded flow from that:
-    /// unlike a masqueraded one it is never re-stamped from the allocator's generation, and the
-    /// ACL runs ahead of the port-forwarder, so the reply dies before the stage that would fix it.
+    /// A flow created between migration and publication must use the new generation. Stamping
+    /// it with the published generation would make it stale as soon as the apply ends, causing
+    /// the ACL stage to drop its reply.
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_flow_opened_while_a_configuration_is_applied_survives_the_publish() {
@@ -2211,7 +2186,7 @@ mod acl {
         let advertised: IpAddr = "172.16.0.5".parse().unwrap_or_else(|_| unreachable!());
         let outside = peer(advertised);
 
-        // Open the flow inside the window.
+        // Create the flow after migration but before publication.
         let mut request = super::round_trip::udp(outside, advertised, 40000, 2003)
             .expect("a well-formed request");
         arrive(&mut request, remote());
@@ -2229,7 +2204,7 @@ mod acl {
             .transport_dst_port()
             .expect("a forwarded request has a destination port");
 
-        // Close the apply.
+        // Publish the new generation.
         fabric.fleet.enact(&overlay, Enact::PublishGeneration);
         assert_eq!(fabric.fleet.blueprint.pipeline.genid(), FIRST_GENID + 1);
 
@@ -2239,10 +2214,8 @@ mod acl {
         let after = verdict(&fabric.send(answer));
         assert!(
             matches!(after, Verdict::Forwarded { .. }),
-            "a flow opened while the configuration was being applied was stale the moment the \
-             apply finished, and its answer was refused: {after:?}. The generation a new flow \
-             stamps itself with must be opened before the migration walks, not published after \
-             them -- see `PipelineData::open_generation`"
+            "a flow created during apply became stale at publication: {after:?}; open its \
+             generation before migration"
         );
     }
 }
@@ -4044,7 +4017,7 @@ mod icmp_error {
 
     const PEER: &str = "3.3.3.1";
 
-    /// One case: a flow to open, and how the router on the far side quotes it back at us.
+    /// A flow and the ICMP error that quotes it.
     #[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
     struct Reported {
         host: u8,
@@ -4052,18 +4025,15 @@ mod icmp_error {
         dport: u16,
         quoted: Quoted,
         code: Code,
-        /// Quote the flow we opened, or a datagram shaped like it that names no flow at all.
+        /// Quote the open flow or a similar datagram with no matching flow.
         names_a_live_flow: bool,
     }
 
-    /// How much of the offending datagram the far-side router put in the quote.
+    /// Length of the offending datagram included in the ICMP error.
     ///
-    /// RFC 792 asks for the IP header plus eight octets and RFC 1812 asks for as much as will
-    /// fit, so everything from "the whole datagram" down to "not even a full IP header" is on
-    /// the wire somewhere, and each length is a different walk through the embedded parser.
-    /// `First` is the one that matters: a plain "trim n octets from the end" never reaches a
-    /// header boundary, because the datagrams this fixture emits are the better part of two
-    /// kilobytes and `n` is a byte.
+    /// Vary quotes from a full datagram to a partial IP header to exercise parser boundaries.
+    /// `First` reaches those boundaries directly: removing at most 255 trailing bytes from
+    /// these roughly 2 KiB datagrams cannot reach the headers.
     #[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
     enum Quoted {
         Whole,
@@ -4105,7 +4075,7 @@ mod icmp_error {
         }
     }
 
-    /// A packet's bytes from its IP header onwards -- what a router quotes back at you.
+    /// The packet bytes from its IP header onwards, as quoted in an ICMP error.
     fn datagram(packet: Packet<TestBuffer>) -> Option<Vec<u8>> {
         let eth = packet.headers().try_eth()?.size().get() as usize;
         let wire = packet.serialize().ok()?;
@@ -4123,7 +4093,7 @@ mod icmp_error {
         PEER.parse().unwrap_or_else(|_| unreachable!())
     }
 
-    /// Open a flow and hand back the frame the gateway put on the wire for it.
+    /// Open a flow and return the emitted frame.
     fn open(fabric: &mut Fabric, host: u8, sport: u16, dport: u16) -> Option<Packet<TestBuffer>> {
         let src: IpAddr = format!("1.1.0.{host}")
             .parse()
@@ -4142,18 +4112,17 @@ mod icmp_error {
             .collect()
     }
 
-    /// What one case did, for the coverage guards to add up.
+    /// Outcomes counted by the coverage checks.
     struct Outcome {
         refused: bool,
         tore_down: bool,
         named_nobody: bool,
     }
 
-    /// Open a flow, have the far side quote it back as an ICMP error, and see what happens.
+    /// Open a flow and process an ICMP error quoting its emitted packet.
     ///
-    /// `None` when the case could not be set up -- an address or port the fixture will not
-    /// accept, a quote too mangled to assemble. Those are skipped rather than failed; the
-    /// coverage guards on the caller are what notice if too many of them are.
+    /// Return `None` if the fixture rejects the address, port, or quote. The caller checks
+    /// that generated cases reach each handler outcome.
     fn run_case(reported: &Reported) -> Option<Outcome> {
         let &Reported {
             host,
@@ -4163,9 +4132,7 @@ mod icmp_error {
             code,
             names_a_live_flow,
         } = reported;
-        // A bystander on the same peering, opened first and never mentioned again. Its flows are
-        // what the containment assertion is about: an ICMP error is entitled to the pair it
-        // names and to nothing else.
+        // Open an unrelated flow first to check that the ICMP error leaves it active.
         let bystander = host.wrapping_add(1);
         if bystander == host {
             return None;
@@ -4185,8 +4152,7 @@ mod icmp_error {
         let offending = if names_a_live_flow {
             inside(&delivered)?
         } else {
-            // The same shape and the same public address, on a port the allocator has not handed
-            // out, so the reversed key misses the table entirely.
+            // Use an unallocated port so the quoted tuple has no flow-table entry.
             super::round_trip::udp(IpAddr::V4(public), peer(), sport ^ 0x8000, dport)?
         };
         let bytes = datagram(offending)?;
@@ -4199,14 +4165,11 @@ mod icmp_error {
         for flow in &watched {
             assert!(
                 flow.is_active(),
-                "an icmp error quoting {}another flow invalidated a bystander's flow {}. Only \
-                 the pair the quote names may be torn down; the reversed embedded key is what \
-                 picks it, so a miss there must let the packet by, not take the nearest flow \
-                 with it",
+                "ICMP error quoting {} invalidated unrelated flow {}",
                 if names_a_live_flow {
-                    ""
+                    "a live flow"
                 } else {
-                    "nothing, and "
+                    "no live flow"
                 },
                 flow.flowkey()
             );
@@ -4222,18 +4185,11 @@ mod icmp_error {
         })
     }
 
-    /// An ICMP error quoting any prefix of a live flow is judged, and judges only that flow.
+    /// Check ICMP handling and ensure unrelated flows remain active.
     ///
-    /// The handler had never been driven by a generated packet. `fn stack` emits an ICMP header
-    /// with an error type and no quoted datagram at all, so every generated case died in
-    /// `IcmpErrorPacket::new`, and four of the handler's six outcomes were reached zero times by
-    /// the entire suite -- measured, not guessed. What gets past that gate is quoting a datagram
-    /// the pipeline really emitted for a flow it really holds, which is free: the fixture has
-    /// one in hand the moment the request is delivered.
-    ///
-    /// The coverage guards below are the point as much as the assertion is. Without them this
-    /// property would go on passing after a change that put it back to generating quotes nothing
-    /// can parse, which is exactly how the gap it closes came to exist.
+    /// Quote a packet emitted by a live flow so cases can reach the handler. The generic packet
+    /// generator omits the quoted datagram and fails parsing first. Coverage checks require
+    /// both accepted and rejected quotes, teardown and survival, and flow-table misses.
     #[tokio::test]
     #[dpdk::with_eal]
     async fn an_icmp_error_quoting_a_live_flow_judges_that_flow_and_no_other() {
@@ -4280,25 +4236,12 @@ mod icmp_error {
         );
         super::assert_covered(
             handled > 0,
-            "every quote was refused, so the handler was never driven -- the exact state this \
-             property exists to keep from returning",
+            "all quotes were rejected before reaching the ICMP handler",
         );
-        super::assert_covered(
-            refused > 0,
-            "no quote was ever short enough to refuse, so the truncation is not being generated",
-        );
-        super::assert_covered(
-            tore_down > 0,
-            "no icmp error ever tore a flow down, so the teardown path is still unexercised",
-        );
-        super::assert_covered(
-            spared > 0,
-            "every icmp error tore a flow down, so nothing exercised the sparing path",
-        );
-        super::assert_covered(
-            nobody > 0,
-            "no quote ever named a flow that does not exist, so the miss path is unexercised",
-        );
+        super::assert_covered(refused > 0, "no quote exercised truncated-header rejection");
+        super::assert_covered(tore_down > 0, "no ICMP error exercised flow teardown");
+        super::assert_covered(spared > 0, "no ICMP error exercised flow survival");
+        super::assert_covered(nobody > 0, "no quoted tuple exercised a flow-table miss");
     }
 }
 
@@ -4362,8 +4305,7 @@ mod model {
     #[concurrency::model_test]
     #[cfg_attr(
         feature = "shuttle",
-        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
-                  park the single thread shuttle schedules its green threads onto"
+        ignore = "DashMap shard locks can block Shuttle's scheduler thread"
     )]
     fn a_pipeline_can_be_driven_inside_a_stress_run() {
         let _eal = dpdk::test_support::start_eal();
@@ -4427,8 +4369,7 @@ mod model {
     #[concurrency::model_test]
     #[cfg_attr(
         feature = "shuttle",
-        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
-                  park the single thread shuttle schedules its green threads onto"
+        ignore = "DashMap shard locks can block Shuttle's scheduler thread"
     )]
     fn two_workers_are_not_given_the_same_public_tuple() {
         const FLOWS: u16 = 3;
@@ -4519,8 +4460,7 @@ mod model {
                 assert_eq!(
                     *count,
                     1,
-                    "{} distinct flows were translated and {tuple:?} was handed out twice, so a \
-                     reply to it cannot be attributed to either of them: {given:?}",
+                    "duplicate public tuple {tuple:?} among {} distinct flows: {given:?}",
                     given.len()
                 );
             }
@@ -4615,8 +4555,7 @@ mod model {
         eprintln!("split={split} thin={thin}");
         super::assert_covered(
             split > 0,
-            "no drawn configuration ever implied enough traffic to load two workers, so this ran \
-             nothing concurrently",
+            "no generated configuration provided traffic for both workers",
         );
     }
 
@@ -4624,7 +4563,7 @@ mod model {
         any(feature = "shuttle", feature = "loom"),
         allow(
             clippy::unnecessary_wraps,
-            reason = "the model backends have no unwinding arm, so only this cfg is infallible"
+            reason = "model backends execute the closure without catching panics"
         )
     )]
     fn without_unwinding<T>(body: impl FnOnce() -> T) -> Result<T, String> {
@@ -4772,7 +4711,7 @@ mod model {
         eprintln!("closed={closed} abandoned={abandoned}");
         super::assert_covered(
             closed > 0,
-            "no conversation was ever answered by the other worker, so nothing crossed",
+            "no conversation received a reply through the other worker",
         );
     }
 
@@ -4804,8 +4743,7 @@ mod model {
     #[concurrency::model_test]
     #[cfg_attr(
         feature = "shuttle",
-        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
-                  park the single thread shuttle schedules its green threads onto"
+        ignore = "DashMap shard locks can block Shuttle's scheduler thread"
     )]
     fn an_icmp_teardown_leaves_another_workers_flow_alone() {
         static REPORTED: AtomicU64 = AtomicU64::new(0);
@@ -4930,8 +4868,7 @@ mod model {
 
                     assert!(
                         teardown.join().expect("teardown panicked"),
-                        "the icmp error never reached the flow it named, so this raced against \
-                         nothing"
+                        "the ICMP error did not reach the target flow"
                     );
                     REPORTED.fetch_add(1, Ordering::Relaxed);
                     answer.join().expect("answer panicked")
@@ -4939,8 +4876,7 @@ mod model {
 
                 assert!(
                     spared.checked(),
-                    "a flow was disturbed by an icmp teardown of a different flow on another \
-                     worker. {}",
+                    "ICMP teardown on another worker disrupted an unrelated flow: {}",
                     spared.describe()
                 );
                 SURVIVED.fetch_add(1, Ordering::Relaxed);
@@ -5074,15 +5010,14 @@ mod model {
         eprintln!("completed={completed} published={published}");
         super::assert_covered(
             completed > 0 && published > 0,
-            "either no conversation completed or no route was published, so nothing was raced",
+            "expected both completed conversations and route publications",
         );
     }
 
     #[concurrency::model_test]
     #[cfg_attr(
         feature = "shuttle",
-        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
-                  park the single thread shuttle schedules its green threads onto"
+        ignore = "DashMap shard locks can block Shuttle's scheduler thread"
     )]
     fn a_next_hop_that_moves_is_never_seen_half_moved() {
         const CHURN: u8 = 3;
@@ -5202,11 +5137,8 @@ mod model {
                                         .find(|nth| waypoint(*nth) == (dst, oif))
                                         .ok_or_else(|| {
                                             format!(
-                                                "it left over interface {oif} towards {dst}, which \
-                                                 is no published next hop: either the \
-                                                 encapsulation and the egress came from different \
-                                                 versions, or the group was read while it was \
-                                                 being written"
+                                                "interface {oif} and destination {dst} do \
+                                                 not match any published next hop"
                                             )
                                         })
                                 };
@@ -5257,27 +5189,22 @@ mod model {
                     let version = match observed {
                         Ok(version) => *version,
                         Err(why) => panic!(
-                            "a probe sent in round {round}, while the next hop was moving, is not \
-                             attributable to any version: {why}"
+                            "round {round}: probe did not match any next-hop version: \
+                             {why}"
                         ),
                     };
                     if last {
                         assert_eq!(
                             version, CHURN,
-                            "a probe sent after the churn had finished was forwarded by version \
-                             {version}, not by version {CHURN}, the last one published. Every \
-                             publish returned before the barrier that released this probe, so a \
-                             reader still serving an earlier version is serving a next hop that \
-                             no longer exists"
+                            "probe used next-hop version {version} after final version \
+                             {CHURN} was published"
                         );
                         continue;
                     }
                     assert!(
                         version == round || version + 1 == round,
-                        "a probe sent in round {round} was forwarded by version {version}. \
-                         Version {} was published before this round opened, so no reader may \
-                         still be serving anything older, and version {round} is the newest that \
-                         exists",
+                        "round {round}: probe used next-hop version {version}; expected {} \
+                         or the current round",
                         round - 1
                     );
                     if version == round {
@@ -5293,16 +5220,15 @@ mod model {
         eprintln!("fresh={fresh} stale={stale}");
         super::assert_covered(
             fresh > 0,
-            "no probe was ever forwarded by the version published in its own round, so the publish \
-             never once landed inside the window it was racing",
+            "no probe used the next hop published in its round; update visibility was not \
+             exercised",
         );
     }
 
     #[concurrency::model_test]
     #[cfg_attr(
         feature = "shuttle",
-        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
-                  park the single thread shuttle schedules its green threads onto"
+        ignore = "DashMap shard locks can block Shuttle's scheduler thread"
     )]
     fn re_enacting_a_configuration_under_load_disturbs_nothing() {
         const FLOWS: u8 = 2;
@@ -5399,9 +5325,8 @@ mod model {
                     });
                     assert!(
                         checked,
-                        "a conversation in round {round} did not survive the configuration it was \
-                         already running being enacted again. Every enactment before this round \
-                         had returned, and the one racing it changes nothing. {described}"
+                        "round {round}: unchanged configuration disrupted traffic after the \
+                         previous apply completed: {described}"
                     );
                     COMPLETED.fetch_add(1, Ordering::Relaxed);
                 }
@@ -5415,15 +5340,14 @@ mod model {
         eprintln!("completed={completed} enacted={enacted}");
         super::assert_covered(
             completed > 0 && enacted > 0,
-            "either no conversation completed or no configuration was enacted, so nothing was raced",
+            "expected both completed conversations and configuration applies",
         );
     }
 
     #[concurrency::model_test]
     #[cfg_attr(
         feature = "shuttle",
-        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
-                  park the single thread shuttle schedules its green threads onto"
+        ignore = "DashMap shard locks can block Shuttle's scheduler thread"
     )]
     fn a_configuration_change_leaves_traffic_outside_its_footprint_alone() {
         const CASES: usize = 64;
@@ -5603,17 +5527,13 @@ mod model {
                                 }
                                 assert!(
                                     checked,
-                                    "traffic outside the footprint of a configuration change did \
-                                     not survive it, in round {round}. The change was {change:?}, \
-                                     whose write set this load is outside of, so the configuration \
-                                     it ran against and the one enacted agree about it entirely. \
-                                     {}. {described}",
+                                    "round {round}: change {change:?} disrupted traffic \
+                                     outside its write set. {}. {described}",
                                     if round == 1 {
-                                        "This round races the enactment that carries the difference"
+                                        "This round overlaps the configuration change"
                                     } else {
-                                        "That enactment returned before this round opened, and \
-                                         this round races only a re-enactment of what is already \
-                                         running"
+                                        "The change completed before this round; only an \
+                                         unchanged configuration was reapplied"
                                     }
                                 );
                             }
@@ -5636,26 +5556,26 @@ mod model {
         );
         super::assert_covered(
             framed > 0,
-            "no draw left two loads outside the footprint of its last operation, so no \
-             configuration change was ever carried under traffic",
+            "no generated change left traffic for two workers outside its write set",
         );
         super::assert_covered(
             raced > 0,
-            "no load was ever carried by the round that races the change itself, so every \
-             assertion here was about a re-enactment of a configuration already running -- which \
-             `re_enacting_a_configuration_under_load_disturbs_nothing` already covers",
+            "no traffic overlapped the configuration change; only unchanged applies were \
+             exercised (see re_enacting_a_configuration_under_load_disturbs_nothing)",
         );
         super::assert_covered(
             framed_out > 0,
-            "no load was ever filtered out for being inside a footprint, so the frame was always \
-             the whole configuration and this property is the re-enactment one with extra steps",
+            "no traffic fell inside the write set, so the footprint filter was not exercised",
         );
     }
 
     #[tokio::test]
     #[dpdk::with_eal]
-    #[ignore = "an instrument, not a property: reports a rate and asserts nothing"]
-    #[allow(clippy::too_many_lines, reason = "one instrument, read top to bottom")]
+    #[ignore = "diagnostic only: reports rates without assertions"]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep diagnostic setup and reporting together"
+    )]
     async fn report_which_enactment_step_disturbs_traffic() {
         use config::external::overlay::algebra::{
             Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
@@ -5820,8 +5740,11 @@ mod model {
 
     #[tokio::test]
     #[dpdk::with_eal]
-    #[ignore = "an instrument, not a property: prints one trace and asserts nothing"]
-    #[allow(clippy::too_many_lines, reason = "one instrument, read top to bottom")]
+    #[ignore = "diagnostic only: prints a trace without assertions"]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep diagnostic setup and reporting together"
+    )]
     async fn report_why_the_masquerade_swap_disturbs_traffic() {
         use concurrency::process_global::atomic::AtomicBool;
         use config::external::overlay::algebra::{

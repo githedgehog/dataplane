@@ -27,11 +27,8 @@ use crate::portfw::packet::nat_packet;
 #[allow(unused)]
 use tracing::{debug, error, trace, warn};
 
-/// Which pair a create attempt ended up translating with, and so what there is to undo.
-///
-/// The same distinction `MasqueradeFlow` draws in the sibling stage: the loser of a race
-/// forwards with the winner's state but owns nothing, so a later failure must not invalidate a
-/// pair another worker installed and is using.
+/// Track whether this call created the flow pair or reused a concurrent winner. Only the
+/// creator may invalidate the pair if translation fails.
 #[derive(Debug)]
 enum PortFwFlow {
     Installed(Arc<FlowInfo>),
@@ -156,25 +153,16 @@ impl PortForwarder {
             return;
         };
 
-        // set the generation id for the flow. This is the generation being installed, not the one
-        // being enforced: the two differ only while a configuration apply is in flight, and a flow
-        // born then belongs to the generation whose tables just admitted it.
+        // Stamp with the generation being installed, which may not yet be published.
         fw_flow.set_genid_pair(self.pipeline_data.staging_genid());
 
         // set the flows in the FORWARD & REVERSE direction for subsequent packets
         let status = setup_forward_flow(&fw_key, &fw_flow, entry, new_dst_ip, new_dst_port);
         setup_reverse_flow(&rev_key, &rev_flow, entry, dst_ip, dst_port, status);
 
-        // Arbitrate before touching the packet.
-        //
-        // The forward key is the tuple the client addressed, *before* translation, so it is the
-        // same for every worker racing to create this flow however far apart the backends they
-        // would pick. Those backends can differ: each worker holds its own read guard on the
-        // port-forwarding table, so a configuration published between two workers' batches has
-        // them mapping one public tuple two ways. Translating first and then discarding the
-        // winner emitted the packet to the loser's backend while the table held only the
-        // winner's pair -- and the reverse key is derived from the backend, so the reply came
-        // back from an address nothing mapped and was dropped.
+        // Claim the forward key before translation. Workers can hold different table snapshots
+        // and choose different backends for the same public tuple. The losing worker must use
+        // the winner's translation so replies match the installed reverse key.
         let outcome = match self.flow_table.insert_if_absent(&fw_flow) {
             Ok(Insertion::Occupied(held)) => {
                 debug!(
@@ -215,10 +203,8 @@ impl PortForwarder {
             }
         };
 
-        // Take a copy of the state rather than translating under the guard: on the losing path
-        // this flow belongs to another worker and is live in the table, which is also why the
-        // miss below is handled instead of asserted -- for a pair this call installed it cannot
-        // happen, but the winner's flow is not ours to make promises about.
+        // Clone the translation state before releasing the guard. A concurrent winner's flow
+        // may lose its state, so handle a missing state even though a new pair always has one.
         let pfw_state = outcome
             .flow()
             .locked
@@ -235,7 +221,7 @@ impl PortForwarder {
             return;
         };
 
-        // translate destination according to whichever pair the table now holds
+        // Translate with the pair that won insertion.
         if let Err(e) = nat_packet(packet, &pfw_state) {
             debug!("Failed to port-forward packet (initial):{e}");
             packet.done(DoneReason::InternalFailure);
@@ -396,8 +382,7 @@ impl PortForwarder {
         packet: &mut Packet<Buf>,
         pfwtable: &PortFwTable,
     ) {
-        // The generation to re-stamp a flow with once we have re-checked it against the table
-        // below, which is the one being installed rather than the one being enforced.
+        // Use the staging generation after validating the flow against the current table.
         let genid = self.pipeline_data.staging_genid();
 
         // fast-path based on the flow table
@@ -492,11 +477,9 @@ mod race {
         forwarding_to("10.0.0.0/30", 9000, 9003)
     }
 
-    /// The same published range, `172.16.0.0/30:8000-8003`, forwarded to a chosen backend range.
+    /// Forward `172.16.0.0/30:8000-8003` to the chosen backend range.
     ///
-    /// Two of these are two configuration generations: the public tuple a client addresses is
-    /// identical, so the forward flow key both workers race to install is identical, while the
-    /// backend each one would translate to is not.
+    /// Different snapshots share the forward key but choose different backends.
     fn forwarding_to(prefix: &str, first: u16, last: u16) -> Fabric {
         let expose = VpcExpose::empty()
             .make_port_forwarding(None, Some(L4Protocol::Tcp))
@@ -753,8 +736,7 @@ mod race {
             packet
         };
 
-        // Both clear flow lookup before either worker runs: neither finds a flow, so both take
-        // the create path with the snapshot its own worker is holding.
+        // Both workers miss flow lookup and create a flow using their own table snapshot.
         let mut stamped = lookup.process(vec![packet(), packet()].into_iter());
         let mut first = stamped.next().unwrap_or_else(|| unreachable!());
         let mut second = stamped.next().unwrap_or_else(|| unreachable!());
@@ -795,8 +777,8 @@ mod race {
         );
         assert_eq!(
             loser, winner,
-            "the loser forwarded to the backend of a snapshot that lost the race; the flow \
-             table holds only the winner's reverse key, so this backend's reply has no mapping"
+            "losing worker used its own backend instead of the winner's; replies have no \
+             reverse mapping"
         );
     }
 }

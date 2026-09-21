@@ -208,23 +208,20 @@ fuzz target time="60s" *args="":
     if [ -n "${sysroot}" ] && [ -r "${sysroot}/.sanitize" ]; then
       built_with="$(cat "${sysroot}/.sanitize")"
       if [ "${built_with}" != "{{ sanitize }}" ]; then
-        printf 'refusing to fuzz: sanitize=%s was asked for, but this sysroot was built with sanitize=%s.\n' \
+        printf 'refusing to fuzz: requested sanitize=%s, but the sysroot uses sanitize=%s.\n' \
           "{{ sanitize }}" "${built_with:-<none>}" >&2
-        printf 'the C dependencies would not be instrumented. Re-enter the shell with:\n' >&2
+        printf 'rebuild the C dependencies and re-enter the shell with:\n' >&2
         printf '  just sanitize=%s setup-roots && nix-shell --argstr sanitize %s\n' \
           "{{ sanitize }}" "{{ sanitize }}" >&2
         exit 1
       fi
     elif [ -n "{{ sanitize }}" ] && [ "{{ sanitize }}" != "NONE" ]; then
-      # Without the stamp there is nothing to compare, and the check above would simply not
-      # run -- so a request for instrumentation would quietly get a sysroot that may have
-      # none, which is the failure the check exists to prevent. Refuse only when a sanitizer
-      # was actually asked for; an uninstrumented run has nothing to be wrong about.
-      printf 'refusing to fuzz: sanitize=%s was asked for, but this sysroot carries no\n' \
+      # A sanitizer run requires a readable stamp to verify the sysroot's instrumentation.
+      printf 'refusing to fuzz: cannot verify sanitize=%s without a readable\n' \
         "{{ sanitize }}" >&2
-      printf '.sanitize stamp (DATAPLANE_SYSROOT=%s), so it cannot be shown to be\n' \
+      printf '.sanitize stamp (DATAPLANE_SYSROOT=%s).\n' \
         "${sysroot:-<unset>}" >&2
-      printf 'instrumented. Re-enter the shell with:\n' >&2
+      printf 'rebuild the sysroot and re-enter the shell with:\n' >&2
       printf '  just sanitize=%s setup-roots && nix-shell --argstr sanitize %s\n' \
         "{{ sanitize }}" "{{ sanitize }}" >&2
       exit 1

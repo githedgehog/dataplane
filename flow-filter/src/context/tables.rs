@@ -345,12 +345,8 @@ impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
     }
 }
 
-// A process-unique sequence for rte_acl context names. This is deliberately *not* scheduled:
-// the registry it feeds is rte_acl's own, which is process-global and outlives any model-checker
-// execution, so a facade atomic here would restart at zero on the second execution and collide.
-// It used to be spelled three times -- `with_std!` on the facade, `with_loom!` and
-// `with_shuttle!` on raw `std::sync` with four suppressions -- because there was no name for
-// "process-lifetime on purpose". There is now.
+// DPDK's ACL registry survives model-checker executions. Its name counter must also persist to
+// avoid reusing a live context's name.
 use concurrency::process_global::atomic::{AtomicU64, Ordering};
 
 static TABLE_SEQ: AtomicU64 = AtomicU64::new(0);

@@ -74,14 +74,11 @@ impl PortFwTableWriter {
         self.0.publish(); // intended
         Ok(())
     }
-    /// Install `ruleset` and carry the live port-forwarded flows onto `genid`.
+    /// Install `ruleset` and migrate live port-forwarded flows to `genid`.
     ///
-    /// This is the entry point a configuration enactment wants, and the counterpart of
-    /// `NatAllocatorWriter::update_nat_allocator`, which has always taken the flow table and the
-    /// generation for the same reason: a stage that runs *before* port forwarding refuses a flow
-    /// whose generation is behind the pipeline's, so nothing the port-forwarding stage does
-    /// later can rescue it. [`Self::update_table`] alone installs the rules and leaves every
-    /// live flow a generation behind.
+    /// Use this during configuration apply, before publishing the generation. The ACL stage
+    /// runs before port forwarding and rejects stale flows; [`Self::update_table`] alone does
+    /// not update their generations.
     pub fn update_table_and_flows(
         &mut self,
         ruleset: &[PortFwEntry],
@@ -98,12 +95,8 @@ impl PortFwTableWriter {
         Ok(())
     }
 
-    /// Lower `vpc_table` to rules, install them, and carry the live flows onto `genid`.
-    ///
-    /// Takes the flow table and the generation for the same reason
-    /// [`Self::update_table_and_flows`] does, and for the additional one that this is the shape
-    /// an enactment has: whoever is holding a validated configuration is also the one who knows
-    /// what generation it is.
+    /// Build and install rules from `vpc_table`, then migrate flows to `genid`. See
+    /// [`Self::update_table_and_flows`] for generation ordering.
     pub fn update_from_vpc_table(
         &mut self,
         vpc_table: &ValidatedVpcTable,

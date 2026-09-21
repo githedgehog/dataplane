@@ -786,20 +786,11 @@ pub fn build_test_icmp6_echo(
     Packet::new(buffer)
 }
 
-/// Build an `ICMPv4` error whose quoted datagram is `quote`, copied in verbatim.
+/// Build an `ICMPv4` error containing the raw `quote` bytes.
 ///
-/// The typed builders above assemble the quote from `EmbeddedTransport` values, which can only
-/// ever produce a quote the deparser agrees with. `quote` here is raw bytes -- the offending
-/// packet from its IP header onwards, at whatever length the caller chose -- so the receiver's
-/// parser has to make sense of it rather than being handed the answer. That is the whole point:
-/// everything a NAT decides about a short or malformed quote lives in that parse.
-///
-/// The ICMP checksum is computed over the quote as parsed, so the result is a *valid* error
-/// unless the caller corrupts it afterwards.
-///
-/// Returns `None` if the assembled packet does not parse, which a sufficiently mangled quote can
-/// legitimately cause -- a caller generating quotes is expected to skip those rather than treat
-/// them as failures.
+/// The quote starts at the offending packet's IP header and may be truncated or malformed.
+/// Re-parse it to exercise embedded-header parsing, then compute the ICMP checksum. Return
+/// `None` if the assembled packet cannot be parsed.
 #[must_use]
 pub fn build_icmp4_error_quoting(
     unreachable: Icmp4DestUnreachable,
@@ -832,9 +823,8 @@ pub fn build_icmp4_error_quoting(
     assemble_quoted(&headers, quote)
 }
 
-/// Build an `ICMPv6` error whose quoted datagram is `quote`, copied in verbatim.
-///
-/// See [`build_icmp4_error_quoting`]; this is the same construction over `ICMPv6`.
+/// Build an `ICMPv6` error containing the raw `quote` bytes. See [`build_icmp4_error_quoting`]
+/// for parsing and checksum behavior.
 #[must_use]
 pub fn build_icmp6_error_quoting(
     icmp_type: Icmp6Type,
@@ -862,11 +852,7 @@ pub fn build_icmp6_error_quoting(
     assemble_quoted(&headers, quote)
 }
 
-/// Lay `headers` down, append `quote` behind them, and re-parse the result.
-///
-/// Re-parsing rather than building the embedded headers directly is the point of these two
-/// constructors: the packet that comes back carries whatever the *parser* made of the quote,
-/// which for a truncated one is not necessarily what the caller put in.
+/// Serialize `headers`, append `quote`, and parse the result to construct embedded headers.
 fn assemble_quoted(headers: &HeadersBuilder, quote: &[u8]) -> Option<Packet<TestBuffer>> {
     let headers = headers.build().ok()?;
     let front = headers.size().get() as usize;
@@ -875,8 +861,7 @@ fn assemble_quoted(headers: &HeadersBuilder, quote: &[u8]) -> Option<Packet<Test
     data[front..].copy_from_slice(quote);
 
     let mut packet = Packet::new(TestBuffer::from_raw_data(&data)).ok()?;
-    // The ICMP checksum covers the quote, so it can only be computed once the quote is in place
-    // and the parser has said what it is.
+    // Compute the checksum after appending and parsing the quote.
     packet.update_checksums();
     Some(packet)
 }
