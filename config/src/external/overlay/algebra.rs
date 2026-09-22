@@ -1511,10 +1511,12 @@ mod tests {
     #[test]
     fn writing_a_vpc_does_not_imply_writing_its_peerings() {
         static SEEN: AtomicUsize = AtomicUsize::new(0);
+        let drawn = AtomicUsize::new(0);
 
         check!()
             .with_generator(Sequence::default())
             .for_each(|ops: &Vec<Op>| {
+                drawn.fetch_add(1, Relaxed);
                 let mut draft = Draft::new();
                 for op in ops {
                     let footprint = op.writes(&draft);
@@ -1529,10 +1531,11 @@ mod tests {
                 }
             });
 
-        assert!(
+        assert_covered(
             SEEN.load(Relaxed) > 0,
+            drawn.load(Relaxed),
             "no generated operation wrote a VPC without writing all its peerings; check \
-             that AddPeering still targets VPCs with existing peerings"
+             that AddPeering still targets VPCs with existing peerings",
         );
     }
 
@@ -1575,16 +1578,18 @@ mod tests {
     /// How many sequences `every_sequence_builds_a_valid_configuration` actually drew.
     /// `check!()` stops on wall clock, so this is set by the machine and the build rather
     /// than by anything in this file, and the coverage guards need it to know whether they
-    /// can speak.
+    /// can speak. It is a `static` only because clippy's `too_many_lines` leaves no room
+    /// for a local; the other tests here keep the same count in a local `drawn`.
     static SEQUENCES: AtomicUsize = AtomicUsize::new(0);
 
-    /// The smallest sample the coverage guards below may judge from.
+    /// The smallest sample any coverage guard in this module may judge from.
     ///
-    /// They ask "did the generator ever draw this shape", and the rarest shape --
-    /// `permit-by-flow` -- turns up in about one drawn sequence in a hundred, so on a
-    /// small enough sample they fail on how many draws the run bought rather than on
-    /// anything about the vocabulary. Measured natively 2026-09-21 (5644 sequences/s, 30
-    /// runs per point, `BOLERO_RANDOM_ITERATIONS` fixing the sample):
+    /// They ask "did the generator ever draw this shape", so on a small enough sample they
+    /// fail on how many draws the run bought rather than on anything about the generator.
+    /// The rarest shape is `permit-by-flow` in `every_sequence_builds_a_valid_configuration`,
+    /// which turns up in about one drawn sequence in a hundred. Measured natively
+    /// 2026-09-21 (5644 sequences/s, 30 runs per point, `BOLERO_RANDOM_ITERATIONS` fixing
+    /// the sample):
     ///
     /// | sequences drawn | runs failing |
     /// |---|---|
@@ -1594,9 +1599,20 @@ mod tests {
     /// | 160 | 8/30 |
     /// | 320 | 0/30 |
     ///
-    /// bolero's 1s default buys ~5600 of them here, so a floor of a thousand leaves the
-    /// guard live -- with room for a runner several times slower than this one -- and
-    /// stands it down where it would only be measuring the machine.
+    /// The other four guards ask about commoner events and so need far less; measured the
+    /// same way 2026-09-22, 60 runs per point, as runs where the counter stayed zero:
+    ///
+    /// | sequences drawn | `SEEN` | `split` | `removed` | `cascaded` |
+    /// |---|---|---|---|---|
+    /// | 5 | 27/60 | 30/60 | 0/60 | 16/60 |
+    /// | 10 | 9/60 | 4/60 | 0/60 | 1/60 |
+    /// | 20 | 0/60 | 2/60 | 0/60 | 0/60 |
+    /// | 40 | 0/60 | 0/60 | 0/60 | 0/60 |
+    ///
+    /// One floor serves all five, sized for the rarest of them. bolero's 1s default buys
+    /// 19k-23k sequences here, so a thousand leaves every guard live -- with room for a
+    /// runner an order of magnitude slower than this one -- and stands them down only
+    /// where they would be measuring the machine.
     const ENOUGH_SEQUENCES: usize = 1_000;
 
     /// Assert a coverage claim, unless the sample is too small for it to mean anything.
@@ -1619,7 +1635,7 @@ mod tests {
         } else if cfg!(sanitized) {
             Some("a sanitizer build buys a fraction of a native run's cases")
         } else if drawn < ENOUGH_SEQUENCES {
-            Some("too few sequences to tell a gap in the vocabulary from an unlucky draw")
+            Some("too few sequences to tell a real gap from an unlucky draw")
         } else {
             None
         };
@@ -1941,22 +1957,27 @@ mod tests {
                 }
             });
 
-        assert!(
-            split.load(Relaxed) > 0,
-            "every sequence produced at most one peered component out of {} drawn, so nothing here \
-             will ever be able to state isolation",
-            joined.load(Relaxed)
+        let (split, joined) = (split.load(Relaxed), joined.load(Relaxed));
+        assert_covered(
+            split > 0,
+            split + joined,
+            &format!(
+                "every sequence produced at most one peered component out of {joined} drawn, so \
+                 nothing here will ever be able to state isolation"
+            ),
         );
     }
 
     #[test]
     fn removing_a_vpc_removes_exactly_what_referred_to_it() {
+        let drawn = AtomicUsize::new(0);
         let removed = AtomicUsize::new(0);
         let cascaded = AtomicUsize::new(0);
 
         check!()
             .with_generator(Sequence::default())
             .for_each(|ops| {
+                drawn.fetch_add(1, Relaxed);
                 let mut draft = Draft::new();
                 for op in ops {
                     if let Op::RemoveVpc(handle) = *op {
@@ -1987,11 +2008,15 @@ mod tests {
                 }
             });
 
-        assert!(removed.load(Relaxed) > 0, "no vpc was ever removed");
-        assert!(
+        let (drawn, removed) = (drawn.load(Relaxed), removed.load(Relaxed));
+        assert_covered(removed > 0, drawn, "no vpc was ever removed");
+        assert_covered(
             cascaded.load(Relaxed) > 0,
-            "every removed vpc was unpeered, so the cascade was never exercised across {} removals",
-            removed.load(Relaxed)
+            drawn,
+            &format!(
+                "every removed vpc was unpeered, so the cascade was never exercised across \
+                 {removed} removals"
+            ),
         );
     }
 }
