@@ -76,11 +76,11 @@ just coverage-archive nat      # one package, as with `just test`
 ```
 
 Additional arguments are forwarded to nextest. CI collects `debug` on every pull
-request and adds `fuzz` on a deep run or behind the `ci:+test/all-profiles`
-label; pick one with, for example, `just profile=fuzz coverage-archive`.
+request and adds `checked` on a deep run or behind the `ci:+test/all-profiles`
+label; pick one with, for example, `just profile=checked coverage-archive`.
 `release` is deliberately excluded from the coverage matrix: it strips the
 debug assertions and overflow checks that make a coverage run worth reading,
-and `fuzz` gives the same optimization while keeping them.
+and `checked` gives the same optimization while keeping them.
 
 Reports are written to `./target/coverage`:
 
@@ -138,7 +138,7 @@ Each worker then writes a `fuzz-<n>.log` into the directory you ran from, rather
 
 ### Sanitizers
 
-`cargo bolero` builds with the `fuzz` profile and links [AddressSanitizer] unless told otherwise, so
+`cargo bolero` builds with the `checked` profile and links [AddressSanitizer] unless told otherwise, so
 a plain `just fuzz` is already an asan campaign. To swap sanitizers, set the same `sanitize`
 variable the rest of the justfile uses:
 
@@ -162,11 +162,11 @@ just sanitize=NONE fuzz 'some::module::tests::some_property' 30min -p some-packa
 The two are complementary: asan for memory errors the assertions cannot see, `NONE` for depth.
 
 The suite as a whole can also be run under either sanitizer with the standard runner, which is what
-CI's `sanitize/fuzz/*` jobs do:
+CI's `sanitize/*` jobs do:
 
 ```shell
-just profile=fuzz sanitize=thread test
-just profile=fuzz sanitize=address test
+just profile=checked sanitize=thread test
+just profile=checked sanitize=address test
 ```
 
 That covers far more code than a single fuzz target, but only with the brief random driver rather

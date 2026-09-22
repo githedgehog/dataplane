@@ -38,10 +38,10 @@ kernel := if platform == "wasm32-wasip1" { "wasip1" } else { "linux" }
 @default:
     just --list --justfile {{ justfile() }}
 
-# cargo build profile (debug/release/fuzz)
+# cargo build profile (debug/release/checked)
 profile := "debug"
 
-# sanitizer to use (address/thread/safe-stack/cfi/"")
+# sanitizers to use, comma-separated (address/cfi/leak/safe-stack/shadow-stack/thread/"")
 sanitize := ""
 
 # Bolero's own default budget is one second. A property that spends it on too few draws can
@@ -108,7 +108,7 @@ _cargo_profile_flag := if profile == "debug" { "" } else { "--profile " + profil
 # Other workspace tests would fail spuriously without this filter.
 filter := if features =~ "^shuttle" { "shuttle" } else if features =~ "^loom" { "::concurrency_model::loom" } else { "" }
 
-# instrumentation mode (none/coverage)
+# instrumentation to add, comma-separated (none/coverage/fuzz)
 instrument := "none"
 
 # target platform (x86-64-v3/bluefield2)
