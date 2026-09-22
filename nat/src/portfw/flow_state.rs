@@ -281,3 +281,151 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
         flow.set_genid(genid);
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::build_portfw_flow_keys;
+    use crate::static_nat::probe::build;
+    use net::FlowKey;
+    use net::buffer::TestBuffer;
+    use net::ip::UnicastIpAddr;
+    use net::packet::{Packet, VpcDiscriminant};
+    use net::vxlan::Vni;
+    use std::net::IpAddr;
+    use std::num::NonZero;
+
+    fn vni(raw: u32) -> Vni {
+        Vni::new_checked(raw).unwrap_or_else(|_| unreachable!())
+    }
+
+    fn addr(raw: &str) -> IpAddr {
+        raw.parse().unwrap_or_else(|_| unreachable!())
+    }
+
+    fn hash_of(key: &FlowKey) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Two tenant VPCs reaching one shared backend, each through its own published tuple.
+    ///
+    /// Overlapping private address space is what a VPC is for, so both clients can hold the same
+    /// address. Neither `validate_ruleset` nor `VpcManifest::validate` rejects this: the former
+    /// groups rules by `PortFwKey`, which carries the source VPC, so two tenants' rules are never
+    /// compared, and it checks published ranges rather than backends; the latter runs per
+    /// manifest, and Tenant1<->Service and Tenant2<->Service are two peerings.
+    fn two_tenants_one_backend() -> ((FlowKey, FlowKey), (FlowKey, FlowKey)) {
+        let backend_vpcd = VpcDiscriminant::from_vni(vni(3000));
+        let backend_ip = UnicastIpAddr::try_from(addr("192.168.1.1"))
+            .unwrap_or_else(|_| unreachable!("the backend address is unicast"));
+        let backend_port = NonZero::new(80).unwrap_or_else(|| unreachable!());
+
+        let client = addr("10.0.0.5");
+        let client_port = 1234;
+
+        let mut first: Packet<TestBuffer> =
+            build(client, addr("172.16.0.1"), true, client_port, 8001);
+        first.meta_mut().src_vpcd = Some(VpcDiscriminant::from_vni(vni(1000)));
+
+        let mut second: Packet<TestBuffer> =
+            build(client, addr("172.16.1.1"), true, client_port, 9001);
+        second.meta_mut().src_vpcd = Some(VpcDiscriminant::from_vni(vni(2000)));
+
+        let keys = |packet: &mut Packet<TestBuffer>| {
+            build_portfw_flow_keys(packet, backend_ip, backend_port, backend_vpcd)
+                .unwrap_or_else(|e| unreachable!("{e}"))
+        };
+        (keys(&mut first), keys(&mut second))
+    }
+
+    /// The property port forwarding would need in order to drop its reverse-key arbitration.
+    ///
+    /// **This test fails.** It is the statement of a known defect, kept as an instrument rather
+    /// than deleted, because the alternative is that nothing in the tree records the problem.
+    ///
+    /// `FlowTable::insert_pair_if_absent` claims both halves of a flow pair under the table's
+    /// write lock so that no competing creator can observe a half-installed pair. That write lock
+    /// serializes every flow creation in the dataplane, and `lookup` -- which runs per packet --
+    /// takes the read side of the same lock, so under `parking_lot`'s task-fair policy a waiting
+    /// pair insert also stalls every worker's next lookup. Replacing it with cheaper single-key
+    /// admission requires knowing that a forward key determines the reverse key it will be paired
+    /// with, so that the two claims cannot disagree.
+    ///
+    /// For masquerade that holds: its reverse key is built from an allocated public tuple, and one
+    /// allocator cannot issue the same tuple twice. (Across an allocator *swap* it can -- see
+    /// `masquerade::nf::race::a_reissued_public_tuple_does_not_take_over_the_replies_of_the_flow_holding_it`
+    /// -- but that is fixable by carrying reservations across the swap.)
+    ///
+    /// For port forwarding it does not hold, and cannot be made to hold by construction. Both
+    /// halves of the reverse key are given rather than allocated: the backend comes from the
+    /// rule's deterministic mapping, the client tuple from the client. `build_portfw_flow_keys`
+    /// stamps the reverse key with the *destination* VPC, so the source VPC -- the only thing
+    /// distinguishing the two conversations in [`two_tenants_one_backend`] -- is erased.
+    ///
+    /// The collision is genuinely ambiguous rather than merely inconvenient: a reply from the
+    /// backend to the shared client tuple carries nothing that says which tenant opened the
+    /// conversation. Today `PairInsertion::ReverseOccupied` refuses the second flow and drops the
+    /// packet with `NatNotPortForwarded`, which is a defensible answer, but it is an unannounced
+    /// one -- the configuration is accepted and the second tenant intermittently cannot reach the
+    /// service, depending on the first tenant's ephemeral port.
+    ///
+    /// Deciding what *should* happen is a design question, not a bug fix, and the three candidate
+    /// answers differ in what they cost:
+    ///
+    /// 1. Treat it as unsupported and reject it during configuration validation, with a
+    ///    cross-peering check on port-forwarding backends. Nothing performs such a check today.
+    /// 2. Treat it as supported and source-NAT the port-forwarded path, allocating a unique source
+    ///    tuple in the backend's VPC. The reverse key becomes unique by construction, by the same
+    ///    argument masquerade already relies on, at the cost of the backend no longer seeing the
+    ///    client's address.
+    /// 3. Treat it as supported and accept that the ambiguity is irreducible, in which case
+    ///    two-key arbitration is permanent and only its *cost* can be reduced -- by claiming the
+    ///    reverse key with a pending marker, so both claims are ordinary single-key operations and
+    ///    the global write lock goes away.
+    #[test]
+    #[ignore = "instrument: port forwarding's forward key does not determine its reverse key"]
+    fn a_forward_key_determines_its_reverse_key() {
+        let ((first_forward, first_reverse), (second_forward, second_reverse)) =
+            two_tenants_one_backend();
+
+        assert_ne!(
+            first_forward, second_forward,
+            "the two tenants share a forward key, so this models nothing"
+        );
+        assert_ne!(
+            first_reverse, second_reverse,
+            "two conversations that are told apart on the way out are merged on the way back"
+        );
+    }
+
+    /// Pin the collision [`a_forward_key_determines_its_reverse_key`] describes.
+    ///
+    /// This one passes, and is deliberately not ignored: an ignored test reports as a pass, so the
+    /// instrument above records the problem for a reader but would not notice it being solved.
+    /// This will fail the day the reverse key gains something that separates the two tenants,
+    /// which is the point at which the arbitration could be revisited.
+    #[test]
+    fn distinct_forward_keys_derive_one_reverse_key() {
+        let ((first_forward, first_reverse), (second_forward, second_reverse)) =
+            two_tenants_one_backend();
+
+        assert_ne!(
+            first_forward, second_forward,
+            "the two tenants share a forward key, so this models nothing"
+        );
+        assert_eq!(
+            first_reverse, second_reverse,
+            "the reverse keys differ, so a forward key does determine its partner after all"
+        );
+
+        // `FlowKey`'s `PartialEq` is symmetric in the ports while its `Hash` is directional, so
+        // equality alone would not prove that the two keys land on one another in the flow table.
+        assert_eq!(
+            hash_of(&first_reverse),
+            hash_of(&second_reverse),
+            "the reverse keys compare equal but hash apart, so they would not collide in the table"
+        );
+    }
+}
