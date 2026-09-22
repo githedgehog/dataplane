@@ -21,6 +21,47 @@ even if you have not installed [nextest] on your system.
 cargo nextest run --cargo-profile=release
 ```
 
+## Build variables: `profile`, `sanitize`, `instrument`
+
+Every `just` recipe that builds something reads three independent variables.
+They are set in front of the recipe name, not after it:
+
+```shell
+just profile=checked sanitize=thread instrument=coverage test
+```
+
+| Variable | Values | Default | What it selects |
+| --- | --- | --- | --- |
+| `profile` | `debug`, `release`, `checked` | `debug` | the cargo profile: optimization and whether debug assertions survive |
+| `sanitize` | `address`, `cfi`, `leak`, `safe-stack`, `shadow-stack`, `thread` | none | runtime checks compiled into Rust _and_ the C dependencies |
+| `instrument` | `none`, `coverage`, `fuzz` | `none` | compiler instrumentation: coverage counters, or libFuzzer's coverage feedback |
+
+Each accepts a comma-separated list, so `sanitize=address,leak` and
+`instrument=coverage,fuzz` both work; order does not matter.
+
+`instrument` used to be a profile rather than a variable of its own -- there was
+a cargo profile called `fuzz`, and asking for coverage meant asking for a
+different build. That is why `checked` is named for what it keeps (the debug
+assertions and overflow checks `release` strips) rather than for what it is
+used for. Instrumentation composes with any of the three profiles now, which is
+what makes an instrumented _optimized_ build expressible at all.
+
+`just coverage-archive` sets `instrument=coverage` for you, so a coverage run
+needs nothing but `just coverage-archive`. `instrument=fuzz` is the one to set
+by hand, and it applies to `just setup-roots` rather than to the fuzz run
+itself: `just fuzz` already instruments the Rust side through cargo-bolero, but
+the _C_ dependencies -- DPDK above all -- carry whatever instrumentation the
+sysroot was built with. To give libFuzzer coverage feedback from those too:
+
+```shell
+just instrument=fuzz setup-roots
+just fuzz 'some::module::tests::some_property' 10min -p some-package
+```
+
+Setting `instrument` for `just build-container` is refused outright: an
+instrumented build is a diagnostic, and instrumentation is not part of the
+version, so the image would take a clean tag and replace it.
+
 ## Linting (clippy)
 
 `just clippy` builds clippy through nix, so a developer and CI run the same
