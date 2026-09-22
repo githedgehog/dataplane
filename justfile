@@ -44,6 +44,14 @@ profile := "debug"
 # sanitizer to use (address/thread/safe-stack/cfi/"")
 sanitize := ""
 
+# Bolero's own default budget is one second. A property that spends it on too few draws can
+# miss the behaviour its coverage assertions require and fail for being under-run rather than
+# for a real gap -- `just coverage` already avoids that with a budget of its own, and the
+# plain run is the one that actually asserts. Exported here rather than per recipe so that
+# every one of them inherits it; `coverage` assigns its own value in its body, which wins.
+# Honour an explicit override if the caller sets one.
+export BOLERO_RANDOM_TEST_TIME_MS := env("BOLERO_RANDOM_TEST_TIME_MS", "4000")
+
 bolero_coverage_test_time_ms := env("BOLERO_COVERAGE_TEST_TIME_MS", "15000")
 
 # comma-separated list of cargo features to enable (e.g. "shuttle")
