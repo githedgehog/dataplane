@@ -1572,11 +1572,73 @@ mod tests {
         DRAWN[index].fetch_add(1, Relaxed);
     }
 
-    fn assert_every_kind_drawn() {
+    /// How many sequences `every_sequence_builds_a_valid_configuration` actually drew.
+    /// `check!()` stops on wall clock, so this is set by the machine and the build rather
+    /// than by anything in this file, and the coverage guards need it to know whether they
+    /// can speak.
+    static SEQUENCES: AtomicUsize = AtomicUsize::new(0);
+
+    /// The smallest sample the coverage guards below may judge from.
+    ///
+    /// They ask "did the generator ever draw this shape", and the rarest shape --
+    /// `permit-by-flow` -- turns up in about one drawn sequence in a hundred, so on a
+    /// small enough sample they fail on how many draws the run bought rather than on
+    /// anything about the vocabulary. Measured natively 2026-09-21 (5644 sequences/s, 30
+    /// runs per point, `BOLERO_RANDOM_ITERATIONS` fixing the sample):
+    ///
+    /// | sequences drawn | runs failing |
+    /// |---|---|
+    /// | 20 | 29/30 |
+    /// | 40 | 24/30 |
+    /// | 80 | 17/30 |
+    /// | 160 | 8/30 |
+    /// | 320 | 0/30 |
+    ///
+    /// bolero's 1s default buys ~5600 of them here, so a floor of a thousand leaves the
+    /// guard live -- with room for a runner several times slower than this one -- and
+    /// stands it down where it would only be measuring the machine.
+    const ENOUGH_SEQUENCES: usize = 1_000;
+
+    /// Assert a coverage claim, unless the sample is too small for it to mean anything.
+    ///
+    /// The same shape as `assert_covered` in `dataplane/src/packet_processor/fuzz.rs`:
+    /// emulation (`just miri test` and `just ci::cross-test`, which both build with
+    /// `--cfg emulated`), coverage instrumentation and the sanitizers each cost one to
+    /// three orders of magnitude in cases per second, and the point of those runs is the
+    /// line counts and the target's own behaviour -- failing here loses both. The sample
+    /// floor covers what a cfg cannot see: a loaded native runner, a shrunken
+    /// `BOLERO_RANDOM_TEST_TIME_MS`, or a corpus replay.
+    fn assert_covered(reached: bool, drawn: usize, what: &str) {
+        if reached {
+            return;
+        }
+        let stood_down = if cfg!(emulated) {
+            Some("an emulated build buys a fraction of a native run's cases")
+        } else if cfg!(instrumented) {
+            Some("an instrumented build buys a fraction of a native run's cases")
+        } else if cfg!(sanitized) {
+            Some("a sanitizer build buys a fraction of a native run's cases")
+        } else if drawn < ENOUGH_SEQUENCES {
+            Some("too few sequences to tell a gap in the vocabulary from an unlucky draw")
+        } else {
+            None
+        };
+        if let Some(why) = stood_down {
+            eprintln!(
+                "{what} -- not asserted: {why} ({drawn} drawn, this guard judges from \
+                 {ENOUGH_SEQUENCES})"
+            );
+            return;
+        }
+        panic!("{what}");
+    }
+
+    fn assert_every_kind_drawn(drawn: usize) {
         for (kind, count) in KINDS.iter().zip(&DRAWN) {
-            assert!(
+            assert_covered(
                 count.load(Relaxed) > 0,
-                "no {kind} was ever drawn, so nothing here tested it"
+                drawn,
+                &format!("no {kind} was ever drawn, so nothing here tested it"),
             );
         }
     }
@@ -1589,6 +1651,7 @@ mod tests {
         check!()
             .with_generator(Sequence::default())
             .for_each(|ops| {
+                SEQUENCES.fetch_add(1, Relaxed);
                 let mut draft = Draft::new();
                 for (index, op) in ops.iter().enumerate() {
                     record(*op);
@@ -1692,8 +1755,8 @@ mod tests {
                 }
             });
 
-        assert_every_kind_drawn();
-        assert_every_shape_built(&flavours, &guards);
+        assert_every_kind_drawn(SEQUENCES.load(Relaxed));
+        assert_every_shape_built(SEQUENCES.load(Relaxed), &flavours, &guards);
     }
 
     const FLAVOURS: [&str; 5] = [
@@ -1712,7 +1775,11 @@ mod tests {
         "deny",
     ];
 
-    fn assert_every_shape_built(flavours: &[AtomicUsize; 5], guards: &[AtomicUsize; 6]) {
+    fn assert_every_shape_built(
+        drawn: usize,
+        flavours: &[AtomicUsize; 5],
+        guards: &[AtomicUsize; 6],
+    ) {
         let show = |names: &[&str], counts: &[AtomicUsize]| {
             names
                 .iter()
@@ -1722,19 +1789,26 @@ mod tests {
                 .join(" ")
         };
         let (built, set) = (show(&FLAVOURS, flavours), show(&GUARDS, guards));
-        eprintln!("exposes: {built}\nguards:  {set}");
+        eprintln!("{drawn} sequences\nexposes: {built}\nguards:  {set}");
 
         for (name, count) in FLAVOURS.iter().zip(flavours) {
-            assert!(
+            assert_covered(
                 count.load(Relaxed) > 0,
-                "no expose was ever {name} ({built}), so the nat combination rules were not \
-                 exercised"
+                drawn,
+                &format!(
+                    "no expose was ever {name} ({built}), so the nat combination rules were not \
+                     exercised"
+                ),
             );
         }
         for (name, count) in GUARDS.iter().zip(guards) {
-            assert!(
+            assert_covered(
                 count.load(Relaxed) > 0,
-                "no peering was ever left {name} ({set}), so the acl vocabulary was not exercised"
+                drawn,
+                &format!(
+                    "no peering was ever left {name} ({set}), so the acl vocabulary was not \
+                     exercised"
+                ),
             );
         }
     }
