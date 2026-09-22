@@ -5,7 +5,7 @@
 
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable, PortFwTableReader};
 use concurrency::sync::{Arc, Weak};
-use flow_entry::flow_table::table::{FlowTable, Insertion};
+use flow_entry::flow_table::table::{FlowTable, PairInsertion};
 
 use net::buffer::PacketBufferMut;
 use net::flows::{ExtractRef, FlowInfo};
@@ -160,44 +160,28 @@ impl PortForwarder {
         let status = setup_forward_flow(&fw_key, &fw_flow, entry, new_dst_ip, new_dst_port);
         setup_reverse_flow(&rev_key, &rev_flow, entry, dst_ip, dst_port, status);
 
-        // Claim the forward key before translation. Workers can hold different table snapshots
+        // Claim both keys before translation. Workers can hold different table snapshots
         // and choose different backends for the same public tuple. The losing worker must use
         // the winner's translation so replies match the installed reverse key.
-        let outcome = match self.flow_table.insert_if_absent(&fw_flow) {
-            Ok(Insertion::Occupied(held)) => {
+        let outcome = match self.flow_table.insert_pair_if_absent(&fw_flow, &rev_flow) {
+            Ok(PairInsertion::ForwardOccupied(held)) => {
                 debug!(
                     "Lost the race to create port-forwarding flow {fw_key}; \
                      forwarding with the winner's state"
                 );
                 PortFwFlow::Held(held)
             }
-            Ok(Insertion::Installed) => {
-                // Distinct public tuples can translate to the same backend tuple. Claim the
-                // reverse key without displacing its live owner. The related forward flow
-                // permits admission even when the table is at capacity.
-                match self.flow_table.insert_if_absent(&rev_flow) {
-                    Ok(Insertion::Installed) => {}
-                    Ok(Insertion::Occupied(_)) => {
-                        debug!(
-                            "Reverse port-forwarding tuple {rev_key} already serves a live flow"
-                        );
-                        fw_flow.invalidate_pair();
-                        packet.done(DoneReason::NatNotPortForwarded);
-                        return;
-                    }
-                    Err(e) => {
-                        fw_flow.invalidate();
-                        warn!("Failed to insert flow (reverse) in the flow table: {e}");
-                        packet.done(DoneReason::FlowCapacityExceeded);
-                        debug_assert!(false, "reverse port-forwarding flow insert failed: {e:?}");
-                        return;
-                    }
-                }
+            Ok(PairInsertion::Installed) => {
                 debug!("Inserted forward and reverse port-forwarding flow entries");
                 PortFwFlow::Installed(fw_flow)
             }
+            Ok(PairInsertion::ReverseOccupied) => {
+                debug!("Reverse port-forwarding tuple {rev_key} already serves a live flow");
+                packet.done(DoneReason::NatNotPortForwarded);
+                return;
+            }
             Err(e) => {
-                warn!("Failed to insert flow (forward) in the flow table: {e}");
+                warn!("Failed to insert port-forwarding flow pair: {e}");
                 packet.done(DoneReason::FlowCapacityExceeded);
                 return;
             }

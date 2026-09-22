@@ -25,6 +25,14 @@ pub enum Insertion {
     Occupied(Arc<FlowInfo>),
 }
 
+/// Outcome of admitting a forward/reverse flow pair.
+#[derive(Debug)]
+pub enum PairInsertion {
+    Installed,
+    ForwardOccupied(Arc<FlowInfo>),
+    ReverseOccupied,
+}
+
 enum Found {
     Inserted(Option<Arc<FlowInfo>>),
     Held(Arc<FlowInfo>),
@@ -76,12 +84,9 @@ fn hasher_state() -> &'static RandomState {
 /// A read guard to the `FlowTable`, returned by the methods that iterate over it so a caller can
 /// keep holding what the iteration held, without exposing the internal types.
 ///
-/// It excludes only the operations that take the table for writing, which today means
-/// [`FlowTable::reshard`]. It does **not** hold off insertion or removal: those take the same read
-/// lock and mutate the map through it, so they proceed alongside this guard. A caller that must not
-/// miss a flow inserted while it works cannot get that from this guard; it needs the inserting side
-/// to re-check its own work afterwards, the way masquerade re-checks the allocator a flow was built
-/// from once the flow is in the table.
+/// It excludes resharding and pair admission. Single-entry insertion and removal take the same
+/// read lock and can proceed alongside this guard. A caller that must not miss an insertion needs
+/// the inserting side to re-check its work, as masquerade does after installing a flow pair.
 pub struct FlowTableReadGuard<'a>(
     #[allow(unused)] RwLockReadGuard<'a, DashMap<FlowKey, Arc<FlowInfo>, RandomState>>,
 );
@@ -240,9 +245,8 @@ impl FlowTable {
                     }
                     return;
                 }
-                // Outer write lock is only held during reshard, which is rare and brief; we still
-                // want a bounded backoff rather than `yield_now()` so a write-locker contending
-                // with this task can't cause it to spin a tokio worker.
+                // Pair admission and resharding hold the outer write lock. Back off so a
+                // contending writer cannot cause this task to spin a tokio worker.
                 debug!("Flow-timer: Waiting for table read access");
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -390,6 +394,74 @@ impl FlowTable {
         Self::displace(displaced.as_ref());
 
         Ok(Insertion::Installed)
+    }
+
+    /// Install a fresh related pair without replacing a live owner of either key.
+    ///
+    /// Check both keys and publish both entries under the table's write lock, so lookups and
+    /// competing creators cannot use a half-installed pair. A forward owner takes precedence;
+    /// otherwise a reverse collision leaves the table unchanged. As with single-entry admission,
+    /// the reverse entry may exceed capacity to complete a pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlowTableError::CapacityExceeded`] if the forward key is free and the table is full.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the flows are not distinct, detached, and related to each other. The caller must
+    /// not hold a table guard.
+    pub fn insert_pair_if_absent(
+        &self,
+        forward: &Arc<FlowInfo>,
+        reverse: &Arc<FlowInfo>,
+    ) -> Result<PairInsertion, FlowTableError> {
+        assert_ne!(forward.flowkey(), reverse.flowkey());
+        for (flow, partner) in [(forward, reverse), (reverse, forward)] {
+            assert_eq!(flow.status(), FlowStatus::Detached);
+            assert!(
+                flow.related
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|related| Arc::ptr_eq(&related, partner))
+            );
+        }
+
+        let table = self.table.write();
+        let old_forward = table
+            .get(forward.flowkey())
+            .map(|entry| entry.value().clone());
+        if let Some(held) = old_forward.as_ref().filter(|held| held.is_active()) {
+            return Ok(PairInsertion::ForwardOccupied(held.clone()));
+        }
+        let old_reverse = table
+            .get(reverse.flowkey())
+            .map(|entry| entry.value().clone());
+        if old_reverse.as_ref().is_some_and(|held| held.is_active()) {
+            return Ok(PairInsertion::ReverseOccupied);
+        }
+        if old_forward.is_none()
+            && self.live.load(Ordering::Relaxed) >= self.capacity.load(Ordering::Relaxed)
+        {
+            return Err(FlowTableError::CapacityExceeded);
+        }
+
+        // Removal also takes the outer lock, so neither entry can disappear before it is counted.
+        let added = usize::from(old_forward.is_none()) + usize::from(old_reverse.is_none());
+        self.live.fetch_add(added, Ordering::Relaxed);
+        table.insert(*forward.flowkey(), forward.clone());
+        table.insert(*reverse.flowkey(), reverse.clone());
+        forward.update_status(FlowStatus::Active);
+        reverse.update_status(FlowStatus::Active);
+        drop(table);
+
+        Self::displace(old_forward.as_ref());
+        Self::displace(old_reverse.as_ref());
+        #[cfg(not(any(feature = "shuttle", feature = "loom")))]
+        for flow in [forward, reverse] {
+            Self::start_timer(self.table.clone(), self.live.clone(), flow.clone());
+        }
+        Ok(PairInsertion::Installed)
     }
 
     /// Lookup a flow in the table.

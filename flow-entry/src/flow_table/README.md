@@ -7,8 +7,9 @@ tokio timers for expiration.
 
 `FlowTable` wraps `Arc<RwLock<DashMap<FlowKey, Arc<FlowInfo>>>>`:
 
-- The outer `RwLock` is write-locked only during resharding; all normal
-  operations take a read lock.
+- Resharding and pair admission take the outer `RwLock` for writing. Pair
+  admission checks both keys and installs both entries before releasing it.
+  Lookups, single-entry insertion, removal, and iteration take a read lock.
 - The `Arc` lets timer tasks hold a reference to the table without a
   back-reference to `FlowTable` itself.
 
