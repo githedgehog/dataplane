@@ -407,7 +407,7 @@ export-scratch-roots:
 
     # The closure, not the whole store. `/nix/store` is mounted into the
     # container whole, so the export has to cover everything the container
-    # resolves through it, which is two things:
+    # resolves through it, which is three things:
     #
     #   testroot/vmroot  the host tier's qemu, cloud-hypervisor and virtiofsd,
     #                    the guest kernel, and n-it inside the guest root
@@ -417,6 +417,8 @@ export-scratch-roots:
     #                    ELF interpreter, so the container exits 127 with
     #                    "No such file or directory" naming a path that plainly
     #                    exists.
+    #   qemu-user        what *runs* the test binary when it is foreign-arch.
+    #                    Not a root and not reachable from one; see below.
     #
     # devroot is deliberately not here. It is the toolchain -- 4.6 GiB against
     # sysroot's 2.0 -- and nothing inside the container compiles.
@@ -429,6 +431,35 @@ export-scratch-roots:
       fi
       resolved+=( "$(readlink -f "${root}")" )
     done
+
+    # The third of those, and the one that is in none of the roots: qemu-user is
+    # a dev-shell package (`default.nix`),
+    # so it reaches a job through PATH and nothing else. A cross-arch guest
+    # cannot exec the foreign test binary directly, so n-vm runs it under
+    # `qemu-<arch>`, resolved with `find_on_path` and handed to the container as
+    # an absolute /nix/store path (`n-vm/src/container.rs`). Unexported, the
+    # container starts, every mount lands, and tini dies on the command itself:
+    #
+    #     [FATAL tini (7)] exec /nix/store/...-qemu-user-11.1.0/bin/qemu-aarch64
+    #       failed: No such file or directory
+    #
+    # Export the whole package rather than the one binary this job happens to
+    # need, so this does not have to know which arch is being cross-tested, and
+    # export it unconditionally: 19 of its 20 requisites are already in the
+    # roots' closure, so the marginal cost is one path and 124 MiB against
+    # 2.7 GiB, and a condition for when it is needed is the same mechanism that
+    # left `cross` without the share to begin with. Any `qemu-<arch>` name will
+    # do as a handle on the package.
+    declare qemu_binary
+    if qemu_binary="$(command -v qemu-aarch64 2>/dev/null)" \
+      || qemu_binary="$(command -v qemu-x86_64 2>/dev/null)"; then
+      declare qemu_package
+      qemu_package="$(readlink -f "${qemu_binary}")"
+      resolved+=( "${qemu_package%/bin/*}" )
+    else
+      >&2 echo "::warning::qemu-user is not on PATH; a cross job's containers will exit 127"
+    fi
+
     declare -a paths
     mapfile -t paths < <(nix-store --query --requisites "${resolved[@]}")
 
