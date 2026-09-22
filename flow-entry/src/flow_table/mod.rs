@@ -8,8 +8,11 @@ pub mod table;
 #[cfg(test)]
 mod concurrent_fuzz;
 
+#[cfg(all(test, not(feature = "loom")))]
+mod pair_tests;
+
 pub use nf_lookup::FlowLookup;
-pub use table::{FlowTable, FlowTableReadGuard, Insertion};
+pub use table::{FlowTable, FlowTableReadGuard, Insertion, PairInsertion};
 
 pub use net::flows::atomic_instant::AtomicInstant;
 pub use net::flows::flow_info::*;

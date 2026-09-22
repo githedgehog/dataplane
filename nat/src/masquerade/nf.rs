@@ -16,7 +16,7 @@ use crate::masquerade::state::MasqueradeState;
 use clock::Duration;
 use concurrency::sync::{Arc, Weak};
 use config::GenId;
-use flow_entry::flow_table::table::{FlowTable, FlowTableError, Insertion};
+use flow_entry::flow_table::table::{FlowTable, FlowTableError, PairInsertion};
 use net::buffer::PacketBufferMut;
 use net::flow_key::{FlowAddrs, IcmpProtoKey};
 use net::flows::{ExtractRef, FlowInfo, FlowInfoError};
@@ -363,45 +363,31 @@ impl Masquerade {
         // set the genid of the flows
         forward.set_genid_pair(genid);
 
+        // An allocator swap can reissue a tuple held by a worker that migration missed.
+        // Claim both keys before exposing either half to lookups or competing creators.
         let insertion = self
             .flow_table
-            .insert_if_absent(&forward)
+            .insert_pair_if_absent(&forward, &reverse)
             .map_err(|e| match e {
                 FlowTableError::CapacityExceeded => MasqueradeError::CapacityExceeded,
             })?;
-        if let Insertion::Occupied(held) = insertion {
-            debug!(
-                "Lost the race to create flow {}; masquerading with the winner",
-                forward.flowkey()
-            );
-            return Ok(MasqueradeFlow::Held(held));
-        }
-
-        // Claim the reverse key without replacing a live flow. An allocator swap can issue the
-        // same public tuple twice: migration cannot see allocations held by workers that have
-        // not inserted their flows yet. Replacing the reverse entry would send the first flow's
-        // replies to the second flow's private address.
-        //
-        // Reject the collision and invalidate our forward entry so the rejected flow can retry.
-        // This protects existing mappings but does not prevent duplicate allocation. Capacity
-        // checks admit the reverse entry because its related forward entry is present.
-        match self.flow_table.insert_if_absent(&reverse) {
-            Ok(Insertion::Installed) => {}
-            Ok(Insertion::Occupied(_)) => {
+        match insertion {
+            PairInsertion::Installed => Ok(MasqueradeFlow::Installed(forward)),
+            PairInsertion::ForwardOccupied(held) => {
+                debug!(
+                    "Lost the race to create flow {}; masquerading with the winner",
+                    forward.flowkey()
+                );
+                Ok(MasqueradeFlow::Held(held))
+            }
+            PairInsertion::ReverseOccupied => {
                 debug!(
                     "Reverse tuple {} is occupied; dropping the new flow",
                     reverse.flowkey()
                 );
-                forward.invalidate();
-                return Err(MasqueradeError::ReverseTupleInUse);
-            }
-            Err(e) => {
-                forward.invalidate();
-                debug_assert!(false, "reverse flow insert failed: {e:?}");
-                return Err(MasqueradeError::CapacityExceeded);
+                Err(MasqueradeError::ReverseTupleInUse)
             }
         }
-        Ok(MasqueradeFlow::Installed(forward))
     }
 
     fn new_reverse_session(
