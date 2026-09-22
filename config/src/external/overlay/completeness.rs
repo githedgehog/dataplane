@@ -369,7 +369,14 @@ fn survey_nat(nat: &VpcExposeNat, seen: &mut Observed) {
     }
 }
 
-const CASES: usize = 512;
+/// How many configurations the census draws before it judges what the algebra reaches.
+///
+/// This is a floor on the rarest value any `Reach::Spans` entry names, not a runtime budget:
+/// the survey finishes well inside Bolero's time limit either way. `Acl.rules` is the binding
+/// entry -- a one-rule ACL turns up in roughly one draw in a hundred, so 512 draws miss it
+/// about once in a few hundred runs, which is often enough to fail CI and never often enough
+/// to reproduce locally. 2048 puts that below the rate at which anything else here fails.
+const CASES: usize = 2048;
 
 /// Survey up to `CASES` configurations and count the draws.
 ///
