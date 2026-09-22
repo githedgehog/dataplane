@@ -3,7 +3,6 @@
 
 //! Port forwarding
 
-mod expiry;
 mod flow_state;
 mod flows;
 mod fuzz;
@@ -14,6 +13,7 @@ mod portfwtable;
 mod probe;
 mod protocol;
 mod test;
+mod test_expiry;
 
 // re-exports
 pub use flow_state::PortFwState;
