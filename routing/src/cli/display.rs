@@ -46,7 +46,7 @@ use std::os::unix::net::SocketAddr;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use tracing::{error, warn};
+use tracing::warn;
 
 // ========================= Common ========================== //
 fn fmt_opt_value<T: Display>(
@@ -148,8 +148,7 @@ impl Display for Nhop {
 }
 
 fn fmt_nhop_resolvers(f: &mut std::fmt::Formatter<'_>, rc: &Nhop, depth: u8) -> std::fmt::Result {
-    let Ok(resolvers) = rc.resolvers.try_borrow() else {
-        warn!("Try-borrow on nhop resolvers failed!");
+    let Some(resolvers) = rc.get_resolvers() else {
         return Ok(());
     };
     let tab = 5 * depth as usize;
@@ -199,8 +198,7 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Rc<Nhop>, depth: u8) -> st
     writeln!(f)?;
     //    fmt_nhop_instruction(f, rc)?;
 
-    let Ok(resolvers) = rc.resolvers.try_borrow() else {
-        error!("Try-borrow on next-hop resolvers failed!");
+    let Some(resolvers) = rc.get_resolvers() else {
         return Ok(());
     };
     for r in resolvers.iter().filter_map(Weak::upgrade) {

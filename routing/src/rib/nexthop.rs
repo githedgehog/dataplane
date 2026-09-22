@@ -10,6 +10,7 @@ use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{FibGroup, PktInstruction};
 use ordermap::OrderSet;
 
+use std::cell::Ref;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::IpAddr;
@@ -31,7 +32,7 @@ trace_target!("next-hops", LevelFilter::WARN, &["routing-full"]);
 /// references to other next-hops in this (or other) table.
 pub struct Nhop {
     pub(crate) key: NhopKey,
-    pub(crate) resolvers: RefCell<Vec<Weak<Nhop>>>,
+    resolvers: RefCell<Vec<Weak<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub(crate) fibgroup: RefCell<FibGroup>,
     pub(crate) invalid: Cell<bool>,
@@ -182,6 +183,21 @@ impl Nhop {
         self
     }
 
+    /// The resolvers of a next-hop, or `None` if they cannot be borrowed. N.B. this is
+    /// the only access to the resolvers from outside of this module
+    pub(crate) fn get_resolvers(&self) -> Option<Ref<'_, [Weak<Nhop>]>> {
+        let Ok(resolvers) = self.resolvers.try_borrow() else {
+            error!("Try-borrow on next-hop resolvers failed!");
+            return None;
+        };
+        Some(Ref::map(resolvers, Vec::as_slice))
+    }
+
+    /// Set the resolvers of a `Nhop`
+    fn set_resolvers(&self, resolvers: Vec<Weak<Nhop>>) {
+        self.resolvers.replace(resolvers);
+    }
+
     fn id(&self) -> NhopId {
         std::ptr::from_ref(self)
     }
@@ -228,12 +244,11 @@ impl Nhop {
         Some(a)
     }
 
-    /// Resolve a next-hop with a VRF, non-recursively; i.e. without caring whether
-    /// the next-hops that a next-hop resolve to are resolved
-    pub fn lazy_resolve(&self, vrf: &Vrf) {
+    /// Compute the resolvers for a next-hop non-recursively
+    fn compute_resolvers(&self, vrf: &Vrf) -> Vec<Weak<Nhop>> {
         let name = &vrf.name;
         let Some(target) = self.needs_resolution() else {
-            return;
+            return vec![];
         };
         let (prefix, route) = vrf.lpm(target);
         debug!("Address {target} resolves with route to {prefix} in vrf {name}");
@@ -247,16 +262,13 @@ impl Nhop {
                 resolvers.push(Rc::downgrade(resolver));
             }
         }
-        // warn if we got no valid resolver for the next-hop
         if resolvers.is_empty() {
             warn!(
-                "Cannot resolve address {target} with vrf {name}: {} route to {prefix} has no usable next-hop",
+                "Cannot resolve NH address {target} with vrf {name}: {} route to {prefix} has no usable next-hop",
                 route.origin
             );
         }
-
-        // update resolvers (N.B: resolvers may be empty)
-        self.resolvers.replace(resolvers);
+        resolvers // may be empty
     }
 
     #[cfg(test)]
@@ -416,9 +428,15 @@ impl NhopStore {
     }
 
     /// Flush all resolution state and lazily re-resolve all next-hops.
+    /// This is the only place where resolution happens and updates next-hops.
+    /// Next-hop instructions could be built here (avoiding a second iteration)
+    /// but that would require passing the rmac store.
     pub fn lazy_resolve_all(&self, vrf: &Vrf) {
         self.flush_resolvers();
-        self.iter().for_each(|nhop| nhop.lazy_resolve(vrf));
+        self.iter().for_each(|nhop| {
+            let resolvers = nhop.compute_resolvers(vrf);
+            nhop.set_resolvers(resolvers);
+        });
     }
 
     /// Rebuild the fibgroup for every next-hop. This method visits every next-hop and
@@ -427,9 +445,11 @@ impl NhopStore {
     /// of the fibgroups. N.B. we hand out weak references and not owning ones so as to
     /// not alter the strong count of the next-hops, which tells how many routes use them
     /// and determines if a next-hop can be removed (see `NhopStore::del_nhop()`).
-    pub fn rebuild_fibgroups(&self, rstore: &RmacStore) -> Vec<Weak<Nhop>> {
+    /// Correctness: this requires the instructions of this next-hop and that of its
+    /// resolvers to be up-to-date.
+    pub fn rebuild_fibgroups(&self) -> Vec<Weak<Nhop>> {
         self.iter()
-            .filter(|nhop| nhop.set_fibgroup(rstore))
+            .filter(|nhop| nhop.set_fibgroup())
             .map(Rc::downgrade)
             .collect()
     }
