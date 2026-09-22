@@ -111,8 +111,7 @@ impl Nhop {
         entry.extend_from_slice(&instructions);
 
         // check the instructions of the resolving next-hops, if any
-        let Ok(resolvers) = self.resolvers.try_borrow() else {
-            warn!("Warning, try-borrow failed!!!");
+        let Some(resolvers) = self.get_resolvers() else {
             return;
         };
 
@@ -159,13 +158,11 @@ impl Nhop {
     }
 
     //////////////////////////////////////////////////////////////////////
-    /// Determine instructions for a next-hop and build its `FibGroup`.
+    /// Build a `FibGroup` from the next-hop instructions and that of its resolvers.
+    /// This requires: 1) next-hops to have instructions 2) next-hops to be resolved.
     /// Returns true if the `Fibgroup` associated to a next-hop changed.
     //////////////////////////////////////////////////////////////////////
-    pub(crate) fn set_fibgroup(&self, rstore: &RmacStore) -> bool {
-        // determine nhop pkt instructions. This is independent of the routing table
-        self.build_nhop_instructions(rstore);
-
+    pub(crate) fn set_fibgroup(&self) -> bool {
         // build the fibgroup for a next-hop. This requires the nhop to be resolved
         // and its resolvers too, and that these have packet instructions up to date
         let fibgroup = self.build_nhop_fibgroup();

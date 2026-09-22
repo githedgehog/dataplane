@@ -211,18 +211,8 @@ impl Vrf {
         };
 
         /* add default routes with default next-hop with action DROP */
-        vrf.add_route(
-            &Prefix::root_v4(),
-            Route::default(),
-            &[RouteNhop::default()],
-            None,
-        );
-        vrf.add_route(
-            &Prefix::root_v6(),
-            Route::default(),
-            &[RouteNhop::default()],
-            None,
-        );
+        vrf.store_preset_drop_route(&Prefix::root_v4());
+        vrf.store_preset_drop_route(&Prefix::root_v6());
         vrf
     }
 
@@ -402,6 +392,25 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     // Route Insertion
     /////////////////////////////////////////////////////////////////////////
+
+    // Store route without performing any resolution of fib update.
+    fn store_route(&mut self, prefix: &Prefix, mut route: Route, nhops: &[RouteNhop]) {
+        // register next-hops and let the route keep references to the shared nexthops created/found
+        route.s_nhops = self.register_shared_nhops(prefix, nhops);
+
+        // store route
+        match prefix {
+            Prefix::IPV4(p) => self.routesv4.insert(*p, route.clone()),
+            Prefix::IPV6(p) => self.routesv6.insert(*p, route.clone()),
+        };
+    }
+
+    // store preset drop route.
+    fn store_preset_drop_route(&mut self, prefix: &Prefix) {
+        self.store_route(prefix, Route::default(), &[RouteNhop::default()]);
+    }
+
+    #[cfg(test)]
     fn add_route(
         &mut self,
         prefix: &Prefix,
@@ -412,18 +421,13 @@ impl Vrf {
         // register next-hops and let the route keep references to the shared nexthops created/found
         route.s_nhops = self.register_shared_nhops(prefix, nhops);
 
-        // resolve the new route next-hops. This is only for testing. In prod code,
-        // this method is only used for drop routes which require no resolution.
-        let rvrf = vrf0.unwrap_or(self);
-        for shim in &route.s_nhops {
-            shim.rc.lazy_resolve(rvrf);
-        }
-
         // store route
         match prefix {
             Prefix::IPV4(p) => self.routesv4.insert(*p, route.clone()),
             Prefix::IPV6(p) => self.routesv6.insert(*p, route.clone()),
         };
+
+        self.nhstore.lazy_resolve_all(vrf0.unwrap_or(self));
     }
 
     /// Rebuild all next-hop state. This is where consistency is maintained
@@ -431,23 +435,22 @@ impl Vrf {
         let resvrf = resvrf.unwrap_or(self);
         self.nhstore.rebuild_nhop_instructions(rstore);
         self.nhstore.lazy_resolve_all(resvrf);
-        self.nhstore.rebuild_fibgroups(rstore)
+        self.nhstore.rebuild_fibgroups()
     }
 
-    /// Apply the given changes to a fib
-    fn update_fib(fibw: &mut FibWriter, changes: &[Weak<Nhop>]) {
-        if changes.is_empty() {
-            return;
-        }
-        let mut count = 0;
-        for nhop in changes.iter().filter_map(Weak::upgrade) {
-            let fibgroup = &nhop.fibgroup.borrow();
-            debug!("Updating fib group for nhop {}...", nhop.key);
-            fibw.register_fibgroup(&nhop.key, fibgroup, false);
-            count += 1;
-        }
-        if count > 0 {
-            fibw.publish();
+    /// Apply the given changes to the vrfs fib
+    fn update_fib(&mut self, changes: &[Weak<Nhop>]) {
+        if let Some(fibw) = &mut self.fibw {
+            let mut count = 0;
+            for nhop in changes.iter().filter_map(Weak::upgrade) {
+                let fibgroup = &nhop.fibgroup.borrow();
+                debug!("Updating fib group for nhop {}...", nhop.key);
+                fibw.register_fibgroup(&nhop.key, fibgroup, false);
+                count += 1;
+            }
+            if count > 0 {
+                fibw.publish();
+            }
         }
     }
 
@@ -457,8 +460,8 @@ impl Vrf {
     ////////////////////////////////////////////////////////////////////////////////////////////////
     pub(crate) fn refresh_fib(&mut self, rstore: &RmacStore, resvrf: Option<&Vrf>) {
         let changes = self.refresh_nhops(rstore, resvrf);
-        if let Some(fibw) = &mut self.fibw {
-            Self::update_fib(fibw, &changes);
+        if !changes.is_empty() {
+            self.update_fib(&changes);
         }
     }
 
@@ -473,33 +476,7 @@ impl Vrf {
         // register next-hops and let the route keep references to the shared nexthops created/found
         route.s_nhops = self.register_shared_nhops(prefix, nhops);
 
-        let rvrf = vrf0.unwrap_or(self);
-
-        // resolve the next-hops of the received route: none of this is needed since we
-        // call refresh_fib at the end. Leaving it for future optimizations.
-        for shim in &route.s_nhops {
-            let refc = self.nhstore.nhop_strong_count(&shim.rc.key);
-            shim.rc.build_nhop_instructions(rstore); // not needed, set_fibgroup() calls it
-            if refc == 2 {
-                shim.rc.lazy_resolve(rvrf);
-            }
-        }
-
-        // update fib: this is not needed if we always call refresh fib.
-        // Leaving it for future optimizations.
-        if let Some(fibw) = &mut self.fibw {
-            let mut nhkeys = Vec::with_capacity(route.s_nhops.len());
-            for shim in &route.s_nhops {
-                if shim.rc.as_ref().set_fibgroup(rstore) {
-                    let fibgroup = &*shim.rc.as_ref().fibgroup.borrow();
-                    fibw.register_fibgroup(&shim.rc.key, fibgroup, false);
-                }
-                nhkeys.push(shim.rc.key.clone());
-            }
-            fibw.add_fibroute(*prefix, nhkeys, true);
-        }
-
-        // store the route in this vrf
+        // store the route in this vrf. N.B. it's next-hops may not be resolved if new
         let prior = match prefix {
             Prefix::IPV4(p) => self.routesv4.insert(*p, route),
             Prefix::IPV6(p) => self.routesv6.insert(*p, route),
@@ -510,8 +487,22 @@ impl Vrf {
             self.deregister_shared_nexthops(&mut prior);
         }
 
-        // refresh FIB
+        // refresh FIB: resolves all next-hops, rebuilds fibgroups and sends them to the fib
+        // resolution may take into account the new route to prefix
         self.refresh_fib(rstore, vrf0);
+
+        // retrieve the route we just stored, which should have the next-hops resolved.
+        let Some(route) = self.get_route(*prefix) else {
+            unreachable!("Route to {prefix} is missing right after storing it");
+        };
+
+        // Get the keys of the next-hops that this route points to.
+        let nhkeys: Vec<NhopKey> = route.s_nhops.iter().map(|nh| nh.rc.key.clone()).collect();
+
+        // Install the route in the fib
+        if let Some(fibw) = &mut self.fibw {
+            fibw.add_fibroute(*prefix, nhkeys, true);
+        }
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -524,12 +515,7 @@ impl Vrf {
             if let Some(mut prior) = self.routesv4.insert(prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
             }
-            self.add_route(
-                &Prefix::from(prefix),
-                Route::default(),
-                &[RouteNhop::default()],
-                None,
-            );
+            self.store_preset_drop_route(&Prefix::root_v4());
         } else if let Some(found) = &mut self.routesv4.remove(prefix) {
             self.deregister_shared_nexthops(found);
         }
@@ -540,12 +526,7 @@ impl Vrf {
             if let Some(mut prior) = self.routesv6.insert(prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
             }
-            self.add_route(
-                &Prefix::from(prefix),
-                Route::default(),
-                &[RouteNhop::default()],
-                None,
-            );
+            self.store_preset_drop_route(&Prefix::root_v6());
         } else if let Some(found) = &mut self.routesv6.remove(prefix) {
             self.deregister_shared_nexthops(found);
         }
