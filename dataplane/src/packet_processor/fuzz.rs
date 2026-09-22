@@ -98,6 +98,32 @@ pub(crate) struct Fabric {
     worker: Worker,
 }
 
+impl Drop for Fabric {
+    /// Retire the case's flows, so that the timer tasks they spawned can finish.
+    ///
+    /// `FlowTable::insert` spawns a timer task per flow. That task ends on its
+    /// deadline or on the flow's cancellation token, and the token is cancelled
+    /// only by removal or replacement -- dropping the table cancels nothing. A
+    /// property that creates flows and drops the fabric therefore leaves one
+    /// parked task per flow behind, each holding an `Arc` on the table it came
+    /// from, for as long as the flow's lifetime: seconds, against a case that
+    /// lasts microseconds.
+    ///
+    /// That was measured rather than assumed. With `settled` yielding a fixed
+    /// number of times and nothing retiring the flows, no task finished in any
+    /// of 3549 sampled cases, and one property reached 9984 live tasks inside a
+    /// one-second bolero budget with the count still climbing linearly.
+    ///
+    /// `remove` cancels the token, which is what gives `drain` something that
+    /// can actually reach zero.
+    fn drop(&mut self) {
+        let table = &self.fleet.blueprint().flow_table;
+        for flow in table.snapshot(|_, _| true) {
+            table.remove(flow.flowkey());
+        }
+    }
+}
+
 impl Fleet {
     pub(crate) fn lowering(
         overlay: &ValidatedOverlay,
@@ -717,10 +743,50 @@ pub(crate) fn settled(body: impl FnOnce()) {
 
     RUNTIME.block_on(async {
         body();
-        for _ in 0..4 {
-            tokio::task::yield_now().await;
-        }
+        drain().await;
     });
+}
+
+/// Run the tasks a case spawned to completion before the next case starts.
+///
+/// Bolero's case loop is synchronous, so nothing polls the tasks
+/// `FlowTable::insert` spawned unless something here does. Left unpolled they
+/// accumulate for the length of the run, which is how this started: the
+/// properties proved nothing about expiry and the process grew until it ran out
+/// of memory.
+///
+/// Draining to zero rather than yielding a fixed number of times, because a
+/// fixed count cannot tell "the tasks finished" from "the tasks were never going
+/// to finish" -- and it was the latter. Zero is reachable only because
+/// `Fabric::drop` retires the flows first; the loop below is what observes that
+/// it happened.
+///
+/// # Panics
+///
+/// Panics if the tasks have not finished within `LIMIT` yields, which means
+/// something the case created outlived it. That is the leak this function
+/// exists to prevent, and a panic is the only way it stays prevented: a silent
+/// return would restore exactly the state this replaced.
+#[cfg(test)]
+async fn drain() {
+    // Generous rather than tuned. A cancelled timer needs a couple of wakeups to
+    // observe its token and unwind, and a spare iteration against an empty
+    // runtime costs one `yield_now`.
+    const LIMIT: usize = 1024;
+
+    let metrics = tokio::runtime::Handle::current().metrics();
+    for _ in 0..LIMIT {
+        if metrics.num_alive_tasks() == 0 {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!(
+        "{alive} task(s) still alive after {LIMIT} yields: a case created \
+         something that outlives it, so the population grows with the corpus. \
+         Every flow a case creates should be retired when its `Fabric` drops.",
+        alive = metrics.num_alive_tasks()
+    );
 }
 
 #[cfg(test)]
