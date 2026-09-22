@@ -734,9 +734,12 @@ jobs:
       - check
       - wasm
     permissions: *check-perms
-    env:
-      USER: "runner"
-      JUST_VARS: ""
+    # The anchor, not a copy of it: `cross-test` starts n-vm containers, so it
+    # needs `N_VM_HOST_SHARE_DIR` like every other job that runs tests. A
+    # literal copy here is how it went missing -- unset, the bind sources stay
+    # `/nix/store` paths the host daemon cannot see, `/vm.root` is created
+    # empty and read-only, and the first mount beneath it dies.
+    env: *ci-env
     strategy:
       fail-fast: false
       # Keep cross serial so one pull request cannot occupy the lab.
