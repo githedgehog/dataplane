@@ -333,17 +333,37 @@ setup-roots *args:
     # feature: shuttle", before a single test ran. It is the same trade the pre-init
     # already makes for the sanitizer: it is the scaffolding that execs the code
     # under test, not the code under test.
+    #
+    # `tag` reaches a build as `VERSION`, and the guest roots are the one place
+    # nothing reads it: the only `option_env!("VERSION")` call sites are in
+    # `dataplane`, `mgmt`, `config` and `args`, and the guest payload is
+    # `n-preinit`, `n-it`, the kernel and the initramfs -- whose only internal
+    # dependency is `n-vm-protocol`. But `version` is
+    # `git describe --tags --dirty --always`, so it moves on every commit *and*
+    # on any uncommitted edit anywhere in the tree, and it is an input to both
+    # root derivations. Left alone, that rebuilds n-preinit -> initramfs ->
+    # kernel-image -> testroot -> n-it -> vmroot for a change of any kind,
+    # including one that touches nothing these roots contain.
+    #
+    # So pin it for the two guest roots, the same way the feature list is
+    # already withheld from them. `devroot` and `sysroot` keep the real tag:
+    # the test binaries built against them do report a version.
     for root in devroot sysroot testroot vmroot; do
-      declare -a featureargs
+      declare -a featureargs tagargs
       case "${root}" in
-        testroot|vmroot) featureargs=() ;;
-        *) featureargs=(
+        testroot|vmroot)
+          featureargs=()
+          tagargs=( --argstr tag guest ) ;;
+        *)
+          featureargs=(
              --argstr default-features '{{ default_features }}'
              --argstr features '{{ features }}'
-           ) ;;
+           )
+          tagargs=( --argstr tag '{{version}}' ) ;;
       esac
       nix build -f default.nix "${root}" \
         "${featureargs[@]}" \
+        "${tagargs[@]}" \
         --argstr instrumentation '{{ instrument }}' \
         --argstr kernel '{{ kernel }}' \
         --argstr libc '{{ libc }}' \
@@ -351,7 +371,6 @@ setup-roots *args:
         --argstr platform '{{ platform }}' \
         --argstr profile '{{ profile }}' \
         --argstr sanitize '{{ sanitize }}' \
-        --argstr tag '{{version}}' \
         --out-link "${root}" \
         {{ args }}
     done
