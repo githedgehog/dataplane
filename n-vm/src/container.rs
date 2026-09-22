@@ -1481,6 +1481,32 @@ pub fn run_test_in_vm<F: FnOnce()>(
             });
         }
 
+        // The same shape, one level up: a kernel profile this architecture's
+        // testroot cannot carry at all.  Skipped here rather than left to the
+        // manifest lookup in the container tier, which cannot tell "no
+        // aarch64 image exists upstream" from "your testroot is stale" and so
+        // correctly fails on both -- see `Arch::can_carry_kernel_profile`.
+        //
+        // Only what the *test* declared, not `N_VM_PROFILE`.  A test naming
+        // `flatcar` is one test asking for something this arch cannot give,
+        // and skipping it loses nothing else.  A whole run pointed at an
+        // impossible profile is a different thing: skips are counted as
+        // passes, so honouring the environment here would turn "this run
+        // cannot do what you asked" into three hundred green skips.  That one
+        // should keep failing, where the manifest error names the profiles the
+        // run could have asked for instead.
+        if let Some(profile) = vm_config.kernel_profile
+            && !guest_arch.can_carry_kernel_profile(profile)
+        {
+            return Ok(ContainerOutcome::Skipped {
+                reason: format!(
+                    "kernel profile `{profile}` has no {guest_arch:?} image: the distribution \
+                     kernels are published for x86_64 only, so no testroot for this \
+                     architecture can carry it"
+                ),
+            });
+        }
+
         // For a cross-arch guest, the container (daemon arch) cannot exec
         // the foreign test binary directly, so run it under user-mode QEMU
         // -- the same `qemu-<arch>` interpreter `scripts/test-runner.sh`

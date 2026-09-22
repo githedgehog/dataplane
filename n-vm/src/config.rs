@@ -219,6 +219,40 @@ impl Arch {
     pub const fn supports_virtual_iommu(self) -> bool {
         self.virtual_iommu().is_some()
     }
+
+    /// Whether a `testroot` built for this architecture can carry `profile`.
+    ///
+    /// The two distribution kernels are published as x86_64 images only --
+    /// `nix/pkgs/flatcar` and `nix/pkgs/ubuntu` both declare
+    /// `platforms = [ "x86_64-linux" ]` -- so an aarch64 `testroot` offers
+    /// `cloud_hypervisor`, `modular` and `qemu`, and no build of this repo
+    /// can make it offer the other two. A test that names one of them is
+    /// therefore skipped on aarch64 rather than failed: the mismatch is
+    /// permanent and true on every runner, which is the condition for a skip
+    /// rather than a failure.
+    ///
+    /// Every other name answers `true`, deliberately. A profile missing for
+    /// any *other* reason is a misconfigured or stale `testroot`, and must
+    /// still reach
+    /// [`KernelManifestError::UnknownProfile`](crate::kernel_manifest::KernelManifestError::UnknownProfile),
+    /// whose message lists what the manifest does have and says to add the
+    /// profile to the nix build. Widening this to "anything the manifest
+    /// lacks" would turn that diagnosis into a silent pass.
+    ///
+    /// If aarch64 images appear upstream, the fix is to drop the name from
+    /// here and let the manifest speak for itself.
+    #[must_use]
+    pub fn can_carry_kernel_profile(self, profile: &str) -> bool {
+        use crate::kernel_feature::kernel_profiles;
+
+        const PUBLISHED_FOR_X86_64_ONLY: [&str; 2] =
+            [kernel_profiles::FLATCAR, kernel_profiles::UBUNTU];
+
+        match self {
+            Self::X86_64 => true,
+            Self::Aarch64 => !PUBLISHED_FOR_X86_64_ONLY.contains(&profile),
+        }
+    }
 }
 
 /// Network interface card model presented to the VM guest.
@@ -2141,6 +2175,47 @@ mod tests {
     }
 
     // -- Arch profiles (both arches exercised on a single host) -------
+
+    #[test]
+    fn only_the_distribution_kernels_are_withheld_from_aarch64() {
+        use crate::kernel_feature::kernel_profiles;
+
+        // The two that upstream publishes for x86_64 alone.
+        for profile in [kernel_profiles::FLATCAR, kernel_profiles::UBUNTU] {
+            assert!(
+                Arch::X86_64.can_carry_kernel_profile(profile),
+                "{profile} is an x86_64 image and x86_64 should carry it",
+            );
+            assert!(
+                !Arch::Aarch64.can_carry_kernel_profile(profile),
+                "{profile} has no aarch64 image, so aarch64 must skip rather than fail",
+            );
+        }
+
+        // The ones this repo builds itself, which exist for both.
+        for profile in [
+            kernel_profiles::CLOUD_HYPERVISOR,
+            kernel_profiles::QEMU,
+            kernel_profiles::MODULAR,
+        ] {
+            for arch in [Arch::X86_64, Arch::Aarch64] {
+                assert!(
+                    arch.can_carry_kernel_profile(profile),
+                    "{profile} is built here and {arch:?} should carry it",
+                );
+            }
+        }
+
+        // The half that keeps the diagnosis alive: a name this function does
+        // not know is *not* a skip on either arch, so a stale or misbuilt
+        // testroot still fails with `UnknownProfile` and its remedy.
+        for arch in [Arch::X86_64, Arch::Aarch64] {
+            assert!(
+                arch.can_carry_kernel_profile("no-such-profile"),
+                "an unrecognised profile must reach the manifest error on {arch:?}, not skip",
+            );
+        }
+    }
 
     #[test]
     fn virtual_iommu_lowering_is_coherent_per_arch() {
