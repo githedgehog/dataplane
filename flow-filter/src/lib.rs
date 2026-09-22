@@ -72,7 +72,7 @@ impl FlowFilter {
     /// - B (batched): one two-pass lookup for the burst; results are `Copy` so the context guard is
     ///   dropped before any packet is mutated.
     /// - C (`apply_route`, per packet): stamp the destination + NAT flags, or drop on a miss.
-    fn process_burst<Buf: PacketBufferMut>(&mut self, burst: &mut [Packet<Buf>]) {
+    fn route_burst<Buf: PacketBufferMut>(&mut self, burst: &mut [Packet<Buf>]) {
         let genid = self.pipeline_data.genid();
 
         let mut inputs: Vec<LookupInput> = Vec::new();
@@ -374,16 +374,12 @@ impl FlowFilter {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        // The driver hands us one bounded rx burst per poll and collects our whole output, so
-        // materializing the burst here is safe (not an unbounded stream) and lets us pool the ACL
-        // lookups into batched rte_acl calls (see `process_burst`).
-        let mut burst: Vec<Packet<Buf>> = input.collect();
-        self.process_burst(&mut burst);
-        burst.into_iter().filter_map(Packet::enforce)
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        // This stage wanted a burst before the pipeline had one to give: it used to collect the
+        // input iterator into a `Vec` here, purely so the ACL lookups could be pooled into
+        // batched rte_acl calls, and then pay to turn the `Vec` back into an iterator. Now that
+        // every stage is handed the burst, both of those copies are gone and this is a call.
+        self.route_burst(burst);
     }
 
     fn set_data(&mut self, data: Arc<PipelineData>) {

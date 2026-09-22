@@ -238,7 +238,7 @@ impl Default for PoolParams {
         PoolParams {
             size: (1 << 15) - 1,
             cache_size: 256,
-            private_size: 256,
+            private_size: 0,
             data_size: 2048,
             socket_id: SocketId::current(),
         }

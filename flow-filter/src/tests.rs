@@ -165,7 +165,7 @@ fn set_genid(flow_filter: &mut FlowFilter, genid: i64) {
 }
 
 fn run(flow_filter: &mut FlowFilter, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
-    flow_filter.process([packet].into_iter()).next().unwrap()
+    flow_filter.process([packet]).next().unwrap()
 }
 
 // vpc1 <-> vpc2: vpc1 (source side) exposes a plain prefix, a static-NAT prefix and a masquerade
@@ -498,7 +498,7 @@ fn batch_of_packets_is_processed_independently() {
             build_tcp_packet(v4("3.0.0.5"), v4("5.0.0.10"), 1234, 5678),
         ), // allowed, masquerade
     ];
-    let out: Vec<_> = flow_filter.process(packets.into_iter()).collect();
+    let out: Vec<_> = flow_filter.process(packets).collect();
     assert_eq!(out.len(), 3);
 
     assert!(!out[0].is_done());
@@ -1113,7 +1113,7 @@ fn burst_larger_than_max_batch_is_processed() {
             )
         })
         .collect();
-    let out: Vec<_> = flow_filter.process(packets.into_iter()).collect();
+    let out: Vec<_> = flow_filter.process(packets).collect();
     // `enforce` marks (does not drop) filtered packets, so all 40 come out in order: even indices
     // routed to vpc2, odd indices marked Filtered.
     assert_eq!(out.len(), 40);
@@ -1161,7 +1161,7 @@ fn mixed_v4_v6_burst_partitions_by_version_and_preserves_order() {
             }
         })
         .collect();
-    let out: Vec<_> = flow_filter.process(packets.into_iter()).collect();
+    let out: Vec<_> = flow_filter.process(packets).collect();
     assert_eq!(out.len(), 8);
     for (i, pkt) in out.iter().enumerate() {
         let expected = if i % 2 == 0 { vpcd(200) } else { vpcd(300) };
@@ -1344,7 +1344,7 @@ fn burst_processing_upholds_structural_invariants() {
                 packets.push(p);
             }
 
-            let out: Vec<_> = flow_filter.process(packets.into_iter()).collect();
+            let out: Vec<_> = flow_filter.process(packets).collect();
             assert_eq!(out.len(), specs.len(), "burst length must be preserved");
 
             for (i, (spec, pkt)) in specs.iter().zip(&out).enumerate() {
@@ -1905,9 +1905,9 @@ mod adversarial_headers {
                 }
 
                 let out = flow_filter
-                    .process([packet].into_iter())
+                    .process([packet])
                     .next()
-                    .unwrap_or_else(|| unreachable!("enforce keeps Filtered and NotIp packets"));
+                    .unwrap_or_else(|| unreachable!("a stage returns the burst it was given"));
 
                 // Mirrors the NF's own order: it resolves the header chain first, so a
                 // chain it cannot account for is `Unhandled` even when no upper-layer

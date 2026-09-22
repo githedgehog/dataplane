@@ -185,11 +185,11 @@ pub(crate) fn run(
     packets: Vec<Packet<TestBuffer>>,
     dst_vpcd: Option<Vni>,
 ) -> Vec<Packet<TestBuffer>> {
-    let mut looked: Vec<_> = lookup.process(packets.into_iter()).collect();
+    let mut looked: Vec<_> = lookup.process(packets).collect();
     for packet in &mut looked {
         packet.meta_mut().dst_vpcd = dst_vpcd.map(VpcDiscriminant::from_vni);
     }
-    pfw.process(looked.into_iter()).collect()
+    pfw.process(looked).collect()
 }
 
 #[derive(Debug, Clone, Copy)]

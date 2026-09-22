@@ -190,20 +190,16 @@ impl Egress {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(move |mut packet| {
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        for packet in burst.iter_mut() {
             if !packet.is_done() {
                 if let Some(iftable) = self.iftr.enter() {
-                    self.egress_process(&mut packet, &iftable);
+                    self.egress_process(packet, &iftable);
                 } else {
                     warn!("{}: Fib iftable no longer readable!", &self.name);
                     packet.done(DoneReason::InternalFailure);
                 }
             }
-            packet.enforce()
-        })
+        }
     }
 }

@@ -25,13 +25,10 @@ custom_target!(PKT_DUMP_TARGET, LevelFilter::OFF, &[]);
 pub struct InspectHeaders;
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for InspectHeaders {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.inspect(|packet| {
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        for packet in burst.iter() {
             debug!("headers: {headers:?}", headers = packet.headers());
-        })
+        }
     }
 }
 
@@ -127,13 +124,10 @@ impl<Buf: PacketBufferMut> PacketDumper<Buf> {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketDumper<Buf> {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
         let enabled = self.enabled();
         let filter = self.filter.load_full();
-        input.inspect(move |packet| {
+        for packet in burst.iter() {
             // if there is no filter, dump the packet. If there is, let it decide.
             if enabled && filter.as_ref().map_or_else(|| true, |x| x.deref()(packet)) {
                 tdebug!(
@@ -145,7 +139,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketDumper<Buf> {
                 );
                 self.count += 1;
             }
-        })
+        }
     }
 }
 
@@ -156,19 +150,15 @@ pub struct BroadcastMacs;
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for BroadcastMacs {
     #[allow(clippy::unwrap_used)]
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.map(|mut packet| {
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        for packet in burst.iter_mut() {
             match packet.try_eth_mut() {
                 None => {}
                 Some(mac) => {
                     mac.set_destination(DestinationMac::new(Mac::BROADCAST).unwrap());
                 }
             }
-            packet
-        })
+        }
     }
 }
 
@@ -179,15 +169,15 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for BroadcastMacs {
 pub struct DecrementTtl;
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DecrementTtl {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(|mut packet| {
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        // The one stage here that genuinely shortens the burst: a packet whose TTL cannot be
+        // decremented is removed outright rather than marked. `retain_mut` is how a stage does
+        // that now, in one compacting pass rather than a per-packet `Option`.
+        burst.retain_mut(|packet| {
             match packet.try_ipv4_mut() {
                 None => {}
                 Some(ipv4) => match ipv4.decrement_ttl() {
-                    Ok(()) => return Some(packet),
+                    Ok(()) => return true,
                     Err(e) => {
                         trace!("{e:?}");
                     }
@@ -197,15 +187,15 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DecrementTtl {
             match packet.try_ipv6_mut() {
                 None => {}
                 Some(ipv6) => match ipv6.decrement_hop_limit() {
-                    Ok(()) => return Some(packet),
+                    Ok(()) => return true,
                     Err(e) => {
                         trace!("{e:?}");
                     }
                 },
             }
 
-            None
-        })
+            false
+        });
     }
 }
 
@@ -213,12 +203,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DecrementTtl {
 pub struct Passthrough;
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Passthrough {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input
-    }
+    fn process_burst(&mut self, _burst: &mut Vec<Packet<Buf>>) {}
 }
 
 /// Network function that collects packet stats
@@ -234,40 +219,16 @@ impl PacketStatsNF {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketStatsNF {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        PacketStatsIter {
-            inner: input,
-            counts: [0u64; DoneReason::COUNT],
-            pkt_stats: &self.pkt_stats,
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        // Previously a bespoke iterator that tallied in `next` and flushed in `Drop`, because
+        // there was no other point at which the batch was known to be finished. A burst is a
+        // batch, so the tally is a loop and the flush is the line after it.
+        let mut counts = [0u64; DoneReason::COUNT];
+        for packet in burst.iter() {
+            if let Some(reason) = packet.get_done() {
+                counts[reason as usize] += 1;
+            }
         }
-    }
-}
-
-struct PacketStatsIter<'a, Buf: PacketBufferMut, I: Iterator<Item = Packet<Buf>>> {
-    inner: I,
-    counts: [u64; DoneReason::COUNT],
-    pkt_stats: &'a PacketStats,
-}
-
-impl<Buf: PacketBufferMut, I: Iterator<Item = Packet<Buf>>> Iterator
-    for PacketStatsIter<'_, Buf, I>
-{
-    type Item = Packet<Buf>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let packet = self.inner.next()?;
-        if let Some(reason) = packet.get_done() {
-            self.counts[reason as usize] += 1;
-        }
-        Some(packet)
-    }
-}
-
-impl<Buf: PacketBufferMut, I: Iterator<Item = Packet<Buf>>> Drop for PacketStatsIter<'_, Buf, I> {
-    fn drop(&mut self) {
-        self.pkt_stats.incr_batch(&self.counts);
+        self.pkt_stats.incr_batch(&counts);
     }
 }

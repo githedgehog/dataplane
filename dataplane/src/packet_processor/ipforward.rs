@@ -10,11 +10,12 @@ use net::packet::{DoneReason, Packet};
 use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
+use std::rc::Rc;
 use tracing::{debug, error, warn};
 
 use routing::{
-    EgressObject, FibEntry, FibKey, FibTableReader, PktInstruction, ResolvedEncapsulation,
-    ResolvedVxlan, Vtep,
+    EgressObject, FibEntry, FibKey, FibReader, FibTableReader, PktInstruction,
+    ResolvedEncapsulation, ResolvedVxlan, Vtep,
 };
 
 use net::headers::{Headers, Net};
@@ -39,6 +40,48 @@ pub struct IpForwarder {
     fibtr: FibTableReader,
 }
 
+/// A two-slot memo of FIB readers, live for the length of one burst.
+///
+/// `FibTableReader::get_fib_reader` is not a getter. Each call takes a left-right read guard on
+/// the FIB *table*, borrows a thread-local `RefCell`, hashes the key, revalidates the cached
+/// entry against the provider -- which takes a second read guard -- and clones an `Rc`. Profiled
+/// on the bench it was 7.6% of all cycles, of which about 3.2% was the memory fences in those two
+/// guards alone, paid per packet for an answer that is the same for every packet in a burst.
+///
+/// Two slots rather than one because a single packet can need two different FIBs: the one it
+/// routes in, and, on the vxlan decap path, the one named by the VNI just decapsulated. A single
+/// slot would thrash between them and memoize nothing.
+///
+/// The memo does not outlive a `process_burst` call, so a FIB replaced by a config apply is
+/// picked up on the next burst instead of the next packet. That widens the window from one packet
+/// to one rx burst -- microseconds -- and config application is already unordered with respect to
+/// traffic: nothing decides whether a packet that arrived before an apply is routed by the table
+/// before or after it. Routing a burst that arrived together with one view of the table is, if
+/// anything, the more defensible of the two.
+#[derive(Default)]
+struct FibMemo {
+    slots: [Option<(FibKey, Rc<FibReader>)>; 2],
+}
+
+impl FibMemo {
+    /// The reader for `key`, from the memo if it is there and from the table if it is not.
+    ///
+    /// Returns the `Rc` by value rather than by reference. A borrow would tie the memo to the
+    /// lifetime of the read guard taken from it, and the caller needs the memo again while that
+    /// guard is alive. The clone is a non-atomic refcount bump against the two memory fences it
+    /// avoids.
+    fn reader(&mut self, key: FibKey, fibtr: &FibTableReader) -> Option<Rc<FibReader>> {
+        if self.slots[1].as_ref().is_some_and(|(k, _)| *k == key) {
+            self.slots.swap(0, 1);
+        } else if self.slots[0].as_ref().is_none_or(|(k, _)| *k != key) {
+            let reader = fibtr.get_fib_reader(key).ok()?;
+            self.slots[1] = self.slots[0].take();
+            self.slots[0] = Some((key, reader));
+        }
+        self.slots[0].as_ref().map(|(_, reader)| Rc::clone(reader))
+    }
+}
+
 impl IpForwarder {
     /// Build a new IP forwarding stage to use the indicated [`FibTableReader`]
     #[must_use]
@@ -51,7 +94,7 @@ impl IpForwarder {
 
     /// Forward a [`Packet`]
     #[allow(clippy::collapsible_else_if)]
-    fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
+    fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, memo: &mut FibMemo) {
         let nfi = &self.name;
         let vrfid = packet.meta().vrf;
 
@@ -85,8 +128,8 @@ impl IpForwarder {
         };
         debug!("{nfi}: processing packet to {dst} with FIB {fibkey}");
 
-        /* access fib, by fetching FibReader from cache */
-        let Ok(fibr) = &self.fibtr.get_fib_reader(fibkey) else {
+        /* access fib, by fetching FibReader from the burst memo (falling back to the cache) */
+        let Some(fibr) = memo.reader(fibkey, &self.fibtr) else {
             warn!("{nfi}: Unable to read fib. Key={fibkey}");
             packet.done(DoneReason::InternalFailure);
             return;
@@ -112,7 +155,7 @@ impl IpForwarder {
         }
 
         /* execute instructions according to FIB */
-        self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
+        self.packet_exec_instructions(packet, fibentry, fib.get_vtep(), memo);
 
         /* strip vrfid */
         if packet.meta().vrf == vrfid {
@@ -125,6 +168,7 @@ impl IpForwarder {
         &self,
         packet: &mut Packet<Buf>,
         _ifindex: InterfaceIndex, /* we get it from metadata */
+        memo: &mut FibMemo,
     ) {
         let nfi = &self.name;
 
@@ -139,7 +183,7 @@ impl IpForwarder {
 
                 // access fib for Vni vni
                 let fibkey = FibKey::from_vni(vni);
-                let Ok(fibr) = self.fibtr.get_fib_reader(fibkey) else {
+                let Some(fibr) = memo.reader(fibkey, &self.fibtr) else {
                     error!("{nfi}: Failed to find fib associated to vni {vni}. Fib key = {fibkey}");
                     packet.done(DoneReason::Unroutable);
                     return;
@@ -347,11 +391,12 @@ impl IpForwarder {
         vtep: &Vtep,
         packet: &mut Packet<Buf>,
         instruction: &PktInstruction,
+        memo: &mut FibMemo,
     ) {
         match instruction {
             PktInstruction::Drop => self.packet_exec_instruction_drop(packet),
             PktInstruction::Local(ifindex) => {
-                self.packet_exec_instruction_local(packet, *ifindex);
+                self.packet_exec_instruction_local(packet, *ifindex, memo);
             }
             PktInstruction::Encap(encap) => self.packet_exec_instruction_encap(packet, encap, vtep),
             PktInstruction::Egress(egress) => self.packet_exec_instruction_egress(packet, egress),
@@ -364,9 +409,10 @@ impl IpForwarder {
         packet: &mut Packet<Buf>,
         fibentry: &FibEntry,
         vtep: &Vtep,
+        memo: &mut FibMemo,
     ) {
         for inst in fibentry.iter() {
-            self.packet_exec_instruction(vtep, packet, inst);
+            self.packet_exec_instruction(vtep, packet, inst, memo);
             if packet.is_done() {
                 return;
             }
@@ -399,16 +445,60 @@ impl IpForwarder {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
-    #[tracing::instrument(level = "trace", skip(self, input))]
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(move |mut packet| {
+    #[tracing::instrument(level = "trace", skip(self, burst))]
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        let mut memo = FibMemo::default();
+        for packet in burst.iter_mut() {
             if !packet.is_done() {
-                self.forward_packet(&mut packet);
+                self.forward_packet(packet, &mut memo);
             }
-            packet.enforce()
-        })
+        }
+    }
+}
+
+#[cfg(test)]
+mod fib_memo_test {
+    use super::{FibKey, FibMemo};
+    use routing::testing::RouterTables;
+
+    /// The memo has to be transparent: for any key it must hand back the same FIB the table
+    /// would have, whichever slot that lands in and however the keys interleave. Two slots is
+    /// the smallest arrangement that can get this wrong, so the sequence below walks a hit in
+    /// slot 0, an eviction, a hit in slot 1 with promotion, and a miss on a key the table does
+    /// not have -- the last because a failed lookup must not disturb what is already memoized.
+    ///
+    /// Break-tested both ways. Returning slot 0 without comparing its key fails here on the
+    /// third assertion, which is the bug worth guarding against. Disabling the slot-1 lookup
+    /// entirely still passes, and should: that is the memo failing to memoize, which costs
+    /// speed and not correctness, and no unit test can see it. Whether the memo actually hits
+    /// is a question for the profile.
+    #[test]
+    fn memo_answers_as_the_table_would() {
+        let mut tables = RouterTables::default();
+        tables.vrf(1, None).vrf(2, None);
+        let fibtr = tables.fibs();
+
+        let (k1, k2) = (FibKey::from_vrfid(1), FibKey::from_vrfid(2));
+        let absent = FibKey::from_vrfid(99);
+
+        let id = |memo: &mut FibMemo, key| {
+            memo.reader(key, &fibtr)
+                .and_then(|reader| reader.get_id().map(|id| id.as_u32()))
+        };
+
+        let mut memo = FibMemo::default();
+        assert_eq!(id(&mut memo, k1), Some(1), "first lookup");
+        assert_eq!(id(&mut memo, k1), Some(1), "repeat hits slot 0");
+        assert_eq!(id(&mut memo, k2), Some(2), "new key evicts into slot 1");
+        assert_eq!(
+            id(&mut memo, k1),
+            Some(1),
+            "old key still served, from slot 1"
+        );
+        assert_eq!(id(&mut memo, k2), Some(2), "and back again");
+
+        assert_eq!(id(&mut memo, absent), None, "a key the table lacks");
+        assert_eq!(id(&mut memo, k2), Some(2), "miss left the memo intact");
+        assert_eq!(id(&mut memo, k1), Some(1), "for both slots");
     }
 }

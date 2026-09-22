@@ -128,6 +128,7 @@ oci_image_dataplane_debugger := oci_repo + "/" + oci_name + "/debugger:" + versi
 oci_image_dataplane_validator := oci_repo + "/" + oci_name + "/validator:" + version
 oci_image_frr_dataplane := oci_repo + "/" + oci_frr_prefix + ":" + version
 oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
+oci_image_perftest := oci_repo + "/" + oci_name + "/perftest:" + version
 
 [private]
 _skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" } else { "" }
@@ -319,6 +320,13 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             docker tag "ghcr.io/githedgehog/dataplane/frr-host:{{version}}" "{{oci_image_frr_host}}"
             echo "imported {{oci_image_frr_host}}"
             ;;
+        "perftest")
+            # A load generator for the bench, not a gateway component: it is pushed to the same
+            # registry only because that is what the bench can pull from.
+            docker load < ./results/containers.perftest
+            docker tag "ghcr.io/githedgehog/dataplane/perftest:{{version}}" "{{oci_image_perftest}}"
+            echo "imported {{oci_image_perftest}}"
+            ;;
         "validator")
             echo "NOTE: validator image is wasm and not containerized"
             ;;
@@ -416,6 +424,9 @@ push-container target="dataplane" *args: (build-container target args) && versio
             ;;
         "frr.host")
             push_image "{{oci_image_frr_host}}"
+            ;;
+        "perftest")
+            push_image "{{oci_image_perftest}}"
             ;;
         "validator")
             if [ "{{platform}}" != "wasm32-wasip1" ]; then

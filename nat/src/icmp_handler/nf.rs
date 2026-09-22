@@ -215,15 +215,11 @@ impl IcmpErrorHandler {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IcmpErrorHandler {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(move |mut packet| {
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        for packet in burst.iter_mut() {
             if !packet.is_done() && packet.meta().is_overlay() && packet.is_icmp_error() {
-                self.handle_icmp_error_msg(&mut packet);
+                self.handle_icmp_error_msg(packet);
             }
-            packet.enforce()
-        })
+        }
     }
 }
