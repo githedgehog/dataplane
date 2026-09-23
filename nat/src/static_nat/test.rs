@@ -1256,3 +1256,138 @@ fn test_config_with_port_ranges_with_default() {
     assert_eq!(output_dst_port, orig_src_port);
     assert_eq!(done_reason, None);
 }
+
+/// Check address and port checksum updates through `StaticNat::process`.
+#[test]
+#[cfg_attr(not(emulated), traced_test)]
+fn static_nat_leaves_a_checksum_a_full_recompute_would_agree_with() {
+    use net::checksum::Checksum;
+    use net::headers::{Transport, TryHeaders, TryTransport};
+
+    let expose1 = VpcExpose::empty()
+        .make_static_nat()
+        .unwrap()
+        .ip(PrefixWithOptionalPorts::new(
+            "1.1.0.0/16".into(),
+            Some(PortRange::new(4001, 5000).unwrap()),
+        ))
+        .as_range(PrefixWithOptionalPorts::new(
+            "10.1.0.0/16".into(),
+            Some(PortRange::new(8001, 9000).unwrap()),
+        ))
+        .unwrap();
+    let expose2 = VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+        "10.2.0.0/16".into(),
+        Some(PortRange::new(1, 5).unwrap()),
+    ));
+
+    let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2]);
+    let nat_tables = build_nat_configuration(gw_config.external().overlay().vpc_table()).unwrap();
+    let (mut nat, mut tablesw) = StaticNat::new("static-nat");
+    tablesw.update_nat_tables(nat_tables);
+
+    let src_vni = Vni::new_checked(100).unwrap();
+    let dst_vni = Vni::new_checked(200).unwrap();
+
+    let mut packet = build_test_ipv4_packet_with_transport(u8::MAX, Some(NextHeader::TCP)).unwrap();
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().set_static_nat_src(true);
+    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+    packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
+    set_addresses_v4(
+        &mut packet,
+        Ipv4Addr::new(1, 1, 0, 1),
+        Ipv4Addr::new(10, 2, 0, 1),
+    );
+    set_ports(&mut packet, 4001, 1);
+    // Incremental updates require a valid starting checksum.
+    packet.update_checksums();
+
+    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    let mut pkt_out = packets_out.into_iter().next().expect("one packet out");
+
+    // Require a translation so the checksum check is meaningful.
+    assert_ne!(
+        get_src_ip_v4(&pkt_out),
+        Ipv4Addr::new(1, 1, 0, 1),
+        "the packet was not translated; the test is not exercising anything"
+    );
+
+    let checksum_of = |p: &_| -> Option<u16> {
+        TryHeaders::headers(p)
+            .try_transport()
+            .and_then(|tp| match tp {
+                Transport::Tcp(tcp) => tcp.checksum().map(u16::from),
+                Transport::Udp(udp) => udp.checksum().map(u16::from),
+                _ => None,
+            })
+    };
+
+    assert!(
+        !pkt_out.meta().checksum_refresh(),
+        "static NAT asked for a full payload recompute; the incremental path was not taken"
+    );
+    let incremental = checksum_of(&pkt_out);
+    pkt_out.update_checksums();
+    assert_eq!(
+        incremental,
+        checksum_of(&pkt_out),
+        "the incremental checksum after static NAT disagrees with a full recompute"
+    );
+}
+
+/// An IPv6 UDP checksum of zero cannot take a delta, so static NAT must request a recompute.
+#[test]
+fn a_zero_ipv6_udp_checksum_asks_for_a_recompute() {
+    use net::checksum::Checksum;
+    use net::headers::{Transport, TryIpMut, TryTransportMut};
+    use net::ip::UnicastIpAddr;
+    use net::packet::test_utils::build_test_ipv6_packet_with_transport;
+    use net::udp::UdpChecksum;
+    use std::net::{IpAddr, Ipv6Addr};
+
+    let expose1 = VpcExpose::empty()
+        .make_static_nat()
+        .unwrap()
+        .ip(PrefixWithOptionalPorts::new("2001:db8:1::/64".into(), None))
+        .as_range(PrefixWithOptionalPorts::new("2001:db8:a::/64".into(), None))
+        .unwrap();
+    let expose2 =
+        VpcExpose::empty().ip(PrefixWithOptionalPorts::new("2001:db8:2::/64".into(), None));
+
+    let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2]);
+    let nat_tables = build_nat_configuration(gw_config.external().overlay().vpc_table()).unwrap();
+    let (mut nat, mut tablesw) = StaticNat::new("static-nat");
+    tablesw.update_nat_tables(nat_tables);
+
+    let src = Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 1);
+    let mut packet = build_test_ipv6_packet_with_transport(u8::MAX, Some(NextHeader::UDP)).unwrap();
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().set_static_nat_src(true);
+    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(Vni::new_checked(100).unwrap()));
+    packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(Vni::new_checked(200).unwrap()));
+    let net = packet.try_ip_mut().unwrap();
+    net.try_set_source(UnicastIpAddr::try_from(IpAddr::V6(src)).unwrap())
+        .unwrap();
+    net.try_set_destination(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 2, 0, 0, 0, 0, 1)))
+        .unwrap();
+    match packet.headers_mut().try_transport_mut() {
+        Some(Transport::Udp(udp)) => {
+            udp.set_checksum(UdpChecksum::new(0)).unwrap();
+        }
+        _ => unreachable!(),
+    }
+
+    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    let pkt_out = packets_out.into_iter().next().expect("one packet out");
+
+    assert_ne!(
+        pkt_out.ip_source(),
+        Some(IpAddr::V6(src)),
+        "the packet was not translated; the test is not exercising anything"
+    );
+    assert!(
+        pkt_out.meta().checksum_refresh(),
+        "a zero IPv6 UDP checksum was translated without requesting a recompute"
+    );
+}
