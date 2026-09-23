@@ -27,6 +27,9 @@ pub enum RouterError {
     #[error("A VRF with Vni {0} already exists")]
     VniInUse(u32),
 
+    #[error("A FIB with id {0} already exists in the fib table")]
+    FibEntryExists(FibKey),
+
     #[error("Invalid VNI value: {0}")]
     VniInvalid(u32),
 

@@ -55,22 +55,28 @@ impl VrfTable {
             return Err(RouterError::VrfExists(vrfid));
         }
 
-        /* Build new VRF object */
-        let mut vrf = Vrf::new(config);
-
         /* Forbid addition of a vrf if one exists with same vni */
         if let Some(vni) = config.vni {
             if self.by_vni.contains_key(&vni) {
                 error!("Can't add VRF (id {vrfid}) with Vni {vni}: Vni is in use");
                 return Err(RouterError::VniInUse(vni.as_u32()));
             }
-            /* set vni */
+        }
+
+        /* Build new VRF object */
+        let mut vrf = Vrf::new(config);
+        if let Some(vni) = config.vni {
             vrf.set_vni(vni);
         }
 
-        /* create fib and register it in the fibtable */
-        let fibw = self.fibtablew.add_fib(vrf.vrfid, vrf.vni);
-        vrf.set_fibw(fibw);
+        /* Register the VRF's fib in the fibtable */
+        if let Err(e) = self
+            .fibtablew
+            .register_fib(vrf.vrfid, vrf.vni, vrf.fibw.factory())
+        {
+            error!("Failed to add VRF {}, id {vrfid}: {e}", vrf.name);
+            return Err(e);
+        }
 
         /* store */
         self.by_id.entry(vrfid).or_insert(vrf);
@@ -142,7 +148,7 @@ impl VrfTable {
 
         // Vrf must have a vni configured: should succeed
         let Some(vni) = &vrf.vni else {
-            return Err(RouterError::Internal("No vni found"));
+            return Err(RouterError::Internal("VRF does not have intended vni"));
         };
 
         // must be able to look up [`Vrf`] by vni and we must find a [`Vrf`] with same [`VrfId`]
@@ -157,11 +163,15 @@ impl VrfTable {
         // changes since we published and would otherwise got blocked. To test for correctness, we check
         // the two keys via which this vrf should be accessible and from our thread-local cache.
         let fibtabler = self.fibtablew.as_fibtable_reader();
-        fibtabler.get_fib_reader(FibKey::from_vrfid(vrfid))?;
 
-        let fibid = FibKey::from_vrfid(vrfid); // The id it should have
-        if let Some(key) = fibtabler.get_fib_reader(FibKey::from_vni(*vni))?.get_id()
-            && key != fibid
+        // check access from vrfid
+        let fibid = FibKey::from_vrfid(vrfid);
+        fibtabler.get_fib_reader(fibid)?;
+
+        // check access from vni and that we hit a fib with the same id
+        let key = FibKey::from_vni(*vni);
+        if let Some(id) = fibtabler.get_fib_reader(key)?.get_id()
+            && id != fibid
         {
             return Err(RouterError::Internal("Inconsistent fib id found!"));
         }
@@ -176,6 +186,7 @@ impl VrfTable {
         vrfid: VrfId,
         iftablew: &mut IfTableWriter,
     ) -> Result<(), RouterError> {
+        debug!("Removing VRF {vrfid}...");
         if vrfid == Vrf::DEFAULT_VRFID {
             error!("Refusing to remove the default vrf");
             return Err(RouterError::Internal(
@@ -184,7 +195,6 @@ impl VrfTable {
         }
 
         // remove the vrf from the vrf table
-        debug!("Removing VRF {vrfid}...");
         let Some(vrf) = self.by_id.remove(&vrfid) else {
             error!("No vrf with id {vrfid} exists");
             return Err(RouterError::NoSuchVrf);
@@ -193,7 +203,7 @@ impl VrfTable {
         // detach interfaces
         iftablew.detach_interfaces_from_vrf(vrfid);
 
-        // unregister a fib from the fib table, including its access via vni if any
+        // unregister its fib entries from the fib table (including one via vni if there)
         debug!("Unregistering Fib for vrf {vrfid} from the FibTable");
         self.fibtablew.unregister_fib(vrfid);
 
