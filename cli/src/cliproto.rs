@@ -160,6 +160,7 @@ impl CliSerialize for CliResponse {
     }
 }
 
+/// The type of errors returned by dataplane. These errors get serialized and are part of the protocol
 #[derive(Error, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum CliError {
     #[error("Internal error: {0}")]
@@ -176,12 +177,15 @@ pub enum CliError {
     InvalidPrefixLength(u8),
 }
 
+/// The type of errors that can happen in the cli or dataplane due to serialization or communications
 #[derive(Error, Debug)]
 pub enum CliLocalError {
     #[error("Serialization error: {0}")]
     Serialization(#[from] CliSerdeError),
+
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
     #[error("Timed out")]
     TimedOut,
 }
@@ -506,6 +510,16 @@ pub enum CliAction {
 
     // auto Prefetch
     Prefetch,
+}
+impl CliAction {
+    #[must_use]
+    // Tell if a `CliAction` is local
+    pub fn is_local(&self) -> bool {
+        matches!(
+            self,
+            Self::Clear | Self::Connect | Self::Disconnect | Self::Help | Self::Quit
+        )
+    }
 }
 
 #[cfg(test)]

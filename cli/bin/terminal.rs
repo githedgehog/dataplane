@@ -146,8 +146,9 @@ impl TermInput {
     pub fn get_line(&self) -> &str {
         &self.line
     }
-    pub fn get_tokens(&mut self) -> &mut VecDeque<String> {
-        &mut self.tokens
+    /// we clone the tokens
+    pub fn get_tokens(&self) -> VecDeque<String> {
+        self.tokens.clone()
     }
     pub fn get_args(&self) -> &HashMap<String, String> {
         &self.args
