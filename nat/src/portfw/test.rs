@@ -398,6 +398,64 @@ mod nf_test {
         establish_tcp_connection(&mut pipeline);
     }
 
+    /// The outer checksum of a translated ICMP error covers the quote the handler rewrote.
+    #[cfg_attr(not(emulated), traced_test)]
+    #[tokio::test]
+    async fn an_icmp_error_about_a_forwarded_tcp_flow_keeps_a_valid_outer_checksum() {
+        use net::headers::TryInnerIpv4;
+        use net::packet::test_utils::{
+            assert_checksum_current_or_refresh_requested,
+            build_test_icmp4_destination_unreachable_packet,
+        };
+        use std::net::Ipv4Addr;
+
+        // As `setup_pipeline`, with the ICMP error handler in front, where it runs in production.
+        let mut writer = PortFwTableWriter::new();
+        let flow_table = Arc::new(FlowTable::default());
+        let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
+            .add_stage(crate::IcmpErrorHandler::new(flow_table.clone()))
+            .add_stage(FlowLookup::new("flow-lookup", flow_table.clone()))
+            .add_stage(TestFlowFilter)
+            .add_stage(PortForwarder::new(
+                "port-forwarder",
+                writer.reader(),
+                flow_table.clone(),
+            ));
+        writer
+            .update_table(&build_test_port_forwarding_ruleset())
+            .unwrap();
+        let mut syn = tcp_packet_to_port_forward();
+        syn.try_tcp_mut().unwrap().set_syn(true);
+        assert!(!process_packet(&mut pipeline, syn).is_done());
+
+        // The backend reports the forwarded segment unreachable, quoting it as translated.
+        let backend = Ipv4Addr::new(192, 168, 1, 1);
+        let client = Ipv4Addr::new(10, 0, 0, 2);
+        let mut error = build_test_icmp4_destination_unreachable_packet(
+            backend,
+            client,
+            client,
+            backend,
+            NextHeader::TCP,
+            7777,
+            22,
+        )
+        .unwrap();
+        error.meta_mut().set_overlay(true);
+        error.meta_mut().src_vpcd = Some(vpcd2());
+        error.meta_mut().set_port_forwarding(true);
+        error.update_checksums();
+
+        let output = process_packet(&mut pipeline, error);
+        assert_eq!(output.get_done(), None);
+        assert_eq!(
+            output.try_inner_ipv4().unwrap().destination(),
+            Ipv4Addr::new(70, 71, 72, 73),
+            "the quote was not translated back; the test is not exercising the handler"
+        );
+        assert_checksum_current_or_refresh_requested(&output);
+    }
+
     #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_tcp_close_server() {

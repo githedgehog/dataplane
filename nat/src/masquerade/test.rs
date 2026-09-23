@@ -35,7 +35,7 @@ use net::packet::test_utils::build_test_ipv6_packet_with_transport;
 use net::packet::test_utils::build_test_tcp_ipv4_packet;
 use net::packet::test_utils::{
     Icmp6ErrorAddrs, IcmpEchoDirection, IcmpErrorAddrs,
-    build_test_icmp4_destination_unreachable_packet,
+    assert_checksum_current_or_refresh_requested, build_test_icmp4_destination_unreachable_packet,
     build_test_icmp4_destination_unreachable_packet_with_code, build_test_icmp4_echo,
     build_test_icmp6_echo, build_test_icmp6_error_packet, build_test_udp_ipv4_frame,
     build_test_udp_ipv4_packet,
@@ -989,8 +989,14 @@ fn check_packet_icmp_error(
     packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
     packet.meta_mut().dst_vpcd.take(); // remove to force processing by masquerade
+    // Initialize the outer checksum before translating the quoted packet.
+    packet.update_checksums();
 
     let packets_out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
+    if packets_out[0].get_done().is_none() {
+        // The outer ICMP checksum covers the quote the error handler rewrote.
+        assert_checksum_current_or_refresh_requested(&packets_out[0]);
+    }
 
     let hdr_out = packets_out[0].try_ipv4().unwrap();
     let inner_ip_out = packets_out[0].try_inner_ipv4().unwrap();
