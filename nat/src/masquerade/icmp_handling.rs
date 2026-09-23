@@ -37,6 +37,9 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
         debug!("(masquerade): Translation of ICMP error inner packet failed: {e}");
         return Err(DoneReason::InternalFailure);
     }
+    // Recompute the outer ICMP checksum after changing the quoted packet.
+    // The quote's checksum may be absent or truncated, so its updates may change the outer sum.
+    packet.meta_mut().set_checksum_refresh(true);
 
     // translate the ICMP error packet (outer)
     let xlate = state.as_translate();
