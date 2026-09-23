@@ -84,6 +84,15 @@ mod tests {
         }
     }
 
+    // Create a fib for the given vrf and register it in the fib table
+    fn add_fib(fibtw: &mut FibTableWriter, vrfid: u32) -> FibWriter {
+        let (fibw, _) = FibWriter::new(vrfid);
+        fibtw
+            .register_fib(vrfid, None, fibw.factory())
+            .expect("fib should not already be registered");
+        fibw
+    }
+
     fn get_entry_interface_index(entry: &FibEntry) -> InterfaceIndex {
         if let PktInstruction::Egress(egress) = &entry.instructions[0] {
             egress.ifindex.unwrap()
@@ -347,7 +356,7 @@ mod tests {
         let randomrouter = RandomRouter::load();
         let mut updates = 0u64;
 
-        let mut fibw: Option<FibWriter> = Some(fibtw.add_fib(vrfid, None));
+        let mut fibw: Option<FibWriter> = Some(add_fib(&mut fibtw, vrfid));
         let fibgroup = randomrouter.random_pick_fibgroup(&mut rng);
         if let Some(fibw) = &mut fibw {
             fibw.register_fibgroup(&nhkey, fibgroup, true);
@@ -356,7 +365,7 @@ mod tests {
         let start = clock::now();
         loop {
             if fibw.is_none() {
-                fibw = Some(fibtw.add_fib(vrfid, None));
+                fibw = Some(add_fib(&mut fibtw, vrfid));
             }
 
             if let Some(fibw) = &mut fibw {
@@ -503,7 +512,7 @@ mod tests {
 #[cfg(not(feature = "loom"))]
 mod concurrency_tests {
     use crate::fib::fibtable::FibTableWriter;
-    use crate::fib::fibtype::FibKey;
+    use crate::fib::fibtype::{FibKey, FibWriter};
 
     use concurrency::sync::Arc;
     use concurrency::sync::atomic::{AtomicBool, Ordering};
@@ -518,6 +527,15 @@ mod concurrency_tests {
 
     use std::str::FromStr;
     use std::time::Duration;
+
+    // Create a fib for the given vrf and register it in the fib table
+    fn add_fib(fibtw: &mut FibTableWriter, vrfid: u32) -> FibWriter {
+        let (fibw, _) = FibWriter::new(vrfid);
+        fibtw
+            .register_fib(vrfid, None, fibw.factory())
+            .expect("fib should not already be registered");
+        fibw
+    }
 
     fn test_packet() -> Packet<TestBuffer> {
         let mut packet = build_test_ipv4_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();
@@ -568,7 +586,7 @@ mod concurrency_tests {
 
         let mut iterations = 0;
         loop {
-            let fibw = fibtw.add_fib(vrfid, None);
+            let fibw = add_fib(&mut fibtw, vrfid);
             thread::sleep(Duration::from_millis(5));
             fibtw.unregister_fib(vrfid);
             fibw.destroy();

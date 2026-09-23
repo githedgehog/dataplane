@@ -56,8 +56,14 @@ impl RouterTables {
         }
     }
 
+    /// Add a vrf.
+    /// # Panics
+    ///    This method panics if a fib already exists for the given `vrfid`
     pub fn vrf(&mut self, vrfid: VrfId, vni: Option<Vni>) -> &mut Self {
-        let fib = self.fib_table.add_fib(vrfid, vni);
+        let (fib, _) = FibWriter::new(vrfid);
+        self.fib_table
+            .register_fib(vrfid, vni, fib.factory())
+            .expect("fib should not be registered");
         self.fibs.insert(vrfid, fib);
         self
     }

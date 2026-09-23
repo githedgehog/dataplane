@@ -324,6 +324,9 @@ impl FibWriter {
         info!("Created Fib with id {vrfid}");
         (FibWriter(w), FibReader(r))
     }
+    pub fn factory(&self) -> FibReaderFactory {
+        FibReaderFactory(self.0.factory())
+    }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
         self.0.enter()
     }

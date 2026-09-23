@@ -4,7 +4,7 @@
 //! The Fib table, which allows accessing all FIBs
 
 use crate::RouterError;
-use crate::fib::fibtype::{FibKey, FibReader, FibReaderFactory, FibWriter};
+use crate::fib::fibtype::{FibKey, FibReader, FibReaderFactory};
 use crate::rib::vrf::VrfId;
 
 use concurrency::sync::Arc;
@@ -71,6 +71,12 @@ impl FibTable {
         self.entries.get(&key)
     }
 
+    // Tell if this `FibTable` contains an entry with the given `FibKey`
+    #[must_use]
+    fn contains_fib(&self, key: FibKey) -> bool {
+        self.entries.contains_key(&key)
+    }
+
     // Get a [`FibReader`] for the fib with the given [`FibKey`]. This method should only
     // be called in the existing tests, as it creates a new `FibReader` on every call.
     #[must_use]
@@ -125,20 +131,47 @@ impl FibTableWriter {
         FibTableReader(self.0.clone())
     }
 
-    /// Creates a new fib and registers it in the fib table by vrf id and, optionally, vni.
-    #[allow(clippy::arc_with_non_send_sync)]
-    #[must_use]
-    pub fn add_fib(&mut self, vrfid: VrfId, vni: Option<Vni>) -> FibWriter {
-        info!("Creating fib for vrf {vrfid}..");
-        let (fibw, fibr) = FibWriter::new(vrfid);
-        let entry = Arc::new(FibTableEntry::new(vrfid, fibr.factory()));
+    // tell if the inner fibtable contains an entry with the given key
+    fn contains_fib(&self, key: FibKey) -> bool {
+        self.enter()
+            .unwrap_or_else(|| unreachable!())
+            .contains_fib(key)
+    }
+
+    fn register_fib_check(&self, vrfid: VrfId, vni: Option<Vni>) -> Result<(), RouterError> {
+        let key = FibKey::Id(vrfid);
+        if self.contains_fib(key) {
+            return Err(RouterError::FibEntryExists(key));
+        }
+        if let Some(vni) = vni {
+            let key = FibKey::Vni(vni);
+            if self.contains_fib(key) {
+                return Err(RouterError::FibEntryExists(key));
+            }
+        }
+        Ok(())
+    }
+
+    /// Registers a fib entry in the fib table by vrf id and, optionally, vni.
+    pub fn register_fib(
+        &mut self,
+        vrfid: VrfId,
+        vni: Option<Vni>,
+        factory: FibReaderFactory,
+    ) -> Result<(), RouterError> {
+        info!("Registering fib for vrf {vrfid}..");
+        if let Err(e) = self.register_fib_check(vrfid, vni) {
+            error!("Failed to register fib for vrf {vrfid}: {e}");
+            return Err(e);
+        }
+        let entry = Arc::new(FibTableEntry::new(vrfid, factory));
         self.0.append(FibTableChange::Register(entry));
         if let Some(vni) = vni {
             info!("Will register fib for vrf {vrfid} with vni {vni}.");
             self.0.append(FibTableChange::RegisterByVni((vrfid, vni)));
         }
         self.0.publish();
-        fibw
+        Ok(())
     }
 
     /// Registers a fib with some vni; i.e. makes it visible under that vni
@@ -333,7 +366,6 @@ mod fibtable_properties {
 
     struct Fibs {
         live: BTreeMap<VrfId, FibWriter>,
-        retired: Vec<FibWriter>,
     }
 
     fn apply(table: &mut FibTableWriter, fibs: &mut Fibs, model: &mut Model, change: &Change) {
@@ -343,10 +375,20 @@ mod fibtable_properties {
             Change::AddFib { vrf, vni } => {
                 let vrf = vrfs[*vrf];
                 let vni = vni.map(|i| all_vnis[i]);
-                let writer = table.add_fib(vrf, vni);
-                if let Some(displaced) = fibs.live.insert(vrf, writer) {
-                    fibs.retired.push(displaced);
+                let taken = model.contains_key(&FibKey::from_vrfid(vrf))
+                    || vni.is_some_and(|vni| model.contains_key(&FibKey::from_vni(vni)));
+                let (writer, _) = FibWriter::new(vrf);
+                let result = table.register_fib(vrf, vni, writer.factory());
+                assert_eq!(
+                    result.is_err(),
+                    taken,
+                    "add_fib({vrf}, {vni:?}): {result:?}"
+                );
+                if taken {
+                    writer.destroy();
+                    return;
                 }
+                fibs.live.insert(vrf, writer);
                 model.insert(FibKey::from_vrfid(vrf), vrf);
                 if let Some(vni) = vni {
                     model.insert(FibKey::from_vni(vni), vrf);
@@ -394,7 +436,6 @@ mod fibtable_properties {
                 let (mut table, _reader) = FibTableWriter::new();
                 let mut fibs = Fibs {
                     live: BTreeMap::new(),
-                    retired: Vec::new(),
                 };
                 let mut model = Model::new();
 
