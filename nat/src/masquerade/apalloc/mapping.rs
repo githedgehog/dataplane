@@ -25,6 +25,7 @@ use net::flows::atomic_instant::AtomicInstant;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 #[cfg(not(any(feature = "shuttle", feature = "loom")))]
 use tracing::debug;
 
@@ -265,6 +266,7 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
             key,
             mapping.clone(),
             pool.subscribers().clone(),
+            pool.reaper_token(),
         );
         Ok(mapping)
     }
@@ -413,6 +415,30 @@ impl<I: NatIpWithBitmap> SubscribersTable<I> {
     }
 }
 
+// Cancels every reaper a pool started, once the pool itself is gone.
+//
+// A reaper sleeps until its mapping's deadline, and it holds the Subscriber, the Mapping and the
+// subscriber table alive while it does. Without a way to wake it, replacing the allocator on a
+// config change leaves one parked task per live mapping until every one of those deadlines passes.
+#[derive(Debug)]
+pub(crate) struct ReaperShutdown(CancellationToken);
+
+impl ReaperShutdown {
+    pub(crate) fn new() -> Self {
+        Self(CancellationToken::new())
+    }
+
+    pub(crate) fn token(&self) -> CancellationToken {
+        self.0.clone()
+    }
+}
+
+impl Drop for ReaperShutdown {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 // This method mirrors the shape of flow_entry::flow_table::table::FlowTable::start_timer. It is a
 // per-mapping tokio task that:
 //
@@ -427,6 +453,7 @@ fn spawn_mapping_reaper<I: NatIpWithBitmap>(
     key: MappingKey<I>,
     mapping: Arc<Mapping<I>>,
     subscribers: SubscribersTable<I>,
+    cancel: CancellationToken,
 ) {
     if tokio::runtime::Handle::try_current().is_err() {
         debug!(
@@ -438,13 +465,19 @@ fn spawn_mapping_reaper<I: NatIpWithBitmap>(
     tokio::task::spawn(async move {
         let mut deadline = mapping.expires_at();
         loop {
-            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-            let new_deadline = mapping.expires_at();
-            if new_deadline > deadline {
-                deadline = new_deadline;
-                continue;
+            tokio::select! {
+                () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                    let new_deadline = mapping.expires_at();
+                    if new_deadline > deadline {
+                        deadline = new_deadline;
+                        continue;
+                    }
+                    break;
+                },
+                // The pool this mapping belongs to is gone, so there is nothing left to reap it
+                // out of. Unwind now rather than holding the table alive until the deadline.
+                () = cancel.cancelled() => return,
             }
-            break;
         }
         reap_expired_mapping(&subscriber, subscriber_ip, key, &mapping, &subscribers);
     });
@@ -495,6 +528,7 @@ fn spawn_mapping_reaper<I: NatIpWithBitmap>(
     _key: MappingKey<I>,
     _mapping: Arc<Mapping<I>>,
     _subscribers: SubscribersTable<I>,
+    _cancel: CancellationToken,
 ) {
     // No task backend under shuttle/loom. Correctness under these modes relies entirely on the lazy
     // staleness check in Subscriber::{get_or_create,get_or_reserve} (via get_or_insert_with), which
@@ -592,6 +626,43 @@ mod tests {
             .into_iter()
             .next()
             .unwrap_or_else(|| unreachable!())
+    }
+
+    // A reaper sleeps until its mapping's deadline, holding the subscriber, the mapping and the
+    // subscriber table alive. Replacing the allocator on a config change drops the pool those
+    // belong to, and the reaper has to notice: otherwise every live mapping leaves a parked task
+    // behind, and the old allocator's tables stay reachable, until its deadline passes.
+    #[tokio::test]
+    async fn dropping_a_pool_retires_the_reapers_it_started() {
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let pool = narrow_budget_pool();
+        let subscriber_ip = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+        let mapping = pool
+            .get_or_create_mapping(
+                subscriber_ip,
+                MappingKey::new(port(1), MappingScope::Independent),
+                false,
+            )
+            .expect("the pool has room");
+        assert!(
+            metrics.num_alive_tasks() > 0,
+            "sanity: creating a mapping should have started a reaper"
+        );
+
+        // The mapping outlives the pool here, as a flow's own reference would
+        drop(pool);
+
+        for _ in 0..1024 {
+            if metrics.num_alive_tasks() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        drop(mapping);
+        panic!(
+            "{} reaper task(s) still parked after their pool was dropped",
+            metrics.num_alive_tasks()
+        );
     }
 
     // The reaper task re-reads the deadline before it decides to expire a mapping, but an outbound
