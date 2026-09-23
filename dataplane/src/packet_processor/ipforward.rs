@@ -265,15 +265,13 @@ impl IpForwarder {
             return;
         }
 
-        // If packet requires updating checksums (e.g. because it was natted), do so.
-        // Otherwise, refresh at least the ipv4 checksum, as we decremented the TTL.
+        // Refresh requested checksums, or just the IPv4 checksum after decrementing TTL.
+        // IPv6 has no header checksum.
         if packet.meta().checksum_refresh() {
             packet.update_checksums();
         } else if let Some(ipv4) = packet.headers_mut().try_ipv4_mut() {
             ipv4.update_checksum(&())
                 .unwrap_or_else(|()| unreachable!()); // IPv4 checksum update never fails
-        } else {
-            unreachable!()
         }
 
         // build vxlan headers for encapsulation
@@ -410,5 +408,41 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
             }
             packet.enforce()
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::IpForwarder;
+    use net::eth::mac::{Mac, SourceMac};
+    use net::ip::NextHeader;
+    use net::packet::test_utils::build_test_ipv6_packet_with_transport;
+    use net::vxlan::Vni;
+    use routing::testing::RouterTables;
+    use routing::{ResolvedVxlan, Vtep};
+    use std::net::IpAddr;
+
+    /// IPv6 packets need no header checksum refresh before encapsulation.
+    #[test]
+    fn an_ipv6_packet_without_a_refresh_encapsulates() {
+        let forwarder = IpForwarder::new("test", RouterTables::new().fibs());
+        let vtep =
+            Vtep::with_ip_and_mac(IpAddr::from([192, 0, 2, 1]), Mac([0x02, 0, 0, 0, 0, 0x01]));
+        let vxlan = ResolvedVxlan {
+            vni: Vni::new_checked(100).unwrap(),
+            remote: IpAddr::from([192, 0, 2, 2]),
+            dmac: SourceMac::new(Mac([0x02, 0, 0, 0, 0, 0x02])).unwrap(),
+        };
+
+        let mut packet = build_test_ipv6_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();
+        assert!(!packet.meta().checksum_refresh());
+
+        forwarder.vxlan_encap(&mut packet, &vxlan, &vtep);
+
+        assert_eq!(packet.get_done(), None);
+        assert!(
+            packet.meta().dst_vpcd.is_some(),
+            "the packet was not encapsulated"
+        );
     }
 }
