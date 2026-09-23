@@ -319,9 +319,9 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
                 info!("Got interface event {ev}");
                 if let Err(e) = handle_ifevent(&ev, &mut db.iftw) {
                     if db.have_config() {
-                        warn!("Failed to process event: {e}");
+                        warn!("Failed to process event {ev}: {e}");
                     } else {
-                        debug!("Failed to process event: {e} (no config is applied)");
+                        debug!("Failed to process event {ev}: {e} (no config is applied)");
                     }
                 }
             }
