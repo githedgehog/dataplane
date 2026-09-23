@@ -8,10 +8,10 @@ use crate::checksum::Checksum;
 use crate::eth::ethtype::EthType;
 use crate::eth::{Eth, EthError};
 use crate::icmp_any::{IcmpAny, IcmpAnyMut};
-use crate::icmp4::Icmp4;
-use crate::icmp6::{Icmp6, Icmp6ChecksumPayload};
+use crate::icmp4::{Icmp4, Icmp4Checksum};
+use crate::icmp6::{Icmp6, Icmp6Checksum, Icmp6ChecksumPayload};
 use crate::impl_from_for_enum;
-use crate::ip::{NextHeader, UnicastIpAddr};
+use crate::ip::{IpAddress, NextHeader, UnicastIpAddr};
 use crate::ip_auth::{Ipv4Auth, Ipv6Auth};
 use crate::ipv4::Ipv4;
 use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Routing};
@@ -19,9 +19,9 @@ use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
     Reader, Writer,
 };
-use crate::tcp::{Tcp, TcpChecksumPayload, TcpPort};
+use crate::tcp::{Tcp, TcpChecksum, TcpChecksumPayload, TcpPort};
 use crate::tcp_udp::{TcpUdp, TcpUdpMut};
-use crate::udp::{Udp, UdpChecksumPayload, UdpEncap, UdpPort};
+use crate::udp::{Udp, UdpChecksum, UdpChecksumPayload, UdpEncap, UdpPort};
 use crate::vlan::{Pcp, Vid, Vlan};
 use crate::vxlan::Vxlan;
 use arrayvec::ArrayVec;
@@ -152,6 +152,90 @@ impl Net {
         }
         Ok(())
     }
+
+    /// Sets the source address and folds the change into `transport`'s checksum (RFC 1624).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetError::InvalidIpVersion`], changing nothing, if the IP version of `addr` does
+    /// not match the IP version of the network header.
+    pub fn try_set_source_updating_checksum(
+        &mut self,
+        addr: UnicastIpAddr,
+        transport: Option<&mut Transport>,
+    ) -> Result<(), NetError> {
+        match (self, addr) {
+            (Net::Ipv4(ip), UnicastIpAddr::V4(addr)) => {
+                let old = ip.source();
+                ip.set_source(addr);
+                if let Some(transport) = transport {
+                    transport.increment_checksum_for_address(old, addr);
+                }
+            }
+            (Net::Ipv6(ip), UnicastIpAddr::V6(addr)) => {
+                let old = ip.source();
+                ip.set_source(addr);
+                if let Some(transport) = transport {
+                    transport.increment_checksum_for_address(old, addr);
+                }
+            }
+            _ => {
+                return Err(NetError::InvalidIpVersion);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sets the destination address and folds the change into `transport`'s checksum (RFC 1624).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetError::InvalidIpVersion`], changing nothing, if the IP version of `addr` does
+    /// not match the IP version of the network header.
+    pub fn try_set_destination_updating_checksum(
+        &mut self,
+        addr: IpAddr,
+        transport: Option<&mut Transport>,
+    ) -> Result<(), NetError> {
+        match (self, addr) {
+            (Net::Ipv4(ip), IpAddr::V4(addr)) => {
+                let old = ip.destination();
+                ip.set_destination(addr);
+                if let Some(transport) = transport {
+                    transport.increment_checksum_for_address(old, addr);
+                }
+            }
+            (Net::Ipv6(ip), IpAddr::V6(addr)) => {
+                let old = ip.destination();
+                ip.set_destination(addr);
+                if let Some(transport) = transport {
+                    transport.increment_checksum_for_address(old, addr);
+                }
+            }
+            _ => {
+                return Err(NetError::InvalidIpVersion);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One's-complement sum of an address's 16-bit words, which is all a pseudo-header checksum sees
+/// of it.
+fn address_sum<A: IpAddress>(addr: A) -> u16 {
+    let bits = addr.to_addr_bits();
+    let mut sum = 0u32;
+    for word in 0..u32::from(A::BITS / 16) {
+        #[allow(clippy::cast_possible_truncation)] // selects one 16-bit word
+        let word = (bits >> (16 * word)) as u16;
+        sum += u32::from(word);
+    }
+    // At most eight words, so two folds bring the carries back into 16 bits.
+    sum = (sum & 0xFFFF) + (sum >> 16);
+    sum = (sum & 0xFFFF) + (sum >> 16);
+    #[allow(clippy::cast_possible_truncation)] // folded into 16 bits above
+    let sum = sum as u16;
+    sum
 }
 
 impl DeParse for Net {
@@ -264,6 +348,115 @@ impl Net {
 }
 
 impl Transport {
+    /// Return the checksum if present and enabled.
+    ///
+    /// A zero UDP checksum is disabled over IPv4 and must stay zero. Over IPv6 it is invalid, and
+    /// only a full recompute can fix it; callers detect that case with
+    /// [`Headers::has_zero_ipv6_udp_checksum`].
+    #[must_use]
+    fn checksum_for_increment(&self) -> Option<u16> {
+        match self {
+            Transport::Tcp(tcp) => tcp.checksum().map(u16::from),
+            Transport::Udp(udp) => match udp.checksum().map(u16::from) {
+                Some(0) | None => None,
+                Some(current) => Some(current),
+            },
+            Transport::Icmp4(icmp) => icmp.checksum().map(u16::from),
+            Transport::Icmp6(icmp) => icmp.checksum().map(u16::from),
+        }
+    }
+
+    /// Store the updated checksum, mapping zero to `0xFFFF` for UDP.
+    fn set_checksum_from_increment(&mut self, updated: u16) {
+        match self {
+            Transport::Tcp(tcp) => {
+                let _ = tcp.set_checksum(TcpChecksum::new(updated));
+            }
+            Transport::Udp(udp) => {
+                let _ = udp.set_checksum(UdpChecksum::from_computed(updated));
+            }
+            Transport::Icmp4(icmp) => {
+                let _ = icmp.set_checksum(Icmp4Checksum::new(updated));
+            }
+            Transport::Icmp6(icmp) => {
+                let _ = icmp.set_checksum(Icmp6Checksum::new(updated));
+            }
+        }
+    }
+
+    /// Apply RFC 1624 to a changed 16-bit field without reading or writing the stored checksum.
+    fn increment_step(&mut self, current: u16, old_value: u16, new_value: u16) -> u16 {
+        match self {
+            Transport::Tcp(tcp) => u16::from(tcp.increment_update_checksum(
+                TcpChecksum::new(current),
+                old_value,
+                new_value,
+            )),
+            Transport::Udp(udp) => u16::from(udp.increment_update_checksum(
+                UdpChecksum::new(current),
+                old_value,
+                new_value,
+            )),
+            Transport::Icmp4(icmp) => u16::from(icmp.increment_update_checksum(
+                Icmp4Checksum::new(current),
+                old_value,
+                new_value,
+            )),
+            Transport::Icmp6(icmp) => u16::from(icmp.increment_update_checksum(
+                Icmp6Checksum::new(current),
+                old_value,
+                new_value,
+            )),
+        }
+    }
+
+    /// Store the updated checksum, or return `false` if full recomputation is needed.
+    fn finish_increment(&mut self, updated: u16) -> bool {
+        // An incremental ICMPv4 result of 0x0000 is ambiguous: all-zero data needs 0xFFFF.
+        // Distinguishing these cases requires the payload.
+        // Other transports have a nonzero protocol number in their pseudo-header.
+        if updated == 0 && matches!(self, Transport::Icmp4(_)) {
+            return false;
+        }
+        self.set_checksum_from_increment(updated);
+        true
+    }
+
+    /// Update the checksum for a changed 16-bit field, such as a port or ICMP identifier (RFC 1624).
+    ///
+    /// Returns `true` if updated or no update is needed, including absent or disabled checksums.
+    /// Returns `false` if an `ICMPv4` update computes to `0x0000`: full recomputation is needed to
+    /// distinguish this from the all-zero case, which requires `0xFFFF`.
+    #[must_use]
+    pub fn increment_checksum_for_u16(&mut self, old_value: u16, new_value: u16) -> bool {
+        if old_value == new_value {
+            return true;
+        }
+        let Some(current) = self.checksum_for_increment() else {
+            return true;
+        };
+        let updated = self.increment_step(current, old_value, new_value);
+        self.finish_increment(updated)
+    }
+
+    /// Update the TCP, UDP, or `ICMPv6` checksum for an IP address change.
+    /// `ICMPv4` has no pseudo-header, so its checksum is unchanged.
+    ///
+    /// `old` and `new` share one address type, so an IP version change cannot be expressed.
+    /// Absent or disabled checksums are left alone.
+    pub fn increment_checksum_for_address<A: IpAddress>(&mut self, old: A, new: A) {
+        if old == new || matches!(self, Transport::Icmp4(_)) {
+            return;
+        }
+        let Some(current) = self.checksum_for_increment() else {
+            return;
+        };
+        // The address enters the checksum only through the sum of its words, so one step covers it.
+        let updated = self.increment_step(current, address_sum(old), address_sum(new));
+        // ICMPv4 returned above, so `finish_increment`'s zero refusal cannot apply.
+        self.set_checksum_from_increment(updated);
+    }
+
     pub(crate) fn update_checksum(
         &mut self,
         net: &Net,
@@ -769,6 +962,20 @@ impl Headers {
     #[must_use]
     pub fn net_mut(&mut self) -> Option<&mut Net> {
         self.net.as_mut()
+    }
+
+    /// Whether this is an IPv6 UDP datagram with a zero checksum.
+    ///
+    /// IPv6 forbids a zero UDP checksum outside RFC 6935 tunnels, and an incremental update cannot
+    /// repair one, so a translation must request a full recompute.
+    #[must_use]
+    pub fn has_zero_ipv6_udp_checksum(&self) -> bool {
+        match (&self.net, &self.transport) {
+            (Some(Net::Ipv6(_)), Some(Transport::Udp(udp))) => {
+                udp.checksum().map(u16::from) == Some(0)
+            }
+            _ => false,
+        }
     }
 
     /// Get a reference to the network extension headers (e.g. IPv6 extensions,
@@ -1758,6 +1965,463 @@ mod test {
             };
         assert_eq!(headers, &parsed);
         assert_eq!(bytes_parsed, headers.size());
+    }
+
+    /// Compare incremental port updates with full recomputation for TCP and UDP over both IP versions.
+    fn incremental_matches_recompute(headers: &Headers) {
+        use crate::headers::TryVxlan;
+        use std::num::NonZero;
+
+        let Some(net) = headers.net.clone() else {
+            return;
+        };
+        let Some(transport) = headers.transport.clone() else {
+            return;
+        };
+        // Skip VXLAN: `Headers::update_checksums` does not update encapsulated transport checksums.
+        if headers.try_vxlan().is_some() {
+            return;
+        }
+        let payload: &[u8] = b"the payload the full recompute has to read";
+
+        // Incremental updates require a valid starting checksum.
+        let mut base = headers.clone();
+        base.update_checksums(payload);
+
+        for (old_port, new_port) in [(1234u16, 4321u16), (80, 8080), (65535, 1)] {
+            let mut incremental = base.clone();
+            let mut recomputed = base.clone();
+
+            let old_nz = NonZero::new(old_port).unwrap();
+            let new_nz = NonZero::new(new_port).unwrap();
+            // Set the same starting port in both copies; skip ICMP, which has no ports.
+            {
+                let inc_tp = incremental.transport.as_mut().unwrap();
+                if inc_tp.try_set_source(old_nz).is_err() {
+                    continue;
+                }
+                let rec_tp = recomputed.transport.as_mut().unwrap();
+                rec_tp.try_set_source(old_nz).unwrap();
+            }
+            incremental.update_checksums(payload);
+            recomputed.update_checksums(payload);
+
+            let inc_tp = incremental.transport.as_mut().unwrap();
+            inc_tp.try_set_source(new_nz).unwrap();
+            assert!(
+                inc_tp.increment_checksum_for_u16(old_port, new_port),
+                "a port update never needs a full recompute"
+            );
+
+            let rec_tp = recomputed.transport.as_mut().unwrap();
+            rec_tp.try_set_source(new_nz).unwrap();
+            recomputed.update_checksums(payload);
+
+            assert_eq!(
+                incremental.transport.as_ref().map(transport_checksum),
+                recomputed.transport.as_ref().map(transport_checksum),
+                "incremental port update {old_port}->{new_port} disagreed with a full recompute \
+                 for {:?} over {:?}",
+                transport_kind(&transport),
+                net_kind(&net),
+            );
+        }
+    }
+
+    /// Compare source/destination address and ICMP identifier updates with full recomputation.
+    /// Cover every transport and both IP versions, including `ICMPv4`'s lack of a pseudo-header.
+    fn address_and_identifier_match_recompute((headers, bits, identifier): &(Headers, u128, u16)) {
+        use crate::headers::TryVxlan;
+        use crate::ip::UnicastIpAddr;
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+        // Skip VXLAN: `Headers::update_checksums` does not update encapsulated transport checksums.
+        if headers.try_vxlan().is_some() {
+            return;
+        }
+        let (Some(net), Some(transport)) = (&headers.net, &headers.transport) else {
+            return;
+        };
+        let payload: &[u8] = b"the payload the full recompute has to read";
+
+        let mut base = headers.clone();
+        base.update_checksums(payload);
+
+        let new = match net {
+            Net::Ipv4(_) => {
+                let [a, b, c, d, ..] = bits.to_be_bytes();
+                IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+            }
+            Net::Ipv6(_) => IpAddr::V6(Ipv6Addr::from(*bits)),
+        };
+        for source in [true, false] {
+            // Only a unicast address can be a source.
+            let new_source = UnicastIpAddr::try_from(new);
+            if source && new_source.is_err() {
+                continue;
+            }
+            let mut incremental = base.clone();
+            let mut recomputed = base.clone();
+            let old = if source {
+                net.src_addr()
+            } else {
+                net.dst_addr()
+            };
+            let Headers {
+                net: Some(incremental_net),
+                transport: incremental_transport,
+                ..
+            } = &mut incremental
+            else {
+                unreachable!()
+            };
+            let recomputed_net = recomputed.net.as_mut().unwrap();
+            if source {
+                incremental_net
+                    .try_set_source_updating_checksum(
+                        new_source.unwrap(),
+                        incremental_transport.as_mut(),
+                    )
+                    .unwrap();
+                recomputed_net.try_set_source(new_source.unwrap()).unwrap();
+            } else {
+                incremental_net
+                    .try_set_destination_updating_checksum(new, incremental_transport.as_mut())
+                    .unwrap();
+                recomputed_net.try_set_destination(new).unwrap();
+            }
+            recomputed.update_checksums(payload);
+            assert_eq!(
+                incremental.transport.as_ref().map(transport_checksum),
+                recomputed.transport.as_ref().map(transport_checksum),
+                "incremental {} address update {old}->{new} disagreed with a full recompute for \
+                 {:?} over {:?}",
+                if source { "source" } else { "destination" },
+                transport_kind(transport),
+                net_kind(net),
+            );
+        }
+
+        let Some(old_identifier) = transport.identifier() else {
+            return;
+        };
+        let mut incremental = base.clone();
+        let mut recomputed = base;
+        for copy in [&mut incremental, &mut recomputed] {
+            if copy
+                .transport
+                .as_mut()
+                .unwrap()
+                .try_set_identifier(*identifier)
+                .is_err()
+            {
+                return;
+            }
+        }
+        let updated = incremental
+            .transport
+            .as_mut()
+            .unwrap()
+            .increment_checksum_for_u16(old_identifier, *identifier);
+        recomputed.update_checksums(payload);
+        if !updated {
+            // An ICMPv4 result of zero requires full recomputation.
+            assert!(matches!(transport, Transport::Icmp4(_)));
+            return;
+        }
+        assert_eq!(
+            incremental.transport.as_ref().map(transport_checksum),
+            recomputed.transport.as_ref().map(transport_checksum),
+            "incremental identifier update {old_identifier}->{identifier} disagreed with a full \
+             recompute for {:?}",
+            transport_kind(transport),
+        );
+    }
+
+    /// Reach what a checksum-correct packet never does: an unchanged value, an address change
+    /// with no transport, and a disabled UDP checksum, which must stay zero over either version.
+    fn unchanged_or_disabled_checksums_stay_put((headers, bits): &(Headers, u128)) {
+        use crate::checksum::Checksum;
+        use crate::headers::TryVxlan;
+        use crate::ip::UnicastIpAddr;
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+        if headers.try_vxlan().is_some() {
+            return;
+        }
+        let Some(net) = &headers.net else {
+            return;
+        };
+        let payload: &[u8] = b"the payload the full recompute has to read";
+        let mut base = headers.clone();
+        base.update_checksums(payload);
+        let new = match net {
+            Net::Ipv4(_) => {
+                let [a, b, c, d, ..] = bits.to_be_bytes();
+                IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+            }
+            Net::Ipv6(_) => IpAddr::V6(Ipv6Addr::from(*bits)),
+        };
+        let new_source = UnicastIpAddr::try_from(new).ok();
+
+        // Rewriting an address or field with its own value changes nothing.
+        let mut unchanged = base.clone();
+        let Headers {
+            net: Some(unchanged_net),
+            transport,
+            ..
+        } = &mut unchanged
+        else {
+            unreachable!()
+        };
+        let src = UnicastIpAddr::try_from(unchanged_net.src_addr()).unwrap();
+        let dst = unchanged_net.dst_addr();
+        unchanged_net
+            .try_set_source_updating_checksum(src, transport.as_mut())
+            .unwrap();
+        unchanged_net
+            .try_set_destination_updating_checksum(dst, transport.as_mut())
+            .unwrap();
+        if let Some(transport) = transport.as_mut() {
+            assert!(transport.increment_checksum_for_u16(0x1234, 0x1234));
+        }
+        assert_eq!(unchanged, base);
+
+        // With no transport to update, only the address moves.
+        let mut no_transport = base.clone();
+        let no_transport_net = no_transport.net.as_mut().unwrap();
+        no_transport_net
+            .try_set_destination_updating_checksum(new, None)
+            .unwrap();
+        if let Some(new_source) = new_source {
+            no_transport_net
+                .try_set_source_updating_checksum(new_source, None)
+                .unwrap();
+        }
+        assert_eq!(no_transport.net.as_ref().unwrap().dst_addr(), new);
+        assert_eq!(no_transport.transport, base.transport);
+
+        // A zero UDP checksum is left alone; over IPv6 the caller learns it must recompute.
+        let mut disabled = base;
+        let Headers {
+            net: Some(disabled_net),
+            transport: Some(Transport::Udp(udp)),
+            ..
+        } = &mut disabled
+        else {
+            return;
+        };
+        udp.set_checksum(UdpChecksum::new(0)).unwrap();
+        let mut transport = Transport::Udp(udp.clone());
+        disabled_net
+            .try_set_destination_updating_checksum(new, Some(&mut transport))
+            .unwrap();
+        if let Some(new_source) = new_source {
+            disabled_net
+                .try_set_source_updating_checksum(new_source, Some(&mut transport))
+                .unwrap();
+        }
+        assert!(transport.increment_checksum_for_u16(0x1234, 0x4321));
+        assert_eq!(transport_checksum(&transport), Some(0));
+        disabled.transport = Some(transport);
+        assert_eq!(
+            disabled.has_zero_ipv6_udp_checksum(),
+            matches!(net, Net::Ipv6(_))
+        );
+    }
+
+    fn transport_checksum(tp: &Transport) -> Option<u16> {
+        match tp {
+            Transport::Tcp(tcp) => tcp.checksum().map(u16::from),
+            Transport::Udp(udp) => udp.checksum().map(u16::from),
+            Transport::Icmp4(icmp) => icmp.checksum().map(u16::from),
+            Transport::Icmp6(icmp) => icmp.checksum().map(u16::from),
+        }
+    }
+
+    fn transport_kind(tp: &Transport) -> &'static str {
+        match tp {
+            Transport::Tcp(_) => "tcp",
+            Transport::Udp(_) => "udp",
+            Transport::Icmp4(_) => "icmp4",
+            Transport::Icmp6(_) => "icmp6",
+        }
+    }
+
+    fn net_kind(net: &Net) -> &'static str {
+        match net {
+            Net::Ipv4(_) => "ipv4",
+            Net::Ipv6(_) => "ipv6",
+        }
+    }
+
+    /// Exercise a computed UDP checksum of zero, which random inputs rarely produce.
+    #[test]
+    fn a_udp_checksum_that_updates_to_zero_is_written_as_ffff() {
+        use crate::checksum::Checksum;
+        use crate::headers::Transport;
+        use crate::udp::{Udp, UdpChecksum, UdpPort};
+        use std::num::NonZero;
+
+        let mut udp = Udp::new(
+            UdpPort::new(NonZero::new(1234).unwrap()),
+            UdpPort::new(NonZero::new(4321).unwrap()),
+        );
+        let start = 0x1234u16;
+        udp.set_checksum(UdpChecksum::new(start)).unwrap();
+        let mut transport = Transport::Udp(udp);
+
+        // Find a field value that produces zero through the RFC 1624 primitive.
+        let old_value = 0xABCDu16;
+        let zeroing = (0..=u16::MAX).find(|new_value| {
+            let Transport::Udp(probe) = &mut transport.clone() else {
+                unreachable!()
+            };
+            u16::from(probe.increment_update_checksum(
+                UdpChecksum::new(start),
+                old_value,
+                *new_value,
+            )) == 0
+        });
+        let zeroing = zeroing.expect("some new value drives the update to zero");
+
+        assert!(transport.increment_checksum_for_u16(old_value, zeroing));
+
+        let Transport::Udp(result) = &transport else {
+            unreachable!()
+        };
+        assert_eq!(
+            result.checksum().map(u16::from),
+            Some(u16::MAX),
+            "an incremental update that computes to 0 must be stored as 0xFFFF, or the datagram \
+             reads as having no checksum at all"
+        );
+    }
+
+    /// Clearing this echo reply's identifier leaves all covered data zero, requiring `0xFFFF`.
+    /// The incremental result is `0x0000`, so the helper must request full recomputation.
+    #[test]
+    fn an_icmp4_update_to_zero_asks_for_a_recompute() {
+        use crate::checksum::Checksum;
+        use crate::icmp4::{Icmp4, Icmp4EchoReply, Icmp4Type};
+
+        let payload: &[u8] = &[];
+        let mut icmp = Icmp4::with_type(Icmp4Type::EchoReply(Icmp4EchoReply { id: 1, seq: 0 }));
+        icmp.update_checksum(payload).unwrap();
+        assert_eq!(icmp.checksum().map(u16::from), Some(0xFFFE));
+
+        let mut transport = Transport::Icmp4(icmp);
+        transport.try_set_identifier(0).unwrap();
+        assert!(
+            !transport.increment_checksum_for_u16(1, 0),
+            "an ICMPv4 update that computes to 0x0000 claimed to be done"
+        );
+
+        let Transport::Icmp4(mut icmp) = transport else {
+            unreachable!()
+        };
+        icmp.update_checksum(payload).unwrap();
+        assert_eq!(
+            icmp.checksum().map(u16::from),
+            Some(0xFFFF),
+            "all-zero ICMPv4 data needs checksum 0xFFFF"
+        );
+    }
+
+    /// Only an IPv6 UDP datagram with a zero checksum needs a full recompute; over IPv4 a zero
+    /// means the checksum is disabled.
+    #[test]
+    fn only_a_zero_ipv6_udp_checksum_is_flagged() {
+        use crate::headers::TryHeaders;
+        use crate::ip::NextHeader;
+        use crate::packet::test_utils::{
+            build_test_ipv4_packet_with_transport, build_test_ipv6_packet_with_transport,
+        };
+
+        for (ipv6, checksum, flagged) in [
+            (true, 0, true),
+            (true, 0x1234, false),
+            (false, 0, false),
+            (false, 0x1234, false),
+        ] {
+            let packet = if ipv6 {
+                build_test_ipv6_packet_with_transport(64, Some(NextHeader::UDP))
+            } else {
+                build_test_ipv4_packet_with_transport(64, Some(NextHeader::UDP))
+            }
+            .unwrap();
+            let mut headers = packet.headers().clone();
+            let Some(Transport::Udp(udp)) = headers.transport.as_mut() else {
+                unreachable!()
+            };
+            udp.set_checksum(UdpChecksum::new(checksum)).unwrap();
+            assert_eq!(
+                headers.has_zero_ipv6_udp_checksum(),
+                flagged,
+                "ipv6={ipv6} checksum={checksum:#06x}"
+            );
+        }
+        let tcp = build_test_ipv6_packet_with_transport(64, Some(NextHeader::TCP)).unwrap();
+        assert!(!tcp.headers().has_zero_ipv6_udp_checksum());
+    }
+
+    /// A version mismatch is refused before anything changes, address or checksum.
+    #[test]
+    fn a_version_mismatch_changes_neither_address_nor_checksum() {
+        use crate::ip::UnicastIpAddr;
+        use crate::ipv4::Ipv4;
+        use crate::tcp::Tcp;
+        use std::net::{IpAddr, Ipv6Addr};
+        use std::num::NonZero;
+
+        let mut net = Net::Ipv4(Ipv4::default());
+        let mut tcp = Tcp::new(
+            TcpPort::new(NonZero::new(1234).unwrap()),
+            TcpPort::new(NonZero::new(80).unwrap()),
+        );
+        tcp.set_checksum(TcpChecksum::new(0x1234)).unwrap();
+        let mut transport = Transport::Tcp(tcp);
+        let before = net.clone();
+
+        let v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+        assert!(
+            net.try_set_source_updating_checksum(
+                UnicastIpAddr::try_from(v6).unwrap(),
+                Some(&mut transport)
+            )
+            .is_err()
+        );
+        assert!(
+            net.try_set_destination_updating_checksum(v6, Some(&mut transport))
+                .is_err()
+        );
+        assert_eq!(net, before);
+        assert_eq!(transport_checksum(&transport), Some(0x1234));
+    }
+
+    #[test]
+    fn incremental_update_matches_full_recompute() {
+        bolero::check!()
+            .with_generator(CommonHeaders)
+            .for_each(incremental_matches_recompute);
+    }
+
+    #[test]
+    fn unchanged_or_disabled_checksums_stay_put_property() {
+        bolero::check!()
+            .with_generator((CommonHeaders, bolero::produce::<u128>()))
+            .for_each(unchanged_or_disabled_checksums_stay_put);
+    }
+
+    #[test]
+    fn address_and_identifier_updates_match_full_recompute() {
+        bolero::check!()
+            .with_generator((
+                CommonHeaders,
+                bolero::produce::<u128>(),
+                bolero::produce::<u16>(),
+            ))
+            .for_each(address_and_identifier_match_recompute);
     }
 
     #[test]
