@@ -813,10 +813,7 @@ where
 }
 impl<F: for<'a> Fn(&'a (Ipv4Prefix, &FibRoute)) -> bool> Display for FibViewV4<'_, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Some(fibw) = &self.vrf.fibw else {
-            return writeln!(f, "No fib");
-        };
-        let Some(fibr) = fibw.enter() else {
+        let Some(fibr) = self.vrf.fibw.enter() else {
             return writeln!(f, "Unable to read fib!");
         };
 
@@ -851,10 +848,7 @@ where
 }
 impl<F: for<'a> Fn(&'a (Ipv6Prefix, &FibRoute)) -> bool> Display for FibViewV6<'_, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Some(fibw) = &self.vrf.fibw else {
-            return writeln!(f, "No fib");
-        };
-        let Some(fibr) = fibw.enter() else {
+        let Some(fibr) = self.vrf.fibw.enter() else {
             return writeln!(f, "Unable to read fib!");
         };
 
@@ -887,12 +881,8 @@ pub struct FibGroups<'a>(pub &'a Vrf);
 
 impl Display for FibGroups<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Some(ref fibw) = self.0.fibw else {
-            writeln!(f, "No fib")?;
-            return Ok(());
-        };
-        let Some(ref fibr) = fibw.enter() else {
-            writeln!(f, "No fib")?;
+        let Some(ref fibr) = self.0.fibw.enter() else {
+            writeln!(f, "Unable to access fib")?;
             return Ok(());
         };
         let num_groups = fibr.len_groups();

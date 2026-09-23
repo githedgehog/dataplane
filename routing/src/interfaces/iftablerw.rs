@@ -5,10 +5,8 @@
 
 use crate::Interface;
 use crate::errors::RouterError;
-use crate::fib::fibtype::FibKey;
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::{IfState, RouterInterfaceConfig};
-use crate::rib::Vrf;
 use crate::rib::vrf::VrfId;
 use crate::rib::vrftable::VrfTable;
 use left_right::ReadHandleFactory;
@@ -113,20 +111,6 @@ impl IfTableWriter {
         Ok(found)
     }
 
-    // Check that a vrf exists and that it has a valid fib
-    fn get_vrf_fibr(vrftable: &VrfTable, vrfid: VrfId) -> Result<&Vrf, RouterError> {
-        let vrf = vrftable.get_vrf(vrfid)?;
-        let fibg = &vrf
-            .fibw
-            .as_ref()
-            .ok_or(RouterError::Internal("No fib writer"))?
-            .enter()
-            .unwrap_or_else(|| unreachable!("Vrf exists and is not dropped"));
-
-        debug_assert_eq!(fibg.get_id(), FibKey::Id(vrfid));
-        Ok(vrf)
-    }
-
     // check that interface and vrf exist
     fn interface_attach_check(
         &mut self,
@@ -136,8 +120,7 @@ impl IfTableWriter {
     ) -> Result<(), RouterError> {
         self.interface_exists(ifindex)
             .ok_or(RouterError::NoSuchInterface(ifindex))?;
-
-        let _ = Self::get_vrf_fibr(vrftable, vrfid)?;
+        let _ = vrftable.get_vrf(vrfid)?;
         Ok(())
     }
 

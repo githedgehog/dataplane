@@ -185,7 +185,7 @@ impl VrfTable {
 
         // remove the vrf from the vrf table
         debug!("Removing VRF {vrfid}...");
-        let Some(mut vrf) = self.by_id.remove(&vrfid) else {
+        let Some(vrf) = self.by_id.remove(&vrfid) else {
             error!("No vrf with id {vrfid} exists");
             return Err(RouterError::NoSuchVrf);
         };
@@ -193,13 +193,9 @@ impl VrfTable {
         // detach interfaces
         iftablew.detach_interfaces_from_vrf(vrfid);
 
-        // unregister a fib from the fib table, including its access via vni
-        // if any, and destroy the fib if there
-        if let Some(fibw) = vrf.fibw.take() {
-            debug!("Deleting Fib for vrf {vrfid} from the FibTable");
-            self.fibtablew.unregister_fib(vrfid);
-            fibw.destroy();
-        }
+        // unregister a fib from the fib table, including its access via vni if any
+        debug!("Unregistering Fib for vrf {vrfid} from the FibTable");
+        self.fibtablew.unregister_fib(vrfid);
 
         // if the VRF had a vni assigned, unregister it from vrf table
         if let Some(vni) = vrf.vni {
@@ -209,6 +205,10 @@ impl VrfTable {
             // since unregister_fib() does both
             self.by_vni.remove(&vni);
         }
+
+        let fibw = vrf.fibw;
+        fibw.destroy();
+
         debug!("Vrf {vrfid} has been removed");
         Ok(())
     }
@@ -1485,8 +1485,7 @@ mod crossvrf_properties {
 
     fn fib_entries(table: &VrfTable, vrfid: VrfId, prefix: Prefix) -> Option<Vec<FibEntry>> {
         let vrf = table.get_vrf(vrfid).unwrap_or_else(|e| unreachable!("{e}"));
-        let fibw = vrf.fibw.as_ref().unwrap_or_else(|| unreachable!());
-        let fib = fibw.enter().unwrap_or_else(|| unreachable!());
+        let fib = vrf.fibw.enter().unwrap_or_else(|| unreachable!());
         let Prefix::IPV4(wanted) = prefix else {
             unreachable!()
         };
@@ -1500,8 +1499,7 @@ mod crossvrf_properties {
 
     fn every_entry_is_executable(table: &VrfTable, at: &str) {
         for vrf in table.values() {
-            let fibw = vrf.fibw.as_ref().unwrap_or_else(|| unreachable!());
-            let fib = fibw.enter().unwrap_or_else(|| unreachable!());
+            let fib = vrf.fibw.enter().unwrap_or_else(|| unreachable!());
             for (prefix, route) in fib.iter_v4() {
                 for group in route.iter() {
                     assert!(!group.is_empty(), "empty group for {prefix} {at}");
