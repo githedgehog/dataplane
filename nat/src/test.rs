@@ -29,7 +29,8 @@ use net::headers::{EmbeddedTransport, TryInnerIpv4};
 use net::ip::NextHeader;
 use net::packet::Packet;
 use net::packet::test_utils::{
-    addr_v4, build_test_icmp4_destination_unreachable_packet, build_test_udp_ipv4_frame,
+    addr_v4, assert_checksum_current_or_refresh_requested,
+    build_test_icmp4_destination_unreachable_packet, build_test_udp_ipv4_frame,
 };
 use net::vxlan::Vni;
 use pipeline::{DynPipeline, NetworkFunction};
@@ -576,6 +577,7 @@ async fn test_nat_combination_static_masq_icmp_error() {
     .unwrap();
     icmp_error.meta_mut().set_overlay(true);
     icmp_error.meta_mut().src_vpcd = Some(vni2.into());
+    icmp_error.update_checksums();
     println!("built packet:\n{icmp_error}");
 
     let output_reply: Vec<_> = pipeline.process(std::iter::once(icmp_error)).collect();
@@ -583,6 +585,8 @@ async fn test_nat_combination_static_masq_icmp_error() {
     let packet_out_reply = output_reply.first().unwrap();
     println!("packet_out_reply:\n{packet_out_reply}\n{flow_table}");
     assert_eq!(packet_out_reply.get_done(), None);
+    // The outer ICMP checksum covers the quote the error handler rewrote.
+    assert_checksum_current_or_refresh_requested(packet_out_reply);
 
     // Check outer IP addresses
     assert_eq!(packet_out_reply.ip_source(), Some(addr(router_ip)));
@@ -710,6 +714,7 @@ async fn test_nat_combination_static_portfwd_icmp_error() {
     .unwrap();
     icmp_error.meta_mut().set_overlay(true);
     icmp_error.meta_mut().src_vpcd = Some(vni2.into());
+    icmp_error.update_checksums();
     println!("built packet:\n{icmp_error}");
 
     let output_reply: Vec<_> = pipeline.process(std::iter::once(icmp_error)).collect();
@@ -717,6 +722,8 @@ async fn test_nat_combination_static_portfwd_icmp_error() {
     let packet_out_reply = output_reply.first().unwrap();
     println!("packet_out_reply:\n{packet_out_reply}\n{flow_table}");
     assert_eq!(packet_out_reply.get_done(), None);
+    // The outer ICMP checksum covers the quote the error handler rewrote.
+    assert_checksum_current_or_refresh_requested(packet_out_reply);
 
     // Check outer IP addresses and ports
     assert_eq!(packet_out_reply.ip_source(), Some(addr(orig_dst_ip))); // Note: We always overwrite the router IP with the original destination IP.

@@ -876,3 +876,31 @@ fn assemble_quoted(headers: &HeadersBuilder, quote: &[u8]) -> Option<Packet<Test
     packet.update_checksums();
     Some(packet)
 }
+
+/// Assert that the transport checksum is current or a refresh was requested.
+///
+/// IPv4 header checksums are recomputed at egress and are not checked here.
+///
+/// # Panics
+///
+/// Panics if no refresh was requested and recomputation changes the transport checksum.
+pub fn assert_checksum_current_or_refresh_requested(packet: &Packet<TestBuffer>) {
+    fn transport_checksum(packet: &Packet<TestBuffer>) -> Option<u16> {
+        match packet.headers.transport.as_ref()? {
+            Transport::Tcp(tcp) => tcp.checksum().map(u16::from),
+            Transport::Udp(udp) => udp.checksum().map(u16::from),
+            Transport::Icmp4(icmp) => icmp.checksum().map(u16::from),
+            Transport::Icmp6(icmp) => icmp.checksum().map(u16::from),
+        }
+    }
+    if packet.meta().checksum_refresh() {
+        return;
+    }
+    let mut recomputed = packet.clone();
+    recomputed.update_checksums();
+    assert_eq!(
+        transport_checksum(packet),
+        transport_checksum(&recomputed),
+        "the packet asked for no checksum recompute, but its transport checksum is stale:\n{packet}"
+    );
+}

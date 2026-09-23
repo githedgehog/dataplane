@@ -82,6 +82,9 @@ pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
         debug!("(port-forwarding): Translation of ICMP error inner packet failed: {e}");
         return Err(DoneReason::InternalFailure);
     }
+    // Recompute the outer ICMP checksum after changing the quoted packet.
+    // The quote's checksum may be absent or truncated, so its updates may change the outer sum.
+    packet.meta_mut().set_checksum_refresh(true);
 
     // NAT the ICMP packet according to the port-fw state of the reverse flow of the offending packet
     if let Err(e) = nat_packet(packet, state) {
