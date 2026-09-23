@@ -3,7 +3,7 @@
 
 //! Masquerade IP allocation. See the architecture diagram in `mod.rs`.
 
-use super::mapping::{Mapping, MappingKey, Subscriber, SubscribersTable};
+use super::mapping::{Mapping, MappingKey, ReaperShutdown, Subscriber, SubscribersTable};
 use super::region::AddrInterval;
 use super::reserved::{ReservedForAddr, ReservedPorts};
 use super::{NatIpWithBitmap, port_alloc};
@@ -18,6 +18,7 @@ use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::Ipv6Addr;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -191,6 +192,8 @@ pub(crate) struct PoolSet<I: NatIpWithBitmap> {
     idle_timeout: Duration,
     mapping_policy: MappingPolicy,
     subscribers: SubscribersTable<I>,
+    // wakes this pool's reapers when the last copy of the pool is dropped
+    shutdown: Arc<ReaperShutdown>,
 }
 
 impl<I: NatIpWithBitmap> PoolSet<I> {
@@ -200,6 +203,7 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
             idle_timeout,
             mapping_policy,
             subscribers: SubscribersTable::new(),
+            shutdown: Arc::new(ReaperShutdown::new()),
         }
     }
 
@@ -221,6 +225,10 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
 
     pub(crate) fn subscribers(&self) -> &SubscribersTable<I> {
         &self.subscribers
+    }
+
+    pub(crate) fn reaper_token(&self) -> CancellationToken {
+        self.shutdown.token()
     }
 
     /// Allocate from the first region with room, preserving non-exhaustion errors.
