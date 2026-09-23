@@ -125,16 +125,17 @@ impl IfTableWriter {
         Ok(())
     }
 
-    fn interface_detach_check(&mut self, ifindex: InterfaceIndex) -> Result<(), RouterError> {
+    fn interface_detach_check(
+        &mut self,
+        ifindex: InterfaceIndex,
+    ) -> Result<Option<VrfId>, RouterError> {
         let iftable = self.enter().unwrap_or_else(|| unreachable!());
-        let iface = iftable
+        let attachment = iftable
             .get_interface(ifindex)
-            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+            .ok_or(RouterError::NoSuchInterface(ifindex))
+            .map(Interface::vrf_attachment)?;
 
-        if iface.vrf_attachment().is_none() {
-            return Err(RouterError::NotAttached(ifindex));
-        }
-        Ok(())
+        Ok(attachment)
     }
 
     pub fn add_interface(&mut self, ifconfig: RouterInterfaceConfig) -> Result<(), RouterError> {
@@ -293,13 +294,16 @@ impl IfTableWriter {
     }
 
     pub fn detach_interface(&mut self, ifindex: InterfaceIndex) -> Result<(), RouterError> {
-        if let Err(e) = self.interface_detach_check(ifindex) {
-            error!("Failed to dettach interface {ifindex}: {e}");
-            return Err(e);
+        let attachment = self.interface_detach_check(ifindex).inspect_err(|e| {
+            error!("Failed to detach interface {ifindex}: {e}");
+        })?;
+        if let Some(vrfid) = attachment {
+            self.0.append(IfTableChange::Detach(ifindex));
+            self.0.publish();
+            debug!("Detached interface {ifindex} from vrf {vrfid}");
+        } else {
+            debug!("Interface {ifindex} was not attached to any VRF");
         }
-        self.0.append(IfTableChange::Detach(ifindex));
-        self.0.publish();
-        debug!("Detached interface {ifindex} from its vrf");
         Ok(())
     }
 

@@ -66,9 +66,6 @@ pub enum RouterError {
     #[error("Invalid next-hop: {0}")]
     InvalidNexthop(&'static str),
 
-    #[error("Interface is not attached: {0}")]
-    NotAttached(InterfaceIndex),
-
     #[error("Interface {0} has no mac")]
     HasNoMac(InterfaceIndex),
 }

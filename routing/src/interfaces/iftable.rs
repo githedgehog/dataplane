@@ -183,10 +183,6 @@ impl IfTable {
         let iface = self
             .get_interface_mut(ifindex)
             .ok_or(RouterError::NoSuchInterface(ifindex))?;
-
-        if iface.vrf_attachment().is_none() {
-            return Err(RouterError::NotAttached(ifindex));
-        }
         iface.detach();
         Ok(())
     }

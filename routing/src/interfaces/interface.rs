@@ -218,6 +218,7 @@ impl Interface {
     }
 
     /// Tell if an [`Interface`] is attached to some vrf
+    #[allow(dead_code)]
     pub(crate) fn vrf_attachment(&self) -> Option<VrfId> {
         match &self.attachment {
             Some(Attachment::Vrf(vrfid)) => Some(*vrfid),

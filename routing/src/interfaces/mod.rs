@@ -318,9 +318,11 @@ pub mod tests {
         iftw.update_name(ifindex, &new_name).unwrap();
         compare(&iftable, &iftr);
 
-        // test detach reject
-        let r1 = iftable.detach_from_vrf(ifindex);
-        let r2 = iftw.detach_interface(ifindex);
+        // test detach non-existing interface
+        let non_existent_index = InterfaceIndex::try_new(8192).unwrap();
+        assert!(iftable.get_interface(non_existent_index).is_none());
+        let r1 = iftable.detach_from_vrf(non_existent_index);
+        let r2 = iftw.detach_interface(non_existent_index);
         assert!(r1.is_err());
         assert_eq!(r1, r2);
         compare(&iftable, &iftr);
