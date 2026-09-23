@@ -534,6 +534,40 @@ fn translation(packet: &Packet<TestBuffer>) -> (Ipv4Addr, u16) {
     )
 }
 
+/// Check that forwarded TCP/UDP translations have valid checksums without a refresh request.
+fn assert_masquerade_checksum_is_incremental(packet: &mut Packet<TestBuffer>) {
+    use net::checksum::Checksum;
+    use net::headers::{Transport, TryHeaders, TryTransport};
+
+    if packet.get_done().is_some() {
+        return; // dropped or filtered; nothing was translated
+    }
+    if !packet.meta().is_src_natted() && !packet.meta().is_dst_natted() {
+        return; // no translation happened, so there is no delta to check
+    }
+    let checksum_of = |p: &Packet<TestBuffer>| -> Option<u16> {
+        TryHeaders::headers(p)
+            .try_transport()
+            .and_then(|tp| match tp {
+                Transport::Tcp(tcp) => tcp.checksum().map(u16::from),
+                Transport::Udp(udp) => udp.checksum().map(u16::from),
+                _ => None,
+            })
+    };
+    assert!(
+        !packet.meta().checksum_refresh(),
+        "a masqueraded packet asked for a full payload recompute; the incremental path was \
+         overridden somewhere above `snat`/`dnat`"
+    );
+    let incremental = checksum_of(packet);
+    packet.update_checksums();
+    assert_eq!(
+        incremental,
+        checksum_of(packet),
+        "a masqueraded packet's incremental checksum disagrees with a full recompute"
+    );
+}
+
 fn check_packet(
     nat: &mut Masquerade,
     src_vni: Vni,
@@ -557,8 +591,11 @@ fn check_packet(
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
     flow_lookup(nat.sessions(), &mut packet);
+    // Incremental updates require a valid starting checksum.
+    packet.update_checksums();
 
-    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    let mut packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    assert_masquerade_checksum_is_incremental(&mut packets_out[0]);
     let hdr_out = packets_out[0].try_ipv4().unwrap();
     let udp_out = packets_out[0].try_udp().unwrap();
     let done_reason = packets_out[0].get_done();

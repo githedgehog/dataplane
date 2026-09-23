@@ -618,9 +618,8 @@ impl Masquerade {
         if let Err(error) = self.masquerade_packet(packet) {
             packet.done((&error).into());
             debug!("Did not masquerade packet: {error}");
-        } else {
-            packet.meta_mut().set_checksum_refresh(true);
         }
+        // The translation helpers request checksum refresh only when needed.
     }
 }
 
