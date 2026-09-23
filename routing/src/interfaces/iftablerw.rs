@@ -220,15 +220,12 @@ impl IfTableWriter {
         ifindex: InterfaceIndex,
         state: IfState,
     ) -> Result<Option<IfState>, RouterError> {
-        let Some(oper_state) = self
+        let oper_state = self
             .enter()
             .unwrap_or_else(|| unreachable!())
             .get_interface(ifindex)
             .map(|iface| iface.oper_state)
-        else {
-            error!("Can't update oper state of interface with index {ifindex}: no such interface");
-            return Err(RouterError::NoSuchInterface(ifindex));
-        };
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
         if oper_state == state {
             return Ok(None);
@@ -245,15 +242,12 @@ impl IfTableWriter {
         ifindex: InterfaceIndex,
         state: IfState,
     ) -> Result<Option<IfState>, RouterError> {
-        let Some(admin_state) = self
+        let admin_state = self
             .enter()
             .unwrap_or_else(|| unreachable!())
             .get_interface(ifindex)
             .map(|iface| iface.admin_state)
-        else {
-            error!("Can't update admin state of interface with index {ifindex}: no such interface");
-            return Err(RouterError::NoSuchInterface(ifindex));
-        };
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
         if admin_state == state {
             return Ok(None);
@@ -319,15 +313,13 @@ impl IfTableWriter {
         ifindex: InterfaceIndex,
         new_name: &InterfaceName,
     ) -> Result<Option<InterfaceName>, RouterError> {
-        let Some(mut ifconfig) = self
+        let mut ifconfig = self
             .enter()
             .unwrap_or_else(|| unreachable!())
             .get_interface(ifindex)
             .map(Interface::as_config)
-        else {
-            error!("Can't update name of interface with index {ifindex}: no such interface");
-            return Err(RouterError::NoSuchInterface(ifindex));
-        };
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
         if ifconfig.name == *new_name {
             return Ok(None);
         }
@@ -351,10 +343,7 @@ impl IfTableWriter {
             .unwrap_or_else(|| unreachable!())
             .get_interface(ifindex)
             .map(|iface| (iface.as_config(), iface.iftype.clone()))
-            .ok_or(RouterError::NoSuchInterface(ifindex))
-            .inspect_err(|_| {
-                error!("Can't update mac of interface with index {ifindex}: no such interface");
-            })?;
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
         let Some(mac) = iftype.get_mac() else {
             // This should only happen if we modelled the interface incorrectly
