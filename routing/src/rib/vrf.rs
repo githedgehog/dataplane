@@ -135,7 +135,7 @@ pub struct Vrf {
     pub(crate) routesv6: PrefixMapTrie<Ipv6Prefix, Route>,
     pub(crate) nhstore: NhopStore,
     pub(crate) vni: Option<Vni>,
-    pub(crate) fibw: Option<FibWriter>,
+    pub(crate) fibw: FibWriter,
 }
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -191,12 +191,13 @@ impl Vrf {
     pub const DEFAULT_VRFID: VrfId = 0;
 
     /////////////////////////////////////////////////////////////////////////
-    /// Create a new [`Vrf`]
+    /// Create a new [`Vrf`], with its own fib ([`FibWriter`])
     /////////////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn new(config: &RouterVrfConfig) -> Self {
         let routesv4 = PrefixMapTrie::create();
         let routesv6 = PrefixMapTrie::create();
+        let (fibw, _fibr) = FibWriter::new(config.vrfid);
         let mut vrf = Self {
             name: config.name.clone(),
             vrfid: config.vrfid,
@@ -207,7 +208,7 @@ impl Vrf {
             routesv4,
             routesv6,
             nhstore: NhopStore::new(),
-            fibw: None,
+            fibw,
         };
 
         /* add default routes with default next-hop with action DROP */
@@ -245,7 +246,7 @@ impl Vrf {
     /// Set the fibw for a [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
     pub fn set_fibw(&mut self, fibw: FibWriter) {
-        self.fibw = Some(fibw);
+        self.fibw = fibw;
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -317,17 +318,15 @@ impl Vrf {
     /// the config causes the vtep ip or mac to change.
     /////////////////////////////////////////////////////////////////////////
     pub fn set_vtep(&mut self, vtep: &Vtep) {
-        if let Some(ref mut fibw) = self.fibw {
-            debug!("Updating VTEP for VRF {}...", self.name);
-            fibw.set_vtep(vtep.clone());
-        }
+        debug!("Updating VTEP for VRF {}...", self.name);
+        self.fibw.set_vtep(vtep.clone());
     }
 
     //////////////////////////////////////////////////////////////////////////////////////
     /// Get the VTEP for a [`Vrf`]. N.B: this gets the value currently visible by readers
     //////////////////////////////////////////////////////////////////////////////////////
     pub fn get_vtep(&self) -> Option<Vtep> {
-        self.fibw.as_ref().and_then(FibWriter::get_vtep)
+        self.fibw.get_vtep()
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -377,15 +376,11 @@ impl Vrf {
             let key = shim.rc.key.clone();
             if self.deregister_shared_nhop(shim) {
                 count += 1;
-                if let Some(fibw) = &mut self.fibw {
-                    fibw.unregister_fibgroup(&key, false);
-                }
+                self.fibw.unregister_fibgroup(&key, false);
             }
         }
         if count > 0 {
-            if let Some(fibw) = &mut self.fibw {
-                fibw.publish();
-            }
+            self.fibw.publish();
         }
     }
 
@@ -440,17 +435,15 @@ impl Vrf {
 
     /// Apply the given changes to the vrfs fib
     fn update_fib(&mut self, changes: &[Weak<Nhop>]) {
-        if let Some(fibw) = &mut self.fibw {
-            let mut count = 0;
-            for nhop in changes.iter().filter_map(Weak::upgrade) {
-                let fibgroup = &nhop.fibgroup.borrow();
-                debug!("Updating fib group for nhop {}...", nhop.key);
-                fibw.register_fibgroup(&nhop.key, fibgroup, false);
-                count += 1;
-            }
-            if count > 0 {
-                fibw.publish();
-            }
+        let mut count = 0;
+        for nhop in changes.iter().filter_map(Weak::upgrade) {
+            let fibgroup = &nhop.fibgroup.borrow();
+            debug!("Updating fib group for nhop {}...", nhop.key);
+            self.fibw.register_fibgroup(&nhop.key, fibgroup, false);
+            count += 1;
+        }
+        if count > 0 {
+            self.fibw.publish();
         }
     }
 
@@ -500,9 +493,7 @@ impl Vrf {
         let nhkeys: Vec<NhopKey> = route.s_nhops.iter().map(|nh| nh.rc.key.clone()).collect();
 
         // Install the route in the fib
-        if let Some(fibw) = &mut self.fibw {
-            fibw.add_fibroute(*prefix, nhkeys, true);
-        }
+        self.fibw.add_fibroute(*prefix, nhkeys, true);
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -536,9 +527,7 @@ impl Vrf {
             Prefix::IPV4(p) => self.del_route_v4(p),
             Prefix::IPV6(p) => self.del_route_v6(p),
         }
-        if let Some(fibw) = &mut self.fibw {
-            fibw.del_fibroute(prefix);
-        }
+        self.fibw.del_fibroute(prefix);
         self.check_deletion();
         self.refresh_fib(rstore, vrf0);
     }
@@ -1113,7 +1102,6 @@ pub mod tests {
 #[cfg(test)]
 mod vrf_properties {
     use super::*;
-    use crate::fib::fibtype::FibWriter;
     use crate::rib::nexthop::NhopKey;
     use bolero::{Driver, ValueGenerator};
     use std::collections::{BTreeMap, BTreeSet};
@@ -1389,8 +1377,7 @@ mod vrf_properties {
             assert_eq!(hit, prefixes[want], "lpm for {probe} {at}");
         }
 
-        let fibw = vrf.fibw.as_ref().unwrap_or_else(|| unreachable!());
-        let fib = fibw.enter().unwrap_or_else(|| unreachable!());
+        let fib = vrf.fibw.enter().unwrap_or_else(|| unreachable!());
         let mut want_v4 = BTreeSet::new();
         let mut want_v6 = BTreeSet::new();
         for prefix in model.routes.keys() {
@@ -1425,8 +1412,6 @@ mod vrf_properties {
             .for_each(|changes: Vec<Change>| {
                 let config = RouterVrfConfig::new(1, "test");
                 let mut vrf = Vrf::new(&config);
-                let (fibw, _fibr) = FibWriter::new(1);
-                vrf.set_fibw(fibw);
                 let mut model = Model::new();
 
                 check(&vrf, &model, "on a fresh vrf");
