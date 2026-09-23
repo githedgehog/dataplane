@@ -19,9 +19,8 @@ use crate::port::NatPort;
 use concurrency::sync::atomic::Ordering;
 use concurrency::sync::{Arc, RwLock};
 use config::external::overlay::vpcpeering::MappingPolicy;
-#[cfg(not(any(feature = "shuttle", feature = "loom")))]
-use dashmap::DashMap;
 use net::flows::atomic_instant::AtomicInstant;
+use shuttle_dashmap::DashMap;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -331,27 +330,24 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
 // Reaping
 ///////////////////////////////////////////////////////////////////////////////
 
+// Must be a power of two.
+// Under the model backends the backing map is a single lock and this is ignored.
+const SUBSCRIBER_SHARDS: usize = 1024;
+
 // The per-pool table of Subscribers, keyed by private address
+//
+// The backing map is shuttle-dashmap, which is the real sharded DashMap in production and a
+// façade-routed RwLock<HashMap> under the model backends. That matters because DashMap::remove_if()
+// runs its closure while holding a shard lock: with the real map that lock is dashmap's own
+// RawRwLock, which a model checker cannot see, so touching a façade lock from the closure would
+// suspend the task mid-closure with an unmodelled lock held and wedge shuttle's single-threaded
+// executor. The model build has no unmodelled lock to hold.
 #[derive(Debug, Clone)]
-pub(crate) struct SubscribersTable<I: NatIpWithBitmap>(Arc<Backing<I>>);
+pub(crate) struct SubscribersTable<I: NatIpWithBitmap>(Arc<DashMap<I, Arc<Subscriber<I>>>>);
 
-// In production, we use a sharded DashMap, for the concurrency a per-packet table needs. Its shard
-// locks come from dashmap's own RawRwLock, not from concurrency::sync, so a model checker cannot
-// see them. Under shuttle that is fatal rather than merely imprecise: DashMap::remove_if() runs its
-// closure while holding the shard lock, the closure touches a façade lock, and a façade lock
-// operation is a scheduling point; so shuttle suspends the task mid-closure with the real shard
-// lock still held, and the next task to touch any shard parks in a real futex that the
-// single-threaded executor can never wake. The model backends therefore get a façade-routed map
-// instead, at the cost of exploring one global lock where production shards.
-#[cfg(not(any(feature = "shuttle", feature = "loom")))]
-type Backing<I> = DashMap<I, Arc<Subscriber<I>>>;
-#[cfg(any(feature = "shuttle", feature = "loom"))]
-type Backing<I> = RwLock<HashMap<I, Arc<Subscriber<I>>>>;
-
-#[cfg(not(any(feature = "shuttle", feature = "loom")))]
 impl<I: NatIpWithBitmap> SubscribersTable<I> {
     pub(crate) fn new() -> Self {
-        Self(Arc::new(DashMap::new()))
+        Self(Arc::new(DashMap::with_shard_amount(SUBSCRIBER_SHARDS)))
     }
 
     // Get the subscriber for the provided IP, or create an empty one if this is the first mapping
@@ -377,41 +373,6 @@ impl<I: NatIpWithBitmap> SubscribersTable<I> {
     #[cfg(test)]
     pub(crate) fn get(&self, ip: I) -> Option<Arc<Subscriber<I>>> {
         self.0.get(&ip).map(|entry| entry.value().clone())
-    }
-}
-
-// The model-checked backing: one façade RwLock over a plain map. Same three operations, same
-// semantics: the emptiness test still runs under the map lock, so the reap stays race-free.
-#[cfg(any(feature = "shuttle", feature = "loom"))]
-impl<I: NatIpWithBitmap> SubscribersTable<I> {
-    pub(crate) fn new() -> Self {
-        Self(Arc::new(RwLock::new(HashMap::new())))
-    }
-
-    pub(crate) fn get_or_default(&self, ip: I) -> Arc<Subscriber<I>> {
-        if let Some(existing) = self.0.read().get(&ip) {
-            return existing.clone();
-        }
-        self.0
-            .write()
-            .entry(ip)
-            .or_insert_with(|| Arc::new(Subscriber::default()))
-            .clone()
-    }
-
-    pub(crate) fn remove_if_empty(&self, ip: I, subscriber: &Arc<Subscriber<I>>) {
-        let mut guard = self.0.write();
-        if guard
-            .get(&ip)
-            .is_some_and(|v| Arc::ptr_eq(v, subscriber) && v.try_is_empty().unwrap_or(false))
-        {
-            guard.remove(&ip);
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn get(&self, ip: I) -> Option<Arc<Subscriber<I>>> {
-        self.0.read().get(&ip).cloned()
     }
 }
 

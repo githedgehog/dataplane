@@ -1782,7 +1782,6 @@ dependencies = [
  "arc-swap",
  "bnum",
  "bolero",
- "dashmap",
  "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
@@ -1803,6 +1802,7 @@ dependencies = [
  "rand 0.10.3",
  "roaring",
  "shuttle",
+ "shuttle-dashmap",
  "smallvec",
  "strum",
  "thiserror",
@@ -2096,6 +2096,16 @@ dependencies = [
  "rustc_version",
  "syn 2.0.119",
  "unicode-xid",
+]
+
+[[package]]
+name = "deterministic_collections"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "840cd0e7a7aab89e504ff08a6fe0e2899887ab0fdcc9e8267b2cb7e545728c7f"
+dependencies = [
+ "serde",
+ "siphasher 0.3.11",
 ]
 
 [[package]]
@@ -4450,7 +4460,7 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
 dependencies = [
- "siphasher",
+ "siphasher 1.0.3",
 ]
 
 [[package]]
@@ -5551,6 +5561,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "shuttle-dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7087e118e37dd0647e8346ff3651452a15139c64cc3ccd8087ea53f6e917ac47"
+dependencies = [
+ "cfg-if",
+ "dashmap",
+ "shuttle-dashmap-impl",
+]
+
+[[package]]
+name = "shuttle-dashmap-impl"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc061039a68dc511025c7ee7ddf48072f2299cb0dc250f516517e2184bd1103e"
+dependencies = [
+ "deterministic_collections",
+ "shuttle",
+]
+
+[[package]]
 name = "shuttle-engine"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5649,6 +5680,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "siphasher"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38b58827f4464d87d377d175e90bf58eb00fd8716ff0a62f80356b5e61555d0d"
 
 [[package]]
 name = "siphasher"

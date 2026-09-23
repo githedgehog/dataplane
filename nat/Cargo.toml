@@ -7,7 +7,7 @@ version.workspace = true
 
 [features]
 loom = ["concurrency/loom"]
-shuttle = ["concurrency/shuttle", "dep:shuttle", "left-right/shuttle"]
+shuttle = ["concurrency/shuttle", "shuttle-dashmap/shuttle", "dep:shuttle", "left-right/shuttle"]
 shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
@@ -18,7 +18,7 @@ clock = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true, features = [] }
 config = { workspace = true }
-dashmap = { workspace = true }
+shuttle-dashmap = { workspace = true }
 flow-entry = { workspace = true }
 indenter = { workspace = true }
 left-right = { workspace = true }
