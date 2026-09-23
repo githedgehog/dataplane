@@ -118,8 +118,9 @@ impl IfTableWriter {
         vrfid: VrfId,
         vrftable: &VrfTable,
     ) -> Result<(), RouterError> {
-        self.interface_exists(ifindex)
-            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+        if !self.interface_exists(ifindex) {
+            return Err(RouterError::NoSuchInterface(ifindex));
+        }
         let _ = vrftable.get_vrf(vrfid)?;
         Ok(())
     }
