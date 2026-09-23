@@ -43,6 +43,11 @@ python3 -m http.server
 
 And then open a web-browser to <http://localhost:8000> to view coverage data.
 
+Pass cargo arguments through to scope the run, for example `just coverage -p dataplane-nat`.
+To report on the Nix-built test archives instead (the binaries CI measures), run
+`just coverage-archive`, or `just coverage-archive nat` for one package; that report lands in
+`./target/coverage`.
+
 ## Fuzz testing (bolero)
 
 The dataplane project makes fairly extensive use of [fuzz testing].
@@ -54,8 +59,23 @@ Running the test suite via `cargo test` or `cargo nextest run` will run the fuzz
 - Coverage information and sanitizers are not enabled.
 - A full fuzzing engine is not set up, so evolutionary feedback is not provided when the tests are run this way.
 
-> [!NOTE]
-> A `just fuzz` recipe for running full fuzz tests with [libfuzzer] or [afl] is planned for a future PR.
+### Running a fuzz campaign
+
+`just fuzz` runs a single bolero target under [libfuzzer], which is coverage guided and reaches far
+deeper than the brief random run above. List the targets in a package, then pick one:
+
+```shell
+just fuzz-list -p dataplane-nat
+just fuzz 'masquerade::apalloc::region::bolero_tests::decompose_properties' 10min -p dataplane-nat
+```
+
+- The duration defaults to `60s`. Anything after it is forwarded to `cargo bolero test`, so `-j 16`
+  spreads the campaign over 16 workers (the default is half the cores).
+- A plain `just fuzz` builds with the `checked` profile under AddressSanitizer. Use
+  `just sanitize=thread fuzz ...` for a concurrency target, or `just sanitize=NONE fuzz ...` for
+  roughly four times the executions per second with no sanitizer.
+- The corpus and any crashing inputs are written to `.fuzz-corpus/<target>` (override with
+  `FUZZ_CORPUS_ROOT`). Both it and the per-worker `fuzz-<n>.log` files are gitignored.
 
 ## Miri
 
@@ -103,7 +123,6 @@ that the interpreter does not model. They're listed under `[workspace.metadata.p
 `Cargo.toml` with `miri = false`. The runner expands those entries into `--exclude=` flags
 automatically when invoked without an explicit package selector.
 
-[afl]: https://aflplus.plus/
 [bolero]: https://github.com/camshaft/bolero
 [cargo llvm-cov]: https://github.com/taiki-e/cargo-llvm-cov?tab=readme-ov-file#cargo-llvm-cov
 [cargo profiles]: https://doc.rust-lang.org/cargo/reference/profiles.html

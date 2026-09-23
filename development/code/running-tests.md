@@ -165,8 +165,9 @@ the difference, a property that manages a few thousand cases per second under `j
 several hundred thousand per minute here, because libfuzzer mutates towards inputs that reach new
 code rather than sampling blindly.
 
-Findings are written to a `__fuzz__` directory beside the test. That directory is gitignored: the
-corpus is a local artifact that seeds later runs on the same machine, not something to commit.
+Findings are written to `.fuzz-corpus/<target>` (set `FUZZ_CORPUS_ROOT` to move it). That directory
+is gitignored: the corpus is a local artifact that seeds later runs on the same machine, not
+something to commit.
 
 Pass `-j` to spread the campaign over more cores, which is the cheapest way to reach deeper:
 
@@ -175,7 +176,7 @@ just fuzz 'some::module::tests::some_property' 10min -p some-package -j 60
 ```
 
 Each worker then writes a `fuzz-<n>.log` into the directory you ran from, rather than into
-`__fuzz__`. Those are gitignored too, and are only worth reading when a run reports a crash.
+the corpus directory. Those are gitignored too, and are only worth reading when a run reports a crash.
 
 ### Sanitizers
 
