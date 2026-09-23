@@ -52,6 +52,13 @@ fn make_default_for_transport(transport_type: Option<NextHeader>) -> Option<Tran
             let udp = Udp::new(123.try_into().unwrap(), 456.try_into().unwrap());
             Some(Transport::Udp(udp))
         }
+        // Echo identifiers serve as ports for NAT and are covered by the ICMP checksum.
+        Some(NextHeader::ICMP) => Some(Transport::Icmp4(crate::icmp4::Icmp4::with_type(
+            crate::icmp4::Icmp4Type::EchoRequest(crate::icmp4::Icmp4EchoRequest { id: 18, seq: 2 }),
+        ))),
+        Some(NextHeader::ICMP6) => Some(Transport::Icmp6(crate::icmp6::Icmp6::with_type(
+            crate::icmp6::Icmp6Type::EchoRequest(crate::icmp6::Icmp6EchoRequest { id: 18, seq: 2 }),
+        ))),
         Some(transport_type) => {
             panic!("make_default_for_transport: Unsupported transport type: {transport_type:?}")
         }
@@ -84,12 +91,14 @@ pub fn make_default_for_eth(ethtype: EthType) -> Eth {
 ///
 /// # Panics
 ///
-/// Panics if the transport type is anything other than `Some(NextHeader::TCP)`, `Some(NextHeader::UDP)`, or None
+/// Panics if the transport type is anything other than `Some(NextHeader::TCP)`,
+/// `Some(NextHeader::UDP)`, `Some(NextHeader::ICMP)`, or None
 ///
 pub fn build_test_ipv4_packet_with_transport(
     ttl: u8,
     transport_type: Option<NextHeader>,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    assert_ne!(transport_type, Some(NextHeader::ICMP6), "ICMPv6 over IPv4");
     let mut headers = HeadersBuilder::default();
     let mut transport = make_default_for_transport(transport_type);
 
@@ -261,11 +270,13 @@ pub fn build_test_ipv6_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPack
 ///
 /// # Panics
 ///
-/// Panics if the transport type is anything other than `Some(NextHeader::TCP)`, `Some(NextHeader::UDP)`, or None
+/// Panics if the transport type is anything other than `Some(NextHeader::TCP)`,
+/// `Some(NextHeader::UDP)`, `Some(NextHeader::ICMP6)`, or None
 pub fn build_test_ipv6_packet_with_transport(
     hl: u8,
     transport_type: Option<NextHeader>,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    assert_ne!(transport_type, Some(NextHeader::ICMP), "ICMPv4 over IPv6");
     let mut headers = HeadersBuilder::default();
     headers.eth(Some(make_default_for_eth(EthType::IPV6)));
 
