@@ -92,7 +92,10 @@ fn snat<Buf: PacketBufferMut>(
     }
     if modified {
         packet.meta_mut().src_natted(true);
-        packet.meta_mut().set_checksum_refresh(needs_full_recompute);
+        if needs_full_recompute {
+            // Preserve refresh requests from earlier stages.
+            packet.meta_mut().set_checksum_refresh(true);
+        }
     }
     Ok(())
 }
@@ -159,7 +162,10 @@ fn dnat<Buf: PacketBufferMut>(
 
     if modified {
         packet.meta_mut().dst_natted(true);
-        packet.meta_mut().set_checksum_refresh(needs_full_recompute);
+        if needs_full_recompute {
+            // Preserve refresh requests from earlier stages.
+            packet.meta_mut().set_checksum_refresh(true);
+        }
     }
     Ok(())
 }
