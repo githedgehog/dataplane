@@ -10,7 +10,10 @@ use crate::icmp_handler::icmp_error_msg::{
 };
 pub use crate::static_nat::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, NetError, TryEmbeddedTransport, TryInnerIp, TryIpMut, TryTcpUdpMut};
+use net::headers::{
+    Net, NetError, Transport, TryEmbeddedTransport, TryHeaders, TryHeadersMut, TryInnerIp,
+    TryTcpUdpMut, TryTransportMut,
+};
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::tcp_udp::TcpUdpMut;
@@ -75,18 +78,24 @@ impl StaticNat {
     fn translate_src(
         &self,
         net: &mut Net,
+        transport: Option<&mut Transport>,
         target_src: UnicastIpAddr,
     ) -> Result<(), StaticNatError> {
         let nfi = self.name();
         debug!("{nfi}: Changing IP src: {} -> {target_src}", net.src_addr());
-        net.try_set_source(target_src)
+        net.try_set_source_updating_checksum(target_src, transport)
             .map_err(StaticNatError::FailedToSetSourceIp)
     }
 
-    fn translate_dst(&self, net: &mut Net, target_dst: IpAddr) -> Result<(), StaticNatError> {
+    fn translate_dst(
+        &self,
+        net: &mut Net,
+        transport: Option<&mut Transport>,
+        target_dst: IpAddr,
+    ) -> Result<(), StaticNatError> {
         let nfi = self.name();
         debug!("{nfi}: Changing IP dst: {} -> {target_dst}", net.dst_addr());
-        net.try_set_destination(target_dst)
+        net.try_set_destination_updating_checksum(target_dst, transport)
             .map_err(StaticNatError::FailedToSetDestIp)
     }
 
@@ -106,6 +115,21 @@ impl StaticNat {
             transport.dst_port()
         );
         transport.set_dst_port(new_port);
+    }
+
+    /// Apply a port checksum delta, requesting full recomputation if needed.
+    ///
+    /// `TcpUdpMut` cannot access the checksum, so callers capture old values before translation.
+    fn fold_port_checksum_delta<Buf: PacketBufferMut>(
+        packet: &mut Packet<Buf>,
+        (old, new): (NonZero<u16>, NonZero<u16>),
+    ) {
+        let Some(transport) = packet.headers_mut().try_transport_mut() else {
+            return;
+        };
+        if !transport.increment_checksum_for_u16(old.get(), new.get()) {
+            packet.meta_mut().set_checksum_refresh(true);
+        }
     }
 
     fn translate_icmp_inner_packet_src_if_any<Buf: PacketBufferMut>(
@@ -176,23 +200,38 @@ impl StaticNat {
         if let Some((new_src_addr, new_src_port_opt)) =
             table.find_src_mapping(&src_addr, src_port_opt, dst_vni)
         {
-            let net = packet.try_ip_mut().ok_or(StaticNatError::NoIpHeader)?;
             if new_src_addr.inner() != src_addr {
-                self.translate_src(net, new_src_addr)?;
+                let (net, transport) = packet
+                    .headers_mut()
+                    .net_and_transport_mut()
+                    .ok_or(StaticNatError::NoIpHeader)?;
+                self.translate_src(net, transport, new_src_addr)?;
                 modified = true;
             }
+            // Save the port delta until the `TcpUdpMut` borrow ends.
+            let mut port_change = None;
             if let (Some(mut transport), Some(new_src_port)) =
                 (packet.try_tcp_udp_mut(), new_src_port_opt)
                 && new_src_port.get() != transport.src_port().get()
             {
+                port_change = Some((transport.src_port(), new_src_port));
                 self.translate_src_port(&mut transport, new_src_port);
                 modified = true;
             }
+            if let Some(port_change) = port_change {
+                Self::fold_port_checksum_delta(packet, port_change);
+            }
+            if modified && packet.headers().has_zero_ipv6_udp_checksum() {
+                packet.meta_mut().set_checksum_refresh(true);
+            }
         }
 
-        // ICMP Error messages
+        // The outer ICMP checksum must include changes to the quoted packet.
         if icmp_err {
             modified |= Self::translate_icmp_inner_packet_dst_if_any(table, packet, dst_vni)?;
+            if modified {
+                packet.meta_mut().set_checksum_refresh(true);
+            }
         }
 
         if modified {
@@ -221,23 +260,37 @@ impl StaticNat {
         if let Some((new_dst_addr, new_dst_port_opt)) =
             table.find_dst_mapping(&dst_addr, dst_port_opt)
         {
-            let net = packet.try_ip_mut().ok_or(StaticNatError::NoIpHeader)?;
             if new_dst_addr != dst_addr {
-                self.translate_dst(net, new_dst_addr)?;
+                let (net, transport) = packet
+                    .headers_mut()
+                    .net_and_transport_mut()
+                    .ok_or(StaticNatError::NoIpHeader)?;
+                self.translate_dst(net, transport, new_dst_addr)?;
                 modified = true;
             }
+            let mut port_change = None;
             if let (Some(mut transport), Some(new_dst_port)) =
                 (packet.try_tcp_udp_mut(), new_dst_port_opt)
                 && new_dst_port.get() != transport.dst_port().get()
             {
+                port_change = Some((transport.dst_port(), new_dst_port));
                 self.translate_dst_port(&mut transport, new_dst_port);
                 modified = true;
             }
+            if let Some(port_change) = port_change {
+                Self::fold_port_checksum_delta(packet, port_change);
+            }
+            if modified && packet.headers().has_zero_ipv6_udp_checksum() {
+                packet.meta_mut().set_checksum_refresh(true);
+            }
         }
 
-        // ICMP Error messages
+        // The outer ICMP checksum must include changes to the quoted packet.
         if icmp_err {
             modified |= Self::translate_icmp_inner_packet_src_if_any(table, packet)?;
+            if modified {
+                packet.meta_mut().set_checksum_refresh(true);
+            }
         }
 
         if modified {
@@ -322,7 +375,7 @@ impl StaticNat {
             }
             Ok(modified) => {
                 if modified {
-                    packet.meta_mut().set_checksum_refresh(true);
+                    // Translation helpers request checksum refresh when needed.
                     debug!("{nfi}: Packet was NAT'ed");
                 } else {
                     debug!("{nfi}: No NAT translation needed");

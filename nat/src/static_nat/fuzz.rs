@@ -427,6 +427,21 @@ fn a_packet_that_cannot_be_looked_up_says_so() {
     drive_attribution!(Scenario::addresses(true));
 }
 
+fn transport_checksum<Buf: net::buffer::PacketBufferMut>(
+    packet: &net::packet::Packet<Buf>,
+) -> Option<u16> {
+    use net::checksum::Checksum;
+    use net::headers::{Transport, TryHeaders, TryTransport};
+    TryHeaders::headers(packet)
+        .try_transport()
+        .and_then(|tp| match tp {
+            Transport::Tcp(tcp) => tcp.checksum().map(u16::from),
+            Transport::Udp(udp) => udp.checksum().map(u16::from),
+            Transport::Icmp4(icmp) => icmp.checksum().map(u16::from),
+            Transport::Icmp6(icmp) => icmp.checksum().map(u16::from),
+        })
+}
+
 macro_rules! drive_marking {
     ($scenario:expr) => {{
     let tally = Tally::default();
@@ -443,8 +458,11 @@ macro_rules! drive_marking {
             for spec in &probes {
                 let mut probe = (*spec).resolve(&fabric);
                 let before = (probe.source, probe.sport);
-                let out = run(&mut nf, vec![probe.take()]);
-                let packet = &out[0];
+                let mut input = probe.take();
+                // Initialize the probe's checksum before applying incremental updates.
+                input.update_checksums();
+                let mut out = run(&mut nf, vec![input]);
+                let packet = &mut out[0];
 
                 if five_tuple_source(packet) == before {
                     continue;
@@ -456,11 +474,17 @@ macro_rules! drive_marking {
                     "{source}:{sport} was translated without the source-natted mark, so a later \
                      stage would translate it again"
                 );
-                assert!(
-                    packet.meta().checksum_refresh(),
-                    "{source}:{sport} was translated without asking for a checksum refresh, so the \
-                     packet goes out with a checksum for headers it no longer carries"
-                );
+                // A packet without a refresh request must already have a valid transport checksum.
+                if !packet.meta().checksum_refresh() {
+                    let incremental = transport_checksum(packet);
+                    packet.update_checksums();
+                    assert_eq!(
+                        incremental,
+                        transport_checksum(packet),
+                        "{source}:{sport} was translated, did not ask for a checksum refresh, and \
+                         its checksum does not match a recompute -- so it goes out wrong"
+                    );
+                }
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
         },

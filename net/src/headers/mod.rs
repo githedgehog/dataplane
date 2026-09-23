@@ -964,6 +964,14 @@ impl Headers {
         self.net.as_mut()
     }
 
+    /// Get mutable references to the network header and, if present, the transport header.
+    ///
+    /// Borrowing both at once lets an address change fold into the transport checksum.
+    #[must_use]
+    pub fn net_and_transport_mut(&mut self) -> Option<(&mut Net, Option<&mut Transport>)> {
+        Some((self.net.as_mut()?, self.transport.as_mut()))
+    }
+
     /// Whether this is an IPv6 UDP datagram with a zero checksum.
     ///
     /// IPv6 forbids a zero UDP checksum outside RFC 6935 tunnels, and an incremental update cannot
