@@ -57,29 +57,16 @@ fn snat<Buf: PacketBufferMut>(
         Some((_, Net::Ipv6(_), Transport::Icmp4(_)) | (_, Net::Ipv4(_), Transport::Icmp6(_))) => {
             return Err(NatPacketError::UnsupportedTraffic);
         }
-        Some((_, ip, Transport::Icmp4(icmp))) => {
+        Some((_, ip, tp)) if matches!(tp, Transport::Icmp4(_) | Transport::Icmp6(_)) => {
             if ip.src_addr() != new_src.inner() {
                 ip.try_set_source(new_src)?;
                 modified = true;
             }
             if let NatPort::Identifier(id) = natport
-                && let Some(current) = icmp.identifier()
+                && let Some(current) = tp.identifier()
                 && current != id
             {
-                icmp.try_set_identifier(id)?;
-                modified = true;
-            }
-        }
-        Some((_, ip, Transport::Icmp6(icmp))) => {
-            if ip.src_addr() != new_src.inner() {
-                ip.try_set_source(new_src)?;
-                modified = true;
-            }
-            if let NatPort::Identifier(id) = natport
-                && let Some(current) = icmp.identifier()
-                && current != id
-            {
-                icmp.try_set_identifier(id)?;
+                tp.try_set_identifier(id)?;
                 modified = true;
             }
         }
@@ -122,32 +109,17 @@ fn dnat<Buf: PacketBufferMut>(
             return Err(NatPacketError::UnsupportedTraffic);
         }
 
-        // ipv4 + Icmp4
-        Some((_, ip, Transport::Icmp4(icmp))) => {
+        // ipv4 + Icmp4 | ipv6 + Icmp6
+        Some((_, ip, tp)) if matches!(tp, Transport::Icmp4(_) | Transport::Icmp6(_)) => {
             if ip.dst_addr() != new_dst_ip {
                 ip.try_set_destination(new_dst_ip)?;
                 modified = true;
             }
             if let NatPort::Identifier(id) = natport
-                && let Some(current) = icmp.identifier()
+                && let Some(current) = tp.identifier()
                 && current != id
             {
-                icmp.try_set_identifier(id)?;
-                modified = true;
-            }
-        }
-
-        // ipv6 + Icmp6
-        Some((_, ip, Transport::Icmp6(icmp))) => {
-            if ip.dst_addr() != new_dst_ip {
-                ip.try_set_destination(new_dst_ip)?;
-                modified = true;
-            }
-            if let NatPort::Identifier(id) = natport
-                && let Some(current) = icmp.identifier()
-                && current != id
-            {
-                icmp.try_set_identifier(id)?;
+                tp.try_set_identifier(id)?;
                 modified = true;
             }
         }
