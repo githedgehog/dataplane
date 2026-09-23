@@ -44,7 +44,7 @@ impl NodeArg {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Node {
     pub(crate) name: String,
     pub depth: u16,
@@ -131,14 +131,14 @@ impl Node {
             self
         }
     }
-    pub fn find_best(&self, tokens: &mut VecDeque<String>) -> Option<&Self> {
+    pub fn find_best(&self, mut tokens: VecDeque<String>) -> &Self {
         if let Some(word) = tokens.pop_front() {
             match self.children.get(word.as_str()) {
                 Some(child) => child.find_best(tokens),
-                None => Some(self),
+                None => self,
             }
         } else {
-            Some(self)
+            self
         }
     }
     pub fn get_node(&self, tokens: &mut VecDeque<String>) -> Option<&Self> {
