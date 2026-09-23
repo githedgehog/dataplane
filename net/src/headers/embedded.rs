@@ -618,12 +618,7 @@ impl EmbeddedTransport {
                     old_value,
                     new_value,
                 );
-                let updated = if u16::from(updated) == 0 {
-                    UdpChecksum::new(u16::MAX)
-                } else {
-                    updated
-                };
-                let _ = udp.set_checksum(updated);
+                let _ = udp.set_checksum(UdpChecksum::from_computed(u16::from(updated)));
             }
             EmbeddedTransport::Icmp4(icmp) => {
                 let updated = icmp.increment_update_checksum(

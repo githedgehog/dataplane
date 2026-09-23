@@ -36,6 +36,18 @@ impl UdpChecksum {
     pub const fn new(raw: u16) -> UdpChecksum {
         UdpChecksum(raw)
     }
+
+    /// Convert a computed checksum to its wire value.
+    ///
+    /// Send a computed zero as `0xFFFF`, since a stored zero disables the checksum (RFC 768).
+    #[must_use]
+    pub const fn from_computed(computed: u16) -> UdpChecksum {
+        if computed == 0 {
+            UdpChecksum(u16::MAX)
+        } else {
+            UdpChecksum(computed)
+        }
+    }
 }
 
 impl AsRef<u16> for UdpChecksum {
