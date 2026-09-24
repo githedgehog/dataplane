@@ -140,7 +140,7 @@ impl PortForwarder {
             };
 
         // create a pair of related flow entries (outside the flow table). Timeout is set according to the rule matched
-        let timeout = clock::now() + entry.init_timeout();
+        let timeout = clock::deadline(entry.init_timeout());
         let Ok((fw_flow, rev_flow)) = FlowInfo::related_pair(
             timeout,
             fw_key,
