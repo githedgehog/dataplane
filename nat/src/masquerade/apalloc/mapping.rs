@@ -427,25 +427,34 @@ fn spawn_mapping_reaper<I: NatIpWithBitmap>(
         let mut deadline = mapping.expires_at();
         loop {
             tokio::select! {
-                () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
-                    let new_deadline = mapping.expires_at();
-                    if new_deadline > deadline {
-                        deadline = new_deadline;
-                        continue;
-                    }
-                    break;
-                },
+                () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {}
                 // The pool this mapping belongs to is gone, so there is nothing left to reap it
                 // out of. Unwind now rather than holding the table alive until the deadline.
                 () = cancel.cancelled() => return,
             }
+
+            let new_deadline = mapping.expires_at();
+            if new_deadline > deadline {
+                deadline = new_deadline;
+                continue;
+            }
+            if reap_expired_mapping(&subscriber, subscriber_ip, key, &mapping, &subscribers) {
+                return;
+            }
+            // A refresh landed between that deadline check and the write lock, so the mapping kept
+            // its entry. It has to keep this reaper too: no other path spawns one for an entry
+            // already in the table.
+            deadline = mapping.expires_at();
         }
-        reap_expired_mapping(&subscriber, subscriber_ip, key, &mapping, &subscribers);
     });
 }
 
 // Drop the mapping from the subscriber's table (verifying identity so a concurrently-inserted
 // replacement under the same key survives), then reap the subscriber itself if it is now empty
+//
+// Return whether this reaper is finished with the mapping: true if the entry is gone (removed here
+// or already replaced elsewhere), false if a refresh landed between the caller's deadline check and
+// the write lock, meaning the entry is still live and the caller has to keep watching it.
 #[cfg_attr(feature = "loom", allow(dead_code))]
 pub(crate) fn reap_expired_mapping<I: NatIpWithBitmap>(
     subscriber: &Arc<Subscriber<I>>,
@@ -453,21 +462,26 @@ pub(crate) fn reap_expired_mapping<I: NatIpWithBitmap>(
     key: MappingKey<I>,
     mapping: &Arc<Mapping<I>>,
     subscribers: &SubscribersTable<I>,
-) {
+) -> bool {
     // Remove the mapping, verifying identity so a concurrently-inserted replacement under the same
     // key survives, and re-checking expiry so a refresh that landed after the reaper last looked is
     // not thrown away. The caller already checked expirty, but we need to double-check now we hold
     // the lock, to avoid a race.
-    {
+    let done = {
         let mut guard = subscriber.mappings.write();
-        if mapping.is_expired()
-            && guard
-                .get(&key)
-                .is_some_and(|current| Arc::ptr_eq(current, mapping))
-        {
-            guard.remove(&key);
+        match guard.get(&key) {
+            Some(current) if Arc::ptr_eq(current, mapping) => {
+                if mapping.is_expired() {
+                    guard.remove(&key);
+                    true
+                } else {
+                    false
+                }
+            }
+            // Gone, or replaced by a fresh mapping that brought its own reaper
+            _ => true,
         }
-    }
+    };
 
     // If that was the last mapping, reap the subscriber too, so its pinned public IP(s) are
     // not held forever.
@@ -480,6 +494,7 @@ pub(crate) fn reap_expired_mapping<I: NatIpWithBitmap>(
     // returns to normal once the orphan subscriber's mappings expire. We accept a similar race
     // AllocatedPortBlockMap::remove_if_still_dead, for the same reason.
     subscribers.remove_if_empty(subscriber_ip, subscriber);
+    done
 }
 
 #[cfg(any(feature = "shuttle", feature = "loom"))]
@@ -626,6 +641,18 @@ mod tests {
         );
     }
 
+    // A pool whose mappings are expired the moment they are handed out
+    fn pool_with_zero_timeout() -> PoolSet<Ipv4Addr> {
+        let specs = vec![PoolSpec::new(
+            vec![AddrInterval::new(BASE, BASE)],
+            Duration::ZERO,
+        )];
+        pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| unreachable!())
+    }
+
     // The reaper task re-reads the deadline before it decides to expire a mapping, but an outbound
     // packet's refresh can still land between that read and the write lock. Reaping then would
     // strand the flow holding this Arc on a tuple the next flow for the same private tuple no
@@ -648,7 +675,7 @@ mod tests {
         // The pool's idle timeout is minutes, so this stands in for a refresh that landed while
         // the reaper was on its way to the lock
         assert!(!mapping.is_expired(), "sanity: the mapping is still live");
-        reap_expired_mapping(
+        let done = reap_expired_mapping(
             &subscriber,
             subscriber_ip,
             key,
@@ -664,6 +691,30 @@ mod tests {
             pool.subscribers().get(subscriber_ip).is_some(),
             "the subscriber was reaped although it still holds a live mapping"
         );
+        // We checked survival, but we're not done yet. Nothing else spawns a reaper for an
+        // entry already in the table, so the entry would be left with no timer at all if its reaper
+        // were told it was finished here.
+        assert!(
+            !done,
+            "the reaper was told it was finished with a mapping it did not reap,
+             so the entry keeps its port and its pinned address with nothing left to expire it"
+        );
+
+        // When the mapping really has expired, the reaper is finished
+        let expired = pool_with_zero_timeout();
+        let key2 = MappingKey::new(port(2), MappingScope::Independent);
+        let doomed = expired
+            .get_or_create_mapping(subscriber_ip, key2, false)
+            .expect("the pool has room");
+        let owner = expired
+            .subscribers()
+            .get(subscriber_ip)
+            .expect("a subscriber row exists after the first mapping");
+        assert!(
+            reap_expired_mapping(&owner, subscriber_ip, key2, &doomed, expired.subscribers()),
+            "an expired mapping should be reaped, and its reaper told it is done"
+        );
+        assert!(owner.live_mapping(&key2).is_none());
     }
 
     //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
