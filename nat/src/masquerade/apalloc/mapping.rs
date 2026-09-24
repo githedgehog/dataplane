@@ -123,7 +123,7 @@ impl<I: NatIpWithBitmap> Mapping<I> {
     fn new(allocation: AllocatedPort<I>, idle_timeout: Duration) -> Self {
         Self {
             allocation,
-            expires_at: AtomicInstant::new(clock::now() + idle_timeout),
+            expires_at: AtomicInstant::new(clock::deadline(idle_timeout)),
             idle_timeout,
         }
     }
@@ -155,7 +155,7 @@ impl<I: NatIpWithBitmap> Mapping<I> {
     // independent of that flow's own idle timer. The clock is monotonic, given that several flows
     // on different cores may refresh concurrently, and we must never make it go backwards.
     pub(crate) fn refresh(&self) {
-        let new = clock::now() + self.idle_timeout;
+        let new = clock::deadline(self.idle_timeout);
         self.expires_at.fetch_max(new, Ordering::Relaxed);
     }
 }
@@ -513,7 +513,8 @@ fn spawn_mapping_reaper<I: NatIpWithBitmap>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::setup::{narrow_budget_specs, pool_sets_for_specs};
+    use super::super::region::AddrInterval;
+    use super::super::setup::{PoolSpec, narrow_budget_specs, pool_sets_for_specs};
     use super::super::test_alloc::context::port;
     use super::*;
     use net::ip::NextHeader;
@@ -638,6 +639,36 @@ mod tests {
         panic!(
             "{} reaper task(s) still parked after their pool was dropped",
             metrics.num_alive_tasks()
+        );
+    }
+
+    // A configured idle timeout has no upper bound (see GH 1854), and deadlines are computed as
+    // "now + timeout". We use a saturating helper to avoid overflow; make sure it doesn't regress.
+    #[test]
+    fn an_absurd_idle_timeout_never_overflows_a_deadline() {
+        let specs = vec![PoolSpec::new(
+            vec![AddrInterval::new(BASE, BASE)],
+            Duration::MAX, // that's long!
+        )];
+        let pool = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| unreachable!());
+        let subscriber_ip = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+
+        // Both deadline computations: one at creation, one on every refresh.
+        let mapping = pool
+            .get_or_create_mapping(
+                subscriber_ip,
+                MappingKey::new(port(1), MappingScope::Independent),
+                false,
+            )
+            .expect("the pool has room");
+        mapping.refresh();
+
+        assert!(
+            !mapping.is_expired(),
+            "a mapping with the largest configured timeout should be live, not expired"
         );
     }
 

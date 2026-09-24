@@ -42,6 +42,37 @@ pub fn elapsed(anchor: Instant) -> Duration {
     now().saturating_duration_since(anchor)
 }
 
+/// A deadline `after` from now, saturating instead of panicking if it cannot be represented.
+///
+/// `Instant + Duration` panics on overflow. Deadlines are computed on the packet path from
+/// durations that originate in configuration, so the addition has to be total: a caller asking
+/// "when does this expire" has nothing useful to do with a panic, and the same reasoning as
+/// [`elapsed`] applies.
+#[must_use]
+pub fn deadline(after: Duration) -> Instant {
+    saturating_add(now(), after)
+}
+
+/// `instant + duration`, saturating at the furthest representable instant.
+///
+/// `Instant` has no `MAX` to clamp against (its range is platform-defined), so an addend that does
+/// not fit is halved until it does. The result is then within a factor of two of the furthest
+/// representable instant, which is indistinguishable from "never" for any deadline.
+#[must_use]
+pub fn saturating_add(instant: Instant, duration: Duration) -> Instant {
+    if let Some(sum) = instant.checked_add(duration) {
+        return sum;
+    }
+    let mut step = duration / 2;
+    while !step.is_zero() {
+        if let Some(sum) = instant.checked_add(step) {
+            return sum;
+        }
+        step /= 2;
+    }
+    instant
+}
+
 #[must_use]
 pub fn checked_now() -> Option<Instant> {
     #[cfg(all(feature = "virtual", not(wall_clock)))]
@@ -100,7 +131,7 @@ pub(crate) fn serially() -> concurrency::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::serially;
-    use super::{Duration, now, system_now};
+    use super::{Duration, now, saturating_add, system_now};
 
     #[test]
     fn now_is_monotonic() {
@@ -147,5 +178,38 @@ mod tests {
     #[test]
     fn durations_are_plain_values() {
         assert_eq!(Duration::from_secs(1).as_millis(), 1000);
+    }
+
+    #[test]
+    fn a_deadline_that_fits_is_exact() {
+        let base = now();
+        let step = Duration::from_secs(30);
+        assert_eq!(saturating_add(base, step), base + step);
+    }
+
+    #[test]
+    fn a_deadline_that_cannot_be_represented_saturates() {
+        let base = now();
+        for absurd in [Duration::MAX, Duration::from_secs(u64::MAX)] {
+            // "base + absurd" panics, this does not.
+            let saturated = saturating_add(base, absurd);
+            assert!(
+                saturated > base,
+                "saturating past the representable range should still move the deadline forward"
+            );
+            // This is not exactly the representable maximum (the halving lands within a factor of
+            // two of it) but far enough out that no deadline will ever be reached
+            let millennium = Duration::from_hours(1000 * 365 * 24);
+            assert!(
+                saturated.duration_since(base) > millennium,
+                "a saturated deadline should be indistinguishable from never"
+            );
+        }
+    }
+
+    #[test]
+    fn saturating_add_never_goes_backwards() {
+        let base = now();
+        assert_eq!(saturating_add(base, Duration::ZERO), base);
     }
 }
