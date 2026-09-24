@@ -37,6 +37,11 @@ impl UdpChecksum {
         UdpChecksum(raw)
     }
 
+    //= https://www.rfc-editor.org/rfc/rfc6935#section-5
+    //= reason=RFC 8200 section 8.1 restates this in lowercase, which duvet does not extract
+    //# if that computation yields a result of zero,
+    //# the checksum MUST be changed to hex FFFF for placement in the UDP
+    //# header
     /// Convert a computed checksum to its wire value.
     ///
     /// Send a computed zero as `0xFFFF`, since a stored zero disables the checksum (RFC 768).

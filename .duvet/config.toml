@@ -23,3 +23,9 @@ source = "https://www.rfc-editor.org/rfc/rfc4787"
 
 [[specification]]
 source = "https://www.rfc-editor.org/rfc/rfc5508"
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc6935"
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc8200"
