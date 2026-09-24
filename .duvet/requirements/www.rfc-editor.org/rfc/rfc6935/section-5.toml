@@ -1,0 +1,113 @@
+target = "https://www.rfc-editor.org/rfc/rfc6935#section-5"
+
+# The Zero UDP Checksum Update
+#
+#    This specification updates IPv6 to allow a zero UDP checksum in the
+#    outer encapsulating datagram of a tunnel protocol.  UDP endpoints
+#    that implement this update MUST follow the node requirements in
+#    "Applicability Statement for the Use of IPv6 UDP Datagrams with Zero
+#    Checksums" [RFC6936].
+# 
+#    The following text in [RFC2460], Section 8.1, fourth bullet should be
+#    deleted:
+# 
+#       Unlike IPv4, when UDP packets are originated by an IPv6 node, the
+#       UDP checksum is not optional.  That is, whenever originating a UDP
+#       packet, an IPv6 node must compute a UDP checksum over the packet
+#       and the pseudo-header, and, if that computation yields a result of
+#       zero, it must be changed to hex FFFF for placement in the UDP
+#       header.  IPv6 receivers must discard UDP packets containing a zero
+#       checksum, and should log the error.
+# 
+#    This text should be replaced by:
+# 
+#       An IPv6 node associates a mode with each used UDP port (for
+#       sending and/or receiving packets).
+# 
+#       Whenever originating a UDP packet for a port in the default mode,
+#       an IPv6 node MUST compute a UDP checksum over the packet and the
+#       pseudo-header, and, if that computation yields a result of zero,
+#       the checksum MUST be changed to hex FFFF for placement in the UDP
+#       header, as specified in [RFC2460].  IPv6 receivers MUST by default
+#       discard UDP packets containing a zero checksum and SHOULD log the
+#       error.
+# 
+#       As an alternative, certain protocols that use UDP as a tunnel
+#       encapsulation MAY enable zero-checksum mode for a specific port
+#       (or set of ports) for sending and/or receiving.  Any node
+#       implementing zero-checksum mode MUST follow the node requirements
+#       specified in Section 4 of "Applicability Statement for the use of
+#       IPv6 UDP Datagrams with Zero Checksums" [RFC6936].
+# 
+#       Any protocol that enables zero-checksum mode for a specific port
+#       or ports MUST follow the usage requirements specified in Section 5
+#       of "Applicability Statement for the Use of IPv6 UDP Datagrams with
+#       Zero Checksums" [RFC6936].
+# 
+#       Middleboxes supporting IPv6 MUST follow requirements 9, 10, and 11
+#       of the usage requirements specified in Section 5 of "Applicability
+#       Statement for the Use of IPv6 UDP Datagrams with Zero Checksums"
+#       [RFC6936].
+
+[[spec]]
+level = "MUST"
+quote = '''
+UDP endpoints
+that implement this update MUST follow the node requirements in
+"Applicability Statement for the Use of IPv6 UDP Datagrams with Zero
+Checksums" [RFC6936].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Whenever originating a UDP packet for a port in the default mode,
+an IPv6 node MUST compute a UDP checksum over the packet and the
+pseudo-header, and, if that computation yields a result of zero,
+the checksum MUST be changed to hex FFFF for placement in the UDP
+header, as specified in [RFC2460].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+IPv6 receivers MUST by default
+discard UDP packets containing a zero checksum and SHOULD log the
+error.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+As an alternative, certain protocols that use UDP as a tunnel
+encapsulation MAY enable zero-checksum mode for a specific port
+(or set of ports) for sending and/or receiving.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Any node
+implementing zero-checksum mode MUST follow the node requirements
+specified in Section 4 of "Applicability Statement for the use of
+IPv6 UDP Datagrams with Zero Checksums" [RFC6936].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Any protocol that enables zero-checksum mode for a specific port
+or ports MUST follow the usage requirements specified in Section 5
+of "Applicability Statement for the Use of IPv6 UDP Datagrams with
+Zero Checksums" [RFC6936].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Middleboxes supporting IPv6 MUST follow requirements 9, 10, and 11
+of the usage requirements specified in Section 5 of "Applicability
+Statement for the Use of IPv6 UDP Datagrams with Zero Checksums"
+[RFC6936].
+'''
+

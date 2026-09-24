@@ -2255,6 +2255,11 @@ mod test {
         }
     }
 
+    //= https://www.rfc-editor.org/rfc/rfc6935#section-5
+    //= type=test
+    //# if that computation yields a result of zero,
+    //# the checksum MUST be changed to hex FFFF for placement in the UDP
+    //# header
     /// Exercise a computed UDP checksum of zero, which random inputs rarely produce.
     #[test]
     fn a_udp_checksum_that_updates_to_zero_is_written_as_ffff() {
