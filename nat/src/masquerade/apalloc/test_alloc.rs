@@ -1460,6 +1460,48 @@ mod std_tests {
         );
     }
 
+    // A mapping refreshed before its first deadline has to keep its reaper across the extension,
+    // and still be reaped once it finally goes idle.
+    #[tokio::test]
+    async fn a_refreshed_mapping_is_still_reaped_once_it_goes_idle() {
+        tokio::time::pause();
+        let idle = std::time::Duration::from_millis(50);
+        let mut allocator = build_allocator_short_timeout(idle);
+
+        let alloc = allocator
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+            )
+            .unwrap();
+
+        // Past the original deadline, but refreshed on the way so the reaper has to go round again
+        advance(idle / 2).await;
+        alloc.allocation.refresh();
+        advance(idle).await;
+        drop(alloc);
+
+        // Now let it go idle for real
+        advance(idle * 4).await;
+
+        let (bitmap, _) = get_ip_allocator_v4(
+            &mut allocator.pools_src44,
+            vpcd1(),
+            vpcd2(),
+            NextHeader::TCP,
+            addr_v4("1.1.0.1"),
+        )
+        .get_pool_clone_for_tests();
+        assert_eq!(
+            bitmap.len(),
+            1,
+            "the address was never freed: \
+             a mapping refreshed past its first deadline kept its entry but lost the reaper that would have expired it"
+        );
+    }
+
     // A subscriber must not pin its public address forever once it has no live mappings, or the
     // address leaks and no other subscriber can ever reuse it. Reaping is driven off the last
     // mapping's own expiry (not an independent subscriber's timer).
