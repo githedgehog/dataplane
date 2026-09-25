@@ -388,13 +388,7 @@ mod event_processing {
             IfState::Down | IfState::Unknown => false,
         };
         let iflowerup = true;
-        EthEvent::new(
-            iface.ifindex,
-            iface.name.clone(),
-            ifup,
-            iflowerup,
-            ifrunning,
-        )
+        EthEvent::new(iface.ifindex, ifup, iflowerup, ifrunning).set_name(Some(iface.name.clone()))
     }
 
     // get interface (clone) from iftable reader

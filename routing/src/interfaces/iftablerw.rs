@@ -58,6 +58,88 @@ impl Absorb<IfTableChange> for IfTable {
     }
 }
 
+/// A struct representing some field or property that may change
+pub struct IfChange<T> {
+    pub old: T,
+    pub new: T,
+}
+impl<T: PartialEq + Clone> IfChange<T> {
+    #[must_use]
+    pub fn cloned(old: &T, new: &T) -> Option<Self> {
+        if old == new {
+            None
+        } else {
+            Some(Self {
+                old: old.clone(),
+                new: new.clone(),
+            })
+        }
+    }
+}
+impl<T: PartialEq + Copy> IfChange<T> {
+    #[must_use]
+    pub fn copied(old: T, new: T) -> Option<Self> {
+        if old == new {
+            None
+        } else {
+            Some(Self { old, new })
+        }
+    }
+}
+
+/// A struct representing the way in which an interface may be updated by the `IfTableWriter`
+/// Optional fields containing a value indicate that such a property was changed and report
+/// the old and the new value in an `IfChange<>`. This struct is part of the `IfTableWriter`
+/// API to report callers if an interface was updated. The distinct methods of `IfTableWriter`
+/// could return a single `IfChange<>` instead of `IfUpdate`. However, new methods may be added
+/// (or the existing be merged) so that multiple changes are handled in one call.
+pub struct IfUpdate {
+    #[allow(dead_code)]
+    pub ifindex: InterfaceIndex,
+    pub ifname: InterfaceName,
+    pub name_change: Option<IfChange<InterfaceName>>,
+    pub mac: Option<IfChange<SourceMac>>,
+    pub adm_state: Option<IfChange<IfState>>,
+    pub oper_state: Option<IfChange<IfState>>,
+}
+impl IfUpdate {
+    #[must_use]
+    fn new(ifindex: InterfaceIndex, ifname: &InterfaceName) -> Self {
+        Self {
+            ifindex,
+            ifname: ifname.clone(),
+            name_change: None,
+            mac: None,
+            adm_state: None,
+            oper_state: None,
+        }
+    }
+
+    #[must_use]
+    fn check_ifname(mut self, old: &InterfaceName, new: &InterfaceName) -> Self {
+        self.name_change = IfChange::cloned(old, new);
+        self
+    }
+
+    #[must_use]
+    fn check_mac(mut self, old: SourceMac, new: SourceMac) -> Self {
+        self.mac = IfChange::copied(old, new);
+        self
+    }
+
+    #[must_use]
+    fn check_adm_state(mut self, old: IfState, new: IfState) -> Self {
+        self.adm_state = IfChange::copied(old, new);
+        self
+    }
+
+    #[must_use]
+    fn check_oper_state(mut self, old: IfState, new: IfState) -> Self {
+        self.oper_state = IfChange::copied(old, new);
+        self
+    }
+}
+
 pub struct IfTableWriter(WriteHandle<IfTable, IfTableChange>);
 impl IfTableWriter {
     #[must_use]
@@ -214,51 +296,62 @@ impl IfTableWriter {
         Ok(())
     }
 
-    // Set the operational state to `state`. Returns the previous state if it changed
+    /// Set the operational state to `state`. Returns `IfUpdate` indicating the change on success
+    ///
+    /// # Errors
+    ///   Returns `RouterError` if the interface could not be found
     pub fn set_iface_oper_state(
         &mut self,
         ifindex: InterfaceIndex,
         state: IfState,
-    ) -> Result<Option<IfState>, RouterError> {
-        let oper_state = self
+    ) -> Result<IfUpdate, RouterError> {
+        let (ifname, op_state) = self
             .enter()
             .unwrap_or_else(|| unreachable!())
             .get_interface(ifindex)
-            .map(|iface| iface.oper_state)
+            .map(|iface| (iface.name.clone(), iface.oper_state))
             .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
-        if oper_state == state {
-            return Ok(None);
+        let update = IfUpdate::new(ifindex, &ifname).check_oper_state(op_state, state);
+        if update.oper_state.is_none() {
+            return Ok(update);
         }
+
         self.0
             .append(IfTableChange::UpdateOpState((ifindex, state)));
         self.0.publish();
 
-        debug!("Updated operational state of {ifindex} {oper_state} -> {state}");
-        Ok(Some(oper_state))
+        debug!("Updated oper state of interface {ifname} ({ifindex}): {op_state} -> {state}");
+        Ok(update)
     }
+
+    /// Set the admin state of an interface to `state`. Returns `IfUpdate` indicating the change on success
+    ///
+    /// # Errors
+    ///   Returns `RouterError` if the interface could not be found
     pub fn set_iface_admin_state(
         &mut self,
         ifindex: InterfaceIndex,
         state: IfState,
-    ) -> Result<Option<IfState>, RouterError> {
-        let admin_state = self
+    ) -> Result<IfUpdate, RouterError> {
+        let (ifname, adm_state) = self
             .enter()
             .unwrap_or_else(|| unreachable!())
             .get_interface(ifindex)
-            .map(|iface| iface.admin_state)
+            .map(|iface| (iface.name.clone(), iface.admin_state))
             .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
-        if admin_state == state {
-            return Ok(None);
+        let update = IfUpdate::new(ifindex, &ifname).check_adm_state(adm_state, state);
+        if update.adm_state.is_none() {
+            return Ok(update);
         }
 
         self.0
             .append(IfTableChange::UpdateAdmState((ifindex, state)));
         self.0.publish();
 
-        debug!("Updated admin state of interface {ifindex} to {admin_state} -> {state}");
-        Ok(Some(admin_state))
+        debug!("Updated admin state of interface {ifname} ({ifindex}): {adm_state} -> {state}");
+        Ok(update)
     }
 
     /// Attach an interface to a vrf
@@ -307,12 +400,15 @@ impl IfTableWriter {
         self.0.publish();
     }
 
-    // change the name of an interface. Returns the previous name if it changed
+    /// Updates the name of an interface to `new_name`. Returns `IfUpdate` indicating the change on success
+    ///
+    /// # Errors
+    ///   Returns `RouterError` if the interface could not be found
     pub fn update_name(
         &mut self,
         ifindex: InterfaceIndex,
         new_name: &InterfaceName,
-    ) -> Result<Option<InterfaceName>, RouterError> {
+    ) -> Result<IfUpdate, RouterError> {
         let mut ifconfig = self
             .enter()
             .unwrap_or_else(|| unreachable!())
@@ -320,24 +416,29 @@ impl IfTableWriter {
             .map(Interface::as_config)
             .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
-        if ifconfig.name == *new_name {
-            return Ok(None);
-        }
         let old_name = ifconfig.name.clone();
-        ifconfig.set_name(new_name);
+        let update = IfUpdate::new(ifindex, &old_name).check_ifname(&old_name, new_name);
+        if update.name_change.is_none() {
+            return Ok(update);
+        }
 
+        ifconfig.set_name(new_name);
         self.0.append(IfTableChange::Mod(ifconfig));
         self.0.publish();
-        debug!("Changed the name of interface with ifindex {ifindex} to {new_name}");
-        Ok(Some(old_name))
+
+        debug!("Changed the name of interface {ifindex}: {old_name} -> {new_name}");
+        Ok(update)
     }
 
-    // Update the mac of an interface. Returns the previous mac if it changed
+    /// Updates the mac of an interface to `new_mac`. Returns `IfUpdate` indicating the change on success
+    ///
+    /// # Errors
+    ///   Returns `RouterError` if the interface could not be found or it is not supposed to have a mac
     pub fn update_mac(
         &mut self,
         ifindex: InterfaceIndex,
         new_mac: SourceMac,
-    ) -> Result<Option<SourceMac>, RouterError> {
+    ) -> Result<IfUpdate, RouterError> {
         let (mut config, mut iftype) = self
             .enter()
             .unwrap_or_else(|| unreachable!())
@@ -346,21 +447,24 @@ impl IfTableWriter {
             .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
         let Some(mac) = iftype.get_mac() else {
-            // This should only happen if we modelled the interface incorrectly
             error!("Can't update mac of interface with index {ifindex}: it has no mac");
             return Err(RouterError::HasNoMac(ifindex));
         };
-        if mac == new_mac {
-            return Ok(None);
+
+        let update = IfUpdate::new(ifindex, &config.name).check_mac(mac, new_mac);
+        if update.mac.is_none() {
+            return Ok(update);
         }
+
+        let ifname = config.name.clone();
         iftype.set_mac(new_mac);
         config.set_iftype(iftype);
 
         self.0.append(IfTableChange::Mod(config));
         self.0.publish();
 
-        debug!("Changed the mac of interface with ifindex {ifindex} to {new_mac}");
-        Ok(Some(mac))
+        debug!("Changed the mac of interface {ifname}: {mac} -> {new_mac}");
+        Ok(update)
     }
 }
 

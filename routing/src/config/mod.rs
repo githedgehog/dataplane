@@ -125,7 +125,7 @@ impl RouterConfig {
     /// Get the config for an interface with a given [`IfIndex`]
     //////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    fn get_interface(&self, ifindex: InterfaceIndex) -> Option<&RouterInterfaceConfig> {
+    pub(crate) fn get_interface(&self, ifindex: InterfaceIndex) -> Option<&RouterInterfaceConfig> {
         self.interfaces.get(&ifindex)
     }
 

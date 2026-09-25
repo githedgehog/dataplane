@@ -3,8 +3,7 @@
 
 //! A small interface monitor. The interface monitor listens to netlink events asynchronously
 //! and disseminates them over a broadcast channel. It does not make any attempt to interpret
-//! the events received via netlink. The interface monitor reports events on ethernet interfaces.
-//! For testing, it can be allowed to report events for other types of network devices.
+//! the events received via netlink. The interface monitor reports events on kernel interfaces.
 
 use concurrency::sync::Arc;
 use net::eth::mac::SourceMac;
@@ -24,10 +23,10 @@ use tracing::{debug, error, info, warn};
 #[allow(clippy::struct_excessive_bools)]
 pub struct EthEvent {
     ifindex: InterfaceIndex,
-    name: InterfaceName,
     ifup: bool,
     iflowerup: bool,
     ifrunning: bool,
+    name: Option<InterfaceName>,
     oper_state: Option<State>,
     carrier: Option<bool>,
     carrierup: Option<u32>,   // stats
@@ -36,19 +35,13 @@ pub struct EthEvent {
 }
 impl EthEvent {
     #[must_use]
-    pub fn new(
-        ifindex: InterfaceIndex,
-        name: InterfaceName,
-        ifup: bool,
-        iflowerup: bool,
-        ifrunning: bool,
-    ) -> Self {
+    pub fn new(ifindex: InterfaceIndex, ifup: bool, iflowerup: bool, ifrunning: bool) -> Self {
         Self {
             ifindex,
-            name,
             ifup,
             iflowerup,
             ifrunning,
+            name: None,
             oper_state: None,
             carrier: None,
             carrierup: None,
@@ -81,14 +74,19 @@ impl EthEvent {
         self.mac = mac;
         self
     }
+    #[must_use]
+    pub fn set_name(mut self, name: Option<InterfaceName>) -> Self {
+        self.name = name;
+        self
+    }
 
     #[must_use]
     pub fn ifindex(&self) -> InterfaceIndex {
         self.ifindex
     }
     #[must_use]
-    pub fn name(&self) -> &InterfaceName {
-        &self.name
+    pub fn name(&self) -> Option<&InterfaceName> {
+        self.name.as_ref()
     }
     #[must_use]
     pub fn ifup(&self) -> bool {
@@ -129,10 +127,14 @@ impl std::fmt::Display for EthEvent {
         let ifloup = if self.iflowerup { "yes" } else { "no" };
         let ifrun = if self.ifrunning { "yes" } else { "no" };
         let carrier = self.carrier.map_or("--", |v| if v { "yes" } else { "no" });
+
+        write!(f, "ifindex: {}", self.ifindex)?;
+        if let Some(ifname) = self.name.as_ref() {
+            write!(f, " ifname:{ifname}")?;
+        }
         write!(
             f,
-            "ifname:{} ({}) ifup:{ifup} iflowerup:{ifloup} ifrun:{ifrun} carrier:{carrier}",
-            self.name, self.ifindex
+            " ifup:{ifup} iflowerup:{ifloup} ifrun:{ifrun} carrier:{carrier}",
         )?;
         if let Some(value) = self.carrierup {
             write!(f, " carrierup:{value}")?;
@@ -151,27 +153,21 @@ impl std::fmt::Display for EthEvent {
 pub struct InterfaceMonitor {
     tx: broadcast::Sender<EthEvent>,
     ct: CancellationToken,
-    tracked: Vec<InterfaceName>,
 }
 impl InterfaceMonitor {
     #[must_use]
-    pub fn new(ct: CancellationToken, track: &[InterfaceName]) -> Self {
+    pub fn new(ct: CancellationToken) -> Self {
         let (tx, _) = broadcast::channel::<EthEvent>(100);
-        Self {
-            tx,
-            ct,
-            tracked: track.into(),
-        }
+        Self { tx, ct }
     }
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<EthEvent> {
         self.tx.subscribe()
     }
 
-    /// Convert a netlink message to an `EthEvent` if it is a `NewLink` message for a tracked interface
-    /// N.B. we don't assume that all of the info will be reported.
-    /// FIXME(fredi): name should not be considered mandatory, but we do here
-    fn netlink_to_event(&self, msg: NetlinkMessage<RouteNetlinkMessage>) -> Option<EthEvent> {
+    /// Convert a netlink message to an `EthEvent` if it is a `NewLink` message
+    /// This is the main function used by the `InterfaceMonitor` to process netlink
+    pub fn netlink_to_event(msg: NetlinkMessage<RouteNetlinkMessage>) -> Option<EthEvent> {
         let (_hdr, payload) = msg.into_parts();
 
         let NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewLink(link_msg)) = payload else {
@@ -186,25 +182,18 @@ impl InterfaceMonitor {
         let iflowerup = link_msg.header.flags.contains(LinkFlags::LowerUp);
         let ifrunning = link_msg.header.flags.contains(LinkFlags::Running);
 
-        // interface name: strictly speaking, this is optional but we count on it for filtering.
-        // In practice we should always get it, but log otherwise
-        // FIXME(fredi)
-        let Some(name) = link_msg.attributes.iter().find_map(|a| match a {
-            LinkAttribute::IfName(name) => Some(name.clone()),
-            _ => None,
-        }) else {
-            error!("Received kernel event for ifindex {ifindex} without name!");
-            return None;
-        };
-        let Ok(ifname) = InterfaceName::try_from(name.clone()) else {
-            error!("Received kernel event for ifindex {ifindex} with invalid name {name}");
-            return None;
-        };
-        if !self.tracked.contains(&ifname) {
-            return None;
-        }
-
         // optional
+        let ifname = link_msg.attributes.iter().find_map(|a| match a {
+            LinkAttribute::IfName(name) => match InterfaceName::try_from(name.as_str()) {
+                Ok(valid) => Some(valid),
+                Err(e) => {
+                    warn!("Got kernel event for ifindex {ifindex} with invalid name {name}: {e}");
+                    // we continue
+                    None
+                }
+            },
+            _ => None,
+        });
         let carrier = link_msg.attributes.iter().find_map(|a| match a {
             LinkAttribute::Carrier(value) => Some(*value != 0),
             _ => None,
@@ -217,6 +206,10 @@ impl InterfaceMonitor {
             LinkAttribute::CarrierDownCount(value) => Some(*value),
             _ => None,
         });
+        let oper_state = link_msg.attributes.iter().find_map(|a| match a {
+            LinkAttribute::OperState(value) => Some(*value),
+            _ => None,
+        });
         let mac = link_msg.attributes.iter().find_map(|a| match a {
             LinkAttribute::Address(value) => match SourceMac::try_from(value) {
                 Ok(mac) => Some(mac),
@@ -227,14 +220,10 @@ impl InterfaceMonitor {
             },
             _ => None,
         });
-        // `LinkAttribute::OperState` is not reliable for events. We include it but don't use it
-        let oper_state = link_msg.attributes.iter().find_map(|a| match a {
-            LinkAttribute::OperState(value) => Some(*value),
-            _ => None,
-        });
 
-        // build event object
-        let event = EthEvent::new(ifindex, ifname, ifup, iflowerup, ifrunning)
+        // build `EthEvent` object
+        let event = EthEvent::new(ifindex, ifup, iflowerup, ifrunning)
+            .set_name(ifname)
             .set_oper_state(oper_state)
             .set_carrier(carrier)
             .set_carrierdown(carrierdown)
@@ -252,9 +241,6 @@ impl InterfaceMonitor {
     /// This method fails if a netlink connection cannot be created.
     pub async fn run(monitor: Arc<Self>) -> std::io::Result<()> {
         info!("Starting interface monitor");
-        for i in &monitor.tracked {
-            info!("Will track status of interface {i}");
-        }
         let (conn, _, mut messages) = rtnetlink::new_multicast_connection(&[MulticastGroup::Link])
             .inspect_err(|e| error!("Failed to open netlink connection: {e}"))?;
 
@@ -267,7 +253,7 @@ impl InterfaceMonitor {
                 nlmsg = messages.recv() => {
                     match nlmsg {
                         Ok((msg, _)) => {
-                            if let Some(event) = monitor.netlink_to_event(msg) && tx.send(event).is_err() {
+                            if let Some(event) = Self::netlink_to_event(msg) && tx.send(event).is_err() {
                                 warn!("Warning, there are no link event readers!");
                             }
                         }
@@ -315,9 +301,9 @@ mod test {
     #[ignore = "disabled until nv_m support is re-enabled"]
     async fn test_interface_monitor() {
         const INTERFACE: &str = "test-dummy";
-        let test_ifname = InterfaceName::try_from(INTERFACE).unwrap();
+        let _test_ifname = InterfaceName::try_from(INTERFACE).unwrap();
         let ct = CancellationToken::new();
-        let ifmonitor = Arc::new(InterfaceMonitor::new(ct, &[test_ifname]));
+        let ifmonitor = Arc::new(InterfaceMonitor::new(ct));
         let mut subsc1 = ifmonitor.subscribe();
         let mut subsc2 = ifmonitor.subscribe();
         tokio::spawn(InterfaceMonitor::run(ifmonitor.clone()));

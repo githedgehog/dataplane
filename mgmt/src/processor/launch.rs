@@ -128,10 +128,7 @@ pub fn run_mgmt(
     params: MgmtParams,
 ) -> Result<(), LaunchError> {
     // start interface monitor
-    let ifmonitor = Arc::new(InterfaceMonitor::new(
-        mgmt.cancel_token(),
-        params.interfaces.as_slice(),
-    ));
+    let ifmonitor = Arc::new(InterfaceMonitor::new(mgmt.cancel_token()));
     let if_subsc = ifmonitor.subscribe();
     mgmt.spawn_fatal_on_exit(
         "interface monitor",
