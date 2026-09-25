@@ -20,6 +20,7 @@ use concurrency::sync::atomic::Ordering;
 use concurrency::sync::{Arc, RwLock};
 use config::external::overlay::vpcpeering::MappingPolicy;
 use net::flows::atomic_instant::AtomicInstant;
+#[cfg(not(miri))]
 use shuttle_dashmap::DashMap;
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -343,8 +344,19 @@ const SUBSCRIBER_SHARDS: usize = 1024;
 // suspend the task mid-closure with an unmodelled lock held and wedge shuttle's single-threaded
 // executor. The model build has no unmodelled lock to hold.
 #[derive(Debug, Clone)]
-pub(crate) struct SubscribersTable<I: NatIpWithBitmap>(Arc<DashMap<I, Arc<Subscriber<I>>>>);
+pub(crate) struct SubscribersTable<I: NatIpWithBitmap>(Arc<Backing<I>>);
 
+// Under miri the map goes through the façade as well, for a reason of the same shape: dashmap's
+// shard locks are parking_lot_core's, and parking_lot_core parks on a futex through a c-variadic
+// syscall whose argument types miri rejects as UB. The façade already refuses to use parking_lot
+// under miri (see concurrency::sync), but it cannot refuse on dashmap's behalf, so a contended
+// shard takes the slow path straight into that syscall.
+#[cfg(not(miri))]
+type Backing<I> = DashMap<I, Arc<Subscriber<I>>>;
+#[cfg(miri)]
+type Backing<I> = RwLock<HashMap<I, Arc<Subscriber<I>>>>;
+
+#[cfg(not(miri))]
 impl<I: NatIpWithBitmap> SubscribersTable<I> {
     pub(crate) fn new() -> Self {
         Self(Arc::new(DashMap::with_shard_amount(SUBSCRIBER_SHARDS)))
@@ -373,6 +385,39 @@ impl<I: NatIpWithBitmap> SubscribersTable<I> {
     #[cfg(test)]
     pub(crate) fn get(&self, ip: I) -> Option<Arc<Subscriber<I>>> {
         self.0.get(&ip).map(|entry| entry.value().clone())
+    }
+}
+
+#[cfg(miri)]
+impl<I: NatIpWithBitmap> SubscribersTable<I> {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(RwLock::new(HashMap::new())))
+    }
+
+    pub(crate) fn get_or_default(&self, ip: I) -> Arc<Subscriber<I>> {
+        if let Some(existing) = self.0.read().get(&ip) {
+            return existing.clone();
+        }
+        self.0
+            .write()
+            .entry(ip)
+            .or_insert_with(|| Arc::new(Subscriber::default()))
+            .clone()
+    }
+
+    pub(crate) fn remove_if_empty(&self, ip: I, subscriber: &Arc<Subscriber<I>>) {
+        let mut guard = self.0.write();
+        if guard
+            .get(&ip)
+            .is_some_and(|v| Arc::ptr_eq(v, subscriber) && v.try_is_empty().unwrap_or(false))
+        {
+            guard.remove(&ip);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get(&self, ip: I) -> Option<Arc<Subscriber<I>>> {
+        self.0.read().get(&ip).cloned()
     }
 }
 
