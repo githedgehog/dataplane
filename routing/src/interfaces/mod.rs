@@ -28,6 +28,7 @@ pub mod tests {
     use std::net::IpAddr;
     use std::str::FromStr;
 
+    // build a sample interface config
     pub(crate) fn build_test_interface_cfg(ifname: &str, ifindex: u32) -> RouterInterfaceConfig {
         let ifindex = InterfaceIndex::try_new(ifindex).expect("bad ifindex");
         let ifname = InterfaceName::try_from(ifname).expect("Illegal ifname");
@@ -35,7 +36,7 @@ pub mod tests {
     }
 
     // build sample interface configs to build a sample iftable
-    fn build_interface_configs() -> Vec<RouterInterfaceConfig> {
+    pub(crate) fn build_interface_configs() -> Vec<RouterInterfaceConfig> {
         let mut configs = vec![];
 
         /* create loopback */
@@ -95,22 +96,20 @@ pub mod tests {
         configs
     }
 
-    // create a test interface table
-    fn populate_test_iftable() -> IfTable {
+    // build a sample iftable fomr the given configs
+    pub(crate) fn sample_iftable(configs: &Vec<RouterInterfaceConfig>) -> IfTable {
         let mut iftable = IfTable::new();
-        let ifconfigs = build_interface_configs();
-
-        // add the interfaces to the iftable from the configs
-        for config in &ifconfigs {
-            iftable.add_interface(config).expect("Should not fail");
+        for ifconfig in configs {
+            iftable.add_interface(ifconfig).expect("Should not fail");
         }
-        assert_eq!(iftable.len(), ifconfigs.len());
+        assert_eq!(iftable.len(), configs.len());
         iftable
     }
 
     // create a test interface table and display it
     pub fn build_test_iftable() -> IfTable {
-        let iftable = populate_test_iftable();
+        let configs = build_interface_configs();
+        let iftable = sample_iftable(&configs);
         println!("{iftable}");
         iftable
     }
@@ -216,7 +215,8 @@ pub mod tests {
     }
 
     #[test]
-    fn test_iftable_wrapped() {
+    /// Test that an iftable writer behaves like an iftable
+    fn test_iftable_writer() {
         const VRFID: VrfId = 123;
         const IF_NAME: &str = "ethernet-1";
         const IF_NAME_MOD: &str = "FastEthernet-1";
@@ -346,26 +346,29 @@ pub mod tests {
     }
 
     #[test]
+    /// Test that recovery of interface config from interface itself
     fn test_interface_config_from_interface() {
         use std::collections::HashMap;
 
-        let iftable = populate_test_iftable();
+        let sample_configs = build_interface_configs();
+        let iftable = sample_iftable(&sample_configs);
+        let configs: HashMap<InterfaceIndex, RouterInterfaceConfig> = sample_configs
+            .iter()
+            .map(|conf| (conf.ifindex, conf.clone()))
+            .collect();
+
         let recovered: HashMap<InterfaceIndex, RouterInterfaceConfig> = iftable
             .values()
             .map(|iface| (iface.ifindex, iface.as_config()))
             .collect();
 
-        // the configs used to populate the iftable
-        let original: HashMap<InterfaceIndex, RouterInterfaceConfig> = build_interface_configs()
-            .iter()
-            .map(|conf| (conf.ifindex, conf.clone()))
-            .collect();
-
-        similar_asserts::assert_eq!(original, recovered);
+        similar_asserts::assert_eq!(configs, recovered);
     }
 }
 
 #[cfg(test)]
+/// Test interface processing of `EthEvent`s. These tests do not require netlink
+/// and check if we correctly set the state of interfaces from `EthEvent`s
 mod event_processing {
     use super::tests::build_test_iftable_left_right;
     use crate::interfaces::iftablerw::IfTableWriter;
@@ -392,7 +395,7 @@ mod event_processing {
     }
 
     // get interface (clone) from iftable reader
-    fn get_interface(iftw: &IfTableWriter, ifindex: InterfaceIndex) -> Interface {
+    pub(crate) fn get_interface(iftw: &IfTableWriter, ifindex: InterfaceIndex) -> Interface {
         iftw.enter()
             .unwrap()
             .get_interface(ifindex)
@@ -401,7 +404,7 @@ mod event_processing {
     }
 
     #[track_caller]
-    fn compare_interface(reference: &Interface, updated: &Interface) {
+    pub(crate) fn compare_interface(reference: &Interface, updated: &Interface) {
         similar_asserts::assert_eq!(reference, updated);
     }
 
@@ -522,6 +525,210 @@ mod event_processing {
             // retrieve interface and compare to reference (already updated)
             let updated = get_interface(&iftw, iface.ifindex);
             compare_interface(iface, &updated);
+        }
+    }
+}
+
+#[cfg(test)]
+/// Small module to generate netlink messages as the kernel would do
+mod netlink_generator {
+    use net::eth::mac::Mac;
+    use rtnetlink::packet_core::{NetlinkHeader, NetlinkMessage, NetlinkPayload};
+    use rtnetlink::packet_route::link::{
+        LinkAttribute, LinkFlags, LinkHeader, LinkLayerType, LinkMessage, State,
+    };
+    use rtnetlink::packet_route::{AddressFamily, RouteNetlinkMessage};
+
+    fn build_link_header(index: u32, flags: LinkFlags) -> LinkHeader {
+        LinkHeader {
+            interface_family: AddressFamily::default(), // don't care
+            index,
+            link_layer_type: LinkLayerType::Ether,
+            flags,
+            change_mask: LinkFlags::empty(),
+        }
+    }
+    fn build_link_message(
+        ifindex: u32,
+        ifname: &str,
+        flags: LinkFlags,
+        oper_state: Option<State>,
+        mac: Option<Mac>,
+    ) -> LinkMessage {
+        let mut link_msg = LinkMessage::default();
+        link_msg.header = build_link_header(ifindex, flags);
+        link_msg
+            .attributes
+            .push(LinkAttribute::IfName(ifname.to_string()));
+        if let Some(state) = oper_state {
+            link_msg.attributes.push(LinkAttribute::OperState(state));
+        }
+        if let Some(mac) = mac {
+            link_msg
+                .attributes
+                .push(LinkAttribute::Address(mac.as_ref().into()));
+        }
+
+        link_msg
+    }
+
+    // build a netlink message with an inner message for an interface with the
+    // given ifindex, name, flags and operstate
+    pub(super) fn build_netlink_msg(
+        ifindex: u32,
+        ifname: &str,
+        flags: LinkFlags,
+        oper_state: Option<State>,
+        mac: Option<Mac>,
+    ) -> NetlinkMessage<RouteNetlinkMessage> {
+        let link_msg = build_link_message(ifindex, ifname, flags, oper_state, mac);
+        let rnlink_newlink = RouteNetlinkMessage::NewLink(link_msg);
+        let payload = NetlinkPayload::InnerMessage(rnlink_newlink);
+        NetlinkMessage::new(NetlinkHeader::default(), payload)
+    }
+}
+
+#[cfg(test)]
+mod test_netlink_event_handling {
+    use super::event_processing::get_interface;
+    use super::netlink_generator::build_netlink_msg;
+    use super::tests::{build_interface_configs, sample_iftable};
+    use crate::interfaces::iftablerw::IfTableWriter;
+    use crate::router::ctl::handle_ifevent;
+    use crate::{IfState, Interface};
+    use interface_manager::monitor::InterfaceMonitor;
+    use net::eth::mac::{Mac, SourceMac};
+    use net::interface::InterfaceName;
+    use rtnetlink::packet_core::NetlinkMessage;
+    use rtnetlink::packet_route::RouteNetlinkMessage;
+    use rtnetlink::packet_route::link::{LinkFlags, State};
+
+    // a struct representing a netlink message and the state an interface
+    // we expect to be after processing it
+    struct MsgAndExpectation {
+        msg: NetlinkMessage<RouteNetlinkMessage>, // message we'd get from netlink
+        iface: Interface,                         // expected state of interface (clone)
+    }
+
+    // netlink builders and expectations
+    fn ifup(mut iface: Interface) -> MsgAndExpectation {
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            iface.name.as_ref(),
+            LinkFlags::Up | LinkFlags::Running,
+            None,
+            None,
+        );
+        iface.set_admin_state(IfState::Up); // have if up
+        iface.set_oper_state(IfState::Up); // have running flag
+        MsgAndExpectation { msg, iface }
+    }
+
+    fn ifup_with_opstate(mut iface: Interface) -> MsgAndExpectation {
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            iface.name.as_ref(),
+            LinkFlags::Up,
+            Some(State::Up),
+            None,
+        );
+        iface.set_admin_state(IfState::Up); // have if up
+        iface.set_oper_state(IfState::Up); // no ifrunning but have oper state
+        MsgAndExpectation { msg, iface }
+    }
+    fn ifdown(mut iface: Interface) -> MsgAndExpectation {
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            iface.name.as_ref(),
+            LinkFlags::empty(),
+            None,
+            None,
+        );
+        iface.set_admin_state(IfState::Down); // no if up
+        iface.set_oper_state(IfState::Down); // no ifrunning nor oper state
+        MsgAndExpectation { msg, iface }
+    }
+    fn ifup_lower_down(mut iface: Interface) -> MsgAndExpectation {
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            iface.name.as_ref(),
+            LinkFlags::Up,
+            None,
+            None,
+        );
+        iface.set_admin_state(IfState::Up); // if up
+        iface.set_oper_state(IfState::Down); // have only up, no running
+        MsgAndExpectation { msg, iface }
+    }
+    fn ifup_oper_down(mut iface: Interface) -> MsgAndExpectation {
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            iface.name.as_ref(),
+            LinkFlags::Up | LinkFlags::LowerUp,
+            Some(State::Down),
+            None,
+        );
+        iface.set_admin_state(IfState::Up); // if up
+        iface.set_oper_state(IfState::Down); // oper_state wins
+        MsgAndExpectation { msg, iface }
+    }
+
+    fn ifup_mac_and_name_change(mut iface: Interface) -> MsgAndExpectation {
+        let mac = Mac::try_from("02:0a:0b:0c:0d:ff").expect("Bad mac");
+        let new_name = InterfaceName::try_from(format!("mod-{}", iface.name)).expect("Bad name");
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            new_name.as_ref(),
+            LinkFlags::Up,
+            Some(State::Dormant),
+            Some(mac),
+        );
+        iface.set_admin_state(IfState::Up); // if up
+        iface.set_oper_state(IfState::Down); // oper_state wins but it is dormant
+        iface.set_mac(SourceMac::try_from(mac).expect("should meet the source mac requirements"));
+        iface.name = new_name;
+        MsgAndExpectation { msg, iface }
+    }
+
+    // main test function: gets a MsgAndExpectation processes the msg and checks the expectation is met
+    #[track_caller]
+    fn netlink_ev_process(iftw: &mut IfTableWriter, test: MsgAndExpectation) {
+        // process the event as the interface monitor would
+        let ev = InterfaceMonitor::netlink_to_event(test.msg).unwrap();
+
+        // process the event as the router would and check that the state
+        // since we build events for existing interfaces only.
+        // interface is in the expected state
+        handle_ifevent(&ev, iftw).expect("All interfaces exist");
+        let updated = get_interface(iftw, test.iface.ifindex);
+        similar_asserts::assert_eq!(updated, test.iface);
+    }
+
+    #[test]
+    fn test_process_netlink_event() {
+        // build a sample iftable from configs. Interfaces have macs
+        let ifconfigs = build_interface_configs()
+            .iter()
+            .filter(|c| c.iftype.get_mac().is_some())
+            .cloned()
+            .collect();
+
+        let iftable = sample_iftable(&ifconfigs);
+        assert!(!iftable.is_empty(), "sample iftable has no interface");
+
+        // build iftable writer from clone of the iftable
+        // N.B. we don't care about interfaces' initial state
+        let (mut iftw, _iftr) = IfTableWriter::new_with_data(iftable.clone());
+
+        // generate misc events for the existing interfaces and check that the
+        // interfaces are updated as we expect
+        for iface in iftable.values() {
+            netlink_ev_process(&mut iftw, ifup(iface.clone()));
+            netlink_ev_process(&mut iftw, ifup_with_opstate(iface.clone()));
+            netlink_ev_process(&mut iftw, ifdown(iface.clone()));
+            netlink_ev_process(&mut iftw, ifup_lower_down(iface.clone()));
+            netlink_ev_process(&mut iftw, ifup_oper_down(iface.clone()));
+            netlink_ev_process(&mut iftw, ifup_mac_and_name_change(iface.clone()));
         }
     }
 }

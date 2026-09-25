@@ -310,6 +310,9 @@ mod test {
 
         create_dummy(INTERFACE).await;
 
+        // FIXME: Interface manager no longer filters by name. So here we should loop until
+        // we hear something for interface INTERFACE (or timeout) since we could otherwise
+        // get events for another interface. Fix when this test is not ignored
         let j1 = tokio::spawn(async move {
             let event = subsc1.recv().await.unwrap();
             println!("listener1: {event}");

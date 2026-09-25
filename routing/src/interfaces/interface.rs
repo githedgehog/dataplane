@@ -4,7 +4,6 @@
 //! Network interface model
 
 use crate::rib::vrf::VrfId;
-
 use net::eth::mac::SourceMac;
 use net::interface::address::IfAddr;
 use net::interface::{InterfaceIndex, InterfaceName, Mtu};
@@ -16,7 +15,7 @@ use std::collections::HashSet;
 use net::ip::UnicastIpAddr;
 
 #[allow(unused)]
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[derive(Clone, Debug, PartialEq)]
 /// Specific data for ethernet interfaces
@@ -32,9 +31,15 @@ pub struct IfDataDot1q {
 }
 
 /// Trait that interfaces having a mac address should implement.
+/// FIXME(fredi): consider removing this trait and letting interface
+/// have Option<SourceMac>
 trait HasMac {
     fn get_mac(&self) -> &SourceMac;
     fn set_mac(&mut self, mac: SourceMac);
+    #[allow(clippy::unused_self)]
+    fn has_mac(&self) -> bool {
+        true
+    }
 }
 
 impl HasMac for IfDataEthernet {
@@ -76,6 +81,13 @@ impl IfType {
             IfType::Ethernet(inner) => inner.set_mac(mac),
             IfType::Dot1q(inner) => inner.set_mac(mac),
             _ => {}
+        }
+    }
+    pub fn has_mac(&mut self) -> bool {
+        match self {
+            IfType::Ethernet(inner) => inner.has_mac(),
+            IfType::Dot1q(inner) => inner.has_mac(),
+            _ => false,
         }
     }
 }
@@ -257,5 +269,13 @@ impl Interface {
     #[must_use]
     pub fn get_mac(&self) -> Option<SourceMac> {
         self.iftype.get_mac()
+    }
+
+    /// Set the MAC address of an [`Interface`], if it has one
+    pub fn set_mac(&mut self, mac: SourceMac) {
+        if !self.iftype.has_mac() {
+            warn!("Attempted to set mac on interface without mac");
+        }
+        self.iftype.set_mac(mac);
     }
 }
