@@ -913,6 +913,17 @@ mod test {
         arbitrary_polynomial!(12);
     }
 
+    // Whether a run reached enough cases for its coverage assertion to mean anything.
+    //
+    // The clamp these tests guard fires only on a minority of generated windows, so noticing it
+    // at all takes a large sample. Emulation, instrumentation and sanitizers cut the iteration
+    // count by orders of magnitude -- miri manages a couple of hundred cases in the time a native
+    // run manages hundreds of thousands -- and under those the assertion measures the interpreter
+    // rather than the property. Same reasoning as `judged` in the nat fuzz properties.
+    fn judged() -> bool {
+        !cfg!(emulated) && !cfg!(instrumented) && !cfg!(sanitized)
+    }
+
     #[test]
     fn smoothing_a_counter_is_never_negative() {
         static UNDERSHOT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
@@ -930,6 +941,10 @@ mod test {
             });
 
         let undershot = UNDERSHOT.load(Ordering::Relaxed);
+        if !judged() {
+            println!("not judged: {undershot} undershooting windows, too few cases to expect any");
+            return;
+        }
         assert!(
             undershot > 0,
             "no window in the whole run would have smoothed to a negative number, so this said \
@@ -958,6 +973,10 @@ mod test {
             });
 
         let undershot = UNDERSHOT.load(Ordering::Relaxed);
+        if !judged() {
+            println!("not judged: {undershot} undershooting windows, too few cases to expect any");
+            return;
+        }
         assert!(
             undershot > 0,
             "no window in the whole run would have smoothed to a negative number, so this said \
