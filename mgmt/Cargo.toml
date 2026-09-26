@@ -19,6 +19,7 @@ bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/bolero", "
 # internal
 acl-filter = { workspace = true }
 args = { workspace = true }
+clock = { workspace = true }
 config = { workspace = true }
 concurrency = { workspace = true }
 flow-entry = { workspace = true }

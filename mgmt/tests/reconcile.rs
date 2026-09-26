@@ -4,6 +4,7 @@
 use dataplane_mgmt as mgmt;
 
 use caps::Capability;
+use clock::Duration;
 use concurrency::sync::Arc;
 use fixin::wrap;
 use interface_manager::interface::{
@@ -24,7 +25,6 @@ use rtnetlink::sys::AsyncSocket;
 use rtnetlink::{LinkBridge, LinkVxlan};
 use std::future::Future;
 use std::net::Ipv4Addr;
-use std::time::Duration;
 use test_utils::with_caps;
 use tracing::info;
 use tracing_test::traced_test;

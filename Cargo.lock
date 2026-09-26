@@ -1701,6 +1701,7 @@ dependencies = [
  "chrono",
  "dataplane-acl-filter",
  "dataplane-args",
+ "dataplane-clock",
  "dataplane-concurrency",
  "dataplane-config",
  "dataplane-dpdk",
