@@ -525,8 +525,8 @@ mod concurrency_tests {
 
     use lpm::prefix::IpAddr;
 
+    use clock::Duration;
     use std::str::FromStr;
-    use std::time::Duration;
 
     // Create a fib for the given vrf and register it in the fib table
     fn add_fib(fibtw: &mut FibTableWriter, vrfid: u32) -> FibWriter {

@@ -2,12 +2,13 @@
 // Copyright Open Network Fabric Authors
 
 use chrono::{DateTime, Local};
+use clock::Duration;
+use clock::Instant;
 use mio::net::UnixStream;
+use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
 use std::str::from_utf8;
-use std::time::Instant;
-use std::{collections::VecDeque, time::Duration};
 use thiserror::Error;
 
 use crate::config::FrrConfig;

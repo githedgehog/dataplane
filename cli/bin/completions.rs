@@ -4,17 +4,18 @@
 //! Adds command completions
 
 use crate::cmdtree::Node;
+use crate::terminal::SharedSession;
 use concurrency::sync::Arc;
 use reedline::{Completer, CompletionResult, Span, Suggestion};
 
-#[derive(Default)]
 pub struct CmdCompleter {
     cmdtree: Arc<Node>,
+    session: SharedSession,
 }
 #[allow(unused)]
 impl CmdCompleter {
-    pub fn new(cmdtree: Arc<Node>) -> Self {
-        Self { cmdtree }
+    pub fn new(cmdtree: Arc<Node>, session: SharedSession) -> Self {
+        Self { cmdtree, session }
     }
     #[allow(unused)]
     pub fn get_commands(&self) -> &Node {
@@ -74,27 +75,19 @@ impl CmdCompleter {
         // the choices that start with xyz.
         if last.contains('=') {
             let (maybearg, value) = last.split_once('=').unwrap_or_else(|| unreachable!());
-            if let Some(arg) = node.find_arg(maybearg) {
-                candidates.clear(); // sanity
-                if !arg.choices.is_empty() {
-                    let mut choices: Vec<_> = arg.choices.clone();
-                    candidates.append(&mut choices);
-                }
-                if let Some(prefetch) = &arg.prefetcher {
-                    let mut values = prefetch();
-                    candidates.append(&mut values);
-                }
-                // input is arg=fragment
-                if !value.is_empty() {
-                    candidates.retain(|c| c.starts_with(value));
-                    let span = Span::new(pos - value.len(), pos);
-                    return candidates
-                        .into_iter()
-                        .map(|c| suggestion(c, span))
-                        .collect();
-                }
+            let span = Span::new(pos - value.len(), pos);
+            let Some(arg) = node.find_arg(maybearg) else {
+                return Vec::new();
+            };
+            candidates.extend(arg.choices.iter().cloned());
+            if let Some(selector) = arg.selector {
+                // N.B. reedline calls us on every keystroke while the menu is open.
+                // prefetch keeps a cache (emptied later) from which it pulls the competion
+                // data without re-asking dataplane.
+                candidates.extend(self.session.lock().prefetch(selector).iter().cloned());
             }
-            let span = Span::new(pos - last.len(), pos);
+            // input is arg=fragment: keep only the values that extend it
+            candidates.retain(|c| c.starts_with(value));
             return candidates
                 .into_iter()
                 .map(|c| suggestion(c, span))

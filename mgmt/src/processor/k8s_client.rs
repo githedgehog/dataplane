@@ -176,7 +176,7 @@ impl K8sClient {
         watch_gateway_agent_crd(&k8s_client2.hostname, callback.clone()).await;
     }
 
-    pub async fn k8s_start_status_update(&self, status_update_interval: &std::time::Duration) {
+    pub async fn k8s_start_status_update(&self, status_update_interval: &clock::Duration) {
         loop {
             self.update_gateway_status().await;
             tokio::time::sleep(*status_update_interval).await;

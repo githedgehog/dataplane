@@ -581,6 +581,7 @@ mod tests {
     use crate::router::rio::{Rio, RioConf, RioHandle, start_rio};
     use crate::routingdb::RoutingDb;
     use cli::cliproto::{CliAction, CliRequest, CliResponse, RequestArgs};
+    use clock::Duration;
     use concurrency::process_global::atomic::{AtomicUsize, Ordering};
     use concurrency::thread;
     use config::GenId;
@@ -593,7 +594,6 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
     use std::path::Path;
-    use std::time::Duration;
 
     const PATIENCE: Duration = Duration::from_secs(cfg_select! {
         any(instrumented, sanitized) => 300,

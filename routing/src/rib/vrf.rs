@@ -15,11 +15,11 @@ use common::cliprovider::Frame;
 use super::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibtype::FibWriter;
-use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
+use clock::Instant;
+use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use net::route::RouteTableId;
 use net::vxlan::Vni;
-use std::time::Instant;
 
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;
@@ -129,7 +129,7 @@ pub struct Vrf {
     pub name: String,
     pub vrfid: VrfId,
     pub tableid: Option<RouteTableId>,
-    pub description: Option<String>,
+    pub vpcname: Option<String>,
     pub(crate) status: VrfStatus,
     pub(crate) routesv4: PrefixMapTrie<Ipv4Prefix, Route>,
     pub(crate) routesv6: PrefixMapTrie<Ipv6Prefix, Route>,
@@ -145,7 +145,7 @@ pub struct Vrf {
 pub struct RouterVrfConfig {
     pub vrfid: VrfId,                  /* Id of VRF - may equate to ifindex */
     pub name: String,                  /* name of kernel interface */
-    pub description: Option<String>,   /* VRF description - may get from cfg or add ourselves */
+    pub vpcname: Option<String>,       /* Name of VPC this vrf corresponds to */
     pub tableid: Option<RouteTableId>, /* kernel table-id */
     pub vni: Option<Vni>,              /* vni */
 }
@@ -155,7 +155,7 @@ impl RouterVrfConfig {
         Self {
             vrfid,
             name: name.to_string(),
-            description: None,
+            vpcname: None,
             tableid: None,
             vni: None,
         }
@@ -164,8 +164,8 @@ impl RouterVrfConfig {
         self.name = name.to_string();
     }
     #[must_use]
-    pub fn set_description(mut self, description: &str) -> Self {
-        self.description = Some(description.to_owned());
+    pub fn set_vpcname(mut self, vpcname: &str) -> Self {
+        self.vpcname = Some(vpcname.to_owned());
         self
     }
     #[must_use]
@@ -183,9 +183,6 @@ impl RouterVrfConfig {
     }
 }
 
-pub type RouteV4Filter = Box<dyn Fn(&(Ipv4Prefix, &Route)) -> bool>;
-pub type RouteV6Filter = Box<dyn Fn(&(Ipv6Prefix, &Route)) -> bool>;
-
 impl Vrf {
     /// The `VrfId` of the default `Vrf`.
     pub const DEFAULT_VRFID: VrfId = 0;
@@ -202,7 +199,7 @@ impl Vrf {
             name: config.name.clone(),
             vrfid: config.vrfid,
             tableid: config.tableid,
-            description: config.description.clone(),
+            vpcname: config.vpcname.clone(),
             vni: config.vni,
             status: VrfStatus::Active,
             routesv4,
@@ -236,10 +233,10 @@ impl Vrf {
     }
 
     ////////////////////////////////////////////////////////////////////////
-    /// Set a description for a [`Vrf`]
+    /// Set the name of the VPC that a [`Vrf`] corresponds to
     /////////////////////////////////////////////////////////////////////////
-    pub fn set_description(&mut self, description: &str) {
-        self.description = Some(description.to_owned());
+    pub fn set_vpcname(&mut self, description: &str) {
+        self.vpcname = Some(description.to_owned());
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -549,9 +546,11 @@ impl Vrf {
     // ///////////////////////////////////////////////////////////////////////
     // iterators, filters and counts
     // //////////////////////////////////////////////////////////////////////
+    #[allow(unused)]
     pub fn iter_v4(&self) -> impl Iterator<Item = (Ipv4Prefix, &Route)> {
         self.routesv4.iter()
     }
+    #[allow(unused)]
     pub fn iter_v6(&self) -> impl Iterator<Item = (Ipv6Prefix, &Route)> {
         self.routesv6.iter()
     }
@@ -656,13 +655,83 @@ impl Vrf {
         self.remove_stale_routes_v4(vrf0, rstore);
         self.remove_stale_routes_v6(vrf0, rstore);
     }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Provide an iterator of `IpV4` routes that match the filter
+    /////////////////////////////////////////////////////////////////////////
+    pub fn filtered_ipv4(
+        &self,
+        filter: &RouteV4Filter,
+    ) -> impl Iterator<Item = (Ipv4Prefix, &Route)> {
+        self.routesv4.iter().filter(|(prefix, route)| {
+            filter.prefix.is_none_or(|target| *prefix == target)
+                && filter.prefix_len.is_none_or(|len| prefix.len() == len)
+                && filter.protocol.is_none_or(|origin| route.origin == origin)
+        })
+    }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Provide an iterator of `IpV6` routes that match the filter
+    /////////////////////////////////////////////////////////////////////////
+    pub fn filtered_ipv6(
+        &self,
+        filter: &RouteV6Filter,
+    ) -> impl Iterator<Item = (Ipv6Prefix, &Route)> {
+        self.routesv6.iter().filter(|(prefix, route)| {
+            filter.prefix.is_none_or(|target| *prefix == target)
+                && filter.prefix_len.is_none_or(|len| prefix.len() == len)
+                && filter.protocol.is_none_or(|origin| route.origin == origin)
+        })
+    }
+}
+
+/// A struct that represents a filter for Ipv4 routes
+#[derive(Default)]
+pub struct RouteV4Filter {
+    prefix: Option<Ipv4Prefix>,
+    prefix_len: Option<u8>,
+    protocol: Option<RouteOrigin>,
+}
+impl RouteV4Filter {
+    #[must_use]
+    pub fn new(
+        prefix: Option<Ipv4Prefix>,
+        prefix_len: Option<u8>,
+        protocol: Option<RouteOrigin>,
+    ) -> Self {
+        Self {
+            prefix,
+            prefix_len,
+            protocol,
+        }
+    }
+}
+pub struct RouteV6Filter {
+    prefix: Option<Ipv6Prefix>,
+    prefix_len: Option<u8>,
+    protocol: Option<RouteOrigin>,
+}
+impl RouteV6Filter {
+    #[must_use]
+    pub fn new(
+        prefix: Option<Ipv6Prefix>,
+        prefix_len: Option<u8>,
+        protocol: Option<RouteOrigin>,
+    ) -> Self {
+        Self {
+            prefix,
+            prefix_len,
+            protocol,
+        }
+    }
 }
 
 #[cfg(test)]
 #[rustfmt::skip]
 #[allow(clippy::cast_sign_loss)]
 pub mod tests {
-    use net::interface::InterfaceIndex;
+    use lpm::prefix::IpPrefix;
+use net::interface::InterfaceIndex;
     use common::cliprovider::Frame;
 
     use super::*;
@@ -889,35 +958,6 @@ pub mod tests {
 
     }
 
-
-    #[test]
-    fn test_route_filtering() {
-        let vrf_cfg = RouterVrfConfig::new(0, "default");
-        let mut vrf = Vrf::new(&vrf_cfg);
-
-        /* connected */
-        let nh = build_test_nhop(None, Some(1), 0, None);
-        let connected = build_test_route(RouteOrigin::Connected, 0, 1);
-        let prefix = Prefix::expect_from(("10.0.0.0", 24));
-        vrf.add_route(&prefix, connected.clone() /* only test */, &[nh], None);
-
-        /* ospf */
-        let nh1 = build_test_nhop(Some("10.0.0.1"), Some(1), 0, None);
-        let nh2 = build_test_nhop(Some("10.0.0.2"), Some(2), 0, None);
-        let ospf = build_test_route(RouteOrigin::Ospf, 110, 20);
-        let prefix = Prefix::expect_from(("7.0.0.1", 32));
-        vrf.add_route(&prefix, ospf.clone() /* only test */, &[nh1, nh2], None);
-
-        /* bgp */
-        let nh = build_test_nhop(Some("7.0.0.1"), None, 0, None);
-        let bgp = build_test_route(RouteOrigin::Bgp, 20, 100);
-        let prefix = Prefix::expect_from(("192.168.1.0", 24));
-        vrf.add_route(&prefix, bgp.clone() /* only test */, &[nh], None);
-
-        assert_eq!(vrf.len_v4(), 4, "There are 3 routes + drop");
-
-    }
-
     fn add_vxlan_route(vrf: &mut Vrf, dst: (&str, u8), vni: u32) {
         let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
         let nhop = build_test_nhop(
@@ -1088,6 +1128,68 @@ pub mod tests {
 
         vrf.dump(Some("VRF with partially resolved nexthops, lazily resolved on addition"));
         vrf
+    }
+
+    #[test]
+    fn test_route_filter_by_prefix() {
+        let vrf = build_test_vrf();
+        for (prefix, _route) in vrf.iter_v4() {
+            let filter = RouteV4Filter::new(Some(prefix), None, None);
+            let out = vrf.filtered_ipv4(&filter);
+            for (pselected, _rselected) in out {
+                assert_eq!(pselected, prefix);
+            }
+        }
+    }
+
+        #[test]
+    fn test_route_filter_by_protocol() {
+        let vrf = build_test_vrf();
+        for (_prefix, route) in vrf.iter_v4() {
+            let filter = RouteV4Filter::new(None, None, Some(route.origin));
+            let out = vrf.filtered_ipv4(&filter);
+            for (_pselected, rselected) in out {
+                assert_eq!(rselected.origin, route.origin);
+            }
+        }
+    }
+
+    #[test]
+    fn test_route_filter_by_prefix_and_protocol() {
+        let vrf = build_test_vrf();
+        for (prefix, route) in vrf.iter_v4() {
+            let filter = RouteV4Filter::new(Some(prefix), None, Some(route.origin));
+            let out = vrf.filtered_ipv4(&filter);
+            for (pselected, rselected) in out {
+                assert_eq!(pselected, prefix);
+                assert_eq!(rselected.origin, route.origin);
+            }
+        }
+    }
+
+    #[test]
+    fn test_route_filter_by_prefix_len() {
+        let vrf = build_test_vrf();
+        for (prefix, _route) in vrf.iter_v4() {
+            let plen = prefix.len();
+            let filter = RouteV4Filter::new( None, Some(plen), None,);
+            let out = vrf.filtered_ipv4(&filter);
+            for (pselected, _rselected) in out {
+                assert_eq!(pselected.len(), plen);
+            }
+        }
+    }
+
+    #[test]
+    fn test_route_filter_pass_through() {
+        let vrf = build_test_vrf();
+        let filter = RouteV4Filter::default();
+        let out: Vec<(Ipv4Prefix, &Route)> = vrf.filtered_ipv4(&filter).collect();
+
+        for (prefix, route) in vrf.iter_v4() {
+            assert!(out.contains(&(prefix, route)));
+        }
+        assert_eq!(out.len(), vrf.len_v4());
     }
 
 }

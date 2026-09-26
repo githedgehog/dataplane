@@ -4,18 +4,16 @@
 //! Defines a command tree of Nodes
 
 use colored::Colorize;
-use dataplane_cli::cliproto::CliAction;
+use dataplane_cli::cliproto::{CliAction, PrefetchSelector};
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
-
-pub(crate) type Prefetcher = fn() -> Vec<String>;
 
 #[derive(Clone, Default, Debug)]
 pub struct NodeArg {
     pub name: String,
     pub choices: Vec<String>,
     pub multi: bool,
-    pub prefetcher: Option<Prefetcher>,
+    pub selector: Option<PrefetchSelector>,
 }
 
 #[allow(unused)]
@@ -25,11 +23,12 @@ impl NodeArg {
             name: name.to_owned(),
             choices: Vec::new(),
             multi: false,
-            prefetcher: None,
+            selector: None,
         }
     }
-    pub fn prefetcher(mut self, prefetcher: Prefetcher) -> Self {
-        self.prefetcher = Some(prefetcher);
+    /// Set pre-fetcher selector
+    pub fn selector(mut self, selector: PrefetchSelector) -> Self {
+        self.selector = Some(selector);
         self
     }
     pub fn choice(mut self, choice: &str) -> Self {
@@ -45,7 +44,7 @@ impl NodeArg {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Node {
     pub(crate) name: String,
     pub depth: u16,
@@ -132,14 +131,14 @@ impl Node {
             self
         }
     }
-    pub fn find_best(&self, tokens: &mut VecDeque<String>) -> Option<&Self> {
+    pub fn find_best(&self, mut tokens: VecDeque<String>) -> &Self {
         if let Some(word) = tokens.pop_front() {
             match self.children.get(word.as_str()) {
                 Some(child) => child.find_best(tokens),
-                None => Some(self),
+                None => self,
             }
         } else {
-            Some(self)
+            self
         }
     }
     pub fn get_node(&self, tokens: &mut VecDeque<String>) -> Option<&Self> {

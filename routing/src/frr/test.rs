@@ -124,7 +124,7 @@ pub mod tests {
     use super::fake_frr_agent::*;
     use crate::config::RouterConfig;
     use crate::{Router, RouterParamsBuilder};
-    use std::time::Duration;
+    use clock::Duration;
     use tracing_test::traced_test;
 
     #[cfg_attr(not(emulated), traced_test)]
