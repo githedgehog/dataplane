@@ -115,10 +115,10 @@ pub async fn kubeless_watch_gateway_agent_crd(
 
 #[cfg(test)]
 mod test {
+    use clock::Duration;
     use std::fs::File;
     use std::io::Write;
     use std::path::PathBuf;
-    use std::time::Duration;
 
     use super::kubeless_watch_gateway_agent_crd;
     use tracing::debug;
