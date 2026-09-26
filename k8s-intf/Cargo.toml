@@ -32,6 +32,7 @@ bolero = [
 
 [dependencies]
 # internal
+clock = { workspace = true }
 concurrency = { workspace = true, optional = true }
 lpm = { workspace = true, optional = true }
 net = { workspace = true, optional = true, features = ["bolero"] }

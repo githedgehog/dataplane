@@ -1595,6 +1595,7 @@ name = "dataplane-k8s-intf"
 version = "0.29.0"
 dependencies = [
  "bolero",
+ "dataplane-clock",
  "dataplane-concurrency",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-lpm",
@@ -1620,6 +1621,7 @@ dependencies = [
 name = "dataplane-k8s-less"
 version = "0.29.0"
 dependencies = [
+ "dataplane-clock",
  "dataplane-k8s-intf",
  "dataplane-tracectl",
  "inotify",
