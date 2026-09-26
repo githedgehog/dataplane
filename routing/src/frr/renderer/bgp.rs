@@ -596,6 +596,7 @@ impl Render for BgpConfig {
 #[allow(dead_code)]
 pub mod tests {
     use super::*;
+    use clock::Duration;
     use config::internal::routing::bgp::{
         AfL2vpnEvpn, BgpConfig, BgpNeighAF, BgpNeighbor, NeighSendCommunities, Protocol,
         Redistribute, VrfImports,
@@ -605,7 +606,6 @@ pub mod tests {
     use net::tcp::TcpPort;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
-    use std::time::Duration;
 
     #[test]
     #[allow(clippy::too_many_lines)]

@@ -525,10 +525,11 @@ impl CliAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clock::Duration;
     use rand::RngExt;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::os::linux::net::SocketAddrExt;
-    use std::{thread, time::Duration};
+    use std::thread;
 
     /// Build a `CliRequest` that exercises every `RequestArgs` field so the
     /// round-trip covers `Option`, `String`, `IpAddr`, `u32`, and enum

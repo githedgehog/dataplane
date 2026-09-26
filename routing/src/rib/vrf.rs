@@ -15,11 +15,11 @@ use common::cliprovider::Frame;
 use super::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibtype::FibWriter;
+use clock::Instant;
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use net::route::RouteTableId;
 use net::vxlan::Vni;
-use std::time::Instant;
 
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;

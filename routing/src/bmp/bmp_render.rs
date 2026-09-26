@@ -15,8 +15,8 @@ use config::internal::status::{
     BgpVrfStatus, DataplaneStatus,
 };
 
+use clock::Duration;
 use concurrency::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::RouterCtlSender;
