@@ -11,14 +11,14 @@ use std::net::IpAddr;
 
 use lpm::prefix::Prefix;
 use net::eth::mac::{Mac, SourceMac};
-use net::interface::InterfaceIndex;
+use net::interface::{InterfaceIndex, InterfaceName};
 use net::vxlan::Vni;
 
 use crate::atable::adjacency::Adjacency;
 use crate::atable::atablerw::{AtableReader, AtableReaderFactory, AtableWriter};
 use crate::evpn::Vtep;
+
 use crate::fib::fibtable::{FibTableReader, FibTableReaderFactory, FibTableWriter};
-use crate::fib::fibtype::FibKey;
 use crate::interfaces::iftablerw::{IfTableReader, IfTableReaderFactory, IfTableWriter};
 use crate::interfaces::interface::{IfDataEthernet, IfState, IfType, RouterInterfaceConfig};
 use crate::rib::vrf::VrfId;
@@ -56,8 +56,14 @@ impl RouterTables {
         }
     }
 
+    /// Add a vrf.
+    /// # Panics
+    ///    This method panics if a fib already exists for the given `vrfid`
     pub fn vrf(&mut self, vrfid: VrfId, vni: Option<Vni>) -> &mut Self {
-        let fib = self.fib_table.add_fib(vrfid, vni);
+        let (fib, _) = FibWriter::new(vrfid);
+        self.fib_table
+            .register_fib(vrfid, vni, fib.factory())
+            .expect("fib should not be registered");
         self.fibs.insert(vrfid, fib);
         self
     }
@@ -93,14 +99,19 @@ impl RouterTables {
     /// # Panics
     ///
     /// Panics if `ifindex` is already in use.
-    pub fn interface(&mut self, ifindex: InterfaceIndex, name: &str, mac: SourceMac) -> &mut Self {
+    pub fn interface(
+        &mut self,
+        ifindex: InterfaceIndex,
+        name: InterfaceName,
+        mac: SourceMac,
+    ) -> &mut Self {
         let mut config = RouterInterfaceConfig::new(name, ifindex);
         config.set_iftype(IfType::Ethernet(IfDataEthernet { mac }));
         config.set_admin_state(IfState::Up);
         self.interfaces
             .add_interface(config)
             .expect("interface index is already in use");
-        self.interfaces.set_iface_oper_state(ifindex, IfState::Up);
+        let _ = self.interfaces.set_iface_oper_state(ifindex, IfState::Up);
         self
     }
 
@@ -110,8 +121,8 @@ impl RouterTables {
         admin: IfState,
         oper: IfState,
     ) -> &mut Self {
-        self.interfaces.set_iface_admin_state(ifindex, admin);
-        self.interfaces.set_iface_oper_state(ifindex, oper);
+        let _ = self.interfaces.set_iface_admin_state(ifindex, admin);
+        let _ = self.interfaces.set_iface_oper_state(ifindex, oper);
         self
     }
 
@@ -123,8 +134,7 @@ impl RouterTables {
             self.fibs.contains_key(&vrfid),
             "no fib for vrf {vrfid}: call `vrf` before `attach`"
         );
-        self.interfaces
-            .attach_interface_to_fib(ifindex, FibKey::from_vrfid(vrfid));
+        self.interfaces.attach_interface_to_fib(ifindex, vrfid);
         self
     }
 

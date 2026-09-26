@@ -37,7 +37,7 @@ pub use fib::fibtype::FibKey;
 pub use frr::frrmi::FrrAppliedConfig;
 pub use frr::renderer::builder::Render;
 pub use interfaces::iftable::IfTable;
-pub use interfaces::iftablerw::{IfTableReader, IfTableReaderFactory};
+pub use interfaces::iftablerw::{IfChange, IfTableReader, IfTableReaderFactory};
 pub use interfaces::interface::{AttachConfig, Attachment, RouterInterfaceConfig};
 pub use interfaces::interface::{IfDataEthernet, IfState, IfType, Interface};
 pub use rib::encapsulation::{

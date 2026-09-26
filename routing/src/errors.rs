@@ -4,6 +4,7 @@
 //! The error results used by this library.
 
 use crate::fib::fibtype::FibKey;
+
 use net::eth::mac::Mac;
 use net::interface::InterfaceIndex;
 use net::interface::address::{IfAddr, IfAddrError};
@@ -25,6 +26,9 @@ pub enum RouterError {
 
     #[error("A VRF with Vni {0} already exists")]
     VniInUse(u32),
+
+    #[error("A FIB with id {0} already exists in the fib table")]
+    FibEntryExists(FibKey),
 
     #[error("Invalid VNI value: {0}")]
     VniInvalid(u32),
@@ -61,4 +65,7 @@ pub enum RouterError {
 
     #[error("Invalid next-hop: {0}")]
     InvalidNexthop(&'static str),
+
+    #[error("Interface {0} has no mac")]
+    HasNoMac(InterfaceIndex),
 }

@@ -7,6 +7,7 @@ use concurrency::sync::Arc;
 use config::{GwConfigMeta, ValidatedGwConfig};
 use interface_manager::monitor::EthEvent;
 use mio::{Interest, Waker};
+use rtnetlink::packet_route::link::State;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::oneshot;
@@ -19,6 +20,7 @@ use crate::RouterError;
 use crate::bmp::bmp_render::BgpNeighEvent;
 use crate::config::RouterConfig;
 use crate::frr::frrmi::FrrAppliedConfig;
+use crate::interfaces::iftablerw::IfTableWriter;
 use crate::interfaces::interface::IfState;
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::router::rio::{CPSOCK, Rio};
@@ -252,32 +254,59 @@ fn handle_config(rio: &mut Rio, config: Arc<ValidatedGwConfig>) {
 fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
     rio.cfg_history = history;
 }
-fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
-    let iftw = &mut db.iftw;
-    let adm_state = if ev.ifup { IfState::Up } else { IfState::Down };
-    let oper_state = if ev.iflowerup && ev.ifrunning && ev.carrier {
-        IfState::Up
-    } else {
-        IfState::Down
-    };
-    let ifindex = ev.ifindex;
-    if let Some(iftable) = iftw.enter() {
-        let Some(iface) = iftable.get_interface(ifindex) else {
-            return;
-        };
-        if iface.admin_state != adm_state {
-            revent!(RouterEvent::IfAdmChange(
-                ev.clone(),
-                iface.admin_state,
-                adm_state
-            ));
+
+fn determine_oper_state(ev: &EthEvent) -> IfState {
+    match ev.oper_state() {
+        Some(State::Up) => IfState::Up,
+        Some(State::Down | State::LowerLayerDown | State::Dormant | State::NotPresent) => {
+            IfState::Down
         }
-        if iface.oper_state != oper_state {
-            revent!(RouterEvent::IfOperChange(ev, iface.oper_state, oper_state));
+        Some(_) | None => {
+            // kernel oper state may not always be reported (None case)
+            // and the other states don't actually tell us. So, fallback
+            // to the ifrunning flag. We don't consider iflowerup flag nor carrier here.
+            IfState::from(ev.ifrunning())
         }
     }
-    iftw.set_iface_admin_state(ifindex, adm_state);
-    iftw.set_iface_oper_state(ifindex, oper_state);
+}
+pub(crate) fn handle_ifevent(ev: &EthEvent, iftw: &mut IfTableWriter) -> Result<(), RouterError> {
+    let ifindex = ev.ifindex();
+
+    // register event
+    revent!(RouterEvent::IfEvent(ev.clone()));
+
+    // determine reported oper and admin state
+    let adm_state = IfState::from(ev.ifup());
+    let oper_state = determine_oper_state(ev);
+
+    // did admin state change ?
+    let update = iftw.set_iface_admin_state(ifindex, adm_state)?;
+    if let Some(state) = update.adm_state {
+        revent!(RouterEvent::IfAdmChange(update.ifname, state));
+    }
+
+    // did oper state change ?
+    let update = iftw.set_iface_oper_state(ifindex, oper_state)?;
+    if let Some(state) = update.oper_state {
+        revent!(RouterEvent::IfOperChange(update.ifname, state));
+    }
+
+    // did interface name change?
+    if let Some(ifname) = ev.name() {
+        let update = iftw.update_name(ifindex, ifname)?;
+        if let Some(name) = update.name_change {
+            revent!(RouterEvent::IfNameChange(update.ifname, name));
+        }
+    }
+
+    // did mac change ?
+    if let Some(mac) = ev.mac() {
+        let update = iftw.update_mac(ifindex, mac)?;
+        if let Some(mac) = update.mac {
+            revent!(RouterEvent::IfMacChange(update.ifname, mac));
+        }
+    }
+    Ok(())
 }
 
 fn handle_bgp_peer_status_change(bgp_ev: BgpNeighEvent) {
@@ -304,7 +333,22 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
             }
             Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
             Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
-            Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(ev, db),
+            Ok(RouterCtlMsg::IfEvent(ev)) => {
+                debug!("Got interface event: {ev}");
+                let ifconfig = db
+                    .config
+                    .as_ref()
+                    .and_then(|c| c.get_interface(ev.ifindex()));
+
+                if let Some(config) = &ifconfig {
+                    debug!("Ifindex matches configured interface {}", config.name);
+                    if let Err(e) = handle_ifevent(&ev, &mut db.iftw) {
+                        warn!("Failed to process event {ev}: {e}");
+                    }
+                } else {
+                    debug!("No interface is configured with ifindex {}", ev.ifindex());
+                }
+            }
             Ok(RouterCtlMsg::BgpNeighStatus(bgp_ev)) => handle_bgp_peer_status_change(bgp_ev),
             Err(TryRecvError::Empty) => break,
             Err(e) => {

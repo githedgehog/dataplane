@@ -3,8 +3,8 @@
 
 //! A table of interfaces
 
+use crate::VrfId;
 use crate::errors::RouterError;
-use crate::fib::fibtype::FibKey;
 use crate::interfaces::interface::{IfState, Interface, RouterInterfaceConfig};
 use ahash::RandomState;
 use net::interface::address::IfAddr;
@@ -14,17 +14,14 @@ use net::interface::InterfaceIndex;
 #[allow(unused)]
 use tracing::{debug, error, info};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 /// A table of network interface objects, keyed by `InterfaceIndex`
 pub struct IfTable {
     by_index: HashMap<InterfaceIndex, Interface, RandomState>,
 }
 
-#[allow(clippy::new_without_default)]
 impl IfTable {
-    //////////////////////////////////////////////////////////////////
-    /// Create an interface table. All interfaces should live here.
-    //////////////////////////////////////////////////////////////////
+    #[allow(clippy::new_without_default)]
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -46,31 +43,26 @@ impl IfTable {
     pub fn values(&self) -> impl Iterator<Item = &Interface> {
         self.by_index.values()
     }
+    #[cfg(test)]
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Interface> {
+        self.by_index.values_mut()
+    }
 
-    //////////////////////////////////////////////////////////////////
     /// Add an [`Interface`] to the table
-    //////////////////////////////////////////////////////////////////
     pub(crate) fn add_interface(
         &mut self,
         config: &RouterInterfaceConfig,
     ) -> Result<(), RouterError> {
         let ifindex = config.ifindex;
         if self.contains(ifindex) {
-            error!("Failed to add interface with ifindex {ifindex}: already exists!");
+            error!("Failed to add interface with ifindex {ifindex}: already exists");
             return Err(RouterError::InterfaceExists(ifindex));
         }
-        let ifindex = config.ifindex;
         self.by_index.insert(ifindex, Interface::new(config));
-        debug!(
-            "Added new interface {} with ifindex {ifindex} to the interface table",
-            &config.name
-        );
         Ok(())
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Modify an [`Interface`] with the provided config
-    //////////////////////////////////////////////////////////////////
     pub(crate) fn mod_interface(
         &mut self,
         config: &RouterInterfaceConfig,
@@ -95,42 +87,35 @@ impl IfTable {
         if iface.mtu != config.mtu {
             iface.mtu = config.mtu;
         }
-        debug!("Modified interface with ifindex {ifindex}");
+
         Ok(())
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// Remove an interface from the table
-    //////////////////////////////////////////////////////////////////
-    pub(crate) fn del_interface(&mut self, ifindex: InterfaceIndex) {
-        if let Some(iface) = self.by_index.remove(&ifindex) {
-            debug!("Deleted interface '{}'", iface.name);
+    /// Remove an [`Interface`] from the table
+    pub(crate) fn del_interface(&mut self, ifindex: InterfaceIndex) -> Result<(), RouterError> {
+        match self.by_index.remove(&ifindex) {
+            Some(_) => Ok(()),
+            None => Err(RouterError::NoSuchInterface(ifindex)),
         }
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Get an immutable reference to an [`Interface`]
-    //////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn get_interface(&self, ifindex: InterfaceIndex) -> Option<&Interface> {
         self.by_index.get(&ifindex)
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Get a mutable reference to an [`Interface`]
-    //////////////////////////////////////////////////////////////////
     #[must_use]
     pub(crate) fn get_interface_mut(&mut self, ifindex: InterfaceIndex) -> Option<&mut Interface> {
         self.by_index.get_mut(&ifindex)
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Assign an [`IfAddress`] to an [`Interface`]
     ///
     /// # Errors
     ///
     /// Fails if the interface is not found
-    //////////////////////////////////////////////////////////////////
     pub(crate) fn add_ifaddr(
         &mut self,
         ifindex: InterfaceIndex,
@@ -141,19 +126,15 @@ impl IfTable {
             .get_mut(&ifindex)
             .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
-        if !iface.add_ifaddr(ifaddr) {
-            debug!("Address {ifaddr} was already configured in interface {ifindex}");
-        }
+        let _ = iface.add_ifaddr(ifaddr);
         Ok(())
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// Un-assign an Ip address from an interface.
+    /// Un-assign an Ip address from an [`Interface`].
     ///
     /// # Errors
     ///
     /// Fails if the interface or the address/mask are not found
-    //////////////////////////////////////////////////////////////////
     pub(crate) fn del_ifaddr(
         &mut self,
         ifindex: InterfaceIndex,
@@ -170,57 +151,67 @@ impl IfTable {
             .ok_or(RouterError::NoSuchAddress(ifaddr))
     }
 
-    //////////////////////////////////////////////////////////////////////
-    /// Detach all interfaces attached to the Vrf whose fib has the given Id
-    //////////////////////////////////////////////////////////////////////
-    pub(crate) fn detach_interfaces_from_vrf(&mut self, fibid: FibKey) {
+    /// Detach all interfaces attached to the Vrf/Fib with the given id
+    #[allow(clippy::unnecessary_wraps)]
+    pub(crate) fn detach_all_from_vrf(&mut self, vrfid: VrfId) -> Result<(), RouterError> {
         for iface in self
             .by_index
             .values_mut()
-            .filter(|iface| iface.is_attached_to_fib(fibid))
+            .filter(|iface| iface.is_attached_to_vrf(vrfid))
         {
             iface.attachment.take();
-            info!("Detached interface {} from {fibid}", iface.name);
         }
+        Ok(())
     }
 
-    //////////////////////////////////////////////////////////////////////
-    /// Attach [`Interface`] to the fib with the indicated  [`FibKey`]
-    //////////////////////////////////////////////////////////////////////
-    pub(crate) fn attach_interface_to_vrf(&mut self, ifindex: InterfaceIndex, fibkey: FibKey) {
-        if let Some(iface) = self.get_interface_mut(ifindex) {
-            iface.attach_vrf(fibkey);
-        } else {
-            error!("Failed to attach interface with ifindex {ifindex}: not found");
-        }
+    /// Attach [`Interface`] to the fib with the VRF with id `VrfId`
+    pub(crate) fn attach_iface_to_vrf(
+        &mut self,
+        ifindex: InterfaceIndex,
+        vrfid: VrfId,
+    ) -> Result<(), RouterError> {
+        let iface = self
+            .get_interface_mut(ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        iface.attach_vrf(vrfid);
+        Ok(())
     }
 
-    //////////////////////////////////////////////////////////////////////
     /// Detach [`Interface`] from wherever it is attached
-    //////////////////////////////////////////////////////////////////////
-    pub(crate) fn detach_interface_from_vrf(&mut self, ifindex: InterfaceIndex) {
-        if let Some(iface) = self.get_interface_mut(ifindex) {
-            iface.detach();
-        } else {
-            error!("Failed to detach interface with ifindex {ifindex}: not found");
-        }
+    pub(crate) fn detach_from_vrf(&mut self, ifindex: InterfaceIndex) -> Result<(), RouterError> {
+        let iface = self
+            .get_interface_mut(ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+        iface.detach();
+        Ok(())
     }
 
-    //////////////////////////////////////////////////////////////////////
-    /// Set the operational state of an [`Interface`]
-    //////////////////////////////////////////////////////////////////////
-    pub(super) fn set_iface_oper_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
-        if let Some(ifr) = self.get_interface_mut(ifindex) {
-            ifr.set_oper_state(state);
-        }
+    /// Set the operational state of an [`Interface`], if found
+    pub(super) fn set_oper_state(
+        &mut self,
+        ifindex: InterfaceIndex,
+        state: IfState,
+    ) -> Result<(), RouterError> {
+        let iface = self
+            .get_interface_mut(ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        iface.set_oper_state(state);
+        Ok(())
     }
 
-    //////////////////////////////////////////////////////////////////////
-    /// Set the admin state of an [`Interface`]
-    //////////////////////////////////////////////////////////////////////
-    pub(super) fn set_iface_admin_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
-        if let Some(ifr) = self.get_interface_mut(ifindex) {
-            ifr.set_admin_state(state);
-        }
+    /// Set the admin state of an [`Interface`], if found
+    pub(super) fn set_admin_state(
+        &mut self,
+        ifindex: InterfaceIndex,
+        state: IfState,
+    ) -> Result<(), RouterError> {
+        let iface = self
+            .get_interface_mut(ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        iface.set_admin_state(state);
+        Ok(())
     }
 }

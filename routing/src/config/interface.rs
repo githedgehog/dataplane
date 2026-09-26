@@ -63,7 +63,7 @@ impl ReconfigInterfacePlan {
 
     fn enforce_deletions(&self, iftw: &mut IfTableWriter) {
         for ifindex in &self.to_delete {
-            iftw.del_interface(*ifindex);
+            let _ = iftw.del_interface(*ifindex);
         }
     }
     fn enforce_additions(
@@ -94,7 +94,9 @@ impl ReconfigInterfacePlan {
             iftw.mod_interface(ifconfig.clone())?;
             // attach / re-attach / detach
             match ifconfig.attach_cfg {
-                None => iftw.detach_interface(ifconfig.ifindex),
+                None => {
+                    let _ = iftw.detach_interface(ifconfig.ifindex);
+                }
                 Some(AttachConfig::Vrf(vrfid)) => {
                     iftw.attach_interface_to_vrf(ifconfig.ifindex, vrfid, vrftable)?;
                 }
@@ -140,8 +142,7 @@ impl Attachment {
     #[must_use]
     pub(crate) fn as_config(&self) -> AttachConfig {
         match self {
-            // FIXME: this should always be FibKey::Id
-            Attachment::Vrf(fibkey) => AttachConfig::Vrf(fibkey.as_u32()),
+            Attachment::Vrf(vrfid) => AttachConfig::Vrf(*vrfid),
             Attachment::BridgeDomain => AttachConfig::BridgeDomain,
         }
     }

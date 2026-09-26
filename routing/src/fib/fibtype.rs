@@ -33,11 +33,11 @@ pub enum FibKey {
 }
 impl FibKey {
     #[must_use]
-    pub fn from_vrfid(vrfid: VrfId) -> Self {
+    pub const fn from_vrfid(vrfid: VrfId) -> Self {
         FibKey::Id(vrfid)
     }
     #[must_use]
-    pub fn from_vni(vni: Vni) -> Self {
+    pub const fn from_vni(vni: Vni) -> Self {
         FibKey::Vni(vni)
     }
     #[must_use]
@@ -56,15 +56,6 @@ pub struct Fib {
     groupstore: FibGroupStore,
     vtep: Vtep,
     valid: bool,
-}
-impl Hash for Fib {
-    // We implement explicitly `std::hash::Hash` for `Fib` instead of deriving it because:
-    //  - this avoids the need to implement/derive it for all internal components
-    //  - it is actually not possible to do so since some types are defined externally (prefixes)
-    //  - the Id suffices to identify them and the implementation is possibly faster.
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
 }
 impl Identity<FibKey> for Fib {
     fn identity(&self) -> FibKey {
@@ -333,6 +324,9 @@ impl FibWriter {
         info!("Created Fib with id {vrfid}");
         (FibWriter(w), FibReader(r))
     }
+    pub fn factory(&self) -> FibReaderFactory {
+        FibReaderFactory(self.0.factory())
+    }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
         self.0.enter()
     }
@@ -373,18 +367,14 @@ impl FibWriter {
     pub fn publish(&mut self) {
         self.0.publish();
     }
-    #[must_use]
-    pub fn as_fibreader(&self) -> FibReader {
-        FibReader::new(self.0.clone())
-    }
-    /// # Panics
-    ///
-    /// Panics if the fib is still marked valid after the invalidation is taken.
     pub fn destroy(mut self) {
+        // writer (self) is alive, so enter() can't fail
+        let id = self.enter().map_or_else(|| unreachable!(), |fib| fib.id);
         self.0.append(FibChange::Invalidate);
         self.0.publish();
         let taken_fib = self.0.take();
-        assert!(!taken_fib.valid);
+        debug_assert!(!taken_fib.valid);
+        info!("Destroyed Fib with id {id:?}");
     }
 }
 

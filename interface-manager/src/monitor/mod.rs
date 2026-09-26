@@ -3,15 +3,15 @@
 
 //! A small interface monitor. The interface monitor listens to netlink events asynchronously
 //! and disseminates them over a broadcast channel. It does not make any attempt to interpret
-//! the events received via netlink. The interface monitor reports events on ethernet interfaces.
-//! For testing, it can be allowed to report events for other types of network devices.
+//! the events received via netlink. The interface monitor reports events on kernel interfaces.
 
 use concurrency::sync::Arc;
+use net::eth::mac::SourceMac;
 use net::interface::{InterfaceIndex, InterfaceName};
 use rtnetlink::MulticastGroup;
 use rtnetlink::packet_core::{NetlinkMessage, NetlinkPayload};
 use rtnetlink::packet_route::RouteNetlinkMessage;
-use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags};
+use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags, State};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -22,26 +22,130 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct EthEvent {
-    pub name: InterfaceName,
-    pub ifindex: InterfaceIndex,
-    pub ifup: bool,
-    pub iflowerup: bool,
-    pub ifrunning: bool,
-    pub carrier: bool,
-    pub carrierup: u32,
-    pub carrierdown: u32,
+    ifindex: InterfaceIndex,
+    ifup: bool,
+    iflowerup: bool,
+    ifrunning: bool,
+    name: Option<InterfaceName>,
+    oper_state: Option<State>,
+    carrier: Option<bool>,
+    carrierup: Option<u32>,   // stats
+    carrierdown: Option<u32>, // stats
+    mac: Option<SourceMac>,
+}
+impl EthEvent {
+    #[must_use]
+    pub fn new(ifindex: InterfaceIndex, ifup: bool, iflowerup: bool, ifrunning: bool) -> Self {
+        Self {
+            ifindex,
+            ifup,
+            iflowerup,
+            ifrunning,
+            name: None,
+            oper_state: None,
+            carrier: None,
+            carrierup: None,
+            carrierdown: None,
+            mac: None,
+        }
+    }
+    #[must_use]
+    pub fn set_carrier(mut self, carrier: Option<bool>) -> Self {
+        self.carrier = carrier;
+        self
+    }
+    #[must_use]
+    pub fn set_carrierup(mut self, carrierup: Option<u32>) -> Self {
+        self.carrierup = carrierup;
+        self
+    }
+    #[must_use]
+    pub fn set_carrierdown(mut self, carrierdown: Option<u32>) -> Self {
+        self.carrierdown = carrierdown;
+        self
+    }
+    #[must_use]
+    pub fn set_oper_state(mut self, oper_state: Option<State>) -> Self {
+        self.oper_state = oper_state;
+        self
+    }
+    #[must_use]
+    pub fn set_mac(mut self, mac: Option<SourceMac>) -> Self {
+        self.mac = mac;
+        self
+    }
+    #[must_use]
+    pub fn set_name(mut self, name: Option<InterfaceName>) -> Self {
+        self.name = name;
+        self
+    }
+
+    #[must_use]
+    pub fn ifindex(&self) -> InterfaceIndex {
+        self.ifindex
+    }
+    #[must_use]
+    pub fn name(&self) -> Option<&InterfaceName> {
+        self.name.as_ref()
+    }
+    #[must_use]
+    pub fn ifup(&self) -> bool {
+        self.ifup
+    }
+    #[must_use]
+    pub fn iflowerup(&self) -> bool {
+        self.iflowerup
+    }
+    #[must_use]
+    pub fn ifrunning(&self) -> bool {
+        self.ifrunning
+    }
+    #[must_use]
+    pub fn oper_state(&self) -> Option<State> {
+        self.oper_state
+    }
+    #[must_use]
+    pub fn carrier(&self) -> Option<bool> {
+        self.carrier
+    }
+    #[must_use]
+    pub fn carrierup(&self) -> Option<u32> {
+        self.carrierup
+    }
+    #[must_use]
+    pub fn carrierdown(&self) -> Option<u32> {
+        self.carrierdown
+    }
+    #[must_use]
+    pub fn mac(&self) -> Option<SourceMac> {
+        self.mac
+    }
 }
 impl std::fmt::Display for EthEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let ifup = if self.ifup { "yes" } else { "no" };
         let ifloup = if self.iflowerup { "yes" } else { "no" };
         let ifrun = if self.ifrunning { "yes" } else { "no" };
-        let carrier = if self.carrier { "yes" } else { "no" };
+        let carrier = self.carrier.map_or("--", |v| if v { "yes" } else { "no" });
+
+        write!(f, "ifindex: {}", self.ifindex)?;
+        if let Some(ifname) = self.name.as_ref() {
+            write!(f, " ifname:{ifname}")?;
+        }
         write!(
             f,
-            "ifname:{} ({}) ifup:{ifup} iflowerup:{ifloup} ifrun:{ifrun} carrier:{carrier} carrierup:{} carrierdown:{}",
-            self.name, self.ifindex, self.carrierup, self.carrierdown
-        )
+            " ifup:{ifup} iflowerup:{ifloup} ifrun:{ifrun} carrier:{carrier}",
+        )?;
+        if let Some(value) = self.carrierup {
+            write!(f, " carrierup:{value}")?;
+        }
+        if let Some(value) = self.carrierdown {
+            write!(f, " carrierdown:{value}")?;
+        }
+        if let Some(opstate) = self.oper_state {
+            write!(f, " opstate:{opstate:?}")?;
+        }
+        Ok(())
     }
 }
 
@@ -49,68 +153,83 @@ impl std::fmt::Display for EthEvent {
 pub struct InterfaceMonitor {
     tx: broadcast::Sender<EthEvent>,
     ct: CancellationToken,
-    tracked: Vec<InterfaceName>,
 }
 impl InterfaceMonitor {
     #[must_use]
-    pub fn new(ct: CancellationToken, track: &[InterfaceName]) -> Self {
+    pub fn new(ct: CancellationToken) -> Self {
         let (tx, _) = broadcast::channel::<EthEvent>(100);
-        Self {
-            tx,
-            ct,
-            tracked: track.into(),
-        }
+        Self { tx, ct }
     }
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<EthEvent> {
         self.tx.subscribe()
     }
 
-    /// Convert a netlink message to an `EthEvent` if it is a `NewLink` message for a tracked interface
-    fn netlink_to_event(&self, msg: NetlinkMessage<RouteNetlinkMessage>) -> Option<EthEvent> {
+    /// Convert a netlink message to an `EthEvent` if it is a `NewLink` message
+    /// This is the main function used by the `InterfaceMonitor` to process netlink
+    pub fn netlink_to_event(msg: NetlinkMessage<RouteNetlinkMessage>) -> Option<EthEvent> {
         let (_hdr, payload) = msg.into_parts();
 
         let NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewLink(link_msg)) = payload else {
             return None;
         };
         let ifindex = link_msg.header.index;
+        let Ok(ifindex) = InterfaceIndex::try_from(ifindex) else {
+            error!("Received kernel event with invalid interface index: {ifindex}");
+            return None;
+        };
         let ifup = link_msg.header.flags.contains(LinkFlags::Up);
         let iflowerup = link_msg.header.flags.contains(LinkFlags::LowerUp);
         let ifrunning = link_msg.header.flags.contains(LinkFlags::Running);
+
+        // optional
         let ifname = link_msg.attributes.iter().find_map(|a| match a {
-            LinkAttribute::IfName(name) => Some(name.clone()),
+            LinkAttribute::IfName(name) => match InterfaceName::try_from(name.as_str()) {
+                Ok(valid) => Some(valid),
+                Err(e) => {
+                    warn!("Got kernel event for ifindex {ifindex} with invalid name {name}: {e}");
+                    // we continue
+                    None
+                }
+            },
             _ => None,
-        })?;
-        let ifname = InterfaceName::try_from(ifname).ok()?;
-        if !self.tracked.contains(&ifname) {
-            return None;
-        }
+        });
         let carrier = link_msg.attributes.iter().find_map(|a| match a {
-            LinkAttribute::Carrier(value) => Some(value),
+            LinkAttribute::Carrier(value) => Some(*value != 0),
             _ => None,
-        })?;
+        });
         let carrierup = link_msg.attributes.iter().find_map(|a| match a {
             LinkAttribute::CarrierUpCount(value) => Some(*value),
             _ => None,
-        })?;
+        });
         let carrierdown = link_msg.attributes.iter().find_map(|a| match a {
             LinkAttribute::CarrierDownCount(value) => Some(*value),
             _ => None,
-        })?;
-        // `LinkAttribute::OperState` is not reliable for events, so we ignore it.
-        // N.B. the above attributes are required (watch the ?)
+        });
+        let oper_state = link_msg.attributes.iter().find_map(|a| match a {
+            LinkAttribute::OperState(value) => Some(*value),
+            _ => None,
+        });
+        let mac = link_msg.attributes.iter().find_map(|a| match a {
+            LinkAttribute::Address(value) => match SourceMac::try_from(value) {
+                Ok(mac) => Some(mac),
+                Err(e) => {
+                    warn!("Got invalid mac {value:?}: {e}");
+                    None
+                }
+            },
+            _ => None,
+        });
 
-        // construct the event object
-        let event = EthEvent {
-            name: ifname,
-            ifindex: InterfaceIndex::new(ifindex.try_into().ok()?),
-            ifup,
-            iflowerup,
-            ifrunning,
-            carrier: *carrier != 0,
-            carrierup,
-            carrierdown,
-        };
+        // build `EthEvent` object
+        let event = EthEvent::new(ifindex, ifup, iflowerup, ifrunning)
+            .set_name(ifname)
+            .set_oper_state(oper_state)
+            .set_carrier(carrier)
+            .set_carrierdown(carrierdown)
+            .set_carrierup(carrierup)
+            .set_mac(mac);
+
         info!("Got event for {event}");
         Some(event)
     }
@@ -122,9 +241,6 @@ impl InterfaceMonitor {
     /// This method fails if a netlink connection cannot be created.
     pub async fn run(monitor: Arc<Self>) -> std::io::Result<()> {
         info!("Starting interface monitor");
-        for i in &monitor.tracked {
-            info!("Will track status of interface {i}");
-        }
         let (conn, _, mut messages) = rtnetlink::new_multicast_connection(&[MulticastGroup::Link])
             .inspect_err(|e| error!("Failed to open netlink connection: {e}"))?;
 
@@ -137,7 +253,7 @@ impl InterfaceMonitor {
                 nlmsg = messages.recv() => {
                     match nlmsg {
                         Ok((msg, _)) => {
-                            if let Some(event) = monitor.netlink_to_event(msg) && tx.send(event).is_err() {
+                            if let Some(event) = Self::netlink_to_event(msg) && tx.send(event).is_err() {
                                 warn!("Warning, there are no link event readers!");
                             }
                         }
@@ -185,15 +301,18 @@ mod test {
     #[ignore = "disabled until nv_m support is re-enabled"]
     async fn test_interface_monitor() {
         const INTERFACE: &str = "test-dummy";
-        let test_ifname = InterfaceName::try_from(INTERFACE).unwrap();
+        let _test_ifname = InterfaceName::try_from(INTERFACE).unwrap();
         let ct = CancellationToken::new();
-        let ifmonitor = Arc::new(InterfaceMonitor::new(ct, &[test_ifname]));
+        let ifmonitor = Arc::new(InterfaceMonitor::new(ct));
         let mut subsc1 = ifmonitor.subscribe();
         let mut subsc2 = ifmonitor.subscribe();
         tokio::spawn(InterfaceMonitor::run(ifmonitor.clone()));
 
         create_dummy(INTERFACE).await;
 
+        // FIXME: Interface manager no longer filters by name. So here we should loop until
+        // we hear something for interface INTERFACE (or timeout) since we could otherwise
+        // get events for another interface. Fix when this test is not ignored
         let j1 = tokio::spawn(async move {
             let event = subsc1.recv().await.unwrap();
             println!("listener1: {event}");

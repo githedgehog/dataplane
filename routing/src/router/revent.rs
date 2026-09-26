@@ -3,11 +3,13 @@
 
 //! Router events and eventlog
 
-use crate::IfState;
 use crate::bmp::bmp_render::BgpNeighEvent;
 use crate::cli::display::PrettyDuration;
 use crate::event::EventLog;
 use crate::router::cpi::CpiStatus;
+use crate::{IfChange, IfState};
+use net::eth::mac::SourceMac;
+use net::interface::InterfaceName;
 
 use config::GenId;
 use config::internal::status::BgpNeighborSessionState;
@@ -32,8 +34,12 @@ pub enum RouterEvent {
     FrrConfigApplySuccess(GenId),
     FrrConfigApplyFailure(GenId),
 
-    IfAdmChange(EthEvent, IfState, IfState),
-    IfOperChange(EthEvent, IfState, IfState),
+    IfEvent(EthEvent),
+
+    IfAdmChange(InterfaceName, IfChange<IfState>),
+    IfOperChange(InterfaceName, IfChange<IfState>),
+    IfNameChange(InterfaceName, IfChange<InterfaceName>),
+    IfMacChange(InterfaceName, IfChange<SourceMac>),
 
     BgpNeighStateChange(BgpNeighEvent),
 }
@@ -68,21 +74,20 @@ impl Display for RouterEvent {
             RouterEvent::FrrConfigApplyFailure(genid) => {
                 write!(f, "FRR configuration for generation {genid} FAILED")?;
             }
-            RouterEvent::IfOperChange(ev, old, new) => {
-                let ifc = &ev.name;
-                write!(
-                    f,
-                    "{ifc}: oper state changed {old} -> {new} (carrier:{:#?}, carrier-up:{} carrier-down:{})",
-                    ev.carrier, ev.carrierup, ev.carrierdown
-                )?;
+            RouterEvent::IfEvent(ev) => {
+                write!(f, "ifevent: {ev}")?;
             }
-            RouterEvent::IfAdmChange(ev, old, new) => {
-                let ifc = &ev.name;
-                write!(
-                    f,
-                    "{ifc}: admin state changed {old} -> {new} (carrier:{:#?}, carrier-up:{} carrier-down:{})",
-                    ev.carrier, ev.carrierup, ev.carrierdown
-                )?;
+            RouterEvent::IfOperChange(ifname, s) => {
+                write!(f, "{ifname}: oper state changed {} -> {}", s.old, s.new)?;
+            }
+            RouterEvent::IfAdmChange(ifname, s) => {
+                write!(f, "{ifname}: adm state changed {} -> {}", s.old, s.new)?;
+            }
+            RouterEvent::IfNameChange(ifname, name) => {
+                write!(f, "{ifname}: was renamed {} -> {}", name.old, name.new)?;
+            }
+            RouterEvent::IfMacChange(ifname, mac) => {
+                write!(f, "{ifname}: Mac changed {} -> {}", mac.old, mac.new)?;
             }
             RouterEvent::BgpNeighStateChange(bgp_ev) => {
                 let peer_key = &bgp_ev.peer_key;

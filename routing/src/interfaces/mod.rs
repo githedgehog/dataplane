@@ -9,96 +9,107 @@ pub(crate) mod interface;
 
 #[cfg(test)]
 pub mod tests {
+
     use crate::RouterError;
-    use crate::fib::fibtype::FibWriter;
+    use crate::RouterVrfConfig;
+    use crate::VrfId;
+    use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftable::IfTable;
     use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
     use crate::interfaces::interface::{
         IfDataDot1q, IfDataEthernet, IfState, IfType, RouterInterfaceConfig,
     };
-    use crate::rib::vrf::{RouterVrfConfig, Vrf};
+    use crate::rib::VrfTable;
     use net::eth::mac::SourceMac;
-    use net::interface::InterfaceIndex;
+    use net::interface::Mtu;
     use net::interface::address::IfAddr;
-    use net::ip::UnicastIpAddr;
+    use net::interface::{InterfaceIndex, InterfaceName};
     use net::vlan::Vid;
     use std::net::IpAddr;
     use std::str::FromStr;
 
-    // create a test interface table
-    fn populate_test_iftable() -> IfTable {
-        let mut iftable = IfTable::new();
+    // build a sample interface config
+    pub(crate) fn build_test_interface_cfg(ifname: &str, ifindex: u32) -> RouterInterfaceConfig {
+        let ifindex = InterfaceIndex::try_new(ifindex).expect("bad ifindex");
+        let ifname = InterfaceName::try_from(ifname).expect("Illegal ifname");
+        RouterInterfaceConfig::new(ifname, ifindex)
+    }
+
+    // build sample interface configs to build a sample iftable
+    pub(crate) fn build_interface_configs() -> Vec<RouterInterfaceConfig> {
+        let mut configs = vec![];
 
         /* create loopback */
-        let lo_idx = InterfaceIndex::try_new(1).unwrap();
-        let mut lo = RouterInterfaceConfig::new("Loopback", lo_idx);
-        lo.set_admin_state(IfState::Up);
-        lo.set_description("Main loopback interface");
-        lo.set_iftype(IfType::Loopback);
+        let mut ifconfig = build_test_interface_cfg("Loopback", 1);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("Main loopback interface");
+        ifconfig.set_iftype(IfType::Loopback);
+        configs.push(ifconfig);
 
         /* create Eth0 */
-        let eth0_idx = InterfaceIndex::try_new(2).unwrap();
-        let mut eth0 = RouterInterfaceConfig::new("eth0", eth0_idx);
-        eth0.set_admin_state(IfState::Up);
-        eth0.set_description("Uplink to the Moon");
-        eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
+        let mut ifconfig = build_test_interface_cfg("eth0", 2);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("Uplink to the Moon");
+        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
         }));
+        configs.push(ifconfig);
 
         /* create Eth1 */
-        let eth1_idx = InterfaceIndex::try_new(3).unwrap();
-        let mut eth1 = RouterInterfaceConfig::new("eth1", eth1_idx);
-        eth1.set_admin_state(IfState::Up);
-        eth1.set_description("Downlink from Mars");
-        eth1.set_iftype(IfType::Ethernet(IfDataEthernet {
+        let mut ifconfig = build_test_interface_cfg("eth1", 3);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("Downlink from Mars");
+        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
         }));
+        configs.push(ifconfig);
 
         /* create Eth2 */
-        let eth2_idx = InterfaceIndex::try_new(4).unwrap();
-        let mut eth2 = RouterInterfaceConfig::new("eth2", eth2_idx);
-        eth2.set_admin_state(IfState::Up);
-        eth2.set_description("Downlink from Sun");
-        eth2.set_iftype(IfType::Ethernet(IfDataEthernet {
+        let mut ifconfig = build_test_interface_cfg("eth2", 4);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("Downlink from Sun");
+        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: SourceMac::try_from("00:cc:00:00:00:03").unwrap(),
         }));
+        configs.push(ifconfig);
 
         /* create vlan.100 */
-        let vlan100_idx = InterfaceIndex::try_new(5).unwrap();
-        let mut vlan100 = RouterInterfaceConfig::new("eth1.100", vlan100_idx);
-        vlan100.set_admin_state(IfState::Up);
-        vlan100.set_description("External customer 1");
-        vlan100.set_iftype(IfType::Dot1q(IfDataDot1q {
+        let mut ifconfig = build_test_interface_cfg("eth1.100", 5);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("External customer 1");
+        ifconfig.set_iftype(IfType::Dot1q(IfDataDot1q {
             mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
             vlanid: Vid::new(100).unwrap(),
         }));
+        configs.push(ifconfig);
 
         /* create vlan.200 */
-        let vlan200_idx = InterfaceIndex::try_new(6).unwrap();
-        let mut vlan200 = RouterInterfaceConfig::new("eth1.200", vlan200_idx);
-        vlan200.set_admin_state(IfState::Up);
-        vlan200.set_description("External customer 2");
-        vlan200.set_iftype(IfType::Dot1q(IfDataDot1q {
+        let mut ifconfig = build_test_interface_cfg("eth1.200", 6);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_description("External customer 2");
+        ifconfig.set_iftype(IfType::Dot1q(IfDataDot1q {
             mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
             vlanid: Vid::new(200).unwrap(),
         }));
+        configs.push(ifconfig);
 
-        /* Add the interfaces to the iftable */
-        iftable.add_interface(&lo).expect("Should not fail");
-        iftable.add_interface(&eth0).expect("Should not fail");
-        iftable.add_interface(&eth1).expect("Should not fail");
-        iftable.add_interface(&eth2).expect("Should not fail");
-        iftable.add_interface(&vlan100).expect("Should not fail");
-        iftable.add_interface(&vlan200).expect("Should not fail");
+        configs
+    }
 
-        assert_eq!(iftable.len(), 6);
-
+    // build a sample iftable fomr the given configs
+    pub(crate) fn sample_iftable(configs: &Vec<RouterInterfaceConfig>) -> IfTable {
+        let mut iftable = IfTable::new();
+        for ifconfig in configs {
+            iftable.add_interface(ifconfig).expect("Should not fail");
+        }
+        assert_eq!(iftable.len(), configs.len());
         iftable
     }
 
     // create a test interface table and display it
     pub fn build_test_iftable() -> IfTable {
-        let iftable = populate_test_iftable();
+        let configs = build_interface_configs();
+        let iftable = sample_iftable(&configs);
         println!("{iftable}");
         iftable
     }
@@ -110,71 +121,614 @@ pub mod tests {
     }
 
     #[test]
-    fn test_interface_basic() {
-        /* create interface table  */
-        let mut iftable = build_test_iftable();
+    fn test_iftable_basic() {
+        const VRFID: VrfId = 123;
+        const IF_NAME: &str = "ethernet";
+        const IF_DESC: &str = "My interface";
+        const IF_ADDRESS: &str = "10.0.1.1";
+        const IF_MAC: &str = "00:aa:00:00:00:01";
 
-        /* Create a fib for the vrf created next */
-        let (fibw, _fibr) = FibWriter::new(0);
+        let mut iftable = IfTable::new();
 
-        /* Create a VRF for that fib */
-        let vrf_cfg = RouterVrfConfig::new(0, "default");
-        let mut vrf = Vrf::new(&vrf_cfg);
-        vrf.set_fibw(fibw);
+        // create interface config
+        let ifindex = 1;
+        let mut config = build_test_interface_cfg(IF_NAME, ifindex);
+        let ifindex = config.ifindex;
+        config.set_description(IF_DESC);
+        config.set_mtu(Some(Mtu::MIN));
+        config.set_admin_state(IfState::Up);
+        config.set_iftype(IfType::Ethernet(IfDataEthernet {
+            mac: SourceMac::try_from(IF_MAC).unwrap(),
+        }));
 
-        /* lookup interface with non-existent index */
-        let idx100 = InterfaceIndex::try_new(100).unwrap();
-        let iface = iftable.get_interface(idx100);
-        assert!(iface.is_none());
+        // add interface to table
+        iftable.add_interface(&config).unwrap();
+        assert_eq!(iftable.len(), 1);
+        assert!(
+            !iftable
+                .get_interface(ifindex)
+                .unwrap()
+                .is_attached_to_vrf(VRFID)
+        );
 
-        /* Lookup interface by ifindex 2 */
-        let idx2 = InterfaceIndex::try_new(2).unwrap();
-        let iface = iftable.get_interface_mut(idx2);
-        assert!(iface.is_some());
-        let eth0 = iface.unwrap();
-        assert_eq!(eth0.name, "eth0", "We should get eth0");
-        assert_eq!(eth0.ifindex, idx2, "eth0 has ifindex 2");
+        // attach to vrf
+        iftable.attach_iface_to_vrf(ifindex, VRFID).unwrap();
 
-        /* Add an ip address (the interface is in the iftable) */
-        let address = IpAddr::from_str("10.0.0.1").expect("Bad address");
-        let _ = eth0.add_ifaddr(IfAddr::new(address, 24).unwrap());
-        assert!(eth0.has_address(UnicastIpAddr::try_from(address).unwrap()));
+        // update adm/oper state
+        iftable.set_admin_state(ifindex, IfState::Down).unwrap();
+        iftable.set_oper_state(ifindex, IfState::Up).unwrap();
+
+        // Add same address twice
+        let address = IpAddr::from_str(IF_ADDRESS).expect("Bad address");
+        let ifaddr = IfAddr::new(address, 24).unwrap();
+        iftable.add_ifaddr(ifindex, ifaddr).unwrap();
+        iftable.add_ifaddr(ifindex, ifaddr).unwrap();
+
+        // get interface from the table and check
+        let interface = iftable.get_interface(config.ifindex).unwrap();
+        assert_eq!(interface.ifindex, ifindex);
+        assert_eq!(interface.name.to_string().as_str(), IF_NAME);
+        assert_eq!(interface.admin_state, IfState::Down);
+        assert_eq!(interface.oper_state, IfState::Up);
+        assert_eq!(interface.description.as_deref(), Some(IF_DESC));
+        assert!(interface.has_address(ifaddr.address()));
+        assert_eq!(&interface.get_mac().unwrap().to_string(), IF_MAC);
+        assert!(interface.is_attached_to_vrf(VRFID));
+        assert_eq!(interface.vrf_attachment(), Some(VRFID));
+        let _ = interface;
+
+        // remove address
+        iftable.del_ifaddr(ifindex, ifaddr).unwrap();
+        let r = iftable.del_ifaddr(ifindex, ifaddr);
+        assert!(r.is_err_and(|e| matches!(e, RouterError::NoSuchAddress(_))));
+
+        // detach
+        iftable.detach_from_vrf(ifindex).unwrap();
+
+        // toggle states
+        iftable.set_admin_state(ifindex, IfState::Up).unwrap();
+        iftable.set_oper_state(ifindex, IfState::Down).unwrap();
+
+        // check
+        let interface = iftable.get_interface_mut(config.ifindex).unwrap();
+        assert_eq!(interface.admin_state, IfState::Up);
+        assert_eq!(interface.oper_state, IfState::Down);
+        assert!(!interface.is_attached_to_vrf(VRFID));
+        assert!(!interface.has_address(ifaddr.address()));
+
+        // attempt add interface with same ifindex
+        let r = iftable.add_interface(&config);
+        assert!(r.is_err_and(|e| matches!(e, RouterError::InterfaceExists(_))));
+
+        // remove interface
+        iftable.del_interface(ifindex).unwrap();
+        assert!(iftable.get_interface(ifindex).is_none());
+        let r = iftable.del_interface(ifindex);
+        assert!(r.is_err_and(|e| matches!(e, RouterError::NoSuchInterface(_))));
+        assert_eq!(iftable.len(), 0);
+    }
+
+    #[track_caller]
+    fn compare(reference: &IfTable, reader: &IfTableReader) {
+        let wrapped = reader.enter().unwrap();
+        similar_asserts::assert_eq!(&*wrapped, reference);
     }
 
     #[test]
-    fn test_iftable_api() {
-        /* create interface table */
+    /// Test that an iftable writer behaves like an iftable
+    fn test_iftable_writer() {
+        const VRFID: VrfId = 123;
+        const IF_NAME: &str = "ethernet-1";
+        const IF_NAME_MOD: &str = "FastEthernet-1";
+        const IF_DESC: &str = "My interface";
+        const IF_ADDRESS: &str = "10.0.1.1";
+        const IF_MAC: &str = "00:aa:00:00:00:01";
+        const IF_MAC_MOD: &str = "00:bb:00:00:00:02";
+
+        let vrfconfig = RouterVrfConfig::new(VRFID, "some vrf");
+        let (fibtw, _fibtr) = FibTableWriter::new();
+        let mut vrftable = VrfTable::new(fibtw);
+        vrftable.add_vrf(&vrfconfig).unwrap();
+
+        // iftables: iftable acts as reference
         let mut iftable = IfTable::new();
+        let (mut iftw, iftr) = IfTableWriter::new();
 
-        /* create Eth0 */
-        let eth0_idx = InterfaceIndex::try_new(2).unwrap();
-        let mut eth0 = RouterInterfaceConfig::new("eth0", eth0_idx);
-        eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
+        // one interface
+        let ifindex = 1;
+        let mut config = build_test_interface_cfg(IF_NAME, ifindex);
+        let ifindex = config.ifindex;
+        config.set_description(IF_DESC);
+        config.set_mtu(Some(Mtu::MIN));
+        config.set_admin_state(IfState::Up);
+        config.set_iftype(IfType::Ethernet(IfDataEthernet {
+            mac: SourceMac::try_from(IF_MAC).unwrap(),
         }));
 
-        /* add to interface table */
-        iftable.add_interface(&eth0).expect("Should succeed");
-        assert_eq!(iftable.len(), 1, "Eth0 should be there");
+        // test interface additions
+        iftable.add_interface(&config).unwrap();
+        iftw.add_interface(config.clone()).unwrap();
+        compare(&iftable, &iftr);
 
-        /* test get_mac */
-        let iface = iftable.get_interface(eth0_idx).expect("Should be there");
-        assert_eq!(
-            SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
-            iface.get_mac().unwrap()
+        // test addition reject: both reject
+        assert!(iftable.add_interface(&config).is_err());
+        assert!(iftw.add_interface(config.clone()).is_err());
+
+        // test attach to vrf
+        iftable.attach_iface_to_vrf(ifindex, VRFID).unwrap();
+        iftw.attach_interface_to_vrf(ifindex, VRFID, &vrftable)
+            .unwrap();
+        compare(&iftable, &iftr);
+
+        // test modify interface config or properties
+        config.set_description("modified config");
+        config.set_mtu(Some(Mtu::MAX));
+        config.set_iftype(IfType::Ethernet(IfDataEthernet {
+            mac: SourceMac::try_from(IF_MAC_MOD).unwrap(),
+        }));
+        iftable.mod_interface(&config).unwrap();
+        iftw.mod_interface(config.clone()).unwrap();
+        compare(&iftable, &iftr);
+
+        // test add address
+        let address = IpAddr::from_str(IF_ADDRESS).expect("Bad address");
+        let ifaddr = IfAddr::new(address, 24).unwrap();
+        iftable.add_ifaddr(ifindex, ifaddr).unwrap();
+        iftw.add_ip_address(ifindex, ifaddr).unwrap();
+        compare(&iftable, &iftr);
+
+        // test add duplicate address: neither fail but don't add twice
+        iftable.add_ifaddr(ifindex, ifaddr).unwrap();
+        iftw.add_ip_address(ifindex, ifaddr).unwrap();
+        compare(&iftable, &iftr);
+
+        // test address removal
+        iftable.del_ifaddr(ifindex, ifaddr).unwrap();
+        iftw.del_ip_address(ifindex, ifaddr).unwrap();
+        compare(&iftable, &iftr);
+
+        // test removal non-existent address
+        let r1 = iftable.del_ifaddr(ifindex, ifaddr);
+        let r2 = iftw.del_ip_address(ifindex, ifaddr);
+        assert!(r1.is_err());
+        assert_eq!(r1, r2);
+        compare(&iftable, &iftr);
+
+        // test set admin state
+        iftable.set_admin_state(ifindex, IfState::Down).unwrap();
+        iftw.set_iface_admin_state(ifindex, IfState::Down).unwrap();
+        compare(&iftable, &iftr);
+
+        // test set oper state
+        iftable.set_oper_state(ifindex, IfState::Up).unwrap();
+        iftw.set_iface_oper_state(ifindex, IfState::Up).unwrap();
+        compare(&iftable, &iftr);
+
+        // test detach from vrf
+        iftable.detach_from_vrf(ifindex).unwrap();
+        iftw.detach_interface(ifindex).unwrap();
+        compare(&iftable, &iftr);
+
+        // test update of interface name
+        let new_name = InterfaceName::try_from(IF_NAME_MOD).expect("Illegal ifname");
+        // refresh the config since we updated admin state without modifying the config
+        let mut config = iftable.get_interface(ifindex).unwrap().as_config();
+        config.set_name(&new_name);
+        iftable.mod_interface(&config).unwrap();
+        iftw.update_name(ifindex, &new_name).unwrap();
+        compare(&iftable, &iftr);
+
+        // test detach non-existing interface
+        let non_existent_index = InterfaceIndex::try_new(8192).unwrap();
+        assert!(iftable.get_interface(non_existent_index).is_none());
+        let r1 = iftable.detach_from_vrf(non_existent_index);
+        let r2 = iftw.detach_interface(non_existent_index);
+        assert!(r1.is_err());
+        assert_eq!(r1, r2);
+        compare(&iftable, &iftr);
+
+        // test interface removal
+        iftable.del_interface(ifindex).unwrap();
+        iftw.del_interface(ifindex).unwrap();
+        compare(&iftable, &iftr);
+
+        // test interface removal reject
+        let r1 = iftable.del_interface(ifindex);
+        let r2 = iftw.del_interface(ifindex);
+        assert_eq!(r1, r2);
+        compare(&iftable, &iftr);
+
+        // test non existent interface update
+        let r1 = iftable.mod_interface(&config);
+        let r2 = iftw.mod_interface(config.clone());
+        assert_eq!(r1, r2);
+        compare(&iftable, &iftr);
+    }
+
+    #[test]
+    /// Test that recovery of interface config from interface itself
+    fn test_interface_config_from_interface() {
+        use std::collections::HashMap;
+
+        let sample_configs = build_interface_configs();
+        let iftable = sample_iftable(&sample_configs);
+        let configs: HashMap<InterfaceIndex, RouterInterfaceConfig> = sample_configs
+            .iter()
+            .map(|conf| (conf.ifindex, conf.clone()))
+            .collect();
+
+        let recovered: HashMap<InterfaceIndex, RouterInterfaceConfig> = iftable
+            .values()
+            .map(|iface| (iface.ifindex, iface.as_config()))
+            .collect();
+
+        similar_asserts::assert_eq!(configs, recovered);
+    }
+}
+
+#[cfg(test)]
+/// Test interface processing of `EthEvent`s. These tests do not require netlink
+/// and check if we correctly set the state of interfaces from `EthEvent`s
+mod event_processing {
+    use super::tests::build_test_iftable_left_right;
+    use crate::interfaces::iftablerw::IfTableWriter;
+    use crate::interfaces::interface::IfState;
+    use crate::router::ctl::handle_ifevent;
+    use crate::{Interface, RouterError};
+    use interface_manager::monitor::EthEvent;
+    use net::eth::mac::{Mac, SourceMac};
+    use net::interface::InterfaceIndex;
+    use tracing_test::traced_test;
+
+    // generate event with the admin / oper states of the given interface
+    fn gen_event(iface: &Interface) -> EthEvent {
+        let ifup = match iface.admin_state {
+            IfState::Up => true,
+            IfState::Down | IfState::Unknown => false,
+        };
+        let ifrunning = match iface.oper_state {
+            IfState::Up => true,
+            IfState::Down | IfState::Unknown => false,
+        };
+        let iflowerup = true;
+        EthEvent::new(iface.ifindex, ifup, iflowerup, ifrunning).set_name(Some(iface.name.clone()))
+    }
+
+    // get interface (clone) from iftable reader
+    pub(crate) fn get_interface(iftw: &IfTableWriter, ifindex: InterfaceIndex) -> Interface {
+        iftw.enter()
+            .unwrap()
+            .get_interface(ifindex)
+            .expect("Not found")
+            .clone()
+    }
+
+    #[track_caller]
+    pub(crate) fn compare_interface(reference: &Interface, updated: &Interface) {
+        similar_asserts::assert_eq!(reference, updated);
+    }
+
+    fn toggle(state: IfState) -> IfState {
+        match state {
+            IfState::Up => IfState::Down,
+            IfState::Down => IfState::Up,
+            IfState::Unknown => unreachable!(),
+        }
+    }
+    fn toggle_adm(iface: &mut Interface) {
+        iface.set_admin_state(toggle(iface.admin_state));
+    }
+    fn toggle_oper(iface: &mut Interface) {
+        iface.set_oper_state(toggle(iface.oper_state));
+    }
+
+    // Initialize oper state of all interfaces to match their admin state
+    fn init_oper_state(iftw: &mut IfTableWriter) {
+        let iftable = unsafe { iftw.raw_write_handle().as_mut() };
+        iftable
+            .values_mut()
+            .for_each(|iface| iface.set_oper_state(iface.admin_state));
+        iftw.publish();
+        println!("Updated oper state of all interfaces");
+    }
+
+    #[test]
+    fn test_interface_event_process() {
+        let (mut iftw, _) = build_test_iftable_left_right();
+        init_oper_state(&mut iftw);
+
+        let mut reference: Vec<Interface> = iftw.enter().unwrap().values().cloned().collect();
+        let initial = reference.clone();
+
+        for iface in &mut reference {
+            // toggle admin state, generate event and check
+            toggle_adm(iface);
+            let event = gen_event(iface);
+            handle_ifevent(&event, &mut iftw).unwrap();
+            let updated = get_interface(&iftw, iface.ifindex);
+            compare_interface(iface, &updated);
+
+            // toggle admin state BACK
+            toggle_adm(iface);
+            let event = gen_event(iface);
+            handle_ifevent(&event, &mut iftw).unwrap();
+            let updated = get_interface(&iftw, iface.ifindex);
+            compare_interface(iface, &updated);
+
+            // toggle oper state, generate event and check
+            toggle_oper(iface);
+            let event = gen_event(iface);
+            handle_ifevent(&event, &mut iftw).unwrap();
+            let updated = get_interface(&iftw, iface.ifindex);
+            compare_interface(iface, &updated);
+
+            // toggle admin state BACK
+            toggle_oper(iface);
+            let event = gen_event(iface);
+            handle_ifevent(&event, &mut iftw).unwrap();
+            let updated = get_interface(&iftw, iface.ifindex);
+            compare_interface(iface, &updated);
+        }
+
+        // all interfaces should remain as they were (this is for test correctness)
+        similar_asserts::assert_eq!(initial, reference);
+
+        // also via writer
+        let last: Vec<Interface> = iftw.enter().unwrap().values().cloned().collect();
+        similar_asserts::assert_eq!(initial, last);
+    }
+
+    fn change_mac(mac: SourceMac) -> SourceMac {
+        let mut raw = *mac.inner().as_mut();
+        raw[5] = 15 - raw[5];
+        raw[0] = 0x02;
+        let reversed = Mac::from(raw);
+        SourceMac::try_from(reversed).unwrap()
+    }
+
+    // change the mac of an interface if it has one
+    // returns false if the interface has no mac (nothing changed)
+    fn change_interface_mac(iface: &mut Interface) -> bool {
+        let Some(mac) = iface.get_mac() else {
+            return false;
+        };
+        let changed = change_mac(mac);
+        iface.iftype.set_mac(changed);
+        true
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_interface_change_mac_event() {
+        let (mut iftw, _) = build_test_iftable_left_right();
+        init_oper_state(&mut iftw);
+
+        // we include all interfaces in reference, even if they don't have a mac
+        let mut reference: Vec<Interface> = iftw.enter().unwrap().values().cloned().collect();
+
+        for iface in &mut reference {
+            // change mac of reference interface
+            if change_interface_mac(iface) {
+                // mac changed, generate event
+                let event = gen_event(iface).set_mac(iface.get_mac());
+                handle_ifevent(&event, &mut iftw).unwrap();
+            } else {
+                // reference iface has no mac. Generate wrong event that includes mac
+                let nobodys = Mac::try_from("02:01:02:02:04:05").unwrap();
+                let nobodys = SourceMac::try_from(nobodys).unwrap();
+                let event = gen_event(iface).set_mac(Some(nobodys));
+
+                // change should be rejected and error propagated
+                let r = handle_ifevent(&event, &mut iftw);
+                assert!(r.is_err_and(|e| matches!(e, RouterError::HasNoMac(_))));
+            }
+            // retrieve interface and compare to reference (already updated)
+            let updated = get_interface(&iftw, iface.ifindex);
+            compare_interface(iface, &updated);
+        }
+    }
+}
+
+#[cfg(test)]
+/// Small module to generate netlink messages as the kernel would do
+mod netlink_generator {
+    use net::eth::mac::Mac;
+    use rtnetlink::packet_core::{NetlinkHeader, NetlinkMessage, NetlinkPayload};
+    use rtnetlink::packet_route::link::{
+        LinkAttribute, LinkFlags, LinkHeader, LinkLayerType, LinkMessage, State,
+    };
+    use rtnetlink::packet_route::{AddressFamily, RouteNetlinkMessage};
+
+    fn build_link_header(index: u32, flags: LinkFlags) -> LinkHeader {
+        LinkHeader {
+            interface_family: AddressFamily::default(), // don't care
+            index,
+            link_layer_type: LinkLayerType::Ether,
+            flags,
+            change_mask: LinkFlags::empty(),
+        }
+    }
+    fn build_link_message(
+        ifindex: u32,
+        ifname: &str,
+        flags: LinkFlags,
+        oper_state: Option<State>,
+        mac: Option<Mac>,
+    ) -> LinkMessage {
+        let mut link_msg = LinkMessage::default();
+        link_msg.header = build_link_header(ifindex, flags);
+        link_msg
+            .attributes
+            .push(LinkAttribute::IfName(ifname.to_string()));
+        if let Some(state) = oper_state {
+            link_msg.attributes.push(LinkAttribute::OperState(state));
+        }
+        if let Some(mac) = mac {
+            link_msg
+                .attributes
+                .push(LinkAttribute::Address(mac.as_ref().into()));
+        }
+
+        link_msg
+    }
+
+    // build a netlink message with an inner message for an interface with the
+    // given ifindex, name, flags and operstate
+    pub(super) fn build_netlink_msg(
+        ifindex: u32,
+        ifname: &str,
+        flags: LinkFlags,
+        oper_state: Option<State>,
+        mac: Option<Mac>,
+    ) -> NetlinkMessage<RouteNetlinkMessage> {
+        let link_msg = build_link_message(ifindex, ifname, flags, oper_state, mac);
+        let rnlink_newlink = RouteNetlinkMessage::NewLink(link_msg);
+        let payload = NetlinkPayload::InnerMessage(rnlink_newlink);
+        NetlinkMessage::new(NetlinkHeader::default(), payload)
+    }
+}
+
+#[cfg(test)]
+mod test_netlink_event_handling {
+    use super::event_processing::get_interface;
+    use super::netlink_generator::build_netlink_msg;
+    use super::tests::{build_interface_configs, sample_iftable};
+    use crate::interfaces::iftablerw::IfTableWriter;
+    use crate::router::ctl::handle_ifevent;
+    use crate::{IfState, Interface};
+    use interface_manager::monitor::InterfaceMonitor;
+    use net::eth::mac::{Mac, SourceMac};
+    use net::interface::InterfaceName;
+    use rtnetlink::packet_core::NetlinkMessage;
+    use rtnetlink::packet_route::RouteNetlinkMessage;
+    use rtnetlink::packet_route::link::{LinkFlags, State};
+
+    // a struct representing a netlink message and the state an interface
+    // we expect to be after processing it
+    struct MsgAndExpectation {
+        msg: NetlinkMessage<RouteNetlinkMessage>, // message we'd get from netlink
+        iface: Interface,                         // expected state of interface (clone)
+    }
+
+    // netlink builders and expectations
+    fn ifup(mut iface: Interface) -> MsgAndExpectation {
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            iface.name.as_ref(),
+            LinkFlags::Up | LinkFlags::Running,
+            None,
+            None,
         );
+        iface.set_admin_state(IfState::Up); // have if up
+        iface.set_oper_state(IfState::Up); // have running flag
+        MsgAndExpectation { msg, iface }
+    }
 
-        /* Add interface again -- idempotence */
-        let mut eth0 = RouterInterfaceConfig::new("eth0", eth0_idx);
-        eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
-        }));
-        let iface = iftable.add_interface(&eth0);
-        assert!(iface.is_err_and(|e| matches!(e, RouterError::InterfaceExists(_))));
-        assert_eq!(iftable.len(), 1, "Only eth0 should be there");
+    fn ifup_with_opstate(mut iface: Interface) -> MsgAndExpectation {
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            iface.name.as_ref(),
+            LinkFlags::Up,
+            Some(State::Up),
+            None,
+        );
+        iface.set_admin_state(IfState::Up); // have if up
+        iface.set_oper_state(IfState::Up); // no ifrunning but have oper state
+        MsgAndExpectation { msg, iface }
+    }
+    fn ifdown(mut iface: Interface) -> MsgAndExpectation {
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            iface.name.as_ref(),
+            LinkFlags::empty(),
+            None,
+            None,
+        );
+        iface.set_admin_state(IfState::Down); // no if up
+        iface.set_oper_state(IfState::Down); // no ifrunning nor oper state
+        MsgAndExpectation { msg, iface }
+    }
+    fn ifup_lower_down(mut iface: Interface) -> MsgAndExpectation {
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            iface.name.as_ref(),
+            LinkFlags::Up,
+            None,
+            None,
+        );
+        iface.set_admin_state(IfState::Up); // if up
+        iface.set_oper_state(IfState::Down); // have only up, no running
+        MsgAndExpectation { msg, iface }
+    }
+    fn ifup_oper_down(mut iface: Interface) -> MsgAndExpectation {
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            iface.name.as_ref(),
+            LinkFlags::Up | LinkFlags::LowerUp,
+            Some(State::Down),
+            None,
+        );
+        iface.set_admin_state(IfState::Up); // if up
+        iface.set_oper_state(IfState::Down); // oper_state wins
+        MsgAndExpectation { msg, iface }
+    }
 
-        /* Delete eth0 by index */
-        iftable.del_interface(eth0_idx);
-        assert_eq!(iftable.len(), 0, "No interface should be there");
+    fn ifup_mac_and_name_change(mut iface: Interface) -> MsgAndExpectation {
+        let mac = Mac::try_from("02:0a:0b:0c:0d:ff").expect("Bad mac");
+        let new_name = InterfaceName::try_from(format!("mod-{}", iface.name)).expect("Bad name");
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            new_name.as_ref(),
+            LinkFlags::Up,
+            Some(State::Dormant),
+            Some(mac),
+        );
+        iface.set_admin_state(IfState::Up); // if up
+        iface.set_oper_state(IfState::Down); // oper_state wins but it is dormant
+        iface.set_mac(SourceMac::try_from(mac).expect("should meet the source mac requirements"));
+        iface.name = new_name;
+        MsgAndExpectation { msg, iface }
+    }
+
+    // main test function: gets a MsgAndExpectation processes the msg and checks the expectation is met
+    #[track_caller]
+    fn netlink_ev_process(iftw: &mut IfTableWriter, test: MsgAndExpectation) {
+        // process the event as the interface monitor would
+        let ev = InterfaceMonitor::netlink_to_event(test.msg).unwrap();
+
+        // process the event as the router would and check that the state
+        // since we build events for existing interfaces only.
+        // interface is in the expected state
+        handle_ifevent(&ev, iftw).expect("All interfaces exist");
+        let updated = get_interface(iftw, test.iface.ifindex);
+        similar_asserts::assert_eq!(updated, test.iface);
+    }
+
+    #[test]
+    fn test_process_netlink_event() {
+        // build a sample iftable from configs. Interfaces have macs
+        let ifconfigs = build_interface_configs()
+            .iter()
+            .filter(|c| c.iftype.get_mac().is_some())
+            .cloned()
+            .collect();
+
+        let iftable = sample_iftable(&ifconfigs);
+        assert!(!iftable.is_empty(), "sample iftable has no interface");
+
+        // build iftable writer from clone of the iftable
+        // N.B. we don't care about interfaces' initial state
+        let (mut iftw, _iftr) = IfTableWriter::new_with_data(iftable.clone());
+
+        // generate misc events for the existing interfaces and check that the
+        // interfaces are updated as we expect
+        for iface in iftable.values() {
+            netlink_ev_process(&mut iftw, ifup(iface.clone()));
+            netlink_ev_process(&mut iftw, ifup_with_opstate(iface.clone()));
+            netlink_ev_process(&mut iftw, ifdown(iface.clone()));
+            netlink_ev_process(&mut iftw, ifup_lower_down(iface.clone()));
+            netlink_ev_process(&mut iftw, ifup_oper_down(iface.clone()));
+            netlink_ev_process(&mut iftw, ifup_mac_and_name_change(iface.clone()));
+        }
     }
 }

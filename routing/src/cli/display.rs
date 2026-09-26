@@ -23,7 +23,7 @@ use crate::rib::VrfTable;
 use crate::rib::encapsulation::{
     Encapsulation, ResolvedEncapsulation, ResolvedVxlan, VxlanEncapsulation,
 };
-use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore, Visited};
+use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::rib::vrf::{Route, RouteFlags, RouteOrigin, ShimNhop, Vrf, VrfStatus};
 
 use crate::interfaces::iftable::IfTable;
@@ -46,7 +46,7 @@ use std::os::unix::net::SocketAddr;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use tracing::{error, warn};
+use tracing::warn;
 
 // ========================= Common ========================== //
 fn fmt_opt_value<T: Display>(
@@ -143,18 +143,12 @@ impl Display for Nhop {
         if self.is_unresolved() {
             write!(f, " (unresolved)")?;
         }
-        fmt_nhop_resolvers(f, self, 2, &mut vec![self.id()])
+        fmt_nhop_resolvers(f, self, 2)
     }
 }
 
-fn fmt_nhop_resolvers(
-    f: &mut std::fmt::Formatter<'_>,
-    rc: &Nhop,
-    depth: u8,
-    path: &mut Visited,
-) -> std::fmt::Result {
-    let Ok(resolvers) = rc.resolvers.try_borrow() else {
-        warn!("Try-borrow on nhop resolvers failed!");
+fn fmt_nhop_resolvers(f: &mut std::fmt::Formatter<'_>, rc: &Nhop, depth: u8) -> std::fmt::Result {
+    let Some(resolvers) = rc.get_resolvers() else {
         return Ok(());
     };
     let tab = 5 * depth as usize;
@@ -164,13 +158,7 @@ fn fmt_nhop_resolvers(
         if r.is_unresolved() {
             write!(f, " (UNRESOLVED)")?;
         }
-        if path.contains(&r.id()) {
-            write!(f, " (LOOP)")?;
-            continue;
-        }
-        path.push(r.id());
-        fmt_nhop_resolvers(f, &r, depth.saturating_add(1), path)?;
-        path.pop();
+        fmt_nhop_resolvers(f, &r, depth.saturating_add(1))?;
     }
     Ok(())
 }
@@ -191,12 +179,7 @@ fn fmt_nhop_instruction(f: &mut std::fmt::Formatter<'_>, rc: &Nhop) -> std::fmt:
 }
 
 // Format the next-hop key and recursively format its resolvers, bypassing `Nhop::fmt`.
-fn fmt_nhop_rec(
-    f: &mut std::fmt::Formatter<'_>,
-    rc: &Rc<Nhop>,
-    depth: u8,
-    path: &mut Visited,
-) -> std::fmt::Result {
+fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Rc<Nhop>, depth: u8) -> std::fmt::Result {
     let tab = 8 * depth as usize;
     let indent = " ".repeat(tab);
 
@@ -212,21 +195,15 @@ fn fmt_nhop_rec(
     if rc.is_unresolved() {
         write!(f, " (UNRESOLVED)")?;
     }
-    if path.contains(&rc.id()) {
-        return writeln!(f, " (LOOP)");
-    }
     writeln!(f)?;
     //    fmt_nhop_instruction(f, rc)?;
 
-    let Ok(resolvers) = rc.resolvers.try_borrow() else {
-        error!("Try-borrow on next-hop resolvers failed!");
+    let Some(resolvers) = rc.get_resolvers() else {
         return Ok(());
     };
-    path.push(rc.id());
     for r in resolvers.iter().filter_map(Weak::upgrade) {
-        fmt_nhop_rec(f, &r, depth.saturating_add(1), path)?;
+        fmt_nhop_rec(f, &r, depth.saturating_add(1))?;
     }
-    path.pop();
     //    if let Ok(fg) = rc.as_ref().fibgroup.read() {
     //        writeln!(f, "FibG {}", fg)?;
     //    }
@@ -237,7 +214,7 @@ impl Display for NhopStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!("Next-hop Store ({})", self.len())).fmt(f)?;
         for nhop in self.iter() {
-            fmt_nhop_rec(f, nhop, 0, &mut Visited::new())?;
+            fmt_nhop_rec(f, nhop, 0)?;
             fmt_nhop_instruction(f, nhop)?;
         }
         line(f)
@@ -438,7 +415,7 @@ impl Display for VrfV4Nexthops<'_> {
             .filter(|nh| nh.key.address.is_none_or(|a| a.is_ipv4()));
 
         for nhop in iter {
-            fmt_nhop_rec(f, nhop, 0, &mut Visited::new())?;
+            fmt_nhop_rec(f, nhop, 0)?;
         }
         line(f)
     }
@@ -456,7 +433,7 @@ impl Display for VrfV6Nexthops<'_> {
             .filter(|nh| nh.key.address.is_none_or(|a| a.is_ipv6()));
 
         for nhop in iter {
-            fmt_nhop_rec(f, nhop, 0, &mut Visited::new())?;
+            fmt_nhop_rec(f, nhop, 0)?;
         }
         line(f)
     }
@@ -569,7 +546,6 @@ impl Display for IfType {
                 fmt_iftype_name(f, "802.1q")?;
                 e.fmt(f)
             }
-            IfType::Vxlan => fmt_iftype_name(f, "VxLAN"),
         }
     }
 }
@@ -837,10 +813,7 @@ where
 }
 impl<F: for<'a> Fn(&'a (Ipv4Prefix, &FibRoute)) -> bool> Display for FibViewV4<'_, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Some(fibw) = &self.vrf.fibw else {
-            return writeln!(f, "No fib");
-        };
-        let Some(fibr) = fibw.enter() else {
+        let Some(fibr) = self.vrf.fibw.enter() else {
             return writeln!(f, "Unable to read fib!");
         };
 
@@ -875,10 +848,7 @@ where
 }
 impl<F: for<'a> Fn(&'a (Ipv6Prefix, &FibRoute)) -> bool> Display for FibViewV6<'_, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Some(fibw) = &self.vrf.fibw else {
-            return writeln!(f, "No fib");
-        };
-        let Some(fibr) = fibw.enter() else {
+        let Some(fibr) = self.vrf.fibw.enter() else {
             return writeln!(f, "Unable to read fib!");
         };
 
@@ -911,12 +881,8 @@ pub struct FibGroups<'a>(pub &'a Vrf);
 
 impl Display for FibGroups<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Some(ref fibw) = self.0.fibw else {
-            writeln!(f, "No fib")?;
-            return Ok(());
-        };
-        let Some(ref fibr) = fibw.enter() else {
-            writeln!(f, "No fib")?;
+        let Some(ref fibr) = self.0.fibw.enter() else {
+            writeln!(f, "Unable to access fib")?;
             return Ok(());
         };
         let num_groups = fibr.len_groups();

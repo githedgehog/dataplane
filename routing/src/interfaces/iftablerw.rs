@@ -3,27 +3,31 @@
 
 //! Interface to the interfaces module
 
+use crate::Interface;
 use crate::errors::RouterError;
-use crate::fib::fibtype::FibKey;
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::{IfState, RouterInterfaceConfig};
 use crate::rib::vrf::VrfId;
 use crate::rib::vrftable::VrfTable;
 use left_right::ReadHandleFactory;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
-use net::interface::InterfaceIndex;
+use net::eth::mac::SourceMac;
 use net::interface::address::IfAddr;
+use net::interface::{InterfaceIndex, InterfaceName};
 
-use tracing::{debug, warn};
+use tracing::{debug, error};
+
+#[cfg(test)]
+use std::ptr::NonNull;
 
 #[allow(unused)]
 enum IfTableChange {
     Add(RouterInterfaceConfig),
     Mod(RouterInterfaceConfig),
     Del(InterfaceIndex),
-    Attach((InterfaceIndex, FibKey)),
+    Attach((InterfaceIndex, VrfId)),
     Detach(InterfaceIndex),
-    DetachFromVrf(FibKey),
+    DetachFromVrf(VrfId),
     AddIpAddress((InterfaceIndex, IfAddr)),
     DelIpAddress((InterfaceIndex, IfAddr)),
     UpdateOpState((InterfaceIndex, IfState)),
@@ -31,39 +35,108 @@ enum IfTableChange {
 }
 impl Absorb<IfTableChange> for IfTable {
     fn absorb_first(&mut self, change: &mut IfTableChange, _: &Self) {
-        match change {
-            IfTableChange::Add(ifconfig) => {
-                let _ = self.add_interface(ifconfig);
-            }
-            IfTableChange::Mod(ifconfig) => {
-                let _ = self.mod_interface(ifconfig);
-            }
+        let apply_result = match change {
+            IfTableChange::Add(ifconfig) => self.add_interface(ifconfig),
+            IfTableChange::Mod(ifconfig) => self.mod_interface(ifconfig),
             IfTableChange::Del(ifindex) => self.del_interface(*ifindex),
-            IfTableChange::Attach((ifindex, fibkey)) => {
-                self.attach_interface_to_vrf(*ifindex, *fibkey);
-            }
-            IfTableChange::Detach(ifindex) => self.detach_interface_from_vrf(*ifindex),
-            IfTableChange::DetachFromVrf(fibid) => self.detach_interfaces_from_vrf(*fibid),
-            IfTableChange::AddIpAddress((ifindex, ifaddr)) => {
-                if let Err(e) = self.add_ifaddr(*ifindex, *ifaddr) {
-                    warn!("Could not add interface address {ifaddr}: {e}");
-                }
-            }
-            IfTableChange::DelIpAddress((ifindex, ifaddr)) => {
-                if let Err(e) = self.del_ifaddr(*ifindex, *ifaddr) {
-                    warn!("Could not remove interface address {ifaddr}: {e}");
-                }
-            }
-            IfTableChange::UpdateOpState((ifindex, state)) => {
-                self.set_iface_oper_state(*ifindex, *state);
-            }
+            IfTableChange::Attach((ifindex, vrfid)) => self.attach_iface_to_vrf(*ifindex, *vrfid),
+            IfTableChange::Detach(ifindex) => self.detach_from_vrf(*ifindex),
+            IfTableChange::DetachFromVrf(vrfid) => self.detach_all_from_vrf(*vrfid),
+            IfTableChange::AddIpAddress((ifindex, ifaddr)) => self.add_ifaddr(*ifindex, *ifaddr),
+            IfTableChange::DelIpAddress((ifindex, ifaddr)) => self.del_ifaddr(*ifindex, *ifaddr),
+            IfTableChange::UpdateOpState((ifindex, state)) => self.set_oper_state(*ifindex, *state),
             IfTableChange::UpdateAdmState((ifindex, state)) => {
-                self.set_iface_admin_state(*ifindex, *state);
+                self.set_admin_state(*ifindex, *state)
             }
+        };
+        if let Err(e) = apply_result {
+            error!("Updating the interface table caused error: {e}. This is a bug");
         }
     }
     fn sync_with(&mut self, first: &Self) {
         *self = first.clone();
+    }
+}
+
+/// A struct representing some field or property that may change
+pub struct IfChange<T> {
+    pub old: T,
+    pub new: T,
+}
+impl<T: PartialEq + Clone> IfChange<T> {
+    #[must_use]
+    pub fn cloned(old: &T, new: &T) -> Option<Self> {
+        if old == new {
+            None
+        } else {
+            Some(Self {
+                old: old.clone(),
+                new: new.clone(),
+            })
+        }
+    }
+}
+impl<T: PartialEq + Copy> IfChange<T> {
+    #[must_use]
+    pub fn copied(old: T, new: T) -> Option<Self> {
+        if old == new {
+            None
+        } else {
+            Some(Self { old, new })
+        }
+    }
+}
+
+/// A struct representing the way in which an interface may be updated by the `IfTableWriter`
+/// Optional fields containing a value indicate that such a property was changed and report
+/// the old and the new value in an `IfChange<>`. This struct is part of the `IfTableWriter`
+/// API to report callers if an interface was updated. The distinct methods of `IfTableWriter`
+/// could return a single `IfChange<>` instead of `IfUpdate`. However, new methods may be added
+/// (or the existing be merged) so that multiple changes are handled in one call.
+pub struct IfUpdate {
+    #[allow(dead_code)]
+    pub ifindex: InterfaceIndex,
+    pub ifname: InterfaceName,
+    pub name_change: Option<IfChange<InterfaceName>>,
+    pub mac: Option<IfChange<SourceMac>>,
+    pub adm_state: Option<IfChange<IfState>>,
+    pub oper_state: Option<IfChange<IfState>>,
+}
+impl IfUpdate {
+    #[must_use]
+    fn new(ifindex: InterfaceIndex, ifname: &InterfaceName) -> Self {
+        Self {
+            ifindex,
+            ifname: ifname.clone(),
+            name_change: None,
+            mac: None,
+            adm_state: None,
+            oper_state: None,
+        }
+    }
+
+    #[must_use]
+    fn check_ifname(mut self, old: &InterfaceName, new: &InterfaceName) -> Self {
+        self.name_change = IfChange::cloned(old, new);
+        self
+    }
+
+    #[must_use]
+    fn check_mac(mut self, old: SourceMac, new: SourceMac) -> Self {
+        self.mac = IfChange::copied(old, new);
+        self
+    }
+
+    #[must_use]
+    fn check_adm_state(mut self, old: IfState, new: IfState) -> Self {
+        self.adm_state = IfChange::copied(old, new);
+        self
+    }
+
+    #[must_use]
+    fn check_oper_state(mut self, old: IfState, new: IfState) -> Self {
+        self.oper_state = IfChange::copied(old, new);
+        self
     }
 }
 
@@ -83,108 +156,315 @@ impl IfTableWriter {
     pub fn enter(&self) -> Option<ReadGuard<'_, IfTable>> {
         self.0.enter()
     }
-    pub fn add_interface(&mut self, ifconfig: RouterInterfaceConfig) -> Result<(), RouterError> {
-        if let Some(iftable) = self.enter()
-            && iftable.contains(ifconfig.ifindex)
-        {
-            return Err(RouterError::InterfaceExists(ifconfig.ifindex));
-        }
-        self.0.append(IfTableChange::Add(ifconfig));
-        self.0.publish();
-        Ok(())
+
+    #[must_use]
+    #[cfg(test)]
+    // Not to be used outside tests; because it is unsafe to mutate with readers
+    // and, most importantly, because this API may change
+    pub(crate) fn raw_write_handle(&mut self) -> NonNull<IfTable> {
+        self.0.raw_write_handle()
     }
-    pub fn mod_interface(&mut self, ifconfig: RouterInterfaceConfig) -> Result<(), RouterError> {
-        if let Some(iftable) = self.enter()
-            && !iftable.contains(ifconfig.ifindex)
-        {
-            return Err(RouterError::NoSuchInterface(ifconfig.ifindex));
-        }
-        self.0.append(IfTableChange::Mod(ifconfig));
-        self.0.publish();
-        Ok(())
-    }
-    pub fn del_interface(&mut self, ifindex: InterfaceIndex) {
-        self.0.append(IfTableChange::Del(ifindex));
-        self.0.publish();
-    }
-    pub fn add_ip_address(&mut self, ifindex: InterfaceIndex, ifaddr: IfAddr) {
-        self.0
-            .append(IfTableChange::AddIpAddress((ifindex, ifaddr)));
-        self.0.publish();
-    }
-    pub fn del_ip_address(&mut self, ifindex: InterfaceIndex, ifaddr: IfAddr) {
-        self.0
-            .append(IfTableChange::DelIpAddress((ifindex, ifaddr)));
-        self.0.publish();
-    }
-    pub fn set_iface_oper_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
-        self.0
-            .append(IfTableChange::UpdateOpState((ifindex, state)));
-        self.0.publish();
-    }
-    pub fn set_iface_admin_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
-        self.0
-            .append(IfTableChange::UpdateAdmState((ifindex, state)));
+
+    #[cfg(test)]
+    pub fn publish(&mut self) {
         self.0.publish();
     }
 
-    fn get_vrf_fibr(vrftable: &VrfTable, vrfid: VrfId) -> Result<FibKey, RouterError> {
-        let Ok(vrf) = vrftable.get_vrf(vrfid) else {
-            return Err(RouterError::NoSuchVrf);
-        };
-        match &vrf.fibw {
-            None => Err(RouterError::Internal("No fib writer")),
-            Some(fibw) => fibw
-                .as_fibreader()
-                .get_id()
-                .ok_or(RouterError::Internal("Fib not accessible")),
-        }
+    // tell if there exists an interface with a given index
+    fn interface_exists(&self, ifindex: InterfaceIndex) -> bool {
+        self.enter()
+            .unwrap_or_else(|| unreachable!())
+            .contains(ifindex)
     }
 
+    // tell if an address is configured in a given interface
+    fn address_is_configured(
+        &self,
+        ifindex: InterfaceIndex,
+        ifaddr: IfAddr,
+    ) -> Result<bool, RouterError> {
+        let found = self
+            .enter()
+            .unwrap_or_else(|| unreachable!("self is alive"))
+            .get_interface(ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?
+            .addresses
+            .contains(&ifaddr);
+        Ok(found)
+    }
+
+    // check that interface and vrf exist
     fn interface_attach_check(
         &mut self,
         ifindex: InterfaceIndex,
         vrfid: VrfId,
         vrftable: &VrfTable,
-    ) -> Result<FibKey, RouterError> {
-        let Some(iftr) = self.enter() else {
-            return Err(RouterError::Internal("Fail to read iftable"));
-        };
-        if iftr.get_interface(ifindex).is_none() {
-            Err(RouterError::NoSuchInterface(ifindex))
-        } else {
-            Self::get_vrf_fibr(vrftable, vrfid)
+    ) -> Result<(), RouterError> {
+        if !self.interface_exists(ifindex) {
+            return Err(RouterError::NoSuchInterface(ifindex));
         }
+        let _ = vrftable.get_vrf(vrfid)?;
+        Ok(())
     }
+
+    fn interface_detach_check(
+        &mut self,
+        ifindex: InterfaceIndex,
+    ) -> Result<Option<VrfId>, RouterError> {
+        let iftable = self.enter().unwrap_or_else(|| unreachable!());
+        let attachment = iftable
+            .get_interface(ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))
+            .map(Interface::vrf_attachment)?;
+
+        Ok(attachment)
+    }
+
+    pub fn add_interface(&mut self, ifconfig: RouterInterfaceConfig) -> Result<(), RouterError> {
+        let ifindex = ifconfig.ifindex;
+        let name = ifconfig.name.clone();
+        if self.interface_exists(ifindex) {
+            error!("Refused to add interface {name}: an interface with index {ifindex} exists");
+            return Err(RouterError::InterfaceExists(ifindex));
+        }
+        self.0.append(IfTableChange::Add(ifconfig));
+        self.0.publish();
+        debug!("Added new interface {name} with ifindex {ifindex} to the interface table");
+        Ok(())
+    }
+    pub fn mod_interface(&mut self, ifconfig: RouterInterfaceConfig) -> Result<(), RouterError> {
+        let ifindex = ifconfig.ifindex;
+        if !self.interface_exists(ifindex) {
+            error!("Refused to modify interface with ifindex {ifindex}: no such interface");
+            return Err(RouterError::NoSuchInterface(ifindex));
+        }
+        self.0.append(IfTableChange::Mod(ifconfig));
+        self.0.publish();
+        debug!("Modified interface with ifindex {ifindex}");
+        Ok(())
+    }
+
+    pub fn del_interface(&mut self, ifindex: InterfaceIndex) -> Result<(), RouterError> {
+        if !self.interface_exists(ifindex) {
+            error!("Can't delete interface with ifindex {ifindex}: no such interface");
+            return Err(RouterError::NoSuchInterface(ifindex));
+        }
+        self.0.append(IfTableChange::Del(ifindex));
+        self.0.publish();
+        debug!("Removed interface with ifindex {ifindex}");
+        Ok(())
+    }
+
+    pub fn add_ip_address(
+        &mut self,
+        ifindex: InterfaceIndex,
+        ifaddr: IfAddr,
+    ) -> Result<(), RouterError> {
+        match self.address_is_configured(ifindex, ifaddr) {
+            Err(e) => {
+                error!("Failed to add address {ifaddr}: {e}");
+                return Err(e);
+            }
+            Ok(true) => {
+                debug!("Address {ifaddr} is already configured in interface with index {ifindex}");
+                return Ok(());
+            }
+            Ok(false) => {}
+        }
+        self.0
+            .append(IfTableChange::AddIpAddress((ifindex, ifaddr)));
+        self.0.publish();
+
+        debug!("Added address {ifaddr} to interface with ifindex {ifindex}");
+        Ok(())
+    }
+    pub fn del_ip_address(
+        &mut self,
+        ifindex: InterfaceIndex,
+        ifaddr: IfAddr,
+    ) -> Result<(), RouterError> {
+        if !self.address_is_configured(ifindex, ifaddr)? {
+            error!("Address {ifaddr} not found in interface with index {ifindex}");
+            return Err(RouterError::NoSuchAddress(ifaddr));
+        }
+
+        self.0
+            .append(IfTableChange::DelIpAddress((ifindex, ifaddr)));
+        self.0.publish();
+
+        debug!("Removed address {ifaddr} from interface with ifindex {ifindex}");
+        Ok(())
+    }
+
+    /// Set the operational state to `state`. Returns `IfUpdate` indicating the change on success
+    ///
+    /// # Errors
+    ///   Returns `RouterError` if the interface could not be found
+    pub fn set_iface_oper_state(
+        &mut self,
+        ifindex: InterfaceIndex,
+        state: IfState,
+    ) -> Result<IfUpdate, RouterError> {
+        let (ifname, op_state) = self
+            .enter()
+            .unwrap_or_else(|| unreachable!())
+            .get_interface(ifindex)
+            .map(|iface| (iface.name.clone(), iface.oper_state))
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        let update = IfUpdate::new(ifindex, &ifname).check_oper_state(op_state, state);
+        if update.oper_state.is_none() {
+            return Ok(update);
+        }
+
+        self.0
+            .append(IfTableChange::UpdateOpState((ifindex, state)));
+        self.0.publish();
+
+        debug!("Updated oper state of interface {ifname} ({ifindex}): {op_state} -> {state}");
+        Ok(update)
+    }
+
+    /// Set the admin state of an interface to `state`. Returns `IfUpdate` indicating the change on success
+    ///
+    /// # Errors
+    ///   Returns `RouterError` if the interface could not be found
+    pub fn set_iface_admin_state(
+        &mut self,
+        ifindex: InterfaceIndex,
+        state: IfState,
+    ) -> Result<IfUpdate, RouterError> {
+        let (ifname, adm_state) = self
+            .enter()
+            .unwrap_or_else(|| unreachable!())
+            .get_interface(ifindex)
+            .map(|iface| (iface.name.clone(), iface.admin_state))
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        let update = IfUpdate::new(ifindex, &ifname).check_adm_state(adm_state, state);
+        if update.adm_state.is_none() {
+            return Ok(update);
+        }
+
+        self.0
+            .append(IfTableChange::UpdateAdmState((ifindex, state)));
+        self.0.publish();
+
+        debug!("Updated admin state of interface {ifname} ({ifindex}): {adm_state} -> {state}");
+        Ok(update)
+    }
+
     /// Attach an interface to a vrf
     ///
     /// # Errors
     ///
-    /// Fails if the interface is not found
+    /// Fails if the interface or the vrf are not found
     pub fn attach_interface_to_vrf(
         &mut self,
         ifindex: InterfaceIndex,
         vrfid: VrfId,
         vrftable: &VrfTable,
     ) -> Result<(), RouterError> {
-        // FIXME(fredi): this can be significantly simplified
-        let fibkey = self.interface_attach_check(ifindex, vrfid, vrftable)?;
-        self.attach_interface_to_fib(ifindex, fibkey);
+        if let Err(e) = self.interface_attach_check(ifindex, vrfid, vrftable) {
+            error!("Failed to attach interface {ifindex} to vrf {vrfid}: {e}");
+            return Err(e);
+        }
+        self.0.append(IfTableChange::Attach((ifindex, vrfid)));
+        self.0.publish();
         Ok(())
     }
-    pub(crate) fn attach_interface_to_fib(&mut self, ifindex: InterfaceIndex, fibkey: FibKey) {
-        self.0.append(IfTableChange::Attach((ifindex, fibkey)));
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn attach_interface_to_fib(&mut self, ifindex: InterfaceIndex, vrfid: VrfId) {
+        self.0.append(IfTableChange::Attach((ifindex, vrfid)));
         self.0.publish();
     }
-    pub fn detach_interface(&mut self, ifindex: InterfaceIndex) {
-        self.0.append(IfTableChange::Detach(ifindex));
-        self.0.publish();
+
+    pub fn detach_interface(&mut self, ifindex: InterfaceIndex) -> Result<(), RouterError> {
+        let attachment = self.interface_detach_check(ifindex).inspect_err(|e| {
+            error!("Failed to detach interface {ifindex}: {e}");
+        })?;
+        if let Some(vrfid) = attachment {
+            self.0.append(IfTableChange::Detach(ifindex));
+            self.0.publish();
+            debug!("Detached interface {ifindex} from vrf {vrfid}");
+        } else {
+            debug!("Interface {ifindex} was not attached to any VRF");
+        }
+        Ok(())
     }
+
     pub fn detach_interfaces_from_vrf(&mut self, vrfid: VrfId) {
-        debug!("Scheduling detach of interfaces from vrf {vrfid}");
-        self.0
-            .append(IfTableChange::DetachFromVrf(FibKey::Id(vrfid)));
+        debug!("Detaching all interfaces from vrf {vrfid}");
+        self.0.append(IfTableChange::DetachFromVrf(vrfid));
         self.0.publish();
+    }
+
+    /// Updates the name of an interface to `new_name`. Returns `IfUpdate` indicating the change on success
+    ///
+    /// # Errors
+    ///   Returns `RouterError` if the interface could not be found
+    pub fn update_name(
+        &mut self,
+        ifindex: InterfaceIndex,
+        new_name: &InterfaceName,
+    ) -> Result<IfUpdate, RouterError> {
+        let mut ifconfig = self
+            .enter()
+            .unwrap_or_else(|| unreachable!())
+            .get_interface(ifindex)
+            .map(Interface::as_config)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        let old_name = ifconfig.name.clone();
+        let update = IfUpdate::new(ifindex, &old_name).check_ifname(&old_name, new_name);
+        if update.name_change.is_none() {
+            return Ok(update);
+        }
+
+        ifconfig.set_name(new_name);
+        self.0.append(IfTableChange::Mod(ifconfig));
+        self.0.publish();
+
+        debug!("Changed the name of interface {ifindex}: {old_name} -> {new_name}");
+        Ok(update)
+    }
+
+    /// Updates the mac of an interface to `new_mac`. Returns `IfUpdate` indicating the change on success
+    ///
+    /// # Errors
+    ///   Returns `RouterError` if the interface could not be found or it is not supposed to have a mac
+    pub fn update_mac(
+        &mut self,
+        ifindex: InterfaceIndex,
+        new_mac: SourceMac,
+    ) -> Result<IfUpdate, RouterError> {
+        let (mut config, mut iftype) = self
+            .enter()
+            .unwrap_or_else(|| unreachable!())
+            .get_interface(ifindex)
+            .map(|iface| (iface.as_config(), iface.iftype.clone()))
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        let Some(mac) = iftype.get_mac() else {
+            error!("Can't update mac of interface with index {ifindex}: it has no mac");
+            return Err(RouterError::HasNoMac(ifindex));
+        };
+
+        let update = IfUpdate::new(ifindex, &config.name).check_mac(mac, new_mac);
+        if update.mac.is_none() {
+            return Ok(update);
+        }
+
+        let ifname = config.name.clone();
+        iftype.set_mac(new_mac);
+        config.set_iftype(iftype);
+
+        self.0.append(IfTableChange::Mod(config));
+        self.0.publish();
+
+        debug!("Changed the mac of interface {ifname}: {mac} -> {new_mac}");
+        Ok(update)
     }
 }
 
@@ -224,6 +504,7 @@ mod iftable_properties {
     use crate::interfaces::interface::{Attachment, IfType};
     use crate::rib::vrf::{RouterVrfConfig, Vrf};
     use bolero::{Driver, ValueGenerator};
+    use net::interface::InterfaceName;
     use net::interface::address::IfAddr;
     use std::collections::{BTreeMap, BTreeSet};
     use std::net::IpAddr;
@@ -340,23 +621,24 @@ mod iftable_properties {
         }
     }
 
-    fn name_of(iface: usize, renamed: bool) -> String {
-        if renamed {
+    fn name_of(iface: usize, renamed: bool) -> InterfaceName {
+        let name = if renamed {
             format!("eth{iface}-renamed")
         } else {
             format!("eth{iface}")
-        }
+        };
+        InterfaceName::try_from(name).unwrap()
     }
 
     fn config_for(iface: usize, renamed: bool) -> RouterInterfaceConfig {
-        let mut config = RouterInterfaceConfig::new(&name_of(iface, renamed), ifindexes()[iface]);
+        let mut config = RouterInterfaceConfig::new(name_of(iface, renamed), ifindexes()[iface]);
         config.set_iftype(IfType::Unknown);
         config
     }
 
     #[derive(Debug, Clone, PartialEq)]
     struct IfaceState {
-        name: String,
+        name: InterfaceName,
         admin: IfState,
         oper: IfState,
         attached: Option<usize>,
@@ -469,11 +751,11 @@ mod iftable_properties {
             Change::AttachToVrf { iface, vrf } => apply_attach(world, model, *iface, *vrf),
             Change::RemoveVrf { vrf } => apply_remove_vrf(world, model, *vrf),
             Change::DelInterface { iface } => {
-                world.iftw.del_interface(ifaces[*iface]);
+                let _ = world.iftw.del_interface(ifaces[*iface]);
                 model.interfaces.remove(iface);
             }
             Change::AddAddress { iface, address } => {
-                world
+                let _ = world
                     .iftw
                     .add_ip_address(ifaces[*iface], addresses()[*address]);
                 if let Some(state) = model.interfaces.get_mut(iface) {
@@ -481,7 +763,7 @@ mod iftable_properties {
                 }
             }
             Change::DelAddress { iface, address } => {
-                world
+                let _ = world
                     .iftw
                     .del_ip_address(ifaces[*iface], addresses()[*address]);
                 if let Some(state) = model.interfaces.get_mut(iface) {
@@ -489,7 +771,7 @@ mod iftable_properties {
                 }
             }
             Change::SetOperState { iface, state } => {
-                world
+                let _ = world
                     .iftw
                     .set_iface_oper_state(ifaces[*iface], states()[*state]);
                 if let Some(entry) = model.interfaces.get_mut(iface) {
@@ -497,7 +779,7 @@ mod iftable_properties {
                 }
             }
             Change::SetAdminState { iface, state } => {
-                world
+                let _ = world
                     .iftw
                     .set_iface_admin_state(ifaces[*iface], states()[*state]);
                 if let Some(entry) = model.interfaces.get_mut(iface) {
@@ -505,7 +787,7 @@ mod iftable_properties {
                 }
             }
             Change::Detach { iface } => {
-                world.iftw.detach_interface(ifaces[*iface]);
+                let _ = world.iftw.detach_interface(ifaces[*iface]);
                 if let Some(state) = model.interfaces.get_mut(iface) {
                     state.attached = None;
                 }
@@ -573,14 +855,14 @@ mod iftable_properties {
                 match (&iface.attachment, want.attached) {
                     (None, None) => (),
                     (Some(Attachment::Vrf(key)), Some(vrf)) => {
-                        assert_eq!(*key, FibKey::Id(vrfs[vrf]), "attachment of {index} {at}");
+                        assert_eq!(*key, vrfs[vrf], "attachment of {index} {at}");
                     }
                     (got, want) => {
                         panic!("attachment of {index} is {got:?}, expected {want:?} {at}")
                     }
                 }
 
-                if let Some(Attachment::Vrf(FibKey::Id(vrfid))) = &iface.attachment {
+                if let Some(Attachment::Vrf(vrfid)) = &iface.attachment {
                     assert!(
                         world.vrftable.contains(*vrfid),
                         "interface {index} is attached to vrf {vrfid}, which is gone {at}"

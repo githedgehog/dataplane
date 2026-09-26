@@ -296,7 +296,7 @@ impl RpcOperation for IfAddress {
                 return RpcResultCode::InvalidRequest;
             }
         };
-        db.iftw.add_ip_address(ifindex, ifaddr);
+        let _ = db.iftw.add_ip_address(ifindex, ifaddr);
         RpcResultCode::Ok
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
@@ -311,7 +311,7 @@ impl RpcOperation for IfAddress {
                 return RpcResultCode::InvalidRequest;
             }
         };
-        db.iftw.del_ip_address(ifindex, ifaddr);
+        let _ = db.iftw.del_ip_address(ifindex, ifaddr);
         RpcResultCode::Ok
     }
 }
@@ -612,8 +612,7 @@ mod cpi_properties {
             .vrftable
             .get_vrf(vrfid)
             .unwrap_or_else(|e| unreachable!("{e}"));
-        let fibw = vrf.fibw.as_ref().unwrap_or_else(|| unreachable!());
-        let fib = fibw.enter().unwrap_or_else(|| unreachable!());
+        let fib = vrf.fibw.enter().unwrap_or_else(|| unreachable!());
         fib.iter_v4()
             .find(|(p, _)| *p == wanted)
             .map(|(_, route)| {

@@ -8,9 +8,9 @@ use super::encapsulation::Encapsulation;
 use super::vrf::{RouteOrigin, Vrf};
 use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{FibGroup, PktInstruction};
+use ordermap::OrderSet;
 
-use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
-use std::collections::BTreeSet;
+use std::cell::Ref;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::IpAddr;
@@ -28,16 +28,11 @@ use tracectl::trace_target;
 trace_target!("next-hops", LevelFilter::WARN, &["routing-full"]);
 
 #[derive(Debug)]
-/// A collection of unique next-hops. Next-hops are identified by a next-hop key
-/// that can contain an address, ifindex and encapsulation.
-pub(crate) struct NhopStore(BTreeSet<Rc<Nhop>>);
-
-#[derive(Debug)]
 /// A next-hop object that can be shared by multiple routes and that can have
 /// references to other next-hops in this (or other) table.
 pub struct Nhop {
     pub(crate) key: NhopKey,
-    pub(crate) resolvers: RefCell<Vec<Weak<Nhop>>>,
+    resolvers: RefCell<Vec<Weak<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub(crate) fibgroup: RefCell<FibGroup>,
     pub(crate) invalid: Cell<bool>,
@@ -143,12 +138,6 @@ impl NhopKey {
     }
 }
 
-/* Implement some traits needed to use Nhop as set element of BtreeSet. Since a Nhop can
-   be internally mutated, we have to implement these manually to leave the resolvers,
-   instructions and fibgroup out, as those may change.
-   The implementations leverage the derived trait implementations for the `NhopKey`
-   contained in the Nhop.
-*/
 impl Eq for Nhop {}
 
 impl PartialEq for Nhop {
@@ -156,27 +145,16 @@ impl PartialEq for Nhop {
         self.key.eq(&other.key)
     }
 }
-impl Ord for Nhop {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.key.cmp(&other.key)
-    }
-}
-impl PartialOrd for Nhop {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/* Hash is only needed if we use HashSet instead of BtreeSet for the NhopMap */
 impl Hash for Nhop {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.key.hash(state);
     }
 }
 
-pub(crate) type NhopId = *const Nhop;
+type NhopId = *const Nhop;
 
-pub(crate) type Visited = Vec<NhopId>;
+#[cfg(test)]
+type Visited = Vec<NhopId>;
 
 impl Nhop {
     /// Create a new Nhop object from a key object
@@ -193,6 +171,10 @@ impl Nhop {
     /// Store a weak reference to some Nhop 'resolver' in the current next-hop
     #[cfg(test)]
     pub fn add_resolver(&self, resolver: &Rc<Nhop>) -> &Self {
+        assert!(
+            !resolver.resolves_with(self),
+            "Resolver {resolver} of next-hop {self} would create a resolution loop"
+        );
         let Ok(mut resolvers) = self.resolvers.try_borrow_mut() else {
             error!("Failed to add resolver: try-borrow-mut failed!. Nhop={self:#?}");
             return self;
@@ -201,30 +183,36 @@ impl Nhop {
         self
     }
 
-    pub(crate) fn id(&self) -> NhopId {
+    /// The resolvers of a next-hop, or `None` if they cannot be borrowed. N.B. this is
+    /// the only access to the resolvers from outside of this module
+    pub(crate) fn get_resolvers(&self) -> Option<Ref<'_, [Weak<Nhop>]>> {
+        let Ok(resolvers) = self.resolvers.try_borrow() else {
+            error!("Try-borrow on next-hop resolvers failed!");
+            return None;
+        };
+        Some(Ref::map(resolvers, Vec::as_slice))
+    }
+
+    /// Set the resolvers of a `Nhop`
+    fn set_resolvers(&self, resolvers: Vec<Weak<Nhop>>) {
+        self.resolvers.replace(resolvers);
+    }
+
+    fn id(&self) -> NhopId {
         std::ptr::from_ref(self)
     }
 
     fn resolves_with(&self, checked: &Nhop) -> bool {
-        self.resolves_with_rec(checked, &mut Visited::new())
-    }
-
-    fn resolves_with_rec(&self, checked: &Nhop, visited: &mut Visited) -> bool {
         if self.id() == checked.id() {
             error!("Loop detected for next-hop {}!", self.key);
             return true;
         }
-        if visited.contains(&self.id()) {
-            return false;
-        }
-        visited.push(self.id());
-
         // resolvers should not refer back to the checked next-hop
         let resolvers = self.resolvers.borrow();
         resolvers
             .iter()
             .filter_map(Weak::upgrade)
-            .any(|res| res.resolves_with_rec(checked, visited))
+            .any(|res| res.resolves_with(checked))
     }
 
     /// Tell if a next-hop requires resolution
@@ -256,12 +244,11 @@ impl Nhop {
         Some(a)
     }
 
-    /// Resolve a next-hop with a VRF, non-recursively; i.e. without caring whether
-    /// the next-hops that a next-hop resolve to are resolved
-    pub fn lazy_resolve(&self, vrf: &Vrf) {
+    /// Compute the resolvers for a next-hop non-recursively
+    fn compute_resolvers(&self, vrf: &Vrf) -> Vec<Weak<Nhop>> {
         let name = &vrf.name;
         let Some(target) = self.needs_resolution() else {
-            return;
+            return vec![];
         };
         let (prefix, route) = vrf.lpm(target);
         debug!("Address {target} resolves with route to {prefix} in vrf {name}");
@@ -275,20 +262,17 @@ impl Nhop {
                 resolvers.push(Rc::downgrade(resolver));
             }
         }
-        // warn if we got no valid resolver for the next-hop
         if resolvers.is_empty() {
             warn!(
-                "Cannot resolve address {target} with vrf {name}: {} route to {prefix} has no usable next-hop",
+                "Cannot resolve NH address {target} with vrf {name}: {} route to {prefix} has no usable next-hop",
                 route.origin
             );
         }
-
-        // update resolvers (N.B: resolvers may be empty)
-        self.resolvers.replace(resolvers);
+        resolvers // may be empty
     }
 
     #[cfg(test)]
-    fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>, visited: &mut Visited) {
+    fn quick_resolve_rec(&self, result: &mut OrderSet<NhopKey>, visited: &mut Visited) {
         if visited.contains(&self.id()) {
             return;
         }
@@ -336,18 +320,23 @@ impl Nhop {
     /// by a small recursion in the next-hop store, which is stateful and persists the results.
     //////////////////////////////////////////////////////////////////////////////////////////////////////
     #[cfg(test)]
-    pub fn quick_resolve(&self) -> BTreeSet<NhopKey> {
-        let mut out: BTreeSet<NhopKey> = BTreeSet::new();
+    pub fn quick_resolve(&self) -> OrderSet<NhopKey> {
+        let mut out: OrderSet<NhopKey> = OrderSet::new();
         self.quick_resolve_rec(&mut out, &mut Visited::new());
         out
     }
 }
 
+#[derive(Debug)]
+/// A collection of unique next-hops. Next-hops are identified by a next-hop key
+/// that can contain an address, ifindex and encapsulation.
+pub(crate) struct NhopStore(OrderSet<Rc<Nhop>>);
+
 impl NhopStore {
     /// Create a next-hop map object.
     #[must_use]
     pub(crate) fn new() -> Self {
-        Self(BTreeSet::new())
+        Self(OrderSet::new())
     }
 
     /// Get the number of next-hops in the store
@@ -439,9 +428,15 @@ impl NhopStore {
     }
 
     /// Flush all resolution state and lazily re-resolve all next-hops.
+    /// This is the only place where resolution happens and updates next-hops.
+    /// Next-hop instructions could be built here (avoiding a second iteration)
+    /// but that would require passing the rmac store.
     pub fn lazy_resolve_all(&self, vrf: &Vrf) {
         self.flush_resolvers();
-        self.iter().for_each(|nhop| nhop.lazy_resolve(vrf));
+        self.iter().for_each(|nhop| {
+            let resolvers = nhop.compute_resolvers(vrf);
+            nhop.set_resolvers(resolvers);
+        });
     }
 
     /// Rebuild the fibgroup for every next-hop. This method visits every next-hop and
@@ -450,9 +445,11 @@ impl NhopStore {
     /// of the fibgroups. N.B. we hand out weak references and not owning ones so as to
     /// not alter the strong count of the next-hops, which tells how many routes use them
     /// and determines if a next-hop can be removed (see `NhopStore::del_nhop()`).
-    pub fn rebuild_fibgroups(&self, rstore: &RmacStore) -> Vec<Weak<Nhop>> {
+    /// Correctness: this requires the instructions of this next-hop and that of its
+    /// resolvers to be up-to-date.
+    pub fn rebuild_fibgroups(&self) -> Vec<Weak<Nhop>> {
         self.iter()
-            .filter(|nhop| nhop.set_fibgroup(rstore))
+            .filter(|nhop| nhop.set_fibgroup())
             .map(Rc::downgrade)
             .collect()
     }
@@ -471,7 +468,7 @@ impl NhopStore {
     /// exists for that address, returns None. Otherwise, it returns the
     /// result of `quick_resolve()` on the next-hop found.
     /// This function is probably only useful for testing.
-    pub(crate) fn resolve_by_addr(&self, address: &IpAddr) -> Option<BTreeSet<NhopKey>> {
+    pub(crate) fn resolve_by_addr(&self, address: &IpAddr) -> Option<OrderSet<NhopKey>> {
         let key = NhopKey::with_address(address);
         self.get_nhop(&key).map(|nh| nh.quick_resolve())
     }
@@ -859,7 +856,7 @@ mod tests {
             let mut res = n.quick_resolve();
             assert_eq!(res.len(), 1, "Should get just one nhop key");
             assert_eq!(
-                res.pop_first().expect("Should be there").fwaction,
+                res.pop().expect("Should be there").fwaction,
                 FwAction::Drop,
                 "It should be drop"
             );
@@ -870,7 +867,7 @@ mod tests {
             let mut res = n.quick_resolve();
             assert_eq!(res.len(), 1, "Should get just one nhop key");
             assert_eq!(
-                res.pop_first().expect("Should be there").fwaction,
+                res.pop().expect("Should be there").fwaction,
                 FwAction::Drop,
                 "It should be drop"
             );
@@ -1068,27 +1065,23 @@ mod tests {
         assert!(!a.resolves_with(checked.as_ref()));
         assert!(!x.resolves_with(checked.as_ref()));
 
-        a.add_resolver(&checked);
-        assert!(a.resolves_with(checked.as_ref()));
+        // a resolver added later is accounted for, transitively
+        x.add_resolver(&b);
+        assert!(x.resolves_with(b.as_ref()));
+        assert!(x.resolves_with(i2.as_ref()));
     }
 
     #[cfg_attr(not(emulated), traced_test)]
     #[test]
-    fn test_display_of_a_resolution_loop_terminates() {
+    #[should_panic(expected = "would create a resolution loop")]
+    /// A resolver that resolves back to the next-hop being resolved must never be
+    /// stored: the walks over the resolvers of a next-hop rely on there being none.
+    fn test_add_resolver_refuses_a_resolution_loop() {
         let mut store = NhopStore::new();
         let a = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
         let b = store.add_nhop(&NhopKey::from_address("8.0.0.2"));
         a.add_resolver(&b);
         b.add_resolver(&a);
-
-        let nhop = format!("{a}");
-        assert!(nhop.contains("(LOOP)"), "loop not reported in {nhop}");
-
-        let whole_store = format!("{store}");
-        assert!(
-            whole_store.contains("(LOOP)"),
-            "loop not reported in {whole_store}"
-        );
     }
 }
 
@@ -1133,11 +1126,21 @@ mod fibgroup_properties {
             let last = u8::try_from(nodes - 1).ok()?;
             let mut edges = Vec::with_capacity(nodes);
             let mut grounded = Vec::with_capacity(nodes);
-            for _ in 0..nodes {
+            for node in 0..nodes {
                 let count = driver.gen_u8(Included(&0), Included(&MAX_RESOLVERS))?;
                 let mut resolvers = Vec::with_capacity(usize::from(count));
-                for _ in 0..count {
-                    resolvers.push(usize::from(driver.gen_u8(Included(&0), Included(&last))?));
+                // Only resolve over later nodes. That keeps the graph acyclic, as
+                // `Nhop::lazy_resolve` does, and every acyclic graph has such an
+                // ordering, so nothing reachable in practice is lost.
+                if let Some(first) = u8::try_from(node.saturating_add(1))
+                    .ok()
+                    .filter(|first| *first <= last)
+                {
+                    for _ in 0..count {
+                        resolvers.push(usize::from(
+                            driver.gen_u8(Included(&first), Included(&last))?,
+                        ));
+                    }
                 }
                 edges.push(resolvers);
                 grounded.push(driver.produce::<bool>()?);
@@ -1174,15 +1177,9 @@ mod fibgroup_properties {
         graph: &Graph,
         nodes: &[Rc<Nhop>],
         from: usize,
-        path: &mut Vec<usize>,
         prefix: &FibEntry,
         out: &mut Vec<FibEntry>,
     ) {
-        if path.contains(&from) {
-            return;
-        }
-        path.push(from);
-
         let mut entry = prefix.clone();
         entry.extend_from_slice(&nodes[from].instructions.borrow());
 
@@ -1195,11 +1192,9 @@ mod fibgroup_properties {
             }
         } else {
             for to in &graph.edges[from] {
-                expected(graph, nodes, *to, path, &entry, out);
+                expected(graph, nodes, *to, &entry, out);
             }
         }
-
-        path.pop();
     }
 
     #[test]
@@ -1215,14 +1210,7 @@ mod fibgroup_properties {
                 }
 
                 let mut want = Vec::new();
-                expected(
-                    &graph,
-                    &nodes,
-                    0,
-                    &mut Vec::new(),
-                    &FibEntry::new(),
-                    &mut want,
-                );
+                expected(&graph, &nodes, 0, &FibEntry::new(), &mut want);
                 if want.is_empty() {
                     want.push(FibEntry::drop_fibentry());
                 }
@@ -1249,27 +1237,6 @@ mod fibgroup_properties {
                     assert!(entry.is_valid(), "unusable entry {entry:?} for {graph:?}");
                 }
             });
-    }
-
-    #[test]
-    fn a_next_hop_in_a_resolution_loop_drops() {
-        let rstore = RmacStore::new();
-        let mut store = NhopStore::new();
-
-        let a = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
-        let b = store.add_nhop(&NhopKey::from_address("8.0.0.2"));
-        let c = store.add_nhop(&NhopKey::from_address("9.0.0.3"));
-        a.add_resolver(&b);
-        b.add_resolver(&c);
-        c.add_resolver(&a);
-        store.rebuild_nhop_instructions(&rstore);
-
-        let group = a.build_nhop_fibgroup();
-        assert_eq!(
-            group.entries(),
-            &vec![FibEntry::drop_fibentry()],
-            "a packet caught in a routing loop must be dropped"
-        );
     }
 
     #[test]
@@ -1319,6 +1286,163 @@ mod fibgroup_properties {
                             !node.resolves_with(other),
                             "{from} resolves via {to} in another store, for {graph:?}"
                         );
+                    }
+                }
+            });
+    }
+}
+
+#[cfg(test)]
+/// The walks over the resolvers of a next-hop (building a fibgroup, displaying a
+/// next-hop) carry no loop guard. They rely on [`Nhop::lazy_resolve`] never storing a
+/// resolver that leads back to the next-hop being resolved. These properties pin that
+/// down, over route graphs that do contain loops.
+mod resolution_properties {
+    use super::*;
+    use crate::evpn::RmacStore;
+    use crate::rib::vrf::tests::{build_test_nhop, build_test_route};
+    use crate::rib::vrf::{RouteNhop, RouteOrigin, RouterVrfConfig};
+    use bolero::{Driver, ValueGenerator};
+    use lpm::prefix::Prefix;
+    use std::ops::Bound::Included;
+    use std::rc::Rc;
+
+    const MAX_NODES: u8 = 6;
+    const MAX_RESOLVERS: u8 = 2;
+
+    /// A graph of next-hops resolving over each other, with no acyclicity restriction:
+    /// the routes of a vrf may perfectly well resolve in a loop.
+    #[derive(Debug, Clone)]
+    struct RouteGraph {
+        edges: Vec<Vec<usize>>,
+        grounded: Vec<bool>,
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct RouteGraphs;
+
+    impl ValueGenerator for RouteGraphs {
+        type Output = RouteGraph;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<RouteGraph> {
+            let nodes = usize::from(driver.gen_u8(Included(&1), Included(&MAX_NODES))?);
+            let last = u8::try_from(nodes - 1).ok()?;
+            let mut edges = Vec::with_capacity(nodes);
+            let mut grounded = Vec::with_capacity(nodes);
+            for _ in 0..nodes {
+                let count = driver.gen_u8(Included(&0), Included(&MAX_RESOLVERS))?;
+                let mut resolvers = Vec::with_capacity(usize::from(count));
+                for _ in 0..count {
+                    resolvers.push(usize::from(driver.gen_u8(Included(&0), Included(&last))?));
+                }
+                edges.push(resolvers);
+                grounded.push(driver.produce::<bool>()?);
+            }
+            Some(RouteGraph { edges, grounded })
+        }
+    }
+
+    /// The address that a node of a graph is reached with
+    fn node_address(node: usize) -> String {
+        format!("10.0.0.{}", node.saturating_add(1))
+    }
+
+    fn add_route(vrf: &mut Vrf, prefix: (&str, u8), nhops: &[RouteNhop]) {
+        let route = build_test_route(RouteOrigin::Bgp, 0, 1);
+        vrf.add_route_complete(
+            &Prefix::expect_from(prefix),
+            route,
+            nhops,
+            None,
+            &RmacStore::new(),
+        );
+    }
+
+    /// Realize a graph as a vrf, so that the only thing that gives its next-hops
+    /// resolvers is `Nhop::lazy_resolve`: every node is an address, reached with a route
+    /// over the addresses of the nodes it has edges to, or over an interface if it is
+    /// grounded. A node with neither resolves with the default (drop) route. Every node
+    /// is also the next-hop of a route of its own, so that it exists as a next-hop even
+    /// if no other node resolves over it.
+    fn realize_as_vrf(graph: &RouteGraph) -> Vrf {
+        let mut vrf = Vrf::new(&RouterVrfConfig::new(0, "default"));
+        for (node, edges) in graph.edges.iter().enumerate() {
+            let address = node_address(node);
+            let user = format!("30.0.0.{}", node.saturating_add(1));
+            add_route(
+                &mut vrf,
+                (user.as_str(), 32),
+                &[build_test_nhop(Some(&address), None, 0, None)],
+            );
+            if graph.grounded[node] {
+                let ifindex = u32::try_from(node.saturating_add(1)).unwrap_or(1);
+                add_route(
+                    &mut vrf,
+                    (address.as_str(), 32),
+                    &[build_test_nhop(None, Some(ifindex), 0, None)],
+                );
+            } else if !edges.is_empty() {
+                let nhops: Vec<RouteNhop> = edges
+                    .iter()
+                    .map(|to| build_test_nhop(Some(&node_address(*to)), None, 0, None))
+                    .collect();
+                add_route(&mut vrf, (address.as_str(), 32), &nhops);
+            }
+        }
+        vrf
+    }
+
+    /// Tell if the resolvers of a next-hop lead back to it
+    fn has_resolution_loop(nhop: &Rc<Nhop>, path: &mut Visited) -> bool {
+        if path.contains(&nhop.id()) {
+            return true;
+        }
+        path.push(nhop.id());
+        let looped = nhop
+            .resolvers
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|resolver| has_resolution_loop(&resolver, path));
+        path.pop();
+        looped
+    }
+
+    #[test]
+    /// However the routes of a vrf resolve with each other, resolution never stores a
+    /// resolver that leads back to the next-hop being resolved.
+    fn lazy_resolve_all_yields_an_acyclic_resolver_graph() {
+        bolero::check!()
+            .with_generator(RouteGraphs)
+            .cloned()
+            .for_each(|graph: RouteGraph| {
+                let vrf = realize_as_vrf(&graph);
+                vrf.nhstore.lazy_resolve_all(&vrf);
+                for nhop in vrf.nhstore.iter() {
+                    assert!(
+                        !has_resolution_loop(nhop, &mut Visited::new()),
+                        "resolution loop at next-hop {nhop} for {graph:?}"
+                    );
+                }
+            });
+    }
+
+    #[test]
+    /// The same, for the walk that the fib actually depends on: building a fibgroup
+    /// terminates and yields a usable group for every next-hop.
+    fn a_fibgroup_can_be_built_for_every_next_hop() {
+        bolero::check!()
+            .with_generator(RouteGraphs)
+            .cloned()
+            .for_each(|graph: RouteGraph| {
+                let vrf = realize_as_vrf(&graph);
+                vrf.nhstore.lazy_resolve_all(&vrf);
+                vrf.nhstore.rebuild_nhop_instructions(&RmacStore::new());
+                for nhop in vrf.nhstore.iter() {
+                    let fibgroup = nhop.build_nhop_fibgroup();
+                    assert!(!fibgroup.is_empty(), "empty fibgroup for {graph:?}");
+                    for entry in fibgroup.iter() {
+                        assert!(entry.is_valid(), "unusable entry {entry:?} for {graph:?}");
                     }
                 }
             });

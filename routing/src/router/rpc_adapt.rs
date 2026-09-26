@@ -221,7 +221,6 @@ impl Vrf {
 #[cfg(test)]
 mod rpc_properties {
     use super::*;
-    use crate::fib::fibtype::FibWriter;
     use crate::rib::vrf::RouterVrfConfig;
     use bolero::{Driver, ValueGenerator};
     use dplane_rpc::proto::{Ifindex, MaskLen, VrfId};
@@ -432,10 +431,7 @@ mod rpc_properties {
 
     fn test_vrf() -> Vrf {
         let config = RouterVrfConfig::new(1, "test");
-        let mut vrf = Vrf::new(&config);
-        let (fibw, _fibr) = FibWriter::new(1);
-        vrf.set_fibw(fibw);
-        vrf
+        Vrf::new(&config)
     }
 
     #[test]
