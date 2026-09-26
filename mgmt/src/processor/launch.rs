@@ -10,6 +10,7 @@ use crate::processor::proc::ConfigProcessor;
 use crate::processor::proc::ConfigProcessorParams;
 use interface_manager::monitor::{EthEvent, InterfaceMonitor};
 
+use clock::Duration;
 use concurrency::sync::Arc;
 use lifecycle::{CancellationToken, Subsystem};
 use net::interface::InterfaceName;
@@ -35,7 +36,6 @@ pub struct MgmtParams {
     pub processor_params: ConfigProcessorParams,
 }
 
-use std::time::Duration;
 const K8S_STATUS_UPD: Duration = Duration::from_secs(15);
 const K8S_INIT_RETRY_TIME: Duration = Duration::from_secs(5);
 const K8S_INIT_MAX_RETRIES: u8 = 10;
@@ -230,8 +230,8 @@ async fn run_k8s(
 mod tests {
     use super::*;
     use crate::processor::k8s_less_client::K8sLessError;
+    use clock::Duration;
     use lifecycle::Shutdown;
-    use std::time::Duration;
 
     #[tokio::test]
     async fn init_cancellable_returns_cancelled_on_pre_tripped_token() {
