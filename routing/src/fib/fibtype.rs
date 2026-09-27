@@ -294,6 +294,7 @@ impl Fib {
 }
 
 // A type that represents a filter for Ipv4 fib routes
+#[derive(Default, Clone)]
 pub struct FibRouteV4Filter {
     prefix: Option<Ipv4Prefix>,
     prefix_len: Option<u8>,
@@ -305,6 +306,7 @@ impl FibRouteV4Filter {
 }
 
 // A type that represents a filter for Ipv6 fib routes
+#[derive(Default, Clone)]
 pub struct FibRouteV6Filter {
     prefix: Option<Ipv6Prefix>,
     prefix_len: Option<u8>,
