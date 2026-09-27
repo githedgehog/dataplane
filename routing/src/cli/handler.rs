@@ -5,11 +5,6 @@
 
 #![allow(clippy::unnecessary_wraps)]
 
-use super::display::IfTableAddress;
-use super::display::RmacStoreView;
-use super::display::{FibGroups, FibViewV4, FibViewV6};
-use super::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
-
 use crate::Vtep;
 use crate::evpn::{RmacFilter, RmacStore};
 use crate::fib::fibtype::{FibRouteV4Filter, FibRouteV6Filter};
@@ -37,10 +32,11 @@ use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
 
 use common::cliprovider::{CliDataProvider, Heading};
+
 use strum::IntoEnumIterator;
 
 #[allow(unused)]
-use tracing::{error, trace};
+use tracing::{debug, error, trace};
 
 use tracectl::{get_trace_ctl, trace_target};
 trace_target!("cli", LevelFilter::OFF, &[]);
@@ -58,31 +54,17 @@ impl From<&RouteProtocol> for RouteOrigin {
     }
 }
 
-fn show_vrf_ipv4_routes(vrf: &Vrf, filter: &RouteV4Filter) -> String {
-    /* This builds a view of the vrf, with only IPv4 routes
-      and maybe not all of them, depending on the filter.
-      If other serializations are needed, here we could either build also
-      the view and implement serde on the view.
-      Alternatively, call vrf.iter_v4() or vrf.filter_v4() to yield
-      iterators over the (prefix, Routes).
-    */
-    VrfViewV4 { vrf, filter }.to_string()
-}
-fn show_vrf_ipv6_routes(vrf: &Vrf, filter: &RouteV6Filter) -> String {
-    VrfViewV6 { vrf, filter }.to_string()
-}
-
 fn show_ipv4_routes(request: CliRequest, vrfs: &[&Vrf], filter: &RouteV4Filter) -> CliResponse {
     let mut out = String::new();
     for vrf in vrfs {
-        out += show_vrf_ipv4_routes(vrf, filter).as_str();
+        out += vrf.cli_ipv4_rib().filter(filter).to_string().as_str();
     }
     CliResponse::from_request_ok(request, out)
 }
 fn show_ipv6_routes(request: CliRequest, vrfs: &[&Vrf], filter: &RouteV6Filter) -> CliResponse {
     let mut out = String::new();
     for vrf in vrfs {
-        out += show_vrf_ipv6_routes(vrf, filter).as_str();
+        out += vrf.cli_ipv6_rib().filter(filter).to_string().as_str();
     }
     CliResponse::from_request_ok(request, out)
 }
@@ -125,7 +107,6 @@ fn route_filter_v4(request: &CliRequest) -> Result<RouteV4Filter, CliError> {
     // filter by protocol
     let protocol = request.args.protocol.as_ref().map(RouteOrigin::from);
 
-    // build filter
     Ok(RouteV4Filter::new(prefix, prefix_len, protocol))
 }
 fn route_filter_v6(request: &CliRequest) -> Result<RouteV6Filter, CliError> {
@@ -143,7 +124,6 @@ fn route_filter_v6(request: &CliRequest) -> Result<RouteV6Filter, CliError> {
     // filter by protocol
     let protocol = request.args.protocol.as_ref().map(RouteOrigin::from);
 
-    // build filter
     Ok(RouteV6Filter::new(prefix, prefix_len, protocol))
 }
 
@@ -201,9 +181,9 @@ fn show_vrf_nexthops_ip(request: CliRequest, vrfs: &[&Vrf], ipv4: bool) -> CliRe
     let mut out = String::new();
     for vrf in vrfs {
         if ipv4 {
-            out += VrfV4Nexthops(vrf).to_string().as_str();
+            out += vrf.cli_ipv4_nhops().to_string().as_str();
         } else {
-            out += VrfV6Nexthops(vrf).to_string().as_str();
+            out += vrf.cli_ipv6_nhops().to_string().as_str();
         }
     }
     CliResponse::from_request_ok(request, out)
@@ -215,16 +195,10 @@ fn show_vrf_nexthops(
     ipv4: bool,
 ) -> Result<CliResponse, CliError> {
     let vrftable = &db.vrftable;
+
     let found = lookup_vrfs(vrftable, &request)?;
     let response = show_vrf_nexthops_ip(request, found.as_slice(), ipv4);
     Ok(response)
-}
-
-fn show_fib_ipv4(vrf: &Vrf, filter: &FibRouteV4Filter) -> String {
-    FibViewV4 { vrf, filter }.to_string()
-}
-fn show_fib_ipv6(vrf: &Vrf, filter: &FibRouteV6Filter) -> String {
-    FibViewV6 { vrf, filter }.to_string()
 }
 
 fn fibgroup_filter_v4(request: &CliRequest) -> Result<FibRouteV4Filter, CliError> {
@@ -241,14 +215,14 @@ fn fibgroup_filter_v6(request: &CliRequest) -> Result<FibRouteV6Filter, CliError
 fn show_ip_fib_v4(request: CliRequest, vrfs: &[&Vrf], filter: &FibRouteV4Filter) -> CliResponse {
     let mut out = String::new();
     for vrf in vrfs {
-        out += show_fib_ipv4(vrf, filter).as_str();
+        out += vrf.cli_ipv4_fib().filter(filter).to_string().as_str();
     }
     CliResponse::from_request_ok(request, out)
 }
 fn show_ip_fib_v6(request: CliRequest, vrfs: &[&Vrf], filter: &FibRouteV6Filter) -> CliResponse {
     let mut out = String::new();
     for vrf in vrfs {
-        out += show_fib_ipv6(vrf, filter).as_ref();
+        out += vrf.cli_ipv6_fib().filter(filter).to_string().as_str();
     }
     CliResponse::from_request_ok(request, out)
 }
@@ -272,9 +246,9 @@ fn show_ip_fib_groups_vrf(request: CliRequest, vrfs: &[&Vrf], ipv4: bool) -> Cli
     let mut out = String::new();
     for vrf in vrfs {
         if ipv4 {
-            out += FibGroups(vrf).to_string().as_str();
+            out += vrf.cli_fib_groups().to_string().as_str();
         } else {
-            out += FibGroups(vrf).to_string().as_str();
+            out += vrf.cli_fib_groups().to_string().as_str();
         }
     }
     CliResponse::from_request_ok(request, out)
@@ -287,6 +261,7 @@ fn show_ip_fib_groups(
 ) -> Result<CliResponse, CliError> {
     let vrftable = &db.vrftable;
     let found = lookup_vrfs(vrftable, &request)?;
+
     let response = show_ip_fib_groups_vrf(request, found.as_slice(), ipv4);
     Ok(response)
 }
@@ -361,7 +336,7 @@ fn rmac_filter(request: &CliRequest) -> Result<RmacFilter, CliError> {
 
 fn show_rmac_store(request: CliRequest, rmac_store: &RmacStore) -> Result<CliResponse, CliError> {
     let filter = rmac_filter(&request)?;
-    let out = RmacStoreView { rmac_store, filter };
+    let out = rmac_store.cli_view().filter(&filter);
 
     Ok(CliResponse::from_request_ok(request, out.to_string()))
 }
@@ -380,7 +355,7 @@ fn show_interfaces(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, C
 
 fn show_interface_addresses(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     let iftable = db.iftw.enter().ok_or(CliError::Inaccessible)?;
-    let iftable_addrs = IfTableAddress(&iftable);
+    let iftable_addrs = &iftable.cli_addresses();
     Ok(CliResponse::from_request_ok(
         request,
         iftable_addrs.to_string(),

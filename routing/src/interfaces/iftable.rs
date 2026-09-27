@@ -7,10 +7,10 @@ use crate::VrfId;
 use crate::errors::RouterError;
 use crate::interfaces::interface::{IfState, Interface, RouterInterfaceConfig};
 use ahash::RandomState;
+use net::interface::InterfaceIndex;
 use net::interface::address::IfAddr;
 use std::collections::HashMap;
 
-use net::interface::InterfaceIndex;
 #[allow(unused)]
 use tracing::{debug, error, info};
 

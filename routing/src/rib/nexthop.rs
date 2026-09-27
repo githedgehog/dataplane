@@ -341,6 +341,7 @@ impl NhopStore {
 
     /// Get the number of next-hops in the store
     #[must_use]
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.0.len()
     }

@@ -227,7 +227,7 @@ impl RmacStore {
 }
 
 /// A type that represents a filter for rmacs
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct RmacFilter {
     vni: Option<Vni>,
     address: Option<IpAddr>,
