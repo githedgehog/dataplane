@@ -3,9 +3,9 @@
 
 //! Interface to the interfaces module
 
-use crate::Interface;
 use crate::errors::RouterError;
 use crate::interfaces::iftable::IfTable;
+use crate::interfaces::interface::Interface;
 use crate::interfaces::interface::{IfState, RouterInterfaceConfig};
 use crate::rib::vrf::VrfId;
 use crate::rib::vrftable::VrfTable;
@@ -465,6 +465,11 @@ impl IfTableWriter {
 
         debug!("Changed the mac of interface {ifname}: {mac} -> {new_mac}");
         Ok(update)
+    }
+
+    #[must_use]
+    pub fn as_reader(&self) -> IfTableReader {
+        IfTableReader(self.0.clone())
     }
 }
 
