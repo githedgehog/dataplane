@@ -133,7 +133,7 @@ fn execute_action(
 
 /// Build arguments from map of arguments
 fn process_args(input: &TermInput) -> Result<CliArgs, ArgsError> {
-    CliArgs::from_args_map(input.get_args()).inspect_err(|e| print_err!(" {e}"))
+    CliArgs::from_args_map(input.get_args())
 }
 
 fn process_command(
