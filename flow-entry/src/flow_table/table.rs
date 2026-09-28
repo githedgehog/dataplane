@@ -86,7 +86,8 @@ fn hasher_state() -> &'static RandomState {
 ///
 /// It excludes resharding and pair admission. Single-entry insertion and removal take the same
 /// read lock and can proceed alongside this guard. A caller that must not miss an insertion needs
-/// the inserting side to re-check its work, as masquerade does after installing a flow pair.
+/// the inserting side to check its work as part of admitting a pair, see
+/// [`FlowTable::insert_pair_if_admitted`].
 pub struct FlowTableReadGuard<'a>(
     #[allow(unused)] RwLockReadGuard<'a, DashMap<FlowKey, Arc<FlowInfo>, RandomState>>,
 );
@@ -416,6 +417,31 @@ impl FlowTable {
         forward: &Arc<FlowInfo>,
         reverse: &Arc<FlowInfo>,
     ) -> Result<PairInsertion, FlowTableError> {
+        self.insert_pair_if_admitted(forward, reverse, || true)
+            .map(|insertion| insertion.unwrap_or_else(|| unreachable!("every pair is admitted")))
+    }
+
+    /// Same as [`FlowTable::insert_pair_if_absent`], but let `admit` veto the insertion, in which
+    /// case this returns `None` and leaves the table unchanged.
+    ///
+    /// `admit` runs under the table's write lock, once the forward key is known to be free. No
+    /// [`FlowTableReadGuard`] is alive at that point: whatever a guard holder did before dropping
+    /// its guard is visible to `admit`, and any iteration started later sees the pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlowTableError::CapacityExceeded`] if the forward key is free and the table is full.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the flows are not distinct, detached, and related to each other. The caller must
+    /// not hold a table guard, and `admit` must not access the table.
+    pub fn insert_pair_if_admitted(
+        &self,
+        forward: &Arc<FlowInfo>,
+        reverse: &Arc<FlowInfo>,
+        admit: impl FnOnce() -> bool,
+    ) -> Result<Option<PairInsertion>, FlowTableError> {
         assert_ne!(forward.flowkey(), reverse.flowkey());
         for (flow, partner) in [(forward, reverse), (reverse, forward)] {
             assert_eq!(flow.status(), FlowStatus::Detached);
@@ -432,13 +458,16 @@ impl FlowTable {
             .get(forward.flowkey())
             .map(|entry| entry.value().clone());
         if let Some(held) = old_forward.as_ref().filter(|held| held.is_active()) {
-            return Ok(PairInsertion::ForwardOccupied(held.clone()));
+            return Ok(Some(PairInsertion::ForwardOccupied(held.clone())));
+        }
+        if !admit() {
+            return Ok(None);
         }
         let old_reverse = table
             .get(reverse.flowkey())
             .map(|entry| entry.value().clone());
         if old_reverse.as_ref().is_some_and(|held| held.is_active()) {
-            return Ok(PairInsertion::ReverseOccupied);
+            return Ok(Some(PairInsertion::ReverseOccupied));
         }
         if old_forward.is_none()
             && self.live.load(Ordering::Relaxed) >= self.capacity.load(Ordering::Relaxed)
@@ -461,7 +490,7 @@ impl FlowTable {
         for flow in [forward, reverse] {
             Self::start_timer(self.table.clone(), self.live.clone(), flow.clone());
         }
-        Ok(PairInsertion::Installed)
+        Ok(Some(PairInsertion::Installed))
     }
 
     /// Lookup a flow in the table.

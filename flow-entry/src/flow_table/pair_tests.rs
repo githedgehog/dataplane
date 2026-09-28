@@ -114,9 +114,41 @@ async fn pair_admission_rejects_a_reverse_collision_without_changing_either_owne
     assert_eq!(table.len(), Some(2));
 }
 
+#[cfg(not(feature = "shuttle"))]
+#[tokio::test]
+async fn pair_admission_can_be_declined_without_changing_the_table() {
+    let table = FlowTable::new(2);
+    let (forward, reverse) = pair(1001, 1002);
+    assert!(
+        table
+            .insert_pair_if_admitted(&forward, &reverse, || false)
+            .unwrap()
+            .is_none()
+    );
+    assert!(table.lookup(forward.flowkey()).is_none());
+    assert!(table.lookup(reverse.flowkey()).is_none());
+    assert!(!forward.is_active());
+    assert!(!reverse.is_active());
+    assert_eq!(table.live_len(), 0);
+
+    // A live forward owner is returned without consulting the check
+    table.insert_pair_if_absent(&forward, &reverse).unwrap();
+    let (duplicate, unused_reverse) = pair(1001, 1003);
+    let outcome = table
+        .insert_pair_if_admitted(&duplicate, &unused_reverse, || {
+            panic!("the check ran for a pair that cannot be installed")
+        })
+        .unwrap();
+    let Some(PairInsertion::ForwardOccupied(held)) = outcome else {
+        panic!("a duplicate pair did not reuse the forward owner: {outcome:?}");
+    };
+    assert!(Arc::ptr_eq(&held, &forward));
+}
+
 #[cfg(feature = "shuttle")]
 mod model {
     use super::*;
+    use concurrency::sync::atomic::{AtomicBool, Ordering};
     use concurrency::thread;
 
     fn check(test: impl Fn() + Send + Sync + 'static) {
@@ -174,6 +206,36 @@ mod model {
             assert_complete(&table, &table.lookup(&key(1001)).unwrap());
             assert_eq!(table.live_len(), 2);
             assert_eq!(table.len(), Some(2));
+        });
+    }
+
+    #[test]
+    fn pair_admission_is_ordered_against_a_table_guard() {
+        check(|| {
+            let table = Arc::new(FlowTable::new(2));
+            let published = Arc::new(AtomicBool::new(false));
+            let (inserting, seen_published) = (table.clone(), published.clone());
+            let creator = thread::spawn(move || {
+                let (forward, reverse) = pair(1001, 1002);
+                inserting
+                    .insert_pair_if_admitted(&forward, &reverse, || {
+                        !seen_published.load(Ordering::Relaxed)
+                    })
+                    .unwrap()
+                    .is_some()
+            });
+
+            // Walk the table, then publish something before releasing the guard
+            let mut walked = false;
+            let guard = table.for_each_flow(|flow_key, _| walked |= *flow_key == key(1001));
+            published.store(true, Ordering::Relaxed);
+            drop(guard);
+
+            let admitted = creator.join().unwrap();
+            assert!(
+                !admitted || walked,
+                "a pair was admitted without seeing what the walk published, nor being walked"
+            );
         });
     }
 
