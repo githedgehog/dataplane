@@ -18,9 +18,9 @@ pub struct NodeArg {
 
 #[allow(unused)]
 impl NodeArg {
-    pub fn new(name: &str) -> Self {
+    pub fn new(name: impl AsRef<str>) -> Self {
         Self {
-            name: name.to_owned(),
+            name: name.as_ref().to_owned(),
             choices: Vec::new(),
             multi: false,
             selector: None,
@@ -67,7 +67,7 @@ impl Node {
         self.action = Some(action);
         self
     }
-    pub fn arg(mut self, arg: &str) -> Self {
+    pub fn arg(mut self, arg: impl AsRef<str>) -> Self {
         self.args.push(NodeArg::new(arg));
         self
     }

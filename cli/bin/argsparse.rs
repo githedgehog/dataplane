@@ -8,71 +8,49 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
 use strum::EnumIter;
+
 use thiserror::Error;
 
 // The identifier for a certain argument
-#[derive(Debug, EnumIter, PartialEq)]
+#[derive(Debug, strum::Display, EnumIter, PartialEq, strum::EnumString, strum::IntoStaticStr)]
 pub enum CliArgId {
+    #[strum(serialize = "path")]
     Path,
+
+    #[strum(serialize = "bind-address")]
     BindAddr,
+
+    #[strum(serialize = "vpc")]
     Vpc,
+
+    #[strum(serialize = "vni")]
     Vni,
+
+    #[strum(serialize = "address")]
     Address,
+
+    #[strum(serialize = "prefix")]
     Prefix,
+
+    #[strum(serialize = "prefix-len")]
     PrefixLen,
+
+    #[strum(serialize = "mac-address")]
     Mac,
+
+    #[strum(serialize = "interface")]
     Ifname,
+
+    #[strum(serialize = "vrfid")]
     VrfId,
+
+    #[strum(serialize = "protocol")]
     Protocol,
 }
 impl CliArgId {
-    // N.B. strings should be different for proper parsing
-    pub const ARG_PATH: &str = "path";
-    pub const ARG_BIND_ADDR: &str = "bind-address";
-    pub const ARG_VPC: &str = "vpc";
-    pub const ARG_VNI: &str = "vni";
-    pub const ARG_ADDRESS: &str = "address";
-    pub const ARG_PREFIX: &str = "prefix";
-    pub const ARG_PREFIX_LEN: &str = "prefix-len";
-    pub const ARG_MAC: &str = "mac-address";
-    pub const ARG_IFNAME: &str = "interface";
-    pub const ARG_VRFID: &str = "vrfid";
-    pub const ARG_PROTOCOL: &str = "protocol";
-
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Path => Self::ARG_PATH,
-            Self::BindAddr => Self::ARG_BIND_ADDR,
-            Self::Vpc => Self::ARG_VPC,
-            Self::Vni => Self::ARG_VNI,
-            Self::Address => Self::ARG_ADDRESS,
-            Self::Prefix => Self::ARG_PREFIX,
-            Self::PrefixLen => Self::ARG_PREFIX_LEN,
-            Self::Mac => Self::ARG_MAC,
-            Self::Ifname => Self::ARG_IFNAME,
-            Self::VrfId => Self::ARG_VRFID,
-            Self::Protocol => Self::ARG_PROTOCOL,
-        }
-    }
-}
-
-impl FromStr for CliArgId {
-    type Err = ArgsError;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            Self::ARG_PATH => Ok(Self::Path),
-            Self::ARG_BIND_ADDR => Ok(Self::BindAddr),
-            Self::ARG_VPC => Ok(Self::Vpc),
-            Self::ARG_VNI => Ok(Self::Vni),
-            Self::ARG_ADDRESS => Ok(Self::Address),
-            Self::ARG_PREFIX => Ok(Self::Prefix),
-            Self::ARG_PREFIX_LEN => Ok(Self::PrefixLen),
-            Self::ARG_MAC => Ok(Self::Mac),
-            Self::ARG_IFNAME => Ok(Self::Ifname),
-            Self::ARG_VRFID => Ok(Self::VrfId),
-            Self::ARG_PROTOCOL => Ok(Self::Protocol),
-            _ => Err(ArgsError::UnknownArgument(value.to_owned())),
-        }
+        self.into()
     }
 }
 
@@ -86,7 +64,7 @@ mod test {
     // Test biject
     fn test_arg_conversion() {
         for a in CliArgId::iter() {
-            assert_eq!(a, CliArgId::from_str(a.as_str()).unwrap());
+            assert_eq!(a, CliArgId::from_str(&a.to_string()).unwrap());
         }
     }
 
@@ -96,7 +74,7 @@ mod test {
         use std::collections::BTreeSet;
         let mut set = BTreeSet::new();
         for a in CliArgId::iter() {
-            assert!(set.insert(a.as_str()));
+            assert!(set.insert(a.to_string()));
         }
     }
 }
@@ -126,7 +104,7 @@ pub enum ArgsError {
     UnknownArgument(String),
 
     #[error("Missing value for {0}")]
-    MissingValue(&'static str),
+    MissingValue(CliArgId),
 
     #[error("Bad value {0}")]
     BadValue(String),
@@ -199,11 +177,12 @@ impl CliArgs {
         // parse each of the args in the input map and, on success, fill in the args for the request
         for (arg_name, value) in args_map {
             // convert arg name to code
-            let argid = CliArgId::from_str(arg_name.as_str())?;
+            let argid = CliArgId::from_str(arg_name)
+                .map_err(|_| ArgsError::UnknownArgument(arg_name.to_owned()))?;
 
             // complain if value is empty
             if value.is_empty() {
-                return Err(ArgsError::MissingValue(argid.as_str()));
+                return Err(ArgsError::MissingValue(argid));
             }
 
             // parse value and fill args
