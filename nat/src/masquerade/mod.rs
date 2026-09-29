@@ -4,6 +4,7 @@
 pub(crate) mod allocation;
 mod allocator_writer;
 pub(crate) mod apalloc;
+mod concurrent_fuzz;
 mod flows;
 mod fuzz;
 pub(crate) mod icmp_handling;

@@ -18,6 +18,7 @@ use net::packet::{Packet, VpcDiscriminant};
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
+use std::num::NonZero;
 
 use crate::Masquerade;
 use crate::static_nat::probe::{build, vni};
@@ -29,6 +30,50 @@ use crate::static_nat::probe::{build, vni};
 const FLOW_SHARDS: usize = 16;
 
 const ABSENT_VNI: u32 = 4_000;
+
+/// A masquerade expose from a private prefix to a public one, both given as strings.
+pub(crate) fn masquerade_expose(private: &str, public: &str) -> VpcExpose {
+    VpcExpose::empty()
+        .make_masquerade(None)
+        .unwrap_or_else(|e| unreachable!("{e}"))
+        .ip(private.into())
+        .as_range(public.into())
+        .unwrap_or_else(|e| unreachable!("{e}"))
+}
+
+/// A UDP packet from the local VPC to the remote one, asking for masquerade.
+pub(crate) fn outbound_probe(
+    source: IpAddr,
+    destination: IpAddr,
+    sport: u16,
+    dport: u16,
+) -> Packet<TestBuffer> {
+    let mut packet: Packet<TestBuffer> = build(source, destination, false, sport, dport);
+    let meta = packet.meta_mut();
+    meta.set_overlay(true);
+    meta.set_masquerade(true);
+    meta.src_vpcd = Some(VpcDiscriminant::from_vni(vni(LOCAL_VNI)));
+    meta.dst_vpcd = Some(VpcDiscriminant::from_vni(vni(REMOTE_VNI)));
+    packet
+}
+
+pub(crate) fn source_of(packet: &Packet<TestBuffer>) -> (IpAddr, u16) {
+    (
+        packet
+            .ip_source()
+            .unwrap_or_else(|| unreachable!("a probe is always an ip packet")),
+        packet.transport_src_port().map_or(0, NonZero::get),
+    )
+}
+
+pub(crate) fn destination_of(packet: &Packet<TestBuffer>) -> (IpAddr, u16) {
+    (
+        packet
+            .ip_destination()
+            .unwrap_or_else(|| unreachable!("a probe is always an ip packet")),
+        packet.transport_dst_port().map_or(0, NonZero::get),
+    )
+}
 
 pub(crate) struct Fabric {
     flow_table: Arc<FlowTable>,

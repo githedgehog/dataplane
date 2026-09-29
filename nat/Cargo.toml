@@ -7,7 +7,7 @@ version.workspace = true
 
 [features]
 loom = ["concurrency/loom"]
-shuttle = ["concurrency/shuttle", "shuttle-dashmap/shuttle", "dep:shuttle", "left-right/shuttle"]
+shuttle = ["concurrency/shuttle", "flow-entry/shuttle", "shuttle-dashmap/shuttle", "dep:shuttle", "left-right/shuttle"]
 shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
