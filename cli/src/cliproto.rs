@@ -676,17 +676,19 @@ mod tests {
 
     /// Send `num` chunks, `every` apart, all flagged as "more chunks follow",
     /// so that the receiver never sees the end of the message.
-    fn chunk_sender(sock: UnixDatagram, num: usize, every: Duration) {
+    fn chunk_sender(sock: UnixDatagram, num: usize, every: Duration) -> thread::JoinHandle<()> {
         thread::spawn(move || {
-            for _ in 0..num {
+            for n in 0..num {
                 let mut raw = vec![0xAAu8; 16];
                 raw.push(1);
-                if sock.send(&raw).is_err() {
+                println!("Sending chunk {n}");
+                if let Err(e) = sock.send(&raw) {
+                    println!("Failed to send chunk: {e}");
                     break;
                 }
                 thread::sleep(every);
             }
-        });
+        })
     }
 
     #[test]
@@ -726,9 +728,7 @@ mod tests {
             .connect_addr(&cli_addr)
             .expect("peer should connect");
 
-        thread::scope(|_| {
-            chunk_sender(dataplane, 10, Duration::from_millis(100));
-        });
+        let sender = chunk_sender(dataplane, 10, Duration::from_millis(100));
 
         let timeout = Duration::from_millis(350);
         let start = clock::now();
@@ -746,6 +746,9 @@ mod tests {
             Some(PREVIOUS),
             "the read timeout of the socket should be restored"
         );
+
+        drop(clisock);
+        sender.join().expect("chunk sender should not panic");
     }
 
     /// A multi-chunk response that arrives inside the budget is returned whole,
@@ -762,25 +765,28 @@ mod tests {
         let response_data = generate_big_response_data(10 * CLI_MSG_CHUNK_SIZE);
         let response_data_len = response_data.len();
 
-        thread::scope(|_| {
-            thread::spawn(move || {
-                let mut cache = IoCache::new();
-                generate_big_response(response_data)
-                    .send(&cli_addr, &dpsock, &mut cache)
-                    .expect("response should be sent");
-            });
+        let sender = thread::spawn(move || {
+            let mut cache = IoCache::new();
+            generate_big_response(response_data)
+                .send(&cli_addr, &dpsock, &mut cache)
+                .expect("response should be sent");
         });
 
-        let response = CliResponse::recv_sync_timeout(&clisock, Duration::from_secs(10))
-            .expect("response should arrive within the budget");
+        let timeout = Duration::from_secs(10);
+        let response = CliResponse::recv_sync_timeout(&clisock, timeout);
+        sender.join().expect("sender should not panic");
+        let response = response.expect("response should arrive before the timeout");
 
         assert_eq!(
             response.result.expect("ok response").len(),
             response_data_len
         );
 
+        // check that the read timeout on the socket remains as it was
         assert_eq!(
-            clisock.read_timeout().expect("read timeout should be read"),
+            clisock
+                .read_timeout()
+                .expect("read timeout should remain unset"),
             None,
         );
     }
