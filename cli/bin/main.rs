@@ -17,6 +17,7 @@ use concurrency::sync::Arc;
 use dataplane_cli::cliproto::CliLocalError;
 use dataplane_cli::cliproto::{CliAction, CliError, CliRequest, CliResponse};
 use std::io::stdin;
+use std::time::Duration;
 use terminal::{TermInput, Terminal};
 
 mod argsparse;
@@ -99,8 +100,15 @@ fn execute_remote_action(
         }
         return Err(e.into());
     }
-    // receive the response (this is blocking by design)
-    CliResponse::recv_sync(sock).map_err(Into::into)
+    // receive the response
+    let timeout = Duration::from_secs(5);
+    loop {
+        let response = CliResponse::recv_sync_timeout(sock, timeout).map_err(ClientError::from)?;
+        if response.prefetched.selector.is_some() || response.request.action != request.action {
+            continue;
+        }
+        return Ok(response);
+    }
 }
 
 fn connect(terminal: &mut Terminal, cmdline: &Cmdline, args: &CliArgs) {
