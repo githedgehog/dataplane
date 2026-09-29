@@ -154,7 +154,7 @@ fn lookup_vrfs<'a>(vrftable: &'a VrfTable, request: &CliRequest) -> Result<Vec<&
     if let Some(vpc) = &request.args.vpc {
         let vrfs = vrftable
             .get_vrfs_by_vpc(vpc.as_str())
-            .map_err(|_| CliError::NotFound(format!("VRF with with descr {vpc}")))?;
+            .map_err(|_| CliError::NotFound(format!("VRF with for VPC {vpc}")))?;
 
         Ok(vrfs)
     } else if let Some(vrfid) = request.args.vrfid {
@@ -370,15 +370,15 @@ fn show_vtep(request: CliRequest, vtep: &Vtep) -> CliResponse {
     CliResponse::from_request_ok(request, vtep.to_string())
 }
 fn show_adjacency_table(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
-    let atable = db.atabler.enter().ok_or(CliError::Inacessible)?;
+    let atable = db.atabler.enter().ok_or(CliError::Inaccessible)?;
     Ok(CliResponse::from_request_ok(request, atable.to_string()))
 }
 fn show_interfaces(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
-    let iftable = db.iftw.enter().ok_or(CliError::Inacessible)?;
+    let iftable = db.iftw.enter().ok_or(CliError::Inaccessible)?;
     Ok(CliResponse::from_request_ok(request, iftable.to_string()))
 }
 fn show_interface_addresses(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
-    let iftable = db.iftw.enter().ok_or(CliError::Inacessible)?;
+    let iftable = db.iftw.enter().ok_or(CliError::Inaccessible)?;
     let iftable_addrs = IfTableAddress(&iftable);
     Ok(CliResponse::from_request_ok(
         request,
@@ -498,16 +498,20 @@ fn prefetch_rmac_macs(db: &RoutingDb) -> PrefetchedData {
 
     rmacs.sort_unstable();
     rmacs.dedup();
-    PrefetchedData::with_data(PrefetchSelector::RmacIp, rmacs)
+    PrefetchedData::with_data(PrefetchSelector::RmacMac, rmacs)
 }
 
-fn prefetch(request: CliRequest, rio: &Rio, db: &RoutingDb) -> CliResponse {
+fn prefetch(
+    request: CliRequest,
+    gwconfig: Option<&Arc<ValidatedGwConfig>>,
+    db: &RoutingDb,
+) -> CliResponse {
     let Some(selector) = request.args.selector else {
         return CliResponse::with_prefetch_data(request, PrefetchedData::default());
     };
     let data = match selector {
-        PrefetchSelector::Vpcs => prefetch_vpcs(rio.gwconfig.as_ref()),
-        PrefetchSelector::Vnis => prefetch_vnis(rio.gwconfig.as_ref()),
+        PrefetchSelector::Vpcs => prefetch_vpcs(gwconfig),
+        PrefetchSelector::Vnis => prefetch_vnis(gwconfig),
         PrefetchSelector::Interfaces => prefetch_interfaces(db),
         PrefetchSelector::RmacIp => prefetch_rmac_ips(db),
         PrefetchSelector::RmacMac => prefetch_rmac_macs(db),
@@ -523,6 +527,8 @@ fn do_handle_cli_request(
 ) -> Result<CliResponse, CliError> {
     let cpi_s = &rio.cpistats;
     let frrmi = &rio.frrmi;
+    let gwconfig = rio.gwconfig.as_ref();
+
     let response = match request.action {
         CliAction::ShowTech => show_tech(request, db, rio, sources),
         CliAction::ShowVpc
@@ -530,7 +536,7 @@ fn do_handle_cli_request(
         | CliAction::ShowVpcRouting
         | CliAction::ShowGatewayCommunities
         | CliAction::ShowGatewayGroups
-        | CliAction::ShowConfigInternal => show_config(request, rio.gwconfig.as_ref()),
+        | CliAction::ShowConfigInternal => show_config(request, gwconfig),
         CliAction::ShowConfigSummary => show_config_summary(request, rio.cfg_history.as_ref()),
         CliAction::ShowTracingTargets => show_tracing_targets(request),
         CliAction::ShowTracingTagGroups => show_tracing_tags(request),
@@ -563,7 +569,7 @@ fn do_handle_cli_request(
         CliAction::ShowDriverStatus => show_provider(request, sources.driver_status.as_deref()),
 
         /* prefetching */
-        CliAction::Prefetch => prefetch(request, rio, db),
+        CliAction::Prefetch => prefetch(request, gwconfig, db),
 
         _ => Err(CliError::NotSupported("Not implemented yet".to_string()))?,
     };
