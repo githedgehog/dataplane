@@ -110,11 +110,7 @@ fn re_reserve_ip_and_port(
     Ok(())
 }
 
-pub(crate) fn check_masquerading_flow(
-    flow_key: &FlowKey,
-    flow_info: &FlowInfo,
-    allocator: &NatAllocator,
-) {
+fn check_masquerading_flow(flow_key: &FlowKey, flow_info: &FlowInfo, allocator: &NatAllocator) {
     // Skip flows that are up-to-date (this could be done by iterator)
     let config = allocator.config();
     let genid = allocator.genid();
