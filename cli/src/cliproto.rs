@@ -169,11 +169,11 @@ pub enum CliError {
     NotFound(String),
     #[error("Not supported: {0}")]
     NotSupported(String),
-    #[error("Inacessible")]
-    Inacessible,
+    #[error("Inaccessible")]
+    Inaccessible,
     #[error("Wrong filter: {0}")]
     WrongFilter(String),
-    #[error("Invalid prefix lenth: {0}")]
+    #[error("Invalid prefix length: {0}")]
     InvalidPrefixLength(u8),
 }
 

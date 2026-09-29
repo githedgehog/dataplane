@@ -9,10 +9,10 @@
 //! This is used for autocompletion.
 
 use crate::CliResponse;
+use clock::Duration;
 use dataplane_cli::cliproto::{CliAction, CliRequest, RequestArgs};
 use dataplane_cli::cliproto::{PrefetchSelector, PrefetchedData};
 use std::os::unix::net::UnixDatagram;
-use std::time::Duration;
 
 /// Send a prefetch request. `PrefetchSelector` indicates the type of data to prefetch.
 fn do_prefetch(sock: &UnixDatagram, selector: PrefetchSelector) -> Option<PrefetchedData> {
