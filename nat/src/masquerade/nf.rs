@@ -773,39 +773,81 @@ mod tests {
 #[cfg(test)]
 mod race {
     use super::*;
-    use crate::masquerade::probe::Fabric;
+    use crate::masquerade::probe::{Fabric, masquerade_expose, outbound_probe};
     use crate::static_nat::probe::{build, vni};
-    use config::external::overlay::vpcpeering::VpcExpose;
     use config::external::overlay::vpcpeering::contract::{LOCAL_VNI, REMOTE_VNI};
-    use lpm::prefix::PrefixWithOptionalPorts;
     use net::buffer::TestBuffer;
 
-    fn prefix(spec: &str) -> PrefixWithOptionalPorts {
-        PrefixWithOptionalPorts::new(spec.parse().unwrap_or_else(|_| unreachable!()), None)
-    }
-
     fn fabric() -> Fabric {
-        let exposes = vec![
-            VpcExpose::empty()
-                .make_masquerade(None)
-                .unwrap_or_else(|e| unreachable!("{e}"))
-                .ip(prefix("10.0.0.0/24"))
-                .as_range(prefix("172.16.0.0/24"))
-                .unwrap_or_else(|e| unreachable!("{e}")),
-        ];
+        let exposes = [masquerade_expose("10.0.0.0/24", "172.16.0.0/24")];
         Fabric::build(&exposes).unwrap_or_else(|| unreachable!("a fixed expose builds"))
     }
 
     fn probe(source: &str, sport: u16) -> Packet<TestBuffer> {
         let source: IpAddr = source.parse().unwrap_or_else(|_| unreachable!());
         let destination: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
-        let mut packet: Packet<TestBuffer> = build(source, destination, false, sport, 80);
-        let meta = packet.meta_mut();
-        meta.set_overlay(true);
-        meta.set_masquerade(true);
-        meta.src_vpcd = Some(VpcDiscriminant::from_vni(vni(LOCAL_VNI)));
-        meta.dst_vpcd = Some(VpcDiscriminant::from_vni(vni(REMOTE_VNI)));
-        packet
+        outbound_probe(source, destination, sport, 80)
+    }
+
+    /// A flow drawn from an allocator that got replaced before the flow was installed must not be
+    /// published: the replacement did not see the flow when migrating, and may hand its public
+    /// tuple to another flow. Processing the packet again draws from the replacement.
+    #[tokio::test]
+    async fn an_allocation_from_a_replaced_allocator_is_not_published() {
+        let mut fabric = fabric();
+        let (_lookup, mut masq) = fabric.stages();
+        let replaced = masq
+            .allocator
+            .get()
+            .unwrap_or_else(|| unreachable!("the fabric installed an allocator"));
+
+        let mut packet = probe("10.0.0.1", 4000);
+        let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!("the probe keys"));
+        let (src_vpcd, dst_vpcd) =
+            Masquerade::discriminants(&packet).unwrap_or_else(|_| unreachable!());
+        let stale = replaced
+            .allocate(
+                src_vpcd,
+                dst_vpcd,
+                key.src_ip(),
+                key.src_port().map(NatPort::new_port).unwrap(),
+                key.dst_ip(),
+                key.dst_port().map(NatPort::new_port),
+                key.proto(),
+            )
+            .unwrap_or_else(|e| unreachable!("the pool has room: {e}"));
+
+        let genid = replaced.genid() + 1;
+        let exposes = [
+            masquerade_expose("10.0.0.0/24", "172.16.0.0/24"),
+            masquerade_expose("10.0.1.0/24", "172.16.1.0/24"),
+        ];
+        assert!(
+            fabric.reconfigure(&exposes, genid),
+            "the new config validates"
+        );
+
+        let outcome = masq.create_flow_pair(&mut packet, &key, &key, stale, &replaced);
+        assert!(
+            matches!(outcome, Err(MasqueradeError::AllocatorReplaced)),
+            "a flow from the replaced allocator was not declined: {outcome:?}"
+        );
+        assert!(masq.flow_table.lookup(&key).is_none());
+
+        let out: Vec<_> = masq
+            .process(std::iter::once(probe("10.0.0.1", 4000)))
+            .collect();
+        assert_eq!(
+            out.len(),
+            1,
+            "the packet did not go through the replacement"
+        );
+        let flow = masq
+            .flow_table
+            .lookup(&key)
+            .unwrap_or_else(|| unreachable!("the packet installed its flow"));
+        assert!(flow.is_active());
+        assert_eq!(flow.genid(), genid);
     }
 
     /// A reissued public tuple must not replace a live flow's reverse mapping.

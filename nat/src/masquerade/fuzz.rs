@@ -4,7 +4,9 @@
 #![cfg(test)]
 
 use crate::Masquerade;
-use crate::masquerade::probe::{Arrival, Fabric, Probe, ProbeSpec, Stray, run};
+use crate::masquerade::probe::{
+    Arrival, Fabric, Probe, ProbeSpec, Stray, destination_of, run, source_of,
+};
 use bolero::{Driver, TypeGenerator, ValueGenerator};
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
 use config::external::overlay::vpcpeering::contract::MasqueradeExposes;
@@ -14,7 +16,6 @@ use net::buffer::TestBuffer;
 use net::packet::Packet;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
-use std::num::NonZero;
 use std::ops::Bound::Included;
 
 const MAX_EXPOSES: u8 = 3;
@@ -126,24 +127,6 @@ fn settled(body: impl FnOnce()) {
 fn fabric(exposes: &[VpcExpose]) -> Option<Fabric> {
     let fabric = Fabric::build(exposes)?;
     fabric.is_probeable().then_some(fabric)
-}
-
-fn source_of(packet: &Packet<TestBuffer>) -> (IpAddr, u16) {
-    (
-        packet
-            .ip_source()
-            .unwrap_or_else(|| unreachable!("a probe is always an ip packet")),
-        packet.transport_src_port().map_or(0, NonZero::get),
-    )
-}
-
-fn destination_of(packet: &Packet<TestBuffer>) -> (IpAddr, u16) {
-    (
-        packet
-            .ip_destination()
-            .unwrap_or_else(|| unreachable!("a probe is always an ip packet")),
-        packet.transport_dst_port().map_or(0, NonZero::get),
-    )
 }
 
 /// Whether this run saw enough to judge the ratios below, or only to print them.
