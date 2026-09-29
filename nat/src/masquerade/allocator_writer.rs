@@ -167,6 +167,10 @@ impl NatAllocatorReader {
     pub fn get(&self) -> Option<Arc<NatAllocator>> {
         self.0.load_full()
     }
+    pub(crate) fn is_current(&self, allocator: &Arc<NatAllocator>) -> bool {
+        let current = self.0.load();
+        Option::as_ref(&current).is_some_and(|current| Arc::ptr_eq(current, allocator))
+    }
     #[must_use]
     pub fn factory(&self) -> NatAllocatorReaderFactory {
         NatAllocatorReaderFactory(self.clone())

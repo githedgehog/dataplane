@@ -9,13 +9,11 @@ use crate::masquerade::NatAllocatorWriter;
 use crate::masquerade::allocation::{AllocationResult, AllocatorError};
 use crate::masquerade::allocator_writer::NatAllocatorReader;
 use crate::masquerade::apalloc::{Allocation, NatAllocator};
-use crate::masquerade::flows::check_masquerading_flow;
 use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
 use crate::masquerade::protocol::{next_flow_status, transport_proto};
 use crate::masquerade::state::MasqueradeState;
 use clock::Duration;
 use concurrency::sync::{Arc, Weak};
-use config::GenId;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError, PairInsertion};
 use net::buffer::PacketBufferMut;
 use net::flow_key::{FlowAddrs, IcmpProtoKey};
@@ -55,6 +53,8 @@ pub(crate) enum MasqueradeError {
     CapacityExceeded,
     #[error("the allocated public tuple already serves a live flow")]
     ReverseTupleInUse,
+    #[error("the NAT allocator was replaced before the flow could be installed")]
+    AllocatorReplaced,
     #[error("unsupported ICMP message category")]
     IcmpUnsupportedCategory,
     #[error("attempted to masquerade ICMP error message")]
@@ -336,7 +336,7 @@ impl Masquerade {
         initial_flow_key: &FlowKey,
         current_flow_key: &FlowKey,
         alloc: AllocationResult<Allocation>,
-        genid: GenId,
+        allocator: &Arc<NatAllocator>,
     ) -> Result<MasqueradeFlow, MasqueradeError> {
         let idle_timeout = alloc.idle_timeout;
 
@@ -370,17 +370,34 @@ impl Masquerade {
         Self::setup_flow_masquerade_state(&forward, forward_state, dst_vpc_id);
         Self::setup_flow_masquerade_state(&reverse, reverse_state, src_vpc_id);
 
-        // set the genid of the flows
-        forward.set_genid_pair(genid);
+        // Only publish the pair if the allocator we used is still the installed one.
+        // On configuration change, the replacement allocator migrates the flows it finds in the
+        // table while holding a table guard, and becomes the new allocator before dropping the
+        // guard. So by checking while we hold the write lock from the table, we have two
+        // possibilities:
+        //
+        // - the replacement allocator sees this pair and all is fine, or
+        // - we see that there is a replacement allocator, and we give up the tuple so that it may
+        //   be handed out again without conflict.
+        let admit = || {
+            let admitted = self.allocator.is_current(allocator);
+            // Similarly, update the genid while we hold the write lock for the table
+            if admitted {
+                let genid = allocator.genid();
+                forward.set_genid(genid);
+                reverse.set_genid(genid);
+            }
+            admitted
+        };
 
-        // An allocator swap can reissue a tuple held by a worker that migration missed.
         // Claim both keys before exposing either half to lookups or competing creators.
         let insertion = self
             .flow_table
-            .insert_pair_if_absent(&forward, &reverse)
+            .insert_pair_if_admitted(&forward, &reverse, admit)
             .map_err(|e| match e {
                 FlowTableError::CapacityExceeded => MasqueradeError::CapacityExceeded,
-            })?;
+            })?
+            .ok_or(MasqueradeError::AllocatorReplaced)?;
         match insertion {
             PairInsertion::Installed => Ok(MasqueradeFlow::Installed(forward)),
             PairInsertion::ForwardOccupied(held) => {
@@ -460,13 +477,44 @@ impl Masquerade {
         )
     }
 
+    /// Allocate a public tuple for a new flow and install the flow pair
+    fn allocate_flow_pair<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        allocator: &Arc<NatAllocator>,
+        (src_vpcd, dst_vpcd): (VpcDiscriminant, VpcDiscriminant),
+        initial_flow_key: &FlowKey,
+        current_flow_key: &FlowKey,
+    ) -> Result<MasqueradeFlow, MasqueradeError> {
+        let nfi = self.name();
+
+        // allocate an ip and port for this flow
+        let src_ip = initial_flow_key.src_ip();
+        let src_port = src_nat_port(initial_flow_key)?;
+        let dst_ip = initial_flow_key.dst_ip();
+        let dst_port = dst_nat_port(initial_flow_key);
+        let proto = initial_flow_key.proto();
+        let alloc = match allocator.allocate(
+            src_vpcd, dst_vpcd, src_ip, src_port, dst_ip, dst_port, proto,
+        ) {
+            Ok(alloc) => alloc,
+            Err(e) => {
+                warn!(
+                    "{nfi}: Ip/port allocation failed for flow {initial_flow_key} towards VPC {dst_vpcd}: {e}"
+                );
+                return Err(MasqueradeError::AllocationFailure(e));
+            }
+        };
+        debug!("{nfi}: Allocated: {alloc}");
+
+        self.create_flow_pair(packet, initial_flow_key, current_flow_key, alloc, allocator)
+    }
+
     /// Main entry point for masquerading logic
     fn masquerade_packet<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
     ) -> Result<(), MasqueradeError> {
-        let nfi = self.name();
-
         // Fragment payload must not reuse or create a transport flow.
         if packet.headers().is_non_first_fragment() {
             return Err(MasqueradeError::BadTransportHeader);
@@ -489,7 +537,7 @@ impl Masquerade {
             return Err(MasqueradeError::IntendedDrop("TCP without SYN"));
         }
 
-        let (src_vpcd, dst_vpcd) = Self::discriminants(packet)?;
+        let discriminants = Self::discriminants(packet)?;
 
         // Extract flow key for the current packet
         let current_flow_key =
@@ -511,30 +559,18 @@ impl Masquerade {
             return Err(MasqueradeError::UnsupportedProtocol(proto));
         }
 
-        // allocate an ip and port for this flow
-        let src_ip = initial_flow_key.src_ip();
-        let src_port = src_nat_port(&initial_flow_key)?;
-        let dst_ip = initial_flow_key.dst_ip();
-        let dst_port = dst_nat_port(&initial_flow_key);
-        let alloc = match allocator.allocate(
-            src_vpcd, dst_vpcd, src_ip, src_port, dst_ip, dst_port, proto,
-        ) {
-            Ok(alloc) => alloc,
-            Err(e) => {
-                warn!(
-                    "{nfi}: Ip/port allocation failed for flow {initial_flow_key} towards VPC {dst_vpcd}: {e}"
-                );
-                return Err(MasqueradeError::AllocationFailure(e));
-            }
+        let create = |packet: &mut Packet<Buf>, allocator: &Arc<NatAllocator>| {
+            let (initial, current) = (&initial_flow_key, &current_flow_key);
+            self.allocate_flow_pair(packet, allocator, discriminants, initial, current)
         };
-        debug!("{nfi}: Allocated: {alloc}");
-
-        // The generation the installed allocator serves
-        let genid = allocator.genid();
-
-        // create flow pair
-        let outcome =
-            self.create_flow_pair(packet, &initial_flow_key, &current_flow_key, alloc, genid)?;
+        let outcome = match create(packet, &allocator) {
+            Err(MasqueradeError::AllocatorReplaced) => {
+                // The allocator got replaced since we loaded it, try again with the replacement
+                let allocator = self.allocator.get().ok_or(MasqueradeError::NoAllocator)?;
+                create(packet, &allocator)?
+            }
+            outcome => outcome?,
+        };
         let flow = outcome.flow();
 
         // check that the masquerade state is readable
@@ -553,47 +589,7 @@ impl Masquerade {
             }
             return Err(e.into());
         }
-
-        // It may happen that between the time we got an allocation and the moment we installed the flows
-        // the allocator was swapped. So, here we have to check if the allocator we used is still there:
-        // it may have been removed or replaced. If so, the newly installed flows may no longer be valid
-        // and we have to remove them. Also, the genid may have changed and we need to bump it.
-        match outcome {
-            MasqueradeFlow::Installed(installed) => self.recheck_flow(&allocator, &installed),
-            MasqueradeFlow::Held(_) => Ok(()),
-        }
-    }
-
-    /// Re-check a freshly installed flow against the latest allocator, that could have been installed
-    /// while we were installing a flow.
-    pub(crate) fn recheck_flow(
-        &self,
-        used_allocator: &Arc<NatAllocator>,
-        flow: &Arc<FlowInfo>,
-    ) -> Result<(), MasqueradeError> {
-        let Some(current) = self.allocator.get() else {
-            debug!("Allocator got removed!");
-            flow.invalidate_pair();
-            return Err(MasqueradeError::IntendedDrop("Allocator got removed"));
-        };
-        if Arc::ptr_eq(used_allocator, &current) {
-            // Allocator did not change. So the allocation of the newly installed flow is
-            // still valid. However, the genid of the allocator may have been bumped.
-            // So, update it in the new flow.
-            if flow.genid() != current.genid() {
-                flow.set_genid_pair(current.genid());
-            }
-            return Ok(());
-        }
-        debug!("NAT allocator got updated. Re-checking newly-installed flow...");
-        check_masquerading_flow(flow.flowkey(), flow.as_ref(), current.as_ref());
-        if flow.is_active() {
-            Ok(())
-        } else {
-            Err(MasqueradeError::IntendedDrop(
-                "Flow is not valid with the new allocator",
-            ))
-        }
+        Ok(())
     }
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
@@ -652,6 +648,7 @@ impl From<&MasqueradeError> for DoneReason {
             MasqueradeError::ReverseTupleInUse => DoneReason::NatOutOfResources,
             MasqueradeError::MissingDiscriminant => DoneReason::Unroutable,
             MasqueradeError::NoAllocator
+            | MasqueradeError::AllocatorReplaced
             | MasqueradeError::PoolAddressNotUnicast(_)
             | MasqueradeError::UnexpectedKeyVariant
             | MasqueradeError::IcmpUnsupportedCategory
@@ -811,11 +808,11 @@ mod race {
         packet
     }
 
-    /// An allocator swap must not replace a live flow's reverse mapping.
+    /// A reissued public tuple must not replace a live flow's reverse mapping.
     ///
-    /// Model an allocation that migration missed: install a flow, then allocate from a fresh
-    /// allocator without reserving the first flow's tuple. The second flow receives the same
-    /// tuple. Its reverse-key collision must leave the first flow's replies intact.
+    /// Install a flow, then allocate from a fresh allocator without reserving the first flow's
+    /// tuple, so that the second flow receives the same tuple. Its reverse-key collision must leave
+    /// the first flow's replies intact.
     #[tokio::test]
     async fn a_reissued_public_tuple_does_not_take_over_the_replies_of_the_flow_holding_it() {
         let fabric = fabric();
@@ -872,20 +869,17 @@ mod race {
             .unwrap_or_else(|e| unreachable!("{e}"));
 
         let installed = masq
-            .create_flow_pair(&mut first, &first_key, &first_key, held, running.genid())
+            .create_flow_pair(&mut first, &first_key, &first_key, held, &running)
             .unwrap_or_else(|e| unreachable!("{e}"));
         assert!(
             matches!(installed, MasqueradeFlow::Installed(_)),
             "the first conversation did not install its flow"
         );
 
-        let refused = masq.create_flow_pair(
-            &mut second,
-            &second_key,
-            &second_key,
-            reissued,
-            replacement.genid(),
-        );
+        // The replacement is not installed, so pass the running allocator to get past admission
+        // and reach the reverse-key check
+        let refused =
+            masq.create_flow_pair(&mut second, &second_key, &second_key, reissued, &running);
         assert!(
             matches!(refused, Err(MasqueradeError::ReverseTupleInUse)),
             "a second conversation was allowed over the live reverse tuple {reverse_key}: {}",
@@ -944,7 +938,6 @@ mod race {
         let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!("the probe keys"));
         let (src_vpcd, dst_vpcd) =
             Masquerade::discriminants(&packet).unwrap_or_else(|_| unreachable!());
-        let genid = allocator.genid();
 
         let allocate = || {
             allocator
@@ -975,14 +968,14 @@ mod race {
             .unwrap_or_else(|e| unreachable!("{e}"));
 
         let winner = masq
-            .create_flow_pair(&mut packet, &key, &key, winning, genid)
+            .create_flow_pair(&mut packet, &key, &key, winning, &allocator)
             .unwrap_or_else(|e| unreachable!("{e}"));
         let MasqueradeFlow::Installed(winner) = winner else {
             unreachable!("the first packet did not install the flow");
         };
 
         let outcome = masq
-            .create_flow_pair(&mut packet, &key, &key, losing, genid)
+            .create_flow_pair(&mut packet, &key, &key, losing, &allocator)
             .unwrap_or_else(|e| unreachable!("{e}"));
         let MasqueradeFlow::Held(held) = outcome else {
             panic!("the second packet installed a pair of its own over a live flow");
