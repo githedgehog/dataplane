@@ -6,4 +6,4 @@
 
 pub(crate) mod frrmi;
 pub mod renderer;
-mod test;
+pub(crate) mod test;

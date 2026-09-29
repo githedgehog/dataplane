@@ -377,6 +377,7 @@ fn show_interfaces(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, C
     let iftable = db.iftw.enter().ok_or(CliError::Inaccessible)?;
     Ok(CliResponse::from_request_ok(request, iftable.to_string()))
 }
+
 fn show_interface_addresses(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     let iftable = db.iftw.enter().ok_or(CliError::Inaccessible)?;
     let iftable_addrs = IfTableAddress(&iftable);
@@ -594,5 +595,623 @@ pub(crate) fn handle_cli_request(
     // If not all of them can be sent, they will be cached.
     if let Err(e) = cliresponse.send(peer, &rio.clisock, &mut rio.cli_cache) {
         error!("Failed to send response: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests_cli_handling {
+    use crate::AttachConfig;
+    use crate::bmp::bmp_render::BgpNeighEvent;
+    use crate::interfaces::interface::{IfDataEthernet, IfType, RouterInterfaceConfig};
+    use crate::rib::vrf::RouterVrfConfig;
+    use crate::{IfState, Vtep};
+    use crate::{Router, RouterConfig, RouterCtlSender, RouterParams, RouterParamsBuilder};
+
+    use clock::Duration;
+    use concurrency::sync::Arc;
+    use config::ValidatedGwConfig;
+    use config::internal::status::BgpNeighborSessionState;
+
+    use interface_manager::monitor::EthEvent;
+    use lifecycle::{CancellationToken, Subsystem};
+
+    use net::eth::mac::{Mac, SourceMac};
+    use net::interface::{InterfaceIndex, InterfaceName};
+    use net::route::RouteTableId;
+    use net::vxlan::Vni;
+
+    use std::net::IpAddr;
+    use std::os::unix::net::{SocketAddr, UnixDatagram};
+    use std::path::{Path, PathBuf};
+    use std::str::FromStr;
+    use tokio::task::JoinHandle;
+
+    use bytes::Bytes;
+    use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, RequestArgs};
+    use dplane_rpc::msg::{
+        ConnectInfo, ForwardAction, IfAddress, IpRoute, MacAddress, NextHop, Rmac, RouteType,
+        RpcMsg, RpcObject, RpcOp, RpcRequest, RpcResultCode, VerInfo, WrapMsg,
+    };
+    use dplane_rpc::wire::Wire;
+
+    use crate::frr::test::fake_frr_agent::fake_frr_agent;
+
+    // max time to wait for a response from the router, over the CPI or the CLI
+    const RECV_TIMEOUT: Duration = Duration::from_secs(5);
+
+    // == Constants used by the tests == //
+    const GENID_CFG_META: i64 = 1879;
+    const IFINDEX: u32 = 13;
+    const IFNAME: &str = "eth0";
+    const IF_MAC: &str = "02:00:01:02:03:01";
+    const IF_NEW_MAC: &str = "02:00:01:02:03:02";
+    const IF_ADDR: &str = "10.0.1.99";
+    const IF_ADDR_LEN: u8 = 27;
+
+    const VRFID: u32 = 981;
+    const VRFNAME: &str = "Vrf-test-1";
+    const VRF_TBL_ID: u32 = 1234;
+    const VNI: u32 = 3000;
+    const VPC: &str = "VPC-1";
+    const VTEP_IP: &str = "7.0.0.1";
+    const VTEP_MAC: &str = "02:aa:bb:cc:dd:ee";
+
+    const RMAC_IP: &str = "7.0.0.2";
+    const RMAC_MAC: &str = "02:FF:AA:CC:EE:01";
+    const RMAC_VNI: u32 = 4000;
+
+    const ROUTE_PREFIX: &str = "192.168.50.0";
+    const ROUTE_PREFIX_LEN: u8 = 24;
+    const NHOP_ADDR: &str = "10.0.1.97";
+    const NHOP_VRFID: u32 = VRFID;
+
+    const ROUTE_PREFIX_V6: &str = "3000:a:b::";
+    const ROUTE_PREFIX_V6_LEN: u8 = 64;
+    const NHOP_ADDR_V6: &str = "2000:1:2:3:4:6:0:1";
+
+    const BGP_PEER: &str = RMAC_IP;
+    const BGP_PEER_ASN: u32 = 65123;
+
+    const UNKNOWN_VPC: &str = "VPC-does-not-exist";
+
+    const FRR_CONFIGURATION: &str = " !This is the FRR configuration";
+
+    // ctl: router config builders
+    fn build_router_vrf_config() -> RouterVrfConfig {
+        RouterVrfConfig::new(VRFID, VRFNAME)
+            .set_tableid(RouteTableId::try_from(VRF_TBL_ID).unwrap())
+            .set_vpcname(VPC)
+            .set_vni(Some(Vni::try_from(VNI).unwrap()))
+    }
+    fn build_router_interface_config() -> RouterInterfaceConfig {
+        let name = InterfaceName::try_from(IFNAME).expect("Bad ifname");
+        let ifindex = InterfaceIndex::try_from(IFINDEX).expect("Bad ifindex");
+        let eth = IfDataEthernet::new(SourceMac::try_from(IF_MAC).expect("Bad mac"));
+        let iftype = IfType::Ethernet(eth);
+        let mut ifconfig = RouterInterfaceConfig::new(name, ifindex);
+        ifconfig.set_iftype(iftype);
+        ifconfig.set_admin_state(IfState::Up);
+        ifconfig.set_attach_cfg(Some(AttachConfig::Vrf(VRFID)));
+        ifconfig
+    }
+    fn build_vtep() -> Vtep {
+        let mut vtep = Vtep::new();
+        vtep.set_ip(IpAddr::from_str(VTEP_IP).unwrap());
+        vtep.set_mac(Mac::try_from(VTEP_MAC).unwrap());
+        vtep
+    }
+    fn build_router_config() -> RouterConfig {
+        let vrfconfig = build_router_vrf_config();
+        let ifconfig = build_router_interface_config();
+        let vtep = build_vtep();
+        let mut config = RouterConfig::new(1);
+        config.add_vrf(vrfconfig);
+        config.add_interface(ifconfig);
+        config.set_vtep(vtep);
+        config.set_frr_config(FRR_CONFIGURATION.to_string());
+        config
+    }
+
+    // ctl: send messages to router
+    async fn send_router_config(ctl: &RouterCtlSender, config: RouterConfig) {
+        ctl.configure(config).await.unwrap();
+    }
+    async fn enable_cpi(ctl: &RouterCtlSender) {
+        ctl.unlock().await.expect("cpi should unlock");
+    }
+    async fn send_gw_config(ctl: &RouterCtlSender) {
+        let config = ValidatedGwConfig::blank();
+        let mut meta = config.meta().load().as_ref().clone();
+        meta.genid = GENID_CFG_META;
+        ctl.send_config(config.into()).await.unwrap();
+        ctl.send_config_history(Arc::new(vec![meta])).await.unwrap();
+    }
+
+    // Most ctl messages do not produce a reply.
+    // This issues a request that the router replies to.
+    // Getting the reply means that all prior messages were processed.
+    async fn ctl_sync(ctl: &RouterCtlSender) {
+        ctl.get_frr_applied_config()
+            .await
+            .expect("router should reply to ctl requests");
+    }
+
+    // ctl: send events to router
+    async fn send_if_event_ifup(ctl: &RouterCtlSender) {
+        let ifindex = InterfaceIndex::try_from(IFINDEX).expect("Bad ifindex");
+        let ev = EthEvent::new(ifindex, true, true, true);
+        ctl.send_ifevent(ev).await.unwrap();
+    }
+    async fn send_if_event_mac_change(ctl: &RouterCtlSender) {
+        let ifindex = InterfaceIndex::try_from(IFINDEX).expect("Bad ifindex");
+        let ev = EthEvent::new(ifindex, true, true, true)
+            .set_mac(Some(SourceMac::try_from(IF_NEW_MAC).expect("Bad mac")));
+        ctl.send_ifevent(ev).await.unwrap();
+    }
+    async fn send_bgp_neigh_change(ctl: &RouterCtlSender) {
+        let bgp_ev = BgpNeighEvent::new(
+            BGP_PEER.into(),
+            BGP_PEER.into(),
+            BGP_PEER_ASN,
+            BgpNeighborSessionState::Idle,
+            BgpNeighborSessionState::Established,
+            None,
+            None,
+        );
+        ctl.send_bgp_neigh_change(bgp_ev).await.unwrap();
+    }
+
+    #[track_caller]
+    // Receive a message from cpi sock and check that it is a response and success
+    fn cpi_recv_response(sock: &UnixDatagram) {
+        let mut raw = vec![0; 1000];
+        let (len, _a) = sock
+            .recv_from(raw.as_mut_slice())
+            .expect("No CPI response received in time");
+        let mut buf_rx = Bytes::copy_from_slice(&raw[0..len]);
+        let msg = RpcMsg::decode(&mut buf_rx).expect("Failure decoding CPI message");
+        let response = msg
+            .get_response()
+            .expect("Got a msg but was not a response");
+        assert_eq!(response.rescode, RpcResultCode::Ok, "CPI request failed");
+    }
+
+    // send a message (request) to the CPI, receive the response and check it is ok
+    fn cpi_send_msg_and_recv_response(sock: &UnixDatagram, msg: &RpcMsg) {
+        let cpi_addr: SocketAddr = sock.peer_addr().expect("cpi sock should be connected");
+        msg.send(sock, &cpi_addr).unwrap();
+        cpi_recv_response(sock);
+    }
+
+    // CPI message builders
+    fn cpi_connect_request_msg() -> RpcMsg {
+        let coninfo = ConnectInfo {
+            pid: 999,
+            name: "pseudo-frr".to_string(),
+            verinfo: VerInfo::default(),
+            synt: 0,
+        };
+        let object = RpcObject::ConnectInfo(coninfo);
+        RpcRequest::new(RpcOp::Connect, 1)
+            .set_object(object)
+            .wrap_in_msg()
+    }
+    fn cpi_add_ifaddr_request_msg() -> RpcMsg {
+        let ifaddr = IfAddress {
+            ifname: IFNAME.to_string(),
+            address: IpAddr::from_str(IF_ADDR).unwrap(),
+            mask_len: IF_ADDR_LEN,
+            ifindex: IFINDEX,
+            vrfid: VRFID,
+        };
+        let object = RpcObject::IfAddress(ifaddr);
+        RpcRequest::new(RpcOp::Add, 2)
+            .set_object(object)
+            .wrap_in_msg()
+    }
+    fn cpi_add_rmac_request_msg() -> RpcMsg {
+        let rmac = Rmac {
+            address: IpAddr::from_str(RMAC_IP).unwrap(),
+            vni: RMAC_VNI,
+            mac: MacAddress::new(Mac::try_from(RMAC_MAC).unwrap().as_ref().to_owned()),
+        };
+        let object = RpcObject::Rmac(rmac);
+        RpcRequest::new(RpcOp::Add, 3)
+            .set_object(object)
+            .wrap_in_msg()
+    }
+    fn cpi_add_ipv4_route_request_msg() -> RpcMsg {
+        let nexthop = NextHop {
+            fwaction: ForwardAction::Forward,
+            address: Some(IpAddr::from_str(NHOP_ADDR).unwrap()),
+            ifindex: Some(IFINDEX),
+            vrfid: NHOP_VRFID,
+            encap: None,
+        };
+        let iproute = IpRoute {
+            prefix: IpAddr::from_str(ROUTE_PREFIX).unwrap(),
+            prefix_len: ROUTE_PREFIX_LEN,
+            vrfid: VRFID,
+            tableid: VRF_TBL_ID,
+            rtype: RouteType::Bgp,
+            distance: 50,
+            metric: 100,
+            nhops: vec![nexthop],
+        };
+        let object = RpcObject::IpRoute(iproute);
+        RpcRequest::new(RpcOp::Add, 4)
+            .set_object(object)
+            .wrap_in_msg()
+    }
+    fn cpi_add_ipv6_route_request_msg() -> RpcMsg {
+        let nexthop = NextHop {
+            fwaction: ForwardAction::Forward,
+            address: Some(IpAddr::from_str(NHOP_ADDR_V6).unwrap()),
+            ifindex: Some(IFINDEX),
+            vrfid: NHOP_VRFID,
+            encap: None,
+        };
+        let iproute = IpRoute {
+            prefix: IpAddr::from_str(ROUTE_PREFIX_V6).unwrap(),
+            prefix_len: ROUTE_PREFIX_V6_LEN,
+            vrfid: VRFID,
+            tableid: VRF_TBL_ID,
+            rtype: RouteType::Bgp,
+            distance: 50,
+            metric: 100,
+            nhops: vec![nexthop],
+        };
+        let object = RpcObject::IpRoute(iproute);
+        RpcRequest::new(RpcOp::Add, 5)
+            .set_object(object)
+            .wrap_in_msg()
+    }
+
+    // CPI send and recv
+    fn cpi_send_connect_request(sock: &UnixDatagram) {
+        cpi_send_msg_and_recv_response(sock, &cpi_connect_request_msg());
+    }
+    fn cpi_send_add_ifaddress(sock: &UnixDatagram) {
+        cpi_send_msg_and_recv_response(sock, &cpi_add_ifaddr_request_msg());
+    }
+    fn cpi_send_add_rmac(sock: &UnixDatagram) {
+        cpi_send_msg_and_recv_response(sock, &cpi_add_rmac_request_msg());
+    }
+    fn cpi_send_add_ipv4_route(sock: &UnixDatagram) {
+        cpi_send_msg_and_recv_response(sock, &cpi_add_ipv4_route_request_msg());
+    }
+    fn cpi_send_add_ipv6_route(sock: &UnixDatagram) {
+        cpi_send_msg_and_recv_response(sock, &cpi_add_ipv6_route_request_msg());
+    }
+
+    // Per-test directory for the unix sockets, so that tests running in parallel (in this
+    // process or in others) never share socket paths. It is removed on drop.
+    struct SockDir(PathBuf);
+    impl SockDir {
+        fn new(test: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("routing-{test}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("Failed to create socket dir");
+            Self(dir)
+        }
+        fn path(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+    impl Drop for SockDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // Guard to stop the router if an assertion fails
+    struct RouterGuard {
+        router: Router,
+        frr_agent: JoinHandle<()>,
+    }
+    impl Drop for RouterGuard {
+        fn drop(&mut self) {
+            self.router.stop();
+            self.frr_agent.abort();
+        }
+    }
+
+    // util: open + connect unix sock
+    fn unix_sock(bind_addr: &Path, remote_addr: &Path) -> Result<UnixDatagram, &'static str> {
+        let sock = UnixDatagram::bind(bind_addr).map_err(|_| "Failed to bind socket")?;
+        sock.connect(remote_addr)
+            .map_err(|_| "Failed to connect socket")?;
+        Ok(sock)
+    }
+
+    // open & connect socks for CLI and CPI
+    fn open_socks(dir: &SockDir, cpi_path: &Path, cli_path: &Path) -> (UnixDatagram, UnixDatagram) {
+        let cpi = unix_sock(&dir.path("frr-plugin"), cpi_path).expect("Failed to open cpi sock");
+
+        cpi.set_read_timeout(Some(RECV_TIMEOUT))
+            .expect("Failed to set cpi sock timeout");
+
+        let cli = unix_sock(&dir.path("cli-client"), cli_path).expect("Failed to open cli sock");
+        (cpi, cli)
+    }
+
+    // subsystem
+    fn rio_subsystem() -> Subsystem {
+        Subsystem::new("router", CancellationToken::new())
+    }
+
+    // issue cli request and receive the response
+    fn cli_send_req(
+        action: CliAction,
+        sock: &UnixDatagram,
+        args: Option<RequestArgs>,
+    ) -> CliResponse {
+        // send request
+        let request = CliRequest::new(action, args.unwrap_or_default());
+        request.send(sock).unwrap();
+
+        // receive response
+        CliResponse::recv_sync_timeout(sock, RECV_TIMEOUT).expect("Failure receiving CLI response")
+    }
+
+    // setup: cli/cpi endpoints
+    fn router_params(dir: &SockDir) -> RouterParams {
+        RouterParamsBuilder::default()
+            .cpi_sock_path(dir.path("cpi.sock"))
+            .cli_sock_path(dir.path("cli.sock"))
+            .frr_agent_path(dir.path("frr-agent.sock"))
+            .build()
+            .expect("No reason to fail")
+    }
+
+    // setup: start router with its sockets in the given dir
+    fn router(subsystem: &Subsystem, dir: &SockDir) -> Router {
+        let params = router_params(dir);
+        Router::new(subsystem, params, None).expect("No reason to fail")
+    }
+
+    #[tokio::test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    async fn test_cli_handling() {
+        // N.B. declared before the router so that the router is dropped (stopped) first
+        let dir = SockDir::new("cli-handling");
+        let subsystem = rio_subsystem();
+        let router = router(&subsystem, &dir);
+        let cpi_path = router.get_cpi_sock_path().clone();
+        let cli_path = router.get_cli_sock_path().clone();
+        let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
+        let ctl = router.get_ctl_tx();
+
+        // start fake frr agent
+        let frr_agent = fake_frr_agent(frr_agent_path).await;
+
+        // build guard so that router and frr_agent get stopped on asserts
+        let _guard = RouterGuard { router, frr_agent };
+
+        // open the cli and cpi socks to talk to router
+        let (cpi, cli) = open_socks(&dir, &cpi_path, &cli_path);
+
+        println!("Updating router state...");
+
+        // enable the cpi: the router ignores the CPI until it is unlocked
+        enable_cpi(&ctl).await;
+
+        // mgmt: send (empty) config and update history
+        send_gw_config(&ctl).await;
+
+        // mgmt: send a router config with one VRF and interface
+        send_router_config(&ctl, build_router_config()).await;
+
+        // CPI: connect, add interface address, rmac, routes ...
+        cpi_send_connect_request(&cpi);
+        cpi_send_add_ifaddress(&cpi);
+        cpi_send_add_rmac(&cpi);
+        cpi_send_add_ipv4_route(&cpi);
+        cpi_send_add_ipv6_route(&cpi);
+
+        // ctl: update state of interface, mac and report bgp event
+        send_if_event_ifup(&ctl).await;
+        send_bgp_neigh_change(&ctl).await;
+        send_if_event_mac_change(&ctl).await;
+
+        // ctl: request the last config applied in frr.
+        ctl_sync(&ctl).await;
+
+        println!("Router state has been updated successfully. Will test cli..");
+
+        // =============================================================== //
+        // Tests: issue cli requests and check that the responses contain
+        // data aligned with the inputs above.
+        // =============================================================== //
+        check_show_config_summary(&cli);
+        check_show_event_log(&cli);
+        check_show_vrfs(&cli);
+        check_show_evpn_vtep(&cli);
+        check_show_interfaces(&cli);
+        check_show_interface_addresses(&cli);
+        check_show_evpn_router_macs(&cli);
+        check_show_ipv4_routes(&cli);
+        check_show_ipv4_fib(&cli);
+        check_show_ipv4_next_hops(&cli);
+        check_show_ipv6_routes(&cli);
+        check_show_ipv6_fib(&cli);
+        check_show_ipv6_next_hops(&cli);
+        check_show_last_frr_config(&cli);
+        check_unknown_vpc_fails(&cli);
+    }
+
+    #[track_caller]
+    fn has(output: &str, patterns: &[impl AsRef<str>], reason: &str) {
+        for pattern in patterns {
+            let pattern = pattern.as_ref();
+            assert!(
+                output.contains(pattern),
+                "FAILURE:: {pattern} was not shown and it should: {reason}.\nOutput was:\n{output}"
+            );
+        }
+    }
+
+    // args to filter by the test VPC
+    fn vpc_args(vpc: &str) -> RequestArgs {
+        RequestArgs {
+            vpc: Some(vpc.to_string()),
+            ..Default::default()
+        }
+    }
+
+    // wrapper around cli_send_req that expects a positive response to a cli request
+    #[track_caller]
+    fn send_cli(cli: &UnixDatagram, action: CliAction, args: Option<RequestArgs>) -> String {
+        match cli_send_req(action, cli, args).result {
+            Ok(output) => output,
+            Err(e) => panic!("CLI request {action:?} failed: {e}"),
+        }
+    }
+
+    fn check_show_config_summary(cli: &UnixDatagram) {
+        println!(" * Testing that config summary is shown");
+        let r = send_cli(cli, CliAction::ShowConfigSummary, None);
+        has(&r, &[GENID_CFG_META.to_string()], "Config summary was sent");
+    }
+    fn check_show_event_log(cli: &UnixDatagram) {
+        println!(" * Testing that event log captured relevant events");
+        let r = send_cli(cli, CliAction::RouterEventLog, None);
+
+        let bgp_status = BgpNeighborSessionState::Established.to_string();
+        has(&r, &["Connected"], "CPI issue connected");
+        has(&r, &[BGP_PEER, bgp_status.as_str()], "BGP event was sent");
+        has(&r, &[IF_MAC, IF_NEW_MAC], "If event with Mac change sent");
+        has(&r, &[IFNAME, "oper state"], "Event for op state sent");
+    }
+    fn check_show_vrfs(cli: &UnixDatagram) {
+        println!(" * Testing that VRFs are shown");
+        let r = send_cli(cli, CliAction::ShowRouterVrfs, None);
+
+        has(&r, &[VRFNAME], "VRF name");
+        has(&r, &[VRFID.to_string()], "VRF Id");
+        has(&r, &[VRF_TBL_ID.to_string()], "VRF table id");
+        has(&r, &[VNI.to_string()], "VRF vni");
+        has(&r, &[VPC], "VRF VPC");
+    }
+    fn check_show_evpn_vtep(cli: &UnixDatagram) {
+        println!(" * Testing that evpn vtep is shown");
+        let r = send_cli(cli, CliAction::ShowRouterEvpnVtep, None);
+
+        has(&r, &[VTEP_IP, VTEP_MAC], "Vtep was configured");
+    }
+    fn check_show_interfaces(cli: &UnixDatagram) {
+        println!(" * Testing that interfaces are displayed");
+        let r = send_cli(cli, CliAction::ShowRouterInterfaces, None);
+
+        has(
+            &r,
+            &[IFNAME, IFINDEX.to_string().as_str()],
+            "Interface was configured",
+        );
+        has(&r, &[IF_NEW_MAC], "Mac of interface changed");
+    }
+    fn check_show_interface_addresses(cli: &UnixDatagram) {
+        println!(" * Testing that interface addresses are displayed");
+        let r = send_cli(cli, CliAction::ShowRouterInterfaceAddresses, None);
+
+        has(
+            &r,
+            &[IFNAME, IfState::Up.to_string().as_str(), IF_ADDR],
+            "An ip address was configured",
+        );
+    }
+    fn check_show_evpn_router_macs(cli: &UnixDatagram) {
+        println!(" * Testing that evpn router macs are shown");
+        let r = send_cli(cli, CliAction::ShowRouterEvpnRmacStore, None);
+
+        has(&r, &[RMAC_IP], "Rmac IP should be shown");
+        has(&r, &[RMAC_MAC.to_lowercase()], "Rmac MAC should be shown");
+        has(&r, &[RMAC_VNI.to_string()], "Rmac VNI should be shown");
+    }
+    fn check_show_ipv4_routes(cli: &UnixDatagram) {
+        println!(" * Testing that ipv4 routes are displayed");
+        let r = send_cli(cli, CliAction::ShowRouterIpv4Routes, Some(vpc_args(VPC)));
+
+        has(&r, &[VRFNAME, VPC], "Vrf is there");
+        has(
+            &r,
+            &[format!("{ROUTE_PREFIX}/{ROUTE_PREFIX_LEN}")],
+            "Route was added",
+        );
+        has(&r, &[NHOP_ADDR], "Route had next-hop");
+    }
+    fn check_show_ipv4_fib(cli: &UnixDatagram) {
+        println!(" * Testing that ipv4 fib routes are displayed");
+        let r = send_cli(
+            cli,
+            CliAction::ShowRouterIpv4FibEntries,
+            Some(vpc_args(VPC)),
+        );
+
+        has(&r, &[VRFNAME, VPC], "Vrf is there");
+        has(
+            &r,
+            &[format!("{ROUTE_PREFIX}/{ROUTE_PREFIX_LEN}")],
+            "Route was added",
+        );
+        has(&r, &[NHOP_ADDR], "Route had next-hop");
+    }
+    fn check_show_ipv4_next_hops(cli: &UnixDatagram) {
+        println!(" * Testing that ipv4 next-hops are displayed");
+        let r = send_cli(cli, CliAction::ShowRouterIpv4NextHops, Some(vpc_args(VPC)));
+
+        has(&r, &[NHOP_ADDR], "Route had next-hop");
+    }
+    fn check_show_ipv6_routes(cli: &UnixDatagram) {
+        println!(" * Testing that ipv6 routes are displayed");
+        let r = send_cli(cli, CliAction::ShowRouterIpv6Routes, Some(vpc_args(VPC)));
+
+        has(&r, &[VRFNAME, VPC], "Vrf is there");
+        has(
+            &r,
+            &[format!("{ROUTE_PREFIX_V6}/{ROUTE_PREFIX_V6_LEN}")],
+            "Route was added",
+        );
+        has(&r, &[NHOP_ADDR_V6], "Route had next-hop");
+    }
+    fn check_show_ipv6_fib(cli: &UnixDatagram) {
+        println!(" * Testing that ipv6 fib routes are displayed");
+        let r = send_cli(
+            cli,
+            CliAction::ShowRouterIpv6FibEntries,
+            Some(vpc_args(VPC)),
+        );
+
+        has(&r, &[VRFNAME, VPC], "Vrf is there");
+        has(
+            &r,
+            &[format!("{ROUTE_PREFIX_V6}/{ROUTE_PREFIX_V6_LEN}")],
+            "Route was added",
+        );
+        has(&r, &[NHOP_ADDR_V6], "Route had next-hop");
+    }
+    fn check_show_ipv6_next_hops(cli: &UnixDatagram) {
+        println!(" * Testing that ipv6 next-hops are displayed");
+        let r = send_cli(cli, CliAction::ShowRouterIpv6NextHops, Some(vpc_args(VPC)));
+
+        has(&r, &[NHOP_ADDR_V6], "Route had next-hop");
+    }
+    fn check_show_last_frr_config(cli: &UnixDatagram) {
+        println!(" * Testing that FRR config can be retrieved");
+        let r = send_cli(cli, CliAction::ShowFrrmiLastConfig, None);
+        has(&r, &[FRR_CONFIGURATION], "Frr config was applied");
+    }
+    fn check_unknown_vpc_fails(cli: &UnixDatagram) {
+        println!(" * Testing that filtering by an unknown VPC fails");
+        let response = cli_send_req(
+            CliAction::ShowRouterIpv4Routes,
+            cli,
+            Some(vpc_args(UNKNOWN_VPC)),
+        );
+        assert!(
+            matches!(response.result, Err(CliError::NotFound(_))),
+            "Expected NotFound for unknown VPC, got {:?}",
+            response.result
+        );
     }
 }
