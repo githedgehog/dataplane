@@ -474,7 +474,7 @@ dependencies = [
  "regex",
  "rustc-hash",
  "shlex 2.0.1",
- "syn 3.0.6",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2649,11 +2649,10 @@ dependencies = [
 [[package]]
 name = "fixin"
 version = "0.0.1"
-source = "git+https://github.com/githedgehog/fixin?branch=main#5e0de31606466b17372f8a2cff090cc0461d572c"
+source = "git+https://github.com/githedgehog/fixin?branch=main#a78026e22fb64c695414e09b078a20bd576c042b"
 dependencies = [
- "proc-macro-error2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]

@@ -69,9 +69,9 @@
       },
       "branch": "main",
       "submodules": false,
-      "revision": "5e0de31606466b17372f8a2cff090cc0461d572c",
-      "url": "https://github.com/githedgehog/fixin/archive/5e0de31606466b17372f8a2cff090cc0461d572c.tar.gz",
-      "hash": "sha256-GfBnaL6ke3ekm+HbV34yXdF4ArYHismxbPHF5/M94yk=",
+      "revision": "a78026e22fb64c695414e09b078a20bd576c042b",
+      "url": "https://github.com/githedgehog/fixin/archive/a78026e22fb64c695414e09b078a20bd576c042b.tar.gz",
+      "hash": "sha256-eipjmP7QdEMOQKlE9eXXiyr0l3AzzB51jn8Dkielb2E=",
       "frozen": true
     },
     "crate-left-right": {
