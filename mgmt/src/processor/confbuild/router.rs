@@ -91,7 +91,7 @@ fn build_router_interface_config(
                 error!("{msg}");
                 return Err(ConfigError::InternalFailure(msg));
             };
-            new.set_iftype(IfType::Ethernet(IfDataEthernet { mac }));
+            new.set_iftype(IfType::Ethernet(IfDataEthernet::new(mac)));
         }
         _ => {
             let msg = format!("Unsupported type of interface: {kiface:#?}");

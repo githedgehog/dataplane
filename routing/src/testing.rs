@@ -106,7 +106,7 @@ impl RouterTables {
         mac: SourceMac,
     ) -> &mut Self {
         let mut config = RouterInterfaceConfig::new(name, ifindex);
-        config.set_iftype(IfType::Ethernet(IfDataEthernet { mac }));
+        config.set_iftype(IfType::Ethernet(IfDataEthernet::new(mac)));
         config.set_admin_state(IfState::Up);
         self.interfaces
             .add_interface(config)

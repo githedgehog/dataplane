@@ -20,14 +20,30 @@ use tracing::{debug, error, info, warn};
 #[derive(Clone, Debug, PartialEq)]
 /// Specific data for ethernet interfaces
 pub struct IfDataEthernet {
-    pub mac: SourceMac,
+    pub(crate) mac: SourceMac,
+}
+impl IfDataEthernet {
+    #[must_use]
+    pub fn new(mac: SourceMac) -> Self {
+        Self { mac }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 /// Specific data for vlan (sub)interfaces
 pub struct IfDataDot1q {
-    pub mac: SourceMac,
-    pub vlanid: Vid,
+    pub(crate) mac: SourceMac,
+    pub(crate) vlanid: Vid,
+}
+impl IfDataDot1q {
+    #[must_use]
+    pub fn new(mac: SourceMac, vlanid: Vid) -> Self {
+        Self { mac, vlanid }
+    }
+    #[allow(dead_code)]
+    pub fn vid(&self) -> Vid {
+        self.vlanid
+    }
 }
 
 /// Trait that interfaces having a mac address should implement.
