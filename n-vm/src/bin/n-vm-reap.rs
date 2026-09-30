@@ -259,11 +259,15 @@ async fn list_owned(client: &bollard::Docker) -> Result<Vec<Orphan>, bollard::er
                     .cloned()
                     .unwrap_or_else(|| "<unknown test>".to_owned()),
                 host_pid: labels.get(LABEL_HOST_PID).and_then(|p| p.parse().ok()),
-                // Paused and restarting count as live: all three still hold
-                // the VM and its resources, which is what the label is for.
+                // Paused, restarting and stopping (a Podman state) count as
+                // live: they all still hold the VM and its resources, which is
+                // what the label is for.
                 running: c.state.is_some_and(|s| {
                     use bollard::models::ContainerSummaryStateEnum as State;
-                    matches!(s, State::RUNNING | State::RESTARTING | State::PAUSED)
+                    matches!(
+                        s,
+                        State::RUNNING | State::RESTARTING | State::PAUSED | State::STOPPING
+                    )
                 }),
             }
         })

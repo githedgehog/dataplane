@@ -840,7 +840,7 @@ impl ContainerParams {
         bollard::models::Mount {
             source: Some(source.into()),
             target: Some(target),
-            typ: Some(bollard::models::MountTypeEnum::BIND),
+            typ: Some(bollard::models::MountType::BIND),
             read_only: Some(true),
             bind_options: Some(MountBindOptions {
                 propagation: Some(bollard::models::MountBindOptionsPropagationEnum::PRIVATE),
@@ -857,7 +857,7 @@ impl ContainerParams {
         bollard::models::Mount {
             source: Some(source.into()),
             target: Some(target),
-            typ: Some(bollard::models::MountTypeEnum::BIND),
+            typ: Some(bollard::models::MountType::BIND),
             read_only: Some(false),
             bind_options: Some(MountBindOptions {
                 propagation: Some(bollard::models::MountBindOptionsPropagationEnum::PRIVATE),
@@ -2249,7 +2249,7 @@ mod tests {
         for mount in &mounts {
             assert_eq!(
                 mount.typ,
-                Some(bollard::models::MountTypeEnum::BIND),
+                Some(bollard::models::MountType::BIND),
                 "all scratch mounts should be bind mounts",
             );
             let target = mount.target.as_deref().unwrap_or("");
@@ -2297,7 +2297,7 @@ mod tests {
         let params = sample_params();
         let mounts = ContainerParams::build_mounts_in(None, &params, &[], None);
         for mount in &mounts {
-            assert_eq!(mount.typ, Some(bollard::models::MountTypeEnum::BIND),);
+            assert_eq!(mount.typ, Some(bollard::models::MountType::BIND),);
             let opts = mount.bind_options.as_ref().expect("bind_options");
             assert_eq!(
                 opts.propagation,
@@ -2327,7 +2327,7 @@ mod tests {
         assert_eq!(mount.source.as_deref(), Some("/src/dir"));
         assert_eq!(mount.target.as_deref(), Some("/dst/dir"));
         assert_eq!(mount.read_only, Some(true));
-        assert_eq!(mount.typ, Some(bollard::models::MountTypeEnum::BIND));
+        assert_eq!(mount.typ, Some(bollard::models::MountType::BIND));
     }
 
     /// The container tier is where the VM timeout is computed, so a scale
