@@ -33,10 +33,9 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use cloud_hypervisor_client::apis::DefaultApi;
-use cloud_hypervisor_client::models::console_config::Mode;
 use cloud_hypervisor_client::models::{
-    ConsoleConfig, CpuTopology, CpusConfig, FsConfig, MemoryConfig, NetConfig, PayloadConfig,
-    PlatformConfig, VmConfig, VsockConfig,
+    ConsoleConfig, ConsoleMode, CpuTopology, CpusConfig, FsConfig, MemoryConfig, NetConfig,
+    PayloadConfig, PlatformConfig, SerialConfig, VmConfig, VsockConfig,
 };
 use command_fds::{CommandFdExt, FdMapping};
 use n_vm_protocol::{
@@ -257,7 +256,7 @@ async fn spawn_hypervisor_process(
 
 /// Builds the complete cloud-hypervisor [`VmConfig`] for a test run.
 ///
-/// The virtio-console is disabled (`Mode::Off`) because test
+/// The virtio-console is disabled (`ConsoleMode::Off`) because test
 /// stdout/stderr are forwarded via dedicated
 /// [`VsockChannel`](n_vm_protocol::VsockChannel)s instead.
 fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
@@ -288,9 +287,9 @@ fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
         fs: Some(build_fs_config(&params.shares)),
         // The virtio-console is disabled: test stdout/stderr travel
         // over dedicated VsockChannels (TEST_STDOUT / TEST_STDERR).
-        console: Some(ConsoleConfig::new(Mode::Off)),
-        serial: Some(ConsoleConfig {
-            mode: Mode::Socket,
+        console: Some(ConsoleConfig::new(ConsoleMode::Off)),
+        serial: Some(SerialConfig {
+            mode: ConsoleMode::Socket,
             socket: Some(KERNEL_CONSOLE_SOCKET_PATH.into()),
             ..Default::default()
         }),
@@ -419,7 +418,13 @@ fn build_network_configs(iommu: bool, ifaces: &[config::NetIface]) -> Vec<NetCon
             mac: Some(iface.mac.clone()),
             mtu: Some(iface.mtu),
             id: Some(iface.id.clone()),
-            pci_segment: Some(i32::from(iface.pci_segment)),
+            // n-vm's own config assigns segments 0 and 1 (see `num_pci_segments`)
+            pci_segment: Some(i16::try_from(iface.pci_segment).unwrap_or_else(|_| {
+                unreachable!(
+                    "PCI segment {} does not fit the API's i16",
+                    iface.pci_segment
+                )
+            })),
             queue_size: Some(iface.queue_size),
             // Only the protected segment carries the flag; the management
             // link is on segment 0, which has no IOMMU in front of it.
@@ -472,7 +477,7 @@ fn build_platform_config(params: &TestVmParams<'_>) -> PlatformConfig {
     // caller has requested vIOMMU support.  Leaving them as `None` when
     // iommu is disabled avoids sending unnecessary (and potentially
     // confusing) configuration to the hypervisor.
-    let (iommu_segments, iommu_address_width) = if params.vm_config.iommu {
+    let (iommu_segments, iommu_address_width_bits) = if params.vm_config.iommu {
         (Some(vec![1]), Some(48))
     } else {
         (None, None)
@@ -487,7 +492,7 @@ fn build_platform_config(params: &TestVmParams<'_>) -> PlatformConfig {
         ]),
         num_pci_segments: Some(2),
         iommu_segments,
-        iommu_address_width,
+        iommu_address_width_bits,
         ..Default::default()
     }
 }
@@ -847,7 +852,7 @@ mod tests {
         let params = sample_params();
         let config = build_vm_config(&params);
         let console = config.console.expect("console should be set");
-        assert_eq!(console.mode, Mode::Off);
+        assert_eq!(console.mode, ConsoleMode::Off);
     }
 
     #[test]
@@ -855,7 +860,7 @@ mod tests {
         let params = sample_params();
         let config = build_vm_config(&params);
         let serial = config.serial.expect("serial should be set");
-        assert_eq!(serial.mode, Mode::Socket);
+        assert_eq!(serial.mode, ConsoleMode::Socket);
         assert_eq!(serial.socket.as_deref(), Some(KERNEL_CONSOLE_SOCKET_PATH));
     }
 
@@ -911,9 +916,30 @@ mod tests {
             "PCI segment 1 (fabric) should be behind the vIOMMU"
         );
         assert_eq!(
-            platform.iommu_address_width,
+            platform.iommu_address_width_bits,
             Some(48),
             "IOMMU address width should be 48 bits"
+        );
+    }
+
+    /// Cloud Hypervisor ignores unknown fields, so a field name that does not match its API
+    /// is dropped without an error. Until cloud-hypervisor-client 0.6, the client sent
+    /// `iommu_address_width`, which Cloud Hypervisor 53 does not know: every vIOMMU guest
+    /// silently got the 64-bit default instead of 48. Pin the name that goes on the wire.
+    #[test]
+    fn platform_config_sends_iommu_address_width_under_the_name_the_hypervisor_reads() {
+        let params = sample_params_iommu();
+        let json = serde_json::to_value(build_platform_config(&params))
+            .unwrap_or_else(|e| unreachable!("PlatformConfig serializes: {e}"));
+        assert_eq!(
+            json.get("iommu_address_width_bits"),
+            Some(&serde_json::json!(48)),
+            "Cloud Hypervisor reads the IOMMU address width from `iommu_address_width_bits`"
+        );
+        assert_eq!(
+            json.get("iommu_address_width"),
+            None,
+            "Cloud Hypervisor would silently ignore `iommu_address_width`"
         );
     }
 
@@ -926,8 +952,8 @@ mod tests {
             "iommu_segments should be None when iommu is disabled"
         );
         assert_eq!(
-            platform.iommu_address_width, None,
-            "iommu_address_width should be None when iommu is disabled"
+            platform.iommu_address_width_bits, None,
+            "iommu_address_width_bits should be None when iommu is disabled"
         );
     }
 
