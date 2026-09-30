@@ -3077,9 +3077,9 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hwlocality"
-version = "1.0.0-alpha.12"
+version = "1.0.0-alpha.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c2e65a48d3b300843ac84a2fe8e166bb5a5b00f30054593bcee8157e4b465fd"
+checksum = "675f669dc152dbbbdf9cc9602192262e2ff465c822d32bb937157c5300d5d61f"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
@@ -3094,9 +3094,9 @@ dependencies = [
 
 [[package]]
 name = "hwlocality-sys"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "507b4c70a812b6ed5907db7d59726118f4e17708fbc09e32a872ac8e3b5bafaf"
+checksum = "e6a8feaeb431a8d8d4f163456e9b5bc7b18bc30c576360d2da2c04990da2f357"
 dependencies = [
  "libc",
  "pkg-config",
@@ -6523,7 +6523,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand 2.5.0",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
