@@ -1357,7 +1357,7 @@ version = "0.29.0"
 dependencies = [
  "arc-swap",
  "dataplane-concurrency",
- "left-right 0.11.8 (git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle)",
+ "left-right",
 ]
 
 [[package]]
@@ -1633,7 +1633,7 @@ version = "0.29.0"
 dependencies = [
  "ahash",
  "dataplane-concurrency",
- "left-right 0.11.8 (git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle)",
+ "left-right",
  "serial_test",
  "thiserror",
 ]
@@ -1828,7 +1828,7 @@ dependencies = [
  "etherparse",
  "fixin",
  "indenter",
- "left-right 0.11.8 (git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle)",
+ "left-right",
  "linkme",
  "rand 0.10.3",
  "roaring",
@@ -1925,7 +1925,7 @@ dependencies = [
  "iai-callgrind",
  "inotify",
  "ipnet",
- "left-right 0.11.8 (git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle)",
+ "left-right",
  "linkme",
  "mio",
  "netdev",
@@ -2030,7 +2030,7 @@ dependencies = [
  "ahash",
  "bolero",
  "dataplane-net",
- "left-right 0.11.8 (git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle)",
+ "left-right",
  "serde",
  "thiserror",
 ]
@@ -2392,7 +2392,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b8874945f036109c72242964c1174cf99434e30cfa45bf45fedc983f50046f8"
 dependencies = [
  "hashbag",
- "left-right 0.11.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "left-right",
  "smallvec",
 ]
 
@@ -3620,17 +3620,6 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-
-[[package]]
-name = "left-right"
-version = "0.11.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bc015ded5d9b3054dbbdb63332cdd6ee42352ccef19e911e25117490e2f48ee"
-dependencies = [
- "crossbeam-utils",
- "loom",
- "slab",
-]
 
 [[package]]
 name = "left-right"
