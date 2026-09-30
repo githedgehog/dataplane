@@ -223,7 +223,12 @@ sha2 = { version = "0.11.0", default-features = false, features = [] }
 shuttle = { version = "0.9.4", default-features = false, features = [] }
 similar-asserts = { version = "2.0.0", default-features = false, features = [] }
 small-map = { version = "0.1.5", default-features = false, features = [] }
-# smallvec: Pin version to avoid a conflict in dependencies - GH-#1861
+# smallvec: held at 1.15.2 by kube (GH-#1861). kube 4.2.0 requires serde-saphyr 0.0.29 exactly, which
+# requires smallvec <1.16. That ceiling was a conservative "tested up to" bound, not a known
+# incompatibility (serde-saphyr 1.x allows <2), but a published bound cannot change. kube main
+# already requires serde-saphyr 1.3 (kube-rs/kube#2086); once a kube release includes it, bump
+# kube and drop this pin, which also picks up smallvec 1.16.2's may_dangle ownership fix.
+# Pinned exactly rather than with `~`: `cargo upgrade --incompatible=allow` bumps past a `~` pin.
 smallvec = { version = "=1.15.2", default-features = false, features = [] }
 static_assertions = { version = "1.1.0", default-features = false, features = [] }
 strum = { version = "0.28.0", default-features = false, features = [] }
