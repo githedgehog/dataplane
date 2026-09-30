@@ -88,8 +88,11 @@ pub enum ArgsError {
     #[error("Bad prefix: {0}")]
     BadPrefix(String),
 
-    #[error("Bad address: {0}")]
+    #[error("Bad IP address: {0}")]
     BadAddress(String),
+
+    #[error("Bad MAC address: {0}")]
+    BadMac(String),
 
     #[error("Wrong prefix length {0}")]
     BadPrefixLength(u8),
@@ -123,6 +126,19 @@ pub struct CliArgs {
 fn parse_string(value: &str) -> String {
     value.to_owned()
 }
+
+fn parse_mac(value: &str) -> Result<String, ArgsError> {
+    let parts: Vec<_> = value.split(':').collect();
+    if parts.len() != 6 {
+        return Err(ArgsError::BadMac(value.to_owned()));
+    }
+    let mut mac = [0u8; 6];
+    for (i, part) in parts.iter().enumerate() {
+        mac[i] = u8::from_str_radix(part, 16).map_err(|_| ArgsError::BadMac(value.to_owned()))?;
+    }
+    Ok(value.to_owned())
+}
+
 fn parse_address(value: &String) -> Result<IpAddr, ArgsError> {
     let address = IpAddr::from_str(value).map_err(|_| ArgsError::BadAddress(value.to_owned()))?;
     Ok(address)
@@ -162,6 +178,17 @@ fn parse_u32(value: &str) -> Result<u32, ArgsError> {
         .parse::<u32>()
         .map_err(|_| ArgsError::BadValue(value.to_owned()))
 }
+fn parse_vni(value: &str) -> Result<u32, ArgsError> {
+    let vni = value
+        .parse::<u32>()
+        .map_err(|_| ArgsError::BadValue(value.to_owned()))?;
+
+    if vni != 0 && vni < 0x00FF_FFFF {
+        Ok(vni)
+    } else {
+        Err(ArgsError::BadValue(value.to_owned()))
+    }
+}
 fn parse_protocol(value: &str) -> Result<RouteProtocol, ArgsError> {
     RouteProtocol::from_str(value).map_err(|_| ArgsError::UnknownProtocol(value.to_owned()))
 }
@@ -191,16 +218,88 @@ impl CliArgs {
                 CliArgId::BindAddr => args.bind_address = Some(parse_string(value)),
                 CliArgId::Vpc => args.remote.vpc = Some(parse_string(value)),
                 CliArgId::Ifname => args.remote.ifname = Some(parse_string(value)),
-                CliArgId::Mac => args.remote.mac = Some(parse_string(value)),
-
+                CliArgId::Mac => args.remote.mac = Some(parse_mac(value)?),
                 CliArgId::Address => args.remote.address = Some(parse_address(value)?),
                 CliArgId::Prefix => args.remote.prefix = Some(parse_prefix(value)?),
                 CliArgId::PrefixLen => args.remote.prefix_len = Some(parse_prefix_len(value)?),
                 CliArgId::VrfId => args.remote.vrfid = Some(parse_u32(value)?),
-                CliArgId::Vni => args.remote.vni = Some(parse_u32(value)?),
+                CliArgId::Vni => args.remote.vni = Some(parse_vni(value)?),
                 CliArgId::Protocol => args.remote.protocol = Some(parse_protocol(value)?),
             }
         }
         Ok(args)
+    }
+}
+
+#[cfg(test)]
+mod test_args_parsing {
+    use super::{CliArgId, CliArgs};
+    use std::collections::HashMap;
+    use strum::IntoEnumIterator;
+
+    #[test]
+    fn test_parse_good_values() {
+        let mut args_map = HashMap::new();
+        for argid in CliArgId::iter() {
+            let value = match argid {
+                CliArgId::Path => "/tmp/foo/bar/baz",
+                CliArgId::BindAddr => "/tmp/foo/bar/local",
+                CliArgId::Vpc => "Vpc-1",
+                CliArgId::Vni => "3000",
+                CliArgId::Address => "192.168.1.1",
+                CliArgId::Prefix => "10.0.1.1/28",
+                CliArgId::PrefixLen => "24",
+                CliArgId::Mac => "02:aa:bb:cc:dd:ee",
+                CliArgId::Ifname => "eth0.100",
+                CliArgId::VrfId => "1879",
+                CliArgId::Protocol => "Bgp",
+            }
+            .to_string();
+            args_map.insert(argid.to_string(), value);
+        }
+        CliArgs::from_args_map(&args_map).expect("Should succeed");
+    }
+
+    #[test]
+    fn test_reject_bad_protocol() {
+        let mut args_map = HashMap::new();
+        args_map.insert(CliArgId::Protocol.to_string(), "PIMPAMPUM".to_string());
+        let parsed = CliArgs::from_args_map(&args_map);
+        assert!(parsed.is_err());
+    }
+    #[test]
+    fn test_reject_bad_prefix() {
+        let mut args_map = HashMap::new();
+        args_map.insert(CliArgId::Prefix.to_string(), "300.0.0.1".to_string());
+        let parsed = CliArgs::from_args_map(&args_map);
+        assert!(parsed.is_err());
+    }
+    #[test]
+    fn test_reject_bad_prefix_len() {
+        let mut args_map = HashMap::new();
+        args_map.insert(CliArgId::PrefixLen.to_string(), "129".to_string());
+        let parsed = CliArgs::from_args_map(&args_map);
+        assert!(parsed.is_err());
+    }
+    #[test]
+    fn test_reject_bad_ip_address() {
+        let mut args_map = HashMap::new();
+        args_map.insert(CliArgId::Address.to_string(), "700.1.2.3".to_string());
+        let parsed = CliArgs::from_args_map(&args_map);
+        assert!(parsed.is_err());
+    }
+    #[test]
+    fn test_reject_bad_mac_address() {
+        let mut args_map = HashMap::new();
+        args_map.insert(CliArgId::Mac.to_string(), "aa:bb:cc:dd".to_string());
+        let parsed = CliArgs::from_args_map(&args_map);
+        assert!(parsed.is_err());
+    }
+    #[test]
+    fn test_reject_bad_vni() {
+        let mut args_map = HashMap::new();
+        args_map.insert(CliArgId::Vni.to_string(), "16777216".to_string());
+        let parsed = CliArgs::from_args_map(&args_map);
+        assert!(parsed.is_err());
     }
 }
