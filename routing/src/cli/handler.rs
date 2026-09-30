@@ -1114,6 +1114,7 @@ mod tests_cli_handling {
             "Route was added",
         );
         has(&r, &[NHOP_ADDR], "Route had next-hop");
+        has(&r, &[IFNAME], "Ifindex should translate to ifname");
     }
     fn check_show_ipv4_fib(cli: &UnixDatagram) {
         println!(" * Testing that ipv4 fib routes are displayed");
@@ -1130,12 +1131,14 @@ mod tests_cli_handling {
             "Route was added",
         );
         has(&r, &[NHOP_ADDR], "Route had next-hop");
+        has(&r, &[IFNAME], "Ifindex should translate to ifname");
     }
     fn check_show_ipv4_next_hops(cli: &UnixDatagram) {
         println!(" * Testing that ipv4 next-hops are displayed");
         let r = send_cli(cli, CliAction::ShowRouterIpv4NextHops, Some(vpc_args(VPC)));
 
         has(&r, &[NHOP_ADDR], "Route had next-hop");
+        has(&r, &[IFNAME], "Ifindex should translate to ifname");
     }
     fn check_show_ipv6_routes(cli: &UnixDatagram) {
         println!(" * Testing that ipv6 routes are displayed");
@@ -1148,6 +1151,7 @@ mod tests_cli_handling {
             "Route was added",
         );
         has(&r, &[NHOP_ADDR_V6], "Route had next-hop");
+        has(&r, &[IFNAME], "Ifindex should translate to ifname");
     }
     fn check_show_ipv6_fib(cli: &UnixDatagram) {
         println!(" * Testing that ipv6 fib routes are displayed");
@@ -1164,6 +1168,7 @@ mod tests_cli_handling {
             "Route was added",
         );
         has(&r, &[NHOP_ADDR_V6], "Route had next-hop");
+        has(&r, &[IFNAME], "Ifindex should translate to ifname");
     }
     fn check_show_ipv6_next_hops(cli: &UnixDatagram) {
         println!(" * Testing that ipv6 next-hops are displayed");
