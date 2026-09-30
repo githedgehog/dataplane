@@ -797,31 +797,70 @@ let
   # Consumers resolve this relative prefix from the workspace root.
   src-prefix = ".";
 
-  # Hash every git dependency so crane uses cacheable fixed-output derivations
-  # instead of cloning whole repositories during evaluation. Keys must match
-  # Cargo.lock sources after percent-decoding branch names: a wrong hash fails
-  # when `vendor-cargo-deps` is realised, but a key that stops matching -- which
-  # a branch rename does -- only warns and silently falls back to the
-  # evaluation-time clone this is meant to avoid.
+  # Registry packages carry a checksum in Cargo.lock, which crane turns into a fixed-output
+  # derivation; git dependencies carry only a commit id, which Nix cannot use as an output
+  # hash. Without one, crane warns and clones the repository during evaluation instead, which
+  # blocks evaluation and caches nothing.
+  #
+  # Each git dependency's hash comes from the npins pin of the same GitHub repository at the
+  # revision Cargo.lock locks (by convention named `crate-<repo>` and frozen). npins hashes
+  # GitHub's tarball of that commit, which unpacks to the same tree crane's `fetchgit` checks
+  # out as long as the repository has no submodules and no export-ignore/export-subst
+  # attributes; one that gains either fails loudly with a hash mismatch. A git dependency with
+  # no matching pin fails evaluation here, instead of crane's warning and silent fallback.
+  cargoGitOutputHashes =
+    let
+      lock = builtins.fromTOML (builtins.readFile ./Cargo.lock);
+      pins = (builtins.fromJSON (builtins.readFile ./npins/sources.json)).pins;
+      # Cargo.lock percent-encodes query values (e.g. `/` in branch names), and crane matches
+      # `outputHashes` keys against the decoded source
+      escapes = {
+        "%2F" = "/";
+        "%2f" = "/";
+        "%40" = "@";
+        "%2B" = "+";
+        "%2b" = "+";
+        "%25" = "%";
+      };
+      decode = builtins.replaceStrings (builtins.attrNames escapes) (builtins.attrValues escapes);
+      gitSources = lib.unique (
+        map (p: decode p.source) (lib.filter (p: lib.hasPrefix "git+" (p.source or "")) lock.package)
+      );
+      hashFor =
+        source:
+        let
+          parts = builtins.match "git\\+https://github\\.com/([^/]+)/([^?#]+)(\\?[^#]*)?#([0-9a-f]+)" source;
+          owner = builtins.elemAt parts 0;
+          repo = lib.removeSuffix ".git" (builtins.elemAt parts 1);
+          rev = builtins.elemAt parts 3;
+          matching = lib.filterAttrs (
+            _: pin:
+            (pin.repository.type or null) == "GitHub"
+            && pin.repository.owner == owner
+            && pin.repository.repo == repo
+            && (pin.revision or null) == rev
+          ) pins;
+        in
+        if parts == null then
+          throw "Cargo.lock git source ${source} is not on GitHub, so npins cannot provide its hash"
+        else if matching == { } then
+          throw ''
+            Cargo.lock locks ${owner}/${repo} at ${rev}, but no npins pin has that revision.
+            If the pin exists and `cargo update` moved the lock to the branch head, move the pin too:
+              npins update --frozen crate-${repo}
+            Otherwise pin the locked revision:
+              npins add github ${owner} ${repo} --branch <branch> --at ${rev} --name crate-${repo} --frozen''
+        else
+          (lib.head (lib.attrValues matching)).hash;
+    in
+    lib.genAttrs gitSources hashFor;
+
   cargoVendorDir = craneLib.vendorMultipleCargoDeps {
     cargoLockList = [
       ./Cargo.lock
       "${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
     ];
-    outputHashes = {
-      "git+https://github.com/githedgehog/bolero.git?branch=hh/v0.14.0#99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951" =
-        "sha256-u86qGrujgmuhuCR6Z2PA2LJZQk2OvLLOivaVP1fX2iw=";
-      "git+https://github.com/githedgehog/dplane-rpc.git?branch=pr/daniel-noland/bumps#6c84b7aff35abb4e94fbb0d09870a0b4a2322913" =
-        "sha256-YOCcWOynWN49KKY17KfP31QBK1ZM6x6Xl4/tdfNwgIs=";
-      "git+https://github.com/githedgehog/fixin?branch=main#5e0de31606466b17372f8a2cff090cc0461d572c" =
-        "sha256-GfBnaL6ke3ekm+HbV34yXdF4ArYHismxbPHF5/M94yk=";
-      "git+https://github.com/githedgehog/left-right.git?branch=fredi/fix-writehandle-drop#765813aa25c8328746e93a7a5ccc75deb57b1d80" =
-        "sha256-GVP11hLRmHip5+MH9U1bD4bANxDpdnkN9cvMo6RDFfY=";
-      "git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr/daniel-noland/swing6#9a257c60e25bc5db50a1cd14aa493d6ec294c23d" =
-        "sha256-w5dK1IfqR1kJDa4ugbvEC4VIASwGlKU6oxEd9USUwMw=";
-      "git+https://github.com/githedgehog/rtnetlink.git?branch=hh/tc-actions4#c6b8d9865858c458e7f27fa67469f2171e1644a4" =
-        "sha256-u14ugCKWU4nwXkQdlleThJLYU4Ft/LJNTKywMUlwxPM=";
-    };
+    outputHashes = cargoGitOutputHashes;
   };
   # Rename per-revision images so the CI push filter keeps them out of Cachix;
   # each is built once and shipped through GHCR. Not applied to workspace
