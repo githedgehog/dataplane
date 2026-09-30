@@ -32,6 +32,90 @@
       "url": "https://api.github.com/repos/ipetkov/crane/tarball/refs/tags/v0.24.0",
       "hash": "sha256-lWhBbBvC05/xwivKBBiM2YNizpmgqCgyOIzomvRuwxs="
     },
+    "crate-bolero": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "bolero"
+      },
+      "branch": "hh/v0.14.0",
+      "submodules": false,
+      "revision": "99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951",
+      "url": "https://github.com/githedgehog/bolero/archive/99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951.tar.gz",
+      "hash": "sha256-u86qGrujgmuhuCR6Z2PA2LJZQk2OvLLOivaVP1fX2iw=",
+      "frozen": true
+    },
+    "crate-dplane-rpc": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "dplane-rpc"
+      },
+      "branch": "pr/daniel-noland/bumps",
+      "submodules": false,
+      "revision": "6c84b7aff35abb4e94fbb0d09870a0b4a2322913",
+      "url": "https://github.com/githedgehog/dplane-rpc/archive/6c84b7aff35abb4e94fbb0d09870a0b4a2322913.tar.gz",
+      "hash": "sha256-YOCcWOynWN49KKY17KfP31QBK1ZM6x6Xl4/tdfNwgIs=",
+      "frozen": true
+    },
+    "crate-fixin": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "fixin"
+      },
+      "branch": "main",
+      "submodules": false,
+      "revision": "5e0de31606466b17372f8a2cff090cc0461d572c",
+      "url": "https://github.com/githedgehog/fixin/archive/5e0de31606466b17372f8a2cff090cc0461d572c.tar.gz",
+      "hash": "sha256-GfBnaL6ke3ekm+HbV34yXdF4ArYHismxbPHF5/M94yk=",
+      "frozen": true
+    },
+    "crate-left-right": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "left-right"
+      },
+      "branch": "hh/shuttle",
+      "submodules": false,
+      "revision": "8e8d1eaef4f22220ac115e551541967c706b361f",
+      "url": "https://github.com/githedgehog/left-right/archive/8e8d1eaef4f22220ac115e551541967c706b361f.tar.gz",
+      "hash": "sha256-8VJwonSWT9y7vrtsdQ8t7cmMvTQwsBNRCQiRBjnFv0k=",
+      "frozen": true
+    },
+    "crate-netlink-packet-route": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "netlink-packet-route"
+      },
+      "branch": "pr/daniel-noland/swing6",
+      "submodules": false,
+      "revision": "9a257c60e25bc5db50a1cd14aa493d6ec294c23d",
+      "url": "https://github.com/githedgehog/netlink-packet-route/archive/9a257c60e25bc5db50a1cd14aa493d6ec294c23d.tar.gz",
+      "hash": "sha256-w5dK1IfqR1kJDa4ugbvEC4VIASwGlKU6oxEd9USUwMw=",
+      "frozen": true
+    },
+    "crate-rtnetlink": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "rtnetlink"
+      },
+      "branch": "hh/tc-actions4",
+      "submodules": false,
+      "revision": "c6b8d9865858c458e7f27fa67469f2171e1644a4",
+      "url": "https://github.com/githedgehog/rtnetlink/archive/c6b8d9865858c458e7f27fa67469f2171e1644a4.tar.gz",
+      "hash": "sha256-u14ugCKWU4nwXkQdlleThJLYU4Ft/LJNTKywMUlwxPM=",
+      "frozen": true
+    },
     "dpdk": {
       "type": "Git",
       "repository": {
