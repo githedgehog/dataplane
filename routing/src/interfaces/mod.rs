@@ -50,47 +50,47 @@ pub mod tests {
         let mut ifconfig = build_test_interface_cfg("eth0", 2);
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_description("Uplink to the Moon");
-        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
-        }));
+        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet::new(
+            SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
+        )));
         configs.push(ifconfig);
 
         /* create Eth1 */
         let mut ifconfig = build_test_interface_cfg("eth1", 3);
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_description("Downlink from Mars");
-        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
-        }));
+        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet::new(
+            SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
+        )));
         configs.push(ifconfig);
 
         /* create Eth2 */
         let mut ifconfig = build_test_interface_cfg("eth2", 4);
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_description("Downlink from Sun");
-        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: SourceMac::try_from("00:cc:00:00:00:03").unwrap(),
-        }));
+        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet::new(
+            SourceMac::try_from("00:cc:00:00:00:03").unwrap(),
+        )));
         configs.push(ifconfig);
 
         /* create vlan.100 */
         let mut ifconfig = build_test_interface_cfg("eth1.100", 5);
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_description("External customer 1");
-        ifconfig.set_iftype(IfType::Dot1q(IfDataDot1q {
-            mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
-            vlanid: Vid::new(100).unwrap(),
-        }));
+        ifconfig.set_iftype(IfType::Dot1q(IfDataDot1q::new(
+            SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
+            Vid::new(100).unwrap(),
+        )));
         configs.push(ifconfig);
 
         /* create vlan.200 */
         let mut ifconfig = build_test_interface_cfg("eth1.200", 6);
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_description("External customer 2");
-        ifconfig.set_iftype(IfType::Dot1q(IfDataDot1q {
-            mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
-            vlanid: Vid::new(200).unwrap(),
-        }));
+        ifconfig.set_iftype(IfType::Dot1q(IfDataDot1q::new(
+            SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
+            Vid::new(200).unwrap(),
+        )));
         configs.push(ifconfig);
 
         configs
@@ -137,9 +137,9 @@ pub mod tests {
         config.set_description(IF_DESC);
         config.set_mtu(Some(Mtu::MIN));
         config.set_admin_state(IfState::Up);
-        config.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: SourceMac::try_from(IF_MAC).unwrap(),
-        }));
+        config.set_iftype(IfType::Ethernet(IfDataEthernet::new(
+            SourceMac::try_from(IF_MAC).unwrap(),
+        )));
 
         // add interface to table
         iftable.add_interface(&config).unwrap();
@@ -241,9 +241,9 @@ pub mod tests {
         config.set_description(IF_DESC);
         config.set_mtu(Some(Mtu::MIN));
         config.set_admin_state(IfState::Up);
-        config.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: SourceMac::try_from(IF_MAC).unwrap(),
-        }));
+        config.set_iftype(IfType::Ethernet(IfDataEthernet::new(
+            SourceMac::try_from(IF_MAC).unwrap(),
+        )));
 
         // test interface additions
         iftable.add_interface(&config).unwrap();
@@ -263,9 +263,9 @@ pub mod tests {
         // test modify interface config or properties
         config.set_description("modified config");
         config.set_mtu(Some(Mtu::MAX));
-        config.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: SourceMac::try_from(IF_MAC_MOD).unwrap(),
-        }));
+        config.set_iftype(IfType::Ethernet(IfDataEthernet::new(
+            SourceMac::try_from(IF_MAC_MOD).unwrap(),
+        )));
         iftable.mod_interface(&config).unwrap();
         iftw.mod_interface(config.clone()).unwrap();
         compare(&iftable, &iftr);
