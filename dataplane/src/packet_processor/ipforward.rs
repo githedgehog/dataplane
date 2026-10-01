@@ -251,12 +251,8 @@ impl IpForwarder {
         };
         let dst_mac = &vxlan.dmac;
 
-        // set current packet src mac (inner)
-        if let Err(e) = packet.set_eth_source(*src_mac) {
-            error!("{nfi}: VxLAN encap FAILED: can't set src mac '{src_mac}': {e}");
-            packet.done(DoneReason::VxlanEncapFailure);
-            return;
-        }
+        // set the src mac of the inner packet (current)
+        packet.set_eth_source_mac(*src_mac);
 
         // set current packet dst mac (inner)
         if let Err(e) = packet.set_eth_destination(dst_mac.inner()) {
@@ -426,8 +422,10 @@ mod test {
     #[test]
     fn an_ipv6_packet_without_a_refresh_encapsulates() {
         let forwarder = IpForwarder::new("test", RouterTables::new().fibs());
-        let vtep =
-            Vtep::with_ip_and_mac(IpAddr::from([192, 0, 2, 1]), Mac([0x02, 0, 0, 0, 0, 0x01]));
+        let vtep = Vtep::with_ip_and_mac(
+            IpAddr::from([192, 0, 2, 1]),
+            SourceMac::try_from("02:00:00:00:00:01").expect("Bad mac"),
+        );
         let vxlan = ResolvedVxlan {
             vni: Vni::new_checked(100).unwrap(),
             remote: IpAddr::from([192, 0, 2, 2]),
