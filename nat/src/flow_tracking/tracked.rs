@@ -29,12 +29,15 @@ pub(crate) trait TrackedState: FlowInfoItem + Sized {
     /// The side of the connection that sends the packets hitting this half of the pair.
     fn side(&self) -> FlowSide;
 
+    /// Whether UDP flows close on the first reply from a DNS server.
+    const CLOSE_DNS_ON_REPLY: bool = false;
+
     /// Compute the next status of the pair, after a packet hit this half.
     fn next_status<Buf: PacketBufferMut>(
         &self,
         packet: &Packet<Buf>,
         status: NatFlowStatus,
     ) -> NatFlowStatus {
-        next_status(packet, self.side(), status)
+        next_status(packet, self.side(), status, Self::CLOSE_DNS_ON_REPLY)
     }
 }

@@ -11,7 +11,6 @@ pub(crate) mod icmp_handling;
 mod nf;
 mod packet;
 mod probe;
-mod protocol;
 mod state;
 mod test;
 mod test_expiry;

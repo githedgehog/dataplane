@@ -104,8 +104,8 @@ impl TrackedState for PortFwState {
         }
     }
 
-    // Masquerade also closes DNS flows on the first reply, with flow_tracking::close_dns_on_reply().
-    // Port forwarding could opt in by overriding next_status() here, if desired.
+    // Masquerade also closes DNS flows on the first reply. Port forwarding could opt in by setting
+    // CLOSE_DNS_ON_REPLY here, if desired.
 }
 
 impl Display for PortFwState {

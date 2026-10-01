@@ -4,14 +4,11 @@
 use super::apalloc::Allocation;
 use super::nf::MasqueradeError;
 use super::packet::NatTranslate;
-use super::protocol::{flow_side, next_flow_status};
-use crate::common::{AtomicNatFlowStatus, NatAction, NatFlowStatus};
+use crate::common::{AtomicNatFlowStatus, NatAction};
 use crate::flow_tracking::{FlowSide, TrackedState};
 use crate::{NatEndpoint, NatPort, NatTranslationData};
-use net::buffer::PacketBufferMut;
 use net::flows::{FlowInfoItem, FlowInfoLocked};
 use net::ip::UnicastIpAddr;
-use net::packet::Packet;
 use std::fmt::Display;
 use std::time::Duration;
 
@@ -119,16 +116,14 @@ impl TrackedState for MasqueradeState {
         &self.status
     }
 
-    fn side(&self) -> FlowSide {
-        flow_side(self.action)
-    }
+    const CLOSE_DNS_ON_REPLY: bool = true;
 
-    fn next_status<Buf: PacketBufferMut>(
-        &self,
-        packet: &Packet<Buf>,
-        status: NatFlowStatus,
-    ) -> NatFlowStatus {
-        next_flow_status(packet, self.action, status)
+    // The initiator's packets are source-NATed.
+    fn side(&self) -> FlowSide {
+        match self.action {
+            NatAction::SrcNat => FlowSide::Initiator,
+            NatAction::DstNat => FlowSide::Responder,
+        }
     }
 }
 
