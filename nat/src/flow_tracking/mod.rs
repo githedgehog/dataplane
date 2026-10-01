@@ -8,6 +8,7 @@
 //! can use it.
 
 mod state_machine;
+mod test_state_machine;
 
 pub(crate) use state_machine::{close_dns_on_reply, next_status, transport_proto};
 

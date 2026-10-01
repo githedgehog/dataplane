@@ -15,7 +15,6 @@ mod protocol;
 mod state;
 mod test;
 mod test_expiry;
-mod test_state_machine;
 
 //= https://www.rfc-editor.org/rfc/rfc4787#section-6
 //= type=todo
