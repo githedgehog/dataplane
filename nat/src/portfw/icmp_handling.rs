@@ -41,7 +41,7 @@ use net::packet::{DoneReason, Packet};
 
 use super::flow_state::PortFwState;
 use super::packet::nat_packet;
-use crate::common::{NatAction, NatFlowStatus};
+use crate::common::NatFlowStatus;
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
 use crate::{NatEndpoint, NatPort, NatTranslationData};
 
@@ -49,16 +49,11 @@ use tracing::debug;
 
 // Build `NatTranslationData` from `PortFwState` to translate the packet embedded in the ICMP error
 fn as_nat_translation(pfw_state: &PortFwState) -> NatTranslationData {
-    match pfw_state.action {
-        NatAction::SrcNat => NatTranslationData::default().with_dst(NatEndpoint::with_port(
-            pfw_state.use_ip().inner(),
-            NatPort::Port(pfw_state.use_port()),
-        )),
-        NatAction::DstNat => NatTranslationData::default().with_src(NatEndpoint::with_port(
-            pfw_state.use_ip().inner(),
-            NatPort::Port(pfw_state.use_port()),
-        )),
-    }
+    let endpoint = NatEndpoint::with_port(
+        pfw_state.use_ip().inner(),
+        NatPort::Port(pfw_state.use_port()),
+    );
+    NatTranslationData::reverse_of(pfw_state.action, endpoint)
 }
 
 pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(

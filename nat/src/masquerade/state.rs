@@ -96,12 +96,8 @@ impl MasqueradeState {
     }
 
     pub(crate) fn reverse_translation_data(&self) -> NatTranslationData {
-        match self.action {
-            NatAction::SrcNat => NatTranslationData::default()
-                .with_dst(NatEndpoint::with_port(self.use_ip.inner(), self.use_port)),
-            NatAction::DstNat => NatTranslationData::default()
-                .with_src(NatEndpoint::with_port(self.use_ip.inner(), self.use_port)),
-        }
+        let endpoint = NatEndpoint::with_port(self.use_ip.inner(), self.use_port);
+        NatTranslationData::reverse_of(self.action, endpoint)
     }
 
     pub(crate) fn set_allocation(&mut self, allocation: Allocation) {
