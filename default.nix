@@ -753,6 +753,9 @@ let
       # Rust's pkg-config crate refuses cross-target builds by default; opt in
       # since our PKG_CONFIG_PATH already points at the matching cross sysroot.
       PKG_CONFIG_ALLOW_CROSS = "1";
+      # So that a plain `cargo doc` renders math and diagrams like the docs
+      # build does.
+      RUSTDOCFLAGS = rustdoc-flags;
     };
   };
   # Nix escaping made the old regexes match unrelated .sh and .patch files.
@@ -1459,6 +1462,15 @@ let
     pkg = builtins.mapAttrs (dir: package: doctest-builder { inherit package; }) package-list;
   };
 
+  # Flags for rustdoc, shared by the docs build and the dev shell's
+  # RUSTDOCFLAGS.  Rustdoc does not inherit rustc's registered cfg
+  # declarations, and `--html-in-header` injects the KaTeX and Mermaid loaders
+  # that render ```math and ```mermaid blocks (scripts/update-doc-headers.sh
+  # regenerates the header when those pins move).  The header is a store path,
+  # not a relative one, because rustdoc runs in each crate's own directory:
+  # a relative path breaks `cargo doc` on every dependency.
+  rustdoc-flags = "--check-cfg=cfg(emulated) --check-cfg=cfg(instrumented) --check-cfg=cfg(sanitized) --html-in-header ${./scripts/doc/custom-header.html}";
+
   docs-builder =
     {
       package ? null,
@@ -1472,8 +1484,7 @@ let
       args = {
         inherit pname;
         cargoArtifacts = cargo-artifacts;
-        # Rustdoc does not inherit rustc's registered cfg declarations.
-        RUSTDOCFLAGS = "-D warnings --check-cfg=cfg(emulated) --check-cfg=cfg(instrumented) --check-cfg=cfg(sanitized)";
+        RUSTDOCFLAGS = "-D warnings ${rustdoc-flags}";
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
             "cargo"
