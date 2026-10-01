@@ -472,7 +472,7 @@ mod tests {
     use crate::fib::fibobjects::{EgressObject, PktInstruction};
     use crate::fib::fibtype::FibKey;
     use crate::interfaces::tests::build_test_iftable_left_right;
-    use crate::rib::encapsulation::ResolvedEncapsulation;
+    use crate::rib::encapsulation::Encapsulation;
     use crate::rib::vrf::VrfStatus;
     use crate::rib::vrf::tests::{build_test_vrf, mk_addr};
     use crate::rib::vrf::tests::{
@@ -881,11 +881,11 @@ mod tests {
             let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
-                PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))
+                PktInstruction::Encap(Encapsulation::Vxlan(vxlan))
             );
             assert_eq!(
                 entry.instructions[1],
-                PktInstruction::Encap(ResolvedEncapsulation::Mpls(7000))
+                PktInstruction::Encap(Encapsulation::Mpls(7000))
             );
             match num {
                 0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1"))))),
@@ -913,11 +913,11 @@ mod tests {
             let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
-                PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))
+                PktInstruction::Encap(Encapsulation::Vxlan(vxlan))
             );
             assert_eq!(
                 entry.instructions[1],
-                PktInstruction::Encap(ResolvedEncapsulation::Mpls(7000))
+                PktInstruction::Encap(Encapsulation::Mpls(7000))
             );
             match num {
                 0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1"))))),
@@ -942,11 +942,11 @@ mod tests {
             let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
-                PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))
+                PktInstruction::Encap(Encapsulation::Vxlan(vxlan))
             );
             assert_eq!(
                 entry.instructions[1],
-                PktInstruction::Encap(ResolvedEncapsulation::Mpls(7000))
+                PktInstruction::Encap(Encapsulation::Mpls(7000))
             );
             match num {
                 0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5"))))),
@@ -967,11 +967,11 @@ mod tests {
             let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
-                PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))
+                PktInstruction::Encap(Encapsulation::Vxlan(vxlan))
             );
             assert_eq!(
                 entry.instructions[1],
-                PktInstruction::Encap(ResolvedEncapsulation::Mpls(7000))
+                PktInstruction::Encap(Encapsulation::Mpls(7000))
             );
             match num {
                 0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1"))))),

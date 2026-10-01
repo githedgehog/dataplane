@@ -8,7 +8,7 @@ use tracing::{debug, trace, warn};
 
 use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
-use crate::rib::encapsulation::{Encapsulation, ResolvedEncapsulation, VxlanEncapsulation};
+use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, Nhop};
 use crate::rib::vrf::RouteOrigin;
 
@@ -51,10 +51,8 @@ impl Nhop {
         // a nexthop with encapsulation info. Will add action encap and egress object
         if let Some(encap) = self.key.encap {
             let resolved = match encap {
-                Encapsulation::Vxlan(vxlan) => {
-                    vxlan.resolve(rstore).map(ResolvedEncapsulation::Vxlan)
-                }
-                Encapsulation::Mpls(label) => Some(ResolvedEncapsulation::Mpls(label)),
+                Encapsulation::Vxlan(vxlan) => vxlan.resolve(rstore).map(Encapsulation::Vxlan),
+                Encapsulation::Mpls(label) => Some(Encapsulation::Mpls(label)),
             };
             if let Some(resolved) = resolved {
                 instructions.push(PktInstruction::Encap(resolved));

@@ -3,7 +3,7 @@
 
 //! Module that contains definitions and methods for fib objects
 
-use crate::rib::encapsulation::ResolvedEncapsulation;
+use crate::rib::encapsulation::Encapsulation;
 use net::interface::InterfaceIndex;
 use net::vxlan::Vni;
 use std::net::IpAddr;
@@ -218,7 +218,7 @@ impl FibEntry {
     #[must_use]
     pub fn is_vxlan(&self) -> Option<Vni> {
         for inst in &self.instructions {
-            if let PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan)) = inst {
+            if let PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) = inst {
                 return Some(vxlan.vni);
             }
         }
@@ -227,7 +227,7 @@ impl FibEntry {
     #[must_use]
     pub fn is_vxlan_with_vni(&self, vni: Vni) -> bool {
         for inst in &self.instructions {
-            if let PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan)) = inst {
+            if let PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) = inst {
                 return vxlan.vni == vni;
             }
         }
@@ -243,7 +243,7 @@ pub enum PktInstruction {
     #[default]
     Drop, /* drop the packet */
     Local(InterfaceIndex),
-    Encap(ResolvedEncapsulation),
+    Encap(Encapsulation),
     Egress(EgressObject),
 }
 
@@ -283,7 +283,7 @@ mod squash_properties {
         Some(match driver.gen_u8(Included(&0), Included(&3))? {
             0 => PktInstruction::Local(index(driver.gen_u8(Included(&1), Included(&3))?)),
             1 => PktInstruction::Drop,
-            2 => PktInstruction::Encap(ResolvedEncapsulation::Vxlan(VxlanEncapsulation {
+            2 => PktInstruction::Encap(Encapsulation::Vxlan(VxlanEncapsulation {
                 vni: Vni::new_checked(u32::from(driver.gen_u8(Included(&1), Included(&3))?))
                     .unwrap_or_else(|_| unreachable!()),
                 remote: ADDRESSES[0],

@@ -35,9 +35,7 @@ use pipeline::{DynPipeline, NetworkFunction, PipelineData};
 use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
 use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
-use routing::{
-    EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, Vtep, VxlanEncapsulation,
-};
+use routing::{EgressObject, Encapsulation, FibEntry, PktInstruction, Vtep, VxlanEncapsulation};
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 use std::time::Duration;
@@ -1307,7 +1305,7 @@ fn encapsulate_out_of(tables: &mut RouterTables, vrfid: u32, out_vni: Vni) {
         ),
     );
     let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
-    let mut out = FibEntry::with_inst(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(
+    let mut out = FibEntry::with_inst(PktInstruction::Encap(Encapsulation::Vxlan(
         VxlanEncapsulation {
             vni: out_vni,
             remote: peer,
@@ -5943,7 +5941,7 @@ mod model {
 
         fn towards(nth: u8) -> FibGroup {
             let (remote, oif) = waypoint(nth);
-            let mut out = FibEntry::with_inst(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(
+            let mut out = FibEntry::with_inst(PktInstruction::Encap(Encapsulation::Vxlan(
                 VxlanEncapsulation {
                     vni: vni(REMOTE_VNI),
                     remote,
