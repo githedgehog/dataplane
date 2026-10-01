@@ -47,7 +47,7 @@ fn generate_router_vrf_config(
 }
 fn generate_router_vtep_config(internal: &InternalConfig, router_config: &mut RouterConfig) {
     if let Some(vconfig) = internal.get_vtep() {
-        let vtep = Vtep::with_ip_and_mac(vconfig.address.into(), vconfig.mac.into());
+        let vtep = Vtep::new(vconfig.address.into(), vconfig.mac);
         router_config.set_vtep(vtep);
     }
 }
