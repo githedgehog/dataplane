@@ -83,7 +83,8 @@ pub(crate) fn transport_proto<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Opt
 }
 
 /// Compute the next status of a flow, given its current status, the packet that hit it, and the
-/// side of the connection that sent this packet.
+/// side of the connection that sent this packet. A UDP flow closes on the first reply from a DNS
+/// server.
 pub(crate) fn next_status<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
     side: FlowSide,
@@ -95,7 +96,7 @@ pub(crate) fn next_status<Buf: PacketBufferMut>(
     };
 
     match proto {
-        NextHeader::UDP => next_status_udp(side, status),
+        NextHeader::UDP => close_dns_on_reply(packet, side, next_status_udp(side, status)),
         NextHeader::ICMP | NextHeader::ICMP6 => next_status_icmp(side, status),
         NextHeader::TCP => {
             if let Some(tcp) = packet.try_tcp() {
@@ -108,20 +109,18 @@ pub(crate) fn next_status<Buf: PacketBufferMut>(
     }
 }
 
-/// Close a UDP flow on the first reply from a DNS server.
-///
-/// This is optional: callers apply it on top of [`next_status`] if they want it.
+// Close a UDP flow on the first reply from a DNS server.
 //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
 //# a) For specific destination ports in the well-known port range
 //# (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
 //# are specific to the IANA-registered application running over
 //# that specific destination port.
-pub(crate) fn close_dns_on_reply<Buf: PacketBufferMut>(
+fn close_dns_on_reply<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
     side: FlowSide,
     status: NatFlowStatus,
 ) -> NatFlowStatus {
-    if side != FlowSide::Responder || transport_proto(packet) != Some(NextHeader::UDP) {
+    if side != FlowSide::Responder {
         return status;
     }
     match packet.headers().pat().eth().net().udp().done() {
