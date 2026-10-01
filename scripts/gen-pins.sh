@@ -88,3 +88,8 @@ tomlq -r '
 ' Cargo.lock | while IFS=$'\t' read -r owner repo branch rev; do
   npins add github "${owner}" "${repo}" --branch "${branch}" --at "${rev}" --name "crate-${repo}" --frozen
 done
+
+# The Flatcar kernel and PXE image the `flatcar` kernel profile boots, pinned at the newest stable release.
+# npins cannot discover Flatcar releases on its own, so the script picks the version and checks each artifact against
+# the digest Flatcar publishes.
+./scripts/flatcar-pins.sh

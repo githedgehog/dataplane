@@ -21,4 +21,8 @@ nix-hash --to-sri --type sha256 \
     "$(nix-prefetch-url --type sha256 "$opengrep_url")" \
     > nix/pkgs/opengrep/binary.sri
 
+# The Flatcar kernel pins are frozen, so `npins update` above leaves them alone: npins can hash a URL but cannot
+# discover a new Flatcar release.  Re-pin them at the newest stable release.  A no-op when that is the pinned one.
+./scripts/flatcar-pins.sh
+
 ./scripts/update-doc-headers.sh

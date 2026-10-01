@@ -185,6 +185,20 @@
       "hash": "sha256-F//ZwZOAuHQ8cd4/VMMYmVcR6T2l58SLPnosDd85jgw=",
       "frozen": true
     },
+    "flatcar-pxe-image": {
+      "type": "Url",
+      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.1/flatcar_production_pxe_image.cpio.gz",
+      "unpack": false,
+      "hash": "sha256-BNaJkGAxH9zMQSBFhvgKA1n+b2sbls0cwlQdTMJ61oQ=",
+      "frozen": true
+    },
+    "flatcar-vmlinuz": {
+      "type": "Url",
+      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.1/flatcar_production_pxe.vmlinuz",
+      "unpack": false,
+      "hash": "sha256-nq0AhJCSMfFuZj7OQRd78b2ua8lv09kMTQWQWBtzQuU=",
+      "frozen": true
+    },
     "frr": {
       "type": "GitRelease",
       "repository": {

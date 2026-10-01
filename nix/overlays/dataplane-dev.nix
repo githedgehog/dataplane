@@ -170,6 +170,8 @@ in
     # embedded IKCFG_ST block -- so our own kernel source's copy reads
     # Flatcar's image fine, and this avoids a second kernel source fetch.
     extractIkconfig = "${final.linux-fancy.src}/scripts/extract-ikconfig";
+    vmlinuzPin = sources.flatcar-vmlinuz;
+    pxeImagePin = sources.flatcar-pxe-image;
   };
 
   # A pinned Ubuntu kernel, repackaged into the same layout.  Not a second
