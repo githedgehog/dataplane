@@ -1481,10 +1481,13 @@ let
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
       profile = profile';
+      no-bins = true;
       args = {
         inherit pname;
         cargoArtifacts = cargo-artifacts;
-        RUSTDOCFLAGS = "-D warnings ${rustdoc-flags}";
+        # `--enable-index-page` writes a top-level index.html listing every crate, so the output has one place to start
+        # browsing from.
+        RUSTDOCFLAGS = "-D warnings -Zunstable-options --enable-index-page ${rustdoc-flags}";
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
             "cargo"
@@ -1495,6 +1498,12 @@ let
           ++ (if package != null then [ "--package=${pname}" ] else [ ])
           ++ cargo-cmd-prefix
         );
+        # The HTML is the whole product; nothing else in the target directory is worth keeping.
+        installPhaseCommand = ''
+          mkdir -p $out
+          cp -r target/${rustc-target}/doc/. $out/
+          test -f $out/index.html
+        '';
       };
     };
 
