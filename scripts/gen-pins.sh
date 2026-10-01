@@ -89,7 +89,11 @@ tomlq -r '
   npins add github "${owner}" "${repo}" --branch "${branch}" --at "${rev}" --name "crate-${repo}" --frozen
 done
 
-# The Flatcar kernel and PXE image the `flatcar` kernel profile boots, pinned at the newest stable release.
-# npins cannot discover Flatcar releases on its own, so the script picks the version and checks each artifact against
-# the digest Flatcar publishes.
+# The guest kernels, which npins cannot discover releases of on its own: each script picks the version from an upstream
+# index and checks what it pins against the digest upstream publishes.
+# - linux-fancy, built from kernel.org source: the newest release of one longterm series.
+./scripts/linux-pins.sh
+# - The Flatcar kernel and PXE image the `flatcar` kernel profile boots: the newest stable release.
 ./scripts/flatcar-pins.sh
+# - The Ubuntu kernel the `ubuntu` kernel profile boots: the newest generic kernel in one suite.
+./scripts/ubuntu-kernel-pins.sh

@@ -83,7 +83,19 @@ in
       extraFragments ? [ ],
     }:
     let
-      version = "6.18.20";
+      # The kernel.org tarball comes from the `linux-fancy` npins pin, which
+      # `scripts/linux-pins.sh` writes after checking the tarball against
+      # kernel.org's published SHA256.  The version is read back out of its
+      # URL, `.../linux-<version>.tar.xz`.
+      pin = sources.linux-fancy;
+      version =
+        let
+          parts = builtins.match ".*/linux-([0-9.]+)\\.tar\\.xz" pin.url;
+        in
+        if parts == null then
+          throw "unexpected linux-fancy pin URL ${pin.url}; rerun scripts/linux-pins.sh"
+        else
+          builtins.head parts;
       # True only when the kernel's target arch differs from the builder.
       isCross = final.stdenv.hostPlatform.system != final.stdenv.buildPlatform.system;
       # Cross stdenv: builds the (possibly aarch64) kernel itself.
@@ -98,8 +110,8 @@ in
       # native build's config output byte-identical).
       kernelArch = if isCross then final.stdenv.hostPlatform.linuxArch else null;
       src = fetchTarball {
-        url = "https://cdn.kernel.org/pub/linux/kernel/v${final.lib.versions.major version}.x/linux-${version}.tar.xz";
-        sha256 = "sha256:1sbidvi0zi1a8nlzrdjmk3yq50gdc5qjvcf4n4ah70pis25912ba";
+        inherit (pin) url;
+        sha256 = pin.hash;
       };
       # Fragments are merged left-to-right; later entries override earlier ones.
       # Place broad settings first and targeted overrides (especially disables) last.
@@ -179,7 +191,11 @@ in
   # is distro-agnostic or merely Flatcar-shaped.  Needs no `extractIkconfig`
   # -- Ubuntu does not set `CONFIG_IKCONFIG`, so its config comes from a
   # separate package instead of from the image.
-  ubuntu-kernel = final.callPackage ../pkgs/ubuntu { };
+  ubuntu-kernel = final.callPackage ../pkgs/ubuntu {
+    imagePin = sources.ubuntu-kernel-image;
+    modulesPin = sources.ubuntu-kernel-modules;
+    buildinfoPin = sources.ubuntu-kernel-buildinfo;
+  };
 
   # The default guest kernel: everything built in, no modules at all.
   linux-fancy = final.mkLinuxFancy { };

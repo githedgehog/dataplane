@@ -50,46 +50,65 @@
   dpkg,
   kmod,
 
-  # Ubuntu kernel to pin.  All three artifacts must come from the same
-  # build: modules are vermagic-matched to their kernel and will refuse to
-  # load against a different one, and a config from another build would
-  # describe a kernel we are not running.
+  # The npins `url` pins (`ubuntu-kernel-image`, `ubuntu-kernel-modules`,
+  # `ubuntu-kernel-buildinfo`) for the three packages; only their `url` and
+  # `hash` are read.  `scripts/ubuntu-kernel-pins.sh` writes all three from
+  # one build, at their versioned pool paths, after checking each against
+  # the SHA256 the archive's `Packages` index publishes.
   #
-  # `abi` is the ABI-and-upload version that appears in the file name
-  # (`7.0.0-29.29`); `release` is the part that also names the module
-  # directory (`7.0.0-29-generic`).
-  abi ? "7.0.0-29.29",
-  series ? "7.0.0-29",
-  flavour ? "generic",
-  # Ubuntu publishes SHA256 in the archive's `Packages` indices.
-  imageHash ? "sha256-xXQCJLovE8qfgnseCyNMgzhctaX/hDdee2/tg9FD36U=",
-  modulesHash ? "sha256-WxZFhzHQeUm6D2ZLDCB3hkiQqQFTh31fuiQpXHwxp8s=",
-  buildinfoHash ? "sha256-zo4+1wQLA8bdeBGVqzYnT803f4qcy9eLxT2/kQsZhFo=",
-}:
-let
-  release = "${series}-${flavour}";
-
-  # The versioned pool path.  The pool retains many kernel versions, but not
-  # indefinitely; when a pin here stops resolving, the durable source is
+  # The pool retains many kernel versions, but not indefinitely; when a pin
+  # stops resolving, rerun the script, or for an older build use
   # `https://snapshot.ubuntu.com/ubuntu/<timestamp>/...`, which serves the
   # archive as it stood at a point in time.
-  base = "https://archive.ubuntu.com/ubuntu/pool/main/l/linux";
+  imagePin,
+  modulesPin,
+  buildinfoPin,
+}:
+let
+  # The build is read back out of the pinned URLs, which end in
+  # `<package>-<release>_<abi>_amd64.deb`: `release` names the module
+  # directory (`7.0.0-29-generic`) and `abi` is the ABI-and-upload version
+  # (`7.0.0-29.29`).
+  build =
+    package: pin:
+    let
+      parts = builtins.match ".*/${package}-([^_]+)_([^_]+)_amd64\\.deb" pin.url;
+    in
+    if parts == null then
+      throw "unexpected Ubuntu kernel pin URL ${pin.url}; rerun scripts/ubuntu-kernel-pins.sh"
+    else
+      {
+        release = builtins.elemAt parts 0;
+        abi = builtins.elemAt parts 1;
+      };
+
+  # All three packages must come from the same build: modules are
+  # vermagic-matched to their kernel and will refuse to load against a
+  # different one, and a config from another build would describe a kernel
+  # we are not running.
+  inherit (build "linux-image-unsigned" imagePin) release abi;
+  _sameBuild =
+    (
+      build "linux-modules" modulesPin == {
+        inherit release abi;
+      }
+      && build "linux-buildinfo" buildinfoPin == { inherit release abi; }
+    )
+    || throw "Ubuntu kernel pins come from different builds (${imagePin.url}, ${modulesPin.url}, ${buildinfoPin.url}); rerun scripts/ubuntu-kernel-pins.sh";
 
   image = fetchurl {
-    url = "${base}/linux-image-unsigned-${release}_${abi}_amd64.deb";
-    hash = imageHash;
+    inherit (imagePin) url hash;
   };
 
   modules = fetchurl {
-    url = "${base}/linux-modules-${release}_${abi}_amd64.deb";
-    hash = modulesHash;
+    inherit (modulesPin) url hash;
   };
 
   buildinfo = fetchurl {
-    url = "${base}/linux-buildinfo-${release}_${abi}_amd64.deb";
-    hash = buildinfoHash;
+    inherit (buildinfoPin) url hash;
   };
 in
+assert _sameBuild;
 stdenvNoCC.mkDerivation {
   pname = "ubuntu-kernel";
   version = abi;
@@ -166,7 +185,7 @@ stdenvNoCC.mkDerivation {
   '';
 
   meta = {
-    description = "Ubuntu ${abi} ${flavour} kernel, modules and config";
+    description = "Ubuntu ${release} (${abi}) kernel, modules and config";
     # The kernel and its modules are GPL-2.0-only.
     license = lib.licenses.gpl2Only;
     platforms = [ "x86_64-linux" ];

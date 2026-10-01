@@ -257,6 +257,13 @@
       "url": "https://api.github.com/repos/kube-rs/kopium/tarball/refs/tags/0.24.1",
       "hash": "sha256-CU2j3VDZfq9DcDyAeZ8v6rRwE4YStUH7ugbmx2jW9+U="
     },
+    "linux-fancy": {
+      "type": "Url",
+      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.54.tar.xz",
+      "unpack": true,
+      "hash": "sha256-WOAv9LyN4z+Utn93yTnqdrF+xMBsLt8JHtTQBhZ6JAU=",
+      "frozen": true
+    },
     "mermaid": {
       "type": "GitRelease",
       "repository": {
@@ -350,6 +357,27 @@
       "revision": "ed3a19fd0439ed618ec5fe1e12f0ba69a8be38b5",
       "url": "https://github.com/oxalica/rust-overlay/archive/ed3a19fd0439ed618ec5fe1e12f0ba69a8be38b5.tar.gz",
       "hash": "sha256-NPs4nNLxCpho3Ctj8O7t/bzmX0zR8r0zndKghAFEz5U="
+    },
+    "ubuntu-kernel-buildinfo": {
+      "type": "Url",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-buildinfo-7.0.0-34-generic_7.0.0-34.34_amd64.deb",
+      "unpack": false,
+      "hash": "sha256-yEcvcH4av9dSVhJypv0rJ3AUpxwkMMyE62Myumh52iU=",
+      "frozen": true
+    },
+    "ubuntu-kernel-image": {
+      "type": "Url",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-image-unsigned-7.0.0-34-generic_7.0.0-34.34_amd64.deb",
+      "unpack": false,
+      "hash": "sha256-9eFMhFY+vtlAciNqrKYsQiGxJj2jEOb/61CKn1k/BzI=",
+      "frozen": true
+    },
+    "ubuntu-kernel-modules": {
+      "type": "Url",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-modules-7.0.0-34-generic_7.0.0-34.34_amd64.deb",
+      "unpack": false,
+      "hash": "sha256-/SB87vw7HYF0OdHr8QE9AGicYPqQoE97i07znT8BrD8=",
+      "frozen": true
     }
   },
   "version": 8
