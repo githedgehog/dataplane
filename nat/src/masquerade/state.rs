@@ -9,6 +9,7 @@ use crate::common::{AtomicNatFlowStatus, NatAction, NatFlowStatus};
 use crate::flow_tracking::{FlowSide, TrackedState};
 use crate::{NatEndpoint, NatPort, NatTranslationData};
 use net::buffer::PacketBufferMut;
+use net::flows::{FlowInfoItem, FlowInfoLocked};
 use net::ip::UnicastIpAddr;
 use net::packet::Packet;
 use std::fmt::Display;
@@ -106,6 +107,14 @@ impl MasqueradeState {
 }
 
 impl TrackedState for MasqueradeState {
+    fn slot(locked: &FlowInfoLocked) -> Option<&dyn FlowInfoItem> {
+        locked.nat_state.as_deref()
+    }
+
+    fn slot_mut(locked: &mut FlowInfoLocked) -> &mut Option<Box<dyn FlowInfoItem>> {
+        &mut locked.nat_state
+    }
+
     fn status(&self) -> &AtomicNatFlowStatus {
         &self.status
     }

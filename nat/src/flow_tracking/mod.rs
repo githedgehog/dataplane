@@ -8,11 +8,13 @@
 //! can use it.
 
 mod refresh;
+mod session;
 mod state_machine;
 mod test_state_machine;
 mod tracked;
 
 pub(crate) use refresh::advance_flow;
+pub(crate) use session::{HalfFlow, InstallError, NewFlow, install_pair};
 pub(crate) use state_machine::{close_dns_on_reply, next_status, transport_proto};
 pub(crate) use tracked::TrackedState;
 
