@@ -410,6 +410,14 @@ test-each *args: (setup-roots) (build "tests.pkg" args)
 docs package="" *args: (build (if package == "" { "docs.all" } else { "docs.pkg." + package }) args)
     {{ _just_debuggable_ }}
 
+# Build the rustdoc HTML (all crates, or one by directory name) and open it in a browser
+[script]
+docs-open package="" *args: (docs package args)
+    {{ _just_debuggable_ }}
+    index="results/{{ if package == "" { "docs.all" } else { "docs.pkg." + package } }}/index.html"
+    echo "docs: file://$(realpath "${index}")"
+    xdg-open "${index}"
+
 # Remove test containers n-vm left behind. Args go to n-vm-reap (--force, --list, --all)
 [script]
 reap *args:
