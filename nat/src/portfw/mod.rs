@@ -11,7 +11,6 @@ mod nf;
 mod packet;
 mod portfwtable;
 mod probe;
-mod protocol;
 mod test;
 mod test_expiry;
 
