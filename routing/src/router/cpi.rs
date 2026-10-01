@@ -501,7 +501,7 @@ pub fn process_cpi_data(rio: &mut Rio, peer: &SocketAddr, data: &mut Bytes, db: 
 #[cfg(test)]
 mod cpi_properties {
     use super::*;
-    use crate::ResolvedEncapsulation;
+    use crate::Encapsulation;
     use crate::atable::atablerw::AtableWriter;
     use crate::config::RouterConfig;
     use crate::evpn::RmacStore;
@@ -693,7 +693,7 @@ mod cpi_properties {
                 for entry in &after {
                     let mut instructions = entry.iter();
                     match instructions.next() {
-                        Some(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))) => {
+                        Some(PktInstruction::Encap(Encapsulation::Vxlan(vxlan))) => {
                             assert_eq!(vxlan.vni.as_u32(), OVERLAY_VNI, "vni in {entry:?}");
                             assert_eq!(vxlan.remote, vtep, "remote in {entry:?}");
                             assert_eq!(vxlan.rmac, expected_mac, "rmac in {entry:?}");
@@ -877,7 +877,7 @@ mod cpi_properties {
             let before = fib_entries(&db, OVERLAY_VRF, prefix);
             assert!(before.iter().any(|entry| matches!(
                 entry.iter().next(),
-                Some(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(_)))
+                Some(PktInstruction::Encap(Encapsulation::Vxlan(_)))
             )));
 
             for bytes in [[0; 6], [0xff; 6], multicast] {

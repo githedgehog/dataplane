@@ -24,8 +24,8 @@ use std::rc::Rc;
 use tracing::{debug, error, warn};
 
 use routing::{
-    EgressObject, FibEntry, FibKey, FibReader, FibTableReader, PktInstruction,
-    ResolvedEncapsulation, Vtep, VxlanEncapsulation,
+    EgressObject, Encapsulation, FibEntry, FibKey, FibReader, FibTableReader, PktInstruction, Vtep,
+    VxlanEncapsulation,
 };
 
 use tracectl::{custom_target, tdebug, trace_target};
@@ -314,12 +314,12 @@ impl IpForwarder {
     fn packet_exec_instruction_encap<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        encap: &ResolvedEncapsulation,
+        encap: &Encapsulation,
         vtep: Option<&Vtep>,
     ) {
         match encap {
-            ResolvedEncapsulation::Mpls(_label) => todo!(),
-            ResolvedEncapsulation::Vxlan(vxlan) => {
+            Encapsulation::Mpls(_label) => todo!(),
+            Encapsulation::Vxlan(vxlan) => {
                 if let Some(vtep) = vtep {
                     self.vxlan_encap(packet, vxlan, vtep);
                 } else {

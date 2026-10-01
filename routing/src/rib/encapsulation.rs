@@ -30,9 +30,3 @@ pub enum Encapsulation {
     Vxlan(VxlanEncapsulation),
     Mpls(MplsLabel),
 }
-
-#[derive(Debug, Eq, PartialEq, Clone, Copy, Hash, PartialOrd, Ord)]
-pub enum ResolvedEncapsulation {
-    Vxlan(VxlanEncapsulation),
-    Mpls(MplsLabel),
-}
