@@ -20,7 +20,7 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::FlowInfo;
 
 use crate::common::{AtomicNatFlowStatus, NatAction, NatFlowStatus};
-use crate::flow_tracking::{FlowSide, TrackedState};
+use crate::flow_tracking::{FlowSide, TrackedState, advance_flow};
 use crate::portfw::PortFwEntry;
 
 #[allow(unused)]
@@ -254,7 +254,7 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
 /// are unexpectedly received. This will be done later when introducing a more
 /// elaborate TCP state machine with ack & seqn numbers.
 pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
-    packet: &mut Packet<Buf>,
+    packet: &Packet<Buf>,
     entry: &PortFwEntry,
     state: &PortFwState, // (*)
     genid: i64,
@@ -262,38 +262,19 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     //(*) Note: atm, this is a clone of the state found by the packet
     // That's fine for updating the status since it's an arc'ed atomic
 
-    // update the flow status (for port forwarding) depending on the packet and the current status
-    let current_status = state.status().load();
-    let new_status = state.next_status(packet, current_status);
-    if new_status != current_status {
-        debug!("Flow state transitions from {current_status} -> {new_status}");
-        state.status().store(new_status);
-    }
-
-    // compute new timeout for the flow. In case of TCP, if the connection was reset or closed,
-    // invalidate the flows in both directions. In either case, the packet is let through.
-    let extend_by = match new_status {
-        NatFlowStatus::Established => entry.estab_timeout(),
-        NatFlowStatus::Closed | NatFlowStatus::Reset => return packet.invalidate_flows(),
-        _ => entry.init_timeout(),
+    let Some(flow) = packet.meta().flow_info.as_ref() else {
+        return;
     };
 
-    let seconds = extend_by.as_secs();
+    // Update the flow status and extend the lifetime of the flows. In case of TCP, if the
+    // connection was reset or closed, invalidate the flows in both directions. In either case,
+    // the packet is let through.
+    let new_status = advance_flow(packet, flow, state, |status| match status {
+        NatFlowStatus::Established => Some(entry.estab_timeout()),
+        _ => Some(entry.init_timeout()),
+    });
 
-    if let Some(flow) = packet.meta_mut().flow_info.as_ref() {
-        if flow.reset_expiry_unchecked(extend_by).is_ok() {
-            debug!("Extended flow lifetime by {seconds}s");
-        }
-
-        flow.related
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .inspect(|reverse| {
-                if reverse.reset_expiry_unchecked(extend_by).is_ok() {
-                    debug!("Extended reverse-flow lifetime by {seconds}s");
-                }
-            });
-
+    if !new_status.is_terminal() {
         // update flow info generation
         flow.set_genid(genid);
     }
