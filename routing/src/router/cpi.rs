@@ -696,7 +696,7 @@ mod cpi_properties {
                         Some(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))) => {
                             assert_eq!(vxlan.vni.as_u32(), OVERLAY_VNI, "vni in {entry:?}");
                             assert_eq!(vxlan.remote, vtep, "remote in {entry:?}");
-                            assert_eq!(vxlan.dmac, expected_mac, "dmac in {entry:?}");
+                            assert_eq!(vxlan.rmac, expected_mac, "rmac in {entry:?}");
                         }
                         other => panic!("expected an encapsulation first, got {other:?}"),
                     }

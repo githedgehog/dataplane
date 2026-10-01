@@ -42,15 +42,20 @@ impl TryFrom<&VxlanEncap> for VxlanEncapsulation {
     type Error = RouterError;
 
     fn try_from(vxlan: &VxlanEncap) -> Result<Self, Self::Error> {
+        let vni = Vni::new_checked(vxlan.vni).map_err(|_| {
+            error!("Received VxLAN encap with invalid vni {}", vxlan.vni);
+            RouterError::VniInvalid(vxlan.vni)
+        })?;
+        let rmac = Mac::from(vxlan.mac.octets());
+        let rmac = SourceMac::try_from(rmac).map_err(|_| {
+            error!("Received VxLAN encap with invalid mac {rmac}");
+            RouterError::InvalidRouterMac(rmac)
+        })?;
+
         Ok(VxlanEncapsulation {
-            vni: Vni::new_checked(vxlan.vni).map_err(|_| {
-                error!(
-                    "Received VxLAN encapsulation with invalid vni {}",
-                    vxlan.vni
-                );
-                RouterError::VniInvalid(vxlan.vni)
-            })?,
+            vni,
             remote: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            rmac,
         })
     }
 }
@@ -230,6 +235,8 @@ mod rpc_properties {
     use std::str::FromStr;
 
     const NUM_PREFIXES: u8 = 5;
+    /// Router mac carried by every vxlan encap on the wire
+    const WIRE_RMAC: [u8; 6] = [0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0x01];
     const NUM_ADDRESSES: u8 = 3;
     const NUM_IFINDEXES: u8 = 4;
     const NUM_VNIS: u8 = 3;
@@ -355,7 +362,7 @@ mod rpc_properties {
     }
 
     fn wire_nhop(spec: &NhopSpec) -> NextHop {
-        let mac = MacAddress::new([0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0x01]);
+        let mac = MacAddress::new(WIRE_RMAC);
         NextHop {
             fwaction: if spec.drop {
                 ForwardAction::Drop
@@ -410,6 +417,7 @@ mod rpc_properties {
             Some(vni) => Some(Encapsulation::Vxlan(VxlanEncapsulation {
                 vni: Vni::new_checked(vni).ok()?,
                 remote: address?,
+                rmac: SourceMac::new(Mac(WIRE_RMAC)).ok()?,
             })),
         };
 

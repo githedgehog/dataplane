@@ -25,7 +25,7 @@ use tracing::{debug, error, warn};
 
 use routing::{
     EgressObject, FibEntry, FibKey, FibReader, FibTableReader, PktInstruction,
-    ResolvedEncapsulation, ResolvedVxlan, Vtep,
+    ResolvedEncapsulation, Vtep, VxlanEncapsulation,
 };
 
 use tracectl::{custom_target, tdebug, trace_target};
@@ -213,7 +213,7 @@ impl IpForwarder {
 
     /// Build the vxlan headers needed to encapsulate the packet in vxlan. This function returns
     /// an error as a string since there's nothing we can do other than logging if this fails.
-    fn build_vxlan_headers(vxlan: &ResolvedVxlan, vtep: &Vtep) -> Result<VxlanEncap, String> {
+    fn build_vxlan_headers(vxlan: &VxlanEncapsulation, vtep: &Vtep) -> Result<VxlanEncap, String> {
         let src_ip = vtep.ip();
 
         // IPv4 or IPv6
@@ -257,7 +257,7 @@ impl IpForwarder {
     fn vxlan_encap<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        vxlan: &ResolvedVxlan,
+        vxlan: &VxlanEncapsulation,
         vtep: &Vtep,
     ) {
         let nfi = &self.name;
@@ -270,7 +270,7 @@ impl IpForwarder {
 
         // set current packet dst mac (inner)
         if packet
-            .set_eth_dest_mac(DestinationMac::from(vxlan.dmac))
+            .set_eth_dest_mac(DestinationMac::from(vxlan.rmac))
             .is_err()
         {
             packet.done(DoneReason::VxlanEncapFailure);
@@ -437,7 +437,7 @@ mod test {
     use net::packet::test_utils::build_test_ipv6_packet_with_transport;
     use net::vxlan::Vni;
     use routing::testing::RouterTables;
-    use routing::{ResolvedVxlan, Vtep};
+    use routing::{Vtep, VxlanEncapsulation};
     use std::net::IpAddr;
     use std::str::FromStr;
 
@@ -449,10 +449,10 @@ mod test {
             UnicastIpAddr::from_str("192.0.2.1").expect("Bad Ip"),
             SourceMac::try_from("02:00:00:00:00:01").expect("Bad mac"),
         );
-        let vxlan = ResolvedVxlan {
+        let vxlan = VxlanEncapsulation {
             vni: Vni::new_checked(100).unwrap(),
             remote: IpAddr::from([192, 0, 2, 2]),
-            dmac: SourceMac::new(Mac([0x02, 0, 0, 0, 0, 0x02])).unwrap(),
+            rmac: SourceMac::new(Mac([0x02, 0, 0, 0, 0, 0x02])).unwrap(),
         };
 
         let mut packet = build_test_ipv6_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();

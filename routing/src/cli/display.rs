@@ -21,9 +21,7 @@ use crate::router::cpi::{CpiStats, CpiStatus, StatsRow};
 
 use crate::VrfId;
 use crate::rib::VrfTable;
-use crate::rib::encapsulation::{
-    Encapsulation, ResolvedEncapsulation, ResolvedVxlan, VxlanEncapsulation,
-};
+use crate::rib::encapsulation::{Encapsulation, ResolvedEncapsulation, VxlanEncapsulation};
 #[cfg(test)]
 use crate::rib::nexthop::NhopStore;
 use crate::rib::nexthop::{FwAction, Nhop, NhopKey};
@@ -73,20 +71,10 @@ impl Display for VxlanEncapsulation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Vxlan (vni {}), remote {}",
-            self.vni.as_u32(),
-            self.remote
-        )
-    }
-}
-impl Display for ResolvedVxlan {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Vxlan (vni {}), remote {} dmac {}",
+            "Vxlan (vni {}), remote {} rmac {}",
             self.vni.as_u32(),
             self.remote,
-            self.dmac
+            self.rmac
         )
     }
 }

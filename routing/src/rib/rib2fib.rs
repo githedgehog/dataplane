@@ -8,9 +8,7 @@ use tracing::{debug, trace, warn};
 
 use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
-use crate::rib::encapsulation::{
-    Encapsulation, ResolvedEncapsulation, ResolvedVxlan, VxlanEncapsulation,
-};
+use crate::rib::encapsulation::{Encapsulation, ResolvedEncapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, Nhop};
 use crate::rib::vrf::RouteOrigin;
 
@@ -180,7 +178,7 @@ impl Nhop {
 }
 
 impl VxlanEncapsulation {
-    pub(crate) fn resolve(&self, rstore: &RmacStore) -> Option<ResolvedVxlan> {
+    pub(crate) fn resolve(&self, rstore: &RmacStore) -> Option<VxlanEncapsulation> {
         let Some(entry) = rstore.get_rmac(self.vni, self.remote) else {
             warn!(
                 "Router mac for vni {} and remote {} is not known!",
@@ -189,10 +187,10 @@ impl VxlanEncapsulation {
             );
             return None;
         };
-        Some(ResolvedVxlan {
+        Some(VxlanEncapsulation {
             vni: self.vni,
             remote: self.remote,
-            dmac: entry.mac,
+            rmac: entry.mac,
         })
     }
 }
