@@ -418,6 +418,20 @@ docs-open package="" *args: (docs package args)
     echo "docs: file://$(realpath "${index}")"
     xdg-open "${index}"
 
+# Like docs-open, but runs cargo doc in the dev shell rather than nix, so edits rebuild incrementally.
+# Args go to cargo doc (e.g. --document-private-items)
+[script]
+docs-quick package="" *args:
+    {{ _just_debuggable_ }}
+    # Appended rather than set: the dev shell's RUSTDOCFLAGS already carries the KaTeX/Mermaid header.
+    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -Zunstable-options --enable-index-page"
+    export RUSTC_BOOTSTRAP=1
+    cargo doc --no-deps {{ _cargo_profile_flag }} {{ _cargo_feature_flags }} \
+        {{ if package == "" { "--workspace" } else { "--manifest-path " + package / "Cargo.toml" } }} {{ args }}
+    index="target/${CARGO_BUILD_TARGET:+${CARGO_BUILD_TARGET}/}doc/index.html"
+    echo "docs: file://$(realpath "${index}")"
+    xdg-open "${index}"
+
 # Remove test containers n-vm left behind. Args go to n-vm-reap (--force, --list, --all)
 [script]
 reap *args:
