@@ -4,9 +4,13 @@
 use super::apalloc::Allocation;
 use super::nf::MasqueradeError;
 use super::packet::NatTranslate;
-use crate::common::{AtomicNatFlowStatus, NatAction};
+use super::protocol::{flow_side, next_flow_status};
+use crate::common::{AtomicNatFlowStatus, NatAction, NatFlowStatus};
+use crate::flow_tracking::{FlowSide, TrackedState};
 use crate::{NatEndpoint, NatPort, NatTranslationData};
+use net::buffer::PacketBufferMut;
 use net::ip::UnicastIpAddr;
+use net::packet::Packet;
 use std::fmt::Display;
 use std::time::Duration;
 
@@ -102,6 +106,24 @@ impl MasqueradeState {
 
     pub(crate) fn set_allocation(&mut self, allocation: Allocation) {
         self.allocation = Some(allocation);
+    }
+}
+
+impl TrackedState for MasqueradeState {
+    fn status(&self) -> &AtomicNatFlowStatus {
+        &self.status
+    }
+
+    fn side(&self) -> FlowSide {
+        flow_side(self.action)
+    }
+
+    fn next_status<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+        status: NatFlowStatus,
+    ) -> NatFlowStatus {
+        next_flow_status(packet, self.action, status)
     }
 }
 
