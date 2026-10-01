@@ -40,32 +40,47 @@
   # so our own kernel's copy reads Flatcar's image perfectly well.
   extractIkconfig,
 
-  # Flatcar release to pin.  Both artifacts must come from the same one:
-  # modules are vermagic-matched to their kernel and will refuse to load
-  # against a different build.
-  channel ? "stable",
-  version ? "4593.2.4",
-  # Digests are published as SHA512 in the `.DIGESTS` files beside each
-  # artifact; there is no SHA256 to use instead.
-  vmlinuzHash ? "sha512-nwL0g+WSR60foPWju9IyuGAF5xv2qDnNBdn5MXO3UUNXFa8/DKYbgzlkJ0FrOQ0PRqP+bX2zZaWzboIHQQ8dHg==",
-  pxeImageHash ? "sha512-iALhDGwMNfvjbmD7sXJWqQs7zLhxD9bque93PXPTqVAMfSVYpqtRuX/HEy3PKepDmb2rm05xYEzqKnjppCjv0w==",
+  # The npins `url` pins (`flatcar-vmlinuz`, `flatcar-pxe-image`) for the
+  # release's kernel and PXE image; only their `url` and `hash` are read.
+  # `scripts/flatcar-pins.sh` writes both from one release, at its versioned
+  # CDN path rather than `.../current/` (which moves at every release), after
+  # checking each artifact against the SHA512 Flatcar publishes beside it.
+  vmlinuzPin,
+  pxeImagePin,
 }:
 let
-  # The versioned CDN path, not `.../current/`.  `current` moves at every
-  # release, so a pin against it would keep a valid hash while silently
-  # coming to mean a different kernel.
-  base = "https://flatcar.cdn.cncf.io/${channel}/amd64-usr/${version}";
+  # The release is read back out of the pinned URLs, which are
+  # `https://flatcar.cdn.cncf.io/<channel>/amd64-usr/<version>/<artifact>`.
+  release =
+    pin:
+    let
+      parts = builtins.match "https://flatcar\\.cdn\\.cncf\\.io/([^/]+)/amd64-usr/([^/]+)/[^/]+" pin.url;
+    in
+    if parts == null then
+      throw "unexpected Flatcar pin URL ${pin.url}; rerun scripts/flatcar-pins.sh"
+    else
+      {
+        channel = builtins.elemAt parts 0;
+        version = builtins.elemAt parts 1;
+      };
+
+  # Both artifacts must come from the same release: modules are
+  # vermagic-matched to their kernel and will refuse to load against a
+  # different build.
+  inherit (release vmlinuzPin) channel version;
+  _sameRelease =
+    release pxeImagePin == release vmlinuzPin
+    || throw "Flatcar pins come from different releases (${vmlinuzPin.url} vs ${pxeImagePin.url}); rerun scripts/flatcar-pins.sh";
 
   vmlinuz = fetchurl {
-    url = "${base}/flatcar_production_pxe.vmlinuz";
-    hash = vmlinuzHash;
+    inherit (vmlinuzPin) url hash;
   };
 
   pxeImage = fetchurl {
-    url = "${base}/flatcar_production_pxe_image.cpio.gz";
-    hash = pxeImageHash;
+    inherit (pxeImagePin) url hash;
   };
 in
+assert _sameRelease;
 stdenvNoCC.mkDerivation {
   pname = "flatcar-kernel";
   inherit version;
