@@ -20,8 +20,8 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::FlowInfo;
 
 use crate::common::{AtomicNatFlowStatus, NatAction, NatFlowStatus};
+use crate::flow_tracking::{self, FlowSide};
 use crate::portfw::PortFwEntry;
-use crate::portfw::protocol::next_flow_status;
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
@@ -80,6 +80,15 @@ impl PortFwState {
     #[must_use]
     pub fn rule(&self) -> &Weak<PortFwEntry> {
         &self.rule
+    }
+    /// The side of the connection that sends the packets hitting this flow: the initiator's
+    /// packets are destination-NATed.
+    #[must_use]
+    pub(crate) fn side(&self) -> FlowSide {
+        match self.action {
+            NatAction::DstNat => FlowSide::Initiator,
+            NatAction::SrcNat => FlowSide::Responder,
+        }
     }
 }
 
@@ -226,6 +235,16 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
     Some(state.clone())
 }
 
+/// Compute the next status of a port-forwarded flow, given the packet that hit it.
+fn next_flow_status<Buf: PacketBufferMut>(
+    packet: &Packet<Buf>,
+    state: &PortFwState,
+) -> NatFlowStatus {
+    // Masquerade also closes DNS flows on the first reply, with flow_tracking::close_dns_on_reply().
+    // Port forwarding could opt in here, if desired.
+    flow_tracking::next_status(packet, state.side(), state.status.load())
+}
+
 /// Update the port-forwarding state of a flow entry after processing a packet.
 /// This updates the flow status shared by flow entries' port-forwarding state.
 /// We use the status of the flow to determine the extent to which the lifetime
@@ -284,10 +303,13 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 
 #[cfg(test)]
 mod test {
-    use super::build_portfw_flow_keys;
+    use super::{PortFwState, build_portfw_flow_keys, next_flow_status};
+    use crate::common::{AtomicNatFlowStatus, NatFlowStatus};
     use crate::static_nat::probe::build;
+    use concurrency::sync::Weak;
     use net::FlowKey;
     use net::buffer::TestBuffer;
+    use net::headers::TryTcp;
     use net::ip::UnicastIpAddr;
     use net::packet::{Packet, VpcDiscriminant};
     use net::vxlan::Vni;
@@ -427,5 +449,53 @@ mod test {
             hash_of(&second_reverse),
             "the reverse keys compare equal but hash apart, so they would not collide in the table"
         );
+    }
+
+    /// A non-first fragment carries no transport header, even if its payload looks like one. It
+    /// must not move the status of the flow it hits.
+    ///
+    /// Port forwarding currently drops such packets when it fails to translate them, before
+    /// updating the flow status. This test checks the state machine directly, in case we
+    /// translate fragments in the future.
+    #[test]
+    fn a_non_first_fragment_does_not_move_the_flow_status() {
+        use etherparse::{IpFragOffset, IpNumber, Ipv4Header, TcpHeader};
+
+        // Fragment payload that looks like a TCP ACK, which would establish a two-way flow.
+        let mut tcp = TcpHeader::new(1234, 8001, 0, 0);
+        tcp.ack = true;
+        let mut payload = Vec::new();
+        tcp.write(&mut payload).unwrap_or_else(|_| unreachable!());
+
+        #[allow(clippy::cast_possible_truncation)]
+        let mut ip = Ipv4Header::new(
+            payload.len() as u16,
+            64,
+            IpNumber::TCP,
+            [3, 3, 3, 1],
+            [172, 16, 0, 1],
+        )
+        .unwrap_or_else(|_| unreachable!());
+        ip.fragment_offset = IpFragOffset::try_new(185).unwrap_or_else(|_| unreachable!());
+
+        let mut bytes = vec![2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x08, 0x00];
+        ip.write(&mut bytes).unwrap_or_else(|_| unreachable!());
+        bytes.extend_from_slice(&payload);
+        let packet: Packet<TestBuffer> =
+            Packet::new(TestBuffer::from_raw_data(&bytes)).unwrap_or_else(|_| unreachable!());
+        assert!(
+            packet.try_tcp().is_some_and(net::tcp::Tcp::ack),
+            "the parser must read a TCP ACK from the fragment payload, or this tests nothing"
+        );
+
+        let status = AtomicNatFlowStatus::new();
+        status.store(NatFlowStatus::TwoWay);
+        let state = PortFwState::new_dnat(
+            UnicastIpAddr::try_from(addr("192.168.1.1")).unwrap_or_else(|_| unreachable!()),
+            NonZero::new(80).unwrap_or_else(|| unreachable!()),
+            Weak::new(),
+            status,
+        );
+        assert_eq!(next_flow_status(&packet, &state), NatFlowStatus::TwoWay);
     }
 }
