@@ -590,7 +590,10 @@ mod cpi_properties {
                 address: Some(vtep),
                 ifindex: None,
                 vrfid,
-                encap: Some(NextHopEncap::VXLAN(VxlanEncap { vni: OVERLAY_VNI })),
+                encap: Some(NextHopEncap::VXLAN(VxlanEncap {
+                    vni: OVERLAY_VNI,
+                    mac: MacAddress::new(macs()[0]),
+                })),
             }],
         }
     }

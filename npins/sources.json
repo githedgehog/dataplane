@@ -53,11 +53,11 @@
         "owner": "githedgehog",
         "repo": "dplane-rpc"
       },
-      "branch": "master",
+      "branch": "pr/fredi/next-hop-vxlan-mac",
       "submodules": false,
-      "revision": "fa91e0be94bcbce21fe5167311e49047e43a9cb1",
-      "url": "https://github.com/githedgehog/dplane-rpc/archive/fa91e0be94bcbce21fe5167311e49047e43a9cb1.tar.gz",
-      "hash": "sha256-4NcJcMoya8m3fE3kCVWzYZyU1h9R5jwLftJ0edmIHAA=",
+      "revision": "78770c05891cf425e13e9ad3d8bb64d24af6073c",
+      "url": "https://github.com/githedgehog/dplane-rpc/archive/78770c05891cf425e13e9ad3d8bb64d24af6073c.tar.gz",
+      "hash": "sha256-0ngagO2Xm8hOo5mDgLeR4tQ7ME8VUH5NlfMkEMgIqe4=",
       "frozen": true
     },
     "crate-fixin": {

@@ -77,7 +77,7 @@ impl TryFrom<&Rmac> for RmacEntry {
     type Error = RouterError;
 
     fn try_from(value: &Rmac) -> Result<Self, Self::Error> {
-        let mac = Mac::from(value.mac.bytes());
+        let mac = Mac::from(value.mac.octets());
         Ok(Self {
             address: value.address,
             mac: SourceMac::new(mac).map_err(|e| {
@@ -223,6 +223,7 @@ mod rpc_properties {
     use super::*;
     use crate::rib::vrf::RouterVrfConfig;
     use bolero::{Driver, ValueGenerator};
+    use dplane_rpc::msg::MacAddress;
     use dplane_rpc::proto::{Ifindex, MaskLen, VrfId};
     use std::net::IpAddr;
     use std::ops::Bound::Included;
@@ -354,6 +355,7 @@ mod rpc_properties {
     }
 
     fn wire_nhop(spec: &NhopSpec) -> NextHop {
+        let mac = MacAddress::new([0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0x01]);
         NextHop {
             fwaction: if spec.drop {
                 ForwardAction::Drop
@@ -363,7 +365,7 @@ mod rpc_properties {
             address: addresses()[spec.address],
             ifindex: ifindexes()[spec.ifindex],
             vrfid: spec.vrfid,
-            encap: vnis()[spec.vni].map(|vni| NextHopEncap::VXLAN(VxlanEncap { vni })),
+            encap: vnis()[spec.vni].map(|vni| NextHopEncap::VXLAN(VxlanEncap { vni, mac })),
         }
     }
 
