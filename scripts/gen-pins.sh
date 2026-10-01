@@ -69,3 +69,22 @@ npins add github githedgehog duvet --branch v0.4.3-hh # floats with branch on pi
 npins add github opengrep opengrep
 npins add github mermaid-js mermaid --release-prefix "mermaid@"
 npins add github KaTeX KaTeX
+
+# Git dependencies of the cargo workspace.
+# Cargo.lock records a checksum for registry packages but only a commit id for git sources, so default.nix takes the
+# Nix hash of each git source from the npins pin of the same repository at the locked revision (see
+# `cargoGitOutputHashes`).
+# These pins must sit at exactly the revision Cargo.lock locks, so rather than floating they are generated from
+# Cargo.lock and frozen. To move one, run `cargo update -p <crate>` and then `npins update --frozen crate-<repo>`.
+# shellcheck disable=SC2016 # `$src` is a jq variable; the program is single-quoted on purpose
+tomlq -r '
+  [.package[].source // empty | select(startswith("git+"))] | unique[]
+  | . as $src
+  | (capture("^git\\+https://github\\.com/(?<owner>[^/]+)/(?<repo>[^/?#]+?)(?:\\.git)?\\?branch=(?<branch>[^&#]+)#(?<rev>[0-9a-f]{40})$")
+      // error("Cargo.lock git source \($src) is not a GitHub repository on a branch; pin it by hand"))
+  # Cargo.lock percent-encodes the branch name (e.g. `/` as `%2F`)
+  | [.owner, .repo, (.branch | gsub("%2[Ff]"; "/")), .rev]
+  | @tsv
+' Cargo.lock | while IFS=$'\t' read -r owner repo branch rev; do
+  npins add github "${owner}" "${repo}" --branch "${branch}" --at "${rev}" --name "crate-${repo}" --frozen
+done
