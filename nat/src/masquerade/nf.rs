@@ -5,7 +5,9 @@
 
 use crate::NatPort;
 use crate::common::NatFlowStatus;
-use crate::flow_tracking::{advance_flow, transport_proto};
+use crate::flow_tracking::{
+    HalfFlow, InstallError, NewFlow, advance_flow, install_pair, transport_proto,
+};
 use crate::masquerade::NatAllocatorWriter;
 use crate::masquerade::allocation::{AllocationResult, AllocatorError};
 use crate::masquerade::allocator_writer::NatAllocatorReader;
@@ -14,7 +16,7 @@ use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
 use crate::masquerade::state::MasqueradeState;
 use clock::Duration;
 use concurrency::sync::Arc;
-use flow_entry::flow_table::table::{FlowTable, FlowTableError, PairInsertion};
+use flow_entry::flow_table::table::FlowTable;
 use net::buffer::PacketBufferMut;
 use net::flow_key::{FlowAddrs, IcmpProtoKey};
 use net::flows::{ExtractRef, FlowInfo, FlowInfoError};
@@ -67,20 +69,6 @@ pub(crate) enum MasqueradeError {
     FlowError(#[from] FlowInfoError),
     #[error("unsupported protocol: {0:?}")]
     UnsupportedProtocol(NextHeader),
-}
-
-#[derive(Debug)]
-enum MasqueradeFlow {
-    Installed(Arc<FlowInfo>),
-    Held(Arc<FlowInfo>),
-}
-
-impl MasqueradeFlow {
-    fn flow(&self) -> &Arc<FlowInfo> {
-        match self {
-            MasqueradeFlow::Installed(flow) | MasqueradeFlow::Held(flow) => flow,
-        }
-    }
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`Masquerade`] processes
@@ -287,19 +275,6 @@ impl Masquerade {
         Some((state.as_translate(), state.idle_timeout()))
     }
 
-    fn setup_flow_masquerade_state(
-        flow_info: &FlowInfo,
-        state: MasqueradeState,
-        dst_vpcd: VpcDiscriminant,
-    ) {
-        let flow_key = flow_info.flowkey();
-        debug!("Setting up masquerade flow state: {flow_key} -> {state}");
-        let state = Box::new(state);
-        let mut write_guard = flow_info.locked.write();
-        write_guard.nat_state = Some(state);
-        write_guard.dst_vpcd = Some(dst_vpcd);
-    }
-
     fn get_reverse_mapping(
         flow_key: &FlowKey,
     ) -> Result<(UnicastIpAddr, NatPort), MasqueradeError> {
@@ -321,7 +296,7 @@ impl Masquerade {
         current_flow_key: &FlowKey,
         alloc: AllocationResult<Allocation>,
         allocator: &Arc<NatAllocator>,
-    ) -> Result<MasqueradeFlow, MasqueradeError> {
+    ) -> Result<NewFlow, MasqueradeError> {
         let idle_timeout = alloc.idle_timeout;
 
         // src and dst vpc of this packet
@@ -340,19 +315,16 @@ impl Masquerade {
         let (forward_state, reverse_state) =
             MasqueradeState::new_pair(alloc.allocation, src_ip, src_port, idle_timeout)?;
 
-        // build a flow pair from the keys (without NAT state)
-        let expires_at = clock::now() + Self::MASQUERADE_ONEWAY_TIMEOUT;
-        let (forward, reverse) = FlowInfo::related_pair(
-            expires_at,
-            *initial_flow_key,
-            packet.meta().compute_flow_flags_forward(),
-            reverse_key,
-            packet.meta().compute_flow_flags_reverse(),
-        )?;
-
-        // set up their NAT state
-        Self::setup_flow_masquerade_state(&forward, forward_state, dst_vpc_id);
-        Self::setup_flow_masquerade_state(&reverse, reverse_state, src_vpc_id);
+        let forward = HalfFlow {
+            key: *initial_flow_key,
+            state: forward_state,
+            dst_vpcd: dst_vpc_id,
+        };
+        let reverse = HalfFlow {
+            key: reverse_key,
+            state: reverse_state,
+            dst_vpcd: src_vpc_id,
+        };
 
         // Only publish the pair if the allocator we used is still the installed one.
         // On configuration change, the replacement allocator migrates the flows it finds in the
@@ -363,42 +335,23 @@ impl Masquerade {
         // - the replacement allocator sees this pair and all is fine, or
         // - we see that there is a replacement allocator, and we give up the tuple so that it may
         //   be handed out again without conflict.
+        //
+        // Similarly, read the genid while we hold the write lock for the table.
         let admit = || {
-            let admitted = self.allocator.is_current(allocator);
-            // Similarly, update the genid while we hold the write lock for the table
-            if admitted {
-                let genid = allocator.genid();
-                forward.set_genid(genid);
-                reverse.set_genid(genid);
-            }
-            admitted
+            self.allocator
+                .is_current(allocator)
+                .then(|| allocator.genid())
         };
 
-        // Claim both keys before exposing either half to lookups or competing creators.
-        let insertion = self
-            .flow_table
-            .insert_pair_if_admitted(&forward, &reverse, admit)
-            .map_err(|e| match e {
-                FlowTableError::CapacityExceeded => MasqueradeError::CapacityExceeded,
-            })?
-            .ok_or(MasqueradeError::AllocatorReplaced)?;
-        match insertion {
-            PairInsertion::Installed => Ok(MasqueradeFlow::Installed(forward)),
-            PairInsertion::ForwardOccupied(held) => {
-                debug!(
-                    "Lost the race to create flow {}; masquerading with the winner",
-                    forward.flowkey()
-                );
-                Ok(MasqueradeFlow::Held(held))
-            }
-            PairInsertion::ReverseOccupied => {
-                debug!(
-                    "Reverse tuple {} is occupied; dropping the new flow",
-                    reverse.flowkey()
-                );
-                Err(MasqueradeError::ReverseTupleInUse)
-            }
-        }
+        let (meta, timeout) = (packet.meta(), Self::MASQUERADE_ONEWAY_TIMEOUT);
+        install_pair(&self.flow_table, meta, timeout, forward, reverse, admit).map_err(
+            |e| match e {
+                InstallError::NotAdmitted => MasqueradeError::AllocatorReplaced,
+                InstallError::ReverseOccupied => MasqueradeError::ReverseTupleInUse,
+                InstallError::CapacityExceeded => MasqueradeError::CapacityExceeded,
+                InstallError::Flow(e) => MasqueradeError::FlowError(e),
+            },
+        )
     }
 
     fn new_reverse_session(
@@ -469,7 +422,7 @@ impl Masquerade {
         (src_vpcd, dst_vpcd): (VpcDiscriminant, VpcDiscriminant),
         initial_flow_key: &FlowKey,
         current_flow_key: &FlowKey,
-    ) -> Result<MasqueradeFlow, MasqueradeError> {
+    ) -> Result<NewFlow, MasqueradeError> {
         let nfi = self.name();
 
         // allocate an ip and port for this flow
@@ -555,22 +508,15 @@ impl Masquerade {
             }
             outcome => outcome?,
         };
-        let flow = outcome.flow();
 
         // check that the masquerade state is readable
-        let translate = flow
-            .locked
-            .read()
-            .nat_state
-            .extract_ref::<MasqueradeState>()
-            .ok_or(MasqueradeError::Bug("Unexpected masquerade state miss"))?
-            .as_translate();
+        let translate = outcome
+            .with_state(MasqueradeState::as_translate)
+            .ok_or(MasqueradeError::Bug("Unexpected masquerade state miss"))?;
 
         // translate the packet
         if let Err(e) = masquerade(packet, &translate) {
-            if let MasqueradeFlow::Installed(installed) = &outcome {
-                installed.invalidate_pair();
-            }
+            outcome.abandon();
             return Err(e.into());
         }
         Ok(())
@@ -899,7 +845,7 @@ mod race {
             .create_flow_pair(&mut first, &first_key, &first_key, held, &running)
             .unwrap_or_else(|e| unreachable!("{e}"));
         assert!(
-            matches!(installed, MasqueradeFlow::Installed(_)),
+            matches!(installed, NewFlow::Installed(_)),
             "the first conversation did not install its flow"
         );
 
@@ -997,14 +943,14 @@ mod race {
         let winner = masq
             .create_flow_pair(&mut packet, &key, &key, winning, &allocator)
             .unwrap_or_else(|e| unreachable!("{e}"));
-        let MasqueradeFlow::Installed(winner) = winner else {
+        let NewFlow::Installed(winner) = winner else {
             unreachable!("the first packet did not install the flow");
         };
 
         let outcome = masq
             .create_flow_pair(&mut packet, &key, &key, losing, &allocator)
             .unwrap_or_else(|e| unreachable!("{e}"));
-        let MasqueradeFlow::Held(held) = outcome else {
+        let NewFlow::Held(held) = outcome else {
             panic!("the second packet installed a pair of its own over a live flow");
         };
         assert!(

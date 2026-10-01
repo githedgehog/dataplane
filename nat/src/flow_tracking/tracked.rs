@@ -6,11 +6,23 @@
 use super::{FlowSide, next_status};
 use crate::common::{AtomicNatFlowStatus, NatFlowStatus};
 use net::buffer::PacketBufferMut;
+use net::flows::{FlowInfoItem, FlowInfoLocked};
 use net::packet::Packet;
 
 /// State that a mode keeps in each half of a tracked pair of flows. Both halves of a pair share
 /// the same status.
-pub(crate) trait TrackedState {
+pub(crate) trait TrackedState: FlowInfoItem + Sized {
+    /// The content of the field of a flow that holds this state.
+    fn slot(locked: &FlowInfoLocked) -> Option<&dyn FlowInfoItem>;
+
+    /// The field of a flow that holds this state, mutable.
+    fn slot_mut(locked: &mut FlowInfoLocked) -> &mut Option<Box<dyn FlowInfoItem>>;
+
+    /// The state of this type held by a flow, if any.
+    fn of(locked: &FlowInfoLocked) -> Option<&Self> {
+        Self::slot(locked)?.downcast_ref::<Self>()
+    }
+
     /// The status shared by both halves of the pair.
     fn status(&self) -> &AtomicNatFlowStatus;
 

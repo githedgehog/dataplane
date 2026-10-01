@@ -7,7 +7,7 @@
 
 use net::buffer::PacketBufferMut;
 use net::flow_key::FlowKeyError;
-use net::flows::{ExtractMut, ExtractRef, FlowStatus};
+use net::flows::{ExtractMut, ExtractRef, FlowInfoItem, FlowInfoLocked, FlowStatus};
 use net::ip::UnicastIpAddr;
 use net::packet::{Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
@@ -84,6 +84,14 @@ impl PortFwState {
 }
 
 impl TrackedState for PortFwState {
+    fn slot(locked: &FlowInfoLocked) -> Option<&dyn FlowInfoItem> {
+        locked.port_fw_state.as_deref()
+    }
+
+    fn slot_mut(locked: &mut FlowInfoLocked) -> &mut Option<Box<dyn FlowInfoItem>> {
+        &mut locked.port_fw_state
+    }
+
     fn status(&self) -> &AtomicNatFlowStatus {
         &self.status
     }
