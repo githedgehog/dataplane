@@ -23,6 +23,11 @@ pub(crate) trait TrackedState: FlowInfoItem + Sized {
         Self::slot(locked)?.downcast_ref::<Self>()
     }
 
+    /// The state of this type held by a flow, if any, mutable.
+    fn of_mut(locked: &mut FlowInfoLocked) -> Option<&mut Self> {
+        Self::slot_mut(locked).as_mut()?.downcast_mut::<Self>()
+    }
+
     /// The status shared by both halves of the pair.
     fn status(&self) -> &AtomicNatFlowStatus;
 

@@ -7,7 +7,7 @@
 
 use net::buffer::PacketBufferMut;
 use net::flow_key::FlowKeyError;
-use net::flows::{ExtractMut, ExtractRef, FlowInfoItem, FlowInfoLocked, FlowStatus};
+use net::flows::{FlowInfoItem, FlowInfoLocked, FlowStatus};
 use net::ip::UnicastIpAddr;
 use net::packet::{Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
@@ -179,7 +179,7 @@ pub(crate) fn new_port_fw_states(
 /// Used by configuration migration and by packets that trigger stale-rule revalidation.
 pub(crate) fn reassign_port_fw_rule(flow_info: &FlowInfo, entry: &Arc<PortFwEntry>) {
     let mut flow_info_locked = flow_info.locked.write();
-    if let Some(state) = flow_info_locked.port_fw_state.extract_mut::<PortFwState>() {
+    if let Some(state) = PortFwState::of_mut(&mut flow_info_locked) {
         state.rule = Arc::downgrade(entry);
     }
 }
@@ -199,11 +199,7 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
         return None;
     }
     let guard = flow.locked.read();
-    let Some(state) = guard
-        .port_fw_state
-        .as_ref()
-        .and_then(|s| s.extract_ref::<PortFwState>())
-    else {
+    let Some(state) = PortFwState::of(&guard) else {
         debug!("Packet flow-info does not contain port-forwarding state");
         return None;
     };
