@@ -40,9 +40,7 @@ pub use interfaces::iftable::IfTable;
 pub use interfaces::iftablerw::{IfChange, IfTableReader, IfTableReaderFactory};
 pub use interfaces::interface::{AttachConfig, Attachment, RouterInterfaceConfig};
 pub use interfaces::interface::{IfDataEthernet, IfState, IfType, Interface};
-pub use rib::encapsulation::{
-    Encapsulation, ResolvedEncapsulation, ResolvedVxlan, VxlanEncapsulation,
-};
+pub use rib::encapsulation::{Encapsulation, ResolvedEncapsulation, VxlanEncapsulation};
 pub use rib::vrf::{RouterVrfConfig, VrfId};
 
 #[cfg(any(test, feature = "testing"))]

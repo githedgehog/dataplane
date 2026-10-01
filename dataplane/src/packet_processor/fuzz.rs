@@ -35,7 +35,9 @@ use pipeline::{DynPipeline, NetworkFunction, PipelineData};
 use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
 use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
-use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
+use routing::{
+    EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, Vtep, VxlanEncapsulation,
+};
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 use std::time::Duration;
@@ -1306,10 +1308,10 @@ fn encapsulate_out_of(tables: &mut RouterTables, vrfid: u32, out_vni: Vni) {
     );
     let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
     let mut out = FibEntry::with_inst(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(
-        ResolvedVxlan {
+        VxlanEncapsulation {
             vni: out_vni,
             remote: peer,
-            dmac: SourceMac::new(PEER_MAC).unwrap_or_else(|_| unreachable!()),
+            rmac: SourceMac::new(PEER_MAC).unwrap_or_else(|_| unreachable!()),
         },
     )));
     out.add(PktInstruction::Egress(EgressObject::new(
@@ -5942,10 +5944,10 @@ mod model {
         fn towards(nth: u8) -> FibGroup {
             let (remote, oif) = waypoint(nth);
             let mut out = FibEntry::with_inst(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(
-                ResolvedVxlan {
+                VxlanEncapsulation {
                     vni: vni(REMOTE_VNI),
                     remote,
-                    dmac: SourceMac::new(framing(nth)).unwrap_or_else(|_| unreachable!()),
+                    rmac: SourceMac::new(framing(nth)).unwrap_or_else(|_| unreachable!()),
                 },
             )));
             out.add(PktInstruction::Egress(EgressObject::new(

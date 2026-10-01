@@ -250,7 +250,7 @@ pub enum PktInstruction {
 #[cfg(test)]
 mod squash_properties {
     use super::*;
-    use crate::rib::encapsulation::ResolvedVxlan;
+    use crate::rib::encapsulation::VxlanEncapsulation;
     use bolero::{Driver, ValueGenerator};
     use std::net::Ipv4Addr;
     use std::num::NonZero;
@@ -283,11 +283,11 @@ mod squash_properties {
         Some(match driver.gen_u8(Included(&0), Included(&3))? {
             0 => PktInstruction::Local(index(driver.gen_u8(Included(&1), Included(&3))?)),
             1 => PktInstruction::Drop,
-            2 => PktInstruction::Encap(ResolvedEncapsulation::Vxlan(ResolvedVxlan {
+            2 => PktInstruction::Encap(ResolvedEncapsulation::Vxlan(VxlanEncapsulation {
                 vni: Vni::new_checked(u32::from(driver.gen_u8(Included(&1), Included(&3))?))
                     .unwrap_or_else(|_| unreachable!()),
                 remote: ADDRESSES[0],
-                dmac: "02:00:00:00:00:01".parse().unwrap(),
+                rmac: "02:00:00:00:00:01".parse().unwrap(),
             })),
             _ => PktInstruction::Egress(egress(driver)?),
         })

@@ -878,9 +878,7 @@ mod tests {
         assert_eq!(fibgroup.len(), 4);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"))
-                .resolve(&rstore)
-                .expect("the rmac store knows this remote");
+            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
                 PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))
@@ -912,9 +910,7 @@ mod tests {
         assert_eq!(fibgroup.len(), 2);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"))
-                .resolve(&rstore)
-                .expect("the rmac store knows this remote");
+            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
                 PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))
@@ -943,9 +939,7 @@ mod tests {
         assert_eq!(fibgroup.len(), 1);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"))
-                .resolve(&rstore)
-                .expect("the rmac store knows this remote");
+            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
                 PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))
@@ -970,9 +964,7 @@ mod tests {
         assert_eq!(fibgroup.len(), 4);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"))
-                .resolve(&rstore)
-                .expect("the rmac store knows this remote");
+            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
                 PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))

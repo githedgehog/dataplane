@@ -743,7 +743,8 @@ impl RouteV6Filter {
 #[allow(clippy::cast_sign_loss)]
 pub mod tests {
     use lpm::prefix::IpPrefix;
-use net::interface::InterfaceIndex;
+    use net::interface::InterfaceIndex;
+    use net::eth::mac::SourceMac;
     use common::cliprovider::Frame;
 
     use super::*;
@@ -979,6 +980,7 @@ use net::interface::InterfaceIndex;
             Some(Encapsulation::Vxlan(VxlanEncapsulation::new(
                 Vni::new_checked(vni).expect("Should be ok"),
                 IpAddr::from_str("7.0.0.1").unwrap(),
+                SourceMac::try_from("02:ca:fe:ba:be:01").unwrap(),
             ))),
         );
         let prefix = Prefix::expect_from(dst);
