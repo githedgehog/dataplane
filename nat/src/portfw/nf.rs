@@ -5,10 +5,9 @@
 
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable, PortFwTableReader};
 use concurrency::sync::{Arc, Weak};
-use flow_entry::flow_table::table::{FlowTable, PairInsertion};
+use flow_entry::flow_table::table::FlowTable;
 
 use net::buffer::PacketBufferMut;
-use net::flows::{ExtractRef, FlowInfo};
 use net::headers::{Transport, TryHeaders, TryIp};
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -16,32 +15,16 @@ use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
 
 use crate::common::NatAction;
+use crate::flow_tracking::{HalfFlow, InstallError, install_pair};
 use crate::portfw::flow_state::build_portfw_flow_keys;
 use crate::portfw::flow_state::get_packet_port_fw_state;
+use crate::portfw::flow_state::new_port_fw_states;
 use crate::portfw::flow_state::reassign_port_fw_rule;
 use crate::portfw::flow_state::refresh_port_fw_entry;
-use crate::portfw::flow_state::setup_forward_flow;
-use crate::portfw::flow_state::setup_reverse_flow;
 use crate::portfw::packet::nat_packet;
 
 #[allow(unused)]
 use tracing::{debug, error, trace, warn};
-
-/// Track whether this call created the flow pair or reused a concurrent winner. Only the
-/// creator may invalidate the pair if translation fails.
-#[derive(Debug)]
-enum PortFwFlow {
-    Installed(Arc<FlowInfo>),
-    Held(Arc<FlowInfo>),
-}
-
-impl PortFwFlow {
-    fn flow(&self) -> &Arc<FlowInfo> {
-        match self {
-            PortFwFlow::Installed(flow) | PortFwFlow::Held(flow) => flow,
-        }
-    }
-}
 
 /// A port-forwarding network function
 pub struct PortForwarder {
@@ -139,69 +122,53 @@ impl PortForwarder {
                 }
             };
 
-        // create a pair of related flow entries (outside the flow table). Timeout is set according to the rule matched
-        let timeout = clock::deadline(entry.init_timeout());
-        let Ok((fw_flow, rev_flow)) = FlowInfo::related_pair(
-            timeout,
-            fw_key,
-            packet.meta().compute_flow_flags_forward(),
-            rev_key,
-            packet.meta().compute_flow_flags_reverse(),
-        ) else {
-            debug!("Failed to build flow pair for port forwarded flow");
-            packet.done(DoneReason::InternalFailure);
-            return;
+        let (fw_state, rev_state) =
+            new_port_fw_states(entry, dst_ip, dst_port, new_dst_ip, new_dst_port);
+        let forward = HalfFlow {
+            key: fw_key,
+            state: fw_state,
+            dst_vpcd: entry.dst_vpcd,
+        };
+        let reverse = HalfFlow {
+            key: rev_key,
+            state: rev_state,
+            dst_vpcd: entry.key.src_vpcd(),
         };
 
         // Stamp with the generation being installed, which may not yet be published.
-        fw_flow.set_genid_pair(self.pipeline_data.staging_genid());
-
-        // set the flows in the FORWARD & REVERSE direction for subsequent packets
-        let status = setup_forward_flow(&fw_key, &fw_flow, entry, new_dst_ip, new_dst_port);
-        setup_reverse_flow(&rev_key, &rev_flow, entry, dst_ip, dst_port, status);
+        let genid = self.pipeline_data.staging_genid();
 
         // Claim both keys before translation. Workers can hold different table snapshots
         // and choose different backends for the same public tuple. The losing worker must use
-        // the winner's translation so replies match the installed reverse key.
-        let outcome = match self.flow_table.insert_pair_if_absent(&fw_flow, &rev_flow) {
-            Ok(PairInsertion::ForwardOccupied(held)) => {
-                debug!(
-                    "Lost the race to create port-forwarding flow {fw_key}; \
-                     forwarding with the winner's state"
-                );
-                PortFwFlow::Held(held)
-            }
-            Ok(PairInsertion::Installed) => {
-                debug!("Inserted forward and reverse port-forwarding flow entries");
-                PortFwFlow::Installed(fw_flow)
-            }
-            Ok(PairInsertion::ReverseOccupied) => {
-                debug!("Reverse port-forwarding tuple {rev_key} already serves a live flow");
+        // the winner's translation so replies match the installed reverse key. Timeout is set
+        // according to the rule matched.
+        let timeout = entry.init_timeout();
+        let meta = packet.meta();
+        let admit = || Some(genid);
+        let outcome = match install_pair(&self.flow_table, meta, timeout, forward, reverse, admit) {
+            Ok(outcome) => outcome,
+            Err(InstallError::ReverseOccupied) => {
                 packet.done(DoneReason::NatNotPortForwarded);
                 return;
             }
-            Err(e) => {
+            Err(e @ InstallError::CapacityExceeded) => {
                 warn!("Failed to insert port-forwarding flow pair: {e}");
                 packet.done(DoneReason::FlowCapacityExceeded);
+                return;
+            }
+            Err(e @ (InstallError::Flow(_) | InstallError::NotAdmitted)) => {
+                debug!("Failed to build flow pair for port forwarded flow: {e}");
+                packet.done(DoneReason::InternalFailure);
                 return;
             }
         };
 
         // Clone the translation state before releasing the guard. A concurrent winner's flow
         // may lose its state, so handle a missing state even though a new pair always has one.
-        let pfw_state = outcome
-            .flow()
-            .locked
-            .read()
-            .port_fw_state
-            .extract_ref::<PortFwState>()
-            .cloned();
-        let Some(pfw_state) = pfw_state else {
+        let Some(pfw_state) = outcome.with_state(PortFwState::clone) else {
             error!("Port-forwarding flow {fw_key} carries no port-forwarding state");
             packet.done(DoneReason::InternalFailure);
-            if let PortFwFlow::Installed(installed) = &outcome {
-                installed.invalidate_pair();
-            }
+            outcome.abandon();
             return;
         };
 
@@ -209,9 +176,7 @@ impl PortForwarder {
         if let Err(e) = nat_packet(packet, &pfw_state) {
             debug!("Failed to port-forward packet (initial):{e}");
             packet.done(DoneReason::InternalFailure);
-            if let PortFwFlow::Installed(installed) = &outcome {
-                installed.invalidate_pair();
-            }
+            outcome.abandon();
         }
     }
 
