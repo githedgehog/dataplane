@@ -341,8 +341,12 @@ fn show_rmac_store(request: CliRequest, rmac_store: &RmacStore) -> Result<CliRes
     Ok(CliResponse::from_request_ok(request, out.to_string()))
 }
 
-fn show_vtep(request: CliRequest, vtep: &Vtep) -> CliResponse {
-    CliResponse::from_request_ok(request, vtep.to_string())
+fn show_vtep(request: CliRequest, vtep: Option<&Vtep>) -> CliResponse {
+    if let Some(vtep) = vtep {
+        CliResponse::from_request_ok(request, vtep.to_string())
+    } else {
+        CliResponse::from_request_ok(request, "No VTEP is configured".to_string())
+    }
 }
 fn show_adjacency_table(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     let atable = db.atabler.enter().ok_or(CliError::Inaccessible)?;
@@ -526,7 +530,7 @@ fn do_handle_cli_request(
         CliAction::ShowRouterInterfaceAddresses => show_interface_addresses(request, db)?,
         CliAction::ShowRouterVrfs => show_vrfs(request, &db.vrftable),
         CliAction::ShowRouterEvpnRmacStore => show_rmac_store(request, &db.rmac_store)?,
-        CliAction::ShowRouterEvpnVtep => show_vtep(request, &db.vtep),
+        CliAction::ShowRouterEvpnVtep => show_vtep(request, db.vtep.as_ref()),
         CliAction::ShowAdjacencies => show_adjacency_table(request, db)?,
         CliAction::ShowRouterIpv4Routes => show_vrf_routes(request, db, true)?,
         CliAction::ShowRouterIpv6Routes => show_vrf_routes(request, db, false)?,
@@ -670,10 +674,9 @@ mod tests_cli_handling {
         ifconfig
     }
     fn build_vtep() -> Vtep {
-        let mut vtep = Vtep::new();
-        vtep.set_ip(IpAddr::from_str(VTEP_IP).unwrap());
-        vtep.set_mac(SourceMac::try_from(VTEP_MAC).unwrap());
-        vtep
+        let ip = IpAddr::from_str(VTEP_IP).unwrap();
+        let mac = SourceMac::try_from(VTEP_MAC).unwrap();
+        Vtep::new(ip, mac)
     }
     fn build_router_config() -> RouterConfig {
         let vrfconfig = build_router_vrf_config();

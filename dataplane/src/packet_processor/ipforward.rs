@@ -112,7 +112,8 @@ impl IpForwarder {
         }
 
         /* execute instructions according to FIB */
-        self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
+        let vtep = fib.get_vtep();
+        self.packet_exec_instructions(packet, fibentry, vtep);
 
         /* strip vrfid */
         if packet.meta().vrf == vrfid {
@@ -188,9 +189,7 @@ impl IpForwarder {
     /// Build the vxlan headers needed to encapsulate the packet in vxlan. This function returns
     /// an error as a string since there's nothing we can do other than logging if this fails.
     fn build_vxlan_headers(vxlan: &ResolvedVxlan, vtep: &Vtep) -> Result<VxlanEncap, String> {
-        let Some(src_ip) = &vtep.get_ip() else {
-            return Err("VTEP has no Ip address".to_string());
-        };
+        let src_ip = vtep.ip();
 
         // IPv4 or IPv6
         let net = match (&src_ip, &vxlan.remote) {
@@ -240,19 +239,21 @@ impl IpForwarder {
         &self,
         packet: &mut Packet<Buf>,
         vxlan: &ResolvedVxlan,
-        vtep: &Vtep,
+        vtep: Option<&Vtep>,
     ) {
         let nfi = &self.name;
-
-        let Some(src_mac) = &vtep.get_mac() else {
-            error!("{nfi}: VxLAN encap FAILED: VTEP has no mac associated!");
+        let Some(vtep) = vtep else {
+            error!("{nfi}: VxLAN encap FAILED: no VTEP info available");
             packet.done(DoneReason::VxlanEncapFailure);
             return;
         };
+
+        let nfi = &self.name;
+        let src_mac = vtep.mac();
         let dst_mac = &vxlan.dmac;
 
         // set the src mac of the inner packet (current)
-        packet.set_eth_source_mac(*src_mac);
+        packet.set_eth_source_mac(src_mac);
 
         // set current packet dst mac (inner)
         if let Err(e) = packet.set_eth_destination(dst_mac.inner()) {
@@ -300,7 +301,7 @@ impl IpForwarder {
         &self,
         packet: &mut Packet<Buf>,
         encap: &ResolvedEncapsulation,
-        vtep: &Vtep,
+        vtep: Option<&Vtep>,
     ) {
         match encap {
             ResolvedEncapsulation::Mpls(_label) => todo!(),
@@ -338,7 +339,7 @@ impl IpForwarder {
     /// Execute a [`PktInstruction`] on the packet
     fn packet_exec_instruction<Buf: PacketBufferMut>(
         &self,
-        vtep: &Vtep,
+        vtep: Option<&Vtep>,
         packet: &mut Packet<Buf>,
         instruction: &PktInstruction,
     ) {
@@ -357,7 +358,7 @@ impl IpForwarder {
         &self,
         packet: &mut Packet<Buf>,
         fibentry: &FibEntry,
-        vtep: &Vtep,
+        vtep: Option<&Vtep>,
     ) {
         for inst in fibentry.iter() {
             self.packet_exec_instruction(vtep, packet, inst);
@@ -422,7 +423,7 @@ mod test {
     #[test]
     fn an_ipv6_packet_without_a_refresh_encapsulates() {
         let forwarder = IpForwarder::new("test", RouterTables::new().fibs());
-        let vtep = Vtep::with_ip_and_mac(
+        let vtep = Vtep::new(
             IpAddr::from([192, 0, 2, 1]),
             SourceMac::try_from("02:00:00:00:00:01").expect("Bad mac"),
         );
@@ -435,7 +436,7 @@ mod test {
         let mut packet = build_test_ipv6_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();
         assert!(!packet.meta().checksum_refresh());
 
-        forwarder.vxlan_encap(&mut packet, &vxlan, &vtep);
+        forwarder.vxlan_encap(&mut packet, &vxlan, Some(&vtep));
 
         assert_eq!(packet.get_done(), None);
         assert!(

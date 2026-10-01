@@ -22,6 +22,7 @@ use tracing::{debug, error};
 
 use crate::config::interface::ReconfigInterfacePlan;
 use crate::config::vrf::ReconfigVrfPlan;
+use crate::config::vtep::apply_vtep_config;
 
 /// Alias for FRR config. Currently, FRR config is received as a string.
 pub type FrrConfig = String;
@@ -86,9 +87,7 @@ impl RouterConfig {
             return Err(RouterError::InvalidConfig("Duplicated vnis"));
         }
         // Check vtep if there
-        if let Some(vtep) = &self.vtep
-            && !vtep.is_set_up()
-        {
+        if num_vnis > 0 && self.vtep.is_none() {
             return Err(RouterError::InvalidConfig("Vtep is not set up"));
         }
         Ok(())
@@ -150,15 +149,22 @@ impl RouterConfig {
     //////////////////////////////////////////////////////////////////////////////////
     pub(crate) fn apply(&self, db: &mut RoutingDb) -> Result<(), RouterError> {
         let genid = self.genid;
-        self.validate()?; /* validate the config */
+
+        // validate the config
+        self.validate()?;
+
+        // build and apply vrf reconfiguration plan
         ReconfigVrfPlan::generate(self, &db.vrftable).apply(&mut db.vrftable, &mut db.iftw)?;
-        let iftabler = db.iftw.enter().unwrap_or_else(|| unreachable!());
-        let reconfig_ifaces = ReconfigInterfacePlan::generate(self, &iftabler);
-        drop(iftabler);
+
+        // build and apply interface reconfiguration
+        let iftable = db.iftw.enter().unwrap_or_else(|| unreachable!());
+        let reconfig_ifaces = ReconfigInterfacePlan::generate(self, &iftable);
+        drop(iftable);
         reconfig_ifaces.apply(&mut db.iftw, &db.vrftable)?;
-        if let Some(vtep) = &self.vtep {
-            vtep.apply(db);
-        }
+
+        // store and apply vtep configuration (infallible)
+        apply_vtep_config(self.vtep.as_ref(), db);
+
         debug!("Successfully applied router config for generation {genid}");
         self.verify(db)?;
         Ok(())
@@ -309,7 +315,7 @@ mod tests {
     fn add_router_vtep_config(config: &mut RouterConfig) {
         let vtep_ip = IpAddr::from_str("7.0.0.100").unwrap();
         let vtep_mac = SourceMac::try_from("00:ca:fe:be:ff:44").expect("Bad mac");
-        let vtep = Vtep::with_ip_and_mac(vtep_ip, vtep_mac);
+        let vtep = Vtep::new(vtep_ip, vtep_mac);
         config.set_vtep(vtep);
     }
     fn build_router_config() -> RouterConfig {
