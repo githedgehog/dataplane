@@ -3,14 +3,14 @@
 
 //! Submodule to represent VTEP state
 
-use net::eth::mac::Mac;
+use net::eth::mac::SourceMac;
 use std::net::IpAddr;
 
 /// Type that represents a VTEP
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Vtep {
     ip: Option<IpAddr>,
-    mac: Option<Mac>,
+    mac: Option<SourceMac>,
 }
 
 impl Vtep {
@@ -19,7 +19,7 @@ impl Vtep {
         Self::default()
     }
     #[must_use]
-    pub fn with_ip_and_mac(ip: IpAddr, mac: Mac) -> Self {
+    pub fn with_ip_and_mac(ip: IpAddr, mac: SourceMac) -> Self {
         Self {
             ip: Some(ip),
             mac: Some(mac),
@@ -30,13 +30,13 @@ impl Vtep {
         self.ip
     }
     #[must_use]
-    pub fn get_mac(&self) -> Option<Mac> {
+    pub fn get_mac(&self) -> Option<SourceMac> {
         self.mac
     }
     pub fn set_ip(&mut self, ip: IpAddr) {
         self.ip = Some(ip);
     }
-    pub fn set_mac(&mut self, mac: Mac) {
+    pub fn set_mac(&mut self, mac: SourceMac) {
         self.mac = Some(mac);
     }
     #[must_use]

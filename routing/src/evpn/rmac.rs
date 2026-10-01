@@ -267,7 +267,7 @@ pub(crate) mod tests {
     use super::{RmacEntry, RmacFilter, RmacStore};
     use crate::evpn::vtep::Vtep;
     use crate::rib::vrf::tests::mk_addr;
-    use net::eth::mac::{Mac, SourceMac};
+    use net::eth::mac::SourceMac;
     use net::vxlan::Vni;
     use std::net::IpAddr;
     use std::str::FromStr;
@@ -287,7 +287,7 @@ pub(crate) mod tests {
     #[allow(unused)] // fixme: add test
     pub fn build_sample_vtep() -> Vtep {
         let address = mk_addr("7.0.0.100");
-        let mac = Mac::from([0x02, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+        let mac = SourceMac::try_from("02:bb:cc:dd:ee:ff").expect("Bad source mac");
         Vtep::with_ip_and_mac(address, mac)
     }
 
@@ -356,7 +356,7 @@ pub(crate) mod tests {
         assert_eq!(vtep.get_mac(), None);
         vtep.set_ip(mk_addr("172.16.128.1"));
         assert!(vtep.get_ip().is_some());
-        vtep.set_mac(Mac::from([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]));
+        vtep.set_mac(SourceMac::try_from("aa:bb:cc:dd:ee:ff").unwrap());
         assert!(vtep.get_mac().is_some());
         vtep.unset_ip();
         vtep.unset_mac();

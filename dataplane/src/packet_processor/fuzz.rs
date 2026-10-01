@@ -1302,7 +1302,7 @@ fn encapsulate_out_of(tables: &mut RouterTables, vrfid: u32, out_vni: Vni) {
         vrfid,
         Vtep::with_ip_and_mac(
             LOCAL_VTEP.parse().unwrap_or_else(|_| unreachable!()),
-            GATEWAY_MAC,
+            SourceMac::new(GATEWAY_MAC).unwrap_or_else(|_| unreachable!()),
         ),
     );
     let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
