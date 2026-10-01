@@ -35,6 +35,9 @@ pub enum PacketUtilError<'a> {
     #[error("no ip")]
     /// This error is returned when the utility method is called with a packet that does not have an IP header
     NoIp,
+    #[error("no ethernet")]
+    /// This error is returned when the utility method is called with a packet that does not have an Ethernet header
+    NoEth,
     #[error("no transport")]
     /// This error is returned when the utility method is called with a packet that does not have a transport header
     NoTransport,
@@ -87,6 +90,18 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         Ok(())
     }
 
+    /// Set a valid source mac in the ethernet Header
+    ///
+    /// # Errors
+    ///
+    /// This method returns [`PacketUtilError`] if the packet has no ethernet header
+    pub fn set_eth_source_mac(&mut self, mac: SourceMac) -> Result<(), PacketUtilError<'_>> {
+        self.try_eth_mut()
+            .map(|eth| eth.set_source(mac))
+            .ok_or(PacketUtilError::NoEth)?;
+        Ok(())
+    }
+
     /// Set destination mac in ethernet Header
     ///
     /// # Errors
@@ -95,6 +110,18 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     pub fn set_eth_destination(&mut self, mac: Mac) -> Result<(), DestinationMacAddressError> {
         let mac = DestinationMac::new(mac)?;
         self.try_eth_mut().map(|eth| eth.set_destination(mac));
+        Ok(())
+    }
+
+    /// Set destination mac in the ethernet Header
+    ///
+    /// # Errors
+    ///
+    /// This method returns [`PacketUtilError`] if the packet has no ethernet header
+    pub fn set_eth_dest_mac(&mut self, mac: DestinationMac) -> Result<(), PacketUtilError<'_>> {
+        self.try_eth_mut()
+            .map(|eth| eth.set_destination(mac))
+            .ok_or(PacketUtilError::NoEth)?;
         Ok(())
     }
 
