@@ -53,11 +53,11 @@
         "owner": "githedgehog",
         "repo": "dplane-rpc"
       },
-      "branch": "pr/daniel-noland/bumps",
+      "branch": "master",
       "submodules": false,
-      "revision": "6c84b7aff35abb4e94fbb0d09870a0b4a2322913",
-      "url": "https://github.com/githedgehog/dplane-rpc/archive/6c84b7aff35abb4e94fbb0d09870a0b4a2322913.tar.gz",
-      "hash": "sha256-YOCcWOynWN49KKY17KfP31QBK1ZM6x6Xl4/tdfNwgIs=",
+      "revision": "fa91e0be94bcbce21fe5167311e49047e43a9cb1",
+      "url": "https://github.com/githedgehog/dplane-rpc/archive/fa91e0be94bcbce21fe5167311e49047e43a9cb1.tar.gz",
+      "hash": "sha256-4NcJcMoya8m3fE3kCVWzYZyU1h9R5jwLftJ0edmIHAA=",
       "frozen": true
     },
     "crate-fixin": {
@@ -151,9 +151,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "5d4a3567cd3112a17c319f8b8039bdc38453f8d0",
-      "url": "https://github.com/githedgehog/dplane-rpc/archive/5d4a3567cd3112a17c319f8b8039bdc38453f8d0.tar.gz",
-      "hash": "sha256-aORTBFg1vcBb7znFEhe0oNCIX00DHwB79aAoxlOMNuc="
+      "revision": "fa91e0be94bcbce21fe5167311e49047e43a9cb1",
+      "url": "https://github.com/githedgehog/dplane-rpc/archive/fa91e0be94bcbce21fe5167311e49047e43a9cb1.tar.gz",
+      "hash": "sha256-4NcJcMoya8m3fE3kCVWzYZyU1h9R5jwLftJ0edmIHAA="
     },
     "duvet": {
       "type": "Git",

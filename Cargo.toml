@@ -85,7 +85,7 @@ dpdk = { path = "./dpdk", package = "dataplane-dpdk", features = [] }
 dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys", features = [] }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper", features = [] }
 dpdk-test-macros = { path = "./dpdk-test-macros", package = "dataplane-dpdk-test-macros", features = [] }
-dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", branch = "pr/daniel-noland/bumps", features = [] }
+dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", branch = "master", features = [] }
 errno = { path = "./errno", package = "dataplane-errno", features = [] }
 fixed-size = { path = "./fixed-size", package = "dataplane-fixed-size", features = [] }
 flow-entry = { path = "./flow-entry", package = "dataplane-flow-entry", features = [] }
