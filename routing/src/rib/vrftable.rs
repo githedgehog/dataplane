@@ -5,7 +5,6 @@
 //! and optionally identified by a Vni. A vrf table always has a default vrf.
 
 use crate::RouterError;
-use crate::evpn::RmacStore;
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibKey;
 use crate::interfaces::iftablerw::IfTableWriter;
@@ -422,21 +421,10 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     /// Refresh the fib groups for all non-default vrfs.
     //////////////////////////////////////////////////////////////////
-    pub fn refresh_non_default_fibs(&mut self, rstore: &RmacStore) {
+    pub fn refresh_non_default_fibs(&mut self) {
         let (vrfs, vrf0) = self.values_mut_except_default();
         for vrf in vrfs {
-            vrf.refresh_fib(rstore, Some(vrf0));
-        }
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Refresh the fib groups for all vrfs that have a vni in the
-    /// provided set
-    //////////////////////////////////////////////////////////////////
-    pub fn refresh_fibs_by_vni(&mut self, vnis: &[Vni], rstore: &RmacStore) {
-        let (vrfs, vrf0) = self.values_mut_except_default();
-        for vrf in vrfs.filter(|v| v.vni.is_some_and(|vni| vnis.contains(&vni))) {
-            vrf.refresh_fib(rstore, Some(vrf0));
+            vrf.refresh_fib(Some(vrf0));
         }
     }
 
@@ -450,17 +438,17 @@ impl VrfTable {
     /////////////////////////////////////////////////////////////////////////
     // Remove stale routes across all vrfs
     /////////////////////////////////////////////////////////////////////////
-    pub fn remove_stale_routes(&mut self, rstore: &RmacStore) {
+    pub fn remove_stale_routes(&mut self) {
         debug!("Removing stale routes..");
         let (vrfs, vrf0) = self.values_mut_except_default();
 
         // remove stale routes from non-default vrfs
         for vrf in vrfs {
-            vrf.remove_stale_routes(Some(vrf0), rstore);
+            vrf.remove_stale_routes(Some(vrf0));
         }
 
         // remove stale routes from default vrf
-        vrf0.remove_stale_routes(None, rstore);
+        vrf0.remove_stale_routes(None);
     }
 }
 
@@ -473,19 +461,18 @@ mod tests {
     use crate::fib::fibtype::FibKey;
     use crate::interfaces::tests::build_test_iftable_left_right;
     use crate::rib::encapsulation::Encapsulation;
+    use crate::rib::encapsulation::VxlanEncapsulation;
     use crate::rib::vrf::VrfStatus;
     use crate::rib::vrf::tests::{build_test_vrf, mk_addr};
     use crate::rib::vrf::tests::{
         build_test_vrf_nhops_partially_resolved, init_test_vrf, mod_test_vrf_1, mod_test_vrf_2,
     };
-    use crate::{
-        evpn::rmac::tests::build_sample_rmac_store, rib::encapsulation::VxlanEncapsulation,
-    };
     use common::cliprovider::Frame;
+    use net::eth::mac::SourceMac;
     use net::interface::InterfaceIndex;
     use tracing_test::traced_test;
 
-    fn mk_vni(vni: u32) -> Vni {
+    fn vni(vni: u32) -> Vni {
         vni.try_into().expect("Bad vni")
     }
 
@@ -508,13 +495,13 @@ mod tests {
 
         /* add VRFs (default VRF is always there) */
         debug!("━━━━━━━━ Test: Add VRFs");
-        let cfg = RouterVrfConfig::new(1, "VPC-1").set_vni(Some(mk_vni(3000)));
+        let cfg = RouterVrfConfig::new(1, "VPC-1").set_vni(Some(vni(3000)));
         vrftable.add_vrf(&cfg).expect("Should succeed");
 
-        let cfg = RouterVrfConfig::new(2, "VPC-2").set_vni(Some(mk_vni(4000)));
+        let cfg = RouterVrfConfig::new(2, "VPC-2").set_vni(Some(vni(4000)));
         vrftable.add_vrf(&cfg).expect("Should succeed");
 
-        let cfg = RouterVrfConfig::new(3, "VPC-3").set_vni(Some(mk_vni(5000)));
+        let cfg = RouterVrfConfig::new(3, "VPC-3").set_vni(Some(vni(5000)));
         vrftable.add_vrf(&cfg).expect("Should succeed");
 
         /* add VRF with already used id */
@@ -528,7 +515,7 @@ mod tests {
 
         /* add VRF with unused id but used vni */
         debug!("━━━━━━━━ Test: Add VRF with duplicated vni 3000");
-        let cfg = RouterVrfConfig::new(999, "duped-vni").set_vni(Some(mk_vni(3000)));
+        let cfg = RouterVrfConfig::new(999, "duped-vni").set_vni(Some(vni(3000)));
         assert!(
             vrftable
                 .add_vrf(&cfg)
@@ -547,14 +534,12 @@ mod tests {
 
         /* get VRF by vni - success */
         debug!("━━━━━━━━ Test: Lookup vrf by vni 5000");
-        let vrf3 = vrftable
-            .get_vrf_by_vni(mk_vni(5000))
-            .expect("Should be there");
+        let vrf3 = vrftable.get_vrf_by_vni(vni(5000)).expect("Should be there");
         assert_eq!(vrf3.name, "VPC-3");
 
         /* get VRF by vni - nonexistent vrf */
         debug!("━━━━━━━━ Test: Lookup VRF by non-existent vni 1234");
-        let vrf = vrftable.get_vrf_by_vni(mk_vni(1234));
+        let vrf = vrftable.get_vrf_by_vni(vni(1234));
         assert!(vrf.is_err_and(|e| e == RouterError::NoSuchVrf));
 
         /* check default vrf exists */
@@ -639,7 +624,7 @@ mod tests {
         debug!("━━━━━━━━ Test: lookup by vni 3000");
         assert!(
             vrftable
-                .get_vrf_by_vni(mk_vni(3000))
+                .get_vrf_by_vni(vni(3000))
                 .is_err_and(|e| e == RouterError::NoSuchVrf),
         );
 
@@ -671,7 +656,7 @@ mod tests {
         debug!("━━━━━━━━ Test: lookup by vni 4000");
         assert!(
             vrftable
-                .get_vrf_by_vni(mk_vni(4000))
+                .get_vrf_by_vni(vni(4000))
                 .is_err_and(|e| e == RouterError::NoSuchVrf),
         );
 
@@ -687,7 +672,7 @@ mod tests {
         let mut vrftable = VrfTable::new(fibtw);
 
         let vrfid = 999;
-        let vni = mk_vni(3000);
+        let vni = vni(3000);
 
         debug!("━━━━Test: Add a VRF without VNI");
         let vrf_cfg = RouterVrfConfig::new(vrfid, "VPC-1");
@@ -755,7 +740,7 @@ mod tests {
         }
 
         let vrfid = 999;
-        let vni = mk_vni(3000);
+        let vni = vni(3000);
 
         debug!("━━━━Test: Add a VRF with id {vrfid} but no Vni");
         let vrf_cfg = RouterVrfConfig::new(vrfid, "VPC-1");
@@ -860,9 +845,7 @@ mod tests {
 
     #[rustfmt::skip]
     fn test_vrf_fibgroup(mut vrf: Vrf) {
-        let rstore = build_sample_rmac_store();
-
-        vrf.nhstore.rebuild_nhop_instructions(&rstore);
+        vrf.nhstore.rebuild_nhop_instructions();
         vrf.nhstore.lazy_resolve_all(&vrf);
         vrf.nhstore.rebuild_fibgroups();
         // this is equivalent to vrf.refresh_fib(&rstore, None);
@@ -872,13 +855,15 @@ mod tests {
         show_fibgroups(&vrf, "8.0.0.2");
         show_fibgroups(&vrf, "7.0.0.1");
         show_fibgroups(&vrf, "192.168.0.1");
+
         let destination = mk_addr("192.168.0.1");
         let (_, route) = vrf.lpm(destination);
         let fibgroup = route.s_nhops[0].rc.fibgroup.borrow().clone();
         assert_eq!(fibgroup.len(), 4);
+
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
+            let vxlan = VxlanEncapsulation::new(vni(3000), mk_addr("7.0.0.1"), "02:ca:fe:ba:be:01".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
                 PktInstruction::Encap(Encapsulation::Vxlan(vxlan))
@@ -897,7 +882,7 @@ mod tests {
         }
 
         mod_test_vrf_1(&mut vrf);
-        vrf.refresh_fib(&rstore, None);
+        vrf.refresh_fib( None);
         vrf.dump(Some("After removing path via 10.0.0.5"));
 
         show_fibgroups(&vrf, "8.0.0.1");
@@ -910,7 +895,7 @@ mod tests {
         assert_eq!(fibgroup.len(), 2);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
+            let vxlan = VxlanEncapsulation::new(vni(3000), mk_addr("7.0.0.1"), "02:ca:fe:ba:be:01".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
                 PktInstruction::Encap(Encapsulation::Vxlan(vxlan))
@@ -928,7 +913,7 @@ mod tests {
 
 
         mod_test_vrf_2(&mut vrf);
-        vrf.refresh_fib(&rstore, None);
+        vrf.refresh_fib(None);
 
         show_fibgroups(&vrf, "8.0.0.1");
         show_fibgroups(&vrf, "7.0.0.1");
@@ -939,7 +924,7 @@ mod tests {
         assert_eq!(fibgroup.len(), 1);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
+            let vxlan = VxlanEncapsulation::new(vni(3000), mk_addr("7.0.0.1"), "02:ca:fe:ba:be:01".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
                 PktInstruction::Encap(Encapsulation::Vxlan(vxlan))
@@ -956,7 +941,7 @@ mod tests {
 
 
         init_test_vrf(&mut vrf);
-        vrf.refresh_fib(&rstore, None);
+        vrf.refresh_fib( None);
         show_fibgroups(&vrf, "192.168.0.1");
 
         let (_, route) = vrf.lpm(destination);
@@ -964,7 +949,7 @@ mod tests {
         assert_eq!(fibgroup.len(), 4);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"), "02:00:00:00:00:aa".parse().unwrap());
+            let vxlan = VxlanEncapsulation::new(vni(3000), mk_addr("7.0.0.1"), "02:ca:fe:ba:be:01".parse().unwrap());
             assert_eq!(
                 entry.instructions[0],
                 PktInstruction::Encap(Encapsulation::Vxlan(vxlan))
@@ -1341,8 +1326,6 @@ mod crossvrf_properties {
         vrfs: Vec<bool>,
         underlay: Vec<(usize, usize, bool)>,
         overlay: Vec<(usize, usize, usize)>,
-        later: Option<(usize, usize, bool)>,
-        selected: Vec<usize>,
     }
 
     #[derive(Debug, Clone, Copy, Default)]
@@ -1383,28 +1366,10 @@ mod crossvrf_properties {
                 ));
             }
 
-            let later = if driver.produce::<bool>()? {
-                Some((
-                    index(driver, NUM_UNDERLAY)?,
-                    index(driver, NUM_IFINDEXES)?,
-                    driver.produce::<bool>()?,
-                ))
-            } else {
-                None
-            };
-
-            let count = driver.gen_u8(Included(&0), Included(&NUM_VNIS))?;
-            let mut selected = Vec::with_capacity(usize::from(count));
-            for _ in 0..count {
-                selected.push(index(driver, NUM_VNIS)?);
-            }
-
             Some(Topology {
                 vrfs,
                 underlay,
                 overlay,
-                later,
-                selected,
             })
         }
     }
@@ -1466,7 +1431,7 @@ mod crossvrf_properties {
         )
     }
 
-    fn realize(topology: &Topology, rstore: &RmacStore) -> (VrfTable, Underlay, Overlay) {
+    fn realize(topology: &Topology) -> (VrfTable, Underlay, Overlay) {
         let (fibtw, _fibtr) = FibTableWriter::new();
         let mut table = VrfTable::new(fibtw);
         let ids = vrf_ids();
@@ -1486,7 +1451,7 @@ mod crossvrf_properties {
             let vrf0 = table
                 .get_vrf_mut(Vrf::DEFAULT_VRFID)
                 .unwrap_or_else(|e| unreachable!("{e}"));
-            vrf0.add_route_complete(&underlay()[*prefix], route, &nhops, None, rstore);
+            vrf0.add_route_complete(&underlay()[*prefix], route, &nhops, None);
             model.insert(*prefix, (*ifindex, *onlink));
         }
 
@@ -1496,7 +1461,7 @@ mod crossvrf_properties {
             let target = table
                 .get_vrf_mut(ids[*vrf])
                 .unwrap_or_else(|e| unreachable!("{e}"));
-            target.add_route_complete(&overlay()[*prefix], route, &nhops, None, rstore);
+            target.add_route_complete(&overlay()[*prefix], route, &nhops, None);
             overlay_model.insert((*vrf, *prefix), *via);
         }
 
@@ -1553,13 +1518,12 @@ mod crossvrf_properties {
 
     #[test]
     fn a_refresh_resolves_other_vrfs_through_the_default_one() {
-        let rstore = RmacStore::new();
         bolero::check!()
             .with_generator(Topologies)
             .cloned()
             .for_each(|topology: Topology| {
-                let (mut table, model, routes) = realize(&topology, &rstore);
-                table.refresh_non_default_fibs(&rstore);
+                let (mut table, model, routes) = realize(&topology);
+                table.refresh_non_default_fibs();
                 every_entry_is_executable(&table, "after a refresh");
 
                 let ids = vrf_ids();
@@ -1576,76 +1540,16 @@ mod crossvrf_properties {
     }
 
     #[test]
-    fn refreshing_by_vni_touches_only_those_vnis() {
-        let rstore = RmacStore::new();
-        bolero::check!()
-            .with_generator(Topologies)
-            .cloned()
-            .for_each(|topology: Topology| {
-                let Some(later) = topology.later else { return };
-                let (mut table, mut model, routes) = realize(&topology, &rstore);
-                table.refresh_non_default_fibs(&rstore);
-
-                let ids = vrf_ids();
-                let all_vnis = vnis();
-
-                let before: BTreeMap<(usize, usize), Option<Vec<FibEntry>>> = routes
-                    .keys()
-                    .map(|(vrf, prefix)| {
-                        (
-                            (*vrf, *prefix),
-                            fib_entries(&table, ids[*vrf], overlay()[*prefix]),
-                        )
-                    })
-                    .collect();
-
-                let (prefix, ifindex, onlink) = later;
-                let (route, nhops) = underlay_route(ifindex, onlink);
-                let vrf0 = table
-                    .get_vrf_mut(Vrf::DEFAULT_VRFID)
-                    .unwrap_or_else(|e| unreachable!("{e}"));
-                vrf0.add_route_complete(&underlay()[prefix], route, &nhops, None, &rstore);
-                model.insert(prefix, (ifindex, onlink));
-
-                let selected: Vec<Vni> = topology.selected.iter().map(|i| all_vnis[*i]).collect();
-                table.refresh_fibs_by_vni(&selected, &rstore);
-                every_entry_is_executable(&table, "after refreshing by vni");
-
-                for ((vrf, prefix), via) in &routes {
-                    let got = fib_entries(&table, ids[*vrf], overlay()[*prefix]);
-                    let vni = table
-                        .get_vrf(ids[*vrf])
-                        .unwrap_or_else(|e| unreachable!("{e}"))
-                        .vni;
-                    if vni.is_some_and(|vni| selected.contains(&vni)) {
-                        assert_eq!(
-                            got,
-                            Some(vec![expected_entry(&model, *via)]),
-                            "refreshed vrf {vrf} prefix {prefix}, for {topology:?}"
-                        );
-                    } else {
-                        assert_eq!(
-                            got,
-                            before[&(*vrf, *prefix)],
-                            "untouched vrf {vrf} prefix {prefix}, for {topology:?}"
-                        );
-                    }
-                }
-            });
-    }
-
-    #[test]
     fn a_stale_sweep_empties_every_vrf() {
-        let rstore = RmacStore::new();
         bolero::check!()
             .with_generator(Topologies)
             .cloned()
             .for_each(|topology: Topology| {
-                let (mut table, _model, _routes) = realize(&topology, &rstore);
-                table.refresh_non_default_fibs(&rstore);
+                let (mut table, _model, _routes) = realize(&topology);
+                table.refresh_non_default_fibs();
 
                 table.set_stale(true);
-                table.remove_stale_routes(&rstore);
+                table.remove_stale_routes();
 
                 for vrf in table.values() {
                     assert_eq!(vrf.len_v4(), 1, "vrf {} kept ipv4 routes", vrf.vrfid);

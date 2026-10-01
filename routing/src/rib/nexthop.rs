@@ -6,7 +6,6 @@
 
 use super::encapsulation::Encapsulation;
 use super::vrf::{RouteOrigin, Vrf};
-use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{FibGroup, PktInstruction};
 use ordermap::OrderSet;
 
@@ -17,7 +16,6 @@ use std::net::IpAddr;
 use std::option::Option;
 
 use net::interface::InterfaceIndex;
-use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 #[cfg(test)]
@@ -35,7 +33,6 @@ pub struct Nhop {
     resolvers: RefCell<Vec<Weak<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub(crate) fibgroup: RefCell<FibGroup>,
-    pub(crate) invalid: Cell<bool>,
 }
 
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
@@ -164,7 +161,6 @@ impl Nhop {
             resolvers: RefCell::new(Vec::new()),
             instructions: RefCell::new(Vec::with_capacity(2)),
             fibgroup: RefCell::new(FibGroup::new()),
-            invalid: Cell::new(false),
         }
     }
 
@@ -415,9 +411,9 @@ impl NhopStore {
     }
 
     /// Rebuild the instructions for each next-hop
-    pub fn rebuild_nhop_instructions(&self, rstore: &RmacStore) {
+    pub fn rebuild_nhop_instructions(&self) {
         for nhop in self.iter() {
-            nhop.build_nhop_instructions(rstore);
+            nhop.build_nhop_instructions();
         }
     }
 
@@ -482,7 +478,6 @@ impl NhopStore {
 
 #[cfg(test)]
 mod tests {
-    use crate::evpn::RmacStore;
     use crate::fib::fibobjects::{FibEntry, PktInstruction};
     use crate::rib::nexthop::*;
     use std::rc::Rc;
@@ -928,7 +923,7 @@ mod tests {
         let key = NhopKey::from_address("7.0.0.1");
         let nhop = store.add_nhop(&key);
         nhop.add_resolver(&i1).add_resolver(&unresolved);
-        store.rebuild_nhop_instructions(&RmacStore::new());
+        store.rebuild_nhop_instructions();
         store.dump();
 
         // Fibgroup gets only one entry over interface
@@ -944,7 +939,6 @@ mod tests {
     #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_nhop_instruction_build_and_fibgroup() {
-        let rmac_store = RmacStore::new();
         let mut store = NhopStore::new();
 
         let nh1 = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
@@ -962,7 +956,7 @@ mod tests {
         nh3_1.add_resolver(&nh5);
 
         // build the instructions of all next-hops
-        store.rebuild_nhop_instructions(&rmac_store);
+        store.rebuild_nhop_instructions();
 
         // check: next-hop nh1 has a single instruction with its address
         let instructions = nh1.instructions.borrow();
@@ -994,7 +988,6 @@ mod tests {
     #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_sanity_drop_fibentry() {
-        let rmac_store = RmacStore::new();
         let mut store = NhopStore::new();
 
         let nh1 = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
@@ -1004,7 +997,7 @@ mod tests {
         nh2.add_resolver(&nh3);
 
         // build the instructions of all next-hops
-        store.rebuild_nhop_instructions(&rmac_store);
+        store.rebuild_nhop_instructions();
 
         // check: next-hop nh1 has a single instruction with its address
         let instructions = nh1.instructions.borrow();
@@ -1200,14 +1193,13 @@ mod fibgroup_properties {
 
     #[test]
     fn a_fibgroup_is_the_usable_paths_through_the_graph() {
-        let rstore = RmacStore::new();
         bolero::check!()
             .with_generator(Graphs)
             .cloned()
             .for_each(|graph: Graph| {
                 let (_store, nodes) = realize(&graph);
                 for node in &nodes {
-                    node.build_nhop_instructions(&rstore);
+                    node.build_nhop_instructions();
                 }
 
                 let mut want = Vec::new();
@@ -1223,14 +1215,13 @@ mod fibgroup_properties {
 
     #[test]
     fn every_entry_in_a_fibgroup_is_usable() {
-        let rstore = RmacStore::new();
         bolero::check!()
             .with_generator(Graphs)
             .cloned()
             .for_each(|graph: Graph| {
                 let (_store, nodes) = realize(&graph);
                 for node in &nodes {
-                    node.build_nhop_instructions(&rstore);
+                    node.build_nhop_instructions();
                 }
                 let group = nodes[0].build_nhop_fibgroup();
                 assert!(!group.is_empty(), "for {graph:?}");
@@ -1300,7 +1291,6 @@ mod fibgroup_properties {
 /// down, over route graphs that do contain loops.
 mod resolution_properties {
     use super::*;
-    use crate::evpn::RmacStore;
     use crate::rib::vrf::tests::{build_test_nhop, build_test_route};
     use crate::rib::vrf::{RouteNhop, RouteOrigin, RouterVrfConfig};
     use bolero::{Driver, ValueGenerator};
@@ -1350,13 +1340,7 @@ mod resolution_properties {
 
     fn add_route(vrf: &mut Vrf, prefix: (&str, u8), nhops: &[RouteNhop]) {
         let route = build_test_route(RouteOrigin::Bgp, 0, 1);
-        vrf.add_route_complete(
-            &Prefix::expect_from(prefix),
-            route,
-            nhops,
-            None,
-            &RmacStore::new(),
-        );
+        vrf.add_route_complete(&Prefix::expect_from(prefix), route, nhops, None);
     }
 
     /// Realize a graph as a vrf, so that the only thing that gives its next-hops
@@ -1438,7 +1422,7 @@ mod resolution_properties {
             .for_each(|graph: RouteGraph| {
                 let vrf = realize_as_vrf(&graph);
                 vrf.nhstore.lazy_resolve_all(&vrf);
-                vrf.nhstore.rebuild_nhop_instructions(&RmacStore::new());
+                vrf.nhstore.rebuild_nhop_instructions();
                 for nhop in vrf.nhstore.iter() {
                     let fibgroup = nhop.build_nhop_fibgroup();
                     assert!(!fibgroup.is_empty(), "empty fibgroup for {graph:?}");

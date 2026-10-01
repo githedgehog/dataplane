@@ -189,9 +189,6 @@ fn indent_depth(f: &mut std::fmt::Formatter<'_>, depth: u8) -> std::fmt::Result 
 fn fmt_nhop(f: &mut std::fmt::Formatter<'_>, nhop: &Nhop, depth: u8) -> std::fmt::Result {
     indent_depth(f, depth)?;
     nhop.key.fmt(f)?;
-    if nhop.invalid.get() {
-        write!(f, " (INVALID)")?;
-    }
     if nhop.is_unresolved() {
         write!(f, " (unresolved)")?;
     }
@@ -650,30 +647,23 @@ impl Display for IfTableAddress<'_> {
 // ======================= RMAC store ======================== //
 macro_rules! RMAC_TBL_FMT {
     () => {
-        " {:<5} {:<20} {:<18} {:<8}"
+        " {:<5} {:<20} {:<18}"
     };
 }
 fn fmt_rmac_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     writeln!(
         f,
         "{}",
-        format_args!(RMAC_TBL_FMT!(), "vni", "address", "mac", "status")
+        format_args!(RMAC_TBL_FMT!(), "vni", "address", "mac")
     )
 }
 
 impl Display for RmacEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let valid = if self.is_stale() { "stale" } else { "ok" };
         write!(
             f,
             "{}",
-            format_args!(
-                RMAC_TBL_FMT!(),
-                self.vni.as_u32(),
-                self.address,
-                self.mac,
-                valid
-            )
+            format_args!(RMAC_TBL_FMT!(), self.vni.as_u32(), self.address, self.mac,)
         )
     }
 }
@@ -697,12 +687,7 @@ impl Display for RmacStoreView<'_> {
             .filter
             .map_or_else(|| Cow::Owned(RmacFilter::default()), Cow::Borrowed);
 
-        Heading(format!(
-            "Router macs (entries: {} stale: {})",
-            store.len(),
-            store.stale()
-        ))
-        .fmt(f)?;
+        Heading(format!("Router macs (entries: {})", store.len(),)).fmt(f)?;
 
         fmt_rmac_heading(f)?;
 
@@ -725,13 +710,7 @@ impl Display for RmacStoreView<'_> {
 #[cfg(test)]
 impl Display for RmacStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading(format!(
-            "Router macs (entries: {} stale: {})",
-            self.len(),
-            self.stale()
-        ))
-        .fmt(f)?;
-
+        Heading(format!("Router macs (entries: {})", self.len())).fmt(f)?;
         fmt_rmac_heading(f)?;
         for rmac in self.values() {
             writeln!(f, "{rmac}")?;
