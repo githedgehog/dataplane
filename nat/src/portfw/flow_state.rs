@@ -20,7 +20,7 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::FlowInfo;
 
 use crate::common::{AtomicNatFlowStatus, NatAction, NatFlowStatus};
-use crate::flow_tracking::{self, FlowSide};
+use crate::flow_tracking::{FlowSide, TrackedState};
 use crate::portfw::PortFwEntry;
 
 #[allow(unused)]
@@ -81,15 +81,23 @@ impl PortFwState {
     pub fn rule(&self) -> &Weak<PortFwEntry> {
         &self.rule
     }
-    /// The side of the connection that sends the packets hitting this flow: the initiator's
-    /// packets are destination-NATed.
-    #[must_use]
-    pub(crate) fn side(&self) -> FlowSide {
+}
+
+impl TrackedState for PortFwState {
+    fn status(&self) -> &AtomicNatFlowStatus {
+        &self.status
+    }
+
+    // The initiator's packets are destination-NATed.
+    fn side(&self) -> FlowSide {
         match self.action {
             NatAction::DstNat => FlowSide::Initiator,
             NatAction::SrcNat => FlowSide::Responder,
         }
     }
+
+    // Masquerade also closes DNS flows on the first reply, with flow_tracking::close_dns_on_reply().
+    // Port forwarding could opt in by overriding next_status() here, if desired.
 }
 
 impl Display for PortFwState {
@@ -235,16 +243,6 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
     Some(state.clone())
 }
 
-/// Compute the next status of a port-forwarded flow, given the packet that hit it.
-fn next_flow_status<Buf: PacketBufferMut>(
-    packet: &Packet<Buf>,
-    state: &PortFwState,
-) -> NatFlowStatus {
-    // Masquerade also closes DNS flows on the first reply, with flow_tracking::close_dns_on_reply().
-    // Port forwarding could opt in here, if desired.
-    flow_tracking::next_status(packet, state.side(), state.status.load())
-}
-
 /// Update the port-forwarding state of a flow entry after processing a packet.
 /// This updates the flow status shared by flow entries' port-forwarding state.
 /// We use the status of the flow to determine the extent to which the lifetime
@@ -265,11 +263,11 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     // That's fine for updating the status since it's an arc'ed atomic
 
     // update the flow status (for port forwarding) depending on the packet and the current status
-    let new_status = next_flow_status(packet, state);
-    let current_status = state.status.load();
+    let current_status = state.status().load();
+    let new_status = state.next_status(packet, current_status);
     if new_status != current_status {
         debug!("Flow state transitions from {current_status} -> {new_status}");
-        state.status.store(new_status);
+        state.status().store(new_status);
     }
 
     // compute new timeout for the flow. In case of TCP, if the connection was reset or closed,
@@ -303,8 +301,9 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 
 #[cfg(test)]
 mod test {
-    use super::{PortFwState, build_portfw_flow_keys, next_flow_status};
+    use super::{PortFwState, build_portfw_flow_keys};
     use crate::common::{AtomicNatFlowStatus, NatFlowStatus};
+    use crate::flow_tracking::TrackedState;
     use crate::static_nat::probe::build;
     use concurrency::sync::Weak;
     use net::FlowKey;
@@ -496,6 +495,9 @@ mod test {
             Weak::new(),
             status,
         );
-        assert_eq!(next_flow_status(&packet, &state), NatFlowStatus::TwoWay);
+        assert_eq!(
+            state.next_status(&packet, NatFlowStatus::TwoWay),
+            NatFlowStatus::TwoWay
+        );
     }
 }

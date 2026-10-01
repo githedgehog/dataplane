@@ -5,13 +5,12 @@
 
 use crate::NatPort;
 use crate::common::NatFlowStatus;
-use crate::flow_tracking::transport_proto;
+use crate::flow_tracking::{TrackedState, transport_proto};
 use crate::masquerade::NatAllocatorWriter;
 use crate::masquerade::allocation::{AllocationResult, AllocatorError};
 use crate::masquerade::allocator_writer::NatAllocatorReader;
 use crate::masquerade::apalloc::{Allocation, NatAllocator};
 use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
-use crate::masquerade::protocol::next_flow_status;
 use crate::masquerade::state::MasqueradeState;
 use clock::Duration;
 use concurrency::sync::{Arc, Weak};
@@ -194,11 +193,11 @@ impl Masquerade {
         state: &MasqueradeState,
     ) {
         let key = flow_info.flowkey();
-        let current = state.status.load();
-        let new_status = next_flow_status(packet, state.action(), current);
+        let current = state.status().load();
+        let new_status = state.next_status(packet, current);
         if new_status != current {
             debug!("Status of flow {key} changed: {current} -> {new_status}");
-            state.status.store(new_status);
+            state.status().store(new_status);
         }
 
         //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
