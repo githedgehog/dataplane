@@ -616,10 +616,11 @@ let
         (lib.subtractLists sanitizer-rustflags (
           lib.filter (flag: flag != "") (lib.splitString " " orig.env.RUSTFLAGS)
         ))
-        ++ [
-          "-Ctarget-feature=+crt-static"
-          "-Clink-arg=-L${pkgs.pkgsHostHost.glibc.static}/lib"
-        ]
+        ++ [ "-Ctarget-feature=+crt-static" ]
+        # Only glibc keeps its archives in a separate output; musl's are in
+        # `out`, already in the sysroot.  Naming `glibc` unconditionally asks
+        # nixpkgs to build glibc with the musl cross compiler, which fails.
+        ++ lib.optional (libc == "gnu") "-Clink-arg=-L${pkgs.pkgsHostHost.glibc.static}/lib"
       );
     };
   });
@@ -1226,11 +1227,15 @@ let
       ln -s "$f" "$out/lib/$(basename "$f")"
     done
 
-    # libgcc runtime libraries (libgcc_s.so, etc.)
-    for f in ${pkgs.pkgsHostHost.glibc.libgcc}/lib/*.so*; do
-      [ -e "$f" ] || continue
-      ln -s "$f" "$out/lib/$(basename "$f")"
-    done
+    # libgcc runtime libraries (libgcc_s.so, etc.), glibc only: musl
+    # binaries unwind with libunwind, and naming `glibc` on a musl host
+    # platform asks nixpkgs to build glibc with the musl cross compiler.
+    ${lib.optionalString (libc == "gnu") ''
+      for f in ${pkgs.pkgsHostHost.glibc.libgcc}/lib/*.so*; do
+        [ -e "$f" ] || continue
+        ln -s "$f" "$out/lib/$(basename "$f")"
+      done
+    ''}
 
     # Create a real /nix/store directory (empty mount point).
     #
