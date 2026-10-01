@@ -20,7 +20,7 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::FlowInfo;
 
 use crate::common::{AtomicNatFlowStatus, NatAction, NatFlowStatus};
-use crate::flow_tracking::{FlowSide, TrackedState, advance_flow};
+use crate::flow_tracking::{FlowSide, TrackedState, advance_flow, packet_flow_keys};
 use crate::portfw::PortFwEntry;
 
 #[allow(unused)]
@@ -140,18 +140,8 @@ pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
     new_dst_port: NonZero<u16>, // destination port to forward to
     dst_vpcd: VpcDiscriminant, // destination VPC to forward to
 ) -> Result<(FlowKey, FlowKey), PortFwKeyError> {
-    // Extract flow key for the current packet
-    let current_flow_key = FlowKey::try_from(&*packet).map_err(PortFwKeyError::NoFlowKey)?;
-
-    // Retrieve initial flow key for the current packet (before any other NAT translation); if
-    // we don't have the information, we didn't populate it because we don't need it and fall
-    // back to the current key
-    let initial_flow_key = packet
-        .meta()
-        .flow_key
-        .as_deref()
-        .copied()
-        .unwrap_or(current_flow_key);
+    let (initial_flow_key, current_flow_key) =
+        packet_flow_keys(packet).map_err(PortFwKeyError::NoFlowKey)?;
 
     // Build the key for the reverse path
     let proto = current_flow_key.proto();

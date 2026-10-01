@@ -6,7 +6,7 @@
 use crate::NatPort;
 use crate::common::NatFlowStatus;
 use crate::flow_tracking::{
-    HalfFlow, InstallError, NewFlow, advance_flow, install_pair, transport_proto,
+    HalfFlow, InstallError, NewFlow, advance_flow, install_pair, packet_flow_keys, transport_proto,
 };
 use crate::masquerade::NatAllocatorWriter;
 use crate::masquerade::allocation::{AllocationResult, AllocatorError};
@@ -476,19 +476,8 @@ impl Masquerade {
 
         let discriminants = Self::discriminants(packet)?;
 
-        // Extract flow key for the current packet
-        let current_flow_key =
-            FlowKey::try_from(&*packet).map_err(|_| MasqueradeError::FlowKeyError)?;
-
-        // Retrieve initial flow key for the current packet (before any other NAT translation); if
-        // we don't have the information, we didn't populate it because we don't need it and fall
-        // back to the current key
-        let initial_flow_key = packet
-            .meta()
-            .flow_key
-            .as_deref()
-            .copied()
-            .unwrap_or(current_flow_key);
+        let (initial_flow_key, current_flow_key) =
+            packet_flow_keys(packet).map_err(|_| MasqueradeError::FlowKeyError)?;
 
         // check if the flow can be masqueraded
         let proto = initial_flow_key.proto();
