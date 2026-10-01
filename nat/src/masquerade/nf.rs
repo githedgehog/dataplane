@@ -5,7 +5,7 @@
 
 use crate::NatPort;
 use crate::common::NatFlowStatus;
-use crate::flow_tracking::{TrackedState, transport_proto};
+use crate::flow_tracking::{advance_flow, transport_proto};
 use crate::masquerade::NatAllocatorWriter;
 use crate::masquerade::allocation::{AllocationResult, AllocatorError};
 use crate::masquerade::allocator_writer::NatAllocatorReader;
@@ -13,7 +13,7 @@ use crate::masquerade::apalloc::{Allocation, NatAllocator};
 use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
 use crate::masquerade::state::MasqueradeState;
 use clock::Duration;
-use concurrency::sync::{Arc, Weak};
+use concurrency::sync::Arc;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError, PairInsertion};
 use net::buffer::PacketBufferMut;
 use net::flow_key::{FlowAddrs, IcmpProtoKey};
@@ -192,36 +192,11 @@ impl Masquerade {
         flow_info: &FlowInfo,
         state: &MasqueradeState,
     ) {
-        let key = flow_info.flowkey();
-        let current = state.status().load();
-        let new_status = state.next_status(packet, current);
-        if new_status != current {
-            debug!("Status of flow {key} changed: {current} -> {new_status}");
-            state.status().store(new_status);
-        }
-
-        //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
-        //= type=implementation
-        //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
-        //# refresh behavior" of "True".
-        //
-        // Any outbound packet on any flow sharing a mapping refreshes it, independent of that
-        // flow's own idle timer. Not a packet that tears the flow down, though: the flow declines
-        // to extend its own expiry there, and extending the mapping's would hold the public tuple
-        // for a further idle timeout past the close, which is how a pool ends up exhausted by churn
-        // rather than by concurrent flows.
-        if !matches!(new_status, NatFlowStatus::Closed | NatFlowStatus::Reset)
-            && let Some(allocation) = state.allocation()
-        {
-            allocation.refresh();
-        }
-        let extend_by = match new_status {
+        let new_status = advance_flow(packet, flow_info, state, |status| match status {
             NatFlowStatus::TwoWay => Some(Self::MASQUERADE_TWOWAY_TIMEOUT),
             NatFlowStatus::Established => Some(state.idle_timeout()),
-            NatFlowStatus::Closed | NatFlowStatus::Reset => {
-                flow_info.invalidate_pair();
-                None
-            }
+            // advance_flow() invalidates the pair
+            NatFlowStatus::Closed | NatFlowStatus::Reset => None,
             NatFlowStatus::CClosing
             | NatFlowStatus::SClosing
             | NatFlowStatus::CHalfClose
@@ -234,13 +209,22 @@ impl Masquerade {
             NatFlowStatus::OneWay => {
                 Self::refreshes_while_unanswered(packet).then_some(Self::MASQUERADE_ONEWAY_TIMEOUT)
             }
-        };
+        });
 
-        if let Some(extend_by) = extend_by {
-            let _ = flow_info.reset_expiry_unchecked(extend_by);
-            if let Some(related) = flow_info.related.as_ref().and_then(Weak::upgrade) {
-                let _ = related.reset_expiry_unchecked(extend_by);
-            }
+        //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+        //= type=implementation
+        //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+        //# refresh behavior" of "True".
+        //
+        // Any outbound packet on any flow sharing a mapping refreshes it, independent of that
+        // flow's own idle timer. Not a packet that tears the flow down, though: the flow declines
+        // to extend its own expiry there, and extending the mapping's would hold the public tuple
+        // for a further idle timeout past the close, which is how a pool ends up exhausted by churn
+        // rather than by concurrent flows.
+        if !new_status.is_terminal()
+            && let Some(allocation) = state.allocation()
+        {
+            allocation.refresh();
         }
     }
 
@@ -775,6 +759,7 @@ mod race {
     use super::*;
     use crate::masquerade::probe::{Fabric, masquerade_expose, outbound_probe};
     use crate::static_nat::probe::{build, vni};
+    use concurrency::sync::Weak;
     use config::external::overlay::vpcpeering::contract::{LOCAL_VNI, REMOTE_VNI};
     use net::buffer::TestBuffer;
 

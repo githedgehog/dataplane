@@ -53,6 +53,14 @@ pub enum NatFlowStatus {
     Closed = 9,
 }
 
+impl NatFlowStatus {
+    /// Tell if the connection is over, closed or reset.
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        matches!(self, NatFlowStatus::Closed | NatFlowStatus::Reset)
+    }
+}
+
 impl From<u8> for NatFlowStatus {
     fn from(value: u8) -> Self {
         match value {
