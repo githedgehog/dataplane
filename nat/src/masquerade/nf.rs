@@ -166,7 +166,7 @@ impl Masquerade {
     }
 
     fn refreshes_while_unanswered<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-        // Resolve extension headers as in `next_flow_status`.
+        // Resolve extension headers as in flow_tracking::next_status().
         matches!(
             transport_proto(packet),
             Some(NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6)

@@ -103,9 +103,6 @@ impl TrackedState for PortFwState {
             NatAction::SrcNat => FlowSide::Responder,
         }
     }
-
-    // Masquerade also closes DNS flows on the first reply, with flow_tracking::close_dns_on_reply().
-    // Port forwarding could opt in by overriding next_status() here, if desired.
 }
 
 impl Display for PortFwState {

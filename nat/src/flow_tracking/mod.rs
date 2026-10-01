@@ -15,7 +15,7 @@ mod tracked;
 
 pub(crate) use refresh::advance_flow;
 pub(crate) use session::{HalfFlow, InstallError, NewFlow, install_pair, packet_flow_keys};
-pub(crate) use state_machine::{close_dns_on_reply, next_status, transport_proto};
+pub(crate) use state_machine::{next_status, transport_proto};
 pub(crate) use tracked::TrackedState;
 
 use std::fmt::Display;
