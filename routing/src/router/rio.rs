@@ -385,7 +385,7 @@ impl Rio {
     fn check_stale_timeout(&mut self, db: &mut RoutingDb) {
         if self.stale_timeout.take_if(|t| *t < clock::now()).is_some() {
             info!("Stale timeout expired");
-            db.vrftable.remove_stale_routes(&db.rmac_store);
+            db.vrftable.remove_stale_routes();
             db.vrftable.remove_deleted_vrfs(&mut db.iftw);
         }
     }
@@ -549,13 +549,6 @@ pub(crate) fn start_rio(
 
             /* check stale timeout. If expired, remove stale routes */
             rio.check_stale_timeout(&mut db);
-
-            /* remove stale router mac entries (if aged). If rmacs were deleted, refresh the
-            fibs for the vrfs with the corresponding vnis */
-            let vnis = db.rmac_store.flush_stale_rmacs();
-            if !vnis.is_empty() {
-                db.vrftable.refresh_fibs_by_vni(&vnis, &db.rmac_store);
-            }
         }
         info!("RIO is now exiting");
     };

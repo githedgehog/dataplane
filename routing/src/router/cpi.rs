@@ -207,7 +207,6 @@ fn is_evpn_route(iproute: &IpRoute) -> bool {
 impl RpcOperation for IpRoute {
     type ObjectStore = RoutingDb;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        let rmac_store = &db.rmac_store;
         let vrftable = &mut db.vrftable;
 
         if self.vrfid == Vrf::DEFAULT_VRFID {
@@ -215,8 +214,8 @@ impl RpcOperation for IpRoute {
                 error!("Unable to find default VRF!");
                 return RpcResultCode::Failure;
             };
-            vrf0.add_route_rpc(self, None, rmac_store);
-            vrftable.refresh_non_default_fibs(rmac_store);
+            vrf0.add_route_rpc(self, None);
+            vrftable.refresh_non_default_fibs();
         } else {
             // this assumes that we always resolve non-default vrfs with the default vrf
             // FIXME: generalize this. This is fine atm because non-default vrfs are always
@@ -228,25 +227,24 @@ impl RpcOperation for IpRoute {
                 error!("Unable to get vrf with id {}", self.vrfid);
                 return RpcResultCode::Failure;
             };
-            vrf.add_route_rpc(self, Some(vrf0), rmac_store);
+            vrf.add_route_rpc(self, Some(vrf0));
         }
         RpcResultCode::Ok
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        let rmac_store = &db.rmac_store;
         let vrftable = &mut db.vrftable;
 
         if self.vrfid == Vrf::DEFAULT_VRFID {
             let Ok(vrf0) = vrftable.get_vrf_mut(self.vrfid) else {
                 return on_vrf_lookup_fail(db.have_config(), self.vrfid);
             };
-            vrf0.del_route_rpc(self, None, rmac_store);
-            vrftable.refresh_non_default_fibs(rmac_store);
+            vrf0.del_route_rpc(self, None);
+            vrftable.refresh_non_default_fibs();
         } else {
             let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
                 return on_vrf_lookup_fail(db.have_config(), self.vrfid);
             };
-            vrf.del_route_rpc(self, Some(vrf0), rmac_store);
+            vrf.del_route_rpc(self, Some(vrf0));
             if vrf.can_be_deleted() {
                 if let Err(e) = vrftable.remove_vrf(self.vrfid, &mut db.iftw) {
                     warn!("Failed to delete vrf {}: {e}", self.vrfid);
@@ -260,16 +258,11 @@ impl RpcOperation for Rmac {
     type ObjectStore = RoutingDb;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         let rmac_store = &mut db.rmac_store;
-        let vrftable = &mut db.vrftable;
         let Ok(rmac) = RmacEntry::try_from(self) else {
             error!("Failed to parse rmac entry {self}");
             return RpcResultCode::Failure;
         };
-        let vni = rmac.vni;
-        if rmac_store.add_rmac_entry(rmac) {
-            // refresh the vrf for that vni
-            vrftable.refresh_fibs_by_vni(&[vni], &db.rmac_store);
-        }
+        let _ = rmac_store.add_rmac_entry(rmac);
         RpcResultCode::Ok
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
@@ -277,7 +270,7 @@ impl RpcOperation for Rmac {
         let Ok(rmac) = RmacEntry::try_from(self) else {
             return RpcResultCode::Failure;
         };
-        rmac_store.invalidate_rmac_entry(&rmac);
+        rmac_store.del_rmac(rmac.address, rmac.vni);
         RpcResultCode::Ok
     }
 }
@@ -501,10 +494,8 @@ pub fn process_cpi_data(rio: &mut Rio, peer: &SocketAddr, data: &mut Bytes, db: 
 #[cfg(test)]
 mod cpi_properties {
     use super::*;
-    use crate::Encapsulation;
     use crate::atable::atablerw::AtableWriter;
     use crate::config::RouterConfig;
-    use crate::evpn::RmacStore;
     use crate::fib::fibobjects::{FibEntry, PktInstruction};
     use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftablerw::IfTableWriter;
@@ -515,7 +506,6 @@ mod cpi_properties {
     use dplane_rpc::msg::{ForwardAction, NextHop, VxlanEncap};
     use dplane_rpc::objects::MacAddress;
     use lpm::prefix::Prefix;
-    use net::eth::mac::{Mac, SourceMac};
     use net::vxlan::Vni;
     use std::net::IpAddr;
     use std::ops::Bound::Included;
@@ -564,7 +554,6 @@ mod cpi_properties {
             build_test_route(RouteOrigin::Connected, 0, 0),
             &[build_test_nhop(None, Some(UNDERLAY_IFINDEX), 0, None)],
             None,
-            &RmacStore::new(),
         );
 
         let vni = Vni::new_checked(OVERLAY_VNI).unwrap_or_else(|_| unreachable!());
@@ -662,65 +651,6 @@ mod cpi_properties {
         }
     }
 
-    #[test]
-    fn an_overlay_route_drops_until_its_router_mac_arrives() {
-        bolero::check!().with_generator(Fabrics).cloned().for_each(
-            |(vtep, mac): (usize, usize)| {
-                let (mut db, _atw) = fabric();
-                let vtep = vteps()[vtep];
-                let prefix = "10.0.0.0/24";
-
-                assert_eq!(
-                    overlay_route(OVERLAY_VRF, prefix, vtep).add(&mut db),
-                    RpcResultCode::Ok
-                );
-
-                let before = fib_entries(&db, OVERLAY_VRF, prefix);
-                entries_are_well_formed(&before, "before the rmac");
-                assert!(
-                    before
-                        .iter()
-                        .all(|entry| matches!(entry.iter().next(), Some(PktInstruction::Drop))),
-                    "an overlay route with no router mac must drop, got {before:?}"
-                );
-
-                assert_eq!(rmac_msg(vtep, macs()[mac]).add(&mut db), RpcResultCode::Ok);
-
-                let after = fib_entries(&db, OVERLAY_VRF, prefix);
-                entries_are_well_formed(&after, "after the rmac");
-                let expected_mac = SourceMac::try_from(Mac::from(macs()[mac])).expect("Bad mac");
-
-                for entry in &after {
-                    let mut instructions = entry.iter();
-                    match instructions.next() {
-                        Some(PktInstruction::Encap(Encapsulation::Vxlan(vxlan))) => {
-                            assert_eq!(vxlan.vni.as_u32(), OVERLAY_VNI, "vni in {entry:?}");
-                            assert_eq!(vxlan.remote, vtep, "remote in {entry:?}");
-                            assert_eq!(vxlan.rmac, expected_mac, "rmac in {entry:?}");
-                        }
-                        other => panic!("expected an encapsulation first, got {other:?}"),
-                    }
-                    match instructions.next() {
-                        Some(PktInstruction::Egress(egress)) => {
-                            assert_eq!(
-                                egress.ifindex().map(InterfaceIndex::to_u32),
-                                Some(UNDERLAY_IFINDEX),
-                                "egress interface in {entry:?}"
-                            );
-                            assert_eq!(
-                                *egress.address(),
-                                Some(vtep),
-                                "egress address in {entry:?}"
-                            );
-                        }
-                        other => panic!("expected an egress second, got {other:?}"),
-                    }
-                    assert!(instructions.next().is_none(), "extra work in {entry:?}");
-                }
-            },
-        );
-    }
-
     /// What a withdrawal does today, which is not what a missing rmac does.
     ///
     /// `before` is taken *after* the rmac is installed, so what this asserts is that
@@ -750,7 +680,7 @@ mod cpi_properties {
                 let before = fib_entries(&db, OVERLAY_VRF, prefix);
 
                 assert_eq!(rmac.del(&mut db), RpcResultCode::Ok);
-                db.vrftable.refresh_non_default_fibs(&db.rmac_store);
+                db.vrftable.refresh_non_default_fibs();
 
                 let after = fib_entries(&db, OVERLAY_VRF, prefix);
                 entries_are_well_formed(&after, "after withdrawing the rmac");
@@ -857,42 +787,5 @@ mod cpi_properties {
         assert!(nonlocal_nhop(&route), "another vrf is nonlocal");
         route.nhops.clear();
         assert!(!nonlocal_nhop(&route), "no next-hops, nothing nonlocal");
-    }
-
-    #[test]
-    fn invalid_router_mac_updates_preserve_the_mapping_and_fib() {
-        bolero::check!().with_type::<[u8; 6]>().for_each(|bytes| {
-            let mut multicast = *bytes;
-            multicast[0] |= 1;
-            let (mut db, _atw) = fabric();
-            let vtep = vteps()[0];
-            let vni = Vni::new_checked(OVERLAY_VNI).unwrap();
-            let prefix = "10.0.0.0/24";
-            assert_eq!(
-                overlay_route(OVERLAY_VRF, prefix, vtep).add(&mut db),
-                RpcResultCode::Ok
-            );
-            assert_eq!(rmac_msg(vtep, macs()[0]).add(&mut db), RpcResultCode::Ok);
-            let original = db.rmac_store.get_rmac(vni, vtep).unwrap().clone();
-            let before = fib_entries(&db, OVERLAY_VRF, prefix);
-            assert!(before.iter().any(|entry| matches!(
-                entry.iter().next(),
-                Some(PktInstruction::Encap(Encapsulation::Vxlan(_)))
-            )));
-
-            for bytes in [[0; 6], [0xff; 6], multicast] {
-                let invalid = rmac_msg(vtep, bytes);
-                for op in [RpcOp::Add, RpcOp::Del] {
-                    let result = match op {
-                        RpcOp::Add => invalid.add(&mut db),
-                        RpcOp::Del => invalid.del(&mut db),
-                        _ => unreachable!(),
-                    };
-                    assert_eq!(result, RpcResultCode::Failure, "router MAC {bytes:02x?}");
-                    assert!(db.rmac_store.get_rmac(vni, vtep) == Some(&original));
-                    assert_eq!(fib_entries(&db, OVERLAY_VRF, prefix), before);
-                }
-            }
-        });
     }
 }

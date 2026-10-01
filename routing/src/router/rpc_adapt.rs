@@ -10,7 +10,7 @@
 //! provide the expected results. Hence the use of the From trait is overloaded for convenience.
 
 use crate::errors::RouterError;
-use crate::evpn::{RmacEntry, RmacStore};
+use crate::evpn::RmacEntry;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, NhopKey};
 use crate::rib::vrf::{Route, RouteFlags, RouteNhop, RouteOrigin, Vrf};
@@ -93,7 +93,6 @@ impl TryFrom<&Rmac> for RmacEntry {
                 error!("Received router mac with invalid vni {}", value.vni);
                 RouterError::VniInvalid(value.vni)
             })?,
-            stale_t: None,
         })
     }
 }
@@ -167,7 +166,7 @@ impl Route {
 }
 
 impl Vrf {
-    pub fn add_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>, rstore: &RmacStore) {
+    pub fn add_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>) {
         let prefix = match Prefix::try_from((iproute.prefix, iproute.prefix_len)) {
             Ok(p) => p,
             Err(e) => {
@@ -208,10 +207,10 @@ impl Vrf {
         }
 
         // N.B. route and next-hops are passed separately
-        self.add_route_complete(&prefix, route, &nhops, vrf0, rstore);
+        self.add_route_complete(&prefix, route, &nhops, vrf0);
     }
 
-    pub fn del_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>, rstore: &RmacStore) {
+    pub fn del_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>) {
         let Ok(prefix) = Prefix::try_from((iproute.prefix, iproute.prefix_len)) else {
             error!(
                 "Failed to remove route from RPC!: bad prefix={} len={}",
@@ -219,7 +218,7 @@ impl Vrf {
             );
             return;
         };
-        self.del_route(prefix, vrf0, rstore);
+        self.del_route(prefix, vrf0);
     }
 }
 
@@ -500,9 +499,8 @@ mod rpc_properties {
             .with_generator(Routes)
             .cloned()
             .for_each(|spec: RouteSpec| {
-                let rstore = RmacStore::new();
                 let mut vrf = test_vrf();
-                vrf.add_route_rpc(&wire_route(&spec), None, &rstore);
+                vrf.add_route_rpc(&wire_route(&spec), None);
 
                 let (raw, len) = prefixes()[spec.prefix];
                 let Ok(prefix) = Prefix::try_from((raw, len)) else {
@@ -538,11 +536,10 @@ mod rpc_properties {
             .with_generator(Routes)
             .cloned()
             .for_each(|spec: RouteSpec| {
-                let rstore = RmacStore::new();
                 let mut vrf = test_vrf();
                 let route = wire_route(&spec);
-                vrf.add_route_rpc(&route, None, &rstore);
-                vrf.del_route_rpc(&route, None, &rstore);
+                vrf.add_route_rpc(&route, None);
+                vrf.del_route_rpc(&route, None);
 
                 let (raw, len) = prefixes()[spec.prefix];
                 if let Ok(prefix) = Prefix::try_from((raw, len)) {
@@ -583,7 +580,6 @@ mod rmac_properties {
                         assert_eq!(entry.mac.inner(), Mac::from(bytes));
                         assert_eq!(entry.address, msg.address);
                         assert_eq!(entry.vni.as_u32(), msg.vni);
-                        assert!(!entry.is_stale());
                     }
                     Err(error) => {
                         assert_eq!(error, RouterError::InvalidRouterMac(Mac::from(bytes)));

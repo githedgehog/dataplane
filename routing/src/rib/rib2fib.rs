@@ -6,9 +6,7 @@
 #[allow(unused)]
 use tracing::{debug, trace, warn};
 
-use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
-use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, Nhop};
 use crate::rib::vrf::RouteOrigin;
 
@@ -23,10 +21,7 @@ impl Nhop {
     //////////////////////////////////////////////////////////////////////
     #[allow(clippy::single_match_else)]
     #[must_use]
-    fn build_pkt_instructions(&self, rstore: &RmacStore) -> Vec<PktInstruction> {
-        // mark as valid for the time being
-        self.invalid.set(false);
-
+    fn build_pkt_instructions(&self) -> Vec<PktInstruction> {
         let mut instructions = Vec::with_capacity(2);
 
         // local route
@@ -34,7 +29,6 @@ impl Nhop {
             match self.key.ifindex {
                 Some(if_index) => instructions.push(PktInstruction::Local(if_index)),
                 None => {
-                    self.invalid.set(true);
                     warn!("Unknown ifindex for local next-hop. Will set action drop");
                     instructions.push(PktInstruction::Drop);
                 }
@@ -50,20 +44,9 @@ impl Nhop {
 
         // a nexthop with encapsulation info. Will add action encap and egress object
         if let Some(encap) = self.key.encap {
-            let resolved = match encap {
-                Encapsulation::Vxlan(vxlan) => vxlan.resolve(rstore).map(Encapsulation::Vxlan),
-                Encapsulation::Mpls(label) => Some(Encapsulation::Mpls(label)),
-            };
-            if let Some(resolved) = resolved {
-                instructions.push(PktInstruction::Encap(resolved));
-                let egress = EgressObject::new(self.key.ifindex, self.key.address);
-                instructions.push(PktInstruction::Egress(egress));
-            } else {
-                // resolution of encap instructions failed. Keep the route with action drop and mark the nhop as invalid
-                self.invalid.set(true);
-                instructions = vec![PktInstruction::Drop];
-                warn!("Nhop {self} became invalid");
-            }
+            instructions.push(PktInstruction::Encap(encap));
+            let egress = EgressObject::new(self.key.ifindex, self.key.address);
+            instructions.push(PktInstruction::Egress(egress));
             return instructions;
         }
         // next-hop is not local, drop or encap. So it must represent either:
@@ -89,9 +72,9 @@ impl Nhop {
     //////////////////////////////////////////////////////////////////////
     /// Given a next-hop, build its packet instructions and attach them to it
     //////////////////////////////////////////////////////////////////////
-    pub(crate) fn build_nhop_instructions(&self, rstore: &RmacStore) {
+    pub(crate) fn build_nhop_instructions(&self) {
         // build new instruction vector for the next-hop
-        let new_instructions = self.build_pkt_instructions(rstore);
+        let new_instructions = self.build_pkt_instructions();
 
         // replace instruction vector
         self.instructions.replace(new_instructions);
@@ -172,23 +155,5 @@ impl Nhop {
             trace!("Fibgroup for nhop {self} did NOT change");
         }
         changed
-    }
-}
-
-impl VxlanEncapsulation {
-    pub(crate) fn resolve(&self, rstore: &RmacStore) -> Option<VxlanEncapsulation> {
-        let Some(entry) = rstore.get_rmac(self.vni, self.remote) else {
-            warn!(
-                "Router mac for vni {} and remote {} is not known!",
-                self.vni.as_u32(),
-                self.remote
-            );
-            return None;
-        };
-        Some(VxlanEncapsulation {
-            vni: self.vni,
-            remote: self.remote,
-            rmac: entry.mac,
-        })
     }
 }

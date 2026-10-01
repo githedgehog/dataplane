@@ -13,7 +13,7 @@ use tracing::{debug, warn};
 use common::cliprovider::Frame;
 
 use super::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
-use crate::evpn::{RmacStore, Vtep};
+use crate::evpn::Vtep;
 use crate::fib::fibtype::FibWriter;
 use clock::Instant;
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
@@ -427,9 +427,9 @@ impl Vrf {
     }
 
     /// Rebuild all next-hop state. This is where consistency is maintained
-    fn refresh_nhops(&self, rstore: &RmacStore, resvrf: Option<&Vrf>) -> Vec<Weak<Nhop>> {
+    fn refresh_nhops(&self, resvrf: Option<&Vrf>) -> Vec<Weak<Nhop>> {
         let resvrf = resvrf.unwrap_or(self);
-        self.nhstore.rebuild_nhop_instructions(rstore);
+        self.nhstore.rebuild_nhop_instructions();
         self.nhstore.lazy_resolve_all(resvrf);
         self.nhstore.rebuild_fibgroups()
     }
@@ -452,8 +452,8 @@ impl Vrf {
     /// Re-resolve the next-hops of a `Vrf`, rebuild their fibgroups and, if they changed, reflect
     /// the changes in the corresponding `Fib`
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn refresh_fib(&mut self, rstore: &RmacStore, resvrf: Option<&Vrf>) {
-        let changes = self.refresh_nhops(rstore, resvrf);
+    pub(crate) fn refresh_fib(&mut self, resvrf: Option<&Vrf>) {
+        let changes = self.refresh_nhops(resvrf);
         if !changes.is_empty() {
             self.update_fib(&changes);
         }
@@ -465,7 +465,6 @@ impl Vrf {
         mut route: Route,
         nhops: &[RouteNhop],
         vrf0: Option<&Vrf>,
-        rstore: &RmacStore,
     ) {
         // register next-hops and let the route keep references to the shared nexthops created/found
         route.s_nhops = self.register_shared_nhops(prefix, nhops);
@@ -483,7 +482,7 @@ impl Vrf {
 
         // refresh FIB: resolves all next-hops, rebuilds fibgroups and sends them to the fib
         // resolution may take into account the new route to prefix
-        self.refresh_fib(rstore, vrf0);
+        self.refresh_fib(vrf0);
 
         // retrieve the route we just stored, which should have the next-hops resolved.
         let Some(route) = self.get_route(*prefix) else {
@@ -523,14 +522,14 @@ impl Vrf {
             self.deregister_shared_nexthops(found);
         }
     }
-    pub(crate) fn del_route(&mut self, prefix: Prefix, vrf0: Option<&Vrf>, rstore: &RmacStore) {
+    pub(crate) fn del_route(&mut self, prefix: Prefix, vrf0: Option<&Vrf>) {
         match prefix {
             Prefix::IPV4(p) => self.del_route_v4(p),
             Prefix::IPV6(p) => self.del_route_v6(p),
         }
         self.fibw.del_fibroute(prefix);
         self.check_deletion();
-        self.refresh_fib(rstore, vrf0);
+        self.refresh_fib(vrf0);
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -622,7 +621,7 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     /// Remove all ipv4 routes marked as stale from a `Vrf`
     /////////////////////////////////////////////////////////////////////////
-    fn remove_stale_routes_v4(&mut self, vrf0: Option<&Vrf>, rstore: &RmacStore) {
+    fn remove_stale_routes_v4(&mut self, vrf0: Option<&Vrf>) {
         // collect all prefixes that contain stale routes. We need to first collect
         // them and then delete to make the borrow-checker happy.
         let prefixes: Vec<_> = self
@@ -637,13 +636,13 @@ impl Vrf {
         // delete the routes
         for prefix in prefixes {
             debug!("vrf {}: removing stale route to {}", self.name, prefix);
-            self.del_route(prefix.into(), vrf0, rstore);
+            self.del_route(prefix.into(), vrf0);
         }
     }
     /////////////////////////////////////////////////////////////////////////
     /// Remove all ipv6 routes marked as stale from a `Vrf`
     /////////////////////////////////////////////////////////////////////////
-    fn remove_stale_routes_v6(&mut self, vrf0: Option<&Vrf>, rstore: &RmacStore) {
+    fn remove_stale_routes_v6(&mut self, vrf0: Option<&Vrf>) {
         let prefixes: Vec<_> = self
             .routesv6
             .iter()
@@ -655,16 +654,16 @@ impl Vrf {
             .collect();
         for prefix in prefixes {
             debug!("vrf {}: removing stale route to {}..", self.name, prefix);
-            self.del_route(prefix.into(), vrf0, rstore);
+            self.del_route(prefix.into(), vrf0);
         }
     }
     /////////////////////////////////////////////////////////////////////////
     /// Remove all the ipv4 & ipv6 routes marked as stale from a `Vrf`
     /////////////////////////////////////////////////////////////////////////
-    pub fn remove_stale_routes(&mut self, vrf0: Option<&Vrf>, rstore: &RmacStore) {
+    pub fn remove_stale_routes(&mut self, vrf0: Option<&Vrf>) {
         debug!("Removing stale routes from vrf {}..", self.name);
-        self.remove_stale_routes_v4(vrf0, rstore);
-        self.remove_stale_routes_v6(vrf0, rstore);
+        self.remove_stale_routes_v4(vrf0);
+        self.remove_stale_routes_v6(vrf0);
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -785,7 +784,6 @@ pub mod tests {
 
     #[test]
     fn test_default_idempotence() {
-        let rstore = RmacStore::new();
         let vrf_cfg = RouterVrfConfig::new(0, "default");
         let mut vrf = Vrf::new(&vrf_cfg);
 
@@ -797,8 +795,8 @@ pub mod tests {
         check_default_drop_v6(&vrf);
 
         /* default-Drop routes cannot be deleted */
-        vrf.del_route(pref_v4, None, &rstore);
-        vrf.del_route(pref_v6, None, &rstore);
+        vrf.del_route(pref_v4, None);
+        vrf.del_route(pref_v6, None);
         check_default_drop_v4(&vrf);
         check_default_drop_v6(&vrf);
 
@@ -846,7 +844,6 @@ pub mod tests {
 
     #[test]
     fn test_default_replace_v4() {
-        let rstore = RmacStore::new();
         let vrf_cfg = RouterVrfConfig::new(0, "default");
         let mut vrf = Vrf::new(&vrf_cfg);
         vrf.dump(Some("Initial (clean)"));
@@ -878,7 +875,7 @@ pub mod tests {
         vrf.dump(Some("With static IPv4 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
-        vrf.del_route(prefix, None, &rstore);
+        vrf.del_route(prefix, None);
         check_default_drop_v4(&vrf);
 
         vrf.dump(Some("After removing the IPv4 static default"));
@@ -886,7 +883,6 @@ pub mod tests {
 
     #[test]
     fn test_default_replace_v6() {
-        let rstore = RmacStore::new();
         let vrf_cfg = RouterVrfConfig::new(0, "default");
         let mut vrf = Vrf::new(&vrf_cfg);
         vrf.dump(Some("Initial (clean)"));
@@ -918,7 +914,7 @@ pub mod tests {
         vrf.dump(Some("With static IPv6 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
-        vrf.del_route(prefix, None, &rstore);
+        vrf.del_route(prefix, None);
         check_default_drop_v6(&vrf);
 
         vrf.dump(Some("After removing the IPv6 static default"));
@@ -926,7 +922,6 @@ pub mod tests {
 
     #[test]
     fn test_vrf_basic() {
-        let rstore = RmacStore::new();
         let num_routes = 10;
         let vrf_cfg = RouterVrfConfig::new(0, "default");
         let mut vrf = Vrf::new(&vrf_cfg);
@@ -957,7 +952,7 @@ pub mod tests {
         for i in 1..=num_routes {
             /* delete v4 routes one at a time */
             let prefix = Prefix::expect_from((format!("7.0.0.{i}").as_str(), 32));
-            vrf.del_route(prefix, None, &rstore);
+            vrf.del_route(prefix, None);
 
             /* each route prefix should resolve only to default */
             let target = prefix.as_address();
@@ -980,7 +975,7 @@ pub mod tests {
             Some(Encapsulation::Vxlan(VxlanEncapsulation::new(
                 Vni::new_checked(vni).expect("Should be ok"),
                 IpAddr::from_str("7.0.0.1").unwrap(),
-                SourceMac::try_from("02:ca:fe:ba:be:01").unwrap(),
+                SourceMac::try_from("02:ca:fe:ba:be:01").expect("Bad mac"),
             ))),
         );
         let prefix = Prefix::expect_from(dst);
@@ -995,87 +990,71 @@ pub mod tests {
     // modify the test vrf
     pub fn mod_test_vrf_1(vrf: &mut Vrf) {
         println!("{}", Frame("Removing paths via 10.0.0.5".to_string()));
-        {
-            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
-            let n1 = build_test_nhop(Some("10.0.0.1"), None, 0, Some(Encapsulation::Mpls(8001)));
-            let prefix = Prefix::expect_from(("8.0.0.1", 32));
-            vrf.add_route(&prefix, route, &[n1], None);
-        }
-        {
-            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
-            let n3 = build_test_nhop(Some("10.0.0.9"), None, 0, Some(Encapsulation::Mpls(8009)));
-            let prefix = Prefix::expect_from(("8.0.0.2", 32));
-            vrf.add_route(&prefix, route, &[n3], None);
-        }
+
+        let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+        let n1 = build_test_nhop(Some("10.0.0.1"), None, 0, Some(Encapsulation::Mpls(8001)));
+        let prefix = Prefix::expect_from(("8.0.0.1", 32));
+        vrf.add_route(&prefix, route, &[n1], None);
+
+        let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+        let n3 = build_test_nhop(Some("10.0.0.9"), None, 0, Some(Encapsulation::Mpls(8009)));
+        let prefix = Prefix::expect_from(("8.0.0.2", 32));
+        vrf.add_route(&prefix, route, &[n3], None);
     }
 
     // modify the test vrf
     pub fn mod_test_vrf_2(vrf: &mut Vrf) {
         println!("{}", Frame("Making 7.0.0.1 reachable only over 8.0.0.1 and 10.0.0.5".to_string()));
-        {
-            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
-            let n2 = build_test_nhop(Some("10.0.0.5"), None, 0, Some(Encapsulation::Mpls(8005)));
-            let prefix = Prefix::expect_from(("8.0.0.1", 32));
-            vrf.add_route(&prefix, route, &[n2], None);
-        }
-        {
-            let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
-            let n1 = build_test_nhop(Some("8.0.0.1"), None, 0, Some(Encapsulation::Mpls(7000)));
-            let prefix = Prefix::expect_from(("7.0.0.1", 32));
-            vrf.add_route(&prefix, route, &[n1], None);
-        }
+
+        let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+        let n2 = build_test_nhop(Some("10.0.0.5"), None, 0, Some(Encapsulation::Mpls(8005)));
+        let prefix = Prefix::expect_from(("8.0.0.1", 32));
+        vrf.add_route(&prefix, route, &[n2], None);
+
+        let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
+        let n1 = build_test_nhop(Some("8.0.0.1"), None, 0, Some(Encapsulation::Mpls(7000)));
+        let prefix = Prefix::expect_from(("7.0.0.1", 32));
+        vrf.add_route(&prefix, route, &[n1], None);
     }
 
     // Initialize test vrf with test routes
     pub fn init_test_vrf(vrf: &mut Vrf) {
         println!("{}", Frame("Initializing VRF routes"));
-        {
-            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
-            let nhop = build_test_nhop(None, Some(1), 0, None);
-            let prefix = Prefix::expect_from(("10.0.0.0", 30));
-            vrf.add_route(&prefix, route, &[nhop], None);
-        }
 
-        {
-            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
-            let nhop = build_test_nhop(None, Some(2), 0, None);
-            let prefix = Prefix::expect_from(("10.0.0.4", 30));
-            vrf.add_route(&prefix, route, &[nhop], None);
-        }
+        let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+        let nhop = build_test_nhop(None, Some(1), 0, None);
+        let prefix = Prefix::expect_from(("10.0.0.0", 30));
+        vrf.add_route(&prefix, route, &[nhop], None);
 
-        {
-            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
-            let nhop = build_test_nhop(None, Some(3), 0, None);
-            let prefix = Prefix::expect_from(("10.0.0.8", 30));
-            vrf.add_route(&prefix, route, &[nhop], None);
-        }
+        let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+        let nhop = build_test_nhop(None, Some(2), 0, None);
+        let prefix = Prefix::expect_from(("10.0.0.4", 30));
+        vrf.add_route(&prefix, route, &[nhop], None);
 
-        {
-            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
-            let n1 = build_test_nhop(Some("10.0.0.1"), None, 0, Some(Encapsulation::Mpls(8001)));
-            let n2 = build_test_nhop(Some("10.0.0.5"), None, 0, Some(Encapsulation::Mpls(8005)));
-            let prefix = Prefix::expect_from(("8.0.0.1", 32));
-            vrf.add_route(&prefix, route, &[n1, n2], None);
-        }
+        let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+        let nhop = build_test_nhop(None, Some(3), 0, None);
+        let prefix = Prefix::expect_from(("10.0.0.8", 30));
+        vrf.add_route(&prefix, route, &[nhop], None);
 
-        {
-            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
-            let n2 = build_test_nhop(Some("10.0.0.5"), None, 0, Some(Encapsulation::Mpls(8005)));
-            let n3 = build_test_nhop(Some("10.0.0.9"), None, 0, Some(Encapsulation::Mpls(8009)));
-            let prefix = Prefix::expect_from(("8.0.0.2", 32));
-            vrf.add_route(&prefix, route, &[n2, n3], None);
-        }
+        let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+        let n1 = build_test_nhop(Some("10.0.0.1"), None, 0, Some(Encapsulation::Mpls(8001)));
+        let n2 = build_test_nhop(Some("10.0.0.5"), None, 0, Some(Encapsulation::Mpls(8005)));
+        let prefix = Prefix::expect_from(("8.0.0.1", 32));
+        vrf.add_route(&prefix, route, &[n1, n2], None);
 
-        {
-            let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
-            let n1 = build_test_nhop(Some("8.0.0.1"), None, 0, Some(Encapsulation::Mpls(7000)));
-            let n2 = build_test_nhop(Some("8.0.0.2"), None, 0, Some(Encapsulation::Mpls(7000)));
-            let prefix = Prefix::expect_from(("7.0.0.1", 32));
-            vrf.add_route(&prefix, route, &[n1, n2], None);
-        }
+        let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+        let n2 = build_test_nhop(Some("10.0.0.5"), None, 0, Some(Encapsulation::Mpls(8005)));
+        let n3 = build_test_nhop(Some("10.0.0.9"), None, 0, Some(Encapsulation::Mpls(8009)));
+        let prefix = Prefix::expect_from(("8.0.0.2", 32));
+        vrf.add_route(&prefix, route, &[n2, n3], None);
+
+        let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
+        let n1 = build_test_nhop(Some("8.0.0.1"), None, 0, Some(Encapsulation::Mpls(7000)));
+        let n2 = build_test_nhop(Some("8.0.0.2"), None, 0, Some(Encapsulation::Mpls(7000)));
+        let prefix = Prefix::expect_from(("7.0.0.1", 32));
+        vrf.add_route(&prefix, route, &[n1, n2], None);
 
         add_vxlan_routes(vrf, 5);
-
     }
 
     // build a sample VRF used for testing
@@ -1092,51 +1071,38 @@ pub mod tests {
         let vrf_cfg = RouterVrfConfig::new(0, "default");
         let mut vrf = Vrf::new(&vrf_cfg);
 
-        {
-            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
-            let nhop = build_test_nhop(None, Some(1), 0, None);
-            let prefix = Prefix::expect_from(("10.0.0.0", 30));
-            vrf.add_route(&prefix, route, &[nhop], None);
-        }
+        let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+        let nhop = build_test_nhop(None, Some(1), 0, None);
+        let prefix = Prefix::expect_from(("10.0.0.0", 30));
+        vrf.add_route(&prefix, route, &[nhop], None);
 
-        {
-            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
-            let nhop = build_test_nhop(None, Some(2), 0, None);
-            let prefix = Prefix::expect_from(("10.0.0.4", 30));
-            vrf.add_route(&prefix, route, &[nhop], None);
-        }
+        let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+        let nhop = build_test_nhop(None, Some(2), 0, None);
+        let prefix = Prefix::expect_from(("10.0.0.4", 30));
+        vrf.add_route(&prefix, route, &[nhop], None);
 
-        {
-            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
-            let nhop = build_test_nhop(None, Some(3), 0, None);
-            let prefix = Prefix::expect_from(("10.0.0.8", 30));
-            vrf.add_route(&prefix, route, &[nhop], None);
-        }
+        let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+        let nhop = build_test_nhop(None, Some(3), 0, None);
+        let prefix = Prefix::expect_from(("10.0.0.8", 30));
+        vrf.add_route(&prefix, route, &[nhop], None);
 
+        let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+        let n1 = build_test_nhop(Some("10.0.0.1"), Some(1), 0, Some(Encapsulation::Mpls(8001)));
+        let n2 = build_test_nhop(Some("10.0.0.5"), Some(2), 0, Some(Encapsulation::Mpls(8005)));
+        let prefix = Prefix::expect_from(("8.0.0.1", 32));
+        vrf.add_route(&prefix, route, &[n1, n2], None);
 
-        {
-            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
-            let n1 = build_test_nhop(Some("10.0.0.1"), Some(1), 0, Some(Encapsulation::Mpls(8001)));
-            let n2 = build_test_nhop(Some("10.0.0.5"), Some(2), 0, Some(Encapsulation::Mpls(8005)));
-            let prefix = Prefix::expect_from(("8.0.0.1", 32));
-            vrf.add_route(&prefix, route, &[n1, n2], None);
-        }
+        let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+        let n2 = build_test_nhop(Some("10.0.0.5"), Some(2), 0, Some(Encapsulation::Mpls(8005)));
+        let n3 = build_test_nhop(Some("10.0.0.9"), Some(3), 0, Some(Encapsulation::Mpls(8009)));
+        let prefix = Prefix::expect_from(("8.0.0.2", 32));
+        vrf.add_route(&prefix, route, &[n2, n3], None);
 
-        {
-            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
-            let n2 = build_test_nhop(Some("10.0.0.5"), Some(2), 0, Some(Encapsulation::Mpls(8005)));
-            let n3 = build_test_nhop(Some("10.0.0.9"), Some(3), 0, Some(Encapsulation::Mpls(8009)));
-            let prefix = Prefix::expect_from(("8.0.0.2", 32));
-            vrf.add_route(&prefix, route, &[n2, n3], None);
-        }
-
-        {
-            let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
-            let n1 = build_test_nhop(Some("8.0.0.1"), None, 0, Some(Encapsulation::Mpls(7000)));
-            let n2 = build_test_nhop(Some("8.0.0.2"), None, 0, Some(Encapsulation::Mpls(7000)));
-            let prefix = Prefix::expect_from(("7.0.0.1", 32));
-            vrf.add_route(&prefix, route, &[n1, n2], None);
-        }
+        let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
+        let n1 = build_test_nhop(Some("8.0.0.1"), None, 0, Some(Encapsulation::Mpls(7000)));
+        let n2 = build_test_nhop(Some("8.0.0.2"), None, 0, Some(Encapsulation::Mpls(7000)));
+        let prefix = Prefix::expect_from(("7.0.0.1", 32));
+        vrf.add_route(&prefix, route, &[n1, n2], None);
 
         add_vxlan_routes(&mut vrf, 5);
 
@@ -1156,7 +1122,7 @@ pub mod tests {
         }
     }
 
-        #[test]
+    #[test]
     fn test_route_filter_by_protocol() {
         let vrf = build_test_vrf();
         for (_prefix, route) in vrf.iter_v4() {
@@ -1429,17 +1395,17 @@ mod vrf_properties {
         }
     }
 
-    fn apply_to_vrf(vrf: &mut Vrf, rstore: &RmacStore, change: &Change, pool: &[RouteNhop]) {
+    fn apply_to_vrf(vrf: &mut Vrf, change: &Change, pool: &[RouteNhop]) {
         let prefixes = prefixes();
         match change {
             Change::AddRoute { prefix, nhops } => {
                 let route = tests::build_test_route(RouteOrigin::Bgp, 20, 100);
                 let nhops: Vec<RouteNhop> = nhops.iter().map(|i| pool[*i].clone()).collect();
-                vrf.add_route_complete(&prefixes[*prefix], route, &nhops, None, rstore);
+                vrf.add_route_complete(&prefixes[*prefix], route, &nhops, None);
             }
-            Change::DelRoute { prefix } => vrf.del_route(prefixes[*prefix], None, rstore),
+            Change::DelRoute { prefix } => vrf.del_route(prefixes[*prefix], None),
             Change::SetStale { value } => vrf.set_stale(*value),
-            Change::RemoveStale => vrf.remove_stale_routes(None, rstore),
+            Change::RemoveStale => vrf.remove_stale_routes(None),
             Change::SetStatus { status } => vrf.set_status(statuses()[*status]),
         }
     }
@@ -1513,8 +1479,6 @@ mod vrf_properties {
     #[test]
     fn a_vrfs_routes_and_next_hops_stay_in_step() {
         let pool = nhops();
-        let rstore = RmacStore::new();
-
         bolero::check!()
             .with_generator(ChangeSequences)
             .cloned()
@@ -1525,7 +1489,7 @@ mod vrf_properties {
 
                 check(&vrf, &model, "on a fresh vrf");
                 for (step, change) in changes.iter().enumerate() {
-                    apply_to_vrf(&mut vrf, &rstore, change, &pool);
+                    apply_to_vrf(&mut vrf, change, &pool);
                     model.apply(change, &pool);
                     check(&vrf, &model, &format!("at step {step} of {changes:?}"));
                 }
