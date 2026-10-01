@@ -168,50 +168,20 @@ pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
     Ok((initial_flow_key, key_reverse))
 }
 
-pub(crate) fn setup_forward_flow(
-    flow_key: &FlowKey,
-    forward_flow: &Arc<FlowInfo>,
-    entry: &Arc<PortFwEntry>,
-    new_dst_ip: UnicastIpAddr,
-    new_dst_port: NonZero<u16>,
-) -> AtomicNatFlowStatus {
-    // build port forwarding state for the forward flow
-    let status = AtomicNatFlowStatus::new();
-    let port_fw_state = PortFwState::new_dnat(
-        new_dst_ip,
-        new_dst_port,
-        Arc::downgrade(entry),
-        status.clone(),
-    );
-
-    // set the port forwarding state in the flow
-    {
-        let mut write_guard = forward_flow.locked.write();
-        write_guard.port_fw_state = Some(Box::new(port_fw_state));
-        write_guard.dst_vpcd = Some(entry.dst_vpcd);
-    }
-    debug!("Set up FORWARD flow for port-forwarding;\nkey={flow_key}\ninfo={forward_flow}");
-    status
-}
-
-pub(crate) fn setup_reverse_flow(
-    reverse_key: &FlowKey,
-    reverse_flow: &Arc<FlowInfo>,
+/// Build the port-forwarding states for the forward and reverse flows of a pair. They share
+/// the same status.
+pub(crate) fn new_port_fw_states(
     entry: &Arc<PortFwEntry>,
     dst_ip: UnicastIpAddr,
     dst_port: NonZero<u16>,
-    status: AtomicNatFlowStatus,
-) {
-    // build port forwarding state for the REVERSE flow
-    let port_fw_state = PortFwState::new_snat(dst_ip, dst_port, Arc::downgrade(entry), status);
-
-    // set the port forwarding state in the flow
-    {
-        let mut write_guard = reverse_flow.locked.write();
-        write_guard.port_fw_state = Some(Box::new(port_fw_state));
-        write_guard.dst_vpcd = Some(entry.key.src_vpcd());
-    }
-    debug!("Set up REVERSE flow for port-forwarding;\nkey={reverse_key}\ninfo={reverse_flow}");
+    new_dst_ip: UnicastIpAddr,
+    new_dst_port: NonZero<u16>,
+) -> (PortFwState, PortFwState) {
+    let status = AtomicNatFlowStatus::new();
+    let rule = Arc::downgrade(entry);
+    let forward = PortFwState::new_dnat(new_dst_ip, new_dst_port, rule.clone(), status.clone());
+    let reverse = PortFwState::new_snat(dst_ip, dst_port, rule, status);
+    (forward, reverse)
 }
 
 /// Update a flow's port-forwarding rule for subsequent packets.
