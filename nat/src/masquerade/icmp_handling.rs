@@ -3,49 +3,23 @@
 
 //! Handling of ICMP errors in masquerade
 
-use crate::common::NatFlowStatus;
-use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
-use crate::masquerade::packet::masquerade;
+use crate::NatTranslationData;
+use crate::icmp_handler::flow_state::IcmpErrorTranslation;
+use crate::masquerade::packet::{NatPacketError, masquerade};
 use crate::masquerade::state::MasqueradeState;
 use net::buffer::PacketBufferMut;
-use net::flows::ExtractRef;
-use net::flows::FlowInfo;
-use net::packet::{DoneReason, Packet};
-use tracing::debug;
+use net::packet::Packet;
 
-pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
-    packet: &mut Packet<Buf>,
-    flow_info: &FlowInfo,
-) -> Result<NatFlowStatus, DoneReason> {
-    let f = flow_info.logfmt();
-    if let Some(src_vpcd) = packet.meta().src_vpcd {
-        debug!("(masquerade): Processing ICMP error message from {src_vpcd} with flow {f}");
-    } else {
-        // The missing source only affects this log line.
-        debug!("(masquerade): Processing ICMP error message with flow {f}");
+impl IcmpErrorTranslation for MasqueradeState {
+    const MODE: &'static str = "masquerade";
+
+    type Error = NatPacketError;
+
+    fn quoted_translation(&self) -> NatTranslationData {
+        self.reverse_translation_data()
     }
 
-    let flow_info_locked = flow_info.locked.read();
-    let Some(state) = flow_info_locked.nat_state.extract_ref::<MasqueradeState>() else {
-        debug!("(masquerade): ICMP error hit a flow carrying no masquerade state");
-        return Err(DoneReason::InternalFailure);
-    };
-
-    // translate inner packet fragment with the common API object `NatTranslationData`
-    let nat_translation = state.reverse_translation_data();
-    if let Err(e) = nat_translate_icmp_inner(packet, &nat_translation) {
-        debug!("(masquerade): Translation of ICMP error inner packet failed: {e}");
-        return Err(DoneReason::InternalFailure);
+    fn translate<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) -> Result<(), Self::Error> {
+        masquerade(packet, &self.as_translate())
     }
-    // Recompute the outer ICMP checksum after changing the quoted packet.
-    // The quote's checksum may be absent or truncated, so its updates may change the outer sum.
-    packet.meta_mut().set_checksum_refresh(true);
-
-    // translate the ICMP error packet (outer)
-    let xlate = state.as_translate();
-    if let Err(e) = masquerade(packet, &xlate) {
-        debug!("(masquerade): Failed to translate ICMP error packet with {xlate}: {e}");
-        return Err(DoneReason::InternalFailure);
-    }
-    Ok(state.status.load())
 }

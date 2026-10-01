@@ -35,60 +35,29 @@
 //! ```
 
 use net::buffer::PacketBufferMut;
-use net::flows::ExtractRef;
-use net::flows::FlowInfo;
-use net::packet::{DoneReason, Packet};
+use net::packet::Packet;
 
 use super::flow_state::PortFwState;
-use super::packet::nat_packet;
-use crate::common::NatFlowStatus;
-use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
+use super::packet::{NatPacketError, nat_packet};
+use crate::icmp_handler::flow_state::IcmpErrorTranslation;
 use crate::{NatEndpoint, NatPort, NatTranslationData};
 
-use tracing::debug;
+impl IcmpErrorTranslation for PortFwState {
+    const MODE: &'static str = "port-forwarding";
 
-// Build `NatTranslationData` from `PortFwState` to translate the packet embedded in the ICMP error
-fn as_nat_translation(pfw_state: &PortFwState) -> NatTranslationData {
-    let endpoint = NatEndpoint::with_port(
-        pfw_state.use_ip().inner(),
-        NatPort::Port(pfw_state.use_port()),
-    );
-    NatTranslationData::reverse_of(pfw_state.action, endpoint)
-}
+    type Error = NatPacketError;
 
-pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
-    packet: &mut Packet<Buf>,
-    flow_info: &FlowInfo,
-) -> Result<NatFlowStatus, DoneReason> {
-    let f = flow_info.logfmt();
-    if let Some(src_vpcd) = packet.meta().src_vpcd {
-        debug!("(port-forwarding): Processing ICMP error packet from {src_vpcd} using flow {f}");
-    } else {
-        // The missing source only affects this log line.
-        debug!("(port-forwarding): Processing ICMP error packet using flow {f}");
+    // Translate the inner packet depending on the port-forwarding state associated to the reverse
+    // flow of the offending packet.
+    fn quoted_translation(&self) -> NatTranslationData {
+        let endpoint =
+            NatEndpoint::with_port(self.use_ip().inner(), NatPort::Port(self.use_port()));
+        NatTranslationData::reverse_of(self.action, endpoint)
     }
 
-    let flow_info_locked = flow_info.locked.read();
-    let Some(state) = flow_info_locked.port_fw_state.extract_ref::<PortFwState>() else {
-        debug!("(port-forwarding): ICMP error hit a flow carrying no port-forwarding state");
-        return Err(DoneReason::InternalFailure);
-    };
-
-    // translate the inner packet depending on the port-forwarding state associated to the
-    // reverse flow of the offending packet.
-    let translation_data = as_nat_translation(state);
-    if let Err(e) = nat_translate_icmp_inner(packet, &translation_data) {
-        debug!("(port-forwarding): Translation of ICMP error inner packet failed: {e}");
-        return Err(DoneReason::InternalFailure);
+    // NAT the ICMP packet according to the port-fw state of the reverse flow of the offending
+    // packet.
+    fn translate<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) -> Result<(), Self::Error> {
+        nat_packet(packet, self).map(|_| ())
     }
-    // Recompute the outer ICMP checksum after changing the quoted packet.
-    // The quote's checksum may be absent or truncated, so its updates may change the outer sum.
-    packet.meta_mut().set_checksum_refresh(true);
-
-    // NAT the ICMP packet according to the port-fw state of the reverse flow of the offending packet
-    if let Err(e) = nat_packet(packet, state) {
-        debug!("(port-forwarding): Failed to NAT ICMP error packet: {e}");
-        return Err(DoneReason::InternalFailure);
-    }
-    Ok(state.status.load())
 }
