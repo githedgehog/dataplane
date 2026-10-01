@@ -60,15 +60,19 @@ pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
 ) -> Result<NatFlowStatus, DoneReason> {
-    let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
     let f = flow_info.logfmt();
-    debug!("(port-forwarding): Processing ICMP error packet from {src_vpcd} using flow {f}");
+    if let Some(src_vpcd) = packet.meta().src_vpcd {
+        debug!("(port-forwarding): Processing ICMP error packet from {src_vpcd} using flow {f}");
+    } else {
+        // The missing source only affects this log line.
+        debug!("(port-forwarding): Processing ICMP error packet using flow {f}");
+    }
 
     let flow_info_locked = flow_info.locked.read();
-    let state = flow_info_locked
-        .port_fw_state
-        .extract_ref::<PortFwState>()
-        .unwrap_or_else(|| unreachable!());
+    let Some(state) = flow_info_locked.port_fw_state.extract_ref::<PortFwState>() else {
+        debug!("(port-forwarding): ICMP error hit a flow carrying no port-forwarding state");
+        return Err(DoneReason::InternalFailure);
+    };
 
     // translate the inner packet depending on the port-forwarding state associated to the
     // reverse flow of the offending packet.
