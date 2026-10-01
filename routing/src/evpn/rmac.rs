@@ -288,7 +288,7 @@ pub(crate) mod tests {
     pub fn build_sample_vtep() -> Vtep {
         let address = mk_addr("7.0.0.100");
         let mac = SourceMac::try_from("02:bb:cc:dd:ee:ff").expect("Bad source mac");
-        Vtep::with_ip_and_mac(address, mac)
+        Vtep::new(address, mac)
     }
 
     #[test]
@@ -351,17 +351,11 @@ pub(crate) mod tests {
 
     #[test]
     fn vtep_basic() {
-        let mut vtep = Vtep::new();
-        assert_eq!(vtep.get_ip(), None);
-        assert_eq!(vtep.get_mac(), None);
-        vtep.set_ip(mk_addr("172.16.128.1"));
-        assert!(vtep.get_ip().is_some());
-        vtep.set_mac(SourceMac::try_from("aa:bb:cc:dd:ee:ff").unwrap());
-        assert!(vtep.get_mac().is_some());
-        vtep.unset_ip();
-        vtep.unset_mac();
-        assert_eq!(vtep.get_ip(), None);
-        assert_eq!(vtep.get_mac(), None);
+        let ip = mk_addr("172.16.128.1");
+        let mac = SourceMac::try_from("aa:bb:cc:dd:ee:ff").unwrap();
+        let vtep = Vtep::new(ip, mac);
+        assert_eq!(vtep.ip(), ip);
+        assert_eq!(vtep.mac(), mac);
     }
 
     #[track_caller]
