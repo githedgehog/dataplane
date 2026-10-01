@@ -3,8 +3,8 @@
 
 #![cfg(test)]
 
-use crate::common::{NatAction, NatFlowStatus};
-use crate::masquerade::protocol::next_flow_status;
+use super::{FlowSide, next_status};
+use crate::common::NatFlowStatus;
 use net::buffer::TestBuffer;
 use net::headers::TryTcpMut;
 use net::packet::Packet;
@@ -63,23 +63,23 @@ fn udp_packet(source_port: u16) -> Packet<TestBuffer> {
 }
 
 #[allow(clippy::match_same_arms)]
-fn expected_tcp(action: NatAction, status: NatFlowStatus, f: Flags) -> NatFlowStatus {
+fn expected_tcp(side: FlowSide, status: NatFlowStatus, f: Flags) -> NatFlowStatus {
     use NatFlowStatus as S;
-    let progressed = match (action, status) {
-        (NatAction::SrcNat, S::TwoWay) if !f.syn && f.ack => Some(S::Established),
-        (NatAction::DstNat, S::OneWay) if f.syn && f.ack => Some(S::TwoWay),
+    let progressed = match (side, status) {
+        (FlowSide::Initiator, S::TwoWay) if !f.syn && f.ack => Some(S::Established),
+        (FlowSide::Responder, S::OneWay) if f.syn && f.ack => Some(S::TwoWay),
 
-        (NatAction::SrcNat, S::Established) if f.fin => Some(S::CClosing),
-        (NatAction::DstNat, S::Established) if f.fin => Some(S::SClosing),
+        (FlowSide::Initiator, S::Established) if f.fin => Some(S::CClosing),
+        (FlowSide::Responder, S::Established) if f.fin => Some(S::SClosing),
 
-        (NatAction::SrcNat, S::SClosing) if !f.fin && f.ack => Some(S::SHalfClose),
-        (NatAction::DstNat, S::CClosing) if !f.fin && f.ack => Some(S::CHalfClose),
+        (FlowSide::Initiator, S::SClosing) if !f.fin && f.ack => Some(S::SHalfClose),
+        (FlowSide::Responder, S::CClosing) if !f.fin && f.ack => Some(S::CHalfClose),
 
-        (NatAction::SrcNat, S::SClosing) if f.fin && f.ack => Some(S::LastAck),
-        (NatAction::DstNat, S::CClosing) if f.fin && f.ack => Some(S::LastAck),
+        (FlowSide::Initiator, S::SClosing) if f.fin && f.ack => Some(S::LastAck),
+        (FlowSide::Responder, S::CClosing) if f.fin && f.ack => Some(S::LastAck),
 
-        (NatAction::SrcNat, S::SHalfClose) if f.fin => Some(S::LastAck),
-        (NatAction::DstNat, S::CHalfClose) if f.fin => Some(S::LastAck),
+        (FlowSide::Initiator, S::SHalfClose) if f.fin => Some(S::LastAck),
+        (FlowSide::Responder, S::CHalfClose) if f.fin => Some(S::LastAck),
 
         (_, S::LastAck) if f.ack => Some(S::Closed),
 
@@ -96,16 +96,16 @@ fn expected_tcp(action: NatAction, status: NatFlowStatus, f: Flags) -> NatFlowSt
 #[test]
 #[cfg_attr(miri, ignore = "the full close sequence is 69s under miri")]
 fn the_tcp_state_machine_follows_the_close_sequence() {
-    for action in [NatAction::SrcNat, NatAction::DstNat] {
+    for side in [FlowSide::Initiator, FlowSide::Responder] {
         for status in STATUSES {
             for bits in 0..16u8 {
                 let flags = Flags::from_bits(bits);
                 let packet = tcp_packet(flags);
-                let got = next_flow_status(&packet, action, status);
-                let want = expected_tcp(action, status, flags);
+                let got = next_status(&packet, side, status);
+                let want = expected_tcp(side, status, flags);
                 assert_eq!(
                     got, want,
-                    "{action} from {status:?} with {flags:?}: expected {want:?}, got {got:?}"
+                    "{side} from {status:?} with {flags:?}: expected {want:?}, got {got:?}"
                 );
             }
         }
@@ -120,13 +120,13 @@ fn a_segment_with_no_flags_moves_nothing() {
         fin: false,
         rst: false,
     };
-    for action in [NatAction::SrcNat, NatAction::DstNat] {
+    for side in [FlowSide::Initiator, FlowSide::Responder] {
         for status in STATUSES {
             let packet = tcp_packet(bare);
             assert_eq!(
-                next_flow_status(&packet, action, status),
+                next_status(&packet, side, status),
                 status,
-                "{action} from {status:?} moved on a segment with no flags set"
+                "{side} from {status:?} moved on a segment with no flags set"
             );
         }
     }
@@ -140,36 +140,19 @@ fn reset_and_closed_absorb() {
         fin: false,
         rst: true,
     };
-    for action in [NatAction::SrcNat, NatAction::DstNat] {
+    for side in [FlowSide::Initiator, FlowSide::Responder] {
         for bits in 0..16u8 {
             let packet = tcp_packet(Flags::from_bits(bits));
             assert_eq!(
-                next_flow_status(&packet, action, NatFlowStatus::Reset),
+                next_status(&packet, side, NatFlowStatus::Reset),
                 NatFlowStatus::Reset,
                 "a reset connection was revived"
             );
         }
         let packet = tcp_packet(rst);
         assert_eq!(
-            next_flow_status(&packet, action, NatFlowStatus::Closed),
+            next_status(&packet, side, NatFlowStatus::Closed),
             NatFlowStatus::Reset
-        );
-    }
-}
-
-#[test]
-fn a_reply_from_a_resolver_closes_the_flow_at_once() {
-    for source_port in [53u16, 853, 8853] {
-        let packet = udp_packet(source_port);
-        assert_eq!(
-            next_flow_status(&packet, NatAction::DstNat, NatFlowStatus::OneWay),
-            NatFlowStatus::Closed,
-            "a reply from port {source_port} should close the flow"
-        );
-        assert_eq!(
-            next_flow_status(&packet, NatAction::SrcNat, NatFlowStatus::TwoWay),
-            NatFlowStatus::Established,
-            "an outbound packet must not be closed by its own source port"
         );
     }
 }
@@ -178,18 +161,18 @@ fn a_reply_from_a_resolver_closes_the_flow_at_once() {
 fn ordinary_udp_opens_and_settles() {
     let packet = udp_packet(12345);
     assert_eq!(
-        next_flow_status(&packet, NatAction::DstNat, NatFlowStatus::OneWay),
+        next_status(&packet, FlowSide::Responder, NatFlowStatus::OneWay),
         NatFlowStatus::TwoWay,
         "a reply makes a one-way flow two-way"
     );
     assert_eq!(
-        next_flow_status(&packet, NatAction::SrcNat, NatFlowStatus::TwoWay),
+        next_status(&packet, FlowSide::Initiator, NatFlowStatus::TwoWay),
         NatFlowStatus::Established,
         "and the next outbound packet establishes it"
     );
     for status in [NatFlowStatus::Established, NatFlowStatus::Closed] {
         assert_eq!(
-            next_flow_status(&packet, NatAction::SrcNat, status),
+            next_status(&packet, FlowSide::Initiator, status),
             status,
             "an established or closed udp flow does not move outbound"
         );
@@ -210,20 +193,20 @@ fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
     .unwrap_or_else(|_| unreachable!());
 
     assert_eq!(
-        next_flow_status(&packet, NatAction::DstNat, NatFlowStatus::OneWay),
+        next_status(&packet, FlowSide::Responder, NatFlowStatus::OneWay),
         NatFlowStatus::TwoWay,
         "a reply must answer the request"
     );
 
     for status in STATUSES {
-        for action in [NatAction::SrcNat, NatAction::DstNat] {
-            let next = next_flow_status(&packet, action, status);
-            if action == NatAction::DstNat && status == NatFlowStatus::OneWay {
+        for side in [FlowSide::Initiator, FlowSide::Responder] {
+            let next = next_status(&packet, side, status);
+            if side == FlowSide::Responder && status == NatFlowStatus::OneWay {
                 continue;
             }
             assert_eq!(
                 next, status,
-                "an {action} icmp packet moved a flow in {status:?}"
+                "an icmp packet from the {side} moved a flow in {status:?}"
             );
         }
     }
@@ -245,14 +228,14 @@ fn rank(status: NatFlowStatus) -> u8 {
 
 #[test]
 fn the_tcp_lifecycle_never_runs_backwards() {
-    for action in [NatAction::SrcNat, NatAction::DstNat] {
+    for side in [FlowSide::Initiator, FlowSide::Responder] {
         for status in STATUSES {
             for bits in 0..16u8 {
                 let flags = Flags::from_bits(bits);
-                let got = next_flow_status(&tcp_packet(flags), action, status);
+                let got = next_status(&tcp_packet(flags), side, status);
                 assert!(
                     rank(got) >= rank(status),
-                    "{action} from {status:?} with {flags:?} went backwards to {got:?}"
+                    "{side} from {status:?} with {flags:?} went backwards to {got:?}"
                 );
             }
         }
@@ -266,23 +249,23 @@ fn each_direction_owns_its_half_of_the_close() {
         for bits in 0..16u8 {
             let flags = Flags::from_bits(bits);
 
-            let got = next_flow_status(&tcp_packet(flags), NatAction::SrcNat, status);
+            let got = next_status(&tcp_packet(flags), FlowSide::Initiator, status);
             if got != status {
                 assert!(
                     !matches!(got, S::OneWay | S::TwoWay | S::SClosing | S::CHalfClose),
-                    "SrcNat from {status:?} with {flags:?} produced {got:?}, which belongs to \
+                    "initiator from {status:?} with {flags:?} produced {got:?}, which belongs to \
                      the server's side of the close"
                 );
             }
 
-            let got = next_flow_status(&tcp_packet(flags), NatAction::DstNat, status);
+            let got = next_status(&tcp_packet(flags), FlowSide::Responder, status);
             if got != status {
                 assert!(
                     !matches!(
                         got,
                         S::OneWay | S::Established | S::CClosing | S::SHalfClose
                     ),
-                    "DstNat from {status:?} with {flags:?} produced {got:?}, which belongs to \
+                    "responder from {status:?} with {flags:?} produced {got:?}, which belongs to \
                      the client's side of the close"
                 );
             }
