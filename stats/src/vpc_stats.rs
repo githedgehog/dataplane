@@ -225,6 +225,7 @@ mod under_readers {
         VpcDiscriminant::from_vni(Vni::new_checked(vni).unwrap_or_else(|_| unreachable!()))
     }
 
+    #[cfg_attr(emulated, ignore = "much too slow under emulation")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_reader_never_sees_a_name_against_the_previous_tenants_traffic() {
         fn sent_by(tenant: u64) -> u64 {

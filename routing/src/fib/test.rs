@@ -414,6 +414,7 @@ mod tests {
     }
 
     // Tests fib reader utilities returning guards
+    #[cfg_attr(emulated, ignore = "much too slow under emulation")]
     #[test]
     fn ecmp_uses_the_whole_group_and_picks_the_same_entry_for_a_packet() {
         let (mut fibw, fibr) = FibWriter::new(0);

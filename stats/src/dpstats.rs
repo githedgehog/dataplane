@@ -1604,6 +1604,7 @@ mod rate_oracle {
         });
     }
 
+    #[cfg_attr(emulated, ignore = "much too slow under emulation")]
     #[test]
     fn a_steady_load_is_published_as_itself_at_every_tick() {
         let clock = clock::virtual_time::Paused::new();
@@ -1620,6 +1621,7 @@ mod rate_oracle {
         });
     }
 
+    #[cfg_attr(emulated, ignore = "much too slow under emulation")]
     #[test]
     fn a_changing_load_is_published_in_the_order_it_happened() {
         const SETTLED: usize = 5;
@@ -2011,6 +2013,7 @@ mod exported {
         });
     }
 
+    #[cfg_attr(emulated, ignore = "much too slow under emulation")]
     #[test]
     fn an_idle_peering_is_not_published() {
         const FABRIC: u32 = 8;
