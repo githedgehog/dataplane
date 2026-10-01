@@ -235,12 +235,12 @@ impl RouterConfig {
 #[cfg(test)]
 #[rustfmt::skip]
 mod tests {
-    use std::net::IpAddr;
     use std::str::FromStr;
     use tracing_test::traced_test;
     use tracing::debug;
     use net::{route::RouteTableId, vxlan::Vni};
     use net::eth::mac::SourceMac;
+    use net::ip::UnicastIpAddr;
     use net::interface::{InterfaceName, InterfaceIndex};
     use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::AttachConfig, rib::vrf::RouterVrfConfig};
     use crate::interfaces::interface::IfState;
@@ -313,7 +313,7 @@ mod tests {
 
     }
     fn add_router_vtep_config(config: &mut RouterConfig) {
-        let vtep_ip = IpAddr::from_str("7.0.0.100").unwrap();
+        let vtep_ip = UnicastIpAddr::from_str("7.0.0.100").unwrap();
         let vtep_mac = SourceMac::try_from("00:ca:fe:be:ff:44").expect("Bad mac");
         let vtep = Vtep::new(vtep_ip, vtep_mac);
         config.set_vtep(vtep);

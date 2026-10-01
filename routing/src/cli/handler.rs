@@ -596,6 +596,7 @@ mod tests_cli_handling {
 
     use net::eth::mac::{Mac, SourceMac};
     use net::interface::{InterfaceIndex, InterfaceName};
+    use net::ip::UnicastIpAddr;
     use net::route::RouteTableId;
     use net::vxlan::Vni;
 
@@ -674,7 +675,7 @@ mod tests_cli_handling {
         ifconfig
     }
     fn build_vtep() -> Vtep {
-        let ip = IpAddr::from_str(VTEP_IP).unwrap();
+        let ip = UnicastIpAddr::from_str(VTEP_IP).unwrap();
         let mac = SourceMac::try_from(VTEP_MAC).unwrap();
         Vtep::new(ip, mac)
     }
