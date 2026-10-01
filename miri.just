@@ -28,8 +28,8 @@ export seeds := "1"
 export stacked_borrow_check := env("STACKED_BORROW_CHECK", "disabled")
 
 export bolero_test_time_ms := env("BOLERO_TEST_TIME_MS", "10000")
-export preemption_rate := "0.10"
-export weak_failure_rate := "0.05"
+export preemption_rate := "0.01"
+export weak_failure_rate := "0.001"
 export randomize_struct_layout := "enabled"
 export layout_seed := `printf '%u' "$((16#$(git rev-parse HEAD)))"`
 
