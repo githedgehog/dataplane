@@ -34,6 +34,8 @@ pub use icmp_handler::nf::IcmpErrorHandler;
 pub use masquerade::Masquerade;
 pub use port::NatPort;
 pub use static_nat::StaticNat;
+
+use common::NatAction;
 use std::net::IpAddr;
 
 #[derive(Debug, Clone, Copy)]
@@ -71,5 +73,15 @@ impl NatTranslationData {
     pub(crate) fn with_dst(mut self, endpoint: NatEndpoint) -> Self {
         self.dst = Some(endpoint);
         self
+    }
+
+    /// Translation to `endpoint`, applied in the direction opposite to `action`: a source NAT
+    /// becomes a destination NAT, and conversely.
+    #[must_use]
+    pub(crate) fn reverse_of(action: NatAction, endpoint: NatEndpoint) -> Self {
+        match action {
+            NatAction::SrcNat => Self::default().with_dst(endpoint),
+            NatAction::DstNat => Self::default().with_src(endpoint),
+        }
     }
 }
