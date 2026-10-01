@@ -672,7 +672,7 @@ mod tests_cli_handling {
     fn build_vtep() -> Vtep {
         let mut vtep = Vtep::new();
         vtep.set_ip(IpAddr::from_str(VTEP_IP).unwrap());
-        vtep.set_mac(Mac::try_from(VTEP_MAC).unwrap());
+        vtep.set_mac(SourceMac::try_from(VTEP_MAC).unwrap());
         vtep
     }
     fn build_router_config() -> RouterConfig {

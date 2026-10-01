@@ -234,7 +234,7 @@ mod tests {
     use tracing_test::traced_test;
     use tracing::debug;
     use net::{route::RouteTableId, vxlan::Vni};
-    use net::eth::mac::{Mac, SourceMac};
+    use net::eth::mac::SourceMac;
     use net::interface::{InterfaceName, InterfaceIndex};
     use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::AttachConfig, rib::vrf::RouterVrfConfig};
     use crate::interfaces::interface::IfState;
@@ -307,7 +307,9 @@ mod tests {
 
     }
     fn add_router_vtep_config(config: &mut RouterConfig) {
-        let vtep = Vtep::with_ip_and_mac(IpAddr::from_str("7.0.0.100").unwrap(), Mac::from([0x00,0xca,0xfe,0xbe,0xff,0x44]));
+        let vtep_ip = IpAddr::from_str("7.0.0.100").unwrap();
+        let vtep_mac = SourceMac::try_from("00:ca:fe:be:ff:44").expect("Bad mac");
+        let vtep = Vtep::with_ip_and_mac(vtep_ip, vtep_mac);
         config.set_vtep(vtep);
     }
     fn build_router_config() -> RouterConfig {
