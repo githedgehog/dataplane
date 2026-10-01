@@ -7,10 +7,31 @@ use super::TrackedState;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError, PairInsertion};
 use net::FlowKey;
+use net::buffer::PacketBufferMut;
+use net::flow_key::FlowKeyError;
 use net::flows::{FlowInfo, FlowInfoError};
-use net::packet::{PacketMeta, VpcDiscriminant};
+use net::packet::{Packet, PacketMeta, VpcDiscriminant};
 use std::time::Duration;
 use tracing::debug;
+
+/// Get the flow keys of a packet, to create a new pair of flows: the initial key, before any
+/// other NAT translation, for the forward flow; and the key for the current headers, from which to
+/// derive the reverse key.
+pub(crate) fn packet_flow_keys<Buf: PacketBufferMut>(
+    packet: &Packet<Buf>,
+) -> Result<(FlowKey, FlowKey), FlowKeyError> {
+    let current = FlowKey::try_from(packet)?;
+
+    // If we don't have the initial key, we didn't populate it because we don't need it: fall back
+    // to the current key
+    let initial = packet
+        .meta()
+        .flow_key
+        .as_deref()
+        .copied()
+        .unwrap_or(current);
+    Ok((initial, current))
+}
 
 /// One half of a pair of flows to install.
 pub(crate) struct HalfFlow<S> {
