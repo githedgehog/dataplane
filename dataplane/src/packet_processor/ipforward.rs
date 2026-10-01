@@ -5,8 +5,18 @@
 
 #![allow(clippy::similar_names)]
 
+use net::eth::mac::DestinationMac;
+use net::headers::{Headers, Net};
 use net::headers::{TryHeaders, TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
+use net::interface::InterfaceIndex;
+use net::ip::NextHeader;
+use net::ip::UnicastIpAddr;
+use net::ipv4::Ipv4;
+use net::ipv6::Ipv6;
+use net::packet::VpcDiscriminant;
 use net::packet::{DoneReason, Packet};
+use net::udp::UdpEncap;
+use net::vxlan::{Vxlan, VxlanEncap};
 use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
@@ -16,15 +26,6 @@ use routing::{
     EgressObject, FibEntry, FibKey, FibTableReader, PktInstruction, ResolvedEncapsulation,
     ResolvedVxlan, Vtep,
 };
-
-use net::headers::{Headers, Net};
-use net::interface::InterfaceIndex;
-use net::ip::NextHeader;
-use net::ipv4::{Ipv4, UnicastIpv4Addr};
-use net::ipv6::{Ipv6, UnicastIpv6Addr};
-use net::packet::VpcDiscriminant;
-use net::udp::UdpEncap;
-use net::vxlan::{Vxlan, VxlanEncap};
 
 use tracectl::{custom_target, tdebug, trace_target};
 trace_target!("ip-forward", LevelFilter::WARN, &["pipeline"]);
@@ -112,8 +113,7 @@ impl IpForwarder {
         }
 
         /* execute instructions according to FIB */
-        let vtep = fib.get_vtep();
-        self.packet_exec_instructions(packet, fibentry, vtep);
+        self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
 
         /* strip vrfid */
         if packet.meta().vrf == vrfid {
@@ -192,20 +192,14 @@ impl IpForwarder {
         let src_ip = vtep.ip();
 
         // IPv4 or IPv6
-        let net = match (&src_ip, &vxlan.remote) {
-            (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
-                let Ok(src_ip) = UnicastIpv4Addr::new(*src_ip) else {
-                    return Err(format!("Invalid source IPv4 address '{src_ip}'"));
-                };
+        let net = match (src_ip, &vxlan.remote) {
+            (UnicastIpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
                 let mut ip = Ipv4::default();
                 ip.set_source(src_ip).set_destination(*dst_ip).set_ttl(64);
                 ip.set_next_header(NextHeader::UDP);
                 Net::Ipv4(ip)
             }
-            (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
-                let Ok(src_ip) = UnicastIpv6Addr::new(*src_ip) else {
-                    return Err(format!("Invalid source IPv4 address '{src_ip}'"));
-                };
+            (UnicastIpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
                 let mut ip = Ipv6::default();
                 ip.set_source(src_ip)
                     .set_destination(*dst_ip)
@@ -239,28 +233,15 @@ impl IpForwarder {
         &self,
         packet: &mut Packet<Buf>,
         vxlan: &ResolvedVxlan,
-        vtep: Option<&Vtep>,
+        vtep: &Vtep,
     ) {
         let nfi = &self.name;
-        let Some(vtep) = vtep else {
-            error!("{nfi}: VxLAN encap FAILED: no VTEP info available");
-            packet.done(DoneReason::VxlanEncapFailure);
-            return;
-        };
 
-        let nfi = &self.name;
-        let src_mac = vtep.mac();
-        let dst_mac = &vxlan.dmac;
+        // set the src mac of the current packet (innert)
+        packet.set_eth_source_mac(vtep.mac());
 
-        // set the src mac of the inner packet (current)
-        packet.set_eth_source_mac(src_mac);
-
-        // set current packet dst mac (inner)
-        if let Err(e) = packet.set_eth_destination(dst_mac.inner()) {
-            error!("{nfi}: VxLAN encap FAILED: can't set dst mac '{dst_mac}': {e}");
-            packet.done(DoneReason::VxlanEncapFailure);
-            return;
-        }
+        // set the dst mac in the current packet (inner)
+        packet.set_eth_dest_mac(DestinationMac::from(vxlan.dmac));
 
         // Refresh requested checksums, or just the IPv4 checksum after decrementing TTL.
         // IPv6 has no header checksum.
@@ -297,7 +278,6 @@ impl IpForwarder {
     }
 
     fn packet_exec_instruction_encap<Buf: PacketBufferMut>(
-        #[allow(clippy::unused_self)] // Reserve the right to use self in the future
         &self,
         packet: &mut Packet<Buf>,
         encap: &ResolvedEncapsulation,
@@ -305,7 +285,15 @@ impl IpForwarder {
     ) {
         match encap {
             ResolvedEncapsulation::Mpls(_label) => todo!(),
-            ResolvedEncapsulation::Vxlan(vxlan) => self.vxlan_encap(packet, vxlan, vtep),
+            ResolvedEncapsulation::Vxlan(vxlan) => {
+                if let Some(vtep) = vtep {
+                    self.vxlan_encap(packet, vxlan, vtep);
+                } else {
+                    let nfi = &self.name;
+                    error!("{nfi}: VxLAN encap FAILED: no VTEP info available");
+                    packet.done(DoneReason::VxlanEncapFailure);
+                }
+            }
         }
     }
 
@@ -412,19 +400,20 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
 mod test {
     use super::IpForwarder;
     use net::eth::mac::{Mac, SourceMac};
-    use net::ip::NextHeader;
+    use net::ip::{NextHeader, UnicastIpAddr};
     use net::packet::test_utils::build_test_ipv6_packet_with_transport;
     use net::vxlan::Vni;
     use routing::testing::RouterTables;
     use routing::{ResolvedVxlan, Vtep};
     use std::net::IpAddr;
+    use std::str::FromStr;
 
     /// IPv6 packets need no header checksum refresh before encapsulation.
     #[test]
     fn an_ipv6_packet_without_a_refresh_encapsulates() {
         let forwarder = IpForwarder::new("test", RouterTables::new().fibs());
         let vtep = Vtep::new(
-            IpAddr::from([192, 0, 2, 1]),
+            UnicastIpAddr::from_str("192.0.2.1").expect("Bad Ip"),
             SourceMac::try_from("02:00:00:00:00:01").expect("Bad mac"),
         );
         let vxlan = ResolvedVxlan {
@@ -436,7 +425,7 @@ mod test {
         let mut packet = build_test_ipv6_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();
         assert!(!packet.meta().checksum_refresh());
 
-        forwarder.vxlan_encap(&mut packet, &vxlan, Some(&vtep));
+        forwarder.vxlan_encap(&mut packet, &vxlan, &vtep);
 
         assert_eq!(packet.get_done(), None);
         assert!(

@@ -268,6 +268,7 @@ pub(crate) mod tests {
     use crate::evpn::vtep::Vtep;
     use crate::rib::vrf::tests::mk_addr;
     use net::eth::mac::SourceMac;
+    use net::ip::UnicastIpAddr;
     use net::vxlan::Vni;
     use std::net::IpAddr;
     use std::str::FromStr;
@@ -286,7 +287,7 @@ pub(crate) mod tests {
     }
     #[allow(unused)] // fixme: add test
     pub fn build_sample_vtep() -> Vtep {
-        let address = mk_addr("7.0.0.100");
+        let address = UnicastIpAddr::from_str("7.0.0.100").expect("Bad ip");
         let mac = SourceMac::try_from("02:bb:cc:dd:ee:ff").expect("Bad source mac");
         Vtep::new(address, mac)
     }
@@ -351,7 +352,7 @@ pub(crate) mod tests {
 
     #[test]
     fn vtep_basic() {
-        let ip = mk_addr("172.16.128.1");
+        let ip = UnicastIpAddr::from_str("172.16.128.1").expect("Bad ip");
         let mac = SourceMac::try_from("aa:bb:cc:dd:ee:ff").unwrap();
         let vtep = Vtep::new(ip, mac);
         assert_eq!(vtep.ip(), ip);
