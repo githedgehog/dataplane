@@ -748,7 +748,6 @@ jobs:
       max-parallel: 1
       matrix:
         platform:
-          - "aarch64"
           - "bluefield3"
         libc:
           - "gnu"
@@ -756,6 +755,10 @@ jobs:
         target:
           - "dataplane"
           - "frr.dataplane"
+        exclude:
+         - target: "frr.dataplane"
+           libc: "gnu"
+
     steps:
       - *checkout
       - *nix-setup
