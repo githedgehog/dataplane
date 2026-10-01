@@ -24,6 +24,7 @@ mod test_expiry;
 pub use allocator_writer::MasqueradeConfig;
 pub use allocator_writer::{NatAllocatorReaderFactory, NatAllocatorWriter};
 pub use nf::Masquerade;
+pub(crate) use state::MasqueradeState;
 
 use tracectl::trace_target;
 trace_target!("masquerade", LevelFilter::INFO, &["nat", "pipeline"]);
