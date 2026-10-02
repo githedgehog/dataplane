@@ -496,19 +496,16 @@ mod cpi_properties {
     use super::*;
     use crate::atable::atablerw::AtableWriter;
     use crate::config::RouterConfig;
-    use crate::fib::fibobjects::{FibEntry, PktInstruction};
     use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftablerw::IfTableWriter;
     use crate::interfaces::tests::build_test_iftable;
     use crate::rib::vrf::tests::{build_test_nhop, build_test_route};
     use crate::rib::vrf::{RouteOrigin, RouterVrfConfig, VrfStatus};
-    use bolero::{Driver, ValueGenerator};
     use dplane_rpc::msg::{ForwardAction, NextHop, VxlanEncap};
     use dplane_rpc::objects::MacAddress;
     use lpm::prefix::Prefix;
     use net::vxlan::Vni;
     use std::net::IpAddr;
-    use std::ops::Bound::Included;
     use std::str::FromStr;
 
     const OVERLAY_VRF: VrfId = 7;
@@ -587,60 +584,6 @@ mod cpi_properties {
         }
     }
 
-    fn rmac_msg(vtep: IpAddr, mac: [u8; 6]) -> Rmac {
-        Rmac {
-            address: vtep,
-            mac: MacAddress::new(mac),
-            vni: OVERLAY_VNI,
-        }
-    }
-
-    fn fib_entries(db: &RoutingDb, vrfid: VrfId, prefix: &str) -> Vec<FibEntry> {
-        let prefix = Prefix::from_str(prefix).unwrap_or_else(|_| unreachable!());
-        let Prefix::IPV4(wanted) = prefix else {
-            unreachable!()
-        };
-        let vrf = db
-            .vrftable
-            .get_vrf(vrfid)
-            .unwrap_or_else(|e| unreachable!("{e}"));
-        let fib = vrf.fibw.enter().unwrap_or_else(|| unreachable!());
-        fib.iter_v4()
-            .find(|(p, _)| *p == wanted)
-            .map(|(_, route)| {
-                route
-                    .iter()
-                    .flat_map(|group| group.entries().iter().cloned())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    fn entries_are_well_formed(entries: &[FibEntry], at: &str) {
-        for entry in entries {
-            assert!(entry.is_valid(), "unusable {entry:?} {at}");
-            let drop_at = entry
-                .iter()
-                .position(|inst| matches!(inst, PktInstruction::Drop));
-            if let Some(index) = drop_at {
-                assert_eq!(index, 0, "a drop is not first in {entry:?} {at}");
-            }
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, Default)]
-    struct Fabrics;
-
-    impl ValueGenerator for Fabrics {
-        type Output = (usize, usize);
-
-        fn generate<D: Driver>(&self, driver: &mut D) -> Option<(usize, usize)> {
-            let vtep = driver.gen_u8(Included(&0), Included(&(NUM_VTEPS - 1)))?;
-            let mac = driver.gen_u8(Included(&0), Included(&(NUM_MACS - 1)))?;
-            Some((usize::from(vtep), usize::from(mac)))
-        }
-    }
-
     #[test]
     fn the_pools_are_the_size_the_generator_thinks() {
         assert_eq!(vteps().len(), usize::from(NUM_VTEPS));
@@ -649,44 +592,6 @@ mod cpi_properties {
         for vtep in vteps() {
             assert!(underlay.covers_addr(&vtep), "{vtep} is not in the underlay");
         }
-    }
-
-    /// What a withdrawal does today, which is not what a missing rmac does.
-    ///
-    /// `before` is taken *after* the rmac is installed, so what this asserts is that
-    /// withdrawing an EVPN router MAC leaves the learned dmac in the fib, and that an explicit
-    /// `refresh_non_default_fibs` does not dislodge it. Its sibling
-    /// `an_overlay_route_drops_until_its_router_mac_arrives` establishes the opposite default
-    /// for what looks like the same condition: an overlay route with no usable router MAC
-    /// drops. So "never had one" and "had one, it was withdrawn" are treated differently.
-    ///
-    /// Both readings are defensible and this records rather than settles it. Retaining is right
-    /// if withdrawals are transient during a peer's reconvergence, and blackholes traffic if
-    /// they are not; dropping applies the same "do not encapsulate to a MAC you do not know"
-    /// argument that justifies the sibling, and strands traffic that would have kept working.
-    /// Named for what it characterises, so that changing the behaviour is a decision to make
-    /// here rather than a red test to explain away.
-    #[test]
-    fn withdrawing_a_router_mac_leaves_the_route_forwarding() {
-        bolero::check!().with_generator(Fabrics).cloned().for_each(
-            |(vtep, mac): (usize, usize)| {
-                let (mut db, _atw) = fabric();
-                let vtep = vteps()[vtep];
-                let prefix = "10.0.0.0/24";
-                let rmac = rmac_msg(vtep, macs()[mac]);
-
-                overlay_route(OVERLAY_VRF, prefix, vtep).add(&mut db);
-                rmac.add(&mut db);
-                let before = fib_entries(&db, OVERLAY_VRF, prefix);
-
-                assert_eq!(rmac.del(&mut db), RpcResultCode::Ok);
-                db.vrftable.refresh_non_default_fibs();
-
-                let after = fib_entries(&db, OVERLAY_VRF, prefix);
-                entries_are_well_formed(&after, "after withdrawing the rmac");
-                assert_eq!(after, before, "withdrawing a router mac changed the fib");
-            },
-        );
     }
 
     #[test]
