@@ -25,7 +25,7 @@ use nat::masquerade::{MasqueradeConfig, NatAllocatorReaderFactory, NatAllocatorW
 use nat::portfw::{PortForwarder, PortFwTableReaderFactory, PortFwTableWriter};
 use nat::static_nat::setup::build_nat_configuration;
 use nat::static_nat::{NatTablesReaderFactory, NatTablesWriter};
-use nat::{IcmpErrorHandler, Masquerade, StaticNat};
+use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::{Mac, SourceMac};
 use net::interface::{InterfaceIndex, InterfaceName};
@@ -352,6 +352,7 @@ impl Blueprint {
                 checking.lock().after(at, packet);
             },
         ));
+        pipeline = pipeline.add_stage(FlowTracker::new("flow-tracker", self.flow_table.clone()));
 
         if let Some(underlay) = &self.underlay {
             pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", underlay.fibs.handle()));
