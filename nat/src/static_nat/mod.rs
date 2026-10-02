@@ -14,6 +14,7 @@ pub(crate) mod test;
 // re-exports
 pub(crate) use flow_data::StaticNatFlowData;
 pub use natrw::NatTablesReaderFactory;
+pub(crate) use nf::translate_flow_key;
 pub use nf::{NatTablesWriter, StaticNat};
 
 use tracectl::trace_target;
