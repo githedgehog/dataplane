@@ -22,7 +22,7 @@ use flow_filter::{FlowFilter, FlowFilterContextWriter};
 use nat::masquerade::NatAllocatorWriter;
 use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::static_nat::NatTablesWriter;
-use nat::{IcmpErrorHandler, Masquerade, StaticNat};
+use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat};
 use net::packet::PacketStats;
 
 use net::buffer::PacketBufferMut;
@@ -118,6 +118,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             flow_table_clone.clone(),
             natallocator_factory.handle(),
         );
+        let flow_tracker = FlowTracker::new("flow-tracker", flow_table_clone.clone());
         let pktdump = PacketDumper::new("pipeline-end", true, None);
         let stats_stage = Stats::new("stats", stats_w.clone());
         let flow_filter = FlowFilter::new("flow-filter", flow_filter_reader_factory.handle());
@@ -144,6 +145,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(static_nat)
             .add_stage(portfw)
             .add_stage(masquerade)
+            .add_stage(flow_tracker)
             .add_stage(iprouter2)
             .add_stage(stage_egress)
             .add_stage(pktdump)
