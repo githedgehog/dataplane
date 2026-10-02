@@ -1449,7 +1449,7 @@ mod crossvrf_properties {
             let vrf0 = table
                 .get_vrf_mut(Vrf::DEFAULT_VRFID)
                 .unwrap_or_else(|e| unreachable!("{e}"));
-            vrf0.add_route_complete(&underlay()[*prefix], route, &nhops, None);
+            vrf0.add_route(&underlay()[*prefix], route, &nhops, None);
             model.insert(*prefix, (*ifindex, *onlink));
         }
 
@@ -1459,7 +1459,7 @@ mod crossvrf_properties {
             let target = table
                 .get_vrf_mut(ids[*vrf])
                 .unwrap_or_else(|e| unreachable!("{e}"));
-            target.add_route_complete(&overlay()[*prefix], route, &nhops, None);
+            target.add_route(&overlay()[*prefix], route, &nhops, None);
             overlay_model.insert((*vrf, *prefix), *via);
         }
 

@@ -406,26 +406,6 @@ impl Vrf {
         self.store_route(prefix, Route::default(), &[RouteNhop::default()]);
     }
 
-    #[cfg(test)]
-    fn add_route(
-        &mut self,
-        prefix: &Prefix,
-        mut route: Route,
-        nhops: &[RouteNhop],
-        vrf0: Option<&Vrf>,
-    ) {
-        // register next-hops and let the route keep references to the shared nexthops created/found
-        route.s_nhops = self.register_shared_nhops(prefix, nhops);
-
-        // store route
-        match prefix {
-            Prefix::IPV4(p) => self.routesv4.insert(*p, route.clone()),
-            Prefix::IPV6(p) => self.routesv6.insert(*p, route.clone()),
-        };
-
-        self.nhstore.lazy_resolve_all(vrf0.unwrap_or(self));
-    }
-
     /// Rebuild all next-hop state. This is where consistency is maintained
     fn refresh_nhops(&self, resvrf: Option<&Vrf>) -> Vec<Weak<Nhop>> {
         let resvrf = resvrf.unwrap_or(self);
@@ -458,7 +438,7 @@ impl Vrf {
         }
     }
 
-    pub(crate) fn add_route_complete(
+    pub(crate) fn add_route(
         &mut self,
         prefix: &Prefix,
         mut route: Route,
@@ -1400,7 +1380,7 @@ mod vrf_properties {
             Change::AddRoute { prefix, nhops } => {
                 let route = tests::build_test_route(RouteOrigin::Bgp, 20, 100);
                 let nhops: Vec<RouteNhop> = nhops.iter().map(|i| pool[*i].clone()).collect();
-                vrf.add_route_complete(&prefixes[*prefix], route, &nhops, None);
+                vrf.add_route(&prefixes[*prefix], route, &nhops, None);
             }
             Change::DelRoute { prefix } => vrf.del_route(prefixes[*prefix], None),
             Change::SetStale { value } => vrf.set_stale(*value),

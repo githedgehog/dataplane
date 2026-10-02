@@ -1319,7 +1319,7 @@ mod resolution_properties {
 
     fn add_route(vrf: &mut Vrf, prefix: (&str, u8), nhops: &[RouteNhop]) {
         let route = build_test_route(RouteOrigin::Bgp, 0, 1);
-        vrf.add_route_complete(&Prefix::expect_from(prefix), route, nhops, None);
+        vrf.add_route(&Prefix::expect_from(prefix), route, nhops, None);
     }
 
     /// Realize a graph as a vrf, so that the only thing that gives its next-hops
