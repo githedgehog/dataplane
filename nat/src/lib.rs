@@ -20,6 +20,7 @@
 //! - "Expose" objects mixing IPv4 and IPv6 endpoints or list of exposed IPs are not supported
 
 mod common;
+mod flow_tracker;
 mod icmp_handler;
 pub mod masquerade;
 mod nat_flows;
@@ -30,6 +31,7 @@ pub mod static_nat;
 #[cfg(test)]
 mod test;
 
+pub use flow_tracker::FlowTracker;
 pub use icmp_handler::nf::IcmpErrorHandler;
 pub use masquerade::Masquerade;
 pub use port::NatPort;
