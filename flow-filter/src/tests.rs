@@ -1299,6 +1299,7 @@ fn invalidation_decision_matches_spec() {
                 },
                 needs_masquerade: case.flow_masquerade,
                 needs_port_forwarding: case.flow_port_forwarding,
+                needs_tracking: false,
                 flow_info,
             });
 
@@ -2214,6 +2215,24 @@ fn peering_with_flow_scope_acl_requires_flow_tracking() {
     assert!(
         !out.meta().has_forced_flow_tracking(),
         "a peering without ACL requested flow tracking"
+    );
+}
+
+#[test]
+fn active_tracked_flow_requires_flow_tracking_on_bypass() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, false);
+    // The flow filter only checks for presence, so the type of the state does not matter
+    flow.locked.write().tracked_info = Some(Box::new(true));
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert!(
+        out.meta().has_forced_flow_tracking(),
+        "a packet bypassing the flow filter thanks to a tracked flow lost its tracking"
     );
 }
 
