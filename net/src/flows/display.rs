@@ -41,6 +41,10 @@ impl Display for FlowInfoLocked {
         if let Some(data) = &self.masquerade_info {
             writeln!(f, "      masquerading:{data}")?;
         }
+        if let Some(_data) = &self.tracked_info {
+            // TODO: Print _data if it ever becomes non-empty in the case of no NAT
+            writeln!(f, "      no-nat")?;
+        }
         Ok(())
     }
 }
@@ -83,6 +87,10 @@ impl Display for FlowInfoLockedOneLiner<'_> {
         }
         if let Some(data) = &locked.masquerade_info {
             write!(f, "masquerading:{data} ")?;
+        }
+        if let Some(_data) = &locked.tracked_info {
+            // TODO: Print _data if it ever becomes non-empty in the case of no NAT
+            write!(f, "no-nat ")?;
         }
         Ok(())
     }

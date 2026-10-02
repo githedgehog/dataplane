@@ -171,6 +171,8 @@ pub struct FlowInfoLocked {
     pub dst_vpcd: Option<VpcDiscriminant>,
     pub masquerade_info: Option<Box<dyn FlowInfoItem>>,
     pub port_fw_info: Option<Box<dyn FlowInfoItem>>,
+    // Information for flows tracked without NAT, required for flow-scoped user ACL rules
+    pub tracked_info: Option<Box<dyn FlowInfoItem>>,
 }
 
 /// Object that represents a flow of packets.
