@@ -15,7 +15,7 @@ use tracing::debug;
 pub(crate) struct RoutingDb {
     pub vrftable: VrfTable,
     pub rmac_store: RmacStore,
-    pub vtep: Vtep,
+    pub vtep: Option<Vtep>,
     pub atabler: AtableReader,
     pub iftw: IfTableWriter,
     pub config: Option<RouterConfig>,
@@ -28,7 +28,7 @@ impl RoutingDb {
         Self {
             vrftable: VrfTable::new(fibtable),
             rmac_store: RmacStore::new(),
-            vtep: Vtep::new(),
+            vtep: None,
             atabler,
             iftw,
             config: None,

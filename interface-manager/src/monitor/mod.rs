@@ -230,7 +230,7 @@ impl InterfaceMonitor {
             .set_carrierup(carrierup)
             .set_mac(mac);
 
-        info!("Got event for {event}");
+        debug!("Got event for {event}");
         Some(event)
     }
 

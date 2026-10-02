@@ -22,6 +22,7 @@ use tracing::{debug, error};
 
 use crate::config::interface::ReconfigInterfacePlan;
 use crate::config::vrf::ReconfigVrfPlan;
+use crate::config::vtep::apply_vtep_config;
 
 /// Alias for FRR config. Currently, FRR config is received as a string.
 pub type FrrConfig = String;
@@ -86,9 +87,7 @@ impl RouterConfig {
             return Err(RouterError::InvalidConfig("Duplicated vnis"));
         }
         // Check vtep if there
-        if let Some(vtep) = &self.vtep
-            && !vtep.is_set_up()
-        {
+        if num_vnis > 0 && self.vtep.is_none() {
             return Err(RouterError::InvalidConfig("Vtep is not set up"));
         }
         Ok(())
@@ -150,15 +149,22 @@ impl RouterConfig {
     //////////////////////////////////////////////////////////////////////////////////
     pub(crate) fn apply(&self, db: &mut RoutingDb) -> Result<(), RouterError> {
         let genid = self.genid;
-        self.validate()?; /* validate the config */
+
+        // validate the config
+        self.validate()?;
+
+        // build and apply vrf reconfiguration plan
         ReconfigVrfPlan::generate(self, &db.vrftable).apply(&mut db.vrftable, &mut db.iftw)?;
-        let iftabler = db.iftw.enter().unwrap_or_else(|| unreachable!());
-        let reconfig_ifaces = ReconfigInterfacePlan::generate(self, &iftabler);
-        drop(iftabler);
+
+        // build and apply interface reconfiguration
+        let iftable = db.iftw.enter().unwrap_or_else(|| unreachable!());
+        let reconfig_ifaces = ReconfigInterfacePlan::generate(self, &iftable);
+        drop(iftable);
         reconfig_ifaces.apply(&mut db.iftw, &db.vrftable)?;
-        if let Some(vtep) = &self.vtep {
-            vtep.apply(db);
-        }
+
+        // store and apply vtep configuration (infallible)
+        apply_vtep_config(self.vtep.as_ref(), db);
+
         debug!("Successfully applied router config for generation {genid}");
         self.verify(db)?;
         Ok(())
@@ -216,11 +222,34 @@ impl RouterConfig {
         }
         Ok(())
     }
+    fn verify_vteps(&self, db: &RoutingDb) -> Result<(), RouterError> {
+        debug!("Verifying vtep status");
+        // the fib of a vrf must have the vtep if and only if the vrf has a vni
+        let vtep = self.vtep.as_ref();
+        let mut consistent = true;
+        for vrf in db.vrftable.values() {
+            let wanted = vtep.filter(|_| vrf.vni.is_some());
+            let current = vrf.get_vtep();
+            if current.as_ref() != wanted {
+                error!(
+                    "BUG: Vrf {} (vni: {:?}) has vtep {current:?}, expected {wanted:?}",
+                    vrf.name, vrf.vni
+                );
+                consistent = false;
+            }
+        }
+        if !consistent {
+            return Err(RouterError::VtepInfoInconsistency);
+        }
+        debug!("Vtep information is consistent in all VRFs");
+        Ok(())
+    }
     fn verify(&self, db: &RoutingDb) -> Result<(), RouterError> {
         let genid = self.genid;
-        debug!("Verifying config {genid}...");
+        debug!("Verifying router config for config generation {genid}...");
         self.verify_vrfs(db)?;
         self.verify_interfaces(db)?;
+        self.verify_vteps(db)?;
         debug!("Successfully verified router config for generation {genid}");
         Ok(())
     }
@@ -229,12 +258,12 @@ impl RouterConfig {
 #[cfg(test)]
 #[rustfmt::skip]
 mod tests {
-    use std::net::IpAddr;
     use std::str::FromStr;
     use tracing_test::traced_test;
     use tracing::debug;
     use net::{route::RouteTableId, vxlan::Vni};
-    use net::eth::mac::{Mac, SourceMac};
+    use net::eth::mac::SourceMac;
+    use net::ip::UnicastIpAddr;
     use net::interface::{InterfaceName, InterfaceIndex};
     use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::AttachConfig, rib::vrf::RouterVrfConfig};
     use crate::interfaces::interface::IfState;
@@ -307,7 +336,9 @@ mod tests {
 
     }
     fn add_router_vtep_config(config: &mut RouterConfig) {
-        let vtep = Vtep::with_ip_and_mac(IpAddr::from_str("7.0.0.100").unwrap(), Mac::from([0x00,0xca,0xfe,0xbe,0xff,0x44]));
+        let vtep_ip = UnicastIpAddr::from_str("7.0.0.100").unwrap();
+        let vtep_mac = SourceMac::try_from("00:ca:fe:be:ff:44").expect("Bad mac");
+        let vtep = Vtep::new(vtep_ip, vtep_mac);
         config.set_vtep(vtep);
     }
     fn build_router_config() -> RouterConfig {
@@ -452,5 +483,76 @@ mod tests {
         let ifconfig = config.get_interface_mut(idx).expect("Should find config");
         ifconfig.set_attach_cfg(None);
         test_apply_config(&config, &mut db).expect("Should succeed");
+    }
+
+    /// Build a config with two VRFs: 100 and 101, with the given vnis and vtep
+    fn build_vtep_test_config(genid: i64, vni1: Option<Vni>, vni2: Option<Vni>, vtep: Option<&Vtep>) -> RouterConfig {
+        let mut config = RouterConfig::new(genid);
+        config.add_vrf(RouterVrfConfig::new(100, "vrf-1").set_tableid(mk_tableid(1000)).set_vni(vni1));
+        config.add_vrf(RouterVrfConfig::new(101, "vrf-2").set_tableid(mk_tableid(1001)).set_vni(vni2));
+        if let Some(vtep) = vtep {
+            config.set_vtep(vtep.clone());
+        }
+        config
+    }
+
+    /// Apply the config and check that the fib of each VRF has the vtep if and only if the VRF has a vni
+    fn apply_and_check_vteps(config: &RouterConfig, db: &mut RoutingDb) {
+        test_apply_config(config, db).expect("Should succeed");
+        assert_eq!(db.vtep, config.vtep, "Stored vtep does not match the config");
+        for vrf in db.vrftable.values() {
+            if vrf.vni.is_some() {
+                assert_eq!(vrf.get_vtep(), config.vtep, "Wrong vtep in vrf {} (vni: {:?})", vrf.vrfid, vrf.vni);
+            } else {
+                assert!(vrf.get_vtep().is_none(), "Found vtep in vrf {} without vni", vrf.vrfid);
+            }
+        }
+    }
+
+    #[cfg_attr(not(emulated), traced_test)]
+    #[test]
+    fn test_config_vtep() {
+        // Create a routing database with 2 vrfs
+        // Add a sequence of vni & vtep configuration changes and verify consistency:
+        // VRFs with vni should get the vtep info as configured. VRFs without vni
+        // should not get the vtep.
+
+        let mut db = create_routing_database();
+        let vni1 = Some(mk_vni(3000));
+        let vni2 = Some(mk_vni(4000));
+        let vtep1 = Vtep::new(UnicastIpAddr::from_str("7.0.0.100").unwrap(), SourceMac::try_from("00:ca:fe:be:ff:44").unwrap());
+        let vtep2 = Vtep::new(UnicastIpAddr::from_str("7.0.0.200").unwrap(), SourceMac::try_from("00:ca:fe:be:ff:55").unwrap());
+
+        debug!("━━━━━━━━ Test: initial config: vrf-1 has vni, vrf-2 does not");
+        apply_and_check_vteps(&build_vtep_test_config(1, vni1, None, Some(&vtep1)), &mut db);
+
+        debug!("━━━━━━━━ Test: reapply the same config");
+        apply_and_check_vteps(&build_vtep_test_config(2, vni1, None, Some(&vtep1)), &mut db);
+
+        debug!("━━━━━━━━ Test: change the vtep");
+        apply_and_check_vteps(&build_vtep_test_config(3, vni1, None, Some(&vtep2)), &mut db);
+
+        debug!("━━━━━━━━ Test: vrf-2 gets a vni, vtep unchanged");
+        apply_and_check_vteps(&build_vtep_test_config(4, vni1, vni2, Some(&vtep2)), &mut db);
+
+        debug!("━━━━━━━━ Test: vrf-1 loses its vni, vtep unchanged");
+        apply_and_check_vteps(&build_vtep_test_config(5, None, vni2, Some(&vtep2)), &mut db);
+
+        debug!("━━━━━━━━ Test: vrf-1 gets back a vni and vtep changes");
+        apply_and_check_vteps(&build_vtep_test_config(6, vni1, vni2, Some(&vtep1)), &mut db);
+
+        debug!("━━━━━━━━ Test: a config with vnis but without vtep is rejected");
+        let config = build_vtep_test_config(7, vni1, vni2, None);
+        let result = test_apply_config(&config, &mut db);
+        assert!(result.is_err_and(|e| matches!(e, RouterError::InvalidConfig(_))));
+
+        debug!("━━━━━━━━ Test: remove vnis and vtep");
+        apply_and_check_vteps(&build_vtep_test_config(8, None, None, None), &mut db);
+
+        debug!("━━━━━━━━ Test: vtep without vnis");
+        apply_and_check_vteps(&build_vtep_test_config(9, None, None, Some(&vtep1)), &mut db);
+
+        debug!("━━━━━━━━ Test: vnis added, vtep unchanged");
+        apply_and_check_vteps(&build_vtep_test_config(10, vni1, vni2, Some(&vtep1)), &mut db);
     }
 }

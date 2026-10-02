@@ -305,15 +305,26 @@ impl Vrf {
 
     /////////////////////////////////////////////////////////////////////////
     /// Set the VTEP for a [`Vrf`]. This should be set on vrf creation or anytime
-    /// the config causes the vtep ip or mac to change.
+    /// the config causes the vtep ip or mac
     /////////////////////////////////////////////////////////////////////////
     pub fn set_vtep(&mut self, vtep: &Vtep) {
-        debug!("Updating VTEP for VRF {}...", self.name);
-        self.fibw.set_vtep(vtep.clone());
+        let name = &self.name;
+        debug!(
+            "Updating VTEP for VRF {name}, ip: {} mac: {}",
+            vtep.ip(),
+            vtep.mac()
+        );
+        self.fibw.set_vtep(Some(vtep.clone()));
+    }
+
+    /// Unset the vtep configuration for a [`Vrf`]
+    pub fn unset_vtep(&mut self) {
+        debug!("Removing VTEP from VRF {}", self.name);
+        self.fibw.set_vtep(None);
     }
 
     //////////////////////////////////////////////////////////////////////////////////////
-    /// Get the VTEP for a [`Vrf`]. N.B: this gets the value currently visible by readers
+    /// Get the VTEP for a [`Vrf`]
     //////////////////////////////////////////////////////////////////////////////////////
     pub fn get_vtep(&self) -> Option<Vtep> {
         self.fibw.get_vtep()

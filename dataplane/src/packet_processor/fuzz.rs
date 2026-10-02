@@ -1300,9 +1300,9 @@ pub(crate) fn topology(vnis: &[Vni]) -> RouterTables {
 fn encapsulate_out_of(tables: &mut RouterTables, vrfid: u32, out_vni: Vni) {
     tables.vtep(
         vrfid,
-        Vtep::with_ip_and_mac(
+        Vtep::new(
             LOCAL_VTEP.parse().unwrap_or_else(|_| unreachable!()),
-            GATEWAY_MAC,
+            SourceMac::new(GATEWAY_MAC).unwrap_or_else(|_| unreachable!()),
         ),
     );
     let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());

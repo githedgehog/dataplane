@@ -5,31 +5,27 @@
 
 use crate::evpn::Vtep;
 use crate::routingdb::RoutingDb;
-use tracing::info;
+use tracing::debug;
 
-impl Vtep {
-    // Apply a vtep configuration. This method can't fail because
-    // we validate that the config has a correct vtep
-    pub(crate) fn apply(&self, db: &mut RoutingDb) {
-        let vtep = &mut db.vtep;
-        let ip = self.get_ip().unwrap_or_else(|| unreachable!());
-        if Some(ip) != vtep.get_ip() {
-            vtep.set_ip(ip);
-            info!("Updated VTEP ip address to {ip}");
-        }
-        let mac = self.get_mac().unwrap_or_else(|| unreachable!());
-        if Some(mac) != vtep.get_mac() {
-            vtep.set_mac(mac);
-            info!("Updated VTEP mac to {mac}");
-        }
-
-        // refresh all VRFs
-        db.vrftable
-            .values_mut()
-            .filter(|vrf| {
-                let vtep = vrf.get_vtep();
-                vrf.vni.is_some() && (vtep != Some(self.clone()))
-            })
-            .for_each(|vrf| vrf.set_vtep(vtep));
+pub(crate) fn apply_vtep_config(vtep: Option<&Vtep>, db: &mut RoutingDb) {
+    let current = db.vtep.as_ref();
+    match (current, vtep) {
+        (Some(old), None) => debug!("VTEP config {old} was removed"),
+        (Some(old), Some(new)) if old == new => debug!("VTEP config has not changed"),
+        (Some(old), Some(new)) => debug!("VTEP config changed. Previous: {old} new: {new}"),
+        (None, Some(new)) => debug!("VTEP config was newly received: {new}"),
+        (None, None) => {}
     }
+    // update the vrfs
+    for vrf in db.vrftable.values_mut() {
+        let wanted = vtep.filter(|_| vrf.vni.is_some());
+        if vrf.get_vtep().as_ref() != wanted {
+            match wanted {
+                Some(v) => vrf.set_vtep(v),
+                None => vrf.unset_vtep(),
+            }
+        }
+    }
+    // store latest config
+    db.vtep = vtep.cloned();
 }

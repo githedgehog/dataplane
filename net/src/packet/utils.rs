@@ -87,6 +87,11 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         Ok(())
     }
 
+    /// Set a valid source mac in the ethernet Header
+    pub fn set_eth_source_mac(&mut self, mac: SourceMac) {
+        self.try_eth_mut().map(|eth| eth.set_source(mac));
+    }
+
     /// Set destination mac in ethernet Header
     ///
     /// # Errors
@@ -96,6 +101,11 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         let mac = DestinationMac::new(mac)?;
         self.try_eth_mut().map(|eth| eth.set_destination(mac));
         Ok(())
+    }
+
+    /// Set destination mac in the ethernet Header
+    pub fn set_eth_dest_mac(&mut self, mac: DestinationMac) {
+        self.try_eth_mut().map(|eth| eth.set_destination(mac));
     }
 
     /// Get the ether type of an [`Packet`]

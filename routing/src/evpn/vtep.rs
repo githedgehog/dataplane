@@ -3,50 +3,27 @@
 
 //! Submodule to represent VTEP state
 
-use net::eth::mac::Mac;
-use std::net::IpAddr;
+use net::eth::mac::SourceMac;
+use net::ip::UnicastIpAddr;
 
 /// Type that represents a VTEP
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Vtep {
-    ip: Option<IpAddr>,
-    mac: Option<Mac>,
+    ip: UnicastIpAddr,
+    mac: SourceMac,
 }
 
 impl Vtep {
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(ip: UnicastIpAddr, mac: SourceMac) -> Self {
+        Self { ip, mac }
     }
     #[must_use]
-    pub fn with_ip_and_mac(ip: IpAddr, mac: Mac) -> Self {
-        Self {
-            ip: Some(ip),
-            mac: Some(mac),
-        }
-    }
-    #[must_use]
-    pub fn get_ip(&self) -> Option<IpAddr> {
+    pub fn ip(&self) -> UnicastIpAddr {
         self.ip
     }
     #[must_use]
-    pub fn get_mac(&self) -> Option<Mac> {
+    pub fn mac(&self) -> SourceMac {
         self.mac
-    }
-    pub fn set_ip(&mut self, ip: IpAddr) {
-        self.ip = Some(ip);
-    }
-    pub fn set_mac(&mut self, mac: Mac) {
-        self.mac = Some(mac);
-    }
-    #[must_use]
-    pub fn is_set_up(&self) -> bool {
-        self.ip.is_some() && self.mac.is_some()
-    }
-    pub fn unset_ip(&mut self) {
-        self.ip.take();
-    }
-    pub fn unset_mac(&mut self) {
-        self.mac.take();
     }
 }

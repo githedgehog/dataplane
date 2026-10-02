@@ -54,7 +54,7 @@ pub struct Fib {
     routesv4: PrefixMapTrie<Ipv4Prefix, FibRoute>,
     routesv6: PrefixMapTrie<Ipv6Prefix, FibRoute>,
     groupstore: FibGroupStore,
-    vtep: Vtep,
+    vtep: Option<Vtep>,
     valid: bool,
 }
 impl Identity<FibKey> for Fib {
@@ -69,7 +69,7 @@ impl Default for Fib {
             routesv4: PrefixMapTrie::create(),
             routesv6: PrefixMapTrie::create(),
             groupstore: FibGroupStore::new(),
-            vtep: Vtep::new(),
+            vtep: None,
             valid: true,
         };
         // default route
@@ -152,24 +152,13 @@ impl Fib {
     }
 
     /// Set the [`Vtep`] for this [`Fib`]
-    fn set_vtep(&mut self, vtep: &Vtep) {
-        self.vtep = vtep.clone();
-        let id = self.get_id();
-        let ip = self
-            .vtep
-            .get_ip()
-            .map_or("none".to_owned(), |a| a.to_string());
-
-        let mac = self
-            .vtep
-            .get_mac()
-            .map_or("none".to_owned(), |a| a.to_string());
-        info!("VTEP for fib {id} set to ip:{ip} mac:{mac}");
+    fn set_vtep(&mut self, vtep: Option<Vtep>) {
+        self.vtep = vtep;
     }
 
     /// Get the [`Vtep`] for this [`Fib`]
-    pub fn get_vtep(&self) -> &Vtep {
-        &self.vtep
+    pub fn get_vtep(&self) -> Option<&Vtep> {
+        self.vtep.as_ref()
     }
 
     /// Tell the number of IPv4 routes in this [`Fib`]
@@ -324,7 +313,7 @@ enum FibChange {
     UnregisterFibGroup(NhopKey),
     AddFibRoute((Prefix, Vec<NhopKey>)),
     DelFibRoute(Prefix),
-    SetVtep(Vtep),
+    SetVtep(Option<Vtep>),
     Invalidate,
 }
 
@@ -339,7 +328,7 @@ impl Absorb<FibChange> for Fib {
             }
             FibChange::AddFibRoute((prefix, keys)) => self.build_add_fibroute(*prefix, keys),
             FibChange::DelFibRoute(prefix) => self.del_fibroute(*prefix),
-            FibChange::SetVtep(vtep) => self.set_vtep(vtep),
+            FibChange::SetVtep(vtep) => self.set_vtep(vtep.clone()),
             FibChange::Invalidate => self.valid = false,
         }
     }
@@ -401,12 +390,13 @@ impl FibWriter {
         self.0.append(FibChange::DelFibRoute(prefix));
         self.0.publish();
     }
-    pub fn set_vtep(&mut self, vtep: Vtep) {
+    pub fn set_vtep(&mut self, vtep: Option<Vtep>) {
         self.0.append(FibChange::SetVtep(vtep));
         self.0.publish();
     }
+    #[allow(dead_code)]
     pub fn get_vtep(&self) -> Option<Vtep> {
-        self.enter().map(|fib| fib.vtep.clone())
+        self.enter().and_then(|fib| fib.vtep.clone())
     }
     pub fn publish(&mut self) {
         self.0.publish();

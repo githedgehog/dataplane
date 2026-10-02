@@ -5,7 +5,7 @@
 
 #![allow(clippy::unnecessary_wraps)]
 
-use crate::Vtep;
+use crate::cli::display::{ActiveVteps, FibVtep, VtepConfig};
 use crate::evpn::{RmacFilter, RmacStore};
 use crate::fib::fibtype::{FibRouteV4Filter, FibRouteV6Filter};
 use crate::frr::frrmi::Frrmi;
@@ -341,8 +341,19 @@ fn show_rmac_store(request: CliRequest, rmac_store: &RmacStore) -> Result<CliRes
     Ok(CliResponse::from_request_ok(request, out.to_string()))
 }
 
-fn show_vtep(request: CliRequest, vtep: &Vtep) -> CliResponse {
-    CliResponse::from_request_ok(request, vtep.to_string())
+fn get_vrf_vteps(db: &RoutingDb) -> Vec<FibVtep> {
+    db.vrftable
+        .values()
+        .filter_map(|vrf| {
+            vrf.vni
+                .map(|vni| FibVtep::new(vrf.vrfid, vni, vrf.get_vtep()))
+        })
+        .collect()
+}
+fn show_vtep(request: CliRequest, db: &RoutingDb) -> CliResponse {
+    let vteps = ActiveVteps(get_vrf_vteps(db));
+    let config = VtepConfig::new(db.vtep.as_ref());
+    CliResponse::from_request_ok(request, config.to_string() + vteps.to_string().as_str())
 }
 fn show_adjacency_table(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     let atable = db.atabler.enter().ok_or(CliError::Inaccessible)?;
@@ -526,7 +537,7 @@ fn do_handle_cli_request(
         CliAction::ShowRouterInterfaceAddresses => show_interface_addresses(request, db)?,
         CliAction::ShowRouterVrfs => show_vrfs(request, &db.vrftable),
         CliAction::ShowRouterEvpnRmacStore => show_rmac_store(request, &db.rmac_store)?,
-        CliAction::ShowRouterEvpnVtep => show_vtep(request, &db.vtep),
+        CliAction::ShowRouterEvpnVtep => show_vtep(request, db),
         CliAction::ShowAdjacencies => show_adjacency_table(request, db)?,
         CliAction::ShowRouterIpv4Routes => show_vrf_routes(request, db, true)?,
         CliAction::ShowRouterIpv6Routes => show_vrf_routes(request, db, false)?,
@@ -592,6 +603,7 @@ mod tests_cli_handling {
 
     use net::eth::mac::{Mac, SourceMac};
     use net::interface::{InterfaceIndex, InterfaceName};
+    use net::ip::UnicastIpAddr;
     use net::route::RouteTableId;
     use net::vxlan::Vni;
 
@@ -670,10 +682,9 @@ mod tests_cli_handling {
         ifconfig
     }
     fn build_vtep() -> Vtep {
-        let mut vtep = Vtep::new();
-        vtep.set_ip(IpAddr::from_str(VTEP_IP).unwrap());
-        vtep.set_mac(Mac::try_from(VTEP_MAC).unwrap());
-        vtep
+        let ip = UnicastIpAddr::from_str(VTEP_IP).unwrap();
+        let mac = SourceMac::try_from(VTEP_MAC).unwrap();
+        Vtep::new(ip, mac)
     }
     fn build_router_config() -> RouterConfig {
         let vrfconfig = build_router_vrf_config();

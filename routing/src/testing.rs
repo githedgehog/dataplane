@@ -70,7 +70,7 @@ impl RouterTables {
 
     pub fn vtep(&mut self, vrfid: VrfId, vtep: Vtep) -> &mut Self {
         let fib = self.fib_mut(vrfid);
-        fib.set_vtep(vtep);
+        fib.set_vtep(Some(vtep));
         fib.publish();
         self
     }

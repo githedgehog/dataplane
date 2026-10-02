@@ -273,19 +273,26 @@ impl Terminal {
         format!("{}({mark})# ", self.prompt_name)
     }
 
-    fn open_unix_sock<P: AsRef<Path>>(bind_addr: &P) -> Result<UnixDatagram, &'static str> {
+    fn open_unix_sock<P: AsRef<Path>>(bind_addr: &P) -> Result<UnixDatagram, String> {
         let _ = std::fs::remove_file(bind_addr);
-        let sock = UnixDatagram::bind(bind_addr).map_err(|_| "Failed to bind socket")?;
+
+        let sock =
+            UnixDatagram::bind(bind_addr).map_err(|e| format!("Failed to bind socket: {e}"))?;
+
         let mut perms = fs::metadata(bind_addr)
-            .map_err(|_| "Failed to retrieve path metadata")?
+            .map_err(|e| format!("Failed to retrieve path metadata: {e}"))?
             .permissions();
+
         perms.set_mode(0o777);
-        fs::set_permissions(bind_addr, perms).map_err(|_| "Failure setting permissions")?;
+        fs::set_permissions(bind_addr, perms)
+            .map_err(|e| format!("Failure setting permissions: {e}"))?;
+
         sock.set_nonblocking(false)
-            .map_err(|_| "Failed to set sock non-blocking")?;
+            .map_err(|e| format!("Failed to make socket blocking: {e}"))?;
 
         setsockopt(&sock, RcvBuf, &CLI_RX_BUFF_SIZE)
-            .map_err(|_| "Failure setting recv buffer size")?;
+            .map_err(|e| format!("Failure setting recv buffer size: {e}"))?;
+
         Ok(sock)
     }
 
@@ -309,9 +316,10 @@ impl Terminal {
     ) -> Result<UnixDatagram, String> {
         let sock = Self::open_unix_sock(local_addr)
             .map_err(|e| format!("Failed to create unix socket: {e}"))?;
+
         sock.connect(remote_addr).map_err(|e| {
             format!(
-                "Failed to connect to '{}': {e}",
+                "Failed to connect to {}: {e}",
                 remote_addr.as_ref().display()
             )
         })?;
