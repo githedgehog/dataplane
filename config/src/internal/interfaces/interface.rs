@@ -167,6 +167,12 @@ impl InterfaceConfig {
         }
         Ok(())
     }
+
+    /// Whether any IPv4 address is configured on this interface.
+    #[must_use]
+    pub fn has_ipv4_address(&self) -> bool {
+        self.addresses.iter().any(|a| a.address.is_ipv4())
+    }
 }
 
 impl InterfaceConfigTable {
@@ -176,6 +182,12 @@ impl InterfaceConfigTable {
     }
     pub fn add_interface_config(&mut self, cfg: InterfaceConfig) {
         self.0.insert(cfg.name.clone(), cfg);
+    }
+    /// Look up an interface by name, or `None` if the table holds no such
+    /// interface.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&InterfaceConfig> {
+        self.0.get(name)
     }
     pub fn values(&self) -> impl Iterator<Item = &InterfaceConfig> {
         self.0.values()

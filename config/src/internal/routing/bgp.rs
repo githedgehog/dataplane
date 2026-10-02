@@ -95,6 +95,10 @@ pub enum BgpNeighType {
     Unset,
     Host(IpAddr),
     PeerGroup(String),
+    /// An unnumbered (interface) peer: the session is established over the
+    /// named interface, with FRR discovering the peer from its IPv6
+    /// link-local router advertisements instead of a configured address.
+    Interface(String),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -396,9 +400,23 @@ impl BgpNeighbor {
             ..Default::default()
         }
     }
+    /// Build an unnumbered (interface) neighbor peering over `ifname`.
+    #[must_use]
+    pub fn new_interface(ifname: &str) -> Self {
+        Self {
+            ntype: BgpNeighType::Interface(ifname.to_owned()),
+            ..Default::default()
+        }
+    }
     #[must_use]
     pub fn is_peer_group(&self) -> bool {
         matches!(self.ntype, BgpNeighType::PeerGroup(_))
+    }
+    /// Whether this is an unnumbered peer, i.e. one identified by the interface
+    /// it peers over rather than by an address.
+    #[must_use]
+    pub fn is_interface(&self) -> bool {
+        matches!(self.ntype, BgpNeighType::Interface(_))
     }
 
     /* capabilities */
