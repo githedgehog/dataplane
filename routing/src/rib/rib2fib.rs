@@ -7,26 +7,22 @@
 use tracing::{debug, trace, warn};
 
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
-use crate::rib::nexthop::{FwAction, Nhop};
+use crate::rib::nexthop::{FwAction, Nhop, NhopKey};
 use crate::rib::vrf::RouteOrigin;
 
 use std::rc::Weak;
 
-impl Nhop {
+impl NhopKey {
     //////////////////////////////////////////////////////////////////////
-    /// Build the vector of packet instructions for a next-hop.
-    /// This process is independent of the resolvers for a next-hop.
-    /// Hence it does not depend on the routing table.
-    /// It does depend on the rmacs, though.
+    /// Build the vector of packet instructions for a next-hop key.
     //////////////////////////////////////////////////////////////////////
     #[allow(clippy::single_match_else)]
-    #[must_use]
-    fn build_pkt_instructions(&self) -> Vec<PktInstruction> {
+    pub(crate) fn as_pkt_instructions(&self) -> Vec<PktInstruction> {
         let mut instructions = Vec::with_capacity(2);
 
         // local route
-        if self.key.origin == RouteOrigin::Local {
-            match self.key.ifindex {
+        if self.origin == RouteOrigin::Local {
+            match self.ifindex {
                 Some(if_index) => instructions.push(PktInstruction::Local(if_index)),
                 None => {
                     warn!("Unknown ifindex for local next-hop. Will set action drop");
@@ -37,15 +33,15 @@ impl Nhop {
         }
 
         // an explicit drop
-        if self.key.fwaction == FwAction::Drop {
+        if self.fwaction == FwAction::Drop {
             instructions.push(PktInstruction::Drop);
             return instructions;
         }
 
         // a nexthop with encapsulation info. Will add action encap and egress object
-        if let Some(encap) = self.key.encap {
+        if let Some(encap) = self.encap {
             instructions.push(PktInstruction::Encap(encap));
-            let egress = EgressObject::new(self.key.ifindex, self.key.address);
+            let egress = EgressObject::new(self.ifindex, self.address);
             instructions.push(PktInstruction::Egress(egress));
             return instructions;
         }
@@ -62,32 +58,24 @@ impl Nhop {
         // and the last address of the chain. Without this, the address of a recursive next-hop would
         // never reach the fib and the egress stage would resolve the destination of the packet instead
         // which is only correct if it is directly connected.
-        if self.key.ifindex.is_some() || self.key.address.is_some() {
-            let egress = EgressObject::new(self.key.ifindex, self.key.address);
+        if self.ifindex.is_some() || self.address.is_some() {
+            let egress = EgressObject::new(self.ifindex, self.address);
             instructions.push(PktInstruction::Egress(egress));
         }
         instructions
     }
+}
 
-    //////////////////////////////////////////////////////////////////////
-    /// Given a next-hop, build its packet instructions and attach them to it
-    //////////////////////////////////////////////////////////////////////
-    pub(crate) fn build_nhop_instructions(&self) {
-        // build new instruction vector for the next-hop
-        let new_instructions = self.build_pkt_instructions();
-
-        // replace instruction vector
-        self.instructions.replace(new_instructions);
-    }
-
+impl Nhop {
     //////////////////////////////////////////////////////////////////////
     /// Recursive helper to build [`FibGroup`] for a next-hop. We accumulate
-    /// a next-hop's packet instructions with those of its resolvers.
+    /// a next-hop's packet instructions with those of its resolvers. So,
+    /// unlike the next-hop packet instructions, the outcome of this DOES
+    /// depend on the next-hop resolvers.
     //////////////////////////////////////////////////////////////////////
     fn build_nhop_fibgroup_rec(&self, fibgroup: &mut FibGroup, mut entry: FibEntry) {
         // add the instructions for a next-hop to the entry
-        let instructions = self.instructions.borrow().clone();
-        entry.extend_from_slice(&instructions);
+        entry.extend_from_slice(&self.instructions);
 
         // check the instructions of the resolving next-hops, if any
         let Some(resolvers) = self.get_resolvers() else {

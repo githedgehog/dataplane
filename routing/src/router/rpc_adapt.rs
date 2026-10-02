@@ -171,7 +171,7 @@ impl Vrf {
             Ok(p) => p,
             Err(e) => {
                 error!(
-                    "Failed to add route to {}/{} from RPC!: {e}",
+                    "Rejected route to {}/{} from RPC!: {e}",
                     iproute.prefix, iproute.prefix_len
                 );
                 return;
