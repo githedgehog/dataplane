@@ -831,11 +831,8 @@ impl Sub<PrefixSize> for PrefixSize {
             (PrefixSize::U128(size_self), PrefixSize::U128(size_other)) => {
                 // Make sure it never wraps (but panics) in case of overflow, negative PrefixSize
                 // doesn't make sense.
-                if size_self < size_other {
-                    panic!("attempt to subtract with overflow");
-                } else {
-                    PrefixSize::U128(size_self - size_other)
-                }
+                assert!(size_self >= size_other, "attempt to subtract with overflow");
+                PrefixSize::U128(size_self - size_other)
             }
             (PrefixSize::U128(_), PrefixSize::Ipv6MaxAddrs) => {
                 panic!("attempt to subtract with overflow");

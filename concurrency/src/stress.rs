@@ -41,6 +41,13 @@ pub fn shuttle_config() -> shuttle::Config {
 /// hand-wiring a `Runner`. Note that the shuttle portfolio includes PCT,
 /// which panics on a body that does not exercise real concurrency, so the
 /// caller must ensure every shape keeps at least two threads runnable.
+///
+/// # Panics
+///
+/// Panics if
+///
+/// 1. The provided function panics.
+/// 2. Concurrency issues are detected by the stress test.
 #[allow(unused_variables)]
 #[allow(clippy::expect_used)]
 pub fn stress<F>(body: F)

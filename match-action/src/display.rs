@@ -345,7 +345,7 @@ mod field_and_grid_tests {
     fn grid_rejects_rows_with_the_wrong_number_of_cells() {
         let mut out = String::new();
         assert!(write_grid(&mut out, &["a", "b"], &[vec!["x".into()]]).is_err());
-        assert!(out.is_empty());
+        assert_eq!(out, "");
 
         assert!(
             write_grid(
@@ -355,6 +355,6 @@ mod field_and_grid_tests {
             )
             .is_err()
         );
-        assert!(out.is_empty());
+        assert_eq!(out, "");
     }
 }

@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn a_prefix_without_ports_claims_nothing() {
         let set = PrefixPortsSet::from([PrefixWithOptionalPorts::new("5.6.7.8/32".into(), None)]);
-        assert!(ReservedPorts::from_set(&set).0.is_empty());
+        assert_eq!(ReservedPorts::from_set(&set).0, []);
     }
 
     #[test]
