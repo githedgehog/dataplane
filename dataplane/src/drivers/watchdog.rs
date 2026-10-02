@@ -102,7 +102,7 @@ impl Watchdog {
 /// Add `val` to `counter`, saturating instead of wrapping.
 fn accumulate(counter: &AtomicU64, val: u64) {
     if val > 0 {
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+        let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
             Some(v.saturating_add(val))
         });
     }

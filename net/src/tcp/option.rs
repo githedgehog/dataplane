@@ -429,7 +429,7 @@ mod test {
     fn sack_round_trip() {
         bolero::check!().with_type().for_each(|sack: &TcpSack| {
             let blocks = sack.blocks();
-            assert!(!blocks.is_empty());
+            assert!(!blocks.is_empty(), "{sack:?}");
             assert!(blocks.len() <= TcpSack::MAX_BLOCKS);
             let reconstructed = TcpSack::new(blocks).unwrap_or_else(|_| unreachable!());
             assert_eq!(*sack, reconstructed);

@@ -898,7 +898,7 @@ mod tests {
         let pwp2 = PrefixWithPorts::new(prefix2, ports);
 
         let result = pwp1.subtract(&pwp2);
-        assert!(result.is_empty());
+        assert!(result.is_empty(), "{result:?}");
     }
 
     #[test]
@@ -909,7 +909,7 @@ mod tests {
         let pwp = PrefixWithPorts::new(prefix, ports);
 
         let result = pwp.subtract(&pwp);
-        assert!(result.is_empty());
+        assert!(result.is_empty(), "{result:?}");
     }
 
     #[test]
@@ -1121,7 +1121,7 @@ mod tests {
         let pwop2 = PrefixWithOptionalPorts::new(prefix2, None);
 
         let result = pwop1.subtract(&pwop2);
-        assert!(result.is_empty());
+        assert!(result.is_empty(), "{result:?}");
     }
 
     #[test]
@@ -1131,7 +1131,7 @@ mod tests {
         let pwop = PrefixWithOptionalPorts::new(prefix, None);
 
         let result = pwop.subtract(&pwop);
-        assert!(result.is_empty());
+        assert!(result.is_empty(), "{result:?}");
     }
 
     #[test]

@@ -51,21 +51,18 @@ type DumperFilter<Buf> = Box<dyn Fn(&Packet<Buf>) -> bool>;
 impl<Buf: PacketBufferMut> PacketDumper<Buf> {
     /// Sample filter that allows everything (added for reference since, to
     /// allow everything, we may just specify no filter)
-    #[must_use]
     pub fn any_traffic() -> DumperFilter<Buf> {
         let c = |_: &Packet<Buf>| -> bool { true };
         Box::new(c)
     }
 
     /// Sample filter that allows only udp traffic
-    #[must_use]
     pub fn udp_only() -> DumperFilter<Buf> {
         let filter = |packet: &Packet<Buf>| -> bool { packet.try_udp().is_some() };
         Box::new(filter)
     }
 
     /// Sample filter that allows only vxlan traffic
-    #[must_use]
     pub fn vxlan_only() -> DumperFilter<Buf> {
         let filter = |packet: &Packet<Buf>| -> bool {
             let Some(udp) = &packet.try_udp() else {
@@ -77,7 +74,6 @@ impl<Buf: PacketBufferMut> PacketDumper<Buf> {
     }
 
     /// Sample filter that allows only vxlan traffic or ICMP
-    #[must_use]
     pub fn vxlan_or_icmp() -> DumperFilter<Buf> {
         // TODO: fix this
         let filter = |packet: &Packet<Buf>| -> bool {
@@ -92,7 +88,6 @@ impl<Buf: PacketBufferMut> PacketDumper<Buf> {
     }
 
     /// Sample filter that allows only ICMP traffic
-    #[must_use]
     pub fn icmp_only() -> DumperFilter<Buf> {
         let filter = |packet: &Packet<Buf>| -> bool { packet.try_icmp4().is_some() };
         Box::new(filter)

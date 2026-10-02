@@ -513,12 +513,10 @@ impl Draft {
         Self::default()
     }
 
-    #[must_use]
     pub fn vpcs(&self) -> impl ExactSizeIterator<Item = VpcHandle> + '_ {
         self.vpcs.iter().copied()
     }
 
-    #[must_use]
     pub fn peerings(&self) -> impl ExactSizeIterator<Item = (PeeringHandle, &PeeringSpec)> {
         self.peerings.iter().map(|(handle, spec)| (*handle, spec))
     }

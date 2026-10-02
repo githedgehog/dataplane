@@ -91,7 +91,7 @@ pub fn predicate_to_chunks(pred: &FieldPredicate, size_bytes: usize) -> AclField
 }
 fn pack_chunks(bytes: &[u8], chunk_size: AclSize) -> Vec<u32> {
     let csz = chunk_size.bytes();
-    debug_assert!(!bytes.is_empty());
+    debug_assert_ne!(bytes, []);
     if bytes.len() <= csz {
         let mut buf = [0u8; 4];
         let off = 4 - bytes.len();

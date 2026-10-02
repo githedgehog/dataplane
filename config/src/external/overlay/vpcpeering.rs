@@ -1140,9 +1140,8 @@ impl VpcPeeringTable {
             // We should have prevented this case by checking for duplicates just above.
             // This should never happen, unless we have another thread modifying the table.
             unreachable!("Unexpected race condition in peering table")
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 
     /// Iterate over all [`VpcPeering`]s in a [`VpcPeeringTable`]
