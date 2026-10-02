@@ -48,6 +48,7 @@ use lpm::prefix::with_ports::{KeyPort, L4Protocol, PORT_RANGE_WILDCARD};
 use match_action::{
     Erased, ExactSpec, FieldPredicate, FixedSize, MaskSpec, MatchKey, PrefixSpec, RangeSpec,
 };
+use net::flows::FlowInfo;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use net::vxlan::Vni;
@@ -738,6 +739,42 @@ impl FlowFilterContext {
             }
         }
         tracked
+    }
+
+    /// Tell if a tracked flow, without masquerade or port forwarding, is still valid for this
+    /// context. This is the case if its packets would still be routed to the same VPC, without
+    /// masquerade or port forwarding, with the same static NAT requirements, and on a peering that
+    /// still requires flow tracking.
+    #[must_use]
+    pub fn keeps_tracked_flow(&self, flow: &FlowInfo) -> bool {
+        let key = flow.flowkey();
+        let (Some(src_vpcd), Some(dst_vpcd)) = (key.src_vpcd(), flow.get_dst_vpcd()) else {
+            return false;
+        };
+        let input = LookupInput {
+            src_vpcd,
+            dst_vpcd: None,
+            src_ip: key.src_ip(),
+            dst_ip: key.dst_ip(),
+            proto: key.proto(),
+            ports: key.src_port().zip(key.dst_port()),
+            gate: SourceGate::Ungated,
+        };
+        let mut result = [LookupResult::DestinationMiss];
+        self.lookup_batch(&[input], &mut result);
+        let LookupResult::Route((route_dst_vpcd, dst_nat, src_nat)) = result[0] else {
+            return false;
+        };
+        let flags = flow.get_flags();
+        let static_matches = |nat: NatMode, flow_static: bool| match nat {
+            None => !flow_static,
+            Some(NatRequirement::Static) => flow_static,
+            Some(NatRequirement::Masquerade | NatRequirement::PortForwarding) => false,
+        };
+        route_dst_vpcd == dst_vpcd
+            && static_matches(src_nat, flags.requires_static_nat_src())
+            && static_matches(dst_nat, flags.requires_static_nat_dst())
+            && self.requires_flow_tracking(src_vpcd, dst_vpcd)
     }
 
     /// Tell if the flows from `src_vpcd` to `dst_vpcd` must be tracked.

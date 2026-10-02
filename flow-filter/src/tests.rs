@@ -2259,3 +2259,35 @@ fn peering_with_packet_scope_acl_does_not_require_flow_tracking() {
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert!(!out.meta().has_forced_flow_tracking());
 }
+
+// A tracked flow from vpc 200 to vpc 100, on the peering described by `context`.
+fn tracked_flow(src: &str, dst: &str) -> Arc<FlowInfo> {
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4(src), v4(dst), 1234, 80),
+    );
+    attach_flow(&mut p, Some(vpcd(100)), true, false, false)
+}
+
+#[test]
+fn tracked_flow_on_masquerade_peering_is_not_kept() {
+    let context = acl_context(AclScope::Flow);
+    assert!(!context.keeps_tracked_flow(&tracked_flow("20.0.0.5", "10.0.0.5")));
+}
+
+#[test]
+fn tracked_flow_without_route_is_not_kept() {
+    let context = acl_context(AclScope::Flow);
+    assert!(!context.keeps_tracked_flow(&tracked_flow("20.0.9.5", "10.0.0.5")));
+}
+
+#[test]
+fn tracked_flow_on_peering_without_stateful_acl_is_not_kept() {
+    let context = acl_context(AclScope::Packet);
+    let mut p = packet(
+        Some(vpcd(300)),
+        build_tcp_packet(v4("30.0.0.5"), v4("10.0.0.5"), 1234, 80),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, false);
+    assert!(!context.keeps_tracked_flow(&flow));
+}
