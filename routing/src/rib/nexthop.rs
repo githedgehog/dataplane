@@ -31,7 +31,7 @@ trace_target!("next-hops", LevelFilter::WARN, &["routing-full"]);
 pub struct Nhop {
     pub(crate) key: NhopKey,
     resolvers: RefCell<Vec<Weak<Nhop>>>,
-    pub(crate) instructions: Vec<PktInstruction>,
+    instructions: Vec<PktInstruction>,
     pub(crate) fibgroup: RefCell<FibGroup>,
 }
 
@@ -45,7 +45,7 @@ pub enum FwAction {
 /// A struct acting as a key to next-hop objects. This should include the properties that
 /// make a shared next-hop unique and distinguishable from the rest. This type is also used
 /// as return value in next-hop resolution routines.
-#[derive(Debug, Default, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct NhopKey {
     pub origin: RouteOrigin,
     pub address: Option<IpAddr>,
@@ -53,11 +53,14 @@ pub struct NhopKey {
     pub encap: Option<Encapsulation>,
     pub fwaction: FwAction,
 }
+impl Default for NhopKey {
+    fn default() -> Self {
+        Self::with_drop()
+    }
+}
 
 impl NhopKey {
-    //////////////////////////////////////////////////////////////////
     /// Build a next-hop key
-    //////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn new(
         origin: RouteOrigin,
@@ -75,7 +78,7 @@ impl NhopKey {
         }
     }
     #[must_use]
-    pub fn with_drop() -> Self {
+    pub(crate) fn with_drop() -> Self {
         Self {
             origin: RouteOrigin::default(),
             address: None,
@@ -84,15 +87,19 @@ impl NhopKey {
             fwaction: FwAction::Drop,
         }
     }
+}
+
+#[cfg(test)]
+impl NhopKey {
     /// Build a next-hop key from an address in string form.
     ///
     /// # Panics
     ///
     /// Panics if `address` does not parse as an IP address.
-    #[cfg(test)]
     #[must_use]
     pub(crate) fn from_address(address: &str) -> Self {
         Self {
+            fwaction: FwAction::Forward,
             address: Some(IpAddr::from_str(address).expect("Bad address")),
             ..Default::default()
         }
@@ -107,6 +114,7 @@ impl NhopKey {
     #[must_use]
     pub(crate) fn with_addr_ifindex(address: &str, ifindex: u32) -> Self {
         Self {
+            fwaction: FwAction::Forward,
             address: Some(IpAddr::from_str(address).expect("Bad address")),
             ifindex: Some(InterfaceIndex::try_new(ifindex).expect("Bad ifindex")),
             ..Default::default()
@@ -116,6 +124,7 @@ impl NhopKey {
     #[must_use]
     pub(crate) fn with_address(address: &IpAddr) -> Self {
         Self {
+            fwaction: FwAction::Forward,
             address: Some(*address),
             ..Default::default()
         }
@@ -129,6 +138,7 @@ impl NhopKey {
     #[must_use]
     pub(crate) fn with_ifindex(ifindex: u32) -> Self {
         Self {
+            fwaction: FwAction::Forward,
             ifindex: Some(InterfaceIndex::try_new(ifindex).unwrap()),
             ..Default::default()
         }
@@ -158,10 +168,15 @@ impl Nhop {
     fn from_key(key: &NhopKey) -> Self {
         Self {
             key: key.clone(),
-            resolvers: RefCell::new(Vec::new()),
             instructions: key.as_pkt_instructions(),
+            resolvers: RefCell::new(Vec::new()),
             fibgroup: RefCell::new(FibGroup::new()),
         }
+    }
+
+    /// Get a reference to the packet instructions associated to this `Nhop`
+    pub(crate) fn instructions(&self) -> &Vec<PktInstruction> {
+        &self.instructions
     }
 
     /// Store a weak reference to some Nhop 'resolver' in the current next-hop

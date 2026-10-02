@@ -231,12 +231,8 @@ fn fmt_vrf_oneline(vrf: &Vrf, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Resu
 
 #[allow(dead_code)] // we don't display this atm
 fn fmt_nhop_instruction(f: &mut std::fmt::Formatter<'_>, rc: &Nhop) -> std::fmt::Result {
-    let instructions = &rc.instructions;
-    if instructions.is_empty() {
-        return Ok(());
-    }
     writeln!(f, "  Fib Instructions:")?;
-    for (i, inst) in instructions.iter().enumerate() {
+    for (i, inst) in rc.instructions().iter().enumerate() {
         writeln!(f, "   [{i}] {inst}")?;
     }
     Ok(())
