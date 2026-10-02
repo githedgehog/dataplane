@@ -16,7 +16,8 @@ use concurrency::sync::Arc;
 use flow_entry::flow_table::table::FlowTable;
 use net::buffer::PacketBufferMut;
 use net::flow_key::IcmpProtoKey;
-use net::flows::conn_tracking::transport_proto;
+use net::flows::FlowInfo;
+use net::flows::conn_tracking::{ConnState, advance_flow, transport_proto};
 use net::headers::TryTcp;
 use net::ip::NextHeader;
 use net::packet::Packet;
@@ -28,8 +29,10 @@ use std::time::Duration;
 #[allow(unused)]
 use tracing::{debug, warn};
 
-// Same default as for port forwarding: there is no pool of ports to preserve.
+// Same defaults as for port forwarding: there is no pool of ports to preserve.
 const INITIAL_TIMEOUT: Duration = Duration::from_secs(10 * TIMEOUT_SCALE);
+const ESTABLISHED_TIMEOUT_TCP: Duration = Duration::from_secs(30 * 60 * TIMEOUT_SCALE);
+const ESTABLISHED_TIMEOUT_OTHER: Duration = Duration::from_secs(30 * TIMEOUT_SCALE);
 
 /// Tell if the flow of a packet needs tracking, and if neither masquerade nor port forwarding
 /// tracks it.
@@ -111,6 +114,18 @@ pub(crate) fn track_new_flow<Buf: PacketBufferMut, S: NatData>(
     }
 }
 
+/// Update the status of a tracked flow after a packet hit it, and extend its lifetime or
+/// invalidate it.
+pub(crate) fn refresh_tracked_flow<Buf: PacketBufferMut>(packet: &Packet<Buf>, flow: &FlowInfo) {
+    advance_flow(packet, flow, |status| match status {
+        ConnState::Established => match transport_proto(packet) {
+            Some(NextHeader::TCP) => Some(ESTABLISHED_TIMEOUT_TCP),
+            _ => Some(ESTABLISHED_TIMEOUT_OTHER),
+        },
+        _ => Some(INITIAL_TIMEOUT),
+    });
+}
+
 /// A network function that creates pairs of flows in the flow table for packets that require
 /// tracking, for traffic without NAT. Masquerade, port forwarding and static NAT track the flows of
 /// their own traffic.
@@ -135,6 +150,9 @@ impl FlowTracker {
         if let Some(flow) = packet.meta().flow_info.as_ref()
             && flow.is_active()
         {
+            if TrackedFlowData::try_get(&flow.locked.read()).is_some() {
+                refresh_tracked_flow(packet, flow);
+            }
             return;
         }
         let Ok(key) = FlowKey::try_from(packet) else {
@@ -181,7 +199,7 @@ mod test {
     use net::FlowKey;
     use net::buffer::TestBuffer;
     use net::flows::FlowInfo;
-    use net::flows::conn_tracking::FlowSide;
+    use net::flows::conn_tracking::{AtomicConnState, ConnState, FlowSide};
     use net::headers::TryTcpMut;
     use net::packet::{Packet, VpcDiscriminant};
     use net::vxlan::Vni;
@@ -281,5 +299,61 @@ mod test {
         let out = run(&mut tracker, packet);
         assert!(!out.is_done(), "{:?}", out.get_done());
         assert!(table.lookup(&key).is_none());
+    }
+
+    /// Hit the flow for `key`, as the flow lookup stage does.
+    fn hitting(mut packet: Packet<TestBuffer>, table: &FlowTable) -> Packet<TestBuffer> {
+        let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!());
+        packet.meta_mut().flow_info = table.lookup(&key);
+        assert!(packet.meta().flow_info.is_some(), "no flow for {key}");
+        packet
+    }
+
+    /// The reply to `syn`, from vpc 200 to vpc 100.
+    fn reply(src: &str, dst: &str) -> Packet<TestBuffer> {
+        let mut packet = build(addr(src), addr(dst), true, 80, 1234);
+        let meta = packet.meta_mut();
+        meta.set_overlay(true);
+        meta.src_vpcd = Some(vpcd(200));
+        meta.dst_vpcd = Some(vpcd(100));
+        meta.set_forced_flow_tracking(true);
+        packet
+    }
+
+    #[tokio::test]
+    async fn a_reply_moves_the_status_of_the_pair() {
+        let table = Arc::new(FlowTable::default());
+        let mut tracker = FlowTracker::new("tracker", table.clone());
+        let packet = syn("10.0.0.5", "20.0.0.5");
+        let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!());
+        run(&mut tracker, packet);
+
+        let mut syn_ack = reply("20.0.0.5", "10.0.0.5");
+        let tcp = syn_ack.try_tcp_mut().unwrap_or_else(|| unreachable!());
+        tcp.set_ack(true);
+        let out = run(&mut tracker, hitting(syn_ack, &table));
+        assert!(!out.is_done(), "{:?}", out.get_done());
+
+        let forward = table.lookup(&key).unwrap_or_else(|| unreachable!());
+        let status = forward.conn_state().map(AtomicConnState::load);
+        assert_eq!(status, Some(ConnState::TwoWay));
+    }
+
+    #[tokio::test]
+    async fn a_reset_ends_the_tracking_of_the_pair() {
+        let table = Arc::new(FlowTable::default());
+        let mut tracker = FlowTracker::new("tracker", table.clone());
+        let packet = syn("10.0.0.5", "20.0.0.5");
+        let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!());
+        run(&mut tracker, packet);
+        let forward = table.lookup(&key).unwrap_or_else(|| unreachable!());
+
+        let mut rst = reply("20.0.0.5", "10.0.0.5");
+        let tcp = rst.try_tcp_mut().unwrap_or_else(|| unreachable!());
+        tcp.set_syn(false);
+        tcp.set_rst(true);
+        let out = run(&mut tracker, hitting(rst, &table));
+        assert!(!out.is_done(), "{:?}", out.get_done());
+        assert!(!forward.is_active(), "a reset connection is still tracked");
     }
 }
