@@ -183,7 +183,7 @@ fn parse_vni(value: &str) -> Result<u32, ArgsError> {
         .parse::<u32>()
         .map_err(|_| ArgsError::BadValue(value.to_owned()))?;
 
-    if vni != 0 && vni < 0x00FF_FFFF {
+    if vni != 0 && vni <= 0x00FF_FFFF {
         Ok(vni)
     } else {
         Err(ArgsError::BadValue(value.to_owned()))
