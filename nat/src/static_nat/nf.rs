@@ -16,6 +16,8 @@ use concurrency::sync::Arc;
 use flow_entry::flow_table::table::FlowTable;
 use net::FlowKey;
 use net::buffer::PacketBufferMut;
+use net::flow_key::FlowAddrs;
+use net::flows::FlowInfoFlags;
 use net::headers::{
     Net, NetError, Transport, TryEmbeddedTransport, TryHeaders, TryHeadersMut, TryInnerIp,
     TryTcpUdpMut, TryTransportMut,
@@ -423,6 +425,54 @@ impl StaticNat {
             genid,
         );
     }
+}
+
+/// Translate a flow key with the static NAT tables, as the static NAT stage translates the packets
+/// with this key, given the destination VPC of the flow and its static NAT requirements.
+///
+/// Return `None` if the tables cannot translate the key, in which case the static NAT stage would
+/// drop the packets of the flow.
+// Keep in sync with StaticNat::translate().
+pub(crate) fn translate_flow_key(
+    nat_tables: &NatTables,
+    key: &FlowKey,
+    dst_vpcd: VpcDiscriminant,
+    flags: FlowInfoFlags,
+) -> Option<FlowKey> {
+    if !flags.requires_static_nat_src() && !flags.requires_static_nat_dst() {
+        return Some(*key);
+    }
+    let VpcDiscriminant::VNI(src_vni) = key.src_vpcd()?;
+    let VpcDiscriminant::VNI(dst_vni) = dst_vpcd;
+    let table = nat_tables.get_table(src_vni)?;
+    let mut src = key.addrs().src_unicast();
+    let mut dst = key.addrs().dst_unicast();
+    let mut proto_key = *key.proto_key_info();
+
+    if flags.requires_static_nat_src()
+        && let Some((addr, port)) =
+            table.find_src_mapping(&key.src_ip(), key.src_port().map(NonZero::get), dst_vni)
+    {
+        src = addr;
+        // Ports only change for TCP and UDP
+        if let (Some(port), Some(_)) = (port, key.src_port()) {
+            proto_key.try_set_src_port(port).ok()?;
+        }
+    }
+    if flags.requires_static_nat_dst()
+        && let Some((addr, port)) =
+            table.find_dst_mapping(&key.dst_ip(), key.dst_port().map(NonZero::get))
+    {
+        dst = UnicastIpAddr::try_from(addr).ok()?;
+        if let (Some(port), Some(_)) = (port, key.dst_port()) {
+            proto_key.try_set_dst_port(port).ok()?;
+        }
+    }
+    Some(FlowKey::new(
+        key.src_vpcd(),
+        FlowAddrs::new(src, dst)?,
+        proto_key,
+    ))
 }
 
 impl From<&StaticNatError> for DoneReason {
