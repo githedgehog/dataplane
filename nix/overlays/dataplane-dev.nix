@@ -32,7 +32,18 @@ in
       (builtins.fromTOML (builtins.readFile ../../Cargo.toml))
       .workspace.dependencies.iai-callgrind.version;
   };
-  cargo-bolero = prev.cargo-bolero.override { inherit (override-packages) rustPlatform; };
+  cargo-bolero =
+    (prev.cargo-bolero.override { inherit (override-packages) rustPlatform; }).overrideAttrs
+      (_: {
+        version =
+          (builtins.fromTOML (builtins.readFile "${sources.crate-bolero}/bin/cargo-bolero/Cargo.toml"))
+          .package.version;
+        src = sources.crate-bolero;
+        sourceRoot = "source/bin";
+        cargoDeps = override-packages.rustPlatform.importCargoLock {
+          lockFile = "${sources.crate-bolero}/bin/Cargo.lock";
+        };
+      });
   cargo-deny = prev.cargo-deny.override { inherit (override-packages) rustPlatform; };
   cargo-edit = prev.cargo-edit.override { inherit (override-packages) rustPlatform; };
   cargo-expand = prev.cargo-expand.override { inherit (override-packages) rustPlatform; };

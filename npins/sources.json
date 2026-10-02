@@ -41,9 +41,9 @@
       },
       "branch": "hh/v0.14.0",
       "submodules": false,
-      "revision": "99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951",
-      "url": "https://github.com/githedgehog/bolero/archive/99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951.tar.gz",
-      "hash": "sha256-u86qGrujgmuhuCR6Z2PA2LJZQk2OvLLOivaVP1fX2iw=",
+      "revision": "444c8b957d17b610ce0b56b1492e5f234a4df53d",
+      "url": "https://github.com/githedgehog/bolero/archive/444c8b957d17b610ce0b56b1492e5f234a4df53d.tar.gz",
+      "hash": "sha256-oBrLfTytqhV1ubNb2BAbgzp1NfGkjF7GIz7allEqqFg=",
       "frozen": true
     },
     "crate-dplane-rpc": {
