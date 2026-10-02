@@ -3,6 +3,7 @@
 
 //! The error results used by this library.
 
+use crate::VrfId;
 use crate::fib::fibtype::FibKey;
 
 use net::eth::mac::Mac;
@@ -68,4 +69,7 @@ pub enum RouterError {
 
     #[error("Interface {0} has no mac")]
     HasNoMac(InterfaceIndex),
+
+    #[error("The following VRFs don't have the intended vtep information: {0:#?}")]
+    VtepInfoInconsistency(Vec<VrfId>),
 }
