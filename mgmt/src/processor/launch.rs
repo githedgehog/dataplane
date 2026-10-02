@@ -97,7 +97,7 @@ async fn interface_event_notify(
         tokio::select! {
             sig = rx.recv() => match sig {
                 Ok(ev) => {
-                    info!("Notifying router about interface event...");
+                    debug!("Notifying router about interface event...");
                     if rtr_ctl.send_ifevent(ev).await.is_err() {
                         warn!("Failed to relay interface event to router")
                     }
