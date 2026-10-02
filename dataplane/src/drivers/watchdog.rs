@@ -102,7 +102,10 @@ impl Watchdog {
 /// Add `val` to `counter`, saturating instead of wrapping.
 fn accumulate(counter: &AtomicU64, val: u64) {
     if val > 0 {
-        let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+        // std deprecates `fetch_update` in favour of `try_update` as of 1.99, but the
+        // shuttle and loom atomics behind the concurrency facade only have `fetch_update`.
+        #[allow(deprecated)]
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
             Some(v.saturating_add(val))
         });
     }
