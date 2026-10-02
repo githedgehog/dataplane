@@ -21,6 +21,7 @@ use tracing::error;
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;
 
+/// A bridge domain identifier.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct BridgeDomain(u32);
 #[allow(unused)]
@@ -143,7 +144,6 @@ pub struct PacketMeta {
     pub oif: Option<InterfaceIndex>, /* outgoing interface - set by IO manager for outgoing traffic or forwarding functions */
     pub nh_addr: Option<IpAddr>,     /* IP address of next-hop */
     pub vrf: Option<VrfId>,          /* for IP packet, the VRF to use to route it */
-    pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a received encapsulated packet */
     pub dst_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a packet to be (or already) re-encapsulated by the gateway */
