@@ -218,7 +218,6 @@ impl AclRule {
             &src_any_ports,
             &dst_any_ports,
         )?;
-        validated_rule.validate_scope(manifest_left, manifest_right)?;
         Ok(validated_rule)
     }
 }
@@ -384,41 +383,6 @@ impl ValidatedAclRule {
         Self::validate_pattern_coverage(&self.name, &mut self.pattern.dst, &dst_set)?;
 
         Ok(())
-    }
-
-    // TODO: Remove once we support flow tracking for non-NAT and static NAT flows
-    // See https://github.com/githedgehog/dataplane/issues/1625
-    fn validate_scope(
-        &self,
-        manifest_left: &ValidatedManifest,
-        manifest_right: &ValidatedManifest,
-    ) -> ConfigResult {
-        if self.scope() != AclScope::Flow {
-            return Ok(());
-        }
-        // If one side uses masquerade or port forwarding for all exposes, then we're good
-        if manifest_left.valexp().iter().all(|expose| {
-            expose
-                .nat()
-                .is_some_and(|nat| nat.is_masquerade() || nat.is_port_forwarding())
-        }) {
-            return Ok(());
-        }
-        // If the other side uses masquerade or port forwarding for all exposes, then we're good
-        if manifest_right.valexp().iter().all(|expose| {
-            expose
-                .nat()
-                .is_some_and(|nat| nat.is_masquerade() || nat.is_port_forwarding())
-        }) {
-            return Ok(());
-        }
-        // If both sides have at least one prefix without masquerade or port forwarding, the peering
-        // will expose flows that won't get entries in the flow table, and ACLs with "scope: flow"
-        // are not supported
-        Err(ConfigError::InvalidAcl(format!(
-            "ACL rule '{}': At the moment, 'scope: flow' is only supported when all connections in the peering use masquerade or port forwarding",
-            self.name,
-        )))
     }
 }
 
@@ -1072,11 +1036,11 @@ mod validation_tests {
     }
 
     // =============================================================================================
-    // User ACLs limitation: restriction on "scope: flow"
+    // Rules with "scope: flow"
     // =============================================================================================
 
     #[test]
-    fn test_flow_scope_rejected_when_no_flow_tracking() {
+    fn test_flow_scope_valid_without_nat() {
         let left = manifest("VPC-1", &["10.0.0.0/16"]);
         let right = manifest("VPC-2", &["10.1.0.0/16"]);
 
@@ -1087,15 +1051,11 @@ mod validation_tests {
         );
         let rule = rule_scope_flow("r", "VPC-1", "VPC-2", AclAction::Allow, p);
 
-        let result = rule.validate(&left, &right);
-        assert!(
-            matches!(result, Err(ConfigError::InvalidAcl(_))),
-            "{result:?}"
-        );
+        rule.validate(&left, &right).expect("should validate");
     }
 
     #[test]
-    fn test_flow_scope_valid_with_flow_tracking() {
+    fn test_flow_scope_valid_with_masquerade() {
         let left = manifest("VPC-1", &["10.0.0.0/16"]);
         let right = manifest_masquerade("VPC-2", &["1.0.0.0/16"], &["10.1.0.0/16"]);
 

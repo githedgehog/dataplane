@@ -697,10 +697,7 @@ mod test {
                 "VPC-2",
                 GatewayAgentPeeringsAclRulesAction::Allow,
                 Some(m),
-                // "scope: flow" (default scope) not currently supported with the peering
-                // configuration, because there's no masquerade/port forwarding.
-                // See https://github.com/githedgehog/dataplane/issues/1625
-                Some(GatewayAgentPeeringsAclRulesScope::Packet),
+                None,
             ),
         )
         .unwrap();
