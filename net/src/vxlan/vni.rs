@@ -49,7 +49,7 @@ pub struct Vni(NonZero<u32>);
 
 impl Display for Vni {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", self.0.get())
+        Display::fmt(&self.0.get(), f)
     }
 }
 
