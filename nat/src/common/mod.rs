@@ -53,6 +53,14 @@ pub enum NatFlowStatus {
     Closed = 9,
 }
 
+impl NatFlowStatus {
+    /// Tell if the connection is over, closed or reset.
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        matches!(self, NatFlowStatus::Closed | NatFlowStatus::Reset)
+    }
+}
+
 impl From<u8> for NatFlowStatus {
     fn from(value: u8) -> Self {
         match value {
@@ -109,5 +117,11 @@ impl AtomicNatFlowStatus {
 
     pub fn store(&self, status: NatFlowStatus) {
         self.0.store(status.into(), Ordering::Relaxed);
+    }
+
+    /// Tell if `self` and `other` are the same shared status.
+    #[must_use]
+    pub fn is_shared_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }

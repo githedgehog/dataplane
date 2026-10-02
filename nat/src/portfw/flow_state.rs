@@ -7,7 +7,7 @@
 
 use net::buffer::PacketBufferMut;
 use net::flow_key::FlowKeyError;
-use net::flows::{ExtractMut, ExtractRef, FlowStatus};
+use net::flows::{FlowInfoItem, FlowInfoLocked, FlowStatus};
 use net::ip::UnicastIpAddr;
 use net::packet::{Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
@@ -20,8 +20,8 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::FlowInfo;
 
 use crate::common::{AtomicNatFlowStatus, NatAction, NatFlowStatus};
+use crate::flow_tracking::{FlowSide, TrackedState, advance_flow, packet_flow_keys};
 use crate::portfw::PortFwEntry;
-use crate::portfw::protocol::next_flow_status;
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
@@ -83,6 +83,31 @@ impl PortFwState {
     }
 }
 
+impl TrackedState for PortFwState {
+    fn slot(locked: &FlowInfoLocked) -> Option<&dyn FlowInfoItem> {
+        locked.port_fw_state.as_deref()
+    }
+
+    fn slot_mut(locked: &mut FlowInfoLocked) -> &mut Option<Box<dyn FlowInfoItem>> {
+        &mut locked.port_fw_state
+    }
+
+    fn status(&self) -> &AtomicNatFlowStatus {
+        &self.status
+    }
+
+    // The initiator's packets are destination-NATed.
+    fn side(&self) -> FlowSide {
+        match self.action {
+            NatAction::DstNat => FlowSide::Initiator,
+            NatAction::SrcNat => FlowSide::Responder,
+        }
+    }
+
+    // Masquerade also closes DNS flows on the first reply. Port forwarding could opt in by setting
+    // CLOSE_DNS_ON_REPLY here, if desired.
+}
+
 impl Display for PortFwState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let dir = match self.action {
@@ -115,18 +140,8 @@ pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
     new_dst_port: NonZero<u16>, // destination port to forward to
     dst_vpcd: VpcDiscriminant, // destination VPC to forward to
 ) -> Result<(FlowKey, FlowKey), PortFwKeyError> {
-    // Extract flow key for the current packet
-    let current_flow_key = FlowKey::try_from(&*packet).map_err(PortFwKeyError::NoFlowKey)?;
-
-    // Retrieve initial flow key for the current packet (before any other NAT translation); if
-    // we don't have the information, we didn't populate it because we don't need it and fall
-    // back to the current key
-    let initial_flow_key = packet
-        .meta()
-        .flow_key
-        .as_deref()
-        .copied()
-        .unwrap_or(current_flow_key);
+    let (initial_flow_key, current_flow_key) =
+        packet_flow_keys(packet).map_err(PortFwKeyError::NoFlowKey)?;
 
     // Build the key for the reverse path
     let proto = current_flow_key.proto();
@@ -143,50 +158,20 @@ pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
     Ok((initial_flow_key, key_reverse))
 }
 
-pub(crate) fn setup_forward_flow(
-    flow_key: &FlowKey,
-    forward_flow: &Arc<FlowInfo>,
-    entry: &Arc<PortFwEntry>,
-    new_dst_ip: UnicastIpAddr,
-    new_dst_port: NonZero<u16>,
-) -> AtomicNatFlowStatus {
-    // build port forwarding state for the forward flow
-    let status = AtomicNatFlowStatus::new();
-    let port_fw_state = PortFwState::new_dnat(
-        new_dst_ip,
-        new_dst_port,
-        Arc::downgrade(entry),
-        status.clone(),
-    );
-
-    // set the port forwarding state in the flow
-    {
-        let mut write_guard = forward_flow.locked.write();
-        write_guard.port_fw_state = Some(Box::new(port_fw_state));
-        write_guard.dst_vpcd = Some(entry.dst_vpcd);
-    }
-    debug!("Set up FORWARD flow for port-forwarding;\nkey={flow_key}\ninfo={forward_flow}");
-    status
-}
-
-pub(crate) fn setup_reverse_flow(
-    reverse_key: &FlowKey,
-    reverse_flow: &Arc<FlowInfo>,
+/// Build the port-forwarding states for the forward and reverse flows of a pair. They share
+/// the same status.
+pub(crate) fn new_port_fw_states(
     entry: &Arc<PortFwEntry>,
     dst_ip: UnicastIpAddr,
     dst_port: NonZero<u16>,
-    status: AtomicNatFlowStatus,
-) {
-    // build port forwarding state for the REVERSE flow
-    let port_fw_state = PortFwState::new_snat(dst_ip, dst_port, Arc::downgrade(entry), status);
-
-    // set the port forwarding state in the flow
-    {
-        let mut write_guard = reverse_flow.locked.write();
-        write_guard.port_fw_state = Some(Box::new(port_fw_state));
-        write_guard.dst_vpcd = Some(entry.key.src_vpcd());
-    }
-    debug!("Set up REVERSE flow for port-forwarding;\nkey={reverse_key}\ninfo={reverse_flow}");
+    new_dst_ip: UnicastIpAddr,
+    new_dst_port: NonZero<u16>,
+) -> (PortFwState, PortFwState) {
+    let status = AtomicNatFlowStatus::new();
+    let rule = Arc::downgrade(entry);
+    let forward = PortFwState::new_dnat(new_dst_ip, new_dst_port, rule.clone(), status.clone());
+    let reverse = PortFwState::new_snat(dst_ip, dst_port, rule, status);
+    (forward, reverse)
 }
 
 /// Update a flow's port-forwarding rule for subsequent packets.
@@ -194,7 +179,7 @@ pub(crate) fn setup_reverse_flow(
 /// Used by configuration migration and by packets that trigger stale-rule revalidation.
 pub(crate) fn reassign_port_fw_rule(flow_info: &FlowInfo, entry: &Arc<PortFwEntry>) {
     let mut flow_info_locked = flow_info.locked.write();
-    if let Some(state) = flow_info_locked.port_fw_state.extract_mut::<PortFwState>() {
+    if let Some(state) = PortFwState::of_mut(&mut flow_info_locked) {
         state.rule = Arc::downgrade(entry);
     }
 }
@@ -214,11 +199,7 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
         return None;
     }
     let guard = flow.locked.read();
-    let Some(state) = guard
-        .port_fw_state
-        .as_ref()
-        .and_then(|s| s.extract_ref::<PortFwState>())
-    else {
+    let Some(state) = PortFwState::of(&guard) else {
         debug!("Packet flow-info does not contain port-forwarding state");
         return None;
     };
@@ -237,7 +218,7 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
 /// are unexpectedly received. This will be done later when introducing a more
 /// elaborate TCP state machine with ack & seqn numbers.
 pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
-    packet: &mut Packet<Buf>,
+    packet: &Packet<Buf>,
     entry: &PortFwEntry,
     state: &PortFwState, // (*)
     genid: i64,
@@ -245,38 +226,19 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     //(*) Note: atm, this is a clone of the state found by the packet
     // That's fine for updating the status since it's an arc'ed atomic
 
-    // update the flow status (for port forwarding) depending on the packet and the current status
-    let new_status = next_flow_status(packet, state);
-    let current_status = state.status.load();
-    if new_status != current_status {
-        debug!("Flow state transitions from {current_status} -> {new_status}");
-        state.status.store(new_status);
-    }
-
-    // compute new timeout for the flow. In case of TCP, if the connection was reset or closed,
-    // invalidate the flows in both directions. In either case, the packet is let through.
-    let extend_by = match new_status {
-        NatFlowStatus::Established => entry.estab_timeout(),
-        NatFlowStatus::Closed | NatFlowStatus::Reset => return packet.invalidate_flows(),
-        _ => entry.init_timeout(),
+    let Some(flow) = packet.meta().flow_info.as_ref() else {
+        return;
     };
 
-    let seconds = extend_by.as_secs();
+    // Update the flow status and extend the lifetime of the flows. In case of TCP, if the
+    // connection was reset or closed, invalidate the flows in both directions. In either case,
+    // the packet is let through.
+    let new_status = advance_flow(packet, flow, state, |status| match status {
+        NatFlowStatus::Established => Some(entry.estab_timeout()),
+        _ => Some(entry.init_timeout()),
+    });
 
-    if let Some(flow) = packet.meta_mut().flow_info.as_ref() {
-        if flow.reset_expiry_unchecked(extend_by).is_ok() {
-            debug!("Extended flow lifetime by {seconds}s");
-        }
-
-        flow.related
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .inspect(|reverse| {
-                if reverse.reset_expiry_unchecked(extend_by).is_ok() {
-                    debug!("Extended reverse-flow lifetime by {seconds}s");
-                }
-            });
-
+    if !new_status.is_terminal() {
         // update flow info generation
         flow.set_genid(genid);
     }
@@ -284,10 +246,14 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 
 #[cfg(test)]
 mod test {
-    use super::build_portfw_flow_keys;
+    use super::{PortFwState, build_portfw_flow_keys};
+    use crate::common::{AtomicNatFlowStatus, NatFlowStatus};
+    use crate::flow_tracking::TrackedState;
     use crate::static_nat::probe::build;
+    use concurrency::sync::Weak;
     use net::FlowKey;
     use net::buffer::TestBuffer;
+    use net::headers::TryTcp;
     use net::ip::UnicastIpAddr;
     use net::packet::{Packet, VpcDiscriminant};
     use net::vxlan::Vni;
@@ -426,6 +392,57 @@ mod test {
             hash_of(&first_reverse),
             hash_of(&second_reverse),
             "the reverse keys compare equal but hash apart, so they would not collide in the table"
+        );
+    }
+
+    /// A non-first fragment carries no transport header, even if its payload looks like one. It
+    /// must not move the status of the flow it hits.
+    ///
+    /// Port forwarding currently drops such packets when it fails to translate them, before
+    /// updating the flow status. This test checks the state machine directly, in case we
+    /// translate fragments in the future.
+    #[test]
+    fn a_non_first_fragment_does_not_move_the_flow_status() {
+        use etherparse::{IpFragOffset, IpNumber, Ipv4Header, TcpHeader};
+
+        // Fragment payload that looks like a TCP ACK, which would establish a two-way flow.
+        let mut tcp = TcpHeader::new(1234, 8001, 0, 0);
+        tcp.ack = true;
+        let mut payload = Vec::new();
+        tcp.write(&mut payload).unwrap_or_else(|_| unreachable!());
+
+        #[allow(clippy::cast_possible_truncation)]
+        let mut ip = Ipv4Header::new(
+            payload.len() as u16,
+            64,
+            IpNumber::TCP,
+            [3, 3, 3, 1],
+            [172, 16, 0, 1],
+        )
+        .unwrap_or_else(|_| unreachable!());
+        ip.fragment_offset = IpFragOffset::try_new(185).unwrap_or_else(|_| unreachable!());
+
+        let mut bytes = vec![2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x08, 0x00];
+        ip.write(&mut bytes).unwrap_or_else(|_| unreachable!());
+        bytes.extend_from_slice(&payload);
+        let packet: Packet<TestBuffer> =
+            Packet::new(TestBuffer::from_raw_data(&bytes)).unwrap_or_else(|_| unreachable!());
+        assert!(
+            packet.try_tcp().is_some_and(net::tcp::Tcp::ack),
+            "the parser must read a TCP ACK from the fragment payload, or this tests nothing"
+        );
+
+        let status = AtomicNatFlowStatus::new();
+        status.store(NatFlowStatus::TwoWay);
+        let state = PortFwState::new_dnat(
+            UnicastIpAddr::try_from(addr("192.168.1.1")).unwrap_or_else(|_| unreachable!()),
+            NonZero::new(80).unwrap_or_else(|| unreachable!()),
+            Weak::new(),
+            status,
+        );
+        assert_eq!(
+            state.next_status(&packet, NatFlowStatus::TwoWay),
+            NatFlowStatus::TwoWay
         );
     }
 }

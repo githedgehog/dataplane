@@ -20,8 +20,9 @@ use tracectl::trace_target;
 use tracing::{debug, warn};
 
 use crate::common::NatFlowStatus;
-use crate::masquerade::icmp_handling::handle_icmp_error_masquerading;
-use crate::portfw::icmp_handling::handle_icmp_error_port_forwarding;
+use crate::icmp_handler::flow_state::translate_icmp_error;
+use crate::masquerade::MasqueradeState;
+use crate::portfw::PortFwState;
 
 trace_target!("icmp-errors", LevelFilter::INFO, &["nat", "pipeline"]);
 
@@ -163,10 +164,10 @@ impl IcmpErrorHandler {
         // process the packet depending on the flow info
         let result = if masquerading {
             debug!("Icmp error is for vpc {dst_vpcd}. Will process with masquerade state");
-            handle_icmp_error_masquerading(packet, flow.as_ref())
+            translate_icmp_error::<_, MasqueradeState>(packet, flow.as_ref())
         } else if port_forwarding {
             debug!("Icmp error is for vpc {dst_vpcd}. Will process with port-forwarding state");
-            handle_icmp_error_port_forwarding(packet, flow.as_ref())
+            translate_icmp_error::<_, PortFwState>(packet, flow.as_ref())
         } else {
             warn!("Found no NAT state to process ICMP error message. Dropping...");
             Err(DoneReason::Filtered)

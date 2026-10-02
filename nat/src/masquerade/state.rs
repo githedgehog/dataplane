@@ -5,7 +5,9 @@ use super::apalloc::Allocation;
 use super::nf::MasqueradeError;
 use super::packet::NatTranslate;
 use crate::common::{AtomicNatFlowStatus, NatAction};
+use crate::flow_tracking::{FlowSide, TrackedState};
 use crate::{NatEndpoint, NatPort, NatTranslationData};
+use net::flows::{FlowInfoItem, FlowInfoLocked};
 use net::ip::UnicastIpAddr;
 use std::fmt::Display;
 use std::time::Duration;
@@ -92,16 +94,36 @@ impl MasqueradeState {
     }
 
     pub(crate) fn reverse_translation_data(&self) -> NatTranslationData {
-        match self.action {
-            NatAction::SrcNat => NatTranslationData::default()
-                .with_dst(NatEndpoint::with_port(self.use_ip.inner(), self.use_port)),
-            NatAction::DstNat => NatTranslationData::default()
-                .with_src(NatEndpoint::with_port(self.use_ip.inner(), self.use_port)),
-        }
+        let endpoint = NatEndpoint::with_port(self.use_ip.inner(), self.use_port);
+        NatTranslationData::reverse_of(self.action, endpoint)
     }
 
     pub(crate) fn set_allocation(&mut self, allocation: Allocation) {
         self.allocation = Some(allocation);
+    }
+}
+
+impl TrackedState for MasqueradeState {
+    fn slot(locked: &FlowInfoLocked) -> Option<&dyn FlowInfoItem> {
+        locked.nat_state.as_deref()
+    }
+
+    fn slot_mut(locked: &mut FlowInfoLocked) -> &mut Option<Box<dyn FlowInfoItem>> {
+        &mut locked.nat_state
+    }
+
+    fn status(&self) -> &AtomicNatFlowStatus {
+        &self.status
+    }
+
+    const CLOSE_DNS_ON_REPLY: bool = true;
+
+    // The initiator's packets are source-NATed.
+    fn side(&self) -> FlowSide {
+        match self.action {
+            NatAction::SrcNat => FlowSide::Initiator,
+            NatAction::DstNat => FlowSide::Responder,
+        }
     }
 }
 

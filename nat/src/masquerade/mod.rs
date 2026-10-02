@@ -11,11 +11,9 @@ pub(crate) mod icmp_handling;
 mod nf;
 mod packet;
 mod probe;
-mod protocol;
 mod state;
 mod test;
 mod test_expiry;
-mod test_state_machine;
 
 //= https://www.rfc-editor.org/rfc/rfc4787#section-6
 //= type=todo
@@ -25,6 +23,7 @@ mod test_state_machine;
 pub use allocator_writer::MasqueradeConfig;
 pub use allocator_writer::{NatAllocatorReaderFactory, NatAllocatorWriter};
 pub use nf::Masquerade;
+pub(crate) use state::MasqueradeState;
 
 use tracectl::trace_target;
 trace_target!("masquerade", LevelFilter::INFO, &["nat", "pipeline"]);

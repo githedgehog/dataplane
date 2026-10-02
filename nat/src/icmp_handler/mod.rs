@@ -3,5 +3,6 @@
 
 //! Module for ICMP handling in the overlay
 
+pub(crate) mod flow_state;
 pub(crate) mod icmp_error_msg;
 pub mod nf;

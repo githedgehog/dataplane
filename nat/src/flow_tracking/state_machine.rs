@@ -1,54 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Functions to represent tiny state machines for flows in the context
-//! of masquerading. We currently use these to know how much to extend the lifetime of flows
-//! for port conservation.
+//! Small state machines for tracked flows. We use them to know how much to extend the lifetime
+//! of flows.
 
-use crate::common::{NatAction, NatFlowStatus};
+use super::FlowSide;
+use crate::common::NatFlowStatus;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryTcp};
-
 use net::ip::NextHeader;
 use net::packet::Packet;
 use net::tcp::Tcp;
 
-impl NatFlowStatus {
-    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
-    //# a) For specific destination ports in the well-known port range
-    //# (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
-    //# are specific to the IANA-registered application running over
-    //# that specific destination port.
-    fn udp_status_patch_dnat<Buf: PacketBufferMut>(self, packet: &Packet<Buf>) -> NatFlowStatus {
-        match packet.headers().pat().eth().net().udp().done() {
-            Some((_, _, udp)) => match udp.source().as_u16() {
-                53 | 853 | 8853 => NatFlowStatus::Closed, // DNS|DNS-over-quic|nextdns
-                _ => self,
-            },
-            _ => self,
-        }
-    }
-
-    // Refine the status of a UDP flow based on the application
-    fn udp_status_patch<Buf: PacketBufferMut>(
-        self,
-        packet: &Packet<Buf>,
-        action: NatAction,
-    ) -> NatFlowStatus {
-        match action {
-            NatAction::SrcNat => self,
-            NatAction::DstNat => self.udp_status_patch_dnat(packet),
-        }
-    }
-}
-
-fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
-    match action {
-        NatAction::SrcNat => match status {
+fn next_status_udp(side: FlowSide, status: NatFlowStatus) -> NatFlowStatus {
+    match side {
+        FlowSide::Initiator => match status {
             NatFlowStatus::TwoWay => NatFlowStatus::Established,
             _ => status,
         },
-        NatAction::DstNat => match status {
+        FlowSide::Responder => match status {
             NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
             _ => status,
         },
@@ -60,12 +30,12 @@ fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStat
 // REQ-10 and RFC 4787 REQ-12 cover errors too, so this function cannot establish
 // compliance with either requirement.
 #[allow(clippy::match_single_binding)]
-fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
-    let next = match action {
-        NatAction::SrcNat => match status {
+fn next_status_icmp(side: FlowSide, status: NatFlowStatus) -> NatFlowStatus {
+    let next = match side {
+        FlowSide::Initiator => match status {
             _ => status,
         },
-        NatAction::DstNat => match status {
+        FlowSide::Responder => match status {
             NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
             _ => status,
         },
@@ -74,14 +44,16 @@ fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowSta
         && matches!(next, NatFlowStatus::Closed | NatFlowStatus::Reset)
         && !matches!(status, NatFlowStatus::Closed | NatFlowStatus::Reset)
     {
-        unreachable!("an ICMP query moved a live flow from {status:?} to {next:?} ({action})");
+        unreachable!("an ICMP query moved a live flow from {status:?} to {next:?} ({side})");
     }
     next
 }
 
-fn next_flow_status_tcp(action: NatAction, status: NatFlowStatus, tcp: &Tcp) -> NatFlowStatus {
-    match action {
-        NatAction::SrcNat => match status {
+// Note: RST only applies when no other arm matches. For example, RST+ACK from the initiator in
+// TwoWay moves the flow to Established, not to Reset.
+fn next_status_tcp(side: FlowSide, status: NatFlowStatus, tcp: &Tcp) -> NatFlowStatus {
+    match side {
+        FlowSide::Initiator => match status {
             NatFlowStatus::TwoWay if !tcp.syn() && tcp.ack() => NatFlowStatus::Established,
             NatFlowStatus::Established if tcp.fin() => NatFlowStatus::CClosing,
             NatFlowStatus::SClosing if !tcp.fin() && tcp.ack() => NatFlowStatus::SHalfClose,
@@ -91,7 +63,7 @@ fn next_flow_status_tcp(action: NatAction, status: NatFlowStatus, tcp: &Tcp) -> 
             _other if tcp.rst() => NatFlowStatus::Reset,
             other => other,
         },
-        NatAction::DstNat => match status {
+        FlowSide::Responder => match status {
             NatFlowStatus::OneWay if tcp.syn() && tcp.ack() => NatFlowStatus::TwoWay,
             NatFlowStatus::Established if tcp.fin() => NatFlowStatus::SClosing,
             NatFlowStatus::CClosing if !tcp.fin() && tcp.ack() => NatFlowStatus::CHalfClose,
@@ -110,12 +82,14 @@ pub(crate) fn transport_proto<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Opt
     packet.upper_layer_proto().carried()
 }
 
-// Compute the next `NatFlowStatus` of a flow, given the current, the received packet and
-// the direction
-pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
+/// Compute the next status of a flow, given its current status, the packet that hit it, and the
+/// side of the connection that sent this packet. If `close_dns` is set, a UDP flow closes on the
+/// first reply from a DNS server.
+pub(crate) fn next_status<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
-    action: NatAction,     // action of the flow hit
-    status: NatFlowStatus, // current status
+    side: FlowSide,
+    status: NatFlowStatus,
+    close_dns: bool,
 ) -> NatFlowStatus {
     // Leave the state unchanged without a resolved protocol.
     let Some(proto) = transport_proto(packet) else {
@@ -123,11 +97,18 @@ pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
     };
 
     match proto {
-        NextHeader::UDP => next_flow_status_udp(action, status).udp_status_patch(packet, action),
-        NextHeader::ICMP | NextHeader::ICMP6 => next_flow_status_icmp(action, status),
+        NextHeader::UDP => {
+            let next = next_status_udp(side, status);
+            if close_dns {
+                close_dns_on_reply(packet, side, next)
+            } else {
+                next
+            }
+        }
+        NextHeader::ICMP | NextHeader::ICMP6 => next_status_icmp(side, status),
         NextHeader::TCP => {
             if let Some(tcp) = packet.try_tcp() {
-                next_flow_status_tcp(action, status, tcp)
+                next_status_tcp(side, status, tcp)
             } else {
                 status
             }
@@ -135,6 +116,30 @@ pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
         _ => status,
     }
 }
+
+// Close a UDP flow on the first reply from a DNS server.
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+//# a) For specific destination ports in the well-known port range
+//# (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
+//# are specific to the IANA-registered application running over
+//# that specific destination port.
+fn close_dns_on_reply<Buf: PacketBufferMut>(
+    packet: &Packet<Buf>,
+    side: FlowSide,
+    status: NatFlowStatus,
+) -> NatFlowStatus {
+    if side != FlowSide::Responder {
+        return status;
+    }
+    match packet.headers().pat().eth().net().udp().done() {
+        Some((_, _, udp)) => match udp.source().as_u16() {
+            53 | 853 | 8853 => NatFlowStatus::Closed, // DNS|DNS-over-quic|nextdns
+            _ => status,
+        },
+        _ => status,
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::transport_proto;
