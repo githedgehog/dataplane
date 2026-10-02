@@ -68,4 +68,7 @@ pub enum RouterError {
 
     #[error("Interface {0} has no mac")]
     HasNoMac(InterfaceIndex),
+
+    #[error("One or more VRFs don't have the intended vtep information")]
+    VtepInfoInconsistency,
 }
