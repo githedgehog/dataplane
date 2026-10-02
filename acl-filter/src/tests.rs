@@ -917,6 +917,74 @@ fn directional_rule_only_applies_to_correct_direction() {
 // authorizes the request; the reply matches no rule directly but must be allowed because it belongs
 // to the established flow.
 
+// The flow filter requests flow tracking for all packets of a peering with flow-scoped rules. Only
+// the packets allowed by a flow-scoped rule, or hitting a valid flow, keep the request.
+#[test]
+fn only_flow_scoped_allow_rules_keep_flow_tracking() {
+    let acl = Acl::new(
+        AclAction::Allow,
+        vec![
+            rule(
+                "allow-flow",
+                AclAction::Allow,
+                AclScope::Flow,
+                pattern(&[V1_IPS], &["20.0.0.0/25"], AclProtoMatch::Udp),
+            ),
+            rule(
+                "allow-packet",
+                AclAction::Allow,
+                AclScope::Packet,
+                pattern(&[V1_IPS], &["20.0.0.128/26"], AclProtoMatch::Udp),
+            ),
+        ],
+    );
+    let mut filter = build_filter_v4_masquerade(Some(acl));
+    let tracked = |src_vni, dst_vni, headers| {
+        let mut p = packet(vpcd(src_vni), Some(vpcd(dst_vni)), headers);
+        p.meta_mut().set_forced_flow_tracking(true);
+        p
+    };
+
+    for (dst, rule, keeps) in [
+        ("20.0.0.5", "a flow-scoped rule", true),
+        ("20.0.0.130", "a packet-scoped rule", false),
+        ("20.0.0.200", "the default action", false),
+    ] {
+        let request = tracked(
+            VNI1,
+            VNI2,
+            build_udp_packet(v4("10.0.0.5"), v4(dst), 1234, 80),
+        );
+        let out = run(&mut filter, request);
+        assert!(is_allowed(&out), "packet allowed by {rule} was dropped");
+        assert_eq!(
+            out.meta().has_forced_flow_tracking(),
+            keeps,
+            "wrong flow tracking request for a packet allowed by {rule}"
+        );
+    }
+
+    // A reply on a valid flow keeps the request, whatever the rule that allows it
+    let request = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        build_udp_packet(v4("10.0.0.5"), v4("20.0.0.130"), 1234, 80),
+    );
+    let fwd_key = FlowKey::try_from(&request).unwrap();
+    let mut reply = tracked(
+        VNI2,
+        VNI1,
+        build_udp_packet(v4("20.0.0.130"), v4("10.0.0.5"), 80, 1234),
+    );
+    let _request_flow = attach_related_flow(&mut reply, fwd_key);
+    let out = run(&mut filter, reply);
+    assert!(is_allowed(&out), "the reply was dropped");
+    assert!(
+        out.meta().has_forced_flow_tracking(),
+        "a reply on a valid flow lost its flow tracking request"
+    );
+}
+
 mod end_to_end {
     use super::{
         Acl, AclAction, AclFilterContext, AclFilterContextWriter, AclProtoMatch, AclScope,

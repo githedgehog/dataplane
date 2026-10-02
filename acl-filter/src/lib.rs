@@ -62,11 +62,23 @@ impl AclFilter {
             }
         };
         let valid_flow = self.packet_has_valid_flow(packet.meta(), genid);
+        let has_valid_flow = valid_flow.is_some();
 
-        if self.lookup(&summary, valid_flow) == AclAction::Deny {
+        let (verdict, flow_scoped_allow) = self.lookup(&summary, valid_flow);
+        if verdict == AclAction::Deny {
             debug!("{nfi}: Packet rejected by ACLs, dropping packet");
             packet.invalidate_flows();
             packet.done(DoneReason::AclDropped);
+            return;
+        }
+
+        // The flow filter requests flow tracking for all packets of a peering with flow-scoped
+        // rules. Only flows opened by such a rule need it: we never use the others to let replies
+        // through, so they would only take room in the flow table. Packets on a valid flow keep
+        // the request, so that tracking keeps updating the flow.
+        if !has_valid_flow && !flow_scoped_allow && packet.meta().has_forced_flow_tracking() {
+            debug!("{nfi}: Packet not allowed by a flow-scoped rule, no flow tracking needed");
+            packet.meta_mut().set_forced_flow_tracking(false);
         }
     }
 
@@ -95,7 +107,13 @@ impl AclFilter {
         Some(flow)
     }
 
-    fn lookup(&self, summary: &PacketSummary, flow_info: Option<&Arc<FlowInfo>>) -> AclAction {
+    // Return the verdict for the packet, and whether it comes from an Allow rule of scope "flow"
+    // matching the packet itself.
+    fn lookup(
+        &self,
+        summary: &PacketSummary,
+        flow_info: Option<&Arc<FlowInfo>>,
+    ) -> (AclAction, bool) {
         let guard = self.tablesr.load();
         let tables = &guard.acls;
 
@@ -106,7 +124,10 @@ impl AclFilter {
             if result.log {
                 info!("ACL filtering: {summary} -> {verdict:?}")
             }
-            return verdict;
+            return (
+                verdict,
+                verdict == AclAction::Allow && result.scope == AclScope::Flow,
+            );
         }
 
         // If we have flow information, we may be dealing with a reply for an authorized flow. But
@@ -125,18 +146,19 @@ impl AclFilter {
                 if result.log {
                     info!("ACL filtering: {summary} -> {verdict:?} (reply from allowed flow)")
                 }
-                return verdict;
+                return (verdict, false);
             }
         }
 
         // Look for a fallback default action for the peering
-        tables
+        let verdict = tables
             .find_default_action(summary.src_vni, summary.dst_vni)
             .unwrap_or(
                 // No default action was found for this peering, this means no ACL list was
                 // configured for the peering. Allow packet to go through.
                 AclAction::Allow,
-            )
+            );
+        (verdict, false)
     }
 }
 
