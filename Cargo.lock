@@ -542,7 +542,7 @@ checksum = "b1b08cb4ecbb540b940016b0a0f35b7e48ab0cc372ab88150c351de4cc469959"
 [[package]]
 name = "bolero"
 version = "0.14.0"
-source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951"
+source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#444c8b957d17b610ce0b56b1492e5f234a4df53d"
 dependencies = [
  "bolero-afl",
  "bolero-engine",
@@ -558,7 +558,7 @@ dependencies = [
 [[package]]
 name = "bolero-afl"
 version = "0.14.0"
-source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951"
+source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#444c8b957d17b610ce0b56b1492e5f234a4df53d"
 dependencies = [
  "bolero-engine",
  "cc",
@@ -567,7 +567,7 @@ dependencies = [
 [[package]]
 name = "bolero-engine"
 version = "0.14.0"
-source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951"
+source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#444c8b957d17b610ce0b56b1492e5f234a4df53d"
 dependencies = [
  "anyhow",
  "bolero-generator",
@@ -580,7 +580,7 @@ dependencies = [
 [[package]]
 name = "bolero-generator"
 version = "0.14.0"
-source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951"
+source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#444c8b957d17b610ce0b56b1492e5f234a4df53d"
 dependencies = [
  "bolero-generator-derive",
  "either",
@@ -592,7 +592,7 @@ dependencies = [
 [[package]]
 name = "bolero-generator-derive"
 version = "0.14.0"
-source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951"
+source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#444c8b957d17b610ce0b56b1492e5f234a4df53d"
 dependencies = [
  "indexmap",
  "proc-macro-crate",
@@ -604,7 +604,7 @@ dependencies = [
 [[package]]
 name = "bolero-honggfuzz"
 version = "0.14.0"
-source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951"
+source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#444c8b957d17b610ce0b56b1492e5f234a4df53d"
 dependencies = [
  "bolero-engine",
 ]
@@ -612,7 +612,7 @@ dependencies = [
 [[package]]
 name = "bolero-kani"
 version = "0.14.0"
-source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951"
+source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#444c8b957d17b610ce0b56b1492e5f234a4df53d"
 dependencies = [
  "bolero-engine",
 ]
@@ -620,7 +620,7 @@ dependencies = [
 [[package]]
 name = "bolero-libafl"
 version = "0.14.0"
-source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951"
+source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#444c8b957d17b610ce0b56b1492e5f234a4df53d"
 dependencies = [
  "bolero-engine",
  "libafl",
@@ -631,7 +631,7 @@ dependencies = [
 [[package]]
 name = "bolero-libfuzzer"
 version = "0.14.0"
-source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#99f7e8f293416d3cddfd61ecc0d1fcf21e0e5951"
+source = "git+https://github.com/githedgehog/bolero.git?branch=hh%2Fv0.14.0#444c8b957d17b610ce0b56b1492e5f234a4df53d"
 dependencies = [
  "bolero-engine",
  "cc",
