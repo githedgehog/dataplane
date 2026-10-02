@@ -19,6 +19,7 @@ use concurrency::sync::Arc;
 use config::external::overlay::acl::{
     Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
 };
+use config::external::overlay::vpcpeering::VpcExpose;
 use lpm::prefix::{L4Protocol, Prefix, PrefixWithOptionalPorts};
 use net::FlowKey;
 use net::buffer::TestBuffer;
@@ -250,8 +251,13 @@ fn ipv6_context() -> FlowFilterContext {
 }
 
 // vpc1 <-> vpc2 with an ACL rule of the given scope, and vpc3 <-> vpc1 without ACL. vpc2 uses
-// masquerade, so that config validation accepts rules with scope "flow".
+// masquerade.
 fn acl_context(scope: AclScope) -> FlowFilterContext {
+    acl_context_with(scope, expose_masquerade("20.0.0.0/24", "20.0.0.0/24"))
+}
+
+// Same as acl_context(), with the given expose for vpc2.
+fn acl_context_with(scope: AclScope, vpc2_expose: VpcExpose) -> FlowFilterContext {
     let prefixes = |prefix: &str| {
         [PrefixWithOptionalPorts::new(Prefix::from(prefix), None)]
             .into_iter()
@@ -278,10 +284,7 @@ fn acl_context(scope: AclScope) -> FlowFilterContext {
     let mut with_acl = peering(
         "vpc1-to-vpc2",
         ("vpc1", vec![expose("10.0.0.0/24")]),
-        (
-            "vpc2",
-            vec![expose_masquerade("20.0.0.0/24", "20.0.0.0/24")],
-        ),
+        ("vpc2", vec![vpc2_expose]),
     );
     with_acl.acl = Some(acl);
     context(
@@ -2288,6 +2291,25 @@ fn tracked_flow_on_peering_without_stateful_acl_is_not_kept() {
         Some(vpcd(300)),
         build_tcp_packet(v4("30.0.0.5"), v4("10.0.0.5"), 1234, 80),
     );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, false);
+    assert!(!context.keeps_tracked_flow(&flow));
+}
+
+#[test]
+fn tracked_flow_on_peering_with_stateful_acl_is_kept() {
+    let context = acl_context_with(AclScope::Flow, expose("20.0.0.0/24"));
+    assert!(context.keeps_tracked_flow(&tracked_flow("20.0.0.5", "10.0.0.5")));
+}
+
+#[test]
+fn tracked_flow_with_other_static_nat_requirements_is_not_kept() {
+    let context = acl_context_with(AclScope::Flow, expose("20.0.0.0/24"));
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("20.0.0.5"), v4("10.0.0.5"), 1234, 80),
+    );
+    // The flow was created when the source required static NAT
+    p.meta_mut().set_static_nat_src(true);
     let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, false);
     assert!(!context.keeps_tracked_flow(&flow));
 }
