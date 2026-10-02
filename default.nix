@@ -1403,6 +1403,7 @@ let
             "cargo"
             "clippy"
             "--all-targets"
+            "--all-features"
             "--profile=${cargo-profile}"
           ]
           # The platform-aware list excludes members that cannot build for WASI.
