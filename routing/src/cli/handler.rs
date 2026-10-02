@@ -5,7 +5,7 @@
 
 #![allow(clippy::unnecessary_wraps)]
 
-use crate::Vtep;
+use crate::cli::display::{ActiveVteps, FibVtep, VtepConfig};
 use crate::evpn::{RmacFilter, RmacStore};
 use crate::fib::fibtype::{FibRouteV4Filter, FibRouteV6Filter};
 use crate::frr::frrmi::Frrmi;
@@ -341,12 +341,19 @@ fn show_rmac_store(request: CliRequest, rmac_store: &RmacStore) -> Result<CliRes
     Ok(CliResponse::from_request_ok(request, out.to_string()))
 }
 
-fn show_vtep(request: CliRequest, vtep: Option<&Vtep>) -> CliResponse {
-    if let Some(vtep) = vtep {
-        CliResponse::from_request_ok(request, vtep.to_string())
-    } else {
-        CliResponse::from_request_ok(request, "No VTEP is configured".to_string())
-    }
+fn get_vrf_vteps(db: &RoutingDb) -> Vec<FibVtep> {
+    db.vrftable
+        .values()
+        .filter_map(|vrf| {
+            vrf.vni
+                .map(|vni| FibVtep::new(vrf.vrfid, vni, vrf.get_vtep()))
+        })
+        .collect()
+}
+fn show_vtep(request: CliRequest, db: &RoutingDb) -> CliResponse {
+    let vteps = ActiveVteps(get_vrf_vteps(db));
+    let config = VtepConfig::new(db.vtep.as_ref());
+    CliResponse::from_request_ok(request, config.to_string() + vteps.to_string().as_str())
 }
 fn show_adjacency_table(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     let atable = db.atabler.enter().ok_or(CliError::Inaccessible)?;
@@ -530,7 +537,7 @@ fn do_handle_cli_request(
         CliAction::ShowRouterInterfaceAddresses => show_interface_addresses(request, db)?,
         CliAction::ShowRouterVrfs => show_vrfs(request, &db.vrftable),
         CliAction::ShowRouterEvpnRmacStore => show_rmac_store(request, &db.rmac_store)?,
-        CliAction::ShowRouterEvpnVtep => show_vtep(request, db.vtep.as_ref()),
+        CliAction::ShowRouterEvpnVtep => show_vtep(request, db),
         CliAction::ShowAdjacencies => show_adjacency_table(request, db)?,
         CliAction::ShowRouterIpv4Routes => show_vrf_routes(request, db, true)?,
         CliAction::ShowRouterIpv6Routes => show_vrf_routes(request, db, false)?,
