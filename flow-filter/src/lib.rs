@@ -257,6 +257,9 @@ impl FlowFilter {
         if flow_summary.needs_port_forwarding {
             meta.set_port_forwarding(true);
         }
+        if flow_summary.needs_tracking {
+            meta.set_forced_flow_tracking(true);
+        }
         if flow_summary.flow_info.get_flags().requires_static_nat_src() {
             meta.set_static_nat_src(true);
         }
@@ -400,6 +403,7 @@ struct FlowSummary {
     dst_vpcd: VpcDiscriminant,
     needs_masquerade: bool,
     needs_port_forwarding: bool,
+    needs_tracking: bool,
     flow_info: Arc<FlowInfo>,
 }
 
@@ -417,6 +421,8 @@ impl FlowSummary {
             dst_vpcd,
             needs_masquerade: locked_info.masquerade_data.is_some(),
             needs_port_forwarding: locked_info.port_fw_data.is_some(),
+            needs_tracking: locked_info.tracked_data.is_some()
+                || locked_info.static_nat_data.is_some(),
             flow_info: flow_info.clone(),
         })
     }
