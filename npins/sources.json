@@ -11,10 +11,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.18.10",
-      "revision": "411da7029f5c095943c2805ce6db16c2be5f214d",
-      "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.18.10",
-      "hash": "sha256-JFOZNiv57sMSQhNyLrRFdzQPIq+9LamKcRxRmkVGXEM="
+      "version": "v0.19.0",
+      "revision": "6ea2dc97188f0cc282e05a9690418ae7fe5457ba",
+      "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.19.0",
+      "hash": "sha256-3ymbUOq7rGXbUG5qE5FXwm2erxAF7eHusND6kKNtfpY="
     },
     "crane": {
       "type": "GitRelease",
@@ -312,9 +312,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "a31f9ea9df720ee68f941e55f75fec31349fcd35",
-      "url": "https://github.com/linux-rdma/perftest/archive/a31f9ea9df720ee68f941e55f75fec31349fcd35.tar.gz",
-      "hash": "sha256-VBJddLA13J/yLw7NaQ4A2/X02spoS9LwU2U3l9/9LfY="
+      "revision": "05e57e3d3c98312106fbcb0dbc7abaa9c71a531f",
+      "url": "https://github.com/linux-rdma/perftest/archive/05e57e3d3c98312106fbcb0dbc7abaa9c71a531f.tar.gz",
+      "hash": "sha256-6yFStzKsfSZkyQFjkKi8dh+nf46rWmxjwKBYGQ3SaFI="
     },
     "rdma-core": {
       "type": "Git",
@@ -360,23 +360,23 @@
     },
     "ubuntu-kernel-buildinfo": {
       "type": "Url",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-buildinfo-7.0.0-34-generic_7.0.0-34.34_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-buildinfo-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
       "unpack": false,
-      "hash": "sha256-yEcvcH4av9dSVhJypv0rJ3AUpxwkMMyE62Myumh52iU=",
+      "hash": "sha256-z2QPQkc9YQlpzHxMpkkfJ34erEfaBqTDRxZXKCgP5L0=",
       "frozen": true
     },
     "ubuntu-kernel-image": {
       "type": "Url",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-image-unsigned-7.0.0-34-generic_7.0.0-34.34_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-image-unsigned-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
       "unpack": false,
-      "hash": "sha256-9eFMhFY+vtlAciNqrKYsQiGxJj2jEOb/61CKn1k/BzI=",
+      "hash": "sha256-RnniLRnUgFk7W3TRD4h3h+n6x8OdyNpyMxXV1LDmU6E=",
       "frozen": true
     },
     "ubuntu-kernel-modules": {
       "type": "Url",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-modules-7.0.0-34-generic_7.0.0-34.34_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-modules-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
       "unpack": false,
-      "hash": "sha256-/SB87vw7HYF0OdHr8QE9AGicYPqQoE97i07znT8BrD8=",
+      "hash": "sha256-rS/tacRDD+otZ/I71nKk5odzBJz5mEpjiU8JOHnsKuA=",
       "frozen": true
     }
   },
