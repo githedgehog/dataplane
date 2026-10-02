@@ -31,7 +31,7 @@ pub mod static_nat;
 #[cfg(test)]
 mod test;
 
-pub use flow_tracker::FlowTracker;
+pub use flow_tracker::{FlowTracker, migrate_tracked_flows};
 pub use icmp_handler::nf::IcmpErrorHandler;
 pub use masquerade::Masquerade;
 pub use port::NatPort;

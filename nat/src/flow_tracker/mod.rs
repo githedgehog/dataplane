@@ -7,20 +7,23 @@
 //! the flows of traffic without NAT. Both use the helpers from this module.
 
 mod flow_data;
+mod migrate;
 
 pub(crate) use flow_data::TrackedFlowData;
+pub use migrate::migrate_tracked_flows;
 
 use tracectl::trace_target;
 trace_target!("flow-tracker", LevelFilter::INFO, &["nat", "pipeline"]);
 
 use crate::common::TIMEOUT_SCALE;
 use crate::nat_flows::{HalfFlow, InstallError, NatData, NewFlow, install_pair};
+use crate::static_nat::StaticNatFlowData;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::table::FlowTable;
 use net::buffer::PacketBufferMut;
 use net::flow_key::IcmpProtoKey;
-use net::flows::FlowInfo;
 use net::flows::conn_tracking::{ConnState, advance_flow, transport_proto};
+use net::flows::{FlowInfo, FlowInfoLocked};
 use net::headers::TryTcp;
 use net::ip::NextHeader;
 use net::packet::Packet;
@@ -48,6 +51,11 @@ pub(crate) fn needs_tracking<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool
         && !meta.requires_masquerade()
         && !meta.requires_port_forwarding()
         && !packet.is_icmp_error()
+}
+
+/// Tell if a flow holds the state of a flow tracked without masquerade or port forwarding.
+pub(crate) fn is_tracked(locked: &FlowInfoLocked) -> bool {
+    TrackedFlowData::try_get(locked).is_some() || StaticNatFlowData::try_get(locked).is_some()
 }
 
 // Only open flows for packets that can start a connection: not for TCP segments without SYN,
