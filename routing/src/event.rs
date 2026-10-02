@@ -9,12 +9,8 @@ use common::cliprovider::Heading;
 use std::fmt::Display;
 
 /// An `Event` is a wrapper over a generic type T that represents something that happened.
-/// The only requirement for T is to implement `Display`. This implementation uses generics
-/// so that the same code can be used by distinct subsystems, each defining its own event types.
-pub(crate) struct Event<T>
-where
-    T: Display,
-{
+/// The implementation uses generics so that the same code can be used by distinct types.
+pub(crate) struct Event<T> {
     code: T,
     ord: usize,
     time: DateTime<Local>,
@@ -34,7 +30,7 @@ impl<T: Display> Event<T> {
 /// timestamps `Events`, preserving the order in which they were added. The current
 /// implementation is meant to use thread-local `EventLog`. Shared or thread-safe
 /// `EventLog`s may be created if needed later.
-pub(crate) struct EventLog<T: Display> {
+pub(crate) struct EventLog<T> {
     name: String,
     items: Vec<Event<T>>,
     count: usize,
