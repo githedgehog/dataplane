@@ -220,7 +220,7 @@ serde_json = { version = "1.0.151", default-features = false, features = [] }
 serde_yaml_ng = { version = "0.10.0", default-features = false, features = [] }
 serial_test = { version = "4.0.1", default-features = false, features = [] }
 sha2 = { version = "0.11.0", default-features = false, features = [] }
-shuttle = { version = "0.9.4", default-features = false, features = [] }
+shuttle = { version = "0.9.5", default-features = false, features = [] }
 similar-asserts = { version = "2.0.0", default-features = false, features = [] }
 small-map = { version = "0.1.5", default-features = false, features = [] }
 # smallvec: held at 1.15.2 by kube (GH-#1861). kube 4.2.0 requires serde-saphyr 0.0.29 exactly, which
