@@ -19,6 +19,7 @@ use crate::fib::fibtype::{Fib, FibKey, FibRouteV4Filter, FibRouteV6Filter};
 use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 use crate::router::cpi::{CpiStats, CpiStatus, StatsRow};
 
+use crate::VrfId;
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{
     Encapsulation, ResolvedEncapsulation, ResolvedVxlan, VxlanEncapsulation,
@@ -762,9 +763,7 @@ impl Display for RmacStore {
 // ================ Local VTEP configuration ================= //
 impl Display for Vtep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading("Local VTEP configuration").fmt(f)?;
-        writeln!(f, " ip address: {}", self.ip())?;
-        writeln!(f, " Mac address: {}", self.mac())
+        write!(f, " ip: {} mac: {}", self.ip(), self.mac())
     }
 }
 
@@ -1266,6 +1265,83 @@ impl RmacStore {
         RmacStoreView {
             rmac_store: self,
             filter: None,
+        }
+    }
+}
+
+pub struct FibVtep {
+    vrfid: VrfId,
+    vni: Vni,
+    vtep: Option<Vtep>,
+}
+impl FibVtep {
+    #[must_use]
+    pub fn new(vrfid: VrfId, vni: Vni, vtep: Option<Vtep>) -> Self {
+        Self { vrfid, vni, vtep }
+    }
+}
+macro_rules! VTEP_INFO {
+    () => {
+        " {:<8} {:<8} {:}"
+    };
+}
+fn fmt_vtep_info_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(f, "{}", format_args!(VTEP_INFO!(), "vni", "vrf", "VTEP"))
+}
+
+impl Display for FibVtep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let vtep = match &self.vtep {
+            Some(vtep) => vtep.to_string(),
+            None => "none".to_string(),
+        };
+        write!(
+            f,
+            "{}",
+            format_args!(VTEP_INFO!(), self.vni, self.vrfid, vtep)
+        )
+    }
+}
+pub(crate) struct ActiveVteps(Vec<FibVtep>);
+impl ActiveVteps {
+    #[must_use]
+    pub(crate) fn from_vrf_table(vrftable: &VrfTable) -> Self {
+        let vteps: Vec<FibVtep> = vrftable
+            .values()
+            .filter_map(|vrf| {
+                vrf.vni
+                    .map(|vni| FibVtep::new(vrf.vrfid, vni, vrf.get_vtep()))
+            })
+            .collect();
+        ActiveVteps(vteps)
+    }
+}
+impl Display for ActiveVteps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading("Active VTEP information").fmt(f)?;
+        if self.0.is_empty() {
+            return writeln!(f, " none");
+        }
+        fmt_vtep_info_heading(f)?;
+        for vtep in &self.0 {
+            writeln!(f, "{vtep}")?;
+        }
+        Ok(())
+    }
+}
+pub struct VtepConfig<'a>(Option<&'a Vtep>);
+impl<'a> VtepConfig<'a> {
+    #[must_use]
+    pub fn new(vtep: Option<&'a Vtep>) -> Self {
+        Self(vtep)
+    }
+}
+impl Display for VtepConfig<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading("VTEP configuration").fmt(f)?;
+        match self.0 {
+            Some(vtep) => writeln!(f, "{vtep}"),
+            None => writeln!(f, " none"),
         }
     }
 }
