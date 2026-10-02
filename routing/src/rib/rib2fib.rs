@@ -75,7 +75,7 @@ impl Nhop {
     //////////////////////////////////////////////////////////////////////
     fn build_nhop_fibgroup_rec(&self, fibgroup: &mut FibGroup, mut entry: FibEntry) {
         // add the instructions for a next-hop to the entry
-        entry.extend_from_slice(&self.instructions);
+        entry.extend_from_slice(self.instructions());
 
         // check the instructions of the resolving next-hops, if any
         let Some(resolvers) = self.get_resolvers() else {
@@ -131,7 +131,8 @@ impl Nhop {
     //////////////////////////////////////////////////////////////////////
     pub(crate) fn set_fibgroup(&self) -> bool {
         // build the fibgroup for a next-hop. This requires the nhop to be resolved
-        // and its resolvers too, and that these have packet instructions up to date
+        // and its resolvers too, and that these have packet instructions, which
+        // all next-hops should have
         let fibgroup = self.build_nhop_fibgroup();
         let changed = fibgroup != *(self.fibgroup.borrow());
         if changed {

@@ -24,19 +24,11 @@ use net::vxlan::Vni;
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+#[derive(Debug, Default, Clone, Eq, Hash, PartialEq)]
 /// A temporary data structure that represents a route next-hop
 pub struct RouteNhop {
     pub vrfid: VrfId,
     pub key: NhopKey,
-}
-impl Default for RouteNhop {
-    fn default() -> Self {
-        Self {
-            vrfid: 0,
-            key: NhopKey::with_drop(),
-        }
-    }
 }
 
 bitflags! {
