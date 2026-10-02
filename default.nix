@@ -886,7 +886,7 @@ let
     else
       pkgs.stdenv'.targetPlatform.rust.rustcTarget;
   is-cross-compile = pkgs.stdenv'.buildPlatform.rust.rustcTarget != ctarget;
-  cxx = if is-cross-compile then "${ctarget}-clang++" else "clang++";
+  cc = if is-cross-compile then "${ctarget}-clang" else "clang";
   strip = if is-cross-compile then "${ctarget}-strip" else "strip";
   objcopy = if is-cross-compile then "${ctarget}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
@@ -1008,7 +1008,7 @@ let
               builtins.concatStringsSep " " (
                 profile.RUSTFLAGS
                 ++ [
-                  "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cxx}"
+                  "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cc}"
                   "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages'.lld}/bin/ld.lld"
                   "-Clink-arg=-L${sysroot}/lib"
                   # Keep debug paths stable across revisions. Source readers
