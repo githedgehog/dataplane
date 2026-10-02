@@ -2209,6 +2209,39 @@ fn flow_from_a_newer_generation_is_honored_for_bypass() {
 // Flow tracking
 
 #[test]
+fn peering_with_flow_scope_acl_requires_flow_tracking() {
+    let (mut flow_filter, _) =
+        make_flow_filter(acl_context_with(AclScope::Flow, expose("20.0.0.0/24")));
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(200)),
+            build_tcp_packet(v4("20.0.0.5"), v4("10.0.0.5"), 1234, 80),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(
+        out.meta().has_forced_flow_tracking(),
+        "a peering with a 'flow' scope ACL did not request flow tracking"
+    );
+
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(300)),
+            build_tcp_packet(v4("30.0.0.5"), v4("10.0.0.5"), 1234, 80),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(
+        !out.meta().has_forced_flow_tracking(),
+        "a peering without ACL requested flow tracking"
+    );
+}
+
+#[test]
 fn active_tracked_flow_requires_flow_tracking_on_bypass() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
     let mut p = packet(
@@ -2226,6 +2259,25 @@ fn active_tracked_flow_requires_flow_tracking_on_bypass() {
     );
 }
 
+// Replies are only let through for flows that a rule of scope "flow" allows
+#[test]
+fn peering_with_flow_scope_deny_rules_only_does_not_require_flow_tracking() {
+    let (mut flow_filter, _) = make_flow_filter(acl_context_with_rule(
+        AclAction::Deny,
+        AclScope::Flow,
+        expose("20.0.0.0/24"),
+    ));
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(200)),
+            build_tcp_packet(v4("20.0.0.5"), v4("10.0.0.5"), 1234, 80),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert!(!out.meta().has_forced_flow_tracking());
+}
+
 #[test]
 fn peering_with_packet_scope_acl_does_not_require_flow_tracking() {
     let (mut flow_filter, _) = make_flow_filter(acl_context(AclScope::Packet));
@@ -2238,6 +2290,100 @@ fn peering_with_packet_scope_acl_does_not_require_flow_tracking() {
     );
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert!(!out.meta().has_forced_flow_tracking());
+}
+
+// Masquerade and port forwarding track their own flows. The flow tracking stages assume that a
+// packet requiring either of them never comes out of the flow filter with forced flow tracking.
+#[test]
+fn forced_flow_tracking_never_comes_with_stateful_nat() {
+    #[derive(Debug, Clone, Copy)]
+    enum FlowState {
+        Masquerade,
+        PortForwarding,
+        Tracked,
+    }
+
+    let vpc2_exposes = [
+        ("no NAT", expose("20.0.0.0/24")),
+        ("static NAT", expose_static("20.0.0.0/24", "20.0.0.0/24")),
+        (
+            "masquerade",
+            expose_masquerade("20.0.0.0/24", "20.0.0.0/24"),
+        ),
+        (
+            "port forwarding",
+            expose_port_forwarding(
+                "20.0.0.0/24",
+                (80, 80),
+                "20.0.0.0/24",
+                (80, 80),
+                Some(L4Protocol::Tcp),
+            ),
+        ),
+    ];
+    let flows = [
+        None,
+        Some((FlowState::Masquerade, true)),
+        Some((FlowState::Masquerade, false)),
+        Some((FlowState::PortForwarding, true)),
+        Some((FlowState::PortForwarding, false)),
+        Some((FlowState::Tracked, true)),
+        Some((FlowState::Tracked, false)),
+    ];
+    let (mut tracked, mut stateful) = (0u32, 0u32);
+
+    for (nat, vpc2_expose) in vpc2_exposes {
+        for scope in [AclScope::Flow, AclScope::Packet] {
+            let (mut flow_filter, _writer) =
+                make_flow_filter(acl_context_with(scope, vpc2_expose.clone()));
+            for outdated in [false, true] {
+                // Flows are created for generation 0: a newer generation makes them outdated
+                set_genid(&mut flow_filter, if outdated { 5 } else { 0 });
+                for from_vpc2 in [false, true] {
+                    for flow in flows {
+                        let (src, dst, headers) = if from_vpc2 {
+                            let headers =
+                                build_tcp_packet(v4("20.0.0.5"), v4("10.0.0.5"), 80, 1234);
+                            (vpcd(200), vpcd(100), headers)
+                        } else {
+                            let headers =
+                                build_tcp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80);
+                            (vpcd(100), vpcd(200), headers)
+                        };
+                        let mut p = packet(Some(src), headers);
+                        if let Some((state, active)) = flow {
+                            let masquerade = matches!(state, FlowState::Masquerade);
+                            let port_fw = matches!(state, FlowState::PortForwarding);
+                            let info = attach_flow(&mut p, Some(dst), active, masquerade, port_fw);
+                            if matches!(state, FlowState::Tracked) {
+                                // The flow filter only checks for presence
+                                info.locked.write().tracked_data = Some(Box::new(true));
+                            }
+                        }
+
+                        let out = run(&mut flow_filter, p);
+                        let meta = out.meta();
+                        let requires_stateful_nat =
+                            meta.requires_masquerade() || meta.requires_port_forwarding();
+                        assert!(
+                            !(meta.has_forced_flow_tracking() && requires_stateful_nat),
+                            "forced flow tracking with stateful NAT: vpc2 uses {nat}, \
+                             scope {scope:?}, outdated {outdated}, from vpc2 {from_vpc2}, \
+                             flow {flow:?}",
+                        );
+                        tracked += u32::from(meta.has_forced_flow_tracking());
+                        stateful += u32::from(requires_stateful_nat);
+                    }
+                }
+            }
+        }
+    }
+    // Make sure both sides of the invariant are reached
+    assert!(tracked > 0, "no packet required flow tracking");
+    assert!(
+        stateful > 0,
+        "no packet required masquerade or port forwarding"
+    );
 }
 
 // A tracked flow from vpc 200 to vpc 100, on the peering described by `context`.
