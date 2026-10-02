@@ -39,6 +39,7 @@ use acl::dpdk::rule::{AclFieldChunks, RuleSpec};
 #[cfg(test)]
 use acl::reference::table::{RefRule, ReferenceTable};
 use config::external::overlay::ValidatedOverlay;
+use config::external::overlay::acl::ValidatedAcl;
 use dpdk::acl::{CategoryMask, Priority};
 #[cfg(test)]
 use lookup::Lookup;
@@ -51,6 +52,7 @@ use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use net::vxlan::Vni;
 use std::cmp::Reverse;
+use std::collections::HashSet;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::num::NonZero;
@@ -673,6 +675,9 @@ pub struct FlowFilterContext {
     pub(super) local_v4: AnyTable<LocalKey<Ipv4Addr>, NatMode>,
     pub(super) remote_v6: AnyTable<RemoteKey<Ipv6Addr>, Verdict>,
     pub(super) local_v6: AnyTable<LocalKey<Ipv6Addr>, NatMode>,
+    // Pairs of (source, destination) VNIs for peerings whose flows must be tracked, in both
+    // directions
+    tracked_peerings: HashSet<(Vni, Vni)>,
 }
 
 impl Default for FlowFilterContext {
@@ -682,6 +687,7 @@ impl Default for FlowFilterContext {
             local_v4: AnyTable::empty(),
             remote_v6: AnyTable::empty(),
             local_v6: AnyTable::empty(),
+            tracked_peerings: HashSet::new(),
         }
     }
 }
@@ -693,6 +699,7 @@ impl fmt::Debug for FlowFilterContext {
             .field("local_v4", &self.local_v4)
             .field("remote_v6", &self.remote_v6)
             .field("local_v6", &self.local_v6)
+            .field("tracked_peerings", &self.tracked_peerings)
             .finish()
     }
 }
@@ -710,7 +717,37 @@ impl FlowFilterContext {
             local_v4: build_table(backend, "local_v4", rules.local_v4)?,
             remote_v6: build_table(backend, "remote_v6", rules.remote_v6)?,
             local_v6: build_table(backend, "local_v6", rules.local_v6)?,
+            tracked_peerings: Self::tracked_peerings(overlay),
         })
+    }
+
+    // Flows need tracking for peerings with ACL rules of scope "flow": the ACL stage relies on
+    // them to let replies through.
+    fn tracked_peerings(overlay: &ValidatedOverlay) -> HashSet<(Vni, Vni)> {
+        let mut tracked = HashSet::new();
+        for vpc in overlay.vpc_table().values() {
+            for peering in vpc.peerings() {
+                if peering
+                    .acl()
+                    .as_ref()
+                    .is_some_and(ValidatedAcl::is_stateful)
+                {
+                    tracked.insert((vpc.vni(), peering.remote_vni()));
+                    tracked.insert((peering.remote_vni(), vpc.vni()));
+                }
+            }
+        }
+        tracked
+    }
+
+    /// Tell if the flows from `src_vpcd` to `dst_vpcd` must be tracked.
+    pub(crate) fn requires_flow_tracking(
+        &self,
+        src_vpcd: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
+    ) -> bool {
+        self.tracked_peerings
+            .contains(&(key_vni(src_vpcd), key_vni(dst_vpcd)))
     }
 
     // Single-key lookup: the readable per-packet oracle used by tests; production runs

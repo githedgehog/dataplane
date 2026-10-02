@@ -100,10 +100,17 @@ impl FlowFilter {
         let tables = self.tables.load();
         tables.lookup_batch(&inputs, &mut results);
 
-        for (item, result) in work.iter().zip(results) {
+        for ((item, result), input) in work.iter().zip(results).zip(&inputs) {
+            let track = match result {
+                LookupResult::Route((dst_vpcd, _, _)) => {
+                    tables.requires_flow_tracking(input.src_vpcd, dst_vpcd)
+                }
+                LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => false,
+            };
             self.apply_route(
                 &mut burst[item.idx],
                 result,
+                track,
                 item.flow_summary.as_ref(),
                 genid,
             );
@@ -189,6 +196,7 @@ impl FlowFilter {
         &self,
         packet: &mut Packet<Buf>,
         result: LookupResult,
+        track: bool,
         flow_summary: Option<&FlowSummary>,
         genid: i64,
     ) {
@@ -213,6 +221,7 @@ impl FlowFilter {
         );
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
         Self::set_nat_requirements(packet.meta_mut(), src_nat_mode, dst_nat_mode);
+        packet.meta_mut().set_forced_flow_tracking(track);
 
         // Port forwarding or masquerading used in combination with static NAT need to keep track of
         // the initial IP addresses for creating the right flow table entries, so we may have to

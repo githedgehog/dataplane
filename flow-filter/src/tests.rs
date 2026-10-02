@@ -16,7 +16,10 @@ use crate::test_utils::{
 use crate::{FlowFilter, LookupResult, NatRequirement};
 use clock::Duration;
 use concurrency::sync::Arc;
-use lpm::prefix::L4Protocol;
+use config::external::overlay::acl::{
+    Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
+};
+use lpm::prefix::{L4Protocol, Prefix, PrefixWithOptionalPorts};
 use net::FlowKey;
 use net::buffer::TestBuffer;
 use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
@@ -243,6 +246,54 @@ fn ipv6_context() -> FlowFilterContext {
             ("vpc1", vec![expose(net::ipv6_doc!())]),
             ("vpc2", vec![expose("2001:db9::/32")]),
         )],
+    )
+}
+
+// vpc1 <-> vpc2 with an ACL rule of the given scope, and vpc3 <-> vpc1 without ACL. vpc2 uses
+// masquerade, so that config validation accepts rules with scope "flow".
+fn acl_context(scope: AclScope) -> FlowFilterContext {
+    let prefixes = |prefix: &str| {
+        [PrefixWithOptionalPorts::new(Prefix::from(prefix), None)]
+            .into_iter()
+            .collect()
+    };
+    let acl = Acl::new(
+        AclAction::Deny,
+        vec![AclRule {
+            name: "allow".to_owned(),
+            from: "vpc1".to_owned(),
+            to: "vpc2".to_owned(),
+            action: AclAction::Allow,
+            pattern: AclPattern {
+                src: prefixes("10.0.0.0/24"),
+                dst: prefixes("20.0.0.0/24"),
+                src_any_ports: Vec::new(),
+                dst_any_ports: Vec::new(),
+                proto: AclProtoMatch::Tcp,
+            },
+            scope,
+            log: false,
+        }],
+    );
+    let mut with_acl = peering(
+        "vpc1-to-vpc2",
+        ("vpc1", vec![expose("10.0.0.0/24")]),
+        (
+            "vpc2",
+            vec![expose_masquerade("20.0.0.0/24", "20.0.0.0/24")],
+        ),
+    );
+    with_acl.acl = Some(acl);
+    context(
+        &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+        vec![
+            with_acl,
+            peering(
+                "vpc3-to-vpc1",
+                ("vpc3", vec![expose("30.0.0.0/24")]),
+                ("vpc1", vec![expose("10.0.0.0/24")]),
+            ),
+        ],
     )
 }
 
@@ -2129,4 +2180,53 @@ fn flow_from_a_newer_generation_is_honored_for_bypass() {
         FlowStatus::Active,
         "the bypass path must not invalidate the flow it just honoured",
     );
+}
+
+// -------------------------------------------------------------------------------------------------
+// Flow tracking
+
+#[test]
+fn peering_with_flow_scope_acl_requires_flow_tracking() {
+    let (mut flow_filter, _) = make_flow_filter(acl_context(AclScope::Flow));
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(200)),
+            build_tcp_packet(v4("20.0.0.5"), v4("10.0.0.5"), 1234, 80),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(
+        out.meta().has_forced_flow_tracking(),
+        "a peering with a 'flow' scope ACL did not request flow tracking"
+    );
+
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(300)),
+            build_tcp_packet(v4("30.0.0.5"), v4("10.0.0.5"), 1234, 80),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(
+        !out.meta().has_forced_flow_tracking(),
+        "a peering without ACL requested flow tracking"
+    );
+}
+
+#[test]
+fn peering_with_packet_scope_acl_does_not_require_flow_tracking() {
+    let (mut flow_filter, _) = make_flow_filter(acl_context(AclScope::Packet));
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(200)),
+            build_tcp_packet(v4("20.0.0.5"), v4("10.0.0.5"), 1234, 80),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert!(!out.meta().has_forced_flow_tracking());
 }
