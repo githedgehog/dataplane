@@ -222,11 +222,34 @@ impl RouterConfig {
         }
         Ok(())
     }
+    fn verify_vteps(&self, db: &RoutingDb) -> Result<(), RouterError> {
+        debug!("Verifying vtep status");
+        // the fib of a vrf must have the vtep if and only if the vrf has a vni
+        let vtep = self.vtep.as_ref();
+        let mut inconsistent_vrfs = vec![];
+        for vrf in db.vrftable.values() {
+            let wanted = vtep.filter(|_| vrf.vni.is_some());
+            let current = vrf.get_vtep();
+            if current.as_ref() != wanted {
+                error!(
+                    "BUG: Vrf {} (vni: {:?}) has vtep {current:?}, expected {wanted:?}",
+                    vrf.name, vrf.vni
+                );
+                inconsistent_vrfs.push(vrf.vrfid);
+            }
+        }
+        if !inconsistent_vrfs.is_empty() {
+            return Err(RouterError::VtepInfoInconsistency(inconsistent_vrfs));
+        }
+        debug!("Vtep information is consistent in all VRFs");
+        Ok(())
+    }
     fn verify(&self, db: &RoutingDb) -> Result<(), RouterError> {
         let genid = self.genid;
-        debug!("Verifying config {genid}...");
+        debug!("Verifying router config for config generation {genid}...");
         self.verify_vrfs(db)?;
         self.verify_interfaces(db)?;
+        self.verify_vteps(db)?;
         debug!("Successfully verified router config for generation {genid}");
         Ok(())
     }
