@@ -549,7 +549,7 @@ mod cpi_properties {
             .vrftable
             .get_vrf_mut(Vrf::DEFAULT_VRFID)
             .unwrap_or_else(|e| unreachable!("{e}"));
-        vrf0.add_route_complete(
+        vrf0.add_route(
             &Prefix::from_str("7.0.0.0/8").unwrap_or_else(|_| unreachable!()),
             build_test_route(RouteOrigin::Connected, 0, 0),
             &[build_test_nhop(None, Some(UNDERLAY_IFINDEX), 0, None)],

@@ -207,7 +207,7 @@ impl Vrf {
         }
 
         // N.B. route and next-hops are passed separately
-        self.add_route_complete(&prefix, route, &nhops, vrf0);
+        self.add_route(&prefix, route, &nhops, vrf0);
     }
 
     pub fn del_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>) {
