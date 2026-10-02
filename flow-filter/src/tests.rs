@@ -1244,21 +1244,28 @@ struct InvalidationCase {
     flow_dst_matches: bool,
     flow_masquerade: bool,
     flow_port_forwarding: bool,
+    meta_tracking: bool,
+    flow_tracking: bool,
+    meta_static_nat: bool,
+    flow_static_nat: bool,
 }
 
 // The specification: a flow is invalidated iff it comes from a DIFFERENT config generation
 // (older or newer -- only an equal genid is trusted) AND the filter can prove it stale: the
 // destination changed, a stateful-NAT requirement appeared or disappeared, or the route no longer
-// needs state at all. Anything else is deferred to the stateful NFs, which own the state's
-// validity.
+// needs state at all. A route without masquerade or port forwarding still needs state if it
+// requires flow tracking and the flow is tracked, as long as the static NAT requirement did not
+// change. Anything else is deferred to the stateful NFs, which own the state's validity.
 fn expected_invalidation(case: &InvalidationCase) -> bool {
     if !case.has_flow || matches!(case.genid, GenidRel::Same) {
         return false;
     }
+    let still_tracked =
+        case.meta_tracking && case.flow_tracking && case.meta_static_nat == case.flow_static_nat;
     !case.flow_dst_matches
         || case.meta_masquerade != case.flow_masquerade
         || case.meta_port_forwarding != case.flow_port_forwarding
-        || (!case.meta_masquerade && !case.meta_port_forwarding)
+        || (!case.meta_masquerade && !case.meta_port_forwarding && !still_tracked)
 }
 
 #[test]
@@ -1280,11 +1287,14 @@ fn invalidation_decision_matches_spec() {
                 Some(vpcd(100)),
                 build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
             );
+            p.meta_mut().set_static_nat_src(case.flow_static_nat);
             let flow_info = attach_flow(&mut p, Some(route_dst), true, false, false);
 
             let mut meta = PacketMeta::default();
             meta.set_masquerade(case.meta_masquerade);
             meta.set_port_forwarding(case.meta_port_forwarding);
+            meta.set_forced_flow_tracking(case.meta_tracking);
+            meta.set_static_nat_src(case.meta_static_nat);
 
             let summary = case.has_flow.then(|| crate::FlowSummary {
                 genid: match case.genid {
@@ -1299,7 +1309,7 @@ fn invalidation_decision_matches_spec() {
                 },
                 needs_masquerade: case.flow_masquerade,
                 needs_port_forwarding: case.flow_port_forwarding,
-                needs_tracking: false,
+                needs_tracking: case.flow_tracking,
                 flow_info,
             });
 

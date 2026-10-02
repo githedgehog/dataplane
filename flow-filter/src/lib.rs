@@ -318,8 +318,21 @@ impl FlowFilter {
             return true;
         }
         if !meta.requires_port_forwarding() && !meta.requires_masquerade() {
-            debug!("{nfi}: Outdated flow {flowkey} (no longer needed) will be invalidated.");
-            return true;
+            // Without masquerade or port forwarding, we only keep flows that are still tracked.
+            if !meta.has_forced_flow_tracking() || !flow_summary.needs_tracking {
+                debug!("{nfi}: Outdated flow {flowkey} (no longer needed) will be invalidated.");
+                return true;
+            }
+            // The reverse key of a tracked flow depends on static NAT, and no other NF checks it.
+            let flags = flow_summary.flow_info.get_flags();
+            if meta.requires_static_nat_src() != flags.requires_static_nat_src()
+                || meta.requires_static_nat_dst() != flags.requires_static_nat_dst()
+            {
+                debug!(
+                    "{nfi}: Outdated flow {flowkey} (static NAT requirement) will be invalidated."
+                );
+                return true;
+            }
         }
         // We could not invalidate despite the config change. This does not mean that the flow is
         // valid (or invalid). The NFs tagged in the requirements must determine whether it's valid:
