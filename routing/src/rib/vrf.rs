@@ -686,7 +686,7 @@ impl Vrf {
 }
 
 /// A struct that represents a filter for Ipv4 routes
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct RouteV4Filter {
     prefix: Option<Ipv4Prefix>,
     prefix_len: Option<u8>,
@@ -706,6 +706,7 @@ impl RouteV4Filter {
         }
     }
 }
+#[derive(Default, Clone)]
 pub struct RouteV6Filter {
     prefix: Option<Ipv6Prefix>,
     prefix_len: Option<u8>,

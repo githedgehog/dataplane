@@ -173,7 +173,6 @@ impl RouterConfig {
         if vrf.as_config() != *vrf_cfg {
             error!("Vrf {} has not been correctly reconfigured!:", vrf.name);
             error!("Config:\n{vrf_cfg:#?}");
-            error!("Vrf:\n{vrf}");
             return Err(RouterError::VerifyFailure(format!(
                 "Vrf with id {}",
                 vrf.vrfid
