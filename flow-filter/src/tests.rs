@@ -2417,3 +2417,22 @@ fn tracked_flow_on_peering_without_stateful_acl_is_not_kept() {
     let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, false);
     assert!(!context.keeps_tracked_flow(&flow));
 }
+
+#[test]
+fn tracked_flow_on_peering_with_stateful_acl_is_kept() {
+    let context = acl_context_with(AclScope::Flow, expose("20.0.0.0/24"));
+    assert!(context.keeps_tracked_flow(&tracked_flow("20.0.0.5", "10.0.0.5")));
+}
+
+#[test]
+fn tracked_flow_with_other_static_nat_requirements_is_not_kept() {
+    let context = acl_context_with(AclScope::Flow, expose("20.0.0.0/24"));
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("20.0.0.5"), v4("10.0.0.5"), 1234, 80),
+    );
+    // The flow was created when the source required static NAT
+    p.meta_mut().set_static_nat_src(true);
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, false);
+    assert!(!context.keeps_tracked_flow(&flow));
+}
