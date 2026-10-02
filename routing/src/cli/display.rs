@@ -50,8 +50,6 @@ use std::fmt::Write;
 use std::os::unix::net::SocketAddr;
 use std::rc::{Rc, Weak};
 
-use tracing::warn;
-
 // ========================= Common ========================== //
 fn fmt_opt_value<T: Display>(
     f: &mut std::fmt::Formatter<'_>,
@@ -233,10 +231,7 @@ fn fmt_vrf_oneline(vrf: &Vrf, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Resu
 
 #[allow(dead_code)] // we don't display this atm
 fn fmt_nhop_instruction(f: &mut std::fmt::Formatter<'_>, rc: &Nhop) -> std::fmt::Result {
-    let Ok(instructions) = &rc.instructions.try_borrow() else {
-        warn!("Try-borrow failed on nhop instruction!");
-        return Ok(());
-    };
+    let instructions = &rc.instructions;
     if instructions.is_empty() {
         return Ok(());
     }
@@ -687,7 +682,7 @@ impl Display for RmacStoreView<'_> {
             .filter
             .map_or_else(|| Cow::Owned(RmacFilter::default()), Cow::Borrowed);
 
-        Heading(format!("Router macs (entries: {})", store.len(),)).fmt(f)?;
+        Heading(format!("Router macs (entries: {})", store.len())).fmt(f)?;
 
         fmt_rmac_heading(f)?;
 

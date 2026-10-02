@@ -31,7 +31,7 @@ trace_target!("next-hops", LevelFilter::WARN, &["routing-full"]);
 pub struct Nhop {
     pub(crate) key: NhopKey,
     resolvers: RefCell<Vec<Weak<Nhop>>>,
-    pub(crate) instructions: RefCell<Vec<PktInstruction>>,
+    pub(crate) instructions: Vec<PktInstruction>,
     pub(crate) fibgroup: RefCell<FibGroup>,
 }
 
@@ -159,7 +159,7 @@ impl Nhop {
         Self {
             key: key.clone(),
             resolvers: RefCell::new(Vec::new()),
-            instructions: RefCell::new(Vec::with_capacity(2)),
+            instructions: key.as_pkt_instructions(),
             fibgroup: RefCell::new(FibGroup::new()),
         }
     }
@@ -408,13 +408,6 @@ impl NhopStore {
     /// Iterate over all next-hops in the next-hop store
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Rc<Nhop>> {
         self.0.iter()
-    }
-
-    /// Rebuild the instructions for each next-hop
-    pub fn rebuild_nhop_instructions(&self) {
-        for nhop in self.iter() {
-            nhop.build_nhop_instructions();
-        }
     }
 
     /// Flush all resolution state of all next-hops
@@ -923,7 +916,6 @@ mod tests {
         let key = NhopKey::from_address("7.0.0.1");
         let nhop = store.add_nhop(&key);
         nhop.add_resolver(&i1).add_resolver(&unresolved);
-        store.rebuild_nhop_instructions();
         store.dump();
 
         // Fibgroup gets only one entry over interface
@@ -955,11 +947,8 @@ mod tests {
         nh3.add_resolver(&nh4);
         nh3_1.add_resolver(&nh5);
 
-        // build the instructions of all next-hops
-        store.rebuild_nhop_instructions();
-
         // check: next-hop nh1 has a single instruction with its address
-        let instructions = nh1.instructions.borrow();
+        let instructions = &nh1.instructions;
         assert_eq!(instructions.len(), 1);
         let inst = &instructions[0];
         assert!(
@@ -996,11 +985,8 @@ mod tests {
         nh1.add_resolver(&nh2);
         nh2.add_resolver(&nh3);
 
-        // build the instructions of all next-hops
-        store.rebuild_nhop_instructions();
-
         // check: next-hop nh1 has a single instruction with its address
-        let instructions = nh1.instructions.borrow();
+        let instructions = &nh1.instructions;
         assert_eq!(instructions.len(), 1);
         let inst = &instructions[0];
         assert!(
@@ -1175,7 +1161,7 @@ mod fibgroup_properties {
         out: &mut Vec<FibEntry>,
     ) {
         let mut entry = prefix.clone();
-        entry.extend_from_slice(&nodes[from].instructions.borrow());
+        entry.extend_from_slice(&nodes[from].instructions);
 
         if graph.edges[from].is_empty() {
             if !nodes[from].must_be_resolved() {
@@ -1198,10 +1184,6 @@ mod fibgroup_properties {
             .cloned()
             .for_each(|graph: Graph| {
                 let (_store, nodes) = realize(&graph);
-                for node in &nodes {
-                    node.build_nhop_instructions();
-                }
-
                 let mut want = Vec::new();
                 expected(&graph, &nodes, 0, &FibEntry::new(), &mut want);
                 if want.is_empty() {
@@ -1220,9 +1202,6 @@ mod fibgroup_properties {
             .cloned()
             .for_each(|graph: Graph| {
                 let (_store, nodes) = realize(&graph);
-                for node in &nodes {
-                    node.build_nhop_instructions();
-                }
                 let group = nodes[0].build_nhop_fibgroup();
                 assert!(!group.is_empty(), "for {graph:?}");
                 for entry in group.iter() {
@@ -1422,7 +1401,6 @@ mod resolution_properties {
             .for_each(|graph: RouteGraph| {
                 let vrf = realize_as_vrf(&graph);
                 vrf.nhstore.lazy_resolve_all(&vrf);
-                vrf.nhstore.rebuild_nhop_instructions();
                 for nhop in vrf.nhstore.iter() {
                     let fibgroup = nhop.build_nhop_fibgroup();
                     assert!(!fibgroup.is_empty(), "empty fibgroup for {graph:?}");

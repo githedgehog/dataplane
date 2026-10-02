@@ -429,7 +429,6 @@ impl Vrf {
     /// Rebuild all next-hop state. This is where consistency is maintained
     fn refresh_nhops(&self, resvrf: Option<&Vrf>) -> Vec<Weak<Nhop>> {
         let resvrf = resvrf.unwrap_or(self);
-        self.nhstore.rebuild_nhop_instructions();
         self.nhstore.lazy_resolve_all(resvrf);
         self.nhstore.rebuild_fibgroups()
     }

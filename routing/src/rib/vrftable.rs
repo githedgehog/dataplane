@@ -468,7 +468,6 @@ mod tests {
         build_test_vrf_nhops_partially_resolved, init_test_vrf, mod_test_vrf_1, mod_test_vrf_2,
     };
     use common::cliprovider::Frame;
-    use net::eth::mac::SourceMac;
     use net::interface::InterfaceIndex;
     use tracing_test::traced_test;
 
@@ -845,7 +844,6 @@ mod tests {
 
     #[rustfmt::skip]
     fn test_vrf_fibgroup(mut vrf: Vrf) {
-        vrf.nhstore.rebuild_nhop_instructions();
         vrf.nhstore.lazy_resolve_all(&vrf);
         vrf.nhstore.rebuild_fibgroups();
         // this is equivalent to vrf.refresh_fib(&rstore, None);
