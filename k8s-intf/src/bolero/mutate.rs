@@ -5,8 +5,7 @@ use bolero::{Driver, ValueGenerator};
 
 use crate::bolero::crd::GatewayAgents;
 use crate::gateway_agent_crd::{
-    GatewayAgent, GatewayAgentPeeringsAclRulesScope, GatewayAgentPeeringsPeering,
-    GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
+    GatewayAgent, GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNatMasquerade,
 };
 
@@ -23,7 +22,6 @@ pub enum Mutation {
     MakeBothSidesStateful,
     NameAMissingGroup,
     NameAStrangerInARule,
-    DemandFlowScope,
     UsePortZero,
     DuplicateAStaticExpose,
     OverlapWithAnotherPeer,
@@ -133,17 +131,6 @@ fn is_static(expose: &GatewayAgentPeeringsPeeringExpose) -> bool {
         .nat
         .as_ref()
         .is_some_and(|nat| nat.r#static.is_some())
-}
-
-fn stateful_throughout(manifest: &GatewayAgentPeeringsPeering) -> bool {
-    let exposes = manifest.expose.as_deref().unwrap_or(&[]);
-    !exposes.is_empty()
-        && exposes.iter().all(|expose| {
-            expose
-                .nat
-                .as_ref()
-                .is_some_and(|nat| nat.masquerade.is_some() || nat.port_forward.is_some())
-        })
 }
 
 fn advertises_its_ips(expose: &GatewayAgentPeeringsPeeringExpose) -> bool {
@@ -295,30 +282,6 @@ fn mutate_peering_metadata(agent: &mut GatewayAgent, mutation: Mutation) -> bool
             done
         }
 
-        Mutation::DemandFlowScope => {
-            let mut done = false;
-            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
-                let allowed = peerings
-                    .peering
-                    .iter()
-                    .flatten()
-                    .any(|(_, manifest)| stateful_throughout(manifest));
-                if allowed {
-                    continue;
-                }
-                let Some(acl) = peerings.acl.as_mut() else {
-                    continue;
-                };
-                for rule in acl.rules.iter_mut().flatten() {
-                    rule.scope = Some(GatewayAgentPeeringsAclRulesScope::Flow);
-                    done = true;
-                }
-                if done {
-                    break;
-                }
-            }
-            done
-        }
         _ => unreachable!("mutate_peering_metadata called for {mutation:?}"),
     }
 }
@@ -513,8 +476,7 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
 
         Mutation::MakeBothSidesStateful
         | Mutation::NameAMissingGroup
-        | Mutation::NameAStrangerInARule
-        | Mutation::DemandFlowScope => mutate_peering_metadata(agent, mutation),
+        | Mutation::NameAStrangerInARule => mutate_peering_metadata(agent, mutation),
         Mutation::UsePortZero => {
             let mut done = false;
             for expose in exposes_mut(agent) {
