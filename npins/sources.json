@@ -340,10 +340,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "1.98.1",
-      "revision": "18ed059b1465ce6195154de3250a668f1dd3b1fa",
-      "url": "https://api.github.com/repos/rust-lang/rust/tarball/refs/tags/1.98.1",
-      "hash": "sha256-gSoGtcGc6Xv+OCZkKSeeD06sH9XGbpX6Q6GbaC9Vyss="
+      "version": "1.99.0",
+      "revision": "daa8d75bc715f77869fa06d80b6ea1a3fe52d38e",
+      "url": "https://api.github.com/repos/rust-lang/rust/tarball/refs/tags/1.99.0",
+      "hash": "sha256-uajR98A5F5URlWvhp4T+hTM9ah2X/fn5Hv9bB6JL4lY="
     },
     "rust-overlay": {
       "type": "Git",
@@ -354,9 +354,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "ed3a19fd0439ed618ec5fe1e12f0ba69a8be38b5",
-      "url": "https://github.com/oxalica/rust-overlay/archive/ed3a19fd0439ed618ec5fe1e12f0ba69a8be38b5.tar.gz",
-      "hash": "sha256-NPs4nNLxCpho3Ctj8O7t/bzmX0zR8r0zndKghAFEz5U="
+      "revision": "dcee1adabb61484343af863501d2e3d91ef51f72",
+      "url": "https://github.com/oxalica/rust-overlay/archive/dcee1adabb61484343af863501d2e3d91ef51f72.tar.gz",
+      "hash": "sha256-n+rcrZkqos6/HY2iSJsVsJw3Q4mB9XEquYpus97iOi4="
     },
     "ubuntu-kernel-buildinfo": {
       "type": "Url",
