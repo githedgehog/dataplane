@@ -25,7 +25,7 @@ use nat::masquerade::{MasqueradeConfig, NatAllocatorReaderFactory, NatAllocatorW
 use nat::portfw::{PortForwarder, PortFwTableReaderFactory, PortFwTableWriter};
 use nat::static_nat::setup::build_nat_configuration;
 use nat::static_nat::{NatTablesReaderFactory, NatTablesWriter};
-use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat};
+use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat, migrate_tracked_flows};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::{Mac, SourceMac};
 use net::interface::{InterfaceIndex, InterfaceName};
@@ -50,6 +50,7 @@ pub(crate) enum Enact {
     OpenGeneration,
     Masquerade,
     PortForward,
+    FlowTracking,
     PublishGeneration,
     Everything,
 }
@@ -197,6 +198,7 @@ impl Fleet {
             Enact::OpenGeneration,
             Enact::Masquerade,
             Enact::PortForward,
+            Enact::FlowTracking,
         ] {
             self.enact(overlay, step);
         }
@@ -248,6 +250,14 @@ impl Fleet {
                     self.genid.get(),
                 )
                 .expect("a validated overlay lowers to port forwarding");
+        }
+        if doing(Enact::FlowTracking) {
+            let context = self.flow_filter.get_reader().load();
+            drop(migrate_tracked_flows(
+                &self.blueprint.flow_table,
+                self.genid.get(),
+                |flow| context.keeps_tracked_flow(flow),
+            ));
         }
         if doing(Enact::PublishGeneration) {
             self.blueprint.pipeline.set_genid(self.genid.get());
