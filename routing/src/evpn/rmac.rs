@@ -7,6 +7,7 @@ use ahash::RandomState;
 use net::eth::mac::SourceMac;
 use net::vxlan::Vni;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::net::IpAddr;
 use tracing::debug;
 
@@ -62,15 +63,21 @@ impl RmacStore {
         }
     }
 
-    /// Delete the [`RmacEntry`] for a given `IpAddr` and `Vni`.
-    /// Returns an entry if it was removed.
-    pub fn del_rmac(&mut self, address: IpAddr, vni: Vni) -> Option<RmacEntry> {
-        let key = (address, vni);
-        let deleted = self.table.remove(&key);
-        if deleted.is_some() {
-            debug!("Removed rmac entry for vni:{vni} address:{address}");
+    /// Delete the [`RmacEntry`] for a given `IpAddr` and `Vni`, if its mac is `mac`.
+    /// Returns the entry if it was removed.
+    pub fn del_rmac(&mut self, address: IpAddr, vni: Vni, mac: SourceMac) -> Option<RmacEntry> {
+        let Entry::Occupied(entry) = self.table.entry((address, vni)) else {
+            return None;
+        };
+        if entry.get().mac != mac {
+            debug!(
+                "Ignoring rmac deletion for vni:{vni} address:{address} (current mac is {}, not {mac})",
+                entry.get().mac
+            );
+            return None;
         }
-        deleted
+        debug!("Removed rmac {mac} for vni:{vni} address:{address}");
+        Some(entry.remove())
     }
 
     /// Get an [`RmacEntry`]
@@ -173,7 +180,7 @@ pub(crate) mod tests {
         assert_eq!(store.len(), 3, "Duplicate should not be stored");
 
         // remove first
-        let deleted = store.del_rmac(rmac1.address, rmac1.vni);
+        let deleted = store.del_rmac(rmac1.address, rmac1.vni, rmac1.mac);
         assert!(deleted.is_some());
         assert_eq!(store.len(), 2, "Should be deleted");
 
@@ -186,6 +193,25 @@ pub(crate) mod tests {
         let r = store.get_rmac(rmac2.vni, rmac2.address);
         assert!(r.is_some());
         assert_eq!(r.unwrap().mac, rmac2_modified_mac.mac);
+    }
+
+    #[test]
+    fn test_rmac_deletions() {
+        let mut store = RmacStore::new();
+        let old = rmac(3001, "7.0.0.1", "00:00:00:00:00:01");
+        let new = rmac(3001, "7.0.0.1", "00:00:00:00:00:02");
+
+        assert!(store.add_rmac_entry(old.clone()));
+        assert!(store.add_rmac_entry(new.clone()));
+        assert!(store.del_rmac(old.address, old.vni, old.mac).is_none());
+
+        let current = store
+            .get_rmac(new.vni, new.address)
+            .expect("rmac should still be stored");
+        assert_eq!(current.mac, new.mac);
+
+        assert!(store.del_rmac(new.address, new.vni, new.mac).is_some());
+        assert_eq!(store.len(), 0);
     }
 
     #[track_caller]
