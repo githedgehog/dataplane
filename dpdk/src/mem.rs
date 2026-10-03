@@ -553,6 +553,11 @@ impl PacketLength for Mbuf {
         // It includes all segments; `data_len` covers only the head.
         unsafe { self.raw.as_ref().annon2.annon1.pkt_len as usize }
     }
+
+    fn is_chained(&self) -> bool {
+        // SAFETY: `self.raw` is live and `nb_segs` is valid for packet mbufs.
+        unsafe { self.raw.as_ref().annon1.annon1.nb_segs > 1 }
+    }
 }
 
 impl Headroom for Mbuf {

@@ -74,7 +74,16 @@ pub struct InvalidPacket<Buf: PacketBufferMut> {
     #[allow(unused)]
     mbuf: Buf,
     #[source]
-    error: ParseError<EthError>,
+    error: InvalidPacketError,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum InvalidPacketError {
+    #[error(transparent)]
+    Parse(#[from] ParseError<EthError>),
+    // Checksums and other whole-payload consumers read only the head segment.
+    #[error("chained packet buffers are not supported")]
+    Chained,
 }
 
 /// Errors which may occur when failing update a buffer from a [`Packet`]
@@ -92,12 +101,22 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     ///
     /// # Errors
     ///
-    /// Returns an [`InvalidPacket`] error the buffer does not parse as an ethernet frame.
+    /// Returns an [`InvalidPacket`] error if the buffer spans more than one segment or does not
+    /// parse as an ethernet frame.
     pub fn new(mut mbuf: Buf) -> Result<Packet<Buf>, InvalidPacket<Buf>> {
+        if mbuf.is_chained() {
+            return Err(InvalidPacket {
+                mbuf,
+                error: InvalidPacketError::Chained,
+            });
+        }
         let (headers, consumed) = match Headers::parse(mbuf.as_ref()) {
             Ok((headers, consumed)) => (headers, consumed),
             Err(error) => {
-                return Err(InvalidPacket { mbuf, error });
+                return Err(InvalidPacket {
+                    mbuf,
+                    error: error.into(),
+                });
             }
         };
         mbuf.trim_from_start(consumed.get())
