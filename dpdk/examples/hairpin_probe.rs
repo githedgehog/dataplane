@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use dataplane_dpdk::dev::{DevConfig, RxOffload};
 use dataplane_dpdk::eal;
-use dataplane_dpdk::mem::{Pool, PoolConfig, PoolParams};
+use dataplane_dpdk::mem::{PoolConfig, PoolParams};
 use dataplane_dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dataplane_dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dataplane_dpdk::socket::Preference;
@@ -130,10 +130,13 @@ fn main() -> Result<(), Err> {
     } else {
         println!("isolated mode SKIPPED (HP_NO_ISOLATE)");
     }
-    let pool = Pool::new_pkt_pool(
-        PoolConfig::new("hp_pool", PoolParams::default()).map_err(|e| format!("pool: {e:?}"))?,
-    )
-    .map_err(|e| format!("pool: {e:?}"))?;
+    let pool = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new("hp_pool", PoolParams::default())
+                .map_err(|e| format!("pool: {e:?}"))?,
+        )
+        .map_err(|e| format!("pool: {e:?}"))?;
     // 2 rx + 2 tx queues: index 0 = host, index 1 = hairpin (set up via raw FFI below).
     let cfg = DevConfig {
         num_rx_queues: 2,
@@ -332,8 +335,9 @@ fn main() -> Result<(), Err> {
     println!("rule installed: eth -> QUEUE(hairpin q{HAIRPIN_Q})");
 
     // ---- inject; watch port stats + the host rx queue ----
-    let rxq = dev
-        .rx_queue(RxQueueIndex(0))
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
         .ok_or("host rx queue 0 missing")?;
     let before = stats(port);
     println!("polling {secs}s -- inject from the peer now...");
