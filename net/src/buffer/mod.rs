@@ -19,6 +19,9 @@ pub use test_buffer::*;
 pub trait PacketLength {
     /// The total length of the packet in bytes (the sum of every segment's data length).
     fn packet_len(&self) -> usize;
+
+    /// Whether the packet spans more than one segment.
+    fn is_chained(&self) -> bool;
 }
 
 /// Super trait representing the abstract operations which may be performed on a packet buffer.

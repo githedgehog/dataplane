@@ -290,9 +290,9 @@ fn frame() -> Vec<u8> {
 fn packet_copy_propagates_pool_exhaustion() {
     let pool = packet_pool(7);
     let bytes = frame();
-    let packet = net::packet::Packet::new(chain(&pool, &[&bytes[..64], &bytes[64..]])).unwrap();
+    let packet = net::packet::Packet::new(chain(&pool, &[&bytes])).unwrap();
     let before = segments(packet.payload());
-    let held = pool.alloc_bulk(5).unwrap();
+    let held = pool.alloc_bulk(6).unwrap();
     assert!(packet.deep_copy().is_err());
     assert_eq!(segments(packet.payload()), before);
     assert_eq!(available(&pool), 0);
@@ -349,14 +349,20 @@ where
 }
 
 #[test]
-fn packet_copy_preserves_headers_metadata_and_segmented_payload() {
+fn packet_copy_preserves_headers_and_metadata() {
+    let pool = packet_pool(7);
+    let bytes = frame();
+    packet_copy_and_roundtrip(TestBuffer::from_raw_data(&bytes), &bytes);
+    packet_copy_and_roundtrip(chain(&pool, &[&bytes]), &bytes);
+    assert_eq!(available(&pool), 7);
+}
+
+#[test]
+fn packets_reject_chained_mbufs_without_leaking() {
     let pool = packet_pool(7);
     let bytes = frame();
     let input = [&bytes[..64], &bytes[64..900], &bytes[900..]];
-    packet_copy_and_roundtrip(chain(&pool, &input), &bytes);
-    assert_eq!(available(&pool), 7);
-    let packet = net::packet::Packet::new(chain(&pool, &input)).unwrap();
-    assert_eq!(segments(&packet.serialize().unwrap()).concat(), bytes);
+    assert!(net::packet::Packet::new(chain(&pool, &input)).is_err());
     assert_eq!(available(&pool), 7);
 }
 
@@ -410,12 +416,12 @@ fn vxlan_lengths<B: net::buffer::PacketBufferMut>(buffer: B, frame_len: usize, i
 }
 
 #[test]
-fn vxlan_lengths_include_every_payload_segment() {
+fn vxlan_lengths_include_the_whole_payload() {
     let pool = packet_pool(7);
     let bytes = frame();
-    let input = [&bytes[..64], &bytes[64..]];
     for ipv6 in [false, true] {
-        vxlan_lengths(chain(&pool, &input), bytes.len(), ipv6);
+        vxlan_lengths(TestBuffer::from_raw_data(&bytes), bytes.len(), ipv6);
+        vxlan_lengths(chain(&pool, &[&bytes]), bytes.len(), ipv6);
     }
     assert_eq!(available(&pool), 7);
 }

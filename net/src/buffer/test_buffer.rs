@@ -121,6 +121,10 @@ impl PacketLength for TestBuffer {
         // region.  When it becomes a segment chain this will sum the segments.
         self.as_ref().len()
     }
+
+    fn is_chained(&self) -> bool {
+        false
+    }
 }
 
 impl Headroom for TestBuffer {
