@@ -27,3 +27,28 @@ pub fn start_eal() -> &'static Eal {
         crate::eal::init(args.iter().copied())
     })
 }
+
+#[cfg(test)]
+pub(crate) fn packet_pool(size: u32) -> crate::mem::Pool {
+    use crate::mem::{Pool, PoolConfig, PoolParams};
+    use crate::socket::SocketId;
+    use concurrency::process_global::atomic::{AtomicU32, Ordering};
+
+    static NEXT_POOL: AtomicU32 = AtomicU32::new(0);
+    let _eal = start_eal();
+    let name = format!("batch_{}", NEXT_POOL.fetch_add(1, Ordering::Relaxed));
+    let params = PoolParams {
+        size,
+        cache_size: 0,
+        private_size: 0,
+        data_size: 2048,
+        socket_id: SocketId::ANY,
+    };
+    Pool::new_pkt_pool(PoolConfig::new(name, params).unwrap()).unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn available(pool: &crate::mem::Pool) -> usize {
+    // SAFETY: the pool is live and its per-core cache is disabled.
+    unsafe { dpdk_sys::rte_mempool_avail_count(pool.inner().as_mut_ptr()) as usize }
+}
