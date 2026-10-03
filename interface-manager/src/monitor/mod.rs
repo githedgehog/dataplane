@@ -152,14 +152,14 @@ impl std::fmt::Display for EthEvent {
     }
 }
 
-/// Interface monitor
-/// How often the monitor re-reads every tracked interface's state.
+/// How often the monitor re-reads interface state.
 ///
 /// Short enough that a dropped notification costs seconds rather than the life of the process,
 /// long enough that the dump is irrelevant next to the traffic it protects: a handful of
 /// interfaces every few seconds.
 const RECONCILE_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
 
+/// Interface monitor.
 pub struct InterfaceMonitor {
     tx: broadcast::Sender<EthEvent>,
     ct: CancellationToken,
@@ -177,21 +177,22 @@ impl InterfaceMonitor {
 
     /// Convert a netlink message to an `EthEvent` if it is a `NewLink` message
     /// This is the main function used by the `InterfaceMonitor` to process netlink
+    #[must_use]
     pub fn netlink_to_event(msg: NetlinkMessage<RouteNetlinkMessage>) -> Option<EthEvent> {
         let (_hdr, payload) = msg.into_parts();
 
         let NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewLink(link_msg)) = payload else {
             return None;
         };
-        self.link_to_event(&link_msg)
+        Self::link_to_event(&link_msg)
     }
 
-    /// Convert a `LinkMessage` to an `EthEvent` if it describes a tracked interface.
+    /// Convert a `LinkMessage` to an `EthEvent` for a valid interface index.
     ///
     /// Split out from [`Self::netlink_to_event`] so that [`Self::resync`] can feed it messages
     /// from a `RTM_GETLINK` dump, which arrive as bare `LinkMessage`s rather than wrapped in a
     /// multicast notification.
-    fn link_to_event(&self, link_msg: &LinkMessage) -> Option<EthEvent> {
+    fn link_to_event(link_msg: &LinkMessage) -> Option<EthEvent> {
         let ifindex = link_msg.header.index;
         let Ok(ifindex) = InterfaceIndex::try_from(ifindex) else {
             error!("Received kernel event with invalid interface index: {ifindex}");
@@ -253,7 +254,7 @@ impl InterfaceMonitor {
         Some(event)
     }
 
-    /// Emit an event for every tracked interface's *current* state.
+    /// Emit an event for every interface's current state.
     ///
     /// The multicast subscription is edge-triggered: it reports changes, and only those that
     /// happen while it is listening. That leaves two ways for the router's interface table to
@@ -276,7 +277,7 @@ impl InterfaceMonitor {
         let mut links = handle.link().get().execute();
         let mut emitted = 0;
         while let Some(link) = links.try_next().await? {
-            if let Some(event) = self.link_to_event(&link) {
+            if let Some(event) = Self::link_to_event(&link) {
                 emitted += 1;
                 if self.tx.send(event).is_err() {
                     debug!("resync: no link event readers");
@@ -306,7 +307,7 @@ impl InterfaceMonitor {
         // Read current state *before* processing any notification. Most of what this monitor
         // needs to know has already happened by the time it starts listening -- see `resync`.
         match monitor.resync(&req_handle).await {
-            Ok(n) => info!("Interface monitor resynced {n} tracked interface(s)"),
+            Ok(n) => info!("Interface monitor resynced {n} interface(s)"),
             Err(e) => error!("Initial interface resync failed: {e}"),
         }
 
@@ -411,17 +412,11 @@ mod test {
 mod resync_conversion {
     use super::{EthEvent, InterfaceMonitor};
     use concurrency::sync::Arc;
-    use net::interface::InterfaceName;
     use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags, LinkMessage};
     use tokio_util::sync::CancellationToken;
 
     /// The MAC a control-plane tap adopts from its DPDK port.
     const PORT_MAC: [u8; 6] = [0x58, 0xa2, 0xe1, 0xb3, 0x3d, 0x94];
-
-    fn monitor(tracked: &str) -> InterfaceMonitor {
-        let name = InterfaceName::try_from(tracked.to_string()).expect("valid ifname");
-        InterfaceMonitor::new(CancellationToken::new(), &[name])
-    }
 
     /// A `RTM_GETLINK` dump entry, which is what `resync` walks. Carries the same attributes the
     /// kernel puts on a link notification.
@@ -446,10 +441,9 @@ mod resync_conversion {
     /// birth address, and the datapath dropping every unicast frame as `MacNotForUs`.
     #[test]
     fn a_dumped_link_yields_its_current_mac() {
-        let mon = monitor("enp2s1np0");
-        let ev: EthEvent = mon
-            .link_to_event(&dumped_link("enp2s1np0", Some(PORT_MAC)))
-            .expect("a dumped tracked link must produce an event");
+        let ev: EthEvent =
+            InterfaceMonitor::link_to_event(&dumped_link("enp2s1np0", Some(PORT_MAC)))
+                .expect("a dumped link must produce an event");
         assert_eq!(
             ev.mac.expect("the dump carried an address").inner().0,
             PORT_MAC,
@@ -457,24 +451,20 @@ mod resync_conversion {
         );
     }
 
-    /// A dump walks every link on the box; only the configured ones are ours.
     #[test]
-    fn an_untracked_link_is_ignored() {
-        let mon = monitor("enp2s1np0");
-        assert!(
-            mon.link_to_event(&dumped_link("some-other-nic", Some(PORT_MAC)))
-                .is_none(),
-            "a link we were not asked to track must not produce an event"
-        );
+    fn all_interface_names_are_reported() {
+        for name in ["enp2s1np0", "some-other-nic"] {
+            let event = InterfaceMonitor::link_to_event(&dumped_link(name, Some(PORT_MAC)))
+                .expect("valid links are reported without configuration filtering");
+            assert_eq!(event.name().unwrap().as_ref(), name);
+        }
     }
 
     /// A message without an address attribute is not a message saying the address was removed,
     /// and must not throw away the rest of an otherwise good event.
     #[test]
     fn a_link_without_an_address_still_reports_state() {
-        let mon = monitor("enp2s1np0");
-        let ev = mon
-            .link_to_event(&dumped_link("enp2s1np0", None))
+        let ev = InterfaceMonitor::link_to_event(&dumped_link("enp2s1np0", None))
             .expect("an event is still useful without an address");
         assert!(ev.mac.is_none());
         assert!(
@@ -486,6 +476,6 @@ mod resync_conversion {
     /// `Arc` is how the monitor is held by the run loop; keep the type usable that way.
     #[test]
     fn monitor_is_shareable() {
-        let _: Arc<InterfaceMonitor> = Arc::new(monitor("enp2s1np0"));
+        let _: Arc<InterfaceMonitor> = Arc::new(InterfaceMonitor::new(CancellationToken::new()));
     }
 }
