@@ -102,9 +102,40 @@ impl WorkerStatus {
     }
 }
 
+/// The limits of whichever driver published a [`DriverStatus`].
+///
+/// Carried rather than read from a driver's constants at display time. The `Display` impl used to
+/// print `DriverKernel::MAX_RX_PKT_BATCH` unconditionally, so a DPDK run reported a batch of 128
+/// when [`dpdk::mem::MBUF_BURST`] is 64. Nothing depended on it, but it was read off a live
+/// gateway and used to size a cache working set, which sent an investigation the wrong way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DriverLimits {
+    /// Most packets the driver will take from a queue in one call.
+    pub max_rx_batch: usize,
+    /// Seconds between activity polls.
+    pub poll_period_s: u16,
+    /// Seconds between watchdog pats.
+    pub pat_period_s: u16,
+    /// Seconds after which an unpatted watchdog counts as stuck.
+    pub check_period_s: u16,
+}
+
+impl Default for DriverLimits {
+    fn default() -> Self {
+        Self {
+            max_rx_batch: DriverKernel::MAX_RX_PKT_BATCH,
+            poll_period_s: DriverKernel::TASK_POLL_PERIOD,
+            pat_period_s: DriverKernel::TASK_PAT_PERIOD,
+            check_period_s: DriverKernel::TASK_CHECK_PERIOD,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct DriverStatus {
     pub workers: Vec<WorkerStatus>,
+    /// Set by the driver that published this. See [`DriverLimits`].
+    pub limits: DriverLimits,
 }
 
 // ====== Types for sharing DriverStatus ===== //
@@ -231,10 +262,10 @@ fn fmt_rx_drop(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::
 impl Display for DriverStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading("Packet driver status").fmt(f)?;
-        writeln!(f, " max rx batch: {} pkts", DriverKernel::MAX_RX_PKT_BATCH)?;
-        write!(f, " activity poll: {} s", DriverKernel::TASK_POLL_PERIOD)?;
-        write!(f, "  watchdog pat: {} s", DriverKernel::TASK_PAT_PERIOD)?;
-        writeln!(f, "  watchdog check: {} s", DriverKernel::TASK_CHECK_PERIOD)?;
+        writeln!(f, " max rx batch: {} pkts", self.limits.max_rx_batch)?;
+        write!(f, " activity poll: {} s", self.limits.poll_period_s)?;
+        write!(f, "  watchdog pat: {} s", self.limits.pat_period_s)?;
+        writeln!(f, "  watchdog check: {} s", self.limits.check_period_s)?;
 
         writeln!(f)?;
         if self.workers.is_empty() {
@@ -293,5 +324,45 @@ mod test {
         assert_eq!(status.total_truncated, 12);
         assert_eq!(status.total_zero_len, 14);
         assert_eq!(status.total_kernel_drops, 16);
+    }
+}
+
+#[cfg(test)]
+mod limits_test {
+    use super::{DriverLimits, DriverStatus};
+    use crate::drivers::kernel::DriverKernel;
+
+    /// The displayed batch size must come from the driver that published the status.
+    ///
+    /// It used to be read from `DriverKernel::MAX_RX_PKT_BATCH` no matter which driver was
+    /// running, so a DPDK gateway reported 128 where the real burst is `MBUF_BURST` (64). That
+    /// number was read off a live gateway and used to size a cache working set, which is how a
+    /// display bug turned into a wrong conclusion about L1 pressure.
+    #[test]
+    fn the_displayed_batch_is_the_publishers_own() {
+        assert_ne!(
+            DriverKernel::MAX_RX_PKT_BATCH,
+            dpdk::mem::MBUF_BURST,
+            "this test is vacuous if the two drivers agree; pick another field or delete it"
+        );
+        let status = DriverStatus {
+            workers: vec![],
+            limits: DriverLimits {
+                max_rx_batch: dpdk::mem::MBUF_BURST,
+                ..DriverLimits::default()
+            },
+        };
+        let shown = format!("{status}");
+        assert!(
+            shown.contains(&format!("max rx batch: {} pkts", dpdk::mem::MBUF_BURST)),
+            "expected the publisher's batch size in:\n{shown}"
+        );
+        assert!(
+            !shown.contains(&format!(
+                "max rx batch: {} pkts",
+                DriverKernel::MAX_RX_PKT_BATCH
+            )),
+            "the other driver's constant leaked into the display:\n{shown}"
+        );
     }
 }

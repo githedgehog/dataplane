@@ -50,6 +50,33 @@ const DEV_PERF_BINARY: &str = "/bin/perf";
 /// the whole point: the restart that ends a run is often the thing you wanted the profile of.
 const DEV_PERF_DIR: &str = "/var/run/dataplane";
 
+/// The variable LLVM's profiling runtime reads to decide where counters go.
+const PROFILE_FILE_ENV: &str = "LLVM_PROFILE_FILE";
+
+/// Where an instrumented build's counters go when the launcher does not say.
+///
+/// In [`DEV_PERF_DIR`] for the same reason a perf profile is: everything else a container writes
+/// lives on a filesystem that goes away with it, so the restart that ended the run would also
+/// destroy the evidence about it.
+///
+/// A plain name, deliberately not one of LLVM's `%m` merge-pool patterns. Each dump writes the
+/// counters accumulated since the process started, so merging a second dump into the first would
+/// add two overlapping totals and count everything before the first dump twice. Overwriting is
+/// right here: the newest dump already contains the oldest.
+const DEV_PROFILE_FILE: &str = "/var/run/dataplane/dataplane.profraw";
+
+/// Where to tell the dataplane to write profile counters, if anywhere.
+///
+/// `None` leaves the environment alone -- either nobody asked for a dump, or the launcher already
+/// chose a destination and gets to keep it.
+fn profile_file(dump_enabled: bool, already_set: bool) -> Option<&'static str> {
+    if dump_enabled && !already_set {
+        Some(DEV_PROFILE_FILE)
+    } else {
+        None
+    }
+}
+
 /// Hugetlbfs mount points.
 ///
 /// Mounting these is best-effort. The dataplane asks the EAL for `--in-memory`, which backs its
@@ -1054,6 +1081,20 @@ fn dataplane_process(
         command.env("RUST_BACKTRACE", "full");
     }
 
+    // Tied to the same switch as the SIGUSR1 forwarding, so asking for profile dumps configures
+    // both halves at once: a forward that arrives with nowhere to write is not much use. Inert in
+    // an uninstrumented build, which has no profiling runtime to read the variable.
+    if let Some(path) = profile_file(
+        std::env::var_os(supervisor::DEV_PROFILE_DUMP_ENV).is_some(),
+        std::env::var_os(PROFILE_FILE_ENV).is_some(),
+    ) {
+        if let Err(e) = std::fs::create_dir_all(DEV_PERF_DIR) {
+            warn!("could not create {DEV_PERF_DIR} for profile counters: {e}");
+        }
+        info!("profile counters will be written to {path}");
+        command.env(PROFILE_FILE_ENV, path);
+    }
+
     Ok(Process::new("dataplane", command))
 }
 
@@ -1308,6 +1349,38 @@ fn main() {
     }
 
     std::process::exit(supervise_gateway(config, netns, host_netns, supervise_frr));
+}
+
+#[cfg(test)]
+mod profile_file_test {
+    use super::{DEV_PROFILE_FILE, profile_file};
+
+    /// The destination is configured by the same switch that turns forwarding on, and a
+    /// destination the launcher already chose is never overridden.
+    #[test]
+    fn a_destination_is_chosen_only_when_asked_for_and_never_overridden() {
+        assert_eq!(profile_file(true, false), Some(DEV_PROFILE_FILE));
+        // Nobody asked: an uninstrumented build must not have its environment decorated.
+        assert_eq!(profile_file(false, false), None);
+        // Already chosen: an operator who set `LLVM_PROFILE_FILE` keeps it, dump or no dump.
+        assert_eq!(profile_file(true, true), None);
+        assert_eq!(profile_file(false, true), None);
+    }
+
+    /// Not a `%`-pattern.
+    ///
+    /// `%m` is the obvious-looking choice and is wrong: it opens a merge pool, and because every
+    /// dump writes the counters accumulated since process start, merging the second dump into the
+    /// first double-counts everything the run did before the first one. This is the cheap guard
+    /// against someone "improving" the constant later.
+    #[test]
+    fn the_destination_does_not_merge() {
+        assert!(
+            !DEV_PROFILE_FILE.contains('%'),
+            "{DEV_PROFILE_FILE} uses an LLVM pattern; `%m` would merge overlapping totals"
+        );
+        assert!(DEV_PROFILE_FILE.starts_with(super::DEV_PERF_DIR));
+    }
 }
 
 #[cfg(test)]
