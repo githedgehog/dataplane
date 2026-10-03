@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use concurrency::sync::Arc;
+use dpdk::lcore::LCore;
 use dpdk::mem::{MBUF_BURST, Mbuf, MbufArray};
 use lifecycle::Subsystem;
 use net::buffer::Append;
@@ -18,8 +19,8 @@ use tracing::{debug, error, trace, warn};
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
-use super::cpbridge::{Disposition, addressed_to, disposition};
 use super::port::PortQueues;
+use crate::drivers::cpbridge::{Disposition, addressed_to, disposition};
 
 /// How many consecutive empty polls across every port before the worker yields its timeslice.
 ///
@@ -78,6 +79,31 @@ impl<'p> Worker<'p> {
         subsystem: &Subsystem,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'p, Mbuf<'p>> + 'p>,
     ) {
+        // Register with the EAL before anything allocates. An unregistered thread reports
+        // `LCORE_ID_ANY`, and `rte_mempool_default_cache` returns NULL for that -- so every
+        // `alloc_bulk` and every mbuf free would go to the shared ring under atomics, on every
+        // burst, in both directions. The token releases the id however this thread ends; leaking
+        // one strands it for the life of the process.
+        //
+        // It is bound rather than discarded because it is also the capability that unlocks
+        // `dpdk::power`: a sleep-until-a-packet-arrives loop is gated on `&LCore`, and this is the
+        // only place a worker can get one.
+        //
+        // A worker that cannot register is left to run anyway. It is slower, not wrong: the
+        // mempool falls back to the ring, which is correct, just contended. Refusing to forward
+        // traffic over a performance property would be the worse failure.
+        let _lcore = match LCore::register() {
+            Ok(lcore) => Some(lcore),
+            Err(e) => {
+                error!(
+                    worker = self.id,
+                    "could not register with the EAL ({e:?}); this worker will run without a \
+                     per-core mempool cache and will contend on every allocation"
+                );
+                None
+            }
+        };
+
         let mut pipeline = setup_pipeline();
 
         // Where a packet leaving the pipeline should go, by the interface index the pipeline names
@@ -91,6 +117,7 @@ impl<'p> Worker<'p> {
 
         debug!(
             worker = self.id,
+            lcore = dpdk::lcore::LCoreId::current().0,
             "DPDK worker started on {} port(s): {}",
             self.queues.len(),
             self.queues
@@ -293,7 +320,7 @@ impl<'p> Worker<'p> {
     fn punt(
         id: WorkerId,
         port: &str,
-        punt: Option<&tokio::sync::mpsc::Sender<super::cpbridge::Frame>>,
+        punt: Option<&tokio::sync::mpsc::Sender<crate::drivers::cpbridge::Frame>>,
         packet: Packet<Mbuf<'p>>,
         counters: &mut RxCounters,
     ) {
@@ -351,7 +378,7 @@ impl<'p> Worker<'p> {
         // the receiver's borrow has to end before the allocation begins. Bounded by
         // `INJECT_PER_POLL`, which is also the batch's capacity, so the `try_push` below cannot
         // overflow.
-        let mut frames: Vec<super::cpbridge::Frame> = Vec::new();
+        let mut frames: Vec<crate::drivers::cpbridge::Frame> = Vec::new();
         for _ in 0..INJECT_PER_POLL {
             let Ok(frame) = inject.try_recv() else {
                 break;

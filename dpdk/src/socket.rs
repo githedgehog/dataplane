@@ -236,9 +236,29 @@ impl SocketId {
         if id.as_u32() >= LCoreId::MAX {
             return None;
         }
-        // Checked before the lookup rather than relying on `rte_lcore_is_enabled` to range-check
-        // for us, so the ordering here does not depend on a DPDK internal.
-        if unsafe { dpdk_sys::rte_lcore_is_enabled(id.as_u32()) } == 0 {
+        // `rte_lcore_is_enabled` is `lcore_role == ROLE_RTE` and *nothing else*, so on its own it
+        // rejects a thread registered with
+        // [`LCore`](crate::lcore::LCore) -- which is `ROLE_NON_EAL`, and is
+        // what every DPDK worker in this dataplane now is. That would make
+        // `Preference::LCore(LCoreId::current())` fail on a worker, which is exactly the thread
+        // most likely to ask.
+        //
+        // A registered lcore does have a real NUMA answer: `thread_update_affinity` populates
+        // `lcore_config[id].numa_id` from the registering thread's cpuset (measured, see
+        // `examples/lcore_role_probe.rs`). So accept both roles and reject only the ids the EAL
+        // never gave meaning to -- which is the check this was always trying to be.
+        //
+        // Checked before the lookup rather than relying on DPDK to range-check for us, so the
+        // ordering here does not depend on a DPDK internal.
+        // `rte_lcore_has_role` returns *positive* when the lcore has the role, 0 otherwise.
+        let usable = unsafe {
+            dpdk_sys::rte_lcore_has_role(id.as_u32(), dpdk_sys::rte_lcore_role_t::ROLE_RTE) != 0
+                || dpdk_sys::rte_lcore_has_role(
+                    id.as_u32(),
+                    dpdk_sys::rte_lcore_role_t::ROLE_NON_EAL,
+                ) != 0
+        };
+        if !usable {
             return None;
         }
         Some(SocketId(unsafe {
@@ -297,6 +317,48 @@ impl TryFrom<Preference> for SocketId {
 mod tests {
     use super::*;
     use crate::with_eal;
+
+    /// A registered (non-EAL) lcore resolves to a socket.
+    ///
+    /// `rte_lcore_is_enabled` is `lcore_role == ROLE_RTE` and nothing else, so gating on it alone
+    /// rejected every thread registered with
+    /// [`LCore`](crate::lcore::LCore) -- which is what every DPDK worker in
+    /// this dataplane is. `Preference::LCore(LCoreId::current())` on a worker would then fail,
+    /// and a worker is the thread most likely to ask.
+    ///
+    /// The answer is real, not a placeholder: `thread_update_affinity` populates
+    /// `lcore_config[id].numa_id` from the registering thread's cpuset.
+    #[test]
+    #[with_eal]
+    fn a_registered_lcore_resolves_to_a_socket() {
+        use crate::lcore::LCore;
+
+        // Spawned: a registered thread is what is under test, and under nextest the harness
+        // thread is already the main lcore.
+        std::thread::spawn(|| {
+            let _registration = LCore::register().expect("could not register");
+            let here = LCoreId::current();
+
+            let socket = SocketId::get_by_lcore_id(here);
+            assert!(
+                socket.is_some(),
+                "a registered lcore ({here:?}) did not resolve to a socket"
+            );
+            assert_eq!(
+                SocketId::try_from(Preference::LCore(here)).ok(),
+                socket,
+                "Preference::LCore disagreed with the direct lookup"
+            );
+            // And it agrees with what the thread reports for itself.
+            assert_eq!(
+                socket,
+                Some(SocketId::current()),
+                "the lcore's socket and the thread's own socket disagree"
+            );
+        })
+        .join()
+        .expect("the test thread panicked");
+    }
 
     /// Regression test for a segfault reachable from safe code.
     ///
@@ -378,14 +440,25 @@ mod tests {
     #[test]
     #[with_eal]
     fn an_in_range_but_disabled_lcore_is_rejected() {
-        let enabled = enabled_lcores();
-        let Some(disabled) = (0..LCoreId::MAX).find(|id| !enabled.contains(id)) else {
-            return; // every lcore enabled; nothing to assert
+        // Selected by `ROLE_OFF`, not by "not enabled". Those used to be the same set and are not
+        // any more: a thread registered with `LCore` is `ROLE_NON_EAL`, which
+        // `rte_lcore_is_enabled` reports as *not enabled* while it legitimately does resolve to a
+        // socket. Keeping the old predicate made this test fail whenever another test in the same
+        // process held a registration -- which `cargo test` allows, since it shares one process
+        // across tests where nextest does not.
+        //
+        // Scanned from the top because `eal_lcore_non_eal_allocate` always takes the *lowest* free
+        // slot, so the highest ids are the ones a concurrent registration will not take between
+        // this search and the assertion below.
+        let Some(unused) = (0..LCoreId::MAX).rev().find(|id| unsafe {
+            dpdk_sys::rte_lcore_has_role(*id, dpdk_sys::rte_lcore_role_t::ROLE_OFF) != 0
+        }) else {
+            return; // every lcore has a role; nothing to assert
         };
         let manager = Manager::init();
         assert!(
-            manager.id_for_lcore(disabled).is_none(),
-            "lcore {disabled} is not enabled and must not resolve"
+            manager.id_for_lcore(unused).is_none(),
+            "lcore {unused} has no role and must not resolve"
         );
     }
 
