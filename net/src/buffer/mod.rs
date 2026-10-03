@@ -65,7 +65,7 @@ pub trait Headroom {
 
 /// Trait representing the ability to get the unused tailroom in a packet buffer.
 pub trait Tailroom {
-    /// Get the (unused) tailroom in a packet buffer.
+    /// Get the unused space at the end of the last segment.
     fn tailroom(&self) -> u16;
 }
 
@@ -73,15 +73,11 @@ pub trait Tailroom {
 pub trait Prepend {
     /// Error which may occur when attempting to prepend data to the buffer.
     type Error: Debug + Error;
-    /// Prepend data to the buffer if possible.
-    ///
-    /// If successful, this method returns a slice to the net start of the buffer.
-    /// The contents of the buffer will not be otherwise altered.
+    /// Prepend `len` bytes and return the entire head segment.
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if an error occurs while performing this operation.
-    /// For example, there may not be enough headroom available.
+    /// Fails without modifying the buffer if there is insufficient headroom.
     fn prepend(&mut self, len: u16) -> Result<&mut [u8], Self::Error>;
 }
 
@@ -89,12 +85,11 @@ pub trait Prepend {
 pub trait Append {
     /// Error which may occur when attempting to append data to the buffer.
     type Error: Debug;
-    /// Append data to the buffer if possible.
+    /// Append `len` bytes and return the entire last segment.
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if an error occurs while performing this operation.
-    /// For example, there may not be enough tailroom available.
+    /// Fails without modifying the buffer if there is insufficient tailroom.
     fn append(&mut self, len: u16) -> Result<&mut [u8], Self::Error>;
 }
 
@@ -102,12 +97,11 @@ pub trait Append {
 pub trait TrimFromStart {
     /// Error which may occur when attempting to trim data from the start of the buffer.
     type Error: Debug;
-    /// Trim data from the start of the buffer if possible.
+    /// Remove `len` bytes from the head segment and return its remaining bytes.
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if an error occurs while performing this operation.
-    /// For example, the buffer may not have `len` bytes in it to begin with.
+    /// Fails without modifying the buffer if `len` exceeds the head segment's length.
     fn trim_from_start(&mut self, len: u16) -> Result<&mut [u8], Self::Error>;
 }
 
@@ -115,12 +109,11 @@ pub trait TrimFromStart {
 pub trait TrimFromEnd {
     /// Error which may occur when attempting to trim data from the end of the buffer.
     type Error: Debug;
-    /// Trim data from the end of the buffer if possible.
+    /// Remove `len` bytes from the last segment and return its remaining bytes.
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] if an error occurs while performing this operation.
-    /// For example, the buffer may not have `len` bytes in it to begin with.
+    /// Fails without modifying the buffer if `len` exceeds the last segment's length.
     fn trim_from_end(&mut self, len: u16) -> Result<&mut [u8], Self::Error>;
 }
 
