@@ -270,7 +270,7 @@ impl RpcOperation for Rmac {
         let Ok(rmac) = RmacEntry::try_from(self) else {
             return RpcResultCode::Failure;
         };
-        rmac_store.del_rmac(rmac.address, rmac.vni);
+        rmac_store.del_rmac(rmac.address, rmac.vni, rmac.mac);
         RpcResultCode::Ok
     }
 }
