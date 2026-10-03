@@ -235,7 +235,7 @@ impl TapDevice {
     ///
     /// # Errors
     ///
-    /// If the tap device cannot be read, a [`tokio::io::Error`] is returned.
+    /// If `buf` is chained or the tap device cannot be read, a [`tokio::io::Error`] is returned.
     ///
     /// # Panics
     ///
@@ -245,6 +245,13 @@ impl TapDevice {
         &mut self,
         buf: &mut Buf,
     ) -> Result<NonZero<u16>, tokio::io::Error> {
+        // The read fills only the head segment, and trimming cannot cross segments.
+        if buf.is_chained() {
+            return Err(tokio::io::Error::new(
+                tokio::io::ErrorKind::InvalidInput,
+                "chained buffers are not supported",
+            ));
+        }
         let bytes_read = self.file.read(buf.as_mut()).await?;
         let bytes_read = match u16::try_from(bytes_read) {
             Ok(bytes_read) => bytes_read,
@@ -259,10 +266,10 @@ impl TapDevice {
                 "unexpected EOF on tap device",
             ));
         };
-        let orig_len = match u16::try_from(buf.packet_len()) {
+        let orig_len = match u16::try_from(buf.as_ref().len()) {
             Ok(orig_len) => orig_len,
             Err(err) => {
-                error!("nonsense sized buffer: {}", buf.packet_len());
+                error!("nonsense sized buffer: {}", buf.as_ref().len());
                 return Err(tokio::io::Error::other(err));
             }
         };
@@ -283,9 +290,17 @@ impl TapDevice {
     ///
     /// # Errors
     ///
-    /// If the tap device cannot be written to, a [`tokio::io::Error`] is returned.
+    /// If `buf` is chained or the tap device cannot be written to, a [`tokio::io::Error`] is
+    /// returned.
     #[tracing::instrument(level = "trace")]
     pub async fn write<Buf: PacketBuffer>(&mut self, buf: Buf) -> Result<(), tokio::io::Error> {
+        // `as_ref` covers only the head segment.
+        if buf.is_chained() {
+            return Err(tokio::io::Error::new(
+                tokio::io::ErrorKind::InvalidInput,
+                "chained buffers are not supported",
+            ));
+        }
         self.file.write_all(buf.as_ref()).await
     }
 }
