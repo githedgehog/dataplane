@@ -230,12 +230,12 @@ mod eth_dispatch_test {
 
     fn interface() -> Interface {
         Interface {
-            name: "enp2s1np0".to_string(),
+            name: "enp2s1np0".try_into().expect("valid interface name"),
             description: None,
             ifindex: InterfaceIndex::try_new(2).expect("a valid index"),
-            iftype: IfType::Ethernet(IfDataEthernet {
-                mac: SourceMac::new(PORT_MAC).expect("a valid source mac"),
-            }),
+            iftype: IfType::Ethernet(IfDataEthernet::new(
+                SourceMac::new(PORT_MAC).expect("a valid source mac"),
+            )),
             admin_state: IfState::Up,
             mtu: None,
             oper_state: IfState::Up,
