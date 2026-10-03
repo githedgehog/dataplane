@@ -1116,6 +1116,7 @@ mod drop_stats_tests {
     use net::buffer::TestBuffer;
     use net::packet::test_utils::build_test_ipv4_packet;
     use net::vxlan::Vni;
+    use strum::IntoEnumIterator;
 
     fn vpcd(vni: u32) -> VpcDiscriminant {
         VpcDiscriminant::from_vni(Vni::new_checked(vni).expect("valid vni"))
@@ -1158,19 +1159,7 @@ mod drop_stats_tests {
 
     #[test]
     fn every_verdict_survives_this_stage() {
-        let verdicts = [
-            DoneReason::Delivered,
-            DoneReason::Local,
-            DoneReason::Unhandled,
-            DoneReason::NotIp,
-            DoneReason::RouteFailure,
-            DoneReason::AclDropped,
-            DoneReason::Filtered,
-            DoneReason::RouteDrop,
-            DoneReason::MacNotForUs,
-            DoneReason::Unroutable,
-        ];
-        for verdict in verdicts {
+        for verdict in DoneReason::iter() {
             let mut stats = new_stats();
             let out: Vec<_> = stats
                 .process(vec![mk_packet(Some(vpcd(1)), Some(vpcd(2)), Some(verdict))])

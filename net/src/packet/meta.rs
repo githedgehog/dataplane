@@ -15,7 +15,7 @@ use concurrency::sync::Arc;
 use serde::Serialize;
 use std::fmt::Display;
 use std::net::IpAddr;
-use strum_macros::{EnumCount, FromRepr};
+use strum_macros::{EnumCount, EnumIter, FromRepr};
 use tracing::error;
 
 /// Every VRF is univocally identified with a numerical VRF id
@@ -81,7 +81,7 @@ impl Display for VpcDiscriminant {
 
 #[repr(u8)]
 #[allow(unused)]
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, EnumCount, FromRepr)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, EnumCount, EnumIter, FromRepr)]
 pub enum DoneReason {
     InternalFailure,      /* catch-all for internal issues */
     InterfaceUnknown,     /* the interface cannot be found */
