@@ -433,27 +433,50 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
 mod test {
     use super::IpForwarder;
     use net::eth::mac::{Mac, SourceMac};
+    use net::interface::InterfaceIndex;
     use net::ip::{NextHeader, UnicastIpAddr};
+    use net::packet::DoneReason;
     use net::packet::test_utils::build_test_ipv6_packet_with_transport;
     use net::vxlan::Vni;
     use routing::testing::RouterTables;
-    use routing::{Vtep, VxlanEncapsulation};
+    use routing::{
+        EgressObject, Encapsulation, FibEntry, PktInstruction, Vtep, VxlanEncapsulation,
+    };
     use std::net::IpAddr;
     use std::str::FromStr;
+
+    fn test_vtep() -> Vtep {
+        Vtep::new(
+            UnicastIpAddr::from_str("192.0.2.1").expect("Bad Ip"),
+            SourceMac::try_from("02:00:00:00:00:01").expect("Bad mac"),
+        )
+    }
+
+    fn test_vxlan() -> VxlanEncapsulation {
+        VxlanEncapsulation {
+            vni: Vni::new_checked(100).unwrap(),
+            remote: IpAddr::from([192, 0, 2, 2]),
+            rmac: SourceMac::new(Mac([0x02, 0, 0, 0, 0, 0x02])).unwrap(),
+        }
+    }
+
+    /// A fib entry that encapsulates in vxlan and sends the packet over interface 1
+    fn vxlan_fibentry() -> FibEntry {
+        let mut entry =
+            FibEntry::with_inst(PktInstruction::Encap(Encapsulation::Vxlan(test_vxlan())));
+        entry.add(PktInstruction::Egress(EgressObject::new(
+            InterfaceIndex::try_new(1).ok(),
+            Some(IpAddr::from([192, 0, 2, 2])),
+        )));
+        entry
+    }
 
     /// IPv6 packets need no header checksum refresh before encapsulation.
     #[test]
     fn an_ipv6_packet_without_a_refresh_encapsulates() {
         let forwarder = IpForwarder::new("test", RouterTables::new().fibs());
-        let vtep = Vtep::new(
-            UnicastIpAddr::from_str("192.0.2.1").expect("Bad Ip"),
-            SourceMac::try_from("02:00:00:00:00:01").expect("Bad mac"),
-        );
-        let vxlan = VxlanEncapsulation {
-            vni: Vni::new_checked(100).unwrap(),
-            remote: IpAddr::from([192, 0, 2, 2]),
-            rmac: SourceMac::new(Mac([0x02, 0, 0, 0, 0, 0x02])).unwrap(),
-        };
+        let vtep = test_vtep();
+        let vxlan = test_vxlan();
 
         let mut packet = build_test_ipv6_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();
         assert!(!packet.meta().checksum_refresh());
@@ -464,6 +487,43 @@ mod test {
         assert!(
             packet.meta().dst_vpcd.is_some(),
             "the packet was not encapsulated"
+        );
+    }
+
+    /// A vxlan fib entry is executed: the packet is encapsulated and sent over the interface
+    #[test]
+    fn a_vxlan_entry_with_a_vtep_encapsulates_and_egresses() {
+        let forwarder = IpForwarder::new("test", RouterTables::new().fibs());
+        let vtep = test_vtep();
+        let mut packet = build_test_ipv6_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();
+
+        forwarder.packet_exec_instructions(&mut packet, &vxlan_fibentry(), Some(&vtep));
+
+        assert_eq!(packet.get_done(), None);
+        assert!(
+            packet.meta().dst_vpcd.is_some(),
+            "the packet was not encapsulated"
+        );
+        assert_eq!(packet.meta().oif, InterfaceIndex::try_new(1).ok());
+    }
+
+    /// Without a VTEP a packet can't be encapsulated in vxlan: it is dropped and the
+    /// remaining instructions of the fib entry are not executed
+    #[test]
+    fn a_vxlan_entry_without_a_vtep_drops_the_packet() {
+        let forwarder = IpForwarder::new("test", RouterTables::new().fibs());
+        let mut packet = build_test_ipv6_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();
+
+        forwarder.packet_exec_instructions(&mut packet, &vxlan_fibentry(), None);
+
+        assert_eq!(packet.get_done(), Some(DoneReason::VxlanEncapFailure));
+        assert!(
+            packet.meta().dst_vpcd.is_none(),
+            "the packet should not be encapsulated"
+        );
+        assert!(
+            packet.meta().oif.is_none(),
+            "the egress instruction should not be executed"
         );
     }
 }

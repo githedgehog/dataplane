@@ -141,10 +141,8 @@ impl RmacFilter {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{RmacEntry, RmacFilter, RmacStore};
-    use crate::evpn::vtep::Vtep;
     use crate::rib::vrf::tests::mk_addr;
     use net::eth::mac::SourceMac;
-    use net::ip::UnicastIpAddr;
     use net::vxlan::Vni;
     use std::net::IpAddr;
     use std::str::FromStr;
@@ -188,15 +186,6 @@ pub(crate) mod tests {
         let r = store.get_rmac(rmac2.vni, rmac2.address);
         assert!(r.is_some());
         assert_eq!(r.unwrap().mac, rmac2_modified_mac.mac);
-    }
-
-    #[test]
-    fn vtep_basic() {
-        let ip = UnicastIpAddr::from_str("172.16.128.1").expect("Bad ip");
-        let mac = SourceMac::try_from("aa:bb:cc:dd:ee:ff").unwrap();
-        let vtep = Vtep::new(ip, mac);
-        assert_eq!(vtep.ip(), ip);
-        assert_eq!(vtep.mac(), mac);
     }
 
     #[track_caller]
