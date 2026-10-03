@@ -344,7 +344,7 @@ impl EmbeddedHeaders {
 
     #[inline(always)]
     pub(crate) fn net_ext(&self) -> &[NetExt] {
-        &self.net_ext
+        self.net_ext.as_slice()
     }
 
     #[inline(always)]

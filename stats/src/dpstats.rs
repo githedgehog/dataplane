@@ -853,11 +853,8 @@ impl Stats {
 
 // TODO: compute drop stats
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
-    #[tracing::instrument(level = "trace", skip(self, input))]
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+    #[tracing::instrument(level = "trace", skip(self, burst))]
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
         // amount of spare room in hash table.  Padding a little bit will hopefully save us some
         // reallocations
         const CAPACITY_PAD: usize = 16;
@@ -885,7 +882,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                 }
             }
         }
-        input.filter_map(|mut packet| {
+        for packet in burst.iter_mut() {
             let sdisc = packet.meta().src_vpcd;
             let ddisc = packet.meta().dst_vpcd;
             // A packet must always carry a verdict by the time it reaches this stage. If it does
@@ -951,9 +948,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                     None => trace!("no source or dest discriminants for packet"),
                 },
             }
-            packet.meta_mut().set_keep(false); /* no longer disable enforce */
-            packet.enforce()
-        })
+            // Leave every packet for the driver to transmit, punt, or drop.
+            // Enforcing verdicts here would discard control-plane traffic such as ARP.
+        }
     }
 }
 
@@ -1119,6 +1116,7 @@ mod drop_stats_tests {
     use net::buffer::TestBuffer;
     use net::packet::test_utils::build_test_ipv4_packet;
     use net::vxlan::Vni;
+    use strum::IntoEnumIterator;
 
     fn vpcd(vni: u32) -> VpcDiscriminant {
         VpcDiscriminant::from_vni(Vni::new_checked(vni).expect("valid vni"))
@@ -1154,10 +1152,40 @@ mod drop_stats_tests {
         Stats::with_delivery_schedule("test", PacketStatsWriter(s), Duration::from_secs(3600))
     }
 
-    /// Drive packets through the NF and drop the (lazy) output so accumulation runs and the
-    /// mutable borrow of `stats` ends.
+    /// Process packets and discard the output.
     fn run(stats: &mut Stats, packets: Vec<Packet<TestBuffer>>) {
-        let _drained: Vec<_> = stats.process(packets.into_iter()).collect();
+        let _drained: Vec<_> = stats.process(packets).collect();
+    }
+
+    #[test]
+    fn every_verdict_survives_this_stage() {
+        for verdict in DoneReason::iter() {
+            let mut stats = new_stats();
+            let out: Vec<_> = stats
+                .process(vec![mk_packet(Some(vpcd(1)), Some(vpcd(2)), Some(verdict))])
+                .collect();
+            assert_eq!(
+                out.len(),
+                1,
+                "a packet with verdict {verdict:?} was swallowed by the stats stage; the driver \
+                 never got the chance to punt or drop it"
+            );
+            assert_eq!(
+                out[0].get_done(),
+                Some(verdict),
+                "the stats stage changed the verdict on a {verdict:?} packet"
+            );
+        }
+    }
+
+    #[test]
+    fn a_packet_with_no_verdict_is_marked_and_still_emitted() {
+        let mut stats = new_stats();
+        let out: Vec<_> = stats
+            .process(vec![mk_packet(Some(vpcd(1)), Some(vpcd(2)), None)])
+            .collect();
+        assert_eq!(out.len(), 1, "a verdict-less packet was swallowed");
+        assert_eq!(out[0].get_done(), Some(DoneReason::InternalFailure));
     }
 
     #[test]

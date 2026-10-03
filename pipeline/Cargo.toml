@@ -7,7 +7,6 @@ version.workspace = true
 
 [dependencies]
 concurrency = { workspace = true }
-dyn-iter = { workspace = true }
 id = { workspace = true }
 linkme = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }

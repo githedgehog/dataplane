@@ -24,7 +24,6 @@ use crate::tcp_udp::{TcpUdp, TcpUdpMut};
 use crate::udp::{Udp, UdpChecksum, UdpChecksumPayload, UdpEncap, UdpPort};
 use crate::vlan::{Pcp, Vid, Vlan};
 use crate::vxlan::Vxlan;
-use arrayvec::ArrayVec;
 use core::fmt::Debug;
 use derive_builder::Builder;
 use std::net::IpAddr;
@@ -36,6 +35,8 @@ pub use contract::*;
 
 #[macro_use]
 mod accessor_macros;
+pub mod stack;
+pub use stack::Stack;
 
 mod embedded;
 pub use embedded::*;
@@ -66,12 +67,13 @@ const MAX_NET_EXTENSIONS: usize = 3;
 #[builder(default)]
 pub struct Headers {
     pub(crate) eth: Option<Eth>,
-    pub(crate) vlan: ArrayVec<Vlan, MAX_VLANS>,
+    pub(crate) vlan: Stack<Vlan, MAX_VLANS>,
     pub(crate) net: Option<Net>,
-    pub(crate) net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
+    pub(crate) net_ext: Stack<NetExt, MAX_NET_EXTENSIONS>,
     pub(crate) transport: Option<Transport>,
     pub(crate) udp_encap: Option<UdpEncap>,
-    pub(crate) embedded_ip: Option<EmbeddedHeaders>,
+    /// Boxed to keep packets without ICMP errors small.
+    pub(crate) embedded_ip: Option<Box<EmbeddedHeaders>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -697,8 +699,8 @@ impl Parse for Headers {
             eth: Some(eth.clone()),
             net: None,
             transport: None,
-            vlan: ArrayVec::default(),
-            net_ext: ArrayVec::default(),
+            vlan: Stack::default(),
+            net_ext: Stack::default(),
             udp_encap: None,
             embedded_ip: None,
         };
@@ -774,7 +776,7 @@ impl Parse for Headers {
                         break;
                     }
                 }
-                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(embedded),
+                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(Box::new(embedded)),
             }
             match header {
                 None => {
@@ -823,7 +825,7 @@ impl DeParse for Headers {
         };
         let embedded_ip = self
             .embedded_ip
-            .as_ref()
+            .as_deref()
             .map_or(0, |embedded_header| embedded_header.size().get());
         NonZero::new(eth + vlan + net + net_ext + transport + encap + embedded_ip)
             .unwrap_or_else(|| unreachable!())
@@ -887,7 +889,7 @@ impl DeParse for Headers {
             }
         }
 
-        if let Some(ref embedded_ip) = self.embedded_ip {
+        if let Some(embedded_ip) = self.embedded_ip.as_deref() {
             if matches!(
                 self.transport,
                 Some(Transport::Icmp4(_) | Transport::Icmp6(_))
@@ -948,8 +950,8 @@ impl Headers {
 
     /// Get a reference to the VLAN header stack.
     #[must_use]
-    pub fn vlan(&self) -> &ArrayVec<Vlan, MAX_VLANS> {
-        &self.vlan
+    pub fn vlan(&self) -> &[Vlan] {
+        self.vlan.as_slice()
     }
 
     /// Get a reference to the network (IP) header, if present.
@@ -989,8 +991,8 @@ impl Headers {
     /// Get a reference to the network extension headers (e.g. IPv6 extensions,
     /// IP Authentication headers).
     #[must_use]
-    pub fn net_ext(&self) -> &ArrayVec<NetExt, MAX_NET_EXTENSIONS> {
-        &self.net_ext
+    pub fn net_ext(&self) -> &[NetExt] {
+        self.net_ext.as_slice()
     }
 
     /// Whether this IPv4 or IPv6 packet has a nonzero fragment offset.
@@ -1089,13 +1091,13 @@ impl Headers {
     /// (potentially truncated) copy of the original offending packet.
     #[must_use]
     pub fn embedded_ip(&self) -> Option<&EmbeddedHeaders> {
-        self.embedded_ip.as_ref()
+        self.embedded_ip.as_deref()
     }
 
     /// Get a mutable reference to the embedded IP headers, if present.
     #[must_use]
     pub fn embedded_ip_mut(&mut self) -> Option<&mut EmbeddedHeaders> {
-        self.embedded_ip.as_mut()
+        self.embedded_ip.as_deref_mut()
     }
 
     /// Push a VLAN header to the top of the stack.
@@ -1180,7 +1182,7 @@ impl Headers {
 
     pub(crate) fn transport_payload_len(&self) -> Option<usize> {
         let ip_payload_len = match self.net.as_ref()? {
-            Net::Ipv4(ip) => usize::from(ip.0.payload_len().ok()?),
+            Net::Ipv4(ip) => usize::from(ip.payload_len()?),
             Net::Ipv6(ip) => usize::from(ip.0.payload_length),
         };
         let after_net = self
@@ -1212,7 +1214,7 @@ impl Headers {
         // them later would invalidate transport's payload.
         if let Some(inner_ip) = self
             .embedded_ip
-            .as_mut()
+            .as_deref_mut()
             .and_then(|ip| ip.try_inner_ip_mut())
         {
             inner_ip.update_checksum();
@@ -1227,7 +1229,7 @@ impl Headers {
             trace!("no transport header: can't update checksum");
             return;
         };
-        transport.update_checksum(net, self.embedded_ip.as_ref(), payload.as_ref());
+        transport.update_checksum(net, self.embedded_ip.as_deref(), payload.as_ref());
     }
 }
 
@@ -1496,6 +1498,7 @@ where
 mod contract {
     use crate::eth::ethtype::CommonEthType;
     use crate::eth::{Eth, GenWithEthType};
+    use crate::headers::Stack;
     use crate::headers::{
         EmbeddedHeaders, EmbeddedTransport, Headers, MAX_NET_EXTENSIONS, MAX_VLANS, Net, NetExt,
         Transport,
@@ -1508,7 +1511,6 @@ mod contract {
     use crate::tcp::Tcp;
     use crate::udp::{Udp, UdpEncap};
     use crate::vxlan::Vxlan;
-    use arrayvec::ArrayVec;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
     use std::ops::Bound;
 
@@ -1579,11 +1581,8 @@ mod contract {
         }
     }
 
-    fn ext_run<D: Driver>(
-        driver: &mut D,
-        v4: bool,
-    ) -> Option<ArrayVec<NetExt, MAX_NET_EXTENSIONS>> {
-        let mut out = ArrayVec::default();
+    fn ext_run<D: Driver>(driver: &mut D, v4: bool) -> Option<Stack<NetExt, MAX_NET_EXTENSIONS>> {
+        let mut out = Stack::default();
         let count = driver.gen_usize(Bound::Included(&0), Bound::Included(&MAX_NET_EXTENSIONS))?;
         let ordered = driver.gen_u8(Bound::Included(&0), Bound::Included(&3))? == 0;
         for slot in 0..count {
@@ -1679,7 +1678,7 @@ mod contract {
             };
             let eth = GenWithEthType(eth_type.into()).generate(driver)?;
 
-            let mut quoted_ext = ArrayVec::default();
+            let mut quoted_ext = crate::headers::Stack::default();
             quoted_ext.push(one_ext(driver, self.v4, self.ext)?);
             let quoted_transport = EmbeddedTransport::Tcp(driver.produce()?);
 
@@ -1711,17 +1710,17 @@ mod contract {
 
             Some(Headers {
                 eth: Some(eth),
-                vlan: ArrayVec::default(),
+                vlan: Stack::default(),
                 net: Some(net),
-                net_ext: ArrayVec::default(),
+                net_ext: Stack::default(),
                 transport: Some(transport),
                 udp_encap: None,
-                embedded_ip: Some(EmbeddedHeaders::new(
+                embedded_ip: Some(Box::new(EmbeddedHeaders::new(
                     Some(quoted_net),
                     Some(quoted_transport),
                     quoted_ext,
                     None,
-                )),
+                ))),
             })
         }
     }
@@ -1742,7 +1741,7 @@ mod contract {
             };
             let eth = GenWithEthType(eth_type.into()).generate(driver)?;
 
-            let mut vlan = ArrayVec::default();
+            let mut vlan = Stack::default();
             let vlans = driver.gen_usize(Bound::Included(&0), Bound::Included(&MAX_VLANS))?;
             for _ in 0..vlans {
                 vlan.push(driver.produce()?);
@@ -1759,7 +1758,7 @@ mod contract {
             };
 
             let embedded_ip = if driver.produce::<bool>()? {
-                Some(quoted_packet(driver, outer_v4)?)
+                Some(Box::new(quoted_packet(driver, outer_v4)?))
             } else {
                 None
             };
@@ -1778,7 +1777,7 @@ mod contract {
 
     fn quoted_packet<D: Driver>(driver: &mut D, outer_v4: bool) -> Option<EmbeddedHeaders> {
         if driver.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0 {
-            return Some(EmbeddedHeaders::new(None, None, ArrayVec::default(), None));
+            return Some(EmbeddedHeaders::new(None, None, Stack::default(), None));
         }
         let mismatch = driver.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0;
         let v4 = outer_v4 != mismatch;
@@ -1836,9 +1835,9 @@ mod contract {
                             let tcp: Tcp = driver.produce()?;
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: ArrayVec::default(),
+                                vlan: Stack::default(),
                                 net: Some(Net::Ipv4(ipv4)),
-                                net_ext: ArrayVec::default(),
+                                net_ext: Stack::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
                                 embedded_ip: None,
@@ -1855,9 +1854,9 @@ mod contract {
                             };
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: ArrayVec::default(),
+                                vlan: Stack::default(),
                                 net: Some(Net::Ipv4(ipv4)),
-                                net_ext: ArrayVec::default(),
+                                net_ext: Stack::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
                                 embedded_ip: None,
@@ -1868,9 +1867,9 @@ mod contract {
                             let icmp: Icmp4 = driver.produce()?;
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: ArrayVec::default(),
+                                vlan: Stack::default(),
                                 net: Some(Net::Ipv4(ipv4)),
-                                net_ext: ArrayVec::default(),
+                                net_ext: Stack::default(),
                                 transport: Some(Transport::Icmp4(icmp)),
                                 udp_encap: None,
                                 embedded_ip: None,
@@ -1888,9 +1887,9 @@ mod contract {
                             let tcp: Tcp = driver.produce()?;
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: ArrayVec::default(),
+                                vlan: Stack::default(),
                                 net: Some(Net::Ipv6(ipv6)),
-                                net_ext: ArrayVec::default(),
+                                net_ext: Stack::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
                                 embedded_ip: None,
@@ -1907,9 +1906,9 @@ mod contract {
                             };
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: ArrayVec::default(),
+                                vlan: Stack::default(),
                                 net: Some(Net::Ipv6(ipv6)),
-                                net_ext: ArrayVec::default(),
+                                net_ext: Stack::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
                                 embedded_ip: None,
@@ -1920,9 +1919,9 @@ mod contract {
                             let icmp6: Icmp6 = driver.produce()?;
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: ArrayVec::default(),
+                                vlan: Stack::default(),
                                 net: Some(Net::Ipv6(ipv6)),
-                                net_ext: ArrayVec::default(),
+                                net_ext: Stack::default(),
                                 transport: Some(Transport::Icmp6(icmp6)),
                                 udp_encap: None,
                                 embedded_ip: None,
