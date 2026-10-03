@@ -18,7 +18,7 @@ use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue};
 use crate::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use crate::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use crate::socket::SocketId;
-use dpdk_sys::rte_eth_rx_mq_mode::RTE_ETH_MQ_RX_RSS;
+use dpdk_sys::rte_eth_rx_mq_mode::{RTE_ETH_MQ_RX_NONE, RTE_ETH_MQ_RX_RSS};
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
@@ -193,6 +193,16 @@ impl From<DevIndex> for u16 {
     }
 }
 
+/// RSS parameters applied before receive queues are created.
+/// mlx5 requires this order to deliver RSS hashes in mbufs.
+#[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
+pub struct RssConf {
+    /// The Toeplitz RSS key.  mlx5 expects exactly 40 bytes (its `hash_key_size`).
+    pub key: [u8; 40],
+    /// The set of `RTE_ETH_RSS_*` hash types to hash over (e.g. `RTE_ETH_RSS_IPV4`).
+    pub hf: u64,
+}
+
 #[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
 /// TODO: add `rx_offloads` support
 pub struct DevConfig {
@@ -219,6 +229,9 @@ pub struct DevConfig {
     /// Requested MTU. `None` uses [`DEFAULT_MTU`] clamped to device limits;
     /// an explicit value outside those limits returns [`DevConfigError::MtuOutOfRange`].
     pub mtu: Option<u16>,
+    /// RSS hashing configuration applied at configure time.  `None` leaves RSS hashing off
+    /// (`rss_hf = 0`), so the NIC computes no hash and reports none in the mbuf.
+    pub rss: Option<RssConf>,
 }
 
 #[derive(Debug)]
@@ -235,6 +248,8 @@ pub enum DevConfigError {
         /// The device's maximum supported MTU.
         max: u16,
     },
+    /// RSS hashing was requested but the device advertises no RSS hash functions.
+    RssUnsupported,
 }
 
 impl DevConfig {
@@ -263,7 +278,12 @@ impl DevConfig {
     pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
         let mtu = self.resolve_mtu(&dev)?;
-        let eth_conf = rte_eth_conf {
+        if self.rss.is_some() && !dev.supports_rss() {
+            return Err(DevConfigError::RssUnsupported);
+        }
+        // Keep the RSS key alive until rte_eth_dev_configure copies it.
+        let mut rss_key_buf: [u8; 40];
+        let mut eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
                 offloads: {
@@ -277,7 +297,12 @@ impl DevConfig {
             },
             rxmode: rte_eth_rxmode {
                 mtu: u32::from(mtu),
-                mq_mode: RTE_ETH_MQ_RX_RSS,
+                // Devices without RSS support reject RTE_ETH_MQ_RX_RSS.
+                mq_mode: if dev.supports_rss() {
+                    RTE_ETH_MQ_RX_RSS
+                } else {
+                    RTE_ETH_MQ_RX_NONE
+                },
                 // Used only when TCP LRO is enabled; zero requests the driver default.
                 max_lro_pkt_size: dev.inner.max_lro_pkt_size,
                 offloads: {
@@ -289,6 +314,15 @@ impl DevConfig {
             },
             ..Default::default()
         };
+
+        if let Some(rss) = self.rss {
+            rss_key_buf = rss.key;
+            let mut rss_conf: rte_eth_rss_conf = unsafe { core::mem::zeroed() };
+            rss_conf.rss_key = rss_key_buf.as_mut_ptr();
+            rss_conf.rss_key_len = rss_key_buf.len() as u8;
+            rss_conf.rss_hf = rss.hf;
+            eth_conf.rx_adv_conf.rss_conf = rss_conf;
+        }
 
         let nb_rx_queues = self.num_rx_queues + self.num_hairpin_queues;
         let nb_tx_queues = self.num_tx_queues + self.num_hairpin_queues;
@@ -792,6 +826,12 @@ impl DevInfo {
     #[must_use]
     pub fn min_mtu(&self) -> u16 {
         self.inner.min_mtu
+    }
+
+    /// Whether the device advertises RSS support.
+    #[must_use]
+    pub fn supports_rss(&self) -> bool {
+        self.inner.flow_type_rss_offloads != 0
     }
 }
 
