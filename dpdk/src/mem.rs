@@ -345,6 +345,37 @@ pub struct PoolParams {
     pub socket_id: SocketId,
 }
 
+/// What [`PoolParams::default`] offers for a data room, and the floor [`mbuf_data_room`] keeps.
+pub const DEFAULT_MBUF_DATA_ROOM: u16 = 2048;
+
+/// The mbuf data room a port needs to receive a full frame at `mtu` in a single buffer.
+///
+/// A receive queue is set up against a pool, and the driver checks that the pool's mbufs can hold
+/// a whole frame. An mlx5 whose mbufs are too small refuses the queue with `ENOMEM` -- which reads
+/// as "out of memory" and actually means "these buffers are too small for the MTU you configured".
+///
+/// [`PoolParams::default`] offers 2048 bytes, 128 of which is DPDK's headroom, so 1920 usable.
+/// That was invisible while every port silently took the 1500 MTU default, and became a startup
+/// failure the moment one was configured for a 9000-byte fabric.
+///
+/// The frame is the MTU plus its Ethernet header, a VLAN tag it may carry and the CRC, with the
+/// headroom in front of all of it; rounded up to a kibibyte because a pool is allocated once and
+/// the slack is worth more than the bytes.
+///
+/// **This multiplies.** A pool holds one of these per mbuf and a busy port wants on the order of a
+/// hundred thousand, so the difference between a 2 KiB and a 9 KiB room is the difference between
+/// roughly 200 MiB and 900 MiB of hugepages. Callers should say what they reserved.
+#[must_use]
+pub fn mbuf_data_room(mtu: u16) -> u16 {
+    #[allow(clippy::cast_possible_truncation)] // every constant here is far below u16::MAX
+    let overhead = (dpdk_sys::RTE_PKTMBUF_HEADROOM
+        + dpdk_sys::RTE_ETHER_HDR_LEN
+        + dpdk_sys::RTE_VLAN_HLEN
+        + dpdk_sys::RTE_ETHER_CRC_LEN) as u16;
+    let needed = mtu.saturating_add(overhead).max(DEFAULT_MBUF_DATA_ROOM);
+    needed.checked_next_multiple_of(1024).unwrap_or(u16::MAX)
+}
+
 impl Default for PoolParams {
     // TODO: not sure if these defaults are sensible.
     fn default() -> PoolParams {
@@ -1394,5 +1425,48 @@ mod tests {
         }
         let ok = pool.alloc_bulk(15).expect("pool should still be full");
         assert_eq!(ok.len(), 15);
+    }
+}
+
+#[cfg(test)]
+mod mbuf_data_room_test {
+    use super::{DEFAULT_MBUF_DATA_ROOM, mbuf_data_room};
+
+    /// A jumbo MTU must get a room that actually holds the frame.
+    ///
+    /// This is the check that was missing. Every port took the 1500 default, the pool's 1920
+    /// usable bytes covered it, and the first port configured for a 9000-byte fabric failed its
+    /// receive-queue setup with `ENOMEM` -- a message that points at memory exhaustion rather than
+    /// at a buffer that cannot hold a frame.
+    #[test]
+    fn a_jumbo_mtu_gets_a_room_that_holds_the_frame() {
+        let room = mbuf_data_room(8986);
+        // 128 headroom + 14 eth + 4 vlan + 4 crc = 150 bytes in front of and behind the MTU.
+        assert!(
+            room >= 8986 + 150,
+            "{room} cannot hold an 8986 MTU frame plus headroom"
+        );
+        assert!(room > DEFAULT_MBUF_DATA_ROOM, "and must exceed the default");
+    }
+
+    /// A small MTU must not shrink the pool below what a burst needs.
+    #[test]
+    fn a_small_mtu_keeps_the_default_floor() {
+        assert_eq!(mbuf_data_room(1500), DEFAULT_MBUF_DATA_ROOM);
+        assert_eq!(mbuf_data_room(68), DEFAULT_MBUF_DATA_ROOM);
+        assert_eq!(mbuf_data_room(0), DEFAULT_MBUF_DATA_ROOM);
+    }
+
+    /// The result is a whole number of kibibytes, and an absurd MTU saturates rather than wraps.
+    #[test]
+    fn the_room_is_rounded_and_never_wraps() {
+        for mtu in [1500u16, 4000, 8986, 9000, 9216, 16384] {
+            let room = mbuf_data_room(mtu);
+            assert_eq!(room % 1024, 0, "{room} for mtu {mtu} is not a whole KiB");
+            assert!(room >= mtu, "{room} is smaller than the mtu {mtu} itself");
+        }
+        // Wrapping here would hand the pool a tiny room and fail queue setup in a way that looks
+        // like the bug this function exists to prevent.
+        assert_eq!(mbuf_data_room(u16::MAX), u16::MAX);
     }
 }

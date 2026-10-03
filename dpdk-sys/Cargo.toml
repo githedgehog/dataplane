@@ -11,5 +11,6 @@ doc = false
 
 [build-dependencies]
 bindgen = { workspace = true, features = ["runtime", "experimental"]}
+cc = { workspace = true }
 doxygen-bindgen = { workspace = true }
 dpdk-sysroot-helper = { workspace = true }
