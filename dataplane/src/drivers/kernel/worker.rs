@@ -135,7 +135,7 @@ fn create_worker_interface(
 pub struct Worker {
     id: WorkerId,
     total_workers: usize,
-    setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
+    setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
     subsystem: Subsystem,
 }
 
@@ -143,7 +143,7 @@ impl Worker {
     pub fn new(
         id: WorkerId,
         total_workers: usize,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
+        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
         subsystem: Subsystem,
     ) -> Self {
         Worker {
@@ -163,7 +163,7 @@ impl Worker {
         id: WorkerId,
         intf: WorkerInterfaceReader,
         reader_handles: &mut tokio::task::JoinSet<()>,
-        setup: Arc<dyn Fn() -> DynPipeline<TestBuffer> + Send + Sync>,
+        setup: Arc<dyn Fn() -> DynPipeline<'static, TestBuffer> + Send + Sync>,
         if_table: Arc<HashMap<InterfaceIndex, Arc<Mutex<WorkerInterfaceWriter>>>>,
         cancel: CancellationToken,
     ) {

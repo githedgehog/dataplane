@@ -25,10 +25,39 @@ pub trait PacketLength {
 }
 
 /// Super trait representing the abstract operations which may be performed on a packet buffer.
-pub trait PacketBuffer: AsRef<[u8]> + Headroom + PacketLength + Debug + 'static {}
-impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + PacketLength + Debug + 'static {}
+///
+/// # Why there is no `'static` bound
+///
+/// There was one, and it made the production buffer type unrepresentable.
+///
+/// A DPDK `Mbuf` is branded with the lifetime of the `Eal` it was allocated under, so that an mbuf
+/// whose `Drop` would free into a dismantled mempool cannot be written. That brand makes it not
+/// `'static`, and a `'static` bound here therefore excluded the one buffer the dataplane actually
+/// runs on, leaving `TestBuffer` as the only inhabitant of its own abstraction.
+///
+/// The bound was never a property of packet buffers in any case. It was there to satisfy
+/// `DynNetworkFunction: Any`, which backed a runtime downcast of a pipeline stage to its concrete
+/// type -- a facility with no production caller. `TypeId` requires `'static` for soundness, so that
+/// downcast and a borrowed buffer are mutually exclusive; the downcast was the one that had to go.
+pub trait PacketBuffer: AsRef<[u8]> + Headroom + PacketLength + Debug {}
+impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + PacketLength + Debug {}
 
 /// Super trait representing the abstract operations which may be performed on mutable a packet buffer.
+///
+/// # Why there is no `Send` bound
+///
+/// Also removed, and for a stronger reason than the `'static` one: requiring `Send` here asserted
+/// something about DPDK mbufs that is false.
+///
+/// An `Mbuf` is deliberately `!Send`: mbufs stay on the lcore that received them, where the
+/// mempool's per-lcore cache makes allocation and free cheap, and anything leaving the datapath
+/// copies out what it needs.
+///
+/// So the bound could not be satisfied by the real buffer, and demanding it here would have forced
+/// an `unsafe impl Send` that contradicts that design. Nothing needed it:
+/// removing it produced no error anywhere in the workspace. A network function that genuinely
+/// requires its buffers to be `Send` should say so itself rather than conscripting every buffer
+/// into the claim.
 pub trait PacketBufferMut:
     PacketBuffer + AsMut<[u8]> + Prepend + TrimFromStart + TrimFromEnd + Headroom + Tailroom
 {
