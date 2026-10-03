@@ -28,6 +28,8 @@ use net::buffer::{
 use std::ffi::CString;
 
 #[cfg(test)]
+mod buffer_tests;
+#[cfg(test)]
 mod tests;
 
 /// DPDK memory manager
@@ -493,7 +495,7 @@ impl Headroom for Mbuf {
 
 impl Tailroom for Mbuf {
     fn tailroom(&self) -> u16 {
-        unsafe { rte_pktmbuf_tailroom(self.raw.as_ptr()) }
+        unsafe { rte_pktmbuf_tailroom(self.last_segment().as_ptr()) }
     }
 }
 
@@ -529,7 +531,8 @@ impl TrimFromEnd for Mbuf {
 
     fn trim_from_end(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
         match unsafe { rte_pktmbuf_trim(self.raw.as_ptr(), len) } {
-            0 => Ok(self.raw_data_mut()),
+            // SAFETY: the tail is live and borrowed through `&mut self`.
+            0 => Ok(unsafe { self.segment_data_mut(self.last_segment()) }),
             -1 => Err(MbufManipulationError::NotLongEnough),
             // TODO: this only happens when DPDK has a programmer error (deviation from docs)
             ret => {
@@ -569,16 +572,10 @@ impl Mbuf {
         raw
     }
 
-    /// Get an immutable ref to the raw data of an Mbuf
-    ///
-    /// TODO: deal with multi segment packets
+    /// Get the contiguous bytes of the head segment.
     #[must_use]
     #[tracing::instrument(level = "trace")]
     pub fn raw_data(&self) -> &[u8] {
-        debug_assert!(
-            unsafe { self.raw.as_ref().annon1.annon1.nb_segs } == 1,
-            "multi seg packets not properly supported yet"
-        );
         let pkt_data_start = unsafe {
             (self.raw.as_ref().buf_addr as *const u8)
                 .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
@@ -591,25 +588,28 @@ impl Mbuf {
         }
     }
 
-    // TODO: deal with multi seg packets
-    /// Get a mutable ref to the raw data of an Mbuf (usually the binary contents of a packet).
+    /// Get mutable access to the head segment.
     #[must_use]
     #[tracing::instrument(level = "trace")]
     pub fn raw_data_mut(&mut self) -> &mut [u8] {
+        // SAFETY: the head is live and borrowed through `&mut self`.
+        unsafe { self.segment_data_mut(self.raw) }
+    }
+
+    fn last_segment(&self) -> NonNull<dpdk_sys::rte_mbuf> {
+        // SAFETY: a live packet always has at least one segment.
+        unsafe { NonNull::new_unchecked(dpdk_sys::rte_pktmbuf_lastseg(self.raw.as_ptr())) }
+    }
+
+    // SAFETY: `segment` must belong to this chain.
+    unsafe fn segment_data_mut(&mut self, segment: NonNull<dpdk_sys::rte_mbuf>) -> &mut [u8] {
         unsafe {
-            if self.raw.as_ref().annon1.annon1.nb_segs > 1 {
-                error!("multi seg packets not supported yet");
-            }
-            let data_start = self
-                .raw
-                .as_mut()
+            let seg = segment.as_ref();
+            let start = seg
                 .buf_addr
-                .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
-                .cast::<u8>();
-            from_raw_parts_mut(
-                data_start,
-                self.raw.as_ref().annon2.annon1.data_len as usize,
-            )
+                .cast::<u8>()
+                .add(seg.annon1.annon1.data_off as usize);
+            from_raw_parts_mut(start, seg.annon2.annon1.data_len as usize)
         }
     }
 
@@ -624,10 +624,12 @@ impl Mbuf {
 
     #[tracing::instrument(level = "trace")]
     fn append_to_tailroom(&mut self, len: u16) -> Result<&mut [u8], NotEnoughTailRoom> {
+        let tail = self.last_segment();
         let val = unsafe { rte_pktmbuf_append(self.raw.as_mut(), len) };
         match NonNull::new(val) {
             None => Err(NotEnoughTailRoom),
-            Some(_) => Ok(self.raw_data_mut()),
+            // SAFETY: the tail is live and borrowed through `&mut self`.
+            Some(_) => Ok(unsafe { self.segment_data_mut(tail) }),
         }
     }
 }
