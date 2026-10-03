@@ -22,7 +22,10 @@ use dpdk_sys::{
     rte_pktmbuf_adj, rte_pktmbuf_append, rte_pktmbuf_headroom, rte_pktmbuf_prepend,
     rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
-use net::buffer::{Append, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
+use net::buffer::{
+    Append, DeepCopy, Headroom, NotWritable, PacketLength, Prepend, Tailroom, TrimFromEnd,
+    TrimFromStart, TryAsMut,
+};
 use std::ffi::CString;
 
 #[cfg(test)]
@@ -431,6 +434,30 @@ pub struct Mbuf {
 // dpdk_sys::rte_mbuf is Send but not Sync since it is a plain C pointer
 unsafe impl Send for Mbuf {}
 
+/// Failure to deep-copy an [`Mbuf`] (the destination pool could not supply a fresh mbuf).
+#[non_exhaustive]
+#[repr(transparent)]
+#[derive(Debug, thiserror::Error)]
+#[error("failed to deep-copy mbuf: source pool exhausted")]
+pub struct MbufCopyError;
+
+impl DeepCopy for Mbuf {
+    type Error = MbufCopyError;
+
+    /// Copy the entire segment chain into independent buffers from the same pool.
+    fn deep_copy(&self) -> Result<Mbuf, MbufCopyError> {
+        // SAFETY: `self.raw` is a live mbuf; reading its originating `pool` pointer is sound.
+        let pool = unsafe { self.raw.as_ref().pool };
+        // A length of `u32::MAX` copies from offset 0 through the end of the packet.
+        let copy = unsafe { dpdk_sys::rte_pktmbuf_copy(self.raw.as_ptr(), pool, 0, u32::MAX) };
+        match NonNull::new(copy) {
+            // SAFETY: `rte_pktmbuf_copy` returned a freshly allocated mbuf chain that we now own.
+            Some(_) => Ok(unsafe { Mbuf::new_from_raw_unchecked(copy) }),
+            None => Err(MbufCopyError),
+        }
+    }
+}
+
 impl Drop for Mbuf {
     fn drop(&mut self) {
         unsafe {
@@ -445,9 +472,33 @@ impl AsRef<[u8]> for Mbuf {
     }
 }
 
-impl AsMut<[u8]> for Mbuf {
-    fn as_mut(&mut self) -> &mut [u8] {
-        self.raw_data_mut()
+impl PacketLength for Mbuf {
+    fn packet_len(&self) -> usize {
+        // SAFETY: `self.raw` is live and `pkt_len` is valid for packet mbufs.
+        // It includes all segments; `data_len` covers only the head.
+        unsafe { self.raw.as_ref().annon2.annon1.pkt_len as usize }
+    }
+}
+
+impl TryAsMut for Mbuf {
+    fn try_as_mut(&mut self) -> Result<&mut [u8], NotWritable> {
+        if self.is_writable() {
+            Ok(self.raw_data_mut())
+        } else {
+            Err(NotWritable)
+        }
+    }
+}
+
+impl Mbuf {
+    /// Whether the mbuf is direct, internally backed, and uniquely owned.
+    #[must_use]
+    fn is_writable(&self) -> bool {
+        // SAFETY: `self.raw` is a live mbuf for the lifetime of `&self`.
+        let attached = unsafe { self.raw.as_ref() }.ol_flags
+            & (dpdk_sys::RTE_MBUF_F_INDIRECT | dpdk_sys::RTE_MBUF_F_EXTERNAL)
+            != 0;
+        !attached && unsafe { dpdk_sys::rte_mbuf_refcnt_read(self.raw.as_ptr()) } == 1
     }
 }
 
