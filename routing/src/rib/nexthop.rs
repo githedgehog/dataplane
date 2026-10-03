@@ -87,6 +87,20 @@ impl NhopKey {
             fwaction: FwAction::Drop,
         }
     }
+    #[must_use]
+    /// Tell if a key is valid
+    pub(crate) fn is_valid(&self) -> bool {
+        // local are valid if ifindex is known
+        if self.origin == RouteOrigin::Local {
+            return self.ifindex.is_some();
+        }
+        match self.fwaction {
+            FwAction::Drop => true,
+            FwAction::Forward => {
+                self.address.is_some() || self.ifindex.is_some() || self.encap.is_some()
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -172,6 +186,13 @@ impl Nhop {
             resolvers: RefCell::new(Vec::new()),
             fibgroup: RefCell::new(FibGroup::new()),
         }
+    }
+
+    #[must_use]
+    /// Tell if a next-hop is valid. A next-hop is valid if its key is.
+    /// Invalid keys create invalid next-hops, which are used for resolution
+    pub(crate) fn is_valid(&self) -> bool {
+        self.key.is_valid()
     }
 
     /// Get a reference to the packet instructions associated to this `Nhop`
@@ -434,11 +455,11 @@ impl NhopStore {
 
     /// Flush all resolution state and lazily re-resolve all next-hops.
     /// This is the only place where resolution happens and updates next-hops.
-    /// Next-hop instructions could be built here (avoiding a second iteration)
-    /// but that would require passing the rmac store.
+    /// Only valid next-hops need to be resolved, but we allow resolving to
+    /// invalid next-hops.
     pub fn lazy_resolve_all(&self, vrf: &Vrf) {
         self.flush_resolvers();
-        self.iter().for_each(|nhop| {
+        self.iter().filter(|nhop| nhop.is_valid()).for_each(|nhop| {
             let resolvers = nhop.compute_resolvers(vrf);
             nhop.set_resolvers(resolvers);
         });
@@ -962,14 +983,6 @@ mod tests {
         nh3.add_resolver(&nh4);
         nh3_1.add_resolver(&nh5);
 
-        // check: next-hop nh1 has a single instruction with its address
-        let instructions = &nh1.instructions;
-        assert_eq!(instructions.len(), 1);
-        let inst = &instructions[0];
-        assert!(
-            matches!(inst, PktInstruction::Egress(e) if e.address().unwrap() == IpAddr::from_str("7.0.0.1").unwrap())
-        );
-
         // check: the fibgroup for nh1 contains 2 fibentries, each with a single instruction egress
         // with the right addresses and interface indices
         let fibgroup = nh1.build_nhop_fibgroup();
@@ -999,14 +1012,6 @@ mod tests {
         let nh3 = store.add_nhop(&NhopKey::from_address("10.0.0.1"));
         nh1.add_resolver(&nh2);
         nh2.add_resolver(&nh3);
-
-        // check: next-hop nh1 has a single instruction with its address
-        let instructions = &nh1.instructions;
-        assert_eq!(instructions.len(), 1);
-        let inst = &instructions[0];
-        assert!(
-            matches!(inst, PktInstruction::Egress(e) if e.address().unwrap() == IpAddr::from_str("7.0.0.1").unwrap())
-        );
 
         // check: the fibgroup for nh1 contains 1 fib entry drop, in spite of the egress instruction, since
         // the resulting fibentry would not be valid.

@@ -844,10 +844,7 @@ mod tests {
 
     #[rustfmt::skip]
     fn test_vrf_fibgroup(mut vrf: Vrf) {
-        vrf.nhstore.lazy_resolve_all(&vrf);
-        vrf.nhstore.rebuild_fibgroups();
-        // this is equivalent to vrf.refresh_fib(&rstore, None);
-
+        // N.B. add_route() refreshes the fib, so next-hops are resolved and fibgroups built
         print!("{}", Frame("Initial fibgroups"));
         show_fibgroups(&vrf, "8.0.0.1");
         show_fibgroups(&vrf, "8.0.0.2");
@@ -880,7 +877,6 @@ mod tests {
         }
 
         mod_test_vrf_1(&mut vrf);
-        vrf.refresh_fib( None);
         vrf.dump(Some("After removing path via 10.0.0.5"));
 
         show_fibgroups(&vrf, "8.0.0.1");
@@ -911,7 +907,6 @@ mod tests {
 
 
         mod_test_vrf_2(&mut vrf);
-        vrf.refresh_fib(None);
 
         show_fibgroups(&vrf, "8.0.0.1");
         show_fibgroups(&vrf, "7.0.0.1");
@@ -939,7 +934,6 @@ mod tests {
 
 
         init_test_vrf(&mut vrf);
-        vrf.refresh_fib( None);
         show_fibgroups(&vrf, "192.168.0.1");
 
         let (_, route) = vrf.lpm(destination);
