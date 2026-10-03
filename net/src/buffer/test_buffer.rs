@@ -118,6 +118,10 @@ impl PacketLength for TestBuffer {
     fn packet_len(&self) -> usize {
         self.as_ref().len()
     }
+
+    fn is_chained(&self) -> bool {
+        false
+    }
 }
 
 impl Headroom for TestBuffer {
