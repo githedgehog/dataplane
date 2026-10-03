@@ -291,7 +291,7 @@ mod nf_test {
             };
             first.meta_mut().set_keep(true);
             let first_key = net::FlowKey::try_from(&first).unwrap();
-            let mut conflicting = first.clone();
+            let mut conflicting = first.deep_copy().expect("copy test packet");
             conflicting
                 .set_ip_destination("70.71.72.74".parse().unwrap())
                 .unwrap();
