@@ -5,3 +5,6 @@
 pub mod hairpin;
 pub mod rx;
 pub mod tx;
+
+#[cfg(test)]
+mod tests;

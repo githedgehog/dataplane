@@ -25,6 +25,9 @@ use dpdk_sys::{
 use net::buffer::{Append, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
 use std::ffi::CString;
 
+#[cfg(test)]
+mod tests;
+
 /// DPDK memory manager
 #[repr(transparent)]
 #[derive(Debug)]
@@ -145,6 +148,9 @@ impl Pool {
     /// Returns [`MbufAllocError::TooMany`] above [`MBUF_BURST`], or
     /// [`MbufAllocError::Exhausted`] if the pool cannot supply the entire batch.
     pub fn alloc_bulk(&self, num: usize) -> Result<MbufArray, MbufAllocError> {
+        if num == 0 {
+            return Ok(MbufArray::new_empty());
+        }
         if num > MBUF_BURST {
             return Err(MbufAllocError::TooMany {
                 requested: num,
