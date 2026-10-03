@@ -1519,7 +1519,11 @@ mod tests {
         let baseline = pool.in_use();
 
         let mut burst = pool.alloc_bulk(8).expect("alloc_bulk failed");
-        assert_eq!(pool.in_use(), baseline + 8, "allocation should be accounted");
+        assert_eq!(
+            pool.in_use(),
+            baseline + 8,
+            "allocation should be accounted"
+        );
 
         // Stand in for the PMD: hand back four freshly allocated mbufs, written straight into
         // the array's storage the way `rte_eth_rx_burst` would.
@@ -1540,7 +1544,11 @@ mod tests {
             });
         }
 
-        assert_eq!(burst.len(), 4, "the array should hold what the filler wrote");
+        assert_eq!(
+            burst.len(),
+            4,
+            "the array should hold what the filler wrote"
+        );
         assert_eq!(
             pool.in_use(),
             baseline + 4,
@@ -1582,7 +1590,11 @@ mod tests {
         );
 
         drop(drained);
-        assert_eq!(pool.in_use(), baseline, "the drained mbufs free exactly once");
+        assert_eq!(
+            pool.in_use(),
+            baseline,
+            "the drained mbufs free exactly once"
+        );
     }
 
     /// Guarding the wrong pool would keep the wrong memory alive, so it is rejected -- and the
