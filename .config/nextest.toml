@@ -199,6 +199,11 @@ threads-required = "num-test-threads"
 [test-groups]
 vm = { max-threads = 1 }
 
+# A TX retry regression must fail instead of spinning forever on a full ring.
+[[profile.default.overrides]]
+filter = 'package(dataplane-dpdk) & test(queue::tests::)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # Find hung tests by stopping each test after 10 seconds and the run after five minutes. These
 # limits can also stop valid, slow tests. Rerun reported tests with a normal profile.
 [profile.scratch]
