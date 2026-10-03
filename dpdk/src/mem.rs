@@ -496,6 +496,61 @@ impl Mbuf {
     }
 }
 
+impl Mbuf {
+    /// Receive offload flags (`RTE_MBUF_F_RX_*`) reported by the PMD.
+    #[must_use]
+    pub fn ol_flags(&self) -> u64 {
+        // SAFETY: `self.raw` is a live mbuf for the lifetime of `&self`.
+        unsafe { self.raw.as_ref() }.ol_flags
+    }
+
+    /// The NIC-reported RSS hash, or `None` when `RTE_MBUF_F_RX_RSS_HASH` is clear.
+    #[must_use]
+    pub fn rss_hash(&self) -> Option<u32> {
+        if self.ol_flags() & u64::from(dpdk_sys::RTE_MBUF_F_RX_RSS_HASH) == 0 {
+            return None;
+        }
+        // SAFETY: the flag above certifies `hash.rss` is the active union member; `self.raw` is a
+        // live mbuf for the lifetime of `&self`.
+        Some(unsafe { self.raw.as_ref().annon2.annon1.annon2.hash.rss })
+    }
+
+    /// The flow `MARK` value, or `None` when `RTE_MBUF_F_RX_FDIR_ID` is clear.
+    #[must_use]
+    pub fn rx_mark(&self) -> Option<u32> {
+        if self.ol_flags() & u64::from(dpdk_sys::RTE_MBUF_F_RX_FDIR_ID) == 0 {
+            return None;
+        }
+        // SAFETY: the flag above certifies the FDIR id (`hash.fdir.hi`) is valid; `self.raw` is a
+        // live mbuf for the lifetime of `&self`.
+        Some(unsafe { self.raw.as_ref().annon2.annon1.annon2.hash.fdir.hi })
+    }
+
+    /// The flow `META` value, or `None` if absent.
+    ///
+    /// Requires [`rte_flow_dynf_metadata_register`](dpdk_sys::rte_flow_dynf_metadata_register);
+    /// returns `None` until registration succeeds.
+    #[must_use]
+    pub fn rx_meta(&self) -> Option<u32> {
+        // SAFETY: copy the registered mask without creating a reference to the static.
+        let mask = unsafe { dpdk_sys::rte_flow_dynf_metadata_mask };
+        if mask == 0 || self.ol_flags() & mask == 0 {
+            return None;
+        }
+        let offs = unsafe { dpdk_sys::rte_flow_dynf_metadata_offs };
+        // SAFETY: registration provides the field offset; the flag confirms the
+        // field is populated, and `self.raw` remains live for this read.
+        let ptr = unsafe {
+            self.raw
+                .as_ptr()
+                .cast::<u8>()
+                .add(offs as usize)
+                .cast::<u32>()
+        };
+        Some(unsafe { ptr.read_unaligned() })
+    }
+}
+
 impl Headroom for Mbuf {
     fn headroom(&self) -> u16 {
         unsafe { rte_pktmbuf_headroom(self.raw.as_ptr()) }
