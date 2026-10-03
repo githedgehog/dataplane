@@ -196,6 +196,11 @@ test-group = 'vm'
 filter = 'package(dataplane) & test(packet_processor::fuzz::)'
 threads-required = "num-test-threads"
 
+# A TX retry regression must fail instead of spinning forever on a full ring.
+[[profile.default.overrides]]
+filter = 'package(dataplane-dpdk) & test(queue::tests::)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 [test-groups]
 vm = { max-threads = 1 }
 
