@@ -372,7 +372,7 @@ impl From<MemFile> for FinalizedMemFile {
 #[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct GeneralConfigSection {
     /// Name to give to this dataplane/gateway
-    name: Option<String>,
+    pub name: Option<String>,
 }
 
 /// Configuration for the packet processing driver used by the dataplane.
@@ -426,6 +426,22 @@ pub struct DpdkDriverConfigSection {
     pub interfaces: Vec<InterfaceArg>,
     /// DPDK EAL (Environment Abstraction Layer) initialization arguments
     pub eal_args: Vec<String>,
+    /// Packet-processing worker threads to run, each owning one rx/tx queue pair per port
+    pub num_workers: u16,
+    /// Whether to isolate the packet path in its own network namespace.
+    ///
+    /// When set, `dataplane-init` creates a network namespace, moves the configured devices into
+    /// it, and hands it to the dataplane as a descriptor. Only the datapath thread runs there.
+    ///
+    /// It also implies a **control** namespace: with the physical devices gone from where the
+    /// dataplane runs, the taps that stand in for them can take the configured interface names,
+    /// which is what makes FRR and the routing tables find them. `dataplane-init` enters that
+    /// namespace before `exec`, so the whole dataplane is in it. See `--control-netns`.
+    ///
+    /// This is meaningful for bifurcated drivers such as mlx5, where the device is still a kernel
+    /// netdev and can therefore belong to a namespace. A device bound to `vfio-pci` has no
+    /// namespace association at all, so isolating it buys nothing.
+    pub netns: bool,
 }
 
 /// Configuration for the Linux kernel networking driver.
@@ -447,6 +463,8 @@ pub struct DpdkDriverConfigSection {
 pub struct KernelDriverConfigSection {
     /// Kernel network interfaces to manage
     pub interfaces: Vec<InterfaceArg>,
+    /// Packet-processing worker threads to run
+    pub num_workers: u16,
 }
 
 /// Configuration for the dataplane's command-line interface (CLI).
@@ -693,7 +711,58 @@ impl Default for ProfilingConfigSection {
     }
 }
 
+impl DriverConfigSection {
+    /// The driver's name, as the `--driver` flag spells it.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            DriverConfigSection::Dpdk(_) => "dpdk",
+            DriverConfigSection::Kernel(_) => "kernel",
+        }
+    }
+
+    /// The interfaces this driver was configured with.
+    pub fn interfaces(&self) -> impl Iterator<Item = &InterfaceArg> {
+        match self {
+            DriverConfigSection::Dpdk(dpdk) => dpdk.interfaces.iter(),
+            DriverConfigSection::Kernel(kernel) => kernel.interfaces.iter(),
+        }
+    }
+
+    /// The number of packet-processing workers to run.
+    #[must_use]
+    pub fn num_workers(&self) -> usize {
+        match self {
+            DriverConfigSection::Dpdk(dpdk) => dpdk.num_workers.into(),
+            DriverConfigSection::Kernel(kernel) => kernel.num_workers.into(),
+        }
+    }
+}
+
 impl LaunchConfiguration {
+    /// Whether this process was handed a configuration by `dataplane-init`.
+    ///
+    /// [`inherit`](Self::inherit) panics when the descriptors are absent, which is right for a
+    /// process that is *supposed* to have them and wrong as a way to find out. This probes both
+    /// standard descriptors with `F_GETFD` instead, so the dataplane can be run directly from a
+    /// command line as well as launched by init.
+    ///
+    /// Both descriptors must be present. One without the other means something has gone wrong with
+    /// the handoff rather than that there was no handoff, and `inherit` should be left to fail
+    /// loudly about it.
+    #[must_use]
+    #[allow(unsafe_code)] // asking whether a raw descriptor is open requires borrowing it
+    pub fn was_inherited() -> bool {
+        // SAFETY: `BorrowedFd` is only used for the duration of the `fcntl` call and never closed;
+        // borrowing a descriptor that turns out not to be open is exactly what is being tested, and
+        // `fcntl` reports that as `EBADF` rather than misbehaving.
+        let present = |fd: RawFd| {
+            let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+            nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_GETFD).is_ok()
+        };
+        present(Self::STANDARD_INTEGRITY_CHECK_FD) && present(Self::STANDARD_CONFIG_FD)
+    }
+
     /// Standard file descriptor number for the integrity check memfd.
     ///
     /// The parent process must pass the integrity check (SHA-384 hash) file at this
@@ -705,6 +774,50 @@ impl LaunchConfiguration {
     /// The parent process must pass the serialized configuration file at this
     /// file descriptor number.
     pub const STANDARD_CONFIG_FD: RawFd = 40;
+
+    /// Standard file descriptor number for the datapath's network namespace.
+    ///
+    /// Optional, unlike the two above: a dataplane driving devices the kernel still owns needs no
+    /// namespace, and one running without `dataplane-init` has nobody to make it one.
+    ///
+    /// The namespace travels as a descriptor rather than as a path because that is what keeps it
+    /// alive. There is no bind mount under `/run/netns` to outlive the process and no name for
+    /// anything to collide with; the namespace exists exactly as long as some descriptor refers to
+    /// it, and the kernel closes this one however the process dies. See
+    /// [`hardware::netns`](../dataplane_hardware/netns/index.html).
+    pub const STANDARD_NETNS_FD: RawFd = 50;
+
+    /// Whether the parent handed us a network namespace for the datapath.
+    ///
+    /// Tested the same way as [`was_inherited`](Self::was_inherited), and for the same reason: an
+    /// open descriptor at the agreed number is the whole protocol.
+    #[must_use]
+    #[allow(unsafe_code)] // asking whether a raw descriptor is open requires borrowing it
+    pub fn netns_was_inherited() -> bool {
+        // SAFETY: as in `was_inherited` -- the borrow does not outlive the `fcntl` call, is never
+        // closed, and a descriptor that is not open is reported as `EBADF` rather than misbehaving.
+        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(Self::STANDARD_NETNS_FD) };
+        nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_GETFD).is_ok()
+    }
+
+    /// Take ownership of the inherited network namespace descriptor, if there is one.
+    ///
+    /// Returns `None` when no namespace was passed, which is the ordinary case for a dataplane
+    /// started without `dataplane-init`.
+    ///
+    /// # Panics
+    ///
+    /// Never: the descriptor is only claimed once its presence has been established.
+    #[must_use]
+    #[allow(unsafe_code)] // claiming an inherited descriptor is inherently a raw operation
+    pub fn inherit_netns() -> Option<OwnedFd> {
+        if !Self::netns_was_inherited() {
+            return None;
+        }
+        // SAFETY: the descriptor is open, was placed there by the parent for this purpose, and is
+        // claimed exactly once -- this is the only caller, and it consumes the number.
+        Some(unsafe { OwnedFd::from_raw_fd(Self::STANDARD_NETNS_FD) })
+    }
 
     /// Inherit the launch configuration from the parent process.
     ///
@@ -1162,11 +1275,14 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     DriverConfigSection::Dpdk(DpdkDriverConfigSection {
                         interfaces: value.interfaces().collect(),
                         eal_args,
+                        num_workers: value.num_workers,
+                        netns: value.datapath_netns,
                     })
                 }
                 Some(driver) if driver == "kernel" => {
                     DriverConfigSection::Kernel(KernelDriverConfigSection {
                         interfaces: value.interfaces().collect(),
+                        num_workers: value.num_workers,
                     })
                 }
                 Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone()))?,
@@ -1248,6 +1364,33 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
 
     #[arg(
         long,
+        default_value_t = false,
+        help = "Run the packet path in its own network namespace, created by dataplane-init and \
+                handed to the dataplane as a descriptor. Only meaningful with --driver dpdk."
+    )]
+    datapath_netns: bool,
+
+    #[arg(
+        long,
+        value_name = "path to a network namespace",
+        help = "Run the control plane in this network namespace instead of a fresh one. \
+                dataplane-init enters it before exec'ing the dataplane, so FRR started under the \
+                same namespace can reach the dataplane's taps. Requires --datapath-netns."
+    )]
+    control_netns: Option<String>,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Run FRR and frr-agent as children of dataplane-init, in the same network \
+                namespace as the control plane, instead of expecting them in a container of \
+                their own. They share this process's fate: if any of the three stops, all of \
+                them do."
+    )]
+    supervise_frr: bool,
+
+    #[arg(
+        long,
         value_name = "CPI Unix socket path",
         help = "Unix socket for FRR to send route update messages to the dataplane",
         default_value = DEFAULT_DP_UX_PATH
@@ -1280,8 +1423,13 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
     metrics_address: SocketAddr,
 
     /// Pyroscope server address for profiling uploads
+    ///
+    /// Also settable by environment. Where the dataplane is launched by a controller that owns
+    /// argv -- which is how it runs in a fabric -- a flag with no environment fallback is a flag
+    /// nobody can set, so profiling could not be turned on at all.
     #[arg(
         long,
+        env = "DATAPLANE_PYROSCOPE_URL",
         value_name = "URL of pyroscope server",
         help = "URL of Pyroscope server (e.g. http://127.0.0.1:4040)"
     )]
@@ -1436,10 +1584,19 @@ impl CmdArgs {
     ///
     /// # Note
     ///
-    /// This value is only relevant when using the kernel driver. The DPDK driver
-    /// uses its own threading model configured via EAL arguments.
+    /// Deprecated in favour of [`num_workers`](Self::num_workers): the count is driver-neutral.
     #[must_use]
     pub fn kernel_num_workers(&self) -> usize {
+        self.num_workers()
+    }
+
+    /// Get the number of packet-processing worker threads to run.
+    ///
+    /// Driver-neutral. The kernel driver spawns this many workers, each with a fanout socket per
+    /// interface; the DPDK driver spawns this many, each owning one receive and one transmit queue
+    /// on every port.
+    #[must_use]
+    pub fn num_workers(&self) -> usize {
         self.num_workers.into()
     }
 
@@ -1529,6 +1686,39 @@ impl CmdArgs {
     #[must_use]
     pub fn config_dir(&self) -> Option<&String> {
         self.config_dir.as_ref()
+    }
+
+    /// The network namespace `dataplane-init` should put the control plane into, if one was named.
+    ///
+    /// Deliberately absent from [`LaunchConfiguration`]: the dataplane never acts on this. By the
+    /// time it runs, `dataplane-init` has already entered the namespace and `exec`'d, so the
+    /// dataplane's own namespace *is* the answer and there is nothing left for it to decide. Making
+    /// it part of the sealed configuration would invite a second, contradictory opinion.
+    #[must_use]
+    pub fn control_netns(&self) -> Option<&String> {
+        self.control_netns.as_ref()
+    }
+
+    /// Whether `dataplane-init` should run FRR and `frr-agent` itself.
+    ///
+    /// Absent from [`LaunchConfiguration`] for the same reason as
+    /// [`control_netns`](Self::control_netns): by the time the dataplane runs, the decision has
+    /// been acted on, and the dataplane reaches FRR over unix sockets whose paths it already
+    /// knows. Whether the process on the other end is a sibling container or a sibling child is
+    /// not something it can or should behave differently about.
+    #[must_use]
+    pub fn supervise_frr(&self) -> bool {
+        self.supervise_frr
+    }
+
+    /// Whether the packet path was asked for a network namespace of its own.
+    ///
+    /// `dataplane-init` needs this before the configuration is built, to decide whether a control
+    /// namespace is coherent: taps named after the configured interfaces can only exist somewhere
+    /// the real devices are not.
+    #[must_use]
+    pub fn datapath_netns(&self) -> bool {
+        self.datapath_netns
     }
 }
 

@@ -5,20 +5,18 @@ use crate::processor::confbuild::namegen::VpcInterfacesNames;
 
 use concurrency::sync::Arc;
 use config::InternalConfig;
-use config::internal::interfaces::interface::{InterfaceConfigTable, InterfaceType};
 use config::internal::routing::evpn::VtepConfig;
 use derive_builder::Builder;
 use futures::TryStreamExt;
 use interface_manager::Manager;
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
-    ManagedInterfaceKind, ManagedInterfaceName, MultiIndexInterfaceAssociationSpecMap,
-    MultiIndexInterfaceSpecMap, MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap,
-    TryFromLinkMessage, VrfPropertiesSpec, VtepPropertiesSpec,
+    ManagedInterfaceKind, MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
+    MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, TryFromLinkMessage,
+    VrfPropertiesSpec, VtepPropertiesSpec,
 };
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
-use net::eth::mac::SourceMac;
 use net::interface::{
     AdminState, Interface, InterfaceName, InterfaceProperties, MultiIndexInterfaceMap,
     MultiIndexVrfPropertiesMap, MultiIndexVtepPropertiesMap,
@@ -39,6 +37,10 @@ pub struct VpcManager<R> {
 }
 
 impl<R> VpcManager<R> {
+    /// Create a manager which reconciles the linux networking stack against a VPC configuration.
+    ///
+    /// There is one such manager per dataplane, and it lives as long as the dataplane's
+    /// configuration does.
     pub fn new(handle: Arc<Handle>) -> Self {
         VpcManager {
             handle,
@@ -48,8 +50,11 @@ impl<R> VpcManager<R> {
 }
 
 impl<T, U> From<&VpcManager<T>> for VpcManager<U> {
-    fn from(handle: &VpcManager<T>) -> Self {
-        Self::new(handle.handle.clone())
+    fn from(other: &VpcManager<T>) -> Self {
+        VpcManager {
+            handle: other.handle.clone(),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -318,58 +323,6 @@ impl Vpc {
     }
 }
 
-/// Create an InterfaceSpec for an InterfaceConfig
-fn add_interface_specs(interfaces: &mut MultiIndexInterfaceSpecMap, ifaces: &InterfaceConfigTable) {
-    for iface in ifaces.values() {
-        match &iface.iftype {
-            InterfaceType::Ethernet(eth) => {
-                let mut tap = InterfaceSpecBuilder::default();
-                match ManagedInterfaceName::new(ManagedInterfaceKind::Tap, iface.name.as_str()) {
-                    Ok(name) => {
-                        tap.name(name.into());
-                    }
-                    Err(e) => {
-                        error!("{e}");
-                        continue;
-                    }
-                };
-                match eth.mac.map(SourceMac::try_from) {
-                    Some(Ok(mac)) => {
-                        tap.mac(Some(mac));
-                    }
-                    None => {
-                        tap.mac(None);
-                    }
-                    Some(Err(e)) => {
-                        error!("{e}");
-                        continue;
-                    }
-                };
-                tap.properties(InterfacePropertiesSpec::Tap);
-                tap.mtu(iface.mtu);
-                tap.admin_state(AdminState::Up);
-                match tap.build() {
-                    Ok(iface) => match interfaces.try_insert(iface) {
-                        Ok(added) => {
-                            debug!("added proxy tap interface to spec: {added:?}");
-                        }
-                        Err(e) => {
-                            error!("{e}");
-                        }
-                    },
-                    Err(e) => {
-                        error!("{e}");
-                        continue;
-                    }
-                }
-            }
-            _ => {
-                continue;
-            }
-        }
-    }
-}
-
 // TODO: break up this method into smaller components
 impl TryFrom<&InternalConfig> for RequiredInformationBase {
     type Error = RequiredInformationBaseBuilderError;
@@ -384,7 +337,6 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
 
         // non-default VRFs
         for vrfconfig in internal.vrfs.iter_by_tableid().filter(|cfg| !cfg.default) {
-            add_interface_specs(&mut interfaces, &vrfconfig.interfaces);
             let main_vtep = internal.vtep.as_ref().unwrap_or_else(|| unreachable!());
             let vtep_ip = match main_vtep.address {
                 UnicastIpAddr::V4(vtep_ip) => vtep_ip,
@@ -523,13 +475,12 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
             }
         }
 
-        // default VRF
-        let vrfconfig = internal
-            .vrfs
-            .default_vrf_config()
-            .unwrap_or_else(|| unreachable!());
-        add_interface_specs(&mut interfaces, &vrfconfig.interfaces);
-
+        // The configured ethernet interfaces themselves are deliberately absent from the plan.
+        // The dataplane's end of each one is a DPDK port, and the kernel's end is a tap which the
+        // control-plane bridge creates and holds -- named exactly the configured name, so that
+        // FRR's configuration and the routing tables find it where they expect to.  Those taps do
+        // not follow the dataplane's `-suffix` naming scheme, which is what keeps the reconciler
+        // from treating them as its own and removing them.
         rb_builder.interfaces(interfaces);
         rb_builder.vteps(vteps);
         rb_builder.vrfs(vrfs);
@@ -558,7 +509,6 @@ mod contract {
             InterfacePropertiesSpec::Bridge(_) => ManagedInterfaceKind::Bridge,
             InterfacePropertiesSpec::Vtep(_) => ManagedInterfaceKind::Vtep,
             InterfacePropertiesSpec::Vrf(_) => ManagedInterfaceKind::Vrf,
-            InterfacePropertiesSpec::Tap => ManagedInterfaceKind::Tap,
             // pci netdev names come from the hardware, not from us
             InterfacePropertiesSpec::Pci(_) => return None,
         };
@@ -642,7 +592,7 @@ mod contract {
                                 .unwrap();
                         }
                     }
-                    InterfacePropertiesSpec::Tap | InterfacePropertiesSpec::Pci(_) => {}
+                    InterfacePropertiesSpec::Pci(_) => {}
                 }
             }
             if !bridges.is_empty() {

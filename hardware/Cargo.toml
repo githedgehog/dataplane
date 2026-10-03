@@ -34,6 +34,8 @@ tracing = { workspace = true, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 sysfs = { workspace = true }
+# `netns` needs setns/unshare (`sched`) and the fresh sysfs mount (`mount`).
+nix = { workspace = true, features = ["sched", "mount"] }
 
 [dev-dependencies]
 # internal
@@ -44,6 +46,7 @@ net = { workspace = true, features = [] }
 # `tests/dpdk_pipeline_on_nic.rs` runs the real network-function pipeline over
 # mbufs received from a physical port.
 pipeline = { workspace = true, features = [] }
+caps = { workspace = true, default-features = false, features = [] }
 fixin = { workspace = true, features = [] }
 id = { workspace = true, features = ["serde", "rkyv"] }
 n-vm = { workspace = true }
@@ -55,6 +58,7 @@ hwlocality = { workspace = true, features = ["hwloc-latest"] }
 pci-ids = { workspace = true, features = [] }
 serde = { workspace = true, features = ["std"] }
 serde_yaml_ng = { workspace = true, features = [] }
+nix = { workspace = true, features = ["sched", "mount"] }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }
 
@@ -65,4 +69,4 @@ dpdk-sysroot-helper = { workspace = true }
 # per package because cargo's `[lints]` are, and the n-vm crate's own
 # declaration does not reach here.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(host_hugepage_tests)', 'cfg(nic_loopback_tests)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(host_hugepage_tests)', 'cfg(nic_loopback_tests)', 'cfg(netns_tests)'] }

@@ -26,6 +26,7 @@ hashbrown = { workspace = true, features = ["default-hasher", "inline-more"] }
 kanal = { workspace = true, features = ["async"] }
 linkme = { workspace = true }
 metrics = { workspace = true }
+strum = { workspace = true }
 multi_index_map = { workspace = true }
 rand = { workspace = true, features = ["thread_rng"] }
 serde = { workspace = true, features = ["derive"] }
@@ -39,5 +40,4 @@ clock = { workspace = true, features = ["virtual"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 bolero = { workspace = true }
 net = { workspace = true, features = ["bolero"] }
-strum = { workspace = true }
 vpcmap = { workspace = true, features = ["bolero"] }
