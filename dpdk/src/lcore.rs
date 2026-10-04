@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::eal::{Eal, EalErrno};
-use core::ffi::{c_int, c_uint, c_void};
+use crate::eal::Eal;
+use core::ffi::{c_int, c_uint};
 use core::fmt::Debug;
 use tracing::{info, warn};
 
@@ -140,35 +140,6 @@ impl ServiceThread<'_> {
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn join(self) -> std::thread::Result<()> {
         self.handle.join()
-    }
-}
-
-#[allow(unused)]
-pub struct WorkerThread {
-    lcore_id: LCoreId,
-}
-
-impl WorkerThread {
-    #[allow(clippy::expect_used)] // this is only called at system launch where crash is still ok
-    pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) {
-        #[inline]
-        unsafe extern "C" fn _launch<Task: Send + FnOnce()>(arg: *mut c_void) -> c_int {
-            let task = unsafe {
-                Box::from_raw(
-                    arg.as_mut().expect("null argument in worker setup") as *mut _ as *mut Task,
-                )
-            };
-            task();
-            0
-        }
-        let task = Box::new(f);
-        EalErrno::assert(unsafe {
-            dpdk_sys::rte_eal_remote_launch(
-                Some(_launch::<T>),
-                Box::leak(task) as *mut _ as _,
-                lcore.0 as c_uint,
-            )
-        });
     }
 }
 
