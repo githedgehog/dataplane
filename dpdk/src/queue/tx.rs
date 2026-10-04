@@ -102,7 +102,10 @@ impl<'dev> TxQueue<'dev> {
         }
 
         let tx_conf = dpdk_sys::rte_eth_txconf {
-            offloads: dev.info.inner.tx_queue_offload_capa,
+            // Only the port-level offloads chosen in `DevConfig`. Adding the queue's own
+            // capabilities here would turn on offloads nobody asked for, `MBUF_FAST_FREE`
+            // included on drivers that offer it per queue.
+            offloads: 0,
             // Zero thresholds select the PMD defaults.
             ..Default::default()
         };

@@ -224,18 +224,12 @@ pub struct DevConfig {
     pub num_tx_queues: u16,
     /// The number of hairpin queues to be made available after device initialization.
     pub num_hairpin_queues: u16,
-    /// The transmit offloads to be requested on the device.
-    ///
-    /// If `None`, the device will use all supported Offloads.
-    /// If `Some`, the device will use the intersection of the supported offloads and the requested
-    /// offloads.
-    /// TODO: this is a silly API.
-    /// Setting it to `None` should disable all offloads, but instead we default to enabling all
-    /// supported.
-    /// Rework this bad idea.
-    pub tx_offloads: Option<TxOffloadConfig>,
-    // TODO: more reasonable type for [`RxOffload`] here (similar to [`TxOffloadConfig`])
-    pub rx_offloads: Option<RxOffload>,
+    /// The transmit offloads to request. The device enables the intersection of these and what it
+    /// supports; nothing is enabled implicitly. `MBUF_FAST_FREE` is never requested, because it
+    /// would let the driver return shared or indirect mbufs straight to their pool.
+    pub tx_offloads: TxOffloadConfig,
+    /// The receive offloads to request, intersected with what the device supports.
+    pub rx_offloads: RxOffload,
     /// Requested MTU. `None` uses [`DEFAULT_MTU`] clamped to device limits;
     /// an explicit value outside those limits returns [`DevConfigError::MtuOutOfRange`].
     pub mtu: Option<u16>,
@@ -299,7 +293,6 @@ impl DevConfig {
     /// on it -- vacuous. [`DevInfo`] carries the brand because it can only be obtained from the
     /// EAL's device manager.
     pub fn apply<'eal>(&self, dev: DevInfo<'eal>) -> Result<Dev<'eal, Configured>, DevConfigError> {
-        const ANY_SUPPORTED: u64 = u64::MAX;
         let mtu = self.resolve_mtu(&dev)?;
         if self.rss.is_some() && !dev.supports_rss() {
             return Err(DevConfigError::RssUnsupported);
@@ -310,11 +303,10 @@ impl DevConfig {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
                 offloads: {
-                    let requested = self
-                        .tx_offloads
-                        .map_or(TxOffload(ANY_SUPPORTED), TxOffload::from);
+                    let requested = TxOffload::from(self.tx_offloads);
                     let supported = dev.tx_offload_caps();
                     (requested & supported).0
+                        & !u64::from(dpdk_sys::RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
                 },
                 ..Default::default()
             },
@@ -328,11 +320,7 @@ impl DevConfig {
                 },
                 // Used only when TCP LRO is enabled; zero requests the driver default.
                 max_lro_pkt_size: dev.inner.max_lro_pkt_size,
-                offloads: {
-                    let requested = self.rx_offloads.unwrap_or(RxOffload(ANY_SUPPORTED));
-                    let supported = dev.rx_offload_caps();
-                    requested.0 & supported.0
-                },
+                offloads: self.rx_offloads.0 & dev.rx_offload_caps().0,
                 ..Default::default()
             },
             ..Default::default()
@@ -464,9 +452,32 @@ pub struct TxOffloadConfig {
     pub unknown: u64,
 }
 
-impl Default for TxOffloadConfig {
-    /// Defaults to enabling all known offloads
-    fn default() -> Self {
+impl TxOffloadConfig {
+    /// Request no transmit offloads.
+    #[must_use]
+    pub const fn none() -> Self {
+        TxOffloadConfig {
+            geneve_tnl_tso: false,
+            gre_tnl_tso: false,
+            ipip_tnl_tso: false,
+            ipv4_cksum: false,
+            macsec_insert: false,
+            outer_ipv4_cksum: false,
+            qinq_insert: false,
+            sctp_cksum: false,
+            tcp_cksum: false,
+            tcp_tso: false,
+            udp_cksum: false,
+            udp_tso: false,
+            vlan_insert: false,
+            vxlan_tnl_tso: false,
+            unknown: 0,
+        }
+    }
+
+    /// Request every transmit offload this type can name.
+    #[must_use]
+    pub const fn all() -> Self {
         TxOffloadConfig {
             geneve_tnl_tso: true,
             gre_tnl_tso: true,
@@ -579,7 +590,7 @@ impl From<TxOffload> for TxOffloadConfig {
 }
 
 impl TxOffload {
-    /// Disable TX offloads. `DevConfig::tx_offloads = None` enables all supported offloads.
+    /// No transmit offloads.
     pub const NONE: TxOffload = TxOffload(0);
 
     /// GENEVE tunnel segmentation offload.
@@ -635,7 +646,7 @@ impl TxOffload {
 }
 
 impl RxOffload {
-    /// Disable RX offloads. `DevConfig::rx_offloads = None` enables all supported offloads.
+    /// No receive offloads.
     pub const NONE: RxOffload = RxOffload(0);
 }
 
