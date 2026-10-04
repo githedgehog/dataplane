@@ -5,6 +5,7 @@
 
 mod dpstats;
 mod dpstats_fuzz;
+mod port;
 mod rate;
 mod rate_fuzz;
 mod register;
@@ -16,6 +17,7 @@ mod vpc_stats;
 mod vpc_stats_fuzz;
 
 pub use dpstats::*;
+pub use port::*;
 pub use rate::*;
 pub use register::*;
 pub use spec::*;
