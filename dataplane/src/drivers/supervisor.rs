@@ -93,6 +93,7 @@ impl<'scope, E> WorkerMonitor<'scope, E> {
 ///
 /// `driver` names the driver in the supervisor's thread name and logs. The supervisor
 /// just joins-and-logs on worker termination; worker fatal reporting is left to the driver.
+/// `publish_counters` runs on each status poll and once after all workers have stopped.
 ///
 /// # Errors
 ///
@@ -103,6 +104,7 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
     subsystem: &Subsystem,
     mut monitors: Vec<WorkerMonitor<'scope, E>>,
     status_writer: DriverStatusWriter,
+    mut publish_counters: impl FnMut() + Send + 'scope,
 ) -> std::io::Result<()> {
     // the two time intervals that matter for liveness detection
     let check_period = Duration::from_secs(u64::from(TASK_CHECK_PERIOD));
@@ -184,6 +186,8 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                     break;
                 }
 
+                publish_counters();
+
                 // publish the status of the driver
                 status_writer.publish(DriverStatus {
                     workers: workers_status.clone(),
@@ -192,6 +196,8 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                 // sleep for the poll period
                 thread::sleep(poll_period);
             }
+
+            publish_counters();
 
             // update status on termination. This is in case we
             // want to log the last state

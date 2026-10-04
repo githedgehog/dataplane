@@ -1300,6 +1300,37 @@ impl<'eal, S: DevState> Dev<'eal, S> {
     }
 }
 
+/// A port's I/O counters, as returned by [`Dev::stats`].
+///
+/// A plain owned snapshot rather than a borrow of DPDK's `rte_eth_stats`: the counters are read by
+/// value at a point in time, and copying eight `u64`s is cheaper than reasoning about when the
+/// driver may rewrite them.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PortStats {
+    /// Packets successfully received.
+    pub ipackets: u64,
+    /// Packets successfully transmitted.
+    pub opackets: u64,
+    /// Bytes successfully received.
+    pub ibytes: u64,
+    /// Bytes successfully transmitted.
+    pub obytes: u64,
+    /// Packets dropped by the hardware because no receive descriptor was free.
+    ///
+    /// This is the counter for "the port had it and the application was not keeping up".
+    pub imissed: u64,
+    /// Erroneous packets received.
+    pub ierrors: u64,
+    /// Packets that failed to transmit.
+    pub oerrors: u64,
+    /// Receive mbuf allocation failures.
+    ///
+    /// Non-zero means the receive mempool ran dry: the PMD could not refill a descriptor, so the
+    /// port dropped traffic it had otherwise accepted. Distinct from [`imissed`](Self::imissed),
+    /// which is the application being too slow rather than the pool being too small.
+    pub rx_nombuf: u64,
+}
+
 impl<'eal, S: Open> Dev<'eal, S> {
     /// The device's primary source MAC address.
     ///
@@ -1332,6 +1363,38 @@ impl<'eal, S: Open> Dev<'eal, S> {
         } else {
             Err(ErrorCode::parse_i32(ret))
         }
+    }
+
+    /// The device's I/O statistics, as the PMD reports them.
+    ///
+    /// These are the counters that separate "the wire lost it" from "we lost it", and there is no
+    /// other way to tell those apart: the kernel's `ethtool -S` sees only its own queues, so on a
+    /// bifurcated driver such as mlx5 it reports a frame delivered to the port while saying nothing
+    /// about whether any DPDK queue received it. [`PortStats::imissed`] and
+    /// [`PortStats::rx_nombuf`] are where a frame that reached the port and never reached a
+    /// receive burst is accounted for.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's [`ErrorCode`] if the counters could not be read; PMDs that do not
+    /// implement statistics report `ENOTSUP`.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn stats(&self) -> Result<PortStats, ErrorCode> {
+        let mut raw: dpdk_sys::rte_eth_stats = unsafe { core::mem::zeroed() };
+        let ret = unsafe { dpdk_sys::rte_eth_stats_get(self.info.index().as_u16(), &raw mut raw) };
+        if ret != 0 {
+            return Err(ErrorCode::parse_i32(ret));
+        }
+        Ok(PortStats {
+            ipackets: raw.ipackets,
+            opackets: raw.opackets,
+            ibytes: raw.ibytes,
+            obytes: raw.obytes,
+            imissed: raw.imissed,
+            ierrors: raw.ierrors,
+            oerrors: raw.oerrors,
+            rx_nombuf: raw.rx_nombuf,
+        })
     }
 
     /// Enable or disable promiscuous mode.
