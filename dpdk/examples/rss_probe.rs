@@ -85,7 +85,7 @@ fn main() -> Result<(), Err> {
         rx_offloads: RxOffload::from(u64::from(dpdk_sys::RTE_ETH_RX_OFFLOAD_RSS_HASH)),
         mtu: None,
         rss: Some(RssConf {
-            key: Some(RSS_KEY.to_vec()),
+            key: Some(Box::new(RSS_KEY)),
             hf: u64::from(RTE_ETH_RSS_IPV4),
         }),
     };
