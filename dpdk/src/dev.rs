@@ -18,7 +18,7 @@ use crate::queue::rx::{RxQueue, RxQueueConfig};
 use crate::queue::tx::{TxQueue, TxQueueConfig};
 use crate::queue::{QueueStore, Queues};
 use crate::socket::SocketId;
-use concurrency::sync::Mutex;
+use crate::sync::Mutex;
 use dpdk_sys::rte_eth_rx_mq_mode::{RTE_ETH_MQ_RX_NONE, RTE_ETH_MQ_RX_RSS};
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;

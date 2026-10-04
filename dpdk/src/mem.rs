@@ -4,10 +4,10 @@
 //! DPDK memory management wrappers.
 
 use crate::socket::SocketId;
+use crate::sync::Mutex;
 use alloc::format;
 use alloc::string::String;
 use arrayvec::ArrayVec;
-use concurrency::sync::Mutex;
 use core::ffi::c_uint;
 use core::ffi::{CStr, c_int};
 use core::fmt::{Debug, Display};
