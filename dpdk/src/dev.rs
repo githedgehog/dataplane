@@ -25,6 +25,10 @@ use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
 use queue::{rx, tx};
 
+mod claim;
+pub(crate) use claim::OwnerId;
+pub use claim::{ClaimError, ForeignOwner, PortClaim, PortOwner};
+
 /// Default Ethernet MTU, clamped to the device limits when configured.
 pub const DEFAULT_MTU: u16 = 1500;
 
@@ -238,11 +242,12 @@ pub struct DevConfig {
     pub rss: Option<RssConf>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 /// Errors that can occur when configuring a DPDK ethernet device.
 pub enum DevConfigError {
     /// The driver rejected the configuration.
+    #[error("the driver rejected the configuration: {message} ({code:?})")]
     DriverSpecificError {
         /// The error code the driver returned.
         code: Errno,
@@ -250,6 +255,7 @@ pub enum DevConfigError {
         message: String,
     },
     /// The requested MTU is outside the device's advertised `[min, max]` range.
+    #[error("MTU {requested} is outside the device's range [{min}, {max}]")]
     MtuOutOfRange {
         /// The MTU that was requested.
         requested: u16,
@@ -259,6 +265,7 @@ pub enum DevConfigError {
         max: u16,
     },
     /// RSS hashing was requested but the device advertises no RSS hash functions.
+    #[error("RSS was requested but the device supports no RSS hash functions")]
     RssUnsupported,
 }
 
@@ -284,16 +291,44 @@ impl DevConfig {
         }
     }
 
-    /// Apply the configuration to the device.
+    /// Apply the configuration to a claimed port.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DevConfigFailure`], which hands the claim back, if the configuration is invalid
+    /// for the device or the driver rejects it.
+    ///
     /// # Note on the lifetime
     ///
-    /// `'eal` is derived from `dev`, never chosen by the caller. An unconstrained
-    /// `apply<'eal>(&self, dev: DevInfo)` would let a caller name `'static` and manufacture a
-    /// `Dev<'static, _>` out of nothing, which would make the brand -- and every guarantee resting
-    /// on it -- vacuous. [`DevInfo`] carries the brand because it can only be obtained from the
-    /// EAL's device manager.
-    pub fn apply<'eal>(&self, dev: DevInfo<'eal>) -> Result<Dev<'eal, Configured>, DevConfigError> {
-        let mtu = self.resolve_mtu(&dev)?;
+    /// `'eal` is derived from the claim, never chosen by the caller. An unconstrained `'eal` would
+    /// let a caller name `'static` and manufacture a `Dev<'static, _>` out of nothing, which would
+    /// make the brand -- and every guarantee resting on it -- vacuous. A [`PortClaim`] carries the
+    /// brand because it can only be obtained from the [`Eal`].
+    // The error hands the claim back; this large result is used only during setup.
+    #[allow(clippy::result_large_err)]
+    pub fn apply<'eal>(
+        &self,
+        port: PortClaim<'eal>,
+    ) -> Result<Dev<'eal, Configured>, DevConfigFailure<'eal>> {
+        if let Err(error) = self.configure(port.info()) {
+            return Err(DevConfigFailure { error, claim: port });
+        }
+        let dev = port.into_info();
+        Ok(Dev {
+            lifecycle: PortLifecycle {
+                port: dev.index(),
+                stage: Stage::Configured,
+            },
+            info: dev,
+            config: self.clone(),
+            queues: Mutex::new(Some(QueueStore::default())),
+            state: PhantomData,
+        })
+    }
+
+    /// Configure `dev`'s port with `rte_eth_dev_configure`.
+    fn configure(&self, dev: &DevInfo<'_>) -> Result<(), DevConfigError> {
+        let mtu = self.resolve_mtu(dev)?;
         if self.rss.is_some() && !dev.supports_rss() {
             return Err(DevConfigError::RssUnsupported);
         }
@@ -365,17 +400,20 @@ impl DevConfig {
                 message,
             });
         }
-        Ok(Dev {
-            lifecycle: PortLifecycle {
-                port: dev.index(),
-                stage: Stage::Configured,
-            },
-            info: dev,
-            config: self.clone(),
-            queues: Mutex::new(Some(QueueStore::default())),
-            state: PhantomData,
-        })
+        Ok(())
     }
+}
+
+/// A configuration error and the still-unused claim, so the caller can fix the configuration and
+/// retry without losing the port.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to configure port {}: {error}", self.claim.info().index())]
+pub struct DevConfigFailure<'eal> {
+    /// What was wrong.
+    #[source]
+    pub error: DevConfigError,
+    /// The claim, still held.
+    pub claim: PortClaim<'eal>,
 }
 
 #[repr(transparent)]

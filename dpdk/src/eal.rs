@@ -53,6 +53,8 @@ pub struct Eal {
     ///
     /// You can manage logical cores and task dispatch here.
     pub lcore: lcore::Manager,
+    /// The DPDK owner id this EAL claims ports under; see [`Eal::claim`].
+    port_owner: dev::OwnerId,
     /// Pins the handle to its creating thread; see the type documentation.
     _local: PhantomData<*const ()>,
     // TODO: queue
@@ -272,16 +274,41 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     if ret < 0 {
         EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
     }
+    let port_owner = dev::OwnerId::new().unwrap_or_else(|e| {
+        Eal::fatal_error(format!("failed to allocate a port owner id: {e:?}"));
+    });
     Eal {
         mem: mem::Manager::init(),
         dev: dev::Manager::init(),
         socket: socket::Manager::init(),
         lcore: lcore::Manager::init(),
+        port_owner,
         _local: PhantomData,
     }
 }
 
 impl Eal {
+    /// Claim exclusive ownership of a port, which [`DevConfig::apply`](dev::DevConfig::apply)
+    /// requires.
+    ///
+    /// Only the thread that owns the EAL can claim ports, which is why this lives here and not
+    /// on the [`dev::Manager`] reachable through [`EalShared`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClaimError`](dev::ClaimError) if the port does not exist or something else (a
+    /// device built from an earlier claim, a bonding PMD, another process) already owns it.
+    pub fn claim(&self, index: dev::DevIndex) -> Result<dev::PortClaim<'_>, dev::ClaimError> {
+        let info = self
+            .dev
+            .info(index)
+            .map_err(|source| dev::ClaimError::Info {
+                port: index,
+                source,
+            })?;
+        dev::PortClaim::new(self.port_owner, info)
+    }
+
     /// A shareable projection of the EAL services that are safe to use from any thread.
     ///
     /// This is how a worker thread gets at device and socket queries: the `Eal` handle itself is
@@ -362,6 +389,8 @@ impl Drop for Eal {
         // SAFETY: every device is already closed -- a `Dev` borrows this `Eal`, so it cannot
         // still be alive here -- and no `Pool` handle can exist either, for the same reason.
         unsafe { self.mem.release_all() };
+        // Every `Dev` is closed by now, which released its port; this catches anything left over.
+        self.port_owner.release_all();
 
         info!("Closing EAL");
         let ret = unsafe { dpdk_sys::rte_eal_cleanup() };

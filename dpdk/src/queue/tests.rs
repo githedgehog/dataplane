@@ -12,7 +12,7 @@ use crate::dev::DevIndex;
 use crate::mem::{MBUF_BURST, MbufArray, Pool};
 use crate::socket::{Preference, SocketId};
 use crate::test_support::{available, packet_pool};
-use concurrency::process_global::{Mutex, MutexGuard};
+use concurrency::process_global::MutexGuard;
 use net::buffer::Append;
 use std::ffi::{CStr, CString, c_int};
 use std::marker::PhantomData;
@@ -35,8 +35,7 @@ struct Loopback {
 impl Loopback {
     fn new(ring_size: u32) -> Self {
         // Port creation and teardown are not thread-safe in DPDK.
-        static PORT: Mutex<()> = Mutex::new(());
-        let guard = PORT.lock().unwrap();
+        let guard = crate::test_support::PORT_LOCK.lock().unwrap();
         let pool = packet_pool(127);
         // SAFETY: EAL is initialized; the ring outlives the port using it.
         let ring = NonNull::new(unsafe {
