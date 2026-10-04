@@ -58,7 +58,10 @@ pub struct TxQueueConfig {
 
 /// Error type for transmit queue configuration failures.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConfigFailure {
+    #[error("transmit queue {} is already configured on this device", .0.as_u16())]
+    AlreadyConfigured(TxQueueIndex),
     #[error("Memory allocation failed: {0}")]
     NoMemory(ErrorCode),
     #[error("An unexpected error occurred {0}")]

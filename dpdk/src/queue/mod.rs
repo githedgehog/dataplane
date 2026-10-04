@@ -25,6 +25,26 @@ pub(crate) struct QueueStore<'eal> {
     pub(crate) hairpin: Vec<HairpinQueue<'eal>>,
 }
 
+impl QueueStore<'_> {
+    /// Whether a receive queue, plain or hairpin, already uses `index`.
+    pub(crate) fn has_rx(&self, index: RxQueueIndex) -> bool {
+        self.rx.iter().any(|q| q.config.queue_index == index)
+            || self
+                .hairpin
+                .iter()
+                .any(|q| q.rx.config.queue_index == index)
+    }
+
+    /// Whether a transmit queue, plain or hairpin, already uses `index`.
+    pub(crate) fn has_tx(&self, index: TxQueueIndex) -> bool {
+        self.tx.iter().any(|q| q.config.queue_index == index)
+            || self
+                .hairpin
+                .iter()
+                .any(|q| q.tx.config.queue_index == index)
+    }
+}
+
 /// The set of a device's queues, for distribution to workers.
 ///
 /// Obtained once from [`Dev::<Started>::take_queues`](crate::dev::Dev::take_queues). Each queue is

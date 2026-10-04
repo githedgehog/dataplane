@@ -1131,6 +1131,10 @@ impl<'eal> Dev<'eal, Configured> {
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`RxQueue`]
     pub fn new_rx_queue(&mut self, config: RxQueueConfig<'eal>) -> Result<(), rx::ConfigFailure> {
+        // Two handles to one queue would let two threads poll it at once.
+        if self.with_store(|store| store.has_rx(config.queue_index)) {
+            return Err(rx::ConfigFailure::AlreadyConfigured(config.queue_index));
+        }
         let rx_queue = RxQueue::setup(self, config)?;
         self.with_store(|store| store.rx.push(rx_queue));
         Ok(())
@@ -1139,6 +1143,9 @@ impl<'eal> Dev<'eal, Configured> {
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`TxQueue`]
     pub fn new_tx_queue(&mut self, config: TxQueueConfig) -> Result<(), tx::ConfigFailure> {
+        if self.with_store(|store| store.has_tx(config.queue_index)) {
+            return Err(tx::ConfigFailure::AlreadyConfigured(config.queue_index));
+        }
         let tx_queue = TxQueue::setup(self, config)?;
         self.with_store(|store| store.tx.push(tx_queue));
         Ok(())
@@ -1151,6 +1158,16 @@ impl<'eal> Dev<'eal, Configured> {
         rx: RxQueueConfig<'eal>,
         tx: TxQueueConfig,
     ) -> Result<(), HairpinConfigFailure> {
+        if self.with_store(|store| store.has_rx(rx.queue_index)) {
+            return Err(HairpinConfigFailure::RxQueueCreationFailed(
+                rx::ConfigFailure::AlreadyConfigured(rx.queue_index),
+            ));
+        }
+        if self.with_store(|store| store.has_tx(tx.queue_index)) {
+            return Err(HairpinConfigFailure::TxQueueCreationFailed(
+                tx::ConfigFailure::AlreadyConfigured(tx.queue_index),
+            ));
+        }
         let rx = RxQueue::setup(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
         let tx = TxQueue::setup(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
         let hairpin = HairpinQueue::new(self, rx, tx)?;

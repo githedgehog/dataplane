@@ -54,6 +54,7 @@ pub enum HairpinStartFailure {
 
 /// An error occurred while configuring a hairpin queue.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum HairpinConfigFailure {
     /// An error occurred while configuring the rx queue portion of the hairpin queue.
     RxQueueCreationFailed(rx::ConfigFailure),
