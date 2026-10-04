@@ -6,9 +6,9 @@
 //! Each worker owns one RX/TX queue pair per port and processes each burst on the
 //! receiving thread. Queue handles borrow their devices; mbufs borrow the EAL.
 //!
-//! RSS is disabled, so only queue 0 receives traffic. Ports need a kernel netdev
-//! because the pipeline identifies interfaces by ifindex. Forwarding runs in software.
-//! Control-plane frames cross per-port TAP interfaces through [`cpbridge`].
+//! RSS spreads flows across per-worker queues. Flow state is shared across workers.
+//! Ports need a kernel netdev because the pipeline identifies interfaces by ifindex.
+//! Forwarding runs in software; control frames cross per-port TAPs through [`cpbridge`].
 
 mod port;
 mod worker;

@@ -3,7 +3,7 @@
 
 //! Bringing DPDK ports up, and the queue split that gives each worker its own.
 
-use dpdk::dev::{Dev, DevConfig, PortClaim, RxOffload, Started, TxOffloadConfig};
+use dpdk::dev::{Dev, DevConfig, DevInfo, PortClaim, RssConf, RxOffload, Started, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::mem::{Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
@@ -25,6 +25,35 @@ const TX_DESCRIPTORS: u16 = 1024;
 
 /// Mbufs per worker, covering RX descriptors, pipeline processing, and pending TX.
 const POOL_MBUFS_PER_WORKER: u32 = 4 * RX_DESCRIPTORS as u32;
+
+/// Decide the RSS configuration for a port, warning if the device cannot spread at all.
+///
+/// RSS is what actually distributes received frames across the per-worker receive queues. Without
+/// it every frame lands on queue 0 and exactly one worker does all the work, however many were
+/// configured. The key is the driver's default and the hash covers whatever subset of L3
+/// addresses and L4 ports the device advertises.
+///
+/// Deliberately *not* symmetric. Two reasons, and the second is the one that settles it: mlx5
+/// rejects any hash function but the default at `rte_eth_dev_configure`, so symmetric Toeplitz is
+/// reachable only through the `rte_flow` RSS action (see [`RssConf`]); and a NAT'd flow's reverse
+/// packet carries the *translated* tuple rather than the reversed one, so no symmetry property the
+/// NIC could have would land a flow's two halves on the same worker. It does not need to: flow
+/// state lives in one `FlowTable` shared by every worker, so any worker can service any packet.
+///
+/// Returns `None` for a device that advertises no RSS hash functions -- how the emulated NICs
+/// (e1000, e1000e, virtio without multi-queue negotiation) report. Such a port still works; it
+/// simply cannot use more than one worker.
+fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
+    let rss = RssConf::supported_on(info);
+    if rss.is_none() && num_workers > 1 {
+        warn!(
+            "port {index} ({name}) advertises no RSS hash functions, so all {num_workers} workers \
+             will share receive queue 0 and only one of them will do any work",
+            index = info.index()
+        );
+    }
+    rss
+}
 
 /// A started port and its receive pool. Workers borrow its queue handles.
 pub(crate) struct Port<'eal> {
@@ -62,7 +91,10 @@ impl<'eal> Port<'eal> {
         name: String,
         num_workers: u16,
     ) -> Result<Self, DriverError> {
-        let index = port.info().index();
+        let info = port.info();
+        let index = info.index();
+
+        let rss = rss_for(info, &name, num_workers);
 
         // Each worker receives its own RX/TX queue pair on every port.
         let config = DevConfig {
@@ -70,11 +102,14 @@ impl<'eal> Port<'eal> {
             num_tx_queues: num_workers,
             num_hairpin_queues: 0,
             // The pipeline handles checksums in software and requires uncoalesced packets.
-            rx_offloads: RxOffload::NONE,
+            rx_offloads: if rss.is_some() {
+                RxOffload::RSS_HASH
+            } else {
+                RxOffload::NONE
+            },
             tx_offloads: TxOffloadConfig::none(),
             mtu: None,
-            // TODO: Enable symmetric RSS to distribute flows across workers.
-            rss: None,
+            rss,
         };
 
         let mut dev = config
