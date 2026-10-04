@@ -18,13 +18,24 @@
 //! here is a plain thread running a loop, with no runtime, and one worker services every port
 //! rather than one task per interface.
 //!
+//! # How work is spread
+//!
+//! RSS distributes received frames across the per-worker receive queues by a Toeplitz hash over
+//! L3 addresses and L4 ports, so every packet of one flow reaches one worker and nothing within a
+//! flow is reordered. Which worker that is does not matter: flow state lives in a single
+//! [`FlowTable`](flow_entry::flow_table::FlowTable) shared by every worker, so any worker can
+//! service any packet.
+//!
+//! That is worth stating plainly because the obvious next thought -- "the two directions of a flow
+//! must reach the same worker, so the hash has to be symmetric" -- is wrong twice over here. The
+//! hardware route is closed (mlx5 rejects any hash function but the default at
+//! `rte_eth_dev_configure`; see [`RssConf`](dpdk::dev::RssConf)), and it would not help anyway: a
+//! NAT'd flow's reverse packet carries the *translated* tuple, not the reversed one, so no
+//! symmetry property the NIC can have would pair the two halves. Shared flow state is what makes
+//! that a non-problem.
+//!
 //! # What this does not do yet
 //!
-//! - **RSS is off**, so every frame lands on receive queue 0 and one worker does all the work. The
-//!   per-worker queues are real and exclusively owned either way; spreading across them needs a
-//!   *symmetric* hash key, so that both directions of a flow reach the same worker and the flow
-//!   table stays per-worker-coherent. That is its own change, and picking the key wrong is a
-//!   correctness bug rather than a performance one.
 //! - **Ports must have a kernel netdev.** The pipeline names interfaces by kernel `ifindex`, and
 //!   this driver takes that from `rte_eth_dev_info.if_index`. That is populated for a bifurcated
 //!   driver such as mlx5, where `mlx5_core` keeps the netdev while DPDK attaches through the RDMA
@@ -37,8 +48,8 @@
 //!
 //! With the kernel driver, FRR shares a namespace with the real NIC and peers through the kernel's
 //! own stack. Here the kernel has no NIC, so every control frame is carried across by
-//! [`cpbridge`](crate::drivers::cpbridge), which is what makes a tap the kernel's end of each port. See that module for the
-//! punt policy and its costs.
+//! [`cpbridge`](crate::drivers::cpbridge), which is what makes a tap the kernel's end of each
+//! port. See that module for the punt policy and its costs.
 
 mod port;
 mod worker;

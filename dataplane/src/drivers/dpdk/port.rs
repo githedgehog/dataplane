@@ -3,7 +3,7 @@
 
 //! Bringing DPDK ports up, and the queue split that gives each worker its own.
 
-use dpdk::dev::{Dev, DevConfig, PortClaim, RxOffload, Started, TxOffloadConfig};
+use dpdk::dev::{Dev, DevConfig, DevInfo, PortClaim, RssConf, RxOffload, Started, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::mem::{Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
@@ -36,6 +36,35 @@ const TX_DESCRIPTORS: u16 = 1024;
 /// the pipeline and mbufs sitting in a transmit ring waiting to be reclaimed. Too small shows up as
 /// `rx_nombuf` on the port, not as an allocation error here.
 const POOL_MBUFS_PER_WORKER: u32 = 4 * RX_DESCRIPTORS as u32;
+
+/// Decide the RSS configuration for a port, warning if the device cannot spread at all.
+///
+/// RSS is what actually distributes received frames across the per-worker receive queues. Without
+/// it every frame lands on queue 0 and exactly one worker does all the work, however many were
+/// configured. The key is the driver's default and the hash covers whatever subset of L3
+/// addresses and L4 ports the device advertises.
+///
+/// Deliberately *not* symmetric. Two reasons, and the second is the one that settles it: mlx5
+/// rejects any hash function but the default at `rte_eth_dev_configure`, so symmetric Toeplitz is
+/// reachable only through the `rte_flow` RSS action (see [`RssConf`]); and a NAT'd flow's reverse
+/// packet carries the *translated* tuple rather than the reversed one, so no symmetry property the
+/// NIC could have would land a flow's two halves on the same worker. It does not need to: flow
+/// state lives in one `FlowTable` shared by every worker, so any worker can service any packet.
+///
+/// Returns `None` for a device that advertises no RSS hash functions -- how the emulated NICs
+/// (e1000, e1000e, virtio without multi-queue negotiation) report. Such a port still works; it
+/// simply cannot use more than one worker.
+fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
+    let rss = RssConf::supported_on(info);
+    if rss.is_none() && num_workers > 1 {
+        warn!(
+            "port {index} ({name}) advertises no RSS hash functions, so all {num_workers} workers \
+             will share receive queue 0 and only one of them will do any work",
+            index = info.index()
+        );
+    }
+    rss
+}
 
 /// A port that has been configured and started, with the pool its receive queues draw from.
 ///
@@ -76,7 +105,10 @@ impl<'eal> Port<'eal> {
         name: String,
         num_workers: u16,
     ) -> Result<Self, DriverError> {
-        let index = port.info().index();
+        let info = port.info();
+        let index = info.index();
+
+        let rss = rss_for(info, &name, num_workers);
 
         // One queue per worker, on every port. That is what makes a queue exclusively owned: a
         // worker holds its rx and tx handles by value for the run, and no two workers ever touch
@@ -91,15 +123,18 @@ impl<'eal> Port<'eal> {
             // what the pipeline sees -- and cost a factor of 32 in receive buffering, because the
             // PMD must reserve enough 2 KiB mbufs per packet to return a 64 KiB coalesced segment.
             // The pipeline computes checksums in software and sets no transmit offload flags.
-            rx_offloads: RxOffload::NONE,
+            //
+            // `RSS_HASH` is the exception, and only when RSS is on (DPDK rejects the offload
+            // otherwise): it makes the NIC report the hash it steered by in each mbuf, which is
+            // the only way to see from software how well traffic is actually spreading.
+            rx_offloads: if rss.is_some() {
+                RxOffload::RSS_HASH
+            } else {
+                RxOffload::NONE
+            },
             tx_offloads: TxOffloadConfig::none(),
             mtu: None,
-            // TODO: RSS is what actually spreads flows across the per-worker receive queues. With
-            // it off, every frame lands on queue 0 and exactly one worker does all the work. The
-            // queues and the workers are real either way, which is what this spike is establishing;
-            // turning RSS on needs a symmetric key so that both directions of a flow hash to the
-            // same worker, and that is its own change.
-            rss: None,
+            rss,
         };
 
         let mut dev = config
