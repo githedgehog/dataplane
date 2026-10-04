@@ -4,6 +4,7 @@
 //! Ethernet device management.
 
 use alloc::format;
+use alloc::string::String;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
 use core::marker::PhantomData;
@@ -244,10 +245,16 @@ pub struct DevConfig {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 /// Errors that can occur when configuring a DPDK ethernet device.
 pub enum DevConfigError {
-    /// A driver-specific error occurred when configuring the ethernet device.
-    DriverSpecificError(&'static str),
+    /// The driver rejected the configuration.
+    DriverSpecificError {
+        /// The error code the driver returned.
+        code: Errno,
+        /// DPDK's description of `code`, copied out of its per-thread buffer.
+        message: String,
+    },
     /// The requested MTU is outside the device's advertised `[min, max]` range.
     MtuOutOfRange {
         /// The MTU that was requested.
@@ -359,13 +366,16 @@ impl DevConfig {
                 code = ret
             );
 
-            // NOTE: it is not clear from the docs if `ret` is going to be a valid errno value.
-            // I am assuming it is for now.
-            // TODO: see if we can determine if `ret` is a valid errno value.
-            let rte_error = unsafe { CStr::from_ptr(rte_strerror(ret)) }
-                .to_str()
-                .unwrap_or("Unknown error");
-            return Err(DevConfigError::DriverSpecificError(rte_error));
+            // `rte_eth_dev_configure` returns a negative errno. `rte_strerror` formats into a
+            // per-thread buffer that the next call overwrites, so copy the message out now.
+            // SAFETY: `rte_strerror` always returns a valid NUL-terminated string.
+            let message = unsafe { CStr::from_ptr(rte_strerror(-ret)) }
+                .to_string_lossy()
+                .into_owned();
+            return Err(DevConfigError::DriverSpecificError {
+                code: Errno::from(-ret),
+                message,
+            });
         }
         Ok(Dev {
             lifecycle: PortLifecycle {
