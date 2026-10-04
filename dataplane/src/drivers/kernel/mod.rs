@@ -198,6 +198,7 @@ impl DriverKernel {
             workers_subsystem,
             worker_monitors,
             status_writer,
+            || {},
         )?;
         info!("Kernel driver started successfully");
         Ok(())
