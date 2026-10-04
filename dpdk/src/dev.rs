@@ -885,6 +885,20 @@ impl DevInfo<'_> {
         self.inner.rx_offload_capa.into()
     }
 
+    #[tracing::instrument(level = "trace")]
+    /// RX offloads allowed in queue configuration.
+    /// Port-wide capabilities may include offloads that cannot be set per queue.
+    pub fn rx_queue_offload_caps(&self) -> RxOffload {
+        self.inner.rx_queue_offload_capa.into()
+    }
+
+    #[tracing::instrument(level = "trace")]
+    /// TX offloads allowed in queue configuration.
+    /// See [`DevInfo::rx_queue_offload_caps`].
+    pub fn tx_queue_offload_caps(&self) -> TxOffload {
+        self.inner.tx_queue_offload_capa.into()
+    }
+
     /// Whether the device advertises RSS support.
     #[must_use]
     pub fn supports_rss(&self) -> bool {
@@ -1149,6 +1163,30 @@ impl<'eal, S: Open> Dev<'eal, S> {
         let ret = unsafe { rte_eth_macaddr_get(self.info.index().as_u16(), &raw mut addr) };
         if ret == 0 {
             Ok(net::eth::mac::Mac(addr.addr_bytes))
+        } else {
+            Err(ErrorCode::parse_i32(ret))
+        }
+    }
+
+    /// Enable or disable promiscuous mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's error, including `ENOTSUP` when unsupported.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn set_promiscuous(&mut self, enable: bool) -> Result<(), ErrorCode> {
+        let port = self.info.index().as_u16();
+        let ret = if enable {
+            unsafe { rte_eth_promiscuous_enable(port) }
+        } else {
+            unsafe { rte_eth_promiscuous_disable(port) }
+        };
+        if ret == 0 {
+            debug!(
+                "Promiscuous mode {state} on port {port}",
+                state = if enable { "enabled" } else { "disabled" }
+            );
+            Ok(())
         } else {
             Err(ErrorCode::parse_i32(ret))
         }
