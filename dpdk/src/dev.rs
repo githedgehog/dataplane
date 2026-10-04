@@ -1028,10 +1028,11 @@ pub struct Dev<'eal, S: DevState = Configured> {
     /// need the obligation restructured (most likely by having `PortLifecycle` own the queue
     /// store) rather than a `Drop` bolted on.
     lifecycle: PortLifecycle,
-    /// The device info
-    pub info: DevInfo<'eal>,
-    /// The configuration of the device.
-    pub config: DevConfig,
+    /// The device info. Private: every port operation reads its index from here, so replacing it
+    /// would aim them at another port.
+    pub(crate) info: DevInfo<'eal>,
+    /// The configuration the device was applied with.
+    pub(crate) config: DevConfig,
     /// The device's queues, until they are taken for distribution to workers.
     ///
     /// Stored with a `'static` brand and handed out shortened to the borrow of the device.  The
@@ -1047,6 +1048,18 @@ pub struct Dev<'eal, S: DevState = Configured> {
 }
 
 impl<'eal, S: DevState> Dev<'eal, S> {
+    /// Information about the underlying port.
+    #[must_use]
+    pub fn info(&self) -> &DevInfo<'eal> {
+        &self.info
+    }
+
+    /// The configuration the device was applied with.
+    #[must_use]
+    pub fn config(&self) -> &DevConfig {
+        &self.config
+    }
+
     /// Move all owned device state into a `Dev` of a different typestate.
     ///
     /// `Dev` deliberately implements no `Drop` of its own -- the teardown lives in the
