@@ -64,8 +64,9 @@ use concurrency::thread::ScopedJoinHandle;
 use dpdk::mem::Mbuf;
 use lifecycle::Subsystem;
 use pipeline::DynPipeline;
+use stats::PortMetrics;
 use tracectl::trace_target;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::DriverError;
 use super::status::{
@@ -177,17 +178,27 @@ impl DriverDpdk {
             });
         }
 
-        Self::spawn_supervisor(scope, workers_subsystem, monitors, status_writer)
+        Self::spawn_supervisor(scope, workers_subsystem, monitors, status_writer, ports)
     }
 
-    /// The supervisor thread: samples worker liveness, publishes status, joins on cancellation.
+    /// The supervisor thread: samples worker liveness, publishes status and port counters, joins on
+    /// cancellation.
+    ///
+    /// The port counters are polled *here* rather than from the metrics runtime because they are
+    /// the only thread that can be. `Dev::stats` needs the device, the devices are branded with
+    /// `'eal`, and `Eal` is `!Send` -- so the counters can only be read from a thread inside the
+    /// EAL's scope. The metrics server is a tokio task on the management runtime, which is neither.
     #[allow(clippy::too_many_lines)]
-    fn spawn_supervisor<'scope>(
+    fn spawn_supervisor<'p, 'scope>(
         scope: &'scope thread::Scope<'scope, '_>,
         workers_subsystem: &Subsystem,
         mut monitors: Vec<WorkerMonitor<'scope>>,
         status_writer: DriverStatusWriter,
-    ) -> Result<(), DriverError> {
+        ports: &'p [Port<'_>],
+    ) -> Result<(), DriverError>
+    where
+        'p: 'scope,
+    {
         let subsystem = workers_subsystem.clone();
         let check_period = Duration::from_secs(u64::from(Self::TASK_CHECK_PERIOD));
         let poll_period = Duration::from_secs(u64::from(Self::TASK_POLL_PERIOD));
@@ -209,6 +220,17 @@ impl DriverDpdk {
                         status
                     })
                     .collect();
+
+                // Registered once, here, rather than per poll: registration is configuration work
+                // and publishing follows traffic. Re-registering each time is what made the VPC
+                // collector quadratic.
+                let port_metrics: Vec<(&Port<'_>, PortMetrics)> = ports
+                    .iter()
+                    .map(|port| (port, PortMetrics::new(&port.name)))
+                    .collect();
+                // A PMD that implements no statistics reports `ENOTSUP` on every call. Complaining
+                // once per port beats a line per port per second for the life of the process.
+                let mut counters_unavailable: Vec<bool> = vec![false; port_metrics.len()];
 
                 let mut next_watchdog_check = std::time::Instant::now() + check_period;
 
@@ -290,11 +312,18 @@ impl DriverDpdk {
                         break;
                     }
 
+                    publish_port_counters(&port_metrics, &mut counters_unavailable);
+
                     status_writer.publish(DriverStatus {
                         workers: statuses.clone(),
                     });
                     thread::sleep(poll_period);
                 }
+
+                // One last read on the way out. A run that ends under load leaves its final drop
+                // count in the device, and without this the last thing a scrape ever sees is a
+                // poll_period old -- which is exactly the interval a shutdown is most interesting.
+                publish_port_counters(&port_metrics, &mut counters_unavailable);
 
                 status_writer.publish(DriverStatus {
                     workers: statuses.clone(),
@@ -307,6 +336,33 @@ impl DriverDpdk {
 
         info!("DPDK driver started successfully");
         Ok(())
+    }
+}
+
+/// Read every port's device counters and publish them.
+///
+/// `unavailable` is one flag per port, carried across calls so that a PMD which implements no
+/// statistics is complained about once rather than on every poll for the life of the process.
+fn publish_port_counters(port_metrics: &[(&Port<'_>, PortMetrics)], unavailable: &mut [bool]) {
+    for (slot, (port, metrics)) in port_metrics.iter().enumerate() {
+        match port.counters() {
+            Ok(counters) => {
+                metrics.publish(&counters);
+                // A port that starts reporting again after a failure is worth hearing about, so
+                // clear the flag rather than latching it.
+                unavailable[slot] = false;
+            }
+            Err(e) => {
+                if !unavailable[slot] {
+                    unavailable[slot] = true;
+                    warn!(
+                        "port {} would not report its counters: {e:?}. Receive drops on this port \
+                         are now invisible -- an overloaded dataplane will look like an idle wire.",
+                        port.name
+                    );
+                }
+            }
+        }
     }
 }
 

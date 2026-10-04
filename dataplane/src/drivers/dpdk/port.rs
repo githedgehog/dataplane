@@ -9,8 +9,10 @@ use dpdk::mem::{Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use dpdk::socket;
+use errno::ErrorCode;
 use net::eth::mac::Mac;
 use net::interface::InterfaceIndex;
+use stats::PortCounters;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -236,6 +238,31 @@ impl<'eal> Port<'eal> {
             mac,
             mtu,
             rx_pool,
+        })
+    }
+
+    /// Read the counters the device keeps for this port.
+    ///
+    /// These are the port's own totals, cumulative since it started, and they see what the
+    /// dataplane cannot: a frame dropped for want of a receive descriptor
+    /// ([`rx_missed`](PortCounters::rx_missed)) or for want of an mbuf
+    /// ([`rx_no_mbuf`](PortCounters::rx_no_mbuf)) never reaches a worker and so appears in no
+    /// pipeline counter at all. Without them an overloaded dataplane and an idle wire look alike.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's error code; a PMD that implements no statistics reports `ENOTSUP`.
+    pub(crate) fn counters(&self) -> Result<PortCounters, ErrorCode> {
+        let stats = self.dev.stats()?;
+        Ok(PortCounters {
+            rx_packets: stats.ipackets,
+            tx_packets: stats.opackets,
+            rx_bytes: stats.ibytes,
+            tx_bytes: stats.obytes,
+            rx_missed: stats.imissed,
+            rx_errors: stats.ierrors,
+            tx_errors: stats.oerrors,
+            rx_no_mbuf: stats.rx_nombuf,
         })
     }
 
