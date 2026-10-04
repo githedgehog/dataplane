@@ -42,6 +42,7 @@ pub mod mem;
 pub mod queue;
 pub mod ring;
 pub mod socket;
+mod sync;
 
 #[cfg(any(test, feature = "test"))]
 pub mod test_support;
