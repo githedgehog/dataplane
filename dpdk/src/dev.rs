@@ -219,6 +219,47 @@ pub struct RssConf {
     pub hf: u64,
 }
 
+impl RssConf {
+    /// The hash types worth asking for on a forwarding plane: L3 addresses for every IP packet,
+    /// plus L4 ports for TCP and UDP so that two flows between the same pair of hosts can land on
+    /// different queues.
+    ///
+    /// A device is not obliged to support all of these; [`RssConf::supported_on`] narrows the set
+    /// to what a given device advertises.
+    pub const DEFAULT_HASH_TYPES: u64 =
+        (RTE_ETH_RSS_IP as u64) | (RTE_ETH_RSS_TCP as u64) | (RTE_ETH_RSS_UDP as u64);
+
+    /// An RSS configuration for `dev` using the driver's default key and as much of
+    /// [`DEFAULT_HASH_TYPES`](Self::DEFAULT_HASH_TYPES) as the device advertises.
+    ///
+    /// Returns `None` if the device advertises no RSS hash functions at all, which is how the
+    /// emulated NICs (e1000, e1000e, and virtio without multi-queue negotiation) report.  Those
+    /// devices cannot spread across queues and must not be handed an RSS configuration.
+    ///
+    /// Intersecting rather than erroring is deliberate: `rte_eth_dev_configure` rejects an
+    /// `rss_hf` that is not a subset of `flow_type_rss_offloads`, and which hash types a device
+    /// supports is a property of the device rather than a thing a caller can be expected to know.
+    /// Asking for TCP ports on a device that only hashes L3 should cost L4 spread, not the port.
+    #[must_use]
+    pub fn supported_on(dev: &DevInfo) -> Option<RssConf> {
+        Self::from_hash_types(dev.rss_hash_types())
+    }
+
+    /// [`supported_on`](Self::supported_on) against a raw `flow_type_rss_offloads` mask.
+    ///
+    /// Split out from `supported_on` because a [`DevInfo`] can only be obtained from a real probed
+    /// device -- unit tests run under `--no-pci`, where none exists -- and the intersection is the
+    /// part with behaviour worth pinning down.
+    #[must_use]
+    pub fn from_hash_types(supported: u64) -> Option<RssConf> {
+        let hf = Self::DEFAULT_HASH_TYPES & supported;
+        if hf == 0 {
+            return None;
+        }
+        Some(RssConf { key: None, hf })
+    }
+}
+
 /// Device queue counts, offloads, MTU, and RSS.
 #[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Hash)]
 pub struct DevConfig {
@@ -275,6 +316,18 @@ pub enum DevConfigError {
         actual: usize,
         /// The key length advertised by the device.
         expected: u8,
+    },
+    /// The requested RSS hash types include bits the device does not support.
+    ///
+    /// `rte_eth_dev_configure` rejects any `rss_hf` that is not a subset of the device's
+    /// `flow_type_rss_offloads`.  Use [`RssConf::supported_on`] to intersect a wish list with what
+    /// a given device can actually hash on.
+    #[error("RSS hash types {requested:#x} include bits outside the supported {supported:#x}")]
+    RssHashTypesUnsupported {
+        /// The `RTE_ETH_RSS_*` bits that were requested.
+        requested: u64,
+        /// The `RTE_ETH_RSS_*` bits the device advertises.
+        supported: u64,
     },
 }
 
@@ -337,6 +390,14 @@ impl DevConfig {
         let mtu = self.resolve_mtu(dev)?;
         let mut config = self.clone();
         let rss_conf = config.prepare_rss(dev)?;
+        if let Some(rss) = &config.rss
+            && rss.hf & !dev.rss_hash_types() != 0
+        {
+            return Err(DevConfigError::RssHashTypesUnsupported {
+                requested: rss.hf,
+                supported: dev.rss_hash_types(),
+            });
+        }
         let mut eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
@@ -702,6 +763,20 @@ impl TxOffload {
 impl RxOffload {
     /// No receive offloads.
     pub const NONE: RxOffload = RxOffload(0);
+
+    /// Deliver the NIC's computed RSS hash in each mbuf's `hash.rss` field.
+    ///
+    /// Without this the hardware still steers by the hash but never reports it, so software cannot
+    /// see which flows the NIC believes it is spreading -- which is the first thing anyone wants
+    /// when RSS distributes badly.
+    ///
+    /// `rte_eth_dev_configure` rejects this offload unless the receive mq-mode has the RSS flag
+    /// set, so it is only legal alongside a [`DevConfig::rss`].
+    ///
+    /// Note that an `rte_flow` MARK or FDIR action overwrites the same union in the mbuf, so a
+    /// rule carrying one makes the hash unreadable -- the reason `flow_api_probe` sees
+    /// `rss_hash=None`.
+    pub const RSS_HASH: RxOffload = RxOffload(RTE_ETH_RX_OFFLOAD_RSS_HASH as u64);
 }
 
 impl BitOr for TxOffload {
@@ -955,6 +1030,16 @@ impl DevInfo<'_> {
     #[must_use]
     pub fn supports_rss(&self) -> bool {
         self.inner.flow_type_rss_offloads != 0
+    }
+
+    /// The set of `RTE_ETH_RSS_*` hash types the device advertises.
+    ///
+    /// `rte_eth_dev_configure` rejects any `rss_hf` that is not a subset of this, so a caller
+    /// building an [`RssConf`] by hand must intersect against it.  [`RssConf::supported_on`] does
+    /// that.
+    #[must_use]
+    pub fn rss_hash_types(&self) -> u64 {
+        self.inner.flow_type_rss_offloads
     }
 }
 
@@ -1429,4 +1514,69 @@ pub enum SocketIdLookupError {
     DevDoesNotExist(DevIndex),
     #[error("Unknown error code set")]
     UnknownErrno(ErrorCode),
+}
+
+#[cfg(test)]
+mod rss_conf_tests {
+    use super::*;
+
+    /// mlx5's `flow_type_rss_offloads`: `~MLX5_RSS_HF_MASK` from `mlx5_defs.h`.
+    ///
+    /// The `L3_SRC_ONLY`/`L3_DST_ONLY`/`L4_*_ONLY` modifier bits mlx5 also advertises are left out.
+    /// They only narrow a hash type that is already selected, so they cannot change the
+    /// intersection under test -- and `RTE_ETH_RSS_L3_SRC_ONLY` is `RTE_BIT64(63)`, which bindgen
+    /// does not emit into `dpdk-sys` at all (`RTE_ETH_RSS_L3_DST_ONLY`, one bit lower, comes
+    /// through fine). That gap is real but belongs to `dpdk-sys`, not here.
+    const MLX5_RSS_OFFLOADS: u64 = (RTE_ETH_RSS_IP as u64)
+        | (RTE_ETH_RSS_UDP as u64)
+        | (RTE_ETH_RSS_TCP as u64)
+        | (RTE_ETH_RSS_ESP as u64);
+
+    /// On mlx5 every hash type this crate asks for is supported, so the intersection must not
+    /// silently narrow. If it does, flows stop spreading by L4 port and every connection between
+    /// one pair of hosts collapses onto a single worker.
+    #[test]
+    fn mlx5_supports_every_hash_type_we_ask_for() {
+        let conf = RssConf::from_hash_types(MLX5_RSS_OFFLOADS).expect("mlx5 supports RSS");
+        assert_eq!(conf.hf, RssConf::DEFAULT_HASH_TYPES);
+        assert_eq!(conf.key, None);
+
+        // Named individually rather than left to the equality above, which compares the
+        // intersection against the wish list and so would still hold if the wish list itself were
+        // narrowed. These are the bits whose loss is operationally visible: without L4, every
+        // connection between one pair of hosts hashes alike and lands on a single worker.
+        for (bit, what) in [
+            (RTE_ETH_RSS_IP as u64, "L3 addresses"),
+            (RTE_ETH_RSS_TCP as u64, "TCP ports"),
+            (RTE_ETH_RSS_UDP as u64, "UDP ports"),
+        ] {
+            assert_ne!(conf.hf & bit, 0, "RSS on mlx5 would not hash over {what}");
+        }
+    }
+
+    /// A device that hashes on L3 but not L4 must still get an RSS configuration -- just a
+    /// narrower one. Erroring instead would refuse to spread traffic at all on a device that can
+    /// perfectly well spread it by address.
+    #[test]
+    fn an_l3_only_device_gets_a_narrowed_configuration() {
+        let conf = RssConf::from_hash_types(RTE_ETH_RSS_IP as u64).expect("L3 hashing is enough");
+        assert_eq!(conf.hf, RTE_ETH_RSS_IP as u64);
+        assert_eq!(conf.hf & RTE_ETH_RSS_TCP as u64, 0);
+    }
+
+    /// The emulated NICs (e1000, e1000e, virtio without multi-queue negotiation) report no hash
+    /// functions at all. Handing such a device an RSS configuration makes `rte_eth_dev_configure`
+    /// fail outright, so this case must produce `None` rather than an empty-but-present config.
+    #[test]
+    fn a_device_that_cannot_hash_gets_no_configuration() {
+        assert_eq!(RssConf::from_hash_types(0), None);
+    }
+
+    /// A device advertising only hash types we do not ask for is the same case: the intersection
+    /// is empty, and an `rss_hf` of zero under `RTE_ETH_MQ_RX_RSS` would configure a hash over
+    /// nothing, sending every packet to queue 0 while looking configured.
+    #[test]
+    fn an_empty_intersection_is_not_a_configuration() {
+        assert_eq!(RssConf::from_hash_types(RTE_ETH_RSS_ESP as u64), None);
+    }
 }
