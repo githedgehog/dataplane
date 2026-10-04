@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use concurrency::sync::Arc;
+use dpdk::lcore::LCore;
 use dpdk::mem::{MBUF_BURST, Mbuf, MbufArray};
 use lifecycle::Subsystem;
 use net::buffer::{Append, PacketBufferMut};
@@ -59,6 +60,27 @@ impl<'p> Worker<'p> {
     ) {
         // Run flow and NAT timers on the management runtime until worker helpers replace it.
         let _runtime = timer_handle.enter();
+        // Register with the EAL before anything allocates. An unregistered thread reports
+        // `LCORE_ID_ANY`, and `rte_mempool_default_cache` returns NULL for that -- so every
+        // `alloc_bulk` and every mbuf free would go to the shared ring under atomics, on every
+        // burst, in both directions. The token releases the id however this thread ends; leaking
+        // one strands it for the life of the process.
+        //
+        // A worker that cannot register is left to run anyway. It is slower, not wrong: the
+        // mempool falls back to the ring, which is correct, just contended. Refusing to forward
+        // traffic over a performance property would be the worse failure.
+        let _lcore = match LCore::register() {
+            Ok(lcore) => Some(lcore),
+            Err(e) => {
+                error!(
+                    worker = self.id,
+                    "could not register with the EAL ({e:?}); this worker will run without a \
+                     per-core mempool cache and will contend on every allocation"
+                );
+                None
+            }
+        };
+
         let mut pipeline = setup_pipeline();
 
         // Map pipeline output ifindices to this worker's transmit queues.
@@ -71,6 +93,7 @@ impl<'p> Worker<'p> {
 
         debug!(
             worker = self.id,
+            lcore = dpdk::lcore::LCoreId::current().0,
             "DPDK worker started on {} port(s): {}",
             self.ports.len(),
             self.ports
