@@ -26,6 +26,8 @@ use tokio::signal::unix::{Signal as SignalStream, SignalKind, signal};
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
+use crate::socket;
+
 /// How long a process is given to respond to `SIGTERM` before it is killed.
 ///
 /// Matched to the ten seconds a container runtime allows between `SIGTERM` and `SIGKILL`, less a
@@ -78,6 +80,18 @@ pub enum SupervisorError {
         timeout: Duration,
     },
 
+    /// A readiness socket could not be checked or had the wrong file type.
+    #[error("could not check {name}'s socket {path}: {source}")]
+    Socket {
+        /// The process waiting to become ready.
+        name: String,
+        /// The expected socket path.
+        path: PathBuf,
+        /// Why the check failed.
+        #[source]
+        source: io::Error,
+    },
+
     /// A signal handler could not be installed, so shutdown could not be made to work.
     #[error("could not listen for {signal}: {source}")]
     SignalHandler {
@@ -127,24 +141,22 @@ impl Ended {
 
 /// What has to be true before the next process is started.
 ///
-/// Startup order only matters where one process will fail without another, and it always fails the
-/// same way: something connects to a socket that is not there yet. So the conditions here are about
-/// the artifacts a dependant looks for, not about a process reporting itself healthy -- a process
-/// that has opened its socket is ready in the only sense a dependant can observe.
+/// Socket paths must be cleared before any children start. A new socket shows that
+/// the endpoint was bound; it does not establish full service health.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Ready {
     /// Start the next process as soon as this one has been spawned.
     Immediately,
-    /// Wait for this path to exist, which for a unix socket means it can be connected to.
-    Path(PathBuf),
+    /// Wait for a Unix socket at this path.
+    Socket(PathBuf),
 }
 
 impl std::fmt::Display for Ready {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Ready::Immediately => write!(f, "nothing to wait for"),
-            Ready::Path(path) => write!(f, "waiting for {} to exist", path.display()),
+            Ready::Socket(path) => write!(f, "waiting for socket {}", path.display()),
         }
     }
 }
@@ -174,10 +186,11 @@ impl Process {
         }
     }
 
-    /// Wait for `path` to exist before considering this process started.
+    /// Wait for a Unix socket at `path` before considering this process started.
+    /// The caller must remove any stale socket before spawning children.
     #[must_use]
-    pub fn ready_when_path_exists(mut self, path: impl Into<PathBuf>) -> Self {
-        self.ready = Ready::Path(path.into());
+    pub fn ready_when_socket_exists(mut self, path: impl Into<PathBuf>) -> Self {
+        self.ready = Ready::Socket(path.into());
         self
     }
 }
@@ -280,7 +293,8 @@ impl Supervisor {
     ///
     /// Returns [`SupervisorError::Spawn`] if the process could not be started,
     /// [`SupervisorError::DiedDuringStartup`] if any supervised child exited,
-    /// [`SupervisorError::Interrupted`] on a shutdown signal, or
+    /// [`SupervisorError::Interrupted`] on a shutdown signal,
+    /// [`SupervisorError::Socket`] if the readiness path cannot be used, or
     /// [`SupervisorError::NeverReady`] if it stayed alive without meeting its condition.
     async fn start(&mut self, mut process: Process) -> Result<(), SupervisorError> {
         self.check_startup()?;
@@ -337,7 +351,7 @@ impl Supervisor {
         condition: &Ready,
         timeout: Duration,
     ) -> Result<(), SupervisorError> {
-        let Ready::Path(path) = condition else {
+        let Ready::Socket(path) = condition else {
             return Ok(());
         };
 
@@ -345,8 +359,12 @@ impl Supervisor {
         let deadline = clock::now() + timeout;
         loop {
             self.check_startup()?;
-            if path.exists() {
-                debug!("{name} is ready ({} exists)", path.display());
+            if socket::exists(path).map_err(|source| SupervisorError::Socket {
+                name: name.to_string(),
+                path: path.clone(),
+                source,
+            })? {
+                debug!("{name} is ready (socket {} exists)", path.display());
                 return Ok(());
             }
 
@@ -638,7 +656,7 @@ mod test {
             .unwrap();
         let pid = supervisor.running[0].pid;
         let next = Process::new("next", sh("exec sleep 600"))
-            .ready_when_path_exists("/definitely/not/a/real/socket");
+            .ready_when_socket_exists("/definitely/not/a/real/socket");
         let (result, ()) = tokio::join!(
             biased;
             tokio::time::timeout(Duration::from_secs(2), supervisor.run([next])),
@@ -666,7 +684,7 @@ mod test {
                 .await
                 .unwrap();
             let process = Process::new("starting", sh("exec sleep 600"))
-                .ready_when_path_exists("/definitely/not/a/real/socket");
+                .ready_when_socket_exists("/definitely/not/a/real/socket");
             let (result, ()) = tokio::join!(
                 biased;
                 tokio::time::timeout(Duration::from_secs(2), supervisor.run([process])),
@@ -790,37 +808,60 @@ mod test {
     }
 
     #[tokio::test]
-    async fn a_dependant_waits_for_the_path_it_needs() {
-        if run_in_subprocess("a_dependant_waits_for_the_path_it_needs") {
+    async fn a_dependant_waits_for_a_new_socket() {
+        if run_in_subprocess("a_dependant_waits_for_a_new_socket") {
             return;
         }
         let scratch = scratch_dir("ready");
-        let socket = scratch.join("cpi.sock");
-        let _ = std::fs::remove_file(&socket);
+        let path = scratch.join("cpi.sock");
+        drop(std::os::unix::net::UnixDatagram::bind(&path).unwrap());
+        socket::remove_stale(&path).unwrap();
 
         let mut supervisor = Supervisor::new().unwrap();
-        let started = clock::now();
-        supervisor
-            .start(
-                Process::new(
-                    "slow-starter",
-                    sh(&format!("sleep 0.3; : > {}; sleep 600", socket.display())),
-                )
-                .ready_when_path_exists(&socket),
-            )
+        {
+            let start = supervisor.start(
+                Process::new("slow-starter", sh("exec sleep 600")).ready_when_socket_exists(&path),
+            );
+            tokio::pin!(start);
+            assert!(
+                start.as_mut().now_or_never().is_none(),
+                "must wait for a new socket"
+            );
+
+            let _socket = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), start)
+                .await
+                .expect("must observe the new socket")
+                .unwrap();
+        }
+        supervisor.shut_down().await.unwrap();
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_regular_file_cannot_satisfy_socket_readiness() {
+        if run_in_subprocess("a_regular_file_cannot_satisfy_socket_readiness") {
+            return;
+        }
+        let scratch = scratch_dir("wrong-type");
+        let path = scratch.join("cpi.sock");
+        std::fs::write(&path, "not a socket").unwrap();
+        let supervisor = Supervisor::new().unwrap();
+        let error = supervisor
+            .run([
+                Process::new("earlier", sh("exec sleep 600")),
+                Process::new("wrong-type", sh("exec sleep 600")).ready_when_socket_exists(&path),
+            ])
             .await
-            .expect("the slow starter should become ready");
-
-        // The point of the readiness gate: `start` did not return until the artifact a dependant
-        // would look for was actually there.
-        assert!(socket.exists(), "start returned before the socket existed");
-        assert!(
-            started.elapsed() >= Duration::from_millis(250),
-            "start returned too early to have waited for anything"
+            .unwrap_err();
+        assert!(matches!(error, SupervisorError::Socket { name, source, .. }
+            if name == "wrong-type" && source.kind() == io::ErrorKind::InvalidInput));
+        assert_eq!(
+            waitpid(None, Some(WaitPidFlag::WNOHANG)),
+            Err(Errno::ECHILD)
         );
-
-        supervisor.shut_down().await.expect("shutdown should work");
-        let _ = std::fs::remove_dir_all(&scratch);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not a socket");
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 
     #[tokio::test]
@@ -835,7 +876,7 @@ mod test {
             .unwrap();
         let error = supervisor
             .run([Process::new("false-start", sh("exit 7"))
-                .ready_when_path_exists("/definitely/not/a/real/socket")])
+                .ready_when_socket_exists("/definitely/not/a/real/socket")])
             .await
             .expect_err("a process that exits during startup is an error");
 
@@ -865,7 +906,7 @@ mod test {
             .await
             .unwrap();
         let mut process = Process::new("never-ready", sh("exec sleep 600"))
-            .ready_when_path_exists("/definitely/not/a/real/socket");
+            .ready_when_socket_exists("/definitely/not/a/real/socket");
         process.ready_timeout = Duration::from_millis(200);
 
         let error = supervisor

@@ -5,6 +5,7 @@
 #![deny(clippy::pedantic, missing_docs)]
 
 mod frr;
+mod socket;
 mod supervisor;
 
 use std::collections::BTreeMap;
@@ -552,6 +553,14 @@ enum HandoffError {
     #[error("could not build a runtime to supervise the gateway: {0}")]
     Runtime(#[source] std::io::Error),
 
+    /// A gateway socket could not be cleared before startup.
+    #[error("could not clear stale socket {path}: {source}")]
+    Socket {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     /// FRR could not be worked out well enough to start it.
     #[error(transparent)]
     Frr(#[from] frr::FrrError),
@@ -649,18 +658,7 @@ async fn run_gateway(
 
     let supervisor = Supervisor::new()?;
 
-    // Everything FRR needs decided *before* anything starts, because the dataplane is first out of
-    // the gate and it already depends on one of these answers.
-    //
-    // The state directory is the reason this is not merely tidy. `/run/frr` is a volume that
-    // outlives the pod and arrives empty on a fresh install, and the dataplane binds its
-    // control-plane socket *inside* it, at `<state>/hh`. Prepare it afterwards and the dataplane
-    // dies on startup with a bind failure -- which is what happened, and which only a lab built
-    // from scratch could show: a machine that has run the old two-container gateway already has
-    // the directory, left behind by the `init-frr` container this replaces.
-    //
-    // Reading the daemon list early is worth having for its own sake: an FRR install missing zebra
-    // should be a refusal to start, not a discovery made after the datapath is already up.
+    // Prepare FRR's directories before the dataplane binds its control-plane socket there.
     let daemons = if supervise_frr {
         let (config_dir, daemon_dir) = frr::install();
         let daemons = frr::enabled_daemons(&config_dir, &daemon_dir)?;
@@ -670,9 +668,25 @@ async fn run_gateway(
         None
     };
 
+    // Clear owned endpoints before any child starts, including configured paths outside /run/frr.
+    for path in [
+        Some(control_plane_socket.as_str()),
+        supervise_frr.then_some(agent_socket.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        socket::remove_stale(std::path::Path::new(path)).map_err(|source| {
+            HandoffError::Socket {
+                path: path.into(),
+                source,
+            }
+        })?;
+    }
+
     let dataplane = dataplane_process(config, &netns, &host_netns)?;
     let dataplane = if supervise_frr {
-        dataplane.ready_when_path_exists(control_plane_socket)
+        dataplane.ready_when_socket_exists(control_plane_socket)
     } else {
         // Nothing here is waiting on it, so there is nothing to gain by waiting: FRR is in a
         // container of its own and already has to tolerate starting in any order.

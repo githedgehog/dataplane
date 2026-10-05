@@ -53,6 +53,7 @@ use std::process::Command;
 
 use tracing::{debug, info, warn};
 
+use crate::socket;
 use crate::supervisor::Process;
 
 /// Where FRR installs its daemons, `watchfrr` among them.
@@ -233,12 +234,7 @@ fn is_executable(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
-/// What has to exist before FRR can be said to be running.
-///
-/// Zebra's `vty` socket, which is the same evidence `watchfrr` itself uses: a daemon that has
-/// opened it is serving, and one that has not is still starting up. It matters because `frr-agent`
-/// applies configuration through `vtysh`, and a `vtysh` that runs before zebra is listening fails
-/// rather than waits.
+/// Wait for zebra's VTY socket before starting the agent that invokes `vtysh`.
 fn readiness(state_dir: &Path) -> PathBuf {
     state_dir.join("zebra.vty")
 }
@@ -262,10 +258,12 @@ const FRR_USER: &str = "frr";
 /// runtime and not at build time: the image cannot carry an ownership it has no `chown` to apply,
 /// and a container runtime will not apply one either.
 ///
+/// Call before spawning any gateway children.
+///
 /// # Errors
 ///
 /// Returns [`FrrError::NoFrrUser`] if the image has no `frr` user, and [`FrrError::StateDir`] if
-/// the directory cannot be created or given to it.
+/// the directory cannot be created, given to it, or cleared of stale state.
 pub fn prepare_state_dir(state_dir: &Path) -> Result<(), FrrError> {
     let user = nix::unistd::User::from_name(FRR_USER)
         .ok()
@@ -296,7 +294,7 @@ pub fn prepare_state_dir(state_dir: &Path) -> Result<(), FrrError> {
         })?;
     }
 
-    sweep_stale_state(state_dir);
+    sweep_stale_state(state_dir)?;
 
     debug!(
         "{} is {FRR_USER}'s, uid {} gid {}",
@@ -307,41 +305,53 @@ pub fn prepare_state_dir(state_dir: &Path) -> Result<(), FrrError> {
     Ok(())
 }
 
-/// Suffixes a previous FRR left behind in a state directory that outlives it.
-///
-/// The vty sockets are the ones that matter. `<state>/zebra.vty` is what [`readiness`] waits for,
-/// so a stale one is worse than a missing one: FRR is declared up the instant it is started, the
-/// agent is released to configure a zebra that is not listening yet, and the failure surfaces as a
-/// configuration that did not apply rather than as a startup problem.
-const STALE_SUFFIXES: &[&str] = &[".pid", ".vty", ".sock", ".api", ".started"];
-
-/// Remove what a previous FRR left in the state directory.
-///
-/// The directory is a host path that outlives the pod, which is what makes this necessary; the
-/// `init-frr` container this replaces swept the same set. Only the top level, and only these
-/// suffixes -- `hh/` below it is the dataplane's, and it binds its control-plane socket there
-/// moments after this runs.
-///
-/// Failures are logged rather than returned. A file that cannot be removed is a reason to look,
-/// not a reason to refuse to start -- FRR will say so itself, and more usefully, when it tries.
-fn sweep_stale_state(state_dir: &Path) {
-    let Ok(entries) = fs::read_dir(state_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+/// Remove FRR's old sockets and status files before any children start.
+/// Configured dataplane and agent paths are also cleared by `run_gateway`.
+fn sweep_stale_state(state_dir: &Path) -> Result<(), FrrError> {
+    let entries = fs::read_dir(state_dir).map_err(|source| FrrError::StateDir {
+        path: state_dir.to_path_buf(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| FrrError::StateDir {
+            path: state_dir.to_path_buf(),
+            source,
+        })?;
         let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !STALE_SUFFIXES.iter().any(|s| name.ends_with(s)) {
+        let result = if [".vty", ".sock", ".api"].iter().any(|s| name.ends_with(s)) {
+            socket::remove_stale(&path)
+        } else if [".pid", ".started"].iter().any(|s| name.ends_with(s)) {
+            remove_stale_status(&path)
+        } else {
             continue;
+        };
+        result.map_err(|source| FrrError::StateDir {
+            path: path.clone(),
+            source,
+        })?;
+        info!("cleared stale FRR state {}", path.display());
+    }
+
+    let path = state_dir.join("hh/plugin.sock");
+    socket::remove_stale(&path).map_err(|source| FrrError::StateDir { path, source })
+}
+
+/// Remove only regular status files, tolerating an already absent path.
+fn remove_stale_status(path: &Path) -> std::io::Result<()> {
+    let remove = || {
+        if !fs::symlink_metadata(path)?.file_type().is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "expected a regular FRR status file",
+            ));
         }
-        match fs::remove_file(&path) {
-            Ok(()) => info!("removed {}, left by a previous FRR", path.display()),
-            Err(e) => warn!("could not remove {}: {e}", path.display()),
-        }
+        fs::remove_file(path)
+    };
+    match remove() {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
     }
 }
 
@@ -360,7 +370,7 @@ pub fn state_dir() -> PathBuf {
 pub fn watchfrr(daemons: &[String]) -> Process {
     let mut command = Command::new(PathBuf::from(DAEMON_DIR).join("watchfrr"));
     command.args(daemons);
-    Process::new("frr", command).ready_when_path_exists(readiness(Path::new(STATE_DIR)))
+    Process::new("frr", command).ready_when_socket_exists(readiness(Path::new(STATE_DIR)))
 }
 
 /// Run the agent that carries configuration from the dataplane into FRR.
@@ -375,7 +385,7 @@ pub fn agent(socket: &str) -> Process {
     command.arg("--sock-path").arg(socket);
     command.arg("--reloader").arg(RELOADER);
     command.arg("--bindir").arg(VTYSH_DIR);
-    Process::new("frr-agent", command).ready_when_path_exists(socket)
+    Process::new("frr-agent", command).ready_when_socket_exists(socket)
 }
 
 /// Where the daemon list is read from, and where the daemons are looked for.
@@ -586,50 +596,71 @@ mod test {
         );
         assert_eq!(
             process.ready,
-            crate::supervisor::Ready::Path(PathBuf::from("/run/frr/frr-agent.sock")),
+            crate::supervisor::Ready::Socket(PathBuf::from("/run/frr/frr-agent.sock")),
             "and the same path is the evidence it is listening"
         );
     }
 
-    /// The sweep exists for `zebra.vty`; `hh/` exists for a socket the dataplane already bound.
     #[test]
-    fn a_stale_vty_goes_and_the_dataplanes_socket_stays() {
-        let root = std::env::temp_dir().join(format!("frr-sweep-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("hh")).expect("temp dir");
-        for name in [
-            "zebra.vty",
-            "bgpd.pid",
-            "frr-agent.sock",
-            "watchfrr.started",
-        ] {
-            fs::write(root.join(name), "").expect("stale file");
+    fn stale_frr_sockets_and_status_files_are_removed() {
+        let install = Install::new("sweep", "", &[]);
+        let root = &install.root;
+        fs::create_dir(root.join("hh")).unwrap();
+        for name in ["zebra.vty", "frr-agent.sock", "zserv.api"] {
+            drop(std::os::unix::net::UnixListener::bind(root.join(name)).unwrap());
         }
-        fs::write(root.join("hh/dataplane.sock"), "").expect("live socket");
-        // Not one of ours, and not a suffix we sweep: a sweep that took this would be a sweep
-        // nobody could keep anything beside.
-        fs::write(root.join("frr.log"), "").expect("bystander");
+        drop(std::os::unix::net::UnixDatagram::bind(root.join("hh/plugin.sock")).unwrap());
+        for name in ["bgpd.pid", "watchfrr.started", "frr.log"] {
+            fs::write(root.join(name), "").unwrap();
+        }
+        let _dataplane =
+            std::os::unix::net::UnixDatagram::bind(root.join("hh/dataplane.sock")).unwrap();
 
-        sweep_stale_state(&root);
+        sweep_stale_state(root).unwrap();
 
         for name in [
             "zebra.vty",
-            "bgpd.pid",
             "frr-agent.sock",
+            "zserv.api",
+            "hh/plugin.sock",
+            "bgpd.pid",
             "watchfrr.started",
         ] {
-            assert!(
-                !root.join(name).exists(),
-                "{name} would have made FRR look up before it was"
-            );
+            assert!(!root.join(name).exists(), "{name} should have been removed");
         }
-        assert!(
-            root.join("hh/dataplane.sock").exists(),
-            "`hh/` is the dataplane's; it binds its control-plane socket there moments after this"
-        );
-        assert!(root.join("frr.log").exists(), "not ours to remove");
+        // The configured dataplane endpoint is cleaned separately, not by scanning hh/.
+        assert!(socket::exists(&root.join("hh/dataplane.sock")).unwrap());
+        assert!(root.join("frr.log").exists());
+        sweep_stale_state(root).unwrap();
+    }
 
-        let _ = fs::remove_dir_all(&root);
+    #[test]
+    fn stale_state_errors_are_fatal() {
+        for name in [
+            "zebra.vty",
+            "frr-agent.sock",
+            "zserv.api",
+            "hh/plugin.sock",
+            "bgpd.pid",
+        ] {
+            let install = Install::new("sweep-error", "", &[]);
+            fs::create_dir(install.root.join("hh")).unwrap();
+            let path = install.root.join(name);
+            if name == "bgpd.pid" {
+                fs::create_dir(&path).unwrap();
+            } else {
+                fs::write(&path, "keep me").unwrap();
+            }
+            assert!(matches!(sweep_stale_state(&install.root),
+                Err(FrrError::StateDir { path: failed, source })
+                if failed == path && source.kind() == std::io::ErrorKind::InvalidInput));
+            assert!(path.exists());
+        }
+        let install = Install::new("sweep-unreadable", "", &[]);
+        assert!(matches!(
+            sweep_stale_state(&install.root.join("etc/daemons")),
+            Err(FrrError::StateDir { .. })
+        ));
     }
 
     /// `watchfrr` must stay in the foreground, or the supervisor has nothing to wait on.

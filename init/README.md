@@ -106,9 +106,12 @@ which is what `/libexec/frr/docker-start` used to do. Two things that script did
 by the shared fate above. The sweep of stale zebra nexthops is unnecessary, because it was cleanup after a _previous_
 container in a namespace that outlived it — and the control namespace is now created per start.
 
-Startup is ordered rather than raced: the dataplane is waited for until its control-plane socket exists, because
-zebra's `hh_dplane` module connects to it as it loads and a zebra that starts first finds nothing there. `frr-agent`
-is started last and waited for at its own socket.
+Before spawning children, init removes the old dataplane control-plane socket and, when it supervises FRR,
+FRR's stale sockets and status files plus the configured agent socket. Init requires exclusive ownership of
+these endpoints during startup. Unexpected file types and cleanup failures are fatal.
+
+Startup waits for each new Unix socket in order: dataplane control plane, zebra VTY, then FRR agent.
+This confirms that each endpoint was bound; it does not establish full service health.
 
 `watchfrr` rather than the daemons individually, which was tried and does not reproduce FRR faithfully — enough of
 the startup lives in `watchfrr.sh` and `frrcommon.sh` (per-daemon options, config file creation, the `vtysh -b` pass)
