@@ -53,11 +53,11 @@
         "owner": "githedgehog",
         "repo": "dplane-rpc"
       },
-      "branch": "pr/fredi/next-hop-vxlan-mac",
+      "branch": "hh-master-10.7",
       "submodules": false,
-      "revision": "78770c05891cf425e13e9ad3d8bb64d24af6073c",
-      "url": "https://github.com/githedgehog/dplane-rpc/archive/78770c05891cf425e13e9ad3d8bb64d24af6073c.tar.gz",
-      "hash": "sha256-0ngagO2Xm8hOo5mDgLeR4tQ7ME8VUH5NlfMkEMgIqe4=",
+      "revision": "45e04e8a5a3d658f384fe1cd0bb1342c1122ab54",
+      "url": "https://github.com/githedgehog/dplane-rpc/archive/45e04e8a5a3d658f384fe1cd0bb1342c1122ab54.tar.gz",
+      "hash": "sha256-LjpoUMPRG22kAb3Y0zyfUC8Y1ejigMpBq0YQZArG6W8=",
       "frozen": true
     },
     "crate-fixin": {
@@ -136,11 +136,11 @@
         "owner": "githedgehog",
         "repo": "dplane-plugin"
       },
-      "branch": "hh-master-10.7.1",
+      "branch": "hh-master-10.7",
       "submodules": false,
-      "revision": "18a1d3a248e2280697d797fd5905d8b472f83e12",
-      "url": "https://github.com/githedgehog/dplane-plugin/archive/18a1d3a248e2280697d797fd5905d8b472f83e12.tar.gz",
-      "hash": "sha256-U+n3Bmm5liqhov08P7rx+8YB6UlzE3/26UA7dMnfbyU="
+      "revision": "e8e262b98ba3c98ec9df14a9bb6806aed02f54ac",
+      "url": "https://github.com/githedgehog/dplane-plugin/archive/e8e262b98ba3c98ec9df14a9bb6806aed02f54ac.tar.gz",
+      "hash": "sha256-DCZEuDr0JmZ8NNBSrk96oCeyjstBoFkfIR3QBmeuJM8="
     },
     "dplane-rpc": {
       "type": "Git",
@@ -149,11 +149,11 @@
         "owner": "githedgehog",
         "repo": "dplane-rpc"
       },
-      "branch": "master",
+      "branch": "hh-master-10.7",
       "submodules": false,
-      "revision": "fa91e0be94bcbce21fe5167311e49047e43a9cb1",
-      "url": "https://github.com/githedgehog/dplane-rpc/archive/fa91e0be94bcbce21fe5167311e49047e43a9cb1.tar.gz",
-      "hash": "sha256-4NcJcMoya8m3fE3kCVWzYZyU1h9R5jwLftJ0edmIHAA="
+      "revision": "45e04e8a5a3d658f384fe1cd0bb1342c1122ab54",
+      "url": "https://github.com/githedgehog/dplane-rpc/archive/45e04e8a5a3d658f384fe1cd0bb1342c1122ab54.tar.gz",
+      "hash": "sha256-LjpoUMPRG22kAb3Y0zyfUC8Y1ejigMpBq0YQZArG6W8="
     },
     "duvet": {
       "type": "Git",
