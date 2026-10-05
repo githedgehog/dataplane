@@ -157,7 +157,7 @@ impl Route {
             origin,
             distance: iproute.distance,
             metric: iproute.metric,
-            s_nhops: vec![], /* shim nhops are empty here */
+            s_nhops: vec![], /* nhops are empty here */
             tstamp: clock::now(),
         }
     }
@@ -539,7 +539,7 @@ mod rpc_properties {
                 if want.is_empty() {
                     want.push(NhopKey::with_drop());
                 }
-                let got: Vec<NhopKey> = route.s_nhops.iter().map(|s| s.rc.key.clone()).collect();
+                let got: Vec<NhopKey> = route.s_nhops.iter().map(|s| s.key.clone()).collect();
                 assert_eq!(got, want, "next-hops for {spec:?}");
             });
     }

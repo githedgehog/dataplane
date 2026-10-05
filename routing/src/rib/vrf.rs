@@ -26,6 +26,8 @@ pub type VrfId = u32;
 
 #[derive(Debug, Default, Clone, Eq, Hash, PartialEq)]
 /// A temporary data structure that represents a route next-hop
+/// This contains just the next-hop key atm. The type is kept for
+/// clarity and to accommodate further info in the future.
 pub struct RouteNhop {
     pub key: NhopKey,
 }
@@ -56,7 +58,9 @@ pub struct Route {
     pub origin: RouteOrigin,
     pub distance: u8,
     pub metric: u32,
-    pub s_nhops: Vec<ShimNhop>,
+    // Shared references to next-hops used by this route in the vrf's `NhopStore`
+    // These get deleted when no route refers to them
+    pub s_nhops: Vec<Rc<Nhop>>,
     pub tstamp: Instant,
 }
 impl Default for Route {
@@ -89,17 +93,7 @@ impl Route {
             && self.s_nhops.len() == 1
             && self.metric == 0
             && self.distance == 0
-            && self.s_nhops[0].rc.key.fwaction == FwAction::Drop
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ShimNhop {
-    pub rc: Rc<Nhop>,
-}
-impl ShimNhop {
-    fn new(rc: Rc<Nhop>) -> Self {
-        Self { rc }
+            && self.s_nhops[0].key.fwaction == FwAction::Drop
     }
 }
 
@@ -324,18 +318,16 @@ impl Vrf {
     /// Register a shared next-hop for the route if not there and return a
     /// vector of shared references to the next-hops used by the route.
     /////////////////////////////////////////////////////////////////////////
-    fn register_shared_nhops(&mut self, prefix: &Prefix, nhops: &[RouteNhop]) -> Vec<ShimNhop> {
+    fn register_shared_nhops(&mut self, prefix: &Prefix, nhops: &[RouteNhop]) -> Vec<Rc<Nhop>> {
         let mut nhop_refs = Vec::with_capacity(nhops.len());
         if nhops.is_empty() {
             warn!("Route to {prefix} has no next-hop: will install one with action drop");
             let shared = self.nhstore.add_nhop(&NhopKey::with_drop());
-            let shim = ShimNhop::new(shared);
-            nhop_refs.push(shim);
+            nhop_refs.push(shared);
         } else {
             for nhop in nhops {
                 let shared = self.nhstore.add_nhop(&nhop.key);
-                let shim = ShimNhop::new(shared);
-                nhop_refs.push(shim);
+                nhop_refs.push(shared);
             }
         }
         nhop_refs
@@ -345,12 +337,12 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     /// Declare next-hop is no longer needed. The next-hop may not be removed
     /// at this point since it may be used by other routes. This method returns
-    /// true if the next-hop was removed and false otherwise.
+    /// the key of the next-hop if it was removed and None otherwise.
     /////////////////////////////////////////////////////////////////////////
-    fn deregister_shared_nhop(&mut self, shim: ShimNhop) -> bool {
-        let key = shim.rc.key.clone();
-        drop(shim);
-        self.nhstore.del_nhop(&key)
+    fn deregister_shared_nhop(&mut self, shared: Rc<Nhop>) -> Option<NhopKey> {
+        let key = shared.key.clone();
+        drop(shared);
+        self.nhstore.del_nhop(&key).then_some(key)
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -358,9 +350,8 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     fn deregister_shared_nexthops(&mut self, route: &mut Route) {
         let mut count = 0;
-        while let Some(shim) = route.s_nhops.pop() {
-            let key = shim.rc.key.clone();
-            if self.deregister_shared_nhop(shim) {
+        while let Some(shared) = route.s_nhops.pop() {
+            if let Some(key) = self.deregister_shared_nhop(shared) {
                 count += 1;
                 self.fibw.unregister_fibgroup(&key, false);
             }
@@ -454,7 +445,7 @@ impl Vrf {
         };
 
         // Get the keys of the next-hops that this route points to.
-        let nhkeys: Vec<NhopKey> = route.s_nhops.iter().map(|nh| nh.rc.key.clone()).collect();
+        let nhkeys: Vec<NhopKey> = route.s_nhops.iter().map(|nh| nh.key.clone()).collect();
 
         // Install the route in the fib
         self.fibw.add_fibroute(*prefix, nhkeys, true);
@@ -730,13 +721,13 @@ pub mod tests {
         let prefix: Prefix = Prefix::root_v4();
         let recovered = vrf.get_route_v4(*prefix.get_v4()).expect("There must be a default route");
         assert_eq!(recovered.s_nhops.len(), 1);
-        assert_eq!(recovered.s_nhops[0].rc.key.fwaction, FwAction::Drop);
+        assert_eq!(recovered.s_nhops[0].key.fwaction, FwAction::Drop);
     }
     fn check_default_drop_v6(vrf: &Vrf) {
         let prefix: Prefix = Prefix::root_v6();
         let recovered = vrf.get_route_v6(*prefix.get_v6()).expect("There must be a default route");
         assert_eq!(recovered.s_nhops.len(), 1);
-        assert_eq!(recovered.s_nhops[0].rc.key.fwaction, FwAction::Drop);
+        assert_eq!(recovered.s_nhops[0].key.fwaction, FwAction::Drop);
     }
     fn check_vrf_is_empty(vrf: &Vrf) {
         assert_eq!(vrf.len_v4(), 1,"Only default(root) route for Ipv4");
@@ -832,8 +823,8 @@ pub mod tests {
         assert_eq!(route.origin, RouteOrigin::Static);
         let resolvers = &route.s_nhops;
         assert_eq!(resolvers.len(), 1);
-        assert_eq!(resolvers[0].rc.key.fwaction, FwAction::Forward);
-        assert_eq!(resolvers[0].rc.key.address, Some(IpAddr::from_str("10.0.0.1").unwrap()));
+        assert_eq!(resolvers[0].key.fwaction, FwAction::Forward);
+        assert_eq!(resolvers[0].key.address, Some(IpAddr::from_str("10.0.0.1").unwrap()));
 
         assert_eq!(vrf.len_v4(), 2, "Should have replaced the default");
         vrf.dump(Some("With static IPv4 default non-drop route"));
@@ -871,8 +862,8 @@ pub mod tests {
         assert_eq!(route.origin, RouteOrigin::Static);
         let resolvers = &route.s_nhops;
         assert_eq!(resolvers.len(), 1);
-        assert_eq!(resolvers[0].rc.key.fwaction, FwAction::Forward);
-        assert_eq!(resolvers[0].rc.key.address, Some(IpAddr::from_str("2001::1").unwrap()));
+        assert_eq!(resolvers[0].key.fwaction, FwAction::Forward);
+        assert_eq!(resolvers[0].key.address, Some(IpAddr::from_str("2001::1").unwrap()));
 
         assert_eq!(vrf.len_v6(), 2, "Should have replaced the default");
         vrf.dump(Some("With static IPv6 default non-drop route"));
@@ -907,8 +898,8 @@ pub mod tests {
             assert_eq!(best.metric, route.metric);
             assert_eq!(best.origin, route.origin);
             assert_eq!(best.s_nhops.len(), 2);
-            assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(mk_addr("10.0.0.1")) && s.rc.key.ifindex == Some(InterfaceIndex::try_new(1).unwrap())));
-            assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(mk_addr("10.0.0.2")) && s.rc.key.ifindex == Some(InterfaceIndex::try_new(2).unwrap())));
+            assert!(best.s_nhops.iter().any(|s| s.key.address == Some(mk_addr("10.0.0.1")) && s.key.ifindex == Some(InterfaceIndex::try_new(1).unwrap())));
+            assert!(best.s_nhops.iter().any(|s| s.key.address == Some(mk_addr("10.0.0.2")) && s.key.ifindex == Some(InterfaceIndex::try_new(2).unwrap())));
         }
         assert_eq!(vrf.len_v4(),  (1 + num_routes) as usize, "There must be default + the ones added");
         assert_eq!(vrf.nhstore.len(), 3usize,"There is drop + 2 nexthops shared by all routes");
@@ -924,7 +915,7 @@ pub mod tests {
 
             assert_eq!(longest, Prefix::root_v4(), "Must resolve via default");
             assert_eq!(best.s_nhops.len(), 1);
-            assert_eq!(best.s_nhops[0].rc.key.fwaction, FwAction::Drop, "Default is drop");
+            assert_eq!(best.s_nhops[0].key.fwaction, FwAction::Drop, "Default is drop");
         }
         check_vrf_is_empty(&vrf);
 
@@ -1392,7 +1383,7 @@ mod vrf_properties {
             let route = vrf
                 .get_route(prefixes[*prefix])
                 .unwrap_or_else(|| panic!("no route for {prefix} {at}"));
-            let got: Vec<NhopKey> = route.s_nhops.iter().map(|s| s.rc.key.clone()).collect();
+            let got: Vec<NhopKey> = route.s_nhops.iter().map(|s| s.key.clone()).collect();
             assert_eq!(got, want.nhops, "next-hops of {prefix} {at}");
             assert_eq!(route.is_stale(), want.stale, "stale flag of {prefix} {at}");
             assert_eq!(
