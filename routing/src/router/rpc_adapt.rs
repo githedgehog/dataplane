@@ -126,6 +126,7 @@ impl RouteNhop {
 
         // build key for this next hop
         let key = NhopKey::new(
+            nh.vrfid,
             origin,
             nh.address,
             ifindex,
@@ -138,10 +139,7 @@ impl RouteNhop {
             return Err(RouterError::InvalidNexthop("Missing forwarding data"));
         }
 
-        Ok(RouteNhop {
-            key,
-            vrfid: nh.vrfid,
-        })
+        Ok(RouteNhop { key })
     }
 }
 
@@ -449,7 +447,9 @@ mod rpc_properties {
             return None;
         }
 
-        Some(NhopKey::new(origin, address, ifindex, encap, fwaction))
+        Some(NhopKey::new(
+            spec.vrfid, origin, address, ifindex, encap, fwaction,
+        ))
     }
 
     fn test_vrf() -> Vrf {
@@ -499,7 +499,6 @@ mod rpc_properties {
                                     panic!("refused {nhop:?} with {e}, expected {want:?}")
                                 });
                                 assert_eq!(got.key, want, "for {nhop:?} origin {origin:?}");
-                                assert_eq!(got.vrfid, nhop.vrfid, "vrfid for {nhop:?}");
                             }
                             None => assert!(got.is_err(), "accepted {nhop:?}, expected refusal"),
                         }

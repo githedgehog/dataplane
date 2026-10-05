@@ -27,7 +27,6 @@ pub type VrfId = u32;
 #[derive(Debug, Default, Clone, Eq, Hash, PartialEq)]
 /// A temporary data structure that represents a route next-hop
 pub struct RouteNhop {
-    pub vrfid: VrfId,
     pub key: NhopKey,
 }
 
@@ -96,12 +95,11 @@ impl Route {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShimNhop {
-    pub ext_vrf: Option<VrfId>,
     pub rc: Rc<Nhop>,
 }
 impl ShimNhop {
-    fn new(ext_vrf: Option<VrfId>, rc: Rc<Nhop>) -> Self {
-        Self { ext_vrf, rc }
+    fn new(rc: Rc<Nhop>) -> Self {
+        Self { rc }
     }
 }
 
@@ -331,17 +329,12 @@ impl Vrf {
         if nhops.is_empty() {
             warn!("Route to {prefix} has no next-hop: will install one with action drop");
             let shared = self.nhstore.add_nhop(&NhopKey::with_drop());
-            let shim = ShimNhop::new(None, shared);
+            let shim = ShimNhop::new(shared);
             nhop_refs.push(shim);
         } else {
             for nhop in nhops {
                 let shared = self.nhstore.add_nhop(&nhop.key);
-                let ext_vrf = if nhop.vrfid == self.vrfid {
-                    None
-                } else {
-                    Some(nhop.vrfid)
-                };
-                let shim = ShimNhop::new(ext_vrf, shared);
+                let shim = ShimNhop::new(shared);
                 nhop_refs.push(shim);
             }
         }
@@ -790,6 +783,7 @@ pub mod tests {
         encap: Option<Encapsulation>,
     ) -> RouteNhop {
         let key = NhopKey::new(
+            vrfid,
             RouteOrigin::default(),
             address.map(mk_addr),
             ifindex.map(|i| InterfaceIndex::try_new(i).unwrap()),
@@ -798,7 +792,6 @@ pub mod tests {
         );
 
         RouteNhop {
-            vrfid,
             key,
         }
     }
