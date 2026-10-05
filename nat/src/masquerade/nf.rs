@@ -4,7 +4,7 @@
 //! Masquerade NF
 
 use crate::NatPort;
-use crate::common::NatFlowStatus;
+use crate::common::ConnState;
 use crate::flow_tracking::{
     HalfFlow, InstallError, NewFlow, TrackedState, advance_flow, install_pair, packet_flow_keys,
     transport_proto,
@@ -182,20 +182,20 @@ impl Masquerade {
         state: &MasqueradeState,
     ) {
         let new_status = advance_flow(packet, flow_info, state, |status| match status {
-            NatFlowStatus::TwoWay => Some(Self::MASQUERADE_TWOWAY_TIMEOUT),
-            NatFlowStatus::Established => Some(state.idle_timeout()),
+            ConnState::TwoWay => Some(Self::MASQUERADE_TWOWAY_TIMEOUT),
+            ConnState::Established => Some(state.idle_timeout()),
             // advance_flow() invalidates the pair
-            NatFlowStatus::Closed | NatFlowStatus::Reset => None,
-            NatFlowStatus::CClosing
-            | NatFlowStatus::SClosing
-            | NatFlowStatus::CHalfClose
-            | NatFlowStatus::SHalfClose
-            | NatFlowStatus::LastAck => Some(Self::MASQUERADE_CLOSING_TIMEOUT),
+            ConnState::Closed | ConnState::Reset => None,
+            ConnState::CClosing
+            | ConnState::SClosing
+            | ConnState::CHalfClose
+            | ConnState::SHalfClose
+            | ConnState::LastAck => Some(Self::MASQUERADE_CLOSING_TIMEOUT),
             //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
             //= type=implementation
             //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
             //# refresh behavior" of "True".
-            NatFlowStatus::OneWay => {
+            ConnState::OneWay => {
                 Self::refreshes_while_unanswered(packet).then_some(Self::MASQUERADE_ONEWAY_TIMEOUT)
             }
         });

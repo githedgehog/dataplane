@@ -19,7 +19,7 @@ use concurrency::sync::{Arc, Weak};
 
 use flow_entry::flow_table::FlowInfo;
 
-use crate::common::{AtomicNatFlowStatus, NatAction, NatFlowStatus};
+use crate::common::{AtomicNatFlowStatus, ConnState, NatAction};
 use crate::flow_tracking::{FlowSide, TrackedState, advance_flow, packet_flow_keys};
 use crate::portfw::PortFwEntry;
 
@@ -231,7 +231,7 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     // connection was reset or closed, invalidate the flows in both directions. In either case,
     // the packet is let through.
     let new_status = advance_flow(packet, flow, state, |status| match status {
-        NatFlowStatus::Established => Some(entry.estab_timeout()),
+        ConnState::Established => Some(entry.estab_timeout()),
         _ => Some(entry.init_timeout()),
     });
 
@@ -244,7 +244,7 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 #[cfg(test)]
 mod test {
     use super::{PortFwState, build_portfw_flow_keys};
-    use crate::common::{AtomicNatFlowStatus, NatFlowStatus};
+    use crate::common::{AtomicNatFlowStatus, ConnState};
     use crate::flow_tracking::TrackedState;
     use crate::static_nat::probe::build;
     use concurrency::sync::Weak;
@@ -430,7 +430,7 @@ mod test {
         );
 
         let status = AtomicNatFlowStatus::new();
-        status.store(NatFlowStatus::TwoWay);
+        status.store(ConnState::TwoWay);
         let state = PortFwState::new_dnat(
             UnicastIpAddr::try_from(addr("192.168.1.1")).unwrap_or_else(|_| unreachable!()),
             NonZero::new(80).unwrap_or_else(|| unreachable!()),
@@ -438,8 +438,8 @@ mod test {
             status,
         );
         assert_eq!(
-            state.next_status(&packet, NatFlowStatus::TwoWay),
-            NatFlowStatus::TwoWay
+            state.next_status(&packet, ConnState::TwoWay),
+            ConnState::TwoWay
         );
     }
 }

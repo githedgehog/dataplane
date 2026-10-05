@@ -4,7 +4,7 @@
 //! Translation of ICMP errors for tracked flows.
 
 use crate::NatTranslationData;
-use crate::common::NatFlowStatus;
+use crate::common::ConnState;
 use crate::flow_tracking::TrackedState;
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
 use net::buffer::PacketBufferMut;
@@ -32,7 +32,7 @@ pub(crate) trait IcmpErrorTranslation: TrackedState {
 pub(crate) fn translate_icmp_error<Buf: PacketBufferMut, S: IcmpErrorTranslation>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
-) -> Result<NatFlowStatus, DoneReason> {
+) -> Result<ConnState, DoneReason> {
     let mode = S::MODE;
     let f = flow_info.logfmt();
     if let Some(src_vpcd) = packet.meta().src_vpcd {

@@ -40,7 +40,7 @@ impl Display for NatAction {
 /// is determined by their users and not prescribed here.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum NatFlowStatus {
+pub enum ConnState {
     OneWay = 0,
     TwoWay = 1,
     Established = 2,
@@ -53,50 +53,50 @@ pub enum NatFlowStatus {
     Closed = 9,
 }
 
-impl NatFlowStatus {
+impl ConnState {
     /// Tell if the connection is over, closed or reset.
     #[must_use]
     pub fn is_terminal(self) -> bool {
-        matches!(self, NatFlowStatus::Closed | NatFlowStatus::Reset)
+        matches!(self, ConnState::Closed | ConnState::Reset)
     }
 }
 
-impl From<u8> for NatFlowStatus {
+impl From<u8> for ConnState {
     fn from(value: u8) -> Self {
         match value {
-            0 => NatFlowStatus::OneWay,
-            1 => NatFlowStatus::TwoWay,
-            2 => NatFlowStatus::Established,
-            3 => NatFlowStatus::Reset,
-            4 => NatFlowStatus::CClosing,
-            5 => NatFlowStatus::SClosing,
-            6 => NatFlowStatus::CHalfClose,
-            7 => NatFlowStatus::SHalfClose,
-            8 => NatFlowStatus::LastAck,
-            9 => NatFlowStatus::Closed,
+            0 => ConnState::OneWay,
+            1 => ConnState::TwoWay,
+            2 => ConnState::Established,
+            3 => ConnState::Reset,
+            4 => ConnState::CClosing,
+            5 => ConnState::SClosing,
+            6 => ConnState::CHalfClose,
+            7 => ConnState::SHalfClose,
+            8 => ConnState::LastAck,
+            9 => ConnState::Closed,
             _ => unreachable!(),
         }
     }
 }
-impl From<NatFlowStatus> for u8 {
-    fn from(value: NatFlowStatus) -> Self {
+impl From<ConnState> for u8 {
+    fn from(value: ConnState) -> Self {
         value as u8
     }
 }
 
-impl Display for NatFlowStatus {
+impl Display for ConnState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NatFlowStatus::OneWay => write!(f, "oneway"),
-            NatFlowStatus::TwoWay => write!(f, "twoway"),
-            NatFlowStatus::Established => write!(f, "established"),
-            NatFlowStatus::Reset => write!(f, "reset"),
-            NatFlowStatus::CClosing => write!(f, "client-closing"),
-            NatFlowStatus::SClosing => write!(f, "server-closing"),
-            NatFlowStatus::CHalfClose => write!(f, "client-half-close"),
-            NatFlowStatus::SHalfClose => write!(f, "server-half-close"),
-            NatFlowStatus::LastAck => write!(f, "last-ack"),
-            NatFlowStatus::Closed => write!(f, "closed"),
+            ConnState::OneWay => write!(f, "oneway"),
+            ConnState::TwoWay => write!(f, "twoway"),
+            ConnState::Established => write!(f, "established"),
+            ConnState::Reset => write!(f, "reset"),
+            ConnState::CClosing => write!(f, "client-closing"),
+            ConnState::SClosing => write!(f, "server-closing"),
+            ConnState::CHalfClose => write!(f, "client-half-close"),
+            ConnState::SHalfClose => write!(f, "server-half-close"),
+            ConnState::LastAck => write!(f, "last-ack"),
+            ConnState::Closed => write!(f, "closed"),
         }
     }
 }
@@ -107,15 +107,15 @@ pub struct AtomicNatFlowStatus(Arc<AtomicU8>);
 impl AtomicNatFlowStatus {
     #[must_use]
     pub fn new() -> Self {
-        AtomicNatFlowStatus(Arc::new(AtomicU8::new(NatFlowStatus::OneWay.into())))
+        AtomicNatFlowStatus(Arc::new(AtomicU8::new(ConnState::OneWay.into())))
     }
 
     #[must_use]
-    pub fn load(&self) -> NatFlowStatus {
+    pub fn load(&self) -> ConnState {
         self.0.load(Ordering::Relaxed).into()
     }
 
-    pub fn store(&self, status: NatFlowStatus) {
+    pub fn store(&self, status: ConnState) {
         self.0.store(status.into(), Ordering::Relaxed);
     }
 
