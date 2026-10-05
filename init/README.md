@@ -85,15 +85,13 @@ Both drivers use it the same way: their interfaces are in the datapath namespace
 
 ## Supervision
 
-A gateway is not one program. The dataplane forwards packets, FRR decides where they should go, and `frr-agent`
-carries configuration between them. This process starts them and stays as their parent, which is what `exec`ing the
-dataplane made impossible: namespaces are inherited at `fork`, so once this process had been replaced there was
-nobody left to fork a second one from.
+Init supervises the dataplane and, with `--supervise-frr`, foreground `watchfrr` and `frr-agent`.
+Any startup failure or unexpected exit of these children is fatal to the gateway. Init stops the remaining
+children and exits with failure, even if the child returned zero, so Kubernetes can restart the gateway.
+SIGTERM and SIGINT request a normal shutdown, including during startup.
 
-Every supervised process is **fatal**. When one exits, for any reason and with any status, the rest are brought down
-and this process exits with a status derived from whichever went first. Nothing is restarted in place. That is a
-stronger coupling than three containers, and it is deliberate: a dataplane forwarding on a FIB whose author has died
-is its own kind of wrong, and the orchestrator above knows better than we do whether restarting beats continuing.
+FRR manages its individual daemons through `watchfrr`. Init supervises `watchfrr` itself and reaps orphans it
+inherits as PID 1.
 
 ### `--supervise-frr`
 

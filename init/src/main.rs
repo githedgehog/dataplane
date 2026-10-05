@@ -647,7 +647,7 @@ async fn run_gateway(
     let control_plane_socket = config.routing.control_plane_socket.clone();
     let agent_socket = config.routing.frr_agent_socket.clone();
 
-    let mut supervisor = Supervisor::new()?;
+    let supervisor = Supervisor::new()?;
 
     // Everything FRR needs decided *before* anything starts, because the dataplane is first out of
     // the gate and it already depends on one of these answers.
@@ -678,14 +678,14 @@ async fn run_gateway(
         // container of its own and already has to tolerate starting in any order.
         dataplane
     };
-    supervisor.start(dataplane).await?;
+    let mut processes = vec![dataplane];
 
     if let Some(daemons) = daemons {
-        supervisor.start(frr::watchfrr(&daemons)).await?;
-        supervisor.start(frr::agent(&agent_socket)).await?;
+        processes.push(frr::watchfrr(&daemons));
+        processes.push(frr::agent(&agent_socket));
     }
 
-    Ok(supervisor.supervise().await?)
+    Ok(supervisor.run(processes).await?)
 }
 
 /// Start the gateway and stay as its supervisor, returning the status this process should exit
@@ -720,7 +720,7 @@ fn supervise_gateway(
             info!("stopped on {signal}");
             0
         }
-        Err(e) => fail("the gateway could not be started", &e.to_string()),
+        Err(e) => fail("the gateway failed", &e.to_string()),
     }
 }
 

@@ -1,54 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Supervision of the processes that make up a running gateway.
+//! Starts and supervises the dataplane, foreground watchfrr, and frr-agent.
 //!
-//! A gateway is not one program. The dataplane forwards packets, FRR decides where they should go,
-//! and `frr-agent` carries configuration between them. They share a network namespace, a set of
-//! unix sockets and a fate, and something has to hold that arrangement together.
+//! Any startup failure or unexpected exit of a supervised child is fatal to the
+//! gateway. Init shuts down the remaining children and exits for Kubernetes to
+//! restart it. SIGTERM and SIGINT request a normal shutdown.
 //!
-//! # Why not `exec`
-//!
-//! `dataplane-init` used to prepare the hardware and then `exec` the dataplane, which is the right
-//! shape when there is exactly one process to run and nothing to decide afterwards. It stops being
-//! the right shape as soon as a second process has to start in the same namespaces, because
-//! namespaces are inherited at `fork` and there is nobody left to fork from.
-//!
-//! Staying resident buys three things that were not previously expressible:
-//!
-//! 1. **Order.** Nothing outside this process can sequence the startup: a container runtime starts
-//!    containers, not programs, and Kubernetes will not order two containers in a pod. Here, zebra
-//!    can be made to wait for the dataplane's CPI socket instead of racing it.
-//! 2. **Shared fate.** See below.
-//! 3. **A namespace that outlives its user.** The datapath network namespace is held by a
-//!    descriptor this process owns. Under `exec` the dataplane held it, so a dataplane that died
-//!    took the namespace with it -- and recreating it means moving the NICs back out and in again,
-//!    which on mlx5 costs a devlink reload, a link flap and a new ifindex.
-//!
-//! # Shared fate, deliberately
-//!
-//! Every supervised process is fatal: when one exits, for any reason and with any status, the rest
-//! are brought down and this process exits too. Nothing is restarted in place.
-//!
-//! That is a stronger coupling than running FRR in its own container, and it is the point. FRR's
-//! own `watchfrr` restarts individual daemons in place, and a restarted zebra meets the nexthops
-//! its predecessor installed and refuses to reuse them -- which is why the gateway's FRR entrypoint
-//! has to sweep them by hand before starting. That sweep cannot be deleted while a daemon can be
-//! replaced underneath a surviving namespace. Make the namespace die with the daemon and the
-//! problem does not arise: the kernel state goes when the namespace does.
-//!
-//! The cost is honest and worth stating: a bug in `bgpd` now restarts the datapath, where before it
-//! would have crash-looped beside a dataplane that kept forwarding on the last FIB it was given.
-//! Forwarding on a FIB whose author has died is its own kind of wrong, and the orchestrator above
-//! us is the layer that knows whether restarting is better than continuing.
-//!
-//! # Reaping
-//!
-//! As PID 1 this process inherits every orphan in the container, so it must reap or the container
-//! fills with zombies. That is why children are spawned through [`std::process::Command`] and
-//! waited on here rather than through `tokio::process`: `tokio::process` reaps only the children it
-//! knows about, and a `waitpid(-1)` loop running beside it would race it for their statuses. One
-//! loop owns `waitpid` and dispatches by pid.
+//! FRR manages its own daemons through watchfrr. Init supervises watchfrr itself
+//! and reaps any orphans it inherits as PID 1. One waitpid loop owns child statuses
+//! so it cannot race a second reaper such as `tokio::process`.
 
 use std::io;
 use std::os::unix::process::CommandExt as _;
@@ -152,13 +113,12 @@ impl std::fmt::Display for Ended {
 }
 
 impl Ended {
-    /// The status this process should exit with, having seen a child end this way.
-    ///
-    /// A child killed by a signal is reported the way a shell reports it, as `128 + signal`, so
-    /// that an orchestrator reading our exit status can tell a crash from a clean stop.
+    /// Report an unexpected child exit as failure, even when the child returned zero.
+    /// Signal deaths use the shell convention of `128 + signal`.
     #[must_use]
     pub fn as_exit_code(self) -> i32 {
         match self {
+            Ended::Code(0) => 1,
             Ended::Code(code) => code,
             Ended::Killed(signal) => 128 + signal as i32,
         }
@@ -278,6 +238,38 @@ impl Supervisor {
         })
     }
 
+    /// Start children in order, supervise them, and shut down on every result.
+    /// FRR manages its own daemons; any top-level child failure ends the gateway.
+    ///
+    /// # Errors
+    ///
+    /// Returns the startup or supervision failure after attempting shutdown.
+    /// A shutdown failure is logged without replacing an earlier failure.
+    pub async fn run(
+        mut self,
+        processes: impl IntoIterator<Item = Process>,
+    ) -> Result<Outcome, SupervisorError> {
+        let result = async {
+            for process in processes {
+                self.start(process).await?;
+            }
+            self.wait().await
+        }
+        .await;
+        let result = match result {
+            Err(SupervisorError::Interrupted { signal }) => Ok(Outcome::Signalled { signal }),
+            result => result,
+        };
+
+        if let Err(shutdown_error) = self.shut_down().await {
+            if result.is_ok() {
+                return Err(shutdown_error);
+            }
+            error!("shutdown after gateway failure also failed: {shutdown_error}");
+        }
+        result
+    }
+
     /// Start a process and wait for it to be ready.
     ///
     /// Returns once the process is running *and* its readiness condition holds, so a caller can
@@ -290,7 +282,7 @@ impl Supervisor {
     /// [`SupervisorError::DiedDuringStartup`] if any supervised child exited,
     /// [`SupervisorError::Interrupted`] on a shutdown signal, or
     /// [`SupervisorError::NeverReady`] if it stayed alive without meeting its condition.
-    pub async fn start(&mut self, mut process: Process) -> Result<(), SupervisorError> {
+    async fn start(&mut self, mut process: Process) -> Result<(), SupervisorError> {
         self.check_startup()?;
         // Its own process group, so shutdown can signal the whole tree rather than just the
         // process we happen to have the pid of. FRR daemons and shell wrappers fork; signalling
@@ -378,15 +370,8 @@ impl Supervisor {
         }
     }
 
-    /// Wait for something to happen, then bring everything down.
-    ///
-    /// Returns when a supervised process exits or a shutdown signal arrives, having in either case
-    /// already terminated whatever was still running.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SupervisorError::Wait`] if child statuses cannot be collected.
-    pub async fn supervise(mut self) -> Result<Outcome, SupervisorError> {
+    /// Wait for a supervised child to exit or a shutdown signal to arrive.
+    async fn wait(&mut self) -> Result<Outcome, SupervisorError> {
         info!("supervising {} process(es)", self.running.len());
 
         let outcome = loop {
@@ -405,7 +390,6 @@ impl Supervisor {
         if let Outcome::Signalled { signal } = &outcome {
             info!("received {signal}; stopping the gateway");
         }
-        self.shut_down().await?;
         Ok(outcome)
     }
 
@@ -609,7 +593,7 @@ mod test {
             .await
             .unwrap()
             .unwrap();
-        let outcome = tokio::time::timeout(Duration::from_secs(2), supervisor.supervise())
+        let outcome = tokio::time::timeout(Duration::from_secs(2), supervisor.run([]))
             .await
             .expect("must not wait for another SIGCHLD")
             .unwrap();
@@ -657,13 +641,16 @@ mod test {
             .ready_when_path_exists("/definitely/not/a/real/socket");
         let (result, ()) = tokio::join!(
             biased;
-            tokio::time::timeout(Duration::from_secs(2), supervisor.start(next)),
+            tokio::time::timeout(Duration::from_secs(2), supervisor.run([next])),
             async { kill(pid, Signal::SIGKILL).unwrap(); }
         );
-        supervisor.shut_down().await.unwrap();
         assert!(
             matches!(result.expect("must observe earlier children during readiness"),
             Err(SupervisorError::DiedDuringStartup { name, report: Ended::Killed(Signal::SIGKILL) }) if name == "earlier")
+        );
+        assert_eq!(
+            waitpid(None, Some(WaitPidFlag::WNOHANG)),
+            Err(Errno::ECHILD)
         );
     }
 
@@ -674,17 +661,53 @@ mod test {
         }
         for (signal, expected) in [(Signal::SIGTERM, "SIGTERM"), (Signal::SIGINT, "SIGINT")] {
             let mut supervisor = Supervisor::new().unwrap();
+            supervisor
+                .start(Process::new("earlier", sh("exec sleep 600")))
+                .await
+                .unwrap();
             let process = Process::new("starting", sh("exec sleep 600"))
                 .ready_when_path_exists("/definitely/not/a/real/socket");
             let (result, ()) = tokio::join!(
                 biased;
-                tokio::time::timeout(Duration::from_secs(2), supervisor.start(process)),
+                tokio::time::timeout(Duration::from_secs(2), supervisor.run([process])),
                 async { kill(unistd::getpid(), signal).unwrap(); }
             );
-            supervisor.shut_down().await.unwrap();
             assert!(matches!(result.expect("must respond during readiness"),
-                Err(SupervisorError::Interrupted { signal }) if signal == expected));
+                Ok(Outcome::Signalled { signal }) if signal == expected));
+            assert_eq!(
+                waitpid(None, Some(WaitPidFlag::WNOHANG)),
+                Err(Errno::ECHILD)
+            );
         }
+    }
+
+    #[tokio::test]
+    async fn a_failed_spawn_stops_started_children() {
+        if run_in_subprocess("a_failed_spawn_stops_started_children") {
+            return;
+        }
+        let mut supervisor = Supervisor::new().unwrap();
+        supervisor
+            .start(Process::new("dataplane", sh("exec sleep 600")))
+            .await
+            .unwrap();
+        let pid = supervisor.running[0].pid;
+        let result = supervisor
+            .run([Process::new(
+                "frr",
+                Command::new("/definitely/not/a/real/watchfrr"),
+            )])
+            .await;
+
+        assert!(
+            matches!(result, Err(SupervisorError::Spawn { name, source })
+            if name == "frr" && source.raw_os_error() == Some(nix::libc::ENOENT))
+        );
+        assert_eq!(
+            waitpid(None, Some(WaitPidFlag::WNOHANG)),
+            Err(Errno::ECHILD)
+        );
+        assert_eq!(kill(pid, None), Err(Errno::ESRCH));
     }
 
     /// A command that runs `script` under a shell.
@@ -709,7 +732,7 @@ mod test {
             .await
             .expect("the quitter should start");
 
-        let outcome = tokio::time::timeout(Duration::from_secs(30), supervisor.supervise())
+        let outcome = tokio::time::timeout(Duration::from_secs(30), supervisor.run([]))
             .await
             .expect("supervision should end promptly once a process exits")
             .expect("supervision should not fail");
@@ -737,7 +760,7 @@ mod test {
             .await
             .expect("the doomed process should start");
 
-        let outcome = tokio::time::timeout(Duration::from_secs(30), supervisor.supervise())
+        let outcome = tokio::time::timeout(Duration::from_secs(30), supervisor.run([]))
             .await
             .expect("supervision should end promptly")
             .expect("supervision should not fail");
@@ -806,11 +829,13 @@ mod test {
             return;
         }
         let mut supervisor = Supervisor::new().unwrap();
+        supervisor
+            .start(Process::new("earlier", sh("exec sleep 600")))
+            .await
+            .unwrap();
         let error = supervisor
-            .start(
-                Process::new("false-start", sh("exit 7"))
-                    .ready_when_path_exists("/definitely/not/a/real/socket"),
-            )
+            .run([Process::new("false-start", sh("exit 7"))
+                .ready_when_path_exists("/definitely/not/a/real/socket")])
             .await
             .expect_err("a process that exits during startup is an error");
 
@@ -823,6 +848,10 @@ mod test {
             }
             other => panic!("expected DiedDuringStartup, got {other:?}"),
         }
+        assert_eq!(
+            waitpid(None, Some(WaitPidFlag::WNOHANG)),
+            Err(Errno::ECHILD)
+        );
     }
 
     #[tokio::test]
@@ -831,12 +860,16 @@ mod test {
             return;
         }
         let mut supervisor = Supervisor::new().unwrap();
-        let mut process = Process::new("never-ready", sh("sleep 600"))
+        supervisor
+            .start(Process::new("earlier", sh("exec sleep 600")))
+            .await
+            .unwrap();
+        let mut process = Process::new("never-ready", sh("exec sleep 600"))
             .ready_when_path_exists("/definitely/not/a/real/socket");
         process.ready_timeout = Duration::from_millis(200);
 
         let error = supervisor
-            .start(process)
+            .run([process])
             .await
             .expect_err("a process that never becomes ready is an error");
 
@@ -845,7 +878,10 @@ mod test {
             other => panic!("expected NeverReady, got {other:?}"),
         }
 
-        supervisor.shut_down().await.expect("shutdown should work");
+        assert_eq!(
+            waitpid(None, Some(WaitPidFlag::WNOHANG)),
+            Err(Errno::ECHILD)
+        );
     }
 
     #[tokio::test]
@@ -892,7 +928,7 @@ mod test {
             .await
             .expect("the parent should start");
 
-        let outcome = tokio::time::timeout(Duration::from_secs(30), supervisor.supervise())
+        let outcome = tokio::time::timeout(Duration::from_secs(30), supervisor.run([]))
             .await
             .expect("supervision should end when the parent exits")
             .expect("supervision should not fail");
@@ -902,6 +938,7 @@ mod test {
             Outcome::Exited { name, report } => {
                 assert_eq!(name, "parent");
                 assert_eq!(report, Ended::Code(0));
+                assert_eq!(report.as_exit_code(), 1);
             }
             other @ Outcome::Signalled { .. } => {
                 panic!("expected the parent to end supervision, got {other:?}")
