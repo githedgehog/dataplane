@@ -309,7 +309,16 @@ fn main() {
     let main = span!(Level::INFO, "init");
     let _main = main.enter();
 
-    let config = match LaunchConfiguration::try_from(CmdArgs::parse()) {
+    let args = CmdArgs::parse();
+    if args.is_informational() {
+        // Only the dataplane binary contains the complete tracing target registry.
+        let error = std::process::Command::new(DATAPLANE_BINARY)
+            .args(std::env::args_os().skip(1))
+            .exec();
+        fail("failed to execute dataplane", &error.to_string());
+    }
+
+    let config = match LaunchConfiguration::try_from(args) {
         Ok(config) => config,
         Err(e) => fail("invalid command line arguments", &e.to_string()),
     };
