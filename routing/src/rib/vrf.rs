@@ -1154,11 +1154,11 @@ mod vrf_properties {
     use std::ops::Bound::Included;
     use std::str::FromStr;
 
-    const NUM_PREFIXES: u8 = 8;
-    const NUM_NHOPS: u8 = 3;
-    const MAX_CHANGES: u8 = 10;
-    const MAX_NHOPS_PER_ROUTE: u8 = 3;
-    const NUM_STATUSES: u8 = 3;
+    const NUM_PREFIXES: usize = 8;
+    const NUM_NHOPS: usize = 3;
+    const MAX_CHANGES: usize = 10;
+    const MAX_NHOPS_PER_ROUTE: usize = 3;
+    const NUM_STATUSES: usize = 3;
 
     const ROOT_V4: usize = 0;
     const ROOT_V6: usize = 5;
@@ -1219,24 +1219,23 @@ mod vrf_properties {
     #[derive(Debug, Clone, Copy, Default)]
     struct ChangeSequences;
 
-    fn index<D: Driver>(driver: &mut D, count: u8) -> Option<usize> {
-        driver
-            .gen_u8(Included(&0), Included(&(count - 1)))
-            .map(usize::from)
+    fn index<D: Driver>(driver: &mut D, count: usize) -> Option<usize> {
+        driver.gen_usize(Included(&0), Included(&(count - 1)))
     }
 
     impl ValueGenerator for ChangeSequences {
         type Output = Vec<Change>;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<Change>> {
-            let len = driver.gen_u8(Included(&0), Included(&MAX_CHANGES))?;
-            let mut out = Vec::with_capacity(usize::from(len));
+            let len = driver.gen_usize(Included(&0), Included(&MAX_CHANGES))?;
+            let mut out = Vec::with_capacity(len);
             for _ in 0..len {
-                let change = match driver.gen_u8(Included(&0), Included(&4))? {
+                let change = match driver.gen_usize(Included(&0), Included(&4))? {
                     0 => {
                         let prefix = index(driver, NUM_PREFIXES)?;
-                        let count = driver.gen_u8(Included(&0), Included(&MAX_NHOPS_PER_ROUTE))?;
-                        let mut nhops = Vec::with_capacity(usize::from(count));
+                        let count =
+                            driver.gen_usize(Included(&0), Included(&MAX_NHOPS_PER_ROUTE))?;
+                        let mut nhops = Vec::with_capacity(count);
                         for _ in 0..count {
                             nhops.push(index(driver, NUM_NHOPS)?);
                         }
@@ -1440,9 +1439,9 @@ mod vrf_properties {
 
     #[test]
     fn the_pools_are_the_size_the_generator_thinks() {
-        assert_eq!(prefixes().len(), usize::from(NUM_PREFIXES));
-        assert_eq!(nhops().len(), usize::from(NUM_NHOPS));
-        assert_eq!(statuses().len(), usize::from(NUM_STATUSES));
+        assert_eq!(prefixes().len(), NUM_PREFIXES);
+        assert_eq!(nhops().len(), NUM_NHOPS);
+        assert_eq!(statuses().len(), NUM_STATUSES);
         assert_eq!(prefixes()[ROOT_V4], Prefix::root_v4());
         assert_eq!(prefixes()[ROOT_V6], Prefix::root_v6());
     }

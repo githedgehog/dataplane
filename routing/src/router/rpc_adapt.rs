@@ -234,8 +234,6 @@ mod rpc_properties {
     use std::str::FromStr;
 
     const NUM_PREFIXES: u8 = 5;
-    /// Router mac carried by every vxlan encap on the wire
-    const WIRE_RMAC: [u8; 6] = [0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0x01];
     const NUM_ADDRESSES: u8 = 3;
     const NUM_IFINDEXES: u8 = 4;
     const NUM_VNIS: u8 = 3;
@@ -245,6 +243,7 @@ mod rpc_properties {
     const NHOP_VRFIDS: [VrfId; 3] = [0, 1, 42];
     const NUM_RTYPES: u8 = 7;
     const MAX_NHOPS: u8 = 3;
+    const NUM_MACS: u8 = 4;
 
     const BAD_PREFIX: usize = 4;
 
@@ -289,6 +288,15 @@ mod rpc_properties {
         vec![None, Some(0), Some(3000)]
     }
 
+    fn vxlan_rmacs() -> Vec<MacAddress> {
+        vec![
+            MacAddress::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]),
+            MacAddress::new([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            MacAddress::new([0x01, 0xCA, 0xFE, 0x00, 0x00, 0x01]),
+            MacAddress::new([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+        ]
+    }
+
     fn rtypes() -> Vec<RouteType> {
         vec![
             RouteType::Local,
@@ -308,6 +316,7 @@ mod rpc_properties {
         ifindex: usize,
         vni: usize,
         vrfid: VrfId,
+        mac: usize,
     }
 
     #[derive(Debug, Clone)]
@@ -348,6 +357,7 @@ mod rpc_properties {
                         driver,
                         u8::try_from(NHOP_VRFIDS.len()).unwrap_or_else(|_| unreachable!()),
                     )?],
+                    mac: index(driver, NUM_MACS)?,
                 });
             }
             Some(RouteSpec {
@@ -361,7 +371,6 @@ mod rpc_properties {
     }
 
     fn wire_nhop(spec: &NhopSpec) -> NextHop {
-        let mac = MacAddress::new(WIRE_RMAC);
         NextHop {
             fwaction: if spec.drop {
                 ForwardAction::Drop
@@ -371,7 +380,12 @@ mod rpc_properties {
             address: addresses()[spec.address],
             ifindex: ifindexes()[spec.ifindex],
             vrfid: spec.vrfid,
-            encap: vnis()[spec.vni].map(|vni| NextHopEncap::VXLAN(VxlanEncap { vni, mac })),
+            encap: vnis()[spec.vni].map(|vni| {
+                NextHopEncap::VXLAN(VxlanEncap {
+                    vni,
+                    mac: vxlan_rmacs()[spec.mac],
+                })
+            }),
         }
     }
 
@@ -416,7 +430,7 @@ mod rpc_properties {
             Some(vni) => Some(Encapsulation::Vxlan(VxlanEncapsulation {
                 vni: Vni::new_checked(vni).ok()?,
                 remote: address?,
-                rmac: SourceMac::new(Mac(WIRE_RMAC)).ok()?,
+                rmac: SourceMac::new(Mac(vxlan_rmacs()[spec.mac].octets())).ok()?,
             })),
         };
 
@@ -449,6 +463,7 @@ mod rpc_properties {
         assert_eq!(addresses().len(), usize::from(NUM_ADDRESSES));
         assert_eq!(ifindexes().len(), usize::from(NUM_IFINDEXES));
         assert_eq!(vnis().len(), usize::from(NUM_VNIS));
+        assert_eq!(vxlan_rmacs().len(), usize::from(NUM_MACS));
         assert_eq!(rtypes().len(), usize::from(NUM_RTYPES));
 
         let (prefix, len) = prefixes()[BAD_PREFIX];
