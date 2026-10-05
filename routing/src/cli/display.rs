@@ -38,7 +38,7 @@ use crate::interfaces::interface::{IfState, IfType, Interface};
 use crate::evpn::rmac::RmacFilter;
 use crate::evpn::{RmacEntry, RmacStore, Vtep};
 
-use chrono::DateTime;
+use chrono::{DateTime, TimeDelta};
 use common::cliprovider::Heading;
 
 use clock::{Duration, Instant};
@@ -130,22 +130,25 @@ impl Display for RouteFlags {
         Ok(())
     }
 }
-pub struct PrettyDuration(Duration);
+pub struct PrettyDuration(TimeDelta);
 impl PrettyDuration {
     #[must_use]
     pub fn new(d: Duration) -> Self {
-        Self(d)
+        Self(TimeDelta::from_std(d).unwrap_or(TimeDelta::MAX))
     }
 }
 impl Display for PrettyDuration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let total = self.0.as_secs();
-        let days = total / 86_400;
-        let hours = (total % 86_400) / 3_600;
-        let minutes = (total % 3_600) / 60;
-        let seconds = total % 60;
+        let weeks = self.0.num_weeks();
+        let days = self.0.num_days() % 7;
+        let hours = self.0.num_hours() % 24;
+        let minutes = self.0.num_minutes() % 60;
+        let seconds = self.0.num_seconds() % 60;
 
-        if days != 0 {
+        if weeks > 0 {
+            write!(f, "{weeks:02}w")?;
+        }
+        if days > 0 {
             write!(f, "{days:02}d")?;
         }
         write!(f, "{hours:02}:{minutes:02}:{seconds:02}")?;
@@ -156,8 +159,7 @@ impl Display for PrettyDuration {
 struct Age(Instant);
 impl Display for Age {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let duration = clock::elapsed(self.0);
-        PrettyDuration(duration).fmt(f)
+        PrettyDuration::new(clock::elapsed(self.0)).fmt(f)
     }
 }
 
