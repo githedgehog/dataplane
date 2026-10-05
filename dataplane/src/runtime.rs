@@ -85,21 +85,21 @@ fn init_logging(config: &LaunchConfiguration, gwname: &str) {
     }
 }
 
-fn process_tracing_cmds(config: &LaunchConfiguration) {
-    if let Some(tracing) = &config.tracing.config
+fn process_tracing_cmds(config: Option<&str>, show_tags: bool, show_targets: bool) {
+    if let Some(tracing) = config
         && let Err(e) = get_trace_ctl().setup_from_string(tracing)
     {
         error!("Invalid tracing configuration: {e}");
         panic!("Invalid tracing configuration: {e}");
     }
-    if config.tracing.show.tags == TracingDisplayOption::Show {
+    if show_tags {
         let out = get_trace_ctl()
             .as_string_by_tag()
             .unwrap_or_else(|e| e.to_string());
         println!("{out}");
         std::process::exit(0);
     }
-    if config.tracing.show.targets == TracingDisplayOption::Show {
+    if show_targets {
         let out = get_trace_ctl()
             .as_string()
             .unwrap_or_else(|e| e.to_string());
@@ -108,16 +108,24 @@ fn process_tracing_cmds(config: &LaunchConfiguration) {
     }
 }
 
-/// Handle tracing configuration generation before converting CLI arguments to launch config.
+/// Display tracing information before validating launch configuration or initializing EAL.
 fn process_tracing_cmdline_only(args: &CmdArgs) {
+    if !args.is_informational() {
+        return;
+    }
+    TracingControl::init_with_rate_limit(None);
     if args.tracing_config_generate() {
-        TracingControl::init_with_rate_limit(None);
         let out = get_trace_ctl()
             .as_config_string()
             .unwrap_or_else(|e| e.to_string());
         println!("{out}");
         std::process::exit(0);
     }
+    process_tracing_cmds(
+        args.tracing().map(String::as_str),
+        args.show_tracing_tags(),
+        args.show_tracing_targets(),
+    );
 }
 
 fn parse_bmp_params(config: &LaunchConfiguration) -> (Option<BmpServerParams>, Option<BmpOptions>) {
@@ -438,6 +446,11 @@ pub fn main() {
         }
     };
     init_logging(&config, &gwname);
+    process_tracing_cmds(
+        config.tracing.config.as_deref(),
+        config.tracing.show.tags == TracingDisplayOption::Show,
+        config.tracing.show.targets == TracingDisplayOption::Show,
+    );
 
     // The DPDK EAL belongs to the datapath thread, which enters its namespace first.
     // The kernel driver only needs EAL memory for ACL classifiers.
@@ -483,8 +496,6 @@ pub fn main() {
             }
         }
     });
-
-    process_tracing_cmds(&config);
 
     let (driver_status_writer, driver_status_reader) = driver_status_access();
 
@@ -701,8 +712,15 @@ mod probe_tests {
 
     // Inherited configurations may contain interface lists rejected by CLI conversion.
     fn launch_config(args: &CmdArgs) -> LaunchConfiguration {
+        let driver = args.driver_name().unwrap();
+        let interface = if driver == "kernel" {
+            "eth0=kernel@eth0"
+        } else {
+            "eth0=pci@0000:01:00.0"
+        };
         let mut config = LaunchConfiguration::try_from(
-            CmdArgs::try_parse_from(["dataplane", "--driver", args.driver_name()]).unwrap(),
+            CmdArgs::try_parse_from(["dataplane", "--driver", driver, "--interface", interface])
+                .unwrap(),
         )
         .unwrap();
         match &mut config.driver {
@@ -715,7 +733,7 @@ mod probe_tests {
     #[test]
     fn eal_never_probes_configured_interfaces_implicitly() {
         for command_line in [
-            vec!["dataplane"],
+            vec!["dataplane", "--driver", "dpdk"],
             vec![
                 "dataplane",
                 "--driver",
@@ -742,7 +760,7 @@ mod probe_tests {
             assert!(!flags.iter().any(|flag| flag.contains("0000:01:00.0")));
             assert_eq!(
                 flags.iter().any(|flag| flag == "--no-pci"),
-                args.driver_name() == "kernel"
+                args.driver_name() == Some("kernel")
             );
         }
     }

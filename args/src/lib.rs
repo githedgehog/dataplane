@@ -1231,6 +1231,8 @@ pub enum InvalidCmdArguments {
     NoDriverSpecified,
     #[error("No network interfaces specified")]
     NoInterfacesSpecified,
+    #[error("DPDK interface \"{0}\" must specify a PCI address")]
+    NoPciAddress(InterfaceName),
     #[error(transparent)]
     UnsupportedByDriver(#[from] UnsupportedByDriver),
 }
@@ -1252,6 +1254,49 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
     type Error = InvalidCmdArguments;
 
     fn try_from(value: CmdArgs) -> Result<Self, InvalidCmdArguments> {
+        let driver = match value.driver_name() {
+            Some("dpdk" | "kernel") if value.interface.is_empty() => {
+                return Err(InvalidCmdArguments::NoInterfacesSpecified);
+            }
+            Some("dpdk") => {
+                let eal_args = value
+                    .interfaces()
+                    .map(|nic| match nic.port {
+                        Some(PortArg::PCI(pci_address)) => {
+                            Ok(["--allow".to_string(), format!("{pci_address}")])
+                        }
+                        Some(PortArg::KERNEL(interface_name)) => {
+                            Err(InvalidCmdArguments::UnsupportedByDriver(
+                                UnsupportedByDriver::Dpdk(interface_name),
+                            ))
+                        }
+                        None => Err(InvalidCmdArguments::NoPciAddress(nic.interface)),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                DriverConfigSection::Dpdk(DpdkDriverConfigSection {
+                    interfaces: value.interfaces().collect(),
+                    eal_args,
+                    num_workers: value.num_workers,
+                    netns: value.datapath_netns,
+                })
+            }
+            Some("kernel") => {
+                for nic in &value.interface {
+                    if let Some(PortArg::PCI(address)) = &nic.port {
+                        return Err(UnsupportedByDriver::Kernel(address.clone()).into());
+                    }
+                }
+                DriverConfigSection::Kernel(KernelDriverConfigSection {
+                    interfaces: value.interfaces().collect(),
+                    num_workers: value.num_workers,
+                })
+            }
+            Some(other) => return Err(InvalidCmdArguments::InvalidDriver(other.to_string())),
+            None => return Err(InvalidCmdArguments::NoDriverSpecified),
+        };
         Ok(LaunchConfiguration {
             general: GeneralConfigSection {
                 name: value.get_name().cloned(),
@@ -1259,42 +1304,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             config_server: Some(ConfigServerSection {
                 config_dir: value.config_dir().cloned(),
             }),
-            driver: match &value.driver {
-                Some(driver) if driver == "dpdk" => {
-                    // TODO: adjust command line to specify lcore usage more flexibly in next PR
-                    let eal_args = value
-                        .interfaces()
-                        .map(|nic| match nic.port {
-                            Some(PortArg::PCI(pci_address)) => {
-                                Ok(["--allow".to_string(), format!("{pci_address}")])
-                            }
-                            Some(PortArg::KERNEL(interface_name)) => {
-                                Err(InvalidCmdArguments::UnsupportedByDriver(
-                                    UnsupportedByDriver::Dpdk(interface_name.clone()),
-                                ))
-                            }
-                            None => Err(InvalidCmdArguments::NoInterfacesSpecified),
-                        })
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into_iter()
-                        .flatten()
-                        .collect();
-                    DriverConfigSection::Dpdk(DpdkDriverConfigSection {
-                        interfaces: value.interfaces().collect(),
-                        eal_args,
-                        num_workers: value.num_workers,
-                        netns: value.datapath_netns,
-                    })
-                }
-                Some(driver) if driver == "kernel" => {
-                    DriverConfigSection::Kernel(KernelDriverConfigSection {
-                        interfaces: value.interfaces().collect(),
-                        num_workers: value.num_workers,
-                    })
-                }
-                Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone()))?,
-                None => Err(InvalidCmdArguments::NoDriverSpecified)?,
-            },
+            driver,
             cli: CliConfigSection {
                 cli_sock_path: value.cli_sock_path(),
             },
@@ -1343,7 +1353,11 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
 #[command(about = "A dataplane for hedgehog's fabric gateway", long_about = None)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CmdArgs {
-    #[arg(long, value_name = "packet driver to use: kernel or dpdk")]
+    #[arg(
+        long,
+        value_name = "kernel|dpdk",
+        help = "Packet driver (required for startup)"
+    )]
     driver: Option<String>,
     #[arg(
         long,
@@ -1490,16 +1504,16 @@ elsewhere and copy it in the configuration directory. This mode is meant mostly 
 }
 
 impl CmdArgs {
-    /// Get the configured driver name.
-    ///
-    /// Returns `"dpdk"` if no driver was explicitly specified (the default),
-    /// otherwise returns the specified driver name (`"dpdk"` or `"kernel"`).
+    /// The explicitly selected driver, if any.
     #[must_use]
-    pub fn driver_name(&self) -> &str {
-        match &self.driver {
-            None => "dpdk",
-            Some(name) => name,
-        }
+    pub fn driver_name(&self) -> Option<&str> {
+        self.driver.as_deref()
+    }
+
+    /// Whether the command displays tracing information and exits without starting the dataplane.
+    #[must_use]
+    pub fn is_informational(&self) -> bool {
+        self.tracing_config_generate || self.show_tracing_tags || self.show_tracing_targets
     }
 
     /// Check if the `--show-tracing-tags` flag was set.
@@ -1673,8 +1687,100 @@ mod tests {
     use net::interface::InterfaceName;
 
     use super::TracingRateLimit;
-    use crate::{InterfaceArg, PortArg};
+    use crate::{
+        CmdArgs, InterfaceArg, InvalidCmdArguments, LaunchConfiguration, Parser, PortArg,
+        UnsupportedByDriver,
+    };
     use std::str::FromStr;
+
+    #[test]
+    fn launch_requires_explicit_driver_and_interfaces() {
+        for argv in [
+            vec!["dataplane"],
+            vec!["dataplane", "--interface", "eth0=pci@0000:01:00.0"],
+        ] {
+            let args = CmdArgs::try_parse_from(argv).unwrap();
+            assert_eq!(args.driver_name(), None);
+            assert!(matches!(
+                LaunchConfiguration::try_from(args),
+                Err(InvalidCmdArguments::NoDriverSpecified)
+            ));
+        }
+        for driver in ["dpdk", "kernel"] {
+            let args = CmdArgs::try_parse_from(["dataplane", "--driver", driver]).unwrap();
+            assert!(matches!(
+                LaunchConfiguration::try_from(args),
+                Err(InvalidCmdArguments::NoInterfacesSpecified)
+            ));
+        }
+        let args = CmdArgs::try_parse_from(["dataplane", "--driver", "unknown"]).unwrap();
+        assert!(matches!(
+            LaunchConfiguration::try_from(args),
+            Err(InvalidCmdArguments::InvalidDriver(_))
+        ));
+    }
+
+    #[test]
+    fn launch_rejects_incompatible_interfaces() {
+        for (driver, interfaces) in [
+            ("dpdk", "eth0=kernel@eth0"),
+            ("dpdk", "eth0=pci@0000:01:00.0,eth1=kernel@eth1"),
+            ("kernel", "eth0=pci@0000:01:00.0"),
+            ("kernel", "eth0,eth1=pci@0000:01:00.0"),
+        ] {
+            let args = CmdArgs::try_parse_from([
+                "dataplane",
+                "--driver",
+                driver,
+                "--interface",
+                interfaces,
+            ])
+            .unwrap();
+            let err = LaunchConfiguration::try_from(args).unwrap_err();
+            assert!(matches!(
+                (driver, err),
+                (
+                    "dpdk",
+                    InvalidCmdArguments::UnsupportedByDriver(UnsupportedByDriver::Dpdk(_))
+                ) | (
+                    "kernel",
+                    InvalidCmdArguments::UnsupportedByDriver(UnsupportedByDriver::Kernel(_))
+                )
+            ));
+        }
+        let args =
+            CmdArgs::try_parse_from(["dataplane", "--driver", "dpdk", "--interface", "eth0"])
+                .unwrap();
+        assert!(matches!(
+            LaunchConfiguration::try_from(args),
+            Err(InvalidCmdArguments::NoPciAddress(_))
+        ));
+    }
+
+    #[test]
+    fn launch_accepts_explicit_driver_and_compatible_interfaces() {
+        for (driver, interfaces) in [
+            ("dpdk", "eth1=pci@0000:02:00.0,eth0=pci@0000:01:00.0"),
+            ("kernel", "eth1,eth0"),
+            ("kernel", "eth1=kernel@eth1,eth0=kernel@eth0"),
+        ] {
+            let args = CmdArgs::try_parse_from([
+                "dataplane",
+                "--driver",
+                driver,
+                "--interface",
+                interfaces,
+            ])
+            .unwrap();
+            let expected: Vec<_> = args.interfaces().collect();
+            let config = LaunchConfiguration::try_from(args).unwrap();
+            assert_eq!(config.driver.name(), driver);
+            assert_eq!(
+                config.driver.interfaces().cloned().collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn test_parse_interface() {
