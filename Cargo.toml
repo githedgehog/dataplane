@@ -254,7 +254,7 @@ tracing-test = { version = "0.2.6", default-features = false, features = [] }
 trybuild = { version = "1.0.121", default-features = false, features = [] }
 ureq = { version = "3.4.2", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
-uuid = { version = "1.26.1", default-features = false, features = [] }
+uuid = { version = "1.27.0", default-features = false, features = [] }
 vsock = { version = "0.5.4", default-features = false, features = [] }
 
 # NOTE: panic strategy is intentionally left unset here.
