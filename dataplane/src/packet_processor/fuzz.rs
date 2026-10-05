@@ -1326,6 +1326,7 @@ fn encapsulate_out_of(tables: &mut RouterTables, vrfid: u32, out_vni: Vni) {
 
 fn nhop(address: &IpAddr) -> NhopKey {
     NhopKey::new(
+        0,
         RouteOrigin::default(),
         Some(*address),
         None,

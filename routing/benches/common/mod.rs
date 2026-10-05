@@ -41,6 +41,7 @@ pub struct Fixture {
 
 fn nhop_key(n: u8) -> NhopKey {
     NhopKey::new(
+        0,
         RouteOrigin::default(),
         Some(format!("10.0.{n}.1").parse().expect("valid address")),
         InterfaceIndex::try_new(u32::from(n) + 1).ok(),

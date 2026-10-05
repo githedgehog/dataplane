@@ -5,7 +5,7 @@
 //! refer to other objects like Encapsulation.
 
 use super::encapsulation::Encapsulation;
-use super::vrf::{RouteOrigin, Vrf};
+use super::vrf::{RouteOrigin, Vrf, VrfId};
 use crate::fib::fibobjects::{FibGroup, PktInstruction};
 use ordermap::OrderSet;
 
@@ -47,6 +47,7 @@ pub enum FwAction {
 /// as return value in next-hop resolution routines.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct NhopKey {
+    pub vrfid: VrfId,
     pub origin: RouteOrigin,
     pub address: Option<IpAddr>,
     pub ifindex: Option<InterfaceIndex>,
@@ -63,6 +64,7 @@ impl NhopKey {
     /// Build a next-hop key
     #[must_use]
     pub fn new(
+        vrfid: VrfId,
         origin: RouteOrigin,
         address: Option<IpAddr>,
         ifindex: Option<InterfaceIndex>,
@@ -70,6 +72,7 @@ impl NhopKey {
         fwaction: FwAction,
     ) -> Self {
         Self {
+            vrfid,
             origin,
             address,
             ifindex,
@@ -80,6 +83,7 @@ impl NhopKey {
     #[must_use]
     pub(crate) fn with_drop() -> Self {
         Self {
+            vrfid: 0,
             origin: RouteOrigin::default(),
             address: None,
             ifindex: None,
@@ -333,6 +337,7 @@ impl Nhop {
                     // they include an address AND an ifindex
                     let address = r.key.address.map_or(self.key.address, |_| r.key.address);
                     result.insert(NhopKey::new(
+                        r.key.vrfid,
                         r.key.origin,
                         address,
                         Some(i),
@@ -868,6 +873,31 @@ mod tests {
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.5", 2)));
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.9", 3)));
         println!("{res:#?}");
+    }
+
+    #[test]
+    /// A resolved key carries the vrf of the resolver that contributed its interface, not
+    /// that of the next-hop being resolved, nor the default vrf.
+    fn test_nhop_store_resolution_keeps_resolver_vrf() {
+        let mut store = NhopStore::new();
+        let in_vrf = |vrfid, address: &str, ifindex: Option<u32>| NhopKey {
+            vrfid,
+            address: Some(address.parse().expect("Bad address")),
+            ifindex: ifindex.map(|i| InterfaceIndex::try_new(i).expect("Bad ifindex")),
+            fwaction: FwAction::Forward,
+            ..Default::default()
+        };
+
+        let local = store.add_nhop(&in_vrf(7, "10.0.0.1", Some(1)));
+        let foreign = store.add_nhop(&in_vrf(42, "10.0.0.5", Some(2)));
+        let n = store.add_nhop(&in_vrf(7, "7.0.0.1", None));
+        n.add_resolver(&local);
+        n.add_resolver(&foreign);
+
+        let res = n.quick_resolve();
+        assert_eq!(res.len(), 2, "Should resolve over 2 interfaces");
+        assert!(res.contains(&in_vrf(7, "10.0.0.1", Some(1))), "{res:#?}");
+        assert!(res.contains(&in_vrf(42, "10.0.0.5", Some(2))), "{res:#?}");
     }
 
     #[test]

@@ -232,7 +232,7 @@ mod tests_nhop_pkt_instructions {
             } else {
                 FwAction::Forward
             };
-            Some(NhopKey::new(origin, address, ifindex, encap, fwaction))
+            Some(NhopKey::new(0, origin, address, ifindex, encap, fwaction))
         }
     }
 
