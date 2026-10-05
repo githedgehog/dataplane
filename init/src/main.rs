@@ -647,7 +647,7 @@ async fn run_gateway(
     let control_plane_socket = config.routing.control_plane_socket.clone();
     let agent_socket = config.routing.frr_agent_socket.clone();
 
-    let mut supervisor = Supervisor::new();
+    let mut supervisor = Supervisor::new()?;
 
     // Everything FRR needs decided *before* anything starts, because the dataplane is first out of
     // the gate and it already depends on one of these answers.

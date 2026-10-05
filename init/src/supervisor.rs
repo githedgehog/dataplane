@@ -56,11 +56,12 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
+use futures::FutureExt;
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{self, Pid};
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::signal::unix::{Signal as SignalStream, SignalKind, signal};
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
@@ -89,13 +90,20 @@ pub enum SupervisorError {
         source: io::Error,
     },
 
-    /// The process started and then exited before it was ready to be depended on.
-    #[error("{name} exited before it was ready ({report})")]
+    /// A supervised process exited during gateway startup.
+    #[error("{name} exited during gateway startup ({report})")]
     DiedDuringStartup {
         /// The name this supervisor knows the process by.
         name: String,
         /// How it ended.
         report: Ended,
+    },
+
+    /// A shutdown signal arrived during gateway startup.
+    #[error("gateway startup interrupted by {signal}")]
+    Interrupted {
+        /// The signal that requested shutdown.
+        signal: &'static str,
     },
 
     /// The process was still running but never met its readiness condition.
@@ -239,17 +247,35 @@ struct Running {
 }
 
 /// Runs the processes a gateway is made of, and takes them all down together.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Supervisor {
     /// In start order, so shutdown can run in reverse.
     running: Vec<Running>,
+    terminate: SignalStream,
+    interrupt: SignalStream,
+    child: SignalStream,
 }
 
 impl Supervisor {
-    /// A supervisor with nothing to supervise.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    /// Install signal handlers before any child can exit or shutdown can be requested.
+    /// Must be called within a Tokio runtime with signals enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SupervisorError::SignalHandler`] if a handler cannot be installed.
+    pub fn new() -> Result<Self, SupervisorError> {
+        let listen = |kind, name| {
+            signal(kind).map_err(|source| SupervisorError::SignalHandler {
+                signal: name,
+                source,
+            })
+        };
+        Ok(Self {
+            running: Vec::new(),
+            terminate: listen(SignalKind::terminate(), "SIGTERM")?,
+            interrupt: listen(SignalKind::interrupt(), "SIGINT")?,
+            child: listen(SignalKind::child(), "SIGCHLD")?,
+        })
     }
 
     /// Start a process and wait for it to be ready.
@@ -261,9 +287,11 @@ impl Supervisor {
     /// # Errors
     ///
     /// Returns [`SupervisorError::Spawn`] if the process could not be started,
-    /// [`SupervisorError::DiedDuringStartup`] if it exited while we waited, and
+    /// [`SupervisorError::DiedDuringStartup`] if any supervised child exited,
+    /// [`SupervisorError::Interrupted`] on a shutdown signal, or
     /// [`SupervisorError::NeverReady`] if it stayed alive without meeting its condition.
     pub async fn start(&mut self, mut process: Process) -> Result<(), SupervisorError> {
+        self.check_startup()?;
         // Its own process group, so shutdown can signal the whole tree rather than just the
         // process we happen to have the pid of. FRR daemons and shell wrappers fork; signalling
         // one pid leaves the rest to be swept up by the broadcast at the end of shutdown, which is
@@ -292,15 +320,28 @@ impl Supervisor {
             pid,
         });
 
-        self.await_ready(&process.name, pid, &process.ready, process.ready_timeout)
+        self.await_ready(&process.name, &process.ready, process.ready_timeout)
             .await
     }
 
-    /// Wait until `condition` holds, the process dies, or the timeout expires.
+    /// Check all children, including those whose readiness checks already passed.
+    fn check_startup(&mut self) -> Result<(), SupervisorError> {
+        if let Some((name, report)) = self.reap()? {
+            return Err(SupervisorError::DiedDuringStartup { name, report });
+        }
+        if self.terminate.recv().now_or_never().is_some() {
+            return Err(SupervisorError::Interrupted { signal: "SIGTERM" });
+        }
+        if self.interrupt.recv().now_or_never().is_some() {
+            return Err(SupervisorError::Interrupted { signal: "SIGINT" });
+        }
+        Ok(())
+    }
+
+    /// Wait for readiness while observing every child and shutdown signals.
     async fn await_ready(
         &mut self,
         name: &str,
-        pid: Pid,
         condition: &Ready,
         timeout: Duration,
     ) -> Result<(), SupervisorError> {
@@ -311,19 +352,10 @@ impl Supervisor {
         debug!("waiting for {name}: {condition}");
         let deadline = clock::now() + timeout;
         loop {
+            self.check_startup()?;
             if path.exists() {
                 debug!("{name} is ready ({} exists)", path.display());
                 return Ok(());
-            }
-
-            // Checked every round, because a process that dies during startup would otherwise be
-            // reported as a timeout -- which sends whoever reads it looking at the wrong thing,
-            // and only after they have waited out the timeout to see it.
-            if let Some(report) = self.reap_one(pid)? {
-                return Err(SupervisorError::DiedDuringStartup {
-                    name: name.to_string(),
-                    report,
-                });
             }
 
             if clock::now() >= deadline {
@@ -333,7 +365,16 @@ impl Supervisor {
                     timeout,
                 });
             }
-            sleep(READY_POLL).await;
+            tokio::select! {
+                _ = self.child.recv() => {}
+                _ = self.terminate.recv() => {
+                    return Err(SupervisorError::Interrupted { signal: "SIGTERM" });
+                }
+                _ = self.interrupt.recv() => {
+                    return Err(SupervisorError::Interrupted { signal: "SIGINT" });
+                }
+                () = sleep(READY_POLL) => {}
+            }
         }
     }
 
@@ -344,39 +385,20 @@ impl Supervisor {
     ///
     /// # Errors
     ///
-    /// Returns [`SupervisorError::SignalHandler`] if the signals that mean "stop" cannot be
-    /// listened for. That is fatal rather than degraded: PID 1 has no default disposition for
-    /// `SIGTERM`, so a supervisor which failed to install the handler would silently ignore every
-    /// request to stop and have to be killed.
+    /// Returns [`SupervisorError::Wait`] if child statuses cannot be collected.
     pub async fn supervise(mut self) -> Result<Outcome, SupervisorError> {
-        let mut terminate =
-            signal(SignalKind::terminate()).map_err(|e| SupervisorError::SignalHandler {
-                signal: "SIGTERM",
-                source: e,
-            })?;
-        let mut interrupt =
-            signal(SignalKind::interrupt()).map_err(|e| SupervisorError::SignalHandler {
-                signal: "SIGINT",
-                source: e,
-            })?;
-        let mut child =
-            signal(SignalKind::child()).map_err(|e| SupervisorError::SignalHandler {
-                signal: "SIGCHLD",
-                source: e,
-            })?;
-
         info!("supervising {} process(es)", self.running.len());
 
         let outcome = loop {
+            // An exit may predate this loop; SIGCHLD notifications may also be coalesced.
+            if let Some((name, report)) = self.reap()? {
+                error!("{name} {report}; bringing the gateway down");
+                break Outcome::Exited { name, report };
+            }
             tokio::select! {
-                _ = child.recv() => {
-                    if let Some((name, report)) = self.reap()? {
-                        error!("{name} {report}; bringing the gateway down");
-                        break Outcome::Exited { name, report };
-                    }
-                }
-                _ = terminate.recv() => break Outcome::Signalled { signal: "SIGTERM" },
-                _ = interrupt.recv() => break Outcome::Signalled { signal: "SIGINT" },
+                _ = self.child.recv() => {}
+                _ = self.terminate.recv() => break Outcome::Signalled { signal: "SIGTERM" },
+                _ = self.interrupt.recv() => break Outcome::Signalled { signal: "SIGINT" },
             }
         };
 
@@ -417,23 +439,6 @@ impl Supervisor {
                 Err(Errno::EINTR) => {}
                 Err(e) => return Err(SupervisorError::Wait(e)),
             }
-        }
-    }
-
-    /// Reap `pid` if it has exited, without disturbing any other child.
-    fn reap_one(&mut self, pid: Pid) -> Result<Option<Ended>, SupervisorError> {
-        match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
-            // Still running, already reaped by someone else, or interrupted before it could say.
-            // In all three the caller has learned nothing and should look again.
-            Ok(WaitStatus::StillAlive) | Err(Errno::ECHILD | Errno::EINTR) => Ok(None),
-            Ok(status) => {
-                let Some((reaped, report)) = interpret(status) else {
-                    return Ok(None);
-                };
-                self.forget(reaped);
-                Ok(Some(report))
-            }
-            Err(e) => Err(SupervisorError::Wait(e)),
         }
     }
 
@@ -541,6 +546,146 @@ fn tool(name: &str) -> PathBuf {
 #[cfg(test)]
 mod test {
     use super::*;
+    use nix::sys::wait::{Id, waitid};
+
+    /// Each supervisor owns process-wide signals and waitpid, so give each test a process.
+    fn run_in_subprocess(name: &str) -> bool {
+        const CHILD_TEST: &str = "DATAPLANE_SUPERVISOR_TEST";
+        if std::env::var(CHILD_TEST).as_deref() == Ok(name) {
+            return false;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("supervisor::test::{name}"),
+                "--nocapture",
+            ])
+            .env(CHILD_TEST, name)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{name}:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
+
+    /// Establish that the child exited without consuming the status the supervisor needs.
+    async fn wait_for_exit(pid: Pid) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let status = waitid(
+                    Id::Pid(pid),
+                    WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT,
+                )
+                .unwrap();
+                if interpret(status).is_some() {
+                    return;
+                }
+                sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("child should exit promptly");
+    }
+
+    #[tokio::test]
+    async fn an_exit_before_supervision_is_not_lost() {
+        if run_in_subprocess("an_exit_before_supervision_is_not_lost") {
+            return;
+        }
+        let mut supervisor = Supervisor::new().unwrap();
+        supervisor
+            .start(Process::new("early", sh("exit 7")))
+            .await
+            .unwrap();
+        let pid = supervisor.running[0].pid;
+        wait_for_exit(pid).await;
+
+        // Even if the notification was already consumed, waitpid must find the exit.
+        tokio::time::timeout(Duration::from_secs(2), supervisor.child.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(2), supervisor.supervise())
+            .await
+            .expect("must not wait for another SIGCHLD")
+            .unwrap();
+        assert!(
+            matches!(outcome, Outcome::Exited { name, report: Ended::Code(7) } if name == "early")
+        );
+        assert_eq!(waitpid(pid, Some(WaitPidFlag::WNOHANG)), Err(Errno::ECHILD));
+    }
+
+    #[tokio::test]
+    async fn an_exit_prevents_starting_the_next_child() {
+        if run_in_subprocess("an_exit_prevents_starting_the_next_child") {
+            return;
+        }
+        let mut supervisor = Supervisor::new().unwrap();
+        supervisor
+            .start(Process::new("early", sh("exit 7")))
+            .await
+            .unwrap();
+        wait_for_exit(supervisor.running[0].pid).await;
+
+        let result = supervisor
+            .start(Process::new("next", sh("sleep 600")))
+            .await;
+        let nothing_started = supervisor.running.is_empty();
+        supervisor.shut_down().await.unwrap();
+        assert!(
+            matches!(result, Err(SupervisorError::DiedDuringStartup { name, report: Ended::Code(7) }) if name == "early")
+        );
+        assert!(nothing_started);
+    }
+
+    #[tokio::test]
+    async fn an_earlier_exit_interrupts_another_childs_readiness() {
+        if run_in_subprocess("an_earlier_exit_interrupts_another_childs_readiness") {
+            return;
+        }
+        let mut supervisor = Supervisor::new().unwrap();
+        supervisor
+            .start(Process::new("earlier", sh("exec sleep 600")))
+            .await
+            .unwrap();
+        let pid = supervisor.running[0].pid;
+        let next = Process::new("next", sh("exec sleep 600"))
+            .ready_when_path_exists("/definitely/not/a/real/socket");
+        let (result, ()) = tokio::join!(
+            biased;
+            tokio::time::timeout(Duration::from_secs(2), supervisor.start(next)),
+            async { kill(pid, Signal::SIGKILL).unwrap(); }
+        );
+        supervisor.shut_down().await.unwrap();
+        assert!(
+            matches!(result.expect("must observe earlier children during readiness"),
+            Err(SupervisorError::DiedDuringStartup { name, report: Ended::Killed(Signal::SIGKILL) }) if name == "earlier")
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_signals_interrupt_readiness() {
+        if run_in_subprocess("shutdown_signals_interrupt_readiness") {
+            return;
+        }
+        for (signal, expected) in [(Signal::SIGTERM, "SIGTERM"), (Signal::SIGINT, "SIGINT")] {
+            let mut supervisor = Supervisor::new().unwrap();
+            let process = Process::new("starting", sh("exec sleep 600"))
+                .ready_when_path_exists("/definitely/not/a/real/socket");
+            let (result, ()) = tokio::join!(
+                biased;
+                tokio::time::timeout(Duration::from_secs(2), supervisor.start(process)),
+                async { kill(unistd::getpid(), signal).unwrap(); }
+            );
+            supervisor.shut_down().await.unwrap();
+            assert!(matches!(result.expect("must respond during readiness"),
+                Err(SupervisorError::Interrupted { signal }) if signal == expected));
+        }
+    }
 
     /// A command that runs `script` under a shell.
     fn sh(script: &str) -> Command {
@@ -551,7 +696,10 @@ mod test {
 
     #[tokio::test]
     async fn a_process_that_exits_takes_the_rest_down_with_it() {
-        let mut supervisor = Supervisor::new();
+        if run_in_subprocess("a_process_that_exits_takes_the_rest_down_with_it") {
+            return;
+        }
+        let mut supervisor = Supervisor::new().unwrap();
         supervisor
             .start(Process::new("survivor", sh("sleep 600")))
             .await
@@ -580,7 +728,10 @@ mod test {
 
     #[tokio::test]
     async fn a_killed_process_is_reported_as_killed() {
-        let mut supervisor = Supervisor::new();
+        if run_in_subprocess("a_killed_process_is_reported_as_killed") {
+            return;
+        }
+        let mut supervisor = Supervisor::new().unwrap();
         supervisor
             .start(Process::new("doomed", sh("kill -9 $$")))
             .await
@@ -617,11 +768,14 @@ mod test {
 
     #[tokio::test]
     async fn a_dependant_waits_for_the_path_it_needs() {
+        if run_in_subprocess("a_dependant_waits_for_the_path_it_needs") {
+            return;
+        }
         let scratch = scratch_dir("ready");
         let socket = scratch.join("cpi.sock");
         let _ = std::fs::remove_file(&socket);
 
-        let mut supervisor = Supervisor::new();
+        let mut supervisor = Supervisor::new().unwrap();
         let started = clock::now();
         supervisor
             .start(
@@ -648,7 +802,10 @@ mod test {
 
     #[tokio::test]
     async fn a_process_that_dies_while_starting_is_reported_as_such() {
-        let mut supervisor = Supervisor::new();
+        if run_in_subprocess("a_process_that_dies_while_starting_is_reported_as_such") {
+            return;
+        }
+        let mut supervisor = Supervisor::new().unwrap();
         let error = supervisor
             .start(
                 Process::new("false-start", sh("exit 7"))
@@ -670,7 +827,10 @@ mod test {
 
     #[tokio::test]
     async fn a_process_that_never_becomes_ready_times_out() {
-        let mut supervisor = Supervisor::new();
+        if run_in_subprocess("a_process_that_never_becomes_ready_times_out") {
+            return;
+        }
+        let mut supervisor = Supervisor::new().unwrap();
         let mut process = Process::new("never-ready", sh("sleep 600"))
             .ready_when_path_exists("/definitely/not/a/real/socket");
         process.ready_timeout = Duration::from_millis(200);
@@ -690,7 +850,10 @@ mod test {
 
     #[tokio::test]
     async fn shutdown_reaches_a_process_that_ignores_sigterm() {
-        let mut supervisor = Supervisor::new();
+        if run_in_subprocess("shutdown_reaches_a_process_that_ignores_sigterm") {
+            return;
+        }
+        let mut supervisor = Supervisor::new().unwrap();
         // `trap '' TERM` makes the shell ignore SIGTERM entirely, which is the case the SIGKILL
         // stage exists for. Without it this test would pass whether or not that stage worked.
         supervisor
@@ -714,7 +877,10 @@ mod test {
 
     #[tokio::test]
     async fn an_orphan_is_reaped_without_ending_supervision() {
-        let mut supervisor = Supervisor::new();
+        if run_in_subprocess("an_orphan_is_reaped_without_ending_supervision") {
+            return;
+        }
+        let mut supervisor = Supervisor::new().unwrap();
         // A grandchild that outlives its parent is reparented to us. Supervision must reap it --
         // otherwise PID 1 accumulates zombies -- without treating it as a supervised process
         // having died.
@@ -752,11 +918,14 @@ mod test {
     /// workstation will terminate the developer's desktop. It has done so before.
     #[tokio::test]
     async fn shutdown_does_not_reach_processes_we_never_started() {
+        if run_in_subprocess("shutdown_does_not_reach_processes_we_never_started") {
+            return;
+        }
         // Deliberately not given to the supervisor: it stands in for every process on the machine
         // that has nothing to do with the gateway.
         let mut bystander = sh("sleep 600").spawn().expect("the bystander should start");
 
-        let mut supervisor = Supervisor::new();
+        let mut supervisor = Supervisor::new().unwrap();
         supervisor
             .start(Process::new("ours", sh("sleep 600")))
             .await
