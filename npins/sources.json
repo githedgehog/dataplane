@@ -259,9 +259,9 @@
     },
     "linux-fancy": {
       "type": "Url",
-      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.54.tar.xz",
+      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.55.tar.xz",
       "unpack": true,
-      "hash": "sha256-WOAv9LyN4z+Utn93yTnqdrF+xMBsLt8JHtTQBhZ6JAU=",
+      "hash": "sha256-ax3gUxfxSIkC9H1jM4v8v0qF/bbeAkB8yY+VFqBVO2U=",
       "frozen": true
     },
     "mermaid": {
@@ -275,17 +275,17 @@
       "version_upper_bound": null,
       "release_prefix": "mermaid@",
       "submodules": false,
-      "version": "mermaid@12.0.0",
-      "revision": "56a69eab4ecb78d453fedd713b7d473efa27207a",
-      "url": "https://api.github.com/repos/mermaid-js/mermaid/tarball/refs/tags/mermaid@12.0.0",
-      "hash": "sha256-Irkthx4a1FCvJBHOtN/1FbR0xy3HiRPpgGVvECbIjfs="
+      "version": "mermaid@12.1.0",
+      "revision": "ee7911783ea93ec82eaabba160a9cfcdb5e28733",
+      "url": "https://api.github.com/repos/mermaid-js/mermaid/tarball/refs/tags/mermaid@12.1.0",
+      "hash": "sha256-u5ptI6hXOLBHuG/+Rb6yJhYpVOU1Is2jWrpxPEIr4GI="
     },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
       "artifact": "nixexprs.tar.xz",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1082290.b6c8664de9b6/nixexprs.tar.xz",
-      "hash": "sha256-k8Fu4c9Z+4Nh7mUr0cfw++ITQiyEhlWxoJBOkI3tOcQ="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1084597.73e728ddb6b7/nixexprs.tar.xz",
+      "hash": "sha256-4ettaZ6zgjT1Zgjq6zrmIg87gBvLMvPJGA8u0BBTn6Y="
     },
     "opengrep": {
       "type": "GitRelease",
@@ -354,9 +354,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "dcee1adabb61484343af863501d2e3d91ef51f72",
-      "url": "https://github.com/oxalica/rust-overlay/archive/dcee1adabb61484343af863501d2e3d91ef51f72.tar.gz",
-      "hash": "sha256-n+rcrZkqos6/HY2iSJsVsJw3Q4mB9XEquYpus97iOi4="
+      "revision": "dbc715a4b7c0ace63b9769a032d1dd34cd89e5bd",
+      "url": "https://github.com/oxalica/rust-overlay/archive/dbc715a4b7c0ace63b9769a032d1dd34cd89e5bd.tar.gz",
+      "hash": "sha256-y/GF+9B0t0TZ0nQiSRMqDXpr76yT7sdDbS/3GNLhzkE="
     },
     "ubuntu-kernel-buildinfo": {
       "type": "Url",
