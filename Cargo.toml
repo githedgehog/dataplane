@@ -176,7 +176,7 @@ kanal = { version = "0.1.1", default-features = false, features = [] }
 kube = { version = "4.2.0", default-features = false, features = [] }
 kube-core = { version = "4.2.0", default-features = false, features = [] }
 left-right = { version = "0.11.8", default-features = false, features = [] }
-libc = { version = "0.2.189", default-features = false, features = [] }
+libc = { version = "0.2.190", default-features = false, features = [] }
 linkme = { version = "0.3.37", default-features = false, features = [] }
 log = { version = "0.4.34", default-features = false, features = [] } # TODO: try to remove this
 loom = { version = "0.7.2", default-features = false, features = [] }
