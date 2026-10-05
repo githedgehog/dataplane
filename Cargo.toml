@@ -184,7 +184,7 @@ memmap2 = { version = "0.9.11", default-features = false, features = [] }
 metrics = { version = "0.24.6", default-features = false, features = [] }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = [] }
 miette = { version = "7.6.0", default-features = false, features = [] }
-mio = { version = "1.2.3", default-features = false, features = [] }
+mio = { version = "1.2.4", default-features = false, features = [] }
 multi_index_map = { version = "0.15.1", default-features = false, features = [] }
 netdev = { version = "0.46.3", default-features = false, features = [] }
 netgauze-bgp-pkt = { version = "0.13.0", features = [] }
