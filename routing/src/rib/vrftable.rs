@@ -831,12 +831,12 @@ mod tests {
     fn show_fibgroups(vrf: &Vrf, destination: &str) {
         let (_prefix, route) = vrf.lpm(mk_addr(destination));
         println!("nhops to {destination} are");
-        for shim in &route.s_nhops {
-            let nhop = &*shim.rc;
+        for shared in &route.s_nhops {
+            let nhop = &**shared;
             println!("{nhop}");
         }
-        for shim in &route.s_nhops {
-            let nhop = &*shim.rc;
+        for shared in &route.s_nhops {
+            let nhop = &**shared;
             let fibgroup = nhop.fibgroup.borrow().clone();
             println!("fibgroup of nhop {nhop}:\n\n{fibgroup}");
         }
@@ -853,7 +853,7 @@ mod tests {
 
         let destination = mk_addr("192.168.0.1");
         let (_, route) = vrf.lpm(destination);
-        let fibgroup = route.s_nhops[0].rc.fibgroup.borrow().clone();
+        let fibgroup = route.s_nhops[0].fibgroup.borrow().clone();
         assert_eq!(fibgroup.len(), 4);
 
         for (num, entry) in fibgroup.iter().enumerate() {
@@ -885,7 +885,7 @@ mod tests {
         show_fibgroups(&vrf, "192.168.0.1");
 
         let (_, route) = vrf.lpm(destination);
-        let fibgroup = route.s_nhops[0].rc.fibgroup.borrow().clone();
+        let fibgroup = route.s_nhops[0].fibgroup.borrow().clone();
         assert_eq!(fibgroup.len(), 2);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
@@ -913,7 +913,7 @@ mod tests {
         show_fibgroups(&vrf, "192.168.0.1");
 
         let (_, route) = vrf.lpm(destination);
-        let fibgroup = route.s_nhops[0].rc.fibgroup.borrow().clone();
+        let fibgroup = route.s_nhops[0].fibgroup.borrow().clone();
         assert_eq!(fibgroup.len(), 1);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
@@ -937,7 +937,7 @@ mod tests {
         show_fibgroups(&vrf, "192.168.0.1");
 
         let (_, route) = vrf.lpm(destination);
-        let fibgroup = route.s_nhops[0].rc.fibgroup.borrow().clone();
+        let fibgroup = route.s_nhops[0].fibgroup.borrow().clone();
         assert_eq!(fibgroup.len(), 4);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);

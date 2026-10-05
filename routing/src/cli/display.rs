@@ -26,7 +26,7 @@ use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::NhopStore;
 use crate::rib::nexthop::{FwAction, Nhop, NhopKey};
 
-use crate::rib::vrf::{Route, RouteFlags, RouteOrigin, ShimNhop, Vrf, VrfStatus};
+use crate::rib::vrf::{Route, RouteFlags, RouteOrigin, Vrf, VrfStatus};
 use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 
 use crate::interfaces::iftable::IfTable;
@@ -172,6 +172,8 @@ impl Display for NhopKey {
             write!(f, " action {:?}", self.fwaction)?;
         }
         write!(f, "  ({})", self.origin)?;
+
+        // the vrfid is purposely not shown here yet since it is not yet used
         Ok(())
     }
 }
@@ -200,9 +202,7 @@ fn fmt_nhop(f: &mut std::fmt::Formatter<'_>, nhop: &Nhop, depth: u8) -> std::fmt
     }
     Ok(())
 }
-fn fmt_shim_nhop(f: &mut std::fmt::Formatter<'_>, shim: &ShimNhop) -> std::fmt::Result {
-    fmt_nhop(f, &shim.rc, 1)
-}
+
 fn fmt_route(f: &mut std::fmt::Formatter<'_>, route: &Route) -> std::fmt::Result {
     let age = Age(route.tstamp);
     writeln!(
@@ -210,8 +210,8 @@ fn fmt_route(f: &mut std::fmt::Formatter<'_>, route: &Route) -> std::fmt::Result
         "{} [{}/{}] {age}",
         route.origin, route.distance, route.metric
     )?;
-    for shim in &route.s_nhops {
-        fmt_shim_nhop(f, shim)?;
+    for shared in &route.s_nhops {
+        fmt_nhop(f, shared, 1)?;
     }
     writeln!(f)
 }
@@ -270,12 +270,6 @@ impl Display for NhopStore {
             fmt_nhop_internals(f, nhop, 0)?;
         }
         Ok(())
-    }
-}
-
-impl Display for ShimNhop {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_shim_nhop(f, self)
     }
 }
 

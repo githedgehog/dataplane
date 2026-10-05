@@ -64,7 +64,7 @@ impl NhopKey {
     /// Build a next-hop key
     #[must_use]
     pub fn new(
-        vrfid: VrfId,
+        vrfid: VrfId, // not anymore used, will in the future
         origin: RouteOrigin,
         address: Option<IpAddr>,
         ifindex: Option<InterfaceIndex>,
@@ -83,7 +83,7 @@ impl NhopKey {
     #[must_use]
     pub(crate) fn with_drop() -> Self {
         Self {
-            vrfid: 0,
+            vrfid: 0, // always zero in drops
             origin: RouteOrigin::default(),
             address: None,
             ifindex: None,
@@ -291,8 +291,7 @@ impl Nhop {
 
         // collect resolvers
         let mut resolvers = Vec::with_capacity(route.s_nhops.len());
-        for nhop in &route.s_nhops {
-            let resolver = &nhop.rc;
+        for resolver in &route.s_nhops {
             if !resolver.resolves_with(self) {
                 debug!(" {target} -> {resolver}");
                 resolvers.push(Rc::downgrade(resolver));
