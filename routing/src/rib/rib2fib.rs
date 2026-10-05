@@ -20,6 +20,12 @@ impl NhopKey {
     pub(crate) fn as_pkt_instructions(&self) -> Vec<PktInstruction> {
         let mut instructions = Vec::with_capacity(2);
 
+        // an explicit drop
+        if self.fwaction == FwAction::Drop {
+            instructions.push(PktInstruction::Drop);
+            return instructions;
+        }
+
         // local route
         if self.origin == RouteOrigin::Local {
             match self.ifindex {
@@ -29,12 +35,6 @@ impl NhopKey {
                     instructions.push(PktInstruction::Drop);
                 }
             }
-            return instructions;
-        }
-
-        // an explicit drop
-        if self.fwaction == FwAction::Drop {
-            instructions.push(PktInstruction::Drop);
             return instructions;
         }
 
@@ -250,12 +250,14 @@ mod tests_nhop_pkt_instructions {
             let local = instructions
                 .iter()
                 .any(|i| matches!(i, PktInstruction::Local(_)));
+            // a drop wins over the origin
+            let forwards = key.fwaction == FwAction::Forward;
             assert_eq!(
                 local,
-                key.origin == RouteOrigin::Local && key.ifindex.is_some(),
+                forwards && key.origin == RouteOrigin::Local && key.ifindex.is_some(),
                 "for {key:?}"
             );
-            if key.origin == RouteOrigin::Local {
+            if forwards && key.origin == RouteOrigin::Local {
                 let expected = key
                     .ifindex
                     .map_or(PktInstruction::Drop, PktInstruction::Local);
@@ -268,9 +270,8 @@ mod tests_nhop_pkt_instructions {
     fn a_drop_is_the_only_instruction() {
         check(|key, instructions| {
             let drops = instructions.contains(&PktInstruction::Drop);
-            let mut should_drop = !key.is_valid();
-            // local ignores fw action (wins over Drop)
-            should_drop |= key.fwaction == FwAction::Drop && key.origin != RouteOrigin::Local;
+            // a drop wins over the origin
+            let should_drop = !key.is_valid() || key.fwaction == FwAction::Drop;
             assert_eq!(drops, should_drop, "for {key:?}");
             if drops {
                 assert_eq!(instructions, [PktInstruction::Drop], "for {key:?}");

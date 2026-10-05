@@ -92,14 +92,12 @@ impl NhopKey {
         }
     }
     #[must_use]
-    /// Tell if a key is valid
+    /// Tell if a key is valid. A drop is always valid, whatever its origin.
     pub(crate) fn is_valid(&self) -> bool {
-        // local are valid if ifindex is known
-        if self.origin == RouteOrigin::Local {
-            return self.ifindex.is_some();
-        }
         match self.fwaction {
             FwAction::Drop => true,
+            // local are valid if ifindex is known
+            FwAction::Forward if self.origin == RouteOrigin::Local => self.ifindex.is_some(),
             FwAction::Forward => {
                 self.address.is_some() || self.ifindex.is_some() || self.encap.is_some()
             }
@@ -1119,15 +1117,48 @@ mod fibgroup_properties {
     use super::*;
     use crate::fib::fibobjects::FibEntry;
     use bolero::{Driver, ValueGenerator};
-    use std::ops::Bound::Included;
+    use std::ops::Bound::{Excluded, Included};
 
     const MAX_NODES: u8 = 6;
     const MAX_RESOLVERS: u8 = 2;
 
+    /// The kind of key that a node of a `Graph` gets
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        OnlyAddress,     // only address. Needs resolution (valid)
+        ResolvedAddress, // address + ifindex (valid)
+        InvalidLocal,    // local route without ifindex, (invalid)
+        Drop,            // drop, (valid)
+        NoInfo,          // bad key lacking mandatory info (invalid)
+    }
+
+    const KINDS: [Kind; 5] = [
+        Kind::OnlyAddress,
+        Kind::ResolvedAddress,
+        Kind::InvalidLocal,
+        Kind::Drop,
+        Kind::NoInfo,
+    ];
+    const INVALID_KINDS: [Kind; 2] = [Kind::InvalidLocal, Kind::NoInfo];
+
+    impl Kind {
+        fn is_valid(self) -> bool {
+            !INVALID_KINDS.contains(&self)
+        }
+        /// Tell if a next-hop of this kind gets resolvers. Neither invalid next-hops
+        fn resolves(self) -> bool {
+            matches!(self, Kind::OnlyAddress | Kind::ResolvedAddress)
+        }
+    }
+
+    fn pick<D: Driver>(driver: &mut D, kinds: &[Kind]) -> Option<Kind> {
+        Some(kinds[driver.gen_usize(Included(&0), Excluded(&kinds.len()))?])
+    }
+
     #[derive(Debug, Clone)]
     struct Graph {
         edges: Vec<Vec<usize>>,
-        grounded: Vec<bool>,
+        kinds: Vec<Kind>,
     }
 
     impl Graph {
@@ -1142,6 +1173,24 @@ mod fibgroup_properties {
             }
             seen
         }
+
+        /// Tell if some path from `node` crosses only valid next-hops and ends over an interface
+        fn usable(&self, node: usize) -> bool {
+            if !self.kinds[node].is_valid() {
+                return false;
+            }
+            if self.edges[node].is_empty() {
+                return self.kinds[node] != Kind::OnlyAddress;
+            }
+            self.edges[node].iter().any(|to| self.usable(*to))
+        }
+
+        /// Append a node and return its index. It has no resolvers.
+        fn push(&mut self, kind: Kind) -> usize {
+            self.edges.push(vec![]);
+            self.kinds.push(kind);
+            self.edges.len() - 1
+        }
     }
 
     #[derive(Debug, Clone, Copy, Default)]
@@ -1154,8 +1203,9 @@ mod fibgroup_properties {
             let nodes = usize::from(driver.gen_u8(Included(&1), Included(&MAX_NODES))?);
             let last = u8::try_from(nodes - 1).ok()?;
             let mut edges = Vec::with_capacity(nodes);
-            let mut grounded = Vec::with_capacity(nodes);
+            let mut kinds = Vec::with_capacity(nodes);
             for node in 0..nodes {
+                let kind = pick(driver, &KINDS)?;
                 let count = driver.gen_u8(Included(&0), Included(&MAX_RESOLVERS))?;
                 let mut resolvers = Vec::with_capacity(usize::from(count));
                 // Only resolve over later nodes. That keeps the graph acyclic, as
@@ -1163,7 +1213,7 @@ mod fibgroup_properties {
                 // ordering, so nothing reachable in practice is lost.
                 if let Some(first) = u8::try_from(node.saturating_add(1))
                     .ok()
-                    .filter(|first| *first <= last)
+                    .filter(|first| *first <= last && kind.resolves())
                 {
                     for _ in 0..count {
                         resolvers.push(usize::from(
@@ -1172,26 +1222,111 @@ mod fibgroup_properties {
                     }
                 }
                 edges.push(resolvers);
-                grounded.push(driver.produce::<bool>()?);
+                kinds.push(kind);
             }
-            Some(Graph { edges, grounded })
+            Some(Graph { edges, kinds })
+        }
+    }
+
+    /// A next-hop resolving over a valid sibling, the root of a graph with a usable path,
+    /// and over invalid next-hops beside it. The root is node 0 and the sibling node 1.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Siblings;
+
+    impl ValueGenerator for Siblings {
+        type Output = Graph;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Graph> {
+            let mut sibling = Graphs.generate(driver)?;
+            // A drop would put a legitimate drop entry in the sibling's group: keep
+            // the sibling to forwarding paths, so that any drop is the invalid ones'.
+            for kind in &mut sibling.kinds {
+                if *kind == Kind::Drop {
+                    *kind = Kind::ResolvedAddress;
+                }
+            }
+            if !sibling.usable(0) {
+                if !sibling.kinds[0].is_valid() {
+                    sibling.kinds[0] = Kind::OnlyAddress;
+                }
+                let leaf = sibling.push(Kind::ResolvedAddress);
+                sibling.edges[0].push(leaf);
+            }
+
+            let mut graph = Graph {
+                edges: vec![vec![]],
+                kinds: vec![Kind::OnlyAddress],
+            };
+            for (resolvers, kind) in sibling.edges.iter().zip(&sibling.kinds) {
+                graph
+                    .edges
+                    .push(resolvers.iter().map(|to| to + 1).collect());
+                graph.kinds.push(*kind);
+            }
+            let count = driver.gen_u8(Included(&1), Included(&MAX_RESOLVERS))?;
+            let mut resolvers = Vec::with_capacity(usize::from(count) + 1);
+            for _ in 0..count {
+                let kind = pick(driver, &INVALID_KINDS)?;
+                resolvers.push(graph.push(kind));
+            }
+            let at = driver.gen_usize(Included(&0), Included(&resolvers.len()))?;
+            resolvers.insert(at, 1);
+            graph.edges[0] = resolvers;
+            Some(graph)
+        }
+    }
+
+    /// A graph in which every path from the root ends in an invalid next-hop
+    #[derive(Debug, Clone, Copy, Default)]
+    struct OnlyInvalidPaths;
+
+    impl ValueGenerator for OnlyInvalidPaths {
+        type Output = Graph;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Graph> {
+            let mut graph = Graphs.generate(driver)?;
+            for node in 0..graph.edges.len() {
+                if graph.edges[node].is_empty() {
+                    graph.kinds[node] = pick(driver, &INVALID_KINDS)?;
+                }
+            }
+            Some(graph)
+        }
+    }
+
+    /// The key of the node at `index` of a graph. Keys of distinct indices are distinct.
+    fn key(kind: Kind, index: usize) -> NhopKey {
+        let raw = u8::try_from(index).unwrap_or_else(|_| unreachable!());
+        let address = format!("10.0.0.{}", raw + 1);
+        match kind {
+            Kind::OnlyAddress => NhopKey::from_address(&address),
+            Kind::ResolvedAddress => NhopKey::with_addr_ifindex(&address, u32::from(raw) + 1),
+            Kind::InvalidLocal => NhopKey {
+                origin: RouteOrigin::Local,
+                ..NhopKey::from_address(&address)
+            },
+            Kind::Drop => NhopKey {
+                origin: RouteOrigin::Local,
+                fwaction: FwAction::Drop,
+                ..NhopKey::from_address(&address)
+            },
+            // Without an address, only the vrf keeps `NoInfo` keys apart. They must stay
+            // apart, or the store would merge them into a single next-hop.
+            Kind::NoInfo => NhopKey {
+                vrfid: u32::from(raw) + 1,
+                fwaction: FwAction::Forward,
+                ..NhopKey::default()
+            },
         }
     }
 
     fn realize(graph: &Graph) -> (NhopStore, Vec<Rc<Nhop>>) {
         let mut store = NhopStore::new();
-        let nodes: Vec<Rc<Nhop>> = (0..graph.edges.len())
-            .map(|index| {
-                let raw = u8::try_from(index).unwrap_or_else(|_| unreachable!());
-                let mut key = NhopKey::from_address(&format!("10.0.0.{}", raw + 1));
-                if graph.grounded[index] {
-                    key.ifindex = Some(
-                        InterfaceIndex::try_new(u32::from(raw) + 1)
-                            .unwrap_or_else(|_| unreachable!()),
-                    );
-                }
-                store.add_nhop(&key)
-            })
+        let nodes: Vec<Rc<Nhop>> = graph
+            .kinds
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| store.add_nhop(&key(*kind, index)))
             .collect();
 
         for (from, resolvers) in graph.edges.iter().enumerate() {
@@ -1209,6 +1344,9 @@ mod fibgroup_properties {
         prefix: &FibEntry,
         out: &mut Vec<FibEntry>,
     ) {
+        if !graph.kinds[from].is_valid() {
+            return;
+        }
         let mut entry = prefix.clone();
         entry.extend_from_slice(&nodes[from].instructions);
 
@@ -1227,6 +1365,19 @@ mod fibgroup_properties {
     }
 
     #[test]
+    fn a_kind_is_valid_exactly_when_its_key_is() {
+        for kind in KINDS {
+            let keys: Vec<NhopKey> = (0..usize::from(MAX_NODES) * 2)
+                .map(|index| key(kind, index))
+                .collect();
+            for (index, key) in keys.iter().enumerate() {
+                assert_eq!(key.is_valid(), kind.is_valid(), "{kind:?} {key:?}");
+                assert!(!keys[..index].contains(key), "{kind:?} {key:?} repeats");
+            }
+        }
+    }
+
+    #[test]
     fn a_fibgroup_is_the_usable_paths_through_the_graph() {
         bolero::check!()
             .with_generator(Graphs)
@@ -1235,6 +1386,7 @@ mod fibgroup_properties {
                 let (_store, nodes) = realize(&graph);
                 let mut want = Vec::new();
                 expected(&graph, &nodes, 0, &FibEntry::new(), &mut want);
+                assert_eq!(want.is_empty(), !graph.usable(0), "for {graph:?}");
                 if want.is_empty() {
                     want.push(FibEntry::drop_fibentry());
                 }
@@ -1256,6 +1408,39 @@ mod fibgroup_properties {
                 for entry in group.iter() {
                     assert!(entry.is_valid(), "unusable entry {entry:?} for {graph:?}");
                 }
+            });
+    }
+
+    #[test]
+    fn partial_invalid_resolution_does_not_affect_valid() {
+        bolero::check!()
+            .with_generator(Siblings)
+            .cloned()
+            .for_each(|graph: Graph| {
+                let (_store, nodes) = realize(&graph);
+                let got = nodes[0].build_nhop_fibgroup();
+                assert!(
+                    got.iter()
+                        .all(|entry| !entry.iter().any(|i| *i == PktInstruction::Drop)),
+                    "drop in {got:?} for {graph:?}"
+                );
+                assert_eq!(got, nodes[1].build_nhop_fibgroup(), "for {graph:?}");
+            });
+    }
+
+    #[test]
+    fn route_with_invalid_paths_yields_drop_fibgroup() {
+        bolero::check!()
+            .with_generator(OnlyInvalidPaths)
+            .cloned()
+            .for_each(|graph: Graph| {
+                let (_store, nodes) = realize(&graph);
+                let got = nodes[0].build_nhop_fibgroup();
+                assert_eq!(
+                    got.entries(),
+                    &vec![FibEntry::drop_fibentry()],
+                    "for {graph:?}"
+                );
             });
     }
 
