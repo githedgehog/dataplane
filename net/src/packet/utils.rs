@@ -50,6 +50,12 @@ pub enum PacketUtilError<'a> {
     #[error("invalid ICMP type")]
     /// This error is returned when the utility method is called with an incompatible ICMP type for the required operation
     InvalidIcmpType,
+    #[error("Invalid source mac")]
+    /// This error is returned when the utility method attempts to set a mac that is not legal as a source mac.
+    InvalidSrcMac(#[from] SourceMacAddressError),
+    #[error("Invalid destination mac")]
+    /// This error is returned when the utility method attempts to set a mac that is not legal as a destination mac.
+    InvalidDstMac(#[from] DestinationMacAddressError),
 }
 
 fn extract_tcp(transport: &mut Transport) -> Result<&mut Tcp, PacketUtilError<'_>> {
@@ -83,10 +89,13 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     ///
     /// # Errors
     ///
-    /// This method returns [`SourceMacAddressError`] if the mac is invalid as source.
-    pub fn set_eth_source(&mut self, mac: Mac) -> Result<(), SourceMacAddressError> {
+    /// This method returns [`PacketUtilError`] if the packet does not have
+    /// an Ethernet header or the mac is invalid as source.
+    pub fn set_eth_source(&mut self, mac: Mac) -> Result<(), PacketUtilError<'_>> {
         let mac = SourceMac::new(mac)?;
-        self.try_eth_mut().map(|eth| eth.set_source(mac));
+        self.try_eth_mut()
+            .map(|eth| eth.set_source(mac))
+            .ok_or(PacketUtilError::NoEth)?;
         Ok(())
     }
 
@@ -106,10 +115,13 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     ///
     /// # Errors
     ///
-    /// This method returns [`DestinationMacAddressError`] if the mac is invalid as destination.
-    pub fn set_eth_destination(&mut self, mac: Mac) -> Result<(), DestinationMacAddressError> {
+    /// This method returns [`PacketUtilError`] if the packet has no ethernet header
+    /// or the mac is invalid as destination.
+    pub fn set_eth_destination(&mut self, mac: Mac) -> Result<(), PacketUtilError<'_>> {
         let mac = DestinationMac::new(mac)?;
-        self.try_eth_mut().map(|eth| eth.set_destination(mac));
+        self.try_eth_mut()
+            .map(|eth| eth.set_destination(mac))
+            .ok_or(PacketUtilError::NoEth)?;
         Ok(())
     }
 
