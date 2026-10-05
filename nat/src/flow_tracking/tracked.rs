@@ -4,7 +4,7 @@
 //! State kept in tracked flows.
 
 use super::{FlowSide, next_status};
-use crate::common::{AtomicNatFlowStatus, NatFlowStatus};
+use crate::common::{AtomicNatFlowStatus, ConnState};
 use net::buffer::PacketBufferMut;
 use net::flows::{FlowInfoItem, FlowInfoLocked};
 use net::packet::Packet;
@@ -38,8 +38,8 @@ pub(crate) trait TrackedState: FlowInfoItem + Sized {
     fn next_status<Buf: PacketBufferMut>(
         &self,
         packet: &Packet<Buf>,
-        status: NatFlowStatus,
-    ) -> NatFlowStatus {
+        status: ConnState,
+    ) -> ConnState {
         next_status(packet, self.side(), status)
     }
 }

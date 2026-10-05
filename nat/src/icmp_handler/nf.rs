@@ -19,7 +19,7 @@ use strum::EnumMessage;
 use tracectl::trace_target;
 use tracing::{debug, warn};
 
-use crate::common::NatFlowStatus;
+use crate::common::ConnState;
 use crate::icmp_handler::flow_state::translate_icmp_error;
 use crate::masquerade::MasqueradeState;
 use crate::portfw::PortFwState;
@@ -209,7 +209,7 @@ impl IcmpErrorHandler {
         let embeds_query = embeds_icmp_query(packet);
         let (unrecoverable, reason) = is_icmp_unrecoverable(packet);
         let reason = reason.unwrap_or("unspecified");
-        if unrecoverable && status == NatFlowStatus::OneWay && !embeds_query {
+        if unrecoverable && status == ConnState::OneWay && !embeds_query {
             debug!("Invalidating flows due to ICMP error (reason={reason} flow-status={status})");
             flow.invalidate_pair();
         } else {

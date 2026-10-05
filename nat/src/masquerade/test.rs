@@ -3,7 +3,7 @@
 
 #![cfg(test)]
 
-use crate::common::{NatAction, NatFlowStatus};
+use crate::common::{ConnState, NatAction};
 use crate::masquerade::state::MasqueradeState;
 use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use crate::{IcmpErrorHandler, Masquerade};
@@ -1653,7 +1653,7 @@ fn flow_genid(packet: &Packet<TestBuffer>) -> Option<i64> {
         .as_ref()
         .map(|flow_info| flow_info.genid())
 }
-fn nat_flow_status(packet: &Packet<TestBuffer>) -> Option<NatFlowStatus> {
+fn nat_flow_status(packet: &Packet<TestBuffer>) -> Option<ConnState> {
     packet
         .meta()
         .flow_info
@@ -1738,7 +1738,7 @@ fn establish_tcp_connection(pipeline: &mut DynPipeline<TestBuffer>) {
     let output: Packet<TestBuffer> = process_packet(pipeline, reply);
     assert!(output.meta().flow_info.is_some());
     assert_eq!(flow_status(&output), Some(FlowStatus::Active));
-    assert_eq!(nat_flow_status(&output), Some(NatFlowStatus::TwoWay));
+    assert_eq!(nat_flow_status(&output), Some(ConnState::TwoWay));
 
     // process TCP ACK packet in forward direction
     let mut packet = tcp_packet_to_masquerade();
@@ -1748,7 +1748,7 @@ fn establish_tcp_connection(pipeline: &mut DynPipeline<TestBuffer>) {
     let output = process_packet(pipeline, packet);
     assert!(!output.is_done());
     assert_eq!(flow_status(&output), Some(FlowStatus::Active));
-    assert_eq!(nat_flow_status(&output), Some(NatFlowStatus::Established));
+    assert_eq!(nat_flow_status(&output), Some(ConnState::Established));
 
     // configured timeout for the flow
     let timeout = with_masquerade_state(&output, MasqueradeState::idle_timeout).unwrap();
@@ -1801,7 +1801,7 @@ async fn test_masquerade_check() {
     let action = with_masquerade_state(&out, MasqueradeState::action)
         .expect("Must have flow info w/ masquerade state");
     assert_eq!(action, NatAction::DstNat);
-    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Established);
+    assert_eq!(nat_flow_status(&out).unwrap(), ConnState::Established);
     assert_eq!(flow_status(&out).unwrap(), FlowStatus::Active);
 
     // packet should make it to tcp source
@@ -1851,7 +1851,7 @@ async fn test_masquerade_teardown_does_not_extend_the_mapping() {
     let mut rst = tcp_packet_to_masquerade();
     rst.try_tcp_mut().unwrap().set_rst(true);
     let out = process_packet(&mut pipeline, rst);
-    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Reset);
+    assert_eq!(nat_flow_status(&out).unwrap(), ConnState::Reset);
 
     let after_teardown = mapping_deadline(&out).expect("the forward flow holds the allocation");
     assert_eq!(
@@ -1882,7 +1882,7 @@ async fn test_masquerade_tcp_reset() {
     let action = with_masquerade_state(&reply_out, MasqueradeState::action)
         .expect("Must have flow info w/ masquerade state");
     assert_eq!(action, NatAction::DstNat);
-    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Reset);
+    assert_eq!(nat_flow_status(&out).unwrap(), ConnState::Reset);
     assert_eq!(flow_status(&reply_out).unwrap(), FlowStatus::Cancelled);
 
     // packet (RST) should make it to tcp source
@@ -1911,7 +1911,7 @@ fn one_way_tcp_flow(
     let out = process_packet(pipeline, syn);
     let flow = out.meta().flow_info.clone().expect("no flow for the SYN");
     assert!(flow.is_active());
-    assert_eq!(nat_flow_status(&out), Some(NatFlowStatus::OneWay));
+    assert_eq!(nat_flow_status(&out), Some(ConnState::OneWay));
 
     (flow, public, public_port, target)
 }
@@ -1992,7 +1992,7 @@ async fn test_masquerade_tcp_close_initiated_by_the_client() {
     let closing = process_packet(&mut pipeline, fin);
     assert_eq!(
         nat_flow_status(&closing),
-        Some(NatFlowStatus::CClosing),
+        Some(ConnState::CClosing),
         "a FIN from the client should start the close"
     );
 
@@ -2002,7 +2002,7 @@ async fn test_masquerade_tcp_close_initiated_by_the_client() {
     let half = process_packet(&mut pipeline, ack);
     assert_eq!(
         nat_flow_status(&half),
-        Some(NatFlowStatus::CHalfClose),
+        Some(ConnState::CHalfClose),
         "an ack of the client's FIN should leave the connection half closed"
     );
 
@@ -2012,7 +2012,7 @@ async fn test_masquerade_tcp_close_initiated_by_the_client() {
     let last = process_packet(&mut pipeline, server_fin);
     assert_eq!(
         nat_flow_status(&last),
-        Some(NatFlowStatus::LastAck),
+        Some(ConnState::LastAck),
         "the server's FIN should leave only the last ack outstanding"
     );
 
@@ -2022,7 +2022,7 @@ async fn test_masquerade_tcp_close_initiated_by_the_client() {
     let closed = process_packet(&mut pipeline, final_ack);
     assert_eq!(
         nat_flow_status(&closed),
-        Some(NatFlowStatus::Closed),
+        Some(ConnState::Closed),
         "the last ack should close the connection"
     );
 }
@@ -2043,7 +2043,7 @@ async fn test_masquerade_tcp_close_initiated_by_the_server() {
     let closing = process_packet(&mut pipeline, server_fin);
     assert_eq!(
         nat_flow_status(&closing),
-        Some(NatFlowStatus::SClosing),
+        Some(ConnState::SClosing),
         "a FIN from the server should start the close"
     );
 
@@ -2053,7 +2053,7 @@ async fn test_masquerade_tcp_close_initiated_by_the_server() {
     let half = process_packet(&mut pipeline, ack);
     assert_eq!(
         nat_flow_status(&half),
-        Some(NatFlowStatus::SHalfClose),
+        Some(ConnState::SHalfClose),
         "an ack of the server's FIN should leave the connection half closed"
     );
 
@@ -2063,7 +2063,7 @@ async fn test_masquerade_tcp_close_initiated_by_the_server() {
     let last = process_packet(&mut pipeline, client_fin);
     assert_eq!(
         nat_flow_status(&last),
-        Some(NatFlowStatus::LastAck),
+        Some(ConnState::LastAck),
         "the client's FIN should leave only the last ack outstanding"
     );
 
@@ -2073,7 +2073,7 @@ async fn test_masquerade_tcp_close_initiated_by_the_server() {
     let closed = process_packet(&mut pipeline, final_ack);
     assert_eq!(
         nat_flow_status(&closed),
-        Some(NatFlowStatus::Closed),
+        Some(ConnState::Closed),
         "the last ack should close the connection"
     );
 }
@@ -2094,7 +2094,7 @@ async fn test_masquerade_reconfig_keep_flow() {
     // process packet in dst nat direction
     let reply = build_reply(&out);
     let out = process_packet(&mut pipeline, reply);
-    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Established);
+    assert_eq!(nat_flow_status(&out).unwrap(), ConnState::Established);
     assert_eq!(flow_status(&out).unwrap(), FlowStatus::Active);
     assert_eq!(flow_genid(&out).unwrap(), genid);
 
@@ -2106,7 +2106,7 @@ async fn test_masquerade_reconfig_keep_flow() {
     // process a packet: it should hit identical flows, except for genid
     let packet = tcp_packet_to_masquerade();
     let out = process_packet(&mut pipeline, packet);
-    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Established);
+    assert_eq!(nat_flow_status(&out).unwrap(), ConnState::Established);
     assert_eq!(flow_status(&out).unwrap(), FlowStatus::Active);
     assert_eq!(flow_genid(&out).unwrap(), genid + 1);
 
@@ -2371,7 +2371,7 @@ async fn test_masquerade_reconfig_drop_flow() {
     // process packet in dst nat direction
     let reply = build_reply(&out);
     let out = process_packet(&mut pipeline, reply);
-    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Established);
+    assert_eq!(nat_flow_status(&out).unwrap(), ConnState::Established);
     assert_eq!(flow_status(&out).unwrap(), FlowStatus::Active);
     assert_eq!(flow_genid(&out).unwrap(), genid);
 
@@ -2383,7 +2383,7 @@ async fn test_masquerade_reconfig_drop_flow() {
     // process a packet: it should hit identical flows
     let packet = tcp_packet_to_masquerade();
     let out = process_packet(&mut pipeline, packet);
-    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Established);
+    assert_eq!(nat_flow_status(&out).unwrap(), ConnState::Established);
     assert_ne!(flow_status(&out).unwrap(), FlowStatus::Active);
     assert_eq!(flow_genid(&out).unwrap(), genid); // genid not upgraded
     assert_eq!(out.get_done(), Some(DoneReason::Filtered)); // packet is not let through
@@ -2523,7 +2523,7 @@ async fn an_icmp_error_about_a_tcp_flow_still_tears_it_down() {
     let out = process_packet(&mut pipeline, syn);
     let flow = out.meta().flow_info.clone().expect("no flow for the SYN");
     assert!(flow.is_active());
-    assert_eq!(nat_flow_status(&out), Some(NatFlowStatus::OneWay));
+    assert_eq!(nat_flow_status(&out), Some(ConnState::OneWay));
 
     let (_, _, _, _, _, _, done_reason) = check_packet_icmp_error(
         &mut pipeline,
@@ -2615,7 +2615,7 @@ async fn masquerade_translates_ipv6() {
     assert!(!back.is_done());
     assert_eq!(back.ip_destination().unwrap(), IpAddr::V6(host));
     assert_eq!(back.ip_source().unwrap(), IpAddr::V6(target));
-    assert_eq!(nat_flow_status(&back), Some(NatFlowStatus::TwoWay));
+    assert_eq!(nat_flow_status(&back), Some(ConnState::TwoWay));
 }
 
 fn icmp6_echo_through(
@@ -2730,7 +2730,7 @@ async fn ipv6_path_mtu_discovery_does_not_tear_down_the_flow_that_triggered_it()
     let out = process_packet(&mut pipeline, tcp_v6_to_masquerade(host, target, 4321, 80));
     let flow = out.meta().flow_info.clone().expect("no flow for the SYN");
     assert!(flow.is_active());
-    assert_eq!(nat_flow_status(&out), Some(NatFlowStatus::OneWay));
+    assert_eq!(nat_flow_status(&out), Some(ConnState::OneWay));
 
     let addrs = Icmp6ErrorAddrs {
         outer_src: addr_v6("2001:db8:3::fe"),
@@ -2936,7 +2936,7 @@ mod fragments {
                     .unwrap()
                     .status
                     .load(),
-                NatFlowStatus::Established
+                ConnState::Established
             );
             let deadlines = (forward.expires_at(), reverse.expires_at());
             tokio::time::advance(Duration::from_secs(1)).await;

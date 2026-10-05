@@ -4,7 +4,7 @@
 #![cfg(test)]
 
 use super::{FlowSide, next_status};
-use crate::common::NatFlowStatus;
+use crate::common::ConnState;
 use net::buffer::TestBuffer;
 use net::headers::TryTcpMut;
 use net::packet::Packet;
@@ -13,17 +13,17 @@ use net::packet::test_utils::{
     build_test_udp_ipv4_packet,
 };
 
-const STATUSES: [NatFlowStatus; 10] = [
-    NatFlowStatus::OneWay,
-    NatFlowStatus::TwoWay,
-    NatFlowStatus::Established,
-    NatFlowStatus::Reset,
-    NatFlowStatus::CClosing,
-    NatFlowStatus::SClosing,
-    NatFlowStatus::CHalfClose,
-    NatFlowStatus::SHalfClose,
-    NatFlowStatus::LastAck,
-    NatFlowStatus::Closed,
+const STATUSES: [ConnState; 10] = [
+    ConnState::OneWay,
+    ConnState::TwoWay,
+    ConnState::Established,
+    ConnState::Reset,
+    ConnState::CClosing,
+    ConnState::SClosing,
+    ConnState::CHalfClose,
+    ConnState::SHalfClose,
+    ConnState::LastAck,
+    ConnState::Closed,
 ];
 
 #[allow(clippy::struct_excessive_bools)]
@@ -63,8 +63,8 @@ fn udp_packet(source_port: u16) -> Packet<TestBuffer> {
 }
 
 #[allow(clippy::match_same_arms)]
-fn expected_tcp(side: FlowSide, status: NatFlowStatus, f: Flags) -> NatFlowStatus {
-    use NatFlowStatus as S;
+fn expected_tcp(side: FlowSide, status: ConnState, f: Flags) -> ConnState {
+    use ConnState as S;
     let progressed = match (side, status) {
         (FlowSide::Initiator, S::TwoWay) if !f.syn && f.ack => Some(S::Established),
         (FlowSide::Responder, S::OneWay) if f.syn && f.ack => Some(S::TwoWay),
@@ -144,15 +144,15 @@ fn reset_and_closed_absorb() {
         for bits in 0..16u8 {
             let packet = tcp_packet(Flags::from_bits(bits));
             assert_eq!(
-                next_status(&packet, side, NatFlowStatus::Reset),
-                NatFlowStatus::Reset,
+                next_status(&packet, side, ConnState::Reset),
+                ConnState::Reset,
                 "a reset connection was revived"
             );
         }
         let packet = tcp_packet(rst);
         assert_eq!(
-            next_status(&packet, side, NatFlowStatus::Closed),
-            NatFlowStatus::Reset
+            next_status(&packet, side, ConnState::Closed),
+            ConnState::Reset
         );
     }
 }
@@ -161,16 +161,16 @@ fn reset_and_closed_absorb() {
 fn ordinary_udp_opens_and_settles() {
     let packet = udp_packet(12345);
     assert_eq!(
-        next_status(&packet, FlowSide::Responder, NatFlowStatus::OneWay),
-        NatFlowStatus::TwoWay,
+        next_status(&packet, FlowSide::Responder, ConnState::OneWay),
+        ConnState::TwoWay,
         "a reply makes a one-way flow two-way"
     );
     assert_eq!(
-        next_status(&packet, FlowSide::Initiator, NatFlowStatus::TwoWay),
-        NatFlowStatus::Established,
+        next_status(&packet, FlowSide::Initiator, ConnState::TwoWay),
+        ConnState::Established,
         "and the next outbound packet establishes it"
     );
-    for status in [NatFlowStatus::Established, NatFlowStatus::Closed] {
+    for status in [ConnState::Established, ConnState::Closed] {
         assert_eq!(
             next_status(&packet, FlowSide::Initiator, status),
             status,
@@ -193,15 +193,15 @@ fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
     .unwrap_or_else(|_| unreachable!());
 
     assert_eq!(
-        next_status(&packet, FlowSide::Responder, NatFlowStatus::OneWay),
-        NatFlowStatus::TwoWay,
+        next_status(&packet, FlowSide::Responder, ConnState::OneWay),
+        ConnState::TwoWay,
         "a reply must answer the request"
     );
 
     for status in STATUSES {
         for side in [FlowSide::Initiator, FlowSide::Responder] {
             let next = next_status(&packet, side, status);
-            if side == FlowSide::Responder && status == NatFlowStatus::OneWay {
+            if side == FlowSide::Responder && status == ConnState::OneWay {
                 continue;
             }
             assert_eq!(
@@ -212,8 +212,8 @@ fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
     }
 }
 
-fn rank(status: NatFlowStatus) -> u8 {
-    use NatFlowStatus as S;
+fn rank(status: ConnState) -> u8 {
+    use ConnState as S;
     match status {
         S::OneWay => 0,
         S::TwoWay => 1,
@@ -244,7 +244,7 @@ fn the_tcp_lifecycle_never_runs_backwards() {
 
 #[test]
 fn each_direction_owns_its_half_of_the_close() {
-    use NatFlowStatus as S;
+    use ConnState as S;
     for status in STATUSES {
         for bits in 0..16u8 {
             let flags = Flags::from_bits(bits);
@@ -278,13 +278,13 @@ fn a_reply_from_a_resolver_closes_the_flow_at_once() {
     let source_port = 53u16;
     let packet = udp_packet(source_port);
     assert_eq!(
-        next_status(&packet, FlowSide::Responder, NatFlowStatus::OneWay),
-        NatFlowStatus::Closed,
+        next_status(&packet, FlowSide::Responder, ConnState::OneWay),
+        ConnState::Closed,
         "a reply from port {source_port} should close the flow"
     );
     assert_eq!(
-        next_status(&packet, FlowSide::Initiator, NatFlowStatus::TwoWay),
-        NatFlowStatus::Established,
+        next_status(&packet, FlowSide::Initiator, ConnState::TwoWay),
+        ConnState::Established,
         "an outbound packet must not be closed by its own source port"
     );
 }

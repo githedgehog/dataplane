@@ -5,21 +5,21 @@
 //! of flows.
 
 use super::FlowSide;
-use crate::common::NatFlowStatus;
+use crate::common::ConnState;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryTcp};
 use net::ip::NextHeader;
 use net::packet::Packet;
 use net::tcp::Tcp;
 
-fn next_status_udp(side: FlowSide, status: NatFlowStatus) -> NatFlowStatus {
+fn next_status_udp(side: FlowSide, status: ConnState) -> ConnState {
     match side {
         FlowSide::Initiator => match status {
-            NatFlowStatus::TwoWay => NatFlowStatus::Established,
+            ConnState::TwoWay => ConnState::Established,
             _ => status,
         },
         FlowSide::Responder => match status {
-            NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
+            ConnState::OneWay => ConnState::TwoWay,
             _ => status,
         },
     }
@@ -30,19 +30,19 @@ fn next_status_udp(side: FlowSide, status: NatFlowStatus) -> NatFlowStatus {
 // REQ-10 and RFC 4787 REQ-12 cover errors too, so this function cannot establish
 // compliance with either requirement.
 #[allow(clippy::match_single_binding)]
-fn next_status_icmp(side: FlowSide, status: NatFlowStatus) -> NatFlowStatus {
+fn next_status_icmp(side: FlowSide, status: ConnState) -> ConnState {
     let next = match side {
         FlowSide::Initiator => match status {
             _ => status,
         },
         FlowSide::Responder => match status {
-            NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
+            ConnState::OneWay => ConnState::TwoWay,
             _ => status,
         },
     };
     if cfg!(debug_assertions)
-        && matches!(next, NatFlowStatus::Closed | NatFlowStatus::Reset)
-        && !matches!(status, NatFlowStatus::Closed | NatFlowStatus::Reset)
+        && matches!(next, ConnState::Closed | ConnState::Reset)
+        && !matches!(status, ConnState::Closed | ConnState::Reset)
     {
         unreachable!("an ICMP query moved a live flow from {status:?} to {next:?} ({side})");
     }
@@ -51,26 +51,26 @@ fn next_status_icmp(side: FlowSide, status: NatFlowStatus) -> NatFlowStatus {
 
 // Note: RST only applies when no other arm matches. For example, RST+ACK from the initiator in
 // TwoWay moves the flow to Established, not to Reset.
-fn next_status_tcp(side: FlowSide, status: NatFlowStatus, tcp: &Tcp) -> NatFlowStatus {
+fn next_status_tcp(side: FlowSide, status: ConnState, tcp: &Tcp) -> ConnState {
     match side {
         FlowSide::Initiator => match status {
-            NatFlowStatus::TwoWay if !tcp.syn() && tcp.ack() => NatFlowStatus::Established,
-            NatFlowStatus::Established if tcp.fin() => NatFlowStatus::CClosing,
-            NatFlowStatus::SClosing if !tcp.fin() && tcp.ack() => NatFlowStatus::SHalfClose,
-            NatFlowStatus::SClosing if tcp.fin() && tcp.ack() => NatFlowStatus::LastAck,
-            NatFlowStatus::SHalfClose if tcp.fin() => NatFlowStatus::LastAck,
-            NatFlowStatus::LastAck if tcp.ack() => NatFlowStatus::Closed,
-            _other if tcp.rst() => NatFlowStatus::Reset,
+            ConnState::TwoWay if !tcp.syn() && tcp.ack() => ConnState::Established,
+            ConnState::Established if tcp.fin() => ConnState::CClosing,
+            ConnState::SClosing if !tcp.fin() && tcp.ack() => ConnState::SHalfClose,
+            ConnState::SClosing if tcp.fin() && tcp.ack() => ConnState::LastAck,
+            ConnState::SHalfClose if tcp.fin() => ConnState::LastAck,
+            ConnState::LastAck if tcp.ack() => ConnState::Closed,
+            _other if tcp.rst() => ConnState::Reset,
             other => other,
         },
         FlowSide::Responder => match status {
-            NatFlowStatus::OneWay if tcp.syn() && tcp.ack() => NatFlowStatus::TwoWay,
-            NatFlowStatus::Established if tcp.fin() => NatFlowStatus::SClosing,
-            NatFlowStatus::CClosing if !tcp.fin() && tcp.ack() => NatFlowStatus::CHalfClose,
-            NatFlowStatus::CClosing if tcp.fin() && tcp.ack() => NatFlowStatus::LastAck,
-            NatFlowStatus::CHalfClose if tcp.fin() => NatFlowStatus::LastAck,
-            NatFlowStatus::LastAck if tcp.ack() => NatFlowStatus::Closed,
-            _other if tcp.rst() => NatFlowStatus::Reset,
+            ConnState::OneWay if tcp.syn() && tcp.ack() => ConnState::TwoWay,
+            ConnState::Established if tcp.fin() => ConnState::SClosing,
+            ConnState::CClosing if !tcp.fin() && tcp.ack() => ConnState::CHalfClose,
+            ConnState::CClosing if tcp.fin() && tcp.ack() => ConnState::LastAck,
+            ConnState::CHalfClose if tcp.fin() => ConnState::LastAck,
+            ConnState::LastAck if tcp.ack() => ConnState::Closed,
+            _other if tcp.rst() => ConnState::Reset,
             other => other,
         },
     }
@@ -88,8 +88,8 @@ pub(crate) fn transport_proto<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Opt
 pub(crate) fn next_status<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
     side: FlowSide,
-    status: NatFlowStatus,
-) -> NatFlowStatus {
+    status: ConnState,
+) -> ConnState {
     // Leave the state unchanged without a resolved protocol.
     let Some(proto) = transport_proto(packet) else {
         return status;
@@ -118,14 +118,14 @@ pub(crate) fn next_status<Buf: PacketBufferMut>(
 fn close_dns_on_reply<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
     side: FlowSide,
-    status: NatFlowStatus,
-) -> NatFlowStatus {
+    status: ConnState,
+) -> ConnState {
     if side != FlowSide::Responder {
         return status;
     }
     match packet.headers().pat().eth().net().udp().done() {
         Some((_, _, udp)) => match udp.source().as_u16() {
-            53 => NatFlowStatus::Closed, // DNS
+            53 => ConnState::Closed, // DNS
             _ => status,
         },
         _ => status,

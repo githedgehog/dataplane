@@ -4,7 +4,7 @@
 //! Status and lifetime updates for tracked flows.
 
 use super::TrackedState;
-use crate::common::NatFlowStatus;
+use crate::common::ConnState;
 use concurrency::sync::Weak;
 use net::buffer::PacketBufferMut;
 use net::flows::FlowInfo;
@@ -22,8 +22,8 @@ pub(crate) fn advance_flow<Buf: PacketBufferMut, S: TrackedState>(
     packet: &Packet<Buf>,
     flow: &FlowInfo,
     state: &S,
-    timeout: impl FnOnce(NatFlowStatus) -> Option<Duration>,
-) -> NatFlowStatus {
+    timeout: impl FnOnce(ConnState) -> Option<Duration>,
+) -> ConnState {
     let current = state.status().load();
     let next = state.next_status(packet, current);
     if next != current {
