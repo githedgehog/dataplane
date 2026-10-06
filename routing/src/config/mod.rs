@@ -278,10 +278,10 @@ mod tests {
     use crate::atable::resolver::AtResolver;
 
 
-    fn mk_vni(vni: u32) -> Vni {
+    pub(super) fn mk_vni(vni: u32) -> Vni {
         vni.try_into().expect("Bad vni")
     }
-    fn mk_tableid(id: u32) -> RouteTableId {
+    pub(super) fn mk_tableid(id: u32) -> RouteTableId {
         id.try_into().expect("Bad table-id")
     }
 
@@ -348,7 +348,7 @@ mod tests {
         add_router_vtep_config(&mut config);
         config
     }
-    fn create_routing_database() -> RoutingDb {
+    pub(super) fn create_routing_database() -> RoutingDb {
         let (iftw, _iftr) = IfTableWriter::new();
         let (fibtw, _fibtr) = FibTableWriter::new();
         let (_resolver, atabler) = AtResolver::new(false);
@@ -496,17 +496,22 @@ mod tests {
         config
     }
 
-    /// Apply the config and check that the fib of each VRF has the vtep if and only if the VRF has a vni
-    fn apply_and_check_vteps(config: &RouterConfig, db: &mut RoutingDb) {
-        test_apply_config(config, db).expect("Should succeed");
-        assert_eq!(db.vtep, config.vtep, "Stored vtep does not match the config");
+    /// Check that the db stores the given vtep and that the fib of each VRF has it iff the VRF has a vni
+    pub(super) fn check_vteps(db: &RoutingDb, vtep: Option<&Vtep>) {
+        assert_eq!(db.vtep.as_ref(), vtep, "Stored vtep does not match the config");
         for vrf in db.vrftable.values() {
             if vrf.vni.is_some() {
-                assert_eq!(vrf.get_vtep(), config.vtep, "Wrong vtep in vrf {} (vni: {:?})", vrf.vrfid, vrf.vni);
+                assert_eq!(vrf.get_vtep().as_ref(), vtep, "Wrong vtep in vrf {} (vni: {:?})", vrf.vrfid, vrf.vni);
             } else {
                 assert!(vrf.get_vtep().is_none(), "Found vtep in vrf {} without vni", vrf.vrfid);
             }
         }
+    }
+
+    /// Apply the config and check that the fib of each VRF has the vtep if and only if the VRF has a vni
+    fn apply_and_check_vteps(config: &RouterConfig, db: &mut RoutingDb) {
+        test_apply_config(config, db).expect("Should succeed");
+        check_vteps(db, config.vtep.as_ref());
     }
 
     #[cfg_attr(not(emulated), traced_test)]
@@ -554,5 +559,156 @@ mod tests {
 
         debug!("━━━━━━━━ Test: vnis added, vtep unchanged");
         apply_and_check_vteps(&build_vtep_test_config(10, vni1, vni2, Some(&vtep1)), &mut db);
+    }
+}
+
+#[cfg(test)]
+mod vtep_config_property {
+    // Property test: apply random sequences of vrf / vni / vtep configs.
+    // Every valid config must be applied and verified; every invalid one must be
+    // rejected leaving the vtep state of the last applied config untouched.
+
+    use super::tests::{check_vteps, create_routing_database, mk_tableid, mk_vni};
+    use crate::RouterError;
+    use crate::config::RouterConfig;
+    use crate::evpn::Vtep;
+    use crate::rib::vrf::RouterVrfConfig;
+    use bolero::{Driver, ValueGenerator};
+    use net::eth::mac::SourceMac;
+    use net::ip::UnicastIpAddr;
+    use std::collections::BTreeSet;
+    use std::ops::Bound::Included;
+    use std::str::FromStr;
+
+    const NUM_VRFS: u8 = 3;
+    const NUM_VNIS: u8 = 3;
+    const NUM_VTEPS: u8 = 2;
+    const MAX_STEPS: u8 = 10;
+
+    fn vtep_pool() -> Vec<Vtep> {
+        [
+            ("7.0.0.100", "00:ca:fe:ba:be:44"),
+            ("7.0.0.200", "00:de:ad:be:ef:55"),
+        ]
+        .iter()
+        .map(|(ip, mac)| {
+            Vtep::new(
+                UnicastIpAddr::from_str(ip).unwrap(),
+                SourceMac::try_from(*mac).unwrap(),
+            )
+        })
+        .collect()
+    }
+
+    /// A configuration choice for a vrf
+    #[derive(Debug, Clone, Copy)]
+    enum VrfChoice {
+        Absent,  // not configured
+        NoVni,   // a vrf without Vni
+        Vni(u8), // a vrf with some Vni
+    }
+
+    /// A certain configuration, valid or not
+    #[derive(Debug, Clone)]
+    struct VtepStep {
+        vrfs: Vec<VrfChoice>,
+        vtep: Option<u8>,
+    }
+
+    impl VtepStep {
+        /// A config is valid iff the configured vnis are unique and vrf has a vtep iff it has a vni
+        fn is_valid(&self) -> bool {
+            let vnis: Vec<u8> = self
+                .vrfs
+                .iter()
+                .filter_map(|c| match c {
+                    VrfChoice::Vni(n) => Some(*n),
+                    _ => None,
+                })
+                .collect();
+            let unique: BTreeSet<u8> = vnis.iter().copied().collect();
+            unique.len() == vnis.len() && (vnis.is_empty() || self.vtep.is_some())
+        }
+        fn build_config(&self, genid: i64, vteps: &[Vtep]) -> RouterConfig {
+            let mut config = RouterConfig::new(genid);
+            for (n, choice) in (0u32..).zip(&self.vrfs) {
+                let vni = match choice {
+                    VrfChoice::Absent => continue,
+                    VrfChoice::NoVni => None,
+                    VrfChoice::Vni(v) => Some(mk_vni(3000 + u32::from(*v))),
+                };
+                config.add_vrf(
+                    RouterVrfConfig::new(100 + n, &format!("vrf-{n}"))
+                        .set_tableid(mk_tableid(1000 + n))
+                        .set_vni(vni),
+                );
+            }
+            if let Some(v) = self.vtep {
+                config.set_vtep(vteps[usize::from(v)].clone());
+            }
+            config
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    /// A sequence of config changes on a vrf wrt to a vtep/vni
+    struct VtepStepSequences;
+
+    impl ValueGenerator for VtepStepSequences {
+        type Output = Vec<VtepStep>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VtepStep>> {
+            let len = driver.gen_u8(Included(&1), Included(&MAX_STEPS))?;
+            let mut out = Vec::with_capacity(usize::from(len));
+            for _ in 0..len {
+                let mut vrfs = Vec::with_capacity(usize::from(NUM_VRFS));
+                for _ in 0..NUM_VRFS {
+                    // choose a config for a vrf
+                    let choice = match driver.gen_u8(Included(&0), Included(&(NUM_VNIS + 1)))? {
+                        0 => VrfChoice::Absent,
+                        1 => VrfChoice::NoVni,
+                        n => VrfChoice::Vni(n - 2),
+                    };
+                    vrfs.push(choice);
+                }
+                // choose a vtep
+                let vtep = match driver.gen_u8(Included(&0), Included(&NUM_VTEPS))? {
+                    0 => None,
+                    n => Some(n - 1),
+                };
+                // store the vrf + vtep config step
+                out.push(VtepStep { vrfs, vtep });
+            }
+            Some(out)
+        }
+    }
+
+    #[test]
+    fn test_config_vtep_fuzz() {
+        let vteps = vtep_pool();
+        assert_eq!(vteps.len(), usize::from(NUM_VTEPS));
+        bolero::check!()
+            .with_generator(VtepStepSequences)
+            .cloned()
+            .for_each(|steps: Vec<VtepStep>| {
+                let mut db = create_routing_database();
+                let mut applied_vtep: Option<Vtep> = None;
+                for (genid, step) in (1i64..).zip(&steps) {
+                    let config = step.build_config(genid, &vteps);
+                    let result = config.apply(&mut db);
+                    if step.is_valid() {
+                        if let Err(e) = result {
+                            panic!("Valid config rejected at step {genid}: {e}\n{step:?}\n{steps:?}");
+                        }
+                        applied_vtep = config.vtep.clone();
+                    } else {
+                        assert!(
+                            matches!(result, Err(RouterError::InvalidConfig(_))),
+                            "Invalid config not rejected at step {genid}: {result:?}\n{step:?}\n{steps:?}"
+                        );
+                    }
+                    check_vteps(&db, applied_vtep.as_ref());
+                }
+            });
     }
 }
