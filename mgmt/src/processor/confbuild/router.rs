@@ -141,18 +141,9 @@ fn generate_router_interface_config_per_vrf(
     Ok(())
 }
 
-// For each interface listed in the vrf configuration, we need to know its ifindex in order to build
-// an interface config. Atm the interface should just exist. When the interface manager will manage those interfaces,
-// they shall exist too, but we may not need to use netdev to look them up here and instead get a list as it happens
-// with kernel vrf interfaces. We look these up once and pass a hashmap keyed by name so that we don't need to
-// look them up for each vrf.
-//
-// What makes the configured interfaces exist depends on the driver, and under DPDK it is not the
-// kernel. The physical devices are in the datapath's own network namespace; what carries these
-// names *here* is the tap the control-plane bridge created for each configured port, in the control
-// namespace this thread is in. That is why those taps are named exactly the configured name rather
-// than with a suffix: this lookup, the routing tables and the ACLs all name interfaces the same
-// way, and a tap under any other name is invisible to all three.
+// Resolve configured interface names once for VRF configuration.
+// With an isolated datapath, these names identify bridge taps in the control
+// namespace, whose indices are also used by routing, ingress lookup, and ACLs.
 fn get_kernel_interfaces() -> HashMap<String, NetDevInterface> {
     debug!("Retrieving kernel interfaces");
     let interfaces = get_interfaces();

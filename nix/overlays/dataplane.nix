@@ -17,32 +17,9 @@ let
     // (
       with builtins; (mapAttrs (var: val: (toString (orig.${var} or "")) + " " + (toString val)) new)
     );
-  # Where the compiler thinks these sources live.
-  #
-  # `-ffile-prefix-map` rewrites the sandbox build directory out of `__FILE__`
-  # and out of debug info, so coverage reports name files somebody can open
-  # rather than a `/build` that exists only inside a nix sandbox. It does not
-  # work for .tar packages or for code generated during the build, but it is
-  # the best available without a much more complicated build.
-  #
-  # Which prefix it maps *to* is the interesting part, because rewriting to a
-  # store path also **creates a reference to that path**. Nix's scanner reads
-  # store hashes out of file contents, so one `__FILE__` in one error message
-  # carries the whole source tree into the closure -- and, through static
-  # linking, into every Rust binary that ends up containing that string.
-  # Measured: hwloc's source (9.9 MB) reached `dataplane-init` this way, and
-  # rdma-core's (9.4 MB) reached the DPDK closure and so the dataplane image.
-  # Neither is any use to a running gateway.
-  #
-  # So the store path goes in only when something is going to read it, and
-  # otherwise the map targets an inert relative name -- which still beats
-  # `/build` for legibility and refers to nothing.
-  #
-  # `finalAttrs.src` rather than `orig.src`, because packages below replace
-  # `src` *after* this wrapper is applied -- rdma-core swaps in our pinned
-  # fork -- and reading the pre-override value mapped build paths onto a
-  # source tree that was never compiled. Coverage aimed at the wrong code is
-  # worse than coverage aimed at nothing, since nothing about it looks wrong.
+  # Map build paths to source-store paths only for coverage. Other profiles use
+  # relative names so __FILE__ strings do not retain source trees in runtime closures.
+  # Read finalAttrs.src because package overrides may replace the original source.
   dataplane-dep =
     pkg:
     (pkg.override { stdenv = final.stdenv'; }).overrideAttrs (
@@ -127,22 +104,9 @@ in
       find $out/lib -name '*.la' -exec rm {} \;
       mv $out/lib/*.a $static/lib/
 
-      # The glob above is flat, but libnl also installs plugin modules for its
-      # `nl-*` command line tools under `lib/libnl/cli/{cls,qdisc}/`, each with
-      # a static archive beside the shared object. Those archives stayed in
-      # `$out`, and under `-flto=thin` an archive member is LLVM **bitcode**,
-      # which records the compiler it came from. So a release build put the
-      # clang wrapper -- and behind it clang, llvm, binutils and two `dev`
-      # outputs -- into the dataplane image's runtime closure, while a debug
-      # build, whose archives are ordinary objects, looked completely clean.
-      # That is the entire reason this class of leak went unnoticed: nobody
-      # measures the profile that has it.
-      #
-      # Moved rather than deleted, and structure preserved, so `static`
-      # consumers see the same tree they always did. Nothing links these --
-      # the dataplane wants `libnl-3` and `libnl-route-3` for DPDK's mlx5 PMD,
-      # not the CLI plugins -- but `static` is the output whose job is to hold
-      # archives, and that is where they belong.
+      # Move nested CLI plugin archives into the static output too. ThinLTO bitcode
+      # can retain compiler paths and pull the toolchain into the runtime closure.
+      # Preserve the directory structure for static consumers.
       if [ -d "$out/lib/libnl" ]; then
         while IFS= read -r -d "" archive; do
           relative="''${archive#$out/lib/}"

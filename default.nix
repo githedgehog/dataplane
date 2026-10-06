@@ -1058,23 +1058,9 @@ let
                       ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
                     done
 
-                    # DPDK's `dev` output is headers, pkg-config files and static
-                    # archives -- build inputs with nothing to offer a running
-                    # binary. It reaches the runtime closure anyway, through a
-                    # single `.rodata` string: DPDK's inline headers carry
-                    # assertions, and the C preprocessor bakes `__FILE__` into
-                    # them, so a stripped binary still spells out
-                    # `.../dpdk-*-dev/include/generic/rte_pause.h`. One string,
-                    # 2.6 MB of closure.
-                    #
-                    # Blanked rather than deleted: `remove-references-to`
-                    # overwrites the hash in place and leaves the length alone, so
-                    # the ELF stays valid and an assertion that fires still names
-                    # its header -- just not at a resolvable path. The debug output
-                    # is untouched and keeps the real one.
-                    #
-                    # Done after the debuglink: `--add-gnu-debuglink` records a CRC
-                    # of the *debug* file, which editing `$out` does not disturb.
+                    # Inline-header assertions embed DPDK's dev path through __FILE__.
+                    # Erase that store reference from runtime binaries without changing their size.
+                    # Keep the debug files and their debuglink CRCs intact.
                     for f in $out/bin/*; do
                       ${pkgs.pkgsBuildHost.removeReferencesTo}/bin/remove-references-to \
                         -t ${pkgs.pkgsHostHost.fancy.dpdk.dev} "$f"

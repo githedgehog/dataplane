@@ -263,27 +263,9 @@ fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, Strin
     Ok(netns)
 }
 
-/// Move the kernel driver's interfaces into a network namespace of their own.
-///
-/// The counterpart of [`move_devices_to_netns`], and much the simpler of the two. A netdev the
-/// kernel drives moves with one `RTM_NEWLINK` carrying `IFLA_NET_NS_FD`; there is no driver to
-/// reinitialize, no devlink instance to find, and no RDMA subsystem to have an opinion about it.
-///
-/// # What moving them buys
-///
-/// Not merely symmetry with DPDK. An interface the kernel still owns is an interface the kernel
-/// will route through, answer ARP on and terminate connections on, all without the dataplane
-/// knowing -- which is what the netfilter rules that kept VXLAN traffic away from the host stack
-/// were defending against. With the device somewhere the host stack is not, there is nothing to
-/// defend.
-///
-/// # What it costs
-///
-/// The interface **loses its addresses and routes**, as any interface does when it changes
-/// namespace, and it comes back administratively down. Nothing here restores them, and nothing
-/// should: the dataplane drives these interfaces with `AF_PACKET` and does not want the kernel
-/// configuring them, and the addresses the control plane cares about belong on the taps that take
-/// their names.
+/// Move kernel-driver netdevs into the datapath namespace with `IFLA_NET_NS_FD`.
+/// Moving clears their addresses/routes and leaves them administratively down.
+/// The driver uses `AF_PACKET`; control-plane addresses belong on the matching taps.
 async fn move_interfaces_to_netns(
     interfaces: &[String],
     netns: &NetworkNamespace,
@@ -365,31 +347,10 @@ fn isolate_interfaces(interfaces: &[String]) -> Result<NetworkNamespace, String>
     Ok(netns)
 }
 
-/// Decide where the control plane runs, and put this process there.
-///
-/// Returns the namespace this process was in beforehand, which is the dataplane's way back out.
-/// When the control plane stays put that is simply the current namespace, and the dataplane, seeing
-/// it is already there, needs no second runtime.
-///
-/// # The rule
-///
-/// **A private control namespace is only correct when FRR is ours to place.** FRR has to see the
-/// taps -- it is configured by looking each interface up in the kernel, and it peers through them
-/// -- so it must share this namespace. When `--supervise-frr` says we start it, that is
-/// automatic, because it inherits ours. When FRR is a container of its own, it is somewhere we do
-/// not control, and moving out of that namespace would leave it looking at an empty one: config
-/// applies fail with "Unable to find kernel interface", and no session ever comes up.
-///
-/// `--control-netns` overrides both: it names a namespace an operator arranged for the two to
-/// share, and taking it at face value is the point of having the flag.
-///
-/// # Why staying put is still worth having a datapath namespace for
-///
-/// The two namespaces answer different questions. The datapath's takes the interfaces away from
-/// the host stack, which is what stops the kernel routing and answering ARP behind the dataplane's
-/// back. The control plane's separates FRR from everything else in the host, which only matters
-/// once FRR is ours. The first is useful on its own; the taps take the names the real interfaces
-/// just vacated.
+/// Choose the control namespace and return a descriptor for the original namespace.
+/// Create a private namespace only when init also starts FRR. External FRR must
+/// share the caller's namespace unless `--control-netns` explicitly selects another.
+/// When the control plane stays put, the original namespace is the current one.
 fn place_control_plane(
     path: Option<&String>,
     supervise_frr: bool,
@@ -405,44 +366,12 @@ fn place_control_plane(
     enter_control_netns(path)
 }
 
-/// Put this process into the network namespace the control plane will run in.
+/// Enter the selected control namespace and bring up loopback.
+/// Do this after moving the NICs, while their devlink instances are still reachable,
+/// and before spawning children so they inherit the control namespace.
 ///
-/// # Why the control plane needs one at all
-///
-/// The dataplane's control path to the wire is a **tap** per configured interface, named exactly
-/// the configured name -- that is the name FRR's configuration, the routing tables and the ACLs all
-/// use. The physical device wants that name too. In the host's namespace those two collide: a tap
-/// sitting on `dp0` makes udev's rename of the returning physical device fail, which strands the
-/// real device under a name nothing is looking for.
-///
-/// A private namespace removes the collision entirely, because the physical device is never in it.
-/// It also gives FRR somewhere to live where the only interfaces it can see are the ones the
-/// dataplane means it to see.
-///
-/// # Why this happens after the devlink reload and not before
-///
-/// The devices are moved with a devlink reload, and a PCI device's devlink instance belongs to the
-/// namespace the device is in -- which, at that point, is the host's. Entering the control
-/// namespace first would put this process somewhere the devlink instance is not.
-///
-/// # Why `lo` has to come up
-///
-/// FRR binds its vty to `127.0.0.1` and the dataplane's `frr-agent` connects to it there. A fresh
-/// namespace's loopback is down, so without this the two cannot talk at all -- and the failure
-/// looks like an agent that will not connect rather than an interface that is down.
-///
-/// # Why nothing has to hold the namespace afterwards
-///
-/// This process stays in the namespace for as long as it supervises anything, and a namespace with
-/// a process in it does not go away, so there is no descriptor to keep and nothing to clean up.
-/// Every process started from here inherits it, because namespaces are inherited at `fork` -- which
-/// is also why this has to happen before anything is started rather than after. A namespace opened
-/// by path (the `--control-netns` case) was somebody else's to begin with and stays theirs.
-///
-/// # Returns
-///
-/// The namespace this process was in **before** the move, so the dataplane can be handed a way
-/// back. This one does have to be held: nothing else in this process refers to it any more.
+/// The process holds the control namespace alive. Return a descriptor for the
+/// original namespace so the dataplane can create its host-facing runtime there.
 fn enter_control_netns(path: Option<&String>) -> Result<NetworkNamespace, String> {
     // Opened *before* the move, because afterwards there is no way to name it. `/proc/self/ns/net`
     // always means "the namespace this thread is in now", so asking after `setns` returns the
@@ -462,23 +391,9 @@ fn enter_control_netns(path: Option<&String>) -> Result<NetworkNamespace, String
             .map_err(|e| format!("could not create a control network namespace: {e}"))?
     };
 
-    // `enter_with_sysfs`, not `enter`. The second half is the one that is easy to miss and it is
-    // not optional here: **sysfs is tagged with the network namespace it was mounted in**, and
-    // `setns` does not retag an existing mount, so a thread which merely joined the namespace still
-    // reads the *old* one's `/sys`.
-    //
-    // The control plane depends on that in a way that is invisible until it fails. `netdev`
-    // reads an interface's type from `/sys/class/net/<name>/type` and reports `Unknown` when it
-    // cannot -- and `mgmt::processor::confbuild::router` rejects an interface whose type is not
-    // Ethernet or Loopback. So with an inherited `/sys` every configured interface is `Unknown`,
-    // every config apply fails with "Unsupported type of interface", the routing table never
-    // learns the interface, and the datapath then drops every frame that arrives on it as
-    // `InterfaceUnknown`. Measured: a tap reads `type = 1` under a fresh sysfs and does not exist
-    // at all under an inherited one.
-    //
-    // The mount namespace is unshared here, on the main thread, so every process started from here
-    // inherits it and every one of the dataplane's threads gets the right view. The datapath thread
-    // unshares again for its own namespace, which is unaffected by this.
+    // Mount a fresh sysfs after entering the control namespace. `setns` alone leaves
+    // /sys showing the old namespace, so netdev cannot identify the taps correctly.
+    // Children inherit this private mount namespace; datapath threads make their own.
     netns
         .enter_with_sysfs()
         .map_err(|e| format!("could not enter the control network namespace: {e}"))?;
@@ -570,18 +485,8 @@ enum HandoffError {
     Supervisor(#[from] SupervisorError),
 }
 
-/// Describe how to start the dataplane.
-///
-/// The configuration travels as a sealed memfd rather than as arguments: it is passed once,
-/// immutably, alongside a hash of itself, so the dataplane can verify it received what was sent and
-/// then read it in place.
-///
-/// The namespace travels the same way, as a descriptor at an agreed number. It is **duplicated**
-/// rather than handed over, because this process stays alive and a namespace is kept alive by
-/// anything holding a descriptor to it. Keeping ours means the namespace -- and so the NICs inside
-/// it, with the ifindices and MAC addresses they already have -- survives a dataplane that dies.
-/// Recreating it would mean another devlink reload, another link flap, and several seconds during
-/// which the hardware is somewhere else.
+/// Pass sealed configuration, its integrity hash, and duplicated namespace descriptors.
+/// Init retains its namespace descriptors until the gateway shuts down.
 fn dataplane_process(
     config: LaunchConfiguration,
     netns: &NetworkNamespace,
@@ -634,18 +539,9 @@ fn dataplane_process(
     Ok(Process::new("dataplane", command))
 }
 
-/// Run the gateway until something stops it.
-///
-/// # Order
-///
-/// The dataplane first, and when FRR is ours to run, not merely started first but *waited for*.
-/// Zebra's `hh_dplane` module connects to the dataplane's control-plane socket as it loads; a zebra
-/// that starts first finds nothing there, and the gateway comes up with a routing daemon that
-/// cannot tell the datapath anything. Waiting for the socket to exist is what removes the race, and
-/// it is cheap: the socket is bound while the router starts, long before the packet path does.
-///
-/// `frr-agent` last, because it is the one thing here that depends on FRR rather than the other way
-/// round: it applies configuration through `vtysh`.
+/// Prepare and supervise the gateway.
+/// When init owns FRR, start dataplane, watchfrr, and agent in that order, waiting
+/// for each socket before starting its consumer.
 async fn run_gateway(
     config: LaunchConfiguration,
     netns: NetworkNamespace,

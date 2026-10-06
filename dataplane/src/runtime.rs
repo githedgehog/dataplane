@@ -156,34 +156,7 @@ fn parse_bmp_params(config: &LaunchConfiguration) -> (Option<BmpServerParams>, O
     }
 }
 
-/// Build a runtime whose threads sit in the namespace `dataplane-init` started in.
-///
-/// # Why a runtime and not a thread
-///
-/// Not all of the dataplane's work belongs in the control namespace. Watching the Kubernetes API
-/// server, serving the metrics endpoint and pushing profiles to Pyroscope all reach *outward*, and
-/// a private control namespace is a place with no route anywhere. FRR, the taps and the netlink
-/// traffic must be inside it. The two sets have opposite requirements, so they get separate
-/// runtimes and each one's threads sit where its sockets need to be created.
-///
-/// A namespace is a property of a *thread*, not of a future, and tokio moves futures between
-/// worker threads as it pleases. So it cannot be "this task runs in the host namespace" -- it has
-/// to be "every thread that could ever poll this task is in the host namespace", which is what
-/// `on_thread_start` buys. It fires for blocking-pool threads too, not just workers, so
-/// `spawn_blocking` and the file I/O behind it are covered as well.
-///
-/// # Why it verifies rather than trusts
-///
-/// `on_thread_start` cannot fail a runtime: it returns nothing, and a thread whose `setns` failed
-/// carries on and serves requests from the wrong namespace. That failure is silent and its
-/// symptoms are not -- connections that time out, a metrics endpoint nothing can scrape -- and
-/// nothing in either symptom points back at a namespace. So a task is run on the new runtime and
-/// asked where it actually is, and a mismatch is reported here where it can still be understood.
-/// Start the Pyroscope agent, or report why it could not start.
-///
-/// Must be called from a thread in the namespace the profiles have to be pushed *from*: the agent
-/// creates its own threads, and a thread inherits the network namespace of whichever thread made
-/// it.
+/// Start Pyroscope from a host-namespace thread so its own threads inherit that namespace.
 fn start_pyroscope(
     url: &str,
 ) -> Option<pyroscope::PyroscopeAgent<pyroscope::pyroscope::PyroscopeAgentRunning>> {
@@ -220,6 +193,8 @@ fn start_pyroscope(
     }
 }
 
+/// Place host-facing async and blocking work in init's original network namespace.
+/// Each runtime thread enters that namespace; a spawned task checks placement at startup.
 fn host_runtime(host_netns: &NetworkNamespace) -> Result<tokio::runtime::Runtime, String> {
     let expected = std::fs::read_link(format!("/proc/self/fd/{}", host_netns.as_raw().as_raw_fd()))
         .map_err(|e| format!("could not identify the host network namespace: {e}"))?
@@ -769,23 +744,9 @@ pub fn main() {
     let ingredients = setup.pipeline;
     let pipeline_data = ingredients.data();
 
-    // The control-plane bridge, built here and not on the datapath thread.
-    //
-    // `TUNSETIFF` creates a tap in the network namespace of the calling thread, so this has to
-    // happen while every thread in the process is still in the control namespace -- before the
-    // datapath thread below jumps into the one that owns the NICs. Afterwards the taps are only
-    // descriptors, which work from anywhere.
-    //
-    // # When there is one
-    //
-    // Exactly when the datapath runs in a namespace other than this one, which is the only
-    // circumstance in which the taps have names free to take. The taps are named after the
-    // configured interfaces, so they can only exist somewhere the physical devices are not.
-    //
-    // The namespace alone decides, not the driver. Either driver whose interfaces were moved
-    // needs the bridge, because the control plane's namespace then contains no real interface;
-    // a datapath sharing this namespace must not have one, because the taps would be created on
-    // top of the very devices they are named after.
+    // Both drivers need a bridge when their interfaces occupy a separate namespace.
+    // Create taps from the control namespace, before starting the datapath thread;
+    // otherwise their configured names would collide with physical interfaces.
     let want_bridge = match datapath_netns.is_current() {
         Ok(shared) => !shared,
         Err(e) => {

@@ -1,50 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Starting FRR, and the agent that carries configuration into it.
+//! Starts foreground watchfrr and the agent that applies FRR configuration.
 //!
-//! FRR used to be a container of its own, started by `/libexec/frr/docker-start`: a shell script
-//! which swept stale nexthops, launched `watchfrr` with whatever `/etc/frr/daemons` enabled,
-//! launched `frr-agent` beside it, and then `wait -n`'d for either to die. This module is what
-//! replaces it, and it is smaller than the script for two reasons that are worth stating.
+//! Use watchfrr's startup scripts to preserve daemon options, configuration files,
+//! and the initial `vtysh` configuration pass. FRR manages individual daemon restarts;
+//! init treats watchfrr or agent exit as fatal to the gateway.
 //!
-//! # What the nexthop sweep was for, and why it is gone
-//!
-//! The script began by deleting every nexthop `zebra` had installed:
-//!
-//! ```sh
-//! ip -j -d nexthop show | jq --raw-output '.[] | select(.protocol=="zebra").id' |
-//!   while read -r id; do ip nexthop del id "${id}"; done
-//! ```
-//!
-//! That is cleanup after a *previous* container. A restarted zebra meets the nexthop ids its
-//! predecessor installed, will not reuse them, and cannot delete them either, because it has no
-//! record of having created them. In a network namespace that outlives the process, somebody has to
-//! sweep, and there is nowhere to do it from but the entrypoint.
-//!
-//! The namespace is now created per start and held by `dataplane-init` alone, so it dies when this
-//! process does and the next start begins in an empty one. There is nothing to sweep. Note that
-//! this is a property of the *namespace*, not of the supervision: the sweep never covered a daemon
-//! restarted underneath a surviving namespace, which is a case
-//! [`crate::supervisor`] removes separately by refusing to restart anything in place.
-//!
-//! # Why `watchfrr`, and not the daemons directly
-//!
-//! Supervising `zebra`, `bgpd` and the rest individually is tempting -- it would put every process
-//! under one policy, and shared fate is the policy this supervisor exists to enforce. It was tried,
-//! on hardware, and FRR did not come up faithfully: zebra never applied the `ip address` the
-//! dataplane had generated for the tap, although `frr-agent` reported the reload applied. Enough of
-//! FRR's startup lives in `watchfrr.sh` and `frrcommon.sh` -- per-daemon options, config file
-//! creation, the `vtysh -b` pass that applies the running configuration once the daemons are up --
-//! that launching the binaries by hand produces a subtly different FRR.
-//!
-//! So `watchfrr` stays, and the difference from the old arrangement is the layer above it: when
-//! `watchfrr` exits, everything else comes down with it rather than the container lingering.
-//!
-//! `watchfrr` starts its daemons with `-d`, so they daemonize out of its process group and are
-//! reparented onto this process. They are reaped here as orphans, and the broadcast at the end of
-//! [`crate::supervisor::Supervisor::shut_down`] is what stops them -- signalling `watchfrr`'s group
-//! alone would not reach them.
+//! A fresh control namespace removes state left by a previous gateway, including
+//! zebra nexthops. Reused namespaces and in-place FRR daemon restarts do not have
+//! that guarantee. As PID 1, init also reaps and shuts down inherited orphans.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -246,24 +211,14 @@ fn readiness(state_dir: &Path) -> PathBuf {
 /// `/etc/passwd`, for FRR to be able to open anything.
 const FRR_USER: &str = "frr";
 
-/// Make FRR's state directory writable by FRR.
-///
-/// Every path in the image is laid down read-only and owned by root -- `dataplane.tar` is tarred
-/// with `--mode='ugo-sw'` -- and FRR starts as root only long enough to drop to [`FRR_USER`].
-/// After that it has to create `<state>/<daemon>.vty`, which is both how `watchfrr` decides a
-/// daemon is up and how [`readiness`] decides FRR is, and the plugin's socket in `<state>/hh`.
-/// Left to the image, all of that fails and FRR looks like it hangs on startup.
-///
-/// This is init's to do rather than the image's because it is the one thing here that is true at
-/// runtime and not at build time: the image cannot carry an ownership it has no `chown` to apply,
-/// and a container runtime will not apply one either.
-///
-/// Call before spawning any gateway children.
+/// Make FRR's state directories writable by the `frr` user and clear stale state.
+/// The image and mounted volumes may provide different ownership and permissions.
+/// Call before spawning any gateway children, including the dataplane that binds in `hh/`.
 ///
 /// # Errors
 ///
-/// Returns [`FrrError::NoFrrUser`] if the image has no `frr` user, and [`FrrError::StateDir`] if
-/// the directory cannot be created, given to it, or cleared of stale state.
+/// Returns [`FrrError::NoFrrUser`] if the user is missing, or [`FrrError::StateDir`]
+/// if a directory cannot be prepared or stale state cannot be removed.
 pub fn prepare_state_dir(state_dir: &Path) -> Result<(), FrrError> {
     let user = nix::unistd::User::from_name(FRR_USER)
         .ok()

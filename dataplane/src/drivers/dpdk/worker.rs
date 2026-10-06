@@ -283,22 +283,9 @@ impl<'p> Worker<'p> {
         }
     }
 
-    /// Move whatever the kernel has queued for this port onto the wire.
-    ///
-    /// Returns whether anything was injected, which counts as activity for the idle backoff.
-    ///
-    /// # Why this bypasses the pipeline
-    ///
-    /// FRR has already made the forwarding decision. These frames come off a tap that stands in for
-    /// this exact port, with the headers the kernel built; running them through the pipeline would
-    /// route them a second time, by tables the kernel's own decision was derived from.
-    ///
-    /// # Why this transmits separately rather than joining the forwarding batch
-    ///
-    /// A transmit batch holds one burst. Sharing it would let a burst of forwarded traffic crowd
-    /// out the control plane -- exactly backwards, since losing a BGP keepalive costs the session
-    /// and losing a forwarded packet costs a retransmit. The extra `rte_eth_tx_burst` only happens
-    /// when there was something to inject, which at control-plane rates is rare.
+    /// Send kernel frames directly through this port, bypassing the forwarding pipeline.
+    /// Use a separate burst so forwarded traffic cannot fill the control-plane batch.
+    /// Returns whether any frames were injected, for idle backoff accounting.
     fn inject(&mut self, slot: usize, counters: &mut RxCounters) -> bool {
         let queue = &mut self.ports[slot].queues;
         let Some(inject) = queue.inject.as_mut() else {

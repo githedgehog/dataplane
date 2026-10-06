@@ -479,18 +479,8 @@ impl Supervisor {
             signal_group(running.pid, Signal::SIGKILL);
         }
 
-        // Whatever is left is something we did not start: a daemon that forked out of its process
-        // group, or an orphan inherited from a process that died before we could.
-        //
-        // Only as PID 1, and the guard is not a formality. `kill(-1, ...)` signals *every process
-        // this process is permitted to signal*. As PID 1 of a container's namespace that set is
-        // the container, which is exactly what should not outlive us. Anywhere else -- a unit
-        // test, a developer running this by hand -- it is every process owned by the same user,
-        // which is their login session. This was not hypothetical: without the guard, running the
-        // tests below killed the developer's window manager and the terminal they were run from.
-        //
-        // A supervisor that is not PID 1 also has no orphans to sweep, because it does not
-        // inherit any, so there is nothing lost by declining.
+        // As PID 1, also stop daemonized children that escaped their parent's group.
+        // Outside PID 1, kill(-1) could signal unrelated processes owned by this user.
         if unistd::getpid().as_raw() == 1 {
             let _ = kill(Pid::from_raw(-1), Signal::SIGTERM);
         } else {

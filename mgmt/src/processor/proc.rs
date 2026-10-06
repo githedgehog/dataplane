@@ -445,42 +445,13 @@ impl VpcManager<RequiredInformationBase> {
         Ok(())
     }
 
-    /// Put every address the configuration gives an interface onto that interface.
+    /// Install configured interface addresses through netlink.
+    /// FRR did not install them on bridge taps in integration testing; missing local
+    /// addresses caused directly connected BGP packets to be forwarded and expire.
     ///
-    /// # Why the dataplane does this and not FRR
-    ///
-    /// FRR is given the same addresses -- they are rendered into its configuration as `ip address`
-    /// lines -- and zebra installs them faithfully on a physical interface. It does **not** install
-    /// them on a *tap* of the same name. Measured in vlab, twice, including with an FRR started
-    /// after the taps already existed, so it is not a question of ordering:
-    ///
-    /// ```text
-    /// physical enp2s1 in the host namespace:  172.30.128.9/31   <- zebra applied it
-    /// tap enp2s1 standing in for it:          fe80::.../64 only <- zebra never does
-    /// ```
-    ///
-    /// Once the dataplane's interfaces move into a namespace of their own, every interface the
-    /// control plane sees is a tap, so that is every interface -- and without an address there is
-    /// no connected route, nothing is recognised as locally destined, and packets addressed to us
-    /// are *forwarded* instead. Since eBGP between directly connected peers uses a TTL of 1, they
-    /// then expire, and the session never comes up. Nothing in that chain of symptoms mentions an
-    /// address.
-    ///
-    /// So the component that creates the taps also dresses them, which it already does for their
-    /// MAC and MTU. Applying the same addresses to a *physical* interface is harmless: they are the
-    /// ones zebra would install anyway, and an address that is already there is reported as
-    /// `EEXIST` and skipped.
-    ///
-    /// # What this deliberately does not do
-    ///
-    /// It adds, and never removes. An address the configuration has stopped mentioning stays until
-    /// the interface goes away -- which for a tap is the next restart. Removing would mean deciding
-    /// that any address not in the configuration is ours to delete, and on an interface the kernel
-    /// still owns that is not true. Doing it properly means teaching the reconciler about
-    /// addresses, which is where this belongs in the end.
-    ///
-    /// Failures are logged, not raised: a config apply that has otherwise succeeded should not be
-    /// reported as failed because one interface is missing, and the next apply retries.
+    /// This only adds addresses and ignores `EEXIST`. Removed configuration addresses
+    /// persist until interface removal; full address reconciliation remains future work.
+    /// Failures are logged and retried on the next configuration apply.
     async fn ensure_interface_addresses(&self, internal: &InternalConfig) {
         // Collected before the first await. The multi-index iterators are not `Send`, and holding
         // one across an await makes the whole config processor's future non-`Send`, which is a

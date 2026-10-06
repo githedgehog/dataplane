@@ -1,64 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! The control-plane bridge: what carries a control packet between a port and the kernel.
+//! Connects isolated datapath ports to the kernel through per-interface taps.
 //!
-//! # Why this has to exist at all
+//! Both drivers use taps named after the configured interfaces so FRR, routing, and
+//! ACLs resolve the same names. Interface indices above the driver are tap indices
+//! in the control namespace, not physical-port indices in the datapath namespace.
 //!
-//! The dataplane puts the interfaces it drives into a network namespace of their own, and the
-//! control plane -- FRR, the routing tables, the interface manager -- into another. Nothing in the
-//! control plane's namespace is a real NIC, so the kernel's end of every port is a **tap**, and
-//! *every* control frame -- BGP, BFD, ARP, LLDP -- has to be carried across by the dataplane.
-//! Without that the control plane is not merely degraded; it never forms an adjacency.
+//! Bounded channels carry owned frames in each direction: workers punt selected
+//! pipeline verdicts to the kernel and inject kernel frames directly onto the wire.
+//! Frames are copied because DPDK mbufs cannot cross threads. This currently allocates
+//! per frame; reusable buffers are a possible later optimization.
 //!
-//! # Why both drivers, and not just DPDK
-//!
-//! Under DPDK the separation is forced: on `vfio-pci` there is no netdev at all, and on a
-//! bifurcated driver the netdev was moved away. The kernel driver could in principle leave its
-//! interfaces where the control plane can see them and let `AF_PACKET` hand the dataplane a copy,
-//! which is what it used to do. Three things argue against it:
-//!
-//! - **The host stack answers behind the dataplane's back.** An interface the kernel still owns is
-//!   an interface the kernel will route, ARP for and terminate connections on, with no dataplane
-//!   involvement. Keeping VXLAN traffic away from it took netfilter rules; moving the device out
-//!   of that namespace removes the thing those rules were defending against.
-//! - **One punt policy instead of two.** With both drivers punting through the same channels, the
-//!   decision about what the kernel should see lives in [`disposition`] alone, and a new
-//!   [`DoneReason`] forces that decision once rather than in two places that can disagree.
-//! - **The control plane stops caring which driver is running.** It configures taps either way.
-//!
-//! So the shape below is symmetric, and the driver-specific part is only how a frame gets in and
-//! out of the datapath's own buffers.
-//!
-//! # Shape
-//!
-//! One tap per configured interface, named **exactly** the configured name. That name is not
-//! cosmetic: FRR's configuration is built by looking each configured interface up in the kernel
-//! (`mgmt::processor::confbuild::router`), and the routing tables and ACLs name interfaces the same
-//! way, so a tap under any other name is invisible to all of them.
-//!
-//! Each tap gets a bounded pair of channels of owned byte buffers:
-//!
-//! - **punt**: datapath to kernel. A worker copies the frame out of its own buffer and hands it
-//!   over.
-//! - **inject**: kernel to datapath. One worker per port drains the queue and transmits, bypassing
-//!   the pipeline entirely -- FRR has already made the forwarding decision.
-//!
-//! The buffers are copies. Under DPDK an `Mbuf` is `!Send` and branded with the EAL's lifetime, so
-//! it cannot cross to the management runtime under any circumstances; the kernel driver has no such
-//! constraint but shares the channel type rather than growing a second one. Control-plane volume
-//! does not justify anything cleverer than a `Vec<u8>` per frame. This is PoC-grade and
-//! deliberately so: it allocates per frame, on both paths. Fixing that means a pool of reusable
-//! buffers on each side, which is a change worth making when there is a measurement saying it
-//! matters.
-//!
-//! # Where the taps are created, and why it matters
-//!
-//! `TUNSETIFF` creates the device in the network namespace of the **calling thread**, and no later
-//! `setns` moves it. The bridge is therefore built on the management runtime, in the control
-//! namespace the whole process was launched into, *before* any datapath thread is spawned and jumps
-//! into the namespace that owns the NICs. The descriptors work from anywhere afterwards; only the
-//! moment of creation is namespace-sensitive.
+//! Create taps on a thread in the control namespace. A tap stays in the namespace
+//! where it was created, even if the thread later calls `setns`.
 
 use std::collections::HashMap;
 
@@ -99,20 +54,9 @@ pub(crate) struct PortIdentity {
 
 /// The datapath's end of one port's bridge.
 pub(crate) struct PortCpQueues {
-    /// The **tap's** interface index, which is the identity the rest of the dataplane uses.
-    ///
-    /// Not the port's own index, and the difference is the whole point. Interface indices are
-    /// per-namespace: the port has one in the datapath namespace and the tap standing in for it has
-    /// an unrelated one in the control namespace. Everything above the driver -- the configuration,
-    /// the interface table the ingress stage looks packets up in, the `oif` the router picks -- was
-    /// built by looking interfaces up **by name in the control namespace**, so all of it speaks in
-    /// tap indices. A driver that stamped its own index instead would have every packet rejected as
-    /// `InterfaceUnknown`, and every transmit fail to find its interface.
-    ///
-    /// The two can coincide, which is worse than if they never did: two freshly created namespaces
-    /// both number upwards from `lo`, so a single-port dataplane in fresh namespaces gets `2` on
-    /// both sides and works by accident. A control plane in a namespace that has other interfaces
-    /// in it -- the host's, say -- immediately does not.
+    /// The tap's index in the control namespace.
+    /// Configuration, ingress lookup, and routing use this index. The physical port's
+    /// index belongs to a different namespace and may only match by coincidence.
     pub(crate) index: InterfaceIndex,
     /// Frames the datapath is handing to the kernel.
     pub(crate) punt: mpsc::Sender<Frame>,
@@ -179,34 +123,14 @@ pub(crate) enum Disposition {
     Drop,
 }
 
-/// Decide what becomes of a packet, given the pipeline's verdict and who the frame was addressed to.
+/// Choose whether to forward, punt, or drop a completed packet.
 ///
-/// The policy is: **anything addressed to us that the datapath did not want, the kernel gets.**
-/// That is what the kernel half of a bifurcated NIC does anyway, and it is what makes the control
-/// plane work rather than merely exist.
+/// `Local` always punts. `Unhandled`, `NotIp`, and `RouteFailure` punt only when
+/// addressed to us, including broadcast and multicast. This carries ARP requests
+/// and replies through the kernel. Explicit drops never punt.
 ///
-/// Two clauses, and the second is the one that is easy to leave out:
-///
-/// 1. [`DoneReason::Local`] is the pipeline explicitly saying "this is for the host". It is
-///    produced today by the IP forwarding stage and, until this bridge existed, consumed by
-///    nothing.
-/// 2. A frame **addressed to us** which the pipeline had no verdict for. This is what carries ARP.
-///    An ARP request is broadcast, and the ingress stage marks a broadcast frame
-///    [`DoneReason::Unhandled`]; an ARP reply is unicast to the port's own MAC, gets as far as
-///    looking for an IP header, and comes back [`DoneReason::NotIp`]. Neither is a drop, and
-///    without both BGP never gets an adjacency, because there is no path by which the peer's MAC
-///    could ever be learned.
-///
-/// Explicit drops are never punted. A frame an ACL rejected, a route dropped, or one addressed to
-/// somebody else is a frame the datapath decided about; handing it to the kernel would relitigate
-/// that decision in a stack with different rules.
-///
-/// # This is PoC-shaped
-///
-/// It is a fixed policy over verdicts rather than something a configuration can express, and it
-/// punts on the destination MAC rather than on what protocol the frame carries -- so an unroutable
-/// unicast IP packet addressed to the port lands in the kernel, which will drop it a second time.
-/// Both are worth revisiting; neither is wrong enough to block a control plane coming up.
+/// This fixed policy uses destination MAC rather than protocol; unroutable IP
+/// traffic addressed to the port also reaches the kernel.
 pub(crate) fn disposition(done: Option<DoneReason>, addressed_to_us: bool) -> Disposition {
     // Exhaustive on purpose. A new `DoneReason` is a new decision about whether the kernel should
     // see that packet, and this is where it has to be made; a wildcard would answer "no" silently.
@@ -525,16 +449,8 @@ async fn dress_taps(
     debug!("tap identity applier stopped");
 }
 
-/// Ask the kernel what index it gave a tap.
-///
-/// By name, because that is the only handle we have: `TUNSETIFF` reports the name it settled on but
-/// not an index, and the device has only just appeared.
-///
-/// `if_nametoindex` rather than netlink, and not merely because it is shorter. The bridge is built
-/// with the management runtime *entered* on this thread, and `Handle::enter` is enough to make
-/// `Handle::block_on` panic with "Cannot start a runtime from within a runtime" -- so an `async`
-/// lookup here has no way to be awaited. A synchronous syscall has no such problem, and it resolves
-/// in the calling thread's namespace, which is exactly the one the tap was just created in.
+/// Look up the tap synchronously in the calling thread's network namespace.
+/// This avoids needing to await a netlink request during bridge construction.
 fn tap_index(name: &InterfaceName) -> Result<InterfaceIndex, String> {
     let raw = nix::net::if_::if_nametoindex(name.to_string().as_str())
         .map_err(|e| format!("if_nametoindex: {e}"))?;
@@ -888,20 +804,9 @@ mod test {
         ]))
     }
 
-    /// A frame punted to the kernel must reach it, and a frame the kernel sends must come back.
-    ///
-    /// This is the whole bridge end to end, with the kernel standing in for FRR:
-    ///
-    /// 1. The tap is created in this namespace under the configured interface name.
-    /// 2. Reporting the port's identity gives the tap that MAC and brings it up, which is what
-    ///    makes the kernel willing to answer for it at all.
-    /// 3. An ARP request is **punted**, exactly as a worker would punt one it received.
-    /// 4. The kernel's reply arrives on the **inject** queue, which is what a worker would put on
-    ///    the wire.
-    ///
-    /// Step 4 succeeding proves step 3 happened: nothing else would make the kernel emit that
-    /// reply. And the MAC in that reply is the port's, not the random one the kernel gave the tap,
-    /// which is the difference between a peer that resolves us and one that never does.
+    /// Verify both bridge directions using the kernel's ARP responder.
+    /// Create a tap in a private namespace, report its MAC/MTU, assign an address,
+    /// and punt an ARP request. Its reply must arrive on the injection queue.
     #[n_vm::test]
     #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
     fn a_punted_frame_reaches_the_kernel_and_its_answer_comes_back() {

@@ -306,37 +306,14 @@ impl TapDevice {
     }
 }
 
-/// The tap devices this process created, and which it keeps alive by holding them open.
+/// Holds nonpersistent tap descriptors for the control-plane bridge.
 ///
-/// A tap device exists for exactly as long as somebody holds a descriptor for it, unless it has
-/// been marked persistent.  The dataplane deliberately declines to persist its taps, so that they
-/// vanish when the dataplane does, however it dies.
+/// Taps disappear when their last descriptor closes, including after a crash. This
+/// prevents stale taps from taking names needed by physical devices returning to
+/// the host namespace. Pump tasks share ownership through [`Arc`]; the taps remain until those tasks
+/// release their descriptors too.
 ///
-/// The alternative is worse than it looks.  A persisted tap outlives the process which made it,
-/// and the dataplane's taps stand in for physical devices which the packet path moved into a
-/// network namespace of its own.  When that namespace goes away those devices come back to the
-/// host under their kernel names, and udev renames them into their configured names.  A leftover
-/// tap sitting on one of those names would make that rename fail, which strands the real device
-/// under a name nothing is looking for.  Nothing recovers from that but an operator.
-///
-/// Declining to persist means somebody has to hold the descriptors, and this is that somebody.
-/// It belongs to the control-plane bridge, so the taps live as long as the bridge which carries
-/// their traffic and no longer.
-///
-/// # Why the devices come back inside an [`Arc`]
-///
-/// The bridge runs one task per tap, and that task needs the device for the whole run.  A borrow
-/// out of the map cannot outlive the lock, so the registry hands out shared ownership instead.
-/// That does not weaken the lifetime property: the tasks holding those clones belong to the
-/// bridge which owns this registry, and they are joined before it is dropped.
-///
-/// # Namespaces
-///
-/// A tap is created in the network namespace of the thread which opens it, and stays there.  The
-/// dataplane opens its taps from the management runtime, which runs in the *control* namespace --
-/// the one the whole process was launched into -- rather than the datapath namespace the packet
-/// path moved the physical devices into.  That is the point: a tap is the kernel's end of a device
-/// the dataplane proxies, and the kernel is the side which stayed behind.
+/// Create taps on a thread in the control namespace; later `setns` calls do not move them.
 #[derive(Debug)]
 pub struct TapRegistry {
     held: Mutex<HashMap<InterfaceName, Arc<TapDevice>>>,
