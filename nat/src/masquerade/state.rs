@@ -5,9 +5,9 @@ use super::apalloc::Allocation;
 use super::nf::MasqueradeError;
 use super::packet::NatTranslate;
 use crate::common::NatAction;
-use crate::flow_tracking::TrackedState;
+use crate::flow_tracking::NatState;
 use crate::{NatEndpoint, NatPort, NatTranslationData};
-use net::flows::{FlowInfoItem, FlowInfoLocked};
+use net::flows::FlowInfoLocked;
 use net::ip::UnicastIpAddr;
 use std::fmt::Display;
 use std::time::Duration;
@@ -90,13 +90,17 @@ impl MasqueradeState {
     }
 }
 
-impl TrackedState for MasqueradeState {
-    fn slot(locked: &FlowInfoLocked) -> Option<&dyn FlowInfoItem> {
-        locked.nat_state.as_deref()
+impl NatState for MasqueradeState {
+    fn try_get(locked: &FlowInfoLocked) -> Option<&Self> {
+        locked.nat_state.as_deref()?.downcast_ref::<Self>()
     }
 
-    fn slot_mut(locked: &mut FlowInfoLocked) -> &mut Option<Box<dyn FlowInfoItem>> {
-        &mut locked.nat_state
+    fn try_get_mut(locked: &mut FlowInfoLocked) -> Option<&mut Self> {
+        locked.nat_state.as_deref_mut()?.downcast_mut::<Self>()
+    }
+
+    fn set(self, locked: &mut FlowInfoLocked) {
+        locked.nat_state = Some(Box::new(self));
     }
 }
 

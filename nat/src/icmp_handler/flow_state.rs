@@ -4,7 +4,7 @@
 //! Translation of ICMP errors for tracked flows.
 
 use crate::NatTranslationData;
-use crate::flow_tracking::TrackedState;
+use crate::flow_tracking::NatState;
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
 use net::buffer::PacketBufferMut;
 use net::flows::ConnState;
@@ -14,7 +14,7 @@ use std::fmt::Display;
 use tracing::debug;
 
 /// State of a tracked flow that can translate the ICMP errors for this flow.
-pub(crate) trait IcmpErrorTranslation: TrackedState {
+pub(crate) trait IcmpErrorTranslation: NatState {
     /// Name of the mode, for logs.
     const MODE: &'static str;
 
@@ -48,7 +48,7 @@ pub(crate) fn translate_icmp_error<Buf: PacketBufferMut, S: IcmpErrorTranslation
     };
 
     let flow_info_locked = flow_info.locked.read();
-    let Some(state) = S::of(&flow_info_locked) else {
+    let Some(state) = S::try_get(&flow_info_locked) else {
         debug!("({mode}): ICMP error hit a flow carrying no {mode} state");
         return Err(DoneReason::InternalFailure);
     };

@@ -5,7 +5,7 @@
 
 use crate::NatPort;
 use crate::flow_tracking::{
-    HalfFlow, InstallError, NewFlow, TrackedState, advance_flow, install_pair, packet_flow_keys,
+    HalfFlow, InstallError, NatState, NewFlow, advance_flow, install_pair, packet_flow_keys,
     transport_proto,
 };
 use crate::masquerade::NatAllocatorWriter;
@@ -249,7 +249,7 @@ impl Masquerade {
         }
         debug!("Hit ACTIVE flow: {}", flow_info.logfmt());
         let locked = flow_info.locked.read();
-        let Some(state) = MasqueradeState::of(&locked) else {
+        let Some(state) = MasqueradeState::try_get(&locked) else {
             debug!("Unable to access masquerade state");
             return None;
         };
@@ -272,7 +272,7 @@ impl Masquerade {
         let flow_key = FlowKey::new(src_vpcd, addrs, proto_key_info);
         let flow_info = self.flow_table.lookup(&flow_key)?;
         let value = flow_info.locked.read();
-        let state = MasqueradeState::of(&value)?;
+        let state = MasqueradeState::try_get(&value)?;
         Some((state.as_translate(), state.idle_timeout()))
     }
 
@@ -857,7 +857,7 @@ mod race {
             .lookup(&reverse_key)
             .unwrap_or_else(|| unreachable!("the winner's reverse half is in the table"));
         let locked = reverse.locked.read();
-        let answers = MasqueradeState::of(&locked)
+        let answers = MasqueradeState::try_get(&locked)
             .unwrap_or_else(|| unreachable!("the reverse half carries masquerade state"))
             .as_translate();
         drop(locked);
