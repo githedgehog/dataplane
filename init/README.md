@@ -9,6 +9,18 @@ driver. Init does not restore driver bindings on exit. Dropping elevated privile
 The dataplane refuses to start without the descriptors init passes it, so init is the container's entrypoint and
 takes the dataplane's command line unchanged.
 
+## Hugepages
+
+The DPDK driver requires hugepages. Init checks the process's hugetlb cgroup allowance, including current usage
+and visible ancestor limits, before preparing the pools. It tries 1 GiB pages, then 2 MiB pages; startup fails
+if neither can supply the full 4 GiB requirement per NIC NUMA node. Ordinary 4 KiB pages are not a fallback.
+
+Init leaves a sufficient pool alone. Otherwise it requests the shortfall and checks the free count again;
+unreadable controls, a refused write, or insufficient pages reject that page size. Cgroup limits are never
+changed. `DATAPLANE_HUGEPAGE_RESERVE=off` disables pool growth but still requires existing pages and quota.
+
+These checks do not allocate pages. EAL performs the allocation and startup fails if it cannot obtain them.
+
 ## Network namespaces
 
 Init moves the selected interfaces into a datapath namespace held only by descriptors. When the gateway stops, the
