@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use args::HugepagePlan;
 use hardware::pci::address::PciAddress;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use cgroup::HugetlbCgroup;
 
@@ -26,37 +26,67 @@ const TWO_MIB_KB: u64 = 2 * 1024;
 /// Required memory per distinct NIC NUMA node, in KiB.
 const WANT_KB_PER_NODE: u64 = 4 * 1024 * 1024;
 
-/// Which NUMA node a PCI device is attached to.
-///
-/// `None` when the kernel reports `-1`, which it does on a single-node machine and on any system
-/// whose firmware did not describe the affinity. `None` is not an error: it means node-agnostic,
-/// and the caller should size the pool without naming a node.
-#[must_use]
-pub fn numa_node_of(address: PciAddress) -> Option<u32> {
+fn numa_node_of(address: PciAddress) -> Result<i32, String> {
     let path = format!("/sys/bus/pci/devices/{address}/numa_node");
-    let raw = fs::read_to_string(&path)
-        .inspect_err(|e| debug!("could not read {path}: {e}; treating {address} as node-agnostic"))
-        .ok()?;
-    match raw.trim().parse::<i32>() {
-        Ok(node) if node >= 0 => u32::try_from(node).ok(),
-        Ok(_) => {
-            debug!("{address} reports no NUMA affinity");
-            None
-        }
-        Err(e) => {
-            warn!("{path} did not contain a number ({e}); treating {address} as node-agnostic");
-            None
-        }
-    }
+    let raw = fs::read_to_string(&path).map_err(|e| format!("could not read {path}: {e}"))?;
+    raw.trim()
+        .parse::<i32>()
+        .map_err(|e| format!("invalid NUMA affinity in {path}: {e}"))
 }
 
-/// The pool for one node, or the global pool for an unknown affinity.
-fn pool_dir(node: Option<u32>, page_size_kb: u64) -> PathBuf {
-    let base = match node {
-        Some(n) => PathBuf::from(format!("/sys/devices/system/node/node{n}/hugepages")),
-        None => PathBuf::from("/sys/kernel/mm/hugepages"),
-    };
-    base.join(format!("hugepages-{page_size_kb}kB"))
+fn topology_nodes(scan: &hardware::Node) -> Result<Vec<u32>, String> {
+    scan.iter()
+        .filter(|node| node.type_() == "NUMANode")
+        .map(|node| {
+            node.os_index()
+                .and_then(|index| u32::try_from(index).ok())
+                .ok_or_else(|| "hardware scan found a NUMA node without a valid OS index".into())
+        })
+        .collect()
+}
+
+/// Resolve every NIC before changing any pool. Unknown affinity is safe only with one node.
+fn resolve_nodes(
+    devices: &[PciAddress],
+    topology: &[u32],
+    mut affinity: impl FnMut(PciAddress) -> Result<i32, String>,
+) -> Result<Vec<u32>, String> {
+    if topology.is_empty() {
+        return Err("hardware scan found no NUMA nodes".into());
+    }
+    let mut nodes = Vec::new();
+    for &address in devices {
+        let reported = affinity(address)?;
+        let node = match (reported, topology) {
+            (-1, &[node]) => {
+                debug!("{address} reports no NUMA affinity; using the only NUMA node {node}");
+                node
+            }
+            (-1, _) => {
+                return Err(format!(
+                    "PCI device {address} reports unknown NUMA affinity on a multi-node system"
+                ));
+            }
+            (reported, _) => u32::try_from(reported).map_err(|_| {
+                format!("PCI device {address} reports invalid NUMA node {reported}")
+            })?,
+        };
+        if !topology.contains(&node) {
+            return Err(format!(
+                "PCI device {address} reports NUMA node {node}, which is absent from the hardware scan"
+            ));
+        }
+        nodes.push(node);
+    }
+    nodes.sort_unstable();
+    nodes.dedup();
+    Ok(nodes)
+}
+
+fn pool_dir(node: u32, page_size_kb: u64) -> PathBuf {
+    PathBuf::from(format!(
+        "/sys/devices/system/node/node{node}/hugepages/hugepages-{page_size_kb}kB"
+    ))
 }
 
 fn read_count(path: &Path) -> Result<u64, String> {
@@ -68,11 +98,8 @@ fn read_count(path: &Path) -> Result<u64, String> {
 }
 
 /// A compaction hint is optional; the final pool counters determine success.
-fn compact(node: Option<u32>) {
-    let path = match node {
-        Some(n) => PathBuf::from(format!("/sys/devices/system/node/node{n}/compact")),
-        None => PathBuf::from("/proc/sys/vm/compact_memory"),
-    };
+fn compact(node: u32) {
+    let path = PathBuf::from(format!("/sys/devices/system/node/node{node}/compact"));
     if let Err(e) = fs::write(&path, "1") {
         debug!("could not request compaction via {}: {e}", path.display());
     }
@@ -115,9 +142,9 @@ fn ensure_pages(dir: &Path, wanted: u64, grow: bool, compact: impl FnOnce()) -> 
 
 /// Check quota before changing any pool. All nodes must satisfy the selected size.
 fn plan_for(
-    nodes: &[Option<u32>],
+    nodes: &[u32],
     mut allowance: impl FnMut(u64) -> Result<Option<u64>, String>,
-    mut reserve: impl FnMut(Option<u32>, u64, u64) -> Result<(), String>,
+    mut reserve: impl FnMut(u32, u64, u64) -> Result<(), String>,
 ) -> Result<HugepagePlan, String> {
     if nodes.is_empty() {
         return Err("no devices were supplied for hugepage reservation".into());
@@ -136,7 +163,7 @@ fn plan_for(
             let mut per_node = BTreeMap::new();
             for &node in nodes {
                 reserve(node, size, WANT_KB_PER_NODE / size)?;
-                per_node.insert(node.unwrap_or(0), WANT_KB_PER_NODE / 1024);
+                per_node.insert(node, WANT_KB_PER_NODE / 1024);
             }
             Ok(HugepagePlan {
                 page_size_kb: size,
@@ -162,13 +189,11 @@ fn plan_for(
 ///
 /// # Errors
 ///
-/// Returns an error if cgroup controls cannot be read or neither hugepage size
-/// satisfies the requirement. The caller must stop startup on failure.
-pub fn reserve_for(devices: &[PciAddress]) -> Result<HugepagePlan, String> {
+/// Returns an error if NIC NUMA placement is unresolved, cgroup controls cannot be read,
+/// or neither hugepage size satisfies the requirement. The caller must stop startup on failure.
+pub fn reserve_for(devices: &[PciAddress], scan: &hardware::Node) -> Result<HugepagePlan, String> {
+    let nodes = resolve_nodes(devices, &topology_nodes(scan)?, numa_node_of)?;
     let cgroup = HugetlbCgroup::discover()?;
-    let mut nodes: Vec<Option<u32>> = devices.iter().copied().map(numa_node_of).collect();
-    nodes.sort_unstable();
-    nodes.dedup();
     let grow = !std::env::var(DISABLE_ENV).is_ok_and(|setting| setting.eq_ignore_ascii_case("off"));
     let plan = plan_for(
         &nodes,
@@ -211,11 +236,82 @@ mod tests {
         }
     }
 
+    fn device() -> PciAddress {
+        PciAddress::try_from("0000:02:01.0").unwrap()
+    }
+
+    #[test]
+    fn unknown_affinity_is_fatal_with_multiple_nodes() {
+        let devices = [device(), PciAddress::try_from("0000:02:02.0").unwrap()];
+        let error = resolve_nodes(&devices, &[0, 2], |address| {
+            Ok(if address == devices[0] { 2 } else { -1 })
+        })
+        .unwrap_err();
+        assert!(error.contains("0000:02:02.0"));
+        assert!(error.contains("unknown NUMA affinity on a multi-node system"));
+    }
+
+    #[test]
+    fn unknown_affinity_uses_the_only_nodes_os_index() {
+        let nodes = resolve_nodes(&[device()], &[2], |_| Ok(-1)).unwrap();
+        let mut reservations = Vec::new();
+        let plan = plan_for(
+            &nodes,
+            |_| Ok(None),
+            |node, size, _| {
+                reservations.push(pool_dir(node, size));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.per_node_mb, vec![(2, 4096)]);
+        assert_eq!(plan.numa_mem_arg().as_deref(), Some("0,0,4096"));
+        assert_eq!(
+            reservations,
+            vec![PathBuf::from(
+                "/sys/devices/system/node/node2/hugepages/hugepages-1048576kB"
+            )]
+        );
+    }
+
+    #[test]
+    fn affinity_must_name_a_node_in_the_scan() {
+        for topology in [&[0][..], &[0, 2][..]] {
+            for reported in [-2, 1] {
+                let error = resolve_nodes(&[device()], topology, |_| Ok(reported)).unwrap_err();
+                assert!(error.contains("0000:02:01.0"));
+                assert!(error.contains("invalid NUMA node") || error.contains("absent"));
+            }
+        }
+    }
+
+    #[test]
+    fn missing_topology_and_unreadable_affinity_are_errors() {
+        let error =
+            resolve_nodes(&[device()], &[], |_| panic!("topology is required")).unwrap_err();
+        assert!(error.contains("no NUMA nodes"));
+        for topology in [&[0][..], &[0, 2][..]] {
+            let error = resolve_nodes(&[device()], topology, |_| Err("permission denied".into()))
+                .unwrap_err();
+            assert_eq!(error, "permission denied");
+        }
+    }
+
+    #[test]
+    fn devices_on_the_same_node_share_one_pool_requirement() {
+        let nodes = resolve_nodes(&[device(); 3], &[0, 2], |_| Ok(2)).unwrap();
+        assert_eq!(nodes, vec![2]);
+        let mut reported = [2, 0, 2].into_iter();
+        let nodes =
+            resolve_nodes(&[device(); 3], &[0, 2], |_| Ok(reported.next().unwrap())).unwrap();
+        assert_eq!(nodes, vec![0, 2]);
+    }
+
     #[test]
     fn zero_large_page_quota_uses_small_hugepages_without_touching_large_pool() {
         let mut reservations = Vec::new();
         let plan = plan_for(
-            &[Some(0)],
+            &[0],
             |size| {
                 Ok(Some(if size == ONE_GIB_KB {
                     0
@@ -231,7 +327,7 @@ mod tests {
         .unwrap();
         assert_eq!(plan.page_size_kb, TWO_MIB_KB);
         assert_eq!(plan.per_node_mb, vec![(0, 4096)]);
-        assert_eq!(reservations, vec![(Some(0), TWO_MIB_KB, 2048)]);
+        assert_eq!(reservations, vec![(0, TWO_MIB_KB, 2048)]);
     }
 
     #[test]
@@ -242,7 +338,7 @@ mod tests {
             Err("permission denied".to_string()),
         ] {
             let error = plan_for(
-                &[Some(0)],
+                &[0],
                 |_| allowance.clone(),
                 |_, _, _| panic!("must not change a pool without quota"),
             )
@@ -255,7 +351,7 @@ mod tests {
     fn pool_failures_try_only_the_two_supported_hugepage_sizes() {
         let mut sizes = Vec::new();
         let error = plan_for(
-            &[Some(0)],
+            &[0],
             |_| Ok(None),
             |_, size, _| {
                 sizes.push(size);
