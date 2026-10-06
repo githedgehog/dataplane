@@ -8,47 +8,36 @@
 use crate::common::{NatAction, NatFlowStatus};
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryTcp};
-
 use net::ip::NextHeader;
 use net::packet::Packet;
 use net::tcp::Tcp;
+use std::fmt::Display;
 
-impl NatFlowStatus {
-    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
-    //# a) For specific destination ports in the well-known port range
-    //# (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
-    //# are specific to the IANA-registered application running over
-    //# that specific destination port.
-    fn udp_status_patch_dnat<Buf: PacketBufferMut>(self, packet: &Packet<Buf>) -> NatFlowStatus {
-        match packet.headers().pat().eth().net().udp().done() {
-            Some((_, _, udp)) => match udp.source().as_u16() {
-                53 | 853 | 8853 => NatFlowStatus::Closed, // DNS|DNS-over-quic|nextdns
-                _ => self,
-            },
-            _ => self,
-        }
-    }
+/// Which end of a connection sent a packet: the one that opened it, or the other one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FlowSide {
+    /// The packet comes from the end that opened the connection.
+    Initiator,
+    /// The packet comes from the end that answers.
+    Responder,
+}
 
-    // Refine the status of a UDP flow based on the application
-    fn udp_status_patch<Buf: PacketBufferMut>(
-        self,
-        packet: &Packet<Buf>,
-        action: NatAction,
-    ) -> NatFlowStatus {
-        match action {
-            NatAction::SrcNat => self,
-            NatAction::DstNat => self.udp_status_patch_dnat(packet),
+impl Display for FlowSide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FlowSide::Initiator => write!(f, "initiator"),
+            FlowSide::Responder => write!(f, "responder"),
         }
     }
 }
 
-fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
-    match action {
-        NatAction::SrcNat => match status {
+fn next_status_udp(side: FlowSide, status: NatFlowStatus) -> NatFlowStatus {
+    match side {
+        FlowSide::Initiator => match status {
             NatFlowStatus::TwoWay => NatFlowStatus::Established,
             _ => status,
         },
-        NatAction::DstNat => match status {
+        FlowSide::Responder => match status {
             NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
             _ => status,
         },
@@ -60,12 +49,12 @@ fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStat
 // REQ-10 and RFC 4787 REQ-12 cover errors too, so this function cannot establish
 // compliance with either requirement.
 #[allow(clippy::match_single_binding)]
-fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
-    let next = match action {
-        NatAction::SrcNat => match status {
+fn next_status_icmp(side: FlowSide, status: NatFlowStatus) -> NatFlowStatus {
+    let next = match side {
+        FlowSide::Initiator => match status {
             _ => status,
         },
-        NatAction::DstNat => match status {
+        FlowSide::Responder => match status {
             NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
             _ => status,
         },
@@ -74,14 +63,16 @@ fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowSta
         && matches!(next, NatFlowStatus::Closed | NatFlowStatus::Reset)
         && !matches!(status, NatFlowStatus::Closed | NatFlowStatus::Reset)
     {
-        unreachable!("an ICMP query moved a live flow from {status:?} to {next:?} ({action})");
+        unreachable!("an ICMP query moved a live flow from {status:?} to {next:?} ({side})");
     }
     next
 }
 
-fn next_flow_status_tcp(action: NatAction, status: NatFlowStatus, tcp: &Tcp) -> NatFlowStatus {
-    match action {
-        NatAction::SrcNat => match status {
+// Note: RST only applies when no other arm matches. For example, RST+ACK from the initiator in
+// TwoWay moves the flow to Established, not to Reset.
+fn next_status_tcp(side: FlowSide, status: NatFlowStatus, tcp: &Tcp) -> NatFlowStatus {
+    match side {
+        FlowSide::Initiator => match status {
             NatFlowStatus::TwoWay if !tcp.syn() && tcp.ack() => NatFlowStatus::Established,
             NatFlowStatus::Established if tcp.fin() => NatFlowStatus::CClosing,
             NatFlowStatus::SClosing if !tcp.fin() && tcp.ack() => NatFlowStatus::SHalfClose,
@@ -91,7 +82,7 @@ fn next_flow_status_tcp(action: NatAction, status: NatFlowStatus, tcp: &Tcp) -> 
             _other if tcp.rst() => NatFlowStatus::Reset,
             other => other,
         },
-        NatAction::DstNat => match status {
+        FlowSide::Responder => match status {
             NatFlowStatus::OneWay if tcp.syn() && tcp.ack() => NatFlowStatus::TwoWay,
             NatFlowStatus::Established if tcp.fin() => NatFlowStatus::SClosing,
             NatFlowStatus::CClosing if !tcp.fin() && tcp.ack() => NatFlowStatus::CHalfClose,
@@ -110,12 +101,12 @@ pub(crate) fn transport_proto<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Opt
     packet.upper_layer_proto().carried()
 }
 
-// Compute the next `NatFlowStatus` of a flow, given the current, the received packet and
-// the direction
-pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
+/// Compute the next status of a flow, given its current status, the packet that hit it, and the
+/// side of the connection that sent this packet.
+pub(crate) fn next_status<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
-    action: NatAction,     // action of the flow hit
-    status: NatFlowStatus, // current status
+    side: FlowSide,
+    status: NatFlowStatus,
 ) -> NatFlowStatus {
     // Leave the state unchanged without a resolved protocol.
     let Some(proto) = transport_proto(packet) else {
@@ -123,11 +114,11 @@ pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
     };
 
     match proto {
-        NextHeader::UDP => next_flow_status_udp(action, status).udp_status_patch(packet, action),
-        NextHeader::ICMP | NextHeader::ICMP6 => next_flow_status_icmp(action, status),
+        NextHeader::UDP => next_status_udp(side, status),
+        NextHeader::ICMP | NextHeader::ICMP6 => next_status_icmp(side, status),
         NextHeader::TCP => {
             if let Some(tcp) = packet.try_tcp() {
-                next_flow_status_tcp(action, status, tcp)
+                next_status_tcp(side, status, tcp)
             } else {
                 status
             }
@@ -135,6 +126,53 @@ pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
         _ => status,
     }
 }
+
+/// Close a UDP flow on the first reply from a DNS server.
+///
+/// This is optional: callers apply it on top of [`next_status`] if they want it.
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+//# a) For specific destination ports in the well-known port range
+//# (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
+//# are specific to the IANA-registered application running over
+//# that specific destination port.
+pub(crate) fn close_dns_on_reply<Buf: PacketBufferMut>(
+    packet: &Packet<Buf>,
+    side: FlowSide,
+    status: NatFlowStatus,
+) -> NatFlowStatus {
+    if side != FlowSide::Responder || transport_proto(packet) != Some(NextHeader::UDP) {
+        return status;
+    }
+    match packet.headers().pat().eth().net().udp().done() {
+        Some((_, _, udp)) => match udp.source().as_u16() {
+            53 | 853 | 8853 => NatFlowStatus::Closed, // DNS|DNS-over-quic|nextdns
+            _ => status,
+        },
+        _ => status,
+    }
+}
+
+/// The side of the connection that sent a packet, given the action of the flow it hit: the
+/// initiator's packets are source-NATed.
+pub(crate) fn flow_side(action: NatAction) -> FlowSide {
+    match action {
+        NatAction::SrcNat => FlowSide::Initiator,
+        NatAction::DstNat => FlowSide::Responder,
+    }
+}
+
+// Compute the next `NatFlowStatus` of a flow, given the current, the received packet and
+// the direction
+pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
+    packet: &Packet<Buf>,
+    action: NatAction,     // action of the flow hit
+    status: NatFlowStatus, // current status
+) -> NatFlowStatus {
+    let side = flow_side(action);
+    let next = next_status(packet, side, status);
+    close_dns_on_reply(packet, side, next)
+}
+
 #[cfg(test)]
 mod test {
     use super::transport_proto;
