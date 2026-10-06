@@ -181,7 +181,7 @@ impl Masquerade {
         flow_info: &FlowInfo,
         state: &MasqueradeState,
     ) {
-        let new_status = advance_flow(packet, flow_info, state, |status| match status {
+        let new_status = advance_flow(packet, flow_info, state.status(), state.side(), |status| match status {
             ConnState::TwoWay => Some(Self::MASQUERADE_TWOWAY_TIMEOUT),
             ConnState::Established => Some(state.idle_timeout()),
             // advance_flow() invalidates the pair
