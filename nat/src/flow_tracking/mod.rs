@@ -18,6 +18,7 @@ pub(crate) use session::{HalfFlow, InstallError, NewFlow, install_pair, packet_f
 pub(crate) use state_machine::{next_status, transport_proto};
 pub(crate) use tracked::TrackedState;
 
+use net::flows::FlowInfoFlags;
 use std::fmt::Display;
 
 use tracectl::trace_target;
@@ -30,6 +31,17 @@ pub(crate) enum FlowSide {
     Initiator,
     /// The packet comes from the end that answers.
     Responder,
+}
+
+// Packets hitting the initiator flow of a pair come from the end that opened the connection.
+impl From<FlowInfoFlags> for FlowSide {
+    fn from(flags: FlowInfoFlags) -> Self {
+        if flags.is_initiator() {
+            FlowSide::Initiator
+        } else {
+            FlowSide::Responder
+        }
+    }
 }
 
 impl Display for FlowSide {

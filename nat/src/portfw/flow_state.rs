@@ -20,7 +20,7 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::FlowInfo;
 
 use crate::common::{AtomicNatFlowStatus, ConnState, NatAction};
-use crate::flow_tracking::{FlowSide, TrackedState, advance_flow, packet_flow_keys};
+use crate::flow_tracking::{TrackedState, advance_flow, packet_flow_keys};
 use crate::portfw::PortFwEntry;
 
 #[allow(unused)]
@@ -94,14 +94,6 @@ impl TrackedState for PortFwState {
 
     fn status(&self) -> &AtomicNatFlowStatus {
         &self.status
-    }
-
-    // The initiator's packets are destination-NATed.
-    fn side(&self) -> FlowSide {
-        match self.action {
-            NatAction::DstNat => FlowSide::Initiator,
-            NatAction::SrcNat => FlowSide::Responder,
-        }
     }
 }
 
@@ -230,7 +222,7 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     // Update the flow status and extend the lifetime of the flows. In case of TCP, if the
     // connection was reset or closed, invalidate the flows in both directions. In either case,
     // the packet is let through.
-    let new_status = advance_flow(packet, flow, state.status(), state.side(), |status| match status {
+    let new_status = advance_flow(packet, flow, state.status(), |status| match status {
         ConnState::Established => Some(entry.estab_timeout()),
         _ => Some(entry.init_timeout()),
     });
@@ -243,11 +235,10 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 
 #[cfg(test)]
 mod test {
-    use super::{PortFwState, build_portfw_flow_keys};
-    use crate::common::{AtomicNatFlowStatus, ConnState};
-    use crate::flow_tracking::{TrackedState, next_status};
+    use super::build_portfw_flow_keys;
+    use crate::common::ConnState;
+    use crate::flow_tracking::{FlowSide, next_status};
     use crate::static_nat::probe::build;
-    use concurrency::sync::Weak;
     use net::FlowKey;
     use net::buffer::TestBuffer;
     use net::headers::TryTcp;
@@ -429,16 +420,8 @@ mod test {
             "the parser must read a TCP ACK from the fragment payload, or this tests nothing"
         );
 
-        let status = AtomicNatFlowStatus::new();
-        status.store(ConnState::TwoWay);
-        let state = PortFwState::new_dnat(
-            UnicastIpAddr::try_from(addr("192.168.1.1")).unwrap_or_else(|_| unreachable!()),
-            NonZero::new(80).unwrap_or_else(|| unreachable!()),
-            Weak::new(),
-            status,
-        );
         assert_eq!(
-            next_status(&packet, state.side(), ConnState::TwoWay),
+            next_status(&packet, FlowSide::Initiator, ConnState::TwoWay),
             ConnState::TwoWay
         );
     }

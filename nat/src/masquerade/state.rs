@@ -5,7 +5,7 @@ use super::apalloc::Allocation;
 use super::nf::MasqueradeError;
 use super::packet::NatTranslate;
 use crate::common::{AtomicNatFlowStatus, NatAction};
-use crate::flow_tracking::{FlowSide, TrackedState};
+use crate::flow_tracking::TrackedState;
 use crate::{NatEndpoint, NatPort, NatTranslationData};
 use net::flows::{FlowInfoItem, FlowInfoLocked};
 use net::ip::UnicastIpAddr;
@@ -114,14 +114,6 @@ impl TrackedState for MasqueradeState {
 
     fn status(&self) -> &AtomicNatFlowStatus {
         &self.status
-    }
-
-    // The initiator's packets are source-NATed.
-    fn side(&self) -> FlowSide {
-        match self.action {
-            NatAction::SrcNat => FlowSide::Initiator,
-            NatAction::DstNat => FlowSide::Responder,
-        }
     }
 }
 

@@ -12,7 +12,7 @@ use net::packet::Packet;
 use std::time::Duration;
 use tracing::debug;
 
-/// Update the `status` shared by a tracked pair of flows, after a packet sent by `side` hit `flow`.
+/// Update the `status` shared by a tracked pair of flows, after a packet hit `flow`.
 ///
 /// If the connection is over, invalidate the pair. Otherwise, reset the expiry of both halves of
 /// the pair to the duration that `timeout` returns for the new status, if any.
@@ -22,11 +22,10 @@ pub(crate) fn advance_flow<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
     flow: &FlowInfo,
     status: &AtomicNatFlowStatus,
-    side: FlowSide,
     timeout: impl FnOnce(ConnState) -> Option<Duration>,
 ) -> ConnState {
     let current = status.load();
-    let next = next_status(packet, side, current);
+    let next = next_status(packet, FlowSide::from(flow.get_flags()), current);
     if next != current {
         debug!(
             "Status of flow {} changed: {current} -> {next}",
