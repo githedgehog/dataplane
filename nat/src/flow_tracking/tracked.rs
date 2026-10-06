@@ -3,11 +3,9 @@
 
 //! State kept in tracked flows.
 
-use super::{FlowSide, next_status};
-use crate::common::{AtomicNatFlowStatus, ConnState};
-use net::buffer::PacketBufferMut;
+use super::FlowSide;
+use crate::common::AtomicNatFlowStatus;
 use net::flows::{FlowInfoItem, FlowInfoLocked};
-use net::packet::Packet;
 
 /// State that a mode keeps in each half of a tracked pair of flows. Both halves of a pair share
 /// the same status.
@@ -33,13 +31,4 @@ pub(crate) trait TrackedState: FlowInfoItem + Sized {
 
     /// The side of the connection that sends the packets hitting this half of the pair.
     fn side(&self) -> FlowSide;
-
-    /// Compute the next status of the pair, after a packet hit this half.
-    fn next_status<Buf: PacketBufferMut>(
-        &self,
-        packet: &Packet<Buf>,
-        status: ConnState,
-    ) -> ConnState {
-        next_status(packet, self.side(), status)
-    }
 }
