@@ -3,7 +3,6 @@
 
 //! State kept in tracked flows.
 
-use super::FlowSide;
 use crate::common::AtomicNatFlowStatus;
 use net::flows::{FlowInfoItem, FlowInfoLocked};
 
@@ -28,7 +27,4 @@ pub(crate) trait TrackedState: FlowInfoItem + Sized {
 
     /// The status shared by both halves of the pair.
     fn status(&self) -> &AtomicNatFlowStatus;
-
-    /// The side of the connection that sends the packets hitting this half of the pair.
-    fn side(&self) -> FlowSide;
 }
