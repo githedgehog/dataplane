@@ -204,16 +204,8 @@ impl<'dev> RxQueue<'dev> {
         burst
     }
 
-    /// Receive into an array the caller owns.
-    ///
-    /// This is [`RxQueue::receive`] without the copies, and on a busy datapath it is the one to
-    /// call. The returning form writes the PMD's pointers into a stack buffer, copies them into a
-    /// fresh array, and then moves that array -- 64 slots of it -- out to the caller. None of
-    /// that depends on how many packets arrived, so a poll that receives nothing pays it in full.
-    /// Measured on an idle 8-worker datapath, that move was 50% of all cycles; the workers were
-    /// fully busy copying an empty array.
-    ///
-    /// Anything already in `burst` is freed first.
+    /// Receive into a reusable array, freeing any packets it still owns first.
+    /// Avoids returning a full pointer array by value on every poll.
     pub fn receive_into(&mut self, burst: &mut MbufArray<'dev>) {
         trace!(
             "Polling for packets from rx queue {queue} on dev {dev}",
