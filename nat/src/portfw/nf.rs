@@ -365,7 +365,7 @@ impl PortForwarder {
             }
 
             // refresh flow state and status
-            refresh_port_fw_entry(packet, entry.as_ref(), &state, genid);
+            refresh_port_fw_entry(packet, entry.as_ref(), genid);
         } else {
             // Slow path: we did not hit a flow, or, if we did, it was not Active or did not contain port-forwarding state.
             self.try_port_forwarding(packet, pfwtable);

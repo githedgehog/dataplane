@@ -250,6 +250,15 @@ fn a_related_pair_refers_to_its_partner() {
                     first.flowkey(),
                     "the pairing is not symmetric"
                 );
+                let (Some(first_conn), Some(second_conn)) =
+                    (first.conn_state(), second.conn_state())
+                else {
+                    panic!("a flow of a pair has no connection status");
+                };
+                assert!(
+                    first_conn.is_shared_with(second_conn),
+                    "the two halves of a pair do not share their connection status"
+                );
 
                 first.invalidate_pair();
                 assert_eq!(first.status(), FlowStatus::Cancelled);

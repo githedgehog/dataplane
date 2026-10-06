@@ -105,14 +105,6 @@ pub(crate) fn install_pair<S: TrackedState>(
     reverse: HalfFlow<S>,
     admit: impl FnOnce() -> Option<i64>,
 ) -> Result<NewFlow, InstallError> {
-    debug_assert!(
-        forward
-            .state
-            .status()
-            .is_shared_with(reverse.state.status()),
-        "the two halves of a flow pair must share their status"
-    );
-
     let (forward_flow, reverse_flow) = FlowInfo::related_pair(
         clock::deadline(timeout),
         forward.key,

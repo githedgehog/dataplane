@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use super::{AtomicInstant, FlowInfoItem};
+use super::{AtomicConnState, AtomicInstant, FlowInfoItem};
 use crate::FlowKey;
 
 #[derive(Debug, thiserror::Error)]
@@ -185,7 +185,8 @@ pub struct FlowInfoLocked {
 /// the flow table gets a key automatically. `genid` is the last generation id where
 /// this flow is valid (accepted by the flow-filter). As such, it increases on config
 /// changes (if the flow is acceptable under a new configuration), or the flow should
-/// no longer have status `Active`.
+/// no longer have status `Active`. `conn_state` is the status of the connection that a pair of
+/// related flows tracks, shared by the two flows of the pair; flows outside a pair have none.
 #[derive(Debug)]
 pub struct FlowInfo {
     expires_at: AtomicInstant,
@@ -193,6 +194,7 @@ pub struct FlowInfo {
     genid: AtomicI64,
     status: AtomicFlowStatus,
     flags: FlowInfoFlags,
+    conn_state: Option<AtomicConnState>,
     pub locked: RwLock<FlowInfoLocked>,
     pub related: Option<Weak<FlowInfo>>,
     pub token: CancellationToken,
@@ -210,6 +212,7 @@ impl FlowInfo {
             genid: AtomicI64::new(0),
             status: AtomicFlowStatus::from(FlowStatus::Detached),
             flags: FlowInfoFlags::default(),
+            conn_state: None,
             locked: RwLock::new(FlowInfoLocked::default()),
             related: None,
             token: CancellationToken::new(),
@@ -231,6 +234,19 @@ impl FlowInfo {
     #[must_use]
     pub fn get_flags(&self) -> FlowInfoFlags {
         self.flags
+    }
+
+    /// Set the connection status of a flow
+    fn set_conn_state(mut self, conn_state: AtomicConnState) -> Self {
+        self.conn_state = Some(conn_state);
+        self
+    }
+
+    /// The status of the connection tracked by the pair this flow belongs to, if any. Both flows
+    /// of a pair built with [`FlowInfo::related_pair`] share it.
+    #[must_use]
+    pub fn conn_state(&self) -> Option<&AtomicConnState> {
+        self.conn_state.as_ref()
     }
 
     #[must_use]
@@ -278,7 +294,8 @@ impl FlowInfo {
     /// `Arc` them and if we do that, we can't mutate them (unless we use a `Mutex` or the like).
     /// So, there is a chicken-and-egg problem which cannot be solved with safe code.
     ///
-    /// This associated function creates a pair of related `FlowInfo`s by construction. The intended usage is
+    /// This associated function creates a pair of related `FlowInfo`s by construction. Both share
+    /// the same connection status, starting as one-way. The intended usage is
     /// to call this function when a couple of related flow entries are needed and later insert them in the
     /// flow-table.
     ///
@@ -305,6 +322,7 @@ impl FlowInfo {
             ));
         }
 
+        let conn_state = AtomicConnState::new();
         let mut one: Arc<MaybeUninit<Self>> = Arc::new_uninit();
         let mut two: Arc<MaybeUninit<Self>> = Arc::new_uninit();
 
@@ -326,11 +344,13 @@ impl FlowInfo {
             one_p.write(
                 FlowInfo::new(key1, expires_at)
                     .set_flags(flags1)
+                    .set_conn_state(conn_state.clone())
                     .set_related(two_weak),
             );
             two_p.write(
                 FlowInfo::new(key2, expires_at)
                     .set_flags(flags2)
+                    .set_conn_state(conn_state)
                     .set_related(one_weak),
             );
             // turn back into Arc's

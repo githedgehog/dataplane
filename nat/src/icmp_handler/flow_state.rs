@@ -4,10 +4,10 @@
 //! Translation of ICMP errors for tracked flows.
 
 use crate::NatTranslationData;
-use crate::common::ConnState;
 use crate::flow_tracking::TrackedState;
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
 use net::buffer::PacketBufferMut;
+use net::flows::ConnState;
 use net::flows::FlowInfo;
 use net::packet::{DoneReason, Packet};
 use std::fmt::Display;
@@ -28,7 +28,7 @@ pub(crate) trait IcmpErrorTranslation: TrackedState {
 }
 
 /// Translate an ICMP error packet, and the packet it quotes, with the state of type `S` in
-/// `flow_info`. Return the status of the flow.
+/// `flow_info`. Return the status of the connection that the flow tracks.
 pub(crate) fn translate_icmp_error<Buf: PacketBufferMut, S: IcmpErrorTranslation>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
@@ -41,6 +41,11 @@ pub(crate) fn translate_icmp_error<Buf: PacketBufferMut, S: IcmpErrorTranslation
         // The missing source only affects this log line.
         debug!("({mode}): Processing ICMP error message with flow {f}");
     }
+
+    let Some(conn_state) = flow_info.conn_state() else {
+        debug!("({mode}): ICMP error hit a flow tracking no connection");
+        return Err(DoneReason::InternalFailure);
+    };
 
     let flow_info_locked = flow_info.locked.read();
     let Some(state) = S::of(&flow_info_locked) else {
@@ -63,5 +68,5 @@ pub(crate) fn translate_icmp_error<Buf: PacketBufferMut, S: IcmpErrorTranslation
         debug!("({mode}): Failed to translate ICMP error packet: {e}");
         return Err(DoneReason::InternalFailure);
     }
-    Ok(state.status().load())
+    Ok(conn_state.load())
 }

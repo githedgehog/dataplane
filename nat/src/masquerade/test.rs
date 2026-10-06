@@ -3,7 +3,7 @@
 
 #![cfg(test)]
 
-use crate::common::{ConnState, NatAction};
+use crate::common::NatAction;
 use crate::masquerade::state::MasqueradeState;
 use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use crate::{IcmpErrorHandler, Masquerade};
@@ -17,6 +17,7 @@ use config::external::overlay::vpcpeering::{
     MappingPolicy, VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
 };
 use flow_entry::flow_table::{FlowLookup, FlowTable};
+use net::flows::{AtomicConnState, ConnState};
 // The real flow-filter links dpdk-sys, which cannot build under miri; it is only used by tests with
 // #[dpdk::with_eal] below. The miri-eligible tests use the local TestFlowFilter mock instead.
 #[cfg(not(miri))]
@@ -1654,16 +1655,14 @@ fn flow_genid(packet: &Packet<TestBuffer>) -> Option<i64> {
         .map(|flow_info| flow_info.genid())
 }
 fn nat_flow_status(packet: &Packet<TestBuffer>) -> Option<ConnState> {
-    packet
-        .meta()
-        .flow_info
-        .as_ref()?
+    let flow_info = packet.meta().flow_info.as_ref()?;
+    flow_info
         .locked
         .read()
         .nat_state
-        .as_ref()
-        .and_then(|s| s.extract_ref::<MasqueradeState>())
-        .map(|state| state.status.load())
+        .as_ref()?
+        .extract_ref::<MasqueradeState>()?;
+    flow_info.conn_state().map(AtomicConnState::load)
 }
 
 // Read something out of a flow's masquerade state, under the lock.
@@ -2928,15 +2927,8 @@ mod fragments {
                 assert!(!out.is_done());
             }
             assert_eq!(
-                forward
-                    .locked
-                    .read()
-                    .nat_state
-                    .extract_ref::<MasqueradeState>()
-                    .unwrap()
-                    .status
-                    .load(),
-                ConnState::Established
+                forward.conn_state().map(AtomicConnState::load),
+                Some(ConnState::Established)
             );
             let deadlines = (forward.expires_at(), reverse.expires_at());
             tokio::time::advance(Duration::from_secs(1)).await;
