@@ -275,17 +275,16 @@ fn each_direction_owns_its_half_of_the_close() {
 
 #[test]
 fn a_reply_from_a_resolver_closes_the_flow_at_once() {
-    for source_port in [53u16, 853, 8853] {
-        let packet = udp_packet(source_port);
-        assert_eq!(
-            next_status(&packet, FlowSide::Responder, NatFlowStatus::OneWay),
-            NatFlowStatus::Closed,
-            "a reply from port {source_port} should close the flow"
-        );
-        assert_eq!(
-            next_status(&packet, FlowSide::Initiator, NatFlowStatus::TwoWay),
-            NatFlowStatus::Established,
-            "an outbound packet must not be closed by its own source port"
-        );
-    }
+    let source_port = 53u16;
+    let packet = udp_packet(source_port);
+    assert_eq!(
+        next_status(&packet, FlowSide::Responder, NatFlowStatus::OneWay),
+        NatFlowStatus::Closed,
+        "a reply from port {source_port} should close the flow"
+    );
+    assert_eq!(
+        next_status(&packet, FlowSide::Initiator, NatFlowStatus::TwoWay),
+        NatFlowStatus::Established,
+        "an outbound packet must not be closed by its own source port"
+    );
 }

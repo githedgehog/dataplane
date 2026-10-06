@@ -125,7 +125,7 @@ fn close_dns_on_reply<Buf: PacketBufferMut>(
     }
     match packet.headers().pat().eth().net().udp().done() {
         Some((_, _, udp)) => match udp.source().as_u16() {
-            53 | 853 | 8853 => NatFlowStatus::Closed, // DNS|DNS-over-quic|nextdns
+            53 => NatFlowStatus::Closed, // DNS
             _ => status,
         },
         _ => status,
