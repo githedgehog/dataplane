@@ -3,8 +3,8 @@
 
 //! Status and lifetime updates for tracked flows.
 
-use super::TrackedState;
-use crate::common::ConnState;
+use super::{FlowSide, next_status};
+use crate::common::{AtomicNatFlowStatus, ConnState};
 use concurrency::sync::Weak;
 use net::buffer::PacketBufferMut;
 use net::flows::FlowInfo;
@@ -12,26 +12,27 @@ use net::packet::Packet;
 use std::time::Duration;
 use tracing::debug;
 
-/// Update the status of a tracked pair of flows, after a packet hit `flow`, which holds `state`.
+/// Update the `status` shared by a tracked pair of flows, after a packet sent by `side` hit `flow`.
 ///
 /// If the connection is over, invalidate the pair. Otherwise, reset the expiry of both halves of
 /// the pair to the duration that `timeout` returns for the new status, if any.
 ///
 /// Return the new status.
-pub(crate) fn advance_flow<Buf: PacketBufferMut, S: TrackedState>(
+pub(crate) fn advance_flow<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
     flow: &FlowInfo,
-    state: &S,
+    status: &AtomicNatFlowStatus,
+    side: FlowSide,
     timeout: impl FnOnce(ConnState) -> Option<Duration>,
 ) -> ConnState {
-    let current = state.status().load();
-    let next = state.next_status(packet, current);
+    let current = status.load();
+    let next = next_status(packet, side, current);
     if next != current {
         debug!(
             "Status of flow {} changed: {current} -> {next}",
             flow.flowkey()
         );
-        state.status().store(next);
+        status.store(next);
     }
 
     if next.is_terminal() {

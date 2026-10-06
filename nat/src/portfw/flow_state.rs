@@ -230,7 +230,7 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     // Update the flow status and extend the lifetime of the flows. In case of TCP, if the
     // connection was reset or closed, invalidate the flows in both directions. In either case,
     // the packet is let through.
-    let new_status = advance_flow(packet, flow, state, |status| match status {
+    let new_status = advance_flow(packet, flow, state.status(), state.side(), |status| match status {
         ConnState::Established => Some(entry.estab_timeout()),
         _ => Some(entry.init_timeout()),
     });
@@ -245,7 +245,7 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 mod test {
     use super::{PortFwState, build_portfw_flow_keys};
     use crate::common::{AtomicNatFlowStatus, ConnState};
-    use crate::flow_tracking::TrackedState;
+    use crate::flow_tracking::{TrackedState, next_status};
     use crate::static_nat::probe::build;
     use concurrency::sync::Weak;
     use net::FlowKey;
@@ -438,7 +438,7 @@ mod test {
             status,
         );
         assert_eq!(
-            state.next_status(&packet, ConnState::TwoWay),
+            next_status(&packet, state.side(), ConnState::TwoWay),
             ConnState::TwoWay
         );
     }
