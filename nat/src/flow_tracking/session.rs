@@ -3,7 +3,7 @@
 
 //! Creation of tracked pairs of flows.
 
-use super::TrackedState;
+use super::NatState;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError, PairInsertion};
 use net::FlowKey;
@@ -65,9 +65,9 @@ impl NewFlow {
     }
 
     /// Run `f` on the state of type `S` of the forward flow, if it has one.
-    pub(crate) fn with_state<S: TrackedState, R>(&self, f: impl FnOnce(&S) -> R) -> Option<R> {
+    pub(crate) fn with_state<S: NatState, R>(&self, f: impl FnOnce(&S) -> R) -> Option<R> {
         let locked = self.flow().locked.read();
-        S::of(&locked).map(f)
+        S::try_get(&locked).map(f)
     }
 }
 
@@ -83,10 +83,10 @@ pub(crate) enum InstallError {
     Flow(#[from] FlowInfoError),
 }
 
-fn set_up_flow<S: TrackedState>(flow: &FlowInfo, state: S, dst_vpcd: VpcDiscriminant) {
+fn set_up_flow<S: NatState>(flow: &FlowInfo, state: S, dst_vpcd: VpcDiscriminant) {
     debug!("Setting up flow state: {} -> {state}", flow.flowkey());
     let mut locked = flow.locked.write();
-    *S::slot_mut(&mut locked) = Some(Box::new(state));
+    state.set(&mut locked);
     locked.dst_vpcd = Some(dst_vpcd);
 }
 
@@ -97,7 +97,7 @@ fn set_up_flow<S: TrackedState>(flow: &FlowInfo, state: S, dst_vpcd: VpcDiscrimi
 /// before insertion. It returns the generation to give the pair, or `None` to refuse the pair.
 ///
 /// If the table already holds a flow with the forward key, return this flow instead.
-pub(crate) fn install_pair<S: TrackedState>(
+pub(crate) fn install_pair<S: NatState>(
     table: &FlowTable,
     meta: &PacketMeta,
     timeout: Duration,
