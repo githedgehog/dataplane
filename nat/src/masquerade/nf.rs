@@ -5,12 +5,13 @@
 
 use crate::NatPort;
 use crate::common::NatFlowStatus;
+use crate::flow_tracking::transport_proto;
 use crate::masquerade::NatAllocatorWriter;
 use crate::masquerade::allocation::{AllocationResult, AllocatorError};
 use crate::masquerade::allocator_writer::NatAllocatorReader;
 use crate::masquerade::apalloc::{Allocation, NatAllocator};
 use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
-use crate::masquerade::protocol::{next_flow_status, transport_proto};
+use crate::masquerade::protocol::next_flow_status;
 use crate::masquerade::state::MasqueradeState;
 use clock::Duration;
 use concurrency::sync::{Arc, Weak};
