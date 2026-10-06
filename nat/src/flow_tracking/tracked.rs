@@ -3,11 +3,10 @@
 
 //! State kept in tracked flows.
 
-use crate::common::AtomicNatFlowStatus;
 use net::flows::{FlowInfoItem, FlowInfoLocked};
 
-/// State that a mode keeps in each half of a tracked pair of flows. Both halves of a pair share
-/// the same status.
+/// State that a mode keeps in each half of a tracked pair of flows. The status of the connection
+/// is not part of it: the flows of the pair hold it.
 pub(crate) trait TrackedState: FlowInfoItem + Sized {
     /// The content of the field of a flow that holds this state.
     fn slot(locked: &FlowInfoLocked) -> Option<&dyn FlowInfoItem>;
@@ -24,7 +23,4 @@ pub(crate) trait TrackedState: FlowInfoItem + Sized {
     fn of_mut(locked: &mut FlowInfoLocked) -> Option<&mut Self> {
         Self::slot_mut(locked).as_mut()?.downcast_mut::<Self>()
     }
-
-    /// The status shared by both halves of the pair.
-    fn status(&self) -> &AtomicNatFlowStatus;
 }

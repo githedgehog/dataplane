@@ -19,10 +19,10 @@ use strum::EnumMessage;
 use tracectl::trace_target;
 use tracing::{debug, warn};
 
-use crate::common::ConnState;
 use crate::icmp_handler::flow_state::translate_icmp_error;
 use crate::masquerade::MasqueradeState;
 use crate::portfw::PortFwState;
+use net::flows::ConnState;
 
 trace_target!("icmp-errors", LevelFilter::INFO, &["nat", "pipeline"]);
 

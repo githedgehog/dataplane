@@ -6,6 +6,7 @@
 #![allow(missing_docs)]
 
 pub mod atomic_instant;
+pub mod conn_state;
 pub mod flow_info;
 pub mod flow_info_fuzz;
 pub mod flow_info_item;
@@ -14,5 +15,6 @@ pub mod display;
 pub mod flow_key;
 
 pub use atomic_instant::AtomicInstant;
+pub use conn_state::{AtomicConnState, ConnState};
 pub use flow_info::*;
 pub use flow_info_item::*;

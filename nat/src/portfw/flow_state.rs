@@ -19,9 +19,10 @@ use concurrency::sync::{Arc, Weak};
 
 use flow_entry::flow_table::FlowInfo;
 
-use crate::common::{AtomicNatFlowStatus, ConnState, NatAction};
+use crate::common::NatAction;
 use crate::flow_tracking::{TrackedState, advance_flow, packet_flow_keys};
 use crate::portfw::PortFwEntry;
+use net::flows::ConnState;
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
@@ -29,7 +30,6 @@ use tracing::{debug, error, warn};
 #[derive(Debug, Clone)]
 pub struct PortFwState {
     pub(crate) action: NatAction,
-    pub(crate) status: AtomicNatFlowStatus,
     use_ip: UnicastIpAddr,
     use_port: NonZero<u16>,
     pub(crate) rule: Weak<PortFwEntry>,
@@ -40,11 +40,9 @@ impl PortFwState {
         use_ip: UnicastIpAddr,
         use_port: NonZero<u16>,
         rule: Weak<PortFwEntry>,
-        status: AtomicNatFlowStatus,
     ) -> Self {
         Self {
             action: NatAction::SrcNat,
-            status,
             use_ip,
             use_port,
             rule,
@@ -55,11 +53,9 @@ impl PortFwState {
         use_ip: UnicastIpAddr,
         use_port: NonZero<u16>,
         rule: Weak<PortFwEntry>,
-        status: AtomicNatFlowStatus,
     ) -> Self {
         Self {
             action: NatAction::DstNat,
-            status,
             use_ip,
             use_port,
             rule,
@@ -91,10 +87,6 @@ impl TrackedState for PortFwState {
     fn slot_mut(locked: &mut FlowInfoLocked) -> &mut Option<Box<dyn FlowInfoItem>> {
         &mut locked.port_fw_state
     }
-
-    fn status(&self) -> &AtomicNatFlowStatus {
-        &self.status
-    }
 }
 
 impl Display for PortFwState {
@@ -105,7 +97,6 @@ impl Display for PortFwState {
         };
         write!(f, "\n        {}", self.action)?;
         writeln!(f, " {dir} ip:{} port:{}", self.use_ip, self.use_port)?;
-        writeln!(f, "        status: {}", self.status.load())?;
         match self.rule.upgrade() {
             Some(entry) => write!(f, "        rule: {entry}"),
             None => write!(f, "        rule: removed"),
@@ -147,8 +138,7 @@ pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
     Ok((initial_flow_key, key_reverse))
 }
 
-/// Build the port-forwarding states for the forward and reverse flows of a pair. They share
-/// the same status.
+/// Build the port-forwarding states for the forward and reverse flows of a pair.
 pub(crate) fn new_port_fw_states(
     entry: &Arc<PortFwEntry>,
     dst_ip: UnicastIpAddr,
@@ -156,10 +146,9 @@ pub(crate) fn new_port_fw_states(
     new_dst_ip: UnicastIpAddr,
     new_dst_port: NonZero<u16>,
 ) -> (PortFwState, PortFwState) {
-    let status = AtomicNatFlowStatus::new();
     let rule = Arc::downgrade(entry);
-    let forward = PortFwState::new_dnat(new_dst_ip, new_dst_port, rule.clone(), status.clone());
-    let reverse = PortFwState::new_snat(dst_ip, dst_port, rule, status);
+    let forward = PortFwState::new_dnat(new_dst_ip, new_dst_port, rule.clone());
+    let reverse = PortFwState::new_snat(dst_ip, dst_port, rule);
     (forward, reverse)
 }
 
@@ -197,7 +186,7 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
 }
 
 /// Update the port-forwarding state of a flow entry after processing a packet.
-/// This updates the flow status shared by flow entries' port-forwarding state.
+/// This updates the connection status shared by the flows of the pair.
 /// We use the status of the flow to determine the extent to which the lifetime
 /// of a flow entry will be extended. Entries in status established get
 /// extended by a large period. In other states, the entries are kept alive with
@@ -209,12 +198,8 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
 pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
     entry: &PortFwEntry,
-    state: &PortFwState, // (*)
     genid: i64,
 ) {
-    //(*) Note: atm, this is a clone of the state found by the packet
-    // That's fine for updating the status since it's an arc'ed atomic
-
     let Some(flow) = packet.meta().flow_info.as_ref() else {
         return;
     };
@@ -222,12 +207,12 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     // Update the flow status and extend the lifetime of the flows. In case of TCP, if the
     // connection was reset or closed, invalidate the flows in both directions. In either case,
     // the packet is let through.
-    let new_status = advance_flow(packet, flow, state.status(), |status| match status {
+    let new_status = advance_flow(packet, flow, |status| match status {
         ConnState::Established => Some(entry.estab_timeout()),
         _ => Some(entry.init_timeout()),
     });
 
-    if !new_status.is_terminal() {
+    if new_status.is_some_and(|status| !status.is_terminal()) {
         // update flow info generation
         flow.set_genid(genid);
     }
@@ -236,11 +221,11 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 #[cfg(test)]
 mod test {
     use super::build_portfw_flow_keys;
-    use crate::common::ConnState;
     use crate::flow_tracking::{FlowSide, next_status};
     use crate::static_nat::probe::build;
     use net::FlowKey;
     use net::buffer::TestBuffer;
+    use net::flows::ConnState;
     use net::headers::TryTcp;
     use net::ip::UnicastIpAddr;
     use net::packet::{Packet, VpcDiscriminant};

@@ -56,12 +56,16 @@ impl Display for FlowInfo {
             .as_ref()
             .and_then(Weak::upgrade)
             .map_or("no", |_| "yes");
-        writeln!(
+        write!(
             f,
             "{info}      status: {:?}, expires in {}s, related: {has_related}, genid: {genid}",
             self.status(),
             expires_in.as_secs(),
-        )
+        )?;
+        if let Some(conn_state) = self.conn_state() {
+            write!(f, ", connection: {}", conn_state.load())?;
+        }
+        writeln!(f)
     }
 }
 
@@ -100,7 +104,11 @@ impl Display for FlowInfoOneLiner<'_> {
             f,
             "{key} {} related:{r} genid:{genid}",
             FlowInfoLockedOneLiner(&info)
-        )
+        )?;
+        if let Some(conn_state) = flow_info.conn_state() {
+            write!(f, " connection:{}", conn_state.load())?;
+        }
+        Ok(())
     }
 }
 

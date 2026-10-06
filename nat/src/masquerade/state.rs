@@ -4,7 +4,7 @@
 use super::apalloc::Allocation;
 use super::nf::MasqueradeError;
 use super::packet::NatTranslate;
-use crate::common::{AtomicNatFlowStatus, NatAction};
+use crate::common::NatAction;
 use crate::flow_tracking::TrackedState;
 use crate::{NatEndpoint, NatPort, NatTranslationData};
 use net::flows::{FlowInfoItem, FlowInfoLocked};
@@ -14,7 +14,6 @@ use std::time::Duration;
 
 #[derive(Debug)]
 pub struct MasqueradeState {
-    pub(crate) status: AtomicNatFlowStatus,
     action: NatAction,
     use_ip: UnicastIpAddr,
     use_port: NatPort,
@@ -23,16 +22,11 @@ pub struct MasqueradeState {
 }
 
 impl MasqueradeState {
-    fn snat(
-        allocation: Allocation,
-        idle_timeout: Duration,
-        status: AtomicNatFlowStatus,
-    ) -> Result<Self, MasqueradeError> {
+    fn snat(allocation: Allocation, idle_timeout: Duration) -> Result<Self, MasqueradeError> {
         let use_ip = UnicastIpAddr::try_from(allocation.ip())
             .map_err(|_| MasqueradeError::PoolAddressNotUnicast(allocation.ip()))?;
         Ok(Self {
             action: NatAction::SrcNat,
-            status,
             use_ip,
             use_port: allocation.port(),
             allocation: Some(allocation),
@@ -41,15 +35,9 @@ impl MasqueradeState {
     }
 
     #[must_use]
-    fn dnat(
-        use_ip: UnicastIpAddr,
-        use_port: NatPort,
-        idle_timeout: Duration,
-        status: AtomicNatFlowStatus,
-    ) -> Self {
+    fn dnat(use_ip: UnicastIpAddr, use_port: NatPort, idle_timeout: Duration) -> Self {
         Self {
             action: NatAction::DstNat,
-            status,
             use_ip,
             use_port,
             allocation: None,
@@ -72,9 +60,8 @@ impl MasqueradeState {
         src_port: NatPort,
         idle_timeout: Duration,
     ) -> Result<(Self, Self), MasqueradeError> {
-        let status = AtomicNatFlowStatus::new();
-        let snat = Self::snat(alloc, idle_timeout, status.clone())?;
-        let dnat = Self::dnat(src_ip, src_port, idle_timeout, status);
+        let snat = Self::snat(alloc, idle_timeout)?;
+        let dnat = Self::dnat(src_ip, src_port, idle_timeout);
         Ok((snat, dnat))
     }
 
@@ -111,23 +98,18 @@ impl TrackedState for MasqueradeState {
     fn slot_mut(locked: &mut FlowInfoLocked) -> &mut Option<Box<dyn FlowInfoItem>> {
         &mut locked.nat_state
     }
-
-    fn status(&self) -> &AtomicNatFlowStatus {
-        &self.status
-    }
 }
 
 impl Display for MasqueradeState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            " {} ip:{} {} {} timeout: {} flow-status: {}",
+            " {} ip:{} {} {} timeout: {}",
             self.action,
             self.use_ip.inner(),
             self.use_port,
             self.allocation.as_ref().map_or("", |_| "(allocated)"),
             self.idle_timeout.as_secs(),
-            self.status.load()
         )
     }
 }
