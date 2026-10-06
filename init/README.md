@@ -21,6 +21,10 @@ changed. `DATAPLANE_HUGEPAGE_RESERVE=off` disables pool growth but still require
 
 These checks do not allocate pages. EAL performs the allocation and startup fails if it cannot obtain them.
 
+NIC NUMA affinity must agree with the hardware scan. Unknown affinity (`-1`) is accepted only when the scan
+identifies a single NUMA node; its OS node ID selects the pool. Unknown affinity on a multi-node system,
+unreadable or invalid affinity, and missing topology are fatal before pool growth or device rebinding.
+
 ## Network namespaces
 
 Init moves the selected interfaces into a datapath namespace held only by descriptors. When the gateway stops, the

@@ -81,10 +81,13 @@ fn mount_hugepages() {
 }
 
 /// Resolve and validate all configured PCI devices before changing any driver bindings.
-fn resolve_devices(dpdk: &DpdkDriverConfigSection) -> Result<Vec<ResolvedDevice>, String> {
-    info!("scanning hardware");
-    let scan = hardware::Node::scan_all();
-
+fn resolve_devices(
+    dpdk: &DpdkDriverConfigSection,
+    scan: &hardware::Node,
+) -> Result<Vec<ResolvedDevice>, String> {
+    if dpdk.interfaces.is_empty() {
+        return Err("the DPDK driver was selected but no interfaces were configured".into());
+    }
     // Every PCI device on the machine, by address.
     let present: BTreeMap<PciAddress, &hardware::pci::PciDeviceAttributes> = scan
         .iter()
@@ -755,20 +758,19 @@ fn main() {
     let (netns, host_netns) = match &config.driver {
         DriverConfigSection::Dpdk(dpdk) => {
             mount_hugepages();
-            let devices = match resolve_devices(dpdk) {
+            info!("scanning hardware");
+            let scan = hardware::Node::scan_all();
+            let devices = match resolve_devices(dpdk, &scan) {
                 Ok(devices) => devices,
                 Err(problems) => fail("cannot use the requested network devices", &problems),
             };
-            if devices.is_empty() {
-                fail(
-                    "no network devices to drive",
-                    "the DPDK driver was selected but no interfaces were configured",
-                );
-            }
             // Check hugepage capacity on the NICs' nodes before changing device bindings.
             hugepage_plan = Some(
-                hugepages::reserve_for(&devices.iter().map(|d| d.address).collect::<Vec<_>>())
-                    .unwrap_or_else(|e| fail("hugepage configuration is unusable", &e)),
+                hugepages::reserve_for(
+                    &devices.iter().map(|d| d.address).collect::<Vec<_>>(),
+                    &scan,
+                )
+                .unwrap_or_else(|e| fail("hugepage configuration is unusable", &e)),
             );
             if let Err(e) = prepare_devices(&devices) {
                 fail("failed to prepare a network device for DPDK", &e);
