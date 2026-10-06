@@ -4,8 +4,8 @@
 #![cfg(test)]
 
 use super::{FlowSide, next_status};
-use crate::common::ConnState;
 use net::buffer::TestBuffer;
+use net::flows::ConnState;
 use net::headers::TryTcpMut;
 use net::packet::Packet;
 use net::packet::test_utils::{

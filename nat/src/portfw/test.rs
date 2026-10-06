@@ -3,8 +3,8 @@
 
 #[cfg(test)]
 mod nf_test {
-    use crate::common::ConnState;
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwState, PortFwTableWriter};
+    use net::flows::{AtomicConnState, ConnState};
 
     use concurrency::sync::Arc;
     use flow_entry::flow_table::{FlowLookup, FlowTable};
@@ -41,16 +41,14 @@ mod nf_test {
     }
 
     fn get_pfw_flow_status(packet: &Packet<TestBuffer>) -> Option<ConnState> {
-        packet
-            .meta()
-            .flow_info
-            .as_ref()?
+        let flow_info = packet.meta().flow_info.as_ref()?;
+        flow_info
             .locked
             .read()
             .port_fw_state
-            .as_ref()
-            .and_then(|s| s.extract_ref::<PortFwState>())
-            .map(|state| state.status.load())
+            .as_ref()?
+            .extract_ref::<PortFwState>()?;
+        flow_info.conn_state().map(AtomicConnState::load)
     }
 
     fn get_pfw_flow_state_rule(packet: &Packet<TestBuffer>) -> Option<Arc<PortFwEntry>> {

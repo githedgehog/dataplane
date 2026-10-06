@@ -5,8 +5,8 @@
 //! of flows.
 
 use super::FlowSide;
-use crate::common::ConnState;
 use net::buffer::PacketBufferMut;
+use net::flows::ConnState;
 use net::headers::{TryHeaders, TryTcp};
 use net::ip::NextHeader;
 use net::packet::Packet;

@@ -4,7 +4,6 @@
 //! Masquerade NF
 
 use crate::NatPort;
-use crate::common::ConnState;
 use crate::flow_tracking::{
     HalfFlow, InstallError, NewFlow, TrackedState, advance_flow, install_pair, packet_flow_keys,
     transport_proto,
@@ -20,6 +19,7 @@ use concurrency::sync::Arc;
 use flow_entry::flow_table::table::FlowTable;
 use net::buffer::PacketBufferMut;
 use net::flow_key::{FlowAddrs, IcmpProtoKey};
+use net::flows::ConnState;
 use net::flows::{FlowInfo, FlowInfoError};
 use net::headers::{TryHeaders, TryIp, TryTcp};
 use net::ip::{NextHeader, UnicastIpAddr};
@@ -181,7 +181,7 @@ impl Masquerade {
         flow_info: &FlowInfo,
         state: &MasqueradeState,
     ) {
-        let new_status = advance_flow(packet, flow_info, state.status(), |status| match status {
+        let new_status = advance_flow(packet, flow_info, |status| match status {
             ConnState::TwoWay => Some(Self::MASQUERADE_TWOWAY_TIMEOUT),
             ConnState::Established => Some(state.idle_timeout()),
             // advance_flow() invalidates the pair
@@ -210,7 +210,7 @@ impl Masquerade {
         // to extend its own expiry there, and extending the mapping's would hold the public tuple
         // for a further idle timeout past the close, which is how a pool ends up exhausted by churn
         // rather than by concurrent flows.
-        if !new_status.is_terminal()
+        if new_status.is_some_and(|status| !status.is_terminal())
             && let Some(allocation) = state.allocation()
         {
             allocation.refresh();
