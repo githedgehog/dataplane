@@ -7,16 +7,16 @@
 //! does not depend on the NAT mode in use, so that other modes than masquerade and port forwarding
 //! can use it.
 
+mod nat_state;
 mod refresh;
 mod session;
 mod state_machine;
 mod test_state_machine;
-mod tracked;
 
+pub(crate) use nat_state::NatState;
 pub(crate) use refresh::advance_flow;
 pub(crate) use session::{HalfFlow, InstallError, NewFlow, install_pair, packet_flow_keys};
 pub(crate) use state_machine::{next_status, transport_proto};
-pub(crate) use tracked::TrackedState;
 
 use net::flows::FlowInfoFlags;
 use std::fmt::Display;

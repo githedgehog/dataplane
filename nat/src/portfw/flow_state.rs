@@ -7,7 +7,7 @@
 
 use net::buffer::PacketBufferMut;
 use net::flow_key::FlowKeyError;
-use net::flows::{FlowInfoItem, FlowInfoLocked, FlowStatus};
+use net::flows::{FlowInfoLocked, FlowStatus};
 use net::ip::UnicastIpAddr;
 use net::packet::{Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
@@ -20,7 +20,7 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::FlowInfo;
 
 use crate::common::NatAction;
-use crate::flow_tracking::{TrackedState, advance_flow, packet_flow_keys};
+use crate::flow_tracking::{NatState, advance_flow, packet_flow_keys};
 use crate::portfw::PortFwEntry;
 use net::flows::ConnState;
 
@@ -79,13 +79,17 @@ impl PortFwState {
     }
 }
 
-impl TrackedState for PortFwState {
-    fn slot(locked: &FlowInfoLocked) -> Option<&dyn FlowInfoItem> {
-        locked.port_fw_state.as_deref()
+impl NatState for PortFwState {
+    fn try_get(locked: &FlowInfoLocked) -> Option<&Self> {
+        locked.port_fw_state.as_deref()?.downcast_ref::<Self>()
     }
 
-    fn slot_mut(locked: &mut FlowInfoLocked) -> &mut Option<Box<dyn FlowInfoItem>> {
-        &mut locked.port_fw_state
+    fn try_get_mut(locked: &mut FlowInfoLocked) -> Option<&mut Self> {
+        locked.port_fw_state.as_deref_mut()?.downcast_mut::<Self>()
+    }
+
+    fn set(self, locked: &mut FlowInfoLocked) {
+        locked.port_fw_state = Some(Box::new(self));
     }
 }
 
@@ -157,7 +161,7 @@ pub(crate) fn new_port_fw_states(
 /// Used by configuration migration and by packets that trigger stale-rule revalidation.
 pub(crate) fn reassign_port_fw_rule(flow_info: &FlowInfo, entry: &Arc<PortFwEntry>) {
     let mut flow_info_locked = flow_info.locked.write();
-    if let Some(state) = PortFwState::of_mut(&mut flow_info_locked) {
+    if let Some(state) = PortFwState::try_get_mut(&mut flow_info_locked) {
         state.rule = Arc::downgrade(entry);
     }
 }
@@ -177,7 +181,7 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
         return None;
     }
     let guard = flow.locked.read();
-    let Some(state) = PortFwState::of(&guard) else {
+    let Some(state) = PortFwState::try_get(&guard) else {
         debug!("Packet flow-info does not contain port-forwarding state");
         return None;
     };
