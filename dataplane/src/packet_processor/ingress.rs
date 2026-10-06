@@ -83,22 +83,8 @@ impl Ingress {
         packet.done(DoneReason::MacNotForUs);
     }
 
-    /// A multicast frame: not ours to route, but not nobody's either.
-    ///
-    /// Distinguished from [`interface_ingress_eth_non_local`](Self::interface_ingress_eth_non_local) because the two mean different
-    /// things and the driver treats them differently. `MacNotForUs` is a drop, full stop;
-    /// `Unhandled` is "the datapath had nothing to do with it", which the control-plane bridge
-    /// punts when the frame was addressed to the port -- and `cpbridge::addressed_to` counts
-    /// multicast as addressed, with the comment that LLDP and IPv6 neighbour discovery "are the
-    /// control plane's business".
-    ///
-    /// They disagreed. Multicast fell to the non-local arm, was marked `MacNotForUs`, and was
-    /// dropped before the bridge ever got to apply that intent -- so every neighbour solicitation
-    /// and every LLDP frame died in the pipeline. IPv6 neighbour discovery is *entirely*
-    /// multicast, so nothing about it could have worked.
-    ///
-    /// `l2bcast` is deliberately not set: this is not a broadcast, and the flag drives replication
-    /// decisions further along.
+    /// Mark multicast `Unhandled` so the control-plane bridge can punt it.
+    /// `MacNotForUs` would force a drop; `l2bcast` stays clear to avoid broadcast replication.
     #[tracing::instrument(level = "trace")]
     fn interface_ingress_eth_mcast<Buf: PacketBufferMut>(
         &self,
@@ -222,8 +208,7 @@ mod eth_dispatch_test {
     const PORT_MAC: Mac = Mac([0x58, 0xa2, 0xe1, 0xb3, 0x3d, 0x94]);
 
     fn ingress() -> Ingress {
-        // The ingress dispatch under test reads nothing from the table -- it is handed the
-        // `Interface` directly -- so an empty one is exactly right.
+        // The dispatch receives its interface directly, so it needs no table entries.
         let tables = routing::testing::RouterTables::default();
         Ingress::new("test-ingress", tables.interfaces())
     }
@@ -255,15 +240,9 @@ mod eth_dispatch_test {
         packet.get_done()
     }
 
-    /// Multicast must not be `MacNotForUs`, because that verdict is an unconditional drop.
-    ///
-    /// The bridge's `addressed_to` counts multicast as the control plane's business, but that
-    /// intent is unreachable if ingress marks the frame `MacNotForUs` first. Measured on hardware
-    /// as 767 frames dropped `Eth: not for us` with nothing reaching the control plane -- IPv6
-    /// neighbour discovery is entirely multicast, so none of it could ever have worked.
     #[test]
     fn a_multicast_frame_is_not_marked_not_for_us() {
-        // IPv6 all-nodes: what neighbour discovery actually arrives as.
+        // IPv6 all-nodes multicast.
         let verdict = verdict_for(Mac([0x33, 0x33, 0x00, 0x00, 0x00, 0x01]));
         assert_ne!(
             verdict,
@@ -285,10 +264,7 @@ mod eth_dispatch_test {
             Some(DoneReason::Unhandled),
             "broadcast reaches the control plane"
         );
-        // Not `None`: a frame for this port is ours, so the dispatch carries on into the
-        // attachment check -- and this fixture is deliberately attached to no VRF. What matters is
-        // that it got *past* the MAC test, which `InterfaceDetached` proves and `MacNotForUs`
-        // would not.
+        // Local unicast passes the MAC check and reaches the missing-VRF check.
         assert_eq!(
             verdict_for(PORT_MAC),
             Some(DoneReason::InterfaceDetached),

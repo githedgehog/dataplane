@@ -221,51 +221,26 @@ pub struct RssConf {
 
 impl RssConf {
     /// The standard 40-byte Microsoft Toeplitz RSS key.
-    ///
-    /// This is the key nearly every NIC and driver defaults to, so a software model of the hash can
-    /// use it to predict a device's reported `mbuf.hash.rss`.
-    ///
-    /// It is *not* symmetric: `H(src, dst) != H(dst, src)`.  A key of period two
-    /// (`0x6d5a` repeated) would be, but symmetry is not worth buying here: mlx5 offers symmetric
-    /// Toeplitz only through the `rte_flow` RSS action, and a NAT'd flow's reverse packet does not
-    /// carry the reversed tuple anyway, so no hash property the NIC can have would co-locate the
-    /// two halves.
+    /// It is not symmetric; NAT changes the reverse tuple anyway. Drivers may use other defaults.
     pub const DEFAULT_KEY: [u8; 40] = [
         0x6d, 0x5a, 0x56, 0xda, 0x25, 0x5b, 0x0e, 0xc2, 0x41, 0x67, 0x25, 0x3d, 0x43, 0xa3, 0x8f,
         0xb0, 0xd0, 0xca, 0x2b, 0xcb, 0xae, 0x7b, 0x30, 0xb4, 0x77, 0xcb, 0x2d, 0xa3, 0x80, 0x30,
         0xf2, 0x0c, 0x6a, 0x42, 0xb7, 0x3b, 0xbe, 0xac, 0x01, 0xfa,
     ];
 
-    /// The hash types worth asking for on a forwarding plane: L3 addresses for every IP packet,
-    /// plus L4 ports for TCP and UDP so that two flows between the same pair of hosts can land on
-    /// different queues.
-    ///
-    /// A device is not obliged to support all of these; [`RssConf::supported_on`] narrows the set
-    /// to what a given device advertises.
+    /// Hash IP addresses and TCP/UDP ports to spread flows between the same hosts.
+    /// [`Self::supported_on`] narrows this set to the device's capabilities.
     pub const DEFAULT_HASH_TYPES: u64 =
         (RTE_ETH_RSS_IP as u64) | (RTE_ETH_RSS_TCP as u64) | (RTE_ETH_RSS_UDP as u64);
 
-    /// An RSS configuration for `dev` using the driver's default key and as much of
-    /// [`DEFAULT_HASH_TYPES`](Self::DEFAULT_HASH_TYPES) as the device advertises.
-    ///
-    /// Returns `None` if the device advertises no RSS hash functions at all, which is how the
-    /// emulated NICs (e1000, e1000e, and virtio without multi-queue negotiation) report.  Those
-    /// devices cannot spread across queues and must not be handed an RSS configuration.
-    ///
-    /// Intersecting rather than erroring is deliberate: `rte_eth_dev_configure` rejects an
-    /// `rss_hf` that is not a subset of `flow_type_rss_offloads`, and which hash types a device
-    /// supports is a property of the device rather than a thing a caller can be expected to know.
-    /// Asking for TCP ports on a device that only hashes L3 should cost L4 spread, not the port.
+    /// Use the driver's default key and its supported subset of [`Self::DEFAULT_HASH_TYPES`].
+    /// Returns `None` if no requested hash types are supported.
     #[must_use]
     pub fn supported_on(dev: &DevInfo) -> Option<RssConf> {
         Self::from_hash_types(dev.rss_hash_types())
     }
 
-    /// [`supported_on`](Self::supported_on) against a raw `flow_type_rss_offloads` mask.
-    ///
-    /// Split out from `supported_on` because a [`DevInfo`] can only be obtained from a real probed
-    /// device -- unit tests run under `--no-pci`, where none exists -- and the intersection is the
-    /// part with behaviour worth pinning down.
+    /// [`Self::supported_on`] against a raw `flow_type_rss_offloads` mask.
     #[must_use]
     pub fn from_hash_types(supported: u64) -> Option<RssConf> {
         let hf = Self::DEFAULT_HASH_TYPES & supported;
@@ -333,11 +308,8 @@ pub enum DevConfigError {
         /// The key length advertised by the device.
         expected: u8,
     },
-    /// The requested RSS hash types include bits the device does not support.
-    ///
-    /// `rte_eth_dev_configure` rejects any `rss_hf` that is not a subset of the device's
-    /// `flow_type_rss_offloads`.  Use [`RssConf::supported_on`] to intersect a wish list with what
-    /// a given device can actually hash on.
+    /// The requested RSS hash types include unsupported bits.
+    /// Use [`RssConf::supported_on`] to intersect with the device's capabilities.
     #[error("RSS hash types {requested:#x} include bits outside the supported {supported:#x}")]
     RssHashTypesUnsupported {
         /// The `RTE_ETH_RSS_*` bits that were requested.
@@ -780,18 +752,8 @@ impl RxOffload {
     /// No receive offloads.
     pub const NONE: RxOffload = RxOffload(0);
 
-    /// Deliver the NIC's computed RSS hash in each mbuf's `hash.rss` field.
-    ///
-    /// Without this the hardware still steers by the hash but never reports it, so software cannot
-    /// see which flows the NIC believes it is spreading -- which is the first thing anyone wants
-    /// when RSS distributes badly.
-    ///
-    /// `rte_eth_dev_configure` rejects this offload unless the receive mq-mode has the RSS flag
-    /// set, so it is only legal alongside a [`DevConfig::rss`].
-    ///
-    /// Note that an `rte_flow` MARK or FDIR action overwrites the same union in the mbuf, so a
-    /// rule carrying one makes the hash unreadable -- the reason `flow_api_probe` sees
-    /// `rss_hash=None`.
+    /// Report the NIC's RSS hash in each mbuf's `hash.rss` field. Requires [`DevConfig::rss`].
+    /// MARK or FDIR actions can overwrite the union containing the hash.
     pub const RSS_HASH: RxOffload = RxOffload(RTE_ETH_RX_OFFLOAD_RSS_HASH as u64);
 }
 
@@ -965,9 +927,6 @@ impl Manager {
 
 impl DevInfo<'_> {
     /// The device's limits on receive descriptors per queue.
-    ///
-    /// `rte_eth_rx_queue_setup` rejects a count outside `[nb_min, nb_max]` outright, so a caller
-    /// sizing a ring against load has to clamp against this rather than guess.
     #[must_use]
     pub fn rx_desc_limits(&self) -> dpdk_sys::rte_eth_desc_lim {
         self.inner.rx_desc_lim
@@ -1057,20 +1016,13 @@ impl DevInfo<'_> {
         self.inner.flow_type_rss_offloads != 0
     }
 
-    /// The set of `RTE_ETH_RSS_*` hash types the device advertises.
-    ///
-    /// `rte_eth_dev_configure` rejects any `rss_hf` that is not a subset of this, so a caller
-    /// building an [`RssConf`] by hand must intersect against it.  [`RssConf::supported_on`] does
-    /// that.
+    /// Supported `RTE_ETH_RSS_*` hash types. Configured types must be a subset of these.
     #[must_use]
     pub fn rss_hash_types(&self) -> u64 {
         self.inner.flow_type_rss_offloads
     }
 
-    /// The exact RSS key length, in bytes, the device requires.
-    ///
-    /// `rte_eth_dev_configure` rejects a key of any other length -- not a shorter one, not a
-    /// longer one.  mlx5 reports 40; other drivers differ (i40e wants 52).
+    /// Required RSS key length in bytes; other lengths are rejected.
     #[must_use]
     pub fn rss_hash_key_size(&self) -> u8 {
         self.inner.hash_key_size
@@ -1343,11 +1295,7 @@ impl core::fmt::Display for LinkStatus {
     }
 }
 
-/// A port's I/O counters, as returned by [`Dev::stats`].
-///
-/// A plain owned snapshot rather than a borrow of DPDK's `rte_eth_stats`: the counters are read by
-/// value at a point in time, and copying eight `u64`s is cheaper than reasoning about when the
-/// driver may rewrite them.
+/// An owned snapshot of a port's I/O counters, as returned by [`Dev::stats`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PortStats {
     /// Packets successfully received.
@@ -1359,18 +1307,12 @@ pub struct PortStats {
     /// Bytes successfully transmitted.
     pub obytes: u64,
     /// Packets dropped by the hardware because no receive descriptor was free.
-    ///
-    /// This is the counter for "the port had it and the application was not keeping up".
     pub imissed: u64,
     /// Erroneous packets received.
     pub ierrors: u64,
     /// Packets that failed to transmit.
     pub oerrors: u64,
-    /// Receive mbuf allocation failures.
-    ///
-    /// Non-zero means the receive mempool ran dry: the PMD could not refill a descriptor, so the
-    /// port dropped traffic it had otherwise accepted. Distinct from [`imissed`](Self::imissed),
-    /// which is the application being too slow rather than the pool being too small.
+    /// Receive mbuf allocation failures, counted separately from [`Self::imissed`].
     pub rx_nombuf: u64,
 }
 
@@ -1408,34 +1350,15 @@ impl<'eal, S: Open> Dev<'eal, S> {
         }
     }
 
-    /// The device's I/O statistics, as the PMD reports them.
-    ///
-    /// These are the counters that separate "the wire lost it" from "we lost it", and there is no
-    /// other way to tell those apart: the kernel's `ethtool -S` sees only its own queues, so on a
-    /// bifurcated driver such as mlx5 it reports a frame delivered to the port while saying nothing
-    /// about whether any DPDK queue received it. [`PortStats::imissed`] and
-    /// [`PortStats::rx_nombuf`] are where a frame that reached the port and never reached a
-    /// Whether the port has carrier, and at what speed.
-    ///
-    /// Worth having because a port with no link is otherwise **invisible**: DPDK will configure a
-    /// device, set up every queue and report it started with the link down, and the datapath then
-    /// runs perfectly while carrying nothing. Nothing in the driver is wrong in that state, so
-    /// nothing in the driver complains.
-    ///
-    /// For a bifurcated device this most often means the kernel netdev is administratively down --
-    /// `mlx5_core` keeps the netdev, and the physical port follows its state. Moving an interface
-    /// between network namespaces clears `IFF_UP`, which is exactly how a port ends up here.
-    ///
-    /// The `_nowait` form deliberately: this is for reporting, and the blocking variant can sit for
-    /// up to nine seconds per port waiting for autonegotiation.
+    /// Current carrier, speed, and duplex state, without waiting for autonegotiation.
+    /// A successfully started port may still have no carrier.
     ///
     /// # Errors
-    ///
     /// Returns the driver's [`ErrorCode`]; a PMD without link support reports `ENOTSUP`.
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn link(&self) -> Result<LinkStatus, ErrorCode> {
         let mut raw: dpdk_sys::rte_eth_link = unsafe { core::mem::zeroed() };
-        // SAFETY: `raw` is live for the call and the port index comes from a started device.
+        // SAFETY: `raw` is live for the call and the port index belongs to an open device.
         let ret =
             unsafe { dpdk_sys::rte_eth_link_get_nowait(self.info.index().as_u16(), &raw mut raw) };
         if ret != 0 {
@@ -1452,12 +1375,10 @@ impl<'eal, S: Open> Dev<'eal, S> {
         })
     }
 
-    /// receive burst is accounted for.
+    /// Read the device's I/O counters, including drops before packets reach a receive burst.
     ///
     /// # Errors
-    ///
-    /// Returns the driver's [`ErrorCode`] if the counters could not be read; PMDs that do not
-    /// implement statistics report `ENOTSUP`.
+    /// Returns the driver's [`ErrorCode`]; a PMD without statistics support reports `ENOTSUP`.
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn stats(&self) -> Result<PortStats, ErrorCode> {
         let mut raw: dpdk_sys::rte_eth_stats = unsafe { core::mem::zeroed() };
@@ -1688,39 +1609,24 @@ pub enum SocketIdLookupError {
 mod rss_conf_tests {
     use super::*;
 
-    /// mlx5's `flow_type_rss_offloads`: `~MLX5_RSS_HF_MASK` from `mlx5_defs.h`.
-    ///
-    /// The `L3_SRC_ONLY`/`L3_DST_ONLY`/`L4_*_ONLY` modifier bits mlx5 also advertises are left out.
-    /// They only narrow a hash type that is already selected, so they cannot change the
-    /// intersection under test -- and `RTE_ETH_RSS_L3_SRC_ONLY` is `RTE_BIT64(63)`, which bindgen
-    /// does not emit into `dpdk-sys` at all (`RTE_ETH_RSS_L3_DST_ONLY`, one bit lower, comes
-    /// through fine). That gap is real but belongs to `dpdk-sys`, not here.
+    /// mlx5 hash types from `mlx5_defs.h`, omitting modifiers outside our requested mask.
     const MLX5_RSS_OFFLOADS: u64 = (RTE_ETH_RSS_IP as u64)
         | (RTE_ETH_RSS_UDP as u64)
         | (RTE_ETH_RSS_TCP as u64)
         | (RTE_ETH_RSS_ESP as u64);
 
-    /// The key length `rte_eth_dev_configure` demands must match what mlx5 reports
-    /// (`MLX5_RSS_HASH_KEY_LEN`). A key of any other length is rejected outright, so this is not a
-    /// style preference.
     #[test]
     fn the_default_key_is_the_length_mlx5_requires() {
         assert_eq!(RssConf::DEFAULT_KEY.len(), 40);
     }
 
-    /// On mlx5 every hash type this crate asks for is supported, so the intersection must not
-    /// silently narrow. If it does, flows stop spreading by L4 port and every connection between
-    /// one pair of hosts collapses onto a single worker.
     #[test]
     fn mlx5_supports_every_hash_type_we_ask_for() {
         let conf = RssConf::from_hash_types(MLX5_RSS_OFFLOADS).expect("mlx5 supports RSS");
         assert_eq!(conf.hf, RssConf::DEFAULT_HASH_TYPES);
         assert_eq!(conf.key, None);
 
-        // Named individually rather than left to the equality above, which compares the
-        // intersection against the wish list and so would still hold if the wish list itself were
-        // narrowed. These are the bits whose loss is operationally visible: without L4, every
-        // connection between one pair of hosts hashes alike and lands on a single worker.
+        // Catch accidental narrowing of DEFAULT_HASH_TYPES itself.
         for (bit, what) in [
             (RTE_ETH_RSS_IP as u64, "L3 addresses"),
             (RTE_ETH_RSS_TCP as u64, "TCP ports"),
@@ -1730,9 +1636,6 @@ mod rss_conf_tests {
         }
     }
 
-    /// A device that hashes on L3 but not L4 must still get an RSS configuration -- just a
-    /// narrower one. Erroring instead would refuse to spread traffic at all on a device that can
-    /// perfectly well spread it by address.
     #[test]
     fn an_l3_only_device_gets_a_narrowed_configuration() {
         let conf = RssConf::from_hash_types(RTE_ETH_RSS_IP as u64).expect("L3 hashing is enough");
@@ -1740,29 +1643,17 @@ mod rss_conf_tests {
         assert_eq!(conf.hf & RTE_ETH_RSS_TCP as u64, 0);
     }
 
-    /// The emulated NICs (e1000, e1000e, virtio without multi-queue negotiation) report no hash
-    /// functions at all. Handing such a device an RSS configuration makes `rte_eth_dev_configure`
-    /// fail outright, so this case must produce `None` rather than an empty-but-present config.
     #[test]
     fn a_device_that_cannot_hash_gets_no_configuration() {
         assert_eq!(RssConf::from_hash_types(0), None);
     }
 
-    /// A device advertising only hash types we do not ask for is the same case: the intersection
-    /// is empty, and an `rss_hf` of zero under `RTE_ETH_MQ_RX_RSS` would configure a hash over
-    /// nothing, sending every packet to queue 0 while looking configured.
     #[test]
     fn an_empty_intersection_is_not_a_configuration() {
         assert_eq!(RssConf::from_hash_types(RTE_ETH_RSS_ESP as u64), None);
     }
 
-    /// The standard Toeplitz key is deliberately **not** symmetric, and this test exists to say so
-    /// where someone would otherwise "fix" it.
-    ///
-    /// A key of period two (`0x6d5a` repeated) would make `H(src, dst) == H(dst, src)`. That is
-    /// not wanted here: mlx5 aside, a NAT'd flow's reverse packet carries the translated tuple
-    /// rather than the reversed one, so symmetry would buy nothing while measurably worsening the
-    /// hash's distribution. See the note on [`RssConf`].
+    // A period-two key makes reversed tuples hash alike; NAT needs no such guarantee.
     #[test]
     fn the_default_key_is_not_symmetric() {
         let (pairs, _) = RssConf::DEFAULT_KEY.as_chunks::<2>();

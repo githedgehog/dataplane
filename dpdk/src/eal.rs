@@ -225,24 +225,9 @@ pub fn main_lcore_arg() -> String {
 /// 4. The EAL has already been initialized.
 #[cold]
 pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
-    // Refuse, loudly and early, to bring the EAL up against a model-checker backend.
-    //
-    // Nothing below this line can be modelled: shuttle multiplexes its threads onto one OS thread
-    // (it is built on `corosensei` coroutines) while every piece of DPDK per-thread state is
-    // OS-thread-local, `Mbuf`/`Eal`/`LCore` are `!Send` about a thread notion the checker
-    // redefines, and DPDK is uninstrumented C whose real synchronisation a checker cannot see.
-    // See `crate::sync` for the long form.
-    //
-    // This is a runtime refusal rather than a `compile_error!` in this crate's root, which was
-    // tried: the two lines of `concurrency::with_shuttle!`/`with_loom!` do work and need no new
-    // features, but `dataplane-nat` carries `dpdk` as a **dev-dependency** for its `#[with_eal]`
-    // tests, and Cargo cannot make a dependency conditional on a feature -- so a compile error here
-    // takes `nat`'s genuine shuttle coverage down with it. Untangling that means moving nat's
-    // EAL-requiring tests into their own package; until then, failing here is the honest gate.
-    //
-    // The message matters: without it the symptom is a bare `ExecutionState is not set` from
-    // somewhere deep inside a facade primitive, which reads like a bug in the test rather than a
-    // category error.
+    // DPDK's OS thread-local state and C synchronization cannot be modelled; see `crate::sync`.
+    // Gate EAL initialization rather than compilation so packages with a DPDK dev-dependency
+    // can still model-check their pure Rust code.
     concurrency::with_shuttle! {
         panic!(
             "the DPDK EAL cannot be initialised under the shuttle backend: DPDK's per-thread state \
@@ -369,20 +354,9 @@ impl Drop for Eal {
         info!("waiting on EAL threads");
         unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
 
-        // `rte_eal_mp_wait_lcore` waits for EAL lcores (`ROLE_RTE`) and **nothing else**. A thread
-        // registered with [`LCore`](crate::lcore::LCore) is `ROLE_NON_EAL`,
-        // so DPDK will neither wait for it nor warn about it -- and `rte_eal_cleanup` below calls
-        // `eal_lcore_var_cleanup` and `rte_eal_memory_detach`, after which, in DPDK's own words,
-        // "any DPDK pointers will become dangling". A registered thread still running past this
-        // point is therefore a use-after-free, and it would present as a segfault somewhere
-        // unrelated during shutdown.
-        //
-        // The Rust side already prevents this structurally: workers live in a
-        // `concurrency::thread::scope` which cannot return until every one is joined, and the ports
-        // they borrow are branded with this EAL's lifetime, so the compiler orders
-        // scope-ends-before-ports-drop-before-EAL-drops. This check exists because that ordering is
-        // a property of the *callers*, not of this type, and a future caller that registers a
-        // thread outside such a scope would get no diagnostic at all.
+        // DPDK waits for ROLE_RTE lcores, but LCore registers ROLE_NON_EAL threads.
+        // Callers must join those before cleanup detaches memory and frees per-lcore storage.
+        // Scoped workers borrowing EAL-branded ports satisfy this ordering.
         let stragglers = (0..dpdk_sys::RTE_MAX_LCORE)
             .filter(|id| unsafe {
                 dpdk_sys::rte_lcore_has_role(*id, dpdk_sys::rte_lcore_role_t::ROLE_NON_EAL) != 0

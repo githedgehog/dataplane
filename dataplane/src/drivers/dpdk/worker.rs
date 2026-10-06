@@ -60,15 +60,8 @@ impl<'p> Worker<'p> {
     ) {
         // Run flow and NAT timers on the management runtime until worker helpers replace it.
         let _runtime = timer_handle.enter();
-        // Register with the EAL before anything allocates. An unregistered thread reports
-        // `LCORE_ID_ANY`, and `rte_mempool_default_cache` returns NULL for that -- so every
-        // `alloc_bulk` and every mbuf free would go to the shared ring under atomics, on every
-        // burst, in both directions. The token releases the id however this thread ends; leaking
-        // one strands it for the life of the process.
-        //
-        // A worker that cannot register is left to run anyway. It is slower, not wrong: the
-        // mempool falls back to the ring, which is correct, just contended. Refusing to forward
-        // traffic over a performance property would be the worse failure.
+        // Registration enables per-lcore mempool caches and releases the id on return or unwind.
+        // If registration fails, allocation remains correct through the shared mempool ring.
         let _lcore = match LCore::register() {
             Ok(lcore) => Some(lcore),
             Err(e) => {
@@ -108,14 +101,10 @@ impl<'p> Worker<'p> {
         // Counters per port, flushed to that port's watchdog.
         let mut counters = vec![RxCounters::default(); self.ports.len()];
 
-        // The burst the pipeline works in, owned by this worker and reused for the life of the
-        // thread. Every stage borrows it, so a packet is rewritten where it lies instead of being
-        // moved from stage to stage, and the allocation happens once rather than once per poll.
+        // Reuse pipeline storage across polls; stages borrow and update packets in place.
         let mut burst: Vec<Packet<Mbuf<'p>>> = Vec::with_capacity(dpdk::mem::MBUF_BURST);
 
-        // Likewise for what the PMD hands back. `RxQueue::receive` returns its array by value,
-        // which is 64 slots copied on every poll whether or not anything arrived; owning one here
-        // and refilling it makes an empty poll cost nothing but the poll.
+        // Refill the receive array in place to avoid returning it by value on every poll.
         let mut rx_mbufs: MbufArray<'p> = MbufArray::new_empty();
 
         loop {

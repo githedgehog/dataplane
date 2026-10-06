@@ -522,12 +522,8 @@ mod tests {
     #[with_eal]
     #[test]
     fn classify_concurrent_arc_shared() {
-        // `std` rather than the concurrency facade, deliberately. This asserts that a built ACL
-        // context can be classified against from several **OS** threads at once, which is a
-        // property of DPDK's `rte_acl_classify` and of real hardware parallelism. Under a model
-        // checker the facade's `thread::spawn` yields coroutines multiplexed onto one OS thread,
-        // which would not exercise that at all -- and, since the DPDK side is uninstrumented C,
-        // there is nothing there for a checker to explore either. See `crate::sync`.
+        // Exercise parallel C classification on OS threads; model checkers cannot model DPDK.
+        // See `crate::sync`.
         use std::sync::Arc;
         // nosemgrep: rust-no-direct-std-thread-import
         use std::thread;

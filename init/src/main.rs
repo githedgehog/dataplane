@@ -316,36 +316,9 @@ async fn move_devices_to_netns(
     }
 }
 
-/// Bring every interface in the datapath namespace administratively up.
-///
-/// # Why this is needed at all
-///
-/// Moving an interface between network namespaces brings it **down**: the kernel's
-/// `dev_change_net_namespace` closes the device before it moves. It arrives in the new namespace
-/// with `IFF_UP` clear, and nothing put it back.
-///
-/// For a bifurcated device that is the whole ballgame. `mlx5_core` keeps the netdev while the PMD
-/// attaches through RDMA, and the physical port follows the *netdev's* administrative state -- so
-/// DPDK will configure the port, set up every queue, report "started", and move not one packet.
-/// Nothing in the datapath complains, because from DPDK's side nothing is wrong.
-///
-/// The kernel driver had the same hole and did not show it: an init container ran
-/// `ip l set dev <iface> up` in shell, guarded by `if driver == "kernel"`, so only the DPDK path
-/// ever went without. Doing it here covers both, and puts it next to the move that made it
-/// necessary.
-///
-/// # Why by index rather than by name
-///
-/// A device that came through devlink was torn down and reprobed in the new namespace, and it does
-/// not have to come back under the name it left with. Everything in this namespace was put there
-/// by this process, so bringing up whatever is in it is both sufficient and immune to a rename.
-///
-/// # Loopback included
-///
-/// `lo` is not an exception, though it is easy to assume it is. A fresh network namespace gets a
-/// loopback device but the kernel leaves it **down** -- `<LOOPBACK> state DOWN`, with `IFF_UP`
-/// clear -- so anything in this namespace that binds or connects to `127.0.0.1` fails until
-/// somebody raises it. Every container runtime does this for the same reason.
+/// Raise every interface in the init-owned datapath namespace, including loopback.
+/// Namespace moves clear `IFF_UP`, and bifurcated devices need the kernel netdev up for carrier.
+/// Enumerate by ifindex because devlink reload may change interface names.
 async fn bring_up_interfaces_in_netns() -> Result<(), String> {
     let (connection, handle, _) =
         rtnetlink::new_connection().map_err(|e| format!("could not open a netlink socket: {e}"))?;
@@ -411,11 +384,7 @@ async fn bring_up_interfaces_in_netns() -> Result<(), String> {
     result
 }
 
-/// Run [`bring_up_interfaces_in_netns`] inside `netns`, on a thread that can be spared.
-///
-/// `setns` is per-thread and there is no going back, so this cannot happen on the caller: the rest
-/// of init still has to see the namespace it started in. A scratch thread enters, brings the
-/// interfaces up, and ends there.
+/// Raise datapath interfaces on a temporary thread, preserving the caller's namespace.
 fn bring_up_datapath_interfaces(netns: &NetworkNamespace) -> Result<(), String> {
     std::thread::scope(|scope| {
         scope

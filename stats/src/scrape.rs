@@ -12,15 +12,7 @@ pub(crate) type SeriesId = (String, Labels);
 
 pub(crate) type Series = BTreeMap<SeriesId, f64>;
 
-/// Counters are kept separately from gauges and as `u64`.
-///
-/// Not folded into [`Series`] as `f64`: a counter is exactly an integer, and the port counters
-/// this records are device totals that can legitimately exceed `2^53`, where `f64` silently stops
-/// being able to represent consecutive values.
-///
-/// Worth knowing when reading older tests against this recorder: until the `port_*` family needed
-/// them, counters were recorded **nowhere**. `register_counter` returned `metrics::Counter::noop()`,
-/// so any assertion about a counter passed whatever the code under test did.
+/// Integer counters preserve values above the exact range of f64 gauges (2^53).
 pub(crate) type Counters = BTreeMap<SeriesId, u64>;
 
 pub(crate) type Shape = (String, Vec<String>);
@@ -42,10 +34,7 @@ impl Scrape {
         self.held().get(&(name.to_string(), labels)).copied()
     }
 
-    /// The current value of a counter series, or `None` if it was never registered.
-    ///
-    /// Separate from [`get`](Self::get), which reads gauges. Asking for a counter through `get`
-    /// returns `None` rather than silently reading a different series.
+    /// The current counter value, or `None` if never registered. [`Self::get`] reads gauges.
     pub(crate) fn counter(&self, name: &str, labels: &[(&str, &str)]) -> Option<u64> {
         let labels: Labels = labels
             .iter()
@@ -125,12 +114,7 @@ impl metrics::GaugeFn for Cell {
     }
 }
 
-/// A counter cell.
-///
-/// `absolute` takes the **maximum** rather than overwriting, which is the contract `CounterFn`
-/// documents and what `AtomicU64` (the reference implementation every real recorder uses) does:
-/// a counter may not go backwards, so a late-arriving smaller reading must not lower it. A test
-/// recorder that simply assigned would accept publishing code that a real recorder rejects.
+/// Counter storage whose `absolute` operation takes the maximum, as `CounterFn` requires.
 #[derive(Debug)]
 struct CounterCell {
     at: SeriesId,

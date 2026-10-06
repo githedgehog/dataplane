@@ -928,11 +928,7 @@ impl<'eal, const N: usize> MbufArray<'eal, N> {
         self.bufs.try_push(mbuf).map_err(|err| err.element())
     }
 
-    /// Free every mbuf held, in one call, and leave the array empty.
-    ///
-    /// Shared by [`Drop`] and [`MbufArray::refill_with`]. `ArrayVec::clear` would also be
-    /// correct -- each `Mbuf` frees itself exactly once -- but it frees them one at a time, and
-    /// the whole point of holding them in an array is that the PMD can take them back in bulk.
+    /// Free every held mbuf in bulk and leave the array empty.
     fn free_all(&mut self) {
         if self.bufs.is_empty() {
             return;
@@ -952,29 +948,17 @@ impl<'eal, const N: usize> MbufArray<'eal, N> {
         }
     }
 
-    /// Empty the array into an iterator without moving the array itself.
-    ///
-    /// [`IntoIterator`] takes `self` by value, which for a 64-slot array is half a kilobyte
-    /// moved every time a caller wants to walk a burst. A worker that owns one array and refills
-    /// it per poll needs to drain it in place instead.
+    /// Drain mbufs without moving the reusable array itself.
     pub fn drain_all(&mut self) -> arrayvec::Drain<'_, Mbuf<'eal>, N> {
         self.bufs.drain(..)
     }
 
-    /// Hand the array's whole storage to `fill`, and take its word for how many slots it wrote.
-    ///
-    /// This exists so a receive can write mbuf pointers straight into the array rather than into
-    /// a stack buffer that is then copied in and returned by value. On a poll that receives
-    /// nothing those copies are the entire cost of the call, and an idle worker spent half of all
-    /// its cycles on them.
-    ///
-    /// Anything already in the array is dropped first, which frees those mbufs.
+    /// Free held mbufs, then let `fill` write new pointers directly into the array's storage.
     ///
     /// # Safety
-    ///
-    /// `fill` must write `n` live, non-null mbufs, owned solely by this array from then on, into
-    /// the first `n` slots of the buffer it is given, where `n` is what it returns. It is told
-    /// the capacity and must not write beyond it.
+    /// `fill` must return `n` no greater than the supplied capacity and initialize the first `n`
+    /// slots with live, non-null mbufs whose ownership transfers to this array. It must not write
+    /// beyond that capacity.
     pub(crate) unsafe fn refill_with(
         &mut self,
         fill: impl FnOnce(*mut *mut dpdk_sys::rte_mbuf, u16) -> usize,
@@ -1129,16 +1113,7 @@ mod pool_tests {
         assert_ne!(a, b);
     }
 
-    /// Refilling an array that still holds mbufs returns the old ones exactly once.
-    ///
-    /// `refill_with` exists to avoid copying the array, so it writes over storage that may still
-    /// be occupied. Forgetting to free what was there leaks it, and "it did not crash" would pass
-    /// on that; occupancy accounting catches it, and break-testing confirms it does.
-    ///
-    /// It does *not* catch the opposite mistake. Freeing the same mbufs twice leaves
-    /// `rte_mempool_in_use_count` unchanged here, not below the baseline -- verified by removing
-    /// the `set_len(0)` from `free_all`, which makes every array double-free and makes no test in
-    /// this module fail. Detecting a double free needs a mempool built with debug checks, which this one is not.
+    // Occupancy detects leaks here, but detecting double frees requires DPDK debug checks.
     #[test]
     #[with_eal]
     fn refilling_a_full_array_frees_the_old_mbufs_exactly_once() {
@@ -1186,12 +1161,6 @@ mod pool_tests {
         assert_eq!(pool.in_use(), baseline, "and the four go back too");
     }
 
-    /// `drain_all` empties the array in place and hands ownership to the caller.
-    ///
-    /// The point of it is that the array is not moved, so the mbufs have to leave by the
-    /// iterator rather than with the array. What this pins down is that the emptied array owns
-    /// nothing afterwards and the drained mbufs are still live -- see the note above on what
-    /// occupancy accounting can and cannot see.
     #[test]
     #[with_eal]
     fn drain_all_empties_in_place_and_transfers_ownership() {
@@ -1255,21 +1224,13 @@ mod prefetch_budget {
     use net::udp::Udp;
     use net::vxlan::Vxlan;
 
-    /// Byte offset at which the *inner* IPv4 header of a VXLAN frame begins.
-    ///
-    /// Derived from the header types rather than written down, so that if any of them changes
-    /// the budget below is re-checked instead of quietly going stale.
+    /// Inner IPv4 header offset derived from the encapsulation header sizes.
     const INNER_IP_OFFSET: usize = Eth::HEADER_LEN.get() as usize      // outer ethernet
         + Ipv4::MIN_LEN.get() as usize                                  // outer IPv4
         + Udp::MIN_LENGTH.get() as usize                                // outer UDP
         + Vxlan::MIN_LENGTH.get() as usize                              // VXLAN
         + Eth::HEADER_LEN.get() as usize; // inner ethernet
 
-    /// The prefetch has to reach the headers the pipeline actually reads.
-    ///
-    /// This is the whole reason `PREFETCH_HEAD_LINES` is 2. The inner IPv4 header of a VXLAN
-    /// frame starts at byte 64 -- exactly one cache line in -- so a single-line prefetch warms
-    /// the encapsulation and leaves the addresses NAT rewrites and forwarding reads cold.
     #[test]
     fn prefetch_span_covers_the_inner_ip_header() {
         assert_eq!(

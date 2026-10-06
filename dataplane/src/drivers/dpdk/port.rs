@@ -25,26 +25,12 @@ const RX_DESCRIPTORS: u16 = 1024;
 /// Transmit descriptors per queue.
 const TX_DESCRIPTORS: u16 = 1024;
 
-/// Mbufs per worker, covering RX descriptors, pipeline processing, and pending TX.
+/// Mbufs per RX descriptor, including room for pipeline processing and pending TX.
 const POOL_MBUFS_PER_RX_DESCRIPTOR: u32 = 4;
 
-/// Decide the RSS configuration for a port, warning if the device cannot spread at all.
-///
-/// RSS is what actually distributes received frames across the per-worker receive queues. Without
-/// it every frame lands on queue 0 and exactly one worker does all the work, however many were
-/// configured. The key is the driver's default and the hash covers whatever subset of L3
-/// addresses and L4 ports the device advertises.
-///
-/// Deliberately *not* symmetric. Two reasons, and the second is the one that settles it: mlx5
-/// rejects any hash function but the default at `rte_eth_dev_configure`, so symmetric Toeplitz is
-/// reachable only through the `rte_flow` RSS action (see [`RssConf`]); and a NAT'd flow's reverse
-/// packet carries the *translated* tuple rather than the reversed one, so no symmetry property the
-/// NIC could have would land a flow's two halves on the same worker. It does not need to: flow
-/// state lives in one `FlowTable` shared by every worker, so any worker can service any packet.
-///
-/// Returns `None` for a device that advertises no RSS hash functions -- how the emulated NICs
-/// (e1000, e1000e, virtio without multi-queue negotiation) report. Such a port still works; it
-/// simply cannot use more than one worker.
+/// Use the driver's RSS key and supported L3/L4 hash types; warn if no requested type is supported.
+/// Symmetric hashing would not co-locate NAT's translated reverse tuples. Shared flow state
+/// lets any worker process either direction.
 fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
     let rss = RssConf::supported_on(info);
     if rss.is_none() && num_workers > 1 {
@@ -57,15 +43,8 @@ fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
     rss
 }
 
-/// Say what the port's link is doing, loudly when it is down.
-///
-/// Separate from `bring_up` only to keep that function within its line budget; it belongs to it.
-///
-/// A port with no carrier is otherwise indistinguishable from a working one: every configuration
-/// step succeeds, the driver reports "started", the workers poll happily, and nothing arrives.
-/// Nothing is wrong from DPDK's side, so nothing in the driver complains. For a bifurcated device
-/// the usual cause is the kernel netdev being administratively down -- the port follows the netdev,
-/// and moving an interface between network namespaces clears `IFF_UP`.
+/// Report carrier state separately from successful device startup.
+/// On bifurcated devices, a down kernel netdev can leave a started DPDK port without carrier.
 fn report_link(
     dev: &Dev<'_, Started>,
     index: dpdk::dev::DevIndex,
@@ -93,13 +72,7 @@ fn report_link(
     }
 }
 
-/// How deep to make each receive queue, honouring `/rxd=N` and the device's own ceiling.
-///
-/// Split out to keep `bring_up` within its line budget, as `pool_shape` was.
-///
-/// `rte_eth_rx_queue_setup` rejects a count above `rx_desc_lim.nb_max` outright, so a port would
-/// fail to come up rather than run with a shallower ring -- which is the worse of the two
-/// outcomes, since a shallow ring drops frames and a port that never starts drops all of them.
+/// Honor `/rxd=N`, capped at the device's advertised maximum.
 fn rx_descriptor_count(
     info: &DevInfo<'_>,
     index: dpdk::dev::DevIndex,
@@ -175,9 +148,7 @@ impl<'eal> Port<'eal> {
                 RxOffload::NONE
             },
             tx_offloads: TxOffloadConfig::none(),
-            // From the configuration when it named one. Left `None` the device takes DPDK's
-            // default of 1500, which on a 9036 fabric stops every connection the moment slow
-            // start reaches a full-size segment.
+            // An omitted MTU uses the device-clamped default; jumbo frames require an explicit MTU.
             mtu,
             rss,
         };
@@ -278,17 +249,10 @@ impl<'eal> Port<'eal> {
         })
     }
 
-    /// Read the counters the device keeps for this port.
-    ///
-    /// These are the port's own totals, cumulative since it started, and they see what the
-    /// dataplane cannot: a frame dropped for want of a receive descriptor
-    /// ([`rx_missed`](PortCounters::rx_missed)) or for want of an mbuf
-    /// ([`rx_no_mbuf`](PortCounters::rx_no_mbuf)) never reaches a worker and so appears in no
-    /// pipeline counter at all. Without them an overloaded dataplane and an idle wire look alike.
+    /// Read cumulative device counters, including drops before packets reach a worker.
     ///
     /// # Errors
-    ///
-    /// Returns the driver's error code; a PMD that implements no statistics reports `ENOTSUP`.
+    /// Returns the driver's error code; unsupported statistics report `ENOTSUP`.
     pub(crate) fn counters(&self) -> Result<PortCounters, ErrorCode> {
         let stats = self.dev.stats()?;
         Ok(PortCounters {

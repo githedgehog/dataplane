@@ -81,23 +81,8 @@ struct LCoreIndexIterator {
     inner: LCoreIdIterator,
 }
 
-/// A thread spawned and registered with the EAL for its lifetime.
-///
-/// # This is not a DPDK "service core"
-///
-/// It was called `ServiceThread`, which invited exactly the wrong reading. DPDK has a distinct and
-/// unrelated concept: a **service core** is an lcore with `ROLE_SERVICE` that runs registered
-/// service *functions* (`rte_service_component_register`) on a scheduler DPDK owns. This type is
-/// nothing of the kind -- it is an ordinary Rust thread that happens to hold an
-/// [`LCore`], and it is `ROLE_NON_EAL`. `rte_service_lcore_add` would refuse it.
-///
-/// The two are not interchangeable and the names should not be either.
-///
-/// # What it is for
-///
-/// It spawns a thread, registers it, and **lends the resulting [`LCore`] token to the body**. That
-/// is the whole job: the body cannot run without a registration, cannot outlive it, and cannot move
-/// it elsewhere, so every API gated on `&LCore` is reachable inside and nowhere outside.
+/// A scoped OS thread registered as `ROLE_NON_EAL` for its lifetime.
+/// The body borrows its [`LCore`] token; this is not a DPDK service core.
 #[allow(unused)]
 pub struct RegisteredThread<'scope> {
     thread_id: RteThreadId,
@@ -128,9 +113,7 @@ pub struct LCore {
 /// }
 /// ```
 ///
-/// Nor can a *reference* to it, which is what makes `&LCore` proof about the calling thread rather
-/// than about some other thread that once registered. This is the property `!Sync` buys, and it is
-/// the one that would be easy to lose by deriving something careless.
+/// References cannot cross threads either: `&LCore` proves the calling thread is registered.
 ///
 /// ```compile_fail,E0277
 /// # use dataplane_dpdk::lcore::LCore;
@@ -146,21 +129,16 @@ impl LCore {
     ///
     /// # Errors
     ///
-    /// Returns `EEXIST` if this thread already has an lcore id, and the EAL's `rte_errno`
-    /// (typically `ENOMEM`) if no id was available.
+    /// Returns `EEXIST` if already registered, `EINVAL` if EAL is not initialized, or
+    /// the EAL's `rte_errno` (typically `ENOMEM`) if no id is available.
     pub fn register() -> Result<LCore, ErrorCode> {
-        // `rte_thread_register` does **not** check whether the calling thread already has an lcore
-        // id -- it allocates a fresh non-EAL one and `__rte_thread_init` overwrites the thread's
-        // id with it. Doing that on an EAL lcore (the main one, say) silently costs that thread its
-        // real identity, and the matching unregister then leaves it as `LCORE_ID_ANY` rather than
-        // restoring what it was. Nothing downstream would report an error; the thread would simply
-        // stop being the main lcore. Refuse instead.
+        // DPDK overwrites an existing lcore id without restoring it on unregister.
+        // Reject duplicate registration before it can corrupt the thread's identity.
         if LCoreId::current().as_u32() != u32::MAX {
             warn!("this thread is already an lcore; refusing to register it a second time");
             return Err(ErrorCode::parse_i32(-errno::EEXIST));
         }
-        // SAFETY: no preconditions; the EAL is initialised by construction, since nothing can hold
-        // an `Eal` handle to reach this otherwise.
+        // SAFETY: this thread is unregistered. DPDK checks that EAL is initialized.
         let ret = unsafe { dpdk_sys::rte_thread_register() };
         if ret != 0 {
             let errno = unsafe { dpdk_sys::rte_errno_get() };
@@ -215,10 +193,7 @@ impl RegisteredThread<'_> {
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, move || {
                 info!("Initializing RTE Lcore");
-                // The registration is created here and lent to `run`, which is the point of this
-                // type: the body cannot run without one, cannot keep it afterwards, and cannot send
-                // it anywhere. Everything gated on `&LCore` is reachable inside `run` and nowhere
-                // else.
+                // Keep the registration on this thread until the body returns or unwinds.
                 let lcore = LCore::register().unwrap_or_else(|e| {
                     Eal::fatal_error(format!("could not register an EAL thread: {e:?}"))
                 });
@@ -432,18 +407,11 @@ mod tests {
         );
     }
 
-    /// The guard registers, so a thread holding one has a real lcore id.
-    ///
-    /// That id is the whole point: `rte_mempool_default_cache` returns NULL for `LCORE_ID_ANY`, so
-    /// without it a thread allocates and frees mbufs straight out of the shared ring.
     #[test]
     #[with_eal]
     fn the_guard_registers_the_calling_thread() {
-        // Spawned deliberately. Whether the *harness's* thread is registered is not a property of
-        // this code: under `cargo test` a test body runs on a spawned thread and is unregistered,
-        // while under `nextest` (one process per test) it runs on the thread that initialised the
-        // EAL and so *is* the main lcore. A freshly spawned thread is unregistered under both, and
-        // is what the real callers are.
+        // A fresh thread is unregistered under both cargo test and nextest; the harness
+        // thread may already be the EAL's main lcore.
         std::thread::spawn(|| {
             assert_eq!(
                 LCoreId::current().as_u32(),
@@ -471,12 +439,6 @@ mod tests {
         .expect("the test thread panicked");
     }
 
-    /// Registering a thread that already has an lcore id is refused.
-    ///
-    /// `rte_thread_register` itself does not check: it allocates a fresh non-EAL id and overwrites
-    /// the thread's with it, so calling it on the main lcore silently costs that thread its
-    /// identity, and the matching unregister then leaves it `LCORE_ID_ANY` rather than restoring
-    /// lcore 0. Nothing downstream reports an error, which is what makes it worth refusing here.
     #[test]
     #[with_eal]
     fn a_thread_that_is_already_an_lcore_is_refused() {
@@ -500,13 +462,7 @@ mod tests {
         .expect("the test thread panicked");
     }
 
-    /// Dropping the guard returns the id to the pool, so registrations can be made indefinitely.
-    ///
-    /// This is the property the guard exists for. A leaked registration strands an id for the life
-    /// of the process, and there are only `RTE_MAX_LCORE` of them -- so a worker that is restarted
-    /// enough times without releasing would eventually be unable to register at all. Iterating
-    /// well past any plausible `RTE_MAX_LCORE` is what makes a leak show up as a failure here
-    /// rather than as an exhaustion months later.
+    // Exceed RTE_MAX_LCORE over successive registrations to detect leaked ids.
     #[test]
     #[with_eal]
     fn registrations_are_released_and_can_be_reused() {
@@ -549,11 +505,6 @@ mod tests {
         .expect("the test thread panicked");
     }
 
-    /// The id a token reports stays put for its whole life.
-    ///
-    /// It is cached at construction rather than read on each call, so this is the test that says
-    /// the cache cannot go stale -- which it could if a token were ever reachable from a thread
-    /// other than the one that made it.
     #[test]
     #[with_eal]
     fn a_token_reports_a_stable_id() {
@@ -569,15 +520,7 @@ mod tests {
         .expect("the test thread panicked");
     }
 
-    /// Concurrent registrations get distinct lcore ids.
-    ///
-    /// The allocator hands out the first `ROLE_OFF` slot under a write lock; if that were racy two
-    /// threads could share an id, and an lcore id is the index into per-lcore state -- most
-    /// visibly a mempool's `local_cache`, where two threads sharing a cache would corrupt it.
-    ///
-    /// Deliberately a small number rather than a saturating one. Capacity is process-global, and
-    /// under `cargo test` (which shares one process across tests, unlike nextest) a test that
-    /// consumed every id would starve whatever ran beside it, so exhaustion is not tested here.
+    // Avoid exhausting the process-global id pool shared with other tests.
     #[test]
     #[with_eal]
     fn concurrent_registrations_get_distinct_ids() {
@@ -616,10 +559,6 @@ mod tests {
         );
     }
 
-    /// An unwinding thread still releases its id.
-    ///
-    /// The guard is a `Drop` impl precisely so that a panicking worker -- the case most likely to
-    /// be retried, and so the one where exhaustion would compound -- does not strand its id.
     #[test]
     #[with_eal]
     fn a_panicking_thread_releases_its_registration() {

@@ -81,30 +81,11 @@ pub enum PortArg {
 pub struct InterfaceArg {
     pub interface: InterfaceName,
     pub port: Option<PortArg>,
-    /// MTU to configure the port with, when the configuration named one.
-    ///
-    /// Spelled `/mtu=N` on the command line rather than `,mtu=N`, because clap splits this
-    /// argument's values on commas before the parser sees them.
-    ///
-    /// `None` leaves the driver's default, which for DPDK is 1500 -- and on a fabric running
-    /// 9036 that is a path-MTU black hole rather than a slow link: the handshake and every small
-    /// packet pass, then the first full-size segment is untransmittable and the connection stops
-    /// dead with its window collapsed to a single segment. The kernel driver never showed this,
-    /// because an init container ran `ip l set mtu` in shell for it.
+    /// Requested MTU, specified as `/mtu=N`; commas separate interfaces.
+    /// If omitted, DPDK uses its device-clamped default and the kernel driver keeps the current MTU.
     pub mtu: Option<u16>,
-    /// Receive descriptors per queue, when the configuration named a count.
-    ///
-    /// Spelled `/rxd=N`, for the same reason as `/mtu=N`.
-    ///
-    /// This is how much traffic a queue can absorb while nothing is polling it: at a worker's
-    /// ~1.2 Mpps, the default 1024 is about 850 microseconds.
-    ///
-    /// Worth reaching for only with evidence. Sweeping 512, 1024 and 4096 on the bench, at both
-    /// 16 and 128 streams, moved throughput by 1.5% -- inside noise -- with the receive path
-    /// never above 2.2% of cycles. Depth is not free either: the mbuf pool scales with it, and at
-    /// a 9100 MTU 4096 descriptors is ~610 MB per port at four workers.
-    ///
-    /// Clamped to what the device reports it can take.
+    /// DPDK receive descriptors per queue, specified as `/rxd=N` and capped at the device maximum.
+    /// Deeper rings absorb longer polling gaps and require larger mbuf pools.
     pub rx_descriptors: Option<u16>,
 }
 
@@ -153,14 +134,8 @@ impl FromStr for PortArg {
 impl FromStr for InterfaceArg {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        // An optional `/mtu=N` suffix, so `name=pci@0000:02:01.0` keeps working untouched and
-        // `name=pci@0000:02:01.0/mtu=9036` sets the port's MTU.
-        //
-        // **Not a comma.** This argument is declared with clap's `value_delimiter = ','`, so a
-        // comma is consumed by clap before this parser is ever called: the value arrives split in
-        // two and the second half fails as an interface name. `/` cannot appear in a PCI address
-        // or a kernel interface name, so it is unambiguous here.
-        // `/rxd=N` is stripped first so it may follow `/mtu=N` in either order.
+        // Slashes separate options because clap consumes commas between interfaces.
+        // Extract /rxd=N first, preserving a following /mtu=N so either order works.
         let (input, rx_descriptors) = match input.split_once("/rxd=") {
             Some((head, value)) => {
                 // A trailing `/mtu=...` would otherwise be swallowed into the number.
@@ -1536,14 +1511,15 @@ pub struct CmdArgs {
         value_name = "interface name",
         value_parser=InterfaceArg::from_str,
         value_delimiter=',',
-        help = "Interface name mapping, with syntax INTERFACE=DISCRIMINANT@{PCI,IFNAME}[/mtu=N]. Two discriminants are possible: pci and kernel.
+        help = "Interface name mapping, with syntax INTERFACE=DISCRIMINANT@{PCI,IFNAME}[/mtu=N][/rxd=N]. Two discriminants are possible: pci and kernel.
 Pci should be followed by a PCI address. Kernel should be followed by a valid kernel interface name.
-An optional /mtu=N sets the port's MTU; without it the driver's default is used, which for DPDK is 1500.
+Optional /mtu=N sets the port MTU. If omitted, DPDK uses 1500 clamped to device limits; kernel interfaces keep their current MTU.
+Optional /rxd=N sets the DPDK receive descriptors per queue, capped at the device maximum.
 Examples:
    --interface eth0=pci@0000:02:01.0
    --interface eth0=pci@0000:02:01.0/mtu=9036
    --interface eth1=kernel@enp2s1
-Note: multiple interfaces can be specified separated by commas and no spaces, which is why the MTU suffix uses a slash"
+Separate interfaces with commas and options with slashes."
     )]
     interface: Vec<InterfaceArg>,
 
@@ -2127,7 +2103,6 @@ mod interface_arg_mtu_test {
     use super::{CmdArgs, InterfaceArg, PortArg};
     use std::str::FromStr;
 
-    /// The existing syntax must keep working, MTU absent.
     #[test]
     fn an_interface_without_an_mtu_parses_as_before() {
         let arg = InterfaceArg::from_str("enp2s1np0=pci@0000:02:01.0").expect("should parse");
@@ -2136,7 +2111,6 @@ mod interface_arg_mtu_test {
         assert_eq!(arg.mtu, None, "absent means the driver's default, not 0");
     }
 
-    /// And the suffix sets it without disturbing the PCI address, which is full of colons.
     #[test]
     fn an_mtu_suffix_is_parsed_and_the_address_survives() {
         let arg =
@@ -2149,20 +2123,13 @@ mod interface_arg_mtu_test {
         }
     }
 
-    /// A kernel interface takes one too, since both drivers have the same hole.
     #[test]
     fn a_kernel_interface_takes_an_mtu() {
         let arg = InterfaceArg::from_str("eth0=kernel@eth0/mtu=1500").expect("should parse");
         assert_eq!(arg.mtu, Some(1500));
     }
 
-    /// The suffix must survive **clap**, not just this parser.
-    ///
-    /// The first attempt at this used `,mtu=N` and passed every test above, because those call
-    /// `from_str` directly. In the lab it failed instantly: the argument is declared with
-    /// `value_delimiter = \',\'`, so clap split the value in two and handed `mtu=8986` to the
-    /// parser on its own, where it died as an interface name with no `@`. Testing the parser in
-    /// isolation cannot see that -- only going through the real argument definition can.
+    // Exercise clap too: direct FromStr calls cannot catch value-delimiter splitting.
     #[test]
     fn the_suffix_survives_clap_argument_splitting() {
         use clap::Parser;
@@ -2193,7 +2160,6 @@ mod interface_arg_mtu_test {
         assert_eq!(ifaces[1].mtu, None);
     }
 
-    /// Nonsense is refused rather than silently ignored, which would restore the black hole.
     #[test]
     fn a_bad_mtu_is_an_error() {
         assert!(InterfaceArg::from_str("a=pci@0000:02:01.0/mtu=").is_err());
@@ -2205,7 +2171,6 @@ mod interface_arg_mtu_test {
         assert!(InterfaceArg::from_str("a=pci@0000:02:01.0/mtu=68").is_ok());
     }
 
-    /// Absent means the built-in default, which is deliberately not 0 or 1.
     #[test]
     fn an_interface_without_rxd_parses_as_before() {
         let arg = InterfaceArg::from_str("enp2s1np0=pci@0000:02:01.0").expect("should parse");
@@ -2224,10 +2189,6 @@ mod interface_arg_mtu_test {
         }
     }
 
-    /// Both suffixes, in either order, and neither eats the other's value.
-    ///
-    /// `/rxd=` is stripped first, so without putting the remainder back the `4096` in
-    /// `rxd=4096/mtu=9036` would parse as `4096/mtu=9036` and fail -- and the mtu would vanish.
     #[test]
     fn rxd_and_mtu_compose_in_either_order() {
         for spec in [

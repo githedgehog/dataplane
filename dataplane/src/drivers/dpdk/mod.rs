@@ -142,17 +142,13 @@ impl DriverDpdk {
     }
 }
 
-/// Read every port's device counters and publish them.
-///
-/// `unavailable` is one flag per port, carried across calls so that a PMD which implements no
-/// statistics is complained about once rather than on every poll for the life of the process.
+/// Publish device counters, logging once per port until a failed read recovers.
 fn publish_port_counters(port_metrics: &[(&Port<'_>, PortMetrics)], unavailable: &mut [bool]) {
     for (slot, (port, metrics)) in port_metrics.iter().enumerate() {
         match port.counters() {
             Ok(counters) => {
                 metrics.publish(&counters);
-                // A port that starts reporting again after a failure is worth hearing about, so
-                // clear the flag rather than latching it.
+                // Report a later failure after recovery.
                 unavailable[slot] = false;
             }
             Err(e) => {

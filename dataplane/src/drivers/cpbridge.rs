@@ -533,29 +533,11 @@ mod test {
         );
     }
 
-    /// The whole punt policy, verdict by verdict.
-    ///
-    /// Written out rather than derived from [`disposition`] on purpose: a test that recomputed the
-    /// policy would agree with any policy at all. This is the statement of what the control plane
-    /// is entitled to see, and changing [`disposition`] should have to change it here too.
-    ///
-    /// Break-tested: inverting any single arm below (say, making `AclDropped` punt when addressed
-    /// to us, or making `NotIp` drop) fails this test.
-    // The table below is data, not logic: every arm is one verdict, and the point is that all of
-    // them are written out. Splitting it to satisfy a line count would only hide that.
-    /// A multicast frame must survive both layers, not just this one.
-    ///
-    /// `addressed_to` counts multicast, but that only matters if the pipeline hands this function
-    /// a verdict the table punts. It did not: ingress marked multicast `MacNotForUs`, which is an
-    /// unconditional drop, so the intent recorded in `addressed_to` was unreachable and every
-    /// neighbour solicitation and LLDP frame died in the pipeline. Measured on hardware as 767
-    /// frames dropped `Eth: not for us` with zero reaching the control plane.
-    ///
-    /// Asserted as the pair, because either half alone looks correct.
+    // Multicast must be addressed to us and carry a puntable verdict.
     #[test]
     fn a_multicast_frame_reaches_the_control_plane() {
         let port = Mac([0x58, 0xa2, 0xe1, 0xb3, 0x3d, 0x94]);
-        // IPv6 all-nodes, i.e. what neighbour discovery actually arrives as.
+        // IPv6 all-nodes multicast.
         let multicast = Mac([0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
         assert!(multicast.is_multicast(), "the fixture must be multicast");
         assert!(
@@ -567,8 +549,7 @@ mod test {
             addressed_to(multicast, port),
             "multicast is addressed to every port on the segment"
         );
-        // `Unhandled` is what ingress now produces for multicast. Were it to go back to
-        // `MacNotForUs`, this is the line that fails.
+        // Ingress produces Unhandled for multicast; MacNotForUs remains a drop.
         assert_eq!(
             disposition(Some(DoneReason::Unhandled), addressed_to(multicast, port)),
             Disposition::Punt,
@@ -582,6 +563,16 @@ mod test {
         );
     }
 
+    /// The whole punt policy, verdict by verdict.
+    ///
+    /// Written out rather than derived from [`disposition`] on purpose: a test that recomputed the
+    /// policy would agree with any policy at all. This is the statement of what the control plane
+    /// is entitled to see, and changing [`disposition`] should have to change it here too.
+    ///
+    /// Break-tested: inverting any single arm below (say, making `AclDropped` punt when addressed
+    /// to us, or making `NotIp` drop) fails this test.
+    // The table below is data, not logic: every arm is one verdict, and the point is that all of
+    // them are written out. Splitting it to satisfy a line count would only hide that.
     #[allow(clippy::too_many_lines)]
     #[test]
     fn punt_policy_table() {
