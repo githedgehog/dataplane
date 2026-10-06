@@ -177,15 +177,13 @@ fn prepare_devices(devices: &[ResolvedDevice]) -> Result<(), String> {
 
 /// Whether the RDMA subsystem will let a network namespace own a device.
 ///
-/// `ib_core`'s `netns_mode` is a bool parameter: `Y` is *shared* (the kernel default) and `N` is
-/// *exclusive*. It is settable at boot as `ib_core.netns_mode=0`, and effectively only at boot --
-/// `rdma system set netns exclusive` is permitted only while no network namespace other than the
-/// initial one exists, which on a node running containers is never.
+/// `ib_core.netns_mode=0` selects exclusive mode at boot. Runtime changes require
+/// that no network namespaces other than the initial one exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RdmaNetnsMode {
-    /// A device can be moved into a namespace and is invisible outside it. What the design needs.
+    /// A device belongs to one namespace.
     Exclusive,
-    /// Devices are visible everywhere and a namespace cannot own one.
+    /// Devices remain in the initial namespace and are visible across namespaces.
     Shared,
     /// `ib_core` is not loaded, or the parameter is not where it is expected.
     Unknown,
@@ -195,8 +193,6 @@ enum RdmaNetnsMode {
 const IB_CORE_NETNS_MODE: &str = "/sys/module/ib_core/parameters/netns_mode";
 
 /// Interpret the contents of [`IB_CORE_NETNS_MODE`].
-///
-/// Split from the read so both answers can be tested on a machine that can only be in one of them.
 fn parse_netns_mode(raw: &str) -> RdmaNetnsMode {
     match raw.trim() {
         "N" | "0" => RdmaNetnsMode::Exclusive,
@@ -239,35 +235,14 @@ async fn move_devices_to_netns(
         })
         .collect();
 
-    // Say so here rather than let this surface only as an empty device list.
-    //
-    // This warns; it used to refuse, and refusing was wrong. In shared mode `_ib_alloc_device`
-    // discards the requested net, so the devlink instance moves while the RDMA device -- the half
-    // the mlx5 PMD attaches through -- stays in `init_net`. That says where the device *lives*,
-    // not whether it can be reached: shared mode also means every RDMA device is visible from
-    // every namespace, and if the kernel does not namespace-tag them in that mode, the datapath
-    // finds it exactly as it would have in `init_net` and the arrangement works.
-    //
-    // What could be measured was: on an *exclusive*-mode host, a fresh network namespace with a
-    // fresh sysfs lists no infiniband devices, so the class is tagged and visibility follows the
-    // device's net. Whether that tagging still applies under shared mode is the part that decides
-    // this, and it cannot be answered on a machine that is not in shared mode.
-    //
-    // A refusal would stop the only kind of host that could settle it from starting at all, to
-    // prevent a failure that is now understood and reported when it happens.
-    // `hardware/tests/dpdk_in_netns.rs` is the probe that answers it properly.
+    // Shared visibility may still let the PMD reach the device, so this is diagnostic only.
     if !bifurcated.is_empty() {
         match rdma_netns_mode() {
             RdmaNetnsMode::Exclusive => {}
             RdmaNetnsMode::Shared => warn!(
-                "the RDMA subsystem is in shared mode, so {} cannot be given to a namespace: the \
-                 devlink instance moves while the RDMA device stays in init_net. Whether the \
-                 datapath can still reach it there is what this run will find out. If it reports \
-                 no devices, that is the answer, and the fix is to boot with \
-                 `ib_core.netns_mode=0` (`rdma system show` should then say `netns exclusive`) or \
-                 to run without --datapath-netns -- it cannot be changed at runtime, because \
-                 `rdma system set netns exclusive` is permitted only while no network namespace \
-                 but the initial one exists.",
+                "RDMA shared mode keeps devices {} in init_net after devlink moves. If the PMD \
+                 cannot find them, boot with ib_core.netns_mode=0 or omit --datapath-netns. \
+                 Switching to exclusive mode at runtime requires no other network namespaces.",
                 bifurcated
                     .iter()
                     .map(|d| d.address.to_string())
@@ -836,11 +811,6 @@ fn main() {
 mod rdma_netns_mode_test {
     use super::{IB_CORE_NETNS_MODE, RdmaNetnsMode, parse_netns_mode, rdma_netns_mode};
 
-    /// Both answers, on a machine that can only be in one of them.
-    ///
-    /// The host-reading test below can only exercise whichever mode this machine happens to be in,
-    /// so a mistake in the other arm would go unnoticed -- and the arm that matters is `Y`, the
-    /// kernel default, which is what a misconfigured lab host reports.
     #[test]
     fn shared_and_exclusive_are_both_recognised() {
         assert_eq!(parse_netns_mode("Y"), RdmaNetnsMode::Shared);
@@ -849,17 +819,13 @@ mod rdma_netns_mode_test {
         assert_eq!(parse_netns_mode("N"), RdmaNetnsMode::Exclusive);
         assert_eq!(parse_netns_mode("0"), RdmaNetnsMode::Exclusive);
         assert_eq!(parse_netns_mode("N\n"), RdmaNetnsMode::Exclusive);
-        // Anything else is not guessed at: an unrecognised value warns and only warns, which is
-        // the right way round -- refusing to start over a parameter we cannot read would be worse.
         assert_eq!(parse_netns_mode("maybe"), RdmaNetnsMode::Unknown);
         assert_eq!(parse_netns_mode(""), RdmaNetnsMode::Unknown);
     }
 
-    /// And the reader must agree with what this machine actually reports.
     #[test]
     fn a_readable_parameter_is_never_reported_unknown() {
         let Ok(raw) = std::fs::read_to_string(IB_CORE_NETNS_MODE) else {
-            // No ib_core here; Unknown is the honest answer and the guard only warns.
             assert_eq!(rdma_netns_mode(), RdmaNetnsMode::Unknown);
             return;
         };

@@ -406,11 +406,7 @@ pub enum DriverConfigSection {
     Kernel(KernelDriverConfigSection),
 }
 
-/// Hugepages `dataplane-init` secured before the dataplane started, and where.
-///
-/// Crosses to the dataplane in the launch configuration so that the EAL can be asked for exactly
-/// what was verified to be free, rather than for a figure someone guessed. See
-/// `dataplane-init`'s `hugepages` module for why the reservation cannot be left to DPDK.
+/// Hugepage capacity checked by init and requested from EAL through the launch configuration.
 #[derive(
     Debug,
     Clone,
@@ -424,21 +420,16 @@ pub enum DriverConfigSection {
 )]
 #[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct HugepagePlan {
-    /// Page size actually used, in kilobytes: 1048576 for 1 GiB pages, 2048 for 2 MiB pages.
+    /// Page size checked by init, in KiB (1048576 or 2048).
     pub page_size_kb: u64,
-    /// Megabytes secured, per NUMA node id, ascending.
+    /// Memory requested in MiB, sorted by NUMA node OS index.
     pub per_node_mb: Vec<(u32, u64)>,
 }
 
 impl HugepagePlan {
-    /// Render the EAL's per-node preallocation argument.
+    /// Render EAL's `--numa-mem` value, padding unrequested node indices with zero.
     ///
-    /// DPDK 26.07 renamed `--socket-mem` to `--numa-mem` and keeps the old spelling as an alias;
-    /// the new name is used here. The value is positional -- one entry per NUMA node from 0 up to
-    /// the highest node named -- so nodes we secured nothing on are filled with `0`.
-    ///
-    /// Returns `None` when nothing was secured, so the caller can omit the flag entirely rather
-    /// than pass `0` and forbid the EAL from allocating at all.
+    /// Returns `None` for an empty or all-zero plan.
     #[must_use]
     pub fn numa_mem_arg(&self) -> Option<String> {
         let highest = self.per_node_mb.iter().map(|(node, _)| *node).max()?;
@@ -2004,9 +1995,6 @@ mod hugepage_plan_test {
 
     #[test]
     fn a_plan_on_a_later_node_pads_the_earlier_ones_with_zero() {
-        // The EAL reads the list positionally, so node 1 has to be the *second* entry. Getting
-        // this wrong would preallocate on node 0 -- the exact cross-NUMA placement this exists to
-        // prevent, and it would look like it worked.
         let plan = HugepagePlan {
             page_size_kb: 1024 * 1024,
             per_node_mb: vec![(1, 4096)],
@@ -2025,8 +2013,6 @@ mod hugepage_plan_test {
 
     #[test]
     fn a_plan_that_secured_nothing_yields_no_argument() {
-        // Not `Some("0")`: passing zero would forbid the EAL from allocating at all, which is a
-        // worse outcome than letting it take whatever the host already has.
         let plan = HugepagePlan {
             page_size_kb: 2048,
             per_node_mb: vec![(0, 0)],
