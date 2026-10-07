@@ -20,9 +20,10 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::FlowInfo;
 
 use crate::common::NatAction;
-use crate::flow_tracking::{NatState, advance_flow, packet_flow_keys};
+use crate::flow_tracking::{NatState, packet_flow_keys};
 use crate::portfw::PortFwEntry;
 use net::flows::ConnState;
+use net::flows::conn_tracking::advance_flow;
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
@@ -225,11 +226,11 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 #[cfg(test)]
 mod test {
     use super::build_portfw_flow_keys;
-    use crate::flow_tracking::{FlowSide, next_status};
     use crate::static_nat::probe::build;
     use net::FlowKey;
     use net::buffer::TestBuffer;
     use net::flows::ConnState;
+    use net::flows::conn_tracking::{FlowSide, next_status};
     use net::headers::TryTcp;
     use net::ip::UnicastIpAddr;
     use net::packet::{Packet, VpcDiscriminant};
