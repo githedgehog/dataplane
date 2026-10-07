@@ -439,6 +439,26 @@ impl PoolConfig {
 ///     drop(single);
 /// }
 /// ```
+///
+/// # Thread affinity
+///
+/// `Mbuf` is `!Send` and `!Sync`, keeping packet processing on the receiving or allocating thread.
+/// Keeping allocation and release on one lcore favors its local mempool cache.
+/// Copy data needed by another thread into an owned value so slow consumers do not retain mbufs.
+///
+/// ```compile_fail,E0277
+/// # use dataplane_dpdk::mem::Mbuf;
+/// fn assert_send<T: Send>(_: T) {}
+/// fn hand_off(mbuf: Mbuf) { assert_send(mbuf); }
+/// ```
+///
+/// [`MbufArray`] has the same thread affinity:
+///
+/// ```compile_fail,E0277
+/// # use dataplane_dpdk::mem::MbufArray;
+/// fn assert_send<T: Send>(_: T) {}
+/// fn hand_off(batch: MbufArray) { assert_send(batch); }
+/// ```
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Mbuf<'eal> {
@@ -446,9 +466,6 @@ pub struct Mbuf<'eal> {
     /// Keeps the EAL alive while this mbuf can be used.
     eal: PhantomData<&'eal ()>,
 }
-
-// dpdk_sys::rte_mbuf is Send but not Sync since it is a plain C pointer
-unsafe impl Send for Mbuf<'_> {}
 
 /// Failure to allocate an independent [`Mbuf`] with the source layout.
 #[non_exhaustive]
