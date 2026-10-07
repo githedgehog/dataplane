@@ -27,6 +27,8 @@ use errno::{Errno, ErrorCode, StandardErrno};
 use queue::{rx, tx};
 
 #[cfg(test)]
+mod iter_tests;
+#[cfg(test)]
 mod rss_tests;
 
 /// Default Ethernet MTU, clamped to the device limits when configured.
@@ -745,15 +747,15 @@ impl Iterator for DevIterator {
             return None;
         }
 
-        // For whatever reason, DPDK can't decide if port_id is `u16` or `u64`.
-        self.cursor = DevIndex(port_id as u16 + 1);
+        let port = DevIndex(port_id as u16);
+        self.cursor = DevIndex(port.0 + 1);
 
-        match cursor.info() {
+        match port.info() {
             Ok(info) => Some(info),
             Err(err) => {
                 // At this point I'm ok with this being a fatal error, but in the future
                 // we will likely need to deal with more dynamic ports.
-                let err_msg = format!("Failed to get device info for port {cursor}: {err}");
+                let err_msg = format!("Failed to get device info for port {port}: {err}");
                 error!("{err_msg}");
                 Eal::fatal_error(err_msg);
             }
