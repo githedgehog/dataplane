@@ -301,7 +301,7 @@ impl DevConfig {
     }
 
     /// Apply the configuration to the device.
-    pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
+    pub fn apply<'eal>(&self, dev: DevInfo) -> Result<Dev<'eal>, DevConfigError> {
         let mtu = self.resolve_mtu(&dev)?;
         // DPDK retains the key pointer, including across stop/start cycles.
         let mut config = self.clone();
@@ -919,25 +919,25 @@ impl DevState for Started {
 ///
 /// [`DevConfig::apply`] produces a [`Configured`] device. [`start`](Dev::<Configured>::start)
 /// moves it to [`Started`]; [`stop`](Dev::<Started>::stop) moves it back.
-pub struct Dev<S: DevState = Configured> {
+pub struct Dev<'eal, S: DevState = Configured> {
     /// The device info
     pub info: DevInfo,
     // Owns the RSS key whose address DPDK retains.
     config: DevConfig,
-    pub(crate) rx_queues: Vec<RxQueue>,
+    pub(crate) rx_queues: Vec<RxQueue<'eal>>,
     pub(crate) tx_queues: Vec<TxQueue>,
-    pub(crate) hairpin_queues: Vec<HairpinQueue>,
+    pub(crate) hairpin_queues: Vec<HairpinQueue<'eal>>,
     state: PhantomData<S>,
 }
 
-impl<S: DevState> Dev<S> {
+impl<'eal, S: DevState> Dev<'eal, S> {
     /// The applied configuration. Its RSS key stays owned by this device.
     pub fn config(&self) -> &DevConfig {
         &self.config
     }
 
     /// Move device state without running Drop on the source.
-    fn transition<T: DevState>(self) -> Dev<T> {
+    fn transition<T: DevState>(self) -> Dev<'eal, T> {
         let this = ManuallyDrop::new(self);
         // SAFETY: ManuallyDrop prevents teardown; each field is moved exactly once.
         unsafe {
@@ -953,7 +953,7 @@ impl<S: DevState> Dev<S> {
     }
 }
 
-impl<S: DevState> Dev<S> {
+impl<'eal, S: DevState> Dev<'eal, S> {
     /// The device's primary source MAC address.
     ///
     /// Returns an error if the driver fails or reports a zero or multicast address.
@@ -995,10 +995,10 @@ impl<S: DevState> Dev<S> {
     }
 }
 
-impl Dev<Configured> {
+impl<'eal> Dev<'eal, Configured> {
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`RxQueue`]
-    pub fn new_rx_queue(&mut self, config: RxQueueConfig) -> Result<(), rx::ConfigFailure> {
+    pub fn new_rx_queue(&mut self, config: RxQueueConfig<'eal>) -> Result<(), rx::ConfigFailure> {
         let rx_queue = RxQueue::setup(self, config)?;
         self.rx_queues.push(rx_queue);
         Ok(())
@@ -1016,7 +1016,7 @@ impl Dev<Configured> {
     /// Configure a new [`HairpinQueue`]
     pub fn new_hairpin_queue(
         &mut self,
-        rx: RxQueueConfig,
+        rx: RxQueueConfig<'eal>,
         tx: TxQueueConfig,
     ) -> Result<(), HairpinConfigFailure> {
         let rx = RxQueue::setup(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
@@ -1032,7 +1032,7 @@ impl Dev<Configured> {
     ///
     /// Returns [`DevStartFailure`] with the configured device for retry or disposal.
     #[allow(clippy::result_large_err)] // Preserve device ownership on failure.
-    pub fn start(self) -> Result<Dev<Started>, DevStartFailure> {
+    pub fn start(self) -> Result<Dev<'eal, Started>, DevStartFailure<'eal>> {
         let ret = unsafe { rte_eth_dev_start(self.info.index().as_u16()) };
         if ret != 0 {
             error!(
@@ -1049,14 +1049,14 @@ impl Dev<Configured> {
     }
 }
 
-impl Dev<Started> {
+impl<'eal> Dev<'eal, Started> {
     /// Stop the device.
     ///
     /// # Errors
     ///
     /// Returns [`DevStopFailure`] with the still-running device.
     #[allow(clippy::result_large_err)] // Preserve device ownership on failure.
-    pub fn stop(self) -> Result<Dev<Configured>, DevStopFailure> {
+    pub fn stop(self) -> Result<Dev<'eal, Configured>, DevStopFailure<'eal>> {
         let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
         if ret != 0 {
             error!(
@@ -1074,7 +1074,7 @@ impl Dev<Started> {
 
     /// Find a configured receive queue by index.
     #[tracing::instrument(level = "trace")]
-    pub fn rx_queue(&self, index: RxQueueIndex) -> Option<&RxQueue> {
+    pub fn rx_queue(&self, index: RxQueueIndex) -> Option<&RxQueue<'eal>> {
         self.rx_queues
             .iter()
             .find(|x| x.config.queue_index == index)
@@ -1092,26 +1092,26 @@ impl Dev<Started> {
 /// A start error and the still-configured device.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to start device {}: {error}", self.dev.info.index())]
-pub struct DevStartFailure {
+pub struct DevStartFailure<'eal> {
     /// The error that caused the start to fail.
     #[source]
     pub error: ErrorCode,
     /// The device, still in its [`Configured`] state.
-    pub dev: Dev<Configured>,
+    pub dev: Dev<'eal, Configured>,
 }
 
 /// A stop error and the still-running device.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to stop device {}: {error}", self.dev.info.index())]
-pub struct DevStopFailure {
+pub struct DevStopFailure<'eal> {
     /// The error that caused the stop to fail.
     #[source]
     pub error: ErrorCode,
     /// The device, still in its [`Started`] state.
-    pub dev: Dev<Started>,
+    pub dev: Dev<'eal, Started>,
 }
 
-impl<S: DevState> Drop for Dev<S> {
+impl<S: DevState> Drop for Dev<'_, S> {
     /// Stop the device if it is running.
     fn drop(&mut self) {
         if !S::RUNNING {

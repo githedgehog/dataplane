@@ -12,8 +12,8 @@ use tracing::debug;
 /// A stopped DPDK hairpin queue.
 #[allow(unused)]
 #[derive(Debug)]
-pub struct HairpinQueue {
-    pub(crate) rx: RxQueue,
+pub struct HairpinQueue<'eal> {
+    pub(crate) rx: RxQueue<'eal>,
     pub(crate) tx: TxQueue,
     pub(crate) peering: HairpinPeering,
 }
@@ -50,7 +50,7 @@ pub enum HairpinConfigFailure {
     CreationFailed(ErrorCode),
 }
 
-impl HairpinQueue {
+impl<'eal> HairpinQueue<'eal> {
     /// Create and configure a new hairpin queue.
     ///
     /// This method is crate internal.
@@ -60,7 +60,11 @@ impl HairpinQueue {
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
     #[tracing::instrument(level = "info", ret)]
-    pub(crate) fn new(dev: &Dev, rx: RxQueue, tx: TxQueue) -> Result<Self, HairpinConfigFailure> {
+    pub(crate) fn new(
+        dev: &Dev,
+        rx: RxQueue<'eal>,
+        tx: TxQueue,
+    ) -> Result<Self, HairpinConfigFailure> {
         let peering = HairpinPeering::define(&dev.info, &rx, &tx);
         // configure the rx queue
 

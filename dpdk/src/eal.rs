@@ -43,7 +43,8 @@ pub struct Eal {
 }
 
 /// Shared EAL services, valid while the owning [`Eal`] remains alive.
-/// Device and socket queries are read-only. Teardown remains on the owning thread.
+/// Device and socket queries are read-only; pool creation uses DPDK synchronization
+/// and a locked registry. Teardown remains on the owning thread.
 ///
 /// ```
 /// # use dataplane_dpdk::eal::EalShared;
@@ -60,6 +61,7 @@ pub struct Eal {
 pub struct EalShared<'eal> {
     dev: &'eal dev::Manager,
     socket: &'eal socket::Manager,
+    mem: &'eal mem::Manager,
 }
 
 impl<'eal> EalShared<'eal> {
@@ -73,6 +75,12 @@ impl<'eal> EalShared<'eal> {
     #[must_use]
     pub fn socket(&self) -> &'eal socket::Manager {
         self.socket
+    }
+
+    /// Shared memory pool creation.
+    #[must_use]
+    pub fn mem(&self) -> &'eal mem::Manager {
+        self.mem
     }
 
     /// Returns `true` if the [`Eal`] is using the PCI bus.
@@ -244,6 +252,7 @@ impl Eal {
         EalShared {
             dev: &self.dev,
             socket: &self.socket,
+            mem: &self.mem,
         }
     }
 
@@ -366,7 +375,7 @@ mod tests {
     #[test]
     #[with_eal]
     fn errno_is_reported_per_thread() {
-        use crate::mem::{Pool, PoolConfig, PoolParams};
+        use crate::mem::{PoolConfig, PoolParams};
 
         let shared = crate::test_support::start_eal();
         let params = PoolParams {
@@ -377,9 +386,15 @@ mod tests {
         let config = |()| {
             PoolConfig::new("errno_probe_pool", params).unwrap_or_else(|e| panic!("config: {e:?}"))
         };
-        let _first = Pool::new_pkt_pool(config(())).expect("first create should succeed");
+        let _first = shared
+            .mem()
+            .new_pkt_pool(config(()))
+            .expect("first create should succeed");
         // Same name again: DPDK refuses and sets this thread's `rte_errno`.
-        Pool::new_pkt_pool(config(())).expect_err("a duplicate pool name must be refused");
+        shared
+            .mem()
+            .new_pkt_pool(config(()))
+            .expect_err("a duplicate pool name must be refused");
 
         let here = shared.errno();
         assert_ne!(

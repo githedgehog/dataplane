@@ -7,6 +7,7 @@ use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
 use arrayvec::ArrayVec;
+use concurrency::sync::Mutex;
 use core::ffi::c_uint;
 use core::ffi::{CStr, c_int};
 use core::fmt::{Debug, Display};
@@ -35,113 +36,155 @@ mod tests;
 #[cfg(test)]
 mod copy_tests;
 
-/// DPDK memory manager
-#[repr(transparent)]
+/// Owns mempools for the life of the EAL.
+/// Creation is synchronized and available through [`EalShared`](crate::eal::EalShared).
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct Manager;
+pub struct Manager {
+    /// Every pool created through this manager, in creation order.
+    pools: Mutex<Vec<Registered>>,
+}
+
+/// An EAL-owned mempool and its shared configuration.
+#[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "kept so the pools can be freed at teardown once ports are closed first"
+)]
+struct Registered {
+    pool: NonNull<dpdk_sys::rte_mempool>,
+    /// Leaked once per pool to provide a stable reference for every cloned handle.
+    config: &'static PoolConfig,
+}
+
+// SAFETY: the pointer is only used through DPDK's internally-synchronized mempool entry points,
+// and is freed exactly once, from the thread that owns the `Eal`.
+unsafe impl Send for Registered {}
 
 impl Manager {
     pub(crate) fn init() -> Manager {
-        Manager
-    }
-}
-
-impl Drop for Manager {
-    fn drop(&mut self) {
-        info!("Closing DPDK memory manager");
-    }
-}
-
-/// Safe wrapper around a DPDK memory pool
-///
-/// <div class="warning">
-///
-/// # Note:
-///
-/// I am not completely sure this implementation is thread safe.
-/// It may need a refactor.
-///
-/// </div>
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct Pool(PoolInner);
-
-impl PartialEq for Pool {
-    fn eq(&self, other: &Self) -> bool {
-        self.inner() == other.inner()
-    }
-}
-
-impl Eq for Pool {}
-
-impl PartialEq for PoolInner {
-    fn eq(&self, other: &Self) -> bool {
-        self.config == other.config
-            && std::ptr::eq(
-                core::ptr::from_ref(unsafe { self.as_ref() }),
-                core::ptr::from_ref(unsafe { other.as_ref() }),
-            )
-    }
-}
-
-impl Eq for PoolInner {}
-
-impl Display for Pool {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(f, "Pool({})", self.name())
-    }
-}
-
-impl Pool {
-    pub(crate) fn inner(&self) -> &PoolInner {
-        &self.0
+        Manager {
+            pools: Mutex::new(Vec::new()),
+        }
     }
 
-    /// Create a new packet memory pool.
-    #[tracing::instrument(level = "debug")]
-    pub fn new_pkt_pool(config: PoolConfig) -> Result<Pool, InvalidMemPoolConfig> {
-        let pool = unsafe {
+    /// Create a packet mempool that lives as long as the EAL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidMemPoolConfig`] if DPDK refuses the parameters -- most often a name
+    /// already in use, or not enough memory to back the pool.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn new_pkt_pool(&self, config: PoolConfig) -> Result<Pool<'_>, InvalidMemPoolConfig> {
+        let raw = unsafe {
             dpdk_sys::rte_pktmbuf_pool_create(
                 config.name.as_ptr(),
                 config.params.size,
                 config.params.cache_size,
                 config.params.private_size,
                 config.params.data_size,
-                // So many sign and bit-width errors in the DPDK API :/
+                // DPDK takes a signed socket ID; preserve the bit pattern for SOCKET_ID_ANY.
                 config.params.socket_id.as_c_uint() as c_int,
             )
         };
 
-        let pool = match NonNull::new(pool) {
-            None => {
-                let errno = unsafe { dpdk_sys::rte_errno_get() };
-                let c_err_str = unsafe { dpdk_sys::rte_strerror(errno) };
-                // SAFETY: `rte_strerror` always returns a valid NUL-terminated string.
-                let err_str = unsafe { CStr::from_ptr(c_err_str) }.to_string_lossy();
-                let err_msg = format!("Failed to create mbuf pool: {err_str}; (errno: {errno})");
-                error!("{err_msg}");
-                return Err(InvalidMemPoolConfig::InvalidParams(
-                    Errno::from(errno),
-                    err_msg,
-                ));
-            }
-            Some(pool) => pool,
+        let Some(pool) = NonNull::new(raw) else {
+            let errno = unsafe { dpdk_sys::rte_errno_get() };
+            let c_err_str = unsafe { dpdk_sys::rte_strerror(errno) };
+            // SAFETY: `rte_strerror` always returns a valid NUL-terminated string.
+            let err_str = unsafe { CStr::from_ptr(c_err_str) }.to_string_lossy();
+            let err_msg = format!("Failed to create mbuf pool: {err_str}; (errno: {errno})");
+            error!("{err_msg}");
+            return Err(InvalidMemPoolConfig::InvalidParams(
+                Errno::from(errno),
+                err_msg,
+            ));
         };
 
-        Ok(Pool(PoolInner { config, pool }))
-    }
+        let config: &'static PoolConfig = alloc::boxed::Box::leak(alloc::boxed::Box::new(config));
+        self.pools.lock().push(Registered { pool, config });
 
+        Ok(Pool {
+            pool,
+            config,
+            eal: PhantomData,
+        })
+    }
+}
+
+/// A cloneable handle to an EAL-owned mempool. Dropping a handle leaves the pool allocated.
+/// The EAL lifetime prevents use after teardown.
+///
+/// ```compile_fail,E0277
+/// # use dataplane_dpdk::mem::Pool;
+/// fn assert_copy<T: Copy>() {}
+/// assert_copy::<Pool>();
+/// ```
+///
+/// ```compile_fail,E0505
+/// # use dataplane_dpdk::eal::Eal;
+/// # use dataplane_dpdk::mem::{PoolConfig, PoolParams};
+/// fn use_after_eal(eal: Eal) {
+///     let config = PoolConfig::new("p", PoolParams::default()).expect("config");
+///     let pool = eal.mem.new_pkt_pool(config).expect("pool");
+///     drop(eal);
+///     let _ = pool.name();
+/// }
+/// ```
+///
+/// ```compile_fail,E0713
+/// # use dataplane_dpdk::eal::Eal;
+/// # use dataplane_dpdk::mem::{Pool, PoolConfig, PoolParams};
+/// fn escape(eal: Eal) -> Pool<'static> {
+///     let config = PoolConfig::new("p", PoolParams::default()).expect("config");
+///     eal.mem.new_pkt_pool(config).expect("pool")
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct Pool<'eal> {
+    pool: NonNull<dpdk_sys::rte_mempool>,
+    config: &'static PoolConfig,
+    eal: PhantomData<&'eal ()>,
+}
+
+// SAFETY: an immutable handle to a mempool whose allocate/free entry points DPDK synchronizes
+// internally: the per-lcore cache is keyed by `rte_lcore_id()`, and non-EAL threads
+// (`LCORE_ID_ANY`) bypass the cache for the multi-producer/multi-consumer ring underneath.
+unsafe impl Send for Pool<'_> {}
+unsafe impl Sync for Pool<'_> {}
+
+impl PartialEq for Pool<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.pool == other.pool
+    }
+}
+
+impl Eq for Pool<'_> {}
+
+impl Display for Pool<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(f, "Pool({})", self.name())
+    }
+}
+
+impl<'eal> Pool<'eal> {
     /// Get the name of the memory pool.
     #[must_use]
     pub fn name(&self) -> &str {
-        self.config().name()
+        self.config.name()
     }
 
     /// Get the configuration of the memory pool.
     #[must_use]
     pub fn config(&self) -> &PoolConfig {
-        &self.0.config
+        self.config
+    }
+
+    /// A mutable pointer to the raw DPDK [`rte_mempool`](dpdk_sys::rte_mempool).
+    ///
+    /// Valid until EAL teardown; callers must ensure any native user finishes before then.
+    pub(crate) fn as_mut_ptr(&self) -> *mut dpdk_sys::rte_mempool {
+        self.pool.as_ptr()
     }
 
     /// Allocate `num` mbufs as an owning batch.
@@ -163,7 +206,7 @@ impl Pool {
         // Wrap pointers as non-null `Mbuf`s only after allocation succeeds.
         let mut raw = [null_mut::<dpdk_sys::rte_mbuf>(); MBUF_BURST];
         let ret = unsafe {
-            dpdk_sys::rte_pktmbuf_alloc_bulk(self.0.as_mut_ptr(), raw.as_mut_ptr(), num as c_uint)
+            dpdk_sys::rte_pktmbuf_alloc_bulk(self.as_mut_ptr(), raw.as_mut_ptr(), num as c_uint)
         };
         if ret != 0 {
             // Bulk allocation is all-or-nothing; no mbufs need freeing on failure.
@@ -194,56 +237,6 @@ pub enum MbufAllocError {
         capacity: usize,
     },
 }
-
-/// This value is RAII-managed and must never implement `Copy` and can likely never implement
-/// `Clone` unless the internal representation is changed to use a reference-counted pointer.
-#[non_exhaustive]
-#[derive(Debug)]
-pub(crate) struct PoolInner {
-    pub(crate) config: PoolConfig,
-    pub(crate) pool: NonNull<dpdk_sys::rte_mempool>,
-}
-
-impl PoolInner {
-    /// Get an immutable reference to the raw DPDK [`rte_mempool`].
-    ///
-    /// # Safety
-    ///
-    /// <div class="warning">
-    ///
-    /// See the safety note on [`PoolInner::as_mut_ptr`].
-    ///
-    /// </div>
-    pub(crate) unsafe fn as_ref(&self) -> &dpdk_sys::rte_mempool {
-        unsafe { self.pool.as_ref() }
-    }
-
-    /// Get a mutable pointer to the raw DPDK [`rte_mempool`].
-    ///
-    /// # Safety
-    ///
-    /// <div class="warning">
-    /// This function is very easy to use unsoundly!
-    ///
-    /// You need to be careful when handing the return value to a [`dpdk_sys`] function or data
-    /// structure.
-    /// In all cases you need to associate any copy of `*mut rte_mempool` back to the [`Pool`]
-    /// object's reference count.
-    /// Failing that risks [`Drop`] ([RAII]) tearing down the [`Pool`] while it is still in use.
-    ///
-    /// If you duplicate the pointer and fail to associate it back with the outer [`Pool`] object's
-    /// reference count, you will risk tearing down the memory pool while it is still in use.
-    ///
-    /// </div>
-    ///
-    /// [RAII]: https://en.wikipedia.org/wiki/Resource_Acquisition_Is_Initialization
-    pub(crate) unsafe fn as_mut_ptr(&self) -> *mut dpdk_sys::rte_mempool {
-        self.pool.as_ptr()
-    }
-}
-
-unsafe impl Send for PoolInner {}
-unsafe impl Sync for PoolInner {}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// As yet unchecked parameters for a memory pool.
@@ -405,14 +398,6 @@ impl PoolConfig {
         unsafe { CStr::from_ptr(self.name.as_ptr()) }
             .to_str()
             .expect("Pool name is not valid UTF-8")
-    }
-}
-
-impl Drop for PoolInner {
-    #[tracing::instrument(level = "debug")]
-    fn drop(&mut self) {
-        info!("Freeing memory pool {}", self.config.name());
-        unsafe { dpdk_sys::rte_mempool_free(self.as_mut_ptr()) }
     }
 }
 
@@ -858,5 +843,94 @@ impl<const N: usize> Drop for MbufArray<N> {
             // Prevent `Mbuf::drop` from freeing these mbufs again.
             self.bufs.set_len(0);
         }
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+    use crate::with_eal;
+
+    /// Pool names are process-global in DPDK, so each test needs its own.
+    fn pool(name: &str, size: u32) -> Pool<'static> {
+        let shared = crate::test_support::start_eal();
+        let config = PoolConfig::new(
+            name,
+            PoolParams {
+                size,
+                cache_size: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("invalid pool config: {e:?}"));
+        shared
+            .mem()
+            .new_pkt_pool(config)
+            .unwrap_or_else(|e| panic!("failed to create pool: {e:?}"))
+    }
+
+    #[test]
+    #[with_eal]
+    fn mbufs_outlive_the_pool_handle_that_allocated_them() {
+        let mut mbufs = {
+            let pool = pool("outlive_pool", 511);
+            let mbufs = pool.alloc_bulk(4).expect("alloc_bulk failed");
+            assert_eq!(mbufs.len(), 4);
+            mbufs
+        };
+
+        for mbuf in &mut mbufs {
+            let room = mbuf.tailroom();
+            assert!(room > 0, "mbuf has no tailroom");
+            mbuf.append(16).expect("append failed");
+        }
+        assert_eq!(mbufs.len(), 4);
+        drop(mbufs);
+    }
+
+    #[test]
+    #[with_eal]
+    fn pool_handles_are_clones_of_one_mempool() {
+        let first = pool("copy_pool", 511);
+        let second = first.clone();
+        assert_eq!(first, second);
+        assert_eq!(first.as_mut_ptr(), second.as_mut_ptr());
+        assert_eq!(first.name(), "copy_pool");
+
+        let a = first.alloc_bulk(2).expect("alloc from first");
+        let b = second.alloc_bulk(2).expect("alloc from second");
+        assert_eq!(a.len(), 2);
+        assert_eq!(b.len(), 2);
+    }
+
+    #[test]
+    #[with_eal]
+    fn distinct_pools_are_not_equal() {
+        let a = pool("distinct_a", 511);
+        let b = pool("distinct_b", 511);
+        assert_ne!(a, b);
+    }
+
+    /// A failed bulk allocation must leave the pool's full capacity available.
+    #[test]
+    #[with_eal]
+    fn alloc_bulk_rejects_oversized_requests() {
+        let pool = pool("oversized_pool", 15);
+        match pool.alloc_bulk(MBUF_BURST + 1) {
+            Err(MbufAllocError::TooMany {
+                requested,
+                capacity,
+            }) => {
+                assert_eq!(requested, MBUF_BURST + 1);
+                assert_eq!(capacity, MBUF_BURST);
+            }
+            other => panic!("expected TooMany, got {other:?}"),
+        }
+        match pool.alloc_bulk(MBUF_BURST) {
+            Err(MbufAllocError::Exhausted { requested }) => assert_eq!(requested, MBUF_BURST),
+            other => panic!("expected Exhausted, got {other:?}"),
+        }
+        let ok = pool.alloc_bulk(15).expect("pool should still be full");
+        assert_eq!(ok.len(), 15);
     }
 }
