@@ -159,7 +159,7 @@ impl FibRoute {
         Self(vec![])
     }
     #[must_use]
-    pub fn with_fibgroup(fg_ref: Rc<UnsafeCell<FibGroup>>) -> Self {
+    pub(crate) fn with_fibgroup(fg_ref: Rc<UnsafeCell<FibGroup>>) -> Self {
         Self(vec![fg_ref])
     }
 
