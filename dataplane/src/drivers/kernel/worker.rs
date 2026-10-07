@@ -230,17 +230,13 @@ impl Worker {
                 // Transmit delivered packets; the kernel already handles local traffic.
                 let mut ppline_drops: u64 = 0;
                 for out_pkt in out_pkts {
-                    let done = out_pkt.get_done();
-                    debug_assert!(done.is_some());
-                    if done == Some(DoneReason::Delivered) {
+                    if should_transmit(&out_pkt, &mut ppline_drops) {
                         to_tx += 1;
                         if tx_packet(id, &intf.if_name, &if_table, out_pkt).await {
                             tx_pkts += 1;
                         } else {
                             tx_drops += 1;
                         }
-                    } else if !matches!(done, Some(DoneReason::Local) | None) {
-                        ppline_drops += 1;
                     }
                 }
 
@@ -540,6 +536,18 @@ async fn read_packets_from_interface(
     Ok(pkts)
 }
 
+/// Count pipeline drops and select packets for transmission; local traffic stays in the kernel.
+fn should_transmit(packet: &Packet<TestBuffer>, ppline_drops: &mut u64) -> bool {
+    match packet.get_done() {
+        Some(DoneReason::Delivered) => return true,
+        Some(DoneReason::Local) => return false,
+        None => error!("Packet returned without a terminal verdict; dropping it (pipeline bug)"),
+        Some(_) => {}
+    }
+    *ppline_drops += 1;
+    false
+}
+
 async fn tx_packet(
     id: WorkerId,
     rx_if_name: &str,
@@ -623,11 +631,12 @@ async fn tx_packet(
 
 #[cfg(test)]
 mod test {
-    use super::{RxCounters, build_packet};
+    use super::{RxCounters, build_packet, should_transmit};
     use net::buffer::test_buffer::TestBuffer;
     use net::interface::InterfaceIndex;
-    use net::packet::Packet;
-    use net::packet::test_utils::build_test_ipv4_packet;
+    use net::packet::test_utils::{build_test_ipv4_packet, build_test_ipv6_packet};
+    use net::packet::{DoneReason, Packet};
+    use pipeline::{NetworkFunction, sample_nfs::DecrementTtl};
 
     const IF_INDEX: u32 = 1;
     const IF_NAME: &str = "test0";
@@ -638,6 +647,46 @@ mod test {
 
     fn build_test_frame() -> Packet<TestBuffer> {
         build_test_ipv4_packet(64).expect("failed to build test packet")
+    }
+
+    #[test]
+    fn only_delivered_verdicts_are_transmitted() {
+        let packets: Vec<_> = (0..=u8::MAX)
+            .filter_map(DoneReason::from_repr)
+            .map(|reason| {
+                let mut packet = build_test_frame();
+                packet.done(reason);
+                packet
+            })
+            .collect();
+        let expected_drops = packets.len() as u64 - 2;
+        let mut drops = 0;
+        let transmitted: Vec<_> = packets
+            .into_iter()
+            .filter(|packet| should_transmit(packet, &mut drops))
+            .collect();
+
+        assert_eq!(transmitted.len(), 1);
+        assert_eq!(transmitted[0].get_done(), Some(DoneReason::Delivered));
+        assert_eq!(drops, expected_drops);
+    }
+
+    #[test]
+    fn ttl_drops_and_missing_verdicts_are_accounted() {
+        let mut burst = vec![
+            build_test_ipv4_packet(0).unwrap(),
+            build_test_ipv6_packet(0).unwrap(),
+            build_test_frame(),
+        ];
+        DecrementTtl.process_burst(&mut burst);
+        let mut drops = 0;
+        let transmitted = burst
+            .into_iter()
+            .filter(|packet| should_transmit(packet, &mut drops))
+            .count();
+
+        assert_eq!(transmitted, 0);
+        assert_eq!(drops, 3);
     }
 
     /// A frame we can parse is returned, and tagged with the interface it came from.

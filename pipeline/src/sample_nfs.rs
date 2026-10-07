@@ -146,7 +146,7 @@ pub struct BroadcastMacs;
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for BroadcastMacs {
     #[allow(clippy::unwrap_used)]
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
-        for packet in burst.iter_mut() {
+        for packet in burst.iter_mut().filter(|packet| !packet.is_done()) {
             match packet.try_eth_mut() {
                 None => {}
                 Some(mac) => {
@@ -159,19 +159,21 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for BroadcastMacs {
 
 /// Network function that decrements the TTL value of an IP packet.
 ///
-/// The function has no effect if the packet is not an IP packet.
-/// If the TTL is 0, an error is logged using [`trace!`].
+/// Marks exhausted and non-IP packets for dropping, retaining them for accounting.
+/// Finalized packets are left unchanged.
 pub struct DecrementTtl;
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DecrementTtl {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
-        burst.retain_mut(|packet| {
+        for packet in burst.iter_mut().filter(|packet| !packet.is_done()) {
             match packet.try_ipv4_mut() {
                 None => {}
                 Some(ipv4) => match ipv4.decrement_ttl() {
-                    Ok(()) => return true,
+                    Ok(()) => continue,
                     Err(e) => {
                         trace!("{e:?}");
+                        packet.done(DoneReason::HopLimitExceeded);
+                        continue;
                     }
                 },
             }
@@ -179,15 +181,17 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DecrementTtl {
             match packet.try_ipv6_mut() {
                 None => {}
                 Some(ipv6) => match ipv6.decrement_hop_limit() {
-                    Ok(()) => return true,
+                    Ok(()) => continue,
                     Err(e) => {
                         trace!("{e:?}");
+                        packet.done(DoneReason::HopLimitExceeded);
+                        continue;
                     }
                 },
             }
 
-            false
-        });
+            packet.done(DoneReason::NotIp);
+        }
     }
 }
 
@@ -219,5 +223,77 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketStatsNF {
             }
         }
         self.pkt_stats.incr_batch(&counts);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::StaticChain;
+    use net::buffer::TestBuffer;
+    use net::headers::{TryIpv4, TryIpv6};
+    use net::packet::test_utils::{build_test_ipv4_packet, build_test_ipv6_packet};
+    use strum::IntoEnumIterator;
+
+    #[test]
+    fn ttl_drops_reach_the_stats_stage() {
+        let mut ethernet = [0u8; 14];
+        ethernet[..6].fill(0xff);
+        ethernet[6] = 2;
+        ethernet[12..].copy_from_slice(&0x0806u16.to_be_bytes());
+        let mut burst = vec![
+            build_test_ipv4_packet(0).unwrap(),
+            build_test_ipv6_packet(0).unwrap(),
+            Packet::new(TestBuffer::from_raw_data(&ethernet)).unwrap(),
+            build_test_ipv4_packet(64).unwrap(),
+            build_test_ipv6_packet(64).unwrap(),
+        ];
+        let stats = Arc::new(PacketStats::new());
+        DecrementTtl
+            .chain(PacketStatsNF::new(stats.clone()))
+            .process_burst(&mut burst);
+
+        assert_eq!(burst.len(), 5);
+        assert_eq!(burst[0].get_done(), Some(DoneReason::HopLimitExceeded));
+        assert_eq!(burst[1].get_done(), Some(DoneReason::HopLimitExceeded));
+        assert_eq!(burst[2].get_done(), Some(DoneReason::NotIp));
+        assert_eq!(stats.get(DoneReason::HopLimitExceeded), 2);
+        assert_eq!(stats.get(DoneReason::NotIp), 1);
+        assert_eq!(burst[3].try_ipv4().unwrap().ttl(), 63);
+        assert_eq!(burst[4].try_ipv6().unwrap().hop_limit(), 63);
+        assert!(!burst[3].is_done());
+        assert!(!burst[4].is_done());
+    }
+
+    #[test]
+    fn finalized_packets_are_preserved_and_counted() {
+        let mut burst = Vec::new();
+        for verdict in DoneReason::iter() {
+            for mut packet in [
+                build_test_ipv4_packet(64).unwrap(),
+                build_test_ipv6_packet(64).unwrap(),
+            ] {
+                packet.done(verdict);
+                burst.push(packet);
+            }
+        }
+        let before: Vec<_> = burst
+            .iter()
+            .map(|packet| (packet.headers().clone(), packet.get_done()))
+            .collect();
+        let stats = Arc::new(PacketStats::new());
+        DecrementTtl
+            .chain(BroadcastMacs)
+            .chain(PacketStatsNF::new(stats.clone()))
+            .process_burst(&mut burst);
+
+        assert_eq!(burst.len(), before.len());
+        for (packet, (headers, verdict)) in burst.iter().zip(before) {
+            assert_eq!(packet.headers(), &headers);
+            assert_eq!(packet.get_done(), verdict);
+        }
+        for verdict in DoneReason::iter() {
+            assert_eq!(stats.get(verdict), 2, "{verdict:?}");
+        }
     }
 }
