@@ -70,6 +70,9 @@ const PCI_DEVICES_PATH: &str = "/sys/bus/pci/devices";
 /// The default 512 MiB guest can reserve 2 MiB pages but cannot fit a 1 GiB page.
 const HUGEPAGE_DIR: &str = "/run/huge/2MiB";
 
+/// Sysfs directory containing per-page-size hugepage accounting.
+const HUGEPAGES_SYSFS: &str = "/sys/kernel/mm/hugepages";
+
 /// Sysfs directory for the built-in `vfio-pci` driver.
 const VFIO_PCI_DRIVER_PATH: &str = "/sys/bus/pci/drivers/vfio-pci";
 
@@ -144,6 +147,78 @@ fn pci_address_of_mac(mac: &str) -> Option<PciAddress> {
         .find_map(|dir| PciAddress::try_from(dir.file_name()?.to_str()?).ok())
 }
 
+/// Log process credentials and capabilities to diagnose permission errors.
+fn dump_capability_diagnostics() {
+    eprintln!("[caps] --- capability diagnostics ---");
+
+    match fs::read_to_string("/proc/self/status") {
+        Ok(status) => {
+            for line in status.lines() {
+                if line.starts_with("Cap") || line.starts_with("Uid") || line.starts_with("Gid") {
+                    eprintln!("[caps]   {line}");
+                }
+            }
+        }
+        Err(e) => eprintln!("[caps]   failed to read /proc/self/status: {e}"),
+    }
+
+    eprintln!("[caps] --- end capability diagnostics ---");
+}
+
+/// Log hugepage pools and mounts before EAL initialization.
+fn dump_hugepage_diagnostics() {
+    eprintln!("[huge] --- hugepage diagnostics ---");
+
+    match fs::read_dir(HUGEPAGES_SYSFS) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                let base = format!("{HUGEPAGES_SYSFS}/{name_str}");
+
+                let nr = fs::read_to_string(format!("{base}/nr_hugepages"))
+                    .unwrap_or_else(|e| format!("<err: {e}>"));
+                let free = fs::read_to_string(format!("{base}/free_hugepages"))
+                    .unwrap_or_else(|e| format!("<err: {e}>"));
+                eprintln!(
+                    "[huge]   {name_str}: nr={nr} free={free}",
+                    nr = nr.trim(),
+                    free = free.trim(),
+                );
+            }
+        }
+        Err(e) => eprintln!("[huge]   failed to read {HUGEPAGES_SYSFS}: {e}"),
+    }
+
+    match fs::read_to_string("/proc/mounts") {
+        Ok(mounts) => {
+            let hugetlb_lines: Vec<&str> =
+                mounts.lines().filter(|l| l.contains("hugetlbfs")).collect();
+            if hugetlb_lines.is_empty() {
+                eprintln!("[huge]   NO hugetlbfs mounts found in /proc/mounts");
+            } else {
+                for line in &hugetlb_lines {
+                    eprintln!("[huge]   mount: {line}");
+                }
+            }
+        }
+        Err(e) => eprintln!("[huge]   failed to read /proc/mounts: {e}"),
+    }
+
+    match fs::metadata(HUGEPAGE_DIR) {
+        Ok(meta) => {
+            eprintln!(
+                "[huge]   {HUGEPAGE_DIR} exists (dir={}, readonly={})",
+                meta.is_dir(),
+                meta.permissions().readonly(),
+            );
+        }
+        Err(e) => eprintln!("[huge]   {HUGEPAGE_DIR} not accessible: {e}"),
+    }
+
+    eprintln!("[huge] --- end diagnostics ---");
+}
+
 /// Require the built-in `vfio-pci` driver.
 fn assert_vfio_pci_available() {
     match fs::metadata(VFIO_PCI_DRIVER_PATH) {
@@ -155,6 +230,116 @@ fn assert_vfio_pci_available() {
             );
         }
     }
+}
+
+/// Where the kernel lists IOMMU groups.
+const IOMMU_GROUPS_PATH: &str = "/sys/kernel/iommu_groups";
+
+/// The names in a directory, numbers in numeric order and anything else after them.
+fn dir_entries(path: &str) -> std::io::Result<Vec<String>> {
+    let mut names: Vec<String> = fs::read_dir(path)?
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    names.sort_by_key(|name| (name.parse::<u32>().unwrap_or(u32::MAX), name.clone()));
+    Ok(names)
+}
+
+/// The last component of a symlink's target, such as a device's driver or IOMMU group.
+fn link_target_name(path: &str) -> std::io::Result<String> {
+    let target = fs::read_link(path)?;
+    Ok(target
+        .file_name()
+        .map_or_else(|| "?".into(), |name| name.to_string_lossy().into_owned()))
+}
+
+/// Log IOMMU groups and kernel settings to diagnose VFIO binding failures.
+fn dump_iommu_diagnostics(addresses: &[PciAddress]) {
+    eprintln!("[iommu] --- IOMMU diagnostics ---");
+
+    match dir_entries(IOMMU_GROUPS_PATH) {
+        Ok(groups) if groups.is_empty() => {
+            eprintln!("[iommu]   {IOMMU_GROUPS_PATH}/ exists but is EMPTY");
+            eprintln!("[iommu]   -> the kernel IOMMU driver may not have initialised");
+            eprintln!("[iommu]   -> check kernel log for: 'DMAR: IOMMU enabled'");
+        }
+        Ok(groups) => eprintln!(
+            "[iommu]   found {} IOMMU group(s): {groups:?}",
+            groups.len()
+        ),
+        Err(e) => {
+            eprintln!("[iommu]   {IOMMU_GROUPS_PATH}/ not readable: {e}");
+            eprintln!("[iommu]   -> IOMMU support may not be compiled into the kernel");
+        }
+    }
+
+    for addr in addresses {
+        match link_target_name(&format!("{PCI_DEVICES_PATH}/{addr}/iommu_group")) {
+            Ok(group) => eprintln!("[iommu]   {addr}: iommu_group={group}"),
+            Err(e) => {
+                eprintln!("[iommu]   {addr}: NO iommu_group symlink ({e})");
+                eprintln!("[iommu]       -> this device cannot be bound to vfio-pci with IOMMU");
+            }
+        }
+    }
+
+    match fs::read_to_string("/sys/module/vfio/parameters/enable_unsafe_noiommu_mode") {
+        Ok(val) => eprintln!("[iommu]   vfio.enable_unsafe_noiommu_mode={}", val.trim()),
+        Err(e) => eprintln!("[iommu]   vfio noiommu flag not readable: {e}"),
+    }
+
+    match fs::read_to_string("/proc/cmdline") {
+        Ok(cmdline) => {
+            let relevant: Vec<&str> = cmdline
+                .split_whitespace()
+                .filter(|w| {
+                    w.starts_with("iommu")
+                        || w.starts_with("intel_iommu")
+                        || w.starts_with("amd_iommu")
+                        || w.starts_with("vfio")
+                })
+                .collect();
+            eprintln!("[iommu]   kernel cmdline IOMMU params: {relevant:?}");
+        }
+        Err(e) => eprintln!("[iommu]   /proc/cmdline not readable: {e}"),
+    }
+
+    eprintln!("[iommu] --- end IOMMU diagnostics ---");
+}
+
+/// Log VFIO devices, drivers, and groups after binding to diagnose DPDK probe failures.
+fn dump_post_bind_vfio_diagnostics(addresses: &[PciAddress]) {
+    eprintln!("[vfio-diag] --- post-bind VFIO diagnostics ---");
+
+    // DPDK opens /dev/vfio/vfio (container) and /dev/vfio/<group> (or
+    // /dev/vfio/noiommu-<group>) for each device.
+    match dir_entries("/dev/vfio") {
+        Ok(names) => eprintln!("[vfio-diag]   /dev/vfio/ entries: {names:?}"),
+        Err(e) => eprintln!("[vfio-diag]   /dev/vfio/ not readable: {e}"),
+    }
+
+    // In no-IOMMU mode, groups are created when devices bind to vfio-pci.
+    match dir_entries(IOMMU_GROUPS_PATH) {
+        Ok(groups) => eprintln!(
+            "[vfio-diag]   iommu_groups after bind: {} group(s): {groups:?}",
+            groups.len()
+        ),
+        Err(e) => eprintln!("[vfio-diag]   {IOMMU_GROUPS_PATH}/ not readable: {e}"),
+    }
+
+    for addr in addresses {
+        let base = format!("{PCI_DEVICES_PATH}/{addr}");
+        match link_target_name(&format!("{base}/driver")) {
+            Ok(driver) => eprintln!("[vfio-diag]   {addr}: driver={driver}"),
+            Err(e) => eprintln!("[vfio-diag]   {addr}: no driver symlink ({e})"),
+        }
+        match link_target_name(&format!("{base}/iommu_group")) {
+            Ok(group) => eprintln!("[vfio-diag]   {addr}: iommu_group={group}"),
+            Err(e) => eprintln!("[vfio-diag]   {addr}: no iommu_group ({e})"),
+        }
+    }
+
+    eprintln!("[vfio-diag] --- end post-bind VFIO diagnostics ---");
 }
 
 /// Bind each address to `vfio-pci` and return those that succeeded.
@@ -269,6 +454,8 @@ fn init_dpdk_eal(config: &VmConfig) -> (Eal, NetIface) {
         probed.id
     );
 
+    dump_iommu_diagnostics(&net_addrs);
+
     let bound = bind_devices_to_vfio(&net_addrs);
     eprintln!("[eal] {} device(s) bound to vfio-pci", bound.len());
     assert_eq!(
@@ -276,6 +463,10 @@ fn init_dpdk_eal(config: &VmConfig) -> (Eal, NetIface) {
         "every NIC to bind must bind to vfio-pci; see the [bind] log above"
     );
 
+    dump_post_bind_vfio_diagnostics(&bound);
+
+    dump_capability_diagnostics();
+    dump_hugepage_diagnostics();
     let eal_args = build_eal_args(&[probed_addr]);
     eprintln!("[eal] args: {eal_args:?}");
     let eal = eal::init(eal_args);
