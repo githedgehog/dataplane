@@ -56,8 +56,20 @@ impl HairpinPeering {
     }
 }
 
+/// A hairpin queue could not be started.
+#[derive(Debug, thiserror::Error)]
+pub enum HairpinStartFailure {
+    /// The receive half could not be started.
+    #[error("could not start the receive half of the hairpin queue: {0}")]
+    Rx(#[source] rx::RxQueueStartError),
+    /// The transmit half could not be started.
+    #[error("could not start the transmit half of the hairpin queue: {0}")]
+    Tx(#[source] tx::TxQueueStartError),
+}
+
 /// An error occurred while configuring a hairpin queue.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum HairpinConfigFailure {
     /// An error occurred while configuring the rx queue portion of the hairpin queue.
     RxQueueCreationFailed(rx::ConfigFailure),
@@ -119,11 +131,11 @@ impl<'dev> HairpinQueue<'dev> {
         Ok(HairpinQueue { rx, tx, peering })
     }
 
-    /// Stop the hairpin queue.
-    #[allow(clippy::expect_used)]
-    pub fn start(&mut self) {
-        // TODO: proper error reporting
-        self.tx.start().expect("todo");
-        self.rx.start().expect("todo");
+    /// Start transmit before receive, as required by the peering relationship.
+    /// If receive start fails, transmit remains started; stop the device to clean up.
+    pub fn start(&mut self) -> Result<(), HairpinStartFailure> {
+        self.tx.start().map_err(HairpinStartFailure::Tx)?;
+        self.rx.start().map_err(HairpinStartFailure::Rx)?;
+        Ok(())
     }
 }
