@@ -117,7 +117,10 @@ pub(crate) enum BridgeError {
     /// A netlink socket could not be opened in the control namespace.
     #[error("could not open a netlink socket for the control-plane bridge: {0}")]
     Netlink(String),
-    /// A tap device could not be created.
+    /// A tap device could not be created, or the kernel would not say what index it got.
+    ///
+    /// Fatal rather than skipped: without the index the datapath has no name for this interface
+    /// that the rest of the dataplane would recognise.
     #[error("could not create the tap device for interface {name}: {source}")]
     Tap {
         /// The interface whose tap could not be made.
@@ -125,17 +128,6 @@ pub(crate) enum BridgeError {
         /// The underlying failure.
         #[source]
         source: std::io::Error,
-    },
-    /// A tap was created but the kernel would not say what index it got.
-    ///
-    /// Fatal rather than skipped: without the index the datapath has no name for this interface
-    /// that the rest of the dataplane would recognise.
-    #[error("could not learn the interface index of the tap for {name}: {problem}")]
-    TapIndex {
-        /// The interface whose tap could not be identified.
-        name: InterfaceName,
-        /// What went wrong.
-        problem: String,
     },
 }
 
@@ -187,14 +179,10 @@ impl CpBridge {
                 source,
             })?;
 
-            // Asked for now, on the thread that made it and in the namespace it lives in. This
-            // index is what the whole dataplane above the driver will call this interface -- see
-            // `PortCpQueues::index` -- so a bridge that could not learn it has not built a usable
-            // port.
-            let index = tap_index(name).map_err(|problem| BridgeError::TapIndex {
-                name: name.clone(),
-                problem,
-            })?;
+            // Learned when the tap was created, in the namespace it lives in. This index is what
+            // the whole dataplane above the driver will call this interface -- see
+            // `PortCpQueues::index`.
+            let index = tap.index();
 
             let (punt_tx, punt_rx) = mpsc::channel(QUEUE_DEPTH);
             let (inject_tx, inject_rx) = mpsc::channel(QUEUE_DEPTH);
@@ -362,14 +350,6 @@ async fn dress_taps(
         }
     }
     debug!("tap identity applier stopped");
-}
-
-/// Look up the tap synchronously in the calling thread's network namespace.
-/// This avoids needing to await a netlink request during bridge construction.
-fn tap_index(name: &InterfaceName) -> Result<InterfaceIndex, String> {
-    let raw = nix::net::if_::if_nametoindex(name.to_string().as_str())
-        .map_err(|e| format!("if_nametoindex: {e}"))?;
-    InterfaceIndex::try_new(raw).map_err(|e| e.to_string())
 }
 
 /// Apply one port's identity to its tap.

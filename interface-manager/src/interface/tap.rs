@@ -14,7 +14,7 @@
 
 use concurrency::sync::Arc;
 use concurrency::sync::Mutex;
-use net::interface::InterfaceName;
+use net::interface::{InterfaceIndex, InterfaceName};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -33,6 +33,7 @@ use tracing::{info, warn};
 #[derive(Debug)]
 pub struct TapDevice {
     fd: AsyncFd<File>,
+    index: InterfaceIndex,
 }
 
 mod helper {
@@ -74,7 +75,7 @@ mod helper {
     unsafe impl Send for InterfaceRequest {}
 
     use super::TapDevice;
-    use net::interface::InterfaceName;
+    use net::interface::{InterfaceIndex, InterfaceName};
     use nix::libc;
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
@@ -147,8 +148,18 @@ mod helper {
                 warn!("failed to create tap device {name}: {err}");
                 return Err(err);
             }
+            // Asked for now, on the thread that created the device: the lookup resolves in the
+            // calling thread's network namespace, which is the one the device was created in.
+            let index = nix::net::if_::if_nametoindex(name.as_ref())
+                .map_err(std::io::Error::from)
+                .and_then(|raw| InterfaceIndex::try_new(raw).map_err(std::io::Error::other))
+                .inspect_err(|err| {
+                    warn!("failed to learn the interface index of tap device {name}: {err}");
+                })?;
+            trace!("tap device {name} is interface index {index}");
             Ok(TapDevice {
                 fd: AsyncFd::new(tap_file)?,
+                index,
             })
         }
     }
@@ -233,10 +244,12 @@ impl TapDevice {
     /// to keep the value; [`TapRegistry`] is what does that for the dataplane.
     ///
     /// The device is created in the network namespace of the *calling thread*, and stays there.
+    /// Its interface index, available through [`Self::index`], is the one in that namespace.
     ///
     /// # Errors
     ///
-    /// If the tap device cannot be created, an `io::Error` is returned.
+    /// If the tap device cannot be created, or its interface index cannot be learned, an
+    /// `io::Error` is returned.
     ///
     /// # Panics
     ///
@@ -246,6 +259,12 @@ impl TapDevice {
     #[tracing::instrument(level = "info")]
     pub fn open(name: &InterfaceName) -> Result<TapDevice, std::io::Error> {
         helper::InterfaceRequest::new(name.clone()).create()
+    }
+
+    /// The kernel's interface index for this tap, in the network namespace it was created in.
+    #[must_use]
+    pub fn index(&self) -> InterfaceIndex {
+        self.index
     }
 
     /// Wait for one frame to arrive on the tap and copy it into `buf`.
