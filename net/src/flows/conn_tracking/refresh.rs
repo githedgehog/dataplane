@@ -3,11 +3,11 @@
 
 //! Status and lifetime updates for tracked flows.
 
-use super::{FlowSide, next_status};
+use super::{ConnState, FlowSide, next_status};
+use crate::buffer::PacketBufferMut;
+use crate::flows::FlowInfo;
+use crate::packet::Packet;
 use concurrency::sync::Weak;
-use net::buffer::PacketBufferMut;
-use net::flows::{ConnState, FlowInfo};
-use net::packet::Packet;
 use std::time::Duration;
 use tracing::debug;
 
@@ -17,7 +17,7 @@ use tracing::debug;
 /// the pair to the duration that `timeout` returns for the new status, if any.
 ///
 /// Return the new status, or `None` if `flow` is not part of a pair and tracks no connection.
-pub(crate) fn advance_flow<Buf: PacketBufferMut>(
+pub fn advance_flow<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
     flow: &FlowInfo,
     timeout: impl FnOnce(ConnState) -> Option<Duration>,

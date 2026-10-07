@@ -3,12 +3,11 @@
 
 #![cfg(test)]
 
-use super::{FlowSide, next_status};
-use net::buffer::TestBuffer;
-use net::flows::ConnState;
-use net::headers::TryTcpMut;
-use net::packet::Packet;
-use net::packet::test_utils::{
+use super::{ConnState, FlowSide, next_status};
+use crate::buffer::TestBuffer;
+use crate::headers::TryTcpMut;
+use crate::packet::Packet;
+use crate::packet::test_utils::{
     IcmpEchoDirection, build_test_icmp4_echo, build_test_tcp_ipv4_packet,
     build_test_udp_ipv4_packet,
 };
