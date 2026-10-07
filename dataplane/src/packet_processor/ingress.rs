@@ -48,8 +48,11 @@ impl Ingress {
         match &interface.attachment {
             Some(Attachment::Vrf(vrfid)) => {
                 if packet.try_ip().is_none() {
-                    debug!("{nfi}: Processing of non-ip traffic on {ifname} is not supported");
-                    packet.done(DoneReason::NotIp);
+                    // e.g. ARP replies: the datapath does not handle them, the control plane does
+                    debug!(
+                        "{nfi}: Non-ip frame for us on {ifname}, handing it to the control plane"
+                    );
+                    packet.done(DoneReason::Local);
                     return;
                 }
                 debug!("{nfi}: Packet is for FIB {vrfid}");
@@ -83,17 +86,20 @@ impl Ingress {
         packet.done(DoneReason::MacNotForUs);
     }
 
+    /// Broadcast and multicast frames (ARP requests, IPv6 neighbor discovery, LLDP, ...) are
+    /// not processed by the datapath: they are handed to the control plane.
     #[tracing::instrument(level = "trace")]
-    fn interface_ingress_eth_bcast<Buf: PacketBufferMut>(
+    fn interface_ingress_eth_bmcast<Buf: PacketBufferMut>(
         &self,
         interface: &Interface,
+        dst_mac: Mac,
         packet: &mut Packet<Buf>,
     ) {
         let nfi = self.name();
-        packet.meta_mut().set_l2bcast(true);
-        packet.done(DoneReason::Unhandled);
+        packet.meta_mut().set_l2bcast(dst_mac.is_broadcast());
+        packet.done(DoneReason::Local);
         debug!(
-            "{nfi}: Processing of broadcast frames is not supported (iif:{ifname})",
+            "{nfi}: Frame for {dst_mac} handed to the control plane (iif:{ifname})",
             ifname = interface.name
         );
     }
@@ -114,8 +120,9 @@ impl Ingress {
                 None => packet.done(DoneReason::NotEthernet),
                 Some(eth) => {
                     let dmac = eth.destination().inner();
-                    if dmac.is_broadcast() {
-                        self.interface_ingress_eth_bcast(interface, packet);
+                    // is_multicast() also holds for broadcast
+                    if dmac.is_multicast() {
+                        self.interface_ingress_eth_bmcast(interface, dmac, packet);
                     } else if dmac == if_mac.inner() {
                         self.interface_ingress_eth_ucast_local(interface, packet);
                     } else {
@@ -174,5 +181,105 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::Ingress;
+    use net::buffer::TestBuffer;
+    use net::eth::mac::{DestinationMac, Mac, SourceMac};
+    use net::headers::TryEthMut;
+    use net::interface::{InterfaceIndex, InterfaceName};
+    use net::packet::test_utils::build_test_ipv4_packet;
+    use net::packet::{DoneReason, Packet};
+    use pipeline::NetworkFunction;
+    use routing::testing::RouterTables;
+
+    const PORT_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0x01]);
+    const VRF: u32 = 1;
+
+    fn ifindex() -> InterfaceIndex {
+        InterfaceIndex::try_new(1).unwrap()
+    }
+
+    /// Router tables with one ethernet interface, with `PORT_MAC`, attached to a vrf.
+    /// The tables must outlive the stage, which only holds a reader.
+    fn tables() -> RouterTables {
+        let mut tables = RouterTables::new();
+        tables.vrf(VRF, None);
+        tables.interface(
+            ifindex(),
+            InterfaceName::try_from("eth0").unwrap(),
+            SourceMac::new(PORT_MAC).unwrap(),
+        );
+        tables.attach(ifindex(), VRF);
+        tables
+    }
+
+    /// An IPv4 packet received on `ifindex()` and sent to `dst`
+    fn ip_packet_to(dst: Mac) -> Packet<TestBuffer> {
+        let mut packet = build_test_ipv4_packet(64).unwrap();
+        packet
+            .try_eth_mut()
+            .unwrap()
+            .set_destination(DestinationMac::new(dst).unwrap());
+        packet.meta_mut().iif = Some(ifindex());
+        packet
+    }
+
+    /// An ARP frame (an ethernet header and no IP header) received on `ifindex()` and sent to
+    /// `dst`
+    fn arp_frame_to(dst: Mac) -> Packet<TestBuffer> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&dst.0);
+        bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 0x02]); // src mac
+        bytes.extend_from_slice(&0x0806u16.to_be_bytes()); // ethertype arp
+        bytes.extend_from_slice(&[0u8; 28]);
+        let mut packet = Packet::new(TestBuffer::from_raw_data(&bytes)).unwrap();
+        packet.meta_mut().iif = Some(ifindex());
+        packet
+    }
+
+    fn ingress(packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
+        let tables = tables();
+        let mut stage = Ingress::new("ingress", tables.interfaces());
+        let mut burst = vec![packet];
+        stage.process_burst(&mut burst);
+        burst.pop().unwrap()
+    }
+
+    #[test]
+    fn an_ip_packet_for_us_continues_in_its_vrf() {
+        let packet = ingress(ip_packet_to(PORT_MAC));
+        assert_eq!(packet.get_done(), None);
+        assert_eq!(packet.meta().vrf, Some(VRF));
+    }
+
+    #[test]
+    fn a_non_ip_frame_for_us_is_local() {
+        let packet = ingress(arp_frame_to(PORT_MAC));
+        assert_eq!(packet.get_done(), Some(DoneReason::Local));
+    }
+
+    #[test]
+    fn a_broadcast_frame_is_local() {
+        let packet = ingress(arp_frame_to(Mac::BROADCAST));
+        assert_eq!(packet.get_done(), Some(DoneReason::Local));
+        assert!(packet.meta().is_l2bcast());
+    }
+
+    /// The IPv6 all-nodes multicast MAC, which is what neighbor discovery arrives on
+    #[test]
+    fn a_multicast_frame_is_local() {
+        let packet = ingress(ip_packet_to(Mac([0x33, 0x33, 0, 0, 0, 0x01])));
+        assert_eq!(packet.get_done(), Some(DoneReason::Local));
+        assert!(!packet.meta().is_l2bcast());
+    }
+
+    #[test]
+    fn a_frame_for_somebody_else_is_not_for_us() {
+        let packet = ingress(ip_packet_to(Mac([0x02, 0, 0, 0, 0, 0x99])));
+        assert_eq!(packet.get_done(), Some(DoneReason::MacNotForUs));
     }
 }

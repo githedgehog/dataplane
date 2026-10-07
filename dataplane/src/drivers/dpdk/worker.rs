@@ -9,7 +9,6 @@ use concurrency::sync::Arc;
 use dpdk::mem::{MBUF_BURST, Mbuf, MbufArray};
 use lifecycle::Subsystem;
 use net::buffer::{Append, PacketBufferMut};
-use net::headers::TryEth;
 use net::interface::InterfaceIndex;
 use net::packet::DoneReason;
 use net::packet::Packet;
@@ -20,7 +19,7 @@ use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
 use super::port::PortQueues;
-use crate::drivers::cpbridge::{Disposition, addressed_to, disposition};
+use crate::drivers::cpbridge::{Disposition, disposition};
 
 #[cfg(all(test, not(feature = "shuttle")))]
 mod tests;
@@ -154,17 +153,9 @@ impl<'p> Worker<'p> {
         let mut batches: HashMap<usize, MbufArray<'p>> = HashMap::new();
         // Borrowed for the packet loop rather than cloned per poll: an `mpsc::Sender` clone is an
         // atomic increment, which is not free at burst rates and buys nothing here.
-        let port_mac = self.ports[slot].queues.mac;
         let punt = self.ports[slot].queues.punt.as_ref();
         for packet in processed {
-            // Who the frame was addressed to, read before the pipeline's verdict is acted on. It is
-            // only consulted for verdicts that did not rewrite the ethernet header, so this is the
-            // destination the frame arrived with.
-            let addressed_to_us = packet
-                .try_eth()
-                .is_some_and(|eth| addressed_to(eth.destination().inner(), port_mac));
-
-            match disposition(packet.get_done(), addressed_to_us) {
+            match disposition(packet.get_done()) {
                 Disposition::Transmit => {}
                 Disposition::Punt => {
                     Self::punt(
@@ -405,14 +396,7 @@ fn process_burst<Buf: PacketBufferMut>(
     // Some stages remove packets instead of returning a drop verdict.
     counters.ppline_drops += parsed.saturating_sub(packets.len()) as u64;
     packets.retain(|packet| {
-        if let Some(
-            DoneReason::Delivered
-            | DoneReason::Local
-            | DoneReason::Unhandled
-            | DoneReason::NotIp
-            | DoneReason::RouteFailure,
-        ) = packet.get_done()
-        {
+        if let Some(DoneReason::Delivered | DoneReason::Local) = packet.get_done() {
             true
         } else {
             counters.ppline_drops += 1;

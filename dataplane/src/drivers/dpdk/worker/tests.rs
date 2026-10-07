@@ -80,8 +80,11 @@ fn drop_verdicts_and_removed_packets_are_counted_once() {
     assert_eq!(counters.tx_drops, 0);
 }
 
+/// Only `Local` reaches the control plane: the verdicts that used to be punted when the frame was
+/// addressed to us are now drops, since the ingress stage marks `Local` whatever the control plane
+/// should see.
 #[test]
-fn control_plane_verdicts_remain_available_to_the_driver() {
+fn verdicts_other_than_local_and_delivered_are_dropped() {
     let mut pipeline = DynPipeline::new().add_stage(ReturnVerdicts(&[
         Some(DoneReason::Unhandled),
         Some(DoneReason::NotIp),
@@ -94,8 +97,8 @@ fn control_plane_verdicts_remain_available_to_the_driver() {
         &mut pipeline,
         &mut counters,
     );
-    assert_eq!(packets.len(), 3);
-    assert_eq!(counters.ppline_drops, 0);
+    assert!(packets.is_empty());
+    assert_eq!(counters.ppline_drops, 3);
 }
 
 #[test]

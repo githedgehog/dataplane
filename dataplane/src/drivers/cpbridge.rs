@@ -125,13 +125,12 @@ pub(crate) enum Disposition {
 
 /// Choose whether to forward, punt, or drop a completed packet.
 ///
-/// `Local` always punts. `Unhandled`, `NotIp`, and `RouteFailure` punt only when
-/// addressed to us, including broadcast and multicast. This carries ARP requests
-/// and replies through the kernel. Explicit drops never punt.
-///
-/// This fixed policy uses destination MAC rather than protocol; unroutable IP
-/// traffic addressed to the port also reaches the kernel.
-pub(crate) fn disposition(done: Option<DoneReason>, addressed_to_us: bool) -> Disposition {
+/// Only `Local` punts. Deciding what the control plane gets to see is the pipeline's job: the
+/// ingress stage marks `Local` what is addressed to us and the datapath does not process
+/// (broadcast and multicast frames, like ARP requests and neighbor discovery, and non-IP frames
+/// for our MAC, like ARP replies), and the router marks `Local` the traffic for our own addresses.
+/// Every other verdict is a decision the datapath already made, and never punts.
+pub(crate) fn disposition(done: Option<DoneReason>) -> Disposition {
     // Exhaustive on purpose. A new `DoneReason` is a new decision about whether the kernel should
     // see that packet, and this is where it has to be made; a wildcard would answer "no" silently.
     match done {
@@ -139,22 +138,16 @@ pub(crate) fn disposition(done: Option<DoneReason>, addressed_to_us: bool) -> Di
 
         Some(DoneReason::Local) => Disposition::Punt,
 
-        // Addressed to us, and the datapath had nothing to do with it.
-        Some(DoneReason::Unhandled | DoneReason::NotIp | DoneReason::RouteFailure) => {
-            if addressed_to_us {
-                Disposition::Punt
-            } else {
-                Disposition::Drop
-            }
-        }
-
         // Decisions the datapath made, and failures the kernel cannot do anything about -- together
         // with `None`, which is no verdict at all: a pipeline that did not finish with the packet
         // is a bug rather than a routing outcome, and dropping matches what the driver has always
         // done with one.
         None
         | Some(
-            DoneReason::InternalFailure
+            DoneReason::Unhandled
+            | DoneReason::NotIp
+            | DoneReason::RouteFailure
+            | DoneReason::InternalFailure
             | DoneReason::InterfaceUnknown
             | DoneReason::InterfaceDetached
             | DoneReason::InterfaceAdmDown
@@ -185,15 +178,6 @@ pub(crate) fn disposition(done: Option<DoneReason>, addressed_to_us: bool) -> Di
             | DoneReason::NoHeadRoom,
         ) => Disposition::Drop,
     }
-}
-
-/// True if a frame with this destination MAC was addressed to a port with this one.
-///
-/// Broadcast and multicast count: the peer's ARP request, the fabric's LLDP, and IPv6 neighbour
-/// discovery all arrive that way, and all of them are the control plane's business.
-#[must_use]
-pub(crate) fn addressed_to(destination: Mac, port: Mac) -> bool {
-    destination == port || destination.is_broadcast() || destination.is_multicast()
 }
 
 /// Anything that can go wrong building the bridge.
@@ -508,30 +492,9 @@ async fn dress_one(
 
 #[cfg(test)]
 mod test {
-    use super::{Disposition, addressed_to, disposition};
-    use net::eth::mac::Mac;
+    use super::{Disposition, disposition};
     use net::packet::DoneReason;
     use strum::EnumCount as _;
-
-    const PORT: Mac = Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
-    const SOMEBODY_ELSE: Mac = Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
-    const BROADCAST: Mac = Mac([0xff; 6]);
-    /// The IPv6 all-nodes multicast MAC, which is what neighbour discovery arrives on.
-    const MULTICAST: Mac = Mac([0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
-
-    #[test]
-    fn only_frames_for_us_are_addressed_to_us() {
-        assert!(addressed_to(PORT, PORT), "our own MAC is for us");
-        assert!(addressed_to(BROADCAST, PORT), "broadcast is for everyone");
-        assert!(
-            addressed_to(MULTICAST, PORT),
-            "multicast carries neighbour discovery and must reach the kernel"
-        );
-        assert!(
-            !addressed_to(SOMEBODY_ELSE, PORT),
-            "a frame for another station is not ours"
-        );
-    }
 
     /// The whole punt policy, verdict by verdict.
     ///
@@ -539,162 +502,59 @@ mod test {
     /// policy would agree with any policy at all. This is the statement of what the control plane
     /// is entitled to see, and changing [`disposition`] should have to change it here too.
     ///
-    /// Break-tested: inverting any single arm below (say, making `AclDropped` punt when addressed
-    /// to us, or making `NotIp` drop) fails this test.
+    /// Break-tested: inverting any single arm below (say, making `AclDropped` punt, or making
+    /// `Local` drop) fails this test.
     // The table below is data, not logic: every arm is one verdict, and the point is that all of
     // them are written out. Splitting it to satisfy a line count would only hide that.
     #[allow(clippy::too_many_lines)]
     #[test]
     fn punt_policy_table() {
-        // (verdict, disposition when addressed to us, disposition otherwise)
-        let table: &[(DoneReason, Disposition, Disposition)] = &[
-            // Transmitted regardless of who the frame was for: by this point the pipeline has
-            // rewritten the destination MAC to the next hop's, so "addressed to us" is meaningless.
-            (
-                DoneReason::Delivered,
-                Disposition::Transmit,
-                Disposition::Transmit,
-            ),
-            // The pipeline said so explicitly.
-            (DoneReason::Local, Disposition::Punt, Disposition::Punt),
-            // The three that carry the control plane.
-            (DoneReason::Unhandled, Disposition::Punt, Disposition::Drop),
-            (DoneReason::NotIp, Disposition::Punt, Disposition::Drop),
-            (
-                DoneReason::RouteFailure,
-                Disposition::Punt,
-                Disposition::Drop,
-            ),
+        // (verdict, disposition)
+        let table: &[(DoneReason, Disposition)] = &[
+            // The pipeline forwarded it.
+            (DoneReason::Delivered, Disposition::Transmit),
+            // The pipeline said so explicitly: the only verdict that reaches the control plane.
+            (DoneReason::Local, Disposition::Punt),
             // Everything else is a decision the datapath already made.
-            (
-                DoneReason::InternalFailure,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InterfaceUnknown,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InterfaceDetached,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InterfaceAdmDown,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InterfaceOperDown,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InterfaceUnsupported,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::NotEthernet,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::MacNotForUs,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InvalidDstMac,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::MissingEtherType,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (DoneReason::RouteDrop, Disposition::Drop, Disposition::Drop),
-            (
-                DoneReason::HopLimitExceeded,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::MissL2resolution,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::VxlanDecapFailure,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::VxlanEncapFailure,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (DoneReason::Filtered, Disposition::Drop, Disposition::Drop),
-            (DoneReason::AclDropped, Disposition::Drop, Disposition::Drop),
-            (
-                DoneReason::NatOutOfResources,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::FlowCapacityExceeded,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::NatUnsupportedProto,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (DoneReason::NatFailure, Disposition::Drop, Disposition::Drop),
-            (
-                DoneReason::NatNotPortForwarded,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (DoneReason::Malformed, Disposition::Drop, Disposition::Drop),
-            (DoneReason::Unroutable, Disposition::Drop, Disposition::Drop),
-            (
-                DoneReason::InvalidChecksum,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::IcmpErrorIncomplete,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InternalDrop,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::DeparseError,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (DoneReason::NoHeadRoom, Disposition::Drop, Disposition::Drop),
+            (DoneReason::Unhandled, Disposition::Drop),
+            (DoneReason::NotIp, Disposition::Drop),
+            (DoneReason::RouteFailure, Disposition::Drop),
+            (DoneReason::InternalFailure, Disposition::Drop),
+            (DoneReason::InterfaceUnknown, Disposition::Drop),
+            (DoneReason::InterfaceDetached, Disposition::Drop),
+            (DoneReason::InterfaceAdmDown, Disposition::Drop),
+            (DoneReason::InterfaceOperDown, Disposition::Drop),
+            (DoneReason::InterfaceUnsupported, Disposition::Drop),
+            (DoneReason::NotEthernet, Disposition::Drop),
+            (DoneReason::MacNotForUs, Disposition::Drop),
+            (DoneReason::InvalidDstMac, Disposition::Drop),
+            (DoneReason::MissingEtherType, Disposition::Drop),
+            (DoneReason::RouteDrop, Disposition::Drop),
+            (DoneReason::HopLimitExceeded, Disposition::Drop),
+            (DoneReason::MissL2resolution, Disposition::Drop),
+            (DoneReason::VxlanDecapFailure, Disposition::Drop),
+            (DoneReason::VxlanEncapFailure, Disposition::Drop),
+            (DoneReason::Filtered, Disposition::Drop),
+            (DoneReason::AclDropped, Disposition::Drop),
+            (DoneReason::NatOutOfResources, Disposition::Drop),
+            (DoneReason::FlowCapacityExceeded, Disposition::Drop),
+            (DoneReason::NatUnsupportedProto, Disposition::Drop),
+            (DoneReason::NatFailure, Disposition::Drop),
+            (DoneReason::NatNotPortForwarded, Disposition::Drop),
+            (DoneReason::Malformed, Disposition::Drop),
+            (DoneReason::Unroutable, Disposition::Drop),
+            (DoneReason::InvalidChecksum, Disposition::Drop),
+            (DoneReason::IcmpErrorIncomplete, Disposition::Drop),
+            (DoneReason::InternalDrop, Disposition::Drop),
+            (DoneReason::DeparseError, Disposition::Drop),
+            (DoneReason::NoHeadRoom, Disposition::Drop),
         ];
 
-        for (verdict, for_us, not_for_us) in table {
+        for (verdict, expected) in table {
             assert_eq!(
-                disposition(Some(*verdict), true),
-                *for_us,
-                "wrong disposition for {verdict:?} addressed to us"
-            );
-            assert_eq!(
-                disposition(Some(*verdict), false),
-                *not_for_us,
-                "wrong disposition for {verdict:?} addressed elsewhere"
+                disposition(Some(*verdict)),
+                *expected,
+                "wrong disposition for {verdict:?}"
             );
         }
 
@@ -712,8 +572,7 @@ mod test {
 
     #[test]
     fn a_packet_with_no_verdict_is_dropped() {
-        assert_eq!(disposition(None, true), Disposition::Drop);
-        assert_eq!(disposition(None, false), Disposition::Drop);
+        assert_eq!(disposition(None), Disposition::Drop);
     }
 
     // ------------------------------------------------------------------------------------------
@@ -725,6 +584,7 @@ mod test {
     use fixin::wrap;
     use futures::TryStreamExt;
     use lifecycle::Shutdown;
+    use net::eth::mac::Mac;
     use net::interface::InterfaceName;
     use std::future::Future;
     use std::net::{IpAddr, Ipv4Addr};

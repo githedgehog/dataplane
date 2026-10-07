@@ -193,8 +193,6 @@ pub(crate) struct PortQueues<'p> {
     /// Which interface frames off this queue arrived on.
     pub(crate) if_index: InterfaceIndex,
     pub(crate) name: String,
-    /// The MAC this port answers to, which is what decides whether a frame was addressed to us.
-    pub(crate) mac: Mac,
     pub(crate) rx: RxQueue<'p>,
     pub(crate) tx: TxQueue<'p>,
     /// The pool injected control-plane frames are copied into.
@@ -283,7 +281,6 @@ pub(crate) fn deal_queues<'p>(
             per_worker[worker as usize].push(PortQueues {
                 if_index,
                 name: port.name.clone(),
-                mac: port.mac,
                 rx,
                 tx,
                 pool: port.rx_pool.clone(),
