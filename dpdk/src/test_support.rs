@@ -36,18 +36,18 @@ pub fn start_eal() -> EalShared<'static> {
 }
 
 #[cfg(test)]
-pub(crate) fn packet_pool(size: u32) -> crate::mem::Pool {
+pub(crate) fn packet_pool(size: u32) -> crate::mem::Pool<'static> {
     packet_pool_with_data_size(size, 2048)
 }
 
 #[cfg(test)]
-pub(crate) fn packet_pool_with_data_size(size: u32, data_size: u16) -> crate::mem::Pool {
-    use crate::mem::{Pool, PoolConfig, PoolParams};
+pub(crate) fn packet_pool_with_data_size(size: u32, data_size: u16) -> crate::mem::Pool<'static> {
+    use crate::mem::{PoolConfig, PoolParams};
     use crate::socket::SocketId;
     use concurrency::process_global::atomic::{AtomicU32, Ordering};
 
     static NEXT_POOL: AtomicU32 = AtomicU32::new(0);
-    let _eal = start_eal();
+    let shared = start_eal();
     let name = format!("batch_{}", NEXT_POOL.fetch_add(1, Ordering::Relaxed));
     let params = PoolParams {
         size,
@@ -56,13 +56,16 @@ pub(crate) fn packet_pool_with_data_size(size: u32, data_size: u16) -> crate::me
         data_size,
         socket_id: SocketId::ANY,
     };
-    Pool::new_pkt_pool(PoolConfig::new(name, params).unwrap()).unwrap()
+    shared
+        .mem()
+        .new_pkt_pool(PoolConfig::new(name, params).unwrap())
+        .unwrap()
 }
 
 #[cfg(test)]
-pub(crate) fn available(pool: &crate::mem::Pool) -> usize {
+pub(crate) fn available(pool: &crate::mem::Pool<'_>) -> usize {
     // SAFETY: the pool is live and its per-core cache is disabled.
-    unsafe { dpdk_sys::rte_mempool_avail_count(pool.inner().as_mut_ptr()) as usize }
+    unsafe { dpdk_sys::rte_mempool_avail_count(pool.as_mut_ptr()) as usize }
 }
 
 /// Serializes ring-port creation and teardown, which DPDK does not make thread-safe.

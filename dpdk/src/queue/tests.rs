@@ -24,7 +24,7 @@ unsafe extern "C" {
 }
 
 struct Loopback {
-    rx: RxQueue,
+    rx: RxQueue<'static>,
     tx: TxQueue,
     ring: NonNull<dpdk_sys::rte_ring>,
     name: CString,
@@ -62,7 +62,7 @@ impl Loopback {
                     128,
                     SocketId::ANY.as_c_uint(),
                     &Default::default(),
-                    pool.inner().as_mut_ptr(),
+                    pool.as_mut_ptr(),
                 ),
                 0
             );
@@ -106,7 +106,7 @@ impl Loopback {
         }
     }
 
-    fn pool(&self) -> &Pool {
+    fn pool(&self) -> &Pool<'static> {
         &self.rx.config.pool
     }
 
