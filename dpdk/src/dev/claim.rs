@@ -9,12 +9,13 @@
 
 use super::{DevIndex, DevInfo, DevInfoError, Manager};
 use alloc::string::String;
+use concurrency::sync::atomic::{AtomicBool, Ordering};
 use core::ffi::{CStr, c_char};
 use core::fmt::{Display, Formatter};
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 use errno::Errno;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 /// The prefix of the owner name this crate registers. The rest is `/<pid>/<tid>`.
 const OWNER_PREFIX: &str = "dataplane";
@@ -38,15 +39,106 @@ impl OwnerId {
             Err(Errno::from(-ret))
         }
     }
+}
+
+/// The EAL's port owner ID and persistent teardown-failure record.
+///
+/// `rte_eth_dev_close` removes the owner record even when the driver fails to close.
+/// Remember failures here so EAL teardown retains mempools the driver may still reference.
+#[derive(Debug)]
+pub(crate) struct Ownership {
+    id: OwnerId,
+    /// Set when a close fails or an abandoned port cannot be closed; never cleared. A failed stop
+    /// leaves the port owned, so `close_abandoned` still sees it.
+    teardown_failed: AtomicBool,
+}
+
+impl Ownership {
+    /// Allocate a fresh owner id with a clean teardown record.
+    pub(crate) fn new() -> Result<Ownership, Errno> {
+        Ok(Ownership {
+            id: OwnerId::new()?,
+            teardown_failed: AtomicBool::new(false),
+        })
+    }
+
+    /// An unregistered owner for tests that make no port calls.
+    #[cfg(test)]
+    pub(crate) fn unregistered() -> Ownership {
+        Ownership {
+            id: OwnerId(0),
+            teardown_failed: AtomicBool::new(false),
+        }
+    }
+
+    /// Record that a port may still reference its mempools after a failed teardown.
+    pub(crate) fn record_teardown_failure(&self) {
+        self.teardown_failed.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether any port's teardown failed, so its driver may still reference the mempools.
+    pub(crate) fn teardown_failed(&self) -> bool {
+        self.teardown_failed.load(Ordering::Relaxed)
+    }
+
+    /// Close owned ports abandoned by leaked handles or failed teardown.
+    /// Called before pool release, after all queue users have finished.
+    #[cold]
+    pub(crate) fn close_abandoned(&self) -> AbandonedPorts {
+        let mut report = AbandonedPorts::default();
+        let mut cursor = 0u16;
+        loop {
+            // SAFETY: plain FFI query on an id from `rte_eth_dev_owner_new`.
+            let next = unsafe { dpdk_sys::rte_eth_find_next_owned_by(cursor, self.id.0) };
+            let Ok(port) = u16::try_from(next) else {
+                break;
+            };
+            if port >= DevIndex::MAX {
+                break;
+            }
+            warn!("port {port} was never closed; closing it at EAL teardown");
+            // SAFETY: `port` is a valid port id owned by this EAL, and no queue handle for it
+            // can still exist (see above).
+            let stopped = unsafe { dpdk_sys::rte_eth_dev_stop(port) };
+            // Closing a port that failed to stop is not valid.
+            let closed = if stopped == 0 {
+                // SAFETY: as above, and the port is stopped.
+                unsafe { dpdk_sys::rte_eth_dev_close(port) }
+            } else {
+                stopped
+            };
+            if closed == 0 {
+                report.closed += 1;
+            } else {
+                error!("could not close abandoned port {port}: {closed}");
+                self.record_teardown_failure();
+                report.stuck += 1;
+            }
+            let Some(after) = port.checked_add(1) else {
+                break;
+            };
+            cursor = after;
+        }
+        report
+    }
 
     /// Delete this owner ID and release any remaining claims at EAL teardown.
-    pub(crate) fn release_all(self) {
+    pub(crate) fn release_all(&self) {
         // SAFETY: plain FFI call on an id from `rte_eth_dev_owner_new`.
-        let ret = unsafe { dpdk_sys::rte_eth_dev_owner_delete(self.0) };
+        let ret = unsafe { dpdk_sys::rte_eth_dev_owner_delete(self.id.0) };
         if ret != 0 {
             warn!("failed to release port ownership at EAL teardown: {ret}");
         }
     }
+}
+
+/// Results of closing abandoned ports during EAL teardown.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct AbandonedPorts {
+    /// Ports that were still open and have now been closed.
+    pub(crate) closed: u16,
+    /// Ports that could not be stopped or closed, and so may still reference their mempools.
+    pub(crate) stuck: u16,
 }
 
 /// Who holds a port, decoded from the name its owner registered with DPDK.
@@ -192,7 +284,7 @@ pub enum ClaimError {
 #[must_use = "dropping a claim releases the port"]
 pub struct PortClaim<'eal> {
     info: DevInfo<'eal>,
-    owner: OwnerId,
+    owner: &'eal Ownership,
     _thread: PhantomData<*const ()>,
 }
 
@@ -201,7 +293,7 @@ impl<'eal> PortClaim<'eal> {
     /// Lookup, claim, and close all run on the EAL thread, preventing port reuse between calls.
     /// Hotplug is not supported.
     pub(crate) fn claim(
-        owner: OwnerId,
+        owner: &'eal Ownership,
         dev: &'eal Manager,
         index: DevIndex,
     ) -> Result<PortClaim<'eal>, ClaimError> {
@@ -217,9 +309,12 @@ impl<'eal> PortClaim<'eal> {
     }
 
     /// Claim `info`'s port for `owner`.
-    pub(crate) fn new(owner: OwnerId, info: DevInfo<'eal>) -> Result<PortClaim<'eal>, ClaimError> {
+    pub(crate) fn new(
+        owner: &'eal Ownership,
+        info: DevInfo<'eal>,
+    ) -> Result<PortClaim<'eal>, ClaimError> {
         let port = info.index();
-        let record = PortOwner::current().encode(owner);
+        let record = PortOwner::current().encode(owner.id);
         // SAFETY: `record` is a valid owner struct for the duration of the call.
         let ret = unsafe { dpdk_sys::rte_eth_dev_owner_set(port.as_u16(), &raw const record) };
         match ret {
@@ -249,11 +344,13 @@ impl<'eal> PortClaim<'eal> {
         &self.info
     }
 
-    /// Hand the claim to a device, which releases it by closing the port.
-    pub(crate) fn into_info(self) -> DevInfo<'eal> {
+    /// Hand the claim to a device, which releases it by closing the port and reports a failed
+    /// teardown to the returned [`Ownership`].
+    pub(crate) fn into_parts(self) -> (DevInfo<'eal>, &'eal Ownership) {
         let this = ManuallyDrop::new(self);
         // SAFETY: `this` is never used or dropped again, so `info` is moved out exactly once.
-        unsafe { core::ptr::read(&raw const this.info) }
+        let info = unsafe { core::ptr::read(&raw const this.info) };
+        (info, this.owner)
     }
 }
 
@@ -261,7 +358,7 @@ impl Drop for PortClaim<'_> {
     fn drop(&mut self) {
         let port = self.info.index();
         // SAFETY: plain FFI call; the port and id are both ours.
-        let ret = unsafe { dpdk_sys::rte_eth_dev_owner_unset(port.as_u16(), self.owner.0) };
+        let ret = unsafe { dpdk_sys::rte_eth_dev_owner_unset(port.as_u16(), self.owner.id.0) };
         if ret != 0 {
             warn!("failed to release port {port}: {ret}");
         }
@@ -287,9 +384,14 @@ fn current_owner(port: DevIndex) -> PortOwner {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClaimError, ForeignOwner, OwnerId, PortClaim, PortOwner};
+    use super::{
+        AbandonedPorts, ClaimError, ForeignOwner, OwnerId, Ownership, PortClaim, PortOwner,
+    };
     use crate::dev::{DevConfig, DevIndex, RssConf, RxOffload, TxOffloadConfig};
-    use crate::test_support::{RingPort, start_eal};
+    use crate::queue::rx::{RxQueueConfig, RxQueueIndex};
+    use crate::queue::tx::{TxQueueConfig, TxQueueIndex};
+    use crate::socket::{Preference, SocketId};
+    use crate::test_support::{RingPort, packet_pool, start_eal};
     use core::ffi::CStr;
 
     #[test]
@@ -297,14 +399,14 @@ mod tests {
         let shared = start_eal();
         let ring = RingPort::new();
         let info = || shared.dev().info(ring.index).unwrap();
-        let owner = OwnerId::new().unwrap();
+        let owner = Ownership::new().unwrap();
 
-        let first = PortClaim::new(owner, info()).unwrap();
+        let first = PortClaim::new(&owner, info()).unwrap();
         assert!(
             shared.dev().iter().all(|dev| dev.index() != ring.index),
             "a claimed port must drop out of iteration"
         );
-        match PortClaim::new(owner, info()) {
+        match PortClaim::new(&owner, info()) {
             Err(ClaimError::AlreadyOwned { port, owner }) => {
                 assert_eq!(port, ring.index);
                 assert_eq!(owner, PortOwner::current());
@@ -313,7 +415,7 @@ mod tests {
         }
 
         drop(first);
-        drop(PortClaim::new(owner, info()).expect("dropping a claim releases the port"));
+        drop(PortClaim::new(&owner, info()).expect("dropping a claim releases the port"));
     }
 
     #[test]
@@ -322,8 +424,8 @@ mod tests {
         let first = RingPort::new();
         let second = first.another();
         assert!(first.index < second.index);
-        let owner = OwnerId::new().unwrap();
-        let _claim = PortClaim::new(owner, shared.dev().info(first.index).unwrap()).unwrap();
+        let owner = Ownership::new().unwrap();
+        let _claim = PortClaim::new(&owner, shared.dev().info(first.index).unwrap()).unwrap();
 
         let available: Vec<_> = shared.dev().iter().map(|dev| dev.index()).collect();
         assert_eq!(available, [second.index]);
@@ -333,7 +435,7 @@ mod tests {
     fn a_close_error_does_not_close_a_reused_port() {
         let shared = start_eal();
         let ring = RingPort::new();
-        let owner = OwnerId::new().unwrap();
+        let owner = Ownership::new().unwrap();
         let config = DevConfig {
             num_rx_queues: 0,
             num_tx_queues: 0,
@@ -343,7 +445,7 @@ mod tests {
             mtu: None,
             rss: None,
         };
-        let claim = PortClaim::new(owner, shared.dev().info(ring.index).unwrap()).unwrap();
+        let claim = PortClaim::new(&owner, shared.dev().info(ring.index).unwrap()).unwrap();
         let dev = config.apply(claim).unwrap();
         // SAFETY: no queues exist. Remove the native port to provoke ENODEV on close.
         assert_eq!(unsafe { dpdk_sys::rte_eth_dev_close(ring.index.0) }, 0);
@@ -366,11 +468,11 @@ mod tests {
     #[test]
     fn claiming_a_missing_port_reports_no_such_port() {
         let shared = start_eal();
-        let owner = OwnerId::new().unwrap();
+        let owner = Ownership::new().unwrap();
         // The test EAL runs with `--no-pci` and creates ring ports from the bottom of the port
         // table, so the last slot is never in use.
         let missing = DevIndex(DevIndex::MAX - 1);
-        match PortClaim::claim(owner, shared.dev(), missing) {
+        match PortClaim::claim(&owner, shared.dev(), missing) {
             Err(ClaimError::NoSuchPort { port }) => assert_eq!(port, missing),
             other => panic!("expected NoSuchPort, got {other:?}"),
         }
@@ -381,7 +483,7 @@ mod tests {
         let shared = start_eal();
         let ring = RingPort::new();
         let info = || shared.dev().info(ring.index).unwrap();
-        let owner = OwnerId::new().unwrap();
+        let owner = Ownership::new().unwrap();
         // The ring PMD supports no RSS, so this configuration is rejected before DPDK sees it.
         let config = DevConfig {
             num_rx_queues: 1,
@@ -397,14 +499,126 @@ mod tests {
         };
 
         let failure = config
-            .apply(PortClaim::new(owner, info()).unwrap())
+            .apply(PortClaim::new(&owner, info()).unwrap())
             .unwrap_err();
         assert!(
-            PortClaim::new(owner, info()).is_err(),
+            PortClaim::new(&owner, info()).is_err(),
             "the claim must still hold"
         );
         drop(failure);
-        drop(PortClaim::new(owner, info()).expect("dropping the failure releases the port"));
+        drop(PortClaim::new(&owner, info()).expect("dropping the failure releases the port"));
+    }
+
+    #[test]
+    fn a_leaked_device_is_closed_at_teardown() {
+        let shared = start_eal();
+        let ring = RingPort::new();
+        let owner = Ownership::new().unwrap();
+        let config = DevConfig {
+            num_rx_queues: 1,
+            num_tx_queues: 1,
+            num_hairpin_queues: 0,
+            tx_offloads: TxOffloadConfig::none(),
+            rx_offloads: RxOffload::NONE,
+            mtu: None,
+            rss: None,
+        };
+        let claim = PortClaim::new(&owner, shared.dev().info(ring.index).unwrap()).unwrap();
+        let mut dev = config.apply(claim).unwrap();
+        dev.new_rx_queue(RxQueueConfig {
+            dev: ring.index,
+            queue_index: RxQueueIndex(0),
+            num_descriptors: 8,
+            socket_preference: Preference::Id(SocketId::ANY),
+            offloads: RxOffload::NONE,
+            pool: packet_pool(63),
+        })
+        .unwrap();
+        dev.new_tx_queue(TxQueueConfig {
+            queue_index: TxQueueIndex(0),
+            num_descriptors: 8,
+            socket_preference: Preference::Id(SocketId::ANY),
+            config: (),
+        })
+        .unwrap();
+        let started = dev.start().unwrap();
+
+        core::mem::forget(started);
+        assert_eq!(
+            owner.close_abandoned(),
+            AbandonedPorts {
+                closed: 1,
+                stuck: 0
+            }
+        );
+        // SAFETY: plain FFI query.
+        let valid = unsafe { dpdk_sys::rte_eth_dev_is_valid_port(ring.index.as_u16()) };
+        assert_eq!(valid, 0, "closing releases the port");
+        assert_eq!(
+            owner.close_abandoned(),
+            AbandonedPorts::default(),
+            "a closed port is not closed twice"
+        );
+        assert!(
+            !owner.teardown_failed(),
+            "closing an abandoned port cleanly lets the pools go"
+        );
+    }
+
+    #[test]
+    fn a_dropped_device_leaves_nothing_abandoned() {
+        let shared = start_eal();
+        let ring = RingPort::new();
+        let owner = Ownership::new().unwrap();
+        let config = DevConfig {
+            num_rx_queues: 0,
+            num_tx_queues: 0,
+            num_hairpin_queues: 0,
+            tx_offloads: TxOffloadConfig::none(),
+            rx_offloads: RxOffload::NONE,
+            mtu: None,
+            rss: None,
+        };
+        let claim = PortClaim::new(&owner, shared.dev().info(ring.index).unwrap()).unwrap();
+        drop(config.apply(claim).unwrap());
+        assert_eq!(owner.close_abandoned(), AbandonedPorts::default());
+        assert!(
+            !owner.teardown_failed(),
+            "a clean close leaves the pools free to release"
+        );
+    }
+
+    /// A failed close must retain mempools even after the port disappears from the owner scan.
+    #[test]
+    fn a_failed_close_is_remembered_after_dpdk_forgets_the_port() {
+        let shared = start_eal();
+        let ring = RingPort::new();
+        let owner = Ownership::new().unwrap();
+        let config = DevConfig {
+            num_rx_queues: 0,
+            num_tx_queues: 0,
+            num_hairpin_queues: 0,
+            tx_offloads: TxOffloadConfig::none(),
+            rx_offloads: RxOffload::NONE,
+            mtu: None,
+            rss: None,
+        };
+        let claim = PortClaim::new(&owner, shared.dev().info(ring.index).unwrap()).unwrap();
+        let dev = config.apply(claim).unwrap();
+        // SAFETY: no queues exist. Release the port behind the device's back, so its own close
+        // fails on a port DPDK no longer lists -- the state a failed driver close leaves.
+        assert_eq!(unsafe { dpdk_sys::rte_eth_dev_close(ring.index.0) }, 0);
+
+        dev.close().unwrap_err();
+        assert_eq!(
+            owner.close_abandoned(),
+            AbandonedPorts::default(),
+            "DPDK no longer reports the port as owned"
+        );
+        assert!(
+            owner.teardown_failed(),
+            "the failed close must still keep the pools allocated"
+        );
     }
 
     #[test]

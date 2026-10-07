@@ -36,7 +36,7 @@ mod tests;
 #[cfg(test)]
 mod copy_tests;
 
-/// Owns mempools for the life of the EAL.
+/// Owns mempools until EAL teardown, after their ports have closed.
 /// Creation is synchronized and available through [`EalShared`](crate::eal::EalShared).
 #[derive(Debug)]
 #[non_exhaustive]
@@ -47,10 +47,6 @@ pub struct Manager {
 
 /// An EAL-owned mempool and its shared configuration.
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "kept so the pools can be freed at teardown once ports are closed first"
-)]
 struct Registered {
     pool: NonNull<dpdk_sys::rte_mempool>,
     /// Leaked once per pool to provide a stable reference for every cloned handle.
@@ -109,6 +105,24 @@ impl Manager {
             config,
             eal: PhantomData,
         })
+    }
+
+    /// Free every mempool, in reverse creation order.
+    ///
+    /// Called during [`Eal`](crate::eal::Eal) teardown, before `rte_eal_cleanup`.
+    ///
+    /// # Safety
+    ///
+    /// All devices must be closed and their mbufs returned to their pools.
+    /// No pool or mbuf handle may be used after this call.
+    #[cold]
+    pub(crate) unsafe fn release_all(&mut self) {
+        for entry in self.pools.get_mut().drain(..).rev() {
+            info!("Freeing memory pool {name}", name = entry.config.name());
+            // SAFETY: from a successful `rte_pktmbuf_pool_create`, and freed exactly once because
+            // the `drain` removes it from the registry.
+            unsafe { dpdk_sys::rte_mempool_free(entry.pool.as_ptr()) };
+        }
     }
 }
 
@@ -185,6 +199,13 @@ impl<'eal> Pool<'eal> {
     /// Valid until EAL teardown; callers must ensure any native user finishes before then.
     pub(crate) fn as_mut_ptr(&self) -> *mut dpdk_sys::rte_mempool {
         self.pool.as_ptr()
+    }
+
+    /// The number of mbufs currently checked out of this pool.
+    #[must_use]
+    pub fn in_use(&self) -> u32 {
+        // SAFETY: a live mempool for the lifetime of this handle; reads accounting only.
+        unsafe { dpdk_sys::rte_mempool_in_use_count(self.pool.as_ptr()) }
     }
 
     /// Allocate `num` mbufs as an owning batch.
