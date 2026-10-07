@@ -24,14 +24,17 @@ pub mod test_utils;
 use crate::buffer::{DeepCopy, Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
 use crate::eth::Eth;
 use crate::eth::EthError;
+use crate::eth::ethtype::EthType;
+use crate::eth::mac::{DestinationMac, SourceMac};
 use crate::flows::{FlowInfo, FlowStatus};
 use crate::headers::{
     EmbeddedHeaders, Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut,
-    TryHeaders, TryHeadersMut, TryIpMut, TryVxlan,
+    TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryVxlan,
 };
 use crate::ip::{dscp::Dscp, ecn::Ecn};
 use crate::parse::{DeParse, DeParseError, Parse, ParseError};
 use crate::udp::{Udp, UdpChecksum};
+use crate::vxlan::Vni;
 
 use crate::checksum::Checksum;
 use crate::vxlan::{Vxlan, VxlanEncap};
@@ -40,6 +43,7 @@ use concurrency::sync::Arc;
 pub use hash::*;
 #[allow(unused_imports)] // re-export
 pub use meta::*;
+use std::net::IpAddr;
 use std::num::NonZero;
 
 pub mod utils;
@@ -94,6 +98,27 @@ pub enum SerializeError<E> {
     NoHeadRoom,
     #[error("De-parsing error: {0}")]
     DeparseError(DeParseError<E>),
+}
+
+/// Data read from a VXLAN packet by [`Packet::vxlan_peek`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VxLanPeekedData {
+    /// The VNI of the VXLAN header.
+    pub vni: Vni,
+    /// The source address of the outer IP header.
+    pub outer_src_ip: IpAddr,
+    /// The destination address of the outer IP header.
+    pub outer_dst_ip: IpAddr,
+    /// The destination MAC of the inner Ethernet header.
+    pub inner_dst_mac: DestinationMac,
+    /// The source MAC of the inner Ethernet header.
+    pub inner_src_mac: SourceMac,
+    /// Whether the inner Ethernet frame is VLAN-tagged.
+    /// Note: this could contain the `ArrayVec` of vlans, but I doubt we'd
+    /// ever do anything with it. Also, this flag is set only from the
+    /// ether type, without actually checking if the inner packet would
+    /// have vlans if parsed
+    pub inner_vlan_tagged: bool,
 }
 
 impl<Buf: PacketBufferMut> Packet<Buf> {
@@ -290,6 +315,39 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 }
             }
         }
+    }
+
+    /// Peek some data if the packet has a VXLAN encapsulation without mutating the packet
+    /// nor performing any actual decapsulation.
+    ///
+    /// Returns:
+    /// - `Ok(None)` if the packet is not VXLAN.
+    /// - `Ok(Some(data))` with the [`VxLanPeekedData`] if it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParseError`] if the packet is VXLAN but its payload does not start with a valid
+    /// Ethernet header.
+    pub fn vxlan_peek(&self) -> Result<Option<VxLanPeekedData>, ParseError<EthError>> {
+        let Some(vxlan) = self.headers.try_vxlan() else {
+            return Ok(None);
+        };
+        let Some(net) = self.headers.try_ip() else {
+            return Ok(None);
+        };
+        let (inner, _) = Eth::parse(self.payload.as_ref())?;
+        Ok(Some(VxLanPeekedData {
+            vni: vxlan.vni(),
+            outer_src_ip: net.src_addr(),
+            outer_dst_ip: net.dst_addr(),
+            inner_dst_mac: inner.destination(),
+            inner_src_mac: inner.source(),
+            // Same ethertypes the header parser treats as VLAN tags (`parse_from_ethertype`).
+            inner_vlan_tagged: matches!(
+                inner.ether_type(),
+                EthType::VLAN | EthType::VLAN_DOUBLE_TAGGED | EthType::VLAN_QINQ
+            ),
+        }))
     }
 
     /// Encapsulate the packet in the supplied [`Vxlan`] [`Headers`]
@@ -825,6 +883,116 @@ pub mod contract {
 
             Packet::new(TestBuffer::from_raw_data(&data)).ok()
         }
+    }
+}
+
+#[cfg(test)]
+mod vxlan_peek_tests {
+    use crate::buffer::TestBuffer;
+    use crate::eth::ethtype::EthType;
+    use crate::headers::TryHeaders;
+    use crate::headers::builder::HeaderStack;
+    use crate::ip::dscp::Dscp;
+    use crate::ip::ecn::Ecn;
+    use crate::ipv4::UnicastIpv4Addr;
+    use crate::packet::Packet;
+    use crate::packet::test_utils::{
+        build_test_ipv4_packet, build_test_vxlan_ipv4_packet_carrying_vni,
+    };
+    use crate::parse::DeParse;
+    use crate::vlan::Vid;
+    use crate::vxlan::Vni;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn vxlan_peek_succeeds_without_mutating() {
+        let inner = build_test_ipv4_packet(64).unwrap();
+        let inner_eth = inner.headers().eth().unwrap().clone();
+        let inner_buf = inner.serialize().unwrap();
+        let vni = Vni::new_checked(4242).unwrap();
+        let packet = build_test_vxlan_ipv4_packet_carrying_vni(
+            vni,
+            Dscp::new(0).unwrap(),
+            Ecn::new(0).unwrap(),
+            inner_buf.as_ref(),
+        )
+        .expect("Failed to build test packet");
+
+        // keep copy of headers prior to peek
+        let headers_before = packet.headers().clone();
+
+        let peeked = packet.vxlan_peek().unwrap().unwrap();
+
+        assert_eq!(peeked.vni, vni);
+        assert_eq!(peeked.outer_src_ip, packet.ip_source().unwrap());
+        assert_eq!(peeked.outer_dst_ip, packet.ip_destination().unwrap());
+        assert_eq!(peeked.inner_src_mac, inner_eth.source());
+        assert_eq!(peeked.inner_dst_mac, inner_eth.destination());
+        assert!(!peeked.inner_vlan_tagged);
+        assert_eq!(
+            packet.headers(),
+            &headers_before,
+            "should not modify packet"
+        );
+    }
+
+    #[test]
+    fn vxlan_peek_detects_inner_vlan_tags() {
+        let tagged = HeaderStack::new()
+            .eth(|eth| {
+                eth.set_ether_type(EthType::VLAN);
+            })
+            .vlan(|v| {
+                v.set_vid(Vid::new(4000).unwrap());
+            })
+            .vlan(|v| {
+                v.set_vid(Vid::new(100).unwrap());
+            })
+            .ipv4(|ip| {
+                ip.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(10, 0, 0, 5)).unwrap());
+                ip.set_destination(Ipv4Addr::new(20, 0, 0, 5));
+                ip.set_ttl(64);
+            })
+            .build_headers()
+            .unwrap();
+        let mut buffer = TestBuffer::new();
+        tagged.deparse(buffer.as_mut()).unwrap();
+        let inner_buf = Packet::new(buffer).unwrap().serialize().unwrap();
+        let mut packet = build_test_vxlan_ipv4_packet_carrying_vni(
+            Vni::new_checked(100).unwrap(),
+            Dscp::new(0).unwrap(),
+            Ecn::new(0).unwrap(),
+            inner_buf.as_ref(),
+        )
+        .unwrap();
+
+        let peeked = packet.vxlan_peek().unwrap().unwrap();
+        assert!(peeked.inner_vlan_tagged);
+
+        packet.vxlan_decap().unwrap().unwrap();
+        assert_eq!(
+            peeked.inner_vlan_tagged,
+            !packet.headers().vlan().is_empty(),
+            "peek and decap disagree on whether the inner frame is tagged"
+        );
+    }
+
+    #[test]
+    fn vxlan_peek_returns_ok_none_if_no_vxlan() {
+        let packet = build_test_ipv4_packet(64).expect("Failed to build test packet");
+        assert!(packet.vxlan_peek().is_ok_and(|r| r.is_none()));
+    }
+
+    #[test]
+    fn vxlan_peek_fails_if_inner_packet_is_truncated() {
+        let packet = build_test_vxlan_ipv4_packet_carrying_vni(
+            Vni::new_checked(100).unwrap(),
+            Dscp::new(0).unwrap(),
+            Ecn::new(0).unwrap(),
+            &[0u8; 6], // some garbage, less than an ethernet header
+        )
+        .expect("Failed to build test packet");
+        assert!(packet.vxlan_peek().is_err());
     }
 }
 
