@@ -152,12 +152,12 @@ impl CpBridge {
     ///
     /// Returns [`BridgeError`] if netlink is unreachable or a tap cannot be created. Neither is
     /// recoverable: without the taps there is no control plane.
-    pub(crate) fn create<'a>(
+    pub(crate) fn create(
         handle: &tokio::runtime::Handle,
         mgmt: &Subsystem,
-        interfaces: impl Iterator<Item = &'a InterfaceName>,
+        interfaces: impl IntoIterator<Item = InterfaceName>,
     ) -> Result<(Self, DatapathEnds), BridgeError> {
-        let names: Vec<InterfaceName> = interfaces.cloned().collect();
+        let names: Vec<InterfaceName> = interfaces.into_iter().collect();
         let cancel = mgmt.cancel_token();
         let taps = Arc::new(TapRegistry::default());
 
@@ -505,7 +505,7 @@ mod test {
             let name = InterfaceName::try_from(PORT_NAME).unwrap();
 
             let (bridge, mut ends) =
-                CpBridge::create(&handle, &shutdown.mgmt, std::iter::once(&name))
+                CpBridge::create(&handle, &shutdown.mgmt, std::iter::once(name.clone()))
                     .unwrap_or_else(|e| panic!("could not build the control-plane bridge: {e}"));
 
             assert_eq!(
