@@ -497,6 +497,11 @@ impl FibReader {
         });
         guarded_entry.map(|guarded_entry| (prefix, guarded_entry))
     }
+
+    /// Get a clone of the `Vtep` owned by the fib this reader accesses
+    pub fn get_vtep(&self) -> Option<Vtep> {
+        self.enter().and_then(|fib| fib.get_vtep().cloned())
+    }
 }
 
 // make FibReader a zero-cost wrap of ReadHandle<Fib>

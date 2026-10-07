@@ -4044,11 +4044,12 @@ mod routed {
     }
 
     pub(super) fn tunnelled_from(from: Vni, inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
-        let bytes = inner
-            .deep_copy()
-            .unwrap()
-            .serialize()
-            .expect("the inner frame serializes");
+        // The gateway only accepts inner frames addressed to its vtep mac
+        let mut inner = inner.deep_copy().unwrap();
+        inner
+            .set_eth_destination(GATEWAY_MAC)
+            .expect("the inner frame has an ethernet header");
+        let bytes = inner.serialize().expect("the inner frame serializes");
         let mut packet = build_test_vxlan_ipv4_packet_carrying_vni(
             from,
             Dscp::default(),
