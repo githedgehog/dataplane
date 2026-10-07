@@ -98,7 +98,8 @@ impl TxQueue {
         }
 
         let tx_conf = dpdk_sys::rte_eth_txconf {
-            offloads: dev.info.inner.tx_queue_offload_capa,
+            // Inherit port offloads without enabling additional queue offloads.
+            offloads: 0,
             // Zero thresholds select the PMD defaults.
             ..Default::default()
         };
