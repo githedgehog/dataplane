@@ -24,24 +24,18 @@ pub trait PacketLength {
     fn is_chained(&self) -> bool;
 }
 
-/// Super trait representing the abstract operations which may be performed on a packet buffer.
-pub trait PacketBuffer: AsRef<[u8]> + Headroom + PacketLength + Debug + 'static {}
-impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + PacketLength + Debug + 'static {}
+/// Read-only packet buffer operations. Buffers may borrow their storage.
+pub trait PacketBuffer: AsRef<[u8]> + Headroom + PacketLength + Debug {}
+impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + PacketLength + Debug {}
 
-/// Super trait representing the abstract operations which may be performed on mutable a packet buffer.
+/// Mutable packet buffer operations. Callers that transfer buffers across threads
+/// must require Send explicitly.
 pub trait PacketBufferMut:
-    PacketBuffer + AsMut<[u8]> + Prepend + Send + TrimFromStart + TrimFromEnd + Headroom + Tailroom
+    PacketBuffer + AsMut<[u8]> + Prepend + TrimFromStart + TrimFromEnd + Headroom + Tailroom
 {
 }
 impl<T> PacketBufferMut for T where
-    T: PacketBuffer
-        + AsMut<[u8]>
-        + Prepend
-        + Send
-        + TrimFromStart
-        + TrimFromEnd
-        + Headroom
-        + Tailroom
+    T: PacketBuffer + AsMut<[u8]> + Prepend + TrimFromStart + TrimFromEnd + Headroom + Tailroom
 {
 }
 
