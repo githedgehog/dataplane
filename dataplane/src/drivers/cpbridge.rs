@@ -187,13 +187,7 @@ impl CpBridge {
             let (punt_tx, punt_rx) = mpsc::channel(QUEUE_DEPTH);
             let (inject_tx, inject_rx) = mpsc::channel(QUEUE_DEPTH);
 
-            handle.spawn(pump(
-                name.to_string(),
-                tap,
-                punt_rx,
-                inject_tx,
-                cancel.clone(),
-            ));
+            handle.spawn(pump(tap, punt_rx, inject_tx, cancel.clone()));
 
             debug!("tap {name} is interface index {index}");
             ports.insert(
@@ -257,12 +251,12 @@ impl Drop for CpBridge {
 /// is registered with the reactor, so both directions can be awaited from the same place without
 /// splitting it. Neither direction can starve the other -- `select!` polls both.
 async fn pump(
-    name: String,
     tap: Arc<TapDevice>,
     mut punt: mpsc::Receiver<Frame>,
     inject: mpsc::Sender<Frame>,
     cancel: CancellationToken,
 ) {
+    let name = tap.name().clone();
     let mut buf = vec![0u8; TapDevice::MAX_FRAME];
     let mut punt_write_errors: u64 = 0;
     let mut inject_drops: u64 = 0;

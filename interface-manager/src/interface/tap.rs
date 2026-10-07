@@ -33,6 +33,7 @@ use tracing::{info, warn};
 #[derive(Debug)]
 pub struct TapDevice {
     fd: AsyncFd<File>,
+    name: InterfaceName,
     index: InterfaceIndex,
 }
 
@@ -159,6 +160,7 @@ mod helper {
             trace!("tap device {name} is interface index {index}");
             Ok(TapDevice {
                 fd: AsyncFd::new(tap_file)?,
+                name,
                 index,
             })
         }
@@ -259,6 +261,12 @@ impl TapDevice {
     #[tracing::instrument(level = "info")]
     pub fn open(name: &InterfaceName) -> Result<TapDevice, std::io::Error> {
         helper::InterfaceRequest::new(name.clone()).create()
+    }
+
+    /// The name of this tap.
+    #[must_use]
+    pub fn name(&self) -> &InterfaceName {
+        &self.name
     }
 
     /// The kernel's interface index for this tap, in the network namespace it was created in.
