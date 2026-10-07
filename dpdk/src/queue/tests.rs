@@ -110,7 +110,7 @@ impl Loopback {
         &self.rx.config.pool
     }
 
-    fn packets(&self, count: usize) -> MbufArray {
+    fn packets(&self, count: usize) -> MbufArray<'static> {
         let mut packets = self.pool().alloc_bulk(count).unwrap();
         for (id, mbuf) in packets.iter_mut().enumerate() {
             mbuf.append(1).unwrap()[0] = id as u8;
