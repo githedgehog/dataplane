@@ -6,7 +6,7 @@ use crate::test_support::{available, packet_pool, packet_pool_with_data_size};
 use net::buffer::{Append, DeepCopy, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
 use net::packet::Packet;
 
-fn segment(pool: &Pool, headroom: u16, len: u16, byte: u8) -> Mbuf {
+fn segment<'eal>(pool: &Pool<'eal>, headroom: u16, len: u16, byte: u8) -> Mbuf<'eal> {
     let mut mbuf = pool.alloc_bulk(1).unwrap().into_iter().next().unwrap();
     mbuf.append(mbuf.tailroom()).unwrap();
     mbuf.prepend(mbuf.headroom()).unwrap().fill(byte);
