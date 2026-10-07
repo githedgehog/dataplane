@@ -81,15 +81,19 @@ impl FibGroup {
     pub fn iter(&self) -> impl Iterator<Item = &FibEntry> {
         self.entries.iter()
     }
+
     /// Mutably iterate over the [`FibEntry`]ies within a [`FibGroup`]
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut FibEntry> {
+    #[allow(dead_code)]
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut FibEntry> {
         self.entries.iter_mut()
     }
+
     /// Extend a [`FibGroup`] with the  [`FibEntry`]ies of another one
     /// N.B. `extend()` uses `extend_from_slice` creating a copy. This is usually
     /// the required behavior. For consuming (moving) the entries in other
     /// we'd use append.
-    pub fn extend(&mut self, other: &Self) {
+    #[allow(dead_code)]
+    pub(crate) fn extend(&mut self, other: &Self) {
         self.entries.extend_from_slice(&other.entries);
     }
 
