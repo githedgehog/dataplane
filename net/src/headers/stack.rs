@@ -100,7 +100,7 @@ impl<T, const N: usize> Stack<T, N> {
     /// # Panics
     ///
     /// Panics if the stack already holds `N` values.
-    pub fn push(&mut self, value: T) {
+    pub(super) fn push(&mut self, value: T) {
         self.0.get_or_insert_with(Box::default).push(value);
     }
 

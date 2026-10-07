@@ -37,19 +37,19 @@ pub use contract::*;
 /// Empty options are stored as `None` so equality matches the wire representation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ipv4 {
-    pub(crate) source: [u8; 4],
-    pub(crate) destination: [u8; 4],
-    pub(crate) options: Option<Box<Ipv4Options>>,
-    pub(crate) total_len: u16,
-    pub(crate) identification: u16,
-    pub(crate) fragment_offset: IpFragOffset,
-    pub(crate) header_checksum: u16,
-    pub(crate) dscp: IpDscp,
-    pub(crate) ecn: IpEcn,
-    pub(crate) time_to_live: u8,
-    pub(crate) protocol: IpNumber,
-    pub(crate) dont_fragment: bool,
-    pub(crate) more_fragments: bool,
+    source: [u8; 4],
+    destination: [u8; 4],
+    options: Option<Box<Ipv4Options>>,
+    total_len: u16,
+    identification: u16,
+    fragment_offset: IpFragOffset,
+    header_checksum: u16,
+    dscp: IpDscp,
+    ecn: IpEcn,
+    time_to_live: u8,
+    protocol: IpNumber,
+    dont_fragment: bool,
+    more_fragments: bool,
 }
 
 /// Matches [`etherparse::Ipv4Header::default`], including the DF bit used by VXLAN.
@@ -179,7 +179,7 @@ impl Ipv4 {
     }
 
     /// Compute the IPv4 header checksum using etherparse's accumulator.
-    pub(crate) fn compute_header_checksum(&self) -> u16 {
+    fn compute_header_checksum(&self) -> u16 {
         etherparse::checksum::Sum16BitWords::new()
             .add_2bytes([
                 (4 << 4) | self.ihl(),
@@ -200,6 +200,11 @@ impl Ipv4 {
     #[must_use]
     pub fn source(&self) -> UnicastIpv4Addr {
         UnicastIpv4Addr::new(Ipv4Addr::from(self.source)).unwrap_or_else(|_| unreachable!())
+    }
+
+    /// Source bytes for pseudo-header checksums, without revalidating the address.
+    pub(crate) fn source_octets(&self) -> [u8; 4] {
+        self.source
     }
 
     /// Get the destination ip address of the header
