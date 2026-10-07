@@ -83,22 +83,16 @@ impl DevIndex {
         self.0
     }
 
-    /// Get information about an ethernet device.
+    /// Query device information without an EAL lifetime.
     ///
-    /// # Arguments
-    ///
-    /// * `index`: the index of the device to get information about.
+    /// Keep this private to the crate: [`Manager::info`] and [`Manager::iter`] tie the result
+    /// to their EAL borrow before exposing it to callers.
     ///
     /// # Errors
     ///
-    /// This function will return a [`DevInfoError`] if the device information could not be
-    /// retrieved.
-    ///
-    /// # Safety
-    ///
-    /// This function should never panic assuming DPDK is correctly implemented.
+    /// Returns [`DevInfoError`] if the device information cannot be retrieved.
     #[tracing::instrument(level = "trace", ret)]
-    pub fn info(&self) -> Result<DevInfo, DevInfoError> {
+    pub(crate) fn info(&self) -> Result<DevInfo<'static>, DevInfoError> {
         let mut dev_info = rte_eth_dev_info::default();
 
         let ret = unsafe { rte_eth_dev_info_get(self.0, &mut dev_info) };
@@ -151,6 +145,7 @@ impl DevIndex {
         Ok(DevInfo {
             index: DevIndex(self.0),
             inner: dev_info,
+            eal: PhantomData,
         })
     }
 
@@ -302,8 +297,8 @@ impl DevConfig {
         }
     }
 
-    /// Apply the configuration to the device.
-    pub fn apply<'eal>(&self, dev: DevInfo) -> Result<Dev<'eal, Configured>, DevConfigError> {
+    /// Configure the device's port. The returned device inherits the info's EAL lifetime.
+    pub fn apply<'eal>(&self, dev: DevInfo<'eal>) -> Result<Dev<'eal, Configured>, DevConfigError> {
         let config = self.configure(&dev)?;
         Ok(Dev {
             lifecycle: PortLifecycle {
@@ -322,7 +317,7 @@ impl DevConfig {
 
     /// Configure the port and return the configuration it must retain.
     /// DPDK keeps a pointer to this copy's RSS key until the port closes.
-    fn configure(&self, dev: &DevInfo) -> Result<DevConfig, DevConfigError> {
+    fn configure(&self, dev: &DevInfo<'_>) -> Result<DevConfig, DevConfigError> {
         let mtu = self.resolve_mtu(dev)?;
         let mut config = self.clone();
         let rss_conf = config.prepare_rss(dev)?;
@@ -727,27 +722,38 @@ impl BitXorAssign for TxOffload {
 /// Information about a DPDK ethernet device.
 ///
 /// This struct is a wrapper around the `rte_eth_dev_info` struct from DPDK.
+///
+/// It borrows the EAL it came from, as does any device configured from it:
+///
+/// ```compile_fail,E0505
+/// # use dataplane_dpdk::eal::Eal;
+/// fn info_outlives_eal(eal: Eal) {
+///     let info = eal.dev.iter().next().expect("a port");
+///     drop(eal);
+///     let _ = info.index();
+/// }
+/// ```
 #[derive(Debug)]
-pub struct DevInfo {
+pub struct DevInfo<'eal> {
     pub(crate) index: DevIndex,
     pub(crate) inner: rte_eth_dev_info,
+    pub(crate) eal: PhantomData<&'eal ()>,
 }
 
-unsafe impl Send for DevInfo {}
-unsafe impl Sync for DevInfo {}
+unsafe impl Send for DevInfo<'_> {}
+unsafe impl Sync for DevInfo<'_> {}
 
-#[repr(transparent)]
 #[derive(Debug)]
-struct DevIterator {
+struct DevIterator<'eal> {
     cursor: DevIndex,
+    /// Ties each yielded [`DevInfo`] to the EAL lifetime.
+    eal: PhantomData<&'eal ()>,
 }
 
-impl DevIterator {}
+impl<'eal> Iterator for DevIterator<'eal> {
+    type Item = DevInfo<'eal>;
 
-impl Iterator for DevIterator {
-    type Item = DevInfo;
-
-    fn next(&mut self) -> Option<DevInfo> {
+    fn next(&mut self) -> Option<DevInfo<'eal>> {
         let cursor = self.cursor;
 
         debug!("Checking port {cursor}");
@@ -804,9 +810,10 @@ impl Manager {
 
     /// Iterate over all available DPDK ethernet devices and return information about each one.
     #[tracing::instrument(level = "trace")]
-    pub fn iter(&self) -> impl Iterator<Item = DevInfo> {
+    pub fn iter(&self) -> impl Iterator<Item = DevInfo<'_>> {
         DevIterator {
             cursor: DevIndex(0),
+            eal: PhantomData,
         }
     }
 
@@ -825,7 +832,7 @@ impl Manager {
     ///
     /// This function should never panic assuming DPDK is correctly implemented.
     #[tracing::instrument(level = "trace", ret)]
-    pub fn info(&self, index: DevIndex) -> Result<DevInfo, DevInfoError> {
+    pub fn info(&self, index: DevIndex) -> Result<DevInfo<'_>, DevInfoError> {
         index.info()
     }
 
@@ -838,7 +845,7 @@ impl Manager {
     }
 }
 
-impl DevInfo {
+impl DevInfo<'_> {
     /// Get the port index of the device.
     #[must_use]
     pub fn index(&self) -> DevIndex {
@@ -1066,8 +1073,8 @@ impl Drop for PortLifecycle {
 pub struct Dev<'eal, S: DevState = Configured> {
     /// Owns the configuration and closes the port before releasing it.
     lifecycle: PortLifecycle,
-    /// The device info
-    pub info: DevInfo,
+    /// Port identity; callers cannot replace it.
+    pub(crate) info: DevInfo<'eal>,
     /// Queues owned until handoff, then borrowed from the device.
     /// The mutex permits sharing Dev while transferring each queue exactly once.
     queues: Mutex<Option<QueueStore<'eal>>>,
@@ -1075,6 +1082,12 @@ pub struct Dev<'eal, S: DevState = Configured> {
 }
 
 impl<'eal, S: DevState> Dev<'eal, S> {
+    /// Information about the underlying port.
+    #[must_use]
+    pub fn info(&self) -> &DevInfo<'eal> {
+        &self.info
+    }
+
     /// The applied configuration. Its RSS key stays owned by this device.
     #[must_use]
     pub fn config(&self) -> &DevConfig {
