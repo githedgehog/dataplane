@@ -3,12 +3,16 @@
 
 use concurrency::sync::OnceLock;
 
-use crate::eal::Eal;
+use crate::eal::{Eal, EalShared};
 
-static EAL: OnceLock<Eal> = OnceLock::new();
+/// Shared access to the process-wide test EAL, which is deliberately never dropped.
+static EAL: OnceLock<EalShared<'static>> = OnceLock::new();
+
+/// Initialize the process-wide test EAL and return a shared handle.
+/// Teardown is tested separately because this fixture keeps the EAL alive until exit.
 #[must_use]
-pub fn start_eal() -> &'static Eal {
-    EAL.get_or_init(|| {
+pub fn start_eal() -> EalShared<'static> {
+    *EAL.get_or_init(|| {
         let core_pinning = crate::eal::main_lcore_arg();
         let eal_id = format!("{}", id::Id::<Eal>::new());
         let args: &[&str] = &[
@@ -24,7 +28,10 @@ pub fn start_eal() -> &'static Eal {
             "--lcores",
             &core_pinning,
         ];
-        crate::eal::init(args.iter().copied())
+        // Leaked on purpose: `Eal` is `!Send`, so it has to stay on whichever thread reached
+        // here first, and the leak is what lets the projection be `'static`.
+        let eal: &'static Eal = Box::leak(Box::new(crate::eal::init(args.iter().copied())));
+        eal.shared()
     })
 }
 
