@@ -33,6 +33,7 @@ impl Display for DoneReason {
             Self::MissL2resolution => f.pad("IP:  L2 resolution failure"),
             Self::VxlanEncapFailure => f.pad("VxLAN: encap failure"),
             Self::VxlanDecapFailure => f.pad("VxLAN: decap failure"),
+            Self::VxlanNotForUs => f.pad("VxLAN: not for us"),
 
             Self::Filtered => f.pad("Filtered"),
             Self::AclDropped => f.pad("Dropped by ACL"),

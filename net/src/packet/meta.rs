@@ -101,6 +101,7 @@ pub enum DoneReason {
     MissL2resolution,     /* adjacency failure: we don't know mac of some ip next-hop */
     VxlanDecapFailure,    /* Failed to decap a Vxlan packet */
     VxlanEncapFailure,    /* Failed to encap a packet in vxlan */
+    VxlanNotForUs,        /* Got vxlan packet not for us */
     Filtered,             /* The packet was administratively filtered */
     AclDropped,           /* The packet was dropped by an ACL rule */
     NatOutOfResources,    /* can't do NAT due to lack of resources */
