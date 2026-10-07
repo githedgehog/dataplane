@@ -409,7 +409,9 @@ impl PoolConfig {
 ///
 /// This is a 0-cost transparent wrapper around an [`dpdk_sys::rte_mbuf`] pointer.
 ///
-/// Mbufs and batches borrow the EAL so their pool remains valid until they are released.
+/// Mbufs and batches borrow the EAL to keep their pool alive.
+/// Batches from [`RxQueue::receive`](crate::queue::rx::RxQueue::receive) borrow the device,
+/// so received packets must be released or transmitted before it stops.
 ///
 /// An allocated batch cannot outlive the EAL:
 ///
@@ -437,6 +439,22 @@ impl PoolConfig {
 ///     let single = mbufs.into_iter().next().expect("one");
 ///     drop(eal);
 ///     drop(single);
+/// }
+/// ```
+///
+/// A received batch prevents its device from stopping:
+///
+/// ```compile_fail,E0505
+/// # use dataplane_dpdk::dev::{Dev, Started};
+/// # use dataplane_dpdk::queue::rx::RxQueueIndex;
+/// fn hold_past_stop(dev: Dev<Started>) {
+///     let mut queues = dev.take_queues().expect("queues");
+///     let mut rxq = queues.take_rx(RxQueueIndex(0)).expect("rx 0");
+///     let batch = rxq.receive();
+///     drop(rxq);
+///     drop(queues);
+///     let _stopped = dev.stop();
+///     drop(batch);
 /// }
 /// ```
 ///

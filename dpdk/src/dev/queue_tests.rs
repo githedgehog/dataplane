@@ -2,6 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 use super::*;
+use crate::queue::rx::RxQueueIndex;
+use crate::queue::tx::TxQueueIndex;
 use crate::socket::Preference;
 use crate::test_support::{RingPort, packet_pool, start_eal};
 
@@ -57,4 +59,47 @@ fn a_queue_index_is_configured_at_most_once() {
         dev.new_tx_queue(tx_config()),
         Err(tx::ConfigFailure::AlreadyConfigured(TxQueueIndex(0)))
     ));
+}
+
+#[test]
+fn a_queue_index_must_be_within_the_configured_count() {
+    let ring = RingPort::new();
+    let mut dev = configured(&ring);
+
+    let mut config = rx_config(&ring);
+    config.queue_index = RxQueueIndex(1);
+    assert!(matches!(
+        dev.new_rx_queue(config),
+        Err(rx::ConfigFailure::OutOfRange {
+            index: RxQueueIndex(1),
+            configured: 1
+        })
+    ));
+    let mut config = tx_config();
+    config.queue_index = TxQueueIndex(1);
+    assert!(matches!(
+        dev.new_tx_queue(config),
+        Err(tx::ConfigFailure::OutOfRange {
+            index: TxQueueIndex(1),
+            configured: 1
+        })
+    ));
+}
+
+#[test]
+fn a_started_device_hands_its_queues_out_once() {
+    let ring = RingPort::new();
+    let mut dev = configured(&ring);
+    dev.new_rx_queue(rx_config(&ring)).unwrap();
+    dev.new_tx_queue(tx_config()).unwrap();
+    let dev = dev.start().unwrap();
+
+    let mut queues = dev.take_queues().expect("first take");
+    assert!(dev.take_queues().is_none());
+    assert_eq!(queues.rx_indices().collect::<Vec<_>>(), [RxQueueIndex(0)]);
+    assert_eq!(queues.tx_indices().collect::<Vec<_>>(), [TxQueueIndex(0)]);
+    assert!(queues.take_rx(RxQueueIndex(0)).is_some());
+    assert!(queues.take_rx(RxQueueIndex(0)).is_none());
+    assert!(queues.take_tx(TxQueueIndex(0)).is_some());
+    assert!(queues.take_tx(TxQueueIndex(0)).is_none());
 }
