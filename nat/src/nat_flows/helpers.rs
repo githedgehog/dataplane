@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Creation of tracked pairs of flows.
+//! Helpers to create NAT flow pairs
 
 use super::NatState;
 use concurrency::sync::Arc;

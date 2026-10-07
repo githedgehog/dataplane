@@ -20,9 +20,9 @@
 //! - "Expose" objects mixing IPv4 and IPv6 endpoints or list of exposed IPs are not supported
 
 mod common;
-mod flow_tracking;
 mod icmp_handler;
 pub mod masquerade;
+mod nat_flows;
 mod port;
 pub mod portfw;
 mod ranges;

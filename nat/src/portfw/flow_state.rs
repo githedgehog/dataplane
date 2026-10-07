@@ -20,7 +20,7 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::FlowInfo;
 
 use crate::common::NatAction;
-use crate::flow_tracking::{NatState, packet_flow_keys};
+use crate::nat_flows::{NatState, packet_flow_keys};
 use crate::portfw::PortFwEntry;
 use net::flows::ConnState;
 use net::flows::conn_tracking::advance_flow;
