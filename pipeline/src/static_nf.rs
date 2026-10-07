@@ -12,8 +12,12 @@ use crate::PipelineData;
 pub trait NetworkFunction<Buf: PacketBufferMut> {
     /// Process a burst in place.
     ///
-    /// Stages should skip packets marked [`Packet::is_done`] and leave verdicts for the
-    /// driver to handle. Stages may also remove packets, as in [`crate::sample_nfs::DecrementTtl`].
+    /// Stages may add packets, for example for multicast replication. To drop a packet,
+    /// mark it with [`Packet::done`] and leave it in the burst for accounting and driver
+    /// handling. Removing packets bypasses both and makes drop counters incomplete.
+    ///
+    /// Stages must preserve finalized packets and their verdicts. Every packet must have
+    /// a terminal verdict when the pipeline returns it to the driver.
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>);
 
     /// Collect packets into a burst and process them.
