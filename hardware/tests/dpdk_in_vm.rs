@@ -4,7 +4,7 @@
 //! Test DPDK device binding, ICMPv6 traffic, and teardown in VM guests.
 //!
 //! Traffic tests require a Neighbor Advertisement and an Echo Reply from the host TAP interface.
-//! Device and EAL teardown must each finish within five seconds.
+//! Teardown tests cover both explicit device cleanup and a leaked device with queued mbufs.
 //!
 //! # Supported NIC models
 //!
@@ -605,7 +605,12 @@ fn setup_dpdk_device<'eal>(
     let dev = dev.start().expect("failed to start DPDK device");
     eprintln!("[dev] device started successfully");
 
-    SetupDevice { dev, mac, tx_pool }
+    SetupDevice {
+        dev,
+        mac,
+        rx_pool,
+        tx_pool,
+    }
 }
 
 /// A started device and its packet pools.
@@ -614,6 +619,8 @@ struct SetupDevice<'eal> {
     dev: Dev<'eal, Started>,
     /// Its MAC address, which the probes are sent from so that the replies come back to it.
     mac: Mac,
+    /// RX queue 0's pool; its in-use count tracks mbufs held by the driver.
+    rx_pool: Pool<'eal>,
     /// Optional pool for outgoing packets.
     tx_pool: Option<Pool<'eal>>,
 }
@@ -1030,6 +1037,57 @@ fn assert_within_budget(step: &str, elapsed: Duration) {
     );
 }
 
+/// Verify EAL teardown closes a leaked device before releasing its pools.
+/// Require mbufs to remain in the RX and TX rings so the test exercises driver cleanup.
+fn run_leaked_device_test(label: &str, config: &VmConfig) {
+    eprintln!("=== {label} ===");
+
+    let (eal, link) = init_dpdk_eal(config);
+    let SetupDevice {
+        dev: started,
+        mac,
+        rx_pool,
+        tx_pool,
+    } = setup_dpdk_device(&eal, &link, true);
+    let tx_pool = tx_pool.expect("setup_dpdk_device should return a tx pool");
+
+    // Fill the TX ring; drivers may retain mbufs until a later burst reclaims descriptors.
+    let mut queues = started.take_queues().expect("device queues already taken");
+    let mut tx_queue = queues
+        .take_tx(TxQueueIndex(0))
+        .expect("tx queue 0 missing after start");
+    let frame = echo_probe_frame(mac);
+    let unsent = tx_queue.transmit(make_batch(&tx_pool, &[&frame, &frame, &frame, &frame]));
+    assert!(
+        unsent.is_empty(),
+        "tx queue refused {} frame(s)",
+        unsent.len()
+    );
+    drop(unsent);
+    drop(queues);
+
+    let rx_held = rx_pool.in_use();
+    let tx_held = tx_pool.in_use();
+    eprintln!("[leak] PMD holds {rx_held} rx mbuf(s) and {tx_held} tx mbuf(s)");
+    assert!(
+        rx_held > 0,
+        "the receive ring holds no mbufs, so leaking the device would test nothing"
+    );
+    assert!(
+        tx_held > 0,
+        "the transmit ring holds no mbufs, so leaking the device would not test the tx pool"
+    );
+
+    core::mem::forget(started);
+
+    eprintln!("{TEARDOWN_STARTING}");
+    assert_within_budget(
+        "dropping the EAL with a leaked device",
+        time_eal_teardown(eal),
+    );
+    eprintln!("=== {label} complete ===");
+}
+
 // Tests
 
 /// Guest hugepages reserved for DPDK mempools in every configuration.
@@ -1127,4 +1185,16 @@ rx_tests! {
     dpdk_rx_frame_e1000_qemu_iommu: E1000_QEMU_IOMMU_1G => "QEMU / e1000 / vIOMMU (VA)";
     dpdk_rx_frame_e1000e_qemu: E1000E_QEMU_1G => "QEMU / e1000e / no-IOMMU (PA)";
     dpdk_rx_frame_e1000e_qemu_iommu: E1000E_QEMU_IOMMU_1G => "QEMU / e1000e / vIOMMU (VA)";
+}
+
+/// EAL teardown closes a leaked virtio-net device with queued mbufs.
+#[n_vm::test(config = VIRTIO_CH)]
+fn dpdk_leaked_device_teardown_virtio_cloud_hypervisor() {
+    run_leaked_device_test("cloud-hypervisor / virtio-net / leaked device", &VIRTIO_CH);
+}
+
+/// EAL teardown closes a leaked e1000 device with queued mbufs.
+#[n_vm::test(config = E1000_QEMU)]
+fn dpdk_leaked_device_teardown_e1000_qemu() {
+    run_leaked_device_test("QEMU / e1000 / leaked device", &E1000_QEMU);
 }
