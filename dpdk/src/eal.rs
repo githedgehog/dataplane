@@ -36,8 +36,8 @@ pub struct Eal {
     ///
     /// You can manage logical cores and task dispatch here.
     pub lcore: lcore::Manager,
-    /// The DPDK owner id this EAL claims ports under; see [`Eal::claim`].
-    port_owner: dev::OwnerId,
+    /// Port ownership and teardown failures; see [`Eal::claim`].
+    port_owner: dev::Ownership,
     /// Pins the handle to its creating thread; see the type documentation.
     _local: PhantomData<*const ()>,
     // TODO: queue
@@ -246,7 +246,7 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     if ret < 0 {
         EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
     }
-    let port_owner = dev::OwnerId::new().unwrap_or_else(|e| {
+    let port_owner = dev::Ownership::new().unwrap_or_else(|e| {
         Eal::fatal_error(format!("failed to allocate a port owner id: {e:?}"));
     });
     Eal {
@@ -267,7 +267,7 @@ impl Eal {
     /// Returns [`ClaimError`](dev::ClaimError) if the port does not exist or something else (a
     /// device built from an earlier claim, a bonding PMD, another process) already owns it.
     pub fn claim(&self, index: dev::DevIndex) -> Result<dev::PortClaim<'_>, dev::ClaimError> {
-        dev::PortClaim::claim(self.port_owner, &self.dev, index)
+        dev::PortClaim::claim(&self.port_owner, &self.dev, index)
     }
 
     /// A shareable projection of the EAL services that are safe to use from any thread.
@@ -336,6 +336,21 @@ impl Drop for Eal {
     fn drop(&mut self) {
         info!("waiting on EAL threads");
         unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
+
+        // Close ports before freeing pools; recorded close failures require retaining the pools.
+        let abandoned = self.port_owner.close_abandoned();
+        if self.port_owner.teardown_failed() {
+            error!(
+                "{stuck} abandoned port(s) could not be closed, or an earlier close \
+                 failed; leaking every mempool rather than freeing memory a driver may still use",
+                stuck = abandoned.stuck
+            );
+        } else {
+            // SAFETY: every port this EAL claimed closed successfully -- by its `Dev`, or just
+            // above -- so no driver holds mbufs from these pools, and no `Pool` handle can still
+            // exist since every handle borrows this `Eal`.
+            unsafe { self.mem.release_all() };
+        }
         self.port_owner.release_all();
 
         info!("Closing EAL");

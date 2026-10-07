@@ -70,11 +70,13 @@ fn rss_key_survives_source_drop_and_device_transitions() {
         source.rss.as_ref().unwrap().key.as_ref().unwrap().as_ptr()
     );
     drop(source);
+    let owner = Ownership::unregistered();
     let dev: Dev = Dev {
         lifecycle: PortLifecycle {
             port: info.index(),
             stage: Stage::Configured,
             config: applied,
+            owner: &owner,
         },
         info,
         queues: Mutex::new(Some(QueueStore::new(0, 0))),
