@@ -15,7 +15,7 @@ use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
 
 use crate::common::NatAction;
-use crate::flow_tracking::{HalfFlow, InstallError, install_pair};
+use crate::nat_flows::{HalfFlow, InstallError, install_pair};
 use crate::portfw::flow_state::build_portfw_flow_keys;
 use crate::portfw::flow_state::get_packet_port_fw_state;
 use crate::portfw::flow_state::new_port_fw_states;
