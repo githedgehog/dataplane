@@ -5,8 +5,7 @@
 
 use crate::NatPort;
 use crate::flow_tracking::{
-    HalfFlow, InstallError, NatState, NewFlow, advance_flow, install_pair, packet_flow_keys,
-    transport_proto,
+    HalfFlow, InstallError, NatState, NewFlow, install_pair, packet_flow_keys,
 };
 use crate::masquerade::NatAllocatorWriter;
 use crate::masquerade::allocation::{AllocationResult, AllocatorError};
@@ -20,6 +19,7 @@ use flow_entry::flow_table::table::FlowTable;
 use net::buffer::PacketBufferMut;
 use net::flow_key::{FlowAddrs, IcmpProtoKey};
 use net::flows::ConnState;
+use net::flows::conn_tracking::{advance_flow, transport_proto};
 use net::flows::{FlowInfo, FlowInfoError};
 use net::headers::{TryHeaders, TryIp, TryTcp};
 use net::ip::{NextHeader, UnicastIpAddr};
@@ -167,7 +167,7 @@ impl Masquerade {
     }
 
     fn refreshes_while_unanswered<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-        // Resolve extension headers as in flow_tracking::next_status().
+        // Resolve extension headers as in conn_tracking::next_status().
         matches!(
             transport_proto(packet),
             Some(NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6)

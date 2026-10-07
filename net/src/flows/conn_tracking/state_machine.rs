@@ -4,13 +4,12 @@
 //! Small state machines for tracked flows. We use them to know how much to extend the lifetime
 //! of flows.
 
-use super::FlowSide;
-use net::buffer::PacketBufferMut;
-use net::flows::ConnState;
-use net::headers::{TryHeaders, TryTcp};
-use net::ip::NextHeader;
-use net::packet::Packet;
-use net::tcp::Tcp;
+use super::{ConnState, FlowSide};
+use crate::buffer::PacketBufferMut;
+use crate::headers::{TryHeaders, TryTcp};
+use crate::ip::NextHeader;
+use crate::packet::Packet;
+use crate::tcp::Tcp;
 
 fn next_status_udp(side: FlowSide, status: ConnState) -> ConnState {
     match side {
@@ -78,14 +77,14 @@ fn next_status_tcp(side: FlowSide, status: ConnState, tcp: &Tcp) -> ConnState {
 
 /// Resolve the protocol for flow-state and timeout updates.
 /// Returns `None` for non-first fragments and incomplete header chains.
-pub(crate) fn transport_proto<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NextHeader> {
+pub fn transport_proto<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NextHeader> {
     packet.upper_layer_proto().carried()
 }
 
 /// Compute the next status of a flow, given its current status, the packet that hit it, and the
 /// side of the connection that sent this packet. A UDP flow closes on the first reply from a DNS
 /// server.
-pub(crate) fn next_status<Buf: PacketBufferMut>(
+pub fn next_status<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
     side: FlowSide,
     status: ConnState,
@@ -135,10 +134,10 @@ fn close_dns_on_reply<Buf: PacketBufferMut>(
 #[cfg(test)]
 mod test {
     use super::transport_proto;
-    use net::buffer::TestBuffer;
-    use net::headers::TryIp;
-    use net::ip::NextHeader;
-    use net::packet::Packet;
+    use crate::buffer::TestBuffer;
+    use crate::headers::TryIp;
+    use crate::ip::NextHeader;
+    use crate::packet::Packet;
 
     #[test]
     fn a_udp_flow_behind_an_extension_header_is_still_udp() {
@@ -167,7 +166,7 @@ mod test {
         let packet: Packet<TestBuffer> = Packet::new(buffer).unwrap_or_else(|_| unreachable!());
 
         assert_ne!(
-            packet.try_ip().map(net::headers::Net::next_header),
+            packet.try_ip().map(crate::headers::Net::next_header),
             Some(NextHeader::UDP),
             "the fixture must carry an extension header, or it cannot tell the two reads apart"
         );
