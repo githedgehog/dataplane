@@ -127,8 +127,9 @@ pub(crate) enum Disposition {
 ///
 /// Only `Local` punts. Deciding what the control plane gets to see is the pipeline's job: the
 /// ingress stage marks `Local` what is addressed to us and the datapath does not process
-/// (broadcast and multicast frames, like ARP requests and neighbor discovery, and non-IP frames
-/// for our MAC, like ARP replies), and the router marks `Local` the traffic for our own addresses.
+/// (broadcast frames like ARP requests, LLDP and IPv6 neighbor discovery multicast, and non-IP
+/// frames for our MAC, like ARP replies), and the router marks `Local` the traffic for our own
+/// addresses.
 /// Every other verdict is a decision the datapath already made, and never punts.
 pub(crate) fn disposition(done: Option<DoneReason>) -> Disposition {
     // Exhaustive on purpose. A new `DoneReason` is a new decision about whether the kernel should
