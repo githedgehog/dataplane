@@ -3,7 +3,7 @@
 
 use super::*;
 
-fn info(key_size: u8, supports_rss: bool) -> DevInfo {
+fn info(key_size: u8, supports_rss: bool) -> DevInfo<'static> {
     DevInfo {
         index: DevIndex(u16::MAX),
         inner: rte_eth_dev_info {
@@ -13,6 +13,7 @@ fn info(key_size: u8, supports_rss: bool) -> DevInfo {
             flow_type_rss_offloads: u64::from(supports_rss),
             ..Default::default()
         },
+        eal: PhantomData,
     }
 }
 
