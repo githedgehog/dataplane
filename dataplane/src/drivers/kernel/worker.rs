@@ -24,7 +24,7 @@ use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::{DynPipeline, NetworkFunction};
 
-use crate::drivers::cpbridge::{Disposition, Frame, disposition};
+use crate::drivers::cpbridge::{Disposition, Frame};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
@@ -273,9 +273,7 @@ impl Worker {
                 let mut ppline_drops: u64 = 0;
                 let mut punted: u64 = 0;
                 for out_pkt in out_pkts {
-                    let done = out_pkt.get_done();
-
-                    match packet_disposition(&out_pkt, &mut ppline_drops) {
+                    match Disposition::of(&out_pkt) {
                         Disposition::Transmit => {
                             to_tx += 1;
                             if tx_packet(id, &intf.if_name, &if_table, out_pkt).await {
@@ -284,19 +282,17 @@ impl Worker {
                                 tx_drops += 1;
                             }
                         }
-                        Disposition::Punt => match &intf.punt {
-                            Some(punt) => {
+                        // Without a tap, the kernel has this interface and already saw the frame.
+                        Disposition::Punt => {
+                            if let Some(punt) = &intf.punt {
                                 if punt_packet(id, &intf.if_name, punt, out_pkt) {
                                     punted += 1;
                                 } else {
                                     ppline_drops += 1;
                                 }
                             }
-                            // No tap: the kernel has this interface and already saw the frame.
-                            None if done == Some(DoneReason::Local) => {}
-                            None => ppline_drops += 1,
-                        },
-                        Disposition::Drop => {}
+                        }
+                        Disposition::Drop => ppline_drops += 1,
                     }
                 }
                 if punted > 0 {
@@ -644,19 +640,6 @@ async fn read_packets_from_interface(
     Ok(pkts)
 }
 
-/// Select forwarding or control-plane delivery and account for pipeline drops.
-fn packet_disposition(packet: &Packet<TestBuffer>, ppline_drops: &mut u64) -> Disposition {
-    let done = packet.get_done();
-    if done.is_none() {
-        error!("Packet returned without a terminal verdict; dropping it (pipeline bug)");
-    }
-    let action = disposition(done);
-    if matches!(action, Disposition::Drop) {
-        *ppline_drops += 1;
-    }
-    action
-}
-
 /// Hand a frame to the kernel through the tap standing in for the interface it arrived on.
 ///
 /// Returns whether it was handed over. A `false` here is counted as a pipeline drop, because that
@@ -834,7 +817,7 @@ async fn tx_packet(
 
 #[cfg(test)]
 mod test {
-    use super::{Disposition, RxCounters, build_packet, packet_disposition};
+    use super::{Disposition, RxCounters, build_packet};
     use net::buffer::test_buffer::TestBuffer;
     use net::interface::InterfaceIndex;
     use net::packet::test_utils::{build_test_ipv4_packet, build_test_ipv6_packet};
@@ -862,16 +845,14 @@ mod test {
                 packet
             })
             .collect();
-        let expected_drops = packets.len() as u64 - 2;
-        let mut drops = 0;
+        let expected_drops = packets.len() - 2;
+        let drops = packets
+            .iter()
+            .filter(|packet| Disposition::of(packet) == Disposition::Drop)
+            .count();
         let transmitted: Vec<_> = packets
             .into_iter()
-            .filter(|packet| {
-                matches!(
-                    packet_disposition(packet, &mut drops),
-                    Disposition::Transmit
-                )
-            })
+            .filter(|packet| Disposition::of(packet) == Disposition::Transmit)
             .collect();
 
         assert_eq!(transmitted.len(), 1);
@@ -887,15 +868,13 @@ mod test {
             build_test_frame(),
         ];
         DecrementTtl.process_burst(&mut burst);
-        let mut drops = 0;
+        let drops = burst
+            .iter()
+            .filter(|packet| Disposition::of(packet) == Disposition::Drop)
+            .count();
         let transmitted = burst
-            .into_iter()
-            .filter(|packet| {
-                matches!(
-                    packet_disposition(packet, &mut drops),
-                    Disposition::Transmit
-                )
-            })
+            .iter()
+            .filter(|packet| Disposition::of(packet) == Disposition::Transmit)
             .count();
 
         assert_eq!(transmitted, 0);

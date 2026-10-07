@@ -10,7 +10,6 @@ use dpdk::mem::{MBUF_BURST, Mbuf, MbufArray};
 use lifecycle::Subsystem;
 use net::buffer::{Append, PacketBufferMut};
 use net::interface::InterfaceIndex;
-use net::packet::DoneReason;
 use net::packet::Packet;
 use pipeline::{DynPipeline, NetworkFunction};
 use tracing::{debug, error, trace, warn};
@@ -19,7 +18,7 @@ use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
 use super::port::PortQueues;
-use crate::drivers::cpbridge::{Disposition, disposition};
+use crate::drivers::cpbridge::Disposition;
 
 #[cfg(all(test, not(feature = "shuttle")))]
 mod tests;
@@ -155,7 +154,7 @@ impl<'p> Worker<'p> {
         // atomic increment, which is not free at burst rates and buys nothing here.
         let punt = self.ports[slot].queues.punt.as_ref();
         for packet in processed {
-            match disposition(packet.get_done()) {
+            match Disposition::of(&packet) {
                 Disposition::Transmit => {}
                 Disposition::Punt => {
                     Self::punt(
@@ -396,11 +395,11 @@ fn process_burst<Buf: PacketBufferMut>(
     // Some stages remove packets instead of returning a drop verdict.
     counters.ppline_drops += parsed.saturating_sub(packets.len()) as u64;
     packets.retain(|packet| {
-        if let Some(DoneReason::Delivered | DoneReason::Local) = packet.get_done() {
-            true
-        } else {
+        if Disposition::of(packet) == Disposition::Drop {
             counters.ppline_drops += 1;
             false
+        } else {
+            true
         }
     });
     packets

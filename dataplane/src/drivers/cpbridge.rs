@@ -20,9 +20,10 @@ use std::collections::HashMap;
 use concurrency::sync::Arc;
 use interface_manager::interface::{TapDevice, TapRegistry};
 use lifecycle::{CancellationToken, Subsystem};
+use net::buffer::PacketBufferMut;
 use net::eth::mac::Mac;
 use net::interface::{InterfaceIndex, InterfaceName};
-use net::packet::DoneReason;
+use net::packet::{DoneReason, Packet};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -123,7 +124,8 @@ pub(crate) enum Disposition {
     Drop,
 }
 
-/// Choose whether to forward, punt, or drop a completed packet.
+/// The punt policy: whether to forward, punt, or drop a packet the pipeline completed with this
+/// verdict.
 ///
 /// Only `Local` punts. Deciding what the control plane gets to see is the pipeline's job: the
 /// ingress stage marks `Local` what is addressed to us and the datapath does not process
@@ -131,20 +133,16 @@ pub(crate) enum Disposition {
 /// frames for our MAC, like ARP replies), and the router marks `Local` the traffic for our own
 /// addresses.
 /// Every other verdict is a decision the datapath already made, and never punts.
-pub(crate) fn disposition(done: Option<DoneReason>) -> Disposition {
-    // Exhaustive on purpose. A new `DoneReason` is a new decision about whether the kernel should
-    // see that packet, and this is where it has to be made; a wildcard would answer "no" silently.
-    match done {
-        Some(DoneReason::Delivered) => Disposition::Transmit,
+impl From<DoneReason> for Disposition {
+    fn from(done: DoneReason) -> Self {
+        // Exhaustive on purpose. A new `DoneReason` is a new decision about whether the kernel
+        // should see that packet, and this is where it has to be made; a wildcard would answer
+        // "no" silently.
+        match done {
+            DoneReason::Delivered => Disposition::Transmit,
+            DoneReason::Local => Disposition::Punt,
 
-        Some(DoneReason::Local) => Disposition::Punt,
-
-        // Decisions the datapath made, and failures the kernel cannot do anything about -- together
-        // with `None`, which is no verdict at all: a pipeline that did not finish with the packet
-        // is a bug rather than a routing outcome, and dropping matches what the driver has always
-        // done with one.
-        None
-        | Some(
+            // Decisions the datapath made, and failures the kernel cannot do anything about.
             DoneReason::Unhandled
             | DoneReason::NotIp
             | DoneReason::RouteFailure
@@ -176,8 +174,24 @@ pub(crate) fn disposition(done: Option<DoneReason>) -> Disposition {
             | DoneReason::IcmpErrorIncomplete
             | DoneReason::InternalDrop
             | DoneReason::DeparseError
-            | DoneReason::NoHeadRoom,
-        ) => Disposition::Drop,
+            | DoneReason::NoHeadRoom => Disposition::Drop,
+        }
+    }
+}
+
+impl Disposition {
+    /// Where to send a packet the pipeline has finished with, according to its verdict.
+    ///
+    /// A packet without a verdict is a pipeline bug rather than a routing outcome: it is dropped,
+    /// which is what the drivers have always done with one.
+    pub(crate) fn of<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Self {
+        packet.get_done().map_or_else(
+            || {
+                error!("Packet returned without a terminal verdict; dropping it (pipeline bug)");
+                Disposition::Drop
+            },
+            Disposition::from,
+        )
     }
 }
 
@@ -493,15 +507,16 @@ async fn dress_one(
 
 #[cfg(test)]
 mod test {
-    use super::{Disposition, disposition};
+    use super::Disposition;
     use net::packet::DoneReason;
+    use net::packet::test_utils::build_test_ipv4_packet;
     use strum::EnumCount as _;
 
     /// The whole punt policy, verdict by verdict.
     ///
-    /// Written out rather than derived from [`disposition`] on purpose: a test that recomputed the
+    /// Written out rather than derived from [`Disposition::from`] on purpose: a test that recomputed the
     /// policy would agree with any policy at all. This is the statement of what the control plane
-    /// is entitled to see, and changing [`disposition`] should have to change it here too.
+    /// is entitled to see, and changing [`Disposition::from`] should have to change it here too.
     ///
     /// Break-tested: inverting any single arm below (say, making `AclDropped` punt, or making
     /// `Local` drop) fails this test.
@@ -553,27 +568,29 @@ mod test {
 
         for (verdict, expected) in table {
             assert_eq!(
-                disposition(Some(*verdict)),
+                Disposition::from(*verdict),
                 *expected,
                 "wrong disposition for {verdict:?}"
             );
         }
 
         // The table has to name every verdict, not merely the interesting ones. Without this a
-        // verdict added later would default to whatever `disposition`'s author decided, with no
+        // verdict added later would default to whatever the policy's author decided, with no
         // test asserting that the control plane was considered at all.
         assert_eq!(
             table.len(),
             DoneReason::COUNT,
             "the punt policy table has drifted from `DoneReason`: every verdict is a decision \
              about whether the control plane may see that packet, so a new one has to be made \
-             here as well as in `disposition`"
+             here as well as in `From<DoneReason> for Disposition`"
         );
     }
 
     #[test]
     fn a_packet_with_no_verdict_is_dropped() {
-        assert_eq!(disposition(None), Disposition::Drop);
+        let packet = build_test_ipv4_packet(64).unwrap();
+        assert_eq!(packet.get_done(), None);
+        assert_eq!(Disposition::of(&packet), Disposition::Drop);
     }
 
     // ------------------------------------------------------------------------------------------

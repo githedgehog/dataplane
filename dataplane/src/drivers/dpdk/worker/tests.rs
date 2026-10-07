@@ -7,6 +7,7 @@ use flow_entry::flow_table::FlowTable;
 use net::buffer::TestBuffer;
 use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
 use net::ip::NextHeader;
+use net::packet::DoneReason;
 use net::packet::test_utils::build_test_ipv4_packet_with_transport;
 use net::{FlowKey, IpProtoKey, TcpProtoKey};
 use std::time::Duration;
