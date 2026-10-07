@@ -164,7 +164,7 @@ impl TxQueue {
     /// The PMD owns accepted packets. Stop when the queue makes no progress.
     #[must_use = "retry or drop the unsent packets"]
     #[tracing::instrument(level = "trace", skip(packets))]
-    pub fn transmit(&self, packets: MbufArray) -> MbufArray {
+    pub fn transmit<'eal>(&self, packets: MbufArray<'eal>) -> MbufArray<'eal> {
         let len = packets.len();
         if len == 0 {
             return MbufArray::new_empty();
