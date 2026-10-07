@@ -4,8 +4,8 @@
 //! Translation of ICMP errors for tracked flows.
 
 use crate::NatTranslationData;
-use crate::flow_tracking::NatState;
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
+use crate::nat_flows::NatState;
 use net::buffer::PacketBufferMut;
 use net::flows::ConnState;
 use net::flows::FlowInfo;

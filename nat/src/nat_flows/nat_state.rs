@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Helpers to mangle the state that NAT flavors keep in tracked flows.
+//! Trait to mangle the state that NAT flavors keep in flows.
 
 use net::flows::{FlowInfoItem, FlowInfoLocked};
 
-/// State that a NAT mode keeps in each half of a tracked pair of flows, in a field of the flows
-/// dedicated to the mode. The status of the connection is not part of it: the flows of the pair
-/// hold it.
+/// State that a NAT mode has in each half of a flow pair
 pub(crate) trait NatState: FlowInfoItem + Sized {
     /// The state of this type held by a flow, if any.
     fn try_get(locked: &FlowInfoLocked) -> Option<&Self>;

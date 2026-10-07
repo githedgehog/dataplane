@@ -5,7 +5,7 @@ use super::apalloc::Allocation;
 use super::nf::MasqueradeError;
 use super::packet::NatTranslate;
 use crate::common::NatAction;
-use crate::flow_tracking::NatState;
+use crate::nat_flows::NatState;
 use crate::{NatEndpoint, NatPort, NatTranslationData};
 use net::flows::FlowInfoLocked;
 use net::ip::UnicastIpAddr;
