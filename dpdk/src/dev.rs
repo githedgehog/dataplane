@@ -14,11 +14,12 @@ use tracing::{debug, error, info};
 
 use crate::eal::Eal;
 use crate::queue;
-use crate::queue::QueueStore;
-use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue};
-use crate::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
-use crate::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
+use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue, HairpinQueueId};
+use crate::queue::rx::{RxQueue, RxQueueConfig};
+use crate::queue::tx::{TxQueue, TxQueueConfig};
+use crate::queue::{QueueStore, Queues};
 use crate::socket::SocketId;
+use concurrency::sync::Mutex;
 use dpdk_sys::rte_eth_rx_mq_mode::{RTE_ETH_MQ_RX_NONE, RTE_ETH_MQ_RX_RSS};
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
@@ -311,7 +312,10 @@ impl DevConfig {
                 config,
             },
             info: dev,
-            queues: QueueStore::default(),
+            queues: Mutex::new(Some(QueueStore::new(
+                self.num_rx_queues + self.num_hairpin_queues,
+                self.num_tx_queues + self.num_hairpin_queues,
+            ))),
             state: PhantomData,
         })
     }
@@ -1064,8 +1068,9 @@ pub struct Dev<'eal, S: DevState = Configured> {
     lifecycle: PortLifecycle,
     /// The device info
     pub info: DevInfo,
-    /// The configured queues. Each index is used at most once.
-    queues: QueueStore<'eal>,
+    /// Queues owned until handoff, then borrowed from the device.
+    /// The mutex permits sharing Dev while transferring each queue exactly once.
+    queues: Mutex<Option<QueueStore<'eal>>>,
     state: PhantomData<S>,
 }
 
@@ -1131,51 +1136,51 @@ impl<'eal, S: Open> Dev<'eal, S> {
 }
 
 impl<'eal> Dev<'eal, Configured> {
-    // TODO: return type should provide a handle back to the queue
-    /// Configure a new [`RxQueue`]
+    /// Access the queue store before start.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the store was taken, which Configured prevents.
+    #[allow(clippy::expect_used)]
+    fn with_store<R>(&mut self, f: impl FnOnce(&mut QueueStore<'eal>) -> R) -> R {
+        let mut guard = self.queues.lock();
+        let store = guard
+            .as_mut()
+            .expect("a configured device cannot have had its queues taken");
+        f(store)
+    }
+
+    /// Configure a receive queue, available through [`Queues::take_rx`] after start.
     pub fn new_rx_queue(&mut self, config: RxQueueConfig<'eal>) -> Result<(), rx::ConfigFailure> {
         // Two handles to one queue would let two threads poll it at once.
-        if self.queues.has_rx(config.queue_index) {
-            return Err(rx::ConfigFailure::AlreadyConfigured(config.queue_index));
-        }
+        self.with_store(|store| store.check_rx(config.queue_index))?;
         let rx_queue = RxQueue::setup(self, config)?;
-        self.queues.rx.push(rx_queue);
+        self.with_store(|store| store.insert_rx(rx_queue));
         Ok(())
     }
 
-    // TODO: return type should provide a handle back to the queue
-    /// Configure a new [`TxQueue`]
+    /// Configure a transmit queue, available through [`Queues::take_tx`] after start.
     pub fn new_tx_queue(&mut self, config: TxQueueConfig) -> Result<(), tx::ConfigFailure> {
-        if self.queues.has_tx(config.queue_index) {
-            return Err(tx::ConfigFailure::AlreadyConfigured(config.queue_index));
-        }
+        self.with_store(|store| store.check_tx(config.queue_index))?;
         let tx_queue = TxQueue::setup(self, config)?;
-        self.queues.tx.push(tx_queue);
+        self.with_store(|store| store.insert_tx(tx_queue));
         Ok(())
     }
 
-    // TODO: return type should provide a handle back to the queue
-    /// Configure a new [`HairpinQueue`]
+    /// Configure a hairpin queue and return its ID for [`Queues::take_hairpin`] after start.
     pub fn new_hairpin_queue(
         &mut self,
         rx: RxQueueConfig<'eal>,
         tx: TxQueueConfig,
-    ) -> Result<(), HairpinConfigFailure> {
-        if self.queues.has_rx(rx.queue_index) {
-            return Err(HairpinConfigFailure::RxQueueCreationFailed(
-                rx::ConfigFailure::AlreadyConfigured(rx.queue_index),
-            ));
-        }
-        if self.queues.has_tx(tx.queue_index) {
-            return Err(HairpinConfigFailure::TxQueueCreationFailed(
-                tx::ConfigFailure::AlreadyConfigured(tx.queue_index),
-            ));
-        }
+    ) -> Result<HairpinQueueId, HairpinConfigFailure> {
+        self.with_store(|store| store.check_rx(rx.queue_index))
+            .map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
+        self.with_store(|store| store.check_tx(tx.queue_index))
+            .map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
         let rx = RxQueue::setup(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
         let tx = TxQueue::setup(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
         let hairpin = HairpinQueue::new(self, rx, tx)?;
-        self.queues.hairpin.push(hairpin);
-        Ok(())
+        Ok(self.with_store(|store| store.insert_hairpin(hairpin)))
     }
 
     /// Start the device.
@@ -1241,22 +1246,30 @@ impl<'eal> Dev<'eal, Started> {
         Ok(self.transition())
     }
 
-    /// Find a configured receive queue by index.
-    #[tracing::instrument(level = "trace")]
-    pub fn rx_queue(&self, index: RxQueueIndex) -> Option<&RxQueue<'eal>> {
-        self.queues
-            .rx
-            .iter()
-            .find(|x| x.config.queue_index == index)
-    }
-
-    /// Find a configured transmit queue by index.
-    #[tracing::instrument(level = "trace")]
-    pub fn tx_queue(&self, index: TxQueueIndex) -> Option<&TxQueue> {
-        self.queues
-            .tx
-            .iter()
-            .find(|x| x.config.queue_index == index)
+    /// Take the queues once, returning `None` on subsequent calls.
+    /// The handles borrow this device and require exclusive access for polling.
+    ///
+    /// ```compile_fail,E0505
+    /// # use dataplane_dpdk::dev::{Dev, Started};
+    /// # use dataplane_dpdk::queue::rx::RxQueueIndex;
+    /// fn use_after_stop(dev: Dev<Started>) {
+    ///     let mut queues = dev.take_queues().expect("queues");
+    ///     let mut rxq = queues.take_rx(RxQueueIndex(0)).expect("rx 0");
+    ///     let _stopped = dev.stop();
+    ///     let _burst = rxq.receive();
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0596
+    /// # use dataplane_dpdk::queue::rx::RxQueue;
+    /// fn poll_shared(rxq: &RxQueue<'_>) {
+    ///     let _burst = rxq.receive();
+    /// }
+    /// ```
+    pub fn take_queues(&self) -> Option<Queues<'_>> {
+        let store = self.queues.lock().take()?;
+        // Queue lifetimes shorten from the EAL borrow to this device borrow.
+        Some(Queues::new(store))
     }
 }
 
