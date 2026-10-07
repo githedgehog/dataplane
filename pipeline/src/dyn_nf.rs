@@ -3,12 +3,11 @@
 
 use crate::NetworkFunction;
 use net::buffer::PacketBufferMut;
-use std::any::Any;
 
-/// A [`NetworkFunction`] trait object supporting downcasts through [`Any`].
-pub trait DynNetworkFunction<Buf: PacketBufferMut>: NetworkFunction<Buf> + Any {}
+/// A [`NetworkFunction`] held as a trait object.
+pub trait DynNetworkFunction<Buf: PacketBufferMut>: NetworkFunction<Buf> {}
 
-impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf> + Any> DynNetworkFunction<Buf> for NF {}
+impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunction<Buf> for NF {}
 
 /// Creates a boxed, dynamic network function.
 ///
@@ -18,8 +17,8 @@ impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf> + Any> DynNetworkFunction<Bu
 ///
 /// * [`DynNetworkFunction`]
 /// * [`crate::pipeline::DynPipeline`]
-pub fn nf_dyn<Buf: PacketBufferMut + 'static, NF: NetworkFunction<Buf> + 'static>(
+pub fn nf_dyn<'nf, Buf: PacketBufferMut + 'nf, NF: NetworkFunction<Buf> + 'nf>(
     nf: NF,
-) -> Box<dyn DynNetworkFunction<Buf>> {
+) -> Box<dyn DynNetworkFunction<Buf> + 'nf> {
     Box::new(nf)
 }

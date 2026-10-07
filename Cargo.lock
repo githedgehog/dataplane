@@ -1765,7 +1765,6 @@ dependencies = [
  "inotify",
  "tokio",
  "tracing",
- "tracing-test",
 ]
 
 [[package]]
@@ -1878,7 +1877,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "tracing-test",
 ]
 
 [[package]]
