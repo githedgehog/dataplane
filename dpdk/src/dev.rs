@@ -6,7 +6,6 @@
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
 use core::marker::PhantomData;
@@ -15,6 +14,7 @@ use tracing::{debug, error, info};
 
 use crate::eal::Eal;
 use crate::queue;
+use crate::queue::QueueStore;
 use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue};
 use crate::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use crate::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
@@ -27,6 +27,8 @@ use queue::{rx, tx};
 
 #[cfg(test)]
 mod iter_tests;
+#[cfg(test)]
+mod queue_tests;
 #[cfg(test)]
 mod rss_tests;
 
@@ -309,9 +311,7 @@ impl DevConfig {
                 config,
             },
             info: dev,
-            rx_queues: Vec::with_capacity(self.num_rx_queues as usize),
-            tx_queues: Vec::with_capacity(self.num_tx_queues as usize),
-            hairpin_queues: Vec::with_capacity(self.num_hairpin_queues as usize),
+            queues: QueueStore::default(),
             state: PhantomData,
         })
     }
@@ -1064,9 +1064,8 @@ pub struct Dev<'eal, S: DevState = Configured> {
     lifecycle: PortLifecycle,
     /// The device info
     pub info: DevInfo,
-    pub(crate) rx_queues: Vec<RxQueue<'eal>>,
-    pub(crate) tx_queues: Vec<TxQueue>,
-    pub(crate) hairpin_queues: Vec<HairpinQueue<'eal>>,
+    /// The configured queues. Each index is used at most once.
+    queues: QueueStore<'eal>,
     state: PhantomData<S>,
 }
 
@@ -1083,9 +1082,7 @@ impl<'eal, S: DevState> Dev<'eal, S> {
         Dev {
             lifecycle: self.lifecycle,
             info: self.info,
-            rx_queues: self.rx_queues,
-            tx_queues: self.tx_queues,
-            hairpin_queues: self.hairpin_queues,
+            queues: self.queues,
             state: PhantomData,
         }
     }
@@ -1137,16 +1134,23 @@ impl<'eal> Dev<'eal, Configured> {
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`RxQueue`]
     pub fn new_rx_queue(&mut self, config: RxQueueConfig<'eal>) -> Result<(), rx::ConfigFailure> {
+        // Two handles to one queue would let two threads poll it at once.
+        if self.queues.has_rx(config.queue_index) {
+            return Err(rx::ConfigFailure::AlreadyConfigured(config.queue_index));
+        }
         let rx_queue = RxQueue::setup(self, config)?;
-        self.rx_queues.push(rx_queue);
+        self.queues.rx.push(rx_queue);
         Ok(())
     }
 
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`TxQueue`]
     pub fn new_tx_queue(&mut self, config: TxQueueConfig) -> Result<(), tx::ConfigFailure> {
+        if self.queues.has_tx(config.queue_index) {
+            return Err(tx::ConfigFailure::AlreadyConfigured(config.queue_index));
+        }
         let tx_queue = TxQueue::setup(self, config)?;
-        self.tx_queues.push(tx_queue);
+        self.queues.tx.push(tx_queue);
         Ok(())
     }
 
@@ -1157,10 +1161,20 @@ impl<'eal> Dev<'eal, Configured> {
         rx: RxQueueConfig<'eal>,
         tx: TxQueueConfig,
     ) -> Result<(), HairpinConfigFailure> {
+        if self.queues.has_rx(rx.queue_index) {
+            return Err(HairpinConfigFailure::RxQueueCreationFailed(
+                rx::ConfigFailure::AlreadyConfigured(rx.queue_index),
+            ));
+        }
+        if self.queues.has_tx(tx.queue_index) {
+            return Err(HairpinConfigFailure::TxQueueCreationFailed(
+                tx::ConfigFailure::AlreadyConfigured(tx.queue_index),
+            ));
+        }
         let rx = RxQueue::setup(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
         let tx = TxQueue::setup(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
         let hairpin = HairpinQueue::new(self, rx, tx)?;
-        self.hairpin_queues.push(hairpin);
+        self.queues.hairpin.push(hairpin);
         Ok(())
     }
 
@@ -1230,7 +1244,8 @@ impl<'eal> Dev<'eal, Started> {
     /// Find a configured receive queue by index.
     #[tracing::instrument(level = "trace")]
     pub fn rx_queue(&self, index: RxQueueIndex) -> Option<&RxQueue<'eal>> {
-        self.rx_queues
+        self.queues
+            .rx
             .iter()
             .find(|x| x.config.queue_index == index)
     }
@@ -1238,7 +1253,8 @@ impl<'eal> Dev<'eal, Started> {
     /// Find a configured transmit queue by index.
     #[tracing::instrument(level = "trace")]
     pub fn tx_queue(&self, index: TxQueueIndex) -> Option<&TxQueue> {
-        self.tx_queues
+        self.queues
+            .tx
             .iter()
             .find(|x| x.config.queue_index == index)
     }
