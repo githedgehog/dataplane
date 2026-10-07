@@ -43,7 +43,7 @@ fn rss_key_length_is_checked_before_device_configuration() {
         } else {
             // Reject the length before trying to configure this invalid port.
             assert!(matches!(
-                config.apply(info(expected, true)),
+                config.configure(&info(expected, true)),
                 Err(DevConfigError::RssKeyLength { actual: got, expected: want })
                     if got == actual && want == expected
             ));
@@ -79,6 +79,7 @@ fn rss_key_survives_source_drop_and_device_transitions() {
         info,
         queues: Mutex::new(Some(QueueStore::new(0, 0))),
         state: PhantomData,
+        _thread: PhantomData,
     };
     // Exercise the ownership moves without calling a driver on this synthetic port.
     let dev = dev.transition::<Started>().transition::<Configured>();

@@ -36,6 +36,8 @@ pub struct Eal {
     ///
     /// You can manage logical cores and task dispatch here.
     pub lcore: lcore::Manager,
+    /// The DPDK owner id this EAL claims ports under; see [`Eal::claim`].
+    port_owner: dev::OwnerId,
     /// Pins the handle to its creating thread; see the type documentation.
     _local: PhantomData<*const ()>,
     // TODO: queue
@@ -43,8 +45,16 @@ pub struct Eal {
 }
 
 /// Shared EAL services, valid while the owning [`Eal`] remains alive.
-/// Device and socket queries are read-only; pool creation uses DPDK synchronization
+/// Socket queries are read-only; pool creation uses DPDK synchronization
 /// and a locked registry. Teardown remains on the owning thread.
+///
+/// Device queries stay on the EAL thread to prevent races with port teardown.
+/// Other threads can query a borrowed [`Dev`](crate::dev::Dev), which keeps its port open.
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::eal::EalShared;
+/// fn query_any_port(shared: EalShared<'_>) { let _ = shared.dev(); }
+/// ```
 ///
 /// ```
 /// # use dataplane_dpdk::eal::EalShared;
@@ -59,15 +69,18 @@ pub struct Eal {
 /// ```
 #[derive(Debug, Copy, Clone)]
 pub struct EalShared<'eal> {
+    /// Test-only, see [`EalShared::dev`].
+    #[cfg(test)]
     dev: &'eal dev::Manager,
     socket: &'eal socket::Manager,
     mem: &'eal mem::Manager,
 }
 
 impl<'eal> EalShared<'eal> {
-    /// Ethernet device *queries*. See the type documentation for why only queries.
+    /// Device queries for unit tests, serialized with port teardown by `test_support::PORT_LOCK`.
+    #[cfg(test)]
     #[must_use]
-    pub fn dev(&self) -> &'eal dev::Manager {
+    pub(crate) fn dev(&self) -> &'eal dev::Manager {
         self.dev
     }
 
@@ -233,23 +246,37 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     if ret < 0 {
         EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
     }
+    let port_owner = dev::OwnerId::new().unwrap_or_else(|e| {
+        Eal::fatal_error(format!("failed to allocate a port owner id: {e:?}"));
+    });
     Eal {
         mem: mem::Manager::init(),
         dev: dev::Manager::init(),
         socket: socket::Manager::init(),
         lcore: lcore::Manager::init(),
+        port_owner,
         _local: PhantomData,
     }
 }
 
 impl Eal {
+    /// Claim a port on the EAL thread for [`DevConfig::apply`](dev::DevConfig::apply).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClaimError`](dev::ClaimError) if the port does not exist or something else (a
+    /// device built from an earlier claim, a bonding PMD, another process) already owns it.
+    pub fn claim(&self, index: dev::DevIndex) -> Result<dev::PortClaim<'_>, dev::ClaimError> {
+        dev::PortClaim::claim(self.port_owner, &self.dev, index)
+    }
+
     /// A shareable projection of the EAL services that are safe to use from any thread.
     ///
-    /// This is how a worker thread gets at device and socket queries: the `Eal` handle itself is
-    /// `!Send`, but [`EalShared`] is `Copy + Send + Sync` and borrows from it.
+    /// Workers can query sockets and create pools while borrowing the EAL.
     #[must_use]
     pub fn shared(&self) -> EalShared<'_> {
         EalShared {
+            #[cfg(test)]
             dev: &self.dev,
             socket: &self.socket,
             mem: &self.mem,
@@ -309,6 +336,8 @@ impl Drop for Eal {
     fn drop(&mut self) {
         info!("waiting on EAL threads");
         unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
+        self.port_owner.release_all();
+
         info!("Closing EAL");
         let ret = unsafe { dpdk_sys::rte_eal_cleanup() };
         if ret != 0 {
