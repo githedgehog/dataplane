@@ -5,6 +5,7 @@
 
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
@@ -43,6 +44,15 @@ impl Display for DevIndex {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+/// Failure to read a valid source MAC address from a device.
+#[derive(Debug, thiserror::Error)]
+pub enum MacAddressError {
+    #[error(transparent)]
+    Driver(#[from] ErrorCode),
+    #[error(transparent)]
+    InvalidAddress(#[from] net::eth::mac::SourceMacAddressError),
 }
 
 #[derive(Debug, thiserror::Error, Copy, Clone)]
@@ -218,18 +228,12 @@ pub struct DevConfig {
     pub num_tx_queues: u16,
     /// The number of hairpin queues to be made available after device initialization.
     pub num_hairpin_queues: u16,
-    /// The transmit offloads to be requested on the device.
-    ///
-    /// If `None`, the device will use all supported Offloads.
-    /// If `Some`, the device will use the intersection of the supported offloads and the requested
-    /// offloads.
-    /// TODO: this is a silly API.
-    /// Setting it to `None` should disable all offloads, but instead we default to enabling all
-    /// supported.
-    /// Rework this bad idea.
-    pub tx_offloads: Option<TxOffloadConfig>,
-    // TODO: more reasonable type for [`RxOffload`] here (similar to [`TxOffloadConfig`])
-    pub rx_offloads: Option<RxOffload>,
+    /// The transmit offloads to request. The device enables the intersection of these and what it
+    /// supports; nothing is enabled implicitly. `MBUF_FAST_FREE` is never requested, because it
+    /// would let the driver return shared or indirect mbufs straight to their pool.
+    pub tx_offloads: TxOffloadConfig,
+    /// The receive offloads to request, intersected with what the device supports.
+    pub rx_offloads: RxOffload,
     /// Requested MTU. `None` uses [`DEFAULT_MTU`] clamped to device limits;
     /// an explicit value outside those limits returns [`DevConfigError::MtuOutOfRange`].
     pub mtu: Option<u16>,
@@ -237,12 +241,20 @@ pub struct DevConfig {
     pub rss: Option<RssConf>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 /// Errors that can occur when configuring a DPDK ethernet device.
 pub enum DevConfigError {
-    /// A driver-specific error occurred when configuring the ethernet device.
-    DriverSpecificError(&'static str),
+    /// The driver rejected the configuration.
+    #[error("the driver rejected the configuration: {message} ({code:?})")]
+    DriverSpecificError {
+        /// The error code the driver returned.
+        code: Errno,
+        /// DPDK's description of `code`, copied out of its per-thread buffer.
+        message: String,
+    },
     /// The requested MTU is outside the device's advertised `[min, max]` range.
+    #[error("MTU {requested} is outside the device's range [{min}, {max}]")]
     MtuOutOfRange {
         /// The MTU that was requested.
         requested: u16,
@@ -252,8 +264,10 @@ pub enum DevConfigError {
         max: u16,
     },
     /// RSS hashing was requested but the device advertises no RSS hash functions.
+    #[error("RSS was requested but the device supports no RSS hash functions")]
     RssUnsupported,
     /// The supplied RSS key does not match the device's required length.
+    #[error("the RSS key is {actual} bytes but the device requires {expected}")]
     RssKeyLength {
         /// The supplied key length.
         actual: usize,
@@ -286,7 +300,6 @@ impl DevConfig {
 
     /// Apply the configuration to the device.
     pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
-        const ANY_SUPPORTED: u64 = u64::MAX;
         let mtu = self.resolve_mtu(&dev)?;
         // DPDK retains the key pointer, including across stop/start cycles.
         let mut config = self.clone();
@@ -295,11 +308,10 @@ impl DevConfig {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
                 offloads: {
-                    let requested = self
-                        .tx_offloads
-                        .map_or(TxOffload(ANY_SUPPORTED), TxOffload::from);
+                    let requested = TxOffload::from(self.tx_offloads);
                     let supported = dev.tx_offload_caps();
                     (requested & supported).0
+                        & !u64::from(dpdk_sys::RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
                 },
                 ..Default::default()
             },
@@ -313,11 +325,7 @@ impl DevConfig {
                 },
                 // Used only when TCP LRO is enabled; zero requests the driver default.
                 max_lro_pkt_size: dev.inner.max_lro_pkt_size,
-                offloads: {
-                    let requested = self.rx_offloads.unwrap_or(RxOffload(ANY_SUPPORTED));
-                    let supported = dev.rx_offload_caps();
-                    requested.0 & supported.0
-                },
+                offloads: self.rx_offloads.0 & dev.rx_offload_caps().0,
                 ..Default::default()
             },
             ..Default::default()
@@ -339,13 +347,16 @@ impl DevConfig {
                 code = ret
             );
 
-            // NOTE: it is not clear from the docs if `ret` is going to be a valid errno value.
-            // I am assuming it is for now.
-            // TODO: see if we can determine if `ret` is a valid errno value.
-            let rte_error = unsafe { CStr::from_ptr(rte_strerror(ret)) }
-                .to_str()
-                .unwrap_or("Unknown error");
-            return Err(DevConfigError::DriverSpecificError(rte_error));
+            // `rte_eth_dev_configure` returns a negative errno. `rte_strerror` formats into a
+            // per-thread buffer that the next call overwrites, so copy the message out now.
+            // SAFETY: `rte_strerror` always returns a valid NUL-terminated string.
+            let message = unsafe { CStr::from_ptr(rte_strerror(-ret)) }
+                .to_string_lossy()
+                .into_owned();
+            return Err(DevConfigError::DriverSpecificError {
+                code: Errno::from(-ret),
+                message,
+            });
         }
         Ok(Dev {
             info: dev,
@@ -458,9 +469,32 @@ pub struct TxOffloadConfig {
     pub unknown: u64,
 }
 
-impl Default for TxOffloadConfig {
-    /// Defaults to enabling all known offloads
-    fn default() -> Self {
+impl TxOffloadConfig {
+    /// Request no transmit offloads.
+    #[must_use]
+    pub const fn none() -> Self {
+        TxOffloadConfig {
+            geneve_tnl_tso: false,
+            gre_tnl_tso: false,
+            ipip_tnl_tso: false,
+            ipv4_cksum: false,
+            macsec_insert: false,
+            outer_ipv4_cksum: false,
+            qinq_insert: false,
+            sctp_cksum: false,
+            tcp_cksum: false,
+            tcp_tso: false,
+            udp_cksum: false,
+            udp_tso: false,
+            vlan_insert: false,
+            vxlan_tnl_tso: false,
+            unknown: 0,
+        }
+    }
+
+    /// Request every transmit offload this type can name.
+    #[must_use]
+    pub const fn all() -> Self {
         TxOffloadConfig {
             geneve_tnl_tso: true,
             gre_tnl_tso: true,
@@ -573,7 +607,7 @@ impl From<TxOffload> for TxOffloadConfig {
 }
 
 impl TxOffload {
-    /// Disable TX offloads. `DevConfig::tx_offloads = None` enables all supported offloads.
+    /// No transmit offloads.
     pub const NONE: TxOffload = TxOffload(0);
 
     /// GENEVE tunnel segmentation offload.
@@ -629,7 +663,7 @@ impl TxOffload {
 }
 
 impl RxOffload {
-    /// Disable RX offloads. `DevConfig::rx_offloads = None` enables all supported offloads.
+    /// No receive offloads.
     pub const NONE: RxOffload = RxOffload(0);
 }
 
@@ -829,6 +863,20 @@ impl DevInfo {
         self.inner.rx_offload_capa.into()
     }
 
+    #[tracing::instrument(level = "trace")]
+    /// RX offloads allowed in queue configuration.
+    /// Port-wide capabilities may include offloads that cannot be set per queue.
+    pub fn rx_queue_offload_caps(&self) -> RxOffload {
+        self.inner.rx_queue_offload_capa.into()
+    }
+
+    #[tracing::instrument(level = "trace")]
+    /// TX offloads allowed in queue configuration.
+    /// See [`DevInfo::rx_queue_offload_caps`].
+    pub fn tx_queue_offload_caps(&self) -> TxOffload {
+        self.inner.tx_queue_offload_capa.into()
+    }
+
     /// Whether the device advertises RSS support.
     #[must_use]
     pub fn supports_rss(&self) -> bool {
@@ -899,6 +947,48 @@ impl<S: DevState> Dev<S> {
                 hairpin_queues: core::ptr::read(&this.hairpin_queues),
                 state: PhantomData,
             }
+        }
+    }
+}
+
+impl<S: DevState> Dev<S> {
+    /// The device's primary source MAC address.
+    ///
+    /// Returns an error if the driver fails or reports a zero or multicast address.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn mac_address(&self) -> Result<net::eth::mac::SourceMac, MacAddressError> {
+        let mut addr: rte_ether_addr = unsafe { core::mem::zeroed() };
+        let ret = unsafe { rte_eth_macaddr_get(self.info.index().as_u16(), &raw mut addr) };
+        if ret == 0 {
+            Ok(net::eth::mac::SourceMac::new(net::eth::mac::Mac(
+                addr.addr_bytes,
+            ))?)
+        } else {
+            Err(MacAddressError::Driver(ErrorCode::parse_i32(ret)))
+        }
+    }
+
+    /// Enable or disable promiscuous mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's error, including `ENOTSUP` when unsupported.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn set_promiscuous(&mut self, enable: bool) -> Result<(), ErrorCode> {
+        let port = self.info.index().as_u16();
+        let ret = if enable {
+            unsafe { rte_eth_promiscuous_enable(port) }
+        } else {
+            unsafe { rte_eth_promiscuous_disable(port) }
+        };
+        if ret == 0 {
+            debug!(
+                "Promiscuous mode {state} on port {port}",
+                state = if enable { "enabled" } else { "disabled" }
+            );
+            Ok(())
+        } else {
+            Err(ErrorCode::parse_i32(ret))
         }
     }
 }
