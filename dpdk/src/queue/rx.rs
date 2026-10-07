@@ -60,7 +60,10 @@ pub struct RxQueueConfig<'eal> {
 
 /// Error type for receive queue configuration failures.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConfigFailure {
+    #[error("receive queue {} is already configured on this device", .0.as_u16())]
+    AlreadyConfigured(RxQueueIndex),
     #[error("The device has been removed")]
     DeviceRemoved(Errno),
     #[error("Invalid arguments were passed to the receive queue configuration")]

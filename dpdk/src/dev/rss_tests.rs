@@ -76,9 +76,7 @@ fn rss_key_survives_source_drop_and_device_transitions() {
             config: applied,
         },
         info,
-        rx_queues: Vec::new(),
-        tx_queues: Vec::new(),
-        hairpin_queues: Vec::new(),
+        queues: QueueStore::default(),
         state: PhantomData,
     };
     // Exercise the ownership moves without calling a driver on this synthetic port.
