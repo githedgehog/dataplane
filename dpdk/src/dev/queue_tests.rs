@@ -17,7 +17,7 @@ fn configured(ring: &RingPort) -> Dev<'static> {
         mtu: None,
         rss: None,
     };
-    let owner = OwnerId::new().unwrap();
+    let owner = Box::leak(Box::new(Ownership::new().unwrap()));
     let claim = PortClaim::new(owner, start_eal().dev().info(ring.index).unwrap()).unwrap();
     config.apply(claim).unwrap()
 }

@@ -27,7 +27,7 @@ use errno::{Errno, ErrorCode, StandardErrno};
 use queue::{rx, tx};
 
 mod claim;
-pub(crate) use claim::OwnerId;
+pub(crate) use claim::Ownership;
 pub use claim::{ClaimError, ForeignOwner, PortClaim, PortOwner};
 #[cfg(test)]
 mod queue_tests;
@@ -311,12 +311,13 @@ impl DevConfig {
             Ok(config) => config,
             Err(error) => return Err(DevConfigFailure { error, claim: port }),
         };
-        let dev = port.into_info();
+        let (dev, owner) = port.into_parts();
         Ok(Dev {
             lifecycle: PortLifecycle {
                 port: dev.index(),
                 stage: Stage::Configured,
                 config,
+                owner,
             },
             info: dev,
             queues: Mutex::new(Some(QueueStore::new(
@@ -1029,14 +1030,16 @@ impl Inactive for Stopped {}
 
 /// Stops and closes the port on drop, allowing `Dev` fields to move between states.
 #[derive(Debug)]
-struct PortLifecycle {
+struct PortLifecycle<'eal> {
     port: DevIndex,
     stage: Stage,
     /// Owns the RSS key whose address DPDK retains.
     config: DevConfig,
+    /// Retains failed-close records after DPDK releases the port ID.
+    owner: &'eal Ownership,
 }
 
-impl PortLifecycle {
+impl PortLifecycle<'_> {
     fn leak_rss_key(&mut self) {
         // Failed teardown may leave native references to this allocation.
         if let Some(key) = self.config.rss.as_mut().and_then(|rss| rss.key.take()) {
@@ -1049,6 +1052,8 @@ impl PortLifecycle {
         self.stage = Stage::Closed;
         let ret = unsafe { rte_eth_dev_close(self.port.as_u16()) };
         if ret != 0 {
+            // Preserve the failure after DPDK removes the port from the owner table.
+            self.owner.record_teardown_failure();
             self.leak_rss_key();
             return Err(DevCloseError {
                 port: self.port,
@@ -1060,7 +1065,7 @@ impl PortLifecycle {
     }
 }
 
-impl Drop for PortLifecycle {
+impl Drop for PortLifecycle<'_> {
     /// Stop and close the port, logging errors. Explicit transitions return errors to the caller.
     fn drop(&mut self) {
         if self.stage == Stage::Closed {
@@ -1092,8 +1097,8 @@ impl Drop for PortLifecycle {
 /// [`start`][Dev::<Configured>::start], [`stop`][Dev::<Started>::stop], and [`close`][Dev::close]
 /// transition it to [`Started`], [`Stopped`], and [`Closed`], respectively.
 ///
-/// Dropping a device stops and closes it. Leaking one (`mem::forget`, `Box::leak`) is safe but
-/// wasteful: the port stays open until EAL cleanup.
+/// Dropping a device stops and closes its port.
+/// EAL teardown also attempts to close ports left open by leaked devices before releasing mempools.
 ///
 /// # Thread affinity
 ///
@@ -1114,7 +1119,7 @@ impl Drop for PortLifecycle {
 /// ```
 pub struct Dev<'eal, S: DevState = Configured> {
     /// Owns the configuration and closes the port before releasing it.
-    lifecycle: PortLifecycle,
+    lifecycle: PortLifecycle<'eal>,
     /// Port identity; callers cannot replace it.
     pub(crate) info: DevInfo<'eal>,
     /// Queues owned until handoff, then borrowed from the device.
@@ -1274,9 +1279,9 @@ impl<'eal> Dev<'eal, Configured> {
 impl<'eal, S: Inactive> Dev<'eal, S> {
     /// Close the port and transition to [`Closed`].
     ///
-    /// Consumes the device even on error. DPDK may release the port despite an error,
+    /// Consumes the device even on error. DPDK releases the port despite a driver error,
     /// so retrying could close a different device that reused its ID.
-    /// Any still-owned port is left to EAL teardown; RSS key storage is leaked on error.
+    /// On error, retain the RSS key and mempools because the driver may still reference them.
     ///
     /// ```compile_fail,E0599
     /// # use dataplane_dpdk::dev::{Dev, Started};
@@ -1361,6 +1366,9 @@ pub struct DevStopFailure<'eal> {
 }
 
 /// A close error. The device is consumed and cannot be retried.
+///
+/// DPDK has released the port regardless, and the driver may still reference mbufs, so the EAL
+/// will not free its mempools at teardown.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to close device {port}: {error}")]
 pub struct DevCloseError {
