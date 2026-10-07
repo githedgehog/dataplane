@@ -20,10 +20,8 @@ use std::collections::HashMap;
 use concurrency::sync::Arc;
 use interface_manager::interface::{TapDevice, TapRegistry};
 use lifecycle::{CancellationToken, Subsystem};
-use net::buffer::PacketBufferMut;
 use net::eth::mac::Mac;
 use net::interface::{InterfaceIndex, InterfaceName};
-use net::packet::{DoneReason, Packet};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -110,54 +108,6 @@ impl DatapathEnds {
                  traffic will not flow between them"
             );
         }
-    }
-}
-
-/// Where the datapath should send a packet the pipeline has finished with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Disposition {
-    /// Transmit it on the interface the pipeline chose.
-    Transmit,
-    /// Hand it to the kernel through the tap of the port it arrived on.
-    Punt,
-    /// Free it.
-    Drop,
-}
-
-/// The punt policy: whether to forward, punt, or drop a packet the pipeline completed with this
-/// verdict.
-///
-/// Only `Local` punts. Deciding what the control plane gets to see is the pipeline's job: the
-/// ingress stage marks `Local` what is addressed to us and the datapath does not process
-/// (broadcast frames like ARP requests, LLDP and IPv6 neighbor discovery multicast, and non-IP
-/// frames for our MAC, like ARP replies), and the router marks `Local` the traffic for our own
-/// addresses.
-/// Every other verdict is a decision the datapath already made, and never punts.
-impl From<DoneReason> for Disposition {
-    fn from(done: DoneReason) -> Self {
-        // Only what the pipeline marked `Local` reaches the control plane. Every other verdict,
-        // including any added later, is dropped: that is the safe default.
-        match done {
-            DoneReason::Delivered => Disposition::Transmit,
-            DoneReason::Local => Disposition::Punt,
-            _ => Disposition::Drop,
-        }
-    }
-}
-
-impl Disposition {
-    /// Where to send a packet the pipeline has finished with, according to its verdict.
-    ///
-    /// A packet without a verdict is a pipeline bug rather than a routing outcome: it is dropped,
-    /// which is what the drivers have always done with one.
-    pub(crate) fn of<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Self {
-        packet.get_done().map_or_else(
-            || {
-                error!("Packet returned without a terminal verdict; dropping it (pipeline bug)");
-                Disposition::Drop
-            },
-            Disposition::from,
-        )
     }
 }
 
@@ -473,45 +423,7 @@ async fn dress_one(
 
 #[cfg(test)]
 mod test {
-    use super::Disposition;
-    use net::packet::DoneReason;
-    use net::packet::test_utils::build_test_ipv4_packet;
-    use strum::IntoEnumIterator as _;
-
-    /// The whole punt policy: the pipeline's forwarding verdict is transmitted, `Local` reaches
-    /// the control plane, and every other verdict -- including any added later -- is dropped.
-    ///
-    /// Written out rather than derived from [`Disposition::from`] on purpose: a test that
-    /// recomputed the policy would agree with any policy at all.
-    ///
-    /// Break-tested: making any verdict other than `Local` punt (say, `AclDropped`), or making
-    /// `Local` drop, fails this test.
-    #[test]
-    fn punt_policy_table() {
-        for verdict in DoneReason::iter() {
-            let expected = match verdict {
-                DoneReason::Delivered => Disposition::Transmit,
-                DoneReason::Local => Disposition::Punt,
-                _ => Disposition::Drop,
-            };
-            assert_eq!(
-                Disposition::from(verdict),
-                expected,
-                "wrong disposition for {verdict:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_packet_with_no_verdict_is_dropped() {
-        let packet = build_test_ipv4_packet(64).unwrap();
-        assert_eq!(packet.get_done(), None);
-        assert_eq!(Disposition::of(&packet), Disposition::Drop);
-    }
-
-    // ------------------------------------------------------------------------------------------
     // The bridge itself, against a real kernel.
-    // ------------------------------------------------------------------------------------------
 
     use super::{CpBridge, PortIdentity};
     use caps::Capability;

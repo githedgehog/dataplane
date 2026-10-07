@@ -24,7 +24,8 @@ use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::{DynPipeline, NetworkFunction};
 
-use crate::drivers::cpbridge::{Disposition, Frame};
+use crate::drivers::cpbridge::Frame;
+use crate::drivers::disposition::Disposition;
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
@@ -259,7 +260,7 @@ impl Worker {
                     .process(packets.map(|pkt| *pkt))
                     .collect::<Vec<_>>();
 
-                // What becomes of each packet is [`disposition`]'s decision, the same one the
+                // What becomes of each packet is [`Disposition::of`]'s decision, the same one the
                 // DPDK driver asks. When this interface has a tap standing in for it, the kernel
                 // is on the far side of that tap and has seen nothing: the interface was moved
                 // into the datapath's namespace, so the host stack no longer has it. Anything the

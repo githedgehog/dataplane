@@ -18,7 +18,7 @@ use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
 use super::port::PortQueues;
-use crate::drivers::cpbridge::Disposition;
+use crate::drivers::disposition::Disposition;
 
 #[cfg(all(test, not(feature = "shuttle")))]
 mod tests;
