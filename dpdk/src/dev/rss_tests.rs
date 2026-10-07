@@ -70,8 +70,12 @@ fn rss_key_survives_source_drop_and_device_transitions() {
     );
     drop(source);
     let dev: Dev = Dev {
+        lifecycle: PortLifecycle {
+            port: info.index(),
+            stage: Stage::Configured,
+            config: applied,
+        },
         info,
-        config: applied,
         rx_queues: Vec::new(),
         tx_queues: Vec::new(),
         hairpin_queues: Vec::new(),
@@ -94,6 +98,9 @@ fn rss_key_survives_source_drop_and_device_transitions() {
         unsafe { core::slice::from_raw_parts(rss.rss_key, 52) },
         &[42; 52]
     );
+    // The port is synthetic, so there is no driver to stop or close it on drop.
+    let mut dev = dev;
+    dev.lifecycle.stage = Stage::Closed;
 }
 
 #[test]
