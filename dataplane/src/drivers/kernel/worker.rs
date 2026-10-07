@@ -273,6 +273,7 @@ impl Worker {
                 // always been.
                 let mut ppline_drops: u64 = 0;
                 let mut punted: u64 = 0;
+                let mut punt_drops: u64 = 0;
                 for out_pkt in out_pkts {
                     match Disposition::of(&out_pkt) {
                         Disposition::Transmit => {
@@ -289,7 +290,7 @@ impl Worker {
                                 if punt_packet(id, &intf.if_name, punt, out_pkt) {
                                     punted += 1;
                                 } else {
-                                    ppline_drops += 1;
+                                    punt_drops += 1;
                                 }
                             }
                         }
@@ -314,6 +315,7 @@ impl Worker {
                 counters.ppline_drops = ppline_drops;
                 counters.tx = tx_pkts;
                 counters.tx_drops = tx_drops;
+                counters.punt_drops = punt_drops;
                 intf.watchdog.record(&counters);
             }
         });
@@ -643,8 +645,8 @@ async fn read_packets_from_interface(
 
 /// Hand a frame to the kernel through the tap standing in for the interface it arrived on.
 ///
-/// Returns whether it was handed over. A `false` here is counted as a pipeline drop, because that
-/// is what it is: the packet was not transmitted and the kernel did not get it either.
+/// Returns whether it was handed over. A `false` here is counted as a punt drop: the packet was
+/// meant for the kernel, and the kernel did not get it.
 ///
 /// The frame is copied. It has to be: the far end of this channel is a task on the management
 /// runtime, and the packet's buffer belongs to this worker. `serialize` first, so what the kernel

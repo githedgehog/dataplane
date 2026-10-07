@@ -246,14 +246,15 @@ impl<'p> Worker<'p> {
         counters: &mut RxCounters,
     ) {
         // No bridge means no tap to punt to, which is every configuration that did not ask for one.
-        // The packet is dropped exactly as it was before this path existed.
+        // DPDK owns the port, so the kernel never sees this frame: count it as a punt drop.
         let Some(punt) = punt else {
+            counters.punt_drops += 1;
             return;
         };
         let mbuf = match packet.serialize() {
             Ok(mbuf) => mbuf,
             Err(e) => {
-                counters.tx_drops += 1;
+                counters.punt_drops += 1;
                 trace!(
                     worker = id,
                     "failed to serialize a frame to punt on {port}: {e:?}"
@@ -265,7 +266,7 @@ impl<'p> Worker<'p> {
         // may wait for. A full queue means the tap's pump is not keeping up, which is a control
         // plane problem and not a reason to stop forwarding.
         if punt.try_send(mbuf.raw_data().to_vec()).is_err() {
-            counters.tx_drops += 1;
+            counters.punt_drops += 1;
             trace!(
                 worker = id,
                 "punt queue for {port} is full; dropping a frame for the kernel"
