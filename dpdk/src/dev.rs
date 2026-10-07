@@ -10,7 +10,6 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
 use core::marker::PhantomData;
-use core::mem::ManuallyDrop;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use tracing::{debug, error, info};
 
@@ -301,11 +300,28 @@ impl DevConfig {
     }
 
     /// Apply the configuration to the device.
-    pub fn apply<'eal>(&self, dev: DevInfo) -> Result<Dev<'eal>, DevConfigError> {
-        let mtu = self.resolve_mtu(&dev)?;
-        // DPDK retains the key pointer, including across stop/start cycles.
+    pub fn apply<'eal>(&self, dev: DevInfo) -> Result<Dev<'eal, Configured>, DevConfigError> {
+        let config = self.configure(&dev)?;
+        Ok(Dev {
+            lifecycle: PortLifecycle {
+                port: dev.index(),
+                stage: Stage::Configured,
+                config,
+            },
+            info: dev,
+            rx_queues: Vec::with_capacity(self.num_rx_queues as usize),
+            tx_queues: Vec::with_capacity(self.num_tx_queues as usize),
+            hairpin_queues: Vec::with_capacity(self.num_hairpin_queues as usize),
+            state: PhantomData,
+        })
+    }
+
+    /// Configure the port and return the configuration it must retain.
+    /// DPDK keeps a pointer to this copy's RSS key until the port closes.
+    fn configure(&self, dev: &DevInfo) -> Result<DevConfig, DevConfigError> {
+        let mtu = self.resolve_mtu(dev)?;
         let mut config = self.clone();
-        let rss_conf = config.prepare_rss(&dev)?;
+        let rss_conf = config.prepare_rss(dev)?;
         let mut eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
@@ -360,14 +376,7 @@ impl DevConfig {
                 message,
             });
         }
-        Ok(Dev {
-            info: dev,
-            config,
-            rx_queues: Vec::with_capacity(self.num_rx_queues as usize),
-            tx_queues: Vec::with_capacity(self.num_tx_queues as usize),
-            hairpin_queues: Vec::with_capacity(self.num_hairpin_queues as usize),
-            state: PhantomData,
-        })
+        Ok(config)
     }
 
     // The returned key pointer borrows this config; keep it alive and unchanged while in use.
@@ -886,20 +895,42 @@ impl DevInfo {
     }
 }
 
-/// Sealed device states: [`Configured`] and [`Started`].
-pub trait DevState: dev_state::Sealed {
-    /// Whether Drop must stop the device.
-    const RUNNING: bool;
+/// Runtime device state used by the port teardown guard.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Stage {
+    /// Configured and never started. Queues may be set up.
+    Configured,
+    /// Running. Packets flow; the queue set is fixed.
+    Started,
+    /// Stopped; queries and close are allowed, but restart is not.
+    Stopped,
+    /// Closed; no further port operations are allowed.
+    Closed,
 }
+
+/// Sealed device states: [`Configured`], [`Started`], [`Stopped`], and [`Closed`].
+pub trait DevState: dev_state::Sealed + Debug {
+    /// The runtime state used to select the required teardown operations.
+    const STAGE: Stage;
+}
+
+/// States with an open port: [`Configured`], [`Started`], and [`Stopped`].
+pub trait Open: DevState {}
+
+/// States that can be closed: [`Configured`] and [`Stopped`].
+pub trait Inactive: Open {}
 
 mod dev_state {
     /// Restricts [`super::DevState`] to this module's states.
     pub trait Sealed {}
     impl Sealed for super::Configured {}
     impl Sealed for super::Started {}
+    impl Sealed for super::Stopped {}
+    impl Sealed for super::Closed {}
 }
 
-/// A stopped, configured device whose queues can be set up.
+/// A configured device whose queues can be set up before start.
 #[derive(Debug)]
 pub struct Configured;
 
@@ -907,23 +938,132 @@ pub struct Configured;
 #[derive(Debug)]
 pub struct Started;
 
+/// A stopped device. Queries and close are supported; restart and queue setup are not.
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::dev::{Dev, Stopped};
+/// fn restart(dev: Dev<Stopped>) { let _ = dev.start(); }
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::dev::{Dev, Stopped};
+/// # use dataplane_dpdk::queue::tx::TxQueueConfig;
+/// fn add_queue(mut dev: Dev<Stopped>, config: TxQueueConfig) { let _ = dev.new_tx_queue(config); }
+/// ```
+#[derive(Debug)]
+pub struct Stopped;
+
+/// A closed device whose port resources have been released. No port operations remain.
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::dev::{Dev, Closed};
+/// fn restart(dev: Dev<Closed>) { let _ = dev.start(); }
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::dev::{Dev, Closed};
+/// fn stop_again(dev: Dev<Closed>) { let _ = dev.stop(); }
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::dev::{Dev, Closed};
+/// fn query(dev: Dev<Closed>) { let _ = dev.mac_address(); }
+/// ```
+#[derive(Debug)]
+pub struct Closed;
+
 impl DevState for Configured {
-    const RUNNING: bool = false;
+    const STAGE: Stage = Stage::Configured;
 }
 impl DevState for Started {
-    const RUNNING: bool = true;
+    const STAGE: Stage = Stage::Started;
+}
+impl DevState for Stopped {
+    const STAGE: Stage = Stage::Stopped;
+}
+impl DevState for Closed {
+    const STAGE: Stage = Stage::Closed;
+}
+
+impl Open for Configured {}
+impl Open for Started {}
+impl Open for Stopped {}
+
+impl Inactive for Configured {}
+impl Inactive for Stopped {}
+
+/// Stops and closes the port on drop, allowing `Dev` fields to move between states.
+#[derive(Debug)]
+struct PortLifecycle {
+    port: DevIndex,
+    stage: Stage,
+    /// Owns the RSS key whose address DPDK retains.
+    config: DevConfig,
+}
+
+impl PortLifecycle {
+    fn leak_rss_key(&mut self) {
+        // Failed teardown may leave native references to this allocation.
+        if let Some(key) = self.config.rss.as_mut().and_then(|rss| rss.key.take()) {
+            core::mem::forget(key);
+        }
+    }
+
+    fn close(&mut self) -> Result<(), DevCloseError> {
+        // Disarm the guard: even a failed close may release the port ID.
+        self.stage = Stage::Closed;
+        let ret = unsafe { rte_eth_dev_close(self.port.as_u16()) };
+        if ret != 0 {
+            self.leak_rss_key();
+            return Err(DevCloseError {
+                port: self.port,
+                error: ErrorCode::parse_i32(ret),
+            });
+        }
+        info!("Device {port} closed", port = self.port);
+        Ok(())
+    }
+}
+
+impl Drop for PortLifecycle {
+    /// Stop and close the port, logging errors. Explicit transitions return errors to the caller.
+    fn drop(&mut self) {
+        if self.stage == Stage::Closed {
+            return;
+        }
+        if self.stage == Stage::Started {
+            info!("Stopping DPDK ethernet device {port}", port = self.port);
+            let ret = unsafe { rte_eth_dev_stop(self.port.as_u16()) };
+            if ret != 0 {
+                self.leak_rss_key();
+                error!(
+                    "Failed to stop device {port} on drop, error code: {ret}",
+                    port = self.port,
+                );
+                // DPDK requires the port to stop successfully before close.
+                return;
+            }
+        }
+        if let Err(error) = self.close() {
+            error!(%error, "Device teardown failed");
+        }
+    }
 }
 
 #[derive(Debug)]
 /// A DPDK Ethernet device with a lifecycle [`DevState`].
 ///
-/// [`DevConfig::apply`] produces a [`Configured`] device. [`start`](Dev::<Configured>::start)
-/// moves it to [`Started`]; [`stop`](Dev::<Started>::stop) moves it back.
+/// [`DevConfig::apply`] creates a [`Configured`] device.
+/// [`start`][Dev::<Configured>::start], [`stop`][Dev::<Started>::stop], and [`close`][Dev::close]
+/// transition it to [`Started`], [`Stopped`], and [`Closed`], respectively.
+///
+/// Dropping a device stops and closes it. Leaking one (`mem::forget`, `Box::leak`) is safe but
+/// wasteful: the port stays open until EAL cleanup.
 pub struct Dev<'eal, S: DevState = Configured> {
+    /// Owns the configuration and closes the port before releasing it.
+    lifecycle: PortLifecycle,
     /// The device info
     pub info: DevInfo,
-    // Owns the RSS key whose address DPDK retains.
-    config: DevConfig,
     pub(crate) rx_queues: Vec<RxQueue<'eal>>,
     pub(crate) tx_queues: Vec<TxQueue>,
     pub(crate) hairpin_queues: Vec<HairpinQueue<'eal>>,
@@ -932,28 +1072,26 @@ pub struct Dev<'eal, S: DevState = Configured> {
 
 impl<'eal, S: DevState> Dev<'eal, S> {
     /// The applied configuration. Its RSS key stays owned by this device.
+    #[must_use]
     pub fn config(&self) -> &DevConfig {
-        &self.config
+        &self.lifecycle.config
     }
 
-    /// Move device state without running Drop on the source.
-    fn transition<T: DevState>(self) -> Dev<'eal, T> {
-        let this = ManuallyDrop::new(self);
-        // SAFETY: ManuallyDrop prevents teardown; each field is moved exactly once.
-        unsafe {
-            Dev {
-                info: core::ptr::read(&this.info),
-                config: core::ptr::read(&this.config),
-                rx_queues: core::ptr::read(&this.rx_queues),
-                tx_queues: core::ptr::read(&this.tx_queues),
-                hairpin_queues: core::ptr::read(&this.hairpin_queues),
-                state: PhantomData,
-            }
+    /// Move device fields and update the teardown guard to the new state.
+    fn transition<T: DevState>(mut self) -> Dev<'eal, T> {
+        self.lifecycle.stage = T::STAGE;
+        Dev {
+            lifecycle: self.lifecycle,
+            info: self.info,
+            rx_queues: self.rx_queues,
+            tx_queues: self.tx_queues,
+            hairpin_queues: self.hairpin_queues,
+            state: PhantomData,
         }
     }
 }
 
-impl<'eal, S: DevState> Dev<'eal, S> {
+impl<'eal, S: Open> Dev<'eal, S> {
     /// The device's primary source MAC address.
     ///
     /// Returns an error if the driver fails or reports a zero or multicast address.
@@ -1049,6 +1187,23 @@ impl<'eal> Dev<'eal, Configured> {
     }
 }
 
+impl<'eal, S: Inactive> Dev<'eal, S> {
+    /// Close the port and transition to [`Closed`].
+    ///
+    /// Consumes the device even on error. DPDK may release the port despite an error,
+    /// so retrying could close a different device that reused its ID.
+    /// Any still-owned port is left to EAL teardown; RSS key storage is leaked on error.
+    ///
+    /// ```compile_fail,E0599
+    /// # use dataplane_dpdk::dev::{Dev, Started};
+    /// fn close_running(dev: Dev<Started>) { let _ = dev.close(); }
+    /// ```
+    pub fn close(mut self) -> Result<Dev<'eal, Closed>, DevCloseError> {
+        self.lifecycle.close()?;
+        Ok(self.transition())
+    }
+}
+
 impl<'eal> Dev<'eal, Started> {
     /// Stop the device.
     ///
@@ -1056,7 +1211,7 @@ impl<'eal> Dev<'eal, Started> {
     ///
     /// Returns [`DevStopFailure`] with the still-running device.
     #[allow(clippy::result_large_err)] // Preserve device ownership on failure.
-    pub fn stop(self) -> Result<Dev<'eal, Configured>, DevStopFailure<'eal>> {
+    pub fn stop(self) -> Result<Dev<'eal, Stopped>, DevStopFailure<'eal>> {
         let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
         if ret != 0 {
             error!(
@@ -1111,24 +1266,15 @@ pub struct DevStopFailure<'eal> {
     pub dev: Dev<'eal, Started>,
 }
 
-impl<S: DevState> Drop for Dev<'_, S> {
-    /// Stop the device if it is running.
-    fn drop(&mut self) {
-        if !S::RUNNING {
-            return;
-        }
-        info!(
-            "Closing DPDK ethernet device {port}",
-            port = self.info.index()
-        );
-        let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
-        if ret != 0 {
-            error!(
-                "Failed to stop device {port} on drop, error code: {ret}",
-                port = self.info.index(),
-            );
-        }
-    }
+/// A close error. The device is consumed and cannot be retried.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to close device {port}: {error}")]
+pub struct DevCloseError {
+    /// The port ID at the time of the close attempt; it may since have been reused.
+    pub port: DevIndex,
+    /// The error that caused the close to fail.
+    #[source]
+    pub error: ErrorCode,
 }
 
 #[derive(Debug, thiserror::Error)]
