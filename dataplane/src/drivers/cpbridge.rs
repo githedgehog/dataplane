@@ -366,31 +366,16 @@ async fn dress_one(
         .ok_or(rtnetlink::Error::RequestFailed)?;
     let index = link.header.index;
 
-    // The address has to be set while the link is down; the MTU and the admin state then follow.
+    // set MAC and MTU, and bring up
     netlink
         .link()
         .set(
             LinkUnspec::new_with_index(index)
-                .down()
                 .address(identity.mac.0.to_vec())
-                .build(),
-        )
-        .execute()
-        .await?;
-
-    netlink
-        .link()
-        .set(
-            LinkUnspec::new_with_index(index)
                 .mtu(u32::from(identity.mtu))
+                .up()
                 .build(),
         )
-        .execute()
-        .await?;
-
-    netlink
-        .link()
-        .set(LinkUnspec::new_with_index(index).up().build())
         .execute()
         .await
 }
@@ -602,6 +587,130 @@ mod test {
 
             // The taps go with the bridge, which is what keeps a dead dataplane from stranding a
             // device on a name the real interface will want back.
+            drop(bridge);
+        });
+    }
+
+    /// A tap that gets its port's identity neither loses any of its addresses nor changes its
+    /// admin or operational state, even when it is already up and addressed, as zebra leaves it
+    /// when FRR is configured before the port is reported.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
+    fn taking_a_port_identity_keeps_the_tap_addresses_and_state() {
+        use rtnetlink::LinkUnspec;
+        use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags, LinkMessage, State};
+        use std::net::Ipv6Addr;
+
+        const PORT_NAME: &str = "dp0";
+        const PORT_MAC: Mac = Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        const MTU: u16 = 1400;
+        const OURS_V4: Ipv4Addr = Ipv4Addr::new(10, 99, 0, 1);
+        const OURS_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+
+        in_private_netns(|| async {
+            let handle = tokio::runtime::Handle::current();
+            let shutdown = Shutdown::new();
+            let name = InterfaceName::try_from(PORT_NAME).unwrap();
+            let (bridge, ends) =
+                CpBridge::create(&handle, &shutdown.mgmt, std::iter::once(name.clone()))
+                    .unwrap_or_else(|e| panic!("could not build the control-plane bridge: {e}"));
+            let index = bridge
+                .taps()
+                .get(&name)
+                .unwrap_or_else(|| panic!("the bridge holds no tap named {PORT_NAME}"))
+                .index()
+                .to_u32();
+
+            let (connection, netlink, _) = rtnetlink::new_connection().unwrap();
+            tokio::spawn(connection);
+
+            let get_link = async || -> LinkMessage {
+                netlink
+                    .link()
+                    .get()
+                    .match_index(index)
+                    .execute()
+                    .try_next()
+                    .await
+                    .unwrap_or_else(|e| panic!("could not look {PORT_NAME} up: {e}"))
+                    .unwrap_or_else(|| panic!("{PORT_NAME} is gone"))
+            };
+            // Admin state, and the operational state the kernel reports.
+            let states = |link: &LinkMessage| -> (bool, Option<State>) {
+                let admin_up = link.header.flags.contains(LinkFlags::Up);
+                let oper = link.attributes.iter().find_map(|attr| match attr {
+                    LinkAttribute::OperState(state) => Some(*state),
+                    _ => None,
+                });
+                (admin_up, oper)
+            };
+
+            // What zebra does before the port is reported: bring the tap up and address it.
+            netlink
+                .link()
+                .set(LinkUnspec::new_with_index(index).up().build())
+                .execute()
+                .await
+                .unwrap_or_else(|e| panic!("could not bring {PORT_NAME} up: {e}"));
+            for (address, len) in [(IpAddr::V4(OURS_V4), 24), (IpAddr::V6(OURS_V6), 64)] {
+                netlink
+                    .address()
+                    .add(index, address, len)
+                    .execute()
+                    .await
+                    .unwrap_or_else(|e| panic!("could not give {PORT_NAME} {address}: {e}"));
+            }
+
+            let before = states(&get_link().await);
+            assert!(
+                before.0,
+                "{PORT_NAME} should be administratively up before it is dressed"
+            );
+
+            ends.report(PortIdentity {
+                name: PORT_NAME.to_string(),
+                mac: PORT_MAC,
+                mtu: MTU,
+            });
+
+            // Applying the identity is asynchronous: wait for the MAC to change.
+            let mut dressed = None;
+            for _ in 0..50 {
+                let link = get_link().await;
+                if link.attributes.iter().any(
+                    |attr| matches!(attr, LinkAttribute::Address(mac) if mac[..] == PORT_MAC.0),
+                ) {
+                    dressed = Some(link);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let dressed =
+                dressed.unwrap_or_else(|| panic!("{PORT_NAME} never took its port's MAC"));
+
+            assert_eq!(
+                states(&dressed),
+                before,
+                "taking its port's identity changed the (admin, oper) state of {PORT_NAME}"
+            );
+
+            for address in [IpAddr::V4(OURS_V4), IpAddr::V6(OURS_V6)] {
+                let kept = netlink
+                    .address()
+                    .get()
+                    .set_link_index_filter(index)
+                    .set_address_filter(address)
+                    .execute()
+                    .try_next()
+                    .await
+                    .unwrap_or_else(|e| panic!("could not list the addresses of {PORT_NAME}: {e}"));
+                assert!(
+                    kept.is_some(),
+                    "{PORT_NAME} lost {address} when it took its port's identity; nothing would \
+                     put it back, and the control plane would not be reachable on it"
+                );
+            }
+
             drop(bridge);
         });
     }
