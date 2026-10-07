@@ -17,9 +17,9 @@ fn configured(ring: &RingPort) -> Dev<'static> {
         mtu: None,
         rss: None,
     };
-    config
-        .apply(start_eal().dev().info(ring.index).unwrap())
-        .unwrap()
+    let owner = OwnerId::new().unwrap();
+    let claim = PortClaim::new(owner, start_eal().dev().info(ring.index).unwrap()).unwrap();
+    config.apply(claim).unwrap()
 }
 
 fn rx_config(ring: &RingPort) -> RxQueueConfig<'static> {

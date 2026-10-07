@@ -26,8 +26,9 @@ use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
 use queue::{rx, tx};
 
-#[cfg(test)]
-mod iter_tests;
+mod claim;
+pub(crate) use claim::OwnerId;
+pub use claim::{ClaimError, ForeignOwner, PortClaim, PortOwner};
 #[cfg(test)]
 mod queue_tests;
 #[cfg(test)]
@@ -297,9 +298,20 @@ impl DevConfig {
         }
     }
 
-    /// Configure the device's port. The returned device inherits the info's EAL lifetime.
-    pub fn apply<'eal>(&self, dev: DevInfo<'eal>) -> Result<Dev<'eal, Configured>, DevConfigError> {
-        let config = self.configure(&dev)?;
+    /// Configure a claimed port, preserving its EAL lifetime.
+    ///
+    /// Returns [`DevConfigFailure`] with the claim if configuration fails.
+    // The error hands the claim back; this large result is used only during setup.
+    #[allow(clippy::result_large_err)]
+    pub fn apply<'eal>(
+        &self,
+        port: PortClaim<'eal>,
+    ) -> Result<Dev<'eal, Configured>, DevConfigFailure<'eal>> {
+        let config = match self.configure(port.info()) {
+            Ok(config) => config,
+            Err(error) => return Err(DevConfigFailure { error, claim: port }),
+        };
+        let dev = port.into_info();
         Ok(Dev {
             lifecycle: PortLifecycle {
                 port: dev.index(),
@@ -312,6 +324,7 @@ impl DevConfig {
                 self.num_tx_queues + self.num_hairpin_queues,
             ))),
             state: PhantomData,
+            _thread: PhantomData,
         })
     }
 
@@ -403,6 +416,17 @@ impl DevConfig {
         }
         Ok(conf)
     }
+}
+
+/// A configuration error and the retained port claim, allowing a retry.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to configure port {}: {error}", self.claim.info().index())]
+pub struct DevConfigFailure<'eal> {
+    /// The configuration error.
+    #[source]
+    pub error: DevConfigError,
+    /// The claim retained after configuration failed.
+    pub claim: PortClaim<'eal>,
 }
 
 #[repr(transparent)]
@@ -1070,6 +1094,24 @@ impl Drop for PortLifecycle {
 ///
 /// Dropping a device stops and closes it. Leaking one (`mem::forget`, `Box::leak`) is safe but
 /// wasteful: the port stays open until EAL cleanup.
+///
+/// # Thread affinity
+///
+/// A device is `!Send` but `Sync`: configuration and teardown stay on the [`Eal`] thread.
+/// This serializes close with port queries, which read driver state without locking.
+/// Other threads can borrow the device to query it or take its queues; the borrow prevents close.
+///
+/// ```compile_fail,E0277
+/// # use dataplane_dpdk::dev::{Dev, Started};
+/// fn assert_send<T: Send>() {}
+/// assert_send::<Dev<'static, Started>>();
+/// ```
+///
+/// ```
+/// # use dataplane_dpdk::dev::{Dev, Started};
+/// fn assert_sync<T: Sync>() {}
+/// assert_sync::<Dev<'static, Started>>();
+/// ```
 pub struct Dev<'eal, S: DevState = Configured> {
     /// Owns the configuration and closes the port before releasing it.
     lifecycle: PortLifecycle,
@@ -1079,7 +1121,16 @@ pub struct Dev<'eal, S: DevState = Configured> {
     /// The mutex permits sharing Dev while transferring each queue exactly once.
     queues: Mutex<Option<QueueStore<'eal>>>,
     state: PhantomData<S>,
+    /// Keeps the device on the EAL thread; see "Thread affinity".
+    _thread: PhantomData<EalThreadBound>,
 }
+
+/// Keeps a value on the EAL thread while allowing shared references (`!Send + Sync`).
+#[derive(Debug)]
+struct EalThreadBound(PhantomData<*const ()>);
+
+// SAFETY: the marker holds no data, so sharing a reference to it shares nothing.
+unsafe impl Sync for EalThreadBound {}
 
 impl<'eal, S: DevState> Dev<'eal, S> {
     /// Information about the underlying port.
@@ -1102,6 +1153,7 @@ impl<'eal, S: DevState> Dev<'eal, S> {
             info: self.info,
             queues: self.queues,
             state: PhantomData,
+            _thread: PhantomData,
         }
     }
 }
@@ -1200,7 +1252,7 @@ impl<'eal> Dev<'eal, Configured> {
     ///
     /// # Errors
     ///
-    /// Returns [`DevStartFailure`] with the configured device for retry or disposal.
+    /// Returns [`DevStartFailure`] with the still-configured device for retry or disposal.
     #[allow(clippy::result_large_err)] // Preserve device ownership on failure.
     pub fn start(self) -> Result<Dev<'eal, Started>, DevStartFailure<'eal>> {
         let ret = unsafe { rte_eth_dev_start(self.info.index().as_u16()) };
