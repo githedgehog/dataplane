@@ -7,6 +7,7 @@ use crate::dev::DevIndex;
 use crate::mem::{MBUF_BURST, MbufArray};
 use crate::socket::SocketId;
 use crate::{dev, socket};
+use core::marker::PhantomData;
 use core::ptr::null_mut;
 use errno::ErrorCode;
 use std::cmp::min;
@@ -61,6 +62,14 @@ pub struct TxQueueConfig {
 pub enum ConfigFailure {
     #[error("transmit queue {} is already configured on this device", .0.as_u16())]
     AlreadyConfigured(TxQueueIndex),
+    #[error(
+        "transmit queue {} is beyond the {configured} the device was configured with",
+        .index.as_u16()
+    )]
+    OutOfRange {
+        index: TxQueueIndex,
+        configured: u16,
+    },
     #[error("Memory allocation failed: {0}")]
     NoMemory(ErrorCode),
     #[error("An unexpected error occurred {0}")]
@@ -69,15 +78,8 @@ pub enum ConfigFailure {
     InvalidSocket(ErrorCode),
 }
 
-impl TxQueue {
-    /// Configure a new [`TxQueueStopped`].
-    ///
-    /// This method is crate internal.
-    /// The library end user should call this by way of the
-    /// [`Dev::configure_tx_queue`] method.
-    ///
-    /// This design ensures that the hairpin queue is correctly tracked in the list of queues
-    /// associated with the device.
+impl<'dev> TxQueue<'dev> {
+    /// Configure a transmit queue, tracked by its device.
     pub(crate) fn setup(dev: &dev::Dev, config: TxQueueConfig) -> Result<Self, ConfigFailure> {
         let socket_id: SocketId = config
             .socket_preference
@@ -120,6 +122,7 @@ impl TxQueue {
             errno::SUCCESS => Ok(TxQueue {
                 dev: dev.info.index(),
                 config,
+                _dev: PhantomData,
             }),
             errno::NEG_ENOMEM => Err(ConfigFailure::NoMemory(ErrorCode::parse(ret))),
             _ => Err(ConfigFailure::Unexpected(ErrorCode::parse(ret))),
@@ -167,7 +170,7 @@ impl TxQueue {
     /// The PMD owns accepted packets. Stop when the queue makes no progress.
     #[must_use = "retry or drop the unsent packets"]
     #[tracing::instrument(level = "trace", skip(packets))]
-    pub fn transmit<'eal>(&self, packets: MbufArray<'eal>) -> MbufArray<'eal> {
+    pub fn transmit(&mut self, packets: MbufArray<'dev>) -> MbufArray<'dev> {
         let len = packets.len();
         if len == 0 {
             return MbufArray::new_empty();
@@ -208,11 +211,13 @@ impl TxQueue {
     }
 }
 
-/// TODO
+/// An exclusive transmit queue handle borrowed from a started device.
+/// Transmission requires mutable access; the handle cannot be used after the device stops.
 #[derive(Debug)]
-pub struct TxQueue {
+pub struct TxQueue<'dev> {
     pub(crate) config: TxQueueConfig,
     pub(crate) dev: DevIndex,
+    pub(crate) _dev: PhantomData<&'dev ()>,
 }
 
 /// TODO

@@ -76,7 +76,7 @@ fn rss_key_survives_source_drop_and_device_transitions() {
             config: applied,
         },
         info,
-        queues: QueueStore::default(),
+        queues: Mutex::new(Some(QueueStore::new(0, 0))),
         state: PhantomData,
     };
     // Exercise the ownership moves without calling a driver on this synthetic port.

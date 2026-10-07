@@ -4,18 +4,35 @@
 //! Hairpin queue configuration and management.
 use super::{rx, tx};
 use crate::dev::{Dev, DevInfo};
-use crate::queue::rx::RxQueue;
+use crate::queue::rx::{RxQueue, RxQueueIndex};
 use crate::queue::tx::TxQueue;
 use errno::ErrorCode;
 use tracing::debug;
 
 /// A stopped DPDK hairpin queue.
+///
+/// Owns the receive and transmit halves, both borrowed from the device.
 #[allow(unused)]
 #[derive(Debug)]
-pub struct HairpinQueue<'eal> {
-    pub(crate) rx: RxQueue<'eal>,
-    pub(crate) tx: TxQueue,
+pub struct HairpinQueue<'dev> {
+    pub(crate) rx: RxQueue<'dev>,
+    pub(crate) tx: TxQueue<'dev>,
     pub(crate) peering: HairpinPeering,
+}
+
+/// A hairpin queue's ID, using its exclusive receive queue index.
+///
+/// Returned by [`Dev::new_hairpin_queue`](crate::dev::Dev::new_hairpin_queue) and taken by
+/// [`Queues::take_hairpin`](crate::queue::Queues::take_hairpin).
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HairpinQueueId(RxQueueIndex);
+
+impl HairpinQueueId {
+    /// The receive queue index the hairpin queue occupies.
+    #[must_use]
+    pub fn rx(self) -> RxQueueIndex {
+        self.0
+    }
 }
 
 #[derive(Debug)]
@@ -50,20 +67,19 @@ pub enum HairpinConfigFailure {
     CreationFailed(ErrorCode),
 }
 
-impl<'eal> HairpinQueue<'eal> {
-    /// Create and configure a new hairpin queue.
-    ///
-    /// This method is crate internal.
-    /// The library end user should call this by way of the
-    /// [`dev::Dev::configure_hairpin_queue`] method.
-    ///
-    /// This design ensures that the hairpin queue is correctly tracked in the list of queues
-    /// associated with the device.
+impl<'dev> HairpinQueue<'dev> {
+    /// This queue's ID on its device.
+    #[must_use]
+    pub fn id(&self) -> HairpinQueueId {
+        HairpinQueueId(self.rx.config.queue_index)
+    }
+
+    /// Configure the paired hairpin queues, tracked by their device.
     #[tracing::instrument(level = "info", ret)]
     pub(crate) fn new(
         dev: &Dev,
-        rx: RxQueue<'eal>,
-        tx: TxQueue,
+        rx: RxQueue<'dev>,
+        tx: TxQueue<'dev>,
     ) -> Result<Self, HairpinConfigFailure> {
         let peering = HairpinPeering::define(&dev.info, &rx, &tx);
         // configure the rx queue
