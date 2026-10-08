@@ -59,8 +59,10 @@ impl SupportedVendor {
 )]
 #[strum(serialize_all = "snake_case")]
 pub enum SupportedDevice {
-    #[strum(props(description = "82574L Gigabit Network Connection"))]
+    #[strum(props(description = "82540EM Gigabit Ethernet Controller"))]
     IntelE1000,
+    #[strum(props(description = "82574L Gigabit Network Connection"))]
+    IntelE1000E,
     #[strum(props(description = "Ethernet Controller X710"))]
     IntelX710,
     #[strum(props(description = "Ethernet Virtual Function 700 Series"))]
@@ -106,6 +108,7 @@ impl From<SupportedDevice> for DpdkDriverType {
     fn from(value: SupportedDevice) -> Self {
         match value {
             SupportedDevice::IntelE1000
+            | SupportedDevice::IntelE1000E
             | SupportedDevice::IntelX710
             | SupportedDevice::IntelX710VirtualFunction
             | SupportedDevice::VirtioNet => DpdkDriverType::VfioPci,
@@ -126,7 +129,7 @@ impl SupportedDevice {
         #[allow(clippy::enum_glob_use)]
         use SupportedVendor::*;
         match self {
-            IntelX710 | IntelX710VirtualFunction | IntelE1000 => Intel,
+            IntelX710 | IntelX710VirtualFunction | IntelE1000 | IntelE1000E => Intel,
             MellanoxConnectX6DX | MellanoxConnectX7 | MellanoxConnectX8 | MellanoxBlueField2
             | MellanoxBlueField3 => Mellanox,
             VirtioNet => RedHat,
@@ -145,14 +148,31 @@ impl SupportedDevice {
         match self {
             IntelE1000 => {
                 const DEVICES: [DeviceId; 1] = [
-                    // TODO: this is somewhat confusing as this card seems to have many sub-models
-                    // 82574L Gigabit Network Connection
+                    // 82540EM Gigabit Ethernet Controller (QEMU's `e1000`)
+                    DeviceId::new(0x100e),
+                ];
+                DEVICES.as_slice()
+            }
+            IntelE1000E => {
+                const DEVICES: [DeviceId; 1] = [
+                    // 82574L Gigabit Network Connection (QEMU's `e1000e`)
                     DeviceId::new(0x10d3),
                 ];
                 DEVICES.as_slice()
             }
             IntelX710 => {
-                const DEVICES: [DeviceId; 1] = [
+                // 10 GbE X710 variants from pci.ids.
+                const DEVICES: [DeviceId; 6] = [
+                    // Ethernet Controller X710 for 10GbE SFP+
+                    DeviceId::new(0x1572),
+                    // Ethernet Controller X710 for 10GbE backplane
+                    DeviceId::new(0x1581),
+                    // Ethernet Controller X710 for 10GbE QSFP+
+                    DeviceId::new(0x1585),
+                    // Ethernet Controller X710 for 10GBASE-T
+                    DeviceId::new(0x1586),
+                    // Ethernet Controller X710/X557-AT 10GBASE-T
+                    DeviceId::new(0x1589),
                     // Ethernet Controller X710 for 10GBASE-T
                     DeviceId::new(0x15ff),
                 ];
@@ -250,6 +270,9 @@ impl TryFrom<(VendorId, DeviceId)> for SupportedDevice {
                     device if SupportedDevice::IntelE1000.device_ids().contains(&device) => {
                         SupportedDevice::IntelE1000
                     }
+                    device if SupportedDevice::IntelE1000E.device_ids().contains(&device) => {
+                        SupportedDevice::IntelE1000E
+                    }
                     device if SupportedDevice::IntelX710.device_ids().contains(&device) => {
                         SupportedDevice::IntelX710
                     }
@@ -308,5 +331,24 @@ impl TryFrom<(VendorId, DeviceId)> for SupportedDevice {
                 },
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// QEMU's `e1000` and `e1000e` are different chips with different drivers.
+    #[test]
+    fn emulated_intel_nics_are_told_apart() {
+        let intel = SupportedVendor::Intel.vendor_id();
+        assert_eq!(
+            SupportedDevice::try_from((intel, DeviceId::new(0x100e))).unwrap(),
+            SupportedDevice::IntelE1000
+        );
+        assert_eq!(
+            SupportedDevice::try_from((intel, DeviceId::new(0x10d3))).unwrap(),
+            SupportedDevice::IntelE1000E
+        );
     }
 }
