@@ -1678,7 +1678,7 @@ let
           ];
         }).overrideAttrs
           source-volatile;
-      config.Entrypoint = [ "/bin/dataplane" ];
+      config.Entrypoint = [ "/bin/dataplane-init" ];
     }).overrideAttrs
       source-volatile;
 
