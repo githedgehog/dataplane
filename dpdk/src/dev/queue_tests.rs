@@ -22,9 +22,8 @@ fn configured(ring: &RingPort) -> Dev<'static> {
     config.apply(claim).unwrap()
 }
 
-fn rx_config(ring: &RingPort) -> RxQueueConfig<'static> {
+fn rx_config() -> RxQueueConfig<'static> {
     RxQueueConfig {
-        dev: ring.index,
         queue_index: RxQueueIndex(0),
         num_descriptors: 128,
         socket_preference: Preference::Id(SocketId::ANY),
@@ -48,9 +47,9 @@ fn a_queue_index_is_configured_at_most_once() {
     let ring = RingPort::new();
     let mut dev = configured(&ring);
 
-    dev.new_rx_queue(rx_config(&ring)).unwrap();
+    dev.new_rx_queue(rx_config()).unwrap();
     assert!(matches!(
-        dev.new_rx_queue(rx_config(&ring)),
+        dev.new_rx_queue(rx_config()),
         Err(rx::ConfigFailure::AlreadyConfigured(RxQueueIndex(0)))
     ));
 
@@ -66,7 +65,7 @@ fn a_queue_index_must_be_within_the_configured_count() {
     let ring = RingPort::new();
     let mut dev = configured(&ring);
 
-    let mut config = rx_config(&ring);
+    let mut config = rx_config();
     config.queue_index = RxQueueIndex(1);
     assert!(matches!(
         dev.new_rx_queue(config),
@@ -90,7 +89,7 @@ fn a_queue_index_must_be_within_the_configured_count() {
 fn a_started_device_hands_its_queues_out_once() {
     let ring = RingPort::new();
     let mut dev = configured(&ring);
-    dev.new_rx_queue(rx_config(&ring)).unwrap();
+    dev.new_rx_queue(rx_config()).unwrap();
     dev.new_tx_queue(tx_config()).unwrap();
     let dev = dev.start().unwrap();
 
