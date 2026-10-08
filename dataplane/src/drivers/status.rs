@@ -14,6 +14,7 @@ use concurrency::sync::Arc;
 use std::fmt::Display;
 
 use crate::drivers::kernel::DriverKernel;
+use crate::drivers::supervisor;
 use crate::drivers::watchdog::{Activity, RxCounters};
 
 // The unique Id of a worker
@@ -232,9 +233,9 @@ impl Display for DriverStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading("Packet driver status").fmt(f)?;
         writeln!(f, " max rx batch: {} pkts", DriverKernel::MAX_RX_PKT_BATCH)?;
-        write!(f, " activity poll: {} s", DriverKernel::TASK_POLL_PERIOD)?;
-        write!(f, "  watchdog pat: {} s", DriverKernel::TASK_PAT_PERIOD)?;
-        writeln!(f, "  watchdog check: {} s", DriverKernel::TASK_CHECK_PERIOD)?;
+        write!(f, " activity poll: {} s", supervisor::TASK_POLL_PERIOD)?;
+        write!(f, "  watchdog pat: {} s", supervisor::TASK_PAT_PERIOD)?;
+        writeln!(f, "  watchdog check: {} s", supervisor::TASK_CHECK_PERIOD)?;
 
         writeln!(f)?;
         if self.workers.is_empty() {
