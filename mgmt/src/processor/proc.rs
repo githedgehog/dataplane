@@ -20,11 +20,6 @@ use config::internal::status::{
 use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, InternalConfig, ValidatedGwConfig};
 
-use config::internal::interfaces::interface::InterfaceConfig;
-use futures::TryStreamExt;
-
-/// `EEXIST`. Spelled out rather than pulled from libc for a single constant.
-const EEXIST: i32 = 17;
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
 use flow_filter::{FlowFilterContext, FlowFilterContextWriter};
@@ -424,9 +419,6 @@ impl VpcManager<RequiredInformationBase> {
         }
         debug!("VPC-manager successfully applied config for genid {genid}");
 
-        /* put the configured addresses on the configured interfaces */
-        self.ensure_interface_addresses(internal).await;
-
         let obs_rib = self.observe().await.map_err(|_| {
             ConfigError::InternalFailure("Failed to observe interface state".to_string())
         })?;
@@ -442,69 +434,6 @@ impl VpcManager<RequiredInformationBase> {
         };
         debug!("The current VRF interfaces are:\n{vrfs}");
 
-        Ok(())
-    }
-
-    /// Install configured interface addresses through netlink.
-    /// FRR did not install them on bridge taps in integration testing; missing local
-    /// addresses caused directly connected BGP packets to be forwarded and expire.
-    ///
-    /// This only adds addresses and ignores `EEXIST`. Removed configuration addresses
-    /// persist until interface removal; full address reconciliation remains future work.
-    /// Failures are logged and retried on the next configuration apply.
-    async fn ensure_interface_addresses(&self, internal: &InternalConfig) {
-        // Collected before the first await. The multi-index iterators are not `Send`, and holding
-        // one across an await makes the whole config processor's future non-`Send`, which is a
-        // compile error a long way from here.
-        let configured: Vec<&InterfaceConfig> = internal
-            .vrfs
-            .iter_by_name()
-            .flat_map(|vrf| vrf.interfaces.values())
-            .filter(|interface| !interface.addresses.is_empty())
-            .collect();
-
-        for interface in configured {
-            if let Err(e) = self.address_interface(interface).await {
-                warn!(
-                    "could not give interface {} its configured addresses: {e}. Without them it \
-                     has no connected route, so traffic addressed to it will be forwarded rather \
-                     than delivered.",
-                    interface.name
-                );
-            }
-        }
-    }
-
-    /// Add the configured addresses of one interface, skipping any it already has.
-    async fn address_interface(&self, interface: &InterfaceConfig) -> Result<(), String> {
-        let link = self
-            .handle()
-            .link()
-            .get()
-            .match_name(interface.name.clone())
-            .execute()
-            .try_next()
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "no such interface".to_string())?;
-
-        for address in &interface.addresses {
-            match self
-                .handle()
-                .address()
-                .add(link.header.index, address.address, address.mask_len)
-                .execute()
-                .await
-            {
-                Ok(()) => info!("gave interface {} the address {address}", interface.name),
-                // Already there, which is the ordinary case on every apply after the first, and
-                // also what happens on a physical interface zebra has already dressed.
-                Err(rtnetlink::Error::NetlinkError(e)) if e.raw_code() == -EEXIST => {
-                    debug!("interface {} already has {address}", interface.name);
-                }
-                Err(e) => return Err(format!("adding {address}: {e}")),
-            }
-        }
         Ok(())
     }
 

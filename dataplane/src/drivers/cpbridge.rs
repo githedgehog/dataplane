@@ -22,7 +22,6 @@ use interface_manager::interface::{TapDevice, TapRegistry};
 use lifecycle::{CancellationToken, Subsystem};
 use net::eth::mac::Mac;
 use net::interface::{InterfaceIndex, InterfaceName};
-use net::packet::DoneReason;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -112,97 +111,16 @@ impl DatapathEnds {
     }
 }
 
-/// Where the datapath should send a packet the pipeline has finished with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Disposition {
-    /// Transmit it on the interface the pipeline chose.
-    Transmit,
-    /// Hand it to the kernel through the tap of the port it arrived on.
-    Punt,
-    /// Free it.
-    Drop,
-}
-
-/// Choose whether to forward, punt, or drop a completed packet.
-///
-/// `Local` always punts. `Unhandled`, `NotIp`, and `RouteFailure` punt only when
-/// addressed to us, including broadcast and multicast. This carries ARP requests
-/// and replies through the kernel. Explicit drops never punt.
-///
-/// This fixed policy uses destination MAC rather than protocol; unroutable IP
-/// traffic addressed to the port also reaches the kernel.
-pub(crate) fn disposition(done: Option<DoneReason>, addressed_to_us: bool) -> Disposition {
-    // Exhaustive on purpose. A new `DoneReason` is a new decision about whether the kernel should
-    // see that packet, and this is where it has to be made; a wildcard would answer "no" silently.
-    match done {
-        Some(DoneReason::Delivered) => Disposition::Transmit,
-
-        Some(DoneReason::Local) => Disposition::Punt,
-
-        // Addressed to us, and the datapath had nothing to do with it.
-        Some(DoneReason::Unhandled | DoneReason::NotIp | DoneReason::RouteFailure) => {
-            if addressed_to_us {
-                Disposition::Punt
-            } else {
-                Disposition::Drop
-            }
-        }
-
-        // Decisions the datapath made, and failures the kernel cannot do anything about -- together
-        // with `None`, which is no verdict at all: a pipeline that did not finish with the packet
-        // is a bug rather than a routing outcome, and dropping matches what the driver has always
-        // done with one.
-        None
-        | Some(
-            DoneReason::InternalFailure
-            | DoneReason::InterfaceUnknown
-            | DoneReason::InterfaceDetached
-            | DoneReason::InterfaceAdmDown
-            | DoneReason::InterfaceOperDown
-            | DoneReason::InterfaceUnsupported
-            | DoneReason::NotEthernet
-            | DoneReason::MacNotForUs
-            | DoneReason::InvalidDstMac
-            | DoneReason::MissingEtherType
-            | DoneReason::RouteDrop
-            | DoneReason::HopLimitExceeded
-            | DoneReason::MissL2resolution
-            | DoneReason::VxlanDecapFailure
-            | DoneReason::VxlanEncapFailure
-            | DoneReason::Filtered
-            | DoneReason::AclDropped
-            | DoneReason::NatOutOfResources
-            | DoneReason::FlowCapacityExceeded
-            | DoneReason::NatUnsupportedProto
-            | DoneReason::NatFailure
-            | DoneReason::NatNotPortForwarded
-            | DoneReason::Malformed
-            | DoneReason::Unroutable
-            | DoneReason::InvalidChecksum
-            | DoneReason::IcmpErrorIncomplete
-            | DoneReason::InternalDrop
-            | DoneReason::DeparseError
-            | DoneReason::NoHeadRoom,
-        ) => Disposition::Drop,
-    }
-}
-
-/// True if a frame with this destination MAC was addressed to a port with this one.
-///
-/// Broadcast and multicast count: the peer's ARP request, the fabric's LLDP, and IPv6 neighbour
-/// discovery all arrive that way, and all of them are the control plane's business.
-#[must_use]
-pub(crate) fn addressed_to(destination: Mac, port: Mac) -> bool {
-    destination == port || destination.is_broadcast() || destination.is_multicast()
-}
-
 /// Anything that can go wrong building the bridge.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum BridgeError {
     /// A netlink socket could not be opened in the control namespace.
     #[error("could not open a netlink socket for the control-plane bridge: {0}")]
     Netlink(String),
-    /// A tap device could not be created.
+    /// A tap device could not be created, or the kernel would not say what index it got.
+    ///
+    /// Fatal rather than skipped: without the index the datapath has no name for this interface
+    /// that the rest of the dataplane would recognise.
     #[error("could not create the tap device for interface {name}: {source}")]
     Tap {
         /// The interface whose tap could not be made.
@@ -210,17 +128,6 @@ pub(crate) enum BridgeError {
         /// The underlying failure.
         #[source]
         source: std::io::Error,
-    },
-    /// A tap was created but the kernel would not say what index it got.
-    ///
-    /// Fatal rather than skipped: without the index the datapath has no name for this interface
-    /// that the rest of the dataplane would recognise.
-    #[error("could not learn the interface index of the tap for {name}: {problem}")]
-    TapIndex {
-        /// The interface whose tap could not be identified.
-        name: InterfaceName,
-        /// What went wrong.
-        problem: String,
     },
 }
 
@@ -245,12 +152,12 @@ impl CpBridge {
     ///
     /// Returns [`BridgeError`] if netlink is unreachable or a tap cannot be created. Neither is
     /// recoverable: without the taps there is no control plane.
-    pub(crate) fn create<'a>(
+    pub(crate) fn create(
         handle: &tokio::runtime::Handle,
         mgmt: &Subsystem,
-        interfaces: impl Iterator<Item = &'a InterfaceName>,
+        interfaces: impl IntoIterator<Item = InterfaceName>,
     ) -> Result<(Self, DatapathEnds), BridgeError> {
-        let names: Vec<InterfaceName> = interfaces.cloned().collect();
+        let names: Vec<InterfaceName> = interfaces.into_iter().collect();
         let cancel = mgmt.cancel_token();
         let taps = Arc::new(TapRegistry::default());
 
@@ -272,25 +179,15 @@ impl CpBridge {
                 source,
             })?;
 
-            // Asked for now, on the thread that made it and in the namespace it lives in. This
-            // index is what the whole dataplane above the driver will call this interface -- see
-            // `PortCpQueues::index` -- so a bridge that could not learn it has not built a usable
-            // port.
-            let index = tap_index(name).map_err(|problem| BridgeError::TapIndex {
-                name: name.clone(),
-                problem,
-            })?;
+            // Learned when the tap was created, in the namespace it lives in. This index is what
+            // the whole dataplane above the driver will call this interface -- see
+            // `PortCpQueues::index`.
+            let index = tap.index();
 
             let (punt_tx, punt_rx) = mpsc::channel(QUEUE_DEPTH);
             let (inject_tx, inject_rx) = mpsc::channel(QUEUE_DEPTH);
 
-            handle.spawn(pump(
-                name.to_string(),
-                tap,
-                punt_rx,
-                inject_tx,
-                cancel.clone(),
-            ));
+            handle.spawn(pump(tap, punt_rx, inject_tx, cancel.clone()));
 
             debug!("tap {name} is interface index {index}");
             ports.insert(
@@ -354,12 +251,12 @@ impl Drop for CpBridge {
 /// is registered with the reactor, so both directions can be awaited from the same place without
 /// splitting it. Neither direction can starve the other -- `select!` polls both.
 async fn pump(
-    name: String,
     tap: Arc<TapDevice>,
     mut punt: mpsc::Receiver<Frame>,
     inject: mpsc::Sender<Frame>,
     cancel: CancellationToken,
 ) {
+    let name = tap.name().clone();
     let mut buf = vec![0u8; TapDevice::MAX_FRAME];
     let mut punt_write_errors: u64 = 0;
     let mut inject_drops: u64 = 0;
@@ -449,14 +346,6 @@ async fn dress_taps(
     debug!("tap identity applier stopped");
 }
 
-/// Look up the tap synchronously in the calling thread's network namespace.
-/// This avoids needing to await a netlink request during bridge construction.
-fn tap_index(name: &InterfaceName) -> Result<InterfaceIndex, String> {
-    let raw = nix::net::if_::if_nametoindex(name.to_string().as_str())
-        .map_err(|e| format!("if_nametoindex: {e}"))?;
-    InterfaceIndex::try_new(raw).map_err(|e| e.to_string())
-}
-
 /// Apply one port's identity to its tap.
 async fn dress_one(
     netlink: &rtnetlink::Handle,
@@ -477,254 +366,30 @@ async fn dress_one(
         .ok_or(rtnetlink::Error::RequestFailed)?;
     let index = link.header.index;
 
-    // The address has to be set while the link is down; the MTU and the admin state then follow.
+    // set MAC and MTU, and bring up
     netlink
         .link()
         .set(
             LinkUnspec::new_with_index(index)
-                .down()
                 .address(identity.mac.0.to_vec())
-                .build(),
-        )
-        .execute()
-        .await?;
-
-    netlink
-        .link()
-        .set(
-            LinkUnspec::new_with_index(index)
                 .mtu(u32::from(identity.mtu))
+                .up()
                 .build(),
         )
-        .execute()
-        .await?;
-
-    netlink
-        .link()
-        .set(LinkUnspec::new_with_index(index).up().build())
         .execute()
         .await
 }
 
 #[cfg(test)]
 mod test {
-    use super::{Disposition, addressed_to, disposition};
-    use net::eth::mac::Mac;
-    use net::packet::DoneReason;
-    use strum::EnumCount as _;
-
-    const PORT: Mac = Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
-    const SOMEBODY_ELSE: Mac = Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
-    const BROADCAST: Mac = Mac([0xff; 6]);
-    /// The IPv6 all-nodes multicast MAC, which is what neighbour discovery arrives on.
-    const MULTICAST: Mac = Mac([0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
-
-    #[test]
-    fn only_frames_for_us_are_addressed_to_us() {
-        assert!(addressed_to(PORT, PORT), "our own MAC is for us");
-        assert!(addressed_to(BROADCAST, PORT), "broadcast is for everyone");
-        assert!(
-            addressed_to(MULTICAST, PORT),
-            "multicast carries neighbour discovery and must reach the kernel"
-        );
-        assert!(
-            !addressed_to(SOMEBODY_ELSE, PORT),
-            "a frame for another station is not ours"
-        );
-    }
-
-    /// The whole punt policy, verdict by verdict.
-    ///
-    /// Written out rather than derived from [`disposition`] on purpose: a test that recomputed the
-    /// policy would agree with any policy at all. This is the statement of what the control plane
-    /// is entitled to see, and changing [`disposition`] should have to change it here too.
-    ///
-    /// Break-tested: inverting any single arm below (say, making `AclDropped` punt when addressed
-    /// to us, or making `NotIp` drop) fails this test.
-    // The table below is data, not logic: every arm is one verdict, and the point is that all of
-    // them are written out. Splitting it to satisfy a line count would only hide that.
-    #[allow(clippy::too_many_lines)]
-    #[test]
-    fn punt_policy_table() {
-        // (verdict, disposition when addressed to us, disposition otherwise)
-        let table: &[(DoneReason, Disposition, Disposition)] = &[
-            // Transmitted regardless of who the frame was for: by this point the pipeline has
-            // rewritten the destination MAC to the next hop's, so "addressed to us" is meaningless.
-            (
-                DoneReason::Delivered,
-                Disposition::Transmit,
-                Disposition::Transmit,
-            ),
-            // The pipeline said so explicitly.
-            (DoneReason::Local, Disposition::Punt, Disposition::Punt),
-            // The three that carry the control plane.
-            (DoneReason::Unhandled, Disposition::Punt, Disposition::Drop),
-            (DoneReason::NotIp, Disposition::Punt, Disposition::Drop),
-            (
-                DoneReason::RouteFailure,
-                Disposition::Punt,
-                Disposition::Drop,
-            ),
-            // Everything else is a decision the datapath already made.
-            (
-                DoneReason::InternalFailure,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InterfaceUnknown,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InterfaceDetached,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InterfaceAdmDown,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InterfaceOperDown,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InterfaceUnsupported,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::NotEthernet,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::MacNotForUs,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InvalidDstMac,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::MissingEtherType,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (DoneReason::RouteDrop, Disposition::Drop, Disposition::Drop),
-            (
-                DoneReason::HopLimitExceeded,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::MissL2resolution,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::VxlanDecapFailure,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::VxlanEncapFailure,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (DoneReason::Filtered, Disposition::Drop, Disposition::Drop),
-            (DoneReason::AclDropped, Disposition::Drop, Disposition::Drop),
-            (
-                DoneReason::NatOutOfResources,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::FlowCapacityExceeded,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::NatUnsupportedProto,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (DoneReason::NatFailure, Disposition::Drop, Disposition::Drop),
-            (
-                DoneReason::NatNotPortForwarded,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (DoneReason::Malformed, Disposition::Drop, Disposition::Drop),
-            (DoneReason::Unroutable, Disposition::Drop, Disposition::Drop),
-            (
-                DoneReason::InvalidChecksum,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::IcmpErrorIncomplete,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::InternalDrop,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (
-                DoneReason::DeparseError,
-                Disposition::Drop,
-                Disposition::Drop,
-            ),
-            (DoneReason::NoHeadRoom, Disposition::Drop, Disposition::Drop),
-        ];
-
-        for (verdict, for_us, not_for_us) in table {
-            assert_eq!(
-                disposition(Some(*verdict), true),
-                *for_us,
-                "wrong disposition for {verdict:?} addressed to us"
-            );
-            assert_eq!(
-                disposition(Some(*verdict), false),
-                *not_for_us,
-                "wrong disposition for {verdict:?} addressed elsewhere"
-            );
-        }
-
-        // The table has to name every verdict, not merely the interesting ones. Without this a
-        // verdict added later would default to whatever `disposition`'s author decided, with no
-        // test asserting that the control plane was considered at all.
-        assert_eq!(
-            table.len(),
-            DoneReason::COUNT,
-            "the punt policy table has drifted from `DoneReason`: every verdict is a decision \
-             about whether the control plane may see that packet, so a new one has to be made \
-             here as well as in `disposition`"
-        );
-    }
-
-    #[test]
-    fn a_packet_with_no_verdict_is_dropped() {
-        assert_eq!(disposition(None, true), Disposition::Drop);
-        assert_eq!(disposition(None, false), Disposition::Drop);
-    }
-
-    // ------------------------------------------------------------------------------------------
     // The bridge itself, against a real kernel.
-    // ------------------------------------------------------------------------------------------
 
     use super::{CpBridge, PortIdentity};
     use caps::Capability;
     use fixin::wrap;
     use futures::TryStreamExt;
     use lifecycle::Shutdown;
+    use net::eth::mac::Mac;
     use net::interface::InterfaceName;
     use std::future::Future;
     use std::net::{IpAddr, Ipv4Addr};
@@ -825,7 +490,7 @@ mod test {
             let name = InterfaceName::try_from(PORT_NAME).unwrap();
 
             let (bridge, mut ends) =
-                CpBridge::create(&handle, &shutdown.mgmt, std::iter::once(&name))
+                CpBridge::create(&handle, &shutdown.mgmt, std::iter::once(name.clone()))
                     .unwrap_or_else(|e| panic!("could not build the control-plane bridge: {e}"));
 
             assert_eq!(
@@ -922,6 +587,130 @@ mod test {
 
             // The taps go with the bridge, which is what keeps a dead dataplane from stranding a
             // device on a name the real interface will want back.
+            drop(bridge);
+        });
+    }
+
+    /// A tap that gets its port's identity neither loses any of its addresses nor changes its
+    /// admin or operational state, even when it is already up and addressed, as zebra leaves it
+    /// when FRR is configured before the port is reported.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
+    fn taking_a_port_identity_keeps_the_tap_addresses_and_state() {
+        use rtnetlink::LinkUnspec;
+        use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags, LinkMessage, State};
+        use std::net::Ipv6Addr;
+
+        const PORT_NAME: &str = "dp0";
+        const PORT_MAC: Mac = Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        const MTU: u16 = 1400;
+        const OURS_V4: Ipv4Addr = Ipv4Addr::new(10, 99, 0, 1);
+        const OURS_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+
+        in_private_netns(|| async {
+            let handle = tokio::runtime::Handle::current();
+            let shutdown = Shutdown::new();
+            let name = InterfaceName::try_from(PORT_NAME).unwrap();
+            let (bridge, ends) =
+                CpBridge::create(&handle, &shutdown.mgmt, std::iter::once(name.clone()))
+                    .unwrap_or_else(|e| panic!("could not build the control-plane bridge: {e}"));
+            let index = bridge
+                .taps()
+                .get(&name)
+                .unwrap_or_else(|| panic!("the bridge holds no tap named {PORT_NAME}"))
+                .index()
+                .to_u32();
+
+            let (connection, netlink, _) = rtnetlink::new_connection().unwrap();
+            tokio::spawn(connection);
+
+            let get_link = async || -> LinkMessage {
+                netlink
+                    .link()
+                    .get()
+                    .match_index(index)
+                    .execute()
+                    .try_next()
+                    .await
+                    .unwrap_or_else(|e| panic!("could not look {PORT_NAME} up: {e}"))
+                    .unwrap_or_else(|| panic!("{PORT_NAME} is gone"))
+            };
+            // Admin state, and the operational state the kernel reports.
+            let states = |link: &LinkMessage| -> (bool, Option<State>) {
+                let admin_up = link.header.flags.contains(LinkFlags::Up);
+                let oper = link.attributes.iter().find_map(|attr| match attr {
+                    LinkAttribute::OperState(state) => Some(*state),
+                    _ => None,
+                });
+                (admin_up, oper)
+            };
+
+            // What zebra does before the port is reported: bring the tap up and address it.
+            netlink
+                .link()
+                .set(LinkUnspec::new_with_index(index).up().build())
+                .execute()
+                .await
+                .unwrap_or_else(|e| panic!("could not bring {PORT_NAME} up: {e}"));
+            for (address, len) in [(IpAddr::V4(OURS_V4), 24), (IpAddr::V6(OURS_V6), 64)] {
+                netlink
+                    .address()
+                    .add(index, address, len)
+                    .execute()
+                    .await
+                    .unwrap_or_else(|e| panic!("could not give {PORT_NAME} {address}: {e}"));
+            }
+
+            let before = states(&get_link().await);
+            assert!(
+                before.0,
+                "{PORT_NAME} should be administratively up before it is dressed"
+            );
+
+            ends.report(PortIdentity {
+                name: PORT_NAME.to_string(),
+                mac: PORT_MAC,
+                mtu: MTU,
+            });
+
+            // Applying the identity is asynchronous: wait for the MAC to change.
+            let mut dressed = None;
+            for _ in 0..50 {
+                let link = get_link().await;
+                if link.attributes.iter().any(
+                    |attr| matches!(attr, LinkAttribute::Address(mac) if mac[..] == PORT_MAC.0),
+                ) {
+                    dressed = Some(link);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let dressed =
+                dressed.unwrap_or_else(|| panic!("{PORT_NAME} never took its port's MAC"));
+
+            assert_eq!(
+                states(&dressed),
+                before,
+                "taking its port's identity changed the (admin, oper) state of {PORT_NAME}"
+            );
+
+            for address in [IpAddr::V4(OURS_V4), IpAddr::V6(OURS_V6)] {
+                let kept = netlink
+                    .address()
+                    .get()
+                    .set_link_index_filter(index)
+                    .set_address_filter(address)
+                    .execute()
+                    .try_next()
+                    .await
+                    .unwrap_or_else(|e| panic!("could not list the addresses of {PORT_NAME}: {e}"));
+                assert!(
+                    kept.is_some(),
+                    "{PORT_NAME} lost {address} when it took its port's identity; nothing would \
+                     put it back, and the control plane would not be reachable on it"
+                );
+            }
+
             drop(bridge);
         });
     }

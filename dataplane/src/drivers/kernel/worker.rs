@@ -20,14 +20,12 @@ use concurrency::thread;
 use concurrency::thread::BuilderExt;
 use lifecycle::{CancellationToken, Subsystem};
 use net::buffer::test_buffer::TestBuffer;
-use net::headers::TryEth;
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::{DynPipeline, NetworkFunction};
 
-use net::eth::mac::Mac;
-
-use crate::drivers::cpbridge::{Disposition, Frame, addressed_to, disposition};
+use crate::drivers::cpbridge::Frame;
+use crate::drivers::disposition::Disposition;
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
@@ -74,8 +72,6 @@ struct WorkerInterfaceReader {
     if_index: InterfaceIndex,
     read_fd: AsyncFd<std::os::unix::io::OwnedFd>,
     watchdog: Watchdog,
-    /// This interface's own MAC, for deciding whether a frame was addressed to us.
-    mac: Option<Mac>,
     /// Where a punted frame goes, when this interface has a tap standing in for it.
     punt: Option<tokio::sync::mpsc::Sender<Frame>>,
 }
@@ -91,7 +87,6 @@ fn create_worker_interface(
     if_name: &str,
     if_index: InterfaceIndex,
     watchdog: Watchdog,
-    mac: Option<Mac>,
     punt: Option<tokio::sync::mpsc::Sender<Frame>>,
 ) -> io::Result<(WorkerInterfaceWriter, WorkerInterfaceReader)> {
     // `if_index` is the dataplane-wide identity; the socket is bound by *name*, which resolves in
@@ -164,7 +159,6 @@ fn create_worker_interface(
             if_index,
             read_fd,
             watchdog,
-            mac,
             punt,
         },
     ))
@@ -266,12 +260,12 @@ impl Worker {
                     .process(packets.map(|pkt| *pkt))
                     .collect::<Vec<_>>();
 
-                // What becomes of each packet is [`disposition`]'s decision, the same one the
+                // What becomes of each packet is [`Disposition::of`]'s decision, the same one the
                 // DPDK driver asks. When this interface has a tap standing in for it, the kernel
                 // is on the far side of that tap and has seen nothing: the interface was moved
-                // into the datapath's namespace, so the host stack no longer has it. Anything
-                // addressed to us that the pipeline declined has to be carried across, or the
-                // control plane never learns a peer's MAC and BGP never forms an adjacency.
+                // into the datapath's namespace, so the host stack no longer has it. Anything the
+                // pipeline marked `Local` has to be carried across, or the control plane never
+                // learns a peer's MAC and BGP never forms an adjacency.
                 //
                 // Without a tap -- interfaces left where the kernel drives them -- there is
                 // nothing to punt to and nowhere to punt from: the kernel saw the frame through
@@ -279,19 +273,9 @@ impl Worker {
                 // always been.
                 let mut ppline_drops: u64 = 0;
                 let mut punted: u64 = 0;
+                let mut punt_drops: u64 = 0;
                 for out_pkt in out_pkts {
-                    let done = out_pkt.get_done();
-
-                    // Read before the verdict is acted on, and only consulted for verdicts that
-                    // did not rewrite the ethernet header, so this is the destination the frame
-                    // arrived with.
-                    let addressed_to_us = intf.mac.is_some_and(|mac| {
-                        out_pkt
-                            .try_eth()
-                            .is_some_and(|eth| addressed_to(eth.destination().inner(), mac))
-                    });
-
-                    match packet_disposition(&out_pkt, addressed_to_us, &mut ppline_drops) {
+                    match Disposition::of(&out_pkt) {
                         Disposition::Transmit => {
                             to_tx += 1;
                             if tx_packet(id, &intf.if_name, &if_table, out_pkt).await {
@@ -300,19 +284,17 @@ impl Worker {
                                 tx_drops += 1;
                             }
                         }
-                        Disposition::Punt => match &intf.punt {
-                            Some(punt) => {
+                        // Without a tap, the kernel has this interface and already saw the frame.
+                        Disposition::Punt => {
+                            if let Some(punt) = &intf.punt {
                                 if punt_packet(id, &intf.if_name, punt, out_pkt) {
                                     punted += 1;
                                 } else {
-                                    ppline_drops += 1;
+                                    punt_drops += 1;
                                 }
                             }
-                            // No tap: the kernel has this interface and already saw the frame.
-                            None if done == Some(DoneReason::Local) => {}
-                            None => ppline_drops += 1,
-                        },
-                        Disposition::Drop => {}
+                        }
+                        Disposition::Drop => ppline_drops += 1,
                     }
                 }
                 if punted > 0 {
@@ -333,6 +315,7 @@ impl Worker {
                 counters.ppline_drops = ppline_drops;
                 counters.tx = tx_pkts;
                 counters.tx_drops = tx_drops;
+                counters.punt_drops = punt_drops;
                 intf.watchdog.record(&counters);
             }
         });
@@ -485,15 +468,8 @@ fn build_interface_table(
         // the number the pipeline will use for both `iif` and `oif`, so the table is keyed by it.
         let if_index = bridged.map_or(kif.ifindex, |port| port.index);
 
-        let (writer, reader) = create_worker_interface(
-            id,
-            total_workers,
-            &kif.name,
-            if_index,
-            watchdog,
-            kif.mac,
-            punt,
-        )?;
+        let (writer, reader) =
+            create_worker_interface(id, total_workers, &kif.name, if_index, watchdog, punt)?;
 
         if_table.insert(if_index, Arc::new(Mutex::new(writer)));
         readers.push(reader);
@@ -667,27 +643,10 @@ async fn read_packets_from_interface(
     Ok(pkts)
 }
 
-/// Select forwarding or control-plane delivery and account for pipeline drops.
-fn packet_disposition(
-    packet: &Packet<TestBuffer>,
-    addressed_to_us: bool,
-    ppline_drops: &mut u64,
-) -> Disposition {
-    let done = packet.get_done();
-    if done.is_none() {
-        error!("Packet returned without a terminal verdict; dropping it (pipeline bug)");
-    }
-    let action = disposition(done, addressed_to_us);
-    if matches!(action, Disposition::Drop) {
-        *ppline_drops += 1;
-    }
-    action
-}
-
 /// Hand a frame to the kernel through the tap standing in for the interface it arrived on.
 ///
-/// Returns whether it was handed over. A `false` here is counted as a pipeline drop, because that
-/// is what it is: the packet was not transmitted and the kernel did not get it either.
+/// Returns whether it was handed over. A `false` here is counted as a punt drop: the packet was
+/// meant for the kernel, and the kernel did not get it.
 ///
 /// The frame is copied. It has to be: the far end of this channel is a task on the management
 /// runtime, and the packet's buffer belongs to this worker. `serialize` first, so what the kernel
@@ -861,7 +820,7 @@ async fn tx_packet(
 
 #[cfg(test)]
 mod test {
-    use super::{Disposition, RxCounters, build_packet, packet_disposition};
+    use super::{Disposition, RxCounters, build_packet};
     use net::buffer::test_buffer::TestBuffer;
     use net::interface::InterfaceIndex;
     use net::packet::test_utils::{build_test_ipv4_packet, build_test_ipv6_packet};
@@ -889,16 +848,14 @@ mod test {
                 packet
             })
             .collect();
-        let expected_drops = packets.len() as u64 - 2;
-        let mut drops = 0;
+        let expected_drops = packets.len() - 2;
+        let drops = packets
+            .iter()
+            .filter(|packet| Disposition::of(packet) == Disposition::Drop)
+            .count();
         let transmitted: Vec<_> = packets
             .into_iter()
-            .filter(|packet| {
-                matches!(
-                    packet_disposition(packet, false, &mut drops),
-                    Disposition::Transmit
-                )
-            })
+            .filter(|packet| Disposition::of(packet) == Disposition::Transmit)
             .collect();
 
         assert_eq!(transmitted.len(), 1);
@@ -914,15 +871,13 @@ mod test {
             build_test_frame(),
         ];
         DecrementTtl.process_burst(&mut burst);
-        let mut drops = 0;
+        let drops = burst
+            .iter()
+            .filter(|packet| Disposition::of(packet) == Disposition::Drop)
+            .count();
         let transmitted = burst
-            .into_iter()
-            .filter(|packet| {
-                matches!(
-                    packet_disposition(packet, false, &mut drops),
-                    Disposition::Transmit
-                )
-            })
+            .iter()
+            .filter(|packet| Disposition::of(packet) == Disposition::Transmit)
             .count();
 
         assert_eq!(transmitted, 0);

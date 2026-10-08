@@ -759,7 +759,7 @@ pub fn main() {
         match CpBridge::create(
             &mgmt_handle,
             &shutdown.mgmt,
-            config.driver.interfaces().map(|i| &i.interface),
+            config.driver.interfaces().map(|i| i.interface.clone()),
         ) {
             Ok((bridge, ends)) => (Some(bridge), Some(ends)),
             Err(e) => {
