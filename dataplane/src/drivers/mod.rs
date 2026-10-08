@@ -3,7 +3,6 @@
 
 use thiserror::Error;
 
-#[expect(dead_code, reason = "main starts the DPDK driver in a later commit")]
 pub mod dpdk;
 pub mod kernel;
 pub mod status;
