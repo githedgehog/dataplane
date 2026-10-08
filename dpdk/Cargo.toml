@@ -17,6 +17,7 @@ concurrency = { workspace = true }
 dpdk-sys = { workspace = true }
 dpdk-test-macros = { workspace = true, optional = true }
 errno = { workspace = true }
+hardware = { workspace = true }
 id = { workspace = true, optional = true }
 net = { workspace = true }
 nix = { workspace = true, features = ["sched"] }
