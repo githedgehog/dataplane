@@ -19,7 +19,7 @@ use crate::queue::rx::{RxQueue, RxQueueConfig};
 use crate::queue::tx::{TxQueue, TxQueueConfig};
 use crate::queue::{QueueStore, Queues};
 use crate::socket::SocketId;
-use concurrency::sync::Mutex;
+use crate::sync::Mutex;
 use dpdk_sys::rte_eth_rx_mq_mode::{RTE_ETH_MQ_RX_NONE, RTE_ETH_MQ_RX_RSS};
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
@@ -219,6 +219,38 @@ pub struct RssConf {
     pub hf: u64,
 }
 
+impl RssConf {
+    /// The standard 40-byte Microsoft Toeplitz RSS key.
+    /// It is not symmetric; NAT changes the reverse tuple anyway. Drivers may use other defaults.
+    pub const DEFAULT_KEY: [u8; 40] = [
+        0x6d, 0x5a, 0x56, 0xda, 0x25, 0x5b, 0x0e, 0xc2, 0x41, 0x67, 0x25, 0x3d, 0x43, 0xa3, 0x8f,
+        0xb0, 0xd0, 0xca, 0x2b, 0xcb, 0xae, 0x7b, 0x30, 0xb4, 0x77, 0xcb, 0x2d, 0xa3, 0x80, 0x30,
+        0xf2, 0x0c, 0x6a, 0x42, 0xb7, 0x3b, 0xbe, 0xac, 0x01, 0xfa,
+    ];
+
+    /// Hash IP addresses and TCP/UDP ports to spread flows between the same hosts.
+    /// [`Self::supported_on`] narrows this set to the device's capabilities.
+    pub const DEFAULT_HASH_TYPES: u64 =
+        (RTE_ETH_RSS_IP as u64) | (RTE_ETH_RSS_TCP as u64) | (RTE_ETH_RSS_UDP as u64);
+
+    /// Use the driver's default key and its supported subset of [`Self::DEFAULT_HASH_TYPES`].
+    /// Returns `None` if no requested hash types are supported.
+    #[must_use]
+    pub fn supported_on(dev: &DevInfo) -> Option<RssConf> {
+        Self::from_hash_types(dev.rss_hash_types())
+    }
+
+    /// [`Self::supported_on`] against a raw `flow_type_rss_offloads` mask.
+    #[must_use]
+    pub fn from_hash_types(supported: u64) -> Option<RssConf> {
+        let hf = Self::DEFAULT_HASH_TYPES & supported;
+        if hf == 0 {
+            return None;
+        }
+        Some(RssConf { key: None, hf })
+    }
+}
+
 /// Device queue counts, offloads, MTU, and RSS.
 #[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Hash)]
 pub struct DevConfig {
@@ -275,6 +307,15 @@ pub enum DevConfigError {
         actual: usize,
         /// The key length advertised by the device.
         expected: u8,
+    },
+    /// The requested RSS hash types include unsupported bits.
+    /// Use [`RssConf::supported_on`] to intersect with the device's capabilities.
+    #[error("RSS hash types {requested:#x} include bits outside the supported {supported:#x}")]
+    RssHashTypesUnsupported {
+        /// The `RTE_ETH_RSS_*` bits that were requested.
+        requested: u64,
+        /// The `RTE_ETH_RSS_*` bits the device advertises.
+        supported: u64,
     },
 }
 
@@ -337,6 +378,14 @@ impl DevConfig {
         let mtu = self.resolve_mtu(dev)?;
         let mut config = self.clone();
         let rss_conf = config.prepare_rss(dev)?;
+        if let Some(rss) = &config.rss
+            && rss.hf & !dev.rss_hash_types() != 0
+        {
+            return Err(DevConfigError::RssHashTypesUnsupported {
+                requested: rss.hf,
+                supported: dev.rss_hash_types(),
+            });
+        }
         let mut eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
@@ -702,6 +751,10 @@ impl TxOffload {
 impl RxOffload {
     /// No receive offloads.
     pub const NONE: RxOffload = RxOffload(0);
+
+    /// Report the NIC's RSS hash in each mbuf's `hash.rss` field. Requires [`DevConfig::rss`].
+    /// MARK or FDIR actions can overwrite the union containing the hash.
+    pub const RSS_HASH: RxOffload = RxOffload(RTE_ETH_RX_OFFLOAD_RSS_HASH as u64);
 }
 
 impl BitOr for TxOffload {
@@ -873,6 +926,12 @@ impl Manager {
 }
 
 impl DevInfo<'_> {
+    /// The device's limits on receive descriptors per queue.
+    #[must_use]
+    pub fn rx_desc_limits(&self) -> dpdk_sys::rte_eth_desc_lim {
+        self.inner.rx_desc_lim
+    }
+
     /// Get the port index of the device.
     #[must_use]
     pub fn index(&self) -> DevIndex {
@@ -955,6 +1014,18 @@ impl DevInfo<'_> {
     #[must_use]
     pub fn supports_rss(&self) -> bool {
         self.inner.flow_type_rss_offloads != 0
+    }
+
+    /// Supported `RTE_ETH_RSS_*` hash types. Configured types must be a subset of these.
+    #[must_use]
+    pub fn rss_hash_types(&self) -> u64 {
+        self.inner.flow_type_rss_offloads
+    }
+
+    /// Required RSS key length in bytes; other lengths are rejected.
+    #[must_use]
+    pub fn rss_hash_key_size(&self) -> u8 {
+        self.inner.hash_key_size
     }
 }
 
@@ -1190,6 +1261,61 @@ impl<'eal, S: DevState> Dev<'eal, S> {
     }
 }
 
+/// What a port's link is doing, as returned by [`Dev::link`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkStatus {
+    /// Carrier is present.
+    pub up: bool,
+    /// Negotiated speed in Mbit/s. `u32::MAX` is DPDK's "unknown".
+    pub speed_mbps: u32,
+    /// Full duplex rather than half.
+    pub full_duplex: bool,
+    /// The speed was autonegotiated rather than fixed.
+    pub autoneg: bool,
+}
+
+impl core::fmt::Display for LinkStatus {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if !self.up {
+            return write!(f, "down");
+        }
+        if self.speed_mbps == u32::MAX {
+            return write!(f, "up at an unknown speed");
+        }
+        write!(
+            f,
+            "up at {} Mbit/s {}",
+            self.speed_mbps,
+            if self.full_duplex {
+                "full duplex"
+            } else {
+                "half duplex"
+            }
+        )
+    }
+}
+
+/// An owned snapshot of a port's I/O counters, as returned by [`Dev::stats`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PortStats {
+    /// Packets successfully received.
+    pub ipackets: u64,
+    /// Packets successfully transmitted.
+    pub opackets: u64,
+    /// Bytes successfully received.
+    pub ibytes: u64,
+    /// Bytes successfully transmitted.
+    pub obytes: u64,
+    /// Packets dropped by the hardware because no receive descriptor was free.
+    pub imissed: u64,
+    /// Erroneous packets received.
+    pub ierrors: u64,
+    /// Packets that failed to transmit.
+    pub oerrors: u64,
+    /// Receive mbuf allocation failures, counted separately from [`Self::imissed`].
+    pub rx_nombuf: u64,
+}
+
 impl<'eal, S: Open> Dev<'eal, S> {
     /// The device's primary source MAC address.
     ///
@@ -1222,6 +1348,54 @@ impl<'eal, S: Open> Dev<'eal, S> {
         } else {
             Err(ErrorCode::parse_i32(ret))
         }
+    }
+
+    /// Current carrier, speed, and duplex state, without waiting for autonegotiation.
+    /// A successfully started port may still have no carrier.
+    ///
+    /// # Errors
+    /// Returns the driver's [`ErrorCode`]; a PMD without link support reports `ENOTSUP`.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn link(&self) -> Result<LinkStatus, ErrorCode> {
+        let mut raw: dpdk_sys::rte_eth_link = unsafe { core::mem::zeroed() };
+        // SAFETY: `raw` is live for the call and the port index belongs to an open device.
+        let ret =
+            unsafe { dpdk_sys::rte_eth_link_get_nowait(self.info.index().as_u16(), &raw mut raw) };
+        if ret != 0 {
+            return Err(ErrorCode::parse_i32(ret));
+        }
+        // SAFETY: the union's struct arm is the documented way to read the fields; the `val64` arm
+        // exists only so the PMD can write the whole thing atomically.
+        let inner = unsafe { raw.annon1.annon1 };
+        Ok(LinkStatus {
+            up: u32::from(inner.link_status()) == dpdk_sys::RTE_ETH_LINK_UP,
+            speed_mbps: inner.link_speed,
+            full_duplex: u32::from(inner.link_duplex()) == dpdk_sys::RTE_ETH_LINK_FULL_DUPLEX,
+            autoneg: inner.link_autoneg() != 0,
+        })
+    }
+
+    /// Read the device's I/O counters, including drops before packets reach a receive burst.
+    ///
+    /// # Errors
+    /// Returns the driver's [`ErrorCode`]; a PMD without statistics support reports `ENOTSUP`.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn stats(&self) -> Result<PortStats, ErrorCode> {
+        let mut raw: dpdk_sys::rte_eth_stats = unsafe { core::mem::zeroed() };
+        let ret = unsafe { dpdk_sys::rte_eth_stats_get(self.info.index().as_u16(), &raw mut raw) };
+        if ret != 0 {
+            return Err(ErrorCode::parse_i32(ret));
+        }
+        Ok(PortStats {
+            ipackets: raw.ipackets,
+            opackets: raw.opackets,
+            ibytes: raw.ibytes,
+            obytes: raw.obytes,
+            imissed: raw.imissed,
+            ierrors: raw.ierrors,
+            oerrors: raw.oerrors,
+            rx_nombuf: raw.rx_nombuf,
+        })
     }
 
     /// Enable or disable promiscuous mode.
@@ -1429,4 +1603,65 @@ pub enum SocketIdLookupError {
     DevDoesNotExist(DevIndex),
     #[error("Unknown error code set")]
     UnknownErrno(ErrorCode),
+}
+
+#[cfg(test)]
+mod rss_conf_tests {
+    use super::*;
+
+    /// mlx5 hash types from `mlx5_defs.h`, omitting modifiers outside our requested mask.
+    const MLX5_RSS_OFFLOADS: u64 = (RTE_ETH_RSS_IP as u64)
+        | (RTE_ETH_RSS_UDP as u64)
+        | (RTE_ETH_RSS_TCP as u64)
+        | (RTE_ETH_RSS_ESP as u64);
+
+    #[test]
+    fn the_default_key_is_the_length_mlx5_requires() {
+        assert_eq!(RssConf::DEFAULT_KEY.len(), 40);
+    }
+
+    #[test]
+    fn mlx5_supports_every_hash_type_we_ask_for() {
+        let conf = RssConf::from_hash_types(MLX5_RSS_OFFLOADS).expect("mlx5 supports RSS");
+        assert_eq!(conf.hf, RssConf::DEFAULT_HASH_TYPES);
+        assert_eq!(conf.key, None);
+
+        // Catch accidental narrowing of DEFAULT_HASH_TYPES itself.
+        for (bit, what) in [
+            (RTE_ETH_RSS_IP as u64, "L3 addresses"),
+            (RTE_ETH_RSS_TCP as u64, "TCP ports"),
+            (RTE_ETH_RSS_UDP as u64, "UDP ports"),
+        ] {
+            assert_ne!(conf.hf & bit, 0, "RSS on mlx5 would not hash over {what}");
+        }
+    }
+
+    #[test]
+    fn an_l3_only_device_gets_a_narrowed_configuration() {
+        let conf = RssConf::from_hash_types(RTE_ETH_RSS_IP as u64).expect("L3 hashing is enough");
+        assert_eq!(conf.hf, RTE_ETH_RSS_IP as u64);
+        assert_eq!(conf.hf & RTE_ETH_RSS_TCP as u64, 0);
+    }
+
+    #[test]
+    fn a_device_that_cannot_hash_gets_no_configuration() {
+        assert_eq!(RssConf::from_hash_types(0), None);
+    }
+
+    #[test]
+    fn an_empty_intersection_is_not_a_configuration() {
+        assert_eq!(RssConf::from_hash_types(RTE_ETH_RSS_ESP as u64), None);
+    }
+
+    // A period-two key makes reversed tuples hash alike; NAT needs no such guarantee.
+    #[test]
+    fn the_default_key_is_not_symmetric() {
+        let (pairs, _) = RssConf::DEFAULT_KEY.as_chunks::<2>();
+        let symmetric = pairs.iter().all(|pair| pair == &pairs[0]);
+        assert!(
+            !symmetric,
+            "the default RSS key has become period-2 (symmetric); \
+             see the RssConf docs for why that is not the fix it looks like"
+        );
+    }
 }

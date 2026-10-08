@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use concurrency::sync::Arc;
+use dpdk::lcore::LCore;
 use dpdk::mem::{MBUF_BURST, Mbuf, MbufArray};
 use lifecycle::Subsystem;
 use net::buffer::{Append, PacketBufferMut};
@@ -59,6 +60,20 @@ impl<'p> Worker<'p> {
     ) {
         // Run flow and NAT timers on the management runtime until worker helpers replace it.
         let _runtime = timer_handle.enter();
+        // Registration enables per-lcore mempool caches and releases the id on return or unwind.
+        // If registration fails, allocation remains correct through the shared mempool ring.
+        let _lcore = match LCore::register() {
+            Ok(lcore) => Some(lcore),
+            Err(e) => {
+                error!(
+                    worker = self.id,
+                    "could not register with the EAL ({e:?}); this worker will run without a \
+                     per-core mempool cache and will contend on every allocation"
+                );
+                None
+            }
+        };
+
         let mut pipeline = setup_pipeline();
 
         // Map pipeline output ifindices to this worker's transmit queues.
@@ -71,6 +86,7 @@ impl<'p> Worker<'p> {
 
         debug!(
             worker = self.id,
+            lcore = dpdk::lcore::LCoreId::current().0,
             "DPDK worker started on {} port(s): {}",
             self.ports.len(),
             self.ports
@@ -85,6 +101,12 @@ impl<'p> Worker<'p> {
         // Counters per port, flushed to that port's watchdog.
         let mut counters = vec![RxCounters::default(); self.ports.len()];
 
+        // Reuse pipeline storage across polls; stages borrow and update packets in place.
+        let mut burst: Vec<Packet<Mbuf<'p>>> = Vec::with_capacity(dpdk::mem::MBUF_BURST);
+
+        // Refill the receive array in place to avoid returning it by value on every poll.
+        let mut rx_mbufs: MbufArray<'p> = MbufArray::new_empty();
+
         loop {
             polls = polls.wrapping_add(1);
             if polls.is_multiple_of(CANCEL_CHECK_INTERVAL) {
@@ -96,7 +118,14 @@ impl<'p> Worker<'p> {
 
             let mut saw_frames = false;
             for (slot, counters) in counters.iter_mut().enumerate() {
-                if self.poll_one(slot, &tx_by_if, &mut pipeline, counters) {
+                if self.poll_one(
+                    slot,
+                    &tx_by_if,
+                    &mut pipeline,
+                    &mut burst,
+                    &mut rx_mbufs,
+                    counters,
+                ) {
                     saw_frames = true;
                 }
             }
@@ -136,6 +165,8 @@ impl<'p> Worker<'p> {
         slot: usize,
         tx_by_if: &HashMap<InterfaceIndex, usize>,
         pipeline: &mut DynPipeline<'p, Mbuf<'p>>,
+        burst: &mut Vec<Packet<Mbuf<'p>>>,
+        rx_mbufs: &mut MbufArray<'p>,
         counters: &mut RxCounters,
     ) -> bool {
         // Before the receive, and unconditionally: a port with no incoming traffic still has to
@@ -143,12 +174,15 @@ impl<'p> Worker<'p> {
         // when data happened to arrive would drop on the first quiet hold timer.
         let injected = self.inject(slot, counters);
 
-        let burst = self.ports[slot].queues.rx.receive();
-        if burst.is_empty() {
+        self.ports[slot].queues.rx.receive_into(rx_mbufs);
+        if rx_mbufs.is_empty() {
             return injected;
         }
         let rx_if = self.ports[slot].queues.if_index;
-        let processed = process_burst(burst.into_iter(), rx_if, pipeline, counters);
+        for mbuf in rx_mbufs.iter() {
+            mbuf.prefetch_head();
+        }
+        process_burst(rx_mbufs.drain_all(), rx_if, pipeline, burst, counters);
 
         // Batch transmission by output port.
         let mut batches: HashMap<usize, MbufArray<'p>> = HashMap::new();
@@ -156,7 +190,7 @@ impl<'p> Worker<'p> {
         // atomic increment, which is not free at burst rates and buys nothing here.
         let port_mac = self.ports[slot].queues.mac;
         let punt = self.ports[slot].queues.punt.as_ref();
-        for packet in processed {
+        for packet in burst.drain(..) {
             // Who the frame was addressed to, read before the pipeline's verdict is acted on. It is
             // only consulted for verdicts that did not rewrite the ethernet header, so this is the
             // destination the frame arrived with.
@@ -383,25 +417,25 @@ fn process_burst<Buf: PacketBufferMut>(
     burst: impl ExactSizeIterator<Item = Buf>,
     rx_if: InterfaceIndex,
     pipeline: &mut impl NetworkFunction<Buf>,
+    packets: &mut Vec<Packet<Buf>>,
     counters: &mut RxCounters,
-) -> Vec<Packet<Buf>> {
+) {
     counters.rx += burst.len() as u64;
-    let mut packets: Vec<_> = burst
-        .filter_map(|buffer| match Packet::new(buffer) {
-            Ok(mut packet) => {
-                packet.meta_mut().iif = Some(rx_if);
-                Some(packet)
-            }
-            Err(e) => {
-                counters.parse_errors += 1;
-                trace!("failed to parse a received frame: {e:?}");
-                None
-            }
-        })
-        .collect();
+    packets.clear();
+    packets.extend(burst.filter_map(|buffer| match Packet::new(buffer) {
+        Ok(mut packet) => {
+            packet.meta_mut().iif = Some(rx_if);
+            Some(packet)
+        }
+        Err(e) => {
+            counters.parse_errors += 1;
+            trace!("failed to parse a received frame: {e:?}");
+            None
+        }
+    }));
 
     let parsed = packets.len();
-    pipeline.process_burst(&mut packets);
+    pipeline.process_burst(packets);
     // Some stages remove packets instead of returning a drop verdict.
     counters.ppline_drops += parsed.saturating_sub(packets.len()) as u64;
     packets.retain(|packet| {
@@ -419,5 +453,4 @@ fn process_burst<Buf: PacketBufferMut>(
             false
         }
     });
-    packets
 }

@@ -25,6 +25,7 @@ common = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
 dpdk = { workspace = true }
+errno = { workspace = true }
 flow-entry = { workspace = true }
 flow-filter = { workspace = true }
 futures = { workspace = true }

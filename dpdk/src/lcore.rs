@@ -4,6 +4,7 @@
 use crate::eal::Eal;
 use core::ffi::{c_int, c_uint};
 use core::fmt::Debug;
+use errno::ErrorCode;
 use tracing::{info, warn};
 
 #[repr(transparent)]
@@ -80,8 +81,10 @@ struct LCoreIndexIterator {
     inner: LCoreIdIterator,
 }
 
+/// A scoped OS thread registered as `ROLE_NON_EAL` for its lifetime.
+/// The body borrows its [`LCore`] token; this is not a DPDK service core.
 #[allow(unused)]
-pub struct ServiceThread<'scope> {
+pub struct RegisteredThread<'scope> {
     thread_id: RteThreadId,
     priority: LCorePriority,
     handle: std::thread::ScopedJoinHandle<'scope, ()>,
@@ -90,47 +93,117 @@ pub struct ServiceThread<'scope> {
 // TODO: take stack size as an EAL argument instead of hard coding it
 const STACK_SIZE: usize = 8 << 20;
 
-/// Unregisters the creating thread on return or unwind.
-/// Keep this guard on the thread that registered.
+/// Proof that the current thread is registered with the EAL.
+/// Enables per-lcore caches and unregisters on drop. Neither the token nor its
+/// references can cross threads. Callers must keep the EAL alive until it drops.
 #[allow(missing_debug_implementations)]
-struct LcoreRegistration;
+pub struct LCore {
+    id: LCoreId,
+    /// Pins the token to the registering thread, and `&LCore` with it. See the type docs.
+    _not_send: core::marker::PhantomData<*const ()>,
+}
 
-impl Drop for LcoreRegistration {
+/// The token cannot be sent to another thread, so it cannot release someone else's id.
+///
+/// ```compile_fail,E0277
+/// # use dataplane_dpdk::lcore::LCore;
+/// fn assert_send<T: Send>(_: T) {}
+/// fn not_send(lcore: LCore) {
+///     assert_send(lcore);
+/// }
+/// ```
+///
+/// References cannot cross threads either: `&LCore` proves the calling thread is registered.
+///
+/// ```compile_fail,E0277
+/// # use dataplane_dpdk::lcore::LCore;
+/// fn assert_send<T: Send>(_: T) {}
+/// fn ref_not_send(lcore: &LCore) {
+///     assert_send(lcore);
+/// }
+/// ```
+impl LCore {
+    /// Register the calling thread with the EAL.
+    ///
+    /// Prefer [`LCore::with`], which cannot leave the registration held past the work it was for.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EEXIST` if already registered, `EINVAL` if EAL is not initialized, or
+    /// the EAL's `rte_errno` (typically `ENOMEM`) if no id is available.
+    pub fn register() -> Result<LCore, ErrorCode> {
+        // DPDK overwrites an existing lcore id without restoring it on unregister.
+        // Reject duplicate registration before it can corrupt the thread's identity.
+        if LCoreId::current().as_u32() != u32::MAX {
+            warn!("this thread is already an lcore; refusing to register it a second time");
+            return Err(ErrorCode::parse_i32(-errno::EEXIST));
+        }
+        // SAFETY: this thread is unregistered. DPDK checks that EAL is initialized.
+        let ret = unsafe { dpdk_sys::rte_thread_register() };
+        if ret != 0 {
+            let errno = unsafe { dpdk_sys::rte_errno_get() };
+            warn!("could not register this thread with the EAL: ret {ret}, errno {errno}");
+            return Err(ErrorCode::parse_i32(errno));
+        }
+        Ok(LCore {
+            id: LCoreId::current(),
+            _not_send: core::marker::PhantomData,
+        })
+    }
+
+    /// Register this thread, run `f` with the token, and release the registration.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever [`LCore::register`] would.
+    pub fn with<R>(f: impl FnOnce(&LCore) -> R) -> Result<R, ErrorCode> {
+        let lcore = LCore::register()?;
+        Ok(f(&lcore))
+    }
+
+    /// The lcore id the EAL assigned to this thread.
+    ///
+    /// Never `LCORE_ID_ANY`: the token only exists after a successful registration, and cannot
+    /// outlive it or leave this thread.
+    #[must_use]
+    pub fn id(&self) -> LCoreId {
+        self.id
+    }
+}
+
+impl Drop for LCore {
     fn drop(&mut self) {
         // SAFETY: constructed after registration and dropped once on the same thread.
         unsafe { dpdk_sys::rte_thread_unregister() };
     }
 }
 
-impl ServiceThread<'_> {
+impl RegisteredThread<'_> {
     #[cold]
     #[allow(clippy::expect_used)]
     #[tracing::instrument(level = "debug", skip(run))]
     pub fn new<'scope>(
         scope: &'scope std::thread::Scope<'scope, '_>,
         name: impl AsRef<str> + Debug,
-        run: impl FnOnce() + 'scope + Send,
-    ) -> ServiceThread<'scope> {
+        run: impl FnOnce(&LCore) + 'scope + Send,
+    ) -> RegisteredThread<'scope> {
         let (send, recv) = std::sync::mpsc::sync_channel(1);
         let handle = std::thread::Builder::new()
             .name(name.as_ref().to_string())
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, move || {
                 info!("Initializing RTE Lcore");
-                let ret = unsafe { dpdk_sys::rte_thread_register() };
-                if ret != 0 {
-                    let errno = unsafe { dpdk_sys::rte_errno_get() };
-                    let msg = format!("rte thread exited with code {ret}, errno: {errno}");
-                    Eal::fatal_error(msg)
-                }
-                let _registration = LcoreRegistration;
+                // Keep the registration on this thread until the body returns or unwinds.
+                let lcore = LCore::register().unwrap_or_else(|e| {
+                    Eal::fatal_error(format!("could not register an EAL thread: {e:?}"))
+                });
                 let thread_id = unsafe { dpdk_sys::rte_thread_self() };
                 send.send(thread_id).expect("could not send thread id");
-                run();
+                run(&lcore);
             })
             .expect("could not create EalThread");
         let thread_id = RteThreadId(recv.recv().expect("could not receive thread id"));
-        ServiceThread {
+        RegisteredThread {
             thread_id,
             priority: LCorePriority::RealTime,
             handle,
@@ -140,42 +213,6 @@ impl ServiceThread<'_> {
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn join(self) -> std::thread::Result<()> {
         self.handle.join()
-    }
-}
-
-pub struct LCoreParams {
-    priority: LCorePriority,
-    name: String,
-}
-
-pub trait LCoreParameters {
-    fn priority(&self) -> &LCorePriority;
-    fn name(&self) -> &String;
-}
-
-#[allow(unused)]
-pub struct LCore {
-    params: LCoreParams,
-    id: RteThreadId,
-}
-
-impl LCoreParameters for LCoreParams {
-    fn priority(&self) -> &LCorePriority {
-        &self.priority
-    }
-
-    fn name(&self) -> &String {
-        &self.name
-    }
-}
-
-impl LCoreParameters for LCore {
-    fn priority(&self) -> &LCorePriority {
-        &self.params.priority
-    }
-
-    fn name(&self) -> &String {
-        &self.params.name
     }
 }
 
@@ -368,6 +405,191 @@ mod tests {
             u32::MAX,
             "expected LCORE_ID_ANY on an unregistered thread"
         );
+    }
+
+    #[test]
+    #[with_eal]
+    fn the_guard_registers_the_calling_thread() {
+        // A fresh thread is unregistered under both cargo test and nextest; the harness
+        // thread may already be the EAL's main lcore.
+        std::thread::spawn(|| {
+            assert_eq!(
+                LCoreId::current().as_u32(),
+                u32::MAX,
+                "a freshly spawned thread should start unregistered"
+            );
+
+            let registration = LCore::register().expect("could not register");
+            let here = LCoreId::current();
+            assert_ne!(here.as_u32(), u32::MAX, "the guard did not register");
+            assert_ne!(
+                here,
+                LCoreId::main(),
+                "a registered thread is not the main lcore"
+            );
+
+            drop(registration);
+            assert_eq!(
+                LCoreId::current().as_u32(),
+                u32::MAX,
+                "the guard did not release the id when dropped"
+            );
+        })
+        .join()
+        .expect("the test thread panicked");
+    }
+
+    #[test]
+    #[with_eal]
+    fn a_thread_that_is_already_an_lcore_is_refused() {
+        std::thread::spawn(|| {
+            let first = LCore::register().expect("first registration");
+            let id = LCoreId::current();
+
+            assert!(
+                LCore::register().is_err(),
+                "registering twice on one thread was allowed; the second would have overwritten \
+                 the first's lcore id"
+            );
+            assert_eq!(
+                LCoreId::current(),
+                id,
+                "the refused registration changed this thread's lcore id anyway"
+            );
+            drop(first);
+        })
+        .join()
+        .expect("the test thread panicked");
+    }
+
+    // Exceed RTE_MAX_LCORE over successive registrations to detect leaked ids.
+    #[test]
+    #[with_eal]
+    fn registrations_are_released_and_can_be_reused() {
+        // Spawned, for the same reason as `the_guard_registers_the_calling_thread`.
+        std::thread::spawn(|| {
+            for round in 0..1024 {
+                let registration = LCore::register()
+                    .unwrap_or_else(|e| panic!("registration {round} failed: {e:?} -- ids leaked"));
+                assert_ne!(LCoreId::current().as_u32(), u32::MAX);
+                drop(registration);
+            }
+        })
+        .join()
+        .expect("the test thread panicked");
+    }
+
+    /// `LCore::with` registers for the duration of the closure and releases after it.
+    #[test]
+    #[with_eal]
+    fn with_scopes_the_registration_to_the_closure() {
+        std::thread::spawn(|| {
+            let seen = LCore::with(|lcore| {
+                assert_ne!(lcore.id().as_u32(), u32::MAX, "the token has no lcore id");
+                assert_eq!(
+                    lcore.id(),
+                    LCoreId::current(),
+                    "the token disagrees with the thread it was made on"
+                );
+                lcore.id()
+            })
+            .expect("could not register");
+            assert_ne!(seen.as_u32(), u32::MAX);
+            assert_eq!(
+                LCoreId::current().as_u32(),
+                u32::MAX,
+                "the registration outlived the closure"
+            );
+        })
+        .join()
+        .expect("the test thread panicked");
+    }
+
+    #[test]
+    #[with_eal]
+    fn a_token_reports_a_stable_id() {
+        std::thread::spawn(|| {
+            let lcore = LCore::register().expect("could not register");
+            let first = lcore.id();
+            for _ in 0..100 {
+                assert_eq!(lcore.id(), first);
+                assert_eq!(lcore.id(), LCoreId::current());
+            }
+        })
+        .join()
+        .expect("the test thread panicked");
+    }
+
+    // Avoid exhausting the process-global id pool shared with other tests.
+    #[test]
+    #[with_eal]
+    fn concurrent_registrations_get_distinct_ids() {
+        const THREADS: usize = 16;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+        let ids: Vec<u32> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let barrier = barrier.clone();
+                    scope.spawn(move || {
+                        let _registration = LCore::register().expect("could not register");
+                        let id = LCoreId::current().as_u32();
+                        // Hold every registration at once; ids are only distinct if they overlap.
+                        barrier.wait();
+                        id
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("a registering thread panicked"))
+                .collect()
+        });
+
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            THREADS,
+            "concurrent registrations shared an lcore id: {ids:?}"
+        );
+        assert!(
+            ids.iter().all(|id| *id != u32::MAX),
+            "a registration reported no lcore id: {ids:?}"
+        );
+    }
+
+    #[test]
+    #[with_eal]
+    fn a_panicking_thread_releases_its_registration() {
+        let before = std::thread::spawn(|| {
+            let _registration = LCore::register().expect("register");
+            LCoreId::current().as_u32()
+        })
+        .join()
+        .expect("thread should not have panicked");
+        assert_ne!(before, u32::MAX);
+
+        // Panic while holding a guard, many times over. If unwinding skipped the release, this
+        // would strand an id per iteration and the assertion below would eventually fail.
+        for _ in 0..512 {
+            let panicked = std::thread::spawn(|| {
+                let _registration = LCore::register().expect("register");
+                panic!("deliberate");
+            })
+            .join();
+            assert!(panicked.is_err(), "the thread was supposed to panic");
+        }
+
+        let after = std::thread::spawn(|| {
+            let _registration = LCore::register().expect(
+                "could not register after panicking threads ran -- unwinding leaked lcore ids",
+            );
+            LCoreId::current().as_u32()
+        })
+        .join()
+        .expect("thread should not have panicked");
+        assert_ne!(after, u32::MAX);
     }
 
     /// ...whereas a registered thread does get one, and it is not the main lcore.

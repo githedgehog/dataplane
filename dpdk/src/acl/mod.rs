@@ -522,8 +522,11 @@ mod tests {
     #[with_eal]
     #[test]
     fn classify_concurrent_arc_shared() {
-        use concurrency::sync::Arc;
-        use concurrency::thread;
+        // Exercise parallel C classification on OS threads; model checkers cannot model DPDK.
+        // See `crate::sync`.
+        use std::sync::Arc;
+        // nosemgrep: rust-no-direct-std-thread-import
+        use std::thread;
 
         const WORKERS: usize = 4;
         const ITERS_PER_WORKER: usize = 1000;

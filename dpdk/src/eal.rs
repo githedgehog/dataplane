@@ -225,6 +225,23 @@ pub fn main_lcore_arg() -> String {
 /// 4. The EAL has already been initialized.
 #[cold]
 pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
+    // DPDK's OS thread-local state and C synchronization cannot be modelled; see `crate::sync`.
+    // Gate EAL initialization rather than compilation so packages with a DPDK dev-dependency
+    // can still model-check their pure Rust code.
+    concurrency::with_shuttle! {
+        panic!(
+            "the DPDK EAL cannot be initialised under the shuttle backend: DPDK's per-thread state \
+             is OS-thread-local and shuttle multiplexes its threads onto one OS thread. Nothing \
+             here is model-checkable; see dpdk::sync."
+        );
+    }
+    concurrency::with_loom! {
+        panic!(
+            "the DPDK EAL cannot be initialised under the loom backend: DPDK's per-thread state is \
+             OS-thread-local and loom does not model OS threads. Nothing here is model-checkable; \
+             see dpdk::sync."
+        );
+    }
     let mut args = ValidatedEalArgs::new(args).unwrap_or_else(|e| {
         Eal::fatal_error(e.to_string());
     });
@@ -336,6 +353,23 @@ impl Drop for Eal {
     fn drop(&mut self) {
         info!("waiting on EAL threads");
         unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
+
+        // DPDK waits for ROLE_RTE lcores, but LCore registers ROLE_NON_EAL threads.
+        // Callers must join those before cleanup detaches memory and frees per-lcore storage.
+        // Scoped workers borrowing EAL-branded ports satisfy this ordering.
+        let stragglers = (0..dpdk_sys::RTE_MAX_LCORE)
+            .filter(|id| unsafe {
+                dpdk_sys::rte_lcore_has_role(*id, dpdk_sys::rte_lcore_role_t::ROLE_NON_EAL) != 0
+            })
+            .count();
+        if stragglers > 0 {
+            error!(
+                "{stragglers} thread(s) are still registered with the EAL as it is torn down. \
+                 Every registered thread must be joined first: cleanup detaches DPDK memory and \
+                 frees per-lcore storage, so anything still running will read freed memory. This \
+                 is a bug in whatever spawned them."
+            );
+        }
 
         // Close ports before freeing pools; recorded close failures require retaining the pools.
         let abandoned = self.port_owner.close_abandoned();

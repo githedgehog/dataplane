@@ -6,6 +6,7 @@
 
 mod frr;
 mod hugepages;
+mod netns_names;
 mod socket;
 mod supervisor;
 
@@ -315,6 +316,93 @@ async fn move_devices_to_netns(
     }
 }
 
+/// Raise every interface in the init-owned datapath namespace, including loopback.
+/// Namespace moves clear `IFF_UP`, and bifurcated devices need the kernel netdev up for carrier.
+/// Enumerate by ifindex because devlink reload may change interface names.
+async fn bring_up_interfaces_in_netns() -> Result<(), String> {
+    let (connection, handle, _) =
+        rtnetlink::new_connection().map_err(|e| format!("could not open a netlink socket: {e}"))?;
+    let connection = tokio::spawn(connection);
+
+    let result = async {
+        let mut links = handle.link().get().execute();
+        let mut problems = Vec::new();
+        let mut brought_up = 0usize;
+        loop {
+            match links.try_next().await {
+                Ok(Some(link)) => {
+                    let index = link.header.index;
+                    let name = link
+                        .attributes
+                        .iter()
+                        .find_map(|a| match a {
+                            rtnetlink::packet_route::link::LinkAttribute::IfName(n) => {
+                                Some(n.clone())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| format!("index {index}"));
+                    match handle
+                        .link()
+                        .set(rtnetlink::LinkUnspec::new_with_index(index).up().build())
+                        .execute()
+                        .await
+                    {
+                        Ok(()) => {
+                            info!("brought {name} up in the datapath network namespace");
+                            if name != "lo" {
+                                brought_up += 1;
+                            }
+                        }
+                        Err(e) => problems.push(format!("could not bring '{name}' up: {e}")),
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    problems.push(format!("could not list interfaces: {e}"));
+                    break;
+                }
+            }
+        }
+        // Counted excluding `lo`, which is always there and says nothing about whether the move
+        // landed. Not an error either way: a vfio-pci device has no netdev to bring up at all.
+        if brought_up == 0 && problems.is_empty() {
+            warn!(
+                "the datapath namespace holds no interface but loopback; expected for a vfio-pci \
+                 device, and a sign the move did not land for a bifurcated one"
+            );
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems.join("; "))
+        }
+    }
+    .await;
+
+    connection.abort();
+    result
+}
+
+/// Raise datapath interfaces on a temporary thread, preserving the caller's namespace.
+fn bring_up_datapath_interfaces(netns: &NetworkNamespace) -> Result<(), String> {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                netns
+                    .enter()
+                    .map_err(|e| format!("could not enter the datapath namespace: {e}"))?;
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("could not build a runtime for netlink: {e}"))?
+                    .block_on(bring_up_interfaces_in_netns())
+            })
+            .join()
+            .map_err(|_| "the thread bringing datapath interfaces up panicked".to_string())?
+    })
+}
+
 /// Create a descriptor-owned namespace and move the datapath devices into it.
 fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, String> {
     let netns = NetworkNamespace::create()
@@ -326,6 +414,9 @@ fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, Strin
         .map_err(|e| format!("could not build a runtime to talk to devlink: {e}"))?;
 
     runtime.block_on(move_devices_to_netns(devices, &netns))?;
+    // The move left them down; a bifurcated device's port follows its netdev, so without this the
+    // datapath starts cleanly and carries nothing.
+    bring_up_datapath_interfaces(&netns)?;
     Ok(netns)
 }
 
@@ -410,6 +501,9 @@ fn isolate_interfaces(interfaces: &[String]) -> Result<NetworkNamespace, String>
         .map_err(|e| format!("could not build a runtime to talk to netlink: {e}"))?;
 
     runtime.block_on(move_interfaces_to_netns(interfaces, &netns))?;
+    // Same reason as the DPDK path. This one was covered by an init container running
+    // `ip l set dev <iface> up` in shell, which is why only DPDK ever showed the hole.
+    bring_up_datapath_interfaces(&netns)?;
     Ok(netns)
 }
 
@@ -677,6 +771,10 @@ fn supervise_gateway(
     host_netns: NetworkNamespace,
     supervise_frr: bool,
 ) -> i32 {
+    // Retain the control descriptor alongside the datapath and host descriptors until shutdown.
+    let _control_namespace = netns_names::publish(Some(&netns), Some(&host_netns))
+        .unwrap_or_else(|e| fail("could not publish network namespace names", &e.to_string()));
+
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

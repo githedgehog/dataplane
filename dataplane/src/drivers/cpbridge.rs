@@ -533,6 +533,36 @@ mod test {
         );
     }
 
+    // Multicast must be addressed to us and carry a puntable verdict.
+    #[test]
+    fn a_multicast_frame_reaches_the_control_plane() {
+        let port = Mac([0x58, 0xa2, 0xe1, 0xb3, 0x3d, 0x94]);
+        // IPv6 all-nodes multicast.
+        let multicast = Mac([0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
+        assert!(multicast.is_multicast(), "the fixture must be multicast");
+        assert!(
+            !multicast.is_broadcast(),
+            "and must not be broadcast, or it would take the other arm"
+        );
+
+        assert!(
+            addressed_to(multicast, port),
+            "multicast is addressed to every port on the segment"
+        );
+        // Ingress produces Unhandled for multicast; MacNotForUs remains a drop.
+        assert_eq!(
+            disposition(Some(DoneReason::Unhandled), addressed_to(multicast, port)),
+            Disposition::Punt,
+            "a multicast frame addressed to this segment belongs to the control plane"
+        );
+        assert_eq!(
+            disposition(Some(DoneReason::MacNotForUs), addressed_to(multicast, port)),
+            Disposition::Drop,
+            "and MacNotForUs remains an unconditional drop, which is why ingress must not use it \
+             for multicast"
+        );
+    }
+
     /// The whole punt policy, verdict by verdict.
     ///
     /// Written out rather than derived from [`disposition`] on purpose: a test that recomputed the

@@ -12,11 +12,15 @@ pub(crate) type SeriesId = (String, Labels);
 
 pub(crate) type Series = BTreeMap<SeriesId, f64>;
 
+/// Integer counters preserve values above the exact range of f64 gauges (2^53).
+pub(crate) type Counters = BTreeMap<SeriesId, u64>;
+
 pub(crate) type Shape = (String, Vec<String>);
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Scrape {
     held: Arc<Mutex<Series>>,
+    counters: Arc<Mutex<Counters>>,
     shapes: Arc<Mutex<BTreeSet<Shape>>>,
     registrations: Arc<AtomicUsize>,
 }
@@ -28,6 +32,18 @@ impl Scrape {
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
         self.held().get(&(name.to_string(), labels)).copied()
+    }
+
+    /// The current counter value, or `None` if never registered. [`Self::get`] reads gauges.
+    pub(crate) fn counter(&self, name: &str, labels: &[(&str, &str)]) -> Option<u64> {
+        let labels: Labels = labels
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        self.counters
+            .lock()
+            .get(&(name.to_string(), labels))
+            .copied()
     }
 
     pub(crate) fn label_shapes(&self, name: &str) -> BTreeSet<Vec<String>> {
@@ -98,6 +114,30 @@ impl metrics::GaugeFn for Cell {
     }
 }
 
+/// Counter storage whose `absolute` operation takes the maximum, as `CounterFn` requires.
+#[derive(Debug)]
+struct CounterCell {
+    at: SeriesId,
+    into: Arc<Mutex<Counters>>,
+}
+
+impl CounterCell {
+    fn with(&self, f: impl FnOnce(&mut u64)) {
+        let mut held = self.into.lock();
+        f(held.entry(self.at.clone()).or_insert(0));
+    }
+}
+
+impl metrics::CounterFn for CounterCell {
+    fn increment(&self, value: u64) {
+        self.with(|held| *held = held.saturating_add(value));
+    }
+
+    fn absolute(&self, value: u64) {
+        self.with(|held| *held = (*held).max(value));
+    }
+}
+
 impl metrics::Recorder for Scrape {
     fn describe_counter(
         &self,
@@ -123,8 +163,22 @@ impl metrics::Recorder for Scrape {
     ) {
     }
 
-    fn register_counter(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
-        metrics::Counter::noop()
+    fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        let labels = key
+            .labels()
+            .map(|label| (label.key().to_string(), label.value().to_string()))
+            .collect();
+        let at = (key.name().to_string(), labels);
+        self.registrations.fetch_add(1, Ordering::Relaxed);
+        self.shapes.lock().insert((
+            key.name().to_string(),
+            key.labels().map(|label| label.key().to_string()).collect(),
+        ));
+        self.counters.lock().entry(at.clone()).or_insert(0);
+        metrics::Counter::from_arc(Arc::new(CounterCell {
+            at,
+            into: self.counters.clone(),
+        }))
     }
 
     fn register_gauge(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {

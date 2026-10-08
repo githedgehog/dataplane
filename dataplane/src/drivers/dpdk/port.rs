@@ -3,14 +3,16 @@
 
 //! Bringing DPDK ports up, and the queue split that gives each worker its own.
 
-use dpdk::dev::{Dev, DevConfig, PortClaim, RxOffload, Started, TxOffloadConfig};
+use dpdk::dev::{Dev, DevConfig, DevInfo, PortClaim, RssConf, RxOffload, Started, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::mem::{Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use dpdk::socket;
+use errno::ErrorCode;
 use net::eth::mac::Mac;
 use net::interface::InterfaceIndex;
+use stats::PortCounters;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -23,8 +25,71 @@ const RX_DESCRIPTORS: u16 = 1024;
 /// Transmit descriptors per queue.
 const TX_DESCRIPTORS: u16 = 1024;
 
-/// Mbufs per worker, covering RX descriptors, pipeline processing, and pending TX.
-const POOL_MBUFS_PER_WORKER: u32 = 4 * RX_DESCRIPTORS as u32;
+/// Mbufs per RX descriptor, including room for pipeline processing and pending TX.
+const POOL_MBUFS_PER_RX_DESCRIPTOR: u32 = 4;
+
+/// Use the driver's RSS key and supported L3/L4 hash types; warn if no requested type is supported.
+/// Symmetric hashing would not co-locate NAT's translated reverse tuples. Shared flow state
+/// lets any worker process either direction.
+fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
+    let rss = RssConf::supported_on(info);
+    if rss.is_none() && num_workers > 1 {
+        warn!(
+            "port {index} ({name}) advertises no RSS hash functions, so all {num_workers} workers \
+             will share receive queue 0 and only one of them will do any work",
+            index = info.index()
+        );
+    }
+    rss
+}
+
+/// Report carrier state separately from successful device startup.
+/// On bifurcated devices, a down kernel netdev can leave a started DPDK port without carrier.
+fn report_link(
+    dev: &Dev<'_, Started>,
+    index: dpdk::dev::DevIndex,
+    name: &str,
+    if_index: InterfaceIndex,
+    mac: Mac,
+    mtu: u16,
+    num_workers: u16,
+) {
+    match dev.link() {
+        Ok(link) if link.up => info!(
+            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+             {num_workers} rx/tx queue pair(s), link {link}"
+        ),
+        Ok(link) => warn!(
+            "DPDK port {index} ({name}) is configured and started but its link is {link}: \
+             ifindex {if_index}, mac {mac}, mtu {mtu}, {num_workers} rx/tx queue pair(s). No \
+             traffic will pass. For a bifurcated device such as mlx5 the port follows its kernel \
+             netdev, so check that the netdev is up inside the datapath network namespace."
+        ),
+        Err(e) => info!(
+            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+             {num_workers} rx/tx queue pair(s); link state unavailable ({e:?})"
+        ),
+    }
+}
+
+/// Honor `/rxd=N`, capped at the device's advertised maximum.
+fn rx_descriptor_count(
+    info: &DevInfo<'_>,
+    index: dpdk::dev::DevIndex,
+    name: &str,
+    asked: Option<u16>,
+) -> u16 {
+    let asked = asked.unwrap_or(RX_DESCRIPTORS);
+    let most = info.rx_desc_limits().nb_max;
+    if most != 0 && asked > most {
+        warn!(
+            "port {index} ({name}) accepts at most {most} rx descriptors per queue; using that \
+             rather than the {asked} asked for"
+        );
+        return most;
+    }
+    asked
+}
 
 /// A started port and its receive pool. Workers borrow its queue handles.
 pub(crate) struct Port<'eal> {
@@ -61,8 +126,15 @@ impl<'eal> Port<'eal> {
         port: PortClaim<'eal>,
         name: String,
         num_workers: u16,
+        mtu: Option<u16>,
+        rx_descriptors: Option<u16>,
     ) -> Result<Self, DriverError> {
-        let index = port.info().index();
+        let info = port.info();
+        let index = info.index();
+
+        let rx_descriptors = rx_descriptor_count(info, index, &name, rx_descriptors);
+
+        let rss = rss_for(info, &name, num_workers);
 
         // Each worker receives its own RX/TX queue pair on every port.
         let config = DevConfig {
@@ -70,11 +142,15 @@ impl<'eal> Port<'eal> {
             num_tx_queues: num_workers,
             num_hairpin_queues: 0,
             // The pipeline handles checksums in software and requires uncoalesced packets.
-            rx_offloads: RxOffload::NONE,
+            rx_offloads: if rss.is_some() {
+                RxOffload::RSS_HASH
+            } else {
+                RxOffload::NONE
+            },
             tx_offloads: TxOffloadConfig::none(),
-            mtu: None,
-            // TODO: Enable symmetric RSS to distribute flows across workers.
-            rss: None,
+            // An omitted MTU uses the device-clamped default; jumbo frames require an explicit MTU.
+            mtu,
+            rss,
         };
 
         let mut dev = config
@@ -91,13 +167,15 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
+        let pool_mbufs =
+            POOL_MBUFS_PER_RX_DESCRIPTOR * u32::from(rx_descriptors) * u32::from(num_workers);
         let rx_pool = eal
             .mem
             .new_pkt_pool(
                 PoolConfig::new(
                     format!("rx_{index}"),
                     PoolParams {
-                        size: POOL_MBUFS_PER_WORKER * u32::from(num_workers),
+                        size: pool_mbufs,
                         ..Default::default()
                     },
                 )
@@ -114,7 +192,7 @@ impl<'eal> Port<'eal> {
         for queue in 0..num_workers {
             dev.new_rx_queue(RxQueueConfig {
                 queue_index: RxQueueIndex(queue),
-                num_descriptors: RX_DESCRIPTORS,
+                num_descriptors: rx_descriptors,
                 socket_preference: socket::Preference::Dev(index),
                 offloads: RxOffload::NONE,
                 pool: rx_pool.clone(),
@@ -159,10 +237,7 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
-        info!(
-            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
-             {num_workers} rx/tx queue pair(s)"
-        );
+        report_link(&dev, index, &name, if_index, mac.into(), mtu, num_workers);
 
         Ok(Port {
             dev,
@@ -171,6 +246,24 @@ impl<'eal> Port<'eal> {
             mac: mac.into(),
             mtu,
             rx_pool,
+        })
+    }
+
+    /// Read cumulative device counters, including drops before packets reach a worker.
+    ///
+    /// # Errors
+    /// Returns the driver's error code; unsupported statistics report `ENOTSUP`.
+    pub(crate) fn counters(&self) -> Result<PortCounters, ErrorCode> {
+        let stats = self.dev.stats()?;
+        Ok(PortCounters {
+            rx_packets: stats.ipackets,
+            tx_packets: stats.opackets,
+            rx_bytes: stats.ibytes,
+            tx_bytes: stats.obytes,
+            rx_missed: stats.imissed,
+            rx_errors: stats.ierrors,
+            tx_errors: stats.oerrors,
+            rx_no_mbuf: stats.rx_nombuf,
         })
     }
 

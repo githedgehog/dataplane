@@ -4,10 +4,10 @@
 //! DPDK memory management wrappers.
 
 use crate::socket::SocketId;
+use crate::sync::Mutex;
 use alloc::format;
 use alloc::string::String;
 use arrayvec::ArrayVec;
-use concurrency::sync::Mutex;
 use core::ffi::c_uint;
 use core::ffi::{CStr, c_int};
 use core::fmt::{Debug, Display};
@@ -278,6 +278,59 @@ pub struct PoolParams {
     pub data_size: u16,
     /// The `SocketId` on which to allocate the pool.
     pub socket_id: SocketId,
+}
+
+/// Bytes per cache line on every CPU this runs on (x86-64 and aarch64 alike).
+pub const CACHE_LINE_BYTES: usize = 64;
+
+/// Cache lines of packet head that [`Mbuf::prefetch_head`] fetches.
+///
+/// Two, because VXLAN pushes the inner IPv4 header to byte 64 -- exactly past the first line.
+/// See [`Mbuf::prefetch_head`].
+pub const PREFETCH_HEAD_LINES: usize = 2;
+
+/// How long a prefetched line should stay cached.
+#[derive(Clone, Copy)]
+enum Locality {
+    /// Keep the line in every cache level (`_MM_HINT_T0`, `PLDL1KEEP`).
+    Keep,
+    /// The line is read once; evict it first (`_MM_HINT_NTA`, `PLDL1STRM`).
+    Stream,
+}
+
+/// Prefetch the cache line holding `addr`. A no-op on architectures without a stable prefetch.
+///
+/// # Safety
+///
+/// None needed beyond a valid `addr` computation: a prefetch neither faults nor reads.
+#[inline(always)]
+#[allow(unused_variables)] // both arguments are unused on other architectures
+unsafe fn prefetch_line(addr: *const u8, locality: Locality) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: `_mm_prefetch` is a hint and cannot fault.
+    unsafe {
+        use core::arch::x86_64::{_MM_HINT_NTA, _MM_HINT_T0, _mm_prefetch};
+        match locality {
+            Locality::Keep => _mm_prefetch::<_MM_HINT_T0>(addr.cast()),
+            Locality::Stream => _mm_prefetch::<_MM_HINT_NTA>(addr.cast()),
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: `prfm` is a hint and cannot fault; it touches no registers but its operand.
+    unsafe {
+        match locality {
+            Locality::Keep => core::arch::asm!(
+                "prfm pldl1keep, [{0}]",
+                in(reg) addr,
+                options(nostack, preserves_flags)
+            ),
+            Locality::Stream => core::arch::asm!(
+                "prfm pldl1strm, [{0}]",
+                in(reg) addr,
+                options(nostack, preserves_flags)
+            ),
+        }
+    }
 }
 
 impl Default for PoolParams {
@@ -713,6 +766,35 @@ impl<'eal> Mbuf<'eal> {
         raw
     }
 
+    /// Prefetch two cache lines at the packet head before parsing a burst.
+    ///
+    /// VXLAN places the inner IPv4 header at byte 64, so it needs the second line.
+    /// The temporal hint keeps headers cached for serialization later in the pipeline.
+    /// Use [`Self::prefetch_head_non_temporal`] to compare the streaming hint on hardware.
+    pub fn prefetch_head(&self) {
+        self.prefetch_head_with(Locality::Keep);
+    }
+
+    /// [`Mbuf::prefetch_head`] with the non-temporal hint, for measuring the other side of the
+    /// choice described there.
+    pub fn prefetch_head_non_temporal(&self) {
+        self.prefetch_head_with(Locality::Stream);
+    }
+
+    #[inline(always)]
+    fn prefetch_head_with(&self, locality: Locality) {
+        // SAFETY: `self.raw` is live. The prefetch hints do not dereference their addresses.
+        // Use wrapping arithmetic because a small or trimmed buffer may end before the
+        // second hint. This needs no packet-length load or bounds check.
+        unsafe {
+            let head = (self.raw.as_ref().buf_addr as *const u8)
+                .offset(self.raw.as_ref().annon1.annon1.data_off as isize);
+            for line in 0..PREFETCH_HEAD_LINES {
+                prefetch_line(head.wrapping_add(line * CACHE_LINE_BYTES), locality);
+            }
+        }
+    }
+
     /// Get the contiguous bytes of the head segment.
     #[must_use]
     #[tracing::instrument(level = "trace")]
@@ -846,6 +928,53 @@ impl<'eal, const N: usize> MbufArray<'eal, N> {
         self.bufs.try_push(mbuf).map_err(|err| err.element())
     }
 
+    /// Free every held mbuf in bulk and leave the array empty.
+    fn free_all(&mut self) {
+        if self.bufs.is_empty() {
+            return;
+        }
+        let count = self.bufs.len();
+        // SAFETY: `Mbuf` is `#[repr(transparent)]` over `NonNull<rte_mbuf>`, so the `ArrayVec<Mbuf>`
+        // backing storage is layout-identical to an array of `*mut rte_mbuf`.  Every element is a
+        // live, singly-owned mbuf, so freeing the whole run in bulk frees each exactly once.
+        unsafe {
+            dpdk_sys::rte_pktmbuf_free_bulk(
+                self.bufs.as_mut_ptr().cast::<*mut dpdk_sys::rte_mbuf>(),
+                count as c_uint,
+            );
+            // The mbufs are freed; drop the wrappers without running `Mbuf::drop` (which would
+            // free them a second time).
+            self.bufs.set_len(0);
+        }
+    }
+
+    /// Drain mbufs without moving the reusable array itself.
+    pub fn drain_all(&mut self) -> arrayvec::Drain<'_, Mbuf<'eal>, N> {
+        self.bufs.drain(..)
+    }
+
+    /// Free held mbufs, then let `fill` write new pointers directly into the array's storage.
+    ///
+    /// # Safety
+    /// `fill` must return `n` no greater than the supplied capacity and initialize the first `n`
+    /// slots with live, non-null mbufs whose ownership transfers to this array. It must not write
+    /// beyond that capacity.
+    pub(crate) unsafe fn refill_with(
+        &mut self,
+        fill: impl FnOnce(*mut *mut dpdk_sys::rte_mbuf, u16) -> usize,
+    ) {
+        self.free_all();
+        // `Mbuf` is `repr(transparent)` over a `NonNull<rte_mbuf>` plus a zero-sized brand, so
+        // the array's storage has the layout of `[*mut rte_mbuf; N]` and can be handed to C.
+        let slots = self.bufs.as_mut_ptr().cast::<*mut dpdk_sys::rte_mbuf>();
+        let capacity = u16::try_from(N).unwrap_or(u16::MAX);
+        let written = fill(slots, capacity);
+        debug_assert!(written <= N, "filler wrote {written} mbufs into {N} slots");
+        // SAFETY: the caller's contract is that `written` slots now hold live, singly-owned
+        // mbufs, and the debug assertion above catches a filler that overran in testing.
+        unsafe { self.bufs.set_len(written) };
+    }
+
     /// Build an array from raw mbuf pointers.
     ///
     /// # Safety
@@ -915,20 +1044,7 @@ impl<'a, 'eal, const N: usize> IntoIterator for &'a mut MbufArray<'eal, N> {
 
 impl<const N: usize> Drop for MbufArray<'_, N> {
     fn drop(&mut self) {
-        if self.bufs.is_empty() {
-            return;
-        }
-        let count = self.bufs.len();
-        // SAFETY: `Mbuf` is transparent over `NonNull<rte_mbuf>`, so its array has the
-        // layout of raw pointers. Each entry owns a live mbuf reference to release.
-        unsafe {
-            dpdk_sys::rte_pktmbuf_free_bulk(
-                self.bufs.as_mut_ptr().cast::<*mut dpdk_sys::rte_mbuf>(),
-                count as c_uint,
-            );
-            // Prevent `Mbuf::drop` from freeing these mbufs again.
-            self.bufs.set_len(0);
-        }
+        self.free_all();
     }
 }
 
@@ -997,6 +1113,86 @@ mod pool_tests {
         assert_ne!(a, b);
     }
 
+    // Occupancy detects leaks here, but detecting double frees requires DPDK debug checks.
+    #[test]
+    #[with_eal]
+    fn refilling_a_full_array_frees_the_old_mbufs_exactly_once() {
+        let pool = pool("refill_accounting", 511);
+        let baseline = pool.in_use();
+
+        let mut burst = pool.alloc_bulk(8).expect("alloc_bulk failed");
+        assert_eq!(
+            pool.in_use(),
+            baseline + 8,
+            "allocation should be accounted"
+        );
+
+        // Stand in for the PMD: hand back four freshly allocated mbufs, written straight into
+        // the array's storage the way `rte_eth_rx_burst` would.
+        let fresh = pool.alloc_bulk(4).expect("alloc_bulk failed");
+        assert_eq!(pool.in_use(), baseline + 12);
+        let mut raw: Vec<*mut dpdk_sys::rte_mbuf> =
+            fresh.iter().map(|mbuf| mbuf.raw.as_ptr()).collect();
+        // The array must not free what it is about to hand over.
+        core::mem::forget(fresh);
+
+        // SAFETY: `raw` holds four live mbufs that nothing else now owns, and four is under the
+        // capacity the filler is offered.
+        unsafe {
+            burst.refill_with(|slots, capacity| {
+                assert!(raw.len() <= capacity as usize);
+                core::ptr::copy_nonoverlapping(raw.as_mut_ptr(), slots, raw.len());
+                raw.len()
+            });
+        }
+
+        assert_eq!(
+            burst.len(),
+            4,
+            "the array should hold what the filler wrote"
+        );
+        assert_eq!(
+            pool.in_use(),
+            baseline + 4,
+            "the eight it held must be back in the pool -- higher means a leak, lower a double free"
+        );
+
+        drop(burst);
+        assert_eq!(pool.in_use(), baseline, "and the four go back too");
+    }
+
+    #[test]
+    #[with_eal]
+    fn drain_all_empties_in_place_and_transfers_ownership() {
+        let pool = pool("drain_all_accounting", 511);
+        let baseline = pool.in_use();
+
+        let mut burst = pool.alloc_bulk(6).expect("alloc_bulk failed");
+        let drained: Vec<_> = burst.drain_all().collect();
+
+        assert_eq!(drained.len(), 6);
+        assert!(burst.is_empty(), "the array is emptied, not consumed");
+        assert_eq!(
+            pool.in_use(),
+            baseline + 6,
+            "draining moves ownership; it must not free anything"
+        );
+
+        drop(burst);
+        assert_eq!(
+            pool.in_use(),
+            baseline + 6,
+            "the emptied array owns nothing, so dropping it frees nothing"
+        );
+
+        drop(drained);
+        assert_eq!(
+            pool.in_use(),
+            baseline,
+            "the drained mbufs free exactly once"
+        );
+    }
+
     /// A failed bulk allocation must leave the pool's full capacity available.
     #[test]
     #[with_eal]
@@ -1018,5 +1214,35 @@ mod pool_tests {
         }
         let ok = pool.alloc_bulk(15).expect("pool should still be full");
         assert_eq!(ok.len(), 15);
+    }
+}
+#[cfg(test)]
+mod prefetch_budget {
+    use super::{CACHE_LINE_BYTES, PREFETCH_HEAD_LINES};
+    use net::eth::Eth;
+    use net::ipv4::Ipv4;
+    use net::udp::Udp;
+    use net::vxlan::Vxlan;
+
+    /// Inner IPv4 header offset derived from the encapsulation header sizes.
+    const INNER_IP_OFFSET: usize = Eth::HEADER_LEN.get() as usize      // outer ethernet
+        + Ipv4::MIN_LEN.get() as usize                                  // outer IPv4
+        + Udp::MIN_LENGTH.get() as usize                                // outer UDP
+        + Vxlan::MIN_LENGTH.get() as usize                              // VXLAN
+        + Eth::HEADER_LEN.get() as usize; // inner ethernet
+
+    #[test]
+    fn prefetch_span_covers_the_inner_ip_header() {
+        assert_eq!(
+            INNER_IP_OFFSET, 64,
+            "VXLAN inner IP is expected to land exactly on the second cache line"
+        );
+        let span = PREFETCH_HEAD_LINES * CACHE_LINE_BYTES;
+        let needed = INNER_IP_OFFSET + Ipv4::MIN_LEN.get() as usize;
+        assert!(
+            span >= needed,
+            "prefetch covers {span} B but the inner IPv4 header ends at {needed} B; raise \
+             PREFETCH_HEAD_LINES"
+        );
     }
 }

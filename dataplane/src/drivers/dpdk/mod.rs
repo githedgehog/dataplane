@@ -6,9 +6,9 @@
 //! Each worker owns one RX/TX queue pair per port and processes each burst on the
 //! receiving thread. Queue handles borrow their devices; mbufs borrow the EAL.
 //!
-//! RSS is disabled, so only queue 0 receives traffic. Ports need a kernel netdev
-//! because the pipeline identifies interfaces by ifindex. Forwarding runs in software.
-//! Control-plane frames cross per-port TAP interfaces through [`cpbridge`].
+//! RSS spreads flows across per-worker queues. Flow state is shared across workers.
+//! Ports need a kernel netdev because the pipeline identifies interfaces by ifindex.
+//! Forwarding runs in software; control frames cross per-port TAPs through [`cpbridge`].
 
 mod port;
 mod worker;
@@ -22,8 +22,9 @@ use concurrency::thread::BuilderExt;
 use dpdk::mem::Mbuf;
 use lifecycle::Subsystem;
 use pipeline::DynPipeline;
+use stats::PortMetrics;
 use tracectl::trace_target;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::DriverError;
 use super::status::DriverStatusWriter;
@@ -122,8 +123,44 @@ impl DriverDpdk {
             monitors.push(WorkerMonitor::new(id, handle, rx_tasks));
         }
 
-        spawn_supervisor(scope, "dpdk", workers_subsystem, monitors, status_writer)?;
+        // Register metrics once; the scoped callback keeps the borrowed ports alive while polling.
+        let port_metrics: Vec<(&Port<'_>, PortMetrics)> = ports
+            .iter()
+            .map(|port| (port, PortMetrics::new(&port.name)))
+            .collect();
+        let mut counters_unavailable = vec![false; port_metrics.len()];
+        spawn_supervisor(
+            scope,
+            "dpdk",
+            workers_subsystem,
+            monitors,
+            status_writer,
+            move || publish_port_counters(&port_metrics, &mut counters_unavailable),
+        )?;
         info!("DPDK driver started successfully");
         Ok(())
+    }
+}
+
+/// Publish device counters, logging once per port until a failed read recovers.
+fn publish_port_counters(port_metrics: &[(&Port<'_>, PortMetrics)], unavailable: &mut [bool]) {
+    for (slot, (port, metrics)) in port_metrics.iter().enumerate() {
+        match port.counters() {
+            Ok(counters) => {
+                metrics.publish(&counters);
+                // Report a later failure after recovery.
+                unavailable[slot] = false;
+            }
+            Err(e) => {
+                if !unavailable[slot] {
+                    unavailable[slot] = true;
+                    warn!(
+                        "port {} would not report its counters: {e:?}. Receive drops on this port \
+                         are now invisible -- an overloaded dataplane will look like an idle wire.",
+                        port.name
+                    );
+                }
+            }
+        }
     }
 }

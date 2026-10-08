@@ -1358,6 +1358,7 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-config",
  "dataplane-dpdk",
+ "dataplane-errno",
  "dataplane-flow-entry",
  "dataplane-flow-filter",
  "dataplane-hardware",
@@ -1693,14 +1694,18 @@ dependencies = [
 name = "dataplane-init"
 version = "0.29.0"
 dependencies = [
+ "caps",
  "command-fds",
  "dataplane-args",
  "dataplane-clock",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-hardware",
  "dataplane-id",
+ "dataplane-n-vm",
  "dataplane-sysfs",
+ "dataplane-test-utils",
  "devlink",
+ "fixin",
  "futures",
  "nix 0.31.3",
  "procfs",

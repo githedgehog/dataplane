@@ -267,14 +267,14 @@ impl TryFrom<Preference> for SocketId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lcore::ServiceThread;
+    use crate::lcore::RegisteredThread;
     use crate::with_eal;
 
     #[test]
     #[with_eal]
     fn a_registered_thread_resolves_to_its_socket() {
         std::thread::scope(|scope| {
-            ServiceThread::new(scope, "socket-lookup", || {
+            RegisteredThread::new(scope, "socket-lookup", |_| {
                 let id = LCoreId::current();
                 assert!(id.as_u32() < LCoreId::MAX);
                 assert_eq!(
