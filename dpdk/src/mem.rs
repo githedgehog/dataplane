@@ -117,12 +117,8 @@ impl Pool {
             None => {
                 let errno = unsafe { dpdk_sys::rte_errno_get() };
                 let c_err_str = unsafe { dpdk_sys::rte_strerror(errno) };
-                let err_str = unsafe { CStr::from_ptr(c_err_str) };
-                // SAFETY:
-                // This `expect` is safe because the error string is guaranteed to be valid
-                // null-terminated ASCII.
-                #[allow(clippy::expect_used)]
-                let err_str = err_str.to_str().expect("invalid UTF-8");
+                // SAFETY: `rte_strerror` always returns a valid NUL-terminated string.
+                let err_str = unsafe { CStr::from_ptr(c_err_str) }.to_string_lossy();
                 let err_msg = format!("Failed to create mbuf pool: {err_str}; (errno: {errno})");
                 error!("{err_msg}");
                 return Err(InvalidMemPoolConfig::InvalidParams(

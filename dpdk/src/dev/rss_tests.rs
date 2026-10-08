@@ -21,8 +21,8 @@ fn config(key: Option<Box<[u8]>>) -> DevConfig {
         num_rx_queues: 1,
         num_tx_queues: 1,
         num_hairpin_queues: 0,
-        tx_offloads: Some(TxOffload::NONE.into()),
-        rx_offloads: Some(RxOffload::NONE),
+        tx_offloads: TxOffloadConfig::none(),
+        rx_offloads: RxOffload::NONE,
         mtu: None,
         rss: Some(RssConf { key, hf: 1 }),
     }
