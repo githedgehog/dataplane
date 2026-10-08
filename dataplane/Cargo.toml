@@ -28,6 +28,7 @@ dpdk = { workspace = true }
 flow-entry = { workspace = true }
 flow-filter = { workspace = true }
 futures = { workspace = true }
+hardware = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 id = { workspace = true }

@@ -3,8 +3,10 @@
 
 use crate::packet_processor::start_router;
 use crate::statistics::spawn_metrics;
-use args::{CmdArgs, Parser};
+use args::{CmdArgs, Parser, PortArg};
 
+use crate::drivers::DriverError;
+use crate::drivers::dpdk::{DriverDpdk, Port};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::driver_status_access;
 use lifecycle::{
@@ -12,6 +14,9 @@ use lifecycle::{
 };
 use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 
+use dpdk::dev::DevInfo;
+use dpdk::eal::Eal;
+use hardware::pci::address::PciAddress;
 use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
 use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeConfig};
@@ -20,7 +25,7 @@ use tracectl::{
     TracingControl, TracingRateLimitConfig, custom_target, get_trace_ctl, trace_target,
 };
 
-use tracing::{error, info, level_filters::LevelFilter};
+use tracing::{error, info, level_filters::LevelFilter, warn};
 
 use concurrency::sync::Arc;
 use config::internal::routing::bmp::BmpOptions;
@@ -165,6 +170,136 @@ fn spawn_signal_handler(
     });
 }
 
+/// Keep EAL initialization separate from explicit device attachment.
+fn eal_arguments(args: &CmdArgs) -> Vec<String> {
+    let main_lcore_arg = dpdk::eal::main_lcore_arg();
+
+    let mut eal_args: Vec<String> = vec![
+        "--no-auto-probing".to_string(),
+        "--in-memory".to_string(),
+        "--no-telemetry".to_string(),
+        "--no-shconf".to_string(),
+        "--iova-mode=va".to_string(),
+        "--lcores".to_string(),
+        main_lcore_arg,
+    ];
+
+    if args.driver_name() != "dpdk" {
+        // Classifier-only: rte_acl needs the memory subsystem and nothing else.
+        eal_args.push("--no-huge".to_string());
+        eal_args.push("--no-pci".to_string());
+    }
+
+    eal_args
+}
+
+fn init_eal(args: &CmdArgs) -> dpdk::eal::Eal {
+    let eal_args = eal_arguments(args);
+    info!("Initializing DPDK EAL with: {}", eal_args.join(" "));
+    dpdk::eal::init(eal_args)
+}
+
+/// Validate every interface before probing any device.
+fn configured_pci_ports(args: &CmdArgs) -> Result<Vec<(String, PciAddress)>, DriverError> {
+    let mut selected = Vec::new();
+    let mut addresses = std::collections::BTreeSet::new();
+    for interface in args.interfaces() {
+        let name = interface.interface.to_string();
+        let Some(PortArg::PCI(ebdf)) = &interface.port else {
+            return Err(DriverError::PortSetup(format!(
+                "interface '{name}' needs a PCI address (--interface {name}=pci@0000:xx:yy.z)"
+            )));
+        };
+        let address = PciAddress::try_from(ebdf.to_string().as_str()).map_err(|e| {
+            DriverError::PortSetup(format!(
+                "interface '{name}' has an invalid PCI address: {e}"
+            ))
+        })?;
+        if !addresses.insert(address) {
+            return Err(DriverError::PortSetup(format!(
+                "PCI device {address} is configured more than once"
+            )));
+        }
+        selected.push((name, address));
+    }
+    if selected.is_empty() {
+        return Err(DriverError::PortSetup(
+            "no PCI devices were configured".to_string(),
+        ));
+    }
+    Ok(selected)
+}
+
+/// Probe, configure and start the selected devices. Init must prepare their kernel bindings first.
+fn bring_up_ports<'eal>(
+    eal: &'eal mut Eal,
+    args: &CmdArgs,
+) -> Result<Vec<Port<'eal>>, DriverError> {
+    let num_workers = u16::try_from(args.num_workers()).map_err(|_| {
+        DriverError::PortSetup(format!("{} workers is too many", args.num_workers()))
+    })?;
+    let selected = configured_pci_ports(args)?;
+    for (name, address) in &selected {
+        eal.probe_pci(*address)
+            .map_err(|e| DriverError::PortSetup(format!("interface '{name}': {e}")))?;
+    }
+
+    // Index probed ports whose ethdev names parse as PCI addresses.
+    let mut probed: Vec<(PciAddress, DevInfo<'eal>)> = Vec::new();
+    for info in eal.dev.iter() {
+        let index = info.index();
+        let name = info.name().map_err(|e| {
+            DriverError::PortSetup(format!("could not read the name of DPDK port {index}: {e}"))
+        })?;
+        match PciAddress::try_from(name.as_str()) {
+            Ok(addr) => probed.push((addr, info)),
+            // Configuration currently accepts only PCI addresses.
+            Err(e) => warn!("DPDK port {index} is named '{name}', which is not a PCI address: {e}"),
+        }
+    }
+    info!(
+        "EAL probed {} DPDK port(s): {}",
+        probed.len(),
+        probed
+            .iter()
+            .map(|(addr, _)| addr.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let mut ports = Vec::new();
+    for (name, wanted) in selected {
+        // TODO: Resolve suffixed PMD port names when init supports eswitch configuration.
+        let at = probed.iter().position(|(addr, _)| *addr == wanted).ok_or_else(|| {
+            DriverError::PortSetup(format!(
+                "interface '{name}': probing PCI device {wanted} produced no Ethernet port with that name"
+            ))
+        })?;
+        let (_, info) = probed.remove(at);
+        let index = info.index();
+        // Claim before any setup, so a port something else owns is refused up front.
+        let port = eal
+            .claim(index)
+            .map_err(|e| DriverError::PortSetup(format!("cannot use port {index}: {e}")))?;
+
+        ports.push(Port::bring_up(eal, port, name, num_workers)?);
+    }
+
+    if !probed.is_empty() {
+        warn!(
+            "{} probed DPDK port(s) were not named by any interface and will carry no traffic: {}",
+            probed.len(),
+            probed
+                .iter()
+                .map(|(addr, _)| addr.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    Ok(ports)
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn main() {
     let args = CmdArgs::parse();
@@ -177,28 +312,9 @@ pub fn main() {
     };
     init_logging(&args, &gwname);
 
-    // Initialize a minimal EAL as early as possible. Stages such as the ACL filter and the
-    // flow-filter build rte_acl classifiers when configuration is applied (which happens before any
-    // packet driver starts), and rte_acl needs the EAL memory subsystem up. These are the
-    // lightweight, classifier-only args (no hugepages / no PCI). NOTE: there can be only one
-    // `rte_eal_init` per process, so the real DPDK datapath driver (currently `todo!()`) must
-    // eventually take over EAL ownership with device-appropriate args rather than adding a second
-    // init. The guard is held for the life of the process.
-    //
-    // `--lcores` pins DPDK's main lcore to every CPU currently allowed for this process rather
-    // than letting `rte_eal_init` default it to a single CPU; see `main_lcore_arg` for why that
-    // default matters here (it otherwise pins every thread spawned after EAL init, not just DPDK's).
-    let main_lcore_arg = dpdk::eal::main_lcore_arg();
-    let _eal = dpdk::eal::init([
-        "--no-huge",
-        "--no-pci",
-        "--in-memory",
-        "--no-telemetry",
-        "--no-shconf",
-        "--iova-mode=va",
-        "--lcores",
-        main_lcore_arg.as_str(),
-    ]);
+    // ACL classifiers and the DPDK driver share one EAL. Initialize it before either starts.
+    // main_lcore_arg preserves the CPU affinity inherited by subsequently spawned threads.
+    let mut eal = init_eal(&args);
 
     let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&args);
 
@@ -296,7 +412,22 @@ pub fn main() {
         setup.stats,
     );
 
-    let pipeline_factory = setup.pipeline;
+    let ingredients = setup.pipeline;
+    let pipeline_data = ingredients.data();
+
+    // Ports must outlive the worker scope because queue handles borrow them.
+    let ports = if args.driver_name() == "dpdk" {
+        match bring_up_ports(&mut eal, &args) {
+            Ok(ports) => ports,
+            Err(e) => {
+                error!("Failed to bring up DPDK ports: {e}");
+                shutdown.fail();
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
 
     concurrency::thread::scope(|scope| {
         let mgmt_result = run_mgmt(
@@ -308,7 +439,7 @@ pub fn main() {
                 interfaces: args.interfaces().map(|i| i.interface).collect(),
                 processor_params: ConfigProcessorParams {
                     router_ctl: setup.router.get_ctl_tx(),
-                    pipeline_data: pipeline_factory().get_data(),
+                    pipeline_data,
                     flow_table: setup.flow_table,
                     vpcmapw: setup.vpcmapw,
                     nattablesw: setup.nattablesw,
@@ -330,7 +461,15 @@ pub fn main() {
                 let driver_result = match args.driver_name() {
                     "dpdk" => {
                         info!("Using driver DPDK...");
-                        todo!();
+                        Some(DriverDpdk::start(
+                            scope,
+                            &shutdown.workers,
+                            &mgmt_handle,
+                            &ports,
+                            args.num_workers(),
+                            &ingredients.factory(),
+                            driver_status_writer,
+                        ))
                     }
                     "kernel" => {
                         info!("Using driver kernel...");
@@ -338,8 +477,8 @@ pub fn main() {
                             scope,
                             &shutdown.workers,
                             args.kernel_interfaces(),
-                            args.kernel_num_workers(),
-                            &pipeline_factory,
+                            args.num_workers(),
+                            &ingredients.factory(),
                             driver_status_writer,
                         ))
                     }
@@ -374,6 +513,11 @@ pub fn main() {
 
     let exit_code = i32::from(shutdown.is_fatal());
 
+    // Workers have joined and released their queue handles; stop and close the ports.
+    for port in ports {
+        port.shutdown();
+    }
+
     setup.router.stop();
     mgmt_runtime.shutdown_timeout(Duration::from_secs(2));
 
@@ -385,4 +529,91 @@ pub fn main() {
     }
     info!("Dataplane shutdown completed");
     std::process::exit(exit_code);
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[test]
+    fn eal_never_probes_configured_interfaces_implicitly() {
+        for command_line in [
+            vec!["dataplane"],
+            vec![
+                "dataplane",
+                "--driver",
+                "dpdk",
+                "--interface",
+                "eth0=pci@0000:01:00.0",
+            ],
+            vec![
+                "dataplane",
+                "--driver",
+                "kernel",
+                "--interface",
+                "eth0=kernel@eth0",
+            ],
+        ] {
+            let args = CmdArgs::try_parse_from(command_line).unwrap();
+            let flags = eal_arguments(&args);
+            assert!(flags.iter().any(|flag| flag == "--no-auto-probing"));
+            assert!(!flags.iter().any(|flag| matches!(
+                flag.as_str(),
+                "-a" | "--allow" | "--auto-probing" | "--vdev"
+            )));
+            assert!(!flags.iter().any(|flag| flag.contains("0000:01:00.0")));
+            assert_eq!(
+                flags.iter().any(|flag| flag == "--no-pci"),
+                args.driver_name() == "kernel"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_all_interfaces_before_selecting_devices() {
+        for (interfaces, message) in [
+            (None, "no PCI devices"),
+            (
+                Some("eth0=pci@0000:01:00.0,eth1=kernel@eth1"),
+                "needs a PCI address",
+            ),
+            (
+                Some("eth0=pci@0000:ab:00.0,eth1=pci@0000:AB:00.0"),
+                "configured more than once",
+            ),
+        ] {
+            let mut command_line = vec!["dataplane", "--driver", "dpdk"];
+            if let Some(interfaces) = interfaces {
+                command_line.extend(["--interface", interfaces]);
+            }
+            let args = CmdArgs::try_parse_from(command_line).unwrap();
+            assert!(
+                configured_pci_ports(&args)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(message)
+            );
+        }
+        let args = CmdArgs::try_parse_from([
+            "dataplane",
+            "--driver",
+            "dpdk",
+            "--interface",
+            "eth1=pci@0000:02:00.0,eth0=pci@0000:01:00.0",
+        ])
+        .unwrap();
+        assert_eq!(
+            configured_pci_ports(&args).unwrap(),
+            vec![
+                (
+                    "eth1".to_string(),
+                    PciAddress::try_from("0000:02:00.0").unwrap()
+                ),
+                (
+                    "eth0".to_string(),
+                    PciAddress::try_from("0000:01:00.0").unwrap()
+                ),
+            ]
+        );
+    }
 }
