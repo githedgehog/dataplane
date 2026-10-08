@@ -7,6 +7,7 @@ use crate::dev::{DevIndex, RxOffload};
 use crate::mem::{MBUF_BURST, MbufArray};
 use crate::socket::SocketId;
 use crate::{dev, mem, socket};
+use core::marker::PhantomData;
 use errno::Errno;
 use std::ffi::c_int;
 use std::ptr::null_mut;
@@ -43,9 +44,7 @@ impl From<u16> for RxQueueIndex {
 
 /// Configuration for a DPDK receive queue.
 #[derive(Debug)]
-pub struct RxQueueConfig {
-    /// The index of the device this rx queue is associated with
-    pub dev: DevIndex,
+pub struct RxQueueConfig<'eal> {
     /// The index of the rx queue.
     pub queue_index: RxQueueIndex,
     /// The number of descriptors in the rx queue.
@@ -55,12 +54,23 @@ pub struct RxQueueConfig {
     /// Hardware offloads to use
     pub offloads: RxOffload,
     /// The memory pool to use for the rx queue.
-    pub pool: mem::Pool,
+    pub pool: mem::Pool<'eal>,
 }
 
 /// Error type for receive queue configuration failures.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConfigFailure {
+    #[error("receive queue {} is already configured on this device", .0.as_u16())]
+    AlreadyConfigured(RxQueueIndex),
+    #[error(
+        "receive queue {} is beyond the {configured} the device was configured with",
+        .index.as_u16()
+    )]
+    OutOfRange {
+        index: RxQueueIndex,
+        configured: u16,
+    },
     #[error("The device has been removed")]
     DeviceRemoved(Errno),
     #[error("Invalid arguments were passed to the receive queue configuration")]
@@ -86,25 +96,23 @@ impl ConfigFailure {
     }
 }
 
-/// DPDK rx queue
+/// An exclusive receive queue handle borrowed from a started device.
+/// Polling requires mutable access; the handle cannot be used after the device stops.
 #[derive(Debug)]
-pub struct RxQueue {
-    pub(crate) config: RxQueueConfig,
+pub struct RxQueue<'dev> {
+    pub(crate) config: RxQueueConfig<'dev>,
     pub(crate) dev: DevIndex,
+    pub(crate) _dev: PhantomData<&'dev ()>,
 }
 
-impl RxQueue {
-    /// Create and configure a new receive queue.
-    ///
-    /// This method is crate internal.
-    /// The library end user should call this by way of the
-    /// [`dev::Dev::new_rx_queue`] method.
-    ///
-    /// This design ensures that the hairpin queue is correctly tracked in the list of queues
-    /// associated with the device.
+impl<'dev> RxQueue<'dev> {
+    /// Configure a receive queue, tracked by its device.
     #[cold]
     #[tracing::instrument(level = "info")]
-    pub(crate) fn setup(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
+    pub(crate) fn setup(
+        dev: &dev::Dev,
+        config: RxQueueConfig<'dev>,
+    ) -> Result<Self, ConfigFailure> {
         let socket_id = SocketId::try_from(config.socket_preference)
             .map_err(|_| ConfigFailure::InvalidSocket(Errno(errno::NEG_EINVAL)))?;
 
@@ -133,12 +141,13 @@ impl RxQueue {
                 nb_rx_desc,
                 socket_id.as_c_uint(),
                 &rx_conf,
-                config.pool.inner().as_mut_ptr(),
+                config.pool.as_mut_ptr(),
             )
         }) {
             None => Ok(RxQueue {
                 dev: dev.info.index(),
                 config,
+                _dev: PhantomData,
             }),
             Some(err) => Err(err),
         }
@@ -187,8 +196,10 @@ impl RxQueue {
 
     /// Receive up to [`MBUF_BURST`] packets. The returned batch owns them and frees
     /// any remaining packets on drop.
+    ///
+    /// The batch borrows the device and must be released or transmitted before it stops.
     #[tracing::instrument(level = "trace")]
-    pub fn receive(&self) -> MbufArray {
+    pub fn receive(&mut self) -> MbufArray<'dev> {
         let mut pkts = [null_mut::<dpdk_sys::rte_mbuf>(); MBUF_BURST];
         trace!(
             "Polling for packets from rx queue {queue} on dev {dev}",

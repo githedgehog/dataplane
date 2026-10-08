@@ -3,7 +3,7 @@
 
 use super::*;
 
-fn info(key_size: u8, supports_rss: bool) -> DevInfo {
+fn info(key_size: u8, supports_rss: bool) -> DevInfo<'static> {
     DevInfo {
         index: DevIndex(u16::MAX),
         inner: rte_eth_dev_info {
@@ -13,6 +13,7 @@ fn info(key_size: u8, supports_rss: bool) -> DevInfo {
             flow_type_rss_offloads: u64::from(supports_rss),
             ..Default::default()
         },
+        eal: PhantomData,
     }
 }
 
@@ -42,7 +43,7 @@ fn rss_key_length_is_checked_before_device_configuration() {
         } else {
             // Reject the length before trying to configure this invalid port.
             assert!(matches!(
-                config.apply(info(expected, true)),
+                config.configure(&info(expected, true)),
                 Err(DevConfigError::RssKeyLength { actual: got, expected: want })
                     if got == actual && want == expected
             ));
@@ -69,13 +70,18 @@ fn rss_key_survives_source_drop_and_device_transitions() {
         source.rss.as_ref().unwrap().key.as_ref().unwrap().as_ptr()
     );
     drop(source);
+    let owner = Ownership::unregistered();
     let dev: Dev = Dev {
+        lifecycle: PortLifecycle {
+            port: info.index(),
+            stage: Stage::Configured,
+            config: applied,
+            owner: &owner,
+        },
         info,
-        config: applied,
-        rx_queues: Vec::new(),
-        tx_queues: Vec::new(),
-        hairpin_queues: Vec::new(),
+        queues: Mutex::new(Some(QueueStore::new(0, 0))),
         state: PhantomData,
+        _thread: PhantomData,
     };
     // Exercise the ownership moves without calling a driver on this synthetic port.
     let dev = dev.transition::<Started>().transition::<Configured>();
@@ -94,6 +100,9 @@ fn rss_key_survives_source_drop_and_device_transitions() {
         unsafe { core::slice::from_raw_parts(rss.rss_key, 52) },
         &[42; 52]
     );
+    // The port is synthetic, so there is no driver to stop or close it on drop.
+    let mut dev = dev;
+    dev.lifecycle.stage = Stage::Closed;
 }
 
 #[test]
