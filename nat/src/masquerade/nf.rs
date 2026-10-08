@@ -10,7 +10,7 @@ use crate::masquerade::allocator_writer::NatAllocatorReader;
 use crate::masquerade::apalloc::{Allocation, NatAllocator};
 use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
 use crate::masquerade::state::MasqueradeState;
-use crate::nat_flows::{HalfFlow, InstallError, NatState, NewFlow, install_pair, packet_flow_keys};
+use crate::nat_flows::{HalfFlow, InstallError, NatData, NewFlow, install_pair, packet_flow_keys};
 use clock::Duration;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::table::FlowTable;

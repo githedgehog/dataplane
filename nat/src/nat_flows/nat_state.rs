@@ -5,8 +5,8 @@
 
 use net::flows::{FlowInfoItem, FlowInfoLocked};
 
-/// State that a NAT mode has in each half of a flow pair
-pub(crate) trait NatState: FlowInfoItem + Sized {
+/// Data that a NAT mode contains in each half of a flow pair
+pub(crate) trait NatData: FlowInfoItem + Sized {
     /// The state of this type held by a flow, if any.
     fn try_get(locked: &FlowInfoLocked) -> Option<&Self>;
 
