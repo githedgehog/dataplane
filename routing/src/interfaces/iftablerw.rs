@@ -466,11 +466,6 @@ impl IfTableWriter {
         debug!("Changed the mac of interface {ifname}: {mac} -> {new_mac}");
         Ok(update)
     }
-
-    #[must_use]
-    pub fn as_reader(&self) -> IfTableReader {
-        IfTableReader(self.0.clone())
-    }
 }
 
 #[derive(Clone, Debug)]

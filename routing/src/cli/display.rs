@@ -43,6 +43,7 @@ use common::cliprovider::Heading;
 use clock::{Duration, Instant};
 use lpm::prefix::IpPrefix;
 use lpm::trie::{PrefixMapTrie, TrieMap};
+use net::interface::InterfaceIndex;
 use net::vxlan::Vni;
 use std::borrow::Cow;
 use std::fmt::Display;
@@ -152,43 +153,57 @@ impl Display for VrfStatus {
     }
 }
 
+fn fmt_nhop_key(
+    f: &mut std::fmt::Formatter<'_>,
+    key: &NhopKey,
+    iftable: Option<&IfTable>,
+) -> std::fmt::Result {
+    // resolve ifindex
+    let ifname = key
+        .ifindex
+        .and_then(|ifindex| iftable.and_then(|t| t.name_of(ifindex)));
+
+    if let Some(address) = key.address {
+        write!(f, " via {address}")?;
+    }
+    if let Some(name) = ifname {
+        write!(f, " interface {name}")?;
+    }
+    if let Some(ifindex) = key.ifindex {
+        write!(f, " (idx {ifindex})")?;
+    }
+    if let Some(encap) = key.encap {
+        write!(f, " encap {encap}")?;
+    }
+    if key.fwaction != FwAction::Forward {
+        write!(f, " action {:?}", key.fwaction)?;
+    }
+    write!(f, "  ({})", key.origin)?;
+    Ok(())
+}
+
 impl Display for NhopKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let ifname = self.ifindex.and_then(name_of);
-
-        if let Some(address) = self.address {
-            write!(f, " via {address}")?;
-        }
-        if let Some(name) = ifname {
-            write!(f, " interface {name}")?;
-        }
-        if let Some(ifindex) = self.ifindex {
-            write!(f, " (idx {ifindex})")?;
-        }
-        if let Some(encap) = self.encap {
-            write!(f, " encap {encap}")?;
-        }
-        if self.fwaction != FwAction::Forward {
-            write!(f, " action {:?}", self.fwaction)?;
-        }
-        write!(f, "  ({})", self.origin)?;
-
-        // the vrfid is purposely not shown here yet since it is not yet used
-        Ok(())
+        fmt_nhop_key(f, self, None)
     }
 }
 impl Display for Nhop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_nhop(f, self, 0)
+        fmt_nhop(f, self, 0, None)
     }
 }
 fn indent_depth(f: &mut std::fmt::Formatter<'_>, depth: u8) -> std::fmt::Result {
     let indent = " ".repeat(4 * depth as usize);
     write!(f, "{indent}")
 }
-fn fmt_nhop(f: &mut std::fmt::Formatter<'_>, nhop: &Nhop, depth: u8) -> std::fmt::Result {
+fn fmt_nhop(
+    f: &mut std::fmt::Formatter<'_>,
+    nhop: &Nhop,
+    depth: u8,
+    iftable: Option<&IfTable>,
+) -> std::fmt::Result {
     indent_depth(f, depth)?;
-    nhop.key.fmt(f)?;
+    fmt_nhop_key(f, &nhop.key, iftable)?;
     if nhop.is_unresolved() {
         write!(f, " (unresolved)")?;
     }
@@ -197,13 +212,17 @@ fn fmt_nhop(f: &mut std::fmt::Formatter<'_>, nhop: &Nhop, depth: u8) -> std::fmt
     // resolvers
     if let Some(resolvers) = nhop.get_resolvers() {
         for r in resolvers.iter().filter_map(Weak::upgrade) {
-            fmt_nhop(f, &r, depth.saturating_add(1))?;
+            fmt_nhop(f, &r, depth.saturating_add(1), iftable)?;
         }
     }
     Ok(())
 }
 
-fn fmt_route(f: &mut std::fmt::Formatter<'_>, route: &Route) -> std::fmt::Result {
+fn fmt_route(
+    f: &mut std::fmt::Formatter<'_>,
+    route: &Route,
+    iftable: Option<&IfTable>,
+) -> std::fmt::Result {
     let age = Age(route.tstamp);
     writeln!(
         f,
@@ -211,7 +230,7 @@ fn fmt_route(f: &mut std::fmt::Formatter<'_>, route: &Route) -> std::fmt::Result
         route.origin, route.distance, route.metric
     )?;
     for shared in &route.s_nhops {
-        fmt_nhop(f, shared, 1)?;
+        fmt_nhop(f, shared, 1, iftable)?;
     }
     writeln!(f)
 }
@@ -242,12 +261,14 @@ fn fmt_nhop_internals(
     f: &mut std::fmt::Formatter<'_>,
     rc: &Rc<Nhop>,
     depth: u8,
+    iftable: Option<&IfTable>,
 ) -> std::fmt::Result {
     let tab = 8 * depth as usize;
     let indent = " ".repeat(tab);
 
     let sym = if depth == 0 { "NH" } else { "ref" };
-    write!(f, "{indent} ({}) {sym} = {}", Rc::strong_count(rc), rc.key)?;
+    write!(f, "{indent} ({}) {sym} = ", Rc::strong_count(rc))?;
+    fmt_nhop_key(f, &rc.key, iftable)?;
     if rc.is_unresolved() {
         write!(f, " (UNRESOLVED)")?;
     }
@@ -257,7 +278,7 @@ fn fmt_nhop_internals(
         return Ok(());
     };
     for r in resolvers.iter().filter_map(Weak::upgrade) {
-        fmt_nhop_internals(f, &r, depth.saturating_add(1))?;
+        fmt_nhop_internals(f, &r, depth.saturating_add(1), iftable)?;
     }
     Ok(())
 }
@@ -267,7 +288,7 @@ impl Display for NhopStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!("Next-hop Store ({})", self.len())).fmt(f)?;
         for nhop in self.iter() {
-            fmt_nhop_internals(f, nhop, 0)?;
+            fmt_nhop_internals(f, nhop, 0, None)?;
         }
         Ok(())
     }
@@ -275,7 +296,7 @@ impl Display for NhopStore {
 
 impl Display for Route {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_route(f, self)
+        fmt_route(f, self, None)
     }
 }
 
@@ -307,13 +328,14 @@ impl Display for Vrf {
     }
 }
 
-pub(crate) struct VrfViewV4<'a> {
+pub(super) struct VrfViewV4<'a> {
     vrf: &'a Vrf,
+    iftable: &'a IfTable,
     filter: Option<&'a RouteV4Filter>,
 }
 impl<'a> VrfViewV4<'a> {
     #[must_use]
-    pub fn filter(mut self, filter: &'a RouteV4Filter) -> Self {
+    pub(super) fn filter(mut self, filter: &'a RouteV4Filter) -> Self {
         self.filter = Some(filter);
         self
     }
@@ -339,7 +361,7 @@ impl Display for VrfViewV4<'_> {
 
         for (prefix, route) in rt_iter {
             write!(f, "{}  {prefix} ", route.flags)?;
-            fmt_route(f, route)?;
+            fmt_route(f, route, Some(self.iftable))?;
             displayed += 1;
         }
         if displayed != total {
@@ -349,13 +371,14 @@ impl Display for VrfViewV4<'_> {
     }
 }
 
-pub(crate) struct VrfViewV6<'a> {
+pub(super) struct VrfViewV6<'a> {
     vrf: &'a Vrf,
+    iftable: &'a IfTable,
     filter: Option<&'a RouteV6Filter>,
 }
 impl<'a> VrfViewV6<'a> {
     #[must_use]
-    pub fn filter(mut self, filter: &'a RouteV6Filter) -> Self {
+    pub(super) fn filter(mut self, filter: &'a RouteV6Filter) -> Self {
         self.filter = Some(filter);
         self
     }
@@ -380,7 +403,7 @@ impl Display for VrfViewV6<'_> {
 
         for (prefix, route) in rt_iter {
             write!(f, "{}  {prefix} ", route.flags)?;
-            fmt_route(f, route)?;
+            fmt_route(f, route, Some(self.iftable))?;
             displayed += 1;
         }
         if displayed != total {
@@ -392,8 +415,9 @@ impl Display for VrfViewV6<'_> {
 
 // ================================================= //
 
-pub(crate) struct VrfV4Nexthops<'a> {
+pub(super) struct VrfV4Nexthops<'a> {
     vrf: &'a Vrf,
+    iftable: &'a IfTable,
 }
 
 impl Display for VrfV4Nexthops<'_> {
@@ -408,13 +432,14 @@ impl Display for VrfV4Nexthops<'_> {
             .filter(|nh| nh.key.address.is_none_or(|a| a.is_ipv4()));
 
         for nhop in iter {
-            fmt_nhop_internals(f, nhop, 0)?;
+            fmt_nhop_internals(f, nhop, 0, Some(self.iftable))?;
         }
         Ok(())
     }
 }
-pub(crate) struct VrfV6Nexthops<'a> {
+pub(super) struct VrfV6Nexthops<'a> {
     vrf: &'a Vrf,
+    iftable: &'a IfTable,
 }
 
 impl Display for VrfV6Nexthops<'_> {
@@ -429,7 +454,7 @@ impl Display for VrfV6Nexthops<'_> {
             .filter(|nh| nh.key.address.is_none_or(|a| a.is_ipv6()));
 
         for nhop in iter {
-            fmt_nhop_internals(f, nhop, 0)?;
+            fmt_nhop_internals(f, nhop, 0, Some(self.iftable))?;
         }
         Ok(())
     }
@@ -587,10 +612,10 @@ impl Display for IfTable {
 
 // =================== Interface addresses =================== //
 #[repr(transparent)]
-pub(crate) struct IfTableAddress<'a>(&'a IfTable);
+pub(super) struct IfTableAddress<'a>(&'a IfTable);
 impl IfTable {
     #[must_use]
-    pub(crate) fn cli_addresses(&self) -> IfTableAddress<'_> {
+    pub(super) fn cli_addresses(&self) -> IfTableAddress<'_> {
         IfTableAddress(self)
     }
 }
@@ -653,13 +678,13 @@ impl Display for RmacEntry {
     }
 }
 
-pub(crate) struct RmacStoreView<'a> {
+pub(super) struct RmacStoreView<'a> {
     rmac_store: &'a RmacStore,
     filter: Option<&'a RmacFilter>,
 }
 impl<'a> RmacStoreView<'a> {
     #[must_use]
-    pub fn filter(mut self, filter: &'a RmacFilter) -> Self {
+    pub(super) fn filter(mut self, filter: &'a RmacFilter) -> Self {
         self.filter = Some(filter);
         self
     }
@@ -763,9 +788,12 @@ impl Display for FibKey {
 fn fmt_egress_object(
     f: &mut std::fmt::Formatter<'_>,
     egress: &EgressObject,
+    iftable: Option<&IfTable>,
 ) -> Result<(), std::fmt::Error> {
     write!(f, "egress:")?;
-    let ifname = egress.ifindex.and_then(name_of);
+    let ifname = egress
+        .ifindex
+        .and_then(|ifindex| iftable.and_then(|t| t.name_of(ifindex)));
     fmt_opt_value(f, " interface", ifname, false)?;
     fmt_opt_value(f, " idx", egress.ifindex.as_ref(), false)?;
     fmt_opt_value(f, " addr", egress.address.as_ref(), false)
@@ -773,8 +801,10 @@ fn fmt_egress_object(
 fn fmt_local_instruction(
     f: &mut std::fmt::Formatter<'_>,
     ifindex: InterfaceIndex,
+    iftable: Option<&IfTable>,
 ) -> Result<(), std::fmt::Error> {
-    match name_of(ifindex) {
+    let ifname = iftable.and_then(|t| t.name_of(ifindex));
+    match ifname {
         Some(ifname) => write!(f, "Local ({ifname}, ifindex {ifindex})"),
         None => write!(f, "Local (ifindex {ifindex})"),
     }
@@ -783,19 +813,24 @@ fn fmt_local_instruction(
 fn fmt_pkt_instruction(
     f: &mut std::fmt::Formatter<'_>,
     pki: &PktInstruction,
+    iftable: Option<&IfTable>,
 ) -> Result<(), std::fmt::Error> {
     match pki {
         PktInstruction::Drop => write!(f, "drop"),
-        PktInstruction::Local(ifindex) => fmt_local_instruction(f, *ifindex),
-        PktInstruction::Egress(egress) => fmt_egress_object(f, egress),
+        PktInstruction::Local(ifindex) => fmt_local_instruction(f, *ifindex, iftable),
+        PktInstruction::Egress(egress) => fmt_egress_object(f, egress, iftable),
         PktInstruction::Encap(encap) => write!(f, "encap: {encap}"),
     }
 }
-fn fmt_fib_entry(f: &mut std::fmt::Formatter<'_>, entry: &FibEntry) -> Result<(), std::fmt::Error> {
+fn fmt_fib_entry(
+    f: &mut std::fmt::Formatter<'_>,
+    entry: &FibEntry,
+    iftable: Option<&IfTable>,
+) -> Result<(), std::fmt::Error> {
     writeln!(f, "        - entry:")?;
     for (n, inst) in entry.iter().enumerate() {
         write!(f, "            {n} ")?;
-        fmt_pkt_instruction(f, inst)?;
+        fmt_pkt_instruction(f, inst, iftable)?;
         writeln!(f)?;
     }
     Ok(())
@@ -803,14 +838,19 @@ fn fmt_fib_entry(f: &mut std::fmt::Formatter<'_>, entry: &FibEntry) -> Result<()
 fn fmt_fibgroup(
     f: &mut std::fmt::Formatter<'_>,
     fibgroup: &FibGroup,
+    iftable: Option<&IfTable>,
 ) -> Result<(), std::fmt::Error> {
     writeln!(f, "     ■ group ({} entries):", fibgroup.len())?;
     for entry in fibgroup.iter() {
-        fmt_fib_entry(f, entry)?;
+        fmt_fib_entry(f, entry, iftable)?;
     }
     writeln!(f)
 }
-fn fmt_fib_route(f: &mut std::fmt::Formatter<'_>, route: &FibRoute) -> std::fmt::Result {
+fn fmt_fib_route(
+    f: &mut std::fmt::Formatter<'_>,
+    route: &FibRoute,
+    iftable: Option<&IfTable>,
+) -> std::fmt::Result {
     writeln!(
         f,
         "via {} groups, {} entries:",
@@ -818,34 +858,34 @@ fn fmt_fib_route(f: &mut std::fmt::Formatter<'_>, route: &FibRoute) -> std::fmt:
         route.len()
     )?;
     for group in route.iter() {
-        fmt_fibgroup(f, group)?;
+        fmt_fibgroup(f, group, iftable)?;
     }
     Ok(())
 }
 
 impl Display for EgressObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        fmt_egress_object(f, self)
+        fmt_egress_object(f, self, None)
     }
 }
 impl Display for PktInstruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        fmt_pkt_instruction(f, self)
+        fmt_pkt_instruction(f, self, None)
     }
 }
 impl Display for FibEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        fmt_fib_entry(f, self)
+        fmt_fib_entry(f, self, None)
     }
 }
 impl Display for FibGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        fmt_fibgroup(f, self)
+        fmt_fibgroup(f, self, None)
     }
 }
 impl Display for FibRoute {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_fib_route(f, self)
+        fmt_fib_route(f, self, None)
     }
 }
 fn fmt_fib_trie<P: IpPrefix, F: Fn(&(P, &FibRoute)) -> bool>(
@@ -873,13 +913,14 @@ impl Display for Fib {
     }
 }
 
-pub(crate) struct FibViewV4<'a> {
+pub(super) struct FibViewV4<'a> {
     vrf: &'a Vrf,
+    iftable: &'a IfTable,
     filter: Option<&'a FibRouteV4Filter>,
 }
 impl<'a> FibViewV4<'a> {
     #[must_use]
-    pub fn filter(mut self, filter: &'a FibRouteV4Filter) -> Self {
+    pub(super) fn filter(mut self, filter: &'a FibRouteV4Filter) -> Self {
         self.filter = Some(filter);
         self
     }
@@ -904,7 +945,7 @@ impl Display for FibViewV4<'_> {
 
         for (prefix, route) in rt_iter {
             write!(f, "  {prefix:?} ")?;
-            fmt_fib_route(f, route)?;
+            fmt_fib_route(f, route, Some(self.iftable))?;
             displayed += 1;
         }
         if displayed != total {
@@ -914,13 +955,14 @@ impl Display for FibViewV4<'_> {
     }
 }
 
-pub(crate) struct FibViewV6<'a> {
+pub(super) struct FibViewV6<'a> {
     vrf: &'a Vrf,
+    iftable: &'a IfTable,
     filter: Option<&'a FibRouteV6Filter>,
 }
 impl<'a> FibViewV6<'a> {
     #[must_use]
-    pub fn filter(mut self, filter: &'a FibRouteV6Filter) -> Self {
+    pub(super) fn filter(mut self, filter: &'a FibRouteV6Filter) -> Self {
         self.filter = Some(filter);
         self
     }
@@ -944,7 +986,7 @@ impl Display for FibViewV6<'_> {
 
         for (prefix, route) in rt_iter {
             write!(f, "  {prefix:?} ")?;
-            fmt_fib_route(f, route)?;
+            fmt_fib_route(f, route, Some(self.iftable))?;
             displayed += 1;
         }
 
@@ -958,8 +1000,9 @@ impl Display for FibViewV6<'_> {
 
 // We show the same fib groups for Ipv4 and Ipv6 for the time being, since filtering
 // them according to ip version is not yet possible.
-pub(crate) struct FibGroups<'a> {
+pub(super) struct FibGroups<'a> {
     vrf: &'a Vrf,
+    iftable: &'a IfTable,
 }
 impl Display for FibGroups<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -977,7 +1020,7 @@ impl Display for FibGroups<'_> {
         writeln!(f, " groups: {num_groups}\n")?;
 
         for group in fibr.group_iter() {
-            fmt_fibgroup(f, group)?;
+            fmt_fibgroup(f, group, Some(self.iftable))?;
         }
         Ok(())
     }
@@ -1156,56 +1199,60 @@ impl Display for FrrAppliedConfig {
 
 impl Vrf {
     #[must_use]
-    pub(crate) fn cli_ipv4_rib(&self) -> VrfViewV4<'_> {
+    pub(super) fn cli_ipv4_rib<'a>(&'a self, iftable: &'a IfTable) -> VrfViewV4<'a> {
         VrfViewV4 {
             vrf: self,
+            iftable,
             filter: None,
         }
     }
 
     #[must_use]
-    pub(crate) fn cli_ipv6_rib(&self) -> VrfViewV6<'_> {
+    pub(super) fn cli_ipv6_rib<'a>(&'a self, iftable: &'a IfTable) -> VrfViewV6<'a> {
         VrfViewV6 {
             vrf: self,
+            iftable,
             filter: None,
         }
     }
 
     #[must_use]
-    pub(crate) fn cli_ipv4_nhops(&self) -> VrfV4Nexthops<'_> {
-        VrfV4Nexthops { vrf: self }
+    pub(super) fn cli_ipv4_nhops<'a>(&'a self, iftable: &'a IfTable) -> VrfV4Nexthops<'a> {
+        VrfV4Nexthops { vrf: self, iftable }
     }
 
     #[must_use]
-    pub(crate) fn cli_ipv6_nhops(&self) -> VrfV6Nexthops<'_> {
-        VrfV6Nexthops { vrf: self }
+    pub(super) fn cli_ipv6_nhops<'a>(&'a self, iftable: &'a IfTable) -> VrfV6Nexthops<'a> {
+        VrfV6Nexthops { vrf: self, iftable }
     }
 
     #[must_use]
-    pub(crate) fn cli_ipv4_fib(&self) -> FibViewV4<'_> {
+    pub(super) fn cli_ipv4_fib<'a>(&'a self, iftable: &'a IfTable) -> FibViewV4<'a> {
         FibViewV4 {
             vrf: self,
+            iftable,
             filter: None,
         }
     }
 
     #[must_use]
-    pub(crate) fn cli_ipv6_fib(&self) -> FibViewV6<'_> {
+    pub(super) fn cli_ipv6_fib<'a>(&'a self, iftable: &'a IfTable) -> FibViewV6<'a> {
         FibViewV6 {
             vrf: self,
+            iftable,
             filter: None,
         }
     }
 
     #[must_use]
-    pub(crate) fn cli_fib_groups(&self) -> FibGroups<'_> {
-        FibGroups { vrf: self }
+    pub(super) fn cli_fib_groups<'a>(&'a self, iftable: &'a IfTable) -> FibGroups<'a> {
+        FibGroups { vrf: self, iftable }
     }
 }
 
 impl RmacStore {
     #[must_use]
-    pub(crate) fn cli_view(&self) -> RmacStoreView<'_> {
+    pub(super) fn cli_view(&self) -> RmacStoreView<'_> {
         RmacStoreView {
             rmac_store: self,
             filter: None,
@@ -1213,14 +1260,14 @@ impl RmacStore {
     }
 }
 
-pub struct FibVtep {
+struct FibVtep {
     vrfid: VrfId,
     vni: Vni,
     vtep: Option<Vtep>,
 }
 impl FibVtep {
     #[must_use]
-    pub fn new(vrfid: VrfId, vni: Vni, vtep: Option<Vtep>) -> Self {
+    fn new(vrfid: VrfId, vni: Vni, vtep: Option<Vtep>) -> Self {
         Self { vrfid, vni, vtep }
     }
 }
@@ -1246,10 +1293,10 @@ impl Display for FibVtep {
         )
     }
 }
-pub(crate) struct ActiveVteps(Vec<FibVtep>);
+pub(super) struct ActiveVteps(Vec<FibVtep>);
 impl ActiveVteps {
     #[must_use]
-    pub(crate) fn from_vrf_table(vrftable: &VrfTable) -> Self {
+    pub(super) fn from_vrf_table(vrftable: &VrfTable) -> Self {
         let vteps: Vec<FibVtep> = vrftable
             .values()
             .filter_map(|vrf| {
@@ -1273,10 +1320,10 @@ impl Display for ActiveVteps {
         Ok(())
     }
 }
-pub struct VtepConfig<'a>(Option<&'a Vtep>);
+pub(super) struct VtepConfig<'a>(Option<&'a Vtep>);
 impl<'a> VtepConfig<'a> {
     #[must_use]
-    pub fn new(vtep: Option<&'a Vtep>) -> Self {
+    pub(super) fn new(vtep: Option<&'a Vtep>) -> Self {
         Self(vtep)
     }
 }
@@ -1288,32 +1335,4 @@ impl Display for VtepConfig<'_> {
             None => writeln!(f, " none"),
         }
     }
-}
-
-// ========================== Ifindex translation ========================== //
-use crate::interfaces::iftablerw::IfTableReader;
-use net::interface::{InterfaceIndex, InterfaceName};
-use std::cell::RefCell;
-
-thread_local! {
-    static IFMAP: RefCell<Option<IfTableReader>> = const { RefCell::new(None) };
-}
-/// Initialize the thread-local `IFMAP` with the given `IfTableReader`
-pub(crate) fn ifmap_init(iftr: IfTableReader) {
-    IFMAP.set(Some(iftr));
-}
-
-/// Resolve an `InterfaceIndex` to a `InterfaceName`.
-/// N.B. this provides an owned `InterfaceName`. This clone could be
-/// avoided, but interface names are very short.
-fn name_of(ifindex: InterfaceIndex) -> Option<InterfaceName> {
-    IFMAP.with_borrow(|iftr| {
-        iftr.as_ref().and_then(|iftr| {
-            iftr.enter().and_then(|iftable| {
-                iftable
-                    .get_interface(ifindex)
-                    .map(|iface| iface.name.clone())
-            })
-        })
-    })
 }

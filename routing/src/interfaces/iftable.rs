@@ -7,8 +7,8 @@ use crate::VrfId;
 use crate::errors::RouterError;
 use crate::interfaces::interface::{IfState, Interface, RouterInterfaceConfig};
 use ahash::RandomState;
-use net::interface::InterfaceIndex;
 use net::interface::address::IfAddr;
+use net::interface::{InterfaceIndex, InterfaceName};
 use std::collections::HashMap;
 
 #[allow(unused)]
@@ -213,5 +213,10 @@ impl IfTable {
 
         iface.set_admin_state(state);
         Ok(())
+    }
+
+    /// Tell the name of the interface with the given `ifindex`
+    pub(crate) fn name_of(&self, ifindex: InterfaceIndex) -> Option<&InterfaceName> {
+        self.by_index.get(&ifindex).map(|iface| &iface.name)
     }
 }

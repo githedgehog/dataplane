@@ -9,6 +9,7 @@ use crate::cli::display::{ActiveVteps, VtepConfig};
 use crate::evpn::{RmacFilter, RmacStore};
 use crate::fib::fibtype::{FibRouteV4Filter, FibRouteV6Filter};
 use crate::frr::frrmi::Frrmi;
+use crate::interfaces::iftable::IfTable;
 use crate::rib::vrf::{RouteOrigin, Vrf};
 use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 use crate::rib::vrftable::VrfTable;
@@ -54,17 +55,35 @@ impl From<&RouteProtocol> for RouteOrigin {
     }
 }
 
-fn show_ipv4_routes(request: CliRequest, vrfs: &[&Vrf], filter: &RouteV4Filter) -> CliResponse {
+fn show_ipv4_routes(
+    request: CliRequest,
+    vrfs: &[&Vrf],
+    iftable: &IfTable,
+    filter: &RouteV4Filter,
+) -> CliResponse {
     let mut out = String::new();
     for vrf in vrfs {
-        out += vrf.cli_ipv4_rib().filter(filter).to_string().as_str();
+        out += vrf
+            .cli_ipv4_rib(iftable)
+            .filter(filter)
+            .to_string()
+            .as_str();
     }
     CliResponse::from_request_ok(request, out)
 }
-fn show_ipv6_routes(request: CliRequest, vrfs: &[&Vrf], filter: &RouteV6Filter) -> CliResponse {
+fn show_ipv6_routes(
+    request: CliRequest,
+    vrfs: &[&Vrf],
+    iftable: &IfTable,
+    filter: &RouteV6Filter,
+) -> CliResponse {
     let mut out = String::new();
     for vrf in vrfs {
-        out += vrf.cli_ipv6_rib().filter(filter).to_string().as_str();
+        out += vrf
+            .cli_ipv6_rib(iftable)
+            .filter(filter)
+            .to_string()
+            .as_str();
     }
     CliResponse::from_request_ok(request, out)
 }
@@ -166,24 +185,30 @@ fn show_vrf_routes(
 ) -> Result<CliResponse, CliError> {
     let vrftable = &db.vrftable;
     let found = lookup_vrfs(vrftable, &request)?;
+    let iftable = db.iftw.enter().ok_or(CliError::Inaccessible)?;
 
     let response = if ipv4 {
         let filter = route_filter_v4(&request)?;
-        show_ipv4_routes(request, found.as_slice(), &filter)
+        show_ipv4_routes(request, found.as_slice(), &iftable, &filter)
     } else {
         let filter = route_filter_v6(&request)?;
-        show_ipv6_routes(request, found.as_slice(), &filter)
+        show_ipv6_routes(request, found.as_slice(), &iftable, &filter)
     };
     Ok(response)
 }
 
-fn show_vrf_nexthops_ip(request: CliRequest, vrfs: &[&Vrf], ipv4: bool) -> CliResponse {
+fn show_vrf_nexthops_ip(
+    request: CliRequest,
+    vrfs: &[&Vrf],
+    iftable: &IfTable,
+    ipv4: bool,
+) -> CliResponse {
     let mut out = String::new();
     for vrf in vrfs {
         if ipv4 {
-            out += vrf.cli_ipv4_nhops().to_string().as_str();
+            out += vrf.cli_ipv4_nhops(iftable).to_string().as_str();
         } else {
-            out += vrf.cli_ipv6_nhops().to_string().as_str();
+            out += vrf.cli_ipv6_nhops(iftable).to_string().as_str();
         }
     }
     CliResponse::from_request_ok(request, out)
@@ -197,7 +222,8 @@ fn show_vrf_nexthops(
     let vrftable = &db.vrftable;
 
     let found = lookup_vrfs(vrftable, &request)?;
-    let response = show_vrf_nexthops_ip(request, found.as_slice(), ipv4);
+    let iftable = db.iftw.enter().ok_or(CliError::Inaccessible)?;
+    let response = show_vrf_nexthops_ip(request, found.as_slice(), &iftable, ipv4);
     Ok(response)
 }
 
@@ -212,17 +238,35 @@ fn fibgroup_filter_v6(request: &CliRequest) -> Result<FibRouteV6Filter, CliError
     Ok(filter)
 }
 
-fn show_ip_fib_v4(request: CliRequest, vrfs: &[&Vrf], filter: &FibRouteV4Filter) -> CliResponse {
+fn show_ip_fib_v4(
+    request: CliRequest,
+    vrfs: &[&Vrf],
+    iftable: &IfTable,
+    filter: &FibRouteV4Filter,
+) -> CliResponse {
     let mut out = String::new();
     for vrf in vrfs {
-        out += vrf.cli_ipv4_fib().filter(filter).to_string().as_str();
+        out += vrf
+            .cli_ipv4_fib(iftable)
+            .filter(filter)
+            .to_string()
+            .as_str();
     }
     CliResponse::from_request_ok(request, out)
 }
-fn show_ip_fib_v6(request: CliRequest, vrfs: &[&Vrf], filter: &FibRouteV6Filter) -> CliResponse {
+fn show_ip_fib_v6(
+    request: CliRequest,
+    vrfs: &[&Vrf],
+    iftable: &IfTable,
+    filter: &FibRouteV6Filter,
+) -> CliResponse {
     let mut out = String::new();
     for vrf in vrfs {
-        out += vrf.cli_ipv6_fib().filter(filter).to_string().as_str();
+        out += vrf
+            .cli_ipv6_fib(iftable)
+            .filter(filter)
+            .to_string()
+            .as_str();
     }
     CliResponse::from_request_ok(request, out)
 }
@@ -230,25 +274,31 @@ fn show_ip_fib_v6(request: CliRequest, vrfs: &[&Vrf], filter: &FibRouteV6Filter)
 fn show_ip_fib(request: CliRequest, db: &RoutingDb, ipv4: bool) -> Result<CliResponse, CliError> {
     let vrftable = &db.vrftable;
     let found = lookup_vrfs(vrftable, &request)?;
+    let iftable = db.iftw.enter().ok_or(CliError::Inaccessible)?;
 
     let response = if ipv4 {
         let filter = fibgroup_filter_v4(&request)?;
-        show_ip_fib_v4(request, found.as_slice(), &filter)
+        show_ip_fib_v4(request, found.as_slice(), &iftable, &filter)
     } else {
         let filter = fibgroup_filter_v6(&request)?;
-        show_ip_fib_v6(request, found.as_slice(), &filter)
+        show_ip_fib_v6(request, found.as_slice(), &iftable, &filter)
     };
     Ok(response)
 }
 
 #[allow(clippy::if_same_then_else)]
-fn show_ip_fib_groups_vrf(request: CliRequest, vrfs: &[&Vrf], ipv4: bool) -> CliResponse {
+fn show_ip_fib_groups_vrf(
+    request: CliRequest,
+    vrfs: &[&Vrf],
+    iftable: &IfTable,
+    ipv4: bool,
+) -> CliResponse {
     let mut out = String::new();
     for vrf in vrfs {
         if ipv4 {
-            out += vrf.cli_fib_groups().to_string().as_str();
+            out += vrf.cli_fib_groups(iftable).to_string().as_str();
         } else {
-            out += vrf.cli_fib_groups().to_string().as_str();
+            out += vrf.cli_fib_groups(iftable).to_string().as_str();
         }
     }
     CliResponse::from_request_ok(request, out)
@@ -261,8 +311,9 @@ fn show_ip_fib_groups(
 ) -> Result<CliResponse, CliError> {
     let vrftable = &db.vrftable;
     let found = lookup_vrfs(vrftable, &request)?;
+    let iftable = db.iftw.enter().ok_or(CliError::Inaccessible)?;
 
-    let response = show_ip_fib_groups_vrf(request, found.as_slice(), ipv4);
+    let response = show_ip_fib_groups_vrf(request, found.as_slice(), &iftable, ipv4);
     Ok(response)
 }
 

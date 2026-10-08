@@ -11,7 +11,6 @@ use crate::fib::fibtable::FibTableWriter;
 use crate::frr::frrmi::{FrrErr, Frrmi, FrrmiRequest};
 use crate::interfaces::iftablerw::IfTableWriter;
 
-use crate::cli::display::ifmap_init;
 use crate::router::CliSources;
 use crate::router::cpi::{CpiStats, CpiStatus, process_cpi_data, rpc_send_control};
 use crate::router::ctl::{RouterCtlMsg, RouterCtlSender, handle_ctl_msg};
@@ -429,9 +428,6 @@ pub(crate) fn start_rio(
 
         // create routing database: this is fully owned
         let mut db = RoutingDb::new(fibtw, iftw, atabler);
-
-        // initialize ifindex local translator
-        ifmap_init(db.iftw.as_reader());
 
         revent!(RouterEvent::Started);
 
