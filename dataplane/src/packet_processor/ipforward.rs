@@ -87,17 +87,11 @@ impl IpForwarder {
             FibKey::from_vrfid(vrfid)
         } else {
             if packet.meta().is_overlay() {
-                warn!(
-                    "{}: missing vrf/vpc annotation to handle packet. Will drop it.",
-                    self.name
-                );
+                warn!("{nfi}: missing vrf/vpc annotation to handle packet. Will drop it.");
                 packet.done(DoneReason::InternalFailure);
                 return;
             }
-            debug!(
-                "{}: there is no vrf/vpc annotation to handle packet. Skipping...",
-                self.name
-            );
+            debug!("{nfi}: there is no vrf/vpc annotation to handle packet. Skipping...");
             // not dropped
             return;
         };
@@ -431,6 +425,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
 
 #[cfg(test)]
 mod test {
+    use super::FibMemo;
     use super::IpForwarder;
     use net::eth::mac::{Mac, SourceMac};
     use net::interface::InterfaceIndex;
@@ -495,9 +490,10 @@ mod test {
     fn a_vxlan_entry_with_a_vtep_encapsulates_and_egresses() {
         let forwarder = IpForwarder::new("test", RouterTables::new().fibs());
         let vtep = test_vtep();
+        let mut memo = FibMemo::default();
         let mut packet = build_test_ipv6_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();
 
-        forwarder.packet_exec_instructions(&mut packet, &vxlan_fibentry(), Some(&vtep));
+        forwarder.packet_exec_instructions(&mut packet, &vxlan_fibentry(), Some(&vtep), &mut memo);
 
         assert_eq!(packet.get_done(), None);
         assert!(
@@ -512,9 +508,10 @@ mod test {
     #[test]
     fn a_vxlan_entry_without_a_vtep_drops_the_packet() {
         let forwarder = IpForwarder::new("test", RouterTables::new().fibs());
+        let mut memo = FibMemo::default();
         let mut packet = build_test_ipv6_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();
 
-        forwarder.packet_exec_instructions(&mut packet, &vxlan_fibentry(), None);
+        forwarder.packet_exec_instructions(&mut packet, &vxlan_fibentry(), None, &mut memo);
 
         assert_eq!(packet.get_done(), Some(DoneReason::VxlanEncapFailure));
         assert!(
