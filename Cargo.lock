@@ -1560,6 +1560,7 @@ dependencies = [
  "dataplane-dpdk-sysroot-helper",
  "dataplane-dpdk-test-macros",
  "dataplane-errno",
+ "dataplane-hardware",
  "dataplane-id",
  "dataplane-net",
  "nix 0.31.3",
