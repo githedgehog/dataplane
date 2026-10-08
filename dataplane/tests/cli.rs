@@ -33,19 +33,11 @@ fn informational_commands_need_no_launch_configuration() {
 }
 
 #[test]
-fn invalid_launch_configuration_fails_before_eal() {
-    for (args, expected) in [
-        (vec![], "Must specify driver"),
-        (vec!["--driver", "dpdk"], "No network interfaces"),
-        (vec!["--driver", "kernel"], "No network interfaces"),
-        (
-            vec!["--driver", "kernel", "--interface", "eth0=pci@0000:01:00.0"],
-            "Kernel driver does not support",
-        ),
-        (
-            vec!["--driver", "dpdk", "--interface", "eth0"],
-            "must specify a PCI address",
-        ),
+fn launch_without_init_is_refused() {
+    for args in [
+        vec![],
+        vec!["--driver", "kernel", "--interface", "eth0=kernel@eth0"],
+        vec!["--driver", "dpdk", "--interface", "eth0=pci@0000:01:00.0"],
     ] {
         let output = Command::new(dataplane_binary())
             .args(&args)
@@ -53,7 +45,10 @@ fn invalid_launch_configuration_fails_before_eal() {
             .unwrap();
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(expected), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("must be launched by dataplane-init"),
+            "{args:?}: {stderr}"
+        );
         assert!(!stderr.contains("EAL:"), "{args:?}: {stderr}");
         assert!(output.stdout.is_empty(), "{args:?}");
     }

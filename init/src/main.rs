@@ -167,8 +167,9 @@ fn prepare_devices(devices: &[ResolvedDevice]) -> Result<(), String> {
 /// Move bifurcated devices with devlink driver reinitialization; vfio-pci devices need no move.
 ///
 /// Unlike moving only the netdev, devlink reload also moves the RDMA device when the host uses
-/// exclusive RDMA namespace mode (`ib_core.netns_mode=0`). Reload retrains links and changes
-/// ifindices. The descriptor names the destination without a `/run/netns` mount.
+/// exclusive RDMA namespace mode (`ib_core.netns_mode=0`). In the default shared mode the RDMA
+/// device stays visible from every namespace. Reload retrains links and changes ifindices.
+/// The descriptor names the destination without a `/run/netns` mount.
 async fn move_devices_to_netns(
     devices: &[ResolvedDevice],
     netns: &NetworkNamespace,
@@ -222,9 +223,12 @@ async fn move_devices_to_netns(
             )
             .await
         {
-            Ok(_) => info!("{} is now in the datapath network namespace", device.address),
+            Ok(_) => info!(
+                "{} is now in the datapath network namespace",
+                device.address
+            ),
             Err(e) => problems.push(format!(
-                "could not move {} into the namespace: {e}. If the devlink instance moved but DPDK                  later finds no device, the RDMA subsystem is in shared mode and the host needs to                  boot with ib_core.netns_mode=0.",
+                "could not move {} into the datapath network namespace: {e}",
                 device.address
             )),
         }
@@ -253,15 +257,15 @@ fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, Strin
     Ok(netns)
 }
 
-/// Exec the dataplane with sealed configuration, its checksum, and an optional namespace FD.
-fn exec_dataplane(config: LaunchConfiguration, netns: Option<NetworkNamespace>) -> ! {
+/// Exec the dataplane with sealed configuration, its checksum, and the datapath namespace.
+fn exec_dataplane(config: LaunchConfiguration, netns: NetworkNamespace) -> ! {
     let mut config_file = config.finalize();
     let integrity_check = config_file.integrity_check().finalize().to_owned_fd();
     let config_fd = config_file.to_owned_fd();
 
     info!("handing configuration to {DATAPLANE_BINARY} and exec'ing it");
 
-    let mut mappings = vec![
+    let mappings = vec![
         FdMapping {
             parent_fd: integrity_check,
             child_fd: LaunchConfiguration::STANDARD_INTEGRITY_CHECK_FD,
@@ -270,15 +274,12 @@ fn exec_dataplane(config: LaunchConfiguration, netns: Option<NetworkNamespace>) 
             parent_fd: config_fd,
             child_fd: LaunchConfiguration::STANDARD_CONFIG_FD,
         },
-    ];
-
-    // The inherited descriptor keeps the namespace alive across exec.
-    if let Some(netns) = netns {
-        mappings.push(FdMapping {
+        // The inherited descriptor keeps the namespace alive across exec.
+        FdMapping {
             parent_fd: netns.into_fd(),
             child_fd: LaunchConfiguration::STANDARD_NETNS_FD,
-        });
-    }
+        },
+    ];
 
     let mut command = std::process::Command::new(DATAPLANE_BINARY);
     command.fd_mappings(mappings).unwrap_or_else(|e| {
@@ -341,21 +342,22 @@ fn main() {
             }
             info!("{} network device(s) ready for DPDK", devices.len());
 
-            if dpdk.netns {
-                match isolate_devices(&devices) {
-                    Ok(netns) => {
-                        info!("datapath network namespace ready");
-                        Some(netns)
-                    }
-                    Err(e) => fail("failed to isolate the network devices", &e),
+            match isolate_devices(&devices) {
+                Ok(netns) => {
+                    info!("datapath network namespace ready");
+                    netns
                 }
-            } else {
-                None
+                Err(e) => fail("failed to isolate the network devices", &e),
             }
         }
         DriverConfigSection::Kernel(_) => {
-            info!("kernel driver selected; no device preparation required");
-            None
+            // The router's adjacency resolver and FRR use the host stack on these interfaces,
+            // so for now they stay in this namespace and the datapath joins it.
+            info!("kernel driver selected; the datapath shares this network namespace");
+            match NetworkNamespace::current() {
+                Ok(netns) => netns,
+                Err(e) => fail("failed to open this network namespace", &e.to_string()),
+            }
         }
     };
 
