@@ -29,6 +29,8 @@ use queue::{rx, tx};
 mod claim;
 pub(crate) use claim::Ownership;
 pub use claim::{ClaimError, ForeignOwner, PortClaim, PortOwner};
+mod probe;
+pub use probe::ProbeError;
 #[cfg(test)]
 mod queue_tests;
 #[cfg(test)]

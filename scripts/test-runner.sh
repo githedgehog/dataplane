@@ -33,5 +33,8 @@ shift
 if [ "${host_machine}" = "${target_machine}" ] && [ "${host_kernel_name}" = "linux" ]; then
     exec "${@}"
 else
-    exec "qemu-${target_machine}" "${@}"
+    # qemu-user does not intercept execve, so a test that re-executes itself must do so through
+    # the same emulator.
+    declare -r DATAPLANE_TEST_EMULATOR="qemu-${target_machine}"
+    exec "${DATAPLANE_TEST_EMULATOR}" "${@}"
 fi
