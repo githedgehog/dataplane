@@ -108,7 +108,11 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
         let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr_factory.handle());
         let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr_factory.handle());
-        let static_nat = StaticNat::with_reader("static-NAT-1", nattabler_factory.handle());
+        let static_nat = StaticNat::with_reader(
+            "static-NAT-1",
+            nattabler_factory.handle(),
+            flow_table_clone.clone(),
+        );
         let masquerade = Masquerade::new(
             "masquerade",
             flow_table_clone.clone(),

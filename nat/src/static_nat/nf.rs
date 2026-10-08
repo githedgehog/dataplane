@@ -5,10 +5,16 @@
 
 use super::setup::tables::{NatTables, PerVniTable};
 use crate::NatPort;
+use crate::flow_tracker::{needs_tracking, refresh_tracked_flow, track_new_flow};
 use crate::icmp_handler::icmp_error_msg::{
     IcmpErrorMsgError, nat_translate_icmp_inner_dst, nat_translate_icmp_inner_src,
 };
+use crate::nat_flows::NatData;
+use crate::static_nat::StaticNatFlowData;
 pub use crate::static_nat::natrw::{NatTablesReader, NatTablesWriter}; // re-export
+use concurrency::sync::Arc;
+use flow_entry::flow_table::table::FlowTable;
+use net::FlowKey;
 use net::buffer::PacketBufferMut;
 use net::headers::{
     Net, NetError, Transport, TryEmbeddedTransport, TryHeaders, TryHeadersMut, TryInnerIp,
@@ -18,7 +24,7 @@ use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::tcp_udp::TcpUdpMut;
 use net::vxlan::Vni;
-use pipeline::NetworkFunction;
+use pipeline::{NetworkFunction, PipelineData};
 use std::net::IpAddr;
 use std::num::NonZero;
 use thiserror::Error;
@@ -44,28 +50,31 @@ enum StaticNatError {
 pub struct StaticNat {
     name: String,
     tablesr: NatTablesReader,
+    flow_table: Arc<FlowTable>,
+    pipeline_data: Arc<PipelineData>,
 }
 
 impl StaticNat {
-    /// Creates a new [`StaticNat`] processor, providing a writer to its internal `NatTables`.
+    /// Creates a new [`StaticNat`] processor, providing a writer to its internal `NatTables`. The
+    /// processor tracks flows in its own, empty flow table.
     #[must_use]
     pub fn new(name: &str) -> (Self, NatTablesWriter) {
         let writer = NatTablesWriter::new();
         let reader = writer.get_reader();
         (
-            Self {
-                name: name.to_string(),
-                tablesr: reader,
-            },
+            Self::with_reader(name, reader, Arc::new(FlowTable::default())),
             writer,
         )
     }
-    /// Creates a new [`StaticNat`] processor as `new()`, but uses the provided `NatTablesReader`.
+    /// Creates a new [`StaticNat`] processor as `new()`, but uses the provided `NatTablesReader`,
+    /// and tracks flows in `flow_table`.
     #[must_use]
-    pub fn with_reader(name: &str, tablesr: NatTablesReader) -> Self {
+    pub fn with_reader(name: &str, tablesr: NatTablesReader, flow_table: Arc<FlowTable>) -> Self {
         Self {
             name: name.to_string(),
             tablesr,
+            flow_table,
+            pipeline_data: Arc::from(PipelineData::default()),
         }
     }
 
@@ -367,6 +376,12 @@ impl StaticNat {
             return;
         };
 
+        // The next packets of the flow hit the flow table with their headers from before static
+        // NAT, so keep the key from before translation, if we track the flow
+        let initial_key = needs_tracking(packet)
+            .then(|| FlowKey::try_from(&*packet).ok())
+            .flatten();
+
         /* do the translations needed according to the NAT tables */
         match self.translate(nat_tables, packet, src_vni, dst_vni) {
             Err(error) => {
@@ -380,8 +395,33 @@ impl StaticNat {
                 } else {
                     debug!("{nfi}: No NAT translation needed");
                 }
+                if let Some(initial_key) = initial_key {
+                    self.track_flow(packet, initial_key);
+                }
             }
         }
+    }
+
+    /// Refresh the tracked flow that a translated packet hit, or create a pair of tracked flows.
+    fn track_flow<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>, initial_key: FlowKey) {
+        if let Some(flow) = packet.meta().flow_info.as_ref()
+            && flow.is_active()
+        {
+            if StaticNatFlowData::try_get(&flow.locked.read()).is_some() {
+                refresh_tracked_flow(packet, flow);
+            }
+            return;
+        }
+        let genid = self.pipeline_data.staging_genid();
+        let state = || StaticNatFlowData;
+        track_new_flow(
+            self.name(),
+            &self.flow_table,
+            packet,
+            initial_key,
+            state,
+            genid,
+        );
     }
 }
 
@@ -414,5 +454,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StaticNat {
                 self.process_packet(packet);
             }
         }
+    }
+
+    fn set_data(&mut self, data: Arc<PipelineData>) {
+        self.pipeline_data = data;
     }
 }

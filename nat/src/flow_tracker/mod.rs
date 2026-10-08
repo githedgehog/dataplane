@@ -2,6 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 //! Tracking of flows that neither masquerade nor port forwarding track, for the ACL stage.
+//!
+//! The static NAT stage tracks the flows of static NAT traffic, and the flow tracker stage tracks
+//! the flows of traffic without NAT. Both use the helpers from this module.
 
 mod flow_data;
 

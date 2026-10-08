@@ -320,6 +320,7 @@ impl Blueprint {
         pipeline = pipeline.add_stage(StaticNat::with_reader(
             "static-nat",
             self.static_nat.handle(),
+            self.flow_table.clone(),
         ));
         pipeline = pipeline.add_stage(PortForwarder::new(
             "port-forwarder",

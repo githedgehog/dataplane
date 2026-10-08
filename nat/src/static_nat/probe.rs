@@ -6,10 +6,12 @@
 use crate::static_nat::nf::StaticNat;
 use crate::static_nat::setup::build_nat_configuration;
 use bolero::TypeGenerator;
+use concurrency::sync::Arc;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{
     LOCAL_VNI, REMOTE_VNI, overlay_with_exposes,
 };
+use flow_entry::flow_table::FlowTable;
 use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
 use net::ip::{NextHeader, UnicastIpAddr};
@@ -138,7 +140,11 @@ impl Fabric {
     }
 
     pub(crate) fn nf(&self) -> StaticNat {
-        StaticNat::with_reader("probe", self.writer.get_reader())
+        StaticNat::with_reader(
+            "probe",
+            self.writer.get_reader(),
+            Arc::new(FlowTable::default()),
+        )
     }
 
     pub(crate) fn outbound_to_peer(&self, source: Endpoint, port: u16) -> Packet<TestBuffer> {

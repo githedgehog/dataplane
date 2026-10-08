@@ -1003,6 +1003,7 @@ mod end_to_end {
         pipeline = pipeline.add_stage(StaticNat::with_reader(
             "static-nat",
             static_nat_writer.get_reader(),
+            flow_table.clone(),
         ));
 
         // Share the allocator between port forwarding and masquerade.
