@@ -42,6 +42,9 @@ nix = { workspace = true, features = ["fs", "sched", "mount"] }
 clock = { workspace = true }
 dpdk = { workspace = true, features = [] }
 net = { workspace = true, features = ["builder"] }
+# `tests/dpdk_pipeline_on_nic.rs` runs the real network-function pipeline over
+# mbufs received from a physical port.
+pipeline = { workspace = true, features = [] }
 caps = { workspace = true, default-features = false, features = [] }
 fixin = { workspace = true, features = [] }
 id = { workspace = true, features = ["serde", "rkyv"] }
@@ -54,6 +57,7 @@ hwlocality = { workspace = true, features = ["hwloc-latest"] }
 pci-ids = { workspace = true, features = [] }
 serde = { workspace = true, features = ["std"] }
 serde_yaml_ng = { workspace = true, features = [] }
+nix = { workspace = true, features = ["sched", "mount"] }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }
 
@@ -62,4 +66,4 @@ dpdk-sysroot-helper = { workspace = true }
 
 # Opt-in VM tests that require 1 GiB host hugepages.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(host_hugepage_tests)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(host_hugepage_tests)', 'cfg(nic_loopback_tests)', 'cfg(netns_tests)'] }
