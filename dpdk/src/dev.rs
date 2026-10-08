@@ -1207,6 +1207,23 @@ impl<'eal, S: Open> Dev<'eal, S> {
         }
     }
 
+    /// Read the port's current MTU, for example to configure its control-plane tap.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's [`ErrorCode`] if the MTU could not be read.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn mtu(&self) -> Result<u16, ErrorCode> {
+        let mut mtu: u16 = 0;
+        let ret =
+            unsafe { dpdk_sys::rte_eth_dev_get_mtu(self.info.index().as_u16(), &raw mut mtu) };
+        if ret == 0 {
+            Ok(mtu)
+        } else {
+            Err(ErrorCode::parse_i32(ret))
+        }
+    }
+
     /// Enable or disable promiscuous mode.
     ///
     /// # Errors

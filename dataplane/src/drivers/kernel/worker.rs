@@ -20,10 +20,14 @@ use concurrency::thread;
 use concurrency::thread::BuilderExt;
 use lifecycle::{CancellationToken, Subsystem};
 use net::buffer::test_buffer::TestBuffer;
+use net::headers::TryEth;
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::{DynPipeline, NetworkFunction};
 
+use net::eth::mac::Mac;
+
+use crate::drivers::cpbridge::{Disposition, Frame, addressed_to, disposition};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
@@ -34,6 +38,24 @@ use crate::drivers::watchdog::{RxCounters, Watchdog};
 
 use tracing::{debug, error, info, trace, warn};
 
+/// One port's share of the control-plane bridge, as a single worker sees it.
+///
+/// The parts are split differently on purpose. `index` and `punt` are given to **every** worker:
+/// any worker can receive a frame the kernel should see, and every worker has to stamp received
+/// packets with the index the rest of the dataplane knows this interface by. `inject` is given to
+/// exactly one, because two workers draining the same queue would interleave a peering session's
+/// frames across two sockets and reorder them.
+pub(crate) struct BridgedPort {
+    /// The interface this stands in for, which is also the tap's name.
+    pub(crate) name: String,
+    /// The tap's interface index -- see [`crate::drivers::cpbridge::PortCpQueues::index`].
+    pub(crate) index: InterfaceIndex,
+    /// Where a punted frame goes.
+    pub(crate) punt: tokio::sync::mpsc::Sender<Frame>,
+    /// Frames the kernel wants transmitted. `None` on every worker but the drainer.
+    pub(crate) inject: Option<tokio::sync::mpsc::Receiver<Frame>>,
+}
+
 struct WorkerInterfaceWriter {
     if_name: String,
     #[allow(unused)]
@@ -43,9 +65,19 @@ struct WorkerInterfaceWriter {
 
 struct WorkerInterfaceReader {
     if_name: String,
+    /// The index the rest of the dataplane knows this interface by.
+    ///
+    /// The tap's, when a bridge stands in for this interface, and the kernel interface's own
+    /// otherwise. Stamped onto every received packet as `iif`, because the ingress stage looks the
+    /// interface up in a table built from the *control plane's* view. See
+    /// [`PortCpQueues::index`](crate::drivers::cpbridge::PortCpQueues::index).
     if_index: InterfaceIndex,
     read_fd: AsyncFd<std::os::unix::io::OwnedFd>,
     watchdog: Watchdog,
+    /// This interface's own MAC, for deciding whether a frame was addressed to us.
+    mac: Option<Mac>,
+    /// Where a punted frame goes, when this interface has a tap standing in for it.
+    punt: Option<tokio::sync::mpsc::Sender<Frame>>,
 }
 
 type WorkerInterfaceReaders = Vec<WorkerInterfaceReader>;
@@ -59,7 +91,11 @@ fn create_worker_interface(
     if_name: &str,
     if_index: InterfaceIndex,
     watchdog: Watchdog,
+    mac: Option<Mac>,
+    punt: Option<tokio::sync::mpsc::Sender<Frame>>,
 ) -> io::Result<(WorkerInterfaceWriter, WorkerInterfaceReader)> {
+    // `if_index` is the dataplane-wide identity; the socket is bound by *name*, which resolves in
+    // this thread's namespace to the real interface. The two are deliberately different things.
     let mut sock = RawPacketStream::new()?;
     sock.bind(if_name)
         .inspect_err(|e| error!("Failed to open raw sock for interface {if_name}: {e}"))?;
@@ -128,6 +164,8 @@ fn create_worker_interface(
             if_index,
             read_fd,
             watchdog,
+            mac,
+            punt,
         },
     ))
 }
@@ -159,6 +197,7 @@ impl Worker {
     /// built from `setup`. The task can be cancelled with the provided `CancellationToken`.
     /// The interface table is used to send packets successfully processed over the right
     /// interface (`WorkerInterfaceWriter`).
+    #[allow(clippy::too_many_lines)] // the punt/transmit decision belongs beside the rx loop
     fn spawn_worker_interface_reader(
         id: WorkerId,
         intf: WorkerInterfaceReader,
@@ -227,17 +266,61 @@ impl Worker {
                     .process(packets.map(|pkt| *pkt))
                     .collect::<Vec<_>>();
 
-                // Transmit delivered packets; the kernel already handles local traffic.
+                // What becomes of each packet is [`disposition`]'s decision, the same one the
+                // DPDK driver asks. When this interface has a tap standing in for it, the kernel
+                // is on the far side of that tap and has seen nothing: the interface was moved
+                // into the datapath's namespace, so the host stack no longer has it. Anything
+                // addressed to us that the pipeline declined has to be carried across, or the
+                // control plane never learns a peer's MAC and BGP never forms an adjacency.
+                //
+                // Without a tap -- interfaces left where the kernel drives them -- there is
+                // nothing to punt to and nowhere to punt from: the kernel saw the frame through
+                // its own stack already. `punt` is `None` then, and this is the drop it has
+                // always been.
                 let mut ppline_drops: u64 = 0;
+                let mut punted: u64 = 0;
                 for out_pkt in out_pkts {
-                    if should_transmit(&out_pkt, &mut ppline_drops) {
-                        to_tx += 1;
-                        if tx_packet(id, &intf.if_name, &if_table, out_pkt).await {
-                            tx_pkts += 1;
-                        } else {
-                            tx_drops += 1;
+                    let done = out_pkt.get_done();
+
+                    // Read before the verdict is acted on, and only consulted for verdicts that
+                    // did not rewrite the ethernet header, so this is the destination the frame
+                    // arrived with.
+                    let addressed_to_us = intf.mac.is_some_and(|mac| {
+                        out_pkt
+                            .try_eth()
+                            .is_some_and(|eth| addressed_to(eth.destination().inner(), mac))
+                    });
+
+                    match packet_disposition(&out_pkt, addressed_to_us, &mut ppline_drops) {
+                        Disposition::Transmit => {
+                            to_tx += 1;
+                            if tx_packet(id, &intf.if_name, &if_table, out_pkt).await {
+                                tx_pkts += 1;
+                            } else {
+                                tx_drops += 1;
+                            }
                         }
+                        Disposition::Punt => match &intf.punt {
+                            Some(punt) => {
+                                if punt_packet(id, &intf.if_name, punt, out_pkt) {
+                                    punted += 1;
+                                } else {
+                                    ppline_drops += 1;
+                                }
+                            }
+                            // No tap: the kernel has this interface and already saw the frame.
+                            None if done == Some(DoneReason::Local) => {}
+                            None => ppline_drops += 1,
+                        },
+                        Disposition::Drop => {}
                     }
+                }
+                if punted > 0 {
+                    trace!(
+                        worker = id,
+                        rx_intf_name = intf.if_name,
+                        "Punted {punted} frames to the control plane",
+                    );
                 }
 
                 tracing::debug!(
@@ -259,6 +342,7 @@ impl Worker {
         self,
         scope: &'scope thread::Scope<'scope, '_>,
         interfaces: &[Kif],
+        bridge: Vec<BridgedPort>,
     ) -> Result<WorkerMonitor<'scope, io::Error>, io::Error> {
         let id = self.id;
         let total_workers = self.total_workers;
@@ -277,6 +361,11 @@ impl Worker {
             .collect();
 
         let worker_ifmonitors = ifmonitors.clone();
+
+        let mut bridge: HashMap<String, BridgedPort> = bridge
+            .into_iter()
+            .map(|port| (port.name.clone(), port))
+            .collect();
 
         let thread_builder = thread::Builder::new().name(format!("dp-worker-{id}"));
         let handle_res = thread_builder.spawn_scoped(scope, move || {
@@ -298,6 +387,7 @@ impl Worker {
                     total_workers,
                     interfaces.as_slice(),
                     &worker_ifmonitors,
+                    &mut bridge,
                 ) {
                     Ok(table) => table,
                     Err(e) => {
@@ -317,6 +407,30 @@ impl Worker {
                         if_table.clone(),
                         cancel.clone(),
                     );
+                }
+
+                // And one task per interface whose queues this worker took, carrying what the
+                // control plane wants sent. Only this worker has them -- see
+                // `DriverKernel::spawn_workers_scoped` for why that is not merely tidiness.
+                for (if_name, port) in bridge.drain() {
+                    let Some(inject) = port.inject else {
+                        continue;
+                    };
+                    let Some(writer) = if_table.get(&port.index).cloned() else {
+                        warn!(
+                            worker = id,
+                            "the bridge has an injection queue for {if_name}, which this worker \
+                             has no socket for; the control plane cannot transmit on it"
+                        );
+                        continue;
+                    };
+                    reader_handles.spawn_local(inject_frames(
+                        id,
+                        if_name,
+                        inject,
+                        writer,
+                        cancel.clone(),
+                    ));
                 }
 
                 // Wait for all reader handles to complete
@@ -350,6 +464,7 @@ fn build_interface_table(
     total_workers: usize,
     interfaces: &[Kif],
     ifmonitors: &[RxTaskMonitor],
+    bridge: &mut HashMap<String, BridgedPort>,
 ) -> Result<(WorkerInterfaceReaders, Arc<WorkerIfTable>), io::Error> {
     let mut if_table = HashMap::new();
     let mut readers = Vec::new();
@@ -361,10 +476,26 @@ fn build_interface_table(
             .map(|ifm| ifm.watchdog.clone())
             .ok_or(io::Error::other("Failed to find interface watchdog"))?;
 
-        let (writer, reader) =
-            create_worker_interface(id, total_workers, &kif.name, kif.ifindex, watchdog)?;
+        // Keyed by name, because the two indices in play mean different things and only the name
+        // is common to both namespaces.
+        let bridged = bridge.get(kif.name.as_str());
+        let punt = bridged.map(|port| port.punt.clone());
 
-        if_table.insert(kif.ifindex, Arc::new(Mutex::new(writer)));
+        // The tap's index when there is a bridge, this interface's own when there is not. This is
+        // the number the pipeline will use for both `iif` and `oif`, so the table is keyed by it.
+        let if_index = bridged.map_or(kif.ifindex, |port| port.index);
+
+        let (writer, reader) = create_worker_interface(
+            id,
+            total_workers,
+            &kif.name,
+            if_index,
+            watchdog,
+            kif.mac,
+            punt,
+        )?;
+
+        if_table.insert(if_index, Arc::new(Mutex::new(writer)));
         readers.push(reader);
     }
     Ok((readers, Arc::new(if_table)))
@@ -536,16 +667,115 @@ async fn read_packets_from_interface(
     Ok(pkts)
 }
 
-/// Count pipeline drops and select packets for transmission; local traffic stays in the kernel.
-fn should_transmit(packet: &Packet<TestBuffer>, ppline_drops: &mut u64) -> bool {
-    match packet.get_done() {
-        Some(DoneReason::Delivered) => return true,
-        Some(DoneReason::Local) => return false,
-        None => error!("Packet returned without a terminal verdict; dropping it (pipeline bug)"),
-        Some(_) => {}
+/// Select forwarding or control-plane delivery and account for pipeline drops.
+fn packet_disposition(
+    packet: &Packet<TestBuffer>,
+    addressed_to_us: bool,
+    ppline_drops: &mut u64,
+) -> Disposition {
+    let done = packet.get_done();
+    if done.is_none() {
+        error!("Packet returned without a terminal verdict; dropping it (pipeline bug)");
     }
-    *ppline_drops += 1;
-    false
+    let action = disposition(done, addressed_to_us);
+    if matches!(action, Disposition::Drop) {
+        *ppline_drops += 1;
+    }
+    action
+}
+
+/// Hand a frame to the kernel through the tap standing in for the interface it arrived on.
+///
+/// Returns whether it was handed over. A `false` here is counted as a pipeline drop, because that
+/// is what it is: the packet was not transmitted and the kernel did not get it either.
+///
+/// The frame is copied. It has to be: the far end of this channel is a task on the management
+/// runtime, and the packet's buffer belongs to this worker. `serialize` first, so what the kernel
+/// sees is the frame as the pipeline left it -- the same bytes a transmit would have put on the
+/// wire -- rather than a payload stripped of its headers.
+fn punt_packet(
+    id: WorkerId,
+    rx_if_name: &str,
+    punt: &tokio::sync::mpsc::Sender<Frame>,
+    pkt: Packet<TestBuffer>,
+) -> bool {
+    let serialized = match pkt.serialize() {
+        Ok(out) => out,
+        Err(e) => {
+            trace!(
+                worker = id,
+                rx_intf_name = rx_if_name,
+                "failed to serialize a frame to punt: {e:?}"
+            );
+            return false;
+        }
+    };
+
+    // `try_send`, never a blocking send. This is the packet path and there is nothing here it may
+    // wait for; a full queue means the tap's pump has fallen behind, which is a control-plane
+    // problem and not a reason to stop forwarding.
+    if punt.try_send(serialized.as_ref().to_vec()).is_err() {
+        trace!(
+            worker = id,
+            rx_intf_name = rx_if_name,
+            "punt queue is full; dropping a frame for the kernel"
+        );
+        return false;
+    }
+    true
+}
+
+/// Carry whatever the kernel has queued for an interface onto the wire.
+///
+/// # Why this bypasses the pipeline
+///
+/// FRR has already made the forwarding decision. These frames come off a tap standing in for this
+/// exact interface, carrying the headers the kernel built; running them through the pipeline would
+/// route them a second time, using tables derived from the kernel's own decision.
+///
+/// # Why one worker
+///
+/// Only the worker that took this interface's queues runs this. Draining from two would interleave
+/// a peering session's frames across two sockets and reorder them.
+async fn inject_frames(
+    id: WorkerId,
+    if_name: String,
+    mut inject: tokio::sync::mpsc::Receiver<Frame>,
+    writer: Arc<Mutex<WorkerInterfaceWriter>>,
+    cancel: CancellationToken,
+) {
+    loop {
+        let frame = tokio::select! {
+            () = cancel.cancelled() => break,
+            frame = inject.recv() => match frame {
+                Some(frame) => frame,
+                // The bridge is gone, which happens on shutdown and means there is nothing left
+                // to carry.
+                None => break,
+            },
+        };
+
+        let mut outgoing = writer.lock().await;
+        match outgoing.sock.write(frame.as_slice()).await {
+            Ok(written) if written == frame.len() => {
+                trace!(
+                    worker = id,
+                    "injected {written} bytes from the control plane on {if_name}"
+                );
+            }
+            Ok(written) => warn!(
+                worker = id,
+                "short write injecting on {if_name}: {written} of {} bytes; one write is one \
+                 frame on a packet socket, so this frame is lost",
+                frame.len()
+            ),
+            Err(e) => warn!(
+                worker = id,
+                "failed to inject a control-plane frame on {if_name}: {e}"
+            ),
+        }
+    }
+    debug!(worker = id, "injection for {if_name} stopped");
 }
 
 async fn tx_packet(
@@ -631,7 +861,7 @@ async fn tx_packet(
 
 #[cfg(test)]
 mod test {
-    use super::{RxCounters, build_packet, should_transmit};
+    use super::{Disposition, RxCounters, build_packet, packet_disposition};
     use net::buffer::test_buffer::TestBuffer;
     use net::interface::InterfaceIndex;
     use net::packet::test_utils::{build_test_ipv4_packet, build_test_ipv6_packet};
@@ -663,7 +893,12 @@ mod test {
         let mut drops = 0;
         let transmitted: Vec<_> = packets
             .into_iter()
-            .filter(|packet| should_transmit(packet, &mut drops))
+            .filter(|packet| {
+                matches!(
+                    packet_disposition(packet, false, &mut drops),
+                    Disposition::Transmit
+                )
+            })
             .collect();
 
         assert_eq!(transmitted.len(), 1);
@@ -682,7 +917,12 @@ mod test {
         let mut drops = 0;
         let transmitted = burst
             .into_iter()
-            .filter(|packet| should_transmit(packet, &mut drops))
+            .filter(|packet| {
+                matches!(
+                    packet_disposition(packet, false, &mut drops),
+                    Disposition::Transmit
+                )
+            })
             .count();
 
         assert_eq!(transmitted, 0);

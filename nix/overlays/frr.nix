@@ -50,10 +50,12 @@ let
             # by libc because the libatomic.so that pairs with the chosen
             # cross-compiler stdenv lives in a different store path:
             #
-            #   glibc: `${fancy.libgccjit}/lib/libatomic.so.1`
-            #     The libgccjit overlay is currently built with the host
-            #     stdenv (see TODO note on the libgccjit override below), so
-            #     the libatomic next to it is glibc-targeted -- safe to link
+            #   glibc: `${fancy.libatomic}/lib/libatomic.so.1`
+            #     A re-export of the one file out of `fancy.libgccjit` that
+            #     FRR actually needs (see the `libatomic` note below).  The
+            #     libgccjit overlay is currently built with the host stdenv
+            #     (see TODO note on the libgccjit override below), so the
+            #     libatomic it carries is glibc-targeted -- safe to link
             #     against a glibc FRR.
             #
             #   musl: `${stdenv.cc.cc.lib}/${triple}/lib/libatomic.so.1`
@@ -65,7 +67,7 @@ let
               if libc == "musl" then
                 " -L${final.stdenv.cc.cc.lib}/${final.stdenv.hostPlatform.config}/lib -latomic "
               else if libc == "gnu" then
-                " -L${final.fancy.libgccjit}/lib -latomic "
+                " -L${final.fancy.libatomic}/lib -latomic "
               else
                 throw "unhandled libc=${libc} for FRR -latomic LDFLAGS"
             )
@@ -102,7 +104,7 @@ let
                 -e ${final.fancy.readline} \
                 -e ${final.fancy.libxcrypt} \
                 -e ${final.fancy.json_c} \
-                ${if libc == "gnu" then "-e ${final.fancy.libgccjit}" else ""} \
+                ${if libc == "gnu" then "-e ${final.fancy.libatomic}" else ""} \
                 ${if libc == "musl" then "-e ${final.stdenv.cc.cc.lib}" else ""} \
                 '{}' +;
           '';
@@ -230,6 +232,30 @@ in
         "--disable-shared"
       ];
     });
+    # FRR needs `libatomic.so.1` at runtime: it is a `DT_NEEDED` of `libfrr.so`
+    # and of every daemon, and it must be exactly one dynamic library in the
+    # process (see the LDFLAGS note in `frr-build` above).
+    #
+    # On glibc the only build in this tree carrying a glibc-targeted libatomic
+    # is `libgccjit`, so that is where FRR's `-L` used to point -- and an RPATH
+    # into `${libgccjit}/lib` put its entire closure in the FRR container image
+    # to reach one 20 KB file.  The rest is `libgccjit.so` (25 MB) and a gcc
+    # lib tree (7.2 MB) plus their closure, none of which any FRR symbol
+    # resolves against.
+    #
+    # So re-export just that file.  This copies the *same bytes* out of the
+    # same build rather than sourcing libatomic from somewhere else, so there
+    # is no ABI question to answer: what FRR links against and loads is
+    # unchanged, only its neighbours are gone.  `libatomic.so.1.2.0` needs
+    # nothing but glibc, which is in the image regardless.
+    #
+    # Measured: this package's closure went from 272.6 MB over 22 paths to
+    # 118.4 MB over 14, and the shipped `containers.frr.dataplane` image
+    # tarball from 116.8 MiB to 62.7 MiB.
+    libatomic = final.runCommand "libatomic-${prev.libgccjit.version}" { } ''
+      mkdir -p "$out/lib"
+      cp -a ${final.fancy.libgccjit}/lib/libatomic.so* "$out/lib/"
+    '';
     libgccjit =
       (prev.libgccjit.override {
         # TODO: debug issue preventing clang build

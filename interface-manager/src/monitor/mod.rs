@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! A small interface monitor. The interface monitor listens to netlink events asynchronously
-//! and disseminates them over a broadcast channel. It does not make any attempt to interpret
-//! the events received via netlink. The interface monitor reports events on kernel interfaces.
+//! Broadcasts kernel interface events from the calling thread's network namespace.
+//!
+//! With an isolated datapath, configured names identify control-plane taps. This
+//! monitor sees tap state, not physical link state. Propagating DPDK port state to
+//! the taps remains a driver task.
 
 use concurrency::sync::Arc;
 use net::eth::mac::SourceMac;

@@ -1,59 +1,80 @@
 # dataplane-init
 
-This program is responsible for initializing the dataplane.
+Init prepares the configured NICs, separates the datapath and control plane into network namespaces,
+and supervises the gateway processes. Driver and interface selection must be explicit.
 
-The primary steps of this program are to:
+DPDK devices that require [vfio-pci] are rebound to it. Bifurcated devices, including [mlx5], retain their kernel
+driver. Init does not restore driver bindings on exit. Dropping elevated privileges remains future work.
 
-1. Drive the NIC into the configuration needed by DPDK to use the NIC
-2. Prepare the network namespace the datapath runs in
-3. (TODO) Drop some hazardous privileges (especially [`CAP_SYS_ADMIN`])
-4. `exec` the dataplane process, passing it the sealed configuration and the namespace descriptor
+The dataplane refuses to start without the descriptors init passes it, so init is the container's entrypoint and
+takes the dataplane's command line unchanged.
 
-The dataplane refuses to start without this handoff, so this program is the container's entrypoint and takes the
-dataplane's command line unchanged.
+## Network namespaces
 
-With the DPDK driver, the namespace is new and owned only by its descriptor.
-Bifurcated devices (mlx5) are moved into it; when the dataplane exits the kernel destroys the namespace and returns
-them to the host.
-With the kernel driver, the datapath shares this program's namespace, because routing still depends on the host stack
-seeing its interfaces.
+Init moves the selected interfaces into a datapath namespace held only by descriptors. When the gateway stops, the
+kernel destroys it and returns physical devices to the host; virtual interfaces (veth, VLAN and the like) are
+destroyed with it instead. Both the DPDK and kernel drivers use a control-plane bridge: one tap per configured
+interface, carrying the configured name in the control namespace. The drivers exchange control traffic with these
+taps.
 
-For most network cards, this configuration step involves unbinding the NIC from the kernel driver and re-binding it to
-the [vfio-pci] driver.
+When `--supervise-frr` is set, init creates a private control namespace. Otherwise the control plane stays
+in the caller's namespace so it can share the taps with external FRR. `--control-netns` selects an existing
+control namespace.
 
-**Note**: Not all NICs should be bound to [vfio-pci].
-Some network cards use the so-called bifurcated driver and must remain bound to the kernel driver.
-In particular, all network cards which use the mlx5 driver must remain bound to the [mlx5] kernel driver.
+```text
+init:       prepare NICs -> move NICs -> enter control namespace -> start children
+dataplane:  main + management runtime     control namespace (taps, netlink, FRR IPC)
+            packet-processing threads     datapath namespace
+            host runtime                  original namespace (Kubernetes, metrics, Pyroscope)
+FRR:                                      control namespace
+```
 
-**Warning**: This program is _not_ responsible for full life cycle management of the NIC.
-In particular, it makes no attempt to rebind the NIC back to the kernel driver.
-Thus, expect this program to make network cards disappear from the perspective of tooling like [iproute2] and [ethtool].
+Move NICs before leaving their original namespace so their devlink instances remain reachable. Init then enters
+the control namespace, mounts a matching sysfs, and brings up loopback. Children inherit that placement.
+The dataplane receives validated descriptors for its datapath namespace and the original namespace, and runs a
+separate host runtime only when the original namespace is not its own.
 
-Only a very limited set of network cards are currently supported, although this set can easily be expanded over time.
+For externally managed FRR in an existing namespace:
 
-## Error Handling Strategy
+```console
+$ ip netns add gwctl
+$ ip netns exec gwctl <start frr>
+$ dataplane-init --driver dpdk --interface dp0=pci@0000:03:00.0 \
+      --control-netns /run/netns/gwctl --config-dir /dpconf
+```
 
-As a short-lived program which is only run once per gateway initialization, this program has significantly different
-error handling requirements from the other software in this workspace.
+Taps are nonpersistent and disappear when their last descriptor closes. This prevents stale taps from taking
+names needed by physical devices returning to the host namespace.
 
-Essentially, it will either succeed or fail, and if it fails it will likely require outside intervention to recover.
-There is little we can or should attempt to do in terms of sophisticated error handling beyond logging clear error
-messages.
+## Supervision
+
+Init supervises the dataplane and, with `--supervise-frr`, foreground `watchfrr` and `frr-agent`.
+Any startup failure or unexpected exit of these children is fatal. Init stops the remaining children and exits
+with failure, even if the child returned zero, so Kubernetes can restart the gateway. SIGTERM and SIGINT request
+a normal shutdown, including during startup.
+
+FRR manages its individual daemons through `watchfrr`, preserving its startup scripts and configuration pass.
+Init supervises `watchfrr` itself and reaps orphans it inherits as PID 1.
+
+Before spawning children, init removes the old dataplane control-plane socket and, when it supervises FRR,
+FRR's stale sockets and status files plus the configured agent socket. Init requires exclusive ownership of
+these endpoints during startup. Unexpected file types and cleanup failures are fatal.
+
+With supervised FRR, startup waits for each new Unix socket in order: dataplane control plane, zebra VTY, then
+FRR agent. This confirms that each endpoint was bound; it does not establish full service health.
+
+## Current limitations
+
+- Physical link changes are not propagated to the taps, so FRR can see a tap as up after its DPDK port goes down.
+- A host-namespace `prometheus-frr-exporter` cannot reach FRR in a private control namespace; metrics need a proxy
+  or an exporter in that namespace.
+- Fresh control namespaces discard old zebra nexthops. Explicitly reused namespaces and FRR daemon restarts
+  within a surviving namespace do not receive that cleanup.
 
 ## Privileges
 
-This program is, by necessity, run with elevated privileges.
-As such, we need to take special caution when writing to files.
+Init needs elevated privileges to configure devices and namespaces. Its sysfs writes must address the intended
+device; sysfs contains symlinks, so path validation matters.
 
-Because [sysfs] is basically a maze of symlinks, it is important to be careful when manipulating paths under [sysfs].
-Mistakes can lead you to write data in highly unexpected places, with totally unknown consequences.
-Some care has been taken in the design of the types used here to discourage programmer errors which might lead to
-unintended writes by a privileged process.
-
-<!-- links -->
-[iproute2]: https://www.kernel.org/pub/linux/utils/net/iproute2/
-[ethtool]: https://www.kernel.org/pub/linux/utils/net/ethtool/
-[sysfs]: https://www.kernel.org/doc/Documentation/filesystems/sysfs.txt
 [vfio-pci]: https://docs.kernel.org/driver-api/vfio.html
 [mlx5]: https://docs.kernel.org/networking/device_drivers/ethernet/mellanox/mlx5/index.html
-[`CAP_SYS_ADMIN`]: <https://www.man7.org/linux/man-pages/man7/capabilities.7.html#:~:text=user_namespaces(7)).-,CAP_SYS_ADMIN,-Note%3A%20this%20capability>

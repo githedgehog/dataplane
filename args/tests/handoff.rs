@@ -13,15 +13,19 @@ const CHILD_MODE: &str = "DATAPLANE_HANDOFF_TEST";
 const CONFIG_FD: RawFd = LaunchConfiguration::STANDARD_CONFIG_FD;
 const HASH_FD: RawFd = LaunchConfiguration::STANDARD_INTEGRITY_CHECK_FD;
 const NETNS_FD: RawFd = LaunchConfiguration::STANDARD_NETNS_FD;
+const HOST_NETNS_FD: RawFd = LaunchConfiguration::STANDARD_HOST_NETNS_FD;
 
-/// Each mode names the descriptors the parent supplies, in the order hash, config, namespace.
-const MODES: [(&str, [bool; 3]); 6] = [
-    ("absent", [false, false, false]),
-    ("config_only", [false, true, false]),
-    ("hash_only", [true, false, false]),
-    ("netns_only", [false, false, true]),
-    ("missing_namespace", [true, true, false]),
-    ("complete", [true, true, true]),
+/// Each mode names the descriptors the parent supplies, in the order hash, config, datapath
+/// namespace, host namespace.
+const MODES: [(&str, [bool; 4]); 8] = [
+    ("absent", [false, false, false, false]),
+    ("config_only", [false, true, false, false]),
+    ("hash_only", [true, false, false, false]),
+    ("netns_only", [false, false, true, false]),
+    ("host_netns_only", [false, false, false, true]),
+    ("missing_namespace", [true, true, false, true]),
+    ("missing_host_namespace", [true, true, true, false]),
+    ("complete", [true, true, true, true]),
 ];
 
 #[test]
@@ -33,7 +37,7 @@ fn handoff_protocol() {
     }
 }
 
-fn run_child(driver: &str, mode: &str, supplied: [bool; 3]) {
+fn run_child(driver: &str, mode: &str, supplied: [bool; 4]) {
     let interface = if driver == "kernel" {
         "eth0=kernel@eth0"
     } else {
@@ -58,8 +62,13 @@ fn run_child(driver: &str, mode: &str, supplied: [bool; 3]) {
         // SAFETY: fcntl returned a new descriptor owned exclusively by this value.
         unsafe { std::os::fd::FromRawFd::from_raw_fd(raw) }
     };
-    let sources = [duplicate(&hash), duplicate(&config), duplicate(&netns)];
-    let mapping = [HASH_FD, CONFIG_FD, NETNS_FD]
+    let sources = [
+        duplicate(&hash),
+        duplicate(&config),
+        duplicate(&netns),
+        duplicate(&netns),
+    ];
+    let mapping = [HASH_FD, CONFIG_FD, NETNS_FD, HOST_NETNS_FD]
         .into_iter()
         .zip(supplied)
         .collect::<Vec<_>>();
@@ -103,7 +112,12 @@ fn handoff_child() {
     };
     match mode.as_str() {
         "absent" => assert!(!LaunchConfiguration::was_inherited().unwrap()),
-        "config_only" | "hash_only" | "netns_only" | "missing_namespace" => {
+        "config_only"
+        | "hash_only"
+        | "netns_only"
+        | "host_netns_only"
+        | "missing_namespace"
+        | "missing_host_namespace" => {
             assert!(LaunchConfiguration::was_inherited().is_err());
         }
         "complete" => {
@@ -112,9 +126,13 @@ fn handoff_child() {
             let _config = unsafe { LaunchConfiguration::inherit() };
             // SAFETY: the parent reserved FD 50 for this handoff; no Rust value owns it yet.
             let fd = unsafe { LaunchConfiguration::inherit_netns() }.unwrap();
-            let flags = nix::fcntl::fcntl(&fd, nix::fcntl::FcntlArg::F_GETFD).unwrap();
-            assert_ne!(flags & nix::fcntl::FdFlag::FD_CLOEXEC.bits(), 0);
-            drop(fd);
+            // SAFETY: the parent reserved FD 60 for this handoff; no Rust value owns it yet.
+            let host_fd = unsafe { LaunchConfiguration::inherit_host_netns() }.unwrap();
+            for fd in [&fd, &host_fd] {
+                let flags = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFD).unwrap();
+                assert_ne!(flags & nix::fcntl::FdFlag::FD_CLOEXEC.bits(), 0);
+            }
+            drop((fd, host_fd));
             assert!(!LaunchConfiguration::was_inherited().unwrap());
         }
         other => unreachable!("unknown handoff mode {other}"),

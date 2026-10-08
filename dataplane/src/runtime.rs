@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use std::os::fd::AsRawFd;
+
 use crate::packet_processor::start_router;
 use crate::statistics::spawn_metrics;
 use args::{
@@ -8,7 +10,7 @@ use args::{
 };
 
 use crate::drivers::DriverError;
-use crate::drivers::dpdk::{DriverDpdk, Port};
+use crate::drivers::dpdk::{CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::{DriverStatusWriter, driver_status_access};
 use crate::packet_processor::PipelineIngredients;
@@ -152,6 +154,93 @@ fn parse_bmp_params(config: &LaunchConfiguration) -> (Option<BmpServerParams>, O
         info!("BMP: disabled");
         (None, None)
     }
+}
+
+/// Start Pyroscope from a host-namespace thread so its own threads inherit that namespace.
+fn start_pyroscope(
+    url: &str,
+) -> Option<pyroscope::PyroscopeAgent<pyroscope::pyroscope::PyroscopeAgentRunning>> {
+    let pyroscope_config = PyroscopeConfig::default();
+    let sample_rate = pyroscope_config.sample_rate;
+
+    match PyroscopeAgentBuilder::new(
+        url,
+        PYROSCOPE_APP_NAME,
+        sample_rate,
+        pyroscope_config.spy_name,
+        pyroscope_config.spy_version,
+        pprof_backend(
+            PprofConfig { sample_rate },
+            BackendConfig {
+                report_thread_name: true,
+                ..BackendConfig::default()
+            },
+        ),
+    )
+    .build()
+    {
+        Ok(agent) => match agent.start() {
+            Ok(running) => Some(running),
+            Err(e) => {
+                error!("Pyroscope start failed: {e}");
+                None
+            }
+        },
+        Err(e) => {
+            error!("Pyroscope build failed: {e}");
+            None
+        }
+    }
+}
+
+/// Place host-facing async and blocking work in init's original network namespace.
+/// Each runtime thread enters that namespace; a spawned task checks placement at startup.
+fn host_runtime(host_netns: &NetworkNamespace) -> Result<tokio::runtime::Runtime, String> {
+    let expected = std::fs::read_link(format!("/proc/self/fd/{}", host_netns.as_raw().as_raw_fd()))
+        .map_err(|e| format!("could not identify the host network namespace: {e}"))?
+        .display()
+        .to_string();
+
+    let entering = Arc::new(
+        host_netns
+            .as_raw()
+            .try_clone_to_owned()
+            .map_err(|e| format!("could not duplicate the host namespace descriptor: {e}"))?,
+    );
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("host-rt")
+        .on_thread_start(move || {
+            if let Err(e) =
+                nix::sched::setns(entering.as_ref(), nix::sched::CloneFlags::CLONE_NEWNET)
+            {
+                // Logged and not panicked on: the check below turns this into a startup failure,
+                // and a panic here would take out a worker thread mid-runtime-construction with a
+                // far worse message than the one that check produces.
+                error!("a host-runtime thread could not enter the host network namespace: {e}");
+            }
+        })
+        .build()
+        .map_err(|e| format!("could not build the host runtime: {e}"))?;
+
+    // Deliberately `spawn` and then wait, not `block_on`. `block_on` would poll the future on
+    // *this* thread -- which is in the control namespace -- and cheerfully report that everything
+    // is fine while proving nothing about the runtime's own threads.
+    let observed = runtime
+        .block_on(runtime.spawn(async { hardware::netns::current() }))
+        .map_err(|e| format!("could not ask the host runtime where it is: {e}"))?;
+
+    if observed != expected {
+        return Err(format!(
+            "the host runtime's threads are in network namespace {observed}, not {expected}; \
+             setns did not take effect, so anything reaching outside the fabric would be sent \
+             from the control namespace"
+        ));
+    }
+
+    info!("outward-facing work runs in network namespace {observed}");
+    Ok(runtime)
 }
 
 fn start_bmp(
@@ -344,6 +433,15 @@ fn enter_datapath_netns(netns: &NetworkNamespace) -> Result<(), String> {
     Ok(())
 }
 
+/// Coordinate datapath readiness and management startup.
+struct DatapathHandshake {
+    /// How the datapath reports that it is ready (for DPDK, that the EAL exists), which management
+    /// must not serve without.
+    ready: std::sync::mpsc::Sender<Result<(), String>>,
+    /// How the datapath is told management is running and the hardware may come up.
+    go: std::sync::mpsc::Receiver<()>,
+}
+
 /// Run the packet path on a thread in the datapath namespace.
 ///
 /// Report readiness once the namespace is entered (and, for DPDK, the EAL exists, since management
@@ -357,9 +455,10 @@ fn run_datapath(
     timer_handle: &tokio::runtime::Handle,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
-    ready: &std::sync::mpsc::Sender<Result<(), String>>,
-    go: &std::sync::mpsc::Receiver<()>,
+    bridge: Option<DatapathEnds>,
+    handshake: &DatapathHandshake,
 ) {
+    let DatapathHandshake { ready, go } = handshake;
     if let Err(detail) = enter_datapath_netns(netns) {
         error!("{detail}");
         drop(ready.send(Err(detail)));
@@ -390,8 +489,9 @@ fn run_datapath(
             timer_handle,
             ingredients,
             status_writer,
+            bridge,
         ),
-        None => run_kernel_driver(config, workers, ingredients, status_writer),
+        None => run_kernel_driver(config, workers, ingredients, status_writer, bridge),
     }
 }
 
@@ -401,6 +501,7 @@ fn run_kernel_driver(
     workers: &lifecycle::Subsystem,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
+    bridge: Option<DatapathEnds>,
 ) {
     concurrency::thread::scope(|scope| {
         info!("Using driver kernel...");
@@ -415,6 +516,7 @@ fn run_kernel_driver(
             config.driver.num_workers(),
             &ingredients.factory(),
             status_writer,
+            bridge,
         ) {
             error!("Failed to start driver: {e}");
             workers.report_fatal("the kernel driver could not be started");
@@ -423,6 +525,7 @@ fn run_kernel_driver(
 }
 
 /// Bring up the DPDK ports and run their workers until they stop.
+#[allow(clippy::too_many_arguments)]
 fn run_dpdk_driver(
     eal: &mut Eal,
     config: &LaunchConfiguration,
@@ -430,6 +533,7 @@ fn run_dpdk_driver(
     timer_handle: &tokio::runtime::Handle,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
+    mut bridge: Option<DatapathEnds>,
 ) {
     let ports = match bring_up_ports(eal, config) {
         Ok(ports) => ports,
@@ -439,6 +543,17 @@ fn run_dpdk_driver(
             return;
         }
     };
+
+    // Give each TAP its port's MAC and MTU.
+    if let Some(bridge) = &bridge {
+        for port in &ports {
+            bridge.report(PortIdentity {
+                name: port.name.clone(),
+                mac: port.mac,
+                mtu: port.mtu,
+            });
+        }
+    }
 
     // Queue handles borrow the ports, so workers must join before port shutdown.
     concurrency::thread::scope(|scope| {
@@ -451,11 +566,16 @@ fn run_dpdk_driver(
             config.driver.num_workers(),
             &ingredients.factory(),
             status_writer,
+            bridge.as_mut(),
         ) {
             error!("Failed to start driver: {e}");
             workers.report_fatal("the DPDK driver could not be started");
         }
     });
+
+    if let Some(bridge) = &bridge {
+        bridge.report_unclaimed();
+    }
 
     // Explicit shutdown reports errors that the Drop backstop would suppress.
     for port in ports {
@@ -488,6 +608,14 @@ pub fn main() {
             eprintln!("Invalid datapath namespace handoff: {e}");
             std::process::exit(1);
         });
+    // SAFETY: init owns the reserved host namespace FD; no other startup component has run yet.
+    let host_netns = unsafe { LaunchConfiguration::inherit_host_netns() }
+        .map_err(|e| e.to_string())
+        .and_then(|fd| NetworkNamespace::from_fd(fd).map_err(|e| e.to_string()))
+        .unwrap_or_else(|e| {
+            eprintln!("Invalid host namespace handoff: {e}");
+            std::process::exit(1);
+        });
 
     let gwname = match init_name(&config) {
         Ok(name) => name,
@@ -514,40 +642,6 @@ pub fn main() {
 
     let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
 
-    let agent_running = config.profiling.pyroscope_url.as_ref().and_then(|url| {
-        let pyroscope_config = PyroscopeConfig::default();
-        let sample_rate = pyroscope_config.sample_rate;
-
-        match PyroscopeAgentBuilder::new(
-            url.as_str(),
-            PYROSCOPE_APP_NAME,
-            sample_rate,
-            pyroscope_config.spy_name,
-            pyroscope_config.spy_version,
-            pprof_backend(
-                PprofConfig { sample_rate },
-                BackendConfig {
-                    report_thread_name: true,
-                    ..BackendConfig::default()
-                },
-            ),
-        )
-        .build()
-        {
-            Ok(agent) => match agent.start() {
-                Ok(running) => Some(running),
-                Err(e) => {
-                    error!("Pyroscope start failed: {e}");
-                    None
-                }
-            },
-            Err(e) => {
-                error!("Pyroscope build failed: {e}");
-                None
-            }
-        }
-    });
-
     let (driver_status_writer, driver_status_reader) = driver_status_access();
 
     let shutdown = Shutdown::new();
@@ -558,6 +652,46 @@ pub fn main() {
         .build()
         .expect("Failed to build mgmt runtime");
     let mgmt_handle = mgmt_runtime.handle().clone();
+
+    // The way back out, if `dataplane-init` moved the control plane into a namespace of its own.
+    // Otherwise this process is already where the outward-facing work belongs, and `host_handle`
+    // is simply the mgmt runtime's. Nothing downstream has to know which case it is in.
+    let host_runtime_guard = match host_netns.is_current() {
+        Ok(true) => None,
+        Ok(false) => match host_runtime(&host_netns) {
+            Ok(runtime) => Some(runtime),
+            Err(e) => {
+                // Fatal. The alternative is a dataplane that comes up, never reaches Kubernetes,
+                // and reports ten identical retry warnings that say nothing about namespaces.
+                error!("{e}");
+                shutdown.fail();
+                None
+            }
+        },
+        Err(e) => {
+            error!("Failed to identify the host network namespace: {e}");
+            shutdown.fail();
+            None
+        }
+    };
+    let host_handle = host_runtime_guard
+        .as_ref()
+        .map_or_else(|| mgmt_handle.clone(), |rt| rt.handle().clone());
+
+    // Started here rather than before the runtimes, and on a host-runtime thread rather than this
+    // one. The agent pushes to a Pyroscope server outside the fabric, and it spawns its own
+    // threads to do it -- threads which inherit the network namespace of whichever thread created
+    // them. Building it on the main thread would put the whole agent in the control namespace,
+    // where its pushes have nowhere to go.
+    let agent_running = match config.profiling.pyroscope_url.clone() {
+        Some(url) => host_handle
+            .block_on(host_handle.spawn_blocking(move || start_pyroscope(&url)))
+            .unwrap_or_else(|e| {
+                error!("Pyroscope startup task failed: {e}");
+                None
+            }),
+        None => None,
+    };
 
     let sigrx = lifecycle::spawn_signal_catcher(&mgmt_handle, shutdown.root.clone())
         .expect("failed to install signal handler");
@@ -597,9 +731,12 @@ pub fn main() {
         None
     };
 
+    // On the host runtime: something outside this process scrapes this endpoint, and in a fabric
+    // that something is an Alloy pod on the node's own network. A listener bound inside the
+    // control namespace is one nothing can reach.
     spawn_metrics(
         &shutdown.metrics,
-        &mgmt_handle,
+        &host_handle,
         config.metrics.address,
         setup.stats,
     );
@@ -607,10 +744,50 @@ pub fn main() {
     let ingredients = setup.pipeline;
     let pipeline_data = ingredients.data();
 
+    // Both drivers need a bridge when their interfaces occupy a separate namespace.
+    // Create taps from the control namespace, before starting the datapath thread;
+    // otherwise their configured names would collide with physical interfaces.
+    let want_bridge = match datapath_netns.is_current() {
+        Ok(shared) => !shared,
+        Err(e) => {
+            error!("Failed to identify the datapath network namespace: {e}");
+            shutdown.fail();
+            false
+        }
+    };
+    let (_cp_bridge, cp_ends) = if want_bridge {
+        match CpBridge::create(
+            &mgmt_handle,
+            &shutdown.mgmt,
+            config.driver.interfaces().map(|i| &i.interface),
+        ) {
+            Ok((bridge, ends)) => (Some(bridge), Some(ends)),
+            Err(e) => {
+                // Fatal, and not because the bridge is a nicety: with the NICs in a namespace of
+                // their own this is the control plane's *only* path to the wire, so the dataplane
+                // would come up, forward nothing it had not been told about, and never learn a
+                // route.
+                error!("Failed to build the control-plane bridge: {e}");
+                shutdown.fail();
+                (None, None)
+            }
+        }
+    } else {
+        info!(
+            "The datapath shares this network namespace, so no control-plane bridge: the kernel \
+             keeps the netdevs and carries the control plane itself"
+        );
+        (None, None)
+    };
+
     concurrency::thread::scope(|scope| {
         // Management waits for the datapath to be ready, then releases it after its own startup.
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel();
+        let handshake = DatapathHandshake {
+            ready: ready_tx,
+            go: go_rx,
+        };
 
         let spawned = thread::Builder::new()
             .name("datapath".to_string())
@@ -627,8 +804,8 @@ pub fn main() {
                         timer_handle,
                         ingredients,
                         driver_status_writer,
-                        &ready_tx,
-                        &go_rx,
+                        cp_ends,
+                        &handshake,
                     );
                 }
             });
@@ -653,6 +830,7 @@ pub fn main() {
 
         let mgmt_result = run_mgmt(
             &mgmt_handle,
+            &host_handle,
             &shutdown.mgmt,
             MgmtParams {
                 config_dir: config
@@ -713,6 +891,14 @@ pub fn main() {
 
     setup.router.stop();
     mgmt_runtime.shutdown_timeout(Duration::from_secs(2));
+
+    // Shut down alongside mgmt, and after it: the k8s status updater is the last thing that should
+    // still be talking, and it reports the state mgmt has just finished arriving at. Present only
+    // when the control plane was moved; otherwise `host_handle` was mgmt's all along and this
+    // would be shutting the same runtime down twice.
+    if let Some(host_runtime) = host_runtime_guard {
+        host_runtime.shutdown_timeout(Duration::from_secs(2));
+    }
 
     if let Some(running) = agent_running {
         match running.stop() {
@@ -829,5 +1015,91 @@ mod probe_tests {
                 ),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::host_runtime;
+    use caps::Capability;
+    use fixin::wrap;
+    use hardware::netns::NetworkNamespace;
+    use test_utils::with_caps;
+
+    /// The namespace the calling thread is in, in the `net:[...]` form `readlink` gives.
+    fn here() -> String {
+        hardware::netns::current()
+    }
+
+    /// The whole point of the split: a task on this runtime must run somewhere other than the
+    /// thread that built it.
+    ///
+    /// Written as an inequality *and* an equality. Asserting only that the runtime is in the
+    /// target namespace would also pass if `setns` had silently done nothing and both were the
+    /// same namespace to begin with, which is exactly the failure this is guarding.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_SYS_ADMIN]))]
+    fn tasks_run_in_the_namespace_the_runtime_was_given() {
+        let elsewhere = NetworkNamespace::create().expect("should be able to make a namespace");
+        let expected = std::fs::read_link(format!(
+            "/proc/self/fd/{}",
+            std::os::fd::AsRawFd::as_raw_fd(&elsewhere.as_raw())
+        ))
+        .expect("the namespace descriptor should be readable")
+        .display()
+        .to_string();
+
+        let caller = here();
+        assert_ne!(
+            caller, expected,
+            "a freshly created namespace should not be the one this thread is already in; \
+             without that the rest of this test proves nothing"
+        );
+
+        let runtime = host_runtime(&elsewhere).expect("the host runtime should build and verify");
+
+        let observed = runtime.block_on(runtime.spawn(async { here() })).unwrap();
+        assert_eq!(
+            observed, expected,
+            "a spawned task ran in {observed}, not the namespace the runtime was given"
+        );
+        assert_ne!(
+            observed, caller,
+            "the task ran in the caller's namespace, so setns did nothing"
+        );
+    }
+
+    /// `spawn_blocking` threads come from a different pool than the workers, and the Pyroscope
+    /// agent is built on one of them. If `on_thread_start` did not cover that pool the agent would
+    /// be created in the wrong namespace while every worker looked correct.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_SYS_ADMIN]))]
+    fn blocking_threads_are_in_the_namespace_too() {
+        let elsewhere = NetworkNamespace::create().expect("should be able to make a namespace");
+        let caller = here();
+        let runtime = host_runtime(&elsewhere).expect("the host runtime should build and verify");
+
+        let observed = runtime
+            .block_on(runtime.spawn_blocking(here))
+            .expect("the blocking task should run");
+        assert_ne!(
+            observed, caller,
+            "a spawn_blocking thread stayed in the caller's namespace, so anything built on one \
+             -- the Pyroscope agent above, for instance -- would push from the wrong place"
+        );
+    }
+
+    /// A dataplane whose namespace work silently failed is worse than one that refuses to start,
+    /// because the symptoms are timeouts rather than an error. Handing `host_runtime` the
+    /// namespace the caller is *already* in is the closest thing to "setns did nothing" that can
+    /// be arranged on purpose, and it must still be reported as agreement rather than as failure.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_SYS_ADMIN]))]
+    fn the_current_namespace_is_accepted_rather_than_mistaken_for_a_failure() {
+        let ours = NetworkNamespace::open("/proc/thread-self/ns/net")
+            .expect("this thread's own namespace should be openable");
+        let runtime = host_runtime(&ours).expect("entering the namespace we are in should succeed");
+        let observed = runtime.block_on(runtime.spawn(async { here() })).unwrap();
+        assert_eq!(observed, here());
     }
 }
