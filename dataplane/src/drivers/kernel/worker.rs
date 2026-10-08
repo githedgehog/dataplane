@@ -28,8 +28,8 @@ use crate::drivers::kernel::DriverKernel;
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
 use crate::drivers::kernel::sockstats;
-use crate::drivers::kernel::{WorkerIfaceMonitor, WorkerMonitor};
 use crate::drivers::status::WorkerId;
+use crate::drivers::supervisor::{RxTaskMonitor, TASK_PAT_PERIOD, WorkerMonitor};
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
 use tracing::{debug, error, info, trace, warn};
@@ -168,7 +168,7 @@ impl Worker {
         cancel: CancellationToken,
     ) {
         // the interval at which we'll pat the watchdog if there is no activity on the socket
-        let pat_period = Duration::from_secs(u64::from(DriverKernel::TASK_PAT_PERIOD));
+        let pat_period = Duration::from_secs(u64::from(TASK_PAT_PERIOD));
 
         reader_handles.spawn_local(async move {
             let intf = intf;
@@ -259,7 +259,7 @@ impl Worker {
         self,
         scope: &'scope thread::Scope<'scope, '_>,
         interfaces: &[Kif],
-    ) -> Result<WorkerMonitor<'scope>, io::Error> {
+    ) -> Result<WorkerMonitor<'scope, io::Error>, io::Error> {
         let id = self.id;
         let total_workers = self.total_workers;
         let setup = self.setup_pipeline;
@@ -267,13 +267,13 @@ impl Worker {
         let cancel = subsystem.cancel_token();
         let interfaces = interfaces.to_vec();
 
-        // Create vector of `WorkerIfaceMonitor` with the watchdogs. We'll hand a watchdog to each
+        // Create vector of `RxTaskMonitor` with the watchdogs. We'll hand a watchdog to each
         // interface reader and pass this vector along with the `WorkerMonitor` returned for this `Worker`
         // for the supervisor to check. Ideally we'd create the watchdogs in the interface readers and
         // collect them. However build_interface_table() needs to be called from the worker's tokio runtime
         let ifmonitors: Vec<_> = interfaces
             .iter()
-            .map(|kif| WorkerIfaceMonitor::new(&kif.name))
+            .map(|kif| RxTaskMonitor::new(&kif.name))
             .collect();
 
         let worker_ifmonitors = ifmonitors.clone();
@@ -349,7 +349,7 @@ fn build_interface_table(
     id: WorkerId,
     total_workers: usize,
     interfaces: &[Kif],
-    ifmonitors: &[WorkerIfaceMonitor],
+    ifmonitors: &[RxTaskMonitor],
 ) -> Result<(WorkerInterfaceReaders, Arc<WorkerIfTable>), io::Error> {
     let mut if_table = HashMap::new();
     let mut readers = Vec::new();
