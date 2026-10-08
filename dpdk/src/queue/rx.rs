@@ -45,8 +45,6 @@ impl From<u16> for RxQueueIndex {
 /// Configuration for a DPDK receive queue.
 #[derive(Debug)]
 pub struct RxQueueConfig<'eal> {
-    /// The index of the device this rx queue is associated with
-    pub dev: DevIndex,
     /// The index of the rx queue.
     pub queue_index: RxQueueIndex,
     /// The number of descriptors in the rx queue.
