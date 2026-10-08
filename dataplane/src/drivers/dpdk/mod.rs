@@ -29,7 +29,7 @@ use super::DriverError;
 use super::status::DriverStatusWriter;
 use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 
-use port::Port;
+pub(crate) use port::Port;
 use worker::{Worker, WorkerPort};
 
 trace_target!("dpdk-driver", LevelFilter::INFO, &["driver"]);
