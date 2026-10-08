@@ -105,7 +105,11 @@ fn setup_masq_pipeline(
     println!("{static_nat_tables}");
     let mut static_nat_writer = NatTablesWriter::new();
     static_nat_writer.update_nat_tables(static_nat_tables);
-    let static_nat = StaticNat::with_reader("static-NAT-1", static_nat_writer.get_reader());
+    let static_nat = StaticNat::with_reader(
+        "static-NAT-1",
+        static_nat_writer.get_reader(),
+        flow_table.clone(),
+    );
     pipeline = pipeline.add_stage(static_nat);
 
     let mut allocator = NatAllocatorWriter::new();

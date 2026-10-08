@@ -1394,3 +1394,84 @@ fn a_zero_ipv6_udp_checksum_asks_for_a_recompute() {
         "a zero IPv6 UDP checksum was translated without requesting a recompute"
     );
 }
+
+mod flow_tracking {
+    use super::{build_context, vni};
+    use crate::StaticNat;
+    use crate::nat_flows::NatData;
+    use crate::static_nat::{NatTablesWriter, StaticNatFlowData};
+    use concurrency::sync::Arc;
+    use flow_entry::flow_table::FlowTable;
+    use net::FlowKey;
+    use net::buffer::TestBuffer;
+    use net::ip::NextHeader;
+    use net::packet::test_utils::build_test_ipv4_packet_with_transport;
+    use net::packet::{Packet, VpcDiscriminant};
+    use pipeline::NetworkFunction;
+
+    fn setup() -> (StaticNat, NatTablesWriter, Arc<FlowTable>) {
+        let flow_table = Arc::new(FlowTable::default());
+        let mut tablesw = NatTablesWriter::new();
+        tablesw.update_nat_tables(build_context());
+        let nat = StaticNat::with_reader("static-nat", tablesw.get_reader(), flow_table.clone());
+        (nat, tablesw, flow_table)
+    }
+
+    // A TCP SYN from VNI 100 to VNI 200, with static NAT on both ends
+    fn syn(tracked: bool) -> Packet<TestBuffer> {
+        let mut packet = build_test_ipv4_packet_with_transport(u8::MAX, Some(NextHeader::TCP))
+            .unwrap_or_else(|_| unreachable!());
+        let meta = packet.meta_mut();
+        meta.src_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
+        meta.dst_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+        meta.set_overlay(true);
+        meta.set_static_nat_src(true);
+        meta.set_static_nat_dst(true);
+        meta.set_forced_flow_tracking(tracked);
+        packet
+    }
+
+    /// The next packets of the connection hit the flow table with their headers from before
+    /// translation, and replies come back to the translated addresses.
+    #[tokio::test]
+    async fn a_tracked_flow_uses_the_initial_key_and_the_translated_reply() {
+        let (mut nat, _tablesw, flow_table) = setup();
+        let packet = syn(true);
+        let initial_key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!());
+
+        let out = nat
+            .process(vec![packet])
+            .next()
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(out.get_done(), None);
+        let translated_key = FlowKey::try_from(&out).unwrap_or_else(|_| unreachable!());
+        assert_ne!(
+            initial_key, translated_key,
+            "the fixture was not translated"
+        );
+
+        let forward = flow_table
+            .lookup(&initial_key)
+            .unwrap_or_else(|| unreachable!("no flow for the headers from before static NAT"));
+        assert!(StaticNatFlowData::try_get(&forward.locked.read()).is_some());
+        let reverse_key = translated_key.reverse(Some(VpcDiscriminant::VNI(vni(200))));
+        let reverse = flow_table
+            .lookup(&reverse_key)
+            .unwrap_or_else(|| unreachable!("no flow for the translated headers, reversed"));
+        assert!(StaticNatFlowData::try_get(&reverse.locked.read()).is_some());
+    }
+
+    #[tokio::test]
+    async fn an_untracked_flow_gets_no_flow_pair() {
+        let (mut nat, _tablesw, flow_table) = setup();
+        let packet = syn(false);
+        let initial_key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!());
+
+        let out = nat
+            .process(vec![packet])
+            .next()
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(out.get_done(), None);
+        assert!(flow_table.lookup(&initial_key).is_none());
+    }
+}
