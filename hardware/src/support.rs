@@ -161,7 +161,18 @@ impl SupportedDevice {
                 DEVICES.as_slice()
             }
             IntelX710 => {
-                const DEVICES: [DeviceId; 1] = [
+                // 10 GbE X710 variants from pci.ids.
+                const DEVICES: [DeviceId; 6] = [
+                    // Ethernet Controller X710 for 10GbE SFP+
+                    DeviceId::new(0x1572),
+                    // Ethernet Controller X710 for 10GbE backplane
+                    DeviceId::new(0x1581),
+                    // Ethernet Controller X710 for 10GbE QSFP+
+                    DeviceId::new(0x1585),
+                    // Ethernet Controller X710 for 10GBASE-T
+                    DeviceId::new(0x1586),
+                    // Ethernet Controller X710/X557-AT 10GBASE-T
+                    DeviceId::new(0x1589),
                     // Ethernet Controller X710 for 10GBASE-T
                     DeviceId::new(0x15ff),
                 ];
