@@ -46,6 +46,20 @@
       "hash": "sha256-oBrLfTytqhV1ubNb2BAbgzp1NfGkjF7GIz7allEqqFg=",
       "frozen": true
     },
+    "crate-devlink": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "devlink"
+      },
+      "branch": "main",
+      "submodules": false,
+      "revision": "11bb53b4a60fe1fbc206b5f48e65ec8127a47216",
+      "url": "https://github.com/githedgehog/devlink/archive/11bb53b4a60fe1fbc206b5f48e65ec8127a47216.tar.gz",
+      "hash": "sha256-wa/dm8G2AvRp12pjUrQI8BowB55IPkZq4sNcg7NGqnk=",
+      "frozen": true
+    },
     "crate-dplane-rpc": {
       "type": "Git",
       "repository": {
@@ -86,6 +100,20 @@
       "revision": "8e8d1eaef4f22220ac115e551541967c706b361f",
       "url": "https://github.com/githedgehog/left-right/archive/8e8d1eaef4f22220ac115e551541967c706b361f.tar.gz",
       "hash": "sha256-8VJwonSWT9y7vrtsdQ8t7cmMvTQwsBNRCQiRBjnFv0k=",
+      "frozen": true
+    },
+    "crate-netlink-packet-devlink": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "netlink-packet-devlink"
+      },
+      "branch": "main",
+      "submodules": false,
+      "revision": "4c920fa98461432a7386dc98463e846f8902ba1a",
+      "url": "https://github.com/githedgehog/netlink-packet-devlink/archive/4c920fa98461432a7386dc98463e846f8902ba1a.tar.gz",
+      "hash": "sha256-7hFrrFUtoz0exuxgGgVuWiFMP+1Pi76eHOhd2Ga9AUI=",
       "frozen": true
     },
     "crate-netlink-packet-route": {
