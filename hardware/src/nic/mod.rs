@@ -178,7 +178,7 @@ pub enum PciDriver {
     /// NVIDIA/Mellanox's mlx5 driver
     #[strum(serialize = "mlx5_core")]
     Mlx5Core,
-    /// The driver you get when you are bound to nothing else, but linux can still see the device.
+    /// PCI Express port services driver for root and downstream bridges.
     #[strum(serialize = "pcieport")]
     PciePort,
     /// The vfio-pci driver.
@@ -229,15 +229,6 @@ impl PciDriver {
         options.write(true);
         SysfsFile::open(path, &options).map_err(DriverErr::Sysfs)
     }
-
-    fn unbind_file(self) -> Result<SysfsFile, DriverErr> {
-        let driver_path = self.driver_path()?;
-        let path = format!("{driver_path}/unbind");
-        info!("opening unbind file {path}");
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true);
-        SysfsFile::open(path, &options).map_err(DriverErr::Sysfs)
-    }
 }
 
 impl std::fmt::Display for PciDriver {
@@ -275,7 +266,7 @@ trait UnbindPciDriver {
     /// Attempt to unbind the device from its current driver.
     ///
     /// Implementations should expect that the device is currently bound to
-    /// some driver (neglecting [`PciDriver::PciePort`], which functionally means "unbound").
+    /// some driver, including drivers absent from [`PciDriver`].
     ///
     /// # Errors
     ///
@@ -294,7 +285,7 @@ trait OverridePciDriver {
     /// Attempt to override the driver for a pci device.
     ///
     /// Implementations should expect that the device is currently unbound from
-    /// any driver (neglecting [`PciDriver::PciePort`], which functionally means "unbound").
+    /// any driver.
     ///
     /// Note: override is not the same as bind.  See [`BindPciDriver`].
     ///
@@ -307,12 +298,22 @@ trait OverridePciDriver {
 impl UnbindPciDriver for PciNic {
     type Error = DriverErr;
     fn unbind(&mut self) -> Result<(), DriverErr> {
-        let Some(driver) = self.driver()? else {
-            info!("no driver bound to {self}");
-            return Ok(());
+        let device_path = self.device_path().map_err(DriverErr::Sysfs)?;
+        // Follow the device's driver link to support drivers absent from `PciDriver`.
+        let driver_path = match device_path.relative("driver") {
+            Ok(path) => path,
+            Err(SysfsErr::IoError(e)) if e.kind() == ErrorKind::NotFound => {
+                info!("no driver bound to {self}");
+                return Ok(());
+            }
+            Err(e) => return Err(DriverErr::Sysfs(e)),
         };
-        driver
-            .unbind_file()?
+        let path = format!("{driver_path}/unbind");
+        info!("opening unbind file {path}");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true);
+        SysfsFile::open(path, &options)
+            .map_err(DriverErr::Sysfs)?
             .write_all(format!("{self}").as_bytes())
             .map_err(|e| DriverErr::Sysfs(SysfsErr::IoError(e)))
     }
@@ -337,7 +338,7 @@ trait BindPciDriver {
     /// Attempt to bind the device to a specific [`PciDriver`].
     ///
     /// Implementations should expect that the device is currently "unbound" from
-    /// any driver (neglecting [`PciDriver::PciePort`], which functionally means "unbound").
+    /// any driver.
     ///
     /// # Errors
     ///
@@ -381,17 +382,17 @@ impl BindToVfioPci for PciNic {
             });
         }
         match self.driver() {
+            Ok(Some(PciDriver::VfioPci)) => {
+                info!("device {self} is already bound to vfio-pci");
+                return Ok(());
+            }
             Ok(Some(known_driver)) => {
-                if known_driver == PciDriver::VfioPci {
-                    info!("device {self} is already bound to vfio-pci");
-                    return Ok(());
-                }
-                if known_driver == PciDriver::PciePort {
-                    info!("device {self} is currently unbound ({known_driver} driver)");
-                } else {
-                    info!("unbinding device {self} from {known_driver}");
-                    self.unbind()?;
-                }
+                info!("unbinding device {self} from {known_driver}");
+                self.unbind()?;
+            }
+            Err(DriverErr::NotSupported { driver_name }) => {
+                info!("unbinding device {self} from unrecognized driver {driver_name}");
+                self.unbind()?;
             }
             Ok(None) => {
                 info!("device {self} has no driver bound; proceeding to vfio-pci bind");
