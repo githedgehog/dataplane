@@ -28,6 +28,27 @@ use tracing::{debug, error, info, warn};
 
 use crate::socket;
 
+/// Set to any value to make the supervisor forward `SIGUSR1` to what it supervises.
+///
+/// A profile-instrumented build writes its counters when it exits, and the dataplane does not
+/// exit -- it runs until something kills it, and a kill loses the counters. `SIGUSR1` is the
+/// conventional "dump what you have now" signal, so forwarding it gives a way to collect a
+/// profile from a process that is still running.
+///
+/// Opt-in rather than unconditional, because **the default disposition of `SIGUSR1` is to
+/// terminate**. Forwarding it to a build with no handler would kill the dataplane, which is a
+/// spectacular way to turn a diagnostic into an outage. A build that can handle it says so by
+/// setting this; every other build never sees the signal.
+///
+/// The value names the process to signal, and defaults to [`DEV_PROFILE_DUMP_DEFAULT_TARGET`]
+/// when empty. It is a name rather than "everything supervised" on purpose: FRR is supervised
+/// here too and reads `SIGUSR1` as "rotate your logs", so a broadcast would quietly do something
+/// unrelated to a second process every time we asked for a profile.
+pub const DEV_PROFILE_DUMP_ENV: &str = "DATAPLANE_DEV_PROFILE_DUMP";
+
+/// The process [`DEV_PROFILE_DUMP_ENV`] signals when its value does not name one.
+pub const DEV_PROFILE_DUMP_DEFAULT_TARGET: &str = "dataplane";
+
 /// How long a process is given to respond to `SIGTERM` before it is killed.
 ///
 /// Matched to the ten seconds a container runtime allows between `SIGTERM` and `SIGKILL`, less a
@@ -392,6 +413,27 @@ impl Supervisor {
     async fn wait(&mut self) -> Result<Outcome, SupervisorError> {
         info!("supervising {} process(es)", self.running.len());
 
+        // Only listened for when a build has asked for it: see `DEV_PROFILE_DUMP_ENV`. An
+        // unwanted `SIGUSR1` would otherwise reach a process whose default action is to die.
+        let dump_target = std::env::var(DEV_PROFILE_DUMP_ENV).ok().map(|v| {
+            if v.trim().is_empty() {
+                DEV_PROFILE_DUMP_DEFAULT_TARGET.to_string()
+            } else {
+                v.trim().to_string()
+            }
+        });
+        let mut profile_dump = if let Some(target) = &dump_target {
+            info!("{DEV_PROFILE_DUMP_ENV} is set: SIGUSR1 will be forwarded to `{target}`");
+            Some(signal(SignalKind::user_defined1()).map_err(|e| {
+                SupervisorError::SignalHandler {
+                    signal: "SIGUSR1",
+                    source: e,
+                }
+            })?)
+        } else {
+            None
+        };
+
         let outcome = loop {
             // An exit may predate this loop; SIGCHLD notifications may also be coalesced.
             if let Some((name, report)) = self.reap()? {
@@ -402,6 +444,29 @@ impl Supervisor {
                 _ = self.child.recv() => {}
                 _ = self.terminate.recv() => break Outcome::Signalled { signal: "SIGTERM" },
                 _ = self.interrupt.recv() => break Outcome::Signalled { signal: "SIGINT" },
+                // Deliberately does not break: this is a request for data, not to stop.
+                Some(()) = async {
+                    match profile_dump.as_mut() {
+                        Some(sig) => sig.recv().await,
+                        // Never completes, so the arm is inert when the feature is off.
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    // Signal the process itself, not its group: a group signal reaches children
+                    // that have no handler for it, and the default disposition kills them.
+                    let target = dump_target.as_deref().unwrap_or(DEV_PROFILE_DUMP_DEFAULT_TARGET);
+                    let mut found = false;
+                    for running in self.running.iter().filter(|r| r.name == target) {
+                        found = true;
+                        info!("forwarding SIGUSR1 to {} (pid {})", running.name, running.pid);
+                        if let Err(e) = kill(running.pid, Signal::SIGUSR1) {
+                            warn!("could not signal {} (pid {}): {e}", running.name, running.pid);
+                        }
+                    }
+                    if !found {
+                        warn!("{DEV_PROFILE_DUMP_ENV} names `{target}`, which is not supervised");
+                    }
+                }
             }
         };
 
@@ -723,6 +788,77 @@ mod test {
         let mut command = Command::new(tool("sh"));
         command.arg("-c").arg(script);
         command
+    }
+
+    /// A profile dump reaches only the named process and leaves supervision running.
+    #[tokio::test]
+    async fn a_forwarded_profile_dump_does_not_stop_the_gateway() {
+        if run_in_subprocess("a_forwarded_profile_dump_does_not_stop_the_gateway") {
+            return;
+        }
+        // SAFETY: this test runs alone in a subprocess on a current-thread runtime.
+        unsafe { std::env::set_var(DEV_PROFILE_DUMP_ENV, "dumper") };
+        let marker = std::env::temp_dir().join(format!("dumped.{}", std::process::id()));
+        // A child with no SIGUSR1 handler. It must survive: the default disposition of SIGUSR1
+        // is to terminate, so signalling the *group* rather than the process would kill it --
+        // which in the real supervisor means killing whatever the dataplane has spawned.
+        let orphan_died = std::env::temp_dir().join(format!("childdied.{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_file(&orphan_died);
+
+        let mut supervisor = Supervisor::new().unwrap();
+        supervisor
+            .start(Process::new(
+                "dumper",
+                // Traps USR1 and keeps going, then exits on its own with a distinctive code:
+                // that exit, not a signal, is what ends supervision.
+                sh(&format!(
+                    "trap 'touch {m}' USR1; sleep 600 & c=$!; i=0; \
+                     while [ $i -lt 30 ]; do sleep 0.1; \
+                       kill -0 $c 2>/dev/null || {{ touch {d}; break; }}; i=$((i+1)); done; \
+                     kill $c 2>/dev/null; exit 7",
+                    m = marker.display(),
+                    d = orphan_died.display()
+                )),
+            ))
+            .await
+            .expect("the dumper should start");
+
+        let pid = std::process::id();
+        let signaller = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            // The supervisor listens for SIGUSR1 in this process; it forwards only to `dumper`.
+            let _ = kill(Pid::from_raw(pid.cast_signed()), Signal::SIGUSR1);
+        });
+
+        let outcome = tokio::time::timeout(Duration::from_secs(30), supervisor.run([]))
+            .await
+            .expect("supervision should end when the dumper exits, not hang")
+            .expect("supervision should not fail");
+        signaller.await.expect("the signaller should finish");
+
+        match outcome {
+            Outcome::Exited { report, .. } => assert_eq!(
+                report,
+                Ended::Code(7),
+                "the dumper should have run to its own exit"
+            ),
+            other @ Outcome::Signalled { .. } => {
+                panic!("SIGUSR1 must not end supervision; got {other:?}")
+            }
+        }
+        assert!(
+            marker.exists(),
+            "the supervised process should have received the forwarded SIGUSR1"
+        );
+        assert!(
+            !orphan_died.exists(),
+            "SIGUSR1 must go to the process, not its group: a child with no handler was killed"
+        );
+        let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_file(&orphan_died);
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(DEV_PROFILE_DUMP_ENV) };
     }
 
     #[tokio::test]
