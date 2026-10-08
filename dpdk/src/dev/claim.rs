@@ -526,7 +526,6 @@ mod tests {
         let claim = PortClaim::new(&owner, shared.dev().info(ring.index).unwrap()).unwrap();
         let mut dev = config.apply(claim).unwrap();
         dev.new_rx_queue(RxQueueConfig {
-            dev: ring.index,
             queue_index: RxQueueIndex(0),
             num_descriptors: 8,
             socket_preference: Preference::Id(SocketId::ANY),

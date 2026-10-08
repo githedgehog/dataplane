@@ -93,7 +93,6 @@ impl Loopback {
     fn queues(&mut self) -> (RxQueue<'_>, TxQueue<'_>) {
         let rx = RxQueue {
             config: RxQueueConfig {
-                dev: self.dev,
                 queue_index: 0.into(),
                 num_descriptors: 128,
                 socket_preference: Preference::Id(SocketId::ANY),

@@ -17,7 +17,6 @@ const PORT: DevIndex = DevIndex(0);
 fn rx(index: u16) -> RxQueue<'static> {
     RxQueue {
         config: RxQueueConfig {
-            dev: PORT,
             queue_index: RxQueueIndex(index),
             num_descriptors: 8,
             socket_preference: Preference::Id(SocketId::ANY),
