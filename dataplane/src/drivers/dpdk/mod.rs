@@ -10,3 +10,4 @@
 //! because the pipeline identifies interfaces by ifindex. Forwarding runs in software.
 
 mod port;
+mod worker;
