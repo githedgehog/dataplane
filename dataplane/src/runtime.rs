@@ -165,6 +165,35 @@ fn spawn_signal_handler(
     });
 }
 
+/// Keep EAL initialization separate from explicit device attachment.
+fn eal_arguments(args: &CmdArgs) -> Vec<String> {
+    let main_lcore_arg = dpdk::eal::main_lcore_arg();
+
+    let mut eal_args: Vec<String> = vec![
+        "--no-auto-probing".to_string(),
+        "--in-memory".to_string(),
+        "--no-telemetry".to_string(),
+        "--no-shconf".to_string(),
+        "--iova-mode=va".to_string(),
+        "--lcores".to_string(),
+        main_lcore_arg,
+    ];
+
+    if args.driver_name() != "dpdk" {
+        // Classifier-only: rte_acl needs the memory subsystem and nothing else.
+        eal_args.push("--no-huge".to_string());
+        eal_args.push("--no-pci".to_string());
+    }
+
+    eal_args
+}
+
+fn init_eal(args: &CmdArgs) -> dpdk::eal::Eal {
+    let eal_args = eal_arguments(args);
+    info!("Initializing DPDK EAL with: {}", eal_args.join(" "));
+    dpdk::eal::init(eal_args)
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn main() {
     let args = CmdArgs::parse();
@@ -177,28 +206,9 @@ pub fn main() {
     };
     init_logging(&args, &gwname);
 
-    // Initialize a minimal EAL as early as possible. Stages such as the ACL filter and the
-    // flow-filter build rte_acl classifiers when configuration is applied (which happens before any
-    // packet driver starts), and rte_acl needs the EAL memory subsystem up. These are the
-    // lightweight, classifier-only args (no hugepages / no PCI). NOTE: there can be only one
-    // `rte_eal_init` per process, so the real DPDK datapath driver (currently `todo!()`) must
-    // eventually take over EAL ownership with device-appropriate args rather than adding a second
-    // init. The guard is held for the life of the process.
-    //
-    // `--lcores` pins DPDK's main lcore to every CPU currently allowed for this process rather
-    // than letting `rte_eal_init` default it to a single CPU; see `main_lcore_arg` for why that
-    // default matters here (it otherwise pins every thread spawned after EAL init, not just DPDK's).
-    let main_lcore_arg = dpdk::eal::main_lcore_arg();
-    let _eal = dpdk::eal::init([
-        "--no-huge",
-        "--no-pci",
-        "--in-memory",
-        "--no-telemetry",
-        "--no-shconf",
-        "--iova-mode=va",
-        "--lcores",
-        main_lcore_arg.as_str(),
-    ]);
+    // ACL classifiers and the DPDK driver share one EAL. Initialize it before either starts.
+    // main_lcore_arg preserves the CPU affinity inherited by subsequently spawned threads.
+    let _eal = init_eal(&args);
 
     let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&args);
 
@@ -386,4 +396,43 @@ pub fn main() {
     }
     info!("Dataplane shutdown completed");
     std::process::exit(exit_code);
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[test]
+    fn eal_never_probes_configured_interfaces_implicitly() {
+        for command_line in [
+            vec!["dataplane"],
+            vec![
+                "dataplane",
+                "--driver",
+                "dpdk",
+                "--interface",
+                "eth0=pci@0000:01:00.0",
+            ],
+            vec![
+                "dataplane",
+                "--driver",
+                "kernel",
+                "--interface",
+                "eth0=kernel@eth0",
+            ],
+        ] {
+            let args = CmdArgs::try_parse_from(command_line).unwrap();
+            let flags = eal_arguments(&args);
+            assert!(flags.iter().any(|flag| flag == "--no-auto-probing"));
+            assert!(!flags.iter().any(|flag| matches!(
+                flag.as_str(),
+                "-a" | "--allow" | "--auto-probing" | "--vdev"
+            )));
+            assert!(!flags.iter().any(|flag| flag.contains("0000:01:00.0")));
+            assert_eq!(
+                flags.iter().any(|flag| flag == "--no-pci"),
+                args.driver_name() == "kernel"
+            );
+        }
+    }
 }
