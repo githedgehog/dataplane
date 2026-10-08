@@ -5,8 +5,18 @@ This program is responsible for initializing the dataplane.
 The primary steps of this program are to:
 
 1. Drive the NIC into the configuration needed by DPDK to use the NIC
-2. (TODO) Drop some hazardous privileges (especially [`CAP_SYS_ADMIN`])
-3. (TODO) `exec` the dataplane process on success
+2. Prepare the network namespace the datapath runs in
+3. (TODO) Drop some hazardous privileges (especially [`CAP_SYS_ADMIN`])
+4. `exec` the dataplane process, passing it the sealed configuration and the namespace descriptor
+
+The dataplane refuses to start without this handoff, so this program is the container's entrypoint and takes the
+dataplane's command line unchanged.
+
+With the DPDK driver, the namespace is new and owned only by its descriptor.
+Bifurcated devices (mlx5) are moved into it; when the dataplane exits the kernel destroys the namespace and returns
+them to the host.
+With the kernel driver, the datapath shares this program's namespace, because routing still depends on the host stack
+seeing its interfaces.
 
 For most network cards, this configuration step involves unbinding the NIC from the kernel driver and re-binding it to
 the [vfio-pci] driver.
