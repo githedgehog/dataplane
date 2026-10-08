@@ -5,6 +5,7 @@
 #![deny(clippy::pedantic, missing_docs)]
 
 mod frr;
+mod hugepages;
 mod socket;
 mod supervisor;
 
@@ -32,9 +33,10 @@ use tracing::{Level, debug, error, info, span, warn};
 const DATAPLANE_BINARY: &str = "/bin/dataplane";
 
 /// Optional hugetlbfs mounts. EAL uses memfd-backed hugepages with `--in-memory`.
+/// Omit mount size caps; the hugepage pool limits available memory.
 const HUGETLBFS_MOUNTS: &[(&str, &str)] = &[
-    ("/dev/hugepages/1G", "pagesize=1G,size=20G,rw"),
-    ("/dev/hugepages/2M", "pagesize=2M,size=128M,rw"),
+    ("/dev/hugepages/1G", "pagesize=1G,rw"),
+    ("/dev/hugepages/2M", "pagesize=2M,rw"),
 ];
 
 /// A device named in the configuration, resolved against the hardware actually present.
@@ -79,10 +81,13 @@ fn mount_hugepages() {
 }
 
 /// Resolve and validate all configured PCI devices before changing any driver bindings.
-fn resolve_devices(dpdk: &DpdkDriverConfigSection) -> Result<Vec<ResolvedDevice>, String> {
-    info!("scanning hardware");
-    let scan = hardware::Node::scan_all();
-
+fn resolve_devices(
+    dpdk: &DpdkDriverConfigSection,
+    scan: &hardware::Node,
+) -> Result<Vec<ResolvedDevice>, String> {
+    if dpdk.interfaces.is_empty() {
+        return Err("the DPDK driver was selected but no interfaces were configured".into());
+    }
     // Every PCI device on the machine, by address.
     let present: BTreeMap<PciAddress, &hardware::pci::PciDeviceAttributes> = scan
         .iter()
@@ -170,6 +175,46 @@ fn prepare_devices(devices: &[ResolvedDevice]) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether the RDMA subsystem will let a network namespace own a device.
+///
+/// `ib_core.netns_mode=0` selects exclusive mode at boot. Runtime changes require
+/// that no network namespaces other than the initial one exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RdmaNetnsMode {
+    /// A device belongs to one namespace.
+    Exclusive,
+    /// Devices remain in the initial namespace and are visible across namespaces.
+    Shared,
+    /// `ib_core` is not loaded, or the parameter is not where it is expected.
+    Unknown,
+}
+
+/// Where the kernel exposes the RDMA namespace mode.
+const IB_CORE_NETNS_MODE: &str = "/sys/module/ib_core/parameters/netns_mode";
+
+/// Interpret the contents of [`IB_CORE_NETNS_MODE`].
+fn parse_netns_mode(raw: &str) -> RdmaNetnsMode {
+    match raw.trim() {
+        "N" | "0" => RdmaNetnsMode::Exclusive,
+        "Y" | "1" => RdmaNetnsMode::Shared,
+        other => {
+            warn!("{IB_CORE_NETNS_MODE} contained {other:?}, which is neither Y nor N");
+            RdmaNetnsMode::Unknown
+        }
+    }
+}
+
+/// Read the RDMA namespace mode from the `ib_core` module parameter.
+fn rdma_netns_mode() -> RdmaNetnsMode {
+    match std::fs::read_to_string(IB_CORE_NETNS_MODE) {
+        Ok(raw) => parse_netns_mode(&raw),
+        Err(e) => {
+            debug!("could not read {IB_CORE_NETNS_MODE}: {e}");
+            RdmaNetnsMode::Unknown
+        }
+    }
+}
+
 /// Move bifurcated devices with devlink driver reinitialization; vfio-pci devices need no move.
 ///
 /// Unlike moving only the netdev, devlink reload also moves the RDMA device when the host uses
@@ -189,6 +234,27 @@ async fn move_devices_to_netns(
             )
         })
         .collect();
+
+    // Shared visibility may still let the PMD reach the device, so this is diagnostic only.
+    if !bifurcated.is_empty() {
+        match rdma_netns_mode() {
+            RdmaNetnsMode::Exclusive => {}
+            RdmaNetnsMode::Shared => warn!(
+                "RDMA shared mode keeps devices {} in init_net after devlink moves. If the PMD \
+                 cannot find them, boot with ib_core.netns_mode=0 or omit --datapath-netns. \
+                 Switching to exclusive mode at runtime requires no other network namespaces.",
+                bifurcated
+                    .iter()
+                    .map(|d| d.address.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            RdmaNetnsMode::Unknown => warn!(
+                "could not determine the RDMA namespace mode; if the datapath finds no device, \
+                 check `rdma system show` for `netns exclusive`"
+            ),
+        }
+    }
 
     for device in devices {
         if matches!(
@@ -657,24 +723,30 @@ fn main() {
     let control_netns = args.control_netns().cloned();
     let supervise_frr = args.supervise_frr();
 
-    let config = match LaunchConfiguration::try_from(args) {
+    let mut config = match LaunchConfiguration::try_from(args) {
         Ok(config) => config,
         Err(e) => fail("invalid command line arguments", &e.to_string()),
     };
 
+    // Record the plan after the driver borrow ends and before sealing the configuration.
+    let mut hugepage_plan = None;
     let (netns, host_netns) = match &config.driver {
         DriverConfigSection::Dpdk(dpdk) => {
             mount_hugepages();
-            let devices = match resolve_devices(dpdk) {
+            info!("scanning hardware");
+            let scan = hardware::Node::scan_all();
+            let devices = match resolve_devices(dpdk, &scan) {
                 Ok(devices) => devices,
                 Err(problems) => fail("cannot use the requested network devices", &problems),
             };
-            if devices.is_empty() {
-                fail(
-                    "no network devices to drive",
-                    "the DPDK driver was selected but no interfaces were configured",
-                );
-            }
+            // Check hugepage capacity on the NICs' nodes before changing device bindings.
+            hugepage_plan = Some(
+                hugepages::reserve_for(
+                    &devices.iter().map(|d| d.address).collect::<Vec<_>>(),
+                    &scan,
+                )
+                .unwrap_or_else(|e| fail("hugepage configuration is unusable", &e)),
+            );
             if let Err(e) = prepare_devices(&devices) {
                 fail("failed to prepare a network device for DPDK", &e);
             }
@@ -727,5 +799,41 @@ fn main() {
         }
     };
 
+    // Pass the checked per-node requirement to EAL before sealing the configuration.
+    if let DriverConfigSection::Dpdk(dpdk) = &mut config.driver {
+        dpdk.hugepages = hugepage_plan;
+    }
+
     std::process::exit(supervise_gateway(config, netns, host_netns, supervise_frr));
+}
+
+#[cfg(test)]
+mod rdma_netns_mode_test {
+    use super::{IB_CORE_NETNS_MODE, RdmaNetnsMode, parse_netns_mode, rdma_netns_mode};
+
+    #[test]
+    fn shared_and_exclusive_are_both_recognised() {
+        assert_eq!(parse_netns_mode("Y"), RdmaNetnsMode::Shared);
+        assert_eq!(parse_netns_mode("1"), RdmaNetnsMode::Shared);
+        assert_eq!(parse_netns_mode("Y\n"), RdmaNetnsMode::Shared);
+        assert_eq!(parse_netns_mode("N"), RdmaNetnsMode::Exclusive);
+        assert_eq!(parse_netns_mode("0"), RdmaNetnsMode::Exclusive);
+        assert_eq!(parse_netns_mode("N\n"), RdmaNetnsMode::Exclusive);
+        assert_eq!(parse_netns_mode("maybe"), RdmaNetnsMode::Unknown);
+        assert_eq!(parse_netns_mode(""), RdmaNetnsMode::Unknown);
+    }
+
+    #[test]
+    fn a_readable_parameter_is_never_reported_unknown() {
+        let Ok(raw) = std::fs::read_to_string(IB_CORE_NETNS_MODE) else {
+            assert_eq!(rdma_netns_mode(), RdmaNetnsMode::Unknown);
+            return;
+        };
+        assert_eq!(rdma_netns_mode(), parse_netns_mode(&raw));
+        assert_ne!(
+            rdma_netns_mode(),
+            RdmaNetnsMode::Unknown,
+            "{IB_CORE_NETNS_MODE} is readable ({raw:?}), so the mode must be decided, not guessed"
+        );
+    }
 }
