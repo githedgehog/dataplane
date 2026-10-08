@@ -404,8 +404,8 @@ impl FlowSummary {
         Some(Self {
             genid: flow_info.genid(),
             dst_vpcd,
-            needs_masquerade: locked_info.nat_state.is_some(),
-            needs_port_forwarding: locked_info.port_fw_state.is_some(),
+            needs_masquerade: locked_info.masquerade_info.is_some(),
+            needs_port_forwarding: locked_info.port_fw_info.is_some(),
             flow_info: flow_info.clone(),
         })
     }

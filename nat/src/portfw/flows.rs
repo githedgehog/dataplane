@@ -63,7 +63,7 @@ pub(crate) fn migrate_port_forwarded_flows<'a>(
 /// takes write guards.
 fn reverse_state(flow_info: &FlowInfo) -> Option<PortFwState> {
     let locked = flow_info.locked.read();
-    let state = locked.port_fw_state.extract_ref::<PortFwState>()?;
+    let state = locked.port_fw_info.extract_ref::<PortFwState>()?;
     (state.action() == NatAction::SrcNat).then(|| state.clone())
 }
 

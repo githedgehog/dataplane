@@ -45,7 +45,7 @@ mod nf_test {
         flow_info
             .locked
             .read()
-            .port_fw_state
+            .port_fw_info
             .as_ref()?
             .extract_ref::<PortFwState>()?;
         flow_info.conn_state().map(AtomicConnState::load)
@@ -58,7 +58,7 @@ mod nf_test {
             .as_ref()?
             .locked
             .read()
-            .port_fw_state
+            .port_fw_info
             .as_ref()
             .and_then(|s| s.extract_ref::<PortFwState>())
             .and_then(|state| state.rule.upgrade())
@@ -691,7 +691,7 @@ mod nf_test {
         // flow entry should have port-forwarding state
         let locked = flow.locked.read();
         let state = locked
-            .port_fw_state
+            .port_fw_info
             .as_ref()
             .unwrap()
             .extract_ref::<PortFwState>()
@@ -707,7 +707,7 @@ mod nf_test {
         // flow entry should have port-forwarding state
         let locked = flow.locked.read();
         let state = locked
-            .port_fw_state
+            .port_fw_info
             .as_ref()
             .unwrap()
             .extract_ref::<PortFwState>()

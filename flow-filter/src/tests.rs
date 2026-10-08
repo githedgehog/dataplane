@@ -65,14 +65,14 @@ fn create_flow_pair(
         locked_fwd.dst_vpcd = dst_vpcd;
         locked_reply.dst_vpcd = src_vpcd;
         if nat_state {
-            // The concrete type would be a NatState; a bool is enough here since the flow filter
+            // The concrete type would be a NatData; a bool is enough here since the flow filter
             // only checks for presence, never downcasts it.
-            locked_fwd.nat_state = Some(Box::new(true));
-            locked_reply.nat_state = Some(Box::new(true));
+            locked_fwd.masquerade_info = Some(Box::new(true));
+            locked_reply.masquerade_info = Some(Box::new(true));
         }
         if port_fw_state {
-            locked_fwd.port_fw_state = Some(Box::new(true));
-            locked_reply.port_fw_state = Some(Box::new(true));
+            locked_fwd.port_fw_info = Some(Box::new(true));
+            locked_reply.port_fw_info = Some(Box::new(true));
         }
     }
     (flow_info_fwd, flow_info_reply)

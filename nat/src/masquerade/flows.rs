@@ -21,7 +21,7 @@ use tracing::{debug, error};
 pub(crate) fn invalidate_masquerade_flows(flow_table: &FlowTable) {
     debug!("INVALIDATING all masquerading flows...");
     flow_table.for_each_flow(|_key, flow_info| {
-        if flow_info.locked.read().nat_state.as_ref().is_some() {
+        if flow_info.locked.read().masquerade_info.as_ref().is_some() {
             flow_info.invalidate_pair();
         }
     });
@@ -36,7 +36,7 @@ pub(crate) fn upgrade_all_masquerading_flows(flow_table: &FlowTable, genid: GenI
         |_key, flow_info: &FlowInfo| flow_info.is_active(),
         |_, flow_info| {
             let locked = flow_info.locked.read();
-            if locked.nat_state.as_ref().is_some() {
+            if locked.masquerade_info.as_ref().is_some() {
                 flow_info.set_genid(genid);
                 count += 1;
             }
@@ -48,7 +48,7 @@ pub(crate) fn upgrade_all_masquerading_flows(flow_table: &FlowTable, genid: GenI
 fn get_flow_masquerading_allocation(flow_info: &FlowInfo) -> Option<(IpAddr, NatPort)> {
     let locked = flow_info.locked.read();
     let alloc = locked
-        .nat_state
+        .masquerade_info
         .extract_ref::<MasqueradeState>()?
         .allocation()?;
 
@@ -67,7 +67,7 @@ enum ReReserveError {
     )]
     NoSrcPortOrId(FlowKey),
     #[error("flow has no NAT state to re-associate. This is a bug")]
-    NoNatState,
+    NoNatData,
     #[error("flow's NAT state is not masquerade. This is a bug")]
     NotMasquerade,
 }
@@ -99,9 +99,9 @@ fn re_reserve_ip_and_port(
     debug!("Successfully re-reserved ip {ip} port/Id {port_u16} ({proto})");
     let mut guard = flow_info.locked.write();
     let nat_state = guard
-        .nat_state
+        .masquerade_info
         .as_mut()
-        .ok_or(ReReserveError::NoNatState)?
+        .ok_or(ReReserveError::NoNatData)?
         .extract_mut::<MasqueradeState>()
         .ok_or(ReReserveError::NotMasquerade)?;
     debug_assert!(matches!(nat_state.action(), NatAction::SrcNat));
@@ -204,7 +204,7 @@ pub(crate) fn check_masquerading_flows<'a>(
     let genid = new_allocator.genid();
     debug!("CHECKING flows against new masquerade configuration with genid {genid}...");
     let guard = flow_table.for_each_flow_filtered(
-        |_, f| f.is_active() && f.locked.read().nat_state.is_some(),
+        |_, f| f.is_active() && f.locked.read().masquerade_info.is_some(),
         |flow_key, flow_info| check_masquerading_flow(flow_key, flow_info, new_allocator),
     );
     debug!("CHECKING flows against new masquerade configuration COMPLETED");

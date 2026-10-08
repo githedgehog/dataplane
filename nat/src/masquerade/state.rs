@@ -5,7 +5,7 @@ use super::apalloc::Allocation;
 use super::nf::MasqueradeError;
 use super::packet::NatTranslate;
 use crate::common::NatAction;
-use crate::nat_flows::NatState;
+use crate::nat_flows::NatData;
 use crate::{NatEndpoint, NatPort, NatTranslationData};
 use net::flows::FlowInfoLocked;
 use net::ip::UnicastIpAddr;
@@ -90,17 +90,20 @@ impl MasqueradeState {
     }
 }
 
-impl NatState for MasqueradeState {
+impl NatData for MasqueradeState {
     fn try_get(locked: &FlowInfoLocked) -> Option<&Self> {
-        locked.nat_state.as_deref()?.downcast_ref::<Self>()
+        locked.masquerade_info.as_deref()?.downcast_ref::<Self>()
     }
 
     fn try_get_mut(locked: &mut FlowInfoLocked) -> Option<&mut Self> {
-        locked.nat_state.as_deref_mut()?.downcast_mut::<Self>()
+        locked
+            .masquerade_info
+            .as_deref_mut()?
+            .downcast_mut::<Self>()
     }
 
     fn set(self, locked: &mut FlowInfoLocked) {
-        locked.nat_state = Some(Box::new(self));
+        locked.masquerade_info = Some(Box::new(self));
     }
 }
 

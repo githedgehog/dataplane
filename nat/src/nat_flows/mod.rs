@@ -8,7 +8,7 @@ mod helpers;
 mod nat_state;
 
 pub(crate) use helpers::{HalfFlow, InstallError, NewFlow, install_pair, packet_flow_keys};
-pub(crate) use nat_state::NatState;
+pub(crate) use nat_state::NatData;
 
 use tracectl::trace_target;
 trace_target!("nat-state", LevelFilter::INFO, &["nat", "pipeline"]);

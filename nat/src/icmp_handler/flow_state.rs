@@ -5,7 +5,7 @@
 
 use crate::NatTranslationData;
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
-use crate::nat_flows::NatState;
+use crate::nat_flows::NatData;
 use net::buffer::PacketBufferMut;
 use net::flows::ConnState;
 use net::flows::FlowInfo;
@@ -14,7 +14,7 @@ use std::fmt::Display;
 use tracing::debug;
 
 /// State of a tracked flow that can translate the ICMP errors for this flow.
-pub(crate) trait IcmpErrorTranslation: NatState {
+pub(crate) trait IcmpErrorTranslation: NatData {
     /// Name of the mode, for logs.
     const MODE: &'static str;
 
