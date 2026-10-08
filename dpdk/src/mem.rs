@@ -2,6 +2,21 @@
 // Copyright Open Network Fabric Authors
 
 //! DPDK memory management wrappers.
+//!
+//! RSS, MARK and META have independent validity flags:
+//!
+//! | Value | Storage | Software access |
+//! | --- | --- | --- |
+//! | RSS | `hash.rss`, overlapping `hash.fdir.lo` | [`Mbuf::rss_hash`] |
+//! | MARK | `hash.fdir.hi` | [`Mbuf::rx_mark`] |
+//! | META | Registered dynamic `u32` field | [`Mbuf::rx_meta`] |
+//! | TAG | Indexed hardware steering registers | No mbuf field |
+//!
+//! [RSS and MARK can coexist](https://doc.dpdk.org/api/structrte__flow__action__rss.html).
+//! META uses separate mbuf storage. Supported combinations, widths and cross-domain propagation
+//! still depend on the PMD and its configuration. TAG has a 32-bit API value; usable indices and
+//! register availability are device-specific. It is not delivered to software, and applications
+//! must not assume it survives a software queue round trip or a hardware hairpin boundary.
 
 use crate::socket::SocketId;
 use crate::sync::Mutex;
@@ -35,6 +50,8 @@ mod tests;
 
 #[cfg(test)]
 mod copy_tests;
+#[cfg(test)]
+mod metadata_tests;
 
 /// Owns mempools until EAL teardown, after their ports have closed.
 /// Creation is synchronized and available through [`EalShared`](crate::eal::EalShared).
@@ -678,6 +695,68 @@ impl PacketLength for Mbuf<'_> {
     fn is_chained(&self) -> bool {
         // SAFETY: `self.raw` is live and `nb_segs` is valid for packet mbufs.
         unsafe { self.raw.as_ref().annon1.annon1.nb_segs > 1 }
+    }
+}
+
+impl<'eal> Mbuf<'eal> {
+    /// Raw mbuf offload flags, including receive metadata validity bits.
+    #[must_use]
+    pub fn ol_flags(&self) -> u64 {
+        // SAFETY: `self.raw` is a live mbuf for the lifetime of `&self`.
+        unsafe { self.raw.as_ref() }.ol_flags
+    }
+
+    /// The NIC-reported RSS hash, or `None` when `RTE_MBUF_F_RX_RSS_HASH` is clear.
+    /// Can coexist with MARK; RSS does not consume bits of the reported mark.
+    /// Queue steering does not guarantee hash delivery: mlx5 CQE compression modes can omit it.
+    #[must_use]
+    pub fn rss_hash(&self) -> Option<u32> {
+        if self.ol_flags() & u64::from(dpdk_sys::RTE_MBUF_F_RX_RSS_HASH) == 0 {
+            return None;
+        }
+        // SAFETY: the flag certifies a valid RSS hash, and `self.raw` remains live.
+        Some(unsafe { self.raw.as_ref().annon2.annon1.annon2.hash.rss })
+    }
+
+    /// The flow `MARK` value, or `None` when `RTE_MBUF_F_RX_FDIR_ID` is clear.
+    /// Zero is a valid mark. Its supported width is PMD-specific: mlx5 commonly uses 24 bits,
+    /// or fewer in extended metadata modes, independently of RSS. META/register allocation
+    /// and reserved values can limit the usable range; validate rules against the device.
+    #[must_use]
+    pub fn rx_mark(&self) -> Option<u32> {
+        if self.ol_flags() & u64::from(dpdk_sys::RTE_MBUF_F_RX_FDIR_ID) == 0 {
+            return None;
+        }
+        // SAFETY: the flag certifies a valid FDIR id, and `self.raw` remains live.
+        Some(unsafe { self.raw.as_ref().annon2.annon1.annon2.hash.fdir.hi })
+    }
+
+    /// The flow `META` value when its validity flag is set, including a reported zero.
+    ///
+    /// [`crate::eal::init`] registers this field before any mbuf can be allocated.
+    /// Registration reserves storage; the PMD and flow configuration determine delivery.
+    /// mlx5 treats zero as absent and does not set the validity flag. Its usable META width
+    /// can be 16 or 32 bits, or unavailable, depending on metadata mode and steering domain.
+    /// See the [mlx5 metadata modes](https://doc.dpdk.org/guides-26.07/nics/mlx5.html#runtime-configuration).
+    #[must_use]
+    pub fn rx_meta(&self) -> Option<u32> {
+        // SAFETY: EAL initialization registers metadata before exposing pools or queues,
+        // and this crate does not register it again while mbufs are live.
+        let mask = unsafe { dpdk_sys::rte_flow_dynf_metadata_mask };
+        if self.ol_flags() & mask == 0 {
+            return None;
+        }
+        let offs = unsafe { dpdk_sys::rte_flow_dynf_metadata_offs };
+        // SAFETY: registration provides the field offset; the flag confirms the
+        // field is populated, and `self.raw` remains live for this read.
+        let ptr = unsafe {
+            self.raw
+                .as_ptr()
+                .cast::<u8>()
+                .add(offs as usize)
+                .cast::<u32>()
+        };
+        Some(unsafe { ptr.read_unaligned() })
     }
 }
 

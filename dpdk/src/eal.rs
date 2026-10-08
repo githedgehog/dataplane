@@ -213,6 +213,8 @@ pub fn main_lcore_arg() -> String {
 }
 
 /// Initialize the DPDK Environment Abstraction Layer (EAL).
+/// Register the mbuf META field before exposing resources to workers.
+/// Registration failure terminates startup through [`Eal::fatal_error`].
 ///
 /// # Panics
 ///
@@ -262,6 +264,15 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
         .collect();
     if ret < 0 {
         EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
+    }
+    // SAFETY: EAL is initialized and no Rust resources have been exposed. Registration
+    // writes process-global offset/mask values that remain fixed while workers use mbufs.
+    let ret = unsafe { dpdk_sys::rte_flow_dynf_metadata_register() };
+    if ret != 0 {
+        Eal::fatal_error(format!(
+            "failed to register RX metadata: {}",
+            errno::ErrorCode::parse_i32(ret)
+        ));
     }
     let port_owner = dev::Ownership::new().unwrap_or_else(|e| {
         Eal::fatal_error(format!("failed to allocate a port owner id: {e:?}"));
