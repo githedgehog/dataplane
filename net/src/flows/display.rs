@@ -35,10 +35,10 @@ impl Display for FlowInfoLocked {
         if let Some(data) = &self.dst_vpcd {
             writeln!(f, "      dst-vpcd:{data}")?;
         }
-        if let Some(data) = &self.port_fw_state {
+        if let Some(data) = &self.port_fw_data {
             writeln!(f, "      port-forwarding:{data}")?;
         }
-        if let Some(data) = &self.nat_state {
+        if let Some(data) = &self.masquerade_data {
             writeln!(f, "      masquerading:{data}")?;
         }
         Ok(())
@@ -78,10 +78,10 @@ impl Display for FlowInfoLockedOneLiner<'_> {
         if let Some(data) = &locked.dst_vpcd {
             write!(f, "dst-vpcd:{data} ")?;
         }
-        if let Some(data) = &locked.port_fw_state {
+        if let Some(data) = &locked.port_fw_data {
             write!(f, "port-forwarding:{data} ")?;
         }
-        if let Some(data) = &locked.nat_state {
+        if let Some(data) = &locked.masquerade_data {
             write!(f, "masquerading:{data} ")?;
         }
         Ok(())

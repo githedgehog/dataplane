@@ -147,8 +147,8 @@ impl IcmpErrorHandler {
             let flow_info_locked = flow.locked.read();
             (
                 flow_info_locked.dst_vpcd,
-                flow_info_locked.nat_state.is_some(),
-                flow_info_locked.port_fw_state.is_some(),
+                flow_info_locked.masquerade_data.is_some(),
+                flow_info_locked.port_fw_data.is_some(),
             )
         };
 
