@@ -10,7 +10,7 @@ use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
 use core::marker::PhantomData;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::eal::Eal;
 use crate::queue;
@@ -20,6 +20,7 @@ use crate::queue::tx::{TxQueue, TxQueueConfig};
 use crate::queue::{QueueStore, Queues};
 use crate::socket::SocketId;
 use crate::sync::Mutex;
+use concurrency::sync::atomic::{AtomicUsize, Ordering};
 use dpdk_sys::rte_eth_rx_mq_mode::{RTE_ETH_MQ_RX_NONE, RTE_ETH_MQ_RX_RSS};
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
@@ -361,6 +362,7 @@ impl DevConfig {
                 stage: Stage::Configured,
                 config,
                 owner,
+                live_rules: AtomicUsize::new(0),
             },
             info: dev,
             queues: Mutex::new(Some(QueueStore::new(
@@ -1137,6 +1139,9 @@ struct PortLifecycle<'eal> {
     config: DevConfig,
     /// Retains failed-close records after DPDK releases the port ID.
     owner: &'eal Ownership,
+    /// Undestroyed rules, including forgotten handles and failed destroys.
+    /// Live handles borrow the device and prevent it from stopping.
+    live_rules: AtomicUsize,
 }
 
 impl PortLifecycle<'_> {
@@ -1163,6 +1168,36 @@ impl PortLifecycle<'_> {
         info!("Device {port} closed", port = self.port);
         Ok(())
     }
+
+    /// Flush before stopping, reporting rules left by forgotten handles or failed destroys.
+    fn flush_flows(&self) {
+        let port = self.port;
+        let leaked = self.live_rules.swap(0, Ordering::AcqRel);
+        // SAFETY: an all-zero `rte_flow_error` is a valid out-parameter.
+        let mut error: rte_flow_error = unsafe { core::mem::zeroed() };
+        if leaked != 0 {
+            warn!(
+                "{leaked} flow rule(s) on port {port} outlived their handles; dumping, then flushing"
+            );
+            // SAFETY: a null flow dumps every rule; DPDK's log stream is a valid open `FILE`.
+            let ret = unsafe {
+                rte_flow_dev_dump(
+                    port.as_u16(),
+                    core::ptr::null_mut(),
+                    rte_log_get_stream(),
+                    &raw mut error,
+                )
+            };
+            if ret != 0 {
+                warn!("failed to dump the leaked flow rules on port {port}: {ret}");
+            }
+        }
+        // SAFETY: plain FFI call on a port this device owns.
+        let ret = unsafe { rte_flow_flush(port.as_u16(), &raw mut error) };
+        if ret != 0 {
+            warn!("failed to flush flow rules on port {port}: {ret}");
+        }
+    }
 }
 
 impl Drop for PortLifecycle<'_> {
@@ -1172,6 +1207,7 @@ impl Drop for PortLifecycle<'_> {
             return;
         }
         if self.stage == Stage::Started {
+            self.flush_flows();
             info!("Stopping DPDK ethernet device {port}", port = self.port);
             let ret = unsafe { rte_eth_dev_stop(self.port.as_u16()) };
             if ret != 0 {
@@ -1238,6 +1274,11 @@ struct EalThreadBound(PhantomData<*const ()>);
 unsafe impl Sync for EalThreadBound {}
 
 impl<'eal, S: DevState> Dev<'eal, S> {
+    /// The live flow-rule count each [`FlowRule`](crate::flow::FlowRule) on this device maintains.
+    pub(crate) fn live_rules(&self) -> &AtomicUsize {
+        &self.lifecycle.live_rules
+    }
+
     /// Information about the underlying port.
     #[must_use]
     pub fn info(&self) -> &DevInfo<'eal> {
@@ -1521,6 +1562,7 @@ impl<'eal> Dev<'eal, Started> {
     /// Returns [`DevStopFailure`] with the still-running device.
     #[allow(clippy::result_large_err)] // Preserve device ownership on failure.
     pub fn stop(self) -> Result<Dev<'eal, Stopped>, DevStopFailure<'eal>> {
+        self.lifecycle.flush_flows();
         let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
         if ret != 0 {
             error!(
