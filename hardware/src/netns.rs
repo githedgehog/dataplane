@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Descriptor-owned network namespaces for the DPDK datapath.
+//! Descriptor-owned network namespaces for the datapath.
 //!
-//! Init creates the namespace and passes its descriptor across `exec`. The descriptor keeps it
+//! Init passes the datapath's namespace descriptor across `exec`. The descriptor keeps it
 //! alive without a bind mount under `/run/netns`; the kernel destroys it after the last reference
 //! is released. Destruction returns physical devices to the host and may reload their drivers.
 //!
-//! The datapath thread enters the namespace before creating EAL and its workers. Management
+//! The datapath thread enters the namespace before creating its driver and workers. Management
 //! threads stay in the host namespace. For mlx5, [`NetworkNamespace::enter_with_sysfs`] also mounts
 //! a private sysfs so libibverbs enumerates devices in the destination namespace.
 
@@ -131,6 +131,28 @@ impl NetworkNamespace {
         Self::from_fd(OwnedFd::from(file))
     }
 
+    /// Open the calling thread's network namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetnsError::Open`] if the namespace descriptor cannot be opened.
+    pub fn current() -> Result<Self, NetnsError> {
+        Self::open(Self::THREAD_NETNS)
+    }
+
+    /// Whether the calling thread is already in this namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetnsError::Inspect`] if either namespace cannot be identified.
+    pub fn is_current(&self) -> Result<bool, NetnsError> {
+        // Namespace identity is the (device, inode) pair of its nsfs file.
+        let this = nix::sys::stat::fstat(&self.fd).map_err(|e| NetnsError::Inspect(e.into()))?;
+        let current =
+            nix::sys::stat::stat(Self::THREAD_NETNS).map_err(|e| NetnsError::Inspect(e.into()))?;
+        Ok((this.st_dev, this.st_ino) == (current.st_dev, current.st_ino))
+    }
+
     /// Borrow the descriptor, for handing to `exec` or to `DEVLINK_ATTR_NETNS_FD`.
     #[must_use]
     pub fn as_raw(&self) -> BorrowedFd<'_> {
@@ -217,6 +239,11 @@ mod tests {
         let netns = NetworkNamespace::from_fd(fd).expect("valid network namespace");
         let flags = fcntl(netns.as_raw(), FcntlArg::F_GETFD).expect("descriptor flags");
         assert_ne!(flags & FdFlag::FD_CLOEXEC.bits(), 0);
+    }
+
+    #[test]
+    fn recognizes_the_current_namespace() {
+        assert!(NetworkNamespace::current().unwrap().is_current().unwrap());
     }
 
     #[test]

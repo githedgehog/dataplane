@@ -324,39 +324,55 @@ fn bring_up_ports<'eal>(
     Ok(ports)
 }
 
-/// Own the EAL, ports, and workers on a thread in the datapath namespace.
+/// Move the calling thread into the datapath namespace, unless it is already there.
+fn enter_datapath_netns(netns: &NetworkNamespace) -> Result<(), String> {
+    let current = netns
+        .is_current()
+        .map_err(|e| format!("failed to identify the datapath network namespace: {e}"))?;
+    if current {
+        info!("The datapath shares the management network namespace");
+        return Ok(());
+    }
+    // libibverbs needs sysfs mounted in the destination network namespace.
+    netns
+        .enter_with_sysfs()
+        .map_err(|e| format!("failed to enter the datapath network namespace: {e}"))?;
+    info!(
+        "Datapath thread is in network namespace {}",
+        hardware::netns::current()
+    );
+    Ok(())
+}
+
+/// Run the packet path on a thread in the datapath namespace.
 ///
-/// Report EAL readiness before management can build ACL classifiers, then wait for management
-/// startup before probing ports. Worker threads inherit this thread's namespaces.
+/// Report readiness once the namespace is entered (and, for DPDK, the EAL exists, since management
+/// builds ACL classifiers in it), then wait for management startup before touching any device.
+/// Driver threads inherit this thread's namespaces.
 #[allow(clippy::too_many_arguments)]
-fn run_dpdk_datapath(
+fn run_datapath(
     config: &LaunchConfiguration,
-    netns: Option<&NetworkNamespace>,
+    netns: &NetworkNamespace,
     workers: &lifecycle::Subsystem,
     timer_handle: &tokio::runtime::Handle,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
-    eal_ready: &std::sync::mpsc::Sender<Result<(), String>>,
+    ready: &std::sync::mpsc::Sender<Result<(), String>>,
     go: &std::sync::mpsc::Receiver<()>,
 ) {
-    if let Some(netns) = netns {
-        // libibverbs needs sysfs mounted in the destination network namespace.
-        if let Err(e) = netns.enter_with_sysfs() {
-            let detail = format!("failed to enter the datapath network namespace: {e}");
-            error!("{detail}");
-            drop(eal_ready.send(Err(detail)));
-            return;
-        }
-        info!(
-            "Datapath thread is in network namespace {}",
-            hardware::netns::current()
-        );
+    if let Err(detail) = enter_datapath_netns(netns) {
+        error!("{detail}");
+        drop(ready.send(Err(detail)));
+        return;
     }
 
-    let mut eal = init_eal(config);
+    let eal = match config.driver {
+        DriverConfigSection::Dpdk(_) => Some(init_eal(config)),
+        DriverConfigSection::Kernel(_) => None,
+    };
 
-    if eal_ready.send(Ok(())).is_err() {
-        info!("The EAL is up but nothing is waiting for it; stopping");
+    if ready.send(Ok(())).is_err() {
+        info!("The datapath is ready but nothing is waiting for it; stopping");
         return;
     }
 
@@ -366,7 +382,56 @@ fn run_dpdk_datapath(
         return;
     }
 
-    let ports = match bring_up_ports(&mut eal, config) {
+    match eal {
+        Some(mut eal) => run_dpdk_driver(
+            &mut eal,
+            config,
+            workers,
+            timer_handle,
+            ingredients,
+            status_writer,
+        ),
+        None => run_kernel_driver(config, workers, ingredients, status_writer),
+    }
+}
+
+/// Run the kernel driver until its workers stop.
+fn run_kernel_driver(
+    config: &LaunchConfiguration,
+    workers: &lifecycle::Subsystem,
+    ingredients: PipelineIngredients,
+    status_writer: DriverStatusWriter,
+) {
+    concurrency::thread::scope(|scope| {
+        info!("Using driver kernel...");
+        if let Err(e) = DriverKernel::start(
+            scope,
+            workers,
+            config
+                .driver
+                .interfaces()
+                .map(|i| i.interface.to_string())
+                .collect::<Vec<_>>(),
+            config.driver.num_workers(),
+            &ingredients.factory(),
+            status_writer,
+        ) {
+            error!("Failed to start driver: {e}");
+            workers.report_fatal("the kernel driver could not be started");
+        }
+    });
+}
+
+/// Bring up the DPDK ports and run their workers until they stop.
+fn run_dpdk_driver(
+    eal: &mut Eal,
+    config: &LaunchConfiguration,
+    workers: &lifecycle::Subsystem,
+    timer_handle: &tokio::runtime::Handle,
+    ingredients: PipelineIngredients,
+    status_writer: DriverStatusWriter,
+) {
+    let ports = match bring_up_ports(eal, config) {
         Ok(ports) => ports,
         Err(e) => {
             error!("Failed to bring up DPDK ports: {e}");
@@ -405,38 +470,24 @@ pub fn main() {
         eprintln!("Invalid init handoff: {e}");
         std::process::exit(1);
     });
-    let (config, datapath_netns) = if inherited {
-        // SAFETY: this is the only handoff reader, at process startup before other FD owners.
-        let config = unsafe { LaunchConfiguration::inherit() };
-        // SAFETY: init owns the reserved namespace FD; no other startup component has run yet.
-        let netns = unsafe { config.inherit_netns() }
-            .map_err(|e| e.to_string())
-            .and_then(|fd| {
-                fd.map(NetworkNamespace::from_fd)
-                    .transpose()
-                    .map_err(|e| e.to_string())
-            })
-            .unwrap_or_else(|e| {
-                eprintln!("Invalid datapath namespace handoff: {e}");
-                std::process::exit(1);
-            });
-        (config, netns)
-    } else {
+    if !inherited {
+        // Init forwards informational commands here, since only this binary knows every
+        // tracing target. Anything else must be prepared by init.
         let args = CmdArgs::parse();
         process_tracing_cmdline_only(&args);
-        let config = match LaunchConfiguration::try_from(args) {
-            Ok(config) => config,
-            Err(e) => {
-                eprintln!("Invalid command line arguments: {e}");
-                std::process::exit(1);
-            }
-        };
-        if matches!(&config.driver, DriverConfigSection::Dpdk(driver) if driver.netns) {
-            eprintln!("--datapath-netns requires a namespace supplied by dataplane-init");
+        eprintln!("The dataplane must be launched by dataplane-init, with the same arguments");
+        std::process::exit(1);
+    }
+    // SAFETY: this is the only handoff reader, at process startup before other FD owners.
+    let config = unsafe { LaunchConfiguration::inherit() };
+    // SAFETY: init owns the reserved namespace FD; no other startup component has run yet.
+    let datapath_netns = unsafe { LaunchConfiguration::inherit_netns() }
+        .map_err(|e| e.to_string())
+        .and_then(|fd| NetworkNamespace::from_fd(fd).map_err(|e| e.to_string()))
+        .unwrap_or_else(|e| {
+            eprintln!("Invalid datapath namespace handoff: {e}");
             std::process::exit(1);
-        }
-        (config, None)
-    };
+        });
 
     let gwname = match init_name(&config) {
         Ok(name) => name,
@@ -556,60 +607,49 @@ pub fn main() {
     let ingredients = setup.pipeline;
     let pipeline_data = ingredients.data();
 
-    if datapath_netns.is_some() {
-        info!("Inherited a network namespace for the datapath");
-    }
-
     concurrency::thread::scope(|scope| {
-        // Management waits for EAL, then releases the datapath after its own startup.
-        let (eal_ready_tx, eal_ready_rx) = std::sync::mpsc::channel();
+        // Management waits for the datapath to be ready, then releases it after its own startup.
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel();
 
-        // Transfer the pipeline and status writer to the selected driver.
-        let kernel_driver = match config.driver {
-            DriverConfigSection::Dpdk(_) => {
-                let spawned = thread::Builder::new()
-                    .name("dpdk-datapath".to_string())
-                    .spawn_scoped(scope, {
-                        let config = &config;
-                        let netns = datapath_netns.as_ref();
-                        let workers = &shutdown.workers;
-                        let timer_handle = &mgmt_handle;
-                        move || {
-                            run_dpdk_datapath(
-                                config,
-                                netns,
-                                workers,
-                                timer_handle,
-                                ingredients,
-                                driver_status_writer,
-                                &eal_ready_tx,
-                                &go_rx,
-                            );
-                        }
-                    });
-                // Cancel on failure, then follow the normal shutdown path.
-                if let Err(e) = spawned {
-                    error!("Failed to spawn the datapath thread: {e}");
-                    shutdown.fail();
-                } else {
-                    // Nothing below may serve a configuration until the EAL exists.
-                    match eal_ready_rx.recv() {
-                        Ok(Ok(())) => info!("The EAL is up; starting management"),
-                        Ok(Err(e)) => {
-                            error!("The datapath failed to start: {e}");
-                            shutdown.fail();
-                        }
-                        Err(_) => {
-                            error!("The datapath thread stopped without reporting why");
-                            shutdown.fail();
-                        }
-                    }
+        let spawned = thread::Builder::new()
+            .name("datapath".to_string())
+            .spawn_scoped(scope, {
+                let config = &config;
+                let netns = &datapath_netns;
+                let workers = &shutdown.workers;
+                let timer_handle = &mgmt_handle;
+                move || {
+                    run_datapath(
+                        config,
+                        netns,
+                        workers,
+                        timer_handle,
+                        ingredients,
+                        driver_status_writer,
+                        &ready_tx,
+                        &go_rx,
+                    );
                 }
-                None
+            });
+        // Cancel on failure, then follow the normal shutdown path.
+        if let Err(e) = spawned {
+            error!("Failed to spawn the datapath thread: {e}");
+            shutdown.fail();
+        } else {
+            // Nothing below may serve a configuration until a DPDK EAL exists.
+            match ready_rx.recv() {
+                Ok(Ok(())) => info!("The datapath is ready; starting management"),
+                Ok(Err(e)) => {
+                    error!("The datapath failed to start: {e}");
+                    shutdown.fail();
+                }
+                Err(_) => {
+                    error!("The datapath thread stopped without reporting why");
+                    shutdown.fail();
+                }
             }
-            DriverConfigSection::Kernel(_) => Some((ingredients, driver_status_writer)),
-        };
+        }
 
         let mgmt_result = run_mgmt(
             &mgmt_handle,
@@ -646,32 +686,10 @@ pub fn main() {
             Ok(()) => {
                 info!("Management is running now");
 
-                match kernel_driver {
-                    Some((ingredients, driver_status_writer)) => {
-                        info!("Using driver kernel...");
-                        if let Err(e) = DriverKernel::start(
-                            scope,
-                            &shutdown.workers,
-                            config
-                                .driver
-                                .interfaces()
-                                .map(|i| i.interface.to_string())
-                                .collect::<Vec<_>>(),
-                            config.driver.num_workers(),
-                            &ingredients.factory(),
-                            driver_status_writer,
-                        ) {
-                            error!("Failed to start driver: {e}");
-                            shutdown.fail();
-                        }
-                    }
-                    // Release the datapath to probe ports and start workers.
-                    None => {
-                        if go_tx.send(()).is_err() {
-                            error!("The datapath thread is gone; cannot start the packet path");
-                            shutdown.fail();
-                        }
-                    }
+                // Release the datapath to bring up its devices and start workers.
+                if go_tx.send(()).is_err() {
+                    error!("The datapath thread is gone; cannot start the packet path");
+                    shutdown.fail();
                 }
             }
             Err(LaunchError::Cancelled) => {
