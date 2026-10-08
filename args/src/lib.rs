@@ -18,7 +18,8 @@
 //!    - Serializes the configuration using `rkyv` for zero-copy deserialization
 //!    - Writes serialized data to a [`MemFile`] and finalizes it into a [`FinalizedMemFile`]
 //!    - Computes an [`IntegrityCheck`] (SHA-384 hash) of the configuration
-//!    - Passes both file descriptors to the child process at known FD numbers
+//!    - Passes both file descriptors, and the datapath network namespace, to the child process
+//!      at known FD numbers
 //!
 //! 2. **Child Process (dataplane)**:
 //!    - Inherits the configuration via [`LaunchConfiguration::inherit()`]
@@ -428,9 +429,6 @@ pub struct DpdkDriverConfigSection {
     pub eal_args: Vec<String>,
     /// Packet-processing worker threads to run, each owning one rx/tx queue pair per port
     pub num_workers: u16,
-    /// Have init move bifurcated devices into a separate namespace for the datapath.
-    /// Management remains in the host namespace; vfio-pci devices need no namespace move.
-    pub netns: bool,
 }
 
 /// Configuration for the Linux kernel networking driver.
@@ -759,7 +757,7 @@ unsafe fn take_inherited_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
 }
 
 impl LaunchConfiguration {
-    /// Whether init supplied both configuration descriptors.
+    /// Whether init supplied the configuration, its integrity check, and the datapath namespace.
     ///
     /// # Errors
     ///
@@ -768,12 +766,13 @@ impl LaunchConfiguration {
         match (
             descriptor_is_open(Self::STANDARD_INTEGRITY_CHECK_FD)?,
             descriptor_is_open(Self::STANDARD_CONFIG_FD)?,
+            descriptor_is_open(Self::STANDARD_NETNS_FD)?,
         ) {
-            (true, true) => Ok(true),
-            (false, false) => Ok(false),
+            (true, true, true) => Ok(true),
+            (false, false, false) => Ok(false),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "incomplete launch configuration handoff: expected descriptors 30 and 40",
+                "incomplete launch configuration handoff: expected descriptors 30, 40 and 50",
             )),
         }
     }
@@ -790,28 +789,28 @@ impl LaunchConfiguration {
     /// file descriptor number.
     pub const STANDARD_CONFIG_FD: RawFd = 40;
 
-    /// Optional network namespace descriptor passed by init to keep the namespace alive.
+    /// Standard file descriptor number for the datapath network namespace.
+    ///
+    /// The parent process must pass the namespace the datapath runs in at this file descriptor
+    /// number. The descriptor also keeps that namespace alive across `exec`.
     pub const STANDARD_NETNS_FD: RawFd = 50;
 
-    /// Claim the namespace descriptor if the inherited configuration requests isolation.
+    /// Claim the datapath network namespace descriptor.
     /// The caller must validate its namespace type before using it.
     ///
     /// # Safety
     ///
-    /// Call only once with a configuration received from init. If isolation is requested,
-    /// FD 50 must belong exclusively to this handoff, have no other owner, and not be closed or
-    /// replaced concurrently. Claim it at startup before other components can reuse that number.
+    /// Call only once for a descriptor supplied by init. FD 50 must belong exclusively to this
+    /// handoff, have no other owner, and not be closed or replaced concurrently.
+    /// Claim it at startup before other components can reuse that number.
     ///
     /// # Errors
     ///
-    /// Returns an error if a requested descriptor is missing or cannot be marked close-on-exec.
+    /// Returns an error if the descriptor is missing or cannot be marked close-on-exec.
     #[allow(unsafe_code)]
-    pub unsafe fn inherit_netns(&self) -> std::io::Result<Option<OwnedFd>> {
-        if !matches!(&self.driver, DriverConfigSection::Dpdk(driver) if driver.netns) {
-            return Ok(None);
-        }
+    pub unsafe fn inherit_netns() -> std::io::Result<OwnedFd> {
         // SAFETY: the caller guarantees exclusive ownership of the inherited descriptor.
-        unsafe { take_inherited_fd(Self::STANDARD_NETNS_FD) }.map(Some)
+        unsafe { take_inherited_fd(Self::STANDARD_NETNS_FD) }
     }
 
     /// Inherit the launch configuration from the parent process.
@@ -1280,7 +1279,6 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     interfaces: value.interfaces().collect(),
                     eal_args,
                     num_workers: value.num_workers,
-                    netns: value.datapath_netns,
                 })
             }
             Some("kernel") => {
@@ -1382,14 +1380,6 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
         help = "Number of packet-processing worker threads in [1..64]"
     )]
     num_workers: u16,
-
-    #[arg(
-        long,
-        default_value_t = false,
-        help = "Run the packet path in its own network namespace, created by dataplane-init and \
-                handed to the dataplane as a descriptor. Only meaningful with --driver dpdk."
-    )]
-    datapath_netns: bool,
 
     #[arg(
         long,

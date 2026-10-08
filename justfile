@@ -645,7 +645,7 @@ build-container target="dataplane" *args: _refuse-instrumented-artifact (build (
             esac
             declare -r docker_platform
             declare img
-            img="$(docker import --platform "${docker_platform}" --change 'ENTRYPOINT ["/bin/dataplane"]' ./results/dataplane.tar)"
+            img="$(docker import --platform "${docker_platform}" --change 'ENTRYPOINT ["/bin/dataplane-init"]' ./results/dataplane.tar)"
             declare -r img
             docker tag "${img}" "{{oci_image_dataplane}}"
             echo "imported {{ oci_image_dataplane }} (${docker_platform})"
