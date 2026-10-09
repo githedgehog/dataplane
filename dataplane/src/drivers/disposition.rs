@@ -48,6 +48,7 @@ impl From<DoneReason> for Disposition {
             | DoneReason::RouteDrop
             | DoneReason::HopLimitExceeded
             | DoneReason::MissL2resolution
+            | DoneReason::ArpOutOfResources
             | DoneReason::VxlanDecapFailure
             | DoneReason::VxlanEncapFailure
             | DoneReason::VxlanNotForUs
@@ -128,6 +129,7 @@ mod test {
             (DoneReason::RouteDrop, Disposition::Drop),
             (DoneReason::HopLimitExceeded, Disposition::Drop),
             (DoneReason::MissL2resolution, Disposition::Drop),
+            (DoneReason::ArpOutOfResources, Disposition::Drop),
             (DoneReason::VxlanDecapFailure, Disposition::Drop),
             (DoneReason::VxlanEncapFailure, Disposition::Drop),
             (DoneReason::VxlanNotForUs, Disposition::Drop),
