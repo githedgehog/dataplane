@@ -95,6 +95,7 @@ pub enum DoneReason {
     InvalidDstMac,        /* dropped the packet since it had to have an invalid destination mac */
     MissingEtherType,     /* couldn't determine ethertype to use */
     NotIp,                /* could not get IP header or packet is not IP */
+    ArpOutOfResources,    /* required ARP/ND resolution but had no resources to admit packet */
     RouteFailure,         /* missing routing information */
     RouteDrop,            /* routing explicitly requests pkts to be dropped */
     HopLimitExceeded,     /* TTL / Hop count was exceeded */
