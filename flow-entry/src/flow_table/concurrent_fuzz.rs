@@ -181,7 +181,7 @@ fn insert_flows(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>
         // flippers have something to race on.
         {
             let mut guard = fi.locked.write();
-            guard.nat_state = Some(Box::new(StubItem {
+            guard.masquerade_info = Some(Box::new(StubItem {
                 status: stub_status.clone(),
             }));
         }
@@ -226,7 +226,7 @@ fn apply_op(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op
                     && let Some(stub) = fi
                         .locked
                         .read()
-                        .nat_state
+                        .masquerade_info
                         .as_ref()
                         .extract_ref::<StubItem>()
                 {
@@ -244,7 +244,7 @@ fn apply_op(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op
                     && let Some(stub) = fi
                         .locked
                         .read()
-                        .nat_state
+                        .masquerade_info
                         .as_ref()
                         .extract_ref::<StubItem>()
                 {
@@ -324,7 +324,7 @@ impl Scenario {
                 );
             }
             let guard = v.locked.read();
-            if let Some(stub) = guard.nat_state.as_ref().extract_ref::<StubItem>() {
+            if let Some(stub) = guard.masquerade_info.as_ref().extract_ref::<StubItem>() {
                 let s = stub.status.load(Ordering::Relaxed);
                 assert!(s < STATE_COUNT, "stub status out of range: {s}");
             }

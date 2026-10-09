@@ -1649,7 +1649,7 @@ fn nat_flow_status(packet: &Packet<TestBuffer>) -> Option<ConnState> {
     flow_info
         .locked
         .read()
-        .nat_state
+        .masquerade_info
         .as_ref()?
         .extract_ref::<MasqueradeState>()?;
     flow_info.conn_state().map(AtomicConnState::load)
@@ -1665,7 +1665,7 @@ fn with_masquerade_state<T>(
 ) -> Option<T> {
     let locked = packet.meta().flow_info.as_ref()?.locked.read();
     let state = locked
-        .nat_state
+        .masquerade_info
         .as_ref()?
         .extract_ref::<MasqueradeState>()?;
     Some(read(state))

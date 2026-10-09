@@ -920,12 +920,13 @@ fn directional_rule_only_applies_to_correct_direction() {
 mod end_to_end {
     use super::{
         Acl, AclAction, AclFilterContext, AclFilterContextWriter, AclProtoMatch, AclScope,
-        build_udp_packet, expose_masquerade, expose_static, is_allowed, overlay, packet, pattern,
-        peering, rule, v4, vpcd,
+        build_udp_packet, expose, expose_masquerade, expose_static, is_allowed, is_denied, overlay,
+        packet, pattern, peering, rule, v4, vpcd,
     };
     use crate::AclFilter;
 
     use config::external::overlay::ValidatedOverlay;
+    use config::external::overlay::vpcpeering::VpcExpose;
 
     use flow_entry::flow_table::{FlowLookup, FlowTable};
     use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
@@ -933,22 +934,24 @@ mod end_to_end {
     use nat::portfw::{PortForwarder, PortFwTableWriter};
     use nat::static_nat::NatTablesWriter;
     use nat::static_nat::setup::build_nat_configuration;
-    use nat::{IcmpErrorHandler, Masquerade, StaticNat};
+    use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat, migrate_tracked_flows};
 
     use net::buffer::TestBuffer;
+    use net::packet::Packet;
 
     use concurrency::sync::Arc;
-    use pipeline::{DynPipeline, NetworkFunction};
+    use pipeline::{DynPipeline, NetworkFunction, PipelineData};
     use tracing_test::traced_test;
 
     // Keep every writer handle alive for the lifetime of the pipeline: dropping one would tear down
     // the data it published
     struct PipelineHandles {
-        _flow_filter: FlowFilterContextWriter,
+        flow_filter: FlowFilterContextWriter,
         _static_nat: NatTablesWriter,
         _portfw: PortFwTableWriter,
         _masquerade: NatAllocatorWriter,
-        _acl: AclFilterContextWriter,
+        acl: AclFilterContextWriter,
+        pipeline_data: Arc<PipelineData>,
     }
 
     // vpc1 masquerades (1.2.3.0/24 -> 5.5.5.5/32); vpc2 uses static NAT (192.168.0.0/24 <->
@@ -979,8 +982,9 @@ mod end_to_end {
         overlay: &ValidatedOverlay,
     ) -> (DynPipeline<TestBuffer>, Arc<FlowTable>, PipelineHandles) {
         let flow_table = Arc::new(FlowTable::default());
+        let pipeline_data = Arc::new(PipelineData::new(1));
 
-        let mut pipeline = DynPipeline::new();
+        let mut pipeline = DynPipeline::new().set_data(pipeline_data.clone());
         pipeline = pipeline.add_stage(IcmpErrorHandler::new(flow_table.clone()));
         pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", flow_table.clone()));
 
@@ -1003,6 +1007,7 @@ mod end_to_end {
         pipeline = pipeline.add_stage(StaticNat::with_reader(
             "static-nat",
             static_nat_writer.get_reader(),
+            flow_table.clone(),
         ));
 
         // Share the allocator between port forwarding and masquerade.
@@ -1027,12 +1032,16 @@ mod end_to_end {
             allocator.get_reader(),
         ));
 
+        // Flow tracking (creates the related flow pair for static NAT or no NAT)
+        pipeline = pipeline.add_stage(FlowTracker::new("flow-tracker", flow_table.clone()));
+
         let handles = PipelineHandles {
-            _flow_filter: flow_filter_writer,
+            flow_filter: flow_filter_writer,
             _static_nat: static_nat_writer,
             _portfw: portfw_writer,
             _masquerade: allocator,
-            _acl: acl_writer,
+            acl: acl_writer,
+            pipeline_data,
         };
         (pipeline, flow_table, handles)
     }
@@ -1077,6 +1086,161 @@ mod end_to_end {
         // De-NAT'd back to the original request's endpoints
         assert_eq!(reply_out.ip_source(), Some(v4("5.6.7.8").into()));
         assert_eq!(reply_out.ip_destination(), Some(v4("1.2.3.4").into()));
+    }
+
+    // vpc1 (10.0.0.0/24) <-> vpc2, with `vpc2` as the exposes of vpc2. An ACL allows vpc1 -> vpc2
+    // UDP with the given scope, and denies by default.
+    fn build_overlay_with(vpc2: Vec<VpcExpose>, scope: AclScope) -> ValidatedOverlay {
+        let acl = Acl::new(
+            AclAction::Deny,
+            vec![rule(
+                "allow-udp",
+                AclAction::Allow,
+                scope,
+                pattern(&[], &[], AclProtoMatch::Udp),
+            )],
+        );
+        overlay(
+            &[("vpc1", 100), ("vpc2", 200)],
+            vec![peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose("10.0.0.0/24")]),
+                ("vpc2", vpc2),
+                Some(acl),
+            )],
+        )
+    }
+
+    fn process(
+        pipeline: &mut DynPipeline<TestBuffer>,
+        packet: Packet<TestBuffer>,
+    ) -> Packet<TestBuffer> {
+        pipeline.process(std::iter::once(packet)).next().unwrap()
+    }
+
+    // Send a request from vpc1 and its reply from vpc2, without NAT, and return the reply.
+    fn request_and_reply(pipeline: &mut DynPipeline<TestBuffer>) -> Packet<TestBuffer> {
+        let request = packet(
+            vpcd(100),
+            None,
+            build_udp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 5678),
+        );
+        assert!(
+            is_allowed(&process(pipeline, request)),
+            "the request was dropped"
+        );
+        reply(pipeline)
+    }
+
+    fn reply(pipeline: &mut DynPipeline<TestBuffer>) -> Packet<TestBuffer> {
+        let reply = packet(
+            vpcd(200),
+            None,
+            build_udp_packet(v4("20.0.0.5"), v4("10.0.0.5"), 5678, 1234),
+        );
+        process(pipeline, reply)
+    }
+
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn flow_scope_allows_replies_without_nat() {
+        let overlay = build_overlay_with(vec![expose("20.0.0.0/24")], AclScope::Flow);
+        let (mut pipeline, _flow_table, _handles) = setup_pipeline(&overlay);
+        assert!(is_allowed(&request_and_reply(&mut pipeline)));
+    }
+
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn packet_scope_denies_replies_without_nat() {
+        let overlay = build_overlay_with(vec![expose("20.0.0.0/24")], AclScope::Packet);
+        let (mut pipeline, _flow_table, _handles) = setup_pipeline(&overlay);
+        assert!(is_denied(&request_and_reply(&mut pipeline)));
+    }
+
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn flow_scope_allows_replies_with_static_nat() {
+        let overlay = build_overlay_with(
+            vec![expose_static("192.168.0.0/24", "5.6.7.0/24")],
+            AclScope::Flow,
+        );
+        let (mut pipeline, _flow_table, _handles) = setup_pipeline(&overlay);
+
+        let request = packet(
+            vpcd(100),
+            None,
+            build_udp_packet(v4("10.0.0.5"), v4("5.6.7.8"), 1234, 5678),
+        );
+        let request_out = process(&mut pipeline, request);
+        assert!(is_allowed(&request_out), "the request was dropped");
+        assert_eq!(request_out.ip_destination(), Some(v4("192.168.0.8").into()));
+
+        let reply = packet(
+            vpcd(200),
+            None,
+            build_udp_packet(v4("192.168.0.8"), v4("10.0.0.5"), 5678, 1234),
+        );
+        let reply_out = process(&mut pipeline, reply);
+        assert!(
+            is_allowed(&reply_out),
+            "the reply of an allowed flow was dropped"
+        );
+        assert_eq!(reply_out.ip_source(), Some(v4("5.6.7.8").into()));
+    }
+
+    // Apply `overlay` as generation `genid`, as the management plane does, optionally migrating the
+    // tracked flows.
+    fn reconfigure(
+        overlay: &ValidatedOverlay,
+        flow_table: &FlowTable,
+        handles: &PipelineHandles,
+        genid: i64,
+        migrate: bool,
+    ) {
+        handles
+            .flow_filter
+            .store(FlowFilterContext::try_from(overlay).unwrap());
+        handles.acl.store(AclFilterContext::for_test(overlay));
+        handles.pipeline_data.open_generation(genid);
+        if migrate {
+            let context = handles.flow_filter.get_reader().load();
+            drop(migrate_tracked_flows(flow_table, genid, |flow| {
+                context.keeps_tracked_flow(flow)
+            }));
+        }
+        handles.pipeline_data.set_genid(genid);
+    }
+
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn replies_are_allowed_across_a_config_change() {
+        let overlay = build_overlay_with(vec![expose("20.0.0.0/24")], AclScope::Flow);
+        let (mut pipeline, flow_table, handles) = setup_pipeline(&overlay);
+        assert!(is_allowed(&request_and_reply(&mut pipeline)));
+
+        reconfigure(&overlay, &flow_table, &handles, 2, true);
+        assert!(
+            is_allowed(&reply(&mut pipeline)),
+            "the reply of a migrated flow was dropped"
+        );
+    }
+
+    /// Instrument for `replies_are_allowed_across_a_config_change`: without migration, the ACL
+    /// stage ignores the flow, now from an older generation, and drops the reply.
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn replies_are_dropped_across_a_config_change_without_migration() {
+        let overlay = build_overlay_with(vec![expose("20.0.0.0/24")], AclScope::Flow);
+        let (mut pipeline, flow_table, handles) = setup_pipeline(&overlay);
+        assert!(is_allowed(&request_and_reply(&mut pipeline)));
+
+        reconfigure(&overlay, &flow_table, &handles, 2, false);
+        assert!(is_denied(&reply(&mut pipeline)));
     }
 }
 

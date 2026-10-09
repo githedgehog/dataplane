@@ -100,10 +100,17 @@ impl FlowFilter {
         let tables = self.tables.load();
         tables.lookup_batch(&inputs, &mut results);
 
-        for (item, result) in work.iter().zip(results) {
+        for ((item, result), input) in work.iter().zip(results).zip(&inputs) {
+            let track = match result {
+                LookupResult::Route((dst_vpcd, _, _)) => {
+                    tables.requires_flow_tracking(input.src_vpcd, dst_vpcd)
+                }
+                LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => false,
+            };
             self.apply_route(
                 &mut burst[item.idx],
                 result,
+                track,
                 item.flow_summary.as_ref(),
                 genid,
             );
@@ -189,6 +196,7 @@ impl FlowFilter {
         &self,
         packet: &mut Packet<Buf>,
         result: LookupResult,
+        track: bool,
         flow_summary: Option<&FlowSummary>,
         genid: i64,
     ) {
@@ -213,6 +221,7 @@ impl FlowFilter {
         );
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
         Self::set_nat_requirements(packet.meta_mut(), src_nat_mode, dst_nat_mode);
+        packet.meta_mut().set_forced_flow_tracking(track);
 
         // Port forwarding or masquerading used in combination with static NAT need to keep track of
         // the initial IP addresses for creating the right flow table entries, so we may have to
@@ -245,6 +254,9 @@ impl FlowFilter {
         }
         if flow_summary.needs_port_forwarding {
             meta.set_port_forwarding(true);
+        }
+        if flow_summary.needs_tracking {
+            meta.set_forced_flow_tracking(true);
         }
         if flow_summary.flow_info.get_flags().requires_static_nat_src() {
             meta.set_static_nat_src(true);
@@ -306,8 +318,21 @@ impl FlowFilter {
             return true;
         }
         if !meta.requires_port_forwarding() && !meta.requires_masquerade() {
-            debug!("{nfi}: Outdated flow {flowkey} (no longer needed) will be invalidated.");
-            return true;
+            // Without masquerade or port forwarding, we only keep flows that are still tracked.
+            if !meta.has_forced_flow_tracking() || !flow_summary.needs_tracking {
+                debug!("{nfi}: Outdated flow {flowkey} (no longer needed) will be invalidated.");
+                return true;
+            }
+            // The reverse key of a tracked flow depends on static NAT, and no other NF checks it.
+            let flags = flow_summary.flow_info.get_flags();
+            if meta.requires_static_nat_src() != flags.requires_static_nat_src()
+                || meta.requires_static_nat_dst() != flags.requires_static_nat_dst()
+            {
+                debug!(
+                    "{nfi}: Outdated flow {flowkey} (static NAT requirement) will be invalidated."
+                );
+                return true;
+            }
         }
         // We could not invalidate despite the config change. This does not mean that the flow is
         // valid (or invalid). The NFs tagged in the requirements must determine whether it's valid:
@@ -389,6 +414,7 @@ struct FlowSummary {
     dst_vpcd: VpcDiscriminant,
     needs_masquerade: bool,
     needs_port_forwarding: bool,
+    needs_tracking: bool,
     flow_info: Arc<FlowInfo>,
 }
 
@@ -404,8 +430,10 @@ impl FlowSummary {
         Some(Self {
             genid: flow_info.genid(),
             dst_vpcd,
-            needs_masquerade: locked_info.nat_state.is_some(),
-            needs_port_forwarding: locked_info.port_fw_state.is_some(),
+            needs_masquerade: locked_info.masquerade_info.is_some(),
+            needs_port_forwarding: locked_info.port_fw_info.is_some(),
+            needs_tracking: locked_info.tracked_info.is_some()
+                || locked_info.static_nat_info.is_some(),
             flow_info: flow_info.clone(),
         })
     }

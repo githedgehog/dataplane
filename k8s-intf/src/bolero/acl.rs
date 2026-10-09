@@ -44,7 +44,6 @@ pub struct SideFacts {
     /// there is no subnet name for those, so a translating expose contributes nothing.
     pub advertised_subnets: Vec<String>,
     pub restricts_ports: bool,
-    pub all_stateful: bool,
 }
 
 impl SideFacts {
@@ -56,7 +55,6 @@ impl SideFacts {
         let mut native_subnets = Vec::new();
         let mut advertised_subnets = Vec::new();
         let mut restricts_ports = false;
-        let mut all_stateful = !exposes.is_empty();
 
         for expose in exposes {
             let ips: Vec<String> = expose
@@ -91,9 +89,6 @@ impl SideFacts {
             if nat.is_some_and(|nat| nat.port_forward.is_some()) {
                 restricts_ports = true;
             }
-            if !nat.is_some_and(|nat| nat.masquerade.is_some() || nat.port_forward.is_some()) {
-                all_stateful = false;
-            }
         }
 
         Self {
@@ -103,7 +98,6 @@ impl SideFacts {
             native_subnets,
             advertised_subnets,
             restricts_ports,
-            all_stateful,
         }
     }
 }
@@ -263,8 +257,7 @@ impl AclGenerator {
             None
         };
 
-        let flow_allowed = self.left.all_stateful || self.right.all_stateful;
-        let scope = if flow_allowed && d.produce::<bool>()? {
+        let scope = if d.produce::<bool>()? {
             if d.produce::<bool>()? {
                 Some(GatewayAgentPeeringsAclRulesScope::Flow)
             } else {

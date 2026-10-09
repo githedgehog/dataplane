@@ -147,10 +147,17 @@ impl IcmpErrorHandler {
             let flow_info_locked = flow.locked.read();
             (
                 flow_info_locked.dst_vpcd,
-                flow_info_locked.nat_state.is_some(),
-                flow_info_locked.port_fw_state.is_some(),
+                flow_info_locked.masquerade_info.is_some(),
+                flow_info_locked.port_fw_info.is_some(),
             )
         };
+
+        // Flows tracked without masquerade or port forwarding need no translation for the ICMP
+        // error: leave the packet through, as if we had found no flow.
+        if !masquerading && !port_forwarding {
+            debug!("Flow for {rev_flow_key} has no NAT state. Letting packet through...");
+            return;
+        }
 
         let Some(dst_vpcd) = dst_vpcd else {
             warn!("Flow for {rev_flow_key} has no dst VPC discriminant set. This is a bug");
@@ -165,12 +172,9 @@ impl IcmpErrorHandler {
         let result = if masquerading {
             debug!("Icmp error is for vpc {dst_vpcd}. Will process with masquerade state");
             translate_icmp_error::<_, MasqueradeState>(packet, flow.as_ref())
-        } else if port_forwarding {
+        } else {
             debug!("Icmp error is for vpc {dst_vpcd}. Will process with port-forwarding state");
             translate_icmp_error::<_, PortFwState>(packet, flow.as_ref())
-        } else {
-            warn!("Found no NAT state to process ICMP error message. Dropping...");
-            Err(DoneReason::Filtered)
         };
 
         // drop packet if could not translate it
@@ -230,5 +234,72 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IcmpErrorHandler {
                 self.handle_icmp_error_msg(packet);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::IcmpErrorHandler;
+    use crate::FlowTracker;
+    use crate::static_nat::probe::build;
+    use concurrency::sync::Arc;
+    use flow_entry::flow_table::FlowTable;
+    use net::buffer::TestBuffer;
+    use net::ip::NextHeader;
+    use net::packet::test_utils::build_test_icmp4_destination_unreachable_packet;
+    use net::packet::{Packet, VpcDiscriminant};
+    use net::vxlan::Vni;
+    use pipeline::NetworkFunction;
+    use std::net::Ipv4Addr;
+
+    fn vpcd(id: u32) -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(Vni::new_checked(id).unwrap_or_else(|_| unreachable!()))
+    }
+
+    /// An ICMP error about a flow tracked without NAT needs no translation, and must be left to
+    /// the next stages, as for a flow we do not know.
+    #[tokio::test]
+    async fn an_icmp_error_about_a_tracked_flow_is_let_through() {
+        let (client, server) = (Ipv4Addr::new(10, 0, 0, 5), Ipv4Addr::new(20, 0, 0, 5));
+        let flow_table = Arc::new(FlowTable::default());
+
+        let mut syn: Packet<TestBuffer> = build(client.into(), server.into(), true, 1234, 80);
+        let meta = syn.meta_mut();
+        meta.set_overlay(true);
+        meta.src_vpcd = Some(vpcd(100));
+        meta.dst_vpcd = Some(vpcd(200));
+        meta.set_forced_flow_tracking(true);
+        let mut tracker = FlowTracker::new("tracker", flow_table.clone());
+        tracker.process(std::iter::once(syn)).for_each(drop);
+        assert_eq!(
+            flow_table.len(),
+            Some(2),
+            "the fixture failed to track a flow"
+        );
+
+        let mut error = build_test_icmp4_destination_unreachable_packet(
+            server,
+            client,
+            client,
+            server,
+            NextHeader::TCP,
+            1234,
+            80,
+        )
+        .unwrap_or_else(|_| unreachable!());
+        error.meta_mut().set_overlay(true);
+        error.meta_mut().src_vpcd = Some(vpcd(200));
+
+        let mut handler = IcmpErrorHandler::new(flow_table);
+        let out = handler
+            .process(std::iter::once(error))
+            .next()
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(out.get_done(), None, "the ICMP error was dropped");
+        assert_eq!(
+            out.meta().dst_vpcd,
+            None,
+            "the ICMP error must go through the flow filter"
+        );
     }
 }

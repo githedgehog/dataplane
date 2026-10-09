@@ -165,18 +165,15 @@ impl FlowInfoFlags {
     }
 }
 
+// We need NAT information to use downcast to avoid circular dependencies between crates.
 #[derive(Debug, Default)]
 pub struct FlowInfoLocked {
-    // We need this to use downcast to avoid circular dependencies between crates.
-
-    // VpcDiscriminant
     pub dst_vpcd: Option<VpcDiscriminant>,
-
-    // State information for masquerade, (see MasqueradeState)
-    pub nat_state: Option<Box<dyn FlowInfoItem>>,
-
-    // State information for port forwarding
-    pub port_fw_state: Option<Box<dyn FlowInfoItem>>,
+    pub masquerade_info: Option<Box<dyn FlowInfoItem>>,
+    pub port_fw_info: Option<Box<dyn FlowInfoItem>>,
+    pub static_nat_info: Option<Box<dyn FlowInfoItem>>,
+    // Information for flows tracked without NAT, required for flow-scoped user ACL rules
+    pub tracked_info: Option<Box<dyn FlowInfoItem>>,
 }
 
 /// Object that represents a flow of packets.

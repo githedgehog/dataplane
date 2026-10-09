@@ -134,6 +134,7 @@ bitflags! {
         const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
         const REQ_STATIC_NAT_SRC  = 0b0010_0000_0000;      /* Packet requires static NAT (source) */
         const REQ_STATIC_NAT_DST  = 0b0100_0000_0000;      /* Packet requires static NAT (destination) */
+        const FORCE_FLOW_TRACKING = 0b1000_0000_0000;      /* We need to track this flow, e.g. to apply stateful user ACLs */
     }
 }
 
@@ -231,6 +232,14 @@ impl PacketMeta {
     #[must_use]
     pub fn requires_static_nat(&self) -> bool {
         self.requires_static_nat_src() || self.requires_static_nat_dst()
+    }
+
+    #[must_use]
+    pub fn has_forced_flow_tracking(&self) -> bool {
+        self.flags.contains(MetaFlags::FORCE_FLOW_TRACKING)
+    }
+    pub fn set_forced_flow_tracking(&mut self, value: bool) {
+        self.set_flag(MetaFlags::FORCE_FLOW_TRACKING, value);
     }
 
     #[must_use]

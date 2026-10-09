@@ -35,11 +35,18 @@ impl Display for FlowInfoLocked {
         if let Some(data) = &self.dst_vpcd {
             writeln!(f, "      dst-vpcd:{data}")?;
         }
-        if let Some(data) = &self.port_fw_state {
+        if let Some(data) = &self.port_fw_info {
             writeln!(f, "      port-forwarding:{data}")?;
         }
-        if let Some(data) = &self.nat_state {
+        if let Some(data) = &self.masquerade_info {
             writeln!(f, "      masquerading:{data}")?;
+        }
+        if let Some(data) = &self.static_nat_info {
+            writeln!(f, "      static-nat:{data}")?;
+        }
+        if let Some(_data) = &self.tracked_info {
+            // TODO: Print _data if it ever becomes non-empty in the case of no NAT
+            writeln!(f, "      no-nat")?;
         }
         Ok(())
     }
@@ -78,11 +85,18 @@ impl Display for FlowInfoLockedOneLiner<'_> {
         if let Some(data) = &locked.dst_vpcd {
             write!(f, "dst-vpcd:{data} ")?;
         }
-        if let Some(data) = &locked.port_fw_state {
+        if let Some(data) = &locked.port_fw_info {
             write!(f, "port-forwarding:{data} ")?;
         }
-        if let Some(data) = &locked.nat_state {
+        if let Some(data) = &locked.masquerade_info {
             write!(f, "masquerading:{data} ")?;
+        }
+        if let Some(data) = &locked.static_nat_info {
+            write!(f, "static-nat:{data} ")?;
+        }
+        if let Some(_data) = &locked.tracked_info {
+            // TODO: Print _data if it ever becomes non-empty in the case of no NAT
+            write!(f, "no-nat ")?;
         }
         Ok(())
     }

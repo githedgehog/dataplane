@@ -16,7 +16,11 @@ use crate::test_utils::{
 use crate::{FlowFilter, LookupResult, NatRequirement};
 use clock::Duration;
 use concurrency::sync::Arc;
-use lpm::prefix::L4Protocol;
+use config::external::overlay::acl::{
+    Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
+};
+use config::external::overlay::vpcpeering::VpcExpose;
+use lpm::prefix::{L4Protocol, Prefix, PrefixWithOptionalPorts};
 use net::FlowKey;
 use net::buffer::TestBuffer;
 use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
@@ -65,14 +69,14 @@ fn create_flow_pair(
         locked_fwd.dst_vpcd = dst_vpcd;
         locked_reply.dst_vpcd = src_vpcd;
         if nat_state {
-            // The concrete type would be a NatState; a bool is enough here since the flow filter
+            // The concrete type would be a NatData; a bool is enough here since the flow filter
             // only checks for presence, never downcasts it.
-            locked_fwd.nat_state = Some(Box::new(true));
-            locked_reply.nat_state = Some(Box::new(true));
+            locked_fwd.masquerade_info = Some(Box::new(true));
+            locked_reply.masquerade_info = Some(Box::new(true));
         }
         if port_fw_state {
-            locked_fwd.port_fw_state = Some(Box::new(true));
-            locked_reply.port_fw_state = Some(Box::new(true));
+            locked_fwd.port_fw_info = Some(Box::new(true));
+            locked_reply.port_fw_info = Some(Box::new(true));
         }
     }
     (flow_info_fwd, flow_info_reply)
@@ -243,6 +247,56 @@ fn ipv6_context() -> FlowFilterContext {
             ("vpc1", vec![expose(net::ipv6_doc!())]),
             ("vpc2", vec![expose("2001:db9::/32")]),
         )],
+    )
+}
+
+// vpc1 <-> vpc2 with an ACL rule of the given scope, and vpc3 <-> vpc1 without ACL. vpc2 uses
+// masquerade.
+fn acl_context(scope: AclScope) -> FlowFilterContext {
+    acl_context_with(scope, expose_masquerade("20.0.0.0/24", "20.0.0.0/24"))
+}
+
+// Same as acl_context(), with the given expose for vpc2.
+fn acl_context_with(scope: AclScope, vpc2_expose: VpcExpose) -> FlowFilterContext {
+    let prefixes = |prefix: &str| {
+        [PrefixWithOptionalPorts::new(Prefix::from(prefix), None)]
+            .into_iter()
+            .collect()
+    };
+    let acl = Acl::new(
+        AclAction::Deny,
+        vec![AclRule {
+            name: "allow".to_owned(),
+            from: "vpc1".to_owned(),
+            to: "vpc2".to_owned(),
+            action: AclAction::Allow,
+            pattern: AclPattern {
+                src: prefixes("10.0.0.0/24"),
+                dst: prefixes("20.0.0.0/24"),
+                src_any_ports: Vec::new(),
+                dst_any_ports: Vec::new(),
+                proto: AclProtoMatch::Tcp,
+            },
+            scope,
+            log: false,
+        }],
+    );
+    let mut with_acl = peering(
+        "vpc1-to-vpc2",
+        ("vpc1", vec![expose("10.0.0.0/24")]),
+        ("vpc2", vec![vpc2_expose]),
+    );
+    with_acl.acl = Some(acl);
+    context(
+        &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+        vec![
+            with_acl,
+            peering(
+                "vpc3-to-vpc1",
+                ("vpc3", vec![expose("30.0.0.0/24")]),
+                ("vpc1", vec![expose("10.0.0.0/24")]),
+            ),
+        ],
     )
 }
 
@@ -1193,21 +1247,28 @@ struct InvalidationCase {
     flow_dst_matches: bool,
     flow_masquerade: bool,
     flow_port_forwarding: bool,
+    meta_tracking: bool,
+    flow_tracking: bool,
+    meta_static_nat: bool,
+    flow_static_nat: bool,
 }
 
 // The specification: a flow is invalidated iff it comes from a DIFFERENT config generation
 // (older or newer -- only an equal genid is trusted) AND the filter can prove it stale: the
 // destination changed, a stateful-NAT requirement appeared or disappeared, or the route no longer
-// needs state at all. Anything else is deferred to the stateful NFs, which own the state's
-// validity.
+// needs state at all. A route without masquerade or port forwarding still needs state if it
+// requires flow tracking and the flow is tracked, as long as the static NAT requirement did not
+// change. Anything else is deferred to the stateful NFs, which own the state's validity.
 fn expected_invalidation(case: &InvalidationCase) -> bool {
     if !case.has_flow || matches!(case.genid, GenidRel::Same) {
         return false;
     }
+    let still_tracked =
+        case.meta_tracking && case.flow_tracking && case.meta_static_nat == case.flow_static_nat;
     !case.flow_dst_matches
         || case.meta_masquerade != case.flow_masquerade
         || case.meta_port_forwarding != case.flow_port_forwarding
-        || (!case.meta_masquerade && !case.meta_port_forwarding)
+        || (!case.meta_masquerade && !case.meta_port_forwarding && !still_tracked)
 }
 
 #[test]
@@ -1229,11 +1290,14 @@ fn invalidation_decision_matches_spec() {
                 Some(vpcd(100)),
                 build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
             );
+            p.meta_mut().set_static_nat_src(case.flow_static_nat);
             let flow_info = attach_flow(&mut p, Some(route_dst), true, false, false);
 
             let mut meta = PacketMeta::default();
             meta.set_masquerade(case.meta_masquerade);
             meta.set_port_forwarding(case.meta_port_forwarding);
+            meta.set_forced_flow_tracking(case.meta_tracking);
+            meta.set_static_nat_src(case.meta_static_nat);
 
             let summary = case.has_flow.then(|| crate::FlowSummary {
                 genid: match case.genid {
@@ -1248,6 +1312,7 @@ fn invalidation_decision_matches_spec() {
                 },
                 needs_masquerade: case.flow_masquerade,
                 needs_port_forwarding: case.flow_port_forwarding,
+                needs_tracking: case.flow_tracking,
                 flow_info,
             });
 
@@ -2129,4 +2194,122 @@ fn flow_from_a_newer_generation_is_honored_for_bypass() {
         FlowStatus::Active,
         "the bypass path must not invalidate the flow it just honoured",
     );
+}
+
+// -------------------------------------------------------------------------------------------------
+// Flow tracking
+
+#[test]
+fn peering_with_flow_scope_acl_requires_flow_tracking() {
+    let (mut flow_filter, _) = make_flow_filter(acl_context(AclScope::Flow));
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(200)),
+            build_tcp_packet(v4("20.0.0.5"), v4("10.0.0.5"), 1234, 80),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(
+        out.meta().has_forced_flow_tracking(),
+        "a peering with a 'flow' scope ACL did not request flow tracking"
+    );
+
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(300)),
+            build_tcp_packet(v4("30.0.0.5"), v4("10.0.0.5"), 1234, 80),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(
+        !out.meta().has_forced_flow_tracking(),
+        "a peering without ACL requested flow tracking"
+    );
+}
+
+#[test]
+fn active_tracked_flow_requires_flow_tracking_on_bypass() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, false);
+    // The flow filter only checks for presence, so the type of the state does not matter
+    flow.locked.write().tracked_info = Some(Box::new(true));
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert!(
+        out.meta().has_forced_flow_tracking(),
+        "a packet bypassing the flow filter thanks to a tracked flow lost its tracking"
+    );
+}
+
+#[test]
+fn peering_with_packet_scope_acl_does_not_require_flow_tracking() {
+    let (mut flow_filter, _) = make_flow_filter(acl_context(AclScope::Packet));
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(200)),
+            build_tcp_packet(v4("20.0.0.5"), v4("10.0.0.5"), 1234, 80),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert!(!out.meta().has_forced_flow_tracking());
+}
+
+// A tracked flow from vpc 200 to vpc 100, on the peering described by `context`.
+fn tracked_flow(src: &str, dst: &str) -> Arc<FlowInfo> {
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4(src), v4(dst), 1234, 80),
+    );
+    attach_flow(&mut p, Some(vpcd(100)), true, false, false)
+}
+
+#[test]
+fn tracked_flow_on_masquerade_peering_is_not_kept() {
+    let context = acl_context(AclScope::Flow);
+    assert!(!context.keeps_tracked_flow(&tracked_flow("20.0.0.5", "10.0.0.5")));
+}
+
+#[test]
+fn tracked_flow_without_route_is_not_kept() {
+    let context = acl_context(AclScope::Flow);
+    assert!(!context.keeps_tracked_flow(&tracked_flow("20.0.9.5", "10.0.0.5")));
+}
+
+#[test]
+fn tracked_flow_on_peering_without_stateful_acl_is_not_kept() {
+    let context = acl_context(AclScope::Packet);
+    let mut p = packet(
+        Some(vpcd(300)),
+        build_tcp_packet(v4("30.0.0.5"), v4("10.0.0.5"), 1234, 80),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, false);
+    assert!(!context.keeps_tracked_flow(&flow));
+}
+
+#[test]
+fn tracked_flow_on_peering_with_stateful_acl_is_kept() {
+    let context = acl_context_with(AclScope::Flow, expose("20.0.0.0/24"));
+    assert!(context.keeps_tracked_flow(&tracked_flow("20.0.0.5", "10.0.0.5")));
+}
+
+#[test]
+fn tracked_flow_with_other_static_nat_requirements_is_not_kept() {
+    let context = acl_context_with(AclScope::Flow, expose("20.0.0.0/24"));
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("20.0.0.5"), v4("10.0.0.5"), 1234, 80),
+    );
+    // The flow was created when the source required static NAT
+    p.meta_mut().set_static_nat_src(true);
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, false);
+    assert!(!context.keeps_tracked_flow(&flow));
 }

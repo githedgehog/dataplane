@@ -20,7 +20,7 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::FlowInfo;
 
 use crate::common::NatAction;
-use crate::nat_flows::{NatState, packet_flow_keys};
+use crate::nat_flows::{NatData, packet_flow_keys};
 use crate::portfw::PortFwEntry;
 use net::flows::ConnState;
 use net::flows::conn_tracking::advance_flow;
@@ -80,17 +80,17 @@ impl PortFwState {
     }
 }
 
-impl NatState for PortFwState {
+impl NatData for PortFwState {
     fn try_get(locked: &FlowInfoLocked) -> Option<&Self> {
-        locked.port_fw_state.as_deref()?.downcast_ref::<Self>()
+        locked.port_fw_info.as_deref()?.downcast_ref::<Self>()
     }
 
     fn try_get_mut(locked: &mut FlowInfoLocked) -> Option<&mut Self> {
-        locked.port_fw_state.as_deref_mut()?.downcast_mut::<Self>()
+        locked.port_fw_info.as_deref_mut()?.downcast_mut::<Self>()
     }
 
     fn set(self, locked: &mut FlowInfoLocked) {
-        locked.port_fw_state = Some(Box::new(self));
+        locked.port_fw_info = Some(Box::new(self));
     }
 }
 

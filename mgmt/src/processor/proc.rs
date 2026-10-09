@@ -24,6 +24,7 @@ use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
 use flow_filter::{FlowFilterContext, FlowFilterContextWriter};
 use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
+use nat::migrate_tracked_flows;
 use nat::portfw::PortFwTableWriter;
 use nat::portfw::build_port_forwarding_configuration;
 use nat::static_nat::NatTablesWriter;
@@ -550,6 +551,20 @@ fn precheck_port_forwarding_config(vpc_table: &ValidatedVpcTable) -> ConfigResul
     nat::portfw::validate_ruleset(&ruleset).map_err(|e| ConfigError::PortForwarding(e.to_string()))
 }
 
+/// Move the flows tracked without NAT to generation `genid`, if the new flow-filter context still
+/// accepts them, or invalidate them otherwise
+fn apply_flow_tracking_config(
+    flow_table: &FlowTable,
+    flow_filter_writer: &FlowFilterContextWriter,
+    genid: GenId,
+) {
+    let context = flow_filter_writer.get_reader().load();
+    drop(migrate_tracked_flows(flow_table, genid, |flow| {
+        context.keeps_tracked_flow(flow)
+    }));
+    debug!("Successfully migrated tracked flows");
+}
+
 fn apply_port_forwarding_config(
     vpc_table: &ValidatedVpcTable,
     flow_table: &FlowTable,
@@ -671,6 +686,9 @@ impl ConfigProcessor {
 
         /* apply port-forwarding config */
         apply_port_forwarding_config(overlay.vpc_table(), flow_table.as_ref(), portfw_w, genid)?;
+
+        /* migrate flows tracked without NAT */
+        apply_flow_tracking_config(flow_table.as_ref(), flow_filter_writer, genid);
 
         /* update stats mappings and seed names to the stats store */
         let _ = update_stats_vpc_mappings(&config, vpcmapw);
