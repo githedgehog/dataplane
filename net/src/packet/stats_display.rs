@@ -27,6 +27,7 @@ impl Display for DoneReason {
             Self::InvalidDstMac => f.pad("Eth: Invalid dst MAC"),
 
             Self::NotIp => f.pad("IP:  packet is not IP"),
+            Self::ArpOutOfResources => f.pad("ARP/ND:  out of resources"),
             Self::RouteFailure => f.pad("IP:  missing routing info"),
             Self::RouteDrop => f.pad("IP:  route drop"),
             Self::HopLimitExceeded => f.pad("IP:  TTL exceeded"),
