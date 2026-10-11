@@ -35,6 +35,14 @@
 //!   * Last `Arc` drop will not free the value if any `Weak` is still
 //!     live; the value is freed when the last `Arc`-or-`Weak` drops.
 //!
+//! ## mpsc
+//!
+//! Loom 0.7's channel is unbounded only, does not model hang-up, and its `recv_timeout` is
+//! `unimplemented!()`.
+//! The [`mpsc`] module below replaces it with one built on loom's `Mutex` and `Condvar`, adds a bounded
+//! `sync_channel`, and makes `recv_timeout` wait like `recv`, which is what shuttle's does too: under
+//! either model checker a timeout never fires.
+//!
 //! Code that uses `Weak<T>` purely to break ownership cycles (the
 //! workspace's only use case) compiles and runs under loom unchanged.
 //! Tests that specifically want to model-check the strong/weak race
@@ -49,7 +57,7 @@ use core::fmt;
 use core::ops::{Deref, DerefMut};
 use loom::sync as inner;
 
-pub use loom::sync::{Barrier, Condvar, WaitTimeoutResult, atomic, mpsc};
+pub use loom::sync::{Barrier, Condvar, WaitTimeoutResult, atomic};
 #[allow(clippy::disallowed_types)]
 pub use std::sync::{
     BarrierWaitResult, LazyLock, LockResult, Once, OnceLock, OnceState, PoisonError, TryLockError,
@@ -323,6 +331,241 @@ macro_rules! impl_rwlock_guard_traits {
 impl_rwlock_guard_traits!(RwLockReadGuard, immut);
 impl_rwlock_guard_traits!(RwLockWriteGuard, mut);
 impl_rwlock_guard_traits!(RwLockUpgradableReadGuard, immut);
+
+// ================================= mpsc ===================================
+
+pub mod mpsc {
+    //! `std::sync::mpsc` for loom.
+    //!
+    //! Loom's own channel models neither hang-up (a `recv` after the last sender drops blocks forever)
+    //! nor a send to a dropped receiver (reported as a leaked message), and has no bounded flavour.
+    //! This one is built on loom's `Mutex` and `Condvar`, which loom models completely, blocking
+    //! included.
+
+    use loom::sync::{Arc, Condvar, Mutex};
+    use std::collections::VecDeque;
+    pub use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError, TrySendError};
+
+    struct State<T> {
+        queue: VecDeque<T>,
+        bound: Option<usize>,
+        senders: usize,
+        receiver: bool,
+    }
+
+    struct Shared<T> {
+        state: Mutex<State<T>>,
+        changed: Condvar,
+    }
+
+    impl<T> Shared<T> {
+        fn new(bound: Option<usize>) -> Arc<Self> {
+            Arc::new(Shared {
+                state: Mutex::new(State {
+                    queue: VecDeque::new(),
+                    bound,
+                    senders: 1,
+                    receiver: true,
+                }),
+                changed: Condvar::new(),
+            })
+        }
+
+        fn lock(&self) -> loom::sync::MutexGuard<'_, State<T>> {
+            self.state.lock().unwrap_or_else(|_| super::poisoned())
+        }
+
+        fn wait<'a>(
+            &self,
+            guard: loom::sync::MutexGuard<'a, State<T>>,
+        ) -> loom::sync::MutexGuard<'a, State<T>> {
+            self.changed
+                .wait(guard)
+                .unwrap_or_else(|_| super::poisoned())
+        }
+
+        fn send(&self, message: T) -> Result<(), SendError<T>> {
+            let mut state = self.lock();
+            loop {
+                if !state.receiver {
+                    return Err(SendError(message));
+                }
+                if state.bound.is_none_or(|bound| state.queue.len() < bound) {
+                    state.queue.push_back(message);
+                    self.changed.notify_all();
+                    return Ok(());
+                }
+                state = self.wait(state);
+            }
+        }
+
+        fn add_sender(&self) {
+            self.lock().senders += 1;
+        }
+
+        fn drop_sender(&self) {
+            let mut state = self.lock();
+            state.senders -= 1;
+            if state.senders == 0 {
+                self.changed.notify_all();
+            }
+        }
+    }
+
+    /// An unbounded channel.
+    #[must_use]
+    pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+        let shared = Shared::new(None);
+        (Sender(shared.clone()), Receiver(shared))
+    }
+
+    /// A channel holding at most `bound` messages.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bound` is zero: rendezvous channels are not modelled.
+    #[must_use]
+    pub fn sync_channel<T>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
+        assert!(
+            bound > 0,
+            "the loom sync_channel shim does not model rendezvous channels"
+        );
+        let shared = Shared::new(Some(bound));
+        (SyncSender(shared.clone()), Receiver(shared))
+    }
+
+    /// The sending half of a [`channel`].
+    pub struct Sender<T>(Arc<Shared<T>>);
+
+    impl<T> Sender<T> {
+        /// Send a message.
+        ///
+        /// # Errors
+        ///
+        /// Returns the message if the receiver is gone.
+        pub fn send(&self, message: T) -> Result<(), SendError<T>> {
+            self.0.send(message)
+        }
+    }
+
+    impl<T> Clone for Sender<T> {
+        fn clone(&self) -> Self {
+            self.0.add_sender();
+            Sender(self.0.clone())
+        }
+    }
+
+    impl<T> Drop for Sender<T> {
+        fn drop(&mut self) {
+            self.0.drop_sender();
+        }
+    }
+
+    /// The sending half of a [`sync_channel`].
+    pub struct SyncSender<T>(Arc<Shared<T>>);
+
+    impl<T> SyncSender<T> {
+        /// Send without waiting.
+        ///
+        /// # Errors
+        ///
+        /// Returns the message if the channel is full or the receiver is gone.
+        pub fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
+            let mut state = self.0.lock();
+            if !state.receiver {
+                return Err(TrySendError::Disconnected(message));
+            }
+            if state.bound.is_some_and(|bound| state.queue.len() >= bound) {
+                return Err(TrySendError::Full(message));
+            }
+            state.queue.push_back(message);
+            self.0.changed.notify_all();
+            Ok(())
+        }
+
+        /// Send, waiting for room.
+        ///
+        /// # Errors
+        ///
+        /// Returns the message if the receiver is gone.
+        pub fn send(&self, message: T) -> Result<(), SendError<T>> {
+            self.0.send(message)
+        }
+    }
+
+    impl<T> Clone for SyncSender<T> {
+        fn clone(&self) -> Self {
+            self.0.add_sender();
+            SyncSender(self.0.clone())
+        }
+    }
+
+    impl<T> Drop for SyncSender<T> {
+        fn drop(&mut self) {
+            self.0.drop_sender();
+        }
+    }
+
+    /// The receiving half of a [`channel`] or [`sync_channel`].
+    pub struct Receiver<T>(Arc<Shared<T>>);
+
+    impl<T> Receiver<T> {
+        /// Wait for a message.
+        ///
+        /// # Errors
+        ///
+        /// Fails once the channel is empty and every sender is gone.
+        pub fn recv(&self) -> Result<T, RecvError> {
+            let mut state = self.0.lock();
+            loop {
+                if let Some(message) = state.queue.pop_front() {
+                    self.0.changed.notify_all();
+                    return Ok(message);
+                }
+                if state.senders == 0 {
+                    return Err(RecvError);
+                }
+                state = self.0.wait(state);
+            }
+        }
+
+        /// Wait for a message; under loom the timeout never fires.
+        ///
+        /// # Errors
+        ///
+        /// Fails once the channel is empty and every sender is gone.
+        pub fn recv_timeout(&self, _: std::time::Duration) -> Result<T, RecvTimeoutError> {
+            self.recv()
+                .map_err(|RecvError| RecvTimeoutError::Disconnected)
+        }
+
+        /// Take a message if one is waiting.
+        ///
+        /// # Errors
+        ///
+        /// Fails if no message is waiting.
+        pub fn try_recv(&self) -> Result<T, TryRecvError> {
+            let mut state = self.0.lock();
+            match state.queue.pop_front() {
+                Some(message) => {
+                    self.0.changed.notify_all();
+                    Ok(message)
+                }
+                None if state.senders == 0 => Err(TryRecvError::Disconnected),
+                None => Err(TryRecvError::Empty),
+            }
+        }
+    }
+
+    impl<T> Drop for Receiver<T> {
+        fn drop(&mut self) {
+            let mut state = self.0.lock();
+            state.receiver = false;
+            state.queue.clear();
+            self.0.changed.notify_all();
+        }
+    }
+}
 
 // ============================== Arc / Weak ================================
 
