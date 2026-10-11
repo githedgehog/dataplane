@@ -70,16 +70,41 @@ pub enum RouteProtocol {
 )]
 #[allow(unused)]
 pub struct RequestArgs {
-    pub address: Option<IpAddr>,            /* an IP address */
-    pub prefix: Option<(IpAddr, u8)>,       /* an IP prefix */
-    pub prefix_len: Option<u8>,             /* an IP prefix length */
-    pub vpc: Option<String>,                /* vpc name */
-    pub vrfid: Option<u32>,                 /* Id of a VRF */
-    pub vni: Option<u32>,                   /* Vxlan vni */
-    pub ifname: Option<String>,             /* name of interface */
-    pub protocol: Option<RouteProtocol>,    /* a type of route or routing protocol */
-    pub mac: Option<String>,                /* a eth MAC address as a string */
-    pub selector: Option<PrefetchSelector>, /* selector to prefetch data for completion */
+    pub address: Option<IpAddr>,                     /* an IP address */
+    pub prefix: Option<(IpAddr, u8)>,                /* an IP prefix */
+    pub prefix_len: Option<u8>,                      /* an IP prefix length */
+    pub vpc: Option<String>,                         /* vpc name */
+    pub vrfid: Option<u32>,                          /* Id of a VRF */
+    pub vni: Option<u32>,                            /* Vxlan vni */
+    pub ifname: Option<String>,                      /* name of interface */
+    pub protocol: Option<RouteProtocol>,             /* a type of route or routing protocol */
+    pub mac: Option<String>,                         /* a eth MAC address as a string */
+    pub selector: Option<PrefetchSelector>,          /* selector to prefetch data for completion */
+    pub capture_direction: Option<CaptureDirection>, /* which way the packets to capture are going */
+    pub capture_packets: Option<u64>,                /* capture budget in packets */
+    pub capture_seconds: Option<u32>,                /* capture duration */
+    pub capture_sample: Option<u32>,                 /* capture one packet in this many */
+}
+
+/// Which way the packets to capture are going.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    strum::Display,
+    strum::EnumString,
+    strum::EnumIter,
+)]
+#[strum(serialize_all = "lowercase")]
+pub enum CaptureDirection {
+    Ingress,
+    Egress,
+    Both,
 }
 impl RequestArgs {
     #[must_use]
@@ -175,6 +200,8 @@ pub enum CliError {
     WrongFilter(String),
     #[error("Invalid prefix length: {0}")]
     InvalidPrefixLength(u8),
+    #[error("Capture failed: {0}")]
+    Capture(String),
 }
 
 /// The type of errors that can happen in the cli or dataplane due to serialization or communications
@@ -510,6 +537,11 @@ pub enum CliAction {
 
     // auto Prefetch
     Prefetch,
+
+    // packet capture
+    CaptureStart,
+    CaptureStop,
+    ShowCapture,
 }
 impl CliAction {
     #[must_use]
@@ -549,6 +581,10 @@ mod tests {
                 protocol: Some(RouteProtocol::Bgp),
                 mac: Some("02:00:00:00:00:01".into()),
                 selector: Some(PrefetchSelector::Vpcs),
+                capture_direction: Some(CaptureDirection::Egress),
+                capture_packets: Some(1_000),
+                capture_seconds: Some(30),
+                capture_sample: Some(10),
             },
         )
     }
