@@ -39,6 +39,6 @@ pub use controller::{
 };
 pub use directory::{CaptureDirectory, CaptureFileError};
 pub use names::CaptureNames;
-pub use record::{CaptureRecord, Direction, ThreadLabel};
+pub use record::{CaptureRecord, Direction, Frame, ThreadLabel};
 pub use stage::{CaptureSink, CaptureStage};
 pub use writer::{CaptureWriteError, CaptureWriter};
