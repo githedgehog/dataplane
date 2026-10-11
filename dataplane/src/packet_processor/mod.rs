@@ -13,7 +13,7 @@ use super::packet_processor::egress::Egress;
 use super::packet_processor::ingress::Ingress;
 use super::packet_processor::ipforward::IpForwarder;
 
-use capture::{CaptureController, CaptureStage, Direction};
+use capture::{CaptureController, CaptureDirectory, CaptureStage, Direction};
 use concurrency::sync::Arc;
 
 use acl_filter::{AclFilter, AclFilterContextReaderFactory, AclFilterContextWriter};
@@ -177,6 +177,7 @@ pub(crate) fn start_router(
     let portfw_factory = portfw_w.reader().factory();
     let pdata = Arc::from(PipelineData::new(0));
     let pkt_stats = Arc::from(PacketStats::new());
+    let capture = CaptureController::new();
 
     // collect readers and the like for cli
     let cli_sources = CliSources {
@@ -187,6 +188,10 @@ pub(crate) fn start_router(
         masquerade_state: Some(Box::new(natallocator_factory.handle().inner())),
         pkt_stats: Some(Box::new(pkt_stats.clone())),
         driver_status: Some(Box::new(driver_status)),
+        capture: Some(CaptureDirectory::new(
+            capture.clone(),
+            args::DEFAULT_CAPTURE_DIR,
+        )),
     };
 
     // create router
@@ -208,7 +213,7 @@ pub(crate) fn start_router(
         stats_w,
         pkt_stats,
         flow_table: flow_table.clone(),
-        capture: CaptureController::new(),
+        capture,
     };
 
     Ok(InternalSetup {

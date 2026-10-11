@@ -6,7 +6,7 @@
 use crate::cmdtree::{Node, NodeArg};
 
 use crate::argsparse::CliArgId;
-use dataplane_cli::cliproto::{CliAction, PrefetchSelector, RouteProtocol};
+use dataplane_cli::cliproto::{CaptureDirection, CliAction, PrefetchSelector, RouteProtocol};
 use std::convert::AsRef;
 use strum::IntoEnumIterator;
 
@@ -328,6 +328,12 @@ fn cmd_show_packet_stats() -> Node {
     root
 }
 
+fn cmd_show_capture() -> Node {
+    Node::new("capture")
+        .desc("Show the running or most recent packet capture")
+        .action(CliAction::ShowCapture)
+}
+
 fn cmd_show_driver_status() -> Node {
     let mut root = Node::new("driver");
     root += Node::new("status")
@@ -358,6 +364,7 @@ fn cmd_show() -> Node {
     root += cmd_show_config_summary();
     root += cmd_show_packet_stats();
     root += cmd_show_driver_status();
+    root += cmd_show_capture();
     root += cmd_show_tech();
     root
 }
@@ -415,11 +422,31 @@ fn cmd_cpi() -> Node {
     root
 }
 
+fn cmd_capture() -> Node {
+    let mut direction = NodeArg::new(CliArgId::Direction.as_str());
+    for choice in CaptureDirection::iter() {
+        direction.add_choice(&choice.to_string());
+    }
+    let mut root = Node::new("capture");
+    root += Node::new("start")
+        .desc("Capture packets into a pcapng file on the gateway")
+        .action(CliAction::CaptureStart)
+        .arg_add(direction)
+        .arg(CliArgId::Packets.as_str())
+        .arg(CliArgId::Seconds.as_str())
+        .arg(CliArgId::Sample.as_str());
+    root += Node::new("stop")
+        .desc("Stop the running packet capture")
+        .action(CliAction::CaptureStop);
+    root
+}
+
 pub fn gw_cmd_tree() -> Node {
     let mut root = Node::new("");
     root += cmd_local();
     root += cmd_show();
     root += cmd_frrmi();
     root += cmd_cpi();
+    root += cmd_capture();
     root
 }

@@ -24,6 +24,7 @@
 //! Interfaces and VPCs appear by the names given in [`CaptureNames`].
 
 mod controller;
+mod directory;
 mod names;
 mod record;
 mod stage;
@@ -36,6 +37,7 @@ pub use controller::{
     CaptureController, CaptureEnd, CaptureReport, CaptureRequest, CaptureStartError, CaptureStatus,
     ControlledSink, Directions,
 };
+pub use directory::{CaptureDirectory, CaptureFileError};
 pub use names::CaptureNames;
 pub use record::{CaptureRecord, Direction, ThreadLabel};
 pub use stage::{CaptureSink, CaptureStage};

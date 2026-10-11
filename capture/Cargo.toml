@@ -12,6 +12,7 @@ shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
 arrayvec = { workspace = true }
+chrono = { workspace = true, features = ["alloc", "std"] }
 clock = { workspace = true }
 concurrency = { workspace = true }
 net = { workspace = true }
