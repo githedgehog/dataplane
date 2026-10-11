@@ -241,6 +241,11 @@ pub const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh/dataplane.sock";
 /// runtime inspection and control.
 pub const DEFAULT_DP_UX_PATH_CLI: &str = "/var/run/dataplane/cli.sock";
 
+/// Default directory for packet captures started from the CLI.
+///
+/// Temporary: the pod has no persisted location for captures yet.
+pub const DEFAULT_CAPTURE_DIR: &str = "/var/run/dataplane/capture";
+
 /// Default path to the FRR agent socket.
 ///
 /// This socket is used to connect to the FRR agent that controls FRR
