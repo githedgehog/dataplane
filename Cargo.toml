@@ -28,6 +28,7 @@ members = [
     "k8s-less",
     "left-right-tlcache",
     "lifecycle",
+    "lldp",
     "lookup",
     "lpm",
     "match-action",
@@ -100,6 +101,7 @@ k8s-intf = { path = "./k8s-intf", package = "dataplane-k8s-intf", default-featur
 k8s-less = { path = "./k8s-less", package = "dataplane-k8s-less", features = [] }
 left-right-tlcache = { path = "./left-right-tlcache", package = "dataplane-left-right-tlcache", features = [] }
 lifecycle = { path = "./lifecycle", package = "dataplane-lifecycle", features = [] }
+lldp = { path = "./lldp", package = "dataplane-lldp", features = [] }
 lookup = { path = "./lookup", package = "dataplane-lookup", features = [] }
 lpm = { path = "./lpm", package = "dataplane-lpm", features = [] }
 match-action = { path = "./match-action", package = "dataplane-match-action", features = [] }
