@@ -10,11 +10,17 @@ use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
 use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketOption;
 use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
+use pcap_file::pcapng::blocks::interface_statistics::InterfaceStatisticsOption;
 use pcap_file::pcapng::blocks::opt_common::CommonOption;
 use pcap_file::pcapng::{Block, PcapNgReader};
 use pipeline::NetworkFunction;
 use std::collections::HashSet;
 use strum::EnumCount;
+
+// Not under loom: shuttle covers the races (stop against admission, a full queue, budget exhaustion), and
+// an exhaustive search over the writer thread costs far more CI time than it could find.
+#[cfg(not(feature = "loom"))]
+mod controller;
 
 /// Metadata to stamp on a generated packet, drawn from small domains so interfaces repeat.
 #[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
@@ -97,10 +103,13 @@ fn round_trip(cases: Vec<(Packet<TestBuffer>, Stamp)>) {
     for record in &records {
         writer.write(record).unwrap();
     }
-    let bytes = writer.finish().unwrap();
+    let bytes = writer
+        .finish(&"summary", std::time::Duration::from_secs(1))
+        .unwrap();
 
     let mut reader = PcapNgReader::new(bytes.as_slice()).unwrap();
     let mut packets = 0;
+    let mut statistics = 0;
     let mut described = Vec::new();
     while let Some(block) = reader.next_block() {
         let (block, state) = block.unwrap();
@@ -139,6 +148,16 @@ fn round_trip(cases: Vec<(Packet<TestBuffer>, Stamp)>) {
                 });
                 assert_eq!(comment, Some(record.annotation(&names()).to_string()));
             }
+            Block::InterfaceStatistics(isb) => {
+                statistics += 1;
+                let summary = isb.options.iter().find_map(|option| match option {
+                    InterfaceStatisticsOption::Common(CommonOption::Comment(text)) => {
+                        Some(text.to_string())
+                    }
+                    _ => None,
+                });
+                assert_eq!(summary.as_deref(), Some("summary"));
+            }
             Block::SectionHeader(_) => {}
             other => panic!("unexpected block {other:?} (state {state:?})"),
         }
@@ -150,6 +169,11 @@ fn round_trip(cases: Vec<(Packet<TestBuffer>, Stamp)>) {
         described.len(),
         distinct.len(),
         "an interface was described twice"
+    );
+    assert_eq!(
+        statistics,
+        described.len(),
+        "every interface gets the closing summary"
     );
 }
 
