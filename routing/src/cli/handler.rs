@@ -661,9 +661,7 @@ mod tests_cli_handling {
     use tokio::task::JoinHandle;
 
     use bytes::Bytes;
-    use cli::cliproto::{
-        CaptureDirection, CliAction, CliError, CliRequest, CliResponse, RequestArgs,
-    };
+    use cli::cliproto::{CaptureVpc, CliAction, CliError, CliRequest, CliResponse, RequestArgs};
     use dplane_rpc::msg::{
         ConnectInfo, ForwardAction, IfAddress, IpRoute, MacAddress, NextHop, Rmac, RouteType,
         RpcMsg, RpcObject, RpcOp, RpcRequest, RpcResultCode, VerInfo, WrapMsg,
@@ -1110,15 +1108,26 @@ mod tests_cli_handling {
         let r = send_cli(&cli, CliAction::ShowCapture, None);
         has(&r, &["no capture has run"], "nothing has been captured yet");
 
+        let unknown = RequestArgs {
+            capture_ingress: Some(CaptureVpc::Named("no-such-vpc".to_owned())),
+            ..Default::default()
+        };
+        let refused = cli_send_req(CliAction::CaptureStart, &cli, Some(unknown));
+        assert!(
+            matches!(&refused.result, Err(CliError::Capture(why)) if why.contains("unknown VPC 'no-such-vpc'")),
+            "a capture of an unknown VPC was started: {:?}",
+            refused.result
+        );
+
         let args = RequestArgs {
-            capture_direction: Some(CaptureDirection::Ingress),
+            capture_ingress: Some(CaptureVpc::Any),
             capture_packets: Some(5),
             ..Default::default()
         };
         let r = send_cli(&cli, CliAction::CaptureStart, Some(args.clone()));
         has(
             &r,
-            &["capturing Ingress traffic", "file: "],
+            &["capturing ingress from *", "file: "],
             "the capture started",
         );
         let refused = cli_send_req(CliAction::CaptureStart, &cli, Some(args));
