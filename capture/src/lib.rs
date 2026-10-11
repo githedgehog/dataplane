@@ -25,6 +25,7 @@
 
 mod controller;
 mod directory;
+mod filter;
 mod names;
 mod record;
 mod stage;
@@ -35,9 +36,10 @@ mod tests;
 
 pub use controller::{
     CaptureController, CaptureEnd, CaptureReport, CaptureRequest, CaptureStartError, CaptureStatus,
-    ControlledSink, Directions,
+    ControlledSink,
 };
 pub use directory::{CaptureDirectory, CaptureFileError};
+pub use filter::{CaptureFilter, VpcMatch};
 pub use names::CaptureNames;
 pub use record::{CaptureRecord, Direction, Frame, ThreadLabel};
 pub use stage::{CaptureSink, CaptureStage};

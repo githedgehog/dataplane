@@ -20,6 +20,7 @@
 //!
 //! [`CaptureStage`]: crate::CaptureStage
 
+use crate::filter::CaptureFilter;
 use crate::names::CaptureNames;
 use crate::record::{CaptureRecord, Direction};
 use crate::stage::CaptureSink;
@@ -39,34 +40,12 @@ use std::time::{Duration, Instant};
 /// How often an idle writer wakes to check the deadline.
 const WRITER_TICK: Duration = Duration::from_millis(100);
 
-/// Which directions a capture records.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Directions {
-    /// Only packets entering the pipeline.
-    Ingress,
-    /// Only packets leaving the pipeline.
-    Egress,
-    /// Both, so the two views of a packet can be compared.
-    Both,
-}
-
-impl Directions {
-    fn includes(self, direction: Direction) -> bool {
-        matches!(
-            (self, direction),
-            (Directions::Both, _)
-                | (Directions::Ingress, Direction::Ingress)
-                | (Directions::Egress, Direction::Egress)
-        )
-    }
-}
-
 /// What to capture, and when to stop.
 #[derive(Debug, Clone, Copy)]
 pub struct CaptureRequest {
-    /// Which directions to record.
-    pub directions: Directions,
-    /// Keep one packet in this many.
+    /// Which packets to record.
+    pub filter: CaptureFilter,
+    /// Keep one matching packet in this many.
     ///
     /// Each capture stage samples on its own (one count per worker and direction), so workers share
     /// nothing to sample.
@@ -171,7 +150,7 @@ enum Message {
 /// The state of one capture, shared by the writer and every worker.
 struct Session {
     id: u64,
-    directions: Directions,
+    filter: CaptureFilter,
     sample_one_in: NonZeroU32,
     budget: u64,
     remaining: AtomicU64,
@@ -313,7 +292,7 @@ impl CaptureController {
         let (queue, records) = mpsc::sync_channel(request.queue_depth.get());
         let session = Arc::new(Session {
             id: control.next_id,
-            directions: request.directions,
+            filter: request.filter,
             sample_one_in: request.sample_one_in,
             budget: request.packets.get(),
             remaining: AtomicU64::new(request.packets.get()),
@@ -502,7 +481,7 @@ impl CaptureSink for ControlledSink {
             self.session = None;
             return false;
         };
-        if !session.directions.includes(self.direction) {
+        if !session.filter.includes(self.direction) {
             self.session = None;
             return false;
         }
@@ -513,10 +492,14 @@ impl CaptureSink for ControlledSink {
         true
     }
 
-    fn admits<Buf: PacketBufferMut>(&mut self, _: &Packet<Buf>) -> bool {
+    fn admits<Buf: PacketBufferMut>(&mut self, packet: &Packet<Buf>) -> bool {
         let Some(session) = &self.session else {
             return false;
         };
+        // Filter before sampling, so that sampling picks among the packets asked for.
+        if !session.filter.matches(packet) {
+            return false;
+        }
         if self.skip > 0 {
             self.skip -= 1;
             return false;

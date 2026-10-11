@@ -4,11 +4,14 @@
 //! CLI handling for packet capture.
 
 use crate::routingdb::RoutingDb;
-use capture::{CaptureDirectory, CaptureNames, CaptureRequest, CaptureStatus, Directions};
-use cli::cliproto::{CaptureDirection, CliAction, CliError, CliRequest, CliResponse};
+use capture::{
+    CaptureDirectory, CaptureFilter, CaptureNames, CaptureRequest, CaptureStatus, VpcMatch,
+};
+use cli::cliproto::{CaptureVpc, CliAction, CliError, CliRequest, CliResponse};
 use concurrency::sync::Arc;
 use config::ValidatedGwConfig;
 use net::packet::VpcDiscriminant;
+use net::vxlan::Vni;
 use std::fmt::Write;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::time::Duration;
@@ -52,10 +55,26 @@ fn start(
     let args = &request.args;
     // The CLI client rejects zeroes; these guard against a client that does not.
     let positive = |what: &str| CliError::Capture(format!("{what} must be at least 1"));
-    let directions = match args.capture_direction.unwrap_or(CaptureDirection::Both) {
-        CaptureDirection::Ingress => Directions::Ingress,
-        CaptureDirection::Egress => Directions::Egress,
-        CaptureDirection::Both => Directions::Both,
+    let known = vpcs(gwconfig);
+    let resolve = |vpc: &CaptureVpc| resolve_vpc(vpc, &known);
+    let (filter, described) = match (&args.capture_ingress, &args.capture_egress) {
+        (None, None) => (CaptureFilter::Everything, "all traffic".to_owned()),
+        (Some(from), None) => (
+            CaptureFilter::Ingress(resolve(from)?),
+            format!("ingress from {from}"),
+        ),
+        (None, Some(to)) => (
+            CaptureFilter::Egress(resolve(to)?),
+            format!("egress to {to}"),
+        ),
+        // Only egress knows both ends, so a conversation is captured there.
+        (Some(from), Some(to)) => (
+            CaptureFilter::Conversation {
+                from: resolve(from)?,
+                to: resolve(to)?,
+            },
+            format!("egress from {from} to {to}"),
+        ),
     };
     let packets = match args.capture_packets {
         Some(packets) => NonZeroU64::new(packets).ok_or_else(|| positive("packets"))?,
@@ -71,7 +90,7 @@ fn start(
         None => DEFAULT_SAMPLE,
     };
     let capture = CaptureRequest {
-        directions,
+        filter,
         sample_one_in,
         packets,
         duration: Duration::from_secs(u64::from(seconds)),
@@ -81,10 +100,42 @@ fn start(
         .start(capture, names(db, gwconfig))
         .map_err(|error| CliError::Capture(error.to_string()))?;
     Ok(format!(
-        "\n capturing {directions:?} traffic, one packet in {sample_one_in}, \
+        "\n capturing {described}, one packet in {sample_one_in}, \
          until {packets} packets or {seconds}s\n file: {}",
         path.display()
     ))
+}
+
+/// Resolve a VPC name against the applied configuration.
+fn resolve_vpc(vpc: &CaptureVpc, known: &[(String, Vni)]) -> Result<VpcMatch, CliError> {
+    let name = match vpc {
+        CaptureVpc::Any => return Ok(VpcMatch::Any),
+        CaptureVpc::Named(name) => name,
+    };
+    if let Some((_, vni)) = known.iter().find(|(candidate, _)| candidate == name) {
+        return Ok(VpcMatch::Vpc(VpcDiscriminant::VNI(*vni)));
+    }
+    let known = if known.is_empty() {
+        "none".to_owned()
+    } else {
+        known
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Err(CliError::Capture(format!(
+        "unknown VPC '{name}' (known: {known})"
+    )))
+}
+
+/// The VPCs the applied configuration defines, by name.
+fn vpcs(gwconfig: Option<&Arc<ValidatedGwConfig>>) -> Vec<(String, Vni)> {
+    gwconfig
+        .iter()
+        .flat_map(|config| config.external().overlay().vpc_table().values())
+        .map(|vpc| (vpc.name().to_owned(), vpc.vni()))
+        .collect()
 }
 
 /// Names for the interfaces the router knows and the VPCs the applied config defines.
@@ -95,10 +146,8 @@ fn names(db: &RoutingDb, gwconfig: Option<&Arc<ValidatedGwConfig>>) -> CaptureNa
             names = names.with_interface(interface.ifindex, interface.name.to_string());
         }
     }
-    if let Some(config) = gwconfig {
-        for vpc in config.external().overlay().vpc_table().values() {
-            names = names.with_vpc(VpcDiscriminant::VNI(vpc.vni()), vpc.name());
-        }
+    for (name, vni) in vpcs(gwconfig) {
+        names = names.with_vpc(VpcDiscriminant::VNI(vni), name);
     }
     names
 }
@@ -121,4 +170,37 @@ fn status(captures: &CaptureDirectory) -> String {
     }
     let _ = write!(out, "\n directory: {}", captures.dir().display());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_vpc;
+    use capture::VpcMatch;
+    use cli::cliproto::{CaptureVpc, CliError};
+    use net::packet::VpcDiscriminant;
+    use net::vxlan::Vni;
+
+    fn known() -> Vec<(String, Vni)> {
+        vec![
+            ("vpc-1".to_owned(), Vni::new_checked(3000).unwrap()),
+            ("vpc-2".to_owned(), Vni::new_checked(4000).unwrap()),
+        ]
+    }
+
+    #[test]
+    fn a_vpc_name_resolves_to_its_vni() {
+        let resolved = resolve_vpc(&CaptureVpc::Named("vpc-2".to_owned()), &known()).unwrap();
+        let vni = Vni::new_checked(4000).unwrap();
+        assert_eq!(resolved, VpcMatch::Vpc(VpcDiscriminant::VNI(vni)));
+        assert_eq!(resolve_vpc(&CaptureVpc::Any, &[]).unwrap(), VpcMatch::Any);
+    }
+
+    #[test]
+    fn an_unknown_vpc_is_refused_with_the_known_ones() {
+        let refused = resolve_vpc(&CaptureVpc::Named("vpc-9".to_owned()), &known());
+        assert!(
+            matches!(&refused, Err(CliError::Capture(why)) if why == "unknown VPC 'vpc-9' (known: vpc-1, vpc-2)"),
+            "{refused:?}"
+        );
+    }
 }

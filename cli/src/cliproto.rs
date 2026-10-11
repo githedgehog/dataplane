@@ -70,41 +70,44 @@ pub enum RouteProtocol {
 )]
 #[allow(unused)]
 pub struct RequestArgs {
-    pub address: Option<IpAddr>,                     /* an IP address */
-    pub prefix: Option<(IpAddr, u8)>,                /* an IP prefix */
-    pub prefix_len: Option<u8>,                      /* an IP prefix length */
-    pub vpc: Option<String>,                         /* vpc name */
-    pub vrfid: Option<u32>,                          /* Id of a VRF */
-    pub vni: Option<u32>,                            /* Vxlan vni */
-    pub ifname: Option<String>,                      /* name of interface */
-    pub protocol: Option<RouteProtocol>,             /* a type of route or routing protocol */
-    pub mac: Option<String>,                         /* a eth MAC address as a string */
-    pub selector: Option<PrefetchSelector>,          /* selector to prefetch data for completion */
-    pub capture_direction: Option<CaptureDirection>, /* which way the packets to capture are going */
-    pub capture_packets: Option<u64>,                /* capture budget in packets */
-    pub capture_seconds: Option<u32>,                /* capture duration */
-    pub capture_sample: Option<u32>,                 /* capture one packet in this many */
+    pub address: Option<IpAddr>,             /* an IP address */
+    pub prefix: Option<(IpAddr, u8)>,        /* an IP prefix */
+    pub prefix_len: Option<u8>,              /* an IP prefix length */
+    pub vpc: Option<String>,                 /* vpc name */
+    pub vrfid: Option<u32>,                  /* Id of a VRF */
+    pub vni: Option<u32>,                    /* Vxlan vni */
+    pub ifname: Option<String>,              /* name of interface */
+    pub protocol: Option<RouteProtocol>,     /* a type of route or routing protocol */
+    pub mac: Option<String>,                 /* a eth MAC address as a string */
+    pub selector: Option<PrefetchSelector>,  /* selector to prefetch data for completion */
+    pub capture_ingress: Option<CaptureVpc>, /* capture packets arriving from this VPC */
+    pub capture_egress: Option<CaptureVpc>,  /* capture packets leaving towards this VPC */
+    pub capture_packets: Option<u64>,        /* capture budget in packets */
+    pub capture_seconds: Option<u32>,        /* capture duration */
+    pub capture_sample: Option<u32>,         /* capture one packet in this many */
 }
 
-/// Which way the packets to capture are going.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    rkyv::Archive,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-    strum::Display,
-    strum::EnumString,
-    strum::EnumIter,
-)]
-#[strum(serialize_all = "lowercase")]
-pub enum CaptureDirection {
-    Ingress,
-    Egress,
-    Both,
+/// One end of a capture filter, as typed: `*` or a VPC name.
+#[derive(Debug, Clone, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub enum CaptureVpc {
+    /// `*`: any VPC, or none.
+    Any,
+    /// A VPC by name, resolved against the applied configuration by the dataplane.
+    Named(String),
+}
+
+impl CaptureVpc {
+    /// How `*` is spelled.
+    pub const ANY: &str = "*";
+}
+
+impl std::fmt::Display for CaptureVpc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CaptureVpc::Any => f.write_str(Self::ANY),
+            CaptureVpc::Named(name) => f.write_str(name),
+        }
+    }
 }
 impl RequestArgs {
     #[must_use]
@@ -581,7 +584,8 @@ mod tests {
                 protocol: Some(RouteProtocol::Bgp),
                 mac: Some("02:00:00:00:00:01".into()),
                 selector: Some(PrefetchSelector::Vpcs),
-                capture_direction: Some(CaptureDirection::Egress),
+                capture_ingress: Some(CaptureVpc::Named("vpc-1".into())),
+                capture_egress: Some(CaptureVpc::Any),
                 capture_packets: Some(1_000),
                 capture_seconds: Some(30),
                 capture_sample: Some(10),
