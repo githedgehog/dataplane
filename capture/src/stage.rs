@@ -14,6 +14,14 @@ use std::cell::OnceCell;
 /// Admission is a separate step from submission so that a sink can sample and filter before anything is
 /// copied: a packet the sink does not want costs only the call to [`CaptureSink::admits`].
 pub trait CaptureSink {
+    /// Whether this burst can capture anything at all.
+    ///
+    /// Called once per burst, so that a sink with nothing to do (no capture running) costs one call per
+    /// burst rather than one per packet.
+    fn begin_burst(&mut self) -> bool {
+        true
+    }
+
     /// Whether to capture `packet`.
     fn admits<Buf: PacketBufferMut>(&mut self, packet: &Packet<Buf>) -> bool;
 
@@ -88,6 +96,9 @@ impl<S: CaptureSink> CaptureStage<S> {
 
 impl<Buf: PacketBufferMut, S: CaptureSink> NetworkFunction<Buf> for CaptureStage<S> {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        if !self.sink.begin_burst() {
+            return;
+        }
         for packet in burst.iter() {
             if !self.sink.admits(packet) {
                 continue;

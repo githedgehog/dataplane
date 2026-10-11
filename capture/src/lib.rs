@@ -23,6 +23,7 @@
 //! The metadata (drop reason, interfaces, VNIs, flow key) rides along as a text comment on each packet.
 //! Interfaces and VPCs appear by the names given in [`CaptureNames`].
 
+mod controller;
 mod names;
 mod record;
 mod stage;
@@ -31,6 +32,10 @@ mod writer;
 #[cfg(test)]
 mod tests;
 
+pub use controller::{
+    CaptureController, CaptureEnd, CaptureReport, CaptureRequest, CaptureStartError, CaptureStatus,
+    ControlledSink, Directions,
+};
 pub use names::CaptureNames;
 pub use record::{CaptureRecord, Direction, ThreadLabel};
 pub use stage::{CaptureSink, CaptureStage};
