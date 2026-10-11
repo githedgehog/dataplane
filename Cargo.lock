@@ -1843,6 +1843,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-lldp"
+version = "0.29.0"
+dependencies = [
+ "dataplane-clock",
+ "dataplane-net",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-lookup"
 version = "0.29.0"
 
