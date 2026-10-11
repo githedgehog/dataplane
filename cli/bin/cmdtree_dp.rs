@@ -6,7 +6,7 @@
 use crate::cmdtree::{Node, NodeArg};
 
 use crate::argsparse::CliArgId;
-use dataplane_cli::cliproto::{CaptureDirection, CliAction, PrefetchSelector, RouteProtocol};
+use dataplane_cli::cliproto::{CaptureVpc, CliAction, PrefetchSelector, RouteProtocol};
 use std::convert::AsRef;
 use strum::IntoEnumIterator;
 
@@ -422,16 +422,23 @@ fn cmd_cpi() -> Node {
     root
 }
 
+/// A capture filter end: `*` or a VPC name.
+fn capture_vpc_arg(id: &CliArgId) -> NodeArg {
+    NodeArg::new(id.as_str())
+        .choice(CaptureVpc::ANY)
+        .selector(PrefetchSelector::Vpcs)
+}
+
 fn cmd_capture() -> Node {
-    let mut direction = NodeArg::new(CliArgId::Direction.as_str());
-    for choice in CaptureDirection::iter() {
-        direction.add_choice(&choice.to_string());
-    }
     let mut root = Node::new("capture");
     root += Node::new("start")
-        .desc("Capture packets into a pcapng file on the gateway")
+        .desc(
+            "Capture packets into a pcapng file on the gateway: ingress=VPC|* from a VPC, \
+             egress=VPC|* to a VPC, both for the conversation between them",
+        )
         .action(CliAction::CaptureStart)
-        .arg_add(direction)
+        .arg_add(capture_vpc_arg(&CliArgId::Ingress))
+        .arg_add(capture_vpc_arg(&CliArgId::Egress))
         .arg(CliArgId::Packets.as_str())
         .arg(CliArgId::Seconds.as_str())
         .arg(CliArgId::Sample.as_str());
