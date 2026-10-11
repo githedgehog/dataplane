@@ -599,6 +599,10 @@ fn do_handle_cli_request(
         /* prefetching */
         CliAction::Prefetch => prefetch(request, gwconfig, db),
 
+        CliAction::CaptureStart | CliAction::CaptureStop | CliAction::ShowCapture => {
+            crate::cli::capture::handle(request, db, gwconfig, sources.capture.as_ref())?
+        }
+
         _ => Err(CliError::NotSupported("Not implemented yet".to_string()))?,
     };
     Ok(response)
@@ -631,8 +635,10 @@ mod tests_cli_handling {
     use crate::bmp::bmp_render::BgpNeighEvent;
     use crate::interfaces::interface::{IfDataEthernet, IfType, RouterInterfaceConfig};
     use crate::rib::vrf::RouterVrfConfig;
+    use crate::{
+        CliSources, Router, RouterConfig, RouterCtlSender, RouterParams, RouterParamsBuilder,
+    };
     use crate::{IfState, Vtep};
-    use crate::{Router, RouterConfig, RouterCtlSender, RouterParams, RouterParamsBuilder};
 
     use clock::Duration;
     use concurrency::sync::Arc;
@@ -655,7 +661,9 @@ mod tests_cli_handling {
     use tokio::task::JoinHandle;
 
     use bytes::Bytes;
-    use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, RequestArgs};
+    use cli::cliproto::{
+        CaptureDirection, CliAction, CliError, CliRequest, CliResponse, RequestArgs,
+    };
     use dplane_rpc::msg::{
         ConnectInfo, ForwardAction, IfAddress, IpRoute, MacAddress, NextHop, Rmac, RouteType,
         RpcMsg, RpcObject, RpcOp, RpcRequest, RpcResultCode, VerInfo, WrapMsg,
@@ -1065,6 +1073,99 @@ mod tests_cli_handling {
         check_show_ipv6_next_hops(&cli);
         check_show_last_frr_config(&cli);
         check_unknown_vpc_fails(&cli);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    async fn test_cli_capture() {
+        use capture::{CaptureController, CaptureDirectory, CaptureStage, Direction};
+        use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
+        use pcap_file::pcapng::{Block, PcapNgReader};
+        use pipeline::NetworkFunction;
+
+        let dir = SockDir::new("cli-capture");
+        let subsystem = rio_subsystem();
+        let controller = CaptureController::new();
+        let sources = CliSources {
+            capture: Some(CaptureDirectory::new(
+                controller.clone(),
+                dir.path("captures"),
+            )),
+            ..Default::default()
+        };
+        let router =
+            Router::new(&subsystem, router_params(&dir), Some(sources)).expect("No reason to fail");
+        let cpi_path = router.get_cpi_sock_path().clone();
+        let cli_path = router.get_cli_sock_path().clone();
+        let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
+        let ctl = router.get_ctl_tx();
+        let frr_agent = fake_frr_agent(frr_agent_path).await;
+        let _guard = RouterGuard { router, frr_agent };
+        let (_cpi, cli) = open_socks(&dir, &cpi_path, &cli_path);
+        send_gw_config(&ctl).await;
+        send_router_config(&ctl, build_router_config()).await;
+        ctl_sync(&ctl).await;
+
+        println!(" * Testing that a capture starts, records, and stops into a file");
+        let r = send_cli(&cli, CliAction::ShowCapture, None);
+        has(&r, &["no capture has run"], "nothing has been captured yet");
+
+        let args = RequestArgs {
+            capture_direction: Some(CaptureDirection::Ingress),
+            capture_packets: Some(5),
+            ..Default::default()
+        };
+        let r = send_cli(&cli, CliAction::CaptureStart, Some(args.clone()));
+        has(
+            &r,
+            &["capturing Ingress traffic", "file: "],
+            "the capture started",
+        );
+        let refused = cli_send_req(CliAction::CaptureStart, &cli, Some(args));
+        assert!(
+            matches!(refused.result, Err(CliError::Capture(_))),
+            "a second capture was started: {:?}",
+            refused.result
+        );
+        let r = send_cli(&cli, CliAction::ShowCapture, None);
+        has(&r, &["capture running"], "the capture is running");
+
+        let mut stage = CaptureStage::new(Direction::Ingress, controller.sink(Direction::Ingress));
+        let mut burst: Vec<_> = (0..3)
+            .map(|_| {
+                let mut packet = net::packet::test_utils::build_test_ipv4_packet(64).unwrap();
+                packet.meta_mut().iif = Some(InterfaceIndex::try_from(IFINDEX).unwrap());
+                packet
+            })
+            .collect();
+        stage.process_burst(&mut burst);
+
+        let r = send_cli(&cli, CliAction::CaptureStop, None);
+        has(
+            &r,
+            &["stopped", "written=3", "dropped=0"],
+            "the capture recorded the burst",
+        );
+        let path = r
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("file: "))
+            .expect("the stop report names the file");
+        let bytes = std::fs::read(path).expect("the capture file exists");
+        let mut reader = PcapNgReader::new(bytes.as_slice()).unwrap();
+        let mut interfaces = Vec::new();
+        while let Some(block) = reader.next_block() {
+            if let Block::InterfaceDescription(idb) = block.unwrap().0 {
+                interfaces.extend(idb.options.iter().filter_map(|option| match option {
+                    InterfaceDescriptionOption::IfName(name) => Some(name.to_string()),
+                    _ => None,
+                }));
+            }
+        }
+        assert_eq!(
+            interfaces,
+            [IFNAME],
+            "the file names the interface as the router does"
+        );
     }
 
     #[track_caller]
