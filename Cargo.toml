@@ -4,6 +4,7 @@ members = [
     "acl",
     "acl-filter",
     "args",
+    "capture",
     "cli",
     "clock",
     "common",
@@ -75,6 +76,7 @@ repository = "https://github.com/githedgehog/dataplane/"
 acl = { path = "./acl", package = "dataplane-acl", features = [] }
 acl-filter = { path = "./acl-filter", package = "dataplane-acl-filter", features = [] }
 args = { path = "./args", package = "dataplane-args", features = [] }
+capture = { path = "./capture", package = "dataplane-capture", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }
 clock = { path = "./clock", package = "dataplane-clock", features = [] }
@@ -194,6 +196,7 @@ num-traits = { version = "0.2.19", default-features = false, features = [] }
 once_cell = { version = "1.21.4", default-features = false, features = [] }
 ordermap = { version = "1.2.2", default-features = false, features = [] }
 parking_lot = { version = "0.12.5", default-features = false, features = [] }
+pcap-file = { version = "=3.0.0-rc.3", default-features = false, features = [] }
 pci-ids = { version = "0.2.6", default-features = false, features = [] }
 prefix-trie = { version = "0.10.1", default-features = false, features = [] }
 pretty_assertions = { version = "1.4.1", default-features = false, features = [] }
@@ -334,6 +337,10 @@ wasm = false # hopeless + pointless
 package = "dataplane-args"
 miri = true
 wasm = false # miss
+
+[workspace.metadata.package.capture]
+package = "dataplane-capture"
+wasm = false # needs pipeline, which needs tracectl
 
 [workspace.metadata.package.cli]
 package = "dataplane-cli"
