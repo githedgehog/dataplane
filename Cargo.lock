@@ -1368,6 +1368,7 @@ dependencies = [
  "caps",
  "dataplane-acl-filter",
  "dataplane-args",
+ "dataplane-capture",
  "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
