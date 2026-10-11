@@ -210,4 +210,39 @@ mod real_time {
         assert!(matches!(controller.status(), CaptureStatus::Idle));
         assert!(controller.stop().is_none());
     }
+
+    #[test]
+    fn a_directory_capture_leaves_one_readable_file() {
+        let dir = std::env::temp_dir().join(format!("capture-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let controller = CaptureController::new();
+        let captures = crate::CaptureDirectory::new(controller.clone(), &dir);
+
+        let path = captures
+            .start(
+                request(Directions::Both, 1, 10, 64),
+                CaptureNames::default(),
+            )
+            .unwrap();
+        assert!(matches!(
+            captures.start(
+                request(Directions::Both, 1, 10, 64),
+                CaptureNames::default()
+            ),
+            Err(crate::CaptureFileError::Start(
+                CaptureStartError::AlreadyRunning
+            ))
+        ));
+        let mut stage = CaptureStage::new(Direction::Ingress, controller.sink(Direction::Ingress));
+        stage.process_burst(&mut burst(3));
+        let (report, stopped) = captures.stop().unwrap();
+        assert_eq!(stopped, path);
+        assert_eq!(report.written, 3, "{report}");
+
+        let files: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(files.len(), 1, "a refused start left a file behind");
+        let file = SharedFile(Arc::new(Mutex::new(std::fs::read(&path).unwrap())));
+        assert_eq!(file.packets(), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

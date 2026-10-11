@@ -14,6 +14,7 @@ testing = []
 [dependencies]
 # internal
 args = { workspace = true }
+capture = { workspace = true }
 cli = { workspace = true }
 clock = { workspace = true }
 common = { workspace = true }
@@ -66,6 +67,8 @@ iai-callgrind = { workspace = true }
 bolero = { workspace = true, features = ["std"] }
 concurrency = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
+pcap-file = { workspace = true }
+pipeline = { workspace = true }
 rand = { workspace = true, default-features = false, features = ["thread_rng"] }
 similar-asserts = { workspace = true }
 tokio = { workspace = true, features = ["time", "test-util"] }
