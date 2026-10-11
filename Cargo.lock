@@ -1487,6 +1487,7 @@ dependencies = [
  "arrayvec",
  "bolero",
  "dataplane-clock",
+ "dataplane-concurrency",
  "dataplane-net",
  "dataplane-pipeline",
  "pcap-file",

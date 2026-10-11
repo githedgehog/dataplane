@@ -12,11 +12,16 @@ use pcap_file::pcapng::blocks::enhanced_packet::{EnhancedPacketBlock, EnhancedPa
 use pcap_file::pcapng::blocks::interface_description::{
     InterfaceDescriptionBlock, InterfaceDescriptionOption, InterfaceTsResolution,
 };
+use pcap_file::pcapng::blocks::interface_statistics::{
+    InterfaceStatisticsBlock, InterfaceStatisticsOption,
+};
 use pcap_file::pcapng::blocks::opt_common::CommonOption;
 use pcap_file::pcapng::{PcapNgWriteError, PcapNgWriter};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::io::Write;
+use std::time::Duration;
 
 /// `epb_flags` direction bits ([pcapng §4.3.1]).
 ///
@@ -104,12 +109,36 @@ impl<W: Write> CaptureWriter<W> {
         Ok(())
     }
 
-    /// Flush and return the underlying sink.
+    /// Close the stream with `summary`, then flush and return the underlying sink.
+    ///
+    /// pcapng has nowhere to put a whole-capture note once the section header is written, so the summary
+    /// goes in an interface statistics block for each interface, stamped with `ended` (time since the
+    /// Unix epoch).
+    /// A capture which wrote no packets described no interfaces and so carries no summary.
     ///
     /// # Errors
     ///
-    /// Fails if the flush fails.
-    pub fn finish(self) -> Result<W, CaptureWriteError> {
+    /// Fails if the statistics cannot be written or the flush fails.
+    pub fn finish(
+        mut self,
+        summary: &impl Display,
+        ended: Duration,
+    ) -> Result<W, CaptureWriteError> {
+        let summary = summary.to_string();
+        let mut ids: Vec<u32> = self.interfaces.values().copied().collect();
+        ids.sort_unstable();
+        for interface_id in ids {
+            self.pcapng.write_pcapng_block(InterfaceStatisticsBlock {
+                interface_id,
+                timestamp: ended,
+                options: vec![
+                    InterfaceStatisticsOption::IsbEndTime(ended),
+                    InterfaceStatisticsOption::Common(CommonOption::Comment(Cow::Borrowed(
+                        &summary,
+                    ))),
+                ],
+            })?;
+        }
         let mut sink = self.pcapng.into_inner();
         sink.flush().map_err(PcapNgWriteError::Io)?;
         Ok(sink)
