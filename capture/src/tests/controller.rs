@@ -2,8 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 use crate::{
-    CaptureController, CaptureEnd, CaptureNames, CaptureRequest, CaptureStage, CaptureStartError,
-    Direction, Directions,
+    CaptureController, CaptureEnd, CaptureFilter, CaptureNames, CaptureRequest, CaptureStage,
+    CaptureStartError, Direction, VpcMatch,
 };
 use concurrency::sync::{Arc, Mutex};
 use concurrency::thread;
@@ -47,13 +47,13 @@ impl SharedFile {
 }
 
 fn request(
-    directions: Directions,
+    filter: CaptureFilter,
     sample_one_in: u32,
     packets: u64,
     queue_depth: usize,
 ) -> CaptureRequest {
     CaptureRequest {
-        directions,
+        filter,
         sample_one_in: NonZeroU32::new(sample_one_in).unwrap(),
         packets: NonZeroU64::new(packets).unwrap(),
         duration: Duration::from_hours(1),
@@ -87,7 +87,7 @@ fn stopping_while_workers_capture_loses_no_record() {
     // A one-slot queue, so that records are dropped as well as written.
     controller
         .start(
-            request(Directions::Both, 1, 4, 1),
+            request(CaptureFilter::Everything, 1, 4, 1),
             file.clone(),
             CaptureNames::default(),
         )
@@ -116,7 +116,7 @@ fn a_capture_ends_on_its_budget_and_another_can_follow() {
     let file = SharedFile::default();
     controller
         .start(
-            request(Directions::Both, 1, 2, 8),
+            request(CaptureFilter::Everything, 1, 2, 8),
             file.clone(),
             CaptureNames::default(),
         )
@@ -130,14 +130,14 @@ fn a_capture_ends_on_its_budget_and_another_can_follow() {
 
     controller
         .start(
-            request(Directions::Both, 1, 2, 8),
+            request(CaptureFilter::Everything, 1, 2, 8),
             SharedFile::default(),
             CaptureNames::default(),
         )
         .unwrap();
     assert!(matches!(
         controller.start(
-            request(Directions::Both, 1, 2, 8),
+            request(CaptureFilter::Everything, 1, 2, 8),
             SharedFile::default(),
             CaptureNames::default()
         ),
@@ -152,7 +152,7 @@ fn a_capture_ignores_directions_it_was_not_asked_for() {
     let controller = CaptureController::new();
     controller
         .start(
-            request(Directions::Egress, 1, 10, 8),
+            request(CaptureFilter::Egress(VpcMatch::Any), 1, 10, 8),
             SharedFile::default(),
             CaptureNames::default(),
         )
@@ -172,7 +172,7 @@ mod real_time {
         let controller = CaptureController::new();
         controller
             .start(
-                request(Directions::Both, 3, 100, 64),
+                request(CaptureFilter::Everything, 3, 100, 64),
                 SharedFile::default(),
                 CaptureNames::default(),
             )
@@ -186,7 +186,7 @@ mod real_time {
     #[test]
     fn a_capture_ends_at_its_deadline() {
         let controller = CaptureController::new();
-        let mut request = request(Directions::Both, 1, 100, 8);
+        let mut request = request(CaptureFilter::Everything, 1, 100, 8);
         request.duration = Duration::from_millis(20);
         controller
             .start(request, SharedFile::default(), CaptureNames::default())
@@ -220,13 +220,13 @@ mod real_time {
 
         let path = captures
             .start(
-                request(Directions::Both, 1, 10, 64),
+                request(CaptureFilter::Everything, 1, 10, 64),
                 CaptureNames::default(),
             )
             .unwrap();
         assert!(matches!(
             captures.start(
-                request(Directions::Both, 1, 10, 64),
+                request(CaptureFilter::Everything, 1, 10, 64),
                 CaptureNames::default()
             ),
             Err(crate::CaptureFileError::Start(
@@ -244,5 +244,129 @@ mod real_time {
         let file = SharedFile(Arc::new(Mutex::new(std::fs::read(&path).unwrap())));
         assert_eq!(file.packets(), 3);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn vni(raw: u32) -> net::vxlan::Vni {
+        net::vxlan::Vni::new_checked(raw).unwrap()
+    }
+
+    fn vpc(raw: u32) -> VpcMatch {
+        VpcMatch::Vpc(net::packet::VpcDiscriminant::VNI(vni(raw)))
+    }
+
+    /// A VXLAN packet as received: still encapsulated, with no VPC in its metadata yet.
+    fn encapsulated(raw: u32) -> Packet<TestBuffer> {
+        let inner = build_test_ipv4_packet(64).unwrap().serialize().unwrap();
+        net::packet::test_utils::build_test_vxlan_ipv4_packet_carrying_vni(
+            vni(raw),
+            net::ip::dscp::Dscp::default(),
+            net::ip::ecn::Ecn::default(),
+            inner.as_ref(),
+        )
+        .unwrap()
+    }
+
+    /// A packet as routed: its metadata names where it came from and where it is going.
+    fn routed(from: u32, to: u32) -> Packet<TestBuffer> {
+        let mut packet = build_test_ipv4_packet(64).unwrap();
+        packet.meta_mut().src_vpcd = Some(net::packet::VpcDiscriminant::VNI(vni(from)));
+        packet.meta_mut().dst_vpcd = Some(net::packet::VpcDiscriminant::VNI(vni(to)));
+        packet
+    }
+
+    /// How many of `packets`, going in `direction`, a capture with `filter` admits.
+    fn admitted(
+        filter: CaptureFilter,
+        direction: Direction,
+        packets: Vec<Packet<TestBuffer>>,
+    ) -> u64 {
+        let controller = CaptureController::new();
+        controller
+            .start(
+                request(filter, 1, 100, 64),
+                SharedFile::default(),
+                CaptureNames::default(),
+            )
+            .unwrap();
+        let mut stage = CaptureStage::new(direction, controller.sink(direction));
+        stage.process_burst(&mut packets.into_iter().collect());
+        controller.stop().unwrap().admitted
+    }
+
+    #[test]
+    fn an_ingress_filter_matches_the_vni_a_packet_arrives_with() {
+        let mixed = || {
+            vec![
+                encapsulated(100),
+                encapsulated(200),
+                build_test_ipv4_packet(64).unwrap(),
+            ]
+        };
+        assert_eq!(
+            admitted(
+                CaptureFilter::Ingress(vpc(100)),
+                Direction::Ingress,
+                mixed()
+            ),
+            1
+        );
+        // `*` takes packets with no VPC too.
+        assert_eq!(
+            admitted(
+                CaptureFilter::Ingress(VpcMatch::Any),
+                Direction::Ingress,
+                mixed()
+            ),
+            3
+        );
+        assert_eq!(
+            admitted(CaptureFilter::Ingress(vpc(100)), Direction::Egress, mixed()),
+            0
+        );
+    }
+
+    #[test]
+    fn a_conversation_matches_both_ends_at_egress() {
+        let mixed = || vec![routed(100, 200), routed(100, 300), routed(300, 200)];
+        let conversation = CaptureFilter::Conversation {
+            from: vpc(100),
+            to: vpc(200),
+        };
+        assert_eq!(admitted(conversation, Direction::Egress, mixed()), 1);
+        assert_eq!(admitted(conversation, Direction::Ingress, mixed()), 0);
+        assert_eq!(
+            admitted(CaptureFilter::Egress(vpc(200)), Direction::Egress, mixed()),
+            2
+        );
+        let from_anywhere = CaptureFilter::Conversation {
+            from: VpcMatch::Any,
+            to: vpc(200),
+        };
+        assert_eq!(admitted(from_anywhere, Direction::Egress, mixed()), 2);
+    }
+
+    #[test]
+    fn sampling_picks_among_matching_packets() {
+        // Every other packet matches; sampling one in two of those keeps two of the four.
+        let packets = (0..8)
+            .map(|i| {
+                if i % 2 == 0 {
+                    routed(100, 200)
+                } else {
+                    routed(300, 400)
+                }
+            })
+            .collect();
+        let controller = CaptureController::new();
+        controller
+            .start(
+                request(CaptureFilter::Egress(vpc(200)), 2, 100, 64),
+                SharedFile::default(),
+                CaptureNames::default(),
+            )
+            .unwrap();
+        let mut stage = CaptureStage::new(Direction::Egress, controller.sink(Direction::Egress));
+        stage.process_burst(&mut { packets });
+        assert_eq!(controller.stop().unwrap().admitted, 2);
     }
 }
