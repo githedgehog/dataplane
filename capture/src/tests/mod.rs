@@ -3,10 +3,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use crate::{CaptureNames, CaptureRecord, CaptureStage, CaptureWriter, Direction};
+use crate::{CaptureNames, CaptureRecord, CaptureStage, CaptureWriter, Direction, Frame};
 use net::buffer::TestBuffer;
+use net::headers::{Headers, TryHeaders, TryVxlan};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
+use net::parse::{DeParse, Parse};
 use net::vxlan::Vni;
 use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketOption;
 use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
@@ -26,6 +28,8 @@ mod controller;
 #[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
 struct Stamp {
     egress: bool,
+    /// Carry the generated packet inside a VXLAN encapsulation, as most dataplane traffic is.
+    encapsulate: bool,
     iif: u8,
     oif: u8,
     src_vni: u8,
@@ -62,6 +66,17 @@ fn stamp(packet: &mut Packet<TestBuffer>, stamp: Stamp) {
     meta.done = DoneReason::from_repr(stamp.done % reasons);
 }
 
+/// `packet` as the inner frame of a VXLAN packet.
+fn encapsulate(packet: &Packet<TestBuffer>) -> Packet<TestBuffer> {
+    net::packet::test_utils::build_test_vxlan_ipv4_packet_carrying_vni(
+        Vni::new_checked(100).unwrap(),
+        net::ip::dscp::Dscp::default(),
+        net::ip::ecn::Ecn::default(),
+        &wire(packet),
+    )
+    .unwrap()
+}
+
 /// The frame `packet` would put on the wire.
 fn wire(packet: &Packet<TestBuffer>) -> Vec<u8> {
     let copy = packet.deep_copy().unwrap();
@@ -78,12 +93,20 @@ fn interface_name(interface: Option<InterfaceIndex>) -> &'static str {
     }
 }
 
-/// Capture `packets` going in each stamped direction, write them, read them back, and check every
-/// packet block against the packet it came from.
-fn round_trip(cases: Vec<(Packet<TestBuffer>, Stamp)>) {
+/// Stamp each case, run it through a capture stage, and return each packet (with its wire bytes)
+/// beside the record taken of it.
+#[allow(clippy::type_complexity)]
+fn capture_each(
+    cases: Vec<(Packet<TestBuffer>, Stamp)>,
+) -> (Vec<(Vec<u8>, Packet<TestBuffer>)>, Vec<CaptureRecord>) {
     let mut expected = Vec::new();
     let mut records = Vec::new();
-    for (mut packet, how) in cases {
+    for (packet, how) in cases {
+        let mut packet = if how.encapsulate {
+            encapsulate(&packet)
+        } else {
+            packet
+        };
         stamp(&mut packet, how);
         let direction = if how.egress {
             Direction::Egress
@@ -98,6 +121,13 @@ fn round_trip(cases: Vec<(Packet<TestBuffer>, Stamp)>) {
         expected.push((wire, burst.pop().unwrap()));
         records.push(record);
     }
+    (expected, records)
+}
+
+/// Capture `packets` going in each stamped direction, write them, read them back, and check every
+/// packet block against the packet it came from.
+fn round_trip(cases: Vec<(Packet<TestBuffer>, Stamp)>) {
+    let (expected, records) = capture_each(cases);
 
     let mut writer = CaptureWriter::new(Vec::new(), names()).unwrap();
     for record in &records {
@@ -129,9 +159,19 @@ fn round_trip(cases: Vec<(Packet<TestBuffer>, Stamp)>) {
                 let interface_id = usize::try_from(epb.interface_id).unwrap();
                 assert_eq!(described[interface_id], interface_name(record.interface()));
                 assert_eq!(epb.timestamp, record.timestamp());
-                assert_eq!(epb.original_len, u32::try_from(wire.len()).unwrap());
-                assert_eq!(epb.data.len(), usize::from(packet.header_len().get()));
-                assert_eq!(&epb.data[..], &wire[..epb.data.len()]);
+                // An encapsulated packet whose inner frame parses is captured from the inner frame on.
+                let inner = packet.headers().try_vxlan().is_some()
+                    && Headers::parse(packet.payload().as_ref()).is_ok();
+                let (expected_frame, start) = if inner {
+                    (Frame::Inner, usize::from(packet.header_len().get()))
+                } else {
+                    (Frame::Outer, 0)
+                };
+                assert_eq!(record.frame(), expected_frame);
+                let frame = &wire[start..];
+                assert_eq!(epb.original_len, u32::try_from(frame.len()).unwrap());
+                assert_eq!(epb.data.len(), usize::from(record.headers().size().get()));
+                assert_eq!(&epb.data[..], &frame[..epb.data.len()]);
 
                 let direction = epb.options.iter().find_map(|option| match option {
                     EnhancedPacketOption::Flags(flags) => Some(flags & 0b11),
@@ -201,8 +241,57 @@ fn annotation_names_every_field() {
     let record = CaptureRecord::new(Direction::Egress, &packet, clock::system_now(), None);
     assert_eq!(
         record.annotation(&names()).to_string(),
-        "direction=egress thread=- done=AclDropped iif=eth1 oif=unnamed(3) \
-         src_vni=100 src_vpc=vpc-1 dst_vni=200 dst_vpc=- flow=-"
+        "direction=egress frame=outer vxlan_vni=- thread=- done=AclDropped iif=eth1 \
+         oif=unnamed(3) src_vni=100 src_vpc=vpc-1 dst_vni=200 dst_vpc=- flow=-"
     );
     assert_eq!(record.interface(), InterfaceIndex::try_new(3).ok());
+}
+
+#[test]
+fn an_encapsulated_packet_is_captured_from_its_inner_frame() {
+    use net::packet::test_utils::{
+        build_test_ipv4_packet, build_test_vxlan_ipv4_packet_carrying_vni,
+    };
+
+    let inner = build_test_ipv4_packet(64).unwrap().serialize().unwrap();
+    let packet = build_test_vxlan_ipv4_packet_carrying_vni(
+        Vni::new_checked(100).unwrap(),
+        net::ip::dscp::Dscp::default(),
+        net::ip::ecn::Ecn::default(),
+        inner.as_ref(),
+    )
+    .unwrap();
+    let record = CaptureRecord::new(Direction::Ingress, &packet, clock::system_now(), None);
+
+    assert_eq!(record.frame(), Frame::Inner);
+    assert_eq!(record.vxlan_vni(), Vni::new_checked(100).ok());
+    assert_eq!(
+        record.original_len(),
+        u32::try_from(inner.as_ref().len()).unwrap()
+    );
+    let mut headers = vec![0; usize::from(record.headers().size().get())];
+    record.headers().deparse(&mut headers).unwrap();
+    assert_eq!(headers, inner.as_ref()[..headers.len()]);
+    assert!(
+        record
+            .annotation(&names())
+            .to_string()
+            .starts_with("direction=ingress frame=inner vxlan_vni=100 ")
+    );
+}
+
+#[test]
+fn an_encapsulation_with_an_unparsable_inner_frame_is_captured_from_outside() {
+    let packet = net::packet::test_utils::build_test_vxlan_ipv4_packet_carrying_vni(
+        Vni::new_checked(100).unwrap(),
+        net::ip::dscp::Dscp::default(),
+        net::ip::ecn::Ecn::default(),
+        &[0xff; 4],
+    )
+    .unwrap();
+    let record = CaptureRecord::new(Direction::Ingress, &packet, clock::system_now(), None);
+    assert_eq!(record.frame(), Frame::Outer);
+    assert_eq!(record.vxlan_vni(), Vni::new_checked(100).ok());
+    assert_eq!(record.headers(), packet.headers());
+    assert_eq!(record.original_len(), u32::from(packet.total_len()));
 }
