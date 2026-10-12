@@ -9,6 +9,8 @@ use net::interface::InterfaceIndex;
 use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags};
 use rtnetlink::{Handle, LinkUnspec};
 
+use lldp::Link;
+use std::path::PathBuf;
 use tracing::{debug, error, info};
 
 #[derive(Debug, Clone)]
@@ -29,6 +31,41 @@ pub struct Kif {
 }
 
 impl Kif {
+    /// Where sysfs describes this interface.
+    ///
+    /// Only meaningful on a thread in the interface's namespace with a sysfs mounted for it, which the
+    /// kernel driver's threads are.
+    fn sysfs(&self) -> PathBuf {
+        PathBuf::from("/sys/class/net").join(&self.name)
+    }
+
+    /// The device behind the interface, `<bus address> (<driver>)`, or `None` for a virtual one.
+    #[must_use]
+    pub fn hardware(&self) -> Option<String> {
+        let device = self.sysfs().join("device");
+        let bus = std::fs::read_link(&device).ok()?;
+        let bus = bus.file_name()?.to_string_lossy().into_owned();
+        let driver = std::fs::read_link(device.join("driver"))
+            .ok()
+            .and_then(|driver| Some(driver.file_name()?.to_string_lossy().into_owned()));
+        Some(match driver {
+            Some(driver) => format!("{bus} ({driver})"),
+            None => bus,
+        })
+    }
+
+    /// Whether the interface has carrier.
+    ///
+    /// An interface whose carrier cannot be read (the kernel refuses while it is administratively
+    /// down) is treated as down: nothing should be sent on it.
+    #[must_use]
+    pub fn link(&self) -> Link {
+        match std::fs::read_to_string(self.sysfs().join("carrier")) {
+            Ok(carrier) if carrier.trim() == "1" => Link::Up,
+            _ => Link::Down,
+        }
+    }
+
     /// Create a kernel interface entry.
     #[allow(clippy::unnecessary_wraps)] // Eventually we'll do work that could return an error
     fn new(ifindex: InterfaceIndex, name: &str, interface: &Interface) -> io::Result<Self> {

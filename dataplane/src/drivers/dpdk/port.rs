@@ -43,6 +43,20 @@ fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
     rss
 }
 
+/// The device behind a port, `<bus address> (<driver>)`.
+///
+/// DPDK names a device by its bus address (with a suffix for representors); with the driver it says
+/// which NIC this is to someone looking at it from the far end of the cable.
+fn hardware(dev: &Dev<'_, Started>, name: &str) -> Option<String> {
+    match dev.info().name() {
+        Ok(device) => Some(format!("{device} ({})", dev.info().driver_name())),
+        Err(e) => {
+            warn!("port {name} would not report its device name: {e:?}");
+            None
+        }
+    }
+}
+
 /// Report carrier state separately from successful device startup.
 /// On bifurcated devices, a down kernel netdev can leave a started DPDK port without carrier.
 fn report_link(
@@ -110,6 +124,8 @@ pub(crate) struct Port<'eal> {
     /// The MTU the port settled on, which is not necessarily the one that was requested: it is
     /// clamped into the device's advertised range at configuration time.
     pub(crate) mtu: u16,
+    /// The device's bus address and driver, if DPDK would say.
+    pub(crate) hardware: Option<String>,
     /// Where injected control-plane frames are allocated from, and where received frames live.
     pub(crate) rx_pool: Pool<'eal>,
 }
@@ -239,12 +255,15 @@ impl<'eal> Port<'eal> {
 
         report_link(&dev, index, &name, if_index, mac.into(), mtu, num_workers);
 
+        let hardware = hardware(&dev, &name);
+
         Ok(Port {
             dev,
             if_index,
             name,
             mac: mac.into(),
             mtu,
+            hardware,
             rx_pool,
         })
     }

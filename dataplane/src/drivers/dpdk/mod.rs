@@ -21,8 +21,10 @@ use concurrency::thread;
 use concurrency::thread::BuilderExt;
 use dpdk::mem::Mbuf;
 use lifecycle::Subsystem;
+use lldp::Link;
 use pipeline::DynPipeline;
 use stats::PortMetrics;
+use tokio::sync::watch;
 use tracectl::trace_target;
 use tracing::{info, warn};
 
@@ -87,6 +89,15 @@ impl DriverDpdk {
             ));
         }
 
+        // Taken before the queues are dealt, which consumes the bridge's ends.
+        let mut bridge = bridge;
+        let links: Vec<(&Port<'_>, watch::Sender<Link>)> = ports
+            .iter()
+            .filter_map(|port| {
+                let link = bridge.as_deref_mut()?.take_link(&port.name)?;
+                Some((port, link))
+            })
+            .collect();
         let dealt = port::deal_queues(ports, num_workers, bridge)?;
 
         info!(
@@ -135,10 +146,42 @@ impl DriverDpdk {
             workers_subsystem,
             monitors,
             status_writer,
-            move || publish_port_counters(&port_metrics, &mut counters_unavailable),
+            move || {
+                publish_port_counters(&port_metrics, &mut counters_unavailable);
+                publish_links(&links);
+            },
         )?;
         info!("DPDK driver started successfully");
         Ok(())
+    }
+}
+
+/// Publish each port's link state where the control plane can see it.
+///
+/// Polled, because nothing in the driver asks DPDK for link-state interrupts. A second's latency is
+/// well inside what anything watching the link (LLDP's fast start, for one) cares about.
+fn publish_links(links: &[(&Port<'_>, watch::Sender<Link>)]) {
+    for (port, link) in links {
+        let now = match port.dev.link() {
+            Ok(status) if status.up => Link::Up,
+            Ok(_) => Link::Down,
+            // A link that cannot be read is treated as down: nothing should be sent on a port whose
+            // state is unknown. The change is logged below, once.
+            Err(e) => {
+                if *link.borrow() == Link::Up {
+                    warn!("port {} would not report its link state: {e:?}", port.name);
+                }
+                Link::Down
+            }
+        };
+        link.send_if_modified(|was| {
+            if *was == now {
+                return false;
+            }
+            info!("port {} link is now {now:?}", port.name);
+            *was = now;
+            true
+        });
     }
 }
 

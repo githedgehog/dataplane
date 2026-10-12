@@ -1381,6 +1381,7 @@ dependencies = [
  "dataplane-id",
  "dataplane-interface-manager",
  "dataplane-lifecycle",
+ "dataplane-lldp",
  "dataplane-lpm",
  "dataplane-mgmt",
  "dataplane-n-vm",

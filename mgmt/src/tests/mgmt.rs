@@ -504,6 +504,7 @@ pub mod test {
         let flow_table = Arc::from(FlowTable::new(16));
 
         /* build configuration of mgmt config processor */
+        let (gateway_name, named) = tokio::sync::watch::channel(None);
         let processor_config = ConfigProcessorParams {
             router_ctl,
             pipeline_data,
@@ -517,6 +518,7 @@ pub mod test {
             vpc_stats_store,
             dp_status_r,
             bmp_options: None,
+            gateway_name,
         };
 
         let rth = tokio::runtime::Handle::current();
@@ -533,6 +535,11 @@ pub mod test {
                 panic!("{e}");
             }
         }
+        assert_eq!(
+            named.borrow().as_deref(),
+            Some("test-gw"),
+            "an applied config tells its watchers the gateway's name"
+        );
 
         /* stop the router */
         debug!("Stopping the router...");
