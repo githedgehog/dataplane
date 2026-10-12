@@ -105,7 +105,7 @@ fn overlay(limits: Vec<RateLimit>) -> ValidatedOverlay {
 }
 
 fn writer(overlay: &ValidatedOverlay) -> RateLimitWriter<VpcDestination> {
-    let writer = RateLimitWriter::new(RateLimits::empty().unwrap(), NonZeroUsize::MIN);
+    let writer = RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
     writer.apply(overlay, Backend::Reference).unwrap();
     writer
 }
@@ -133,7 +133,7 @@ fn the_longest_destination_decides() {
             rate_limit("narrow", "vpc-1", "10.1.1.0/24", two_then_one()),
             rate_limit("v6", "vpc-1", "fd01::/64", two_then_one()),
         ]),
-        &RateLimits::empty().unwrap(),
+        &RateLimits::empty(),
         NonZeroUsize::MIN,
         clock::now(),
         Backend::Reference,
@@ -303,7 +303,7 @@ fn rate_limits_render_their_rules_and_counts() {
     );
     assert!(lines[4].starts_with("  red:    drop "), "{rendered}");
     assert_eq!(
-        RateLimits::empty().unwrap().to_string(),
+        RateLimits::empty().to_string(),
         "no rate limits are configured\n"
     );
 }
@@ -321,7 +321,7 @@ fn rte_acl_classifies_as_the_reference_does() {
     let build = |backend| {
         RateLimits::build(
             &config,
-            &RateLimits::empty().unwrap(),
+            &RateLimits::empty(),
             NonZeroUsize::MIN,
             clock::now(),
             backend,

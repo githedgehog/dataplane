@@ -774,6 +774,11 @@ mod test {
             (DoneReason::Filtered, Disposition::Drop, Disposition::Drop),
             (DoneReason::AclDropped, Disposition::Drop, Disposition::Drop),
             (
+                DoneReason::RateLimited,
+                Disposition::Drop,
+                Disposition::Drop,
+            ),
+            (
                 DoneReason::NatOutOfResources,
                 Disposition::Drop,
                 Disposition::Drop,

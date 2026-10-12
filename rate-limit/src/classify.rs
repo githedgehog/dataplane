@@ -48,6 +48,15 @@ pub struct VpcDestination {
 }
 
 impl VpcDestination {
+    /// A classifier that matches nothing.
+    #[must_use]
+    pub fn empty() -> VpcDestination {
+        VpcDestination {
+            v4: Table::empty(),
+            v6: Table::empty(),
+        }
+    }
+
     /// A classifier for `rules`, whose index is their place in the slice.
     ///
     /// # Errors

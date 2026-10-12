@@ -31,6 +31,7 @@ mod stage;
 #[cfg(test)]
 mod tests;
 
+pub use acl::table::Backend;
 pub use classify::{Classify, RuleIndex, VpcDestination};
 pub use counts::Counts;
 pub use rules::{RateLimitReader, RateLimitWriter, RateLimits, Rule};

@@ -548,6 +548,9 @@ pub enum CliAction {
 
     // LLDP
     ShowLldpNeighbors,
+
+    // Rate limits
+    ShowRateLimits,
 }
 impl CliAction {
     #[must_use]
