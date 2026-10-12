@@ -220,3 +220,41 @@ impl Limits {
         self.packets
     }
 }
+
+impl std::fmt::Display for Rate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/s", self.0)
+    }
+}
+
+/// `srTCM cir 1000/s cbs 1500 ebs 3000`, in tokens.
+impl std::fmt::Display for Profile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Profile::SingleRate(p) => write!(
+                f,
+                "srTCM cir {} cbs {} ebs {}",
+                p.committed_rate, p.committed_burst, p.excess_burst
+            ),
+            Profile::TwoRate(p) => write!(
+                f,
+                "trTCM cir {} cbs {} pir {} pbs {}",
+                p.committed_rate, p.committed_burst, p.peak_rate, p.peak_burst
+            ),
+        }
+    }
+}
+
+/// `bytes: <profile>; packets: <profile>`, leaving out what is not limited.
+impl std::fmt::Display for Limits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut separator = "";
+        for (unit, profile) in [("bytes", self.bytes), ("packets", self.packets)] {
+            if let Some(profile) = profile {
+                write!(f, "{separator}{unit}: {profile}")?;
+                separator = "; ";
+            }
+        }
+        Ok(())
+    }
+}

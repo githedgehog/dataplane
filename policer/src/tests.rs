@@ -479,3 +479,14 @@ fn workers_spend_each_token_once() {
     accounted += shared.tokens()[0][0];
     assert_eq!(accounted, BURST);
 }
+
+#[test]
+fn limits_render_what_they_limit() {
+    let limits = Limits::new(Some(two(1000, 1500, 2000, 3000)), Some(single(10, 5, 0))).unwrap();
+    assert_eq!(
+        limits.to_string(),
+        "bytes: trTCM cir 1000/s cbs 1500 pir 2000/s pbs 3000; packets: srTCM cir 10/s cbs 5 ebs 0"
+    );
+    let limits = Limits::new(None, Some(single(10, 5, 0))).unwrap();
+    assert_eq!(limits.to_string(), "packets: srTCM cir 10/s cbs 5 ebs 0");
+}
