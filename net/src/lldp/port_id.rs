@@ -254,6 +254,21 @@ mod contract {
     }
 }
 
+/// The identifier's value; its subtype is what kind of value it is, which the value usually shows.
+impl core::fmt::Display for PortId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PortId::InterfaceAlias(value)
+            | PortId::PortComponent(value)
+            | PortId::InterfaceName(value)
+            | PortId::AgentCircuitId(value)
+            | PortId::LocallyAssigned(value) => value.fmt(f),
+            PortId::MacAddress(mac) => mac.fmt(f),
+            PortId::NetworkAddress(address) => address.fmt(f),
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::{PortId, PortIdError, PortIdSubtype};
