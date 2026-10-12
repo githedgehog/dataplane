@@ -933,7 +933,13 @@ mod test {
 
             let (gateway_name, named) = watch::channel(None);
             let (_management, management) = watch::channel(None);
-            crate::lldp_agent::start(&handle, &shutdown.mgmt, bridge.ports(), &named, &management);
+            let _new_neighbors = crate::lldp_agent::start(
+                &handle,
+                &shutdown.mgmt,
+                bridge.ports(),
+                &named,
+                &management,
+            );
 
             ends.report(PortIdentity {
                 name: PORT_NAME.to_string(),
@@ -1039,7 +1045,14 @@ mod test {
             let (publish, mut snapshot) =
                 watch::channel(crate::lldp_agent::NeighborSnapshot::default());
             let heard = bridge.take_heard().expect("the bridge hears LLDP once");
-            crate::lldp_agent::listen(&handle, &shutdown.mgmt, heard, bridge.ports(), publish);
+            crate::lldp_agent::listen(
+                &handle,
+                &shutdown.mgmt,
+                heard,
+                bridge.ports(),
+                std::collections::HashMap::new(),
+                publish,
+            );
 
             let leaf = Advertisement::new(
                 SourceMac::new(Mac([0x02, 0, 0, 0, 0, 0x10])).unwrap(),
