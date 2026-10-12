@@ -394,8 +394,9 @@ pub(crate) struct PortQueues<'p> {
     pub(crate) pool: Pool<'p>,
     /// Where to hand a frame this port received which the kernel should see.
     ///
-    /// `None` when there is no control-plane bridge, which is every configuration that did not ask
-    /// for one -- there is then nowhere to punt to and local delivery is dropped as it always was.
+    /// `None` only without a control-plane bridge: in tests, or when building the bridge failed and
+    /// the dataplane is already shutting down. There is then nowhere to punt to and local delivery is
+    /// dropped.
     pub(crate) punt: Option<mpsc::Sender<Frame>>,
     /// Frames the kernel wants this port to transmit, on the one worker that drains them.
     pub(crate) inject: Option<mpsc::Receiver<Frame>>,
