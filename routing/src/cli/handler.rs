@@ -595,6 +595,7 @@ fn do_handle_cli_request(
         CliAction::ShowMasquerading => show_provider(request, sources.masquerade_state.as_deref()),
         CliAction::ShowPacketStats => show_provider(request, sources.pkt_stats.as_deref()),
         CliAction::ShowDriverStatus => show_provider(request, sources.driver_status.as_deref()),
+        CliAction::ShowLldpNeighbors => show_provider(request, sources.lldp_neighbors.as_deref()),
 
         /* prefetching */
         CliAction::Prefetch => prefetch(request, gwconfig, db),
