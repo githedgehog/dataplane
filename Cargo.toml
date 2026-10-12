@@ -43,6 +43,7 @@ members = [
     "net",
     "pipeline",
     "policer",
+    "rate-limit",
     "rekon",
     "routing",
     "stats",
@@ -117,6 +118,7 @@ nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
 policer = { path = "./policer", package = "dataplane-policer", features = [] }
+rate-limit = { path = "./rate-limit", package = "dataplane-rate-limit", features = [] }
 rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
 routing = { path = "./routing", package = "dataplane-routing", features = [] }
 stats = { path = "./stats", package = "dataplane-stats", features = [] }
@@ -492,6 +494,11 @@ wasm = false # miss
 package = "dataplane-policer"
 miri = true
 wasm = false # split (clock)
+
+[workspace.metadata.package.rate-limit]
+package = "dataplane-rate-limit"
+miri = false # hopeless + pointless (rte_acl)
+wasm = false # hopeless + pointless
 
 [workspace.metadata.package.routing]
 package = "dataplane-routing"
