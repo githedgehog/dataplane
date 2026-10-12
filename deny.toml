@@ -29,6 +29,10 @@ ignore = [
     # bincode is unmaintained and is used only by the routing benchmark harness.
     # Revisit this exception if it becomes a runtime dependency.
     "RUSTSEC-2025-0141",
+    # unsafe-libyaml is unmaintained but is needed by serde_yaml_ng, used to
+    # parse CRDs in k8s-intf and validator. Remove once we have migrated to a
+    # maintained YAML crate.
+    "RUSTSEC-2024-0449",
 ]
 
 [licenses]
