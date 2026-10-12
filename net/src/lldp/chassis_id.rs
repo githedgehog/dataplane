@@ -261,6 +261,21 @@ mod contract {
     }
 }
 
+/// The identifier's value; its subtype is what kind of value it is, which the value usually shows.
+impl core::fmt::Display for ChassisId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ChassisId::ChassisComponent(value)
+            | ChassisId::InterfaceAlias(value)
+            | ChassisId::PortComponent(value)
+            | ChassisId::InterfaceName(value)
+            | ChassisId::LocallyAssigned(value) => value.fmt(f),
+            ChassisId::MacAddress(mac) => mac.fmt(f),
+            ChassisId::NetworkAddress(address) => address.fmt(f),
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::{ChassisId, ChassisIdError, ChassisIdSubtype, IdOctets};

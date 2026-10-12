@@ -265,6 +265,18 @@ mod contract {
     }
 }
 
+impl core::fmt::Display for NetworkAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            NetworkAddress::Ipv4(address) => address.fmt(f),
+            NetworkAddress::Ipv6(address) => address.fmt(f),
+            NetworkAddress::Other(other) => {
+                write!(f, "family {}: {}", other.family, other.address)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::{
