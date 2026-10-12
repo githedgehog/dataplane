@@ -32,6 +32,13 @@ const REACH: &[(&str, Reach)] = &[
         "Overlay.peering_table",
         Reach::Determined("one peering per `AddPeering`, in handle order"),
     ),
+    (
+        "Overlay.rate_limits",
+        Reach::Fixed(
+            "empty: the algebra has no operation adding a rate limit yet. A rate limit depends on \
+             the VPC table alone, and `ratelimit.rs` tests that dependence directly.",
+        ),
+    ),
     ("Vpc.name", Reach::Determined("`VpcHandle::name`")),
     ("Vpc.id", Reach::Determined("`VpcHandle::id`")),
     ("Vpc.vni", Reach::Determined("`VpcHandle::vni`")),
@@ -202,9 +209,11 @@ fn survey(overlay: &Overlay, seen: &mut Observed) {
     let Overlay {
         vpc_table,
         peering_table,
+        rate_limits,
     } = overlay;
     seen.count("Overlay.vpc_table", vpc_table.len());
     seen.count("Overlay.peering_table", peering_table.len());
+    seen.count("Overlay.rate_limits", rate_limits.values().count());
 
     for vpc in vpc_table.values() {
         let Vpc {
