@@ -809,7 +809,7 @@ pub fn main() {
             config.driver.interfaces().map(|i| i.interface.clone()),
         ) {
             Ok((mut bridge, ends)) => {
-                crate::lldp_agent::start(
+                let new_neighbors = crate::lldp_agent::start(
                     &mgmt_handle,
                     &shutdown.mgmt,
                     bridge.ports(),
@@ -823,6 +823,7 @@ pub fn main() {
                         &shutdown.mgmt,
                         heard,
                         bridge.ports(),
+                        new_neighbors,
                         setup.lldp_neighbors.clone(),
                     );
                 }
