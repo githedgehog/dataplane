@@ -22,6 +22,7 @@
 //! about drivers.
 
 mod advert;
+mod neighbors;
 mod sink;
 mod timing;
 mod transmitter;
@@ -30,6 +31,7 @@ mod transmitter;
 mod tests;
 
 pub use advert::Advertisement;
+pub use neighbors::{Heard, Neighbor, Neighbors};
 pub use sink::{FrameSink, Refused};
 pub use timing::Timing;
 pub use transmitter::{Inputs, Link, transmit};
