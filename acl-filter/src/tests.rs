@@ -1000,8 +1000,8 @@ mod end_to_end {
     use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
     use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
     use nat::portfw::{PortForwarder, PortFwTableWriter};
-    use nat::static_nat::NatTablesWriter;
     use nat::static_nat::setup::build_nat_configuration;
+    use nat::static_nat::{NatTablesWriter, invalidate_stale_static_nat_flows};
     use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat, migrate_tracked_flows};
 
     use net::FlowKey;
@@ -1018,14 +1018,14 @@ mod end_to_end {
         flow_filter: FlowFilterContextWriter,
         static_nat: NatTablesWriter,
         _portfw: PortFwTableWriter,
-        _masquerade: NatAllocatorWriter,
+        masquerade: NatAllocatorWriter,
         acl: AclFilterContextWriter,
         pipeline_data: Arc<PipelineData>,
     }
 
-    // vpc1 masquerades (1.2.3.0/24 -> 5.5.5.5/32); vpc2 uses static NAT (192.168.0.0/24 <->
+    // vpc1 masquerades (1.2.3.0/24 -> 5.5.5.5/32); vpc2 uses static NAT (`vpc2_private` <->
     // 5.6.7.0/24). An ACL allows vpc1 -> vpc2 UDP with 'flow' scope, and denies by default.
-    fn build_overlay() -> ValidatedOverlay {
+    fn build_overlay(vpc2_private: &str) -> ValidatedOverlay {
         let acl = Acl::new(
             AclAction::Deny,
             vec![rule(
@@ -1041,7 +1041,7 @@ mod end_to_end {
             vec![peering(
                 "vpc1-to-vpc2",
                 ("vpc1", vec![expose_masquerade("1.2.3.0/24", "5.5.5.5/32")]),
-                ("vpc2", vec![expose_static("192.168.0.0/24", "5.6.7.0/24")]),
+                ("vpc2", vec![expose_static(vpc2_private, "5.6.7.0/24")]),
                 Some(acl),
             )],
         )
@@ -1108,7 +1108,7 @@ mod end_to_end {
             flow_filter: flow_filter_writer,
             static_nat: static_nat_writer,
             _portfw: portfw_writer,
-            _masquerade: allocator,
+            masquerade: allocator,
             acl: acl_writer,
             pipeline_data,
         };
@@ -1119,7 +1119,7 @@ mod end_to_end {
     #[tokio::test]
     #[dpdk::with_eal] // Required for flow-filter
     async fn flow_scope_end_to_end() {
-        let overlay = build_overlay();
+        let overlay = build_overlay("192.168.0.0/24");
         let (mut pipeline, _flow_table, _handles) = setup_pipeline(&overlay);
 
         // Request: 1.2.3.4:1234 -> 5.6.7.8:5678 (vpc1 -> vpc2). Allowed by the flow-scoped rule and
@@ -1277,6 +1277,11 @@ mod end_to_end {
             .static_nat
             .update_nat_tables(build_nat_configuration(overlay.vpc_table()).unwrap());
         handles.pipeline_data.open_generation(genid);
+        handles.masquerade.update_nat_allocator(
+            MasqueradeConfig::new(overlay.vpc_table()),
+            genid,
+            flow_table,
+        );
         if migrate {
             let context = handles.flow_filter.get_reader().load();
             let nat_tables_reader = handles.static_nat.get_reader();
@@ -1284,6 +1289,7 @@ mod end_to_end {
             migrate_tracked_flows(flow_table, &nat_tables, genid, |flow| {
                 context.keeps_tracked_flow(flow)
             });
+            invalidate_stale_static_nat_flows(flow_table, &nat_tables);
         }
         handles.pipeline_data.set_genid(genid);
     }
@@ -1374,6 +1380,58 @@ mod end_to_end {
 
         reconfigure(&after, &flow_table, &mut handles, 2, true);
         let reply = static_nat_request_and_reply(&mut pipeline, "192.168.1.8");
+        assert!(
+            is_allowed(&reply),
+            "the reply from the new static NAT address was dropped"
+        );
+        assert_eq!(reply.ip_source(), Some(v4("5.6.7.8").into()));
+    }
+
+    // A masqueraded request from vpc1 to 5.6.7.8, translated to `private`, and its reply
+    fn masquerade_request_and_reply(
+        pipeline: &mut DynPipeline<TestBuffer>,
+        private: &str,
+    ) -> Packet<TestBuffer> {
+        let request = packet(
+            vpcd(100),
+            None,
+            build_udp_packet(v4("1.2.3.4"), v4("5.6.7.8"), 1234, 5678),
+        );
+        let request_out = process(pipeline, request);
+        assert!(is_allowed(&request_out), "the request was dropped");
+        assert_eq!(request_out.ip_destination(), Some(v4(private).into()));
+        let masq_src_port = request_out.transport_src_port().unwrap().get();
+
+        let reply = packet(
+            vpcd(200),
+            None,
+            build_udp_packet(v4(private), v4("5.5.5.5"), 5678, masq_src_port),
+        );
+        process(pipeline, reply)
+    }
+
+    /// Masquerade does not check the static NAT end of its flows when migrating them. When the
+    /// static NAT mapping changes, the pair must not be kept: the next requests would keep it
+    /// alive, while replies come back from the new address and do not hit it.
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn a_changed_static_nat_mapping_does_not_keep_a_stale_masquerade_flow() {
+        let (mut pipeline, flow_table, mut handles) =
+            setup_pipeline(&build_overlay("192.168.0.0/24"));
+        assert!(is_allowed(&masquerade_request_and_reply(
+            &mut pipeline,
+            "192.168.0.8"
+        )));
+
+        reconfigure(
+            &build_overlay("192.168.1.0/24"),
+            &flow_table,
+            &mut handles,
+            2,
+            true,
+        );
+        let reply = masquerade_request_and_reply(&mut pipeline, "192.168.1.8");
         assert!(
             is_allowed(&reply),
             "the reply from the new static NAT address was dropped"
