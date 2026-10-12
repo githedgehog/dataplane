@@ -20,10 +20,12 @@ mod worker;
 use concurrency::sync::Arc;
 use concurrency::thread;
 use lifecycle::Subsystem;
+use lldp::Link;
 use net::buffer::test_buffer::TestBuffer;
 use net::eth::mac::SourceMac;
 use net::interface::InterfaceName;
 use pipeline::DynPipeline;
+use tokio::sync::watch;
 use tracectl::trace_target;
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
@@ -158,6 +160,7 @@ impl DriverKernel {
                         name,
                         mac,
                         mtu: kif.mtu.and_then(|mtu| u16::try_from(mtu).ok()),
+                        hardware: kif.hardware(),
                     });
                 } else {
                     warn!(
@@ -168,6 +171,17 @@ impl DriverKernel {
                 }
             }
         }
+
+        let links: Vec<(Kif, watch::Sender<Link>)> = match cp_ends.as_mut() {
+            Some(ends) => interfaces
+                .iter()
+                .filter_map(|kif| {
+                    let name = InterfaceName::try_from(kif.name.as_str()).ok()?;
+                    Some((kif.clone(), ends.take_link(&name)?))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
 
         let worker_monitors = Self::spawn_workers_scoped(
             scope,
@@ -191,9 +205,24 @@ impl DriverKernel {
             workers_subsystem,
             worker_monitors,
             status_writer,
-            || {},
+            move || publish_links(&links),
         )?;
         info!("Kernel driver started successfully");
         Ok(())
+    }
+}
+
+/// Publish each interface's link state where the control plane can see it.
+fn publish_links(links: &[(Kif, watch::Sender<Link>)]) {
+    for (kif, link) in links {
+        let now = kif.link();
+        link.send_if_modified(|was| {
+            if *was == now {
+                return false;
+            }
+            info!("interface {} link is now {now:?}", kif.name);
+            *was = now;
+            true
+        });
     }
 }
