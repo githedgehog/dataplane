@@ -578,6 +578,7 @@ fn run_dpdk_driver(
                 name: port.name.clone(),
                 mac: port.mac,
                 mtu: Some(port.mtu),
+                hardware: port.hardware.clone(),
             });
         }
     }
@@ -792,13 +793,31 @@ pub fn main() {
             false
         }
     };
+    // What LLDP needs from outside the datapath: the gateway's name, once a config has named it, and
+    // the host's management address, which only the host namespace can see.
+    let (gateway_name, gateway_named) = tokio::sync::watch::channel(None);
+    let (management_address, management_addressed) = tokio::sync::watch::channel(None);
+    shutdown.mgmt.spawn_on(
+        crate::lldp_agent::management_address(management_address, shutdown.mgmt.cancel_token()),
+        &host_handle,
+    );
+
     let (_cp_bridge, cp_ends) = if want_bridge {
         match CpBridge::create(
             &mgmt_handle,
             &shutdown.mgmt,
             config.driver.interfaces().map(|i| i.interface.clone()),
         ) {
-            Ok((bridge, ends)) => (Some(bridge), Some(ends)),
+            Ok((bridge, ends)) => {
+                crate::lldp_agent::start(
+                    &mgmt_handle,
+                    &shutdown.mgmt,
+                    bridge.ports(),
+                    &gateway_named,
+                    &management_addressed,
+                );
+                (Some(bridge), Some(ends))
+            }
             Err(e) => {
                 // Fatal, and not because the bridge is a nicety: with the NICs in a namespace of
                 // their own this is the control plane's *only* path to the wire, so the dataplane
@@ -814,6 +833,7 @@ pub fn main() {
             "The datapath shares this network namespace, so no control-plane bridge: the kernel \
              keeps the netdevs and carries the control plane itself"
         );
+        warn!("LLDP is off: without the control-plane bridge there is no way to send on the ports");
         (None, None)
     };
 
@@ -895,6 +915,7 @@ pub fn main() {
                     vpc_stats_store: setup.vpc_stats_store,
                     dp_status_r: dp_status.clone(),
                     bmp_options: bmp_client_opts,
+                    gateway_name,
                 },
             },
         );

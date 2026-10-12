@@ -46,6 +46,12 @@ impl Advertisement {
         Ok(Advertisement { source, pdu })
     }
 
+    /// The LLDPDU this advertises; its time to live is a placeholder, set per frame.
+    #[must_use]
+    pub fn lldpdu(&self) -> &Lldpdu {
+        &self.pdu
+    }
+
     /// Whether `other` advertises the same chassis and port.
     ///
     /// A neighbour keys what it has heard on these two, so changing either one is, to the neighbour,
