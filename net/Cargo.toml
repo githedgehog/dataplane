@@ -13,7 +13,7 @@ netdevsim = ["dep:id"]
 bolero = ["dep:bolero", "id?/bolero"]
 test_buffer = []
 test_meta = []
-builder = []
+builder = ["test_buffer"]
 # Check, on every serialize, that no stage changed what a transport checksum covers without folding
 # the change in or asking for a refresh. It costs a full checksum per check; for tests only.
 checksum-audit = []

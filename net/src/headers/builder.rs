@@ -69,6 +69,7 @@ use std::num::NonZero;
 use etherparse::IpNumber;
 
 use crate::checksum::Checksum;
+use crate::buffer::TestBuffer;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, Mac, SourceMac};
@@ -82,7 +83,8 @@ use crate::ip_auth::{Ipv4Auth, Ipv6Auth};
 use crate::ipv4::Ipv4;
 use crate::ipv4::Ipv4LengthError;
 use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Routing};
-use crate::parse::DeParse;
+use crate::packet::{InvalidPacket, Packet};
+use crate::parse::{DeParse, DeParseError};
 use crate::tcp::port::TcpPort;
 use crate::tcp::{Tcp, TruncatedTcp};
 #[cfg(test)]
@@ -120,6 +122,22 @@ pub enum BuildError {
     /// header.
     #[error("IPv4 total length overflow (header + payload exceeds u16): {0}")]
     Ipv4PayloadOverflow(Ipv4LengthError),
+}
+
+/// Errors that can occur when finalizing a header stack into a [`Packet`].
+#[derive(Debug, thiserror::Error)]
+pub enum BuildPacketError {
+    /// Length computation failed (see [`BuildError`]).
+    #[error(transparent)]
+    Build(#[from] BuildError),
+
+    /// The assembled headers could not be written out.
+    #[error("failed to deparse headers: {0:?}")]
+    Deparse(DeParseError<()>),
+
+    /// The written bytes did not parse back as a packet.
+    #[error("built packet does not parse")]
+    Parse(#[source] InvalidPacket<TestBuffer>),
 }
 
 /// Sub-builder for the headers embedded inside an ICMP error message.
@@ -392,6 +410,46 @@ where
         Ok(self.headers)
     }
 
+    /// Install the final layer and build a [`Packet`] with lengths and checksums set.
+    ///
+    /// Only a stack with at least one layer (so starting with `Eth`) can become a packet.
+    ///
+    /// # Errors
+    ///
+    /// See [`BuildPacketError`].
+    pub fn build_packet(self) -> Result<Packet<TestBuffer>, BuildPacketError>
+    where
+        T: Blank,
+    {
+        self.build_packet_with_payload([])
+    }
+
+    /// Like [`build_packet`](Self::build_packet), with `payload` after the headers
+    /// (for VXLAN, the inner frame).
+    ///
+    /// # Errors
+    ///
+    /// See [`BuildPacketError`].
+    pub fn build_packet_with_payload(
+        self,
+        payload: impl AsRef<[u8]>,
+    ) -> Result<Packet<TestBuffer>, BuildPacketError>
+    where
+        T: Blank,
+    {
+        let payload = payload.as_ref();
+        let headers = self.build_headers_with_payload(payload)?;
+
+        let hdr_len = usize::from(headers.size().get());
+        let mut data = vec![0u8; hdr_len + payload.len()];
+        headers
+            .deparse(&mut data[..hdr_len])
+            .map_err(BuildPacketError::Deparse)?;
+        data[hdr_len..].copy_from_slice(payload);
+
+        Packet::new(TestBuffer::from_raw_data(&data)).map_err(BuildPacketError::Parse)
+    }
+
     layer_method!(
         /// Push an `Eth` layer.
         eth, Eth
@@ -655,10 +713,6 @@ impl Install<Ipv6Auth> for Headers {
             .try_push(NetExt::Ipv6Auth(a))
             .expect("too many extension headers (exceeded MAX_NET_EXTENSIONS)");
     }
-}
-
-impl Blank for () {
-    fn blank() -> Self {}
 }
 
 impl Blank for Eth {
@@ -2330,6 +2384,92 @@ mod tests {
                 );
             },
         );
+    }
+
+    // -- build_packet tests ---------------------------------------------------
+
+    /// Recomputing checksums on a copy must not change the headers.
+    fn assert_checksums_current(packet: &Packet<TestBuffer>) {
+        use crate::headers::TryHeaders;
+        let mut recomputed = packet.deep_copy().unwrap();
+        recomputed.update_checksums();
+        assert_eq!(packet.headers(), recomputed.headers(), "stale checksum");
+    }
+
+    #[test]
+    fn build_packet_ipv4_tcp() {
+        let packet = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(10, 0, 0, 1)).unwrap());
+                ip.set_destination(Ipv4Addr::new(10, 0, 0, 2));
+            })
+            .tcp(|tcp| {
+                tcp.set_source(TcpPort::new_checked(12345).unwrap());
+                tcp.set_destination(TcpPort::new_checked(80).unwrap());
+            })
+            .build_packet()
+            .unwrap();
+
+        assert!(packet.payload().as_ref().is_empty());
+        assert_checksums_current(&packet);
+    }
+
+    #[test]
+    fn build_packet_ipv4_udp_with_payload() {
+        let payload = [0xde, 0xad, 0xbe, 0xef];
+        let packet = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .udp(|_| {})
+            .build_packet_with_payload(payload)
+            .unwrap();
+
+        assert_eq!(packet.payload().as_ref(), payload);
+        assert_checksums_current(&packet);
+    }
+
+    #[test]
+    fn build_packet_vxlan_carries_inner_frame() {
+        let inner = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .build_packet()
+            .unwrap()
+            .serialize()
+            .unwrap();
+
+        let packet = HeaderStack::new()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .udp(|_| {})
+            .vxlan(|_| {})
+            .build_packet_with_payload(inner.as_ref())
+            .unwrap();
+
+        assert_eq!(packet.payload().as_ref(), inner.as_ref());
+    }
+
+    #[test]
+    fn build_packet_icmp4_error_with_embedded() {
+        use crate::headers::TryHeaders;
+        let packet = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .icmp4(|_| {})
+            .dest_unreachable(|_| {})
+            .embedded(|inner| {
+                inner.ipv4(|_| {}).udp(
+                    UdpPort::new_checked(5000).unwrap(),
+                    UdpPort::new_checked(53).unwrap(),
+                    |_| {},
+                )
+            })
+            .build_packet()
+            .unwrap();
+
+        assert!(packet.headers().embedded_ip().is_some());
+        assert_checksums_current(&packet);
     }
 
     // -- Fuzz ValueGenerator tests -------------------------------------------
