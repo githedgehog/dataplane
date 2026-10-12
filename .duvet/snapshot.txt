@@ -1,3 +1,52 @@
+SPECIFICATION: https://www.rfc-editor.org/rfc/rfc2697
+  SECTION: [Configuration](#section-2)
+    TEXT[implementation,test]:    The CBS and the EBS and are measured in bytes.  The CBS and EBS must
+    TEXT[implementation,test]:    be configured so that at least one of them is larger than 0.
+
+  SECTION: [Metering](#section-3)
+    TEXT[implementation,test]:    The token buckets C and E are initially (at time 0) full, i.e., the
+    TEXT[implementation,test]:    token count Tc(0) = CBS and the token count Te(0) = EBS.
+    TEXT[implementation,test]: Thereafter,
+    TEXT[implementation,test]:    the token counts Tc and Te are updated CIR times per second as
+    TEXT[implementation,test]:    follows:
+    TEXT[implementation,test]:      o If Tc is less than CBS, Tc is incremented by one, else
+    TEXT[implementation,test]:      o if Te is less then EBS, Te is incremented by one, else
+    TEXT[implementation,test]:      o neither Tc nor Te is incremented.
+    TEXT[implementation,test]:    When a packet of size B bytes arrives at time t, the following
+    TEXT[implementation,test]:    happens if the srTCM is configured to operate in the Color-Blind
+    TEXT[implementation,test]:    mode:
+    TEXT[implementation,test]:      o If Tc(t)-B >= 0, the packet is green and Tc is decremented by B
+    TEXT[implementation,test]:        down to the minimum value of 0, else
+    TEXT[implementation,test]:      o if Te(t)-B >= 0, the packets is yellow and Te is decremented by B
+    TEXT[implementation,test]:        down to the minimum value of 0, else
+    TEXT[implementation,test]:      o the packet is red and neither Tc nor Te is decremented.
+    TEXT[implication]:    The actual implementation of a Meter doesn't need to be modeled
+    TEXT[implication]:    according to the above formal specification.
+
+SPECIFICATION: https://www.rfc-editor.org/rfc/rfc2698
+  SECTION: [Configuration](#section-2)
+    TEXT[implementation,test]: The PIR
+    TEXT[implementation,test]:    must be equal to or greater than the CIR.
+    TEXT[implementation]:    The PBS and the CBS and are measured in bytes and both of them must
+    TEXT[implementation]:    be configured to be greater than 0.
+
+  SECTION: [Metering](#section-3)
+    TEXT[implementation,test]:    The token buckets P and C are initially (at time 0) full, i.e., the
+    TEXT[implementation,test]:    token count Tp(0) = PBS and the token count Tc(0) = CBS.
+    TEXT[implementation,test]: Thereafter,
+    TEXT[implementation,test]:    the token count Tp is incremented by one PIR times per second up to
+    TEXT[implementation,test]:    PBS and the token count Tc is incremented by one CIR times per second
+    TEXT[implementation,test]:    up to CBS.
+    TEXT[implementation,test]:    When a packet of size B bytes arrives at time t, the following
+    TEXT[implementation,test]:    happens if the trTCM is configured to operate in the Color-Blind
+    TEXT[implementation,test]:    mode:
+    TEXT[implementation,test]:      o If Tp(t)-B < 0, the packet is red, else
+    TEXT[implementation,test]:      o if Tc(t)-B < 0, the packet is yellow and Tp is decremented by B,
+    TEXT[implementation,test]:        else
+    TEXT[implementation,test]:      o the packet is green and both Tp and Tc are decremented by B.
+    TEXT[implication]:    The actual implementation of a Meter doesn't need to be modeled
+    TEXT[implication]:    according to the above formal specification.
+
 SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
   SECTION: [Address and Port Mapping](#section-4.1)
     TEXT[!MUST,implementation,test,exception]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.

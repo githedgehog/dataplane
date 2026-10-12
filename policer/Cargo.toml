@@ -1,0 +1,19 @@
+[package]
+name = "dataplane-policer"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[features]
+loom = ["concurrency/loom"]
+shuttle = ["concurrency/shuttle"]
+shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
+
+[dependencies]
+concurrency = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+bolero = { workspace = true, features = ["std"] }
+clock = { workspace = true }
