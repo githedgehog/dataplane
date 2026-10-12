@@ -15,31 +15,24 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
-/// Records each frame with the second it was sent, counted from `start`.
+/// Records each frame with when it was sent, counted from `start`.
 struct Recorder {
     start: Instant,
-    frames: mpsc::UnboundedSender<(u64, Vec<u8>)>,
+    frames: mpsc::UnboundedSender<(Duration, Vec<u8>)>,
 }
 
 impl FrameSink for Recorder {
     fn send(&mut self, frame: Vec<u8>) -> Result<(), Refused> {
         let at = clock::now().duration_since(self.start);
-        // Frames are sent on whole seconds of virtual time; anything else is a scheduling bug.
-        assert_eq!(
-            at.subsec_nanos(),
-            0,
-            "a frame went out between seconds: {at:?}"
-        );
-        self.frames
-            .send((at.as_secs(), frame))
-            .map_err(|_| Refused::Closed)
+        self.frames.send((at, frame)).map_err(|_| Refused::Closed)
     }
 }
 
 struct Harness {
     link: watch::Sender<Link>,
+    new_neighbor: watch::Sender<()>,
     advertisement: watch::Sender<Option<Advertisement>>,
-    frames: mpsc::UnboundedReceiver<(u64, Vec<u8>)>,
+    frames: mpsc::UnboundedReceiver<(Duration, Vec<u8>)>,
     cancel: CancellationToken,
     task: tokio::task::JoinHandle<()>,
 }
@@ -50,10 +43,12 @@ impl Harness {
         let (link_tx, link_rx) = watch::channel(link);
         let (advert_tx, advert_rx) = watch::channel(advertisement);
         let (frames_tx, frames) = mpsc::unbounded_channel();
+        let (new_neighbor, new_neighbor_rx) = watch::channel(());
         let cancel = CancellationToken::new();
         let inputs = Inputs {
             link: link_rx,
             advertisement: advert_rx,
+            new_neighbor: new_neighbor_rx,
             sink: Recorder {
                 start: clock::now(),
                 frames: frames_tx,
@@ -63,6 +58,7 @@ impl Harness {
         let task = tokio::spawn(transmit(inputs, cancel.clone()));
         Harness {
             link: link_tx,
+            new_neighbor,
             advertisement: advert_tx,
             frames,
             cancel,
@@ -71,7 +67,7 @@ impl Harness {
     }
 
     /// Every frame sent so far: when, and the LLDPDU it carried.
-    fn sent(&mut self) -> Vec<(u64, Lldpdu)> {
+    fn sent(&mut self) -> Vec<(Duration, Lldpdu)> {
         let mut sent = Vec::new();
         while let Ok((at, frame)) = self.frames.try_recv() {
             sent.push((at, decode(&frame)));
@@ -105,11 +101,24 @@ fn advertisement(chassis: &str, system: &str) -> Advertisement {
     .unwrap()
 }
 
-fn times(sent: &[(u64, Lldpdu)]) -> Vec<u64> {
-    sent.iter().map(|(at, _)| *at).collect()
+/// When each frame went out, in whole seconds.
+///
+/// Every timer the transmitter sets is whole seconds from something a test did on a whole second, so a
+/// frame between seconds is a scheduling bug.
+fn times(sent: &[(Duration, Lldpdu)]) -> Vec<u64> {
+    sent.iter()
+        .map(|(at, _)| {
+            assert_eq!(
+                at.subsec_nanos(),
+                0,
+                "a frame went out between seconds: {at:?}"
+            );
+            at.as_secs()
+        })
+        .collect()
 }
 
-fn ttls(sent: &[(u64, Lldpdu)]) -> Vec<u16> {
+fn ttls(sent: &[(Duration, Lldpdu)]) -> Vec<u16> {
     sent.iter().map(|(_, pdu)| pdu.ttl().as_secs()).collect()
 }
 
@@ -180,7 +189,7 @@ fn stopping_tells_neighbours_to_forget_us() {
         (&mut port.task).await.unwrap();
         let sent = port.sent();
         let (at, shutdown) = sent.last().unwrap();
-        assert_eq!(*at, 10);
+        assert_eq!(*at, Duration::from_secs(10));
         assert_eq!(shutdown.ttl().as_secs(), 0);
         assert!(
             shutdown.optional().is_empty(),
@@ -256,5 +265,42 @@ fn a_port_that_goes_away_ends_the_transmitter() {
         drop(port.frames);
         wait(10).await;
         assert!(port.task.is_finished());
+    });
+}
+
+#[test]
+fn a_new_neighbour_restarts_the_fast_start() {
+    Paused::new().block_on(async {
+        let mut port = Harness::start(Link::Up, Some(advertisement("gw-1", "gw-1")));
+        wait(40).await;
+        port.sent();
+        port.new_neighbor.send_replace(());
+        wait(40).await;
+        // Told at once, then fast again (txFastInit 4 in all), then back to the routine interval.
+        assert_eq!(times(&port.sent()), [40, 41, 42, 43, 73]);
+    });
+}
+
+#[test]
+fn a_new_neighbour_while_fast_does_not_lengthen_the_fast_start() {
+    Paused::new().block_on(async {
+        let mut port = Harness::start(Link::Up, Some(advertisement("gw-1", "gw-1")));
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        port.new_neighbor.send_replace(());
+        wait(40).await;
+        // The newcomer is told at 1.5 s, which counts as one of the four fast sends, and the fast
+        // cadence carries on from there.
+        let at: Vec<_> = port.sent().iter().map(|(at, _)| at.as_millis()).collect();
+        assert_eq!(at, [0, 1000, 1500, 2500, 32500]);
+    });
+}
+
+#[test]
+fn a_new_neighbour_while_silent_waits_for_the_link() {
+    Paused::new().block_on(async {
+        let mut port = Harness::start(Link::Down, Some(advertisement("gw-1", "gw-1")));
+        port.new_neighbor.send_replace(());
+        wait(10).await;
+        assert_eq!(port.sent(), []);
     });
 }

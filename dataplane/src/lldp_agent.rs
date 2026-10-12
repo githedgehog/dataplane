@@ -36,6 +36,7 @@ use net::lldp::{
     SystemCapabilities, SystemCapability, Text,
 };
 use net::parse::Parse;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::num::NonZeroUsize;
@@ -50,16 +51,24 @@ const SYSTEM_DESCRIPTION: &str = concat!("Hedgehog gateway dataplane ", env!("CA
 /// Octets an Ethernet frame adds around its payload: the header and the frame check sequence.
 const ETHERNET_OVERHEAD: u16 = 14 + 4;
 
+/// Where to tell each port's transmitter that a new neighbour has appeared on it.
+pub(crate) type NewNeighbors = HashMap<InterfaceName, watch::Sender<()>>;
+
 /// Start advertising on every port in `ports`.
+///
+/// Returns where to signal each port's new neighbours, for [`listen`].
 pub(crate) fn start(
     handle: &tokio::runtime::Handle,
     mgmt: &Subsystem,
     ports: &[BridgePort],
     gateway_name: &watch::Receiver<Option<String>>,
     management: &watch::Receiver<Option<IpAddr>>,
-) {
+) -> NewNeighbors {
+    let mut new_neighbors = HashMap::with_capacity(ports.len());
     for port in ports {
         let (advertisement, advertised) = watch::channel(None);
+        let (new_neighbor, new_neighbor_rx) = watch::channel(());
+        new_neighbors.insert(port.name.clone(), new_neighbor);
         mgmt.spawn_on(
             compose(
                 port.name.clone(),
@@ -76,6 +85,7 @@ pub(crate) fn start(
                 Inputs {
                     link: port.link.clone(),
                     advertisement: advertised,
+                    new_neighbor: new_neighbor_rx,
                     sink: port.inject.clone(),
                     timing: Timing::default(),
                 },
@@ -85,6 +95,7 @@ pub(crate) fn start(
         );
     }
     debug!("LLDP: advertising on {} port(s)", ports.len());
+    new_neighbors
 }
 
 /// Keep one port's advertisement current until cancelled or an input goes away.
@@ -281,6 +292,7 @@ pub(crate) fn listen(
     mgmt: &Subsystem,
     heard: mpsc::Receiver<HeardFrame>,
     ports: &[BridgePort],
+    new_neighbors: NewNeighbors,
     publish: watch::Sender<NeighborSnapshot>,
 ) {
     // A port that goes down takes its neighbours with it (IEEE 802.1AB-2016 §9.2.7.7); one forwarder
@@ -292,7 +304,10 @@ pub(crate) fn listen(
             handle,
         );
     }
-    mgmt.spawn_on(receive(heard, down, publish, mgmt.cancel_token()), handle);
+    mgmt.spawn_on(
+        receive(heard, down, new_neighbors, publish, mgmt.cancel_token()),
+        handle,
+    );
 }
 
 /// Send `port` on `down` every time its link goes down, until either end goes away.
@@ -311,6 +326,7 @@ async fn forward_link_down(
 async fn receive(
     mut heard: mpsc::Receiver<HeardFrame>,
     mut down: mpsc::Receiver<InterfaceName>,
+    new_neighbors: NewNeighbors,
     publish: watch::Sender<NeighborSnapshot>,
     cancel: lifecycle::CancellationToken,
 ) {
@@ -320,7 +336,17 @@ async fn receive(
         let changed = tokio::select! {
             () = cancel.cancelled() => return,
             frame = heard.recv() => match frame {
-                Some(frame) => hear(&mut table, &frame),
+                Some(frame) => match hear(&mut table, &frame) {
+                    Some(lldp::Heard::New) => {
+                        // newNeighbor: the port's transmitter fast-starts so the newcomer learns
+                        // about us as quickly as we learned about it.
+                        if let Some(signal) = new_neighbors.get(&frame.port) {
+                            signal.send_replace(());
+                        }
+                        true
+                    }
+                    heard => heard.is_some_and(lldp::Heard::changed),
+                },
                 None => return,
             },
             Some(port) = down.recv() => table.forget_port(&port) > 0,
@@ -342,18 +368,18 @@ async fn receive(
     }
 }
 
-/// Record what `frame` says, returning whether the table changed.
-fn hear(table: &mut Neighbors<InterfaceName>, frame: &HeardFrame) -> bool {
+/// Record what `frame` says, returning what it did to the table, or `None` if it said nothing usable.
+fn hear(table: &mut Neighbors<InterfaceName>, frame: &HeardFrame) -> Option<lldp::Heard> {
     let Ok((mut headers, _)) = Headers::parse(&frame.frame) else {
         debug!("LLDP: a frame received on {} did not parse", frame.port);
-        return false;
+        return None;
     };
     let (Some(source), Some(lldpdu)) = (
         headers.eth().map(|eth| eth.source().inner()),
         headers.take_lldp(),
     ) else {
         debug!("LLDP: a frame received on {} carried no LLDPDU", frame.port);
-        return false;
+        return None;
     };
     let heard = table.hear(&frame.port, source, *lldpdu, clock::now());
     if heard == lldp::Heard::TooMany {
@@ -362,7 +388,7 @@ fn hear(table: &mut Neighbors<InterfaceName>, frame: &HeardFrame) -> bool {
             frame.port
         );
     }
-    heard.changed()
+    Some(heard)
 }
 
 /// `show lldp neighbors`.
@@ -494,6 +520,8 @@ mod tests {
             heard: mpsc::Sender<HeardFrame>,
             down: mpsc::Sender<InterfaceName>,
             snapshot: watch::Receiver<NeighborSnapshot>,
+            /// eth1's new-neighbour signal.
+            new_on_eth1: watch::Receiver<()>,
         }
 
         impl Listener {
@@ -501,9 +529,14 @@ mod tests {
                 let (heard, heard_rx) = mpsc::channel(8);
                 let (down, down_rx) = mpsc::channel(8);
                 let (publish, snapshot) = watch::channel(NeighborSnapshot::default());
+                let (new_neighbor, new_on_eth1) = watch::channel(());
+                let new_neighbors = [(InterfaceName::try_from("eth1").unwrap(), new_neighbor)]
+                    .into_iter()
+                    .collect();
                 tokio::spawn(receive(
                     heard_rx,
                     down_rx,
+                    new_neighbors,
                     publish,
                     lifecycle::CancellationToken::new(),
                 ));
@@ -511,6 +544,7 @@ mod tests {
                     heard,
                     down,
                     snapshot,
+                    new_on_eth1,
                 }
             }
 
@@ -580,6 +614,35 @@ mod tests {
                     .unwrap();
                 settle().await;
                 assert_eq!(listener.neighbours(), 0);
+            });
+        }
+
+        #[test]
+        fn only_a_new_neighbour_signals_the_transmitter() {
+            clock::virtual_time::Paused::new().block_on(async {
+                let mut listener = Listener::start();
+                listener
+                    .heard
+                    .send(from_leaf("eth1", "leaf-1", 120))
+                    .await
+                    .unwrap();
+                settle().await;
+                assert!(
+                    listener.new_on_eth1.has_changed().unwrap(),
+                    "a newcomer is signalled"
+                );
+                listener.new_on_eth1.mark_unchanged();
+
+                listener
+                    .heard
+                    .send(from_leaf("eth1", "leaf-1", 120))
+                    .await
+                    .unwrap();
+                settle().await;
+                assert!(
+                    !listener.new_on_eth1.has_changed().unwrap(),
+                    "a known neighbour refreshing is not"
+                );
             });
         }
     }
