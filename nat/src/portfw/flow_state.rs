@@ -181,13 +181,18 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
         debug!("Packet flow-info is not active (status:{status})");
         return None;
     }
-    let guard = flow.locked.read();
-    let Some(state) = PortFwState::try_get(&guard) else {
-        debug!("Packet flow-info does not contain port-forwarding state");
-        return None;
+    // Release the guard before logging: displaying the flow takes the lock again, and a recursive
+    // read blocks if a writer (flow migration) is waiting.
+    let state = {
+        let guard = flow.locked.read();
+        let Some(state) = PortFwState::try_get(&guard) else {
+            debug!("Packet flow-info does not contain port-forwarding state");
+            return None;
+        };
+        state.clone()
     };
     debug!("Packet hit entry with port-forwarding state: {flow}");
-    Some(state.clone())
+    Some(state)
 }
 
 /// Update the port-forwarding state of a flow entry after processing a packet.
