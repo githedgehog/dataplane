@@ -19,6 +19,8 @@ use tokio_util::sync::CancellationToken;
 struct Recorder {
     start: Instant,
     frames: mpsc::UnboundedSender<(Duration, Vec<u8>)>,
+    /// Whether the port has taken everything queued; tests hold the sender.
+    drained: watch::Receiver<bool>,
 }
 
 impl FrameSink for Recorder {
@@ -26,10 +28,15 @@ impl FrameSink for Recorder {
         let at = clock::now().duration_since(self.start);
         self.frames.send((at, frame)).map_err(|_| Refused::Closed)
     }
+
+    fn is_drained(&self) -> bool {
+        *self.drained.borrow()
+    }
 }
 
 struct Harness {
     link: watch::Sender<Link>,
+    drained: watch::Sender<bool>,
     new_neighbor: watch::Sender<()>,
     advertisement: watch::Sender<Option<Advertisement>>,
     frames: mpsc::UnboundedReceiver<(Duration, Vec<u8>)>,
@@ -44,6 +51,7 @@ impl Harness {
         let (advert_tx, advert_rx) = watch::channel(advertisement);
         let (frames_tx, frames) = mpsc::unbounded_channel();
         let (new_neighbor, new_neighbor_rx) = watch::channel(());
+        let (drained, drained_rx) = watch::channel(true);
         let cancel = CancellationToken::new();
         let inputs = Inputs {
             link: link_rx,
@@ -52,12 +60,14 @@ impl Harness {
             sink: Recorder {
                 start: clock::now(),
                 frames: frames_tx,
+                drained: drained_rx,
             },
             timing: Timing::default(),
         };
         let task = tokio::spawn(transmit(inputs, cancel.clone()));
         Harness {
             link: link_tx,
+            drained,
             new_neighbor,
             advertisement: advert_tx,
             frames,
@@ -302,5 +312,32 @@ fn a_new_neighbour_while_silent_waits_for_the_link() {
         port.new_neighbor.send_replace(());
         wait(10).await;
         assert_eq!(port.sent(), []);
+    });
+}
+
+#[test]
+fn stopping_waits_for_the_shutdown_frame_to_leave() {
+    Paused::new().block_on(async {
+        let port = Harness::start(Link::Up, Some(advertisement("gw-1", "gw-1")));
+        wait(10).await;
+        port.drained.send_replace(false);
+        port.cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!port.task.is_finished(), "stopped before the frame left");
+        port.drained.send_replace(true);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(port.task.is_finished());
+    });
+}
+
+#[test]
+fn a_shutdown_frame_that_never_leaves_does_not_hold_up_stopping() {
+    Paused::new().block_on(async {
+        let port = Harness::start(Link::Up, Some(advertisement("gw-1", "gw-1")));
+        wait(10).await;
+        port.drained.send_replace(false);
+        port.cancel.cancel();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(port.task.is_finished());
     });
 }
