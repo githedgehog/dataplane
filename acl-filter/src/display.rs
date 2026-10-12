@@ -12,7 +12,8 @@ use std::fmt::{self, Display, Write};
 
 use crate::AclFilterContext;
 use crate::PacketSummary;
-use crate::context::{AclTables, AnyTable, RuleRow};
+use crate::context::AclTables;
+use acl::table::{RuleRow, Table};
 use match_action::{Field, MatchKey, RuleFields, write_grid};
 
 impl CliSource for AclFilterContext {}
@@ -60,12 +61,12 @@ impl Display for AclTables {
 /// which half is matched on and which half is the result.
 fn fmt_table<W: Write, K: MatchKey>(
     w: &mut W,
-    table: &AnyTable<K, crate::context::LookupResult>,
+    table: &Table<K, crate::context::LookupResult>,
 ) -> fmt::Result
 where
     K::Rule: RuleFields,
 {
-    if table.len() == 0 {
+    if table.is_empty() {
         return writeln!(w, "(none)");
     }
 

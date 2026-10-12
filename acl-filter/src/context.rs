@@ -4,24 +4,17 @@
 //! Context table build (ACLs)
 
 use super::PacketSummary;
-use acl::dpdk::dyn_table::predicate_to_chunks;
-use acl::dpdk::install::install_table;
-use acl::dpdk::lookup::DpdkAclLookup;
-use acl::dpdk::rule::{AclFieldChunks, RuleSpec};
-#[cfg(test)]
-use acl::reference::table::{RefRule, ReferenceTable};
+use acl::table::build_table;
+pub(super) use acl::table::{Backend, Table};
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, ValidatedAclRule};
-use dpdk::acl::{CategoryMask, Priority};
-use lookup::Lookup;
 use lpm::prefix::with_ports::KeyPort;
 use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use match_action::{Erased, ExactSpec, FieldPredicate, MatchKey, PrefixSpec, RangeSpec};
 use net::ip::{IpAddress, NextHeader};
 use net::vxlan::Vni;
 use std::collections::HashMap;
-use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::num::NonZero;
 use tracing::error;
@@ -327,167 +320,6 @@ fn lower_rules<T: IpVersion>(rules: &[PeeringAclRule]) -> Result<Vec<LoweredRule
 /// never compiled into production builds.
 pub(super) const PRODUCTION_BACKEND: Backend = Backend::Dpdk;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Backend {
-    Dpdk,
-    #[cfg(test)]
-    Reference,
-}
-
-/// A classifier and its rules for one IP version.
-pub(super) struct AnyTable<K: MatchKey, A> {
-    classifier: Classifier<K, A>,
-    /// Typed rules in precedence order, retained because rte_acl cannot expose installed rules.
-    rules: Box<[RuleRow<K, A>]>,
-}
-
-/// A typed rule and its action, retained for display.
-pub(super) struct RuleRow<K: MatchKey, A> {
-    pub(super) rule: K::Rule,
-    pub(super) action: A,
-}
-
-/// The classifier backing a table.
-///
-/// `Empty` matches nothing -- used for the default context and any zero-rule table, so we never
-/// ask rte_acl to build an empty context. `Dpdk` is the production rte_acl classifier. `Reference`
-/// is the `cfg(test)` linear-scan oracle that drives the fast, EAL-free semantic suite.
-#[allow(clippy::large_enum_variant)] // backend reprs differ in size; boxing would add an indirection
-enum Classifier<K: MatchKey, A> {
-    Empty,
-    Dpdk(DpdkAclLookup<K, A>),
-    #[cfg(test)]
-    Reference(ReferenceTable<K, A>),
-}
-
-impl<K: MatchKey, A> AnyTable<K, A> {
-    /// A table that matches nothing.
-    fn empty() -> Self {
-        Self {
-            classifier: Classifier::Empty,
-            rules: Box::new([]),
-        }
-    }
-
-    /// Single-key lookup -- the per-packet production path (acl-filter classifies one packet at a
-    /// time rather than in batches).
-    fn lookup(&self, key: &K) -> Option<&A> {
-        match &self.classifier {
-            Classifier::Empty => None,
-            Classifier::Dpdk(table) => table.lookup(key),
-            #[cfg(test)]
-            Classifier::Reference(table) => table.lookup(key),
-        }
-    }
-
-    pub(super) fn len(&self) -> usize {
-        self.rules.len()
-    }
-
-    /// The rules this table was built from, in precedence (first-match) order.
-    pub(super) fn rules(&self) -> &[RuleRow<K, A>] {
-        &self.rules
-    }
-}
-
-impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = match self.classifier {
-            Classifier::Empty => "empty",
-            Classifier::Dpdk(_) => "dpdk",
-            #[cfg(test)]
-            Classifier::Reference(_) => "reference",
-        };
-        write!(f, "AnyTable::{kind}({} rules)", self.len())
-    }
-}
-
-// DPDK's ACL registry survives model-checker executions. Its name counter must also persist to
-// avoid reusing a live context's name.
-use concurrency::process_global::atomic::{AtomicU64, Ordering};
-
-static TABLE_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn next_in_sequence() -> u64 {
-    TABLE_SEQ.fetch_add(1, Ordering::Relaxed)
-}
-
-/// A process-unique rte_acl context name. rte_acl rejects duplicate names, and a hot-swap briefly
-/// keeps the old and new contexts alive at once, so the name must be unique across the process.
-fn table_name(base: &str) -> String {
-    format!("acl_{base}_{}", next_in_sequence())
-}
-
-/// Build one table for the selected backend from rules in precedence (insertion) order.
-fn build_table<K: MatchKey, A: Clone>(
-    backend: Backend,
-    base_name: &str,
-    rules: Vec<(K::Rule, Vec<FieldPredicate>, A)>,
-) -> Result<AnyTable<K, A>, String>
-where
-    K::Rule: Copy,
-{
-    let rows: Box<[RuleRow<K, A>]> = rules
-        .iter()
-        .map(|(rule, _, action)| RuleRow {
-            rule: *rule,
-            action: action.clone(),
-        })
-        .collect();
-
-    let classifier = match backend {
-        Backend::Dpdk => {
-            // A zero-rule table matches nothing; represent it as `Empty` rather than asking
-            // rte_acl to build an empty context.
-            if rules.is_empty() {
-                return Ok(AnyTable::empty());
-            }
-            let n = rules.len();
-            let max = NonZero::new(u32::try_from(n).unwrap_or(u32::MAX))
-                .ok_or_else(|| "zero-rule table reached the dpdk builder".to_string())?;
-            let specs = K::field_specs();
-            let mut rule_specs = Vec::with_capacity(n);
-            for (i, (_, fields, action)) in rules.into_iter().enumerate() {
-                // Positional first-match: the first matching rule wins. rte_acl returns the
-                // highest-priority match, so priority descends with insertion index (rule 0 gets
-                // the highest priority). Distinct priorities keep the outcome deterministic.
-                let priority_value = i32::try_from(n - i).map_err(|e| e.to_string())?;
-                let priority = Priority::new(priority_value).map_err(|e| e.to_string())?;
-                let chunks: Vec<AclFieldChunks> = fields
-                    .iter()
-                    .zip(specs)
-                    .map(|(pred, spec)| predicate_to_chunks(pred, spec.size))
-                    .collect();
-                let spec = RuleSpec::<K, A>::new(
-                    priority,
-                    CategoryMask::new(1).map_err(|e| e.to_string())?,
-                    chunks,
-                    action,
-                )
-                .map_err(|e| e.to_string())?;
-                rule_specs.push(spec);
-            }
-            install_table::<K, A>(&table_name(base_name), max, rule_specs)
-                .map(Classifier::Dpdk)
-                .map_err(|e| e.to_string())?
-        }
-        #[cfg(test)]
-        Backend::Reference => {
-            // The reference backend is first-match on insertion order, which is exactly the
-            // precedence we want -- no priority sort needed.
-            let rules = rules
-                .into_iter()
-                .map(|(_, fields, action)| RefRule::new(fields, action))
-                .collect();
-            Classifier::Reference(ReferenceTable::new(rules))
-        }
-    };
-    Ok(AnyTable {
-        classifier,
-        rules: rows,
-    })
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct LookupResult {
     pub(super) action: AclAction,
@@ -497,16 +329,16 @@ pub(super) struct LookupResult {
 
 #[derive(Debug)]
 pub(super) struct AclTables {
-    pub(super) v4: AnyTable<AclKey<Ipv4Addr>, LookupResult>,
-    pub(super) v6: AnyTable<AclKey<Ipv6Addr>, LookupResult>,
+    pub(super) v4: Table<AclKey<Ipv4Addr>, LookupResult>,
+    pub(super) v6: Table<AclKey<Ipv6Addr>, LookupResult>,
     pub(super) default_actions: HashMap<(Vni, Vni), AclAction>,
 }
 
 impl Default for AclTables {
     fn default() -> Self {
         Self {
-            v4: AnyTable::empty(),
-            v6: AnyTable::empty(),
+            v4: Table::empty(),
+            v6: Table::empty(),
             default_actions: HashMap::new(),
         }
     }
