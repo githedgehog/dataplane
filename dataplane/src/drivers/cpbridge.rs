@@ -21,9 +21,10 @@ use std::time::Duration;
 use concurrency::sync::Arc;
 use interface_manager::interface::{TapDevice, TapRegistry};
 use lifecycle::{CancellationToken, Subsystem};
+use lldp::Link;
 use net::eth::mac::Mac;
 use net::interface::{InterfaceIndex, InterfaceName};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
 /// One control-plane frame, copied out of (or destined for) a driver's own buffer.
@@ -61,6 +62,9 @@ pub(crate) struct PortIdentity {
     /// The MTU the port settled on, which may not be the one that was asked for. `None` if the
     /// driver could not learn it, in which case the tap keeps its own.
     pub(crate) mtu: Option<u16>,
+    /// The device behind the port, for people reading what neighbours hear about it: its bus address
+    /// and driver, as far as the driver can tell.
+    pub(crate) hardware: Option<String>,
 }
 
 /// The datapath's end of one port's bridge.
@@ -87,6 +91,7 @@ pub(crate) struct PortCpQueues {
 pub(crate) struct DatapathEnds {
     ports: HashMap<String, PortCpQueues>,
     identities: mpsc::Sender<PortIdentity>,
+    links: HashMap<String, watch::Sender<Link>>,
 }
 
 impl DatapathEnds {
@@ -96,6 +101,13 @@ impl DatapathEnds {
     /// two workers quietly sharing one injection queue.
     pub(crate) fn take(&mut self, name: &str) -> Option<PortCpQueues> {
         self.ports.remove(name)
+    }
+
+    /// Take where the driver reports the link state of the port named `name`.
+    ///
+    /// Taken for the same reason as [`DatapathEnds::take`]: one reporter per port.
+    pub(crate) fn take_link(&mut self, name: &str) -> Option<watch::Sender<Link>> {
+        self.links.remove(name)
     }
 
     /// Tell the control plane what a port turned out to be.
@@ -149,6 +161,21 @@ pub(crate) struct CpBridge {
     taps: Arc<TapRegistry>,
     /// Stops the pump tasks so that they let go of their share of the descriptors.
     cancel: CancellationToken,
+    /// What the control plane, other than the taps, may know and do about each port.
+    ports: Vec<BridgePort>,
+}
+
+/// The control plane's view of one port, for things other than the tap that want to use it.
+#[derive(Clone)]
+pub(crate) struct BridgePort {
+    /// The configured interface name.
+    pub(crate) name: InterfaceName,
+    /// Frames to transmit out of the port, sharing the tap's injection queue.
+    pub(crate) inject: mpsc::Sender<Frame>,
+    /// The port's link state, as the driver last saw it.
+    pub(crate) link: watch::Receiver<Link>,
+    /// What the port turned out to be, once the driver has reported it.
+    pub(crate) identity: watch::Receiver<Option<PortIdentity>>,
 }
 
 impl CpBridge {
@@ -184,6 +211,9 @@ impl CpBridge {
         let netlink = Arc::new(netlink);
 
         let mut ports = HashMap::with_capacity(names.len());
+        let mut links = HashMap::with_capacity(names.len());
+        let mut identities = HashMap::with_capacity(names.len());
+        let mut bridge_ports = Vec::with_capacity(names.len());
         for name in &names {
             // Created here, on this runtime, in this namespace. Everything downstream is just
             // descriptors, which travel anywhere.
@@ -199,6 +229,18 @@ impl CpBridge {
 
             let (punt_tx, punt_rx) = mpsc::channel(QUEUE_DEPTH);
             let (inject_tx, inject_rx) = mpsc::channel(QUEUE_DEPTH);
+            // Down until the driver says otherwise: nothing should be sent on a port nobody has
+            // seen come up.
+            let (link_tx, link_rx) = watch::channel(Link::Down);
+            let (identity_tx, identity_rx) = watch::channel(None);
+            links.insert(name.to_string(), link_tx);
+            identities.insert(name.to_string(), identity_tx);
+            bridge_ports.push(BridgePort {
+                name: name.clone(),
+                inject: inject_tx.clone(),
+                link: link_rx,
+                identity: identity_rx,
+            });
 
             handle.spawn(pump(tap, punt_rx, inject_tx, cancel.clone(), mgmt.clone()));
 
@@ -214,7 +256,7 @@ impl CpBridge {
         }
 
         let (identity_tx, identity_rx) = mpsc::channel(names.len().max(1));
-        handle.spawn(dress_taps(netlink, identity_rx, cancel.clone()));
+        handle.spawn(dress_taps(netlink, identity_rx, identities, cancel.clone()));
 
         info!(
             "control-plane bridge holding {} tap(s): {}",
@@ -227,12 +269,22 @@ impl CpBridge {
         );
 
         Ok((
-            CpBridge { taps, cancel },
+            CpBridge {
+                taps,
+                cancel,
+                ports: bridge_ports,
+            },
             DatapathEnds {
                 ports,
                 identities: identity_tx,
+                links,
             },
         ))
+    }
+
+    /// Every port the bridge holds, for control-plane services that transmit on them.
+    pub(crate) fn ports(&self) -> &[BridgePort] {
+        &self.ports
     }
 
     /// The taps this bridge is holding open.
@@ -348,6 +400,7 @@ async fn pump(
 async fn dress_taps(
     netlink: Arc<rtnetlink::Handle>,
     mut identities: mpsc::Receiver<PortIdentity>,
+    published: HashMap<String, watch::Sender<Option<PortIdentity>>>,
     cancel: CancellationToken,
 ) {
     loop {
@@ -358,9 +411,22 @@ async fn dress_taps(
         let Some(identity) = next else {
             break;
         };
+        if let Some(port) = published.get(&identity.name) {
+            port.send_replace(Some(identity.clone()));
+        } else {
+            warn!(
+                "the datapath reported an identity for {}, a port the bridge does not hold",
+                identity.name
+            );
+        }
 
         dress_one(&netlink, &identity).await;
     }
+    // The kernel driver reports each port once and then drops its end, but what it reported stays
+    // true. LLDP watches these identities and stops advertising when one closes, so they are held
+    // until shutdown rather than until the datapath stops talking.
+    cancel.cancelled().await;
+    drop(published);
     debug!("tap identity applier stopped");
 }
 
@@ -571,6 +637,7 @@ mod test {
                 name: PORT_NAME.to_string(),
                 mac: PORT_MAC,
                 mtu: Some(MTU),
+                hardware: None,
             });
 
             let (connection, netlink, _) = rtnetlink::new_connection().unwrap();
@@ -728,6 +795,7 @@ mod test {
                 name: PORT_NAME.to_string(),
                 mac: PORT_MAC,
                 mtu: Some(MTU),
+                hardware: None,
             });
 
             // Applying the identity is asynchronous: wait for the MAC to change.
@@ -768,6 +836,131 @@ mod test {
                 );
             }
 
+            drop(bridge);
+        });
+    }
+
+    /// The whole LLDP path short of a NIC: once the datapath reports a port up and a config names the
+    /// gateway, LLDP frames naming both arrive on the port's injection queue, and stopping retracts
+    /// them.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
+    fn a_named_gateway_advertises_on_a_port_that_is_up() {
+        use lldp::Link;
+        use net::headers::Headers;
+        use net::lldp::{ChassisId, IdOctets, Lldpdu, OptionalTlv, PortId, Text};
+        use net::parse::Parse;
+        use tokio::sync::{mpsc, watch};
+
+        const PORT_NAME: &str = "dp0";
+
+        /// The next LLDP frame on `inject`, skipping whatever the kernel sends through the tap.
+        async fn next_lldpdu(inject: &mut mpsc::Receiver<Vec<u8>>) -> Lldpdu {
+            let next = async {
+                loop {
+                    let frame = inject.recv().await.expect("the injection queue closed");
+                    if frame.get(12..14) != Some(&[0x88, 0xcc][..]) {
+                        continue;
+                    }
+                    let (mut headers, _) = Headers::parse(&frame).expect("an LLDP frame parses");
+                    return *headers
+                        .take_lldp()
+                        .expect("an LLDP frame carries an LLDPDU");
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(10), next)
+                .await
+                .expect("no LLDP frame arrived")
+        }
+
+        in_private_netns(|| async {
+            let handle = tokio::runtime::Handle::current();
+            let shutdown = Shutdown::new();
+            let name = InterfaceName::try_from(PORT_NAME).unwrap();
+            let (bridge, mut ends) =
+                CpBridge::create(&handle, &shutdown.mgmt, std::iter::once(name.clone()))
+                    .unwrap_or_else(|e| panic!("could not build the control-plane bridge: {e}"));
+            let mut inject = ends.take(PORT_NAME).unwrap().inject.take().unwrap();
+            let link = ends.take_link(PORT_NAME).unwrap();
+
+            let (gateway_name, named) = watch::channel(None);
+            let (_management, management) = watch::channel(None);
+            crate::lldp_agent::start(&handle, &shutdown.mgmt, bridge.ports(), &named, &management);
+
+            ends.report(PortIdentity {
+                name: PORT_NAME.to_string(),
+                mac: Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]),
+                mtu: Some(1500),
+                hardware: Some("0000:00:00.0 (test)".to_string()),
+            });
+            link.send_replace(Link::Up);
+            gateway_name.send_replace(Some("gw-test".to_string()));
+
+            let pdu = next_lldpdu(&mut inject).await;
+            assert_eq!(
+                *pdu.chassis_id(),
+                ChassisId::LocallyAssigned(IdOctets::new(b"gw-test").unwrap())
+            );
+            assert_eq!(
+                *pdu.port_id(),
+                PortId::InterfaceName(IdOctets::new(PORT_NAME.as_bytes()).unwrap())
+            );
+            assert_eq!(pdu.ttl().as_secs(), 121);
+            assert!(pdu.optional().contains(&OptionalTlv::PortDescription(
+                Text::new(b"0000:00:00.0 (test)").unwrap()
+            )));
+            assert!(
+                pdu.optional()
+                    .contains(&OptionalTlv::SystemName(Text::new(b"gw-test").unwrap()))
+            );
+
+            shutdown.mgmt.cancel_token().cancel();
+            loop {
+                if next_lldpdu(&mut inject).await.ttl().is_shutdown() {
+                    break;
+                }
+            }
+            drop(bridge);
+        });
+    }
+
+    /// The kernel driver reports each port once and drops its end when it has finished starting.
+    /// What it reported has to stay published: LLDP stops advertising on a port whose identity
+    /// closes, which is how a gateway in vlab came to send nothing at all.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
+    fn a_reported_identity_outlives_the_datapath_end() {
+        const PORT_NAME: &str = "dp0";
+
+        in_private_netns(|| async {
+            let handle = tokio::runtime::Handle::current();
+            let shutdown = Shutdown::new();
+            let name = InterfaceName::try_from(PORT_NAME).unwrap();
+            let (bridge, ends) =
+                CpBridge::create(&handle, &shutdown.mgmt, std::iter::once(name.clone()))
+                    .unwrap_or_else(|e| panic!("could not build the control-plane bridge: {e}"));
+            let mut identity = bridge.ports()[0].identity.clone();
+
+            ends.report(PortIdentity {
+                name: PORT_NAME.to_string(),
+                mac: Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]),
+                mtu: Some(1500),
+                hardware: None,
+            });
+            drop(ends);
+
+            tokio::time::timeout(Duration::from_secs(10), identity.wait_for(Option::is_some))
+                .await
+                .expect("the reported identity was never published")
+                .expect("the identity closed before it was published");
+            // Long enough for the applier to notice that the datapath's end is gone.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(
+                identity.has_changed().is_ok(),
+                "the identity closed when the datapath dropped its end"
+            );
+
+            shutdown.mgmt.cancel_token().cancel();
             drop(bridge);
         });
     }
