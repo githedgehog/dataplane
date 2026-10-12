@@ -26,6 +26,14 @@ pub trait FrameSink: Send {
     ///
     /// Refuses the frame if the queue is full or the port is gone.
     fn send(&mut self, frame: Vec<u8>) -> Result<(), Refused>;
+
+    /// Whether every frame queued so far has been taken for transmission.
+    ///
+    /// A stopping transmitter waits on this (briefly) so that its shutdown frame is not lost with the
+    /// queue. A sink that cannot tell says it is drained.
+    fn is_drained(&self) -> bool {
+        true
+    }
 }
 
 impl FrameSink for mpsc::Sender<Vec<u8>> {
@@ -34,5 +42,9 @@ impl FrameSink for mpsc::Sender<Vec<u8>> {
             mpsc::error::TrySendError::Full(_) => Refused::Full,
             mpsc::error::TrySendError::Closed(_) => Refused::Closed,
         })
+    }
+
+    fn is_drained(&self) -> bool {
+        self.capacity() == self.max_capacity()
     }
 }

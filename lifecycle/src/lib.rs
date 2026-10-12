@@ -172,6 +172,9 @@ pub mod default_deadlines {
     pub const ROUTER: Duration = Duration::from_secs(5);
     /// Drain mgmt's tasks (config processor, status updater, watcher).
     pub const MGMT: Duration = Duration::from_secs(5);
+    /// Drain protocols that speak through the datapath; short, since all they have left to do is
+    /// queue a parting frame and see it leave.
+    pub const PROTOCOLS: Duration = Duration::from_secs(1);
     /// Drain metrics; short — a stuck scrape is fine to abandon.
     pub const METRICS: Duration = Duration::from_secs(2);
     /// Hard process-wide ceiling. Independent of the sum above.
@@ -185,6 +188,11 @@ pub struct Shutdown {
     /// [`Subsystem::report_fatal`].
     pub root: CancellationToken,
     fatal: Arc<AtomicBool>,
+    /// Control-plane protocols that send through the datapath (LLDP).
+    ///
+    /// Drained before the workers, so that what they say on the way out (an LLDP shutdown frame) still
+    /// has a datapath to leave by.
+    pub protocols: Subsystem,
     /// Data-plane workers.
     pub workers: Subsystem,
     /// Routing/control I/O.
@@ -203,6 +211,7 @@ impl Shutdown {
         let root = CancellationToken::new();
         let fatal = Arc::new(AtomicBool::new(false));
         Self {
+            protocols: Subsystem::with_fatal("protocols", root.clone(), fatal.clone()),
             workers: Subsystem::with_fatal("workers", root.clone(), fatal.clone()),
             router: Subsystem::with_fatal("router", root.clone(), fatal.clone()),
             mgmt: Subsystem::with_fatal("mgmt", root.clone(), fatal.clone()),
@@ -225,10 +234,12 @@ impl Shutdown {
         self.fatal.load(Ordering::Relaxed)
     }
 
-    /// Drain in order: workers, router, metrics, mgmt. Workers stop
-    /// touching packets before the control plane goes away. Subsystems
-    /// that miss their deadline are logged and abandoned.
+    /// Drain in order: protocols, workers, router, metrics, mgmt.
+    /// Protocols that send through the datapath say goodbye while it still runs; workers then stop
+    /// touching packets before the control plane goes away. Subsystems that miss their deadline are
+    /// logged and abandoned.
     pub async fn drain_in_order(&self) {
+        Self::drain_one(&self.protocols, default_deadlines::PROTOCOLS).await;
         Self::drain_one(&self.workers, default_deadlines::WORKERS).await;
         Self::drain_one(&self.router, default_deadlines::ROUTER).await;
         Self::drain_one(&self.metrics, default_deadlines::METRICS).await;
@@ -579,6 +590,7 @@ mod tests {
         let shutdown = Shutdown::new();
         let handle = tokio::runtime::Handle::current();
         for sub in [
+            &shutdown.protocols,
             &shutdown.workers,
             &shutdown.router,
             &shutdown.mgmt,
@@ -588,9 +600,30 @@ mod tests {
             sub.spawn_on(async move { cancel.cancelled().await }, &handle);
         }
         shutdown.drain_in_order().await;
+        assert!(shutdown.protocols.is_cancelled());
         assert!(shutdown.workers.is_cancelled());
         assert!(shutdown.router.is_cancelled());
         assert!(shutdown.mgmt.is_cancelled());
         assert!(shutdown.metrics.is_cancelled());
+    }
+
+    /// A protocol's parting words need running workers to carry them.
+    #[tokio::test]
+    async fn protocols_finish_before_the_workers_are_cancelled() {
+        let shutdown = Shutdown::new();
+        let handle = tokio::runtime::Handle::current();
+        let cancel = shutdown.protocols.cancel_token();
+        let workers = shutdown.workers.clone();
+        let saw_workers_running = shutdown.protocols.spawn_on(
+            async move {
+                cancel.cancelled().await;
+                // Still running while the protocol says goodbye, however long that takes.
+                tokio::task::yield_now().await;
+                !workers.is_cancelled()
+            },
+            &handle,
+        );
+        shutdown.drain_in_order().await;
+        assert!(saw_workers_running.await.unwrap());
     }
 }

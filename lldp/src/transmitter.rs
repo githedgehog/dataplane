@@ -249,6 +249,25 @@ impl<S: FrameSink> Io<S> {
     }
 }
 
+/// How long a stopping transmitter waits for its shutdown frame to leave.
+const FLUSH_DEADLINE: Duration = Duration::from_millis(500);
+/// How often it looks.
+const FLUSH_POLL: Duration = Duration::from_millis(5);
+
+impl<S: FrameSink> Io<S> {
+    /// Wait, briefly, until the sink has taken everything queued.
+    async fn flush(&self) {
+        let deadline = clock::now() + FLUSH_DEADLINE;
+        while !self.sink.is_drained() {
+            if clock::now() >= deadline {
+                warn!("LLDP: the shutdown frame did not leave before the deadline");
+                return;
+            }
+            tokio::time::sleep(FLUSH_POLL).await;
+        }
+    }
+}
+
 async fn new_neighbor(
     signal: Option<&mut watch::Receiver<()>>,
 ) -> Result<(), watch::error::RecvError> {
@@ -344,7 +363,14 @@ impl<S: FrameSink> Io<S> {
     async fn advertising_step(&mut self, current: &mut Advertising, interval: Duration) -> Next {
         let credit_back = current.owed.then(|| self.credit.next_at());
         match self.next_event(Some(current.next), credit_back).await {
-            Event::Cancelled | Event::AdvertisementGone => {
+            Event::Cancelled => {
+                // The dataplane is stopping: the frame has to leave before the datapath does.
+                if self.send(current.advertisement.shutdown_frame()) {
+                    self.flush().await;
+                }
+                Next::Done
+            }
+            Event::AdvertisementGone => {
                 self.send(current.advertisement.shutdown_frame());
                 Next::Done
             }
