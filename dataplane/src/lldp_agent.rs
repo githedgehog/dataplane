@@ -25,17 +25,23 @@
 //! from startup, and it does not change when a configuration arrives, since neighbours key on it;
 //! the k8s name, the one a person will recognise, is the system name.
 
-use crate::drivers::cpbridge::{BridgePort, PortIdentity};
+use crate::drivers::cpbridge::{BridgePort, HeardFrame, PortIdentity};
+use common::cliprovider::{CliDataProvider, Heading};
 use lifecycle::Subsystem;
-use lldp::{Advertisement, Inputs, Timing, transmit};
+use lldp::{Advertisement, Inputs, Link, Neighbor, Neighbors, Timing, transmit};
+use net::headers::Headers;
 use net::interface::InterfaceName;
 use net::lldp::{
     ChassisId, Dot3Tlv, IdOctets, InterfaceNumber, InterfaceNumbering, ManagementAddress,
     NetworkAddress, ObjectIdentifier, OptionalTlv, OrganizationallySpecific, PortId,
     SystemCapabilities, SystemCapability, Text,
 };
+use net::parse::Parse;
+use std::fmt::Write as _;
 use std::net::IpAddr;
+use std::num::NonZeroUsize;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tracing::{debug, warn};
 
@@ -272,6 +278,158 @@ pub(crate) async fn management_address(
     }
 }
 
+/// How many neighbours one port may have. A point-to-point link has one.
+const MAX_NEIGHBORS_PER_PORT: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+
+/// Every neighbour heard, with the port it was heard on.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NeighborSnapshot(Vec<(InterfaceName, Neighbor)>);
+
+impl NeighborSnapshot {
+    /// How many neighbours are known.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+/// Keep the neighbour table from what arrives on the ports, publishing it on every change.
+pub(crate) fn listen(
+    handle: &tokio::runtime::Handle,
+    mgmt: &Subsystem,
+    heard: mpsc::Receiver<HeardFrame>,
+    ports: &[BridgePort],
+    publish: watch::Sender<NeighborSnapshot>,
+) {
+    // A port that goes down takes its neighbours with it (IEEE 802.1AB-2016 §9.2.7.7); one forwarder
+    // per port turns its link state into events the table can wait on alongside everything else.
+    let (down_tx, down) = mpsc::channel(ports.len().max(1));
+    for port in ports {
+        mgmt.spawn_on(
+            forward_link_down(port.name.clone(), port.link.clone(), down_tx.clone()),
+            handle,
+        );
+    }
+    mgmt.spawn_on(receive(heard, down, publish, mgmt.cancel_token()), handle);
+}
+
+/// Send `port` on `down` every time its link goes down, until either end goes away.
+async fn forward_link_down(
+    port: InterfaceName,
+    mut link: watch::Receiver<Link>,
+    down: mpsc::Sender<InterfaceName>,
+) {
+    while link.changed().await.is_ok() {
+        if *link.borrow_and_update() == Link::Down && down.send(port.clone()).await.is_err() {
+            return;
+        }
+    }
+}
+
+async fn receive(
+    mut heard: mpsc::Receiver<HeardFrame>,
+    mut down: mpsc::Receiver<InterfaceName>,
+    publish: watch::Sender<NeighborSnapshot>,
+    cancel: lifecycle::CancellationToken,
+) {
+    let mut table = Neighbors::new(MAX_NEIGHBORS_PER_PORT);
+    loop {
+        let expiry = table.next_expiry();
+        let changed = tokio::select! {
+            () = cancel.cancelled() => return,
+            frame = heard.recv() => match frame {
+                Some(frame) => hear(&mut table, &frame),
+                None => return,
+            },
+            Some(port) = down.recv() => table.forget_port(&port) > 0,
+            () = async {
+                match expiry {
+                    Some(at) => tokio::time::sleep_until(at.into()).await,
+                    None => std::future::pending().await,
+                }
+            } => table.expire(clock::now()) > 0,
+        };
+        if changed {
+            publish.send_replace(NeighborSnapshot(
+                table
+                    .iter()
+                    .map(|(port, neighbor)| (port.clone(), neighbor.clone()))
+                    .collect(),
+            ));
+        }
+    }
+}
+
+/// Record what `frame` says, returning whether what `show lldp neighbors` displays changed.
+fn hear(table: &mut Neighbors<InterfaceName>, frame: &HeardFrame) -> bool {
+    let Ok((mut headers, _)) = Headers::parse(&frame.frame) else {
+        debug!("LLDP: a frame received on {} did not parse", frame.port);
+        return false;
+    };
+    let (Some(source), Some(lldpdu)) = (
+        headers.eth().map(|eth| eth.source().inner()),
+        headers.take_lldp(),
+    ) else {
+        debug!("LLDP: a frame received on {} carried no LLDPDU", frame.port);
+        return false;
+    };
+    let heard = table.hear(&frame.port, source, *lldpdu, clock::now());
+    if heard == lldp::Heard::TooMany {
+        warn!(
+            "LLDP: ignoring a new neighbour on {}, which already has {MAX_NEIGHBORS_PER_PORT}",
+            frame.port
+        );
+    }
+    // A refresh changes only when the neighbour expires, but that is shown too.
+    heard != lldp::Heard::TooMany
+}
+
+/// `show lldp neighbors`.
+pub(crate) struct NeighborsCli(pub(crate) watch::Receiver<NeighborSnapshot>);
+
+impl CliDataProvider for NeighborsCli {
+    fn provide(&self) -> String {
+        let snapshot = self.0.borrow();
+        let mut rows: Vec<_> = snapshot.0.iter().collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        let now = clock::now();
+        let mut out = String::new();
+        let _ = write!(out, "{}", Heading("LLDP neighbors"));
+        let _ = writeln!(
+            out,
+            " {:<16} {:<24} {:<20} {:<24} {:<16} {:>9}",
+            "port", "chassis", "remote port", "system name", "management", "expires"
+        );
+        for (port, neighbor) in rows {
+            let pdu = &neighbor.lldpdu;
+            let system_name = pdu.optional().iter().find_map(|tlv| match tlv {
+                net::lldp::OptionalTlv::SystemName(name) => Some(name.to_string()),
+                _ => None,
+            });
+            let management = pdu.optional().iter().find_map(|tlv| match tlv {
+                net::lldp::OptionalTlv::ManagementAddress(address) => {
+                    Some(address.address().to_string())
+                }
+                _ => None,
+            });
+            let _ = writeln!(
+                out,
+                " {:<16} {:<24} {:<20} {:<24} {:<16} {:>8}s",
+                port.to_string(),
+                pdu.chassis_id().to_string(),
+                pdu.port_id().to_string(),
+                system_name.as_deref().unwrap_or("-"),
+                management.as_deref().unwrap_or("-"),
+                neighbor.expires.saturating_duration_since(now).as_secs(),
+            );
+        }
+        if snapshot.0.is_empty() {
+            let _ = writeln!(out, " (none)");
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{advertise, text};
@@ -363,5 +521,156 @@ mod tests {
                 .iter()
                 .any(|tlv| matches!(tlv, OptionalTlv::ManagementAddress(_)))
         );
+    }
+
+    mod receiving {
+        use super::super::{HeardFrame, NeighborSnapshot, NeighborsCli, receive};
+        use common::cliprovider::CliDataProvider;
+        use lldp::Advertisement;
+        use net::eth::mac::{Mac, SourceMac};
+        use net::interface::InterfaceName;
+        use net::lldp::{ChassisId, IdOctets, OptionalTlv, PortId, Text, TimeToLive};
+        use std::time::Duration;
+        use tokio::sync::{mpsc, watch};
+
+        /// A frame from switch `leaf`, as it arrives on one of our ports.
+        fn from_leaf(port: &str, leaf: &str, ttl: u16) -> HeardFrame {
+            let advertisement = Advertisement::new(
+                SourceMac::new(Mac([0x02, 0, 0, 0, 0, 0x10])).unwrap(),
+                ChassisId::LocallyAssigned(IdOctets::new(leaf.as_bytes()).unwrap()),
+                PortId::InterfaceName(IdOctets::new(b"Ethernet8").unwrap()),
+                [OptionalTlv::SystemName(Text::new(leaf.as_bytes()).unwrap())],
+            )
+            .unwrap();
+            HeardFrame {
+                port: InterfaceName::try_from(port).unwrap(),
+                frame: advertisement.frame(TimeToLive::new(ttl)),
+            }
+        }
+
+        struct Listener {
+            heard: mpsc::Sender<HeardFrame>,
+            down: mpsc::Sender<InterfaceName>,
+            snapshot: watch::Receiver<NeighborSnapshot>,
+        }
+
+        impl Listener {
+            fn start() -> Listener {
+                let (heard, heard_rx) = mpsc::channel(8);
+                let (down, down_rx) = mpsc::channel(8);
+                let (publish, snapshot) = watch::channel(NeighborSnapshot::default());
+                tokio::spawn(receive(
+                    heard_rx,
+                    down_rx,
+                    publish,
+                    lifecycle::CancellationToken::new(),
+                ));
+                Listener {
+                    heard,
+                    down,
+                    snapshot,
+                }
+            }
+
+            fn neighbours(&self) -> usize {
+                self.snapshot.borrow().0.len()
+            }
+        }
+
+        async fn settle() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        #[test]
+        fn a_neighbour_is_learned_shown_and_forgotten_when_its_ttl_runs_out() {
+            clock::virtual_time::Paused::new().block_on(async {
+                let listener = Listener::start();
+                listener
+                    .heard
+                    .send(from_leaf("eth1", "leaf-1", 10))
+                    .await
+                    .unwrap();
+                settle().await;
+                assert_eq!(listener.neighbours(), 1);
+
+                let shown = NeighborsCli(listener.snapshot.clone()).provide();
+                for expected in ["eth1", "leaf-1", "Ethernet8"] {
+                    assert!(
+                        shown.contains(expected),
+                        "{expected} missing from:\n{shown}"
+                    );
+                }
+
+                tokio::time::sleep(Duration::from_secs(11)).await;
+                assert_eq!(listener.neighbours(), 0, "the neighbour outlived its TTL");
+            });
+        }
+
+        /// `show lldp neighbors` reads its expiry from the snapshot, so a neighbour that keeps
+        /// advertising has to move it. A switch sending every 5 s with a 20 s TTL used to show
+        /// 0 s for as long as it stayed.
+        #[test]
+        fn a_refresh_moves_the_expiry_that_is_shown() {
+            clock::virtual_time::Paused::new().block_on(async {
+                let listener = Listener::start();
+                listener
+                    .heard
+                    .send(from_leaf("eth1", "leaf-1", 20))
+                    .await
+                    .unwrap();
+                settle().await;
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                listener
+                    .heard
+                    .send(from_leaf("eth1", "leaf-1", 20))
+                    .await
+                    .unwrap();
+                settle().await;
+
+                let left = listener.snapshot.borrow().0[0]
+                    .1
+                    .expires
+                    .saturating_duration_since(clock::now());
+                assert!(
+                    left > Duration::from_secs(15),
+                    "the snapshot still expires {left:?} from now, as of the first frame"
+                );
+            });
+        }
+
+        #[test]
+        fn a_shutdown_frame_or_a_downed_link_forgets_at_once() {
+            clock::virtual_time::Paused::new().block_on(async {
+                let listener = Listener::start();
+                listener
+                    .heard
+                    .send(from_leaf("eth1", "leaf-1", 120))
+                    .await
+                    .unwrap();
+                listener
+                    .heard
+                    .send(from_leaf("eth2", "leaf-2", 120))
+                    .await
+                    .unwrap();
+                settle().await;
+                assert_eq!(listener.neighbours(), 2);
+
+                listener
+                    .heard
+                    .send(from_leaf("eth1", "leaf-1", 0))
+                    .await
+                    .unwrap();
+                settle().await;
+                assert_eq!(listener.neighbours(), 1);
+
+                listener
+                    .down
+                    .send(InterfaceName::try_from("eth2").unwrap())
+                    .await
+                    .unwrap();
+                settle().await;
+                assert_eq!(listener.neighbours(), 0);
+            });
+        }
     }
 }

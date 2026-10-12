@@ -53,6 +53,8 @@ pub(crate) struct InternalSetup {
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
     pub portfw_w: PortFwTableWriter,
+    /// Where the LLDP agent publishes its neighbours for the CLI.
+    pub lldp_neighbors: tokio::sync::watch::Sender<crate::lldp_agent::NeighborSnapshot>,
 }
 
 /// Shared inputs for building a separate pipeline on each worker thread.
@@ -179,6 +181,8 @@ pub(crate) fn start_router(
     let pdata = Arc::from(PipelineData::new(0));
     let pkt_stats = Arc::from(PacketStats::new());
     let capture = CaptureController::new();
+    let (lldp_neighbors, lldp_heard) =
+        tokio::sync::watch::channel(crate::lldp_agent::NeighborSnapshot::default());
 
     // collect readers and the like for cli
     let cli_sources = CliSources {
@@ -193,6 +197,7 @@ pub(crate) fn start_router(
             capture.clone(),
             capture_dir.map(std::path::PathBuf::from),
         )),
+        lldp_neighbors: Some(Box::new(crate::lldp_agent::NeighborsCli(lldp_heard))),
     };
 
     // create router
@@ -229,5 +234,6 @@ pub(crate) fn start_router(
         stats,
         vpc_stats_store,
         portfw_w,
+        lldp_neighbors,
     })
 }
