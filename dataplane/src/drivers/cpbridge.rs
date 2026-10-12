@@ -197,6 +197,7 @@ pub(crate) fn disposition(done: Option<DoneReason>, addressed_to_us: bool) -> Di
             | DoneReason::VxlanEncapFailure
             | DoneReason::Filtered
             | DoneReason::AclDropped
+            | DoneReason::RateLimited
             | DoneReason::NatOutOfResources
             | DoneReason::FlowCapacityExceeded
             | DoneReason::NatUnsupportedProto
