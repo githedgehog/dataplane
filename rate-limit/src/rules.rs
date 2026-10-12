@@ -121,15 +121,12 @@ impl<C> RateLimits<C> {
 
 impl RateLimits<VpcDestination> {
     /// No rules at all.
-    ///
-    /// # Errors
-    ///
-    /// Fails if even an empty classifier cannot be built.
-    pub fn empty() -> Result<Self, ConfigError> {
-        Ok(RateLimits {
-            classifier: VpcDestination::new(&[], Backend::Dpdk)?,
+    #[must_use]
+    pub fn empty() -> Self {
+        RateLimits {
+            classifier: VpcDestination::empty(),
             rules: Box::new([]),
-        })
+        }
     }
 
     /// The rate limits `overlay` configures, keeping the meters and counts of any rule `previous`
@@ -178,6 +175,15 @@ impl RateLimits<VpcDestination> {
 pub struct RateLimitWriter<C> {
     slot: Arc<Slot<RateLimits<C>>>,
     workers: NonZeroUsize,
+}
+
+impl<C> Clone for RateLimitWriter<C> {
+    fn clone(&self) -> Self {
+        RateLimitWriter {
+            slot: Arc::clone(&self.slot),
+            workers: self.workers,
+        }
+    }
 }
 
 impl<C> RateLimitWriter<C> {

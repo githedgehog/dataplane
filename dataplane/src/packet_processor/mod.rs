@@ -19,6 +19,8 @@ use concurrency::sync::Arc;
 use acl_filter::{AclFilter, AclFilterContextReaderFactory, AclFilterContextWriter};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterContextReaderFactory, FlowFilterContextWriter};
+use rate_limit::{RateLimitReader, RateLimitWriter, RateLimiter, RateLimits, VpcDestination};
+use std::num::NonZeroUsize;
 
 use nat::masquerade::{NatAllocatorReaderFactory, NatAllocatorWriter};
 use nat::portfw::{PortForwarder, PortFwTableReaderFactory, PortFwTableWriter};
@@ -50,6 +52,7 @@ pub(crate) struct InternalSetup {
     pub natallocatorw: NatAllocatorWriter,
     pub flow_filter_writer: FlowFilterContextWriter,
     pub aclfiltertablesw: AclFilterContextWriter,
+    pub rate_limits: RateLimitWriter<VpcDestination>,
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
     pub portfw_w: PortFwTableWriter,
@@ -67,6 +70,7 @@ pub(crate) struct PipelineIngredients {
     natallocator_factory: NatAllocatorReaderFactory,
     flow_filter_reader_factory: FlowFilterContextReaderFactory,
     aclfiltertablesr_factory: AclFilterContextReaderFactory,
+    rate_limits: RateLimitReader<VpcDestination>,
     portfw_factory: PortFwTableReaderFactory,
     stats_w: PacketStatsWriter,
     pkt_stats: Arc<PacketStats>,
@@ -111,6 +115,7 @@ impl PipelineIngredients {
             let flow_filter =
                 FlowFilter::new("flow-filter", self.flow_filter_reader_factory.handle());
             let acl_filter = AclFilter::new("acl-filter", self.aclfiltertablesr_factory.handle());
+            let rate_limiter = RateLimiter::new(self.rate_limits.clone());
             let icmp_error_handler = IcmpErrorHandler::new(self.flow_table.clone());
             let flow_lookup = FlowLookup::new("flow-lookup", self.flow_table.clone());
             let portfw = PortForwarder::new(
@@ -137,6 +142,9 @@ impl PipelineIngredients {
                 .add_stage(flow_lookup)
                 .add_stage(flow_filter)
                 .add_stage(acl_filter)
+                // After the ACLs, so that denied packets are not charged; before NAT, so that rate
+                // limits see destinations as the source VPC addresses them.
+                .add_stage(rate_limiter)
                 .add_stage(static_nat)
                 .add_stage(portfw)
                 .add_stage(masquerade)
@@ -156,6 +164,7 @@ pub(crate) fn start_router(
     router: &lifecycle::Subsystem,
     params: RouterParams,
     driver_status: DriverStatusReader,
+    workers: NonZeroUsize,
 ) -> Result<InternalSetup, RouterError> {
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
     let vpc_stats_store: Arc<VpcStatsStore> = VpcStatsStore::new();
@@ -171,6 +180,7 @@ pub(crate) fn start_router(
     let flow_filter_reader_factory = flow_filter_writer.get_reader_factory();
     let aclfiltertablesw = AclFilterContextWriter::new();
     let aclfiltertablesr_factory = aclfiltertablesw.get_reader_factory();
+    let rate_limits = RateLimitWriter::new(RateLimits::empty(), workers);
     let nattablesw = NatTablesWriter::new();
     let natallocatorw = NatAllocatorWriter::new();
     let nattabler_factory = nattablesw.get_reader_factory();
@@ -197,6 +207,7 @@ pub(crate) fn start_router(
             args::DEFAULT_CAPTURE_DIR,
         )),
         lldp_neighbors: Some(Box::new(crate::lldp_agent::NeighborsCli(lldp_heard))),
+        rate_limits: Some(Box::new(rate_limits.reader())),
     };
 
     // create router
@@ -214,6 +225,7 @@ pub(crate) fn start_router(
         natallocator_factory,
         flow_filter_reader_factory,
         aclfiltertablesr_factory,
+        rate_limits: rate_limits.reader(),
         portfw_factory,
         stats_w,
         pkt_stats,
@@ -230,6 +242,7 @@ pub(crate) fn start_router(
         natallocatorw,
         flow_filter_writer,
         aclfiltertablesw,
+        rate_limits,
         stats,
         vpc_stats_store,
         portfw_w,
