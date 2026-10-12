@@ -328,6 +328,14 @@ fn cmd_show_packet_stats() -> Node {
     root
 }
 
+fn cmd_show_lldp() -> Node {
+    let mut root = Node::new("lldp");
+    root += Node::new("neighbors")
+        .desc("Show what the gateway's LLDP neighbours advertise")
+        .action(CliAction::ShowLldpNeighbors);
+    root
+}
+
 fn cmd_show_capture() -> Node {
     Node::new("capture")
         .desc("Show the running or most recent packet capture")
@@ -365,6 +373,7 @@ fn cmd_show() -> Node {
     root += cmd_show_packet_stats();
     root += cmd_show_driver_status();
     root += cmd_show_capture();
+    root += cmd_show_lldp();
     root += cmd_show_tech();
     root
 }
