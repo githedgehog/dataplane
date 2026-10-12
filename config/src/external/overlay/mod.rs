@@ -8,6 +8,7 @@ pub mod acl;
 pub mod algebra;
 #[cfg(test)]
 mod completeness;
+pub mod ratelimit;
 pub mod tests;
 pub mod validation_tests;
 pub mod vpc;
@@ -15,6 +16,7 @@ pub mod vpcpeering;
 pub mod vpcrouting;
 
 use crate::{ConfigError, ConfigResult};
+use ratelimit::{RateLimitTable, ValidatedRateLimits};
 use tracing::{debug, error};
 use vpc::{ValidatedVpcTable, VpcTable};
 use vpcpeering::{VpcManifest, VpcPeeringTable};
@@ -23,6 +25,7 @@ use vpcpeering::{VpcManifest, VpcPeeringTable};
 pub struct Overlay {
     pub vpc_table: VpcTable,
     pub peering_table: VpcPeeringTable,
+    pub rate_limits: RateLimitTable,
 }
 
 impl Overlay {
@@ -31,6 +34,16 @@ impl Overlay {
         Self {
             vpc_table,
             peering_table,
+            rate_limits: RateLimitTable::default(),
+        }
+    }
+
+    /// The same overlay, with `rate_limits`.
+    #[must_use]
+    pub fn with_rate_limits(self, rate_limits: RateLimitTable) -> Self {
+        Self {
+            rate_limits,
+            ..self
         }
     }
 
@@ -70,7 +83,12 @@ impl Overlay {
             .collect_peerings(&self.peering_table)
             .validate()?;
 
-        let validated_overlay = ValidatedOverlay { vpc_table };
+        let rate_limits = self.rate_limits.validate(&vpc_table)?;
+
+        let validated_overlay = ValidatedOverlay {
+            vpc_table,
+            rate_limits,
+        };
 
         let peering_table = &self.peering_table;
         debug!("Overlay configuration is VALID:\n{validated_overlay}\n{peering_table}");
@@ -81,11 +99,17 @@ impl Overlay {
 #[derive(Debug, Default)]
 pub struct ValidatedOverlay {
     vpc_table: ValidatedVpcTable,
+    rate_limits: ValidatedRateLimits,
 }
 
 impl ValidatedOverlay {
     #[must_use]
     pub fn vpc_table(&self) -> &ValidatedVpcTable {
         &self.vpc_table
+    }
+
+    #[must_use]
+    pub fn rate_limits(&self) -> &ValidatedRateLimits {
+        &self.rate_limits
     }
 }

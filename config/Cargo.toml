@@ -17,6 +17,7 @@ k8s-intf = { workspace = true }
 lpm = { workspace = true }
 match-action = { workspace = true }
 net = { workspace = true }
+policer = { workspace = true }
 
 # external
 arc-swap = { workspace = true }

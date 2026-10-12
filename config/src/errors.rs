@@ -76,6 +76,13 @@ pub enum ConfigError {
     SpecialUsePrefix(Prefix, &'static str),
     #[error("Invalid ACL configuration: {0}")]
     InvalidAcl(String),
+    // Rate limits
+    #[error("A rate limit with name '{0}' already exists")]
+    DuplicateRateLimit(String),
+    #[error("Rate limit '{limit}' refers to non-existent VPC '{vpc}'")]
+    RateLimitNoSuchVpc { limit: String, vpc: String },
+    #[error("Rate limits '{0}' and '{1}' meter the same VPC and destination")]
+    RateLimitsOverlap(String, String),
     // NAT-specific
     #[error(
         "Mismatched sizes for static NAT: the exposed prefixes and the range they translate to \
