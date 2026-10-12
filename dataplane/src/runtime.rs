@@ -809,9 +809,11 @@ pub fn main() {
             config.driver.interfaces().map(|i| i.interface.clone()),
         ) {
             Ok((mut bridge, ends)) => {
+                // Under `protocols`, which stops before the workers, so the shutdown frames LLDP sends
+                // on the way out still have a datapath to leave by.
                 let new_neighbors = crate::lldp_agent::start(
                     &mgmt_handle,
-                    &shutdown.mgmt,
+                    &shutdown.protocols,
                     bridge.ports(),
                     &gwname,
                     &gateway_named,
@@ -820,7 +822,7 @@ pub fn main() {
                 if let Some(heard) = bridge.take_heard() {
                     crate::lldp_agent::listen(
                         &mgmt_handle,
-                        &shutdown.mgmt,
+                        &shutdown.protocols,
                         heard,
                         bridge.ports(),
                         new_neighbors,
