@@ -545,6 +545,9 @@ pub enum CliAction {
     CaptureStart,
     CaptureStop,
     ShowCapture,
+
+    // LLDP
+    ShowLldpNeighbors,
 }
 impl CliAction {
     #[must_use]

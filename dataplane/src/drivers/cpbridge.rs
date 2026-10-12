@@ -48,6 +48,20 @@ const READ_ERRORS_BEFORE_FATAL: u32 = 100;
 /// How long to wait before retrying a failed tap read.
 const READ_RETRY: Duration = Duration::from_millis(10);
 
+/// How many received LLDP frames may wait for the LLDP agent, across all ports.
+///
+/// A neighbour sends one every thirty seconds or so, so this is generous; past it frames are dropped
+/// and counted, and the neighbour's next frame makes up for them.
+const HEARD_QUEUE_DEPTH: usize = 64;
+
+/// An LLDP frame received on a port, on its way to the LLDP agent.
+pub(crate) struct HeardFrame {
+    /// The port it arrived on.
+    pub(crate) port: InterfaceName,
+    /// The whole frame, Ethernet header included.
+    pub(crate) frame: Frame,
+}
+
 /// What a port turns out to be once it is up.
 ///
 /// The datapath learns this and the control plane needs it: a tap whose MAC does not match its
@@ -163,6 +177,8 @@ pub(crate) struct CpBridge {
     cancel: CancellationToken,
     /// What the control plane, other than the taps, may know and do about each port.
     ports: Vec<BridgePort>,
+    /// LLDP frames received on any port, until the LLDP agent takes them.
+    heard: Option<mpsc::Receiver<HeardFrame>>,
 }
 
 /// The control plane's view of one port, for things other than the tap that want to use it.
@@ -214,6 +230,7 @@ impl CpBridge {
         let mut links = HashMap::with_capacity(names.len());
         let mut identities = HashMap::with_capacity(names.len());
         let mut bridge_ports = Vec::with_capacity(names.len());
+        let (heard_tx, heard_rx) = mpsc::channel(HEARD_QUEUE_DEPTH);
         for name in &names {
             // Created here, on this runtime, in this namespace. Everything downstream is just
             // descriptors, which travel anywhere.
@@ -242,7 +259,14 @@ impl CpBridge {
                 identity: identity_rx,
             });
 
-            handle.spawn(pump(tap, punt_rx, inject_tx, cancel.clone(), mgmt.clone()));
+            handle.spawn(pump(
+                tap,
+                punt_rx,
+                inject_tx,
+                heard_tx.clone(),
+                cancel.clone(),
+                mgmt.clone(),
+            ));
 
             debug!("tap {name} is interface index {index}");
             ports.insert(
@@ -273,6 +297,7 @@ impl CpBridge {
                 taps,
                 cancel,
                 ports: bridge_ports,
+                heard: Some(heard_rx),
             },
             DatapathEnds {
                 ports,
@@ -285,6 +310,11 @@ impl CpBridge {
     /// Every port the bridge holds, for control-plane services that transmit on them.
     pub(crate) fn ports(&self) -> &[BridgePort] {
         &self.ports
+    }
+
+    /// Take the LLDP frames received on the bridge's ports. There is one taker.
+    pub(crate) fn take_heard(&mut self) -> Option<mpsc::Receiver<HeardFrame>> {
+        self.heard.take()
     }
 
     /// The taps this bridge is holding open.
@@ -321,6 +351,7 @@ async fn pump(
     tap: Arc<TapDevice>,
     mut punt: mpsc::Receiver<Frame>,
     inject: mpsc::Sender<Frame>,
+    heard: mpsc::Sender<HeardFrame>,
     cancel: CancellationToken,
     mgmt: Subsystem,
 ) {
@@ -329,6 +360,7 @@ async fn pump(
     let mut punt_write_errors: u64 = 0;
     let mut inject_drops: u64 = 0;
     let mut read_errors: u32 = 0;
+    let mut heard_drops: u64 = 0;
 
     loop {
         tokio::select! {
@@ -379,6 +411,17 @@ async fn pump(
                     debug!("nothing is punting to {name} any more; stopping its pump");
                     break;
                 };
+                // LLDP is the dataplane's own business; the kernel gets a copy as well, which costs
+                // nothing and keeps a capture on the tap honest.
+                if is_lldp(&frame) {
+                    let copy = HeardFrame { port: name.clone(), frame: frame.clone() };
+                    if heard.try_send(copy).is_err() {
+                        heard_drops += 1;
+                        if heard_drops.is_power_of_two() {
+                            warn!("dropped {heard_drops} LLDP frame(s) received on {name}: the LLDP agent is not keeping up");
+                        }
+                    }
+                }
                 if let Err(e) = tap.write(&frame).await {
                     punt_write_errors += 1;
                     if punt_write_errors.is_power_of_two() {
@@ -390,6 +433,11 @@ async fn pump(
     }
 
     debug!("control-plane pump for {name} stopped");
+}
+
+/// Whether `frame` is an untagged LLDP frame.
+fn is_lldp(frame: &[u8]) -> bool {
+    frame.get(12..14) == Some(&net::lldp::ETHTYPE.as_u16().to_be_bytes()[..])
 }
 
 /// Give each tap the MAC and MTU of the port it stands for, and bring it up.
@@ -961,6 +1009,62 @@ mod test {
             );
 
             shutdown.mgmt.cancel_token().cancel();
+            drop(bridge);
+        });
+    }
+
+    /// The receive half of LLDP against real taps: a neighbour's frame that the datapath punts reaches
+    /// the neighbour table, and the port going down forgets it.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
+    fn a_punted_lldp_frame_teaches_the_neighbour_table() {
+        use lldp::{Advertisement, Link};
+        use net::eth::mac::SourceMac;
+        use net::lldp::{ChassisId, IdOctets, PortId, TimeToLive};
+        use tokio::sync::watch;
+
+        const PORT_NAME: &str = "dp0";
+
+        in_private_netns(|| async {
+            let handle = tokio::runtime::Handle::current();
+            let shutdown = Shutdown::new();
+            let name = InterfaceName::try_from(PORT_NAME).unwrap();
+            let (mut bridge, mut ends) =
+                CpBridge::create(&handle, &shutdown.mgmt, std::iter::once(name.clone()))
+                    .unwrap_or_else(|e| panic!("could not build the control-plane bridge: {e}"));
+            let queues = ends.take(PORT_NAME).unwrap();
+            let link = ends.take_link(PORT_NAME).unwrap();
+            link.send_replace(Link::Up);
+
+            let (publish, mut snapshot) =
+                watch::channel(crate::lldp_agent::NeighborSnapshot::default());
+            let heard = bridge.take_heard().expect("the bridge hears LLDP once");
+            crate::lldp_agent::listen(&handle, &shutdown.mgmt, heard, bridge.ports(), publish);
+
+            let leaf = Advertisement::new(
+                SourceMac::new(Mac([0x02, 0, 0, 0, 0, 0x10])).unwrap(),
+                ChassisId::LocallyAssigned(IdOctets::new(b"leaf-1").unwrap()),
+                PortId::InterfaceName(IdOctets::new(b"Ethernet8").unwrap()),
+                [],
+            )
+            .unwrap();
+            queues
+                .punt
+                .send(leaf.frame(TimeToLive::new(120)))
+                .await
+                .unwrap();
+
+            let within = Duration::from_secs(10);
+            tokio::time::timeout(within, snapshot.wait_for(|s| s.len() == 1))
+                .await
+                .expect("the neighbour was never learned")
+                .unwrap();
+
+            link.send_replace(Link::Down);
+            tokio::time::timeout(within, snapshot.wait_for(|s| s.len() == 0))
+                .await
+                .expect("a downed port kept its neighbour")
+                .unwrap();
             drop(bridge);
         });
     }

@@ -394,4 +394,29 @@ mod test {
         let packet = ingress(ip_packet_to(Mac([0x02, 0, 0, 0, 0, 0x99])));
         assert_eq!(packet.get_done(), Some(DoneReason::MacNotForUs));
     }
+
+    /// An LLDP frame from a neighbour goes to the control plane, where the LLDP agent hears it.
+    #[test]
+    fn an_lldp_frame_reaches_the_control_plane() {
+        use net::eth::mac::Mac as M;
+        use net::headers::TryHeaders;
+        use net::lldp::{ChassisId, IdOctets, PortId, TimeToLive};
+
+        let advertisement = lldp::Advertisement::new(
+            SourceMac::new(M([0x02, 0, 0, 0, 0, 0x10])).expect("a valid source mac"),
+            ChassisId::LocallyAssigned(IdOctets::new(b"leaf-1").expect("a valid id")),
+            PortId::InterfaceName(IdOctets::new(b"Ethernet8").expect("a valid id")),
+            [],
+        )
+        .expect("a small advertisement fits");
+        let frame = advertisement.frame(TimeToLive::new(120));
+        let mut packet = Packet::new(TestBuffer::from_raw_data(&frame)).expect("LLDP parses");
+        assert!(
+            packet.headers().lldp().is_some(),
+            "the parser decodes the LLDPDU"
+        );
+        packet.meta_mut().iif = Some(ifindex());
+        let packet = ingress(packet);
+        assert_eq!(packet.get_done(), Some(DoneReason::Local));
+    }
 }
