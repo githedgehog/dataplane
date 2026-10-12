@@ -500,6 +500,28 @@ fn outdated_flow_is_invalidated() {
     assert_eq!(flow.status(), FlowStatus::Cancelled);
 }
 
+// A masqueraded flow created when the destination did not require static NAT: its reverse key
+// does not match the replies of the new configuration.
+#[test]
+fn outdated_masquerade_flow_with_new_static_nat_requirement_is_invalidated() {
+    let (mut flow_filter, _) = make_flow_filter(static_nat_plus_masquerade_context());
+    // Advance the configuration generation so the flow (genid 0) is outdated.
+    set_genid(&mut flow_filter, 5);
+
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("20.0.0.5"), 1234, 5678),
+    );
+    // The flow carries masquerade state, but no static NAT requirement.
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    let out = run(&mut flow_filter, p);
+
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert!(out.meta().requires_masquerade());
+    assert!(out.meta().requires_static_nat_dst());
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
 // -------------------------------------------------------------------------------------------------
 // More NAT flags, protocols and batching
 
@@ -1264,19 +1286,19 @@ struct InvalidationCase {
 
 // The specification: a flow is invalidated iff it comes from a DIFFERENT config generation
 // (older or newer -- only an equal genid is trusted) AND the filter can prove it stale: the
-// destination changed, a stateful-NAT requirement appeared or disappeared, or the route no longer
-// needs state at all. A route without masquerade or port forwarding still needs state if it
-// requires flow tracking and the flow is tracked, as long as the static NAT requirement did not
-// change. Anything else is deferred to the stateful NFs, which own the state's validity.
+// destination changed, a stateful-NAT or static NAT requirement appeared or disappeared, or the
+// route no longer needs state at all. A route without masquerade or port forwarding still needs
+// state if it requires flow tracking and the flow is tracked. Anything else is deferred to the
+// stateful NFs, which own the state's validity.
 fn expected_invalidation(case: &InvalidationCase) -> bool {
     if !case.has_flow || matches!(case.genid, GenidRel::Same) {
         return false;
     }
-    let still_tracked =
-        case.meta_tracking && case.flow_tracking && case.meta_static_nat == case.flow_static_nat;
+    let still_tracked = case.meta_tracking && case.flow_tracking;
     !case.flow_dst_matches
         || case.meta_masquerade != case.flow_masquerade
         || case.meta_port_forwarding != case.flow_port_forwarding
+        || case.meta_static_nat != case.flow_static_nat
         || (!case.meta_masquerade && !case.meta_port_forwarding && !still_tracked)
 }
 
