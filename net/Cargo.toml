@@ -13,7 +13,7 @@ netdevsim = []
 bolero = ["dep:bolero", "id/bolero"]
 test_buffer = []
 test_meta = []
-builder = []
+builder = ["test_buffer"]
 
 [target.'cfg(unix)'.dependencies]
 atomic-instant-full = { workspace = true }
