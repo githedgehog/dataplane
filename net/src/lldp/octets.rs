@@ -3,7 +3,7 @@
 
 //! Length bounded octet strings.
 
-use core::fmt::{Debug, Formatter};
+use core::fmt::{Debug, Display, Formatter};
 use core::str::Utf8Error;
 
 /// An octet string of between `MIN` and `MAX` octets inclusive.
@@ -182,9 +182,43 @@ mod contract {
     }
 }
 
+/// As text if the octets are printable UTF-8, as colon-separated hex otherwise.
+///
+/// LLDP carries both: names that are meant to be read and identifiers that are not, often under the
+/// same TLV type, so the octets decide.
+impl<const MIN: usize, const MAX: usize> Display for Octets<MIN, MAX> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        if let Ok(text) = self.as_str()
+            && !text.chars().any(char::is_control)
+        {
+            return f.write_str(text);
+        }
+        for (i, octet) in self.as_bytes().iter().enumerate() {
+            if i > 0 {
+                f.write_str(":")?;
+            }
+            write!(f, "{octet:02x}")?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::{Octets, OctetsError};
+
+    #[test]
+    fn octets_show_as_text_when_they_are_text_and_as_hex_otherwise() {
+        let show = |bytes: &[u8]| Octets::<0, 8>::new(bytes).unwrap().to_string();
+        assert_eq!(show(b"swp1"), "swp1");
+        assert_eq!(show(&[0x00, 0x1b, 0xff]), "00:1b:ff");
+        assert_eq!(
+            show(b"a\nb"),
+            "61:0a:62",
+            "control characters are not shown as text"
+        );
+        assert_eq!(show(&[0xc3]), "c3", "invalid UTF-8 is not shown as text");
+    }
 
     #[test]
     fn under_length_is_rejected() {
