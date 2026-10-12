@@ -48,6 +48,60 @@ fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
     rss
 }
 
+/// The device behind a port, `<bus address> (<driver>)`.
+///
+/// DPDK names a device by its bus address (with a suffix for representors); with the driver it says
+/// which NIC this is to someone looking at it from the far end of the cable.
+fn hardware(dev: &Dev<'_, Started>, name: &str) -> Option<String> {
+    match dev.info().name() {
+        Ok(device) => Some(format!("{device} ({})", dev.info().driver_name())),
+        Err(e) => {
+            warn!("port {name} would not report its device name: {e:?}");
+            None
+        }
+    }
+}
+
+/// Create the pool a port's receive queues allocate from, sized for every worker's ring.
+fn new_rx_pool<'eal>(
+    eal: &'eal Eal,
+    index: dpdk::dev::DevIndex,
+    name: &str,
+    rx_descriptors: u16,
+    num_workers: u16,
+) -> Result<Pool<'eal>, DriverError> {
+    // Checked: `/rxd` times the worker count can pass `u32` for absurd worker counts, and a
+    // wrapped product would make a uselessly small pool rather than an error.
+    let pool_mbufs = POOL_MBUFS_PER_RX_DESCRIPTOR
+        .checked_mul(u32::from(rx_descriptors))
+        .and_then(|n| n.checked_mul(u32::from(num_workers)))
+        .ok_or_else(|| {
+            DriverError::PortSetup(format!(
+                "port {index} ({name}): {rx_descriptors} rx descriptors for each of \
+                 {num_workers} workers needs more mbufs than one pool can hold"
+            ))
+        })?;
+    let params = PoolParams {
+        size: pool_mbufs,
+        ..Default::default()
+    };
+    let pool_mib = u64::from(pool_mbufs)
+        * (u64::from(params.data_size) + u64::from(params.private_size) + MBUF_HEADER_BYTES)
+        / (1 << 20);
+    eal.mem
+        .new_pkt_pool(PoolConfig::new(format!("rx_{index}"), params).map_err(|e| {
+            DriverError::PortSetup(format!("invalid rx pool config for port {index}: {e:?}"))
+        })?)
+        .map_err(|e| {
+            DriverError::PortSetup(format!(
+                "failed to create the rx pool for port {index} ({name}): {e:?}. It holds \
+                 {pool_mbufs} mbufs (about {pool_mib} MiB of hugepages), sized as \
+                 {POOL_MBUFS_PER_RX_DESCRIPTOR} per rx descriptor x {rx_descriptors} \
+                 descriptors x {num_workers} workers; lower /rxd or reserve more hugepages"
+            ))
+        })
+}
+
 /// How often [`report_links`] re-reads link state while waiting for carrier.
 const LINK_POLL: Duration = Duration::from_millis(100);
 
@@ -171,6 +225,8 @@ pub(crate) struct Port<'eal> {
     /// The MTU the port settled on, which is not necessarily the one that was requested: it is
     /// clamped into the device's advertised range at configuration time.
     pub(crate) mtu: u16,
+    /// The device's bus address and driver, if DPDK would say.
+    pub(crate) hardware: Option<String>,
     /// Where injected control-plane frames are allocated from, and where received frames live.
     pub(crate) rx_pool: Pool<'eal>,
 }
@@ -226,37 +282,7 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
-        // Checked: `/rxd` times the worker count can pass `u32` for absurd worker counts, and a
-        // wrapped product would make a uselessly small pool rather than an error.
-        let pool_mbufs = POOL_MBUFS_PER_RX_DESCRIPTOR
-            .checked_mul(u32::from(rx_descriptors))
-            .and_then(|n| n.checked_mul(u32::from(num_workers)))
-            .ok_or_else(|| {
-                DriverError::PortSetup(format!(
-                    "port {index} ({name}): {rx_descriptors} rx descriptors for each of \
-                     {num_workers} workers needs more mbufs than one pool can hold"
-                ))
-            })?;
-        let params = PoolParams {
-            size: pool_mbufs,
-            ..Default::default()
-        };
-        let pool_mib = u64::from(pool_mbufs)
-            * (u64::from(params.data_size) + u64::from(params.private_size) + MBUF_HEADER_BYTES)
-            / (1 << 20);
-        let rx_pool = eal
-            .mem
-            .new_pkt_pool(PoolConfig::new(format!("rx_{index}"), params).map_err(|e| {
-                DriverError::PortSetup(format!("invalid rx pool config for port {index}: {e:?}"))
-            })?)
-            .map_err(|e| {
-                DriverError::PortSetup(format!(
-                    "failed to create the rx pool for port {index} ({name}): {e:?}. It holds \
-                     {pool_mbufs} mbufs (about {pool_mib} MiB of hugepages), sized as \
-                     {POOL_MBUFS_PER_RX_DESCRIPTOR} per rx descriptor x {rx_descriptors} \
-                     descriptors x {num_workers} workers; lower /rxd or reserve more hugepages"
-                ))
-            })?;
+        let rx_pool = new_rx_pool(eal, index, &name, rx_descriptors, num_workers)?;
 
         for queue in 0..num_workers {
             dev.new_rx_queue(RxQueueConfig {
@@ -306,12 +332,15 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
+        let hardware = hardware(&dev, &name);
+
         Ok(Port {
             dev,
             if_index,
             name,
             mac: mac.into(),
             mtu,
+            hardware,
             rx_pool,
         })
     }
