@@ -55,7 +55,8 @@ impl Advertisement {
     }
 
     /// The frame that advertises this, valid for `ttl`.
-    pub(crate) fn frame(&self, ttl: TimeToLive) -> Vec<u8> {
+    #[must_use]
+    pub fn frame(&self, ttl: TimeToLive) -> Vec<u8> {
         let mut pdu = self.pdu.clone();
         pdu.set_ttl(ttl);
         self.frame_of(&pdu)
