@@ -4,6 +4,7 @@
 //! Static NAT implementation
 
 mod flow_data;
+mod flows;
 pub(crate) mod fuzz;
 pub mod natrw;
 pub mod nf;
@@ -13,6 +14,7 @@ pub(crate) mod test;
 
 // re-exports
 pub(crate) use flow_data::StaticNatFlowData;
+pub use flows::invalidate_stale_static_nat_flows;
 pub use natrw::NatTablesReaderFactory;
 pub(crate) use nf::translate_flow_key;
 pub use nf::{NatTablesWriter, StaticNat};

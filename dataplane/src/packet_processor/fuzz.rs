@@ -23,6 +23,7 @@ use flow_filter::{
 use lpm::prefix::Prefix;
 use nat::masquerade::{MasqueradeConfig, NatAllocatorReaderFactory, NatAllocatorWriter};
 use nat::portfw::{PortForwarder, PortFwTableReaderFactory, PortFwTableWriter};
+use nat::static_nat::invalidate_stale_static_nat_flows;
 use nat::static_nat::setup::build_nat_configuration;
 use nat::static_nat::{NatTablesReaderFactory, NatTablesWriter};
 use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat, migrate_tracked_flows};
@@ -263,6 +264,7 @@ impl Fleet {
                 self.genid.get(),
                 |flow| context.keeps_tracked_flow(flow),
             );
+            invalidate_stale_static_nat_flows(&self.blueprint.flow_table, &nat_tables);
         }
         if doing(Enact::PublishGeneration) {
             self.blueprint.pipeline.set_genid(self.genid.get());

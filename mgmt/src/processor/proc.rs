@@ -28,6 +28,7 @@ use nat::migrate_tracked_flows;
 use nat::portfw::PortFwTableWriter;
 use nat::portfw::build_port_forwarding_configuration;
 use nat::static_nat::NatTablesWriter;
+use nat::static_nat::invalidate_stale_static_nat_flows;
 use nat::static_nat::setup::build_nat_configuration;
 use pipeline::PipelineData;
 
@@ -552,7 +553,8 @@ fn precheck_port_forwarding_config(vpc_table: &ValidatedVpcTable) -> ConfigResul
 }
 
 /// Move the flows tracked without NAT to generation `genid`, if the new flow-filter context still
-/// accepts them, or invalidate them otherwise
+/// accepts them, or invalidate them otherwise. Also invalidate the flows of masquerade or port
+/// forwarding whose static NAT end no longer matches the new static NAT tables.
 fn apply_forced_flow_tracking_config(
     flow_table: &FlowTable,
     flow_filter_writer: &FlowFilterContextWriter,
@@ -569,6 +571,7 @@ fn apply_forced_flow_tracking_config(
         context.keeps_tracked_flow(flow)
     });
     debug!("Successfully migrated tracked flows");
+    invalidate_stale_static_nat_flows(flow_table, &nat_tables);
 }
 
 fn apply_port_forwarding_config(
