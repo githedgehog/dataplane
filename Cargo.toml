@@ -243,7 +243,7 @@ thread_local = { version = "1.1.10", default-features = false, features = [] }
 # and the real dataplane.  Keep it global.
 tokio = { version = "1.53.2", default-features = false, features = ["parking_lot"] }
 tokio-stream = { version = "0.1.19", default-features = false, features = [] }
-tokio-util = { version = "0.7.19", default-features = false, features = [] }
+tokio-util = { version = "0.7.20", default-features = false, features = [] }
 tokio-vsock = { version = "0.7.2", default-features = false, features = [] }
 tonic ={ version = "0.14.6", default-features = false, features = [] }
 tracing = { version = "0.1.44", default-features = false, features = ["release_max_level_debug"] }
