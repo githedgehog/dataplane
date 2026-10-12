@@ -19,6 +19,8 @@ fn main() {
 #[cfg(not(feature = "loom"))]
 mod drivers;
 #[cfg(not(feature = "loom"))]
+mod lldp_agent;
+#[cfg(not(feature = "loom"))]
 mod packet_processor;
 #[cfg(not(feature = "loom"))]
 mod runtime;

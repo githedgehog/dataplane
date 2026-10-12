@@ -110,6 +110,10 @@ pub struct ConfigProcessorParams {
 
     // BMP options to inject into InternalConfig
     pub bmp_options: Option<BmpOptions>,
+
+    /// The gateway's name, as of the last config applied: what this gateway calls itself to its
+    /// neighbours. `None` until a config naming it has been applied.
+    pub gateway_name: tokio::sync::watch::Sender<Option<String>>,
 }
 
 impl ConfigProcessor {
@@ -183,11 +187,30 @@ impl ConfigProcessor {
         let result = self.apply_gw_config(config.clone()).await;
         self.update_history(&config, &result, false).await;
         if result.is_ok() {
+            self.publish_gateway_name(&config);
             self.config_db.store(config);
         } else {
             self.rollback().await;
         }
         result
+    }
+
+    /// Tell whoever is watching the name of the gateway an applied config describes.
+    ///
+    /// The blank config names nothing, so it leaves the last name in place.
+    fn publish_gateway_name(&self, config: &ValidatedGwConfig) {
+        let name = config.external().gwname();
+        if name.is_empty() {
+            return;
+        }
+        self.proc_params.gateway_name.send_if_modified(|current| {
+            if current.as_deref() == Some(name) {
+                return false;
+            }
+            info!("this gateway is named {name}");
+            *current = Some(name.to_owned());
+            true
+        });
     }
 
     /// Attempt to apply the previously applied config.
@@ -197,6 +220,9 @@ impl ConfigProcessor {
         info!("Rolling back to config with genid {}...", active.genid());
         let result = self.apply_gw_config(active.clone()).await.map(drop);
         self.update_history(&active, &result, true).await;
+        if result.is_ok() {
+            self.publish_gateway_name(&active);
+        }
         match &result {
             Ok(_) => debug!("Successfully rolled back to config {active_genid}"),
             Err(e) => error!("Rolling back to config {active_genid} failed: {e}"),
