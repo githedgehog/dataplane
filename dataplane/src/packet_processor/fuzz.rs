@@ -3176,6 +3176,40 @@ mod generated {
         super::assert_within_budget("generated::Generated", &Generated);
     }
 
+    // A flow-scoped guard is legal only on a peering that opens from one side, and Sequence rarely
+    // draws it. Set it on half the configurations that admit it, on a peering with no guard yet.
+    struct FlowGuarded;
+
+    impl ValueGenerator for FlowGuarded {
+        type Output = (Vec<Op>, Vec<Vary>, Vec<Poll>);
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let (mut ops, vary, schedule) = Generated.generate(driver)?;
+            if driver.produce::<bool>()? {
+                let draft = Sequence::fold(&ops);
+                let willing: Vec<Op> = draft
+                    .peerings()
+                    .filter(|(_, spec)| spec.guard() == Guard::Open)
+                    .map(|(peering, _)| Op::SetGuard {
+                        peering,
+                        guard: Guard::PermitFlow,
+                    })
+                    .filter(|op| op.applicable(&draft))
+                    .collect();
+                if !willing.is_empty() {
+                    let index = usize::from(driver.produce::<u8>()?) % willing.len();
+                    ops.extend(willing.get(index).copied());
+                }
+            }
+            Some((ops, vary, schedule))
+        }
+    }
+
+    #[test]
+    fn the_flow_guarded_generator_fits_the_input_budget() {
+        super::assert_within_budget("generated::FlowGuarded", &FlowGuarded);
+    }
+
     fn carried_counting<'a>(
         draft: &'a Draft,
         permitting: &'a Cell<u64>,
@@ -3203,7 +3237,7 @@ mod generated {
         let _eal = dpdk::test_support::start_eal();
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
-            .with_generator(Generated)
+            .with_generator(FlowGuarded)
             .for_each(|(ops, vary, schedule)| {
                 settled(|| {
                     let draft = Sequence::fold(ops);
