@@ -525,3 +525,8 @@ bolero-honggfuzz = { git = "https://github.com/githedgehog/bolero.git", branch =
 bolero-kani = { git = "https://github.com/githedgehog/bolero.git", branch = "hh/v0.14.0" }
 bolero-libafl = { git = "https://github.com/githedgehog/bolero.git", branch = "hh/v0.14.0" }
 bolero-libfuzzer = { git = "https://github.com/githedgehog/bolero.git", branch = "hh/v0.14.0" }
+# pest pins psm = "=0.1.24", one release before upstream taught psm's build script to skip
+# its assembly under Miri (rust-lang/stacker@4045bf9). Without that, cross-target Miri
+# runs try to assemble the target's .s file with the host toolchain. The psm-0.1.24-miri
+# branch is 0.1.24 plus that backport; drop this once pest relaxes the pin.
+psm = { git = "https://github.com/githedgehog/stacker.git", branch = "psm-0.1.24-miri" }
