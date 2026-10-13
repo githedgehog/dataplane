@@ -5184,8 +5184,7 @@ dependencies = [
 [[package]]
 name = "psm"
 version = "0.1.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "200b9ff220857e53e184257720a14553b2f4aa02577d2ed9842d45d4b9654810"
+source = "git+https://github.com/githedgehog/stacker.git?branch=psm-0.1.24-miri#d6ac3abdb7d902e957e9f78232cc11323e3d4137"
 dependencies = [
  "cc",
 ]
