@@ -116,6 +116,20 @@
       "hash": "sha256-u14ugCKWU4nwXkQdlleThJLYU4Ft/LJNTKywMUlwxPM=",
       "frozen": true
     },
+    "crate-stacker": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "stacker"
+      },
+      "branch": "psm-0.1.24-miri",
+      "submodules": false,
+      "revision": "d6ac3abdb7d902e957e9f78232cc11323e3d4137",
+      "url": "https://github.com/githedgehog/stacker/archive/d6ac3abdb7d902e957e9f78232cc11323e3d4137.tar.gz",
+      "hash": "sha256-kNwK//8VQ2AwTGrCr4nu394dwy4A+luCs6agYPgwlco=",
+      "frozen": true
+    },
     "dpdk": {
       "type": "Git",
       "repository": {
