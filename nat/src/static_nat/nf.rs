@@ -46,6 +46,66 @@ enum StaticNatError {
     IcmpErrorMsg(IcmpErrorMsgError),
 }
 
+/// The new addresses and ports that static NAT gives to the ends of a packet or flow. The static
+/// NAT stage translates packets, and the config-change migration translates flow keys, with the
+/// same plan, so that both always agree.
+#[derive(Debug)]
+struct StaticNatPlan {
+    src: Option<SrcMapping>,
+    dst: Option<DstMapping>,
+}
+
+// New address and port, if any, for one end of a packet or flow
+type SrcMapping = (UnicastIpAddr, Option<NonZero<u16>>);
+type DstMapping = (IpAddr, Option<NonZero<u16>>);
+
+impl StaticNatPlan {
+    /// Look up the translation of the source `(address, port)` and of the destination `(address,
+    /// port)`, if required, in `table`, the table of the source VPC. Ports are `None` for
+    /// protocols other than TCP and UDP.
+    fn new(
+        table: &PerVniTable,
+        (src_addr, src_port): (IpAddr, Option<u16>),
+        (dst_addr, dst_port): (IpAddr, Option<u16>),
+        dst_vni: Vni,
+        (nat_src, nat_dst): (bool, bool),
+    ) -> Self {
+        Self {
+            src: nat_src
+                .then(|| table.find_src_mapping(&src_addr, src_port, dst_vni))
+                .flatten(),
+            dst: nat_dst
+                .then(|| table.find_dst_mapping(&dst_addr, dst_port))
+                .flatten(),
+        }
+    }
+
+    /// Apply the plan to a flow key. Return `None` if the result is not a valid key.
+    fn translate_key(&self, key: &FlowKey) -> Option<FlowKey> {
+        let mut src = key.addrs().src_unicast();
+        let mut dst = key.addrs().dst_unicast();
+        let mut proto_key = *key.proto_key_info();
+        if let Some((addr, port)) = self.src {
+            src = addr;
+            // Ports only change for TCP and UDP
+            if let (Some(port), Some(_)) = (port, key.src_port()) {
+                proto_key.try_set_src_port(port).ok()?;
+            }
+        }
+        if let Some((addr, port)) = self.dst {
+            dst = UnicastIpAddr::try_from(addr).ok()?;
+            if let (Some(port), Some(_)) = (port, key.dst_port()) {
+                proto_key.try_set_dst_port(port).ok()?;
+            }
+        }
+        Some(FlowKey::new(
+            key.src_vpcd(),
+            FlowAddrs::new(src, dst)?,
+            proto_key,
+        ))
+    }
+}
+
 /// A NAT processor, implementing the [`NetworkFunction`] trait. [`StaticNat`] processes packets to
 /// run source or destination Network Address Translation (NAT) on their IP addresses.
 #[derive(Debug)]
@@ -196,21 +256,12 @@ impl StaticNat {
         packet: &mut Packet<Buf>,
         icmp_err: bool,
         dst_vni: Vni,
+        (src_addr, mapping): (IpAddr, Option<SrcMapping>),
     ) -> Result<bool, StaticNatError> {
-        let nfi = self.name();
         let mut modified = false;
 
-        // Get source IP address, port
-        let Some(src_addr) = packet.ip_source() else {
-            error!("{nfi}: Failed to get source IP address");
-            return Err(StaticNatError::NoIpHeader);
-        };
-        let src_port_opt = packet.transport_src_port().map(NonZero::get);
-
         // Source NAT
-        if let Some((new_src_addr, new_src_port_opt)) =
-            table.find_src_mapping(&src_addr, src_port_opt, dst_vni)
-        {
+        if let Some((new_src_addr, new_src_port_opt)) = mapping {
             if new_src_addr.inner() != src_addr {
                 let (net, transport) = packet
                     .headers_mut()
@@ -256,21 +307,12 @@ impl StaticNat {
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
         icmp_err: bool,
+        (dst_addr, mapping): (IpAddr, Option<DstMapping>),
     ) -> Result<bool, StaticNatError> {
-        let nfi = self.name();
         let mut modified = false;
 
-        // Get destination IP address, port
-        let Some(dst_addr) = packet.ip_destination() else {
-            error!("{nfi}: Failed to get destination IP address");
-            return Err(StaticNatError::NoIpHeader);
-        };
-        let dst_port_opt = packet.transport_dst_port().map(NonZero::get);
-
         // Destination NAT
-        if let Some((new_dst_addr, new_dst_port_opt)) =
-            table.find_dst_mapping(&dst_addr, dst_port_opt)
-        {
+        if let Some((new_dst_addr, new_dst_port_opt)) = mapping {
             if new_dst_addr != dst_addr {
                 let (net, transport) = packet
                     .headers_mut()
@@ -341,11 +383,26 @@ impl StaticNat {
         // and we assume the packet has gone through the ICMP Error handler pipeline stage where the
         // ICMP checksum and inner IPv4 checksum have been validated already.
 
-        if packet.meta().requires_static_nat_src() && !packet.meta().is_src_natted() {
-            modified |= self.source_nat(table, packet, icmp_err, dst_vni)?;
+        let meta = packet.meta();
+        let nat_src = meta.requires_static_nat_src() && !meta.is_src_natted();
+        let nat_dst = meta.requires_static_nat_dst() && !meta.is_dst_natted();
+        let (Some(src_addr), Some(dst_addr)) = (packet.ip_source(), packet.ip_destination()) else {
+            error!("{nfi}: Failed to get IP addresses");
+            return Err(StaticNatError::NoIpHeader);
+        };
+        let plan = StaticNatPlan::new(
+            table,
+            (src_addr, packet.transport_src_port().map(NonZero::get)),
+            (dst_addr, packet.transport_dst_port().map(NonZero::get)),
+            dst_vni,
+            (nat_src, nat_dst),
+        );
+
+        if nat_src {
+            modified |= self.source_nat(table, packet, icmp_err, dst_vni, (src_addr, plan.src))?;
         }
-        if packet.meta().requires_static_nat_dst() && !packet.meta().is_dst_natted() {
-            modified |= self.destination_nat(table, packet, icmp_err)?;
+        if nat_dst {
+            modified |= self.destination_nat(table, packet, icmp_err, (dst_addr, plan.dst))?;
         }
         Ok(modified)
     }
@@ -432,47 +489,30 @@ impl StaticNat {
 ///
 /// Return `None` if the tables cannot translate the key, in which case the static NAT stage would
 /// drop the packets of the flow.
-// Keep in sync with StaticNat::translate().
 pub(crate) fn translate_flow_key(
     nat_tables: &NatTables,
     key: &FlowKey,
     dst_vpcd: VpcDiscriminant,
     flags: FlowInfoFlags,
 ) -> Option<FlowKey> {
-    if !flags.requires_static_nat_src() && !flags.requires_static_nat_dst() {
+    let (nat_src, nat_dst) = (
+        flags.requires_static_nat_src(),
+        flags.requires_static_nat_dst(),
+    );
+    if !nat_src && !nat_dst {
         return Some(*key);
     }
     let VpcDiscriminant::VNI(src_vni) = key.src_vpcd()?;
     let VpcDiscriminant::VNI(dst_vni) = dst_vpcd;
     let table = nat_tables.get_table(src_vni)?;
-    let mut src = key.addrs().src_unicast();
-    let mut dst = key.addrs().dst_unicast();
-    let mut proto_key = *key.proto_key_info();
-
-    if flags.requires_static_nat_src()
-        && let Some((addr, port)) =
-            table.find_src_mapping(&key.src_ip(), key.src_port().map(NonZero::get), dst_vni)
-    {
-        src = addr;
-        // Ports only change for TCP and UDP
-        if let (Some(port), Some(_)) = (port, key.src_port()) {
-            proto_key.try_set_src_port(port).ok()?;
-        }
-    }
-    if flags.requires_static_nat_dst()
-        && let Some((addr, port)) =
-            table.find_dst_mapping(&key.dst_ip(), key.dst_port().map(NonZero::get))
-    {
-        dst = UnicastIpAddr::try_from(addr).ok()?;
-        if let (Some(port), Some(_)) = (port, key.dst_port()) {
-            proto_key.try_set_dst_port(port).ok()?;
-        }
-    }
-    Some(FlowKey::new(
-        key.src_vpcd(),
-        FlowAddrs::new(src, dst)?,
-        proto_key,
-    ))
+    let plan = StaticNatPlan::new(
+        table,
+        (key.src_ip(), key.src_port().map(NonZero::get)),
+        (key.dst_ip(), key.dst_port().map(NonZero::get)),
+        dst_vni,
+        (nat_src, nat_dst),
+    );
+    plan.translate_key(key)
 }
 
 impl From<&StaticNatError> for DoneReason {

@@ -147,6 +147,10 @@ impl Fabric {
         )
     }
 
+    pub(crate) fn tables(&self) -> crate::static_nat::natrw::NatTablesReader {
+        self.writer.get_reader()
+    }
+
     pub(crate) fn outbound_to_peer(&self, source: Endpoint, port: u16) -> Packet<TestBuffer> {
         let mut packet = build(source.addr, self.peer[0], false, port, 80);
         Arrival::outbound().stamp(&mut packet);
