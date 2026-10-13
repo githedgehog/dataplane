@@ -3,12 +3,14 @@
 
 #![cfg(test)]
 
-use crate::static_nat::nf::StaticNat;
+use crate::static_nat::nf::{StaticNat, translate_flow_key};
 use crate::static_nat::probe::{Fabric, ProbeSpec, Stray};
+use crate::static_nat::setup::tables::NatTables;
 use bolero::{Driver, TypeGenerator, ValueGenerator};
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::StaticNatExposes;
+use net::FlowKey;
 use net::buffer::TestBuffer;
 use net::ip::NextHeader;
 use net::packet::{DoneReason, Packet};
@@ -504,4 +506,84 @@ fn a_modified_packet_is_always_marked() {
 #[test]
 fn a_port_modified_packet_is_always_marked() {
     drive_marking!(Scenario::ports(true));
+}
+
+// Process `packet` with `nf`, and check that translate_flow_key() turns the key of the packet into
+// the key of the translated packet. Return both keys, or None if the packet was dropped.
+fn check_flow_key_translation(
+    tables: &NatTables,
+    nf: &mut StaticNat,
+    packet: Packet<TestBuffer>,
+) -> Option<(FlowKey, FlowKey)> {
+    let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!("a probe has a key"));
+    let meta = packet.meta();
+    let dst_vpcd = meta
+        .dst_vpcd
+        .unwrap_or_else(|| unreachable!("a probe without strays has a destination"));
+    let flags = meta.compute_flow_flags_forward();
+    let out = run(nf, vec![packet]).remove(0);
+    if out.is_done() {
+        return None;
+    }
+    let translated = FlowKey::try_from(&out).unwrap_or_else(|_| unreachable!("still a probe"));
+    assert_eq!(
+        translate_flow_key(tables, &key, dst_vpcd, flags),
+        Some(translated),
+        "the static NAT stage translated {key} into {translated}, but not the flow key translation"
+    );
+    Some((key, translated))
+}
+
+macro_rules! drive_flow_key_translation {
+    ($scenario:expr) => {{
+        let tally = Tally::default();
+
+        bolero::check!()
+            .with_generator($scenario)
+            .cloned()
+            .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+                tally.seen.fetch_add(1, Ordering::Relaxed);
+                let Some(fabric) = fabric(&exposes) else {
+                    return;
+                };
+                tally.built.fetch_add(1, Ordering::Relaxed);
+                let mut nf = fabric.nf();
+                let reader = fabric.tables();
+                let tables = reader
+                    .enter()
+                    .unwrap_or_else(|| unreachable!("a writer's tables are readable"));
+
+                for spec in &probes {
+                    let mut probe = (*spec).resolve(&fabric);
+                    let Some((key, translated)) =
+                        check_flow_key_translation(&tables, &mut nf, probe.take())
+                    else {
+                        continue;
+                    };
+                    if key == translated {
+                        continue;
+                    }
+                    // The reply goes through destination NAT
+                    let port = translated.src_port().map_or(0, NonZero::get);
+                    let reply = probe.reply(translated.src_ip(), port);
+                    check_flow_key_translation(&tables, &mut nf, reply);
+                    tally.reached.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        tally.report("flow key translation");
+    }};
+}
+
+/// The config-change migration checks the reverse key of tracked flows with
+/// `translate_flow_key()`. It must translate flow keys exactly as the static NAT stage translates
+/// their packets.
+#[test]
+fn flow_keys_translate_as_their_packets() {
+    drive_flow_key_translation!(Scenario::addresses(false));
+}
+
+#[test]
+fn flow_keys_with_ports_translate_as_their_packets() {
+    drive_flow_key_translation!(Scenario::ports(false));
 }
