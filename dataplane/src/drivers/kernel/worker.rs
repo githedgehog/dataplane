@@ -80,7 +80,9 @@ fn create_worker_interface(
     )?;
 
     let read_fd_owned = nix::unistd::dup(bfd).map_err(io::Error::from)?;
-    let read_fd = AsyncFd::with_interest(read_fd_owned, Interest::READABLE)?;
+    // SAFETY: The AsyncFd takes ownership of the duplicated OwnedFd, so the fd stays open for its
+    // whole lifetime and as_raw_fd() always returns the same value.
+    let read_fd = unsafe { AsyncFd::register_with_interest(read_fd_owned, Interest::READABLE) }?;
     let fanout_type = set_packet_fanout(if_index, &read_fd);
     if total_workers > 1 {
         match fanout_type {
