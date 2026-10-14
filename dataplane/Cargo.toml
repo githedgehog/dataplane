@@ -14,6 +14,7 @@ shuttle = ["concurrency/shuttle", "nat/shuttle", "flow-entry/shuttle", "routing/
 shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
+arp = { workspace = true }
 acl-filter = { workspace = true }
 afpacket = { workspace = true, features = ["async-tokio"] }
 args = { workspace = true }

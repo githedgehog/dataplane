@@ -58,6 +58,7 @@ pub struct RouterParams {
 /// for the CLI to be able to display them.
 #[derive(Default)]
 pub struct CliSources {
+    pub neigh_cache: Option<Box<dyn CliDataProvider + Send>>,
     pub flow_table: Option<Box<dyn CliDataProvider + Send>>,
     pub flow_filter: Option<Box<dyn CliDataProvider + Send>>,
     pub portfw_table: Option<Box<dyn CliDataProvider + Send>>,
