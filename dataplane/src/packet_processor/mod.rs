@@ -104,7 +104,6 @@ pub(crate) fn start_router<'nf, Buf: PacketBufferMut + Send + 'nf>(
     let router = Router::new(router, params, Some(cli_sources))?;
     let iftr_factory = router.get_iftabler_factory();
     let fibtr_factory = router.get_fibtr_factory();
-    let atabler_factory = router.get_atabler_factory();
 
     // create pipeline builder
     let flow_table_clone = flow_table.clone();
@@ -114,7 +113,11 @@ pub(crate) fn start_router<'nf, Buf: PacketBufferMut + Send + 'nf>(
 
         // Build network functions
         let stage_ingress = Ingress::new("Ingress", iftr_factory.handle());
-        let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
+        let stage_egress = Egress::new(
+            "Egress",
+            iftr_factory.handle(),
+            neigh_cache_factory.handle(),
+        );
         let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr_factory.handle());
         let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr_factory.handle());
         let static_nat = StaticNat::with_reader("static-NAT-1", nattabler_factory.handle());

@@ -61,6 +61,7 @@ vpcmap = { workspace = true }
 clock = { workspace = true, features = ["virtual"] }
 # internal
 config = { workspace = true, features = ["bolero"] }
+arp = { workspace = true, features = ["testing"] }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero", "builder", "test_buffer", "test_meta"] }
 routing = { workspace = true, features = ["testing"] }
