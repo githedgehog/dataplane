@@ -289,10 +289,10 @@
       "version_upper_bound": null,
       "release_prefix": "mermaid@",
       "submodules": false,
-      "version": "mermaid@12.1.0",
-      "revision": "ee7911783ea93ec82eaabba160a9cfcdb5e28733",
-      "url": "https://api.github.com/repos/mermaid-js/mermaid/tarball/refs/tags/mermaid@12.1.0",
-      "hash": "sha256-u5ptI6hXOLBHuG/+Rb6yJhYpVOU1Is2jWrpxPEIr4GI="
+      "version": "mermaid@12.2.0",
+      "revision": "ee1fdbcebe057cae346232efb6df066215565bec",
+      "url": "https://api.github.com/repos/mermaid-js/mermaid/tarball/refs/tags/mermaid@12.2.0",
+      "hash": "sha256-rX1IpZtES1iwVoSNa37H5hqi+ZzRNV25MmNcqTIgz7g="
     },
     "nixpkgs": {
       "type": "Channel",
@@ -326,9 +326,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "7ca1d0cb14848b6df331f1d5ec0b8c23462238e9",
-      "url": "https://github.com/linux-rdma/perftest/archive/7ca1d0cb14848b6df331f1d5ec0b8c23462238e9.tar.gz",
-      "hash": "sha256-9xw+Ms3YRRUk5/VxLBfGAgA2kcQL7LAjhd0mSzOFQk0="
+      "revision": "05200c2fc2599f72dc1b6bd70de1b966c88150d9",
+      "url": "https://github.com/linux-rdma/perftest/archive/05200c2fc2599f72dc1b6bd70de1b966c88150d9.tar.gz",
+      "hash": "sha256-qwMhaIkD6M6xmzeXFxBZfA7WKfWhJza8OfHo21JURFk="
     },
     "rdma-core": {
       "type": "Git",
@@ -368,9 +368,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "c1cfa7a2c809d364ac1a7e9b3ec418afa3f19793",
-      "url": "https://github.com/oxalica/rust-overlay/archive/c1cfa7a2c809d364ac1a7e9b3ec418afa3f19793.tar.gz",
-      "hash": "sha256-w3m8HtAVCfGTHw+gcCTAy7jFHSdGbokm8NngbeFrkek="
+      "revision": "8111d2b45adcbaeaff037f996643f1ac43f944e6",
+      "url": "https://github.com/oxalica/rust-overlay/archive/8111d2b45adcbaeaff037f996643f1ac43f944e6.tar.gz",
+      "hash": "sha256-rEB0dvSZw1niBVJvt0AiWygNS/OMdA81lquTzLIWuvo="
     },
     "ubuntu-kernel-buildinfo": {
       "type": "Url",
