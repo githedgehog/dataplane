@@ -1391,21 +1391,16 @@ let
     }:
     let
       pname = if package != null then package else "all";
-    in
-    pkgs.callPackage invoke {
-      builder = craneLib.mkCargoDerivation;
-      profile = profile-tests';
-      args = {
-        inherit pname;
-        cargoArtifacts = cargo-artifacts-tests;
-        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+      clippy-cmd =
+        features:
+        builtins.concatStringsSep " " (
           [
             "cargo"
             "clippy"
             "--all-targets"
-            "--all-features"
-            "--profile=${cargo-profile}"
           ]
+          ++ features
+          ++ [ "--profile=${cargo-profile}" ]
           # The platform-aware list excludes members that cannot build for WASI.
           ++ (
             if package != null then
@@ -1419,6 +1414,19 @@ let
             "-D warnings"
           ]
         );
+    in
+    pkgs.callPackage invoke {
+      builder = craneLib.mkCargoDerivation;
+      profile = profile-tests';
+      args = {
+        inherit pname;
+        cargoArtifacts = cargo-artifacts-tests;
+        # The "loom" feature, enabled by --all-features, compiles out most of the dataplane binary,
+        # so we also lint with default features.
+        buildPhaseCargoCommand = ''
+          ${clippy-cmd [ "--all-features" ]}
+          ${clippy-cmd [ ]}
+        '';
       };
     };
 
