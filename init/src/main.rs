@@ -539,6 +539,35 @@ fn dataplane_process(
     Ok(Process::new("dataplane", command))
 }
 
+/// Remove socket filesystem entries
+fn clean_up_endpoints(
+    config: &LaunchConfiguration,
+    supervise_frr: bool,
+) -> Result<(), HandoffError> {
+    let control_plane_socket = &config.routing.control_plane_socket;
+    let agent_socket = &config.routing.frr_agent_socket;
+
+    debug!("Removing {control_plane_socket}");
+    socket::remove_stale(std::path::Path::new(control_plane_socket)).map_err(|source| {
+        HandoffError::Socket {
+            path: control_plane_socket.into(),
+            source,
+        }
+    })?;
+
+    if supervise_frr {
+        debug!("Removing {agent_socket}");
+        socket::remove_stale(std::path::Path::new(agent_socket)).map_err(|source| {
+            HandoffError::Socket {
+                path: agent_socket.into(),
+                source,
+            }
+        })?;
+    }
+
+    Ok(())
+}
+
 /// Prepare and supervise the gateway.
 /// When init owns FRR, start dataplane, watchfrr, and agent in that order, waiting
 /// for each socket before starting its consumer.
@@ -554,47 +583,28 @@ async fn run_gateway(
 
     let supervisor = Supervisor::new()?;
 
-    // Prepare FRR's directories before the dataplane binds its control-plane socket there.
-    let daemons = if supervise_frr {
-        let (config_dir, daemon_dir) = frr::install();
-        let daemons = frr::enabled_daemons(&config_dir, &daemon_dir)?;
-        frr::prepare_state_dir(&frr::state_dir())?;
-        Some(daemons)
-    } else {
-        None
-    };
-
     // Clear owned endpoints before any child starts, including configured paths outside /run/frr.
-    for path in [
-        Some(control_plane_socket.as_str()),
-        supervise_frr.then_some(agent_socket.as_str()),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        socket::remove_stale(std::path::Path::new(path)).map_err(|source| {
-            HandoffError::Socket {
-                path: path.into(),
-                source,
-            }
-        })?;
-    }
+    clean_up_endpoints(&config, supervise_frr)?;
 
     let dataplane = dataplane_process(config, &netns, &host_netns)?;
-    let dataplane = if supervise_frr {
-        dataplane.ready_when_socket_exists(control_plane_socket)
+    let mut processes = if supervise_frr {
+        vec![dataplane.ready_when_socket_exists(control_plane_socket)]
     } else {
         // Nothing here is waiting on it, so there is nothing to gain by waiting: FRR is in a
         // container of its own and already has to tolerate starting in any order.
-        dataplane
+        vec![dataplane]
     };
-    let mut processes = vec![dataplane];
 
-    if let Some(daemons) = daemons {
+    // Prepare FRR's directories before the dataplane binds its control-plane socket there.
+    if supervise_frr {
+        frr::prepare_state_dir(&frr::state_dir())?;
+        let (config_dir, daemon_dir) = frr::install();
+        let daemons = frr::enabled_daemons(&config_dir, &daemon_dir)?;
         processes.push(frr::watchfrr(&daemons));
         processes.push(frr::agent(&agent_socket));
     }
 
+    // start the processes
     Ok(supervisor.run(processes).await?)
 }
 
