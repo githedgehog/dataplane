@@ -73,7 +73,14 @@ pub async fn kubeless_watch_gateway_agent_crd(
     // generation id is automatically set and will monotonically increase
     let mut generation: i64 = 1;
 
-    let async_fd = AsyncFd::new(inotify.as_raw_fd())
+    // SAFETY: The raw fd is a plain integer copy, so as_raw_fd() always returns the same value. It
+    // is owned by inotify, which is never closed or moved, and is declared before async_fd, so it
+    // is dropped after it (including when this future is cancelled); so we're sure that the fd
+    // stays open and refers to the same inotify instance for the whole lifetime of async_fd.
+    //
+    // TODO: Consider inotify.into_event_stream() instead: it owns the fd so no unsafe would be
+    // necessary, and it handles WouldBlock on wakeups (but yields events one by one w/o batching).
+    let async_fd = unsafe { AsyncFd::register(inotify.as_raw_fd()) }
         .map_err(|e| format!("Failed to create async fd for inotify: {e}"))?;
 
     debug!("Starting kubeless watcher for directory '{path}'");
