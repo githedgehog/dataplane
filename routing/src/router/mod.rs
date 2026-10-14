@@ -19,8 +19,6 @@ use tracing::{debug, error, info};
 // sockets
 use std::net::SocketAddr;
 
-use crate::atable::atablerw::{AtableReader, AtableReaderFactory};
-use crate::atable::resolver::AtResolver;
 use crate::errors::RouterError;
 use crate::fib::fibtable::{FibTableReader, FibTableReaderFactory, FibTableWriter};
 use crate::interfaces::iftablerw::{IfTableReader, IfTableReaderFactory, IfTableWriter};
@@ -82,7 +80,6 @@ impl Display for RouterParams {
 pub struct Router {
     name: String,
     params: RouterParams,
-    resolver: AtResolver,
     rio_handle: RioHandle,
     iftr: IfTableReader,
     fibtr: FibTableReader,
@@ -132,20 +129,15 @@ impl Router {
         debug!("{name}: Creating FIB table...");
         let (fibtw, fibtr) = FibTableWriter::new();
 
-        debug!("{name}: Creating Adjacency resolver...");
-        let (mut resolver, atabler) = AtResolver::new(true);
-        resolver.start(3);
-
         debug!("{name}: Building router IO config...");
         let rioconf = Self::build_rio_config(&params)?;
 
         debug!("{name}: Starting router IO...");
-        let rio_handle = start_rio(router, &rioconf, fibtw, iftw, atabler, cli_sources)?;
+        let rio_handle = start_rio(router, &rioconf, fibtw, iftw, cli_sources)?;
         debug!("{name}: Successfully started router with parameters:\n{params}");
         let router = Router {
             name: name.to_owned(),
             params,
-            resolver,
             rio_handle,
             iftr,
             fibtr,
@@ -153,25 +145,13 @@ impl Router {
         Ok(router)
     }
 
-    /// Stop this router. This stops the router IO thread and drops the interface table, adjacency table
+    /// Stop this router. This stops the router IO thread and drops the interface table, the
     /// vrf table and the fib table.
     pub fn stop(&mut self) {
         if let Err(e) = self.rio_handle.finish() {
             error!("Failed to stop IO for router '{}': {e}", self.name);
         }
-        self.resolver.stop();
-
         info!("Router '{}' is now stopped", self.name);
-    }
-
-    #[must_use]
-    pub fn get_atabler(&self) -> AtableReader {
-        self.resolver.get_reader()
-    }
-
-    #[must_use]
-    pub fn get_atabler_factory(&self) -> AtableReaderFactory {
-        self.resolver.get_reader().factory()
     }
 
     #[must_use]
