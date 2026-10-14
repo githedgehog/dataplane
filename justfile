@@ -201,7 +201,7 @@ fmt *args:
 
 # run a series of pre-flight checks to catch most problems you might find in CI early
 [script]
-pre-flight: (check-dependencies) (fmt "--check") (test) (lint) (doctest)
+pre-flight: (fmt "--check") (test) (lint) (doctest)
     {{ _just_debuggable_ }}
     echo "pre flight checks pass"
 
@@ -806,11 +806,103 @@ push:
 print-container-tags:
     echo "{{ oci_image_dataplane }}"
 
-# Check dependency licenses and security advisories
+# Check dependency licenses, bans, sources and security advisories
+[arg("advisories", long="no-advisories", value="false")]
 [script]
-check-dependencies *args:
+check-dependencies advisories="true":
     {{ _just_debuggable_ }}
-    cargo deny {{ _cargo_feature_flags }} check {{ args }}
+    # cargo-deny has no option to skip a check, list the others instead.
+    cargo deny {{ _cargo_feature_flags }} check {{ if advisories == "false" { "licenses bans sources" } else { "" } }}
+
+# Check security advisories, failing only on those not already reported for "base".
+#
+# Unlike the other cargo-deny checks, advisories change over time: a new RUSTSEC entry for a
+# crate already used on main would otherwise fail every PR and merge queue run. Advisories
+# already present on the base are reported as warnings, and passed as output "result" in GitHub
+# Actions. With "--all", fail on all advisories instead, without comparing with the base.
+[arg("all", long="all", value="true")]
+[script]
+check-advisories base="origin/main" all="false":
+    {{ _just_debuggable_ }}
+    declare tmp
+    tmp="$(mktemp -d)"
+    declare -r tmp
+    trap 'rm -rf "${tmp}"; git worktree prune' EXIT
+    # Compare with the fork point, so that changes made on the base since then are not ours.
+    declare fork=""
+    if [ "{{ all }}" != "true" ]; then
+        fork="$(git merge-base "{{ base }}" HEAD)"
+    fi
+    declare -r fork
+
+    # Fetch the database once, then run offline, so that both sides see the same advisories.
+    cargo deny fetch db
+
+    # Print one "<advisory or code> <crate>" line per error; fail if cargo-deny itself failed.
+    # The version is left out, so that bumping a crate to a version that is still affected
+    # does not count as a new failure.
+    deny_errors() {
+        local -r dir="$1" out="$2"
+        local -i rc=0
+        (cd "${dir}" && cargo fetch --locked >/dev/null)
+        (cd "${dir}" && cargo deny --offline --format json {{ _cargo_feature_flags }} check advisories) \
+            2>"${out}.json" || rc=$?
+        jq -rR 'fromjson? | select(.type == "diagnostic" and .fields.severity == "error")
+            | .fields
+            | "\(.advisory.id // .code) \(.graphs[]?.Krate.name // "-")"' "${out}.json" \
+            | sort -u >"${out}"
+        if [ "${rc}" -ne 0 ] && [ ! -s "${out}" ]; then
+            >&2 jq -rR 'fromjson? // {fields: {message: .}} | .fields.message' "${out}.json"
+            return 1
+        fi
+    }
+
+    if ! deny_errors . "${tmp}/head"; then
+        >&2 echo "::error::cargo-deny failed to check advisories"
+        exit 1
+    fi
+
+    if [ -z "${fork}" ]; then
+        : >"${tmp}/base"
+    elif [ ! -s "${tmp}/head" ] \
+        || git diff --quiet "${fork}" -- Cargo.lock deny.toml ':(glob)**/Cargo.toml'; then
+        # No change to the dependency graph or to the configuration: nothing can be new.
+        cp "${tmp}/head" "${tmp}/base"
+    else
+        git worktree add --quiet --detach "${tmp}/base-tree" "${fork}"
+        if ! deny_errors "${tmp}/base-tree" "${tmp}/base"; then
+            # Fail closed: count everything as new.
+            >&2 echo "::warning::cargo-deny failed on {{ base }}, cannot tell which advisories are new"
+            : >"${tmp}/base"
+        fi
+    fi
+    comm -12 "${tmp}/head" "${tmp}/base" >"${tmp}/known"
+    comm -23 "${tmp}/head" "${tmp}/base" >"${tmp}/new"
+
+    declare id crate
+    while read -r id crate; do
+        echo "::warning::${id} (${crate}) is already reported on {{ base }}"
+    done <"${tmp}/known"
+    if [ -n "${GITHUB_OUTPUT:-}" ]; then
+        {
+            echo "result<<EOF"
+            cat "${tmp}/known"
+            echo "EOF"
+        } >>"${GITHUB_OUTPUT}"
+    fi
+
+    while read -r id crate; do
+        if [ -z "${fork}" ]; then
+            >&2 echo "::error::${id} (${crate})"
+        else
+            >&2 echo "::error::${id} (${crate}) is not reported on {{ base }}"
+        fi
+    done <"${tmp}/new"
+    if [ -s "${tmp}/new" ]; then
+        # Show the full diagnostics, in human-readable form.
+        cargo deny --offline {{ _cargo_feature_flags }} check advisories || true
+        exit 1
+    fi
 
 # Ensure the shared dependency derivations stay reusable across revisions.
 #
@@ -1089,7 +1181,8 @@ lint: \
     (fmt "--check") \
     (clippy) \
     (commitlint) \
-    (check-dependencies) \
+    (check-dependencies "false") \
+    (check-advisories) \
     (opengrep) \
     (zizmor) \
     (pinact "--fix=false" "--no-api") \
