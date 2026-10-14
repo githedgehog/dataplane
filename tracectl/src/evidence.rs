@@ -393,14 +393,12 @@ impl Recording {
         self.evidence().dump();
     }
 
-    #[cfg(test)]
-    #[expect(dead_code)]
+    #[cfg(all(test, not(any(feature = "loom", feature = "shuttle"))))]
     fn len(&self) -> usize {
         self.log.lock().map_or(0, |log| log.lines.len())
     }
 
-    #[cfg(test)]
-    #[expect(dead_code)]
+    #[cfg(all(test, not(any(feature = "loom", feature = "shuttle"))))]
     fn rendered(&self) -> Vec<String> {
         self.log.lock().map_or_else(
             |_| Vec::new(),
