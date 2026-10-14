@@ -68,8 +68,8 @@ use std::num::NonZero;
 
 use etherparse::IpNumber;
 
-use crate::checksum::Checksum;
 use crate::buffer::TestBuffer;
+use crate::checksum::Checksum;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, Mac, SourceMac};
@@ -95,6 +95,8 @@ use crate::vlan::{Pcp, Vid, Vlan};
 use crate::vxlan::{Vni, Vxlan};
 
 use super::{Net, NetExt, Transport};
+
+pub mod quick;
 
 /// Errors that can occur when finalizing a header stack.
 ///
@@ -2412,7 +2414,7 @@ mod tests {
             .build_packet()
             .unwrap();
 
-        assert!(packet.payload().as_ref().is_empty());
+        assert_eq!(packet.payload().as_ref(), &[] as &[u8]);
         assert_checksums_current(&packet);
     }
 
