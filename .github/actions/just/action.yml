@@ -35,10 +35,16 @@ inputs:
     description: "Positional arguments to pass after the recipe name"
     default: ""
 
+outputs:
+  result:
+    description: "Output \"result\" of the recipe, if it writes one to GITHUB_OUTPUT"
+    value: "${{ steps.run.outputs.result }}"
+
 runs:
   using: "composite"
   steps:
     - name: "just ${{ inputs.recipe }} ${{ inputs.recipe_args }}"
+      id: "run"
       shell: "bash"
       env:
         RECIPE: "${{ inputs.recipe }}"

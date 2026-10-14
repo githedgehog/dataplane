@@ -291,6 +291,9 @@ jobs:
     env:
       USER: "runner"
       JUST_VARS: "" # the `.github/actions/just` composite action runs under `set -u`; must be set even when empty
+      BASE_REF: "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'origin/main' }}"
+    outputs:
+      known-advisories: "${{ steps.check-advisories.outputs.result }}"
     steps:
       - *checkout
       - *nix-setup
@@ -317,7 +320,18 @@ jobs:
         uses: *just
         with:
           recipe: "check-dependencies"
-          recipe_args: ""
+          recipe_args: "--no-advisories" # see check-advisories below
+
+      # Only advisories missing from the base branch fail the step, except for release tags, where
+      # we fail on all advisories
+      - name: "check-advisories"
+        id: "check-advisories"
+        continue-on-error: true
+        env: *lint-auth
+        uses: *just
+        with:
+          recipe: "check-advisories"
+          recipe_args: "${{ startsWith(github.ref, 'refs/tags/') && '--all' || env.BASE_REF }}"
 
       - name: "commitlint"
         id: "commitlint"
@@ -326,7 +340,7 @@ jobs:
         uses: *just
         with:
           recipe: "commitlint"
-          recipe_args: "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'origin/main' }}"
+          recipe_args: "${{ env.BASE_REF }}"
 
       - name: "opengrep"
         id: "opengrep"
@@ -425,6 +439,7 @@ jobs:
         env:
           OUTCOMES: |-
             check-dependencies=${{ steps.check-dependencies.outcome }}
+            check-advisories=${{ steps.check-advisories.outcome }}
             commitlint=${{ steps.commitlint.outcome }}
             opengrep=${{ steps.opengrep.outcome }}
             zizmor=${{ steps.zizmor.outcome }}
@@ -450,6 +465,27 @@ jobs:
           exit "${status}"
 
       - *tmate
+
+  # Flag the advisories already on the base, for which the lint job only emits warnings. Neither
+  # "build" nor "summary" (the required check) depends on this job, so that these advisories do
+  # not block unrelated changes.
+  advisories:
+    name: "advisories"
+    runs-on: "ubuntu-latest"
+    needs:
+      - lint
+    if: "${{ !cancelled() && needs.lint.outputs.known-advisories != '' }}"
+    permissions: {}
+    steps:
+      - name: "Flag advisories from the base"
+        env:
+          KNOWN: "${{ needs.lint.outputs.known-advisories }}"
+        run: |
+          set -euo pipefail
+          while read -r id crate; do
+            echo "::error::${id} (${crate}) is reported on the base"
+          done <<<"${KNOWN}"
+          exit 1
 
   build:
     name: "${{ matrix.nix-target }}/${{ matrix.profile }}"
