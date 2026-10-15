@@ -527,7 +527,8 @@ pub(crate) struct ControlQueues<'p, 'eal> {
     pub(crate) tx: TxQueue<'p>,
     /// The port's control pool, which injected frames are copied into.
     pub(crate) pool: Pool<'p>,
-    /// Where to hand the kernel what the control queue receives.
+    /// Where to hand the kernel what the control queue receives: the bridge's control channel,
+    /// which its pump drains before the data workers' punts.
     pub(crate) punt: Option<mpsc::Sender<Frame>>,
     /// Frames the kernel wants this port to transmit.
     pub(crate) inject: Option<mpsc::Receiver<Frame>>,
@@ -565,13 +566,18 @@ pub(crate) fn deal_queues<'p, 'eal>(
         // The injection queue goes to the control worker alone; the punt sender is cloned to every
         // worker, because any worker can receive a frame the kernel should see but only one may
         // drain a queue without reordering the session it carries.
-        let (if_index, punt, inject) = if let Some(queues) =
+        let (if_index, punt, control_punt, inject) = if let Some(queues) =
             bridge.as_deref_mut().and_then(|b| b.take(&port.name))
         {
             // The tap's index, not the port's. Interface indices are per-namespace and these two
             // live in different ones; everything above the driver was built from the control
             // plane's view, so it speaks in tap indices. See `cpbridge::PortCpQueues::index`.
-            (queues.index, Some(queues.punt), queues.inject)
+            (
+                queues.index,
+                Some(queues.punt),
+                Some(queues.control),
+                queues.inject,
+            )
         } else {
             if bridged {
                 warn!(
@@ -587,7 +593,7 @@ pub(crate) fn deal_queues<'p, 'eal>(
             }
             // No bridge, so nothing moved and the port's own index is the one the control plane
             // saw too.
-            (port.if_index, None, None)
+            (port.if_index, None, None, None)
         };
 
         let mut queues = port.dev.take_queues().ok_or_else(|| {
@@ -644,7 +650,7 @@ pub(crate) fn deal_queues<'p, 'eal>(
             rx,
             tx,
             pool: port.control_pool.clone(),
-            punt,
+            punt: control_punt,
             inject,
         });
     }
