@@ -10,7 +10,7 @@ use net::eth::mac::Mac;
 use net::lldp::NEAREST_BRIDGE;
 
 use crate::key::{ICMP6, TCP, UDP};
-use crate::{Class, ClassTable, ControlPlane, Fate, Frame, Ip, Key, L4, Ports, Rule};
+use crate::{Class, ClassTable, ControlPlane, Frame, Ip, Key, L4, Ports, Rule};
 
 const V4: [Ipv4Addr; 5] = [
     Ipv4Addr::new(10, 0, 0, 1),
@@ -147,26 +147,26 @@ impl RawKey {
     }
 }
 
-/// What a NIC does with `rules`: the fate of the highest tier rule that matches.
+/// What a NIC does with `rules`: the class of the highest tier rule that matches.
 ///
 /// # Panics
 ///
-/// If two rules of that tier match with different fates: the NIC would pick either.
-fn steer(rules: &[Rule], key: &Key) -> Option<Fate> {
+/// If two rules of that tier match with different classes: the NIC would pick either.
+fn steer(rules: &[Rule], key: &Key) -> Option<Class> {
     let tier = rules
         .iter()
         .filter(|r| r.matches(key))
         .map(|r| r.tier)
         .min()?;
-    let mut fates = rules
+    let mut classes = rules
         .iter()
         .filter(|r| r.tier == tier && r.matches(key))
-        .map(|r| r.fate);
-    let fate = fates.next()?;
-    for other in fates {
-        assert_eq!(fate, other, "rules of one tier disagree on {key:?}");
+        .map(|r| r.class);
+    let class = classes.next()?;
+    for other in classes {
+        assert_eq!(class, other, "rules of one tier disagree on {key:?}");
     }
-    Some(fate)
+    Some(class)
 }
 
 #[test]
@@ -176,11 +176,11 @@ fn the_rules_steer_exactly_what_the_classifier_classifies() {
         .for_each(|(control, key)| {
             let table = ClassTable::new(control.control());
             let key = key.key();
-            let steered = match steer(table.rules(), &key) {
-                Some(Fate::Control(class)) => Some(class),
-                Some(Fate::Data) | None => None,
-            };
-            assert_eq!(steered, table.classify(&key), "{key:?} under {table:?}");
+            assert_eq!(
+                steer(table.rules(), &key),
+                table.classify(&key),
+                "{key:?} under {table:?}"
+            );
         });
 }
 
