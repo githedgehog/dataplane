@@ -52,7 +52,9 @@ pub use view::{HeadersView, Look, LookMut, Shape, ShapePrefix};
 pub mod embedded_view;
 pub use embedded_view::{EmbeddedHeadersView, EmbeddedLook, EmbeddedLookMut, EmbeddedShape};
 
-#[cfg(any(test, feature = "builder"))]
+// `test_utils` (behind `test_buffer`) is built on the builder, and the builder
+// produces `TestBuffer` packets, so either feature brings in both.
+#[cfg(any(doc, test, feature = "builder", feature = "test_buffer"))]
 pub mod builder;
 
 const MAX_VLANS: usize = 4;

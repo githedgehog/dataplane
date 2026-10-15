@@ -16,6 +16,7 @@ use crate::checksum::Checksum;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, Mac, SourceMac};
+use crate::headers::builder::HeaderStack;
 use crate::headers::{EmbeddedHeadersBuilder, EmbeddedTransport, HeadersBuilder, Net, Transport};
 use crate::icmp4::{Icmp4, Icmp4DestUnreachable, TruncatedIcmp4};
 use crate::icmp6::{Icmp6, Icmp6Type, TruncatedIcmp6};
@@ -28,7 +29,6 @@ use crate::packet::{InvalidPacket, Packet};
 use crate::parse::DeParse;
 use crate::tcp::port::TcpPort;
 use crate::tcp::{Tcp, TcpChecksumPayload, TruncatedTcp};
-use crate::udp::port::UdpPort;
 use crate::udp::{TruncatedUdp, Udp, UdpChecksum, UdpChecksumPayload, UdpEncap};
 use etherparse::icmpv4::DestUnreachableHeader;
 use etherparse::{IcmpEchoHeader, Icmpv4Header, Icmpv4Type, Icmpv6Header, Icmpv6Type};
@@ -147,8 +147,14 @@ pub fn addr_v4(a: &str) -> Ipv4Addr {
 }
 
 #[must_use]
-#[allow(unsafe_code)]
-/// Builds a UDP/IPv4/Eth frame
+#[track_caller]
+/// Builds a UDP/IPv4/Eth frame with no payload and a TTL of 255.
+///
+/// Lengths and checksums are correct for the given addresses and ports.
+///
+/// # Panics
+///
+/// If an address does not parse, the source is not unicast, or a port is 0.
 pub fn build_test_udp_ipv4_frame(
     src_mac: Mac,
     dst_mac: Mac,
@@ -157,34 +163,21 @@ pub fn build_test_udp_ipv4_frame(
     sport: u16,
     dport: u16,
 ) -> Packet<TestBuffer> {
-    use crate::ip::UnicastIpAddr;
-    use std::net::IpAddr;
-
-    let mut packet = build_test_ipv4_packet_with_transport(255, Some(NextHeader::UDP)).unwrap();
-    packet
-        .set_eth_source(src_mac)
-        .expect("Could not set src mac");
-    packet
-        .set_eth_destination(dst_mac)
-        .expect("Could not set dst mac");
-    packet
-        .set_ip_source(src_ip.parse::<UnicastIpAddr>().expect("Bad src ip"))
-        .expect("Could not set src ip");
-    packet
-        .set_ip_destination(dst_ip.parse::<IpAddr>().expect("Bad dst ip"))
-        .expect("Could not set dst ip");
-    packet
-        .set_udp_source_port(UdpPort::new_checked(sport).expect("Bad src port"))
-        .expect("Could not set src port");
-    packet
-        .set_udp_destination_port(UdpPort::new_checked(dport).expect("Bad dst port"))
-        .expect("Could not set dst port");
-
-    packet
+    HeaderStack::new()
+        .eth_macs(src_mac, dst_mac)
+        .ipv4_addrs(src_ip, dst_ip)
+        .with(|ip| {
+            ip.set_ttl(255);
+        })
+        .udp_ports(sport, dport)
+        .build_packet()
+        .expect("a valid UDP/IPv4 frame")
 }
 
 #[must_use]
-#[allow(unsafe_code)]
+#[track_caller]
+/// Builds a UDP/IPv4/Eth frame between `02:00:00:00:00:01` and itself. See
+/// [`build_test_udp_ipv4_frame`].
 pub fn build_test_udp_ipv4_packet(
     src_ip: &str,
     dst_ip: &str,
