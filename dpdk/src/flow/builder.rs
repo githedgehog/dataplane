@@ -34,7 +34,9 @@ use net::vxlan::{Vni, Vxlan};
 
 use crate::dev::{Dev, DevIndex, Started};
 use crate::flow::error::FlowError;
-use crate::flow::pattern::{Ipv4Match, Ipv6Match, TcpMatch, UdpMatch, VlanMatch, VxlanMatch};
+use crate::flow::pattern::{
+    EthMatch, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch, VlanMatch, VxlanMatch,
+};
 use crate::flow::rule::FlowRule;
 use crate::flow::{Direction, Domain, FlowGroup, Mark, Priority};
 use crate::queue::rx::RxQueueIndex;
@@ -42,7 +44,7 @@ use concurrency::sync::atomic::AtomicUsize;
 
 /// Owned match criteria, kept in place while the PMD reads their pointers.
 enum MatchItem {
-    Eth,
+    Eth(rte_flow_item_eth, rte_flow_item_eth),
     Vlan(rte_flow_item_vlan, rte_flow_item_vlan),
     Ipv4(rte_flow_item_ipv4, rte_flow_item_ipv4),
     Ipv6(rte_flow_item_ipv6, rte_flow_item_ipv6),
@@ -54,7 +56,7 @@ enum MatchItem {
 impl MatchItem {
     fn type_(&self) -> it::Type {
         match self {
-            MatchItem::Eth => it::RTE_FLOW_ITEM_TYPE_ETH,
+            MatchItem::Eth(..) => it::RTE_FLOW_ITEM_TYPE_ETH,
             MatchItem::Vlan(..) => it::RTE_FLOW_ITEM_TYPE_VLAN,
             MatchItem::Ipv4(..) => it::RTE_FLOW_ITEM_TYPE_IPV4,
             MatchItem::Ipv6(..) => it::RTE_FLOW_ITEM_TYPE_IPV6,
@@ -67,7 +69,7 @@ impl MatchItem {
     /// Pointer to the spec struct (null for a presence-only item). Valid while `self` is alive.
     fn spec(&self) -> *const c_void {
         match self {
-            MatchItem::Eth => null(),
+            MatchItem::Eth(spec, _) => from_ref(spec).cast(),
             MatchItem::Vlan(spec, _) => from_ref(spec).cast(),
             MatchItem::Ipv4(spec, _) => from_ref(spec).cast(),
             MatchItem::Ipv6(spec, _) => from_ref(spec).cast(),
@@ -80,7 +82,7 @@ impl MatchItem {
     /// Pointer to the mask struct (null for a presence-only item). Valid while `self` is alive.
     fn mask(&self) -> *const c_void {
         match self {
-            MatchItem::Eth => null(),
+            MatchItem::Eth(_, mask) => from_ref(mask).cast(),
             MatchItem::Vlan(_, mask) => from_ref(mask).cast(),
             MatchItem::Ipv4(_, mask) => from_ref(mask).cast(),
             MatchItem::Ipv6(_, mask) => from_ref(mask).cast(),
@@ -390,14 +392,15 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
         self
     }
 
-    /// Match the presence of an Ethernet header.
+    /// Match an Ethernet header against `criteria` ([`EthMatch::default`] matches any frame).
     ///
     /// Only available at the start of a pattern (`Eth` is the sole layer `Within<()>`).
-    pub fn match_eth(mut self) -> FlowBuilder<'dev, D, Eth>
+    pub fn match_eth(mut self, criteria: EthMatch) -> FlowBuilder<'dev, D, Eth>
     where
         Eth: Within<Pos>,
     {
-        self.items.push(MatchItem::Eth);
+        let (spec, mask) = criteria.lower();
+        self.items.push(MatchItem::Eth(spec, mask));
         self.retype()
     }
 
@@ -816,7 +819,10 @@ mod tests {
         let mut builder = builder.vxlan_encap(first).mark(Mark(7));
         check_encapsulation(&builder, &[first]);
         builder.actions.reserve(128);
-        let builder = builder.match_eth().vxlan_encap(second).drop();
+        let builder = builder
+            .match_eth(EthMatch::default())
+            .vxlan_encap(second)
+            .drop();
         check_encapsulation(&builder, &[first, second]);
         check_encapsulation(&builder, &[first, second]);
         assert_eq!(live.load(concurrency::sync::atomic::Ordering::Relaxed), 0);
