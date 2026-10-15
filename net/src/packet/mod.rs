@@ -21,7 +21,7 @@ pub use stats::PacketStats;
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
-#[cfg(any(doc, test, feature = "test_buffer"))]
+#[cfg(any(doc, test, feature = "builder"))]
 pub mod test_utils;
 
 #[cfg(any(doc, test, feature = "test_buffer"))]
