@@ -15,6 +15,7 @@
 
 mod classes;
 mod control;
+mod placement;
 mod port;
 mod worker;
 
@@ -41,6 +42,7 @@ use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 
 pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
 use control::{ControlPort, ControlWorker};
+use placement::{Placement, pin};
 pub(crate) use port::{Port, report_links};
 use worker::{Worker, WorkerPort};
 
@@ -106,6 +108,7 @@ impl DriverDpdk {
             ports.len()
         );
 
+        let placement = Placement::of_this_process();
         let mut monitors = Vec::with_capacity(dealt.workers.len() + 1);
         for (id, queues) in dealt.workers.into_iter().enumerate() {
             let rx_tasks: Vec<RxTaskMonitor> =
@@ -122,12 +125,16 @@ impl DriverDpdk {
 
             let subsystem = workers_subsystem.clone();
             let setup_pipeline = setup_pipeline.clone();
+            let cpus = placement.data.clone();
             let handle = thread::Builder::new()
                 .name(format!("dpdk-worker-{id}"))
                 .spawn_scoped(scope, move || {
                     // Any exit before shutdown, a panic included, leaves this worker's queues
                     // unpolled, so it is fatal. The guard sees cancellation and stays quiet then.
                     let _guard = subsystem.new_exit_guard(format!("worker {id}"), true);
+                    if let Some(cpus) = cpus {
+                        pin(&format!("DPDK worker {id}"), &cpus);
+                    }
                     worker.run(&subsystem, &setup_pipeline, timer_handle);
                     Ok::<(), Infallible>(())
                 })
@@ -143,6 +150,7 @@ impl DriverDpdk {
             scope,
             workers_subsystem,
             usize::from(num_workers.get()),
+            placement.control,
             dealt.control,
             control_plane,
         )?);
@@ -170,11 +178,12 @@ impl DriverDpdk {
     }
 }
 
-/// Spawn the control worker over every port's control queues, as worker `id`.
+/// Spawn the control worker over every port's control queues, as worker `id`, on `cpu`.
 fn spawn_control<'p, 'eal, 'scope>(
     scope: &'scope thread::Scope<'scope, '_>,
     subsystem: &Subsystem,
     id: usize,
+    cpu: Option<usize>,
     control: Vec<port::ControlQueues<'p, 'eal>>,
     control_plane: watch::Receiver<ControlPlane>,
 ) -> Result<WorkerMonitor<'scope, Infallible>, DriverError>
@@ -199,6 +208,9 @@ where
     let handle = thread::Builder::new()
         .name("dpdk-control".to_string())
         .spawn_scoped(scope, move || {
+            if let Some(cpu) = cpu {
+                pin("the DPDK control worker", &[cpu]);
+            }
             worker.run(&subsystem);
             Ok::<(), Infallible>(())
         })
