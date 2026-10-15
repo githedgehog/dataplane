@@ -41,6 +41,7 @@ use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
 use tracectl::{TracingRateLimitConfig, get_trace_ctl};
 use tracing::{debug, error, info, warn};
+use traffic_control::ControlPlane;
 
 use net::interface::display::MultiIndexInterfaceMapView;
 use net::interface::{Interface, InterfaceName};
@@ -114,6 +115,10 @@ pub struct ConfigProcessorParams {
     /// The gateway's name, as of the last config applied: what this gateway calls itself to its
     /// neighbours. `None` until a config naming it has been applied.
     pub gateway_name: tokio::sync::watch::Sender<Option<String>>,
+
+    /// The addresses and peers the control-plane traffic classes are built from, as of the last
+    /// config applied.
+    pub control_plane: tokio::sync::watch::Sender<ControlPlane>,
 }
 
 impl ConfigProcessor {
@@ -188,6 +193,7 @@ impl ConfigProcessor {
         self.update_history(&config, &result, false).await;
         if result.is_ok() {
             self.publish_gateway_name(&config);
+            self.publish_control_plane(&config);
             self.config_db.store(config);
         } else {
             self.rollback().await;
@@ -213,6 +219,25 @@ impl ConfigProcessor {
         });
     }
 
+    /// Tell whoever is watching the addresses and peers an applied config gives the gateway, if
+    /// they changed.
+    fn publish_control_plane(&self, config: &ValidatedGwConfig) {
+        let control = super::control_plane::of_config(config);
+        self.proc_params.control_plane.send_if_modified(|current| {
+            if *current == control {
+                return false;
+            }
+            info!(
+                "control plane: local addresses {:?}, VTEP {:?}, neighbours {:?}",
+                control.local(),
+                control.vtep(),
+                control.neighbours()
+            );
+            *current = control;
+            true
+        });
+    }
+
     /// Attempt to apply the previously applied config.
     async fn rollback(&mut self) {
         let active = self.config_db.get_current_config();
@@ -222,6 +247,7 @@ impl ConfigProcessor {
         self.update_history(&active, &result, true).await;
         if result.is_ok() {
             self.publish_gateway_name(&active);
+            self.publish_control_plane(&active);
         }
         match &result {
             Ok(_) => debug!("Successfully rolled back to config {active_genid}"),
