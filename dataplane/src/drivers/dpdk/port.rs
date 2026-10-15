@@ -551,22 +551,26 @@ pub(crate) struct ControlQueues<'p, 'eal> {
     pub(crate) tx: TxQueue<'p>,
     /// The port's control pool, which injected frames are copied into.
     pub(crate) pool: Pool<'p>,
-    /// Where to hand the kernel what the control queue receives.
+    /// Where to hand the kernel what the control queue receives: the bridge's control channel,
+    /// which its pump drains before the data workers' punts.
     pub(crate) punt: Option<mpsc::Sender<Frame>>,
     /// Frames the kernel wants this port to transmit.
     pub(crate) inject: Option<mpsc::Receiver<Frame>>,
 }
 
-/// The interface index the rest of the dataplane knows `port` by, and the channels to and from its
-/// tap, if the control-plane bridge has one.
-fn map_port_to_cp(
-    port: &Port<'_>,
-    bridge: Option<&mut DatapathEnds>,
-) -> (
+/// A port's interface index as the control plane knows it, then its punt channel, its control
+/// queue's priority punt channel, and its injection queue.
+type CpChannels = (
     InterfaceIndex,
     Option<mpsc::Sender<Frame>>,
+    Option<mpsc::Sender<Frame>>,
     Option<mpsc::Receiver<Frame>>,
-) {
+);
+
+/// The interface index the rest of the dataplane knows `port` by, and the channels to and from its
+/// tap, if the control-plane bridge has one: the ordinary punt channel, the control queue's
+/// priority punt channel, and the injection queue.
+fn map_port_to_cp(port: &Port<'_>, bridge: Option<&mut DatapathEnds>) -> CpChannels {
     let Some(bridge) = bridge else {
         debug!(
             "no control-plane bridge, so port {} delivers nothing to the kernel",
@@ -574,7 +578,7 @@ fn map_port_to_cp(
         );
         // No bridge, so nothing moved and the port's own index is the one the control plane saw
         // too.
-        return (port.if_index, None, None);
+        return (port.if_index, None, None, None);
     };
     let Some(queues) = bridge.take(&port.name) else {
         warn!(
@@ -582,12 +586,17 @@ fn map_port_to_cp(
              dropped and nothing can be injected",
             port.name
         );
-        return (port.if_index, None, None);
+        return (port.if_index, None, None, None);
     };
     // The tap's index, not the port's. Interface indices are per-namespace and these two live in
     // different ones; everything above the driver was built from the control plane's view, so it
     // speaks in tap indices. See `cpbridge::PortCpQueues::index`.
-    (queues.index, Some(queues.punt), queues.inject)
+    (
+        queues.index,
+        Some(queues.punt),
+        Some(queues.control),
+        queues.inject,
+    )
 }
 
 /// Every port's queues, split between the data workers and the control worker.
@@ -617,7 +626,7 @@ pub(crate) fn deal_queues<'p, 'eal>(
         // The injection queue goes to the control worker alone; the punt sender is cloned to every
         // worker, because any worker can receive a frame the kernel should see but only one may
         // drain a queue without reordering the session it carries.
-        let (if_index, punt, inject) = map_port_to_cp(port, bridge.as_deref_mut());
+        let (if_index, punt, control_punt, inject) = map_port_to_cp(port, bridge.as_deref_mut());
 
         let mut queues = port.dev.take_queues().ok_or_else(|| {
             DriverError::PortSetup(format!(
@@ -673,7 +682,7 @@ pub(crate) fn deal_queues<'p, 'eal>(
             rx,
             tx,
             pool: port.control_pool.clone(),
-            punt,
+            punt: control_punt,
             inject,
         });
     }
