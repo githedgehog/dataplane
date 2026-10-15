@@ -2,9 +2,18 @@
 // Copyright Open Network Fabric Authors
 
 //! Bringing DPDK ports up, and the queue split that gives each worker its own.
+//!
+//! A port has one receive and one transmit queue per data worker, and one more of each for the
+//! control worker: queue `W` for `W` data workers. RSS spreads over the data queues only, so the
+//! control receive queue gets nothing but what the control-plane classes' flow rules steer to it,
+//! and a data flood cannot crowd it out. The control queues draw on a pool of their own for the
+//! same reason.
 
 use concurrency::thread;
-use dpdk::dev::{Dev, DevConfig, DevInfo, PortClaim, RssConf, RxOffload, Started, TxOffloadConfig};
+use dpdk::dev::{
+    Configured, Dev, DevConfig, DevIndex, DevInfo, PortClaim, RssConf, RxOffload, Started,
+    TxOffloadConfig,
+};
 use dpdk::eal::Eal;
 use dpdk::mem::{Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
@@ -32,6 +41,20 @@ const POOL_MBUFS_PER_RX_DESCRIPTOR: u32 = 4;
 
 /// `sizeof(struct rte_mbuf)`, for estimating a pool's footprint in error messages.
 const MBUF_HEADER_BYTES: u64 = 128;
+
+/// Receive descriptors on the control queue: control traffic is a few thousand frames a second.
+const CONTROL_RX_DESCRIPTORS: u16 = 512;
+
+/// Transmit descriptors on the control queue.
+const CONTROL_TX_DESCRIPTORS: u16 = 512;
+
+/// Mbufs in a port's control pool: every descriptor of both control queues filled, with as many
+/// again for frames on their way through and per-core caches (2<sup>11</sup> - 1, the size a
+/// mempool uses best).
+const CONTROL_POOL_MBUFS: u32 = (1 << 11) - 1;
+
+/// Per-core cache of the control pool: only the control worker allocates from it, in small bursts.
+const CONTROL_POOL_CACHE: u32 = 32;
 
 /// Use the driver's RSS key and supported L3/L4 hash types; warn if no requested type is supported.
 /// Symmetric hashing would not co-locate NAT's translated reverse tuples. Shared flow state
@@ -206,7 +229,88 @@ fn fit_descriptors(asked: u16, min: u16, max: u16, align: u16) -> u16 {
     u16::try_from(fitted).unwrap_or(max)
 }
 
-/// A started port and its receive pool. Workers borrow its queue handles.
+/// A packet pool for port `index`, named `<what>_<index>`.
+fn new_pool<'eal>(
+    eal: &'eal Eal,
+    index: DevIndex,
+    what: &str,
+    params: PoolParams,
+) -> Result<Pool<'eal>, DriverError> {
+    let config = PoolConfig::new(format!("{what}_{index}"), params).map_err(|e| {
+        DriverError::PortSetup(format!(
+            "invalid {what} pool config for port {index}: {e:?}"
+        ))
+    })?;
+    eal.mem.new_pkt_pool(config).map_err(|e| {
+        DriverError::PortSetup(format!(
+            "failed to create {what} pool for port {index}: {e:?}"
+        ))
+    })
+}
+
+/// Set up receive queue `queue` with `descriptors` descriptors, filled from `pool`.
+fn new_rx_queue<'eal>(
+    dev: &mut Dev<'eal, Configured>,
+    queue: u16,
+    descriptors: u16,
+    pool: &Pool<'eal>,
+) -> Result<(), DriverError> {
+    let index = dev.info().index();
+    dev.new_rx_queue(RxQueueConfig {
+        queue_index: RxQueueIndex(queue),
+        num_descriptors: descriptors,
+        socket_preference: socket::Preference::Dev(index),
+        offloads: RxOffload::NONE,
+        pool: pool.clone(),
+    })
+    .map_err(|e| {
+        DriverError::PortSetup(format!(
+            "failed to set up rx queue {queue} on port {index}: {e:?}"
+        ))
+    })
+}
+
+/// Set up transmit queue `queue` with `descriptors` descriptors.
+fn new_tx_queue(
+    dev: &mut Dev<'_, Configured>,
+    queue: u16,
+    descriptors: u16,
+) -> Result<(), DriverError> {
+    let index = dev.info().index();
+    dev.new_tx_queue(TxQueueConfig {
+        queue_index: TxQueueIndex(queue),
+        num_descriptors: descriptors,
+        socket_preference: socket::Preference::Dev(index),
+        config: (),
+    })
+    .map_err(|e| {
+        DriverError::PortSetup(format!(
+            "failed to set up tx queue {queue} on port {index}: {e:?}"
+        ))
+    })
+}
+
+/// Spread RSS over the `data_queues` data queues only, keeping it off the control queue after them.
+///
+/// A port that cannot have that would deliver data to the control worker, which has no pipeline to
+/// forward it with: it is refused rather than left to drop a share of the traffic.
+fn keep_rss_off_control(
+    dev: &mut Dev<'_, Started>,
+    name: &str,
+    data_queues: u16,
+) -> Result<(), DriverError> {
+    let index = dev.info().index();
+    let data: Vec<RxQueueIndex> = (0..data_queues).map(RxQueueIndex).collect();
+    let size = dev.spread_rss(&data).map_err(|e| {
+        DriverError::PortSetup(format!(
+            "port {index} ({name}) would not keep RSS off its control queue: {e}"
+        ))
+    })?;
+    debug!("port {index} ({name}) spreads RSS over {data_queues} queue(s), {size} entries");
+    Ok(())
+}
+
+/// A started port and its control pool. Workers borrow its queue handles.
 pub(crate) struct Port<'eal> {
     /// The started device. Kept so the port can be stopped and closed explicitly at shutdown.
     pub(crate) dev: Dev<'eal, Started>,
@@ -227,12 +331,18 @@ pub(crate) struct Port<'eal> {
     pub(crate) mtu: u16,
     /// The device's bus address and driver, if DPDK would say.
     pub(crate) hardware: Option<String>,
-    /// Where injected control-plane frames are allocated from, and where received frames live.
-    pub(crate) rx_pool: Pool<'eal>,
+    /// Where frames received on the control queue live, and injected frames are allocated from.
+    pub(crate) control_pool: Pool<'eal>,
+    /// The number of data queues, which is also the index of the control queues.
+    pub(crate) data_queues: u16,
+    /// Whether the port has a control receive queue. It does unless the device spreads RSS over
+    /// every queue with no table to keep it off one; then control traffic stays on the data path.
+    pub(crate) control_rx: bool,
 }
 
 impl<'eal> Port<'eal> {
-    /// Configure a device with one receive and one transmit queue per worker, and start it.
+    /// Configure a device with one receive and one transmit queue per worker and one of each for
+    /// the control worker, and start it.
     ///
     /// # Errors
     ///
@@ -253,10 +363,21 @@ impl<'eal> Port<'eal> {
 
         let rss = rss_for(info, &name, num_workers);
 
-        // Each worker receives its own RX/TX queue pair on every port.
+        // Without a redirection table, RSS would spread over the control queue too.
+        let spreads = rss.is_some();
+        let control_rx = !spreads || info.reta_size() > 0;
+        if !control_rx {
+            warn!(
+                "port {index} ({name}) does RSS but has no redirection table to keep it off a \
+                 control queue; its control traffic will share the data queues"
+            );
+        }
+
+        // Each worker receives its own RX/TX queue pair on every port; the control worker gets the
+        // next pair.
         let config = DevConfig {
-            num_rx_queues: num_workers,
-            num_tx_queues: num_workers,
+            num_rx_queues: num_workers + u16::from(control_rx),
+            num_tx_queues: num_workers + 1,
             num_hairpin_queues: 0,
             // The pipeline handles checksums in software and requires uncoalesced packets.
             // RSS spreads queues without `RSS_HASH`, which only copies the hash into mbufs, and
@@ -283,37 +404,33 @@ impl<'eal> Port<'eal> {
         })?;
 
         let rx_pool = new_rx_pool(eal, index, &name, rx_descriptors, num_workers)?;
+        let control_pool = new_pool(
+            eal,
+            index,
+            "control",
+            PoolParams {
+                size: CONTROL_POOL_MBUFS,
+                cache_size: CONTROL_POOL_CACHE,
+                ..Default::default()
+            },
+        )?;
 
         for queue in 0..num_workers {
-            dev.new_rx_queue(RxQueueConfig {
-                queue_index: RxQueueIndex(queue),
-                num_descriptors: rx_descriptors,
-                socket_preference: socket::Preference::Dev(index),
-                offloads: RxOffload::NONE,
-                pool: rx_pool.clone(),
-            })
-            .map_err(|e| {
-                DriverError::PortSetup(format!(
-                    "failed to set up rx queue {queue} on port {index}: {e:?}"
-                ))
-            })?;
-
-            dev.new_tx_queue(TxQueueConfig {
-                queue_index: TxQueueIndex(queue),
-                num_descriptors: TX_DESCRIPTORS,
-                socket_preference: socket::Preference::Dev(index),
-                config: (),
-            })
-            .map_err(|e| {
-                DriverError::PortSetup(format!(
-                    "failed to set up tx queue {queue} on port {index}: {e:?}"
-                ))
-            })?;
+            new_rx_queue(&mut dev, queue, rx_descriptors, &rx_pool)?;
+            new_tx_queue(&mut dev, queue, TX_DESCRIPTORS)?;
         }
+        if control_rx {
+            new_rx_queue(&mut dev, num_workers, CONTROL_RX_DESCRIPTORS, &control_pool)?;
+        }
+        new_tx_queue(&mut dev, num_workers, CONTROL_TX_DESCRIPTORS)?;
 
-        let dev = dev
+        let mut dev = dev
             .start()
             .map_err(|e| DriverError::PortSetup(format!("failed to start port {index}: {e}")))?;
+
+        if control_rx && spreads {
+            keep_rss_off_control(&mut dev, &name, num_workers)?;
+        }
 
         // Both read after the port has started, because both are properties of the running device
         // rather than of the configuration: the MTU was clamped into the device's range and the MAC
@@ -341,7 +458,9 @@ impl<'eal> Port<'eal> {
             mac: mac.into(),
             mtu,
             hardware,
-            rx_pool,
+            control_pool,
+            data_queues: num_workers,
+            control_rx,
         })
     }
 
@@ -384,23 +503,41 @@ pub(crate) struct PortQueues<'p> {
     pub(crate) name: String,
     pub(crate) rx: RxQueue<'p>,
     pub(crate) tx: TxQueue<'p>,
-    /// The pool injected control-plane frames are copied into.
-    ///
-    /// The port's receive pool, deliberately: a second pool per port would be memory reserved for
-    /// a handful of frames a second. The cost is that a burst of injection competes with receive
-    /// buffering, which at control-plane rates it will not do noticeably.
-    pub(crate) pool: Pool<'p>,
     /// Where to hand a frame this port received which the kernel should see.
     ///
     /// `None` only without a control-plane bridge: in tests, or when building the bridge failed and
     /// the dataplane is already shutting down. There is then nowhere to punt to and local delivery is
     /// dropped.
     pub(crate) punt: Option<mpsc::Sender<Frame>>,
-    /// Frames the kernel wants this port to transmit, on the one worker that drains them.
+}
+
+/// One port's control queues, as handed to the control worker.
+pub(crate) struct ControlQueues<'p> {
+    pub(crate) name: String,
+    /// The MAC this port answers to.
+    pub(crate) mac: Mac,
+    /// Where the control-plane classes' flow rules steer to; `None` if the port has no control
+    /// receive queue.
+    pub(crate) rx: Option<RxQueue<'p>>,
+    /// Where the control plane's frames leave, apart from forwarded traffic.
+    pub(crate) tx: TxQueue<'p>,
+    /// The port's control pool, which injected frames are copied into.
+    pub(crate) pool: Pool<'p>,
+    /// Where to hand the kernel what the control queue receives.
+    pub(crate) punt: Option<mpsc::Sender<Frame>>,
+    /// Frames the kernel wants this port to transmit.
     pub(crate) inject: Option<mpsc::Receiver<Frame>>,
 }
 
-/// Give worker `i` queue pair `i` from every port.
+/// Every port's queues, split between the data workers and the control worker.
+pub(crate) struct Dealt<'p> {
+    /// Worker `i`'s queue pair `i` from every port.
+    pub(crate) workers: Vec<Vec<PortQueues<'p>>>,
+    /// Every port's control queues.
+    pub(crate) control: Vec<ControlQueues<'p>>,
+}
+
+/// Give worker `i` queue pair `i` from every port, and the control worker the control queues.
 ///
 /// # Errors
 ///
@@ -409,10 +546,11 @@ pub(crate) fn deal_queues<'p>(
     ports: &'p [Port<'_>],
     num_workers: u16,
     bridge: Option<&mut DatapathEnds>,
-) -> Result<Vec<Vec<PortQueues<'p>>>, DriverError> {
+) -> Result<Dealt<'p>, DriverError> {
     let mut per_worker: Vec<Vec<PortQueues<'p>>> = (0..num_workers)
         .map(|_| Vec::with_capacity(ports.len()))
         .collect();
+    let mut control = Vec::with_capacity(ports.len());
 
     let mut bridge = bridge;
     // Whether there is a bridge at all, as distinct from whether it knows about a given port. No
@@ -420,10 +558,10 @@ pub(crate) fn deal_queues<'p>(
     // control plane itself. A bridge that is missing *this* port is a mismatch worth a warning.
     let bridged = bridge.is_some();
     for port in ports {
-        // The injection queue goes to exactly one worker; the punt sender is cloned to all of them,
-        // because any worker can receive a frame the kernel should see but only one may drain a
-        // queue without reordering the session it carries.
-        let (if_index, punt, mut inject) = if let Some(queues) =
+        // The injection queue goes to the control worker alone; the punt sender is cloned to every
+        // worker, because any worker can receive a frame the kernel should see but only one may
+        // drain a queue without reordering the session it carries.
+        let (if_index, punt, inject) = if let Some(queues) =
             bridge.as_deref_mut().and_then(|b| b.take(&port.name))
         {
             // The tap's index, not the port's. Interface indices are per-namespace and these two
@@ -473,15 +611,42 @@ pub(crate) fn deal_queues<'p>(
                 name: port.name.clone(),
                 rx,
                 tx,
-                pool: port.rx_pool.clone(),
                 punt: punt.clone(),
-                // `take` rather than `clone`: worker 0 gets it, everybody else gets `None`.
-                inject: inject.take(),
             });
         }
+
+        let queue = port.data_queues;
+        let rx = if port.control_rx {
+            Some(queues.take_rx(RxQueueIndex(queue)).ok_or_else(|| {
+                DriverError::PortSetup(format!(
+                    "control rx queue {queue} missing on port {} after start",
+                    port.name
+                ))
+            })?)
+        } else {
+            None
+        };
+        let tx = queues.take_tx(TxQueueIndex(queue)).ok_or_else(|| {
+            DriverError::PortSetup(format!(
+                "control tx queue {queue} missing on port {} after start",
+                port.name
+            ))
+        })?;
+        control.push(ControlQueues {
+            name: port.name.clone(),
+            mac: port.mac,
+            rx,
+            tx,
+            pool: port.control_pool.clone(),
+            punt,
+            inject,
+        });
     }
 
-    Ok(per_worker)
+    Ok(Dealt {
+        workers: per_worker,
+        control,
+    })
 }
 
 #[cfg(test)]
