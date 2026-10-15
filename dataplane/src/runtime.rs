@@ -803,6 +803,9 @@ pub fn main() {
     // the host's management address, which only the host namespace can see.
     let (gateway_name, gateway_named) = tokio::sync::watch::channel(None);
     let (management_address, management_addressed) = tokio::sync::watch::channel(None);
+    // The addresses and peers that decide which traffic is the control plane's, from the config.
+    let (control_plane, _control_planes) =
+        tokio::sync::watch::channel(traffic_control::ControlPlane::default());
     shutdown.mgmt.spawn_on(
         crate::lldp_agent::management_address(management_address, shutdown.mgmt.cancel_token()),
         &host_handle,
@@ -928,6 +931,7 @@ pub fn main() {
                     dp_status_r: dp_status.clone(),
                     bmp_options: bmp_client_opts,
                     gateway_name,
+                    control_plane,
                 },
             },
         );
