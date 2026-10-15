@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::converters::strings::parse_address_v4;
+use net::interface::InterfaceName;
 use std::net::IpAddr;
 
 use k8s_intf::gateway_agent_crd::GatewayAgentGateway;
@@ -18,6 +19,10 @@ use crate::internal::routing::vrf::VrfConfig;
 
 use crate::converters::k8s::FromK8sConversionError;
 
+fn checked_ifname(name: &str) -> Result<InterfaceName, FromK8sConversionError> {
+    InterfaceName::try_from(name).map_err(|e| FromK8sConversionError::InvalidData(e.to_string()))
+}
+
 fn add_hardcoded_interfaces(
     vrf: &mut VrfConfig,
     gateway: &GatewayAgentGateway,
@@ -33,7 +38,8 @@ fn add_hardcoded_interfaces(
         .map_err(|e| FromK8sConversionError::InvalidData(format!("VTEP IP {vtep_ip_raw}: {e}")))?;
 
     // Loopback
-    let mut lo = InterfaceConfig::new("lo", InterfaceType::Loopback, false);
+    let ifname = checked_ifname("lo")?;
+    let mut lo = InterfaceConfig::new(ifname, InterfaceType::Loopback, false);
     lo = lo.add_address(vtep_ip.address, vtep_ip.mask_len);
     vrf.add_interface_config(lo);
 
@@ -63,7 +69,8 @@ fn add_hardcoded_interfaces(
         local: vtep_ipv4,
     });
 
-    let vtep = InterfaceConfig::new("vtep", vtep_iftype, false);
+    let ifname = checked_ifname("vtep")?;
+    let vtep = InterfaceConfig::new(ifname, vtep_iftype, false);
     vrf.add_interface_config(vtep);
 
     Ok(())
@@ -231,7 +238,7 @@ mod test {
                 let lo = underlay_interfaces
                     .values()
                     .find(|intf| {
-                        intf.name == "lo" && matches!(intf.iftype, InterfaceType::Loopback)
+                        intf.name.as_ref() == "lo" && matches!(intf.iftype, InterfaceType::Loopback)
                     })
                     .expect("lo interface not found");
                 assert_eq!(
@@ -245,7 +252,8 @@ mod test {
                 let vtep = underlay_interfaces
                     .values()
                     .find(|intf| {
-                        intf.name == "vtep" && matches!(intf.iftype, InterfaceType::Vtep(_))
+                        intf.name.as_ref() == "vtep"
+                            && matches!(intf.iftype, InterfaceType::Vtep(_))
                     })
                     .expect("vtep interface not found");
                 match &vtep.iftype {
@@ -262,7 +270,7 @@ mod test {
                     .filter(|intf| matches!(intf.iftype, InterfaceType::Ethernet(_)))
                     .map(|intf| {
                         (
-                            intf.name.clone(),
+                            intf.name.as_ref().to_string(),
                             GatewayAgentGatewayInterfaces::try_from(intf).unwrap(),
                         )
                     })

@@ -79,8 +79,12 @@ mod tests {
     fn an_underlay_names_its_addresses_and_neighbours() {
         let mut underlay = Underlay::default();
         underlay.vrf.add_interface_config(
-            InterfaceConfig::new("eth0", InterfaceType::Loopback, false)
-                .add_address(v4(10, 0, 0, 1), 31),
+            InterfaceConfig::new(
+                "eth0".try_into().expect("Bad ifname"),
+                InterfaceType::Loopback,
+                false,
+            )
+            .add_address(v4(10, 0, 0, 1), 31),
         );
         let mut bgp = BgpConfig::new(65000);
         bgp.add_neighbor(

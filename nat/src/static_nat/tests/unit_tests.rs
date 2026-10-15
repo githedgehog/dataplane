@@ -27,6 +27,7 @@ use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
 use net::buffer::PacketBufferMut;
 use net::eth::mac::Mac;
 use net::headers::{TryHeaders, TryHeadersMut, TryInnerIpv4, TryIpv4, TryIpv4Mut};
+use net::interface::InterfaceName;
 use net::ip::NextHeader;
 use net::packet::test_utils::{
     build_test_icmp4_destination_unreachable_packet, build_test_ipv4_packet,
@@ -41,6 +42,11 @@ use std::assert_matches;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 use tracing_test::traced_test;
+
+#[track_caller]
+fn ifname(name: &str) -> InterfaceName {
+    name.try_into().expect("Bad ifname")
+}
 
 fn addr_v4(addr: &str) -> Ipv4Addr {
     Ipv4Addr::from_str(addr).expect("Failed to create IPv4 address")
@@ -570,7 +576,7 @@ pub(crate) fn build_gwconfig_from_overlay(overlay: Overlay) -> ExternalConfig {
     let device_config = DeviceConfig::new();
 
     let vtep = InterfaceConfig::new(
-        "vtep",
+        ifname("vtep"),
         InterfaceType::Vtep(IfVtepConfig {
             mac: Some(Mac::from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01])),
             local: Ipv4Addr::from_str("127.0.0.1").expect("Failed to create local address"),
