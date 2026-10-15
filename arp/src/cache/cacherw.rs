@@ -196,11 +196,13 @@ mod test_arpnd_cache {
     fn test_neigh_cache_reader_stale_entries() {
         let (mut writer, reader) = NeighCacheWriter::new();
         let mac = DestinationMac::new(Mac::from([0x02, 0xca, 0xfe, 0xba, 0xbe, 0x01])).unwrap();
+        let ifname = "test-iface";
         let entry = |ip: &str, ifindex: u32, state: NeighState| {
             let ip = IpAddr::from_str(ip).expect("Bad address");
             NeighEntry::new(
                 ip,
                 InterfaceIndex::try_new(ifindex).unwrap(),
+                ifname,
                 Some(mac),
                 state,
             )

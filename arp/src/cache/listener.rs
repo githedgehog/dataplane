@@ -27,6 +27,7 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 use futures::channel::mpsc::UnboundedReceiver;
+use nix::net::if_::if_indextoname;
 
 #[allow(unused)]
 use tracing::{debug, error, info};
@@ -88,9 +89,15 @@ impl TryFrom<&NeighbourMessage> for NeighEntry {
         let address = get_ip_address(&neigh.attributes).ok_or("No ip available".to_string())?;
         let state = NeighState::try_from(neigh.header.state)?;
         let mac = get_mac(&neigh.attributes);
+        let ifname = match if_indextoname(ifindex.to_u32()) {
+            Ok(name) => name.to_string_lossy().into_owned(),
+            Err(_) => "unknown".into(),
+        };
+
         Ok(Self {
             address,
             ifindex,
+            ifname,
             mac,
             state,
         })

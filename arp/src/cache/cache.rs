@@ -56,6 +56,7 @@ impl NeighState {
 pub struct NeighEntry {
     pub(crate) address: IpAddr,
     pub(crate) ifindex: InterfaceIndex,
+    pub(crate) ifname: String,
     pub(crate) mac: Option<DestinationMac>,
     pub(crate) state: NeighState,
 }
@@ -66,12 +67,14 @@ impl NeighEntry {
     pub(crate) fn new(
         address: IpAddr,
         ifindex: InterfaceIndex,
+        ifname: &str,
         mac: Option<DestinationMac>,
         state: NeighState,
     ) -> Self {
         Self {
             address,
             ifindex,
+            ifname: ifname.to_owned(),
             mac,
             state,
         }
@@ -83,6 +86,7 @@ impl NeighEntry {
         Self {
             address,
             ifindex,
+            ifname: "ifname".to_string(),
             mac: Some(mac),
             state: NeighState::Reachable,
         }
@@ -91,6 +95,11 @@ impl NeighEntry {
     #[must_use]
     pub(crate) fn ifindex(&self) -> InterfaceIndex {
         self.ifindex
+    }
+
+    #[must_use]
+    pub(crate) fn ifname(&self) -> &String {
+        &self.ifname
     }
 
     /// The MAC of the neighbor, if known. It may not be usable: see [`NeighEntry::is_usable`].
@@ -217,18 +226,19 @@ pub mod tests {
         let mac = DestinationMac::new(Mac::from([0x0, 0x0, 0x0, 0x0 ,0x0, 0x1])).unwrap();
         let resolved = [NeighState::Reachable, NeighState::Stale, NeighState::Delay, NeighState::Probe, NeighState::Noarp, NeighState::Permanent];
         let unresolved = [NeighState::Unset, NeighState::Incomplete, NeighState::Failed];
+        let ifname = "test-iface";
 
         for state in resolved {
-            let entry = NeighEntry::new(ip, ifindex, Some(mac), state);
+            let entry = NeighEntry::new(ip, ifindex, ifname, Some(mac), state);
             assert!(entry.is_usable(), "{state:?}");
             assert_eq!(entry.usable_mac(), Some(mac));
-            assert!(!NeighEntry::new(ip, ifindex, None, state).is_usable(), "{state:?} without mac");
+            assert!(!NeighEntry::new(ip, ifindex, ifname, None, state).is_usable(), "{state:?} without mac");
         }
         for state in unresolved {
-            let entry = NeighEntry::new(ip, ifindex, Some(mac), state);
+            let entry = NeighEntry::new(ip, ifindex, ifname, Some(mac), state);
             assert!(!entry.is_usable(), "{state:?}");
             assert_eq!(entry.usable_mac(), None);
-            assert!(!NeighEntry::new(ip, ifindex, None, state).is_usable(), "{state:?} without mac");
+            assert!(!NeighEntry::new(ip, ifindex, ifname, None, state).is_usable(), "{state:?} without mac");
         }
     }
 
@@ -239,12 +249,13 @@ pub mod tests {
         let ip = mk_addr("10.0.0.1");
         let ifindex = InterfaceIndex::try_new(2).unwrap();
         let mac = DestinationMac::new(Mac::from([0x0, 0x0, 0x0, 0x0 ,0x0, 0x1])).unwrap();
+        let ifname = "test-iface";
 
-        cache.add_entry(NeighEntry::new(ip, ifindex, Some(mac), NeighState::Stale));
+        cache.add_entry(NeighEntry::new(ip, ifindex, ifname, Some(mac), NeighState::Stale));
         assert_eq!(cache.get_mac(ip, ifindex), Some(mac));
 
         // the entry is kept, but its mac is no longer provided
-        cache.add_entry(NeighEntry::new(ip, ifindex, None, NeighState::Failed));
+        cache.add_entry(NeighEntry::new(ip, ifindex, ifname, None, NeighState::Failed));
         assert_eq!(cache.get_entry(ip, ifindex).map(NeighEntry::state), Some(NeighState::Failed));
         assert_eq!(cache.get_mac(ip, ifindex), None);
     }

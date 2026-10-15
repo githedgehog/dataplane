@@ -12,14 +12,17 @@ impl CliSource for NeighCache {}
 
 macro_rules! NEIGH_ENTRY_FMT {
     () => {
-        " {:<10} {:<20} {:<18} {:<10}"
+        " {:<16} {:<10} {:<20} {:<18} {:<10}"
     };
 }
 fn fmt_neigh_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     writeln!(
         f,
         "{}",
-        format_args!(NEIGH_ENTRY_FMT!(), "ifindex", "address", "mac", "state")
+        format_args!(
+            NEIGH_ENTRY_FMT!(),
+            "interface", "ifindex", "address", "mac", "state"
+        )
     )
 }
 
@@ -31,6 +34,7 @@ impl Display for NeighEntry {
             "{}",
             format_args!(
                 NEIGH_ENTRY_FMT!(),
+                self.ifname(),
                 self.ifindex(),
                 self.ip(),
                 mac,
