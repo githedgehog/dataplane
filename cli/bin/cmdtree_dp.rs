@@ -215,10 +215,12 @@ fn cmd_show_evpn() -> Node {
 
     root
 }
-fn cmd_show_adjacency_table() -> Node {
-    Node::new("adjacency-table")
-        .desc("Show neighboring information")
-        .action(CliAction::ShowAdjacencies)
+fn cmd_show_neigh_cache() -> Node {
+    let mut root = Node::new("neigh");
+    root += Node::new("cache")
+        .desc("Show the neighbor cache")
+        .action(CliAction::ShowNeighCache);
+    root
 }
 fn cmd_show_interface() -> Node {
     let mut root = Node::new("interface")
@@ -234,7 +236,7 @@ fn cmd_show_interface() -> Node {
 }
 fn cmd_show_routing() -> Node {
     let mut root = Node::new("");
-    root += cmd_show_adjacency_table();
+    root += cmd_show_neigh_cache();
     root += cmd_show_interface();
     root += cmd_show_evpn();
     root += cmd_show_vrf();

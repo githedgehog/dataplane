@@ -95,6 +95,7 @@ pub enum DoneReason {
     InvalidDstMac,        /* dropped the packet since it had to have an invalid destination mac */
     MissingEtherType,     /* couldn't determine ethertype to use */
     NotIp,                /* could not get IP header or packet is not IP */
+    ArpOutOfResources,    /* required ARP/ND resolution but had no resources to admit packet */
     RouteFailure,         /* missing routing information */
     RouteDrop,            /* routing explicitly requests pkts to be dropped */
     HopLimitExceeded,     /* TTL / Hop count was exceeded */
@@ -114,7 +115,7 @@ pub enum DoneReason {
     InvalidChecksum,      /* the validation of a checksum for this packet failed */
     IcmpErrorIncomplete,  /* the packet is an ICMP error but it does not contain data it should */
     InternalDrop,         /* the packet was dropped internally due to a queue being full */
-    Local,                /* the packet has to be locally consumed by kernel */
+    Local,                /* the packet has been handed to the system for local consumption */
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
     DeparseError, /* the packet was processed and delivered to driver, but not be sent due to serialization issue */
     NoHeadRoom, /* the packet was processed and delivered to driver, but not serialized due lack of headroom */
@@ -134,6 +135,9 @@ bitflags! {
         const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
         const REQ_STATIC_NAT_SRC  = 0b0010_0000_0000;      /* Packet requires static NAT (source) */
         const REQ_STATIC_NAT_DST  = 0b0100_0000_0000;      /* Packet requires static NAT (destination) */
+        const LOCAL       = 0b1000_0000_0000; /* Packet is to be locally consumed */
+        const SOURCED     = 0b0001_0000_0000_0000; /* Packet is locally originated */
+        const NEED_ARPND  = 0b0010_0000_0000_0000; /* Need ARP resolution */
     }
 }
 
@@ -293,6 +297,30 @@ impl PacketMeta {
             flags |= FlowInfoFlags::REQ_STATIC_NAT_SRC;
         }
         flags
+    }
+
+    pub fn set_local(&mut self, value: bool) {
+        self.set_flag(MetaFlags::LOCAL, value);
+    }
+
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        self.flags.contains(MetaFlags::LOCAL)
+    }
+
+    #[must_use]
+    pub fn is_sourced(&self) -> bool {
+        self.flags.contains(MetaFlags::SOURCED)
+    }
+    pub fn set_sourced(&mut self, value: bool) {
+        self.set_flag(MetaFlags::SOURCED, value);
+    }
+    #[must_use]
+    pub fn need_arp_nd(&self) -> bool {
+        self.flags.contains(MetaFlags::NEED_ARPND)
+    }
+    pub fn set_need_arp_nd(&mut self, value: bool) {
+        self.set_flag(MetaFlags::NEED_ARPND, value);
     }
 }
 impl Drop for PacketMeta {

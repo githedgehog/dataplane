@@ -3,7 +3,6 @@
 
 //! Router IO, which includes the control-plane interface CPI and the FRR management interface (FRRMI)
 
-use crate::atable::atablerw::AtableReader;
 use crate::cli::handler::handle_cli_request;
 use crate::config::FrrConfig;
 use crate::errors::RouterError;
@@ -404,7 +403,6 @@ pub(crate) fn start_rio(
     conf: &RioConf,
     fibtw: FibTableWriter,
     iftw: IfTableWriter,
-    atabler: AtableReader,
     cli_sources: Option<CliSources>,
 ) -> Result<RioHandle, RouterError> {
     let mut rio = Rio::new(conf)?;
@@ -427,7 +425,7 @@ pub(crate) fn start_rio(
         let mut cpi_buf = BytesMut::with_capacity(2048);
 
         // create routing database: this is fully owned
-        let mut db = RoutingDb::new(fibtw, iftw, atabler);
+        let mut db = RoutingDb::new(fibtw, iftw);
 
         revent!(RouterEvent::Started);
 
@@ -563,7 +561,6 @@ pub(crate) fn start_rio(
 
 #[cfg(test)]
 mod tests {
-    use crate::atable::atablerw::AtableWriter;
     use crate::config::{FrrConfig, RouterConfig};
     use crate::errors::RouterError;
     use crate::fib::fibtable::FibTableWriter;
@@ -609,13 +606,9 @@ mod tests {
         /* create fib table */
         let (fibtw, _fibtr) = FibTableWriter::new();
 
-        /* create atable */
-        let (_atablew, atabler) = AtableWriter::new();
-
         /* start CPI */
         let router = test_router_subsystem();
-        let mut cpi =
-            start_rio(&router, &conf, fibtw, iftw, atabler, None).expect("Should succeed");
+        let mut cpi = start_rio(&router, &conf, fibtw, iftw, None).expect("Should succeed");
         thread::sleep(Duration::from_secs(3));
         assert_eq!(cpi.finish(), Ok(()));
     }
@@ -636,12 +629,9 @@ mod tests {
         /* create fib table */
         let (fibtw, _fibtr) = FibTableWriter::new();
 
-        /* create atable */
-        let (_atablew, atabler) = AtableWriter::new();
-
         /* start router IO */
         let router = test_router_subsystem();
-        let rio = start_rio(&router, &conf, fibtw, iftw, atabler, None);
+        let rio = start_rio(&router, &conf, fibtw, iftw, None);
         assert!(rio.is_err_and(|e| matches!(e, RouterError::InvalidPath(_))));
     }
 
@@ -687,16 +677,15 @@ mod tests {
         held: (
             crate::interfaces::iftablerw::IfTableReader,
             crate::fib::fibtable::FibTableReader,
-            crate::atable::atablerw::AtableWriter,
         ),
     }
     fn db_for_test() -> TestDb {
         let (iftw, iftr) = IfTableWriter::new();
         let (fibtw, fibtr) = FibTableWriter::new();
-        let (atablew, atabler) = AtableWriter::new();
+
         TestDb {
-            db: RoutingDb::new(fibtw, iftw, atabler),
-            held: (iftr, fibtr, atablew),
+            db: RoutingDb::new(fibtw, iftw),
+            held: (iftr, fibtr),
         }
     }
 
@@ -963,7 +952,6 @@ mod tests {
         held: (
             crate::interfaces::iftablerw::IfTableReader,
             crate::fib::fibtable::FibTableReader,
-            crate::atable::atablerw::AtableWriter,
         ),
     }
     impl RunningRio {
@@ -971,20 +959,12 @@ mod tests {
             let dir = SockDir::new();
             let (iftw, iftr) = IfTableWriter::new();
             let (fibtw, fibtr) = FibTableWriter::new();
-            let (atablew, atabler) = AtableWriter::new();
-            let handle = start_rio(
-                &test_router_subsystem(),
-                &dir.conf(),
-                fibtw,
-                iftw,
-                atabler,
-                None,
-            )
-            .expect("rio should start on fresh socket paths");
+            let handle = start_rio(&test_router_subsystem(), &dir.conf(), fibtw, iftw, None)
+                .expect("rio should start on fresh socket paths");
             Self {
                 handle,
                 dir,
-                held: (iftr, fibtr, atablew),
+                held: (iftr, fibtr),
             }
         }
     }

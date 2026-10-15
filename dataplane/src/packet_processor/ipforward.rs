@@ -249,6 +249,8 @@ impl IpForwarder {
             }
             Ok(None) => {
                 // Packet does not include VxLAN encap. Consume it.
+                packet.meta_mut().set_local(true);
+                // we keep this done reason for the time being, but it should be removed
                 packet.done(DoneReason::Local);
             }
         }

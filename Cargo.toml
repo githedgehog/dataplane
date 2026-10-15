@@ -4,6 +4,7 @@ members = [
     "acl",
     "acl-filter",
     "args",
+    "arp",
     "cli",
     "clock",
     "common",
@@ -40,6 +41,7 @@ members = [
     "nat",
     "net",
     "pipeline",
+    "pkt-io",
     "rekon",
     "routing",
     "stats",
@@ -75,6 +77,7 @@ repository = "https://github.com/githedgehog/dataplane/"
 acl = { path = "./acl", package = "dataplane-acl", features = [] }
 acl-filter = { path = "./acl-filter", package = "dataplane-acl-filter", features = [] }
 args = { path = "./args", package = "dataplane-args", features = [] }
+arp = { path = "./arp", package = "dataplane-arp", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }
 clock = { path = "./clock", package = "dataplane-clock", features = [] }
@@ -111,6 +114,7 @@ n-vm-protocol = { path = "./n-vm-protocol", package = "dataplane-n-vm-protocol",
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
+pkt-io = { path = "./pkt-io", package = "dataplane-pkt-io", features = [] }
 rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
 routing = { path = "./routing", package = "dataplane-routing", features = [] }
 stats = { path = "./stats", package = "dataplane-stats", features = [] }
@@ -126,6 +130,7 @@ ahash = { version = "0.8.12", default-features = false, features = [] }
 anyhow = { version = "1.0.104", default-features = false, features = [] }
 arc-swap = { version = "1.9.2", default-features = false, features = [] }
 arrayvec = { version = "0.7.8", default-features = false, features = [] }
+async-channel = { version = "2.5.0", default-features = false, features = [] }
 async-trait = { version = "0.1.92", default-features = false, features = [] }
 atomic-instant-full = { version = "0.1.1", default-features = false, features = [] }
 axum = { version = "0.8.9", default-features = false, features = [] }

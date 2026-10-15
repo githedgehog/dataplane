@@ -17,6 +17,7 @@ bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/bolero", "
 
 [dependencies]
 # internal
+arp = { workspace = true }
 acl-filter = { workspace = true }
 args = { workspace = true }
 clock = { workspace = true }

@@ -5,6 +5,7 @@
 
 use acl_filter::AclFilterContext;
 use acl_filter::AclFilterContextWriter;
+use arp::ArpNdCtl;
 use concurrency::sync::Arc;
 use config::external::overlay::ValidatedOverlay;
 use flow_entry::flow_table::FlowTable;
@@ -75,6 +76,9 @@ pub(crate) struct ConfigProcessor {
 pub struct ConfigProcessorParams {
     // channel to router
     pub router_ctl: RouterCtlSender,
+
+    // channel to ARP/ND
+    pub arp_ctl: ArpNdCtl,
 
     // access data associated to pipeline
     pub pipeline_data: Arc<PipelineData>,
@@ -458,7 +462,7 @@ impl VpcManager<RequiredInformationBase> {
 /// Build router config and apply it over the router control channel
 async fn apply_router_config(
     kernel_vrfs: &HashMap<InterfaceName, Interface>,
-    config: Arc<ValidatedGwConfig>,
+    config: &Arc<ValidatedGwConfig>,
     router_ctl: &RouterCtlSender,
 ) -> ConfigResult {
     let genid = config.genid();
@@ -591,6 +595,20 @@ fn apply_device_config(device: &DeviceConfig) -> ConfigResult {
     Ok(())
 }
 
+async fn update_arp_config(arp_ctl: &ArpNdCtl, config: &ValidatedGwConfig) {
+    let interfaces: Vec<_> = config
+        .external()
+        .underlay()
+        .vrf
+        .interfaces
+        .values()
+        .filter(|ifc| ifc.is_eth())
+        .map(|iface| InterfaceName::try_from(iface.name.as_str()).unwrap())
+        .collect();
+
+    arp_ctl.enable(&interfaces).await.unwrap();
+}
+
 impl ConfigProcessor {
     /// Main method to apply a config
     async fn apply_gw_config(&mut self, config: Arc<ValidatedGwConfig>) -> Result<(), ConfigError> {
@@ -606,6 +624,7 @@ impl ConfigProcessor {
         let aclfilterw = &mut self.proc_params.aclfilterw;
         let portfw_w = &mut self.proc_params.portfw_w;
         let flow_table = &self.proc_params.flow_table;
+        let arp_ctl = &self.proc_params.arp_ctl;
 
         // internal config should be available
         let internal = config.internal().unwrap_or_else(|| unreachable!());
@@ -676,7 +695,10 @@ impl ConfigProcessor {
         let _ = update_stats_vpc_mappings(&config, vpcmapw);
 
         /* apply config in router */
-        apply_router_config(&kernel_vrfs, config.clone(), router_ctl).await?;
+        apply_router_config(&kernel_vrfs, &config, router_ctl).await?;
+
+        /* update arp configuration */
+        update_arp_config(arp_ctl, &config).await;
 
         /* update the pipeline generation id, iff config was applied */
         self.proc_params.pipeline_data.set_genid(genid);

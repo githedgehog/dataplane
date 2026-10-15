@@ -275,6 +275,15 @@ pub fn main() {
     let mut setup = start_router(&shutdown.router, router_params, driver_status_reader)
         .expect("failed to start router");
 
+    // start ARP/ND
+    let arp = setup.arp;
+    let (_handle, arp_ctl) = match arp.launch(&mgmt_handle, &shutdown.arp) {
+        Ok((handle, arp_ctl)) => (handle, arp_ctl),
+        Err(e) => {
+            panic!("Failed to launch ARP/ND daemon: {e}");
+        }
+    };
+
     // start bmp server if indicated via cmd line. It is fine to start it after the router since no bgp session may be up
     // until a configuration is applied, and the mgmt is not yet up.
     let _bmp_handle = if let Some(bmp_params) = &bmp_server_params {
@@ -307,6 +316,7 @@ pub fn main() {
                 hostname: gwname.clone(),
                 interfaces: args.interfaces().map(|i| i.interface).collect(),
                 processor_params: ConfigProcessorParams {
+                    arp_ctl,
                     router_ctl: setup.router.get_ctl_tx(),
                     pipeline_data: pipeline_factory().get_data(),
                     flow_table: setup.flow_table,
