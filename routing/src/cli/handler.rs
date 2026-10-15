@@ -583,7 +583,7 @@ fn do_handle_cli_request(
         CliAction::ShowRouterIpv6FibEntries => show_ip_fib(request, db, false)?,
         CliAction::ShowRouterIpv4FibGroups => show_ip_fib_groups(request, db, true)?,
         CliAction::ShowRouterIpv6FibGroups => show_ip_fib_groups(request, db, false)?,
-        CliAction::ShowAdjacencies => show_provider(request, sources.neigh_cache.as_deref()),
+        CliAction::ShowNeighCache => show_provider(request, sources.neigh_cache.as_deref()),
         CliAction::ShowFlowTable => show_provider(request, sources.flow_table.as_deref()),
         CliAction::ShowFlowFilter => show_provider(request, sources.flow_filter.as_deref()),
         CliAction::ShowPortForwarding => show_provider(request, sources.portfw_table.as_deref()),
