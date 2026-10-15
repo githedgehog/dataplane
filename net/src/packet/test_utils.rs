@@ -16,9 +16,13 @@ use crate::checksum::Checksum;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, Mac, SourceMac};
-use crate::headers::{EmbeddedHeadersBuilder, EmbeddedTransport, HeadersBuilder, Net, Transport};
-use crate::icmp4::{Icmp4, Icmp4DestUnreachable, TruncatedIcmp4};
-use crate::icmp6::{Icmp6, Icmp6Type, TruncatedIcmp6};
+use crate::headers::Headers;
+use crate::headers::builder::{
+    Blank, BuildPacketError, EmbeddedAssembler, HeaderStack, Install, Within,
+};
+use crate::headers::{HeadersBuilder, Net, Transport};
+use crate::icmp4::{Icmp4, Icmp4DestUnreachable, Icmp4EchoRequest, Icmp4Type};
+use crate::icmp6::{Icmp6, Icmp6EchoRequest, Icmp6Type};
 use crate::ip::NextHeader;
 use crate::ipv4::Ipv4;
 use crate::ipv4::addr::UnicastIpv4Addr;
@@ -26,12 +30,10 @@ use crate::ipv6::Ipv6;
 use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::packet::{InvalidPacket, Packet};
 use crate::parse::DeParse;
-use crate::tcp::port::TcpPort;
-use crate::tcp::{Tcp, TcpChecksumPayload, TruncatedTcp};
-use crate::udp::port::UdpPort;
-use crate::udp::{TruncatedUdp, Udp, UdpChecksum, UdpChecksumPayload, UdpEncap};
+use crate::tcp::Tcp;
+use crate::udp::Udp;
 use etherparse::icmpv4::DestUnreachableHeader;
-use etherparse::{IcmpEchoHeader, Icmpv4Header, Icmpv4Type, Icmpv6Header, Icmpv6Type};
+use etherparse::{Icmpv4Header, Icmpv4Type, Icmpv6Header};
 use std::default::Default;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
@@ -40,29 +42,45 @@ use crate::ip::dscp::Dscp;
 use crate::ip::ecn::Ecn;
 use crate::vxlan::{Vni, Vxlan};
 
-fn make_default_for_transport(transport_type: Option<NextHeader>) -> Option<Transport> {
+/// MACs of the default test frames.
+const TEST_SRC_MAC: Mac = Mac([0x2, 0, 0, 0, 0, 1]);
+const TEST_DST_MAC: Mac = Mac([0x2, 0, 0, 0, 0, 2]);
+
+/// Map builder errors onto the helpers' error type. Only a parse failure fits; any
+/// other error is a bug in the defaults.
+fn into_packet(
+    built: Result<Packet<TestBuffer>, BuildPacketError>,
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    match built {
+        Ok(packet) => Ok(packet),
+        Err(BuildPacketError::Parse(invalid)) => Err(invalid),
+        Err(e) => panic!("the default test packet does not build: {e}"),
+    }
+}
+
+/// Add the default transport: a TCP SYN (seq 1) or UDP from port 123 to 456, or none.
+#[track_caller]
+fn with_default_transport<T>(
+    ip: HeaderStack<T>,
+    transport_type: Option<NextHeader>,
+) -> Result<Packet<TestBuffer>, BuildPacketError>
+where
+    T: Blank,
+    Headers: Install<T>,
+    Tcp: Within<T>,
+    Udp: Within<T>,
+{
     match transport_type {
-        Some(NextHeader::TCP) => {
-            let mut tcp = Tcp::new(123.try_into().unwrap(), 456.try_into().unwrap());
-            tcp.set_syn(true);
-            tcp.set_sequence_number(1);
-            Some(Transport::Tcp(tcp))
-        }
-        Some(NextHeader::UDP) => {
-            let udp = Udp::new(123.try_into().unwrap(), 456.try_into().unwrap());
-            Some(Transport::Udp(udp))
-        }
-        // Echo identifiers serve as ports for NAT and are covered by the ICMP checksum.
-        Some(NextHeader::ICMP) => Some(Transport::Icmp4(crate::icmp4::Icmp4::with_type(
-            crate::icmp4::Icmp4Type::EchoRequest(crate::icmp4::Icmp4EchoRequest { id: 18, seq: 2 }),
-        ))),
-        Some(NextHeader::ICMP6) => Some(Transport::Icmp6(crate::icmp6::Icmp6::with_type(
-            crate::icmp6::Icmp6Type::EchoRequest(crate::icmp6::Icmp6EchoRequest { id: 18, seq: 2 }),
-        ))),
-        Some(transport_type) => {
-            panic!("make_default_for_transport: Unsupported transport type: {transport_type:?}")
-        }
-        None => None,
+        None => ip.build_packet(),
+        Some(NextHeader::TCP) => ip
+            .tcp_ports(123, 456)
+            .with(|tcp| {
+                tcp.set_syn(true);
+                tcp.set_sequence_number(1);
+            })
+            .build_packet(),
+        Some(NextHeader::UDP) => ip.udp_ports(123, 456).build_packet(),
+        Some(other) => panic!("unsupported transport type for a default test packet: {other:?}"),
     }
 }
 
@@ -80,62 +98,33 @@ pub fn make_default_for_eth(ethtype: EthType) -> Eth {
 }
 
 #[must_use]
-/// Builds a test ipv4 packet with the given TTL value and transport type.
+/// An IPv4 packet from `1.2.3.4` to `5.6.7.8` with the given TTL.
 ///
-/// The packet is an IPv4 packet with a source IP address of `1.2.3.4` and a destination of `5.6.7.8`.
-/// The Ethernet source and destination MAC addresses are 0x02:00:00:00:00:01 and 0x02:00:00:00:00:02
-/// respectively.  The source and destination ports are 123 and 456 respectively for TCP and UDP.
-///
-/// Tests can use the utility functions on [`Packet`] to then customize the addresses and ports as
-/// desired.
-///
-/// # Panics
-///
-/// Panics if the transport type is anything other than `Some(NextHeader::TCP)`,
-/// `Some(NextHeader::UDP)`, `Some(NextHeader::ICMP)`, or None
-///
+/// The transport is a TCP SYN or UDP from port 123 to 456, an ICMP echo request
+/// (id 18, seq 2), or none.
 pub fn build_test_ipv4_packet_with_transport(
     ttl: u8,
     transport_type: Option<NextHeader>,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
     assert_ne!(transport_type, Some(NextHeader::ICMP6), "ICMPv6 over IPv4");
-    let mut headers = HeadersBuilder::default();
-    let mut transport = make_default_for_transport(transport_type);
-
-    headers.eth(Some(make_default_for_eth(EthType::IPV4)));
-    let mut ipv4 = Ipv4::default();
-    ipv4.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(1, 2, 3, 4)).unwrap());
-    ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
-    ipv4.set_ttl(ttl);
-    if let Some(transport) = transport.as_ref() {
-        ipv4.set_payload_len(transport.size().get()).unwrap();
-        if let Some(transport_type) = transport_type {
-            ipv4.set_next_header(transport_type);
-        } else {
-            unreachable!("build_test_ipv4_packet_with_transport: Transport type is None here");
-        }
-    }
-
-    let net = Net::Ipv4(ipv4);
-
-    if let Some(transport) = transport.as_mut() {
-        transport.update_checksum(&net, None, []);
-    }
-
-    headers.net(Some(net));
-    headers.transport(transport);
-    let headers = headers.build().unwrap();
-    let mut buffer: TestBuffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
-    Packet::new(buffer)
+    let ip = HeaderStack::new()
+        .eth_macs(TEST_SRC_MAC, TEST_DST_MAC)
+        .ipv4_addrs("1.2.3.4", "5.6.7.8")
+        .with(|ip| {
+            ip.set_ttl(ttl);
+        });
+    into_packet(match transport_type {
+        // Echo identifiers serve as ports for NAT and are covered by the ICMP checksum.
+        Some(NextHeader::ICMP) => ip
+            .icmp4(|_| {})
+            .echo_request(|echo| *echo = Icmp4EchoRequest { id: 18, seq: 2 })
+            .build_packet(),
+        other => with_default_transport(ip, other),
+    })
 }
 
 #[must_use]
-/// Builds a test packet with the given TTL value.
-///
-/// The packet is an IPv4 packet with a source IP address of 1.2.3.4 and a destination of 5.6.7.8.
-/// The Ethernet source and destination MAC addresses are 0x02:00:00:00:00:01 and 0x02:00:00:00:00:02
-/// respectively.
+/// [`build_test_ipv4_packet_with_transport`] with no transport.
 pub fn build_test_ipv4_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
     build_test_ipv4_packet_with_transport(ttl, None)
 }
@@ -147,8 +136,8 @@ pub fn addr_v4(a: &str) -> Ipv4Addr {
 }
 
 #[must_use]
-#[allow(unsafe_code)]
-/// Builds a UDP/IPv4/Eth frame
+#[track_caller]
+/// A UDP/IPv4 frame with TTL 255 and no payload.
 pub fn build_test_udp_ipv4_frame(
     src_mac: Mac,
     dst_mac: Mac,
@@ -157,34 +146,20 @@ pub fn build_test_udp_ipv4_frame(
     sport: u16,
     dport: u16,
 ) -> Packet<TestBuffer> {
-    use crate::ip::UnicastIpAddr;
-    use std::net::IpAddr;
-
-    let mut packet = build_test_ipv4_packet_with_transport(255, Some(NextHeader::UDP)).unwrap();
-    packet
-        .set_eth_source(src_mac)
-        .expect("Could not set src mac");
-    packet
-        .set_eth_destination(dst_mac)
-        .expect("Could not set dst mac");
-    packet
-        .set_ip_source(src_ip.parse::<UnicastIpAddr>().expect("Bad src ip"))
-        .expect("Could not set src ip");
-    packet
-        .set_ip_destination(dst_ip.parse::<IpAddr>().expect("Bad dst ip"))
-        .expect("Could not set dst ip");
-    packet
-        .set_udp_source_port(UdpPort::new_checked(sport).expect("Bad src port"))
-        .expect("Could not set src port");
-    packet
-        .set_udp_destination_port(UdpPort::new_checked(dport).expect("Bad dst port"))
-        .expect("Could not set dst port");
-
-    packet
+    HeaderStack::new()
+        .eth_macs(src_mac, dst_mac)
+        .ipv4_addrs(src_ip, dst_ip)
+        .with(|ip| {
+            ip.set_ttl(255);
+        })
+        .udp_ports(sport, dport)
+        .build_packet()
+        .expect("a valid UDP/IPv4 frame")
 }
 
 #[must_use]
-#[allow(unsafe_code)]
+#[track_caller]
+/// [`build_test_udp_ipv4_frame`] with both MACs `02:00:00:00:00:01`.
 pub fn build_test_udp_ipv4_packet(
     src_ip: &str,
     dst_ip: &str,
@@ -202,127 +177,67 @@ pub fn build_test_udp_ipv4_packet(
 }
 
 #[must_use]
-#[allow(unsafe_code)]
+#[track_caller]
+/// A TCP SYN (seq 1) with TTL 255 and no payload, both MACs `02:00:00:00:00:01`.
 pub fn build_test_tcp_ipv4_packet(
     src_ip: &str,
     dst_ip: &str,
     sport: u16,
     dport: u16,
 ) -> Packet<TestBuffer> {
-    use crate::ip::UnicastIpAddr;
-    use std::net::IpAddr;
-
-    let mut packet = build_test_ipv4_packet_with_transport(255, Some(NextHeader::TCP)).unwrap();
-    packet
-        .set_eth_source(Mac([0x2, 0, 0, 0, 0, 1]))
-        .expect("Could not set src mac");
-    packet
-        .set_eth_destination(Mac([0x2, 0, 0, 0, 0, 1]))
-        .expect("Could not set dst mac");
-    packet
-        .set_ip_source(src_ip.parse::<UnicastIpAddr>().expect("Bad src ip"))
-        .expect("Could not set src ip");
-    packet
-        .set_ip_destination(dst_ip.parse::<IpAddr>().expect("Bad dst ip"))
-        .expect("Could not set dst ip");
-    packet
-        .set_tcp_source_port(TcpPort::new_checked(sport).expect("Bad src port"))
-        .expect("Could not set src port");
-    packet
-        .set_tcp_destination_port(TcpPort::new_checked(dport).expect("Bad dst port"))
-        .expect("Could not set dst port");
-
-    packet
+    let mac = Mac([0x2, 0, 0, 0, 0, 1]);
+    HeaderStack::new()
+        .eth_macs(mac, mac)
+        .ipv4_addrs(src_ip, dst_ip)
+        .with(|ip| {
+            ip.set_ttl(255);
+        })
+        .tcp_ports(sport, dport)
+        .with(|tcp| {
+            tcp.set_syn(true);
+            tcp.set_sequence_number(1);
+        })
+        .build_packet()
+        .expect("a valid TCP/IPv4 frame")
 }
 
 #[must_use]
-/// Builds a test packet with the given TTL value.
-///
-/// The packet is an IPv6 packet with a source IP address of `::1.2.3.4` and a destination of `::5.6.7.8`.
-/// The Ethernet source and destination MAC addresses are 0x02:00:00:00:00:01 and 0x02:00:00:00:00:02
-/// respectively.
+/// [`build_test_ipv6_packet_with_transport`] with no transport.
 pub fn build_test_ipv6_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
-    let mut headers = HeadersBuilder::default();
-    headers.eth(Some(make_default_for_eth(EthType::IPV6)));
-    let mut ipv6 = Ipv6::default();
-    // To construct an Ipv6Addr from a string, use FromStr or "::1.2.3.4".parse()
-    ipv6.set_source(UnicastIpv6Addr::new("::1.2.3.4".parse::<Ipv6Addr>().unwrap()).unwrap());
-    ipv6.set_destination("::5.6.7.8".parse::<Ipv6Addr>().unwrap());
-    ipv6.set_hop_limit(ttl);
-    headers.net(Some(Net::Ipv6(ipv6)));
-
-    let headers = headers.build().unwrap();
-    let mut buffer: TestBuffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
-    Packet::new(buffer)
+    build_test_ipv6_packet_with_transport(ttl, None)
 }
 
 #[must_use]
-/// Builds a test IPv6 packet with the given hop-limit value and transport type.
+/// An IPv6 packet from `::1.2.3.4` to `::5.6.7.8` with the given hop limit.
 ///
-/// The packet is an IPv6 packet with a source IP address of `::1.2.3.4` and a destination of
-/// `::5.6.7.8`. The Ethernet source and destination MAC addresses are 0x02:00:00:00:00:01 and
-/// 0x02:00:00:00:00:02 respectively. The source and destination ports are 123 and 456 respectively
-/// for TCP and UDP.
-///
-/// Tests can use the utility functions on [`Packet`] to then customize the addresses and ports as
-/// desired.
-///
-/// # Panics
-///
-/// Panics if the transport type is anything other than `Some(NextHeader::TCP)`,
-/// `Some(NextHeader::UDP)`, `Some(NextHeader::ICMP6)`, or None
+/// The transport is a TCP SYN or UDP from port 123 to 456, an `ICMPv6` echo request
+/// (id 18, seq 2), or none.
 pub fn build_test_ipv6_packet_with_transport(
     hl: u8,
     transport_type: Option<NextHeader>,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
     assert_ne!(transport_type, Some(NextHeader::ICMP), "ICMPv4 over IPv6");
-    let mut headers = HeadersBuilder::default();
-    headers.eth(Some(make_default_for_eth(EthType::IPV6)));
-
-    let mut ipv6 = Ipv6::default();
-    ipv6.set_source(UnicastIpv6Addr::new("::1.2.3.4".parse::<Ipv6Addr>().unwrap()).unwrap());
-    ipv6.set_destination("::5.6.7.8".parse::<Ipv6Addr>().unwrap());
-    ipv6.set_hop_limit(hl);
-
-    if let Some(next_header) = transport_type {
-        let mut transport = make_default_for_transport(transport_type).unwrap();
-        ipv6.set_payload_length(transport.size().get());
-        ipv6.set_next_header(next_header);
-        let net = Net::Ipv6(ipv6);
-        transport.update_checksum(&net, None, []);
-        headers.net(Some(net));
-        headers.transport(Some(transport));
-    } else {
-        headers.net(Some(Net::Ipv6(ipv6)));
-    }
-
-    let headers = headers.build().unwrap();
-    let mut buffer: TestBuffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
-    Packet::new(buffer)
+    let ip = HeaderStack::new()
+        .eth_macs(TEST_SRC_MAC, TEST_DST_MAC)
+        .ipv6_addrs("::1.2.3.4", "::5.6.7.8")
+        .with(|ip| {
+            ip.set_hop_limit(hl);
+        });
+    into_packet(match transport_type {
+        // Echo identifiers serve as ports for NAT and are covered by the ICMP checksum.
+        Some(NextHeader::ICMP6) => ip
+            .icmp6(|_| {})
+            .echo_request6(|echo| *echo = Icmp6EchoRequest { id: 18, seq: 2 })
+            .build_packet(),
+        other => with_default_transport(ip, other),
+    })
 }
 
 #[must_use]
-/// Builds a test `ICMPv4` Destination Unreachable packet with embedded headers.
+/// An `ICMPv4` network-unreachable error quoting a header-only packet.
 ///
-/// The outer packet is an IPv4 packet with the specified source and destination addresses.
-/// The Ethernet source and destination MAC addresses are `0x02:00:00:00:00:01` and `0x02:00:00:00:00:02`,
-/// respectively.
-///
-/// The embedded (inner) packet is a TCP/UDP/ICMP packet with the specified source and destination
-/// IP addresses and ports or identifier. The inner TCP/UDP/ICMP packet has a full (not-truncated)
-/// header, but an empty payload.
-///
-/// # Arguments
-///
-/// * `outer_src_ip` - The source IP address of the outer packet.
-/// * `outer_dst_ip` - The destination IP address of the outer packet.
-/// * `inner_src_ip` - The source IP address of the inner packet.
-/// * `inner_dst_ip` - The destination IP address of the inner packet.
-/// * `next_header` - The transport type of the inner packet.
-/// * `inner_param_1` - The first parameter of the inner packet: source port, or identifier for ICMP echo.
-/// * `inner_param_2` - The second parameter of the inner packet: destination port, or sequence number for ICMP echo.
+/// The quoted TCP / UDP uses `inner_param_1` and `inner_param_2` as ports; a quoted
+/// echo request uses them as id and seq.
 pub fn build_test_icmp4_destination_unreachable_packet(
     outer_src_ip: Ipv4Addr,
     outer_dst_ip: Ipv4Addr,
@@ -361,110 +276,47 @@ pub fn build_test_icmp4_destination_unreachable_packet_with_code(
     inner_param_1: u16,
     inner_param_2: u16,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
-    let IcmpErrorAddrs {
-        outer_src: outer_src_ip,
-        outer_dst: outer_dst_ip,
-        inner_src: inner_src_ip,
-        inner_dst: inner_dst_ip,
-    } = addrs;
-    let mut headers = HeadersBuilder::default();
+    let inner_src = UnicastIpv4Addr::new(addrs.inner_src).unwrap();
+    let packet = HeaderStack::new()
+        .eth_macs(TEST_SRC_MAC, TEST_DST_MAC)
+        .ipv4_addrs(addrs.outer_src, addrs.outer_dst)
+        .with(|ip| {
+            ip.set_ttl(8);
+        })
+        .icmp4(|_| {})
+        .dest_unreachable(|u| *u = unreachable)
+        .embedded(|inner| {
+            let inner = inner.ipv4(|ip| {
+                ip.set_source(inner_src)
+                    .set_destination(addrs.inner_dst)
+                    .set_ttl(4);
+            });
+            match next_header {
+                NextHeader::ICMP => {
+                    inner.icmp4(Icmp4::with_type(Icmp4Type::EchoRequest(Icmp4EchoRequest {
+                        id: inner_param_1,
+                        seq: inner_param_2,
+                    })))
+                }
+                other => embed_ports(inner, other, inner_param_1, inner_param_2),
+            }
+        })
+        .build_packet();
+    into_packet(packet)
+}
 
-    // Ethernet
-    headers.eth(Some(make_default_for_eth(EthType::IPV4)));
-
-    // Inner transport
-    let mut inner_transport;
+/// Quote a TCP or UDP header with these ports.
+fn embed_ports(
+    inner: EmbeddedAssembler,
+    next_header: NextHeader,
+    sport: u16,
+    dport: u16,
+) -> EmbeddedAssembler {
     match next_header {
-        NextHeader::TCP => {
-            let tcp = Tcp::new(
-                inner_param_1.try_into().unwrap(),
-                inner_param_2.try_into().unwrap(),
-            );
-            inner_transport = EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp));
-        }
-        NextHeader::UDP => {
-            let udp = Udp::new(
-                inner_param_1.try_into().unwrap(),
-                inner_param_2.try_into().unwrap(),
-            );
-            inner_transport = EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp));
-        }
-        NextHeader::ICMP => {
-            let icmp = Icmp4(Icmpv4Header::new(Icmpv4Type::EchoRequest(IcmpEchoHeader {
-                id: inner_param_1,
-                seq: inner_param_2,
-            })));
-            inner_transport = EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp));
-        }
+        NextHeader::TCP => inner.tcp(sport.try_into().unwrap(), dport.try_into().unwrap(), |_| {}),
+        NextHeader::UDP => inner.udp(sport.try_into().unwrap(), dport.try_into().unwrap(), |_| {}),
         _ => panic!("Unsupported next header: {next_header:?}"),
     }
-
-    // Inner IPv4
-    let mut inner_ipv4 = Ipv4::default();
-    inner_ipv4.set_source(UnicastIpv4Addr::new(inner_src_ip).unwrap());
-    inner_ipv4.set_destination(inner_dst_ip);
-    inner_ipv4.set_ttl(4);
-    inner_ipv4.set_next_header(next_header);
-    inner_ipv4
-        .set_payload_len(inner_transport.size().get())
-        .unwrap();
-    inner_ipv4.update_checksum(&()).unwrap();
-
-    // ICMP
-    let icmp = Icmp4(Icmpv4Header::new(Icmpv4Type::DestinationUnreachable(
-        DestUnreachableHeader::from(unreachable),
-    )));
-
-    // Outer IPv4
-    let mut outer_ipv4 = Ipv4::default();
-    outer_ipv4.set_source(UnicastIpv4Addr::new(outer_src_ip).unwrap());
-    outer_ipv4.set_destination(outer_dst_ip);
-    outer_ipv4.set_ttl(8);
-    outer_ipv4.set_next_header(NextHeader::ICMP);
-    outer_ipv4
-        .set_payload_len(icmp.size().get() + inner_ipv4.size().get() + inner_transport.size().get())
-        .unwrap();
-    outer_ipv4.update_checksum(&()).unwrap();
-    let outer_net = Net::Ipv4(outer_ipv4);
-
-    // Adjustments
-    let inner_net = Net::Ipv4(inner_ipv4);
-    match &mut inner_transport {
-        EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp)) => {
-            tcp.update_checksum(&TcpChecksumPayload::new(&inner_net, &[]))
-                .unwrap();
-        }
-        EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp)) => {
-            udp.update_checksum(&UdpChecksumPayload::new(&inner_net, &[]))
-                .unwrap();
-        }
-        EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp)) => {
-            icmp.update_checksum(&[]).unwrap();
-        }
-        _ => {}
-    }
-
-    // Embedded headers
-    let mut embedded_headers = EmbeddedHeadersBuilder::default();
-    embedded_headers.net(Some(inner_net));
-    embedded_headers.transport(Some(inner_transport));
-    let embedded_headers = embedded_headers.build().unwrap();
-
-    // More adjustments
-    let mut icmp_transport = Transport::Icmp4(icmp);
-    icmp_transport.update_checksum(&outer_net, Some(&embedded_headers), []);
-
-    // Headers
-    headers.net(Some(outer_net));
-    headers.transport(Some(icmp_transport));
-    headers.embedded_ip(Some(Box::new(embedded_headers)));
-    let headers = headers.build().unwrap();
-
-    // Packet
-    let data = vec![0u8; headers.size().get() as usize];
-    let mut buffer = TestBuffer::from_raw_data(&data);
-    headers.deparse(buffer.as_mut()).unwrap();
-    Packet::new(buffer)
 }
 
 /// Direction for ICMP Echo packets
@@ -477,62 +329,30 @@ pub enum IcmpEchoDirection {
 }
 
 #[must_use]
-/// Builds a test `ICMPv4` Echo Request or Reply packet.
-///
-/// The packet is an IPv4 packet with the specified source and destination addresses.
-/// The Ethernet source and destination MAC addresses are `0x02:00:00:00:00:01` and `0x02:00:00:00:00:02`,
-/// respectively.
+/// An `ICMPv4` echo request or reply with TTL 8 and seq 0.
 pub fn build_test_icmp4_echo(
     src_ip: Ipv4Addr,
     dst_ip: Ipv4Addr,
     identifier: u16,
     direction: IcmpEchoDirection,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
-    let mut headers = HeadersBuilder::default();
-
-    // Ethernet
-    headers.eth(Some(make_default_for_eth(EthType::IPV4)));
-
-    // ICMP Echo header
-    let echo_header = IcmpEchoHeader {
-        id: identifier,
-        seq: 0,
-    };
-    let icmp_type = match direction {
-        IcmpEchoDirection::Request => Icmpv4Type::EchoRequest(echo_header),
-        IcmpEchoDirection::Reply => Icmpv4Type::EchoReply(echo_header),
-    };
-    let icmp = Icmp4(Icmpv4Header::new(icmp_type));
-
-    // IPv4
-    let mut ipv4 = Ipv4::default();
-    ipv4.set_source(UnicastIpv4Addr::new(src_ip).unwrap());
-    ipv4.set_destination(dst_ip);
-    ipv4.set_ttl(8);
-    ipv4.set_next_header(NextHeader::ICMP);
-    ipv4.set_payload_len(icmp.size().get()).unwrap();
-    ipv4.update_checksum(&()).unwrap();
-    let net = Net::Ipv4(ipv4);
-
-    // Update ICMP checksum
-    let mut icmp_transport = Transport::Icmp4(icmp);
-    icmp_transport.update_checksum(&net, None, []);
-
-    // Build headers
-    headers.net(Some(net));
-    headers.transport(Some(icmp_transport));
-    let headers = headers.build().unwrap();
-
-    // Create packet
-    let mut buffer: TestBuffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
-    Packet::new(buffer)
+    let icmp = HeaderStack::new()
+        .eth_macs(TEST_SRC_MAC, TEST_DST_MAC)
+        .ipv4_addrs(src_ip, dst_ip)
+        .with(|ip| {
+            ip.set_ttl(8);
+        })
+        .icmp4(|_| {});
+    into_packet(match direction {
+        IcmpEchoDirection::Request => icmp
+            .echo_request(|echo| echo.id = identifier)
+            .build_packet(),
+        IcmpEchoDirection::Reply => icmp.echo_reply(|echo| echo.id = identifier).build_packet(),
+    })
 }
 
 #[must_use]
-/// Builds a VXLAN packet (underlay IPv4) whose outer IP header carries the given DSCP/ECN.
-///
-/// The payload is a minimal valid inner Ethernet frame (an IPv4 packet with empty payload).
+/// A VXLAN packet over IPv4 with the given outer DSCP/ECN, carrying a minimal IPv4 frame.
 pub fn build_test_vxlan_ipv4_packet_with_outer_qos(
     dscp: Dscp,
     ecn: Ecn,
@@ -563,106 +383,45 @@ pub fn build_test_vxlan_ipv4_packet_carrying_vni(
     ecn: Ecn,
     inner_bytes: &[u8],
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
-    // VXLAN header bytes
-    let vxlan = Vxlan::new(vni);
-    let vxlan_len = Vxlan::MIN_LENGTH.get() as usize;
+    let udp = HeaderStack::new()
+        .eth_macs(TEST_SRC_MAC, TEST_DST_MAC)
+        .ipv4_addrs("1.2.3.4", "5.6.7.8")
+        .with(|ip| {
+            ip.set_dscp(dscp);
+            ip.set_ecn(ecn);
+        })
+        .udp_ports(123, Vxlan::PORT.as_u16());
+    vxlan_carrying(udp, vni, inner_bytes)
+}
 
-    // UDP payload = VXLAN header + inner frame
-    let udp_payload_len = vxlan_len + inner_bytes.len();
-    let udp_total_len = (Udp::MIN_LENGTH.get() as usize) + udp_payload_len;
-    let udp_len_u16: u16 = udp_total_len.try_into().unwrap();
-
-    // Outer headers
-    let mut headers = HeadersBuilder::default();
-    headers.eth(Some(make_default_for_eth(EthType::IPV4)));
-
-    let mut ipv4 = Ipv4::default();
-    ipv4.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(1, 2, 3, 4)).unwrap());
-    ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
-    ipv4.set_ttl(64);
-    ipv4.set_dscp(dscp);
-    ipv4.set_ecn(ecn);
-    ipv4.set_next_header(NextHeader::UDP);
-    ipv4.set_payload_len(udp_len_u16).unwrap();
-    ipv4.update_checksum(&()).unwrap();
-    let net = Net::Ipv4(ipv4);
-
-    let mut udp = Udp::new(123.try_into().unwrap(), Vxlan::PORT);
-    // VXLAN spec says that the checksum SHOULD be zero.
-    udp.set_checksum(UdpChecksum::ZERO)
-        .unwrap_or_else(|()| unreachable!());
-
-    headers.net(Some(net));
-    headers.transport(Some(Transport::Udp(udp)));
-    headers.udp_encap(Some(UdpEncap::Vxlan(vxlan)));
-    let headers = headers.build().unwrap();
-
-    // Buffer: outer headers + vxlan bytes + inner bytes
-    let total_len = headers.size().get() as usize + inner_bytes.len();
-    let mut data = vec![0u8; total_len];
-
-    headers.deparse(data.as_mut()).unwrap();
-
-    let inner_off = headers.size().get() as usize;
-    data[inner_off..inner_off + inner_bytes.len()].copy_from_slice(inner_bytes);
-
-    Packet::new(TestBuffer::from_raw_data(&data))
+/// Finish `udp` as a VXLAN tunnel on `vni` carrying `inner_bytes`.
+fn vxlan_carrying(
+    udp: HeaderStack<Udp>,
+    vni: Vni,
+    inner_bytes: &[u8],
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    into_packet(
+        udp.vxlan(|vxlan| *vxlan = Vxlan::new(vni))
+            .build_packet_with_payload(inner_bytes),
+    )
 }
 
 #[must_use]
-/// Builds a VXLAN packet (underlay IPv6) whose outer IPv6 header carries the given DSCP/ECN.
-///
-/// The payload is a minimal valid inner Ethernet frame (an IPv4 packet with empty payload).
+/// A VXLAN packet over IPv6 with the given outer DSCP/ECN, carrying a minimal IPv4 frame.
 pub fn build_test_vxlan_ipv6_packet_with_outer_qos(
     dscp: Dscp,
     ecn: Ecn,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
-    // Inner ethernet frame bytes
-    let inner = build_test_ipv4_packet(64).unwrap();
-    let inner_buf = inner.serialize().unwrap();
-    let inner_bytes = inner_buf.as_ref();
-
-    // VXLAN header bytes
-    let vni = Vni::new_checked(100).unwrap();
-    let vxlan = Vxlan::new(vni);
-    let vxlan_len = Vxlan::MIN_LENGTH.get() as usize;
-
-    // UDP payload = VXLAN header + inner frame
-    let udp_payload_len = vxlan_len + inner_bytes.len();
-    let udp_total_len = (Udp::MIN_LENGTH.get() as usize) + udp_payload_len;
-    let udp_len_u16: u16 = udp_total_len.try_into().unwrap();
-
-    let mut headers = HeadersBuilder::default();
-    headers.eth(Some(make_default_for_eth(EthType::IPV6)));
-
-    let mut ipv6 = Ipv6::default();
-    ipv6.set_source(UnicastIpv6Addr::new("::1.2.3.4".parse::<Ipv6Addr>().unwrap()).unwrap());
-    ipv6.set_destination("::5.6.7.8".parse::<Ipv6Addr>().unwrap());
-    ipv6.set_hop_limit(64);
-    ipv6.set_next_header(NextHeader::UDP);
-    ipv6.set_dscp(dscp);
-    ipv6.set_ecn(ecn);
-    ipv6.set_payload_length(udp_len_u16);
-    let net = Net::Ipv6(ipv6);
-
-    let mut udp = Udp::new(123.try_into().unwrap(), Vxlan::PORT);
-    udp.set_checksum(UdpChecksum::ZERO)
-        .unwrap_or_else(|()| unreachable!());
-
-    headers.net(Some(net));
-    headers.transport(Some(Transport::Udp(udp)));
-    headers.udp_encap(Some(UdpEncap::Vxlan(vxlan)));
-    let headers = headers.build().unwrap();
-
-    let total_len = headers.size().get() as usize + inner_bytes.len();
-    let mut data = vec![0u8; total_len];
-
-    headers.deparse(data.as_mut()).unwrap();
-
-    let inner_off = headers.size().get() as usize;
-    data[inner_off..inner_off + inner_bytes.len()].copy_from_slice(inner_bytes);
-
-    Packet::new(TestBuffer::from_raw_data(&data))
+    let inner = build_test_ipv4_packet(64).unwrap().serialize().unwrap();
+    let udp = HeaderStack::new()
+        .eth_macs(TEST_SRC_MAC, TEST_DST_MAC)
+        .ipv6_addrs("::1.2.3.4", "::5.6.7.8")
+        .with(|ip| {
+            ip.set_dscp(dscp);
+            ip.set_ecn(ecn);
+        })
+        .udp_ports(123, Vxlan::PORT.as_u16());
+    vxlan_carrying(udp, Vni::new_checked(100).unwrap(), inner.as_ref())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -681,81 +440,49 @@ pub fn build_test_icmp6_error_packet(
     inner_param_1: u16,
     inner_param_2: u16,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
-    let mut headers = HeadersBuilder::default();
-    headers.eth(Some(make_default_for_eth(EthType::IPV6)));
-
-    let mut inner_transport = match next_header {
-        NextHeader::TCP => EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(Tcp::new(
-            inner_param_1.try_into().unwrap(),
-            inner_param_2.try_into().unwrap(),
-        ))),
-        NextHeader::UDP => EmbeddedTransport::Udp(TruncatedUdp::FullHeader(Udp::new(
-            inner_param_1.try_into().unwrap(),
-            inner_param_2.try_into().unwrap(),
-        ))),
-        NextHeader::ICMP6 => EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(Icmp6(
-            Icmpv6Header::new(Icmpv6Type::EchoRequest(IcmpEchoHeader {
-                id: inner_param_1,
-                seq: inner_param_2,
-            })),
-        ))),
-        _ => panic!("Unsupported next header: {next_header:?}"),
+    let inner_src = UnicastIpv6Addr::new(addrs.inner_src).unwrap();
+    let embed = |inner: EmbeddedAssembler| {
+        let inner = inner.ipv6(|ip| {
+            ip.set_source(inner_src)
+                .set_destination(addrs.inner_dst)
+                .set_hop_limit(4);
+        });
+        match next_header {
+            NextHeader::ICMP6 => {
+                inner.icmp6(Icmp6::with_type(Icmp6Type::EchoRequest(Icmp6EchoRequest {
+                    id: inner_param_1,
+                    seq: inner_param_2,
+                })))
+            }
+            other => embed_ports(inner, other, inner_param_1, inner_param_2),
+        }
     };
-
-    let mut inner_ipv6 = Ipv6::default();
-    inner_ipv6.set_source(UnicastIpv6Addr::new(addrs.inner_src).unwrap());
-    inner_ipv6.set_destination(addrs.inner_dst);
-    inner_ipv6.set_hop_limit(4);
-    inner_ipv6.set_next_header(next_header);
-    inner_ipv6.set_payload_length(inner_transport.size().get());
-    let inner_net = Net::Ipv6(inner_ipv6);
-
-    let described = format!("{icmp_type:?}");
-    let icmp = Icmp6(Icmpv6Header::new(icmp_type.into()));
-    assert!(
-        icmp.is_error_message(),
-        "not an ICMPv6 error message: {described}"
-    );
-
-    let mut outer_ipv6 = Ipv6::default();
-    outer_ipv6.set_source(UnicastIpv6Addr::new(addrs.outer_src).unwrap());
-    outer_ipv6.set_destination(addrs.outer_dst);
-    outer_ipv6.set_hop_limit(8);
-    outer_ipv6.set_next_header(NextHeader::ICMP6);
-    outer_ipv6.set_payload_length(
-        icmp.size().get() + inner_net.size().get() + inner_transport.size().get(),
-    );
-    let outer_net = Net::Ipv6(outer_ipv6);
-
-    match &mut inner_transport {
-        EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp)) => {
-            tcp.update_checksum(&TcpChecksumPayload::new(&inner_net, &[]))
-                .unwrap();
-        }
-        EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp)) => {
-            udp.update_checksum(&UdpChecksumPayload::new(&inner_net, &[]))
-                .unwrap();
-        }
-        _ => {}
-    }
-
-    let mut embedded_headers = EmbeddedHeadersBuilder::default();
-    embedded_headers.net(Some(inner_net));
-    embedded_headers.transport(Some(inner_transport));
-    let embedded_headers = embedded_headers.build().unwrap();
-
-    let mut icmp_transport = Transport::Icmp6(icmp);
-    icmp_transport.update_checksum(&outer_net, Some(&embedded_headers), []);
-
-    headers.net(Some(outer_net));
-    headers.transport(Some(icmp_transport));
-    headers.embedded_ip(Some(Box::new(embedded_headers)));
-    let headers = headers.build().unwrap();
-
-    let data = vec![0u8; headers.size().get() as usize];
-    let mut buffer = TestBuffer::from_raw_data(&data);
-    headers.deparse(buffer.as_mut()).unwrap();
-    Packet::new(buffer)
+    let icmp = HeaderStack::new()
+        .eth_macs(TEST_SRC_MAC, TEST_DST_MAC)
+        .ipv6_addrs(addrs.outer_src, addrs.outer_dst)
+        .with(|ip| {
+            ip.set_hop_limit(8);
+        })
+        .icmp6(|_| {});
+    into_packet(match icmp_type {
+        Icmp6Type::DestUnreachable(t) => icmp
+            .dest_unreachable6(|u| *u = t)
+            .embedded(embed)
+            .build_packet(),
+        Icmp6Type::PacketTooBig(t) => icmp
+            .packet_too_big6(|u| *u = t)
+            .embedded(embed)
+            .build_packet(),
+        Icmp6Type::TimeExceeded(t) => icmp
+            .time_exceeded6(|u| *u = t)
+            .embedded(embed)
+            .build_packet(),
+        Icmp6Type::ParamProblem(t) => icmp
+            .param_problem6(|u| *u = t)
+            .embedded(embed)
+            .build_packet(),
+        other => panic!("not an ICMPv6 error message: {other:?}"),
+    })
 }
 
 #[must_use]
@@ -765,36 +492,19 @@ pub fn build_test_icmp6_echo(
     identifier: u16,
     direction: IcmpEchoDirection,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
-    let mut headers = HeadersBuilder::default();
-    headers.eth(Some(make_default_for_eth(EthType::IPV6)));
-
-    let echo_header = IcmpEchoHeader {
-        id: identifier,
-        seq: 0,
-    };
-    let icmp = Icmp6(Icmpv6Header::new(match direction {
-        IcmpEchoDirection::Request => Icmpv6Type::EchoRequest(echo_header),
-        IcmpEchoDirection::Reply => Icmpv6Type::EchoReply(echo_header),
-    }));
-
-    let mut ipv6 = Ipv6::default();
-    ipv6.set_source(UnicastIpv6Addr::new(src_ip).unwrap());
-    ipv6.set_destination(dst_ip);
-    ipv6.set_hop_limit(8);
-    ipv6.set_next_header(NextHeader::ICMP6);
-    ipv6.set_payload_length(icmp.size().get());
-    let net = Net::Ipv6(ipv6);
-
-    let mut icmp_transport = Transport::Icmp6(icmp);
-    icmp_transport.update_checksum(&net, None, []);
-
-    headers.net(Some(net));
-    headers.transport(Some(icmp_transport));
-    let headers = headers.build().unwrap();
-
-    let mut buffer: TestBuffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
-    Packet::new(buffer)
+    let icmp = HeaderStack::new()
+        .eth_macs(TEST_SRC_MAC, TEST_DST_MAC)
+        .ipv6_addrs(src_ip, dst_ip)
+        .with(|ip| {
+            ip.set_hop_limit(8);
+        })
+        .icmp6(|_| {});
+    into_packet(match direction {
+        IcmpEchoDirection::Request => icmp
+            .echo_request6(|echo| echo.id = identifier)
+            .build_packet(),
+        IcmpEchoDirection::Reply => icmp.echo_reply6(|echo| echo.id = identifier).build_packet(),
+    })
 }
 
 /// Build an `ICMPv4` error containing the raw `quote` bytes.
@@ -903,4 +613,327 @@ pub fn assert_checksum_current_or_refresh_requested(packet: &Packet<TestBuffer>)
         transport_checksum(&recomputed),
         "the packet asked for no checksum recompute, but its transport checksum is stale:\n{packet}"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::headers::{TryHeaders, TryIpv4, TryIpv6, TryTcp, TryUdp};
+    use crate::icmp4::Icmp4Type;
+    use crate::icmp6::Icmp6Type as Icmp6Kind;
+
+    /// Recomputing checksums on a copy must not change the headers.
+    fn assert_checksums_current(packet: &Packet<TestBuffer>) {
+        let mut recomputed = packet.deep_copy().unwrap();
+        recomputed.update_checksums();
+        assert_eq!(packet.headers(), recomputed.headers(), "stale checksum");
+    }
+
+    fn assert_default_eth(packet: &Packet<TestBuffer>) {
+        let eth = packet.headers().eth().unwrap();
+        assert_eq!(eth.source().inner(), TEST_SRC_MAC);
+        assert_eq!(eth.destination().inner(), TEST_DST_MAC);
+    }
+
+    #[test]
+    fn ipv4_defaults_for_every_transport() {
+        for transport in [
+            None,
+            Some(NextHeader::TCP),
+            Some(NextHeader::UDP),
+            Some(NextHeader::ICMP),
+        ] {
+            let packet = build_test_ipv4_packet_with_transport(17, transport).unwrap();
+            assert_default_eth(&packet);
+            let ip = packet.try_ipv4().unwrap();
+            assert_eq!(ip.source().inner(), Ipv4Addr::new(1, 2, 3, 4));
+            assert_eq!(ip.destination(), Ipv4Addr::new(5, 6, 7, 8));
+            assert_eq!(ip.ttl(), 17);
+            assert_checksums_current(&packet);
+        }
+    }
+
+    #[test]
+    fn ipv6_defaults_for_every_transport() {
+        for transport in [
+            None,
+            Some(NextHeader::TCP),
+            Some(NextHeader::UDP),
+            Some(NextHeader::ICMP6),
+        ] {
+            let packet = build_test_ipv6_packet_with_transport(17, transport).unwrap();
+            assert_default_eth(&packet);
+            let ip = packet.try_ipv6().unwrap();
+            assert_eq!(
+                ip.source().inner(),
+                "::1.2.3.4".parse::<Ipv6Addr>().unwrap()
+            );
+            assert_eq!(ip.destination(), "::5.6.7.8".parse::<Ipv6Addr>().unwrap());
+            assert_eq!(ip.hop_limit(), 17);
+            assert_checksums_current(&packet);
+        }
+    }
+
+    #[test]
+    fn default_transports_keep_their_fields() {
+        let packet = build_test_ipv4_packet_with_transport(64, Some(NextHeader::TCP)).unwrap();
+        let tcp = packet.try_tcp().unwrap();
+        assert_eq!(
+            (tcp.source().as_u16(), tcp.destination().as_u16()),
+            (123, 456)
+        );
+        assert!(tcp.syn());
+        assert_eq!(tcp.sequence_number(), 1);
+
+        let packet = build_test_ipv6_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();
+        let udp = packet.try_udp().unwrap();
+        assert_eq!(
+            (udp.source().as_u16(), udp.destination().as_u16()),
+            (123, 456)
+        );
+
+        let packet = build_test_ipv4_packet_with_transport(64, Some(NextHeader::ICMP)).unwrap();
+        let Some(Transport::Icmp4(icmp)) = packet.headers().transport() else {
+            panic!("expected Icmp4");
+        };
+        assert!(matches!(
+            icmp.icmp_type(),
+            Icmp4Type::EchoRequest(Icmp4EchoRequest { id: 18, seq: 2 })
+        ));
+
+        let packet = build_test_ipv6_packet_with_transport(64, Some(NextHeader::ICMP6)).unwrap();
+        let Some(Transport::Icmp6(icmp)) = packet.headers().transport() else {
+            panic!("expected Icmp6");
+        };
+        assert!(matches!(
+            icmp.icmp_type(),
+            Icmp6Kind::EchoRequest(Icmp6EchoRequest { id: 18, seq: 2 })
+        ));
+    }
+
+    /// The quoted transport checksum must be valid.
+    fn assert_inner_checksum_valid(packet: &Packet<TestBuffer>) {
+        use crate::headers::{EmbeddedTransport, TryEmbeddedTransport, TryInnerIp};
+        use crate::icmp4::TruncatedIcmp4;
+        use crate::icmp6::{Icmp6ChecksumPayload, TruncatedIcmp6};
+        use crate::tcp::{TcpChecksumPayload, TruncatedTcp};
+        use crate::udp::{TruncatedUdp, UdpChecksumPayload};
+
+        let net = packet.try_inner_ip().expect("an embedded IP header");
+        let valid = match packet
+            .try_embedded_transport()
+            .expect("an embedded transport")
+        {
+            EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp)) => tcp
+                .validate_checksum(&TcpChecksumPayload::new(net, &[]))
+                .is_ok(),
+            EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp)) => udp
+                .validate_checksum(&UdpChecksumPayload::new(net, &[]))
+                .is_ok(),
+            EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp)) => {
+                icmp.validate_checksum(&[]).is_ok()
+            }
+            EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(icmp)) => {
+                let Net::Ipv6(ip) = net else {
+                    panic!("ICMPv6 quoted inside IPv4");
+                };
+                icmp.validate_checksum(&Icmp6ChecksumPayload::new(
+                    ip.source().inner(),
+                    ip.destination(),
+                    &[],
+                ))
+                .is_ok()
+            }
+            other => panic!("expected a full quoted header, got {other:?}"),
+        };
+        assert!(valid, "the quoted transport checksum is not valid");
+    }
+
+    const V4_ERROR: IcmpErrorAddrs = IcmpErrorAddrs {
+        outer_src: Ipv4Addr::new(10, 0, 0, 254),
+        outer_dst: Ipv4Addr::new(10, 0, 0, 1),
+        inner_src: Ipv4Addr::new(10, 0, 0, 1),
+        inner_dst: Ipv4Addr::new(192, 168, 0, 1),
+    };
+
+    #[test]
+    fn icmp4_errors_quote_a_valid_original() {
+        for next_header in [NextHeader::TCP, NextHeader::UDP, NextHeader::ICMP] {
+            let packet = build_test_icmp4_destination_unreachable_packet_with_code(
+                Icmp4DestUnreachable::Host,
+                V4_ERROR,
+                next_header,
+                1234,
+                80,
+            )
+            .unwrap();
+            assert_default_eth(&packet);
+            let outer = packet.try_ipv4().unwrap();
+            assert_eq!(outer.source().inner(), V4_ERROR.outer_src);
+            assert_eq!(outer.ttl(), 8);
+            let Some(Transport::Icmp4(icmp)) = packet.headers().transport() else {
+                panic!("expected Icmp4");
+            };
+            assert_eq!(
+                icmp.icmp_type(),
+                Icmp4Type::DestUnreachable(Icmp4DestUnreachable::Host)
+            );
+            assert_checksums_current(&packet);
+            assert_inner_checksum_valid(&packet);
+        }
+    }
+
+    #[test]
+    fn icmp6_errors_quote_a_valid_original() {
+        use crate::icmp6::{
+            Icmp6DestUnreachable, Icmp6PacketTooBig, Icmp6ParamProblem, Icmp6ParamProblemCode,
+            Icmp6TimeExceeded,
+        };
+
+        let addrs = Icmp6ErrorAddrs {
+            outer_src: "2001:db8::fe".parse().unwrap(),
+            outer_dst: "2001:db8::1".parse().unwrap(),
+            inner_src: "2001:db8::1".parse().unwrap(),
+            inner_dst: "2001:db8:1::1".parse().unwrap(),
+        };
+        let errors = [
+            Icmp6Kind::DestUnreachable(Icmp6DestUnreachable::NoRoute),
+            Icmp6Kind::PacketTooBig(Icmp6PacketTooBig::new(1280).unwrap()),
+            Icmp6Kind::TimeExceeded(Icmp6TimeExceeded::HopLimitExceeded),
+            Icmp6Kind::ParamProblem(Icmp6ParamProblem {
+                code: Icmp6ParamProblemCode::ErroneousHeaderField,
+                pointer: 6,
+            }),
+        ];
+        for error in errors {
+            for next_header in [NextHeader::TCP, NextHeader::UDP, NextHeader::ICMP6] {
+                let packet =
+                    build_test_icmp6_error_packet(error.clone(), addrs, next_header, 1234, 80)
+                        .unwrap();
+                let Some(Transport::Icmp6(icmp)) = packet.headers().transport() else {
+                    panic!("expected Icmp6");
+                };
+                assert_eq!(icmp.icmp_type(), error);
+                assert_eq!(packet.try_ipv6().unwrap().hop_limit(), 8);
+                assert_checksums_current(&packet);
+                assert_inner_checksum_valid(&packet);
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "not an ICMPv6 error message")]
+    fn icmp6_error_rejects_a_query() {
+        let addrs = Icmp6ErrorAddrs {
+            outer_src: "2001:db8::fe".parse().unwrap(),
+            outer_dst: "2001:db8::1".parse().unwrap(),
+            inner_src: "2001:db8::1".parse().unwrap(),
+            inner_dst: "2001:db8:1::1".parse().unwrap(),
+        };
+        let _ = build_test_icmp6_error_packet(
+            Icmp6Kind::EchoRequest(Icmp6EchoRequest { id: 1, seq: 1 }),
+            addrs,
+            NextHeader::UDP,
+            1,
+            2,
+        );
+    }
+
+    #[test]
+    fn echo_helpers_set_direction_and_identifier() {
+        let src = Ipv4Addr::new(10, 0, 0, 1);
+        let dst = Ipv4Addr::new(10, 0, 0, 2);
+        for (direction, expect_request) in [
+            (IcmpEchoDirection::Request, true),
+            (IcmpEchoDirection::Reply, false),
+        ] {
+            let packet = build_test_icmp4_echo(src, dst, 7, direction).unwrap();
+            let Some(Transport::Icmp4(icmp)) = packet.headers().transport() else {
+                panic!("expected Icmp4");
+            };
+            match icmp.icmp_type() {
+                Icmp4Type::EchoRequest(echo) => {
+                    assert!(expect_request);
+                    assert_eq!((echo.id, echo.seq), (7, 0));
+                }
+                Icmp4Type::EchoReply(echo) => {
+                    assert!(!expect_request);
+                    assert_eq!((echo.id, echo.seq), (7, 0));
+                }
+                other => panic!("expected an echo, got {other:?}"),
+            }
+            assert_eq!(packet.try_ipv4().unwrap().ttl(), 8);
+            assert_checksums_current(&packet);
+
+            let packet = build_test_icmp6_echo(
+                "2001:db8::1".parse().unwrap(),
+                "2001:db8::2".parse().unwrap(),
+                7,
+                direction,
+            )
+            .unwrap();
+            let Some(Transport::Icmp6(icmp)) = packet.headers().transport() else {
+                panic!("expected Icmp6");
+            };
+            match icmp.icmp_type() {
+                Icmp6Kind::EchoRequest(echo) => {
+                    assert!(expect_request);
+                    assert_eq!((echo.id, echo.seq), (7, 0));
+                }
+                Icmp6Kind::EchoReply(echo) => {
+                    assert!(!expect_request);
+                    assert_eq!((echo.id, echo.seq), (7, 0));
+                }
+                other => panic!("expected an echo, got {other:?}"),
+            }
+            assert_checksums_current(&packet);
+        }
+    }
+
+    #[test]
+    fn vxlan_helpers_carry_the_inner_frame() {
+        use crate::headers::{TryUdp, TryVxlan};
+        use crate::udp::UdpChecksum;
+
+        let dscp = Dscp::new(46).unwrap();
+        let ecn = Ecn::new(1).unwrap();
+        let inner = build_test_ipv4_packet(64).unwrap().serialize().unwrap();
+        let vni = Vni::new_checked(4242).unwrap();
+
+        let v4 = build_test_vxlan_ipv4_packet_carrying_vni(vni, dscp, ecn, inner.as_ref()).unwrap();
+        let ip = v4.try_ipv4().unwrap();
+        assert_eq!((ip.dscp(), ip.ecn()), (dscp.into(), ecn.into()));
+        assert_eq!(v4.try_vxlan().unwrap().vni(), vni);
+
+        let v6 = build_test_vxlan_ipv6_packet_with_outer_qos(dscp, ecn).unwrap();
+        let ip = v6.try_ipv6().unwrap();
+        assert_eq!((ip.dscp(), ip.ecn()), (dscp.into(), ecn.into()));
+        assert_eq!(v6.try_vxlan().unwrap().vni().as_u32(), 100);
+
+        for packet in [&v4, &v6] {
+            assert_default_eth(packet);
+            assert_eq!(packet.payload().as_ref(), inner.as_ref());
+            let udp = packet.try_udp().unwrap();
+            assert_eq!(udp.destination(), Vxlan::PORT);
+            assert_eq!(udp.checksum(), Some(UdpChecksum::ZERO));
+            // UDP length covers the VXLAN header and the inner frame.
+            assert_eq!(
+                usize::from(udp.length().get()),
+                usize::from(Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()) + inner.as_ref().len()
+            );
+            assert_checksums_current(packet);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "ICMPv6 over IPv4")]
+    fn icmp6_over_ipv4_is_rejected() {
+        let _ = build_test_ipv4_packet_with_transport(64, Some(NextHeader::ICMP6));
+    }
+
+    #[test]
+    #[should_panic(expected = "unsupported transport type")]
+    fn unsupported_transport_is_rejected() {
+        let _ = build_test_ipv4_packet_with_transport(64, Some(NextHeader::HOP_BY_HOP));
+    }
 }

@@ -17,4 +17,4 @@ tracectl = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-net = { workspace = true, features = ["test_buffer"] }
+net = { workspace = true, features = ["builder"] }

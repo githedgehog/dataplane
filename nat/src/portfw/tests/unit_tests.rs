@@ -437,7 +437,6 @@ async fn an_icmp_error_about_a_forwarded_tcp_flow_keeps_a_valid_outer_checksum()
     error.meta_mut().set_overlay(true);
     error.meta_mut().src_vpcd = Some(vpcd2());
     error.meta_mut().set_port_forwarding(true);
-    error.update_checksums();
 
     let output = process_packet(&mut pipeline, error);
     assert_eq!(output.get_done(), None);
