@@ -1493,42 +1493,71 @@ impl<'eal, S: Open> Dev<'eal, S> {
 
 impl<'eal, S: Open> Dev<'eal, S> {
     /// Lay the RSS redirection table out round-robin over `queues`, so RSS delivers only to them.
+    /// Returns the size of the table, which [`rss_reta`](Self::rss_reta) reads back.
     ///
     /// Receive queues left out of the table get only what flow rules send them. Listing a queue
     /// more than once gives it a proportionally larger share.
+    ///
+    /// The table is the size the device reports, unless that would split unevenly: mlx5 reports a
+    /// table as small as the number of queues when that is a power of two, so 7 data queues out of
+    /// 8 would share 8 entries and one would get twice the traffic. Then the largest size DPDK
+    /// defines is tried first. Drivers that only take their own size refuse it, and get theirs.
     ///
     /// # Errors
     ///
     /// [`RetaError`] if the device has no usable table, `queues` is empty, or the driver refuses.
     #[tracing::instrument(level = "debug", skip(self))]
-    pub fn spread_rss(&mut self, queues: &[queue::rx::RxQueueIndex]) -> Result<(), RetaError> {
-        let size = self.info.reta_size();
+    pub fn spread_rss(&mut self, queues: &[queue::rx::RxQueueIndex]) -> Result<u16, RetaError> {
+        let reported = self.info.reta_size();
+        if reported != 0 && reported < reta::LARGEST && !reta::even(reported, queues.len()) {
+            match self.update_reta(reta::LARGEST, queues) {
+                Ok(()) => return Ok(reta::LARGEST),
+                Err(e) => debug!(
+                    "a {} entry RSS table was refused ({e}); using the {reported} the device reports",
+                    reta::LARGEST
+                ),
+            }
+        }
+        self.update_reta(reported, queues)?;
+        Ok(reported)
+    }
+
+    /// Write a table of `size` entries laid out over `queues`.
+    fn update_reta(
+        &mut self,
+        size: u16,
+        queues: &[queue::rx::RxQueueIndex],
+    ) -> Result<(), RetaError> {
         let mut groups = reta::layout(size, queues)?;
         let port = self.info.index().as_u16();
-        // SAFETY: `groups` holds `size` entries in whole groups, as the size argument says, and is
-        // only read during the call.
+        // SAFETY: `groups` covers `size` entries, as the size argument says, and is only read
+        // during the call.
         let ret = unsafe { rte_eth_dev_rss_reta_update(port, groups.as_mut_ptr(), size) };
         if ret == 0 {
-            debug!("RSS on port {port} now spreads over receive queues {queues:?}");
+            debug!(
+                "RSS on port {port} now spreads over receive queues {queues:?} ({size} entries)"
+            );
             Ok(())
         } else {
             Err(RetaError::Driver(ErrorCode::parse_i32(ret)))
         }
     }
 
-    /// The receive queue each entry of the RSS redirection table names, in table order.
+    /// The receive queue each entry of a `size` entry RSS redirection table names, in table order.
     ///
     /// # Errors
     ///
-    /// [`RetaError`] if the device has no usable table or the driver refuses the query.
-    pub fn rss_reta(&self) -> Result<alloc::vec::Vec<queue::rx::RxQueueIndex>, RetaError> {
-        let size = self.info.reta_size();
+    /// [`RetaError`] if `size` is zero or the driver refuses the query.
+    pub fn rss_reta(
+        &self,
+        size: u16,
+    ) -> Result<alloc::vec::Vec<queue::rx::RxQueueIndex>, RetaError> {
         let mut groups = reta::query_groups(size)?;
         let port = self.info.index().as_u16();
-        // SAFETY: `groups` holds `size` entries in whole groups, as the size argument says.
+        // SAFETY: `groups` covers `size` entries, as the size argument says.
         let ret = unsafe { rte_eth_dev_rss_reta_query(port, groups.as_mut_ptr(), size) };
         if ret == 0 {
-            Ok(reta::flatten(&groups))
+            Ok(reta::flatten(&groups, size))
         } else {
             Err(RetaError::Driver(ErrorCode::parse_i32(ret)))
         }
