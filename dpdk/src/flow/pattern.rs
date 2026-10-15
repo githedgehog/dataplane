@@ -7,15 +7,72 @@
 use core::net::{Ipv4Addr, Ipv6Addr};
 
 use dpdk_sys::{
-    rte_flow_item_ipv4, rte_flow_item_ipv6, rte_flow_item_tcp, rte_flow_item_udp,
-    rte_flow_item_vlan, rte_flow_item_vxlan,
+    rte_flow_item_eth, rte_flow_item_ipv4, rte_flow_item_ipv6, rte_flow_item_tcp,
+    rte_flow_item_udp, rte_flow_item_vlan, rte_flow_item_vxlan,
 };
+use net::eth::ethtype::EthType;
+use net::eth::mac::Mac;
 use net::vlan::{Pcp, Vid};
 use net::vxlan::Vni;
 
 /// `rte_be32_t` (network byte order) for an IPv4 address.
 fn be32(addr: Ipv4Addr) -> u32 {
     u32::from(addr).to_be()
+}
+
+/// Match criteria for an Ethernet header. `default()` matches any Ethernet frame (presence only).
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub struct EthMatch {
+    dst: Option<Mac>,
+    src: Option<Mac>,
+    ether_type: Option<EthType>,
+}
+
+impl EthMatch {
+    /// Constrain the destination MAC address, e.g. LLDP's nearest-bridge group address.
+    #[must_use]
+    pub fn dst(mut self, dst: Mac) -> EthMatch {
+        self.dst = Some(dst);
+        self
+    }
+
+    /// Constrain the source MAC address.
+    #[must_use]
+    pub fn src(mut self, src: Mac) -> EthMatch {
+        self.src = Some(src);
+        self
+    }
+
+    /// Constrain the EtherType, e.g. [`EthType::ARP`] or [`EthType::LLDP`].
+    ///
+    /// This is the EtherType of the Ethernet header itself: on a VLAN-tagged frame that is the tag's
+    /// TPID, and the payload's type is the VLAN item's to match.
+    #[must_use]
+    pub fn ether_type(mut self, ether_type: EthType) -> EthMatch {
+        self.ether_type = Some(ether_type);
+        self
+    }
+
+    /// Lower to the `(spec, mask)` pair the PMD reads. Unconstrained fields stay zero in `mask`,
+    /// which `rte_flow` reads as "don't care".
+    pub(crate) fn lower(&self) -> (rte_flow_item_eth, rte_flow_item_eth) {
+        // SAFETY: zeroed fields are valid; a zero mask leaves fields unconstrained.
+        let mut spec: rte_flow_item_eth = unsafe { core::mem::zeroed() };
+        let mut mask: rte_flow_item_eth = unsafe { core::mem::zeroed() };
+        if let Some(dst) = self.dst {
+            spec.annon1.hdr.dst_addr.addr_bytes = dst.0;
+            mask.annon1.hdr.dst_addr.addr_bytes = [u8::MAX; 6];
+        }
+        if let Some(src) = self.src {
+            spec.annon1.hdr.src_addr.addr_bytes = src.0;
+            mask.annon1.hdr.src_addr.addr_bytes = [u8::MAX; 6];
+        }
+        if let Some(ether_type) = self.ether_type {
+            spec.annon1.hdr.ether_type = ether_type.as_u16().to_be();
+            mask.annon1.hdr.ether_type = u16::MAX;
+        }
+        (spec, mask)
+    }
 }
 
 /// An IPv4 address and mask, supporting host, subnet and arbitrary masked matches.
@@ -344,5 +401,71 @@ impl TcpMatch {
             mask.hdr.dst_port = u16::MAX;
         }
         (spec, mask)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Whether `rte_flow` would say `(spec, mask)` matches a header of these fields: every masked bit
+    /// of the header equals the spec's.
+    fn eth_matches(
+        lowered: &(rte_flow_item_eth, rte_flow_item_eth),
+        dst: Mac,
+        src: Mac,
+        ty: u16,
+    ) -> bool {
+        let (spec, mask) = lowered;
+        let bytes = |a: [u8; 6], s: [u8; 6], m: [u8; 6]| (0..6).all(|i| a[i] & m[i] == s[i] & m[i]);
+        // SAFETY: reading the `hdr` view of the anonymous union, which is how `lower` wrote it.
+        let (spec, mask) = unsafe { (&spec.annon1.hdr, &mask.annon1.hdr) };
+        bytes(dst.0, spec.dst_addr.addr_bytes, mask.dst_addr.addr_bytes)
+            && bytes(src.0, spec.src_addr.addr_bytes, mask.src_addr.addr_bytes)
+            && ty.to_be() & mask.ether_type == spec.ether_type & mask.ether_type
+    }
+
+    #[test]
+    fn an_eth_match_lowers_to_exactly_its_criteria() {
+        bolero::check!()
+            .with_type::<(
+                Option<[u8; 6]>,
+                Option<[u8; 6]>,
+                Option<u16>,
+                [u8; 6],
+                [u8; 6],
+                u16,
+            )>()
+            .for_each(|&(want_dst, want_src, want_type, dst, src, ty)| {
+                let mut criteria = EthMatch::default();
+                if let Some(d) = want_dst {
+                    criteria = criteria.dst(Mac(d));
+                }
+                if let Some(s) = want_src {
+                    criteria = criteria.src(Mac(s));
+                }
+                if let Some(t) = want_type {
+                    criteria = criteria.ether_type(EthType::new(t));
+                }
+                let expected = want_dst.is_none_or(|d| d == dst)
+                    && want_src.is_none_or(|s| s == src)
+                    && want_type.is_none_or(|t| t == ty);
+                assert_eq!(
+                    eth_matches(&criteria.lower(), Mac(dst), Mac(src), ty),
+                    expected
+                );
+                // And the header the criteria describe always matches.
+                let own = (
+                    want_dst.unwrap_or(dst),
+                    want_src.unwrap_or(src),
+                    want_type.unwrap_or(ty),
+                );
+                assert!(eth_matches(
+                    &criteria.lower(),
+                    Mac(own.0),
+                    Mac(own.1),
+                    own.2
+                ));
+            });
     }
 }
