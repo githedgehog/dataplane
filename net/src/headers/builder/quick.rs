@@ -3,25 +3,14 @@
 
 //! Shorthands for building test packets from literals.
 //!
-//! Addresses, ports, MACs and VNIs are accepted as strings or as their typed
-//! values, so a test can say what it means without constructing every type:
-//!
 //! ```ignore
 //! use net::headers::builder::quick::*;
 //!
-//! // A TCP SYN from 10.0.0.1:12345 to 10.0.0.2:80.
 //! let syn = tcp("10.0.0.1:12345", "10.0.0.2:80")
 //!     .with(|tcp| { tcp.set_syn(true); })
 //!     .build_packet()
 //!     .unwrap();
 //!
-//! // IPv6 works the same; the family comes from the addresses.
-//! let dns = udp("[2001:db8::1]:5353", "[2001:db8::2]:53").build_packet().unwrap();
-//!
-//! // Ports can be strings too, and endpoints can be `(ip, port)` pairs.
-//! let web = tcp(("10.0.0.1", "40000"), ("10.0.0.2", "443")).build_packet().unwrap();
-//!
-//! // Anything the shorthands do not cover is still a `HeaderStack`.
 //! let tagged = HeaderStack::new()
 //!     .eth_macs("02:00:00:00:00:01", "02:00:00:00:00:02")
 //!     .vlan_id(100)
@@ -31,16 +20,10 @@
 //!     .unwrap();
 //! ```
 //!
-//! Every shorthand panics, naming the offending literal and the calling line,
-//! when a value does not parse or is not valid where it is used (a multicast
-//! source address, port 0, ...). This is test-facing code: a bad literal is a
-//! bug in the test.
-//!
-//! IP layers built here carry a TTL / hop limit of [`DEFAULT_TTL`] rather than
-//! the blank 0, so they survive a routing stage.
+//! Values can be strings or typed values. A bad value panics at the caller's line.
+//! IP layers get a TTL / hop limit of [`DEFAULT_TTL`].
 
-// Test-facing: a literal that does not parse is a bug in the test, and the
-// panic names it at the caller's line.
+// A bad literal is a bug in the test.
 #![allow(clippy::panic)]
 
 use std::fmt::Debug;
@@ -64,7 +47,7 @@ use crate::udp::port::UdpPort;
 use crate::vlan::{Vid, Vlan};
 use crate::vxlan::{Vni, Vxlan};
 
-/// TTL / hop limit given to IP layers built by these shorthands.
+/// TTL / hop limit of the IP layers built here.
 pub const DEFAULT_TTL: u8 = 64;
 
 // ---------------------------------------------------------------------------
@@ -101,7 +84,7 @@ macro_rules! from_text {
     };
 }
 
-/// Implement a literal trait for types that convert into the output losslessly.
+/// Implement a literal trait for types that convert with `into`.
 macro_rules! from_value {
     ($trait:ident :: $method:ident -> $out:ty, $($ty:ty),+) => {
         $(
@@ -114,45 +97,41 @@ macro_rules! from_value {
     };
 }
 
-/// Something that names an IP address of either family: `"10.0.0.1"`,
-/// `"2001:db8::1"`, or an [`IpAddr`] / [`Ipv4Addr`] / [`Ipv6Addr`].
+/// An IPv4 or IPv6 address, as a string or a std address type.
 pub trait IntoIpAddr {
-    /// Produce the address, panicking if it does not parse.
+    /// Convert, panicking on a bad value.
     fn into_ip_addr(self) -> IpAddr;
 }
 from_text!(IntoIpAddr::into_ip_addr -> IpAddr, "IP address");
 from_value!(IntoIpAddr::into_ip_addr -> IpAddr, IpAddr, Ipv4Addr, Ipv6Addr);
 
-/// Something that names an IPv4 address: `"10.0.0.1"`, an [`Ipv4Addr`], or
-/// its octets.
+/// An IPv4 address, as a string, an [`Ipv4Addr`] or octets.
 pub trait IntoIpv4Addr {
-    /// Produce the address, panicking if it does not parse.
+    /// Convert, panicking on a bad value.
     fn into_ipv4_addr(self) -> Ipv4Addr;
 }
 from_text!(IntoIpv4Addr::into_ipv4_addr -> Ipv4Addr, "IPv4 address");
 from_value!(IntoIpv4Addr::into_ipv4_addr -> Ipv4Addr, Ipv4Addr, [u8; 4]);
 
-/// Something that names an IPv6 address: `"2001:db8::1"`, an [`Ipv6Addr`], or
-/// its segments.
+/// An IPv6 address, as a string, an [`Ipv6Addr`] or segments.
 pub trait IntoIpv6Addr {
-    /// Produce the address, panicking if it does not parse.
+    /// Convert, panicking on a bad value.
     fn into_ipv6_addr(self) -> Ipv6Addr;
 }
 from_text!(IntoIpv6Addr::into_ipv6_addr -> Ipv6Addr, "IPv6 address");
 from_value!(IntoIpv6Addr::into_ipv6_addr -> Ipv6Addr, Ipv6Addr, [u16; 8]);
 
-/// Something that names a TCP / UDP port: `80` or `"80"`.
+/// A TCP / UDP port, as a number or a string.
 pub trait IntoPort {
-    /// Produce the port number, panicking if it does not parse.
+    /// Convert, panicking on a bad value.
     fn into_port(self) -> u16;
 }
 from_text!(IntoPort::into_port -> u16, "port");
 from_value!(IntoPort::into_port -> u16, u16);
 
-/// Something that names a MAC address: `"02:00:00:00:00:01"`, a [`Mac`], or
-/// its octets.
+/// A MAC address, as a string, a [`Mac`] or octets.
 pub trait IntoMac {
-    /// Produce the address, panicking if it does not parse.
+    /// Convert, panicking on a bad value.
     fn into_mac(self) -> Mac;
 }
 from_text!(IntoMac::into_mac -> Mac, "MAC address");
@@ -167,11 +146,10 @@ impl IntoMac for [u8; 6] {
     }
 }
 
-/// Something that names a transport endpoint: `"10.0.0.1:80"`,
-/// `"[2001:db8::1]:80"`, a [`SocketAddr`], or an `(address, port)` pair of
-/// anything [`IntoIpAddr`] and [`IntoPort`] accept.
+/// An endpoint: `"10.0.0.1:80"`, `"[2001:db8::1]:80"`, a [`SocketAddr`] or an
+/// `(address, port)` pair.
 pub trait IntoEndpoint {
-    /// Produce the endpoint, panicking if it does not parse.
+    /// Convert, panicking on a bad value.
     fn into_endpoint(self) -> SocketAddr;
 }
 from_text!(IntoEndpoint::into_endpoint -> SocketAddr, "endpoint (address:port)");
@@ -187,8 +165,7 @@ impl<A: IntoIpAddr, P: IntoPort> IntoEndpoint for (A, P) {
     }
 }
 
-// Validated forms. Each takes an already-converted value so the panic location
-// is the shorthand's caller, not a closure.
+// Checked conversions, done outside closures so a panic points at the caller.
 
 #[track_caller]
 fn unicast_v4(addr: Ipv4Addr) -> UnicastIpv4Addr {
@@ -220,22 +197,18 @@ impl<T> HeaderStack<T>
 where
     Headers: Install<T>,
 {
-    /// Adjust the layer on top of the stack.
-    ///
-    /// Useful after a shorthand that built the layer for you:
-    /// `tcp("10.0.0.1:1", "10.0.0.2:2").with(|tcp| { tcp.set_syn(true); })`.
+    /// Modify the layer on top of the stack.
     #[must_use]
     pub fn with(mut self, f: impl FnOnce(&mut T)) -> Self {
         f(&mut self.working);
         self
     }
 
-    /// Push an `Eth` layer with the given source and destination MACs.
+    /// Push an `Eth` layer with these MACs.
     ///
     /// # Panics
     ///
-    /// If a MAC does not parse, or is not valid in its position (e.g. a
-    /// multicast source).
+    /// On an invalid MAC.
     #[track_caller]
     pub fn eth_macs(self, src: impl IntoMac, dst: impl IntoMac) -> HeaderStack<Eth>
     where
@@ -251,11 +224,11 @@ where
         })
     }
 
-    /// Push a `Vlan` layer with the given VLAN id.
+    /// Push a `Vlan` layer with this VLAN id.
     ///
     /// # Panics
     ///
-    /// If `vid` is not a valid VLAN id (1..=4094).
+    /// On an invalid VLAN id.
     #[track_caller]
     pub fn vlan_id(self, vid: u16) -> HeaderStack<Vlan>
     where
@@ -267,12 +240,11 @@ where
         })
     }
 
-    /// Push an `Ipv4` layer with the given addresses and a TTL of
-    /// [`DEFAULT_TTL`].
+    /// Push an `Ipv4` layer with these addresses and [`DEFAULT_TTL`].
     ///
     /// # Panics
     ///
-    /// If an address does not parse, or the source is not unicast.
+    /// On a bad address or a non-unicast source.
     #[track_caller]
     pub fn ipv4_addrs(self, src: impl IntoIpv4Addr, dst: impl IntoIpv4Addr) -> HeaderStack<Ipv4>
     where
@@ -285,12 +257,11 @@ where
         })
     }
 
-    /// Push an `Ipv6` layer with the given addresses and a hop limit of
-    /// [`DEFAULT_TTL`].
+    /// Push an `Ipv6` layer with these addresses and [`DEFAULT_TTL`].
     ///
     /// # Panics
     ///
-    /// If an address does not parse, or the source is not unicast.
+    /// On a bad address or a non-unicast source.
     #[track_caller]
     pub fn ipv6_addrs(self, src: impl IntoIpv6Addr, dst: impl IntoIpv6Addr) -> HeaderStack<Ipv6>
     where
@@ -305,11 +276,11 @@ where
         })
     }
 
-    /// Push a `Tcp` layer with the given ports.
+    /// Push a `Tcp` layer with these ports.
     ///
     /// # Panics
     ///
-    /// If a port does not parse or is 0.
+    /// On a bad port or port 0.
     #[track_caller]
     pub fn tcp_ports(self, src: impl IntoPort, dst: impl IntoPort) -> HeaderStack<Tcp>
     where
@@ -323,11 +294,11 @@ where
         })
     }
 
-    /// Push a `Udp` layer with the given ports.
+    /// Push a `Udp` layer with these ports.
     ///
     /// # Panics
     ///
-    /// If a port does not parse or is 0.
+    /// On a bad port or port 0.
     #[track_caller]
     pub fn udp_ports(self, src: impl IntoPort, dst: impl IntoPort) -> HeaderStack<Udp>
     where
@@ -341,11 +312,11 @@ where
         })
     }
 
-    /// Push a `Vxlan` layer with the given VNI.
+    /// Push a `Vxlan` layer with this VNI.
     ///
     /// # Panics
     ///
-    /// If `vni` is not a valid VNI.
+    /// On an invalid VNI.
     #[track_caller]
     pub fn vxlan_vni(self, vni: u32) -> HeaderStack<Vxlan>
     where
@@ -361,7 +332,7 @@ where
 // Dedicated packets
 // ---------------------------------------------------------------------------
 
-/// Build `Eth` + the IP layer matching the address family, then `$top`.
+/// `Eth` and the IP layer matching the addresses, then `$top`.
 macro_rules! over_ip {
     ($src:expr, $dst:expr, |$stack:ident| $top:expr) => {
         match ($src, $dst) {
@@ -378,17 +349,11 @@ macro_rules! over_ip {
     };
 }
 
-/// A TCP segment from `src` to `dst` over IPv4 or IPv6, chosen by the
-/// addresses.
-///
-/// ```ignore
-/// let packet = tcp("10.0.0.1:12345", "10.0.0.2:80").build_packet().unwrap();
-/// ```
+/// A TCP segment over IPv4 or IPv6, following the addresses.
 ///
 /// # Panics
 ///
-/// If an endpoint does not parse, the families differ, the source is not
-/// unicast, or a port is 0.
+/// On a bad endpoint or mixed address families.
 #[track_caller]
 pub fn tcp(src: impl IntoEndpoint, dst: impl IntoEndpoint) -> HeaderStack<Tcp> {
     let (src, dst) = (src.into_endpoint(), dst.into_endpoint());
@@ -396,17 +361,11 @@ pub fn tcp(src: impl IntoEndpoint, dst: impl IntoEndpoint) -> HeaderStack<Tcp> {
         .tcp_ports(src.port(), dst.port()))
 }
 
-/// A UDP datagram from `src` to `dst` over IPv4 or IPv6, chosen by the
-/// addresses.
-///
-/// ```ignore
-/// let packet = udp("[2001:db8::1]:5353", "[2001:db8::2]:53").build_packet().unwrap();
-/// ```
+/// A UDP datagram over IPv4 or IPv6, following the addresses.
 ///
 /// # Panics
 ///
-/// If an endpoint does not parse, the families differ, the source is not
-/// unicast, or a port is 0.
+/// On a bad endpoint or mixed address families.
 #[track_caller]
 pub fn udp(src: impl IntoEndpoint, dst: impl IntoEndpoint) -> HeaderStack<Udp> {
     let (src, dst) = (src.into_endpoint(), dst.into_endpoint());
@@ -414,18 +373,11 @@ pub fn udp(src: impl IntoEndpoint, dst: impl IntoEndpoint) -> HeaderStack<Udp> {
         .udp_ports(src.port(), dst.port()))
 }
 
-/// An `ICMPv4` echo request from `src` to `dst`, with id and sequence 0.
-///
-/// ```ignore
-/// let ping = icmp4_echo_request("10.0.0.1", "10.0.0.2")
-///     .with(|echo| echo.id = 7)
-///     .build_packet()
-///     .unwrap();
-/// ```
+/// An `ICMPv4` echo request with id and sequence 0.
 ///
 /// # Panics
 ///
-/// If an address does not parse or the source is not unicast.
+/// On a bad address.
 #[track_caller]
 pub fn icmp4_echo_request(
     src: impl IntoIpv4Addr,
@@ -438,11 +390,11 @@ pub fn icmp4_echo_request(
         .echo_request(|_| {})
 }
 
-/// An `ICMPv6` echo request from `src` to `dst`, with id and sequence 0.
+/// An `ICMPv6` echo request with id and sequence 0.
 ///
 /// # Panics
 ///
-/// If an address does not parse or the source is not unicast.
+/// On a bad address.
 #[track_caller]
 pub fn icmp6_echo_request(
     src: impl IntoIpv6Addr,
@@ -455,22 +407,12 @@ pub fn icmp6_echo_request(
         .echo_request6(|_| {})
 }
 
-/// The outer headers of a VXLAN tunnel from VTEP `src` to VTEP `dst` on
-/// `vni`.
-///
-/// Finish with the inner Ethernet frame as payload:
-///
-/// ```ignore
-/// let inner = udp("10.0.0.1:1234", "10.0.0.2:80").build_packet().unwrap();
-/// let outer = vxlan("192.0.2.1", "192.0.2.2", 100)
-///     .build_packet_with_payload(inner.serialize().unwrap().as_ref())
-///     .unwrap();
-/// ```
+/// Outer VXLAN headers between two VTEPs. Pass the inner frame to
+/// `build_packet_with_payload`.
 ///
 /// # Panics
 ///
-/// If an address does not parse, the families differ, the source is not
-/// unicast, or `vni` is not a valid VNI.
+/// On a bad address, mixed address families or an invalid VNI.
 #[track_caller]
 pub fn vxlan(src: impl IntoIpAddr, dst: impl IntoIpAddr, vni: u32) -> HeaderStack<Vxlan> {
     over_ip!(src.into_ip_addr(), dst.into_ip_addr(), |stack| stack

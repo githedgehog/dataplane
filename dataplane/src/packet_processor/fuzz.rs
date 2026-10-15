@@ -791,9 +791,8 @@ pub(crate) type Poll = Vec<Pick>;
 
 #[cfg(test)]
 pub(crate) fn settled(body: impl FnOnce()) {
-    // One runtime per thread, so one per test: `drain` counts every task alive on the
-    // runtime, and a runtime shared across the process would count the flows of tests
-    // running alongside this one.
+    // One runtime per test thread: `drain` counts all of the runtime's tasks, so a
+    // shared runtime would see other tests' flows.
     thread_local! {
         static RUNTIME: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
