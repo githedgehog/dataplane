@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! The control-plane classes as `rte_flow` rules steering to a port's control queue.
+//! The control-plane classes as `rte_flow` rules steering to a port's control queue, and the
+//! classes a port's NIC does not steer, which the data workers take off the data path instead.
 
 use std::collections::BTreeSet;
+
+use concurrency::slot::SlotOption;
+use concurrency::sync::Arc;
 
 use dpdk::dev::{Dev, Started};
 use dpdk::flow::{
@@ -16,30 +20,77 @@ use net::headers::Within;
 use net::tcp::Tcp;
 use net::udp::Udp;
 use tracing::{debug, warn};
-use traffic_control::{ClassTable, L4Pattern, Pattern, Rule, Tier};
+use traffic_control::{Class, ClassTable, Key, L4Pattern, Pattern, Rule, Tier};
 
 /// The IP protocol numbers the TCP and UDP patterns imply.
 const TCP: u8 = 6;
 const UDP: u8 = 17;
 
+/// Classes of a port's control traffic its NIC does not steer to the control queue: all of them
+/// on a port without one, those whose rules the NIC refused on the rest.
+///
+/// The data workers check frames against these first thing after receive, and punt matches as
+/// the control worker would, without the pipeline. That spares the pipeline's cost and the shared
+/// punt channel, though not the shared receive queue.
+#[derive(Debug)]
+pub(crate) struct SoftwareClasses {
+    table: Arc<ClassTable>,
+    classes: BTreeSet<Class>,
+}
+
+impl SoftwareClasses {
+    /// Whether the frame `key` describes is of one of these classes.
+    pub(crate) fn matches(&self, key: &Key) -> bool {
+        self.table
+            .classify(key)
+            .is_some_and(|class| self.classes.contains(&class))
+    }
+}
+
+/// Where the control worker tells a port's data workers which classes to take in software: empty
+/// when the NIC steers them all.
+pub(crate) type Fallback = Arc<SlotOption<SoftwareClasses>>;
+
+/// Tell a port's data workers to take `classes` of `table` in software, or nothing if empty.
+pub(crate) fn fall_back(fallback: &Fallback, table: &Arc<ClassTable>, classes: BTreeSet<Class>) {
+    if classes.is_empty() {
+        fallback.store(None);
+    } else {
+        fallback.store(Some(Arc::new(SoftwareClasses {
+            table: Arc::clone(table),
+            classes,
+        })));
+    }
+}
+
 /// The class rules installed on one port.
 pub(crate) struct Installed<'d> {
     /// Each rule the NIC took, with the handle that removes it.
     rules: Vec<(Rule, FlowRule<'d>)>,
+    /// Classes with a rule the NIC refused.
+    refused: BTreeSet<Class>,
 }
 
 impl<'d> Installed<'d> {
     /// No rules.
     pub(crate) fn none() -> Installed<'d> {
-        Installed { rules: Vec::new() }
+        Installed {
+            rules: Vec::new(),
+            refused: BTreeSet::new(),
+        }
+    }
+
+    /// Classes with a rule the NIC refused: their traffic is taken off the data path in software.
+    pub(crate) fn refused(&self) -> &BTreeSet<Class> {
+        &self.refused
     }
 
     /// Make the rules on `dev` those of `table`, steering to `queue`.
     ///
     /// Rules already installed stay; only those `table` adds are created and those it drops
     /// destroyed, so a config change does not leave a window in which control traffic takes the
-    /// data path. A rule the NIC refuses is logged, and tried again on the next change; meanwhile
-    /// what it would match stays on the data path, which punts it as before.
+    /// data path. A rule the NIC refuses is logged, its class [refused](Self::refused), and tried
+    /// again on the next change.
     pub(crate) fn update(
         self,
         dev: &'d Dev<'_, Started>,
@@ -59,8 +110,8 @@ impl<'d> Installed<'d> {
                 Ok(handle) => rules.push((rule.clone(), handle)),
                 Err(e) => {
                     warn!(
-                        "port {port} refused the {} rule {:?}: {e}; that traffic stays on the data \
-                         path",
+                        "port {port} refused the {} rule {:?}: {e}; that class is taken off the \
+                         data path in software",
                         rule.class, rule.pattern
                     );
                     refused.insert(rule.class);
@@ -75,7 +126,7 @@ impl<'d> Installed<'d> {
             rules.len(),
             refused.len()
         );
-        Installed { rules }
+        Installed { rules, refused }
     }
 }
 
