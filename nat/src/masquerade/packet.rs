@@ -221,7 +221,6 @@ mod checksum_test {
         } else {
             build_test_ipv4_packet_with_transport(64, Some(next_header)).unwrap()
         };
-        packet.update_checksums();
 
         let new_src = if ipv6 {
             UnicastIpAddr::try_from(IpAddr::from([
@@ -316,7 +315,6 @@ mod checksum_test {
     fn dnat_leaves_a_checksum_a_full_recompute_would_agree_with() {
         let mut packet: Packet<TestBuffer> =
             build_test_tcp_ipv4_packet("1.2.3.4", "5.6.7.8", 1234, 80);
-        packet.update_checksums();
 
         let new_dst = IpAddr::from([9, 9, 9, 9]);
         dnat(
@@ -352,8 +350,6 @@ mod checksum_test {
     fn snat_leaves_a_checksum_a_full_recompute_would_agree_with() {
         let mut packet: Packet<TestBuffer> =
             build_test_tcp_ipv4_packet("1.2.3.4", "5.6.7.8", 1234, 80);
-        // Incremental updates require a valid starting checksum.
-        packet.update_checksums();
 
         let new_src = UnicastIpAddr::try_from(IpAddr::from([9, 9, 9, 9])).unwrap();
         let new_port = NatPort::Port(NonZero::new(4321).unwrap());

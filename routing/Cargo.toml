@@ -66,7 +66,7 @@ criterion = { workspace = true }
 iai-callgrind = { workspace = true }
 bolero = { workspace = true, features = ["std"] }
 concurrency = { workspace = true }
-net = { workspace = true, features = ["test_buffer"] }
+net = { workspace = true, features = ["builder"] }
 pcap-file = { workspace = true }
 pipeline = { workspace = true }
 rand = { workspace = true, default-features = false, features = ["thread_rng"] }

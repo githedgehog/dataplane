@@ -205,8 +205,6 @@ mod checksum_test {
 
     /// Check checksum correctness and that no full recomputation was requested.
     fn agrees_with_recompute(mut packet: Packet<TestBuffer>, source: bool) {
-        packet.update_checksums();
-
         let new_ip = UnicastIpAddr::try_from(IpAddr::from([9, 9, 9, 9])).unwrap();
         let new_port = NonZero::new(4321).unwrap();
         let modified = if source {
@@ -282,7 +280,6 @@ mod checksum_test {
     fn icmp4_address_translation_does_not_move_the_checksum() {
         let mut packet: Packet<TestBuffer> =
             build_test_ipv4_packet_with_transport(64, Some(NextHeader::ICMP)).unwrap();
-        packet.update_checksums();
         let before = transport_checksum(&packet);
 
         let new_ip = UnicastIpAddr::try_from(IpAddr::from([9, 9, 9, 9])).unwrap();
@@ -303,7 +300,6 @@ mod checksum_test {
     fn icmp6_address_translation_does_move_the_checksum() {
         let mut packet: Packet<TestBuffer> =
             build_test_ipv6_packet_with_transport(64, Some(NextHeader::ICMP6)).unwrap();
-        packet.update_checksums();
         let before = transport_checksum(&packet);
 
         let new_ip = UnicastIpAddr::try_from(IpAddr::from([
