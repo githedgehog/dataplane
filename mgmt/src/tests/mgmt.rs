@@ -87,6 +87,7 @@ pub mod test {
     use tokio::sync::RwLock;
     use tracectl::get_trace_ctl;
     use tracing::{debug, error};
+    use traffic_control::ControlPlane;
     use vpcmap::map::VpcMapWriter;
 
     /* OVERLAY config sample builders */
@@ -505,6 +506,7 @@ pub mod test {
 
         /* build configuration of mgmt config processor */
         let (gateway_name, named) = tokio::sync::watch::channel(None);
+        let (control_plane, _) = tokio::sync::watch::channel(ControlPlane::default());
         let processor_config = ConfigProcessorParams {
             router_ctl,
             pipeline_data,
@@ -519,6 +521,7 @@ pub mod test {
             dp_status_r,
             bmp_options: None,
             gateway_name,
+            control_plane,
         };
 
         let rth = tokio::runtime::Handle::current();

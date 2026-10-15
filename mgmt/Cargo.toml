@@ -37,6 +37,7 @@ rekon = { workspace = true }
 routing = { workspace = true }
 stats = { workspace = true }
 tracectl = { workspace = true }
+traffic-control = { workspace = true }
 vpcmap = { workspace = true }
 
 # external
