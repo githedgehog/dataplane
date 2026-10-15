@@ -43,6 +43,8 @@ fn parse_failures_are_not_pipeline_drops() {
         rx_if,
         &mut pipeline,
         &mut packets,
+        None,
+        &mut Vec::new(),
         &mut counters,
     );
     assert_eq!(packets.len(), 1);
@@ -56,6 +58,8 @@ fn parse_failures_are_not_pipeline_drops() {
         rx_if,
         &mut pipeline,
         &mut packets,
+        None,
+        &mut Vec::new(),
         &mut counters,
     );
     assert_eq!(packets.len(), 1);
@@ -80,6 +84,8 @@ fn drop_verdicts_and_removed_packets_are_counted_once() {
         InterfaceIndex::try_new(1).unwrap(),
         &mut pipeline,
         &mut packets,
+        None,
+        &mut Vec::new(),
         &mut counters,
     );
     assert_eq!(packets.len(), 2);
@@ -108,6 +114,8 @@ fn verdicts_other_than_local_and_delivered_are_dropped() {
         InterfaceIndex::try_new(1).unwrap(),
         &mut pipeline,
         &mut packets,
+        None,
+        &mut Vec::new(),
         &mut counters,
     );
     assert!(packets.is_empty());
@@ -125,6 +133,8 @@ fn additional_pipeline_outputs_do_not_count_as_drops() {
         InterfaceIndex::try_new(1).unwrap(),
         &mut pipeline,
         &mut packets,
+        None,
+        &mut Vec::new(),
         &mut counters,
     );
     assert_eq!(packets.len(), 2);
@@ -212,4 +222,62 @@ fn flow_timers_progress_while_the_worker_polls() {
         shutdown.workers.cancel_token().cancel();
         worker.join().unwrap();
     });
+}
+
+/// Counts what the pipeline is given.
+struct Count(usize);
+
+impl NetworkFunction<TestBuffer> for Count {
+    fn process_burst(&mut self, burst: &mut Vec<Packet<TestBuffer>>) {
+        self.0 += burst.len();
+    }
+}
+
+#[test]
+fn control_traffic_the_nic_does_not_steer_skips_the_pipeline() {
+    use crate::drivers::dpdk::classes::{Fallback, fall_back};
+    use std::collections::BTreeSet;
+    use traffic_control::{Class, ClassTable, ControlPlane, Frame};
+
+    // The test frame, to an address the gateway then calls its own.
+    let probe = Packet::new(frame()).unwrap();
+    let Ok(Key {
+        frame: Frame::Ipv4(ip),
+        ..
+    }) = Key::of(probe.headers())
+    else {
+        unreachable!("the test frame is IPv4");
+    };
+    let table = Arc::new(ClassTable::new(ControlPlane::new(
+        [ip.dst.into()],
+        None,
+        [],
+    )));
+
+    for (classes, diverted_expected) in [
+        (BTreeSet::from([Class::OtherLocal]), 1),
+        // Steered by the NIC, so left alone here.
+        (BTreeSet::from([Class::Bgp]), 0),
+        (BTreeSet::new(), 0),
+    ] {
+        let fallback = Fallback::default();
+        fall_back(&fallback, &table, classes);
+        let early = fallback.load();
+        let mut pipeline = Count(0);
+        let mut packets = Vec::new();
+        let mut diverted = Vec::new();
+        let mut counters = RxCounters::default();
+        process_burst(
+            [frame()].into_iter(),
+            InterfaceIndex::try_new(1).unwrap(),
+            &mut pipeline,
+            &mut packets,
+            early.as_deref(),
+            &mut diverted,
+            &mut counters,
+        );
+        assert_eq!(diverted.len(), diverted_expected);
+        assert_eq!(pipeline.0, 1 - diverted_expected);
+        assert_eq!(counters.rx, 1);
+    }
 }

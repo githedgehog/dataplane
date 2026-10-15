@@ -27,6 +27,9 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use concurrency::sync::Arc;
+
+use super::classes::Fallback;
 use crate::drivers::DriverError;
 use crate::drivers::cpbridge::{DatapathEnds, Frame};
 
@@ -501,8 +504,17 @@ pub(crate) struct PortQueues<'p> {
     /// Which interface frames off this queue arrived on.
     pub(crate) if_index: InterfaceIndex,
     pub(crate) name: String,
+    /// The MAC this port answers to, which decides whether control traffic taken off the data
+    /// path was addressed to us.
+    pub(crate) mac: Mac,
     pub(crate) rx: RxQueue<'p>,
     pub(crate) tx: TxQueue<'p>,
+    /// Classes of control traffic to take off the data path before the pipeline, because the NIC
+    /// does not steer them to the control queue.
+    pub(crate) fallback: Fallback,
+    /// Where to hand the kernel what is taken off the data path that way: the same channel the
+    /// control worker punts on.
+    pub(crate) control_punt: Option<mpsc::Sender<Frame>>,
     /// Where to hand a frame this port received which the kernel should see.
     ///
     /// `None` only without a control-plane bridge: in tests, or when building the bridge failed and
@@ -532,6 +544,8 @@ pub(crate) struct ControlQueues<'p, 'eal> {
     pub(crate) punt: Option<mpsc::Sender<Frame>>,
     /// Frames the kernel wants this port to transmit.
     pub(crate) inject: Option<mpsc::Receiver<Frame>>,
+    /// Where to tell the port's data workers which classes the NIC does not steer.
+    pub(crate) fallback: Fallback,
 }
 
 /// Every port's queues, split between the data workers and the control worker.
@@ -596,6 +610,8 @@ pub(crate) fn deal_queues<'p, 'eal>(
             (port.if_index, None, None, None)
         };
 
+        let fallback = Fallback::default();
+
         let mut queues = port.dev.take_queues().ok_or_else(|| {
             DriverError::PortSetup(format!(
                 "queues for port {} were already taken; each device hands its set out once",
@@ -619,8 +635,11 @@ pub(crate) fn deal_queues<'p, 'eal>(
             per_worker[worker as usize].push(PortQueues {
                 if_index,
                 name: port.name.clone(),
+                mac: port.mac,
                 rx,
                 tx,
+                fallback: Arc::clone(&fallback),
+                control_punt: control_punt.clone(),
                 punt: punt.clone(),
             });
         }
@@ -652,6 +671,7 @@ pub(crate) fn deal_queues<'p, 'eal>(
             pool: port.control_pool.clone(),
             punt: control_punt,
             inject,
+            fallback,
         });
     }
 

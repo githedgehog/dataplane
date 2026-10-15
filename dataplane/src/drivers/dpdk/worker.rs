@@ -10,15 +10,19 @@ use dpdk::lcore::LCore;
 use dpdk::mem::{Mbuf, MbufArray};
 use lifecycle::Subsystem;
 use net::buffer::PacketBufferMut;
+use net::headers::{TryEth, TryHeaders};
 use net::interface::InterfaceIndex;
 use net::packet::Packet;
 use pipeline::{DynPipeline, NetworkFunction};
 use tracing::{debug, error, trace, warn};
+use traffic_control::Key;
 
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
+use super::classes::SoftwareClasses;
 use super::port::PortQueues;
+use super::control::addressed_to;
 use crate::drivers::disposition::Disposition;
 
 #[cfg(all(test, not(feature = "shuttle")))]
@@ -34,6 +38,18 @@ const CANCEL_CHECK_INTERVAL: u32 = 1024;
 pub(crate) struct WorkerPort<'p> {
     pub(crate) queues: PortQueues<'p>,
     pub(crate) watchdog: Watchdog,
+}
+
+/// Storage a worker reuses from poll to poll rather than allocating per burst.
+struct Scratch<'p> {
+    /// The parsed burst; stages borrow and update packets in place.
+    burst: Vec<Packet<Mbuf<'p>>>,
+    /// Control traffic taken off the data path before the pipeline.
+    diverted: Vec<Packet<Mbuf<'p>>>,
+    /// The receive array, refilled in place rather than returned by value on every poll.
+    rx_mbufs: MbufArray<'p>,
+    /// One transmit batch per port slot, indexed like the worker's ports.
+    tx_batches: Vec<MbufArray<'p>>,
 }
 
 /// A worker and its exclusively owned queue handles.
@@ -97,16 +113,14 @@ impl<'p> Worker<'p> {
         // Counters per port, flushed to that port's watchdog.
         let mut counters = vec![RxCounters::default(); self.ports.len()];
 
-        // Reuse pipeline storage across polls; stages borrow and update packets in place.
-        let mut burst: Vec<Packet<Mbuf<'p>>> = Vec::with_capacity(dpdk::mem::MBUF_BURST);
-
-        // Refill the receive array in place to avoid returning it by value on every poll.
-        let mut rx_mbufs: MbufArray<'p> = MbufArray::new_empty();
-
-        // One transmit batch per port slot, indexed like `self.ports`.
-        let mut tx_batches: Vec<MbufArray<'p>> = (0..self.ports.len())
-            .map(|_| MbufArray::new_empty())
-            .collect();
+        let mut scratch = Scratch {
+            burst: Vec::with_capacity(dpdk::mem::MBUF_BURST),
+            diverted: Vec::new(),
+            rx_mbufs: MbufArray::new_empty(),
+            tx_batches: (0..self.ports.len())
+                .map(|_| MbufArray::new_empty())
+                .collect(),
+        };
 
         loop {
             polls = polls.wrapping_add(1);
@@ -119,15 +133,7 @@ impl<'p> Worker<'p> {
 
             let mut saw_frames = false;
             for (slot, counters) in counters.iter_mut().enumerate() {
-                if self.poll_one(
-                    slot,
-                    &tx_by_if,
-                    &mut pipeline,
-                    &mut burst,
-                    &mut rx_mbufs,
-                    &mut tx_batches,
-                    counters,
-                ) {
+                if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut scratch, counters) {
                     saw_frames = true;
                 }
             }
@@ -167,11 +173,15 @@ impl<'p> Worker<'p> {
         slot: usize,
         tx_by_if: &HashMap<InterfaceIndex, usize>,
         pipeline: &mut DynPipeline<'p, Mbuf<'p>>,
-        burst: &mut Vec<Packet<Mbuf<'p>>>,
-        rx_mbufs: &mut MbufArray<'p>,
-        tx_batches: &mut [MbufArray<'p>],
+        scratch: &mut Scratch<'p>,
         counters: &mut RxCounters,
     ) -> bool {
+        let Scratch {
+            burst,
+            diverted,
+            rx_mbufs,
+            tx_batches,
+        } = scratch;
         self.ports[slot].queues.rx.receive_into(rx_mbufs);
         if rx_mbufs.is_empty() {
             return false;
@@ -180,7 +190,17 @@ impl<'p> Worker<'p> {
         for mbuf in rx_mbufs.iter() {
             mbuf.prefetch_head();
         }
-        process_burst(rx_mbufs.drain_all(), rx_if, pipeline, burst, counters);
+        let fallback = self.ports[slot].queues.fallback.load();
+        process_burst(
+            rx_mbufs.drain_all(),
+            rx_if,
+            pipeline,
+            burst,
+            fallback.as_deref(),
+            diverted,
+            counters,
+        );
+        self.punt_diverted(slot, diverted, counters);
 
         // Borrowed for the packet loop rather than cloned per poll: an `mpsc::Sender` clone is an
         // atomic increment, which is not free at burst rates and buys nothing here.
@@ -267,6 +287,33 @@ impl<'p> Worker<'p> {
         true
     }
 
+    /// Hand the kernel the control traffic taken off the data path, if addressed to the port, on
+    /// the channel the control worker punts on.
+    fn punt_diverted(
+        &self,
+        slot: usize,
+        diverted: &mut Vec<Packet<Mbuf<'p>>>,
+        counters: &mut RxCounters,
+    ) {
+        let queues = &self.ports[slot].queues;
+        for packet in diverted.drain(..) {
+            let addressed_to_us = packet
+                .try_eth()
+                .is_some_and(|eth| addressed_to(eth.destination().inner(), queues.mac));
+            if addressed_to_us {
+                Self::punt(
+                    self.id,
+                    &queues.name,
+                    queues.control_punt.as_ref(),
+                    packet,
+                    counters,
+                );
+            } else {
+                counters.ppline_drops += 1;
+            }
+        }
+    }
+
     /// Hand one frame to the kernel through the ingress port's tap.
     ///
     /// The frame is copied, because that is the only thing it can be: an `Mbuf` is `!Send` and
@@ -311,11 +358,16 @@ impl<'p> Worker<'p> {
 }
 
 /// Parse a burst and retain forwarded packets and possible control-plane traffic.
+///
+/// Control traffic of the `early` classes, which the NIC does not steer to the control queue, is
+/// moved to `diverted` before the pipeline sees it.
 fn process_burst<Buf: PacketBufferMut>(
     burst: impl ExactSizeIterator<Item = Buf>,
     rx_if: InterfaceIndex,
     pipeline: &mut impl NetworkFunction<Buf>,
     packets: &mut Vec<Packet<Buf>>,
+    early: Option<&SoftwareClasses>,
+    diverted: &mut Vec<Packet<Buf>>,
     counters: &mut RxCounters,
 ) {
     counters.rx += burst.len() as u64;
@@ -331,6 +383,13 @@ fn process_burst<Buf: PacketBufferMut>(
             None
         }
     }));
+
+    diverted.clear();
+    if let Some(early) = early {
+        diverted.extend(packets.extract_if(.., |packet| {
+            Key::of(packet.headers()).is_ok_and(|key| early.matches(&key))
+        }));
+    }
 
     let parsed = packets.len();
     pipeline.process_burst(packets);
