@@ -8,6 +8,7 @@
 //! pipeline, and it transmits what the kernel sends on the control transmit queue, from the control
 //! pool. Neither depends on how busy the data workers are or on the data pool having buffers.
 
+use concurrency::sync::Arc;
 use dpdk::lcore::LCore;
 use dpdk::mem::{MBUF_BURST, MbufArray};
 use dpdk::queue::rx::RxQueueIndex;
@@ -16,13 +17,13 @@ use net::buffer::Append;
 use net::eth::mac::Mac;
 use tokio::sync::watch;
 use tracing::{debug, error, info, trace, warn};
-use traffic_control::{ClassTable, ControlPlane};
+use traffic_control::{Class, ClassTable, ControlPlane};
 
 use crate::drivers::cpbridge::Frame;
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
-use super::classes::Installed;
+use super::classes::{Installed, fall_back};
 use super::port::ControlQueues;
 
 /// Yield after this many consecutive polls without traffic on any port.
@@ -68,7 +69,9 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
         if !self.control_plane.has_changed().unwrap_or(false) && !installed.is_empty() {
             return;
         }
-        let table = ClassTable::new(self.control_plane.borrow_and_update().clone());
+        let table = Arc::new(ClassTable::new(
+            self.control_plane.borrow_and_update().clone(),
+        ));
         info!(
             worker = self.id,
             "steering {} control-plane rule(s) per port",
@@ -76,7 +79,9 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
         );
         for (port, installed) in self.ports.iter().zip(installed.iter_mut()) {
             let queues = &port.queues;
+            // Without a control queue, every class is taken in software.
             if queues.rx.is_none() {
+                fall_back(&queues.fallback, &table, Class::ALL.into_iter().collect());
                 continue;
             }
             *installed = std::mem::replace(installed, Installed::none()).update(
@@ -85,6 +90,7 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
                 &table,
                 RxQueueIndex(queues.queue),
             );
+            fall_back(&queues.fallback, &table, installed.refused().clone());
         }
     }
 
@@ -304,7 +310,7 @@ fn inject(id: WorkerId, queue: &mut ControlQueues<'_, '_>, counters: &mut RxCoun
 ///
 /// Broadcast and multicast count: the peer's ARP request, the fabric's LLDP, and IPv6 neighbour
 /// discovery all arrive that way. Only what flow rules steered to the control queue gets here.
-fn addressed_to(destination: Mac, port: Mac) -> bool {
+pub(super) fn addressed_to(destination: Mac, port: Mac) -> bool {
     destination == port || destination.is_broadcast() || destination.is_multicast()
 }
 
