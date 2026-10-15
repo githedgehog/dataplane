@@ -10,15 +10,19 @@
 
 use dpdk::lcore::LCore;
 use dpdk::mem::{MBUF_BURST, MbufArray};
+use dpdk::queue::rx::RxQueueIndex;
 use lifecycle::Subsystem;
 use net::buffer::Append;
 use net::eth::mac::Mac;
-use tracing::{debug, error, trace, warn};
+use tokio::sync::watch;
+use tracing::{debug, error, info, trace, warn};
+use traffic_control::{ClassTable, ControlPlane};
 
 use crate::drivers::cpbridge::Frame;
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
+use super::classes::Installed;
 use super::port::ControlQueues;
 
 /// Yield after this many consecutive polls without traffic on any port.
@@ -32,20 +36,56 @@ const INJECT_PER_POLL: usize = MBUF_BURST;
 
 /// One port's control queues as seen by the control worker, and the watchdog its traffic is
 /// reported on.
-pub(crate) struct ControlPort<'p> {
-    pub(crate) queues: ControlQueues<'p>,
+pub(crate) struct ControlPort<'p, 'eal> {
+    pub(crate) queues: ControlQueues<'p, 'eal>,
     pub(crate) watchdog: Watchdog,
 }
 
 /// The control worker and its exclusively owned queue handles.
-pub(crate) struct ControlWorker<'p> {
+pub(crate) struct ControlWorker<'p, 'eal> {
     id: WorkerId,
-    ports: Vec<ControlPort<'p>>,
+    ports: Vec<ControlPort<'p, 'eal>>,
+    /// The addresses and peers the classes are built from.
+    control_plane: watch::Receiver<ControlPlane>,
 }
 
-impl<'p> ControlWorker<'p> {
-    pub(crate) fn new(id: WorkerId, ports: Vec<ControlPort<'p>>) -> Self {
-        Self { id, ports }
+impl<'p, 'eal> ControlWorker<'p, 'eal> {
+    pub(crate) fn new(
+        id: WorkerId,
+        ports: Vec<ControlPort<'p, 'eal>>,
+        control_plane: watch::Receiver<ControlPlane>,
+    ) -> Self {
+        Self {
+            id,
+            ports,
+            control_plane,
+        }
+    }
+
+    /// Steer each port's control traffic to its control queue, by the classes of the current
+    /// control plane, if it has changed since they were last installed.
+    fn steer(&mut self, installed: &mut [Installed<'p>]) {
+        if !self.control_plane.has_changed().unwrap_or(false) && !installed.is_empty() {
+            return;
+        }
+        let table = ClassTable::new(self.control_plane.borrow_and_update().clone());
+        info!(
+            worker = self.id,
+            "steering {} control-plane rule(s) per port",
+            table.rules().len()
+        );
+        for (port, installed) in self.ports.iter().zip(installed.iter_mut()) {
+            let queues = &port.queues;
+            if queues.rx.is_none() {
+                continue;
+            }
+            *installed = std::mem::replace(installed, Installed::none()).update(
+                queues.dev,
+                &queues.name,
+                &table,
+                RxQueueIndex(queues.queue),
+            );
+        }
     }
 
     /// Run until cancelled.
@@ -77,6 +117,11 @@ impl<'p> ControlWorker<'p> {
         let mut polls: u32 = 0;
         let mut counters = vec![RxCounters::default(); self.ports.len()];
         let mut rx_mbufs = MbufArray::new_empty();
+        // The rules go before the queues they steer to are dropped, which is when this returns.
+        let mut installed: Vec<Installed<'p>> =
+            self.ports.iter().map(|_| Installed::none()).collect();
+        self.control_plane.mark_changed();
+        self.steer(&mut installed);
 
         loop {
             polls = polls.wrapping_add(1);
@@ -85,6 +130,7 @@ impl<'p> ControlWorker<'p> {
                     break;
                 }
                 self.report(&mut counters);
+                self.steer(&mut installed);
             }
 
             let mut busy = false;
@@ -124,7 +170,7 @@ impl<'p> ControlWorker<'p> {
 /// a NIC in promiscuous mode also receives frames for others.
 fn receive<'p>(
     id: WorkerId,
-    queues: &mut ControlQueues<'p>,
+    queues: &mut ControlQueues<'p, '_>,
     rx_mbufs: &mut MbufArray<'p>,
     counters: &mut RxCounters,
 ) -> bool {
@@ -166,7 +212,7 @@ fn destination(frame: &[u8]) -> Option<Mac> {
 
 /// Send kernel frames directly through the port's control queue, bypassing the forwarding
 /// pipeline. Returns whether any frames were injected, for idle backoff accounting.
-fn inject(id: WorkerId, queue: &mut ControlQueues<'_>, counters: &mut RxCounters) -> bool {
+fn inject(id: WorkerId, queue: &mut ControlQueues<'_, '_>, counters: &mut RxCounters) -> bool {
     let Some(inject) = queue.inject.as_mut() else {
         return false;
     };

@@ -42,7 +42,8 @@ use config::internal::routing::bmp::BmpOptions;
 use config::internal::status::DataplaneStatus;
 use net::tcp::TcpPort;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, watch};
+use traffic_control::ControlPlane;
 
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
 custom_target!("Pyroscope", LevelFilter::WARN, &["third-party"]);
@@ -476,6 +477,7 @@ fn run_datapath(
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
     bridge: Option<DatapathEnds>,
+    control_plane: watch::Receiver<ControlPlane>,
     handshake: &DatapathHandshake,
 ) {
     let DatapathHandshake { ready, go } = handshake;
@@ -510,6 +512,7 @@ fn run_datapath(
             ingredients,
             status_writer,
             bridge,
+            control_plane,
         ),
         None => run_kernel_driver(config, workers, ingredients, status_writer, bridge),
     }
@@ -550,6 +553,7 @@ fn run_dpdk_driver(
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
     mut bridge: Option<DatapathEnds>,
+    control_plane: watch::Receiver<ControlPlane>,
 ) {
     let ports = match bring_up_ports(eal, config) {
         Ok(ports) => ports,
@@ -584,6 +588,7 @@ fn run_dpdk_driver(
             &ingredients.factory(),
             status_writer,
             bridge.as_mut(),
+            control_plane,
         ) {
             error!("Failed to start driver: {e}");
             workers.report_fatal("the DPDK driver could not be started");
@@ -790,8 +795,7 @@ pub fn main() {
     let (gateway_name, gateway_named) = tokio::sync::watch::channel(None);
     let (management_address, management_addressed) = tokio::sync::watch::channel(None);
     // The addresses and peers that decide which traffic is the control plane's, from the config.
-    let (control_plane, _control_planes) =
-        tokio::sync::watch::channel(traffic_control::ControlPlane::default());
+    let (control_plane, control_planes) = watch::channel(ControlPlane::default());
     shutdown.mgmt.spawn_on(
         crate::lldp_agent::management_address(management_address, shutdown.mgmt.cancel_token()),
         &host_handle,
@@ -862,6 +866,7 @@ pub fn main() {
                         ingredients,
                         driver_status_writer,
                         cp_ends,
+                        control_planes,
                         &handshake,
                     );
                 }

@@ -13,6 +13,7 @@
 //! A control worker owns one more queue pair per port, which the data workers' RSS does not reach:
 //! it receives the control plane's traffic there and transmits what the kernel sends.
 
+mod classes;
 mod control;
 mod port;
 mod worker;
@@ -31,6 +32,7 @@ use stats::PortMetrics;
 use tokio::sync::watch;
 use tracectl::trace_target;
 use tracing::{info, warn};
+use traffic_control::ControlPlane;
 
 use super::DriverError;
 use super::status::DriverStatusWriter;
@@ -55,6 +57,9 @@ impl DriverDpdk {
     /// `bridge` is the datapath's end of the control-plane bridge, if there is one. Its queues are
     /// dealt out alongside the hardware queues, because the two are used from the same loop.
     ///
+    /// `control_plane` is what the control-plane classes are built from; the control worker steers
+    /// them to the control queues and follows its changes.
+    ///
     /// # Errors
     ///
     /// Returns an error for invalid worker counts, missing ports or queues, or thread spawn failures.
@@ -68,6 +73,7 @@ impl DriverDpdk {
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'p, Mbuf<'p>> + 'p>,
         status_writer: DriverStatusWriter,
         bridge: Option<&mut DatapathEnds>,
+        control_plane: watch::Receiver<ControlPlane>,
     ) -> Result<(), DriverError>
     where
         'p: 'scope,
@@ -145,6 +151,7 @@ impl DriverDpdk {
             workers_subsystem,
             usize::from(num_workers),
             dealt.control,
+            control_plane,
         )?);
 
         // Register metrics once; the scoped callback keeps the borrowed ports alive while polling.
@@ -170,14 +177,16 @@ impl DriverDpdk {
 }
 
 /// Spawn the control worker over every port's control queues, as worker `id`.
-fn spawn_control<'p, 'scope>(
+fn spawn_control<'p, 'eal, 'scope>(
     scope: &'scope thread::Scope<'scope, '_>,
     subsystem: &Subsystem,
     id: usize,
-    control: Vec<port::ControlQueues<'p>>,
+    control: Vec<port::ControlQueues<'p, 'eal>>,
+    control_plane: watch::Receiver<ControlPlane>,
 ) -> Result<WorkerMonitor<'scope, Infallible>, DriverError>
 where
     'p: 'scope,
+    'eal: 'scope,
 {
     let rx_tasks: Vec<RxTaskMonitor> = control
         .iter()
@@ -191,7 +200,7 @@ where
             watchdog: task.watchdog.clone(),
         })
         .collect();
-    let worker = ControlWorker::new(id, ports);
+    let worker = ControlWorker::new(id, ports, control_plane);
     let subsystem = subsystem.clone();
     let handle = thread::Builder::new()
         .name("dpdk-control".to_string())
