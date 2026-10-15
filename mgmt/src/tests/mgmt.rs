@@ -48,7 +48,7 @@ pub mod test {
     use flow_entry::flow_table::FlowTable;
     use lpm::prefix::Prefix;
     use net::eth::mac::Mac;
-    use net::interface::Mtu;
+    use net::interface::{InterfaceName, Mtu};
     use pipeline::PipelineData;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
@@ -88,6 +88,11 @@ pub mod test {
     use tracectl::get_trace_ctl;
     use tracing::{debug, error};
     use vpcmap::map::VpcMapWriter;
+
+    #[track_caller]
+    fn ifname(name: &str) -> InterfaceName {
+        name.try_into().expect("Bad ifname")
+    }
 
     /* OVERLAY config sample builders */
     fn sample_vpc_table() -> VpcTable {
@@ -265,7 +270,7 @@ pub mod test {
         /* configure loopback interface */
         let ospf =
             OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area")).set_passive(true);
-        let lo = InterfaceConfig::new("lo", InterfaceType::Loopback, false)
+        let lo = InterfaceConfig::new(ifname("lo"), InterfaceType::Loopback, false)
             .set_description("Main loopback interface")
             .add_address(loopback, 32)
             .set_ospf(ospf);
@@ -276,7 +281,7 @@ pub mod test {
             IpAddr::V6(_) => panic!("Bad Vtep address from loopback, address must be IPv4"),
         };
         let vtep = InterfaceConfig::new(
-            "vtep",
+            ifname("vtep"),
             InterfaceType::Vtep(IfVtepConfig {
                 mac: Some(Mac::from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01])),
                 local: vtep_addr,
@@ -292,7 +297,7 @@ pub mod test {
             .set_passive(false)
             .set_network(OspfNetwork::Point2Point);
         let eth0 = InterfaceConfig::new(
-            "eth0",
+            ifname("eth0"),
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
             false,
         )
@@ -303,7 +308,7 @@ pub mod test {
 
         /* configure eth1 interface */
         let eth1 = InterfaceConfig::new(
-            "eth1",
+            ifname("eth1"),
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
             false,
         )
@@ -317,7 +322,7 @@ pub mod test {
             .set_passive(false)
             .set_network(OspfNetwork::Point2Point);
         let eth2 = InterfaceConfig::new(
-            "eth2",
+            ifname("eth2"),
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
             false,
         )

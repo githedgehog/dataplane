@@ -324,7 +324,7 @@ fn add_interface_specs(interfaces: &mut MultiIndexInterfaceSpecMap, ifaces: &Int
         match &iface.iftype {
             InterfaceType::Ethernet(eth) => {
                 let mut tap = InterfaceSpecBuilder::default();
-                match ManagedInterfaceName::new(ManagedInterfaceKind::Tap, iface.name.as_str()) {
+                match ManagedInterfaceName::new(ManagedInterfaceKind::Tap, iface.name.as_ref()) {
                     Ok(name) => {
                         tap.name(name.into());
                     }
