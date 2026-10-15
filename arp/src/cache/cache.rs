@@ -57,9 +57,10 @@ impl NeighState {
 pub struct NeighEntry {
     pub(crate) address: IpAddr,
     pub(crate) ifindex: InterfaceIndex,
+    pub(crate) ifname: Option<String>,
     pub(crate) mac: Option<DestinationMac>,
     pub(crate) state: NeighState,
-    pub(crate) updated: Instant, // when the entry was learnt from the kernel
+    pub(crate) updated: Instant,
 }
 
 impl NeighEntry {
@@ -74,6 +75,7 @@ impl NeighEntry {
         Self {
             address,
             ifindex,
+            ifname: None,
             mac,
             state,
             updated: Instant::now(),
@@ -86,6 +88,7 @@ impl NeighEntry {
         Self {
             address,
             ifindex,
+            ifname: None,
             mac: Some(mac),
             state: NeighState::Reachable,
             updated: Instant::now(),
@@ -95,6 +98,11 @@ impl NeighEntry {
     #[must_use]
     pub(crate) fn ifindex(&self) -> InterfaceIndex {
         self.ifindex
+    }
+
+    #[must_use]
+    pub(crate) fn ifname(&self) -> Option<&String> {
+        self.ifname.as_ref()
     }
 
     /// The MAC of the neighbor, if known. It may not be usable: see [`NeighEntry::is_usable`].

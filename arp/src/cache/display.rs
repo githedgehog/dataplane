@@ -4,22 +4,24 @@
 //! Display of ARP/ND cache
 
 use crate::cache::{NeighCache, NeighEntry, NeighState};
-use common::cliprovider::CliSource;
-use common::cliprovider::Heading;
+use common::cliprovider::{Age, CliSource, Heading};
 use std::fmt::Display;
 
 impl CliSource for NeighCache {}
 
 macro_rules! NEIGH_ENTRY_FMT {
     () => {
-        " {:<10} {:<20} {:<18} {:<10}"
+        " {:<16} {:<10} {:<20} {:<18} {:<10} {}"
     };
 }
 fn fmt_neigh_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     writeln!(
         f,
         "{}",
-        format_args!(NEIGH_ENTRY_FMT!(), "ifindex", "address", "mac", "state")
+        format_args!(
+            NEIGH_ENTRY_FMT!(),
+            "interface", "ifindex", "address", "mac", "state", "last-update"
+        )
     )
 }
 
@@ -31,10 +33,12 @@ impl Display for NeighEntry {
             "{}",
             format_args!(
                 NEIGH_ENTRY_FMT!(),
+                self.ifname().map_or("unknown", |v| v),
                 self.ifindex(),
                 self.ip(),
                 mac,
-                self.state()
+                self.state(),
+                Age::from_instant(self.updated.into())
             )
         )
     }

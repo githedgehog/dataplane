@@ -43,7 +43,6 @@ impl NeighCacheWriter {
     }
 
     #[must_use]
-    #[allow(dead_code)]
     pub fn enter(&self) -> Option<ReadGuard<'_, NeighCache>> {
         self.0.enter()
     }

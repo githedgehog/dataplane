@@ -28,6 +28,7 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 
 use futures::channel::mpsc::UnboundedReceiver;
+use nix::net::if_::if_indextoname;
 
 #[allow(unused)]
 use tracing::{debug, error, info};
@@ -92,6 +93,7 @@ impl TryFrom<&NeighbourMessage> for NeighEntry {
         Ok(Self {
             address,
             ifindex,
+            ifname: None,
             mac,
             state,
             updated: Instant::now(),
@@ -160,13 +162,34 @@ impl NeighListener {
                 continue;
             }
             match NeighEntry::try_from(&neigh) {
-                Ok(entry) => entries.push(entry),
+                Ok(mut entry) => {
+                    self.set_ifname(&mut entry);
+                    entries.push(entry);
+                }
                 Err(e) => debug!("Ignoring neighbor: {e}"),
             }
         }
         let num_entries = entries.len();
         self.cachew.add_entries(entries);
         Ok(num_entries)
+    }
+
+    /// Resolve the interface name if it has not been resolved.
+    fn set_ifname(&self, entry: &mut NeighEntry) {
+        if entry.ifname.is_some() {
+            return;
+        }
+        let cached = self.cachew.enter().and_then(|cache| {
+            cache
+                .get_entry(entry.address, entry.ifindex)
+                .and_then(|known| known.ifname.clone())
+        });
+        // set the current name as in the cache, or look it up
+        entry.ifname = cached.or_else(|| {
+            if_indextoname(entry.ifindex.to_u32())
+                .ok()
+                .map(|name| name.to_string_lossy().into_owned())
+        });
     }
 
     /// Start the [`NeighListener`]: it listens to the changes of the neighbors. It only ends if
@@ -189,8 +212,9 @@ impl NeighListener {
                         continue;
                     }
                     match NeighEntry::try_from(neigh) {
-                        Ok(entry) => {
+                        Ok(mut entry) => {
                             // publish entry and notify
+                            self.set_ifname(&mut entry);
                             self.cachew.add_entry(entry);
                             self.cache_notify.notify_one();
                         }

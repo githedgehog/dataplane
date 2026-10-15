@@ -243,11 +243,15 @@ pub(crate) mod test_netlink_utils {
             .await
             .expect("the listener did not report the new neighbor");
 
-        // check that the mac is in the cache
+        // check that the mac is in the cache, and the name of the interface of the new entry
         assert_eq!(
             cacher.get_mac(ip, ifindex),
             Some(DestinationMac::new(mac).unwrap())
         );
+        let ifname = cacher
+            .get_entry(ip, ifindex)
+            .and_then(|e| e.ifname().cloned());
+        assert_eq!(ifname.as_deref(), Some("tap0"));
         let cache = cacher.enter().unwrap();
         println!("{}", *cache);
 
@@ -296,6 +300,12 @@ pub(crate) mod test_netlink_utils {
         .await;
         assert!(failed, "the failed neighbor is not in the cache");
         assert!(cacher.get_mac(ip, ifindex).is_none());
+
+        // the name of the interface is kept across updates
+        let ifname = cacher
+            .get_entry(ip, ifindex)
+            .and_then(|e| e.ifname().cloned());
+        assert_eq!(ifname.as_deref(), Some("tap0"));
 
         listening.abort();
     }
@@ -352,6 +362,10 @@ pub(crate) mod test_netlink_utils {
         assert_eq!(entry(permanent), Some((NeighState::Permanent, mac(mac1))));
         assert_eq!(entry(reachable), Some((NeighState::Reachable, mac(mac2))));
         assert_eq!(entry(failed), Some((NeighState::Failed, None)));
+        let ifname = cacher
+            .get_entry(permanent, ifindex)
+            .and_then(|e| e.ifname().cloned());
+        assert_eq!(ifname.as_deref(), Some("tap0"), "learnt entries are named");
 
         // the listener can then be started
         let listening = tokio::spawn(listener.start());
