@@ -1,0 +1,15 @@
+[package]
+name = "dataplane-traffic-control"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+lpm = { workspace = true }
+net = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+bolero = { workspace = true, features = ["std"] }
+net = { workspace = true, features = ["builder"] }
