@@ -536,7 +536,11 @@ pub(crate) struct PortQueues<'p> {
 }
 
 /// One port's control queues, as handed to the control worker.
-pub(crate) struct ControlQueues<'p> {
+pub(crate) struct ControlQueues<'p, 'eal> {
+    /// The device, for the flow rules that steer control traffic to `rx`.
+    pub(crate) dev: &'p Dev<'eal, Started>,
+    /// The index of the control queues.
+    pub(crate) queue: u16,
     pub(crate) name: String,
     /// The MAC this port answers to.
     pub(crate) mac: SourceMac,
@@ -587,11 +591,11 @@ fn map_port_to_cp(
 }
 
 /// Every port's queues, split between the data workers and the control worker.
-pub(crate) struct Dealt<'p> {
+pub(crate) struct Dealt<'p, 'eal> {
     /// Worker `i`'s queue pair `i` from every port.
     pub(crate) workers: Vec<Vec<PortQueues<'p>>>,
     /// Every port's control queues.
-    pub(crate) control: Vec<ControlQueues<'p>>,
+    pub(crate) control: Vec<ControlQueues<'p, 'eal>>,
 }
 
 /// Give worker `i` queue pair `i` from every port, and the control worker the control queues.
@@ -599,11 +603,11 @@ pub(crate) struct Dealt<'p> {
 /// # Errors
 ///
 /// Returns an error if queues were already taken or a configured queue is missing.
-pub(crate) fn deal_queues<'p>(
-    ports: &'p [Port<'_>],
+pub(crate) fn deal_queues<'p, 'eal>(
+    ports: &'p [Port<'eal>],
     num_workers: u16,
     mut bridge: Option<&mut DatapathEnds>,
-) -> Result<Dealt<'p>, DriverError> {
+) -> Result<Dealt<'p, 'eal>, DriverError> {
     let mut per_worker: Vec<Vec<PortQueues<'p>>> = (0..num_workers)
         .map(|_| Vec::with_capacity(ports.len()))
         .collect();
@@ -662,6 +666,8 @@ pub(crate) fn deal_queues<'p>(
             ))
         })?;
         control.push(ControlQueues {
+            dev: &port.dev,
+            queue,
             name: port.name.to_string(),
             mac: port.mac,
             rx,
