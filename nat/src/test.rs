@@ -597,7 +597,6 @@ async fn test_nat_combination_static_masq_icmp_error() {
     .unwrap();
     icmp_error.meta_mut().set_overlay(true);
     icmp_error.meta_mut().src_vpcd = Some(vni2.into());
-    icmp_error.update_checksums();
     println!("built packet:\n{icmp_error}");
 
     let output_reply: Vec<_> = pipeline.process(std::iter::once(icmp_error)).collect();
@@ -734,7 +733,6 @@ async fn test_nat_combination_static_portfwd_icmp_error() {
     .unwrap();
     icmp_error.meta_mut().set_overlay(true);
     icmp_error.meta_mut().src_vpcd = Some(vni2.into());
-    icmp_error.update_checksums();
     println!("built packet:\n{icmp_error}");
 
     let output_reply: Vec<_> = pipeline.process(std::iter::once(icmp_error)).collect();

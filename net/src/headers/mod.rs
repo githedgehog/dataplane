@@ -55,7 +55,7 @@ pub use view::{HeadersView, Look, LookMut, Shape, ShapePrefix};
 pub mod embedded_view;
 pub use embedded_view::{EmbeddedHeadersView, EmbeddedLook, EmbeddedLookMut, EmbeddedShape};
 
-#[cfg(any(test, feature = "builder"))]
+#[cfg(any(doc, test, feature = "builder"))]
 pub mod builder;
 
 const MAX_VLANS: usize = 4;

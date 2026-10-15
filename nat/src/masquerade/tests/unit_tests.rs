@@ -601,8 +601,6 @@ fn check_packet(
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
     flow_lookup(nat.sessions(), &mut packet);
-    // Incremental updates require a valid starting checksum.
-    packet.update_checksums();
 
     let mut packets_out: Vec<_> = nat.process(vec![packet]).collect();
     assert_masquerade_checksum_is_incremental(&mut packets_out[0]);
@@ -999,8 +997,6 @@ fn check_packet_icmp_error(
     packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
     packet.meta_mut().dst_vpcd.take(); // remove to force processing by masquerade
-    // Initialize the outer checksum before translating the quoted packet.
-    packet.update_checksums();
 
     let packets_out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
     if packets_out[0].get_done().is_none() {

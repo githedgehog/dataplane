@@ -277,8 +277,13 @@ fn generated_edits_match_the_byte_model() {
         });
 }
 
+/// An IPv4 frame with a 1000-byte payload, long enough to split across segments.
 fn frame() -> Vec<u8> {
-    net::packet::test_utils::build_test_ipv4_packet(64)
+    let payload: Vec<u8> = (0..=u8::MAX).cycle().take(1000).collect();
+    net::headers::builder::HeaderStack::new()
+        .eth(|_| {})
+        .ipv4_addrs("1.2.3.4", "5.6.7.8")
+        .build_packet_with_payload(&payload)
         .unwrap()
         .serialize()
         .unwrap()
