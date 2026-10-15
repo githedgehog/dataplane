@@ -67,9 +67,15 @@ pub mod tests {
     use super::*;
     use config::internal::interfaces::interface::IfEthConfig;
     use config::internal::interfaces::interface::InterfaceType;
+    use net::interface::InterfaceName;
     use net::interface::Mtu;
     use std::net::IpAddr;
     use std::str::FromStr;
+
+    #[track_caller]
+    fn ifname(name: &str) -> InterfaceName {
+        name.try_into().expect("Bad ifname")
+    }
 
     #[test]
     fn test_interface_render() {
@@ -77,7 +83,7 @@ pub mod tests {
 
         /* eth0: Ethernet */
         let interface = InterfaceConfig::new(
-            "eth0",
+            ifname("eth0"),
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
             false,
         )
@@ -90,7 +96,7 @@ pub mod tests {
         iface_table.add_interface_config(interface);
 
         /* lo: Loopback */
-        let interface = InterfaceConfig::new("lo", InterfaceType::Loopback, false)
+        let interface = InterfaceConfig::new(ifname("lo"), InterfaceType::Loopback, false)
             .set_description("Main loopback interface")
             .set_mtu(Mtu::try_from(9000).expect("Bad MTU"))
             .add_address(IpAddr::from_str("7.0.0.10").expect("Bad address"), 32)

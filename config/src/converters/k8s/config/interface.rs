@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use k8s_intf::gateway_agent_crd::GatewayAgentGatewayInterfaces;
-use net::interface::Mtu;
+use net::interface::{InterfaceName, Mtu};
 
 use crate::converters::k8s::{FromK8sConversionError, ToK8sConversionError};
 use crate::internal::interfaces::interface::{
@@ -22,7 +22,11 @@ impl TryFrom<(&str, &GatewayAgentGatewayInterfaces)> for InterfaceConfig {
         // address.
         let iftype = InterfaceType::Ethernet(IfEthConfig { mac: None });
 
-        let mut interface_config: InterfaceConfig = InterfaceConfig::new(name, iftype, false);
+        // admit only kernel-compatible interface names
+        let ifname = InterfaceName::try_from(name)
+            .map_err(|e| FromK8sConversionError::InvalidData(e.to_string()))?;
+
+        let mut interface_config: InterfaceConfig = InterfaceConfig::new(ifname, iftype, false);
 
         if let Some(ips) = iface.ips.as_ref() {
             for ip in ips {
