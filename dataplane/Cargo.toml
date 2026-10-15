@@ -37,6 +37,7 @@ id = { workspace = true }
 interface-manager = { workspace = true }
 lifecycle = { workspace = true }
 linkme = { workspace = true }
+lpm = { workspace = true }
 lldp = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
