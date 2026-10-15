@@ -10,7 +10,7 @@ use std::net::{IpAddr, Ipv6Addr};
 use net::eth::ethtype::EthType;
 use net::lldp::NEAREST_BRIDGE;
 
-use crate::key::{Frame, ICMP6, Ip, Key, L4, Ports};
+use crate::key::{Frame, ICMP, ICMP6, Ip, Key, L4, Ports, TCP};
 use crate::rules::{self, Rule};
 
 /// BGP's TCP port (RFC 4271).
@@ -19,8 +19,9 @@ pub(crate) const BGP: u16 = 179;
 pub(crate) const BFD_SINGLE_HOP: u16 = 3784;
 /// The UDP destination port of multihop BFD control packets (RFC 5883).
 pub(crate) const BFD_MULTIHOP: u16 = 4784;
-/// VXLAN's UDP port (RFC 7348).
-pub(crate) const VXLAN: u16 = 4789;
+/// The protocols that count as other local traffic to the VTEP's address: ICMP and TCP. The rest,
+/// UDP above all, is VXLAN or nothing the gateway expects there, and stays on the data path.
+pub(crate) const VTEP_LOCAL: [u8; 2] = [ICMP, TCP];
 
 /// A kind of control-plane traffic, policed and counted on its own.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -35,8 +36,8 @@ pub enum Class {
     Arp,
     /// LLDP to the nearest bridge group address.
     Lldp,
-    /// Anything else to a local address, VXLAN to the VTEP excepted. BGP and BFD from addresses
-    /// that are not neighbours land here, with the smaller budget.
+    /// Anything else to a local address; to the VTEP's, only ICMP and TCP, as UDP to it is VXLAN.
+    /// BGP and BFD from addresses that are not neighbours land here, with the smaller budget.
     OtherLocal,
 }
 
@@ -179,9 +180,7 @@ impl ClassTable {
                 _ => {}
             }
         }
-        if let L4::Udp(Ports { dst: VXLAN, .. }) = l4
-            && Some(dst) == self.control.vtep
-        {
+        if Some(dst) == self.control.vtep && !VTEP_LOCAL.contains(&l4.proto()) {
             return None;
         }
         Some(Class::OtherLocal)

@@ -6,8 +6,8 @@
 //! A NIC cannot run [`ClassTable::classify`](crate::ClassTable::classify): it matches header fields
 //! against constants and takes the highest priority match. So the table is also compiled to rules
 //! of that kind. Two tiers are enough: specific protocols first, then the catch-all for anything
-//! else to a local address. Within a tier, two rules that match the same frame agree on its fate,
-//! so their order does not matter.
+//! else to a local address. Within a tier, two rules that match the same frame agree on its class,
+//! so their order does not matter. What no rule matches is the data plane's.
 
 use std::net::{IpAddr, Ipv6Addr};
 
@@ -17,36 +17,27 @@ use net::eth::mac::Mac;
 use net::lldp::NEAREST_BRIDGE;
 
 use crate::key::{Frame, ICMP6, Ip, Key, L4, Ports};
-use crate::table::{BFD_MULTIHOP, BFD_SINGLE_HOP, BGP, Class, ControlPlane, VXLAN};
+use crate::table::{BFD_MULTIHOP, BFD_SINGLE_HOP, BGP, Class, ControlPlane, VTEP_LOCAL};
 
 /// A rule's precedence: a frame matching rules in both tiers takes the [`Tier::Protocol`] rule's
-/// fate.
+/// class.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Tier {
-    /// Rules for specific protocols, and the exceptions to [`Tier::Local`].
+    /// Rules for specific protocols.
     Protocol,
     /// The catch-all for anything else to a local address.
     Local,
 }
 
-/// Where a rule sends the frames it matches.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum Fate {
-    /// To the control queue, as this class.
-    Control(Class),
-    /// To the data queues, as if no rule had matched: an exception carved out of a lower tier.
-    Data,
-}
-
-/// One match rule.
+/// One match rule: frames it matches go to the control queue, as its class.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
     /// The rule's precedence.
     pub tier: Tier,
     /// The frames it matches.
     pub pattern: Pattern,
-    /// Where they go.
-    pub fate: Fate,
+    /// Their class.
+    pub class: Class,
 }
 
 /// The frames a rule matches.
@@ -155,14 +146,14 @@ pub(crate) fn compile(control: &ControlPlane) -> Vec<Rule> {
                 dst: None,
                 ether_type: EthType::ARP,
             },
-            Fate::Control(Class::Arp),
+            Class::Arp,
         ),
         protocol(
             Pattern::Eth {
                 dst: Some(NEAREST_BRIDGE),
                 ether_type: EthType::LLDP,
             },
-            Fate::Control(Class::Lldp),
+            Class::Lldp,
         ),
     ];
 
@@ -174,7 +165,7 @@ pub(crate) fn compile(control: &ControlPlane) -> Vec<Rule> {
                 dst,
                 l4: L4Pattern::Proto(ICMP6),
             }),
-            Fate::Control(Class::Icmpv6),
+            Class::Icmpv6,
         )
     };
     rules.push(icmp6(v6_prefix(
@@ -226,42 +217,39 @@ pub(crate) fn compile(control: &ControlPlane) -> Vec<Rule> {
         for local in control.local() {
             for (l4, class) in sessions {
                 if let Some(pattern) = ip_pattern(Some(*neighbour), *local, l4) {
-                    rules.push(protocol(pattern, Fate::Control(class)));
+                    rules.push(protocol(pattern, class));
                 }
             }
         }
     }
 
-    // VXLAN to the VTEP is data.
-    if let Some(vtep) = control.vtep() {
-        let vxlan = L4Pattern::Udp {
-            src: None,
-            dst: Some(VXLAN),
-        };
-        if let Some(pattern) = ip_pattern(None, vtep, vxlan) {
-            rules.push(protocol(pattern, Fate::Data));
-        }
-    }
-
-    // Everything else to us.
+    // Everything else to us. Only some protocols to the VTEP: UDP to it is VXLAN, which is data,
+    // and a NIC rule cannot say "anything but UDP".
     for local in control.local() {
-        if let Some(pattern) = ip_pattern(None, *local, L4Pattern::Any) {
-            rules.push(Rule {
-                tier: Tier::Local,
-                pattern,
-                fate: Fate::Control(Class::OtherLocal),
-            });
+        let l4s = if Some(*local) == control.vtep() {
+            VTEP_LOCAL.map(L4Pattern::Proto).to_vec()
+        } else {
+            vec![L4Pattern::Any]
+        };
+        for l4 in l4s {
+            if let Some(pattern) = ip_pattern(None, *local, l4) {
+                rules.push(Rule {
+                    tier: Tier::Local,
+                    pattern,
+                    class: Class::OtherLocal,
+                });
+            }
         }
     }
     rules
 }
 
 /// A [`Tier::Protocol`] rule.
-fn protocol(pattern: Pattern, fate: Fate) -> Rule {
+fn protocol(pattern: Pattern, class: Class) -> Rule {
     Rule {
         tier: Tier::Protocol,
         pattern,
-        fate,
+        class,
     }
 }
 
