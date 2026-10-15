@@ -19,7 +19,7 @@ pub(crate) fn profiles(limits: &Limits) -> impl Iterator<Item = (Unit, Profile)>
 
 /// A color-blind three color marker, owned by one thread.
 ///
-/// This is RFC 2697 or 2698 to the token: the reference the shared meter is held to, and the right
+/// This is RFC 2697, 2698 or 4115 to the token: the reference the shared meter is held to, and the right
 /// meter wherever one thread sees all of the traffic.
 #[derive(Debug)]
 pub struct Meter {

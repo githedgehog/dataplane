@@ -9,8 +9,9 @@
 //! tokens from the shared buckets a batch at a time and colors packets against its lease, going back
 //! to the shared buckets only when the lease runs short.
 //!
-//! RFC 2697 and 2698 allow any implementation that behaves as their model does; this one departs from
-//! the model in two bounded ways, both from tokens sitting in leases:
+//! RFC 2697 and 2698 allow any implementation that behaves as their model does (RFC 4115 does not say,
+//! and is held to the same bounds); this one departs from the model in two bounded ways, both from
+//! tokens sitting in leases:
 //!
 //! - a burst can exceed the bucket size by what the workers hold, at most one lease each per bucket;
 //! - a worker can be refused while another worker holds tokens it is not using.
@@ -155,6 +156,14 @@ fn rate_and_burst(profile: Profile, bucket: Bucket) -> (u64, u64) {
         (Profile::TwoRate(profile), Bucket::Second) => (
             profile.peak_rate().per_second().get(),
             profile.peak_burst().get(),
+        ),
+        (Profile::CommittedPlusExcess(profile), Bucket::Committed) => (
+            profile.committed_rate().per_second().get(),
+            profile.committed_burst().get(),
+        ),
+        (Profile::CommittedPlusExcess(profile), Bucket::Second) => (
+            profile.excess_rate().per_second().get(),
+            profile.excess_burst().get(),
         ),
     }
 }

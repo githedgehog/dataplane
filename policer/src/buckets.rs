@@ -18,7 +18,8 @@ const NANOS_PER_SECOND: u128 = 1_000_000_000;
 pub enum Color {
     /// Within the committed rate.
     Green,
-    /// Over the committed rate, but within the excess burst (RFC 2697) or the peak rate (RFC 2698).
+    /// Over the committed rate, but within the excess burst (RFC 2697), the peak rate (RFC 2698) or
+    /// the excess rate (RFC 4115).
     Yellow,
     /// Over every limit.
     Red,
@@ -29,7 +30,7 @@ pub enum Color {
 pub(crate) enum Bucket {
     /// C: the committed bucket, of either profile.
     Committed,
-    /// E (RFC 2697) or P (RFC 2698): the other one.
+    /// E (RFC 2697 and 4115) or P (RFC 2698): the other one.
     Second,
 }
 
@@ -53,25 +54,29 @@ pub(crate) trait Purse {
     fn spend(&mut self, bucket: Bucket, amount: u64);
 }
 
-/// The two kinds of profile, for the rules that do not care about their rates.
+/// Which buckets each color pays from, for the rules that do not care how the buckets refill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Shape {
-    SingleRate,
-    TwoRate,
+    /// Each color pays its own bucket: green the committed one, yellow the excess one (RFC 2697 and
+    /// 4115).
+    Separate,
+    /// The peak bucket bounds everything: green pays the committed bucket and the peak bucket, yellow
+    /// the peak bucket alone (RFC 2698).
+    Nested,
 }
 
 impl Shape {
     /// Whether `purse` holds enough to pay `amount` as `color`.
     ///
     /// Red is free; it is what a packet is when it can pay for nothing else. Yellow is paid from the
-    /// second bucket of either profile (E or P); green from the committed bucket, and under RFC 2698
+    /// second bucket of every profile (E or P); green from the committed bucket, and under RFC 2698
     /// from the peak bucket too.
     pub(crate) fn can_pay(self, purse: &mut impl Purse, color: Color, amount: u64) -> bool {
         match (self, color) {
             (_, Color::Red) => true,
             (_, Color::Yellow) => purse.ensure(Bucket::Second, amount),
-            (Shape::SingleRate, Color::Green) => purse.ensure(Bucket::Committed, amount),
-            (Shape::TwoRate, Color::Green) => {
+            (Shape::Separate, Color::Green) => purse.ensure(Bucket::Committed, amount),
+            (Shape::Nested, Color::Green) => {
                 purse.ensure(Bucket::Second, amount) && purse.ensure(Bucket::Committed, amount)
             }
         }
@@ -82,8 +87,8 @@ impl Shape {
         match (self, color) {
             (_, Color::Red) => {}
             (_, Color::Yellow) => purse.spend(Bucket::Second, amount),
-            (Shape::SingleRate, Color::Green) => purse.spend(Bucket::Committed, amount),
-            (Shape::TwoRate, Color::Green) => {
+            (Shape::Separate, Color::Green) => purse.spend(Bucket::Committed, amount),
+            (Shape::Nested, Color::Green) => {
                 purse.spend(Bucket::Second, amount);
                 purse.spend(Bucket::Committed, amount);
             }
@@ -119,7 +124,7 @@ pub(crate) struct Dimension<P> {
 /// Color a packet of `bytes` bytes against every one of `dimensions`, and charge it.
 ///
 /// The packet is the best color every dimension can pay for, and pays for that color in each. With one
-/// dimension this is exactly the color-blind rule of RFC 2697 or 2698; with two (bytes and packets) a
+/// dimension this is exactly the color-blind rule of RFC 2697, 2698 or 4115; with two (bytes and packets) a
 /// packet is only as good as the worse of its two limits allows, and tokens of a color are still only
 /// spent on packets of that color.
 //= https://www.rfc-editor.org/rfc/rfc2697#section-3
@@ -152,6 +157,26 @@ pub(crate) struct Dimension<P> {
 //
 //= https://www.rfc-editor.org/rfc/rfc2698#section-3
 //# o the packet is green and both Tp and Tc are decremented by B.
+//
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//# When a green packet of size B arrives at time t, then
+//
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//= reason=a packet that exactly empties the bucket is green, as Figure 1 (B <= Tc(t-)) and RFC 2697 have it, not red as this strict inequality would
+//# o  if Tc(t)- B > 0, the packet is green, and Tc(t) is decremented
+//# by B; else
+//
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//= reason=a packet that exactly empties the bucket is yellow, as Figure 1 (B <= Te(t-)) and RFC 2697 have it, not red as this strict inequality would
+//# o  if Te(t)- B > 0, the packet is yellow, and Te(t) is decremented
+//# by B; else
+//
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//# o  the packet is red.
+//
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//# In the color-blind operation, the meter assumes that all incoming
+//# packets are green.
 pub(crate) fn mark<P: Purse>(dimensions: &mut [Dimension<P>], bytes: u32) -> Color {
     let color = [Color::Green, Color::Yellow]
         .into_iter()
@@ -215,20 +240,23 @@ impl Accrual {
 /// A profile's two buckets, with their token counts exactly as the RFCs keep them.
 #[derive(Debug, Clone)]
 pub(crate) enum Buckets {
-    SingleRate {
+    /// RFC 2697: one rate fills the committed bucket, and what it cannot hold fills the excess one.
+    Cascading {
         accrual: Accrual,
         committed: u64,
         committed_burst: u64,
         excess: u64,
         excess_burst: u64,
     },
-    TwoRate {
+    /// RFC 2698 and 4115: each bucket fills at its own rate; `shape` tells them apart.
+    Independent {
+        shape: Shape,
         committed_accrual: Accrual,
         committed: u64,
         committed_burst: u64,
-        peak_accrual: Accrual,
-        peak: u64,
-        peak_burst: u64,
+        second_accrual: Accrual,
+        second: u64,
+        second_burst: u64,
     },
 }
 
@@ -241,30 +269,50 @@ impl Buckets {
     //= https://www.rfc-editor.org/rfc/rfc2698#section-3
     //# The token buckets P and C are initially (at time 0) full, i.e., the
     //# token count Tp(0) = PBS and the token count Tc(0) = CBS.
+    //
+    //= https://www.rfc-editor.org/rfc/rfc4115#section-3
+    //# The token buckets C and E are initially (at time 0) full; i.e., the
+    //# token count Tc(0) = CBS and Te(0) = EBS.
     pub(crate) fn new(profile: Profile, now: Instant) -> Buckets {
+        let independent =
+            |shape, committed_rate, committed_burst: u64, rate, burst: u64| Buckets::Independent {
+                shape,
+                committed_accrual: Accrual::new(committed_rate, now),
+                committed: committed_burst,
+                committed_burst,
+                second_accrual: Accrual::new(rate, now),
+                second: burst,
+                second_burst: burst,
+            };
         match profile {
-            Profile::SingleRate(profile) => Buckets::SingleRate {
+            Profile::SingleRate(profile) => Buckets::Cascading {
                 accrual: Accrual::new(profile.committed_rate(), now),
                 committed: profile.committed_burst(),
                 committed_burst: profile.committed_burst(),
                 excess: profile.excess_burst(),
                 excess_burst: profile.excess_burst(),
             },
-            Profile::TwoRate(profile) => Buckets::TwoRate {
-                committed_accrual: Accrual::new(profile.committed_rate(), now),
-                committed: profile.committed_burst().get(),
-                committed_burst: profile.committed_burst().get(),
-                peak_accrual: Accrual::new(profile.peak_rate(), now),
-                peak: profile.peak_burst().get(),
-                peak_burst: profile.peak_burst().get(),
-            },
+            Profile::TwoRate(profile) => independent(
+                Shape::Nested,
+                profile.committed_rate(),
+                profile.committed_burst().get(),
+                profile.peak_rate(),
+                profile.peak_burst().get(),
+            ),
+            Profile::CommittedPlusExcess(profile) => independent(
+                Shape::Separate,
+                profile.committed_rate(),
+                profile.committed_burst().get(),
+                profile.excess_rate(),
+                profile.excess_burst().get(),
+            ),
         }
     }
 
     pub(crate) fn shape(&self) -> Shape {
         match self {
-            Buckets::SingleRate { .. } => Shape::SingleRate,
-            Buckets::TwoRate { .. } => Shape::TwoRate,
+            Buckets::Cascading { .. } => Shape::Separate,
+            Buckets::Independent { shape, .. } => *shape,
         }
     }
 
@@ -288,9 +336,15 @@ impl Buckets {
     //# the token count Tp is incremented by one PIR times per second up to
     //# PBS and the token count Tc is incremented by one CIR times per second
     //# up to CBS.
+    //
+    //= https://www.rfc-editor.org/rfc/rfc4115#section-3
+    //# Thereafter, the token count
+    //# Tc is incremented by one CIR times per second (up to CBS), and the
+    //# token count Te is incremented by one EIR times per second (up to
+    //# EBS).
     pub(crate) fn refill(&mut self, now: Instant) {
         match self {
-            Buckets::SingleRate {
+            Buckets::Cascading {
                 accrual,
                 committed,
                 committed_burst,
@@ -302,17 +356,18 @@ impl Buckets {
                 *committed += to_committed;
                 *excess = (*excess_burst).min(excess.saturating_add(earned - to_committed));
             }
-            Buckets::TwoRate {
+            Buckets::Independent {
                 committed_accrual,
                 committed,
                 committed_burst,
-                peak_accrual,
-                peak,
-                peak_burst,
+                second_accrual,
+                second,
+                second_burst,
+                ..
             } => {
                 *committed =
                     (*committed_burst).min(committed.saturating_add(committed_accrual.earn(now)));
-                *peak = (*peak_burst).min(peak.saturating_add(peak_accrual.earn(now)));
+                *second = (*second_burst).min(second.saturating_add(second_accrual.earn(now)));
             }
         }
     }
@@ -321,11 +376,14 @@ impl Buckets {
     pub(crate) fn tokens(&self, bucket: Bucket) -> u64 {
         match (self, bucket) {
             (
-                Buckets::SingleRate { committed, .. } | Buckets::TwoRate { committed, .. },
+                Buckets::Cascading { committed, .. } | Buckets::Independent { committed, .. },
                 Bucket::Committed,
             ) => *committed,
-            (Buckets::SingleRate { excess, .. }, Bucket::Second) => *excess,
-            (Buckets::TwoRate { peak, .. }, Bucket::Second) => *peak,
+            (
+                Buckets::Cascading { excess: tokens, .. }
+                | Buckets::Independent { second: tokens, .. },
+                Bucket::Second,
+            ) => *tokens,
         }
     }
 
@@ -333,11 +391,14 @@ impl Buckets {
     pub(crate) fn take(&mut self, bucket: Bucket, amount: u64) {
         let tokens = match (self, bucket) {
             (
-                Buckets::SingleRate { committed, .. } | Buckets::TwoRate { committed, .. },
+                Buckets::Cascading { committed, .. } | Buckets::Independent { committed, .. },
                 Bucket::Committed,
             ) => committed,
-            (Buckets::SingleRate { excess, .. }, Bucket::Second) => excess,
-            (Buckets::TwoRate { peak, .. }, Bucket::Second) => peak,
+            (
+                Buckets::Cascading { excess: tokens, .. }
+                | Buckets::Independent { second: tokens, .. },
+                Bucket::Second,
+            ) => tokens,
         };
         debug_assert!(*tokens >= amount, "spent tokens the bucket does not hold");
         *tokens = tokens.saturating_sub(amount);
@@ -351,17 +412,17 @@ impl Buckets {
     pub(crate) fn earliest(&self, bucket: Bucket, needed: u64) -> Instant {
         let short = needed.saturating_sub(self.tokens(bucket));
         let accrual = match (self, bucket) {
-            (Buckets::SingleRate { accrual, .. }, _)
+            (Buckets::Cascading { accrual, .. }, _)
             | (
-                Buckets::TwoRate {
+                Buckets::Independent {
                     committed_accrual: accrual,
                     ..
                 },
                 Bucket::Committed,
             )
             | (
-                Buckets::TwoRate {
-                    peak_accrual: accrual,
+                Buckets::Independent {
+                    second_accrual: accrual,
                     ..
                 },
                 Bucket::Second,

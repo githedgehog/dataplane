@@ -161,13 +161,90 @@ impl TwoRate {
     }
 }
 
+/// A two rate three color marker's profile with an excess rate (RFC 4115).
+///
+/// Unlike RFC 2698's peak rate, the excess rate is in addition to the committed rate: green packets
+/// pay only the committed bucket and yellow packets only the excess bucket, so up to the committed
+/// rate is green and up to the sum of the two rates is green or yellow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CommittedPlusExcess {
+    committed_rate: Rate,
+    committed_burst: NonZeroU64,
+    excess_rate: Rate,
+    excess_burst: NonZeroU64,
+}
+
+impl CommittedPlusExcess {
+    /// Fill the committed bucket at `committed_rate` up to `committed_burst`, and the excess bucket at
+    /// `excess_rate` up to `excess_burst`.
+    ///
+    /// The bursts should each hold the largest packet metered: a packet larger than a bucket can
+    /// never be paid from it. The policer does not know the largest packet, so it is up to whoever
+    /// builds the profile.
+    //= https://www.rfc-editor.org/rfc/rfc4115#section-2
+    //= type=exception
+    //= reason=the policer does not know the largest packet; it only refuses empty buckets, and the configuration that builds the profile must size them
+    //# The CBS and EBS are measured in bytes and must configure to be
+    //# greater than the expected maximum length of the incoming PDU.
+    //
+    //= https://www.rfc-editor.org/rfc/rfc4115#section-2
+    //= type=exception
+    //= reason=rates are in tokens a second (bytes a second for a byte limit), as RFC 2697 and 2698 measure them; the configuration converts from bits
+    //# The
+    //# CIR and EIR are both measured in bits/s.
+    //
+    //= https://www.rfc-editor.org/rfc/rfc4115#section-2
+    //# The CIR and EIR can be set
+    //# independently of each other.
+    #[must_use]
+    pub fn new(
+        committed_rate: Rate,
+        committed_burst: NonZeroU64,
+        excess_rate: Rate,
+        excess_burst: NonZeroU64,
+    ) -> CommittedPlusExcess {
+        CommittedPlusExcess {
+            committed_rate,
+            committed_burst,
+            excess_rate,
+            excess_burst,
+        }
+    }
+
+    /// The committed bucket's rate (CIR).
+    #[must_use]
+    pub fn committed_rate(&self) -> Rate {
+        self.committed_rate
+    }
+
+    /// The committed bucket's size (CBS).
+    #[must_use]
+    pub fn committed_burst(&self) -> NonZeroU64 {
+        self.committed_burst
+    }
+
+    /// The excess bucket's rate (EIR).
+    #[must_use]
+    pub fn excess_rate(&self) -> Rate {
+        self.excess_rate
+    }
+
+    /// The excess bucket's size (EBS).
+    #[must_use]
+    pub fn excess_burst(&self) -> NonZeroU64 {
+        self.excess_burst
+    }
+}
+
 /// How one quantity, bytes or packets, is metered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Profile {
     /// RFC 2697: one rate, two burst sizes.
     SingleRate(SingleRate),
-    /// RFC 2698: two rates, each with its own burst size.
+    /// RFC 2698: two rates, each with its own burst size; the peak rate bounds all that passes.
     TwoRate(TwoRate),
+    /// RFC 4115: two rates, each with its own burst size; the excess rate adds to the committed one.
+    CommittedPlusExcess(CommittedPlusExcess),
 }
 
 impl From<SingleRate> for Profile {
@@ -179,6 +256,12 @@ impl From<SingleRate> for Profile {
 impl From<TwoRate> for Profile {
     fn from(profile: TwoRate) -> Profile {
         Profile::TwoRate(profile)
+    }
+}
+
+impl From<CommittedPlusExcess> for Profile {
+    fn from(profile: CommittedPlusExcess) -> Profile {
+        Profile::CommittedPlusExcess(profile)
     }
 }
 
@@ -195,7 +278,7 @@ pub struct Limits {
 impl Limits {
     /// Limit bytes by `bytes` and packets by `packets`.
     ///
-    /// A byte is a byte of the IP packet, header included, as RFC 2697 and 2698 count them; link layer
+    /// A byte is a byte of the IP packet, header included, as RFC 2697, 2698 and 4115 count them; link layer
     /// headers, and any encapsulation the packet arrived in, are not counted.
     ///
     /// # Errors
@@ -240,6 +323,11 @@ impl std::fmt::Display for Profile {
                 f,
                 "trTCM cir {} cbs {} pir {} pbs {}",
                 p.committed_rate, p.committed_burst, p.peak_rate, p.peak_burst
+            ),
+            Profile::CommittedPlusExcess(p) => write!(
+                f,
+                "rfc4115 cir {} cbs {} eir {} ebs {}",
+                p.committed_rate, p.committed_burst, p.excess_rate, p.excess_burst
             ),
         }
     }

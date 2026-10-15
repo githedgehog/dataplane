@@ -11,7 +11,7 @@
     clippy::panic
 )]
 
-//! Three color markers (RFC 2697 and RFC 2698) for policing traffic at line rate.
+//! Three color markers (RFC 2697, RFC 2698 and RFC 4115) for policing traffic at line rate.
 //!
 //! A meter colors each packet green, yellow or red the moment it arrives; nothing is queued, so a
 //! meter costs a few comparisons a packet whatever the rate. It can limit bytes, packets, or both.
@@ -30,5 +30,5 @@ mod tests;
 
 pub use buckets::Color;
 pub use meter::Meter;
-pub use profile::{Limits, Profile, ProfileError, Rate, SingleRate, TwoRate};
+pub use profile::{CommittedPlusExcess, Limits, Profile, ProfileError, Rate, SingleRate, TwoRate};
 pub use shared::{LocalMeter, SharedMeter};

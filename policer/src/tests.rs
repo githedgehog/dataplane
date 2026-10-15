@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::{Color, Limits, Meter, Profile, ProfileError, Rate, SharedMeter, SingleRate, TwoRate};
+use crate::{
+    Color, CommittedPlusExcess, Limits, Meter, Profile, ProfileError, Rate, SharedMeter,
+    SingleRate, TwoRate,
+};
 use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
@@ -24,16 +27,26 @@ fn two(cir: u64, cbs: u64, pir: u64, pbs: u64) -> Profile {
     .into()
 }
 
+fn excess(cir: u64, cbs: u64, eir: u64, ebs: u64) -> Profile {
+    CommittedPlusExcess::new(
+        rate(cir),
+        NonZeroU64::new(cbs).unwrap(),
+        rate(eir),
+        NonZeroU64::new(ebs).unwrap(),
+    )
+    .into()
+}
+
 fn bytes(profile: Profile) -> Limits {
     Limits::new(Some(profile), None).unwrap()
 }
 
-/// RFC 2697 and 2698 transcribed as literally as they read: one token at a time, at the instants the
-/// rates say, and the color-blind rules as written.
+/// RFC 2697, 2698 and 4115 transcribed as literally as they read: one token at a time, at the instants
+/// the rates say, and the color-blind rules as written (for RFC 4115, as its Figure 1 writes them).
 #[derive(Debug)]
 struct Literal {
     profile: Profile,
-    /// Tc and Te (RFC 2697), or Tc and Tp (RFC 2698).
+    /// Tc and Te (RFC 2697 and 4115), or Tc and Tp (RFC 2698).
     tokens: [u64; 2],
     /// How many of each bucket's ticks have happened.
     ticks: [u64; 2],
@@ -44,6 +57,7 @@ impl Literal {
         let tokens = match profile {
             Profile::SingleRate(p) => [p.committed_burst(), p.excess_burst()],
             Profile::TwoRate(p) => [p.committed_burst().get(), p.peak_burst().get()],
+            Profile::CommittedPlusExcess(p) => [p.committed_burst().get(), p.excess_burst().get()],
         };
         Literal {
             profile,
@@ -108,27 +122,55 @@ impl Literal {
                     Color::Green
                 }
             }
+            Profile::CommittedPlusExcess(p) => {
+                let [tc, te] = &mut self.tokens;
+                let due = Literal::due(p.committed_rate(), elapsed);
+                while self.ticks[0] < due {
+                    self.ticks[0] += 1;
+                    if *tc < p.committed_burst().get() {
+                        *tc += 1;
+                    }
+                }
+                let due = Literal::due(p.excess_rate(), elapsed);
+                while self.ticks[1] < due {
+                    self.ticks[1] += 1;
+                    if *te < p.excess_burst().get() {
+                        *te += 1;
+                    }
+                }
+                if b <= *tc {
+                    *tc -= b;
+                    Color::Green
+                } else if b <= *te {
+                    *te -= b;
+                    Color::Yellow
+                } else {
+                    Color::Red
+                }
+            }
         }
     }
 }
 
 /// A small profile and a stream of packets, from raw fuzzer input.
-type Scenario = (bool, [u16; 4], Vec<(u16, u16)>);
+type Scenario = (u8, [u16; 4], Vec<(u16, u16)>);
 
-fn scenario((two_rate, [r1, r2, b1, b2], packets): &Scenario) -> (Profile, Vec<(Duration, u32)>) {
+fn scenario((kind, [r1, r2, b1, b2], packets): &Scenario) -> (Profile, Vec<(Duration, u32)>) {
     // Small rates and bursts, so that the literal model's tick by tick refill stays cheap.
     let r1 = u64::from(r1 % 2000) + 1;
     let r2 = u64::from(r2 % 2000) + 1;
-    let profile = if *two_rate {
-        two(
+    let profile = match kind % 3 {
+        0 => {
+            let (cbs, ebs) = (u64::from(b1 % 4000), u64::from(b2 % 4000));
+            single(r1, cbs, if cbs == 0 { ebs.max(1) } else { ebs })
+        }
+        1 => two(
             r1.min(r2),
             u64::from(b1 % 4000) + 1,
             r1.max(r2),
             u64::from(b2 % 4000) + 1,
-        )
-    } else {
-        let (cbs, ebs) = (u64::from(b1 % 4000), u64::from(b2 % 4000));
-        single(r1, cbs, if cbs == 0 { ebs.max(1) } else { ebs })
+        ),
+        _ => excess(r1, u64::from(b1 % 4000) + 1, r2, u64::from(b2 % 4000) + 1),
     };
     let mut elapsed = Duration::ZERO;
     let packets = packets
@@ -215,6 +257,31 @@ fn scenario((two_rate, [r1, r2, b1, b2], packets): &Scenario) -> (Profile, Vec<(
 //= https://www.rfc-editor.org/rfc/rfc2698#section-3
 //= type=test
 //# o the packet is green and both Tp and Tc are decremented by B.
+//
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//= type=test
+//# The token buckets C and E are initially (at time 0) full; i.e., the
+//# token count Tc(0) = CBS and Te(0) = EBS.
+//
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//= type=test
+//# Thereafter, the token count
+//# Tc is incremented by one CIR times per second (up to CBS), and the
+//# token count Te is incremented by one EIR times per second (up to
+//# EBS).
+//
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//= type=test
+//# When a green packet of size B arrives at time t, then
+//
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//= type=test
+//# o  the packet is red.
+//
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//= type=test
+//# In the color-blind operation, the meter assumes that all incoming
+//# packets are green.
 #[test]
 fn the_meter_colors_as_the_rfcs_do() {
     bolero::check!().with_type::<Scenario>().for_each(|input| {
@@ -271,6 +338,67 @@ fn over_the_peak_rate_is_red_and_between_the_rates_is_yellow() {
     assert_eq!(meter.color(later, 500), Color::Green);
     assert_eq!(meter.color(later, 500), Color::Yellow);
     assert_eq!(meter.color(later, 1), Color::Red);
+}
+
+#[test]
+fn the_excess_rate_adds_to_the_committed_rate() {
+    let start = clock::now();
+    let mut meter = Meter::new(&bytes(excess(1000, 1000, 1000, 1000)), start);
+    assert_eq!(meter.color(start, 1000), Color::Green);
+    assert_eq!(meter.color(start, 1000), Color::Yellow);
+    assert_eq!(meter.color(start, 1), Color::Red);
+    // A second earns 1000 committed and 1000 excess tokens: twice what RFC 2698 passes with a
+    // peak rate of 1000.
+    let later = start + Duration::from_secs(1);
+    assert_eq!(meter.color(later, 1000), Color::Green);
+    assert_eq!(meter.color(later, 1000), Color::Yellow);
+    assert_eq!(meter.color(later, 1), Color::Red);
+}
+
+/// RFC 4115's reason to exist: under RFC 2698 a packet within the committed rate can be red because
+/// the peak bucket is smaller than the committed one, or drained by yellow traffic.
+#[test]
+fn green_traffic_does_not_depend_on_the_excess_bucket() {
+    let start = clock::now();
+    let mut peak = Meter::new(&bytes(two(1000, 1000, 2000, 500)), start);
+    assert_eq!(peak.color(start, 1000), Color::Red);
+    let mut excess_rate = Meter::new(&bytes(excess(1000, 1000, 1000, 500)), start);
+    assert_eq!(excess_rate.color(start, 1000), Color::Green);
+    // Spending the whole excess bucket on yellow leaves the committed bucket to green.
+    let mut excess_rate = Meter::new(&bytes(excess(1000, 500, 1000, 1000)), start);
+    assert_eq!(excess_rate.color(start, 1000), Color::Yellow);
+    assert_eq!(excess_rate.color(start, 500), Color::Green);
+}
+
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//= type=test
+//# o  if Tc(t)- B > 0, the packet is green, and Tc(t) is decremented
+//# by B; else
+//
+//= https://www.rfc-editor.org/rfc/rfc4115#section-3
+//= type=test
+//# o  if Te(t)- B > 0, the packet is yellow, and Te(t) is decremented
+//# by B; else
+#[test]
+fn a_packet_that_exactly_empties_a_bucket_still_pays_for_its_color() {
+    let start = clock::now();
+    let mut meter = Meter::new(&bytes(excess(1, 1000, 1, 500)), start);
+    assert_eq!(meter.color(start, 1000), Color::Green);
+    assert_eq!(meter.color(start, 500), Color::Yellow);
+    assert_eq!(meter.color(start, 1), Color::Red);
+}
+
+//= https://www.rfc-editor.org/rfc/rfc4115#section-2
+//= type=test
+//# The CIR and EIR can be set
+//# independently of each other.
+#[test]
+fn an_excess_rate_profile_takes_any_two_rates() {
+    let start = clock::now();
+    // An excess rate below the committed rate is fine; it is not a peak.
+    let mut meter = Meter::new(&bytes(excess(2000, 1000, 1000, 1000)), start);
+    assert_eq!(meter.color(start, 1000), Color::Green);
+    assert_eq!(meter.color(start, 1000), Color::Yellow);
 }
 
 #[test]
@@ -394,6 +522,13 @@ mod leasing {
                         p.committed_burst().get() + earned(p.committed_rate()),
                         p.peak_burst().get() + earned(p.peak_rate()),
                     ),
+                    Profile::CommittedPlusExcess(p) => {
+                        let green = p.committed_burst().get() + earned(p.committed_rate());
+                        (
+                            green,
+                            green + p.excess_burst().get() + earned(p.excess_rate()),
+                        )
+                    }
                 };
                 assert!(green <= green_bound, "{green} green of {green_bound}");
                 assert!(passed <= passed_bound, "{passed} passed of {passed_bound}");
@@ -489,4 +624,9 @@ fn limits_render_what_they_limit() {
     );
     let limits = Limits::new(None, Some(single(10, 5, 0))).unwrap();
     assert_eq!(limits.to_string(), "packets: srTCM cir 10/s cbs 5 ebs 0");
+    let limits = Limits::new(Some(excess(1000, 1500, 500, 3000)), None).unwrap();
+    assert_eq!(
+        limits.to_string(),
+        "bytes: rfc4115 cir 1000/s cbs 1500 eir 500/s ebs 3000"
+    );
 }

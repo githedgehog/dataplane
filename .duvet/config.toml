@@ -35,3 +35,6 @@ source = "https://www.rfc-editor.org/rfc/rfc2697"
 
 [[specification]]
 source = "https://www.rfc-editor.org/rfc/rfc2698"
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc4115"

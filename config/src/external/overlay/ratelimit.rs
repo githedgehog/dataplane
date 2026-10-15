@@ -4,7 +4,7 @@
 //! Rate limits: policing what a VPC sends towards a destination.
 //!
 //! Each rate limit meters, as one aggregate, every packet a VPC sends to a destination prefix, and
-//! decides what happens to it by the color the meter gives it (RFC 2697 or 2698).
+//! decides what happens to it by the color the meter gives it (RFC 2697, 2698 or 4115).
 
 use super::vpc::ValidatedVpcTable;
 use crate::ConfigError;

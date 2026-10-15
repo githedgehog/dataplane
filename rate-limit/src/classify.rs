@@ -146,7 +146,7 @@ impl IpVersion for Ipv6Addr {
     }
 }
 
-/// How many bytes of IP packet `net` heads: what RFC 2697 and 2698 meter.
+/// How many bytes of IP packet `net` heads: what RFC 2697, 2698 and 4115 meter.
 pub(crate) fn ip_bytes(net: &Net) -> u32 {
     match net {
         Net::Ipv4(ip) => u32::from(ip.total_len()),
