@@ -32,6 +32,8 @@ pub(crate) use claim::Ownership;
 pub use claim::{ClaimError, ForeignOwner, PortClaim, PortOwner};
 mod probe;
 pub use probe::ProbeError;
+mod reta;
+pub use reta::RetaError;
 #[cfg(test)]
 mod queue_tests;
 #[cfg(test)]
@@ -1017,6 +1019,12 @@ impl DevInfo<'_> {
     pub fn rss_hash_types(&self) -> u64 {
         self.inner.flow_type_rss_offloads
     }
+
+    /// Entries in the device's RSS redirection table; zero if it has none.
+    #[must_use]
+    pub fn reta_size(&self) -> u16 {
+        self.inner.reta_size
+    }
 }
 
 /// Runtime device state used by the port teardown guard.
@@ -1479,6 +1487,50 @@ impl<'eal, S: Open> Dev<'eal, S> {
             Ok(())
         } else {
             Err(ErrorCode::parse_i32(ret))
+        }
+    }
+}
+
+impl<'eal, S: Open> Dev<'eal, S> {
+    /// Lay the RSS redirection table out round-robin over `queues`, so RSS delivers only to them.
+    ///
+    /// Receive queues left out of the table get only what flow rules send them. Listing a queue
+    /// more than once gives it a proportionally larger share.
+    ///
+    /// # Errors
+    ///
+    /// [`RetaError`] if the device has no usable table, `queues` is empty, or the driver refuses.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn spread_rss(&mut self, queues: &[queue::rx::RxQueueIndex]) -> Result<(), RetaError> {
+        let size = self.info.reta_size();
+        let mut groups = reta::layout(size, queues)?;
+        let port = self.info.index().as_u16();
+        // SAFETY: `groups` holds `size` entries in whole groups, as the size argument says, and is
+        // only read during the call.
+        let ret = unsafe { rte_eth_dev_rss_reta_update(port, groups.as_mut_ptr(), size) };
+        if ret == 0 {
+            debug!("RSS on port {port} now spreads over receive queues {queues:?}");
+            Ok(())
+        } else {
+            Err(RetaError::Driver(ErrorCode::parse_i32(ret)))
+        }
+    }
+
+    /// The receive queue each entry of the RSS redirection table names, in table order.
+    ///
+    /// # Errors
+    ///
+    /// [`RetaError`] if the device has no usable table or the driver refuses the query.
+    pub fn rss_reta(&self) -> Result<alloc::vec::Vec<queue::rx::RxQueueIndex>, RetaError> {
+        let size = self.info.reta_size();
+        let mut groups = reta::query_groups(size)?;
+        let port = self.info.index().as_u16();
+        // SAFETY: `groups` holds `size` entries in whole groups, as the size argument says.
+        let ret = unsafe { rte_eth_dev_rss_reta_query(port, groups.as_mut_ptr(), size) };
+        if ret == 0 {
+            Ok(reta::flatten(&groups))
+        } else {
+            Err(RetaError::Driver(ErrorCode::parse_i32(ret)))
         }
     }
 }
