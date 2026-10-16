@@ -35,6 +35,8 @@ impl EthType {
     pub const VLAN_DOUBLE_TAGGED: EthType = EthType(EtherType::VLAN_DOUBLE_TAGGED_FRAME);
     /// Ethernet type for [QinQ (aka provider bridging)](https://en.wikipedia.org/wiki/IEEE_802.1ad)
     pub const VLAN_QINQ: EthType = EthType(EtherType::PROVIDER_BRIDGING);
+    /// Ethernet type for [LLDP](https://standards.ieee.org/ieee/802.1AB/6047/)
+    pub const LLDP: EthType = EthType(EtherType(0x88cc));
 
     /// Map a raw (native-endian) u16 into an [`EthType`]
     #[must_use]
