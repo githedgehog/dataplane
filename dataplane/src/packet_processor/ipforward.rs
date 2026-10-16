@@ -199,6 +199,15 @@ impl IpForwarder {
                 debug!("The decapsulated packet is malformed!: {bad:#?}");
                 packet.done(DoneReason::VxlanDecapFailure);
             }
+            // Addressed to the gateway from inside a VPC. Nothing in the control plane serves a VPC:
+            // punting would hand the kernel the inner frame on the underlay port's tap, stripped of
+            // its VNI, where it means something else or nothing at all.
+            None if packet.meta().is_overlay() => {
+                debug!(
+                    "{nfi}: decapsulated packet is addressed to the gateway itself; dropping it"
+                );
+                packet.done(DoneReason::Unhandled);
+            }
             None => {
                 /* send to kernel, among other options */
                 debug!("Packet should be delivered to kernel...");
@@ -431,10 +440,12 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
 
 #[cfg(test)]
 mod test {
-    use super::IpForwarder;
+    use super::{FibMemo, IpForwarder};
     use net::eth::mac::{Mac, SourceMac};
+    use net::interface::InterfaceIndex;
     use net::ip::{NextHeader, UnicastIpAddr};
-    use net::packet::test_utils::build_test_ipv6_packet_with_transport;
+    use net::packet::DoneReason;
+    use net::packet::test_utils::{build_test_ipv4_packet, build_test_ipv6_packet_with_transport};
     use net::vxlan::Vni;
     use routing::testing::RouterTables;
     use routing::{ResolvedVxlan, Vtep};
@@ -465,6 +476,19 @@ mod test {
             packet.meta().dst_vpcd.is_some(),
             "the packet was not encapsulated"
         );
+    }
+
+    /// A packet for the gateway is punted from the underlay, and dropped from inside a VPC.
+    #[test]
+    fn only_underlay_packets_for_the_gateway_are_local() {
+        let forwarder = IpForwarder::new("test", RouterTables::new().fibs());
+        let ifindex = InterfaceIndex::try_new(1).unwrap();
+        for (overlay, expected) in [(false, DoneReason::Local), (true, DoneReason::Unhandled)] {
+            let mut packet = build_test_ipv4_packet(64).unwrap();
+            packet.meta_mut().set_overlay(overlay);
+            forwarder.packet_exec_instruction_local(&mut packet, ifindex, &mut FibMemo::default());
+            assert_eq!(packet.get_done(), Some(expected), "overlay: {overlay}");
+        }
     }
 }
 
