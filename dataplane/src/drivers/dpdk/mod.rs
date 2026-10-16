@@ -8,6 +8,7 @@
 //!
 //! RSS is disabled, so only queue 0 receives traffic. Ports need a kernel netdev
 //! because the pipeline identifies interfaces by ifindex. Forwarding runs in software.
+//! Control-plane frames cross per-port TAP interfaces through [`cpbridge`].
 
 mod port;
 mod worker;
@@ -29,6 +30,7 @@ use super::DriverError;
 use super::status::DriverStatusWriter;
 use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 
+pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
 pub(crate) use port::Port;
 use worker::{Worker, WorkerPort};
 
@@ -43,9 +45,13 @@ impl DriverDpdk {
     /// Queue handles borrow the ports, which must outlive the worker scope.
     /// The timer runtime must keep running until all workers have joined.
     ///
+    /// `bridge` is the datapath's end of the control-plane bridge, if there is one. Its queues are
+    /// dealt out alongside the hardware queues, because the two are used from the same loop.
+    ///
     /// # Errors
     ///
     /// Returns an error for missing ports or queues, or thread spawn failures.
+    #[allow(clippy::too_many_arguments)]
     pub fn start<'p, 'scope>(
         scope: &'scope thread::Scope<'scope, '_>,
         workers_subsystem: &Subsystem,
@@ -54,6 +60,7 @@ impl DriverDpdk {
         num_workers: NonZero<u16>,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'p, Mbuf<'p>> + 'p>,
         status_writer: DriverStatusWriter,
+        bridge: Option<&mut DatapathEnds>,
     ) -> Result<(), DriverError>
     where
         'p: 'scope,
@@ -69,7 +76,7 @@ impl DriverDpdk {
             ));
         }
 
-        let dealt = port::deal_queues(ports, num_workers.get())?;
+        let dealt = port::deal_queues(ports, num_workers.get(), bridge)?;
 
         info!(
             "Starting {num_workers} DPDK worker(s) across {} port(s)",
