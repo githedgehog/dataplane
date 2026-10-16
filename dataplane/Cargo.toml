@@ -15,6 +15,7 @@ shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
 acl-filter = { workspace = true }
+rate-limit = { workspace = true }
 afpacket = { workspace = true, features = ["async-tokio"] }
 args = { workspace = true }
 arrayvec = { workspace = true }

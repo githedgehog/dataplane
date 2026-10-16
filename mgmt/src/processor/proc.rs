@@ -8,6 +8,7 @@ use acl_filter::AclFilterContextWriter;
 use concurrency::sync::Arc;
 use config::external::overlay::ValidatedOverlay;
 use flow_entry::flow_table::FlowTable;
+use rate_limit::{Backend, RateLimitWriter, VpcDestination};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
@@ -99,6 +100,9 @@ pub struct ConfigProcessorParams {
 
     // writer for ACL filter tables
     pub aclfilterw: AclFilterContextWriter,
+
+    // writer for rate limits
+    pub rate_limits: RateLimitWriter<VpcDestination>,
 
     // writer for port forwarding table
     pub portfw_w: PortFwTableWriter,
@@ -574,6 +578,15 @@ fn apply_acl_filter_config(
     Ok(())
 }
 
+fn apply_rate_limit_config(
+    overlay: &ValidatedOverlay,
+    rate_limits: &RateLimitWriter<VpcDestination>,
+) -> ConfigResult {
+    rate_limits.apply(overlay, Backend::Dpdk)?;
+    debug!("Successfully updated the rate limits");
+    Ok(())
+}
+
 /// Update the Nat tables for static NAT
 fn apply_static_nat_config(
     vpc_table: &ValidatedVpcTable,
@@ -679,6 +692,7 @@ impl ConfigProcessor {
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let flow_filter_writer = &mut self.proc_params.flow_filter_writer;
         let aclfilterw = &mut self.proc_params.aclfilterw;
+        let rate_limits = &self.proc_params.rate_limits;
         let portfw_w = &mut self.proc_params.portfw_w;
         let flow_table = &self.proc_params.flow_table;
 
@@ -724,6 +738,9 @@ impl ConfigProcessor {
 
         /* apply ACL filter config */
         apply_acl_filter_config(overlay, aclfilterw)?;
+
+        /* apply rate limits */
+        apply_rate_limit_config(overlay, rate_limits)?;
 
         /* apply static NAT config */
         apply_static_nat_config(overlay.vpc_table(), nattablesw)?;

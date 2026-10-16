@@ -557,6 +557,9 @@ pub enum CliAction {
 
     // Port links (mstlink)
     ShowLink,
+
+    // Rate limits
+    ShowRateLimits,
 }
 impl CliAction {
     #[must_use]
