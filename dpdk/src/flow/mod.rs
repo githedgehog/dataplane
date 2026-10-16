@@ -19,7 +19,8 @@ pub use error::FlowError;
 pub use pattern::{
     Ipv4Match, Ipv4Prefix, Ipv6Match, Ipv6Prefix, TcpMatch, UdpMatch, VlanMatch, VxlanMatch,
 };
-pub use rule::FlowRule;
+pub(crate) use rule::flush;
+pub use rule::{FlowDestroyFailure, FlowRule};
 
 use crate::dev::{Dev, Started};
 
