@@ -458,8 +458,8 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
 
     /// Match a VXLAN header against `criteria` ([`VxlanMatch::default`] matches any VXLAN packet).
     ///
-    /// Available only after UDP (VXLAN is UDP-encapsulated). Inner (decapsulated) headers can then be
-    /// matched as the pattern continues, since the `net` lattice resumes at the tunnel's inner start.
+    /// Available only after UDP (VXLAN is UDP-encapsulated). The pattern cannot yet continue into
+    /// the inner headers.
     pub fn match_vxlan(mut self, criteria: VxlanMatch) -> FlowBuilder<'dev, D, Vxlan>
     where
         Vxlan: Within<Pos>,
@@ -568,7 +568,8 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
         self.actions.push(Action::ModifyField(modify_set(
             rte_flow_field_id::RTE_FLOW_FIELD_META,
             32,
-            &value.to_le_bytes(),
+            // `rte_flow_item_meta.data` is a host-order `u32`.
+            &value.to_ne_bytes(),
         )));
         self
     }
