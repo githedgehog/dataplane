@@ -8,5 +8,7 @@ repository.workspace = true
 
 [dependencies]
 arc-swap = { workspace = true }
+chrono = { workspace = true, features = ["clock"] }
+clock = { workspace = true }
 concurrency = { workspace = true }
 left-right = { workspace = true }

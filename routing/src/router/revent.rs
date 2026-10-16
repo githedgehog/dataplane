@@ -4,10 +4,10 @@
 //! Router events and eventlog
 
 use crate::bmp::bmp_render::BgpNeighEvent;
-use crate::cli::display::PrettyDuration;
 use crate::event::EventLog;
 use crate::router::cpi::CpiStatus;
 use crate::{IfChange, IfState};
+use common::cliprovider::PrettyDuration;
 use net::eth::mac::SourceMac;
 use net::interface::InterfaceName;
 
