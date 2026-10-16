@@ -80,7 +80,7 @@ impl TlvType {
     }
 
     /// True if this TLV is one of the three mandatory TLVs, which an
-    /// `Lldpdu` carries in dedicated fields, or the end
+    /// [`Lldpdu`](crate::lldp::Lldpdu) carries in dedicated fields, or the end
     /// of LLDPDU marker, which it supplies itself.
     ///
     /// Such a TLV may not be added to the optional section of an LLDPDU.
