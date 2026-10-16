@@ -53,7 +53,7 @@ pub(crate) fn of_underlay(underlay: &Underlay, bfd_peers: &[BfdPeer]) -> Control
         .vtep
         .as_ref()
         .map(|vtep| -> IpAddr { vtep.address.inner() });
-    ControlPlane::new(local, vtep, neighbours)
+    ControlPlane::new(local.chain(vtep), neighbours)
 }
 
 #[cfg(test)]
@@ -76,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn an_underlay_names_its_addresses_vtep_and_neighbours() {
+    fn an_underlay_names_its_addresses_and_neighbours() {
         let mut underlay = Underlay::default();
         underlay.vrf.add_interface_config(
             InterfaceConfig::new("eth0", InterfaceType::Loopback, false)
@@ -110,7 +110,6 @@ mod tests {
                 v4(172, 16, 0, 2)
             ])
         );
-        assert_eq!(control.vtep(), Some(v4(172, 16, 0, 2)));
         assert_eq!(
             *control.neighbours(),
             set(&[v4(10, 0, 0, 0), v4(10, 0, 1, 0)])
