@@ -2125,6 +2125,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-rate-limit"
+version = "0.29.0"
+dependencies = [
+ "dataplane-acl",
+ "dataplane-clock",
+ "dataplane-common",
+ "dataplane-concurrency",
+ "dataplane-config",
+ "dataplane-dpdk",
+ "dataplane-lpm",
+ "dataplane-match-action",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-policer",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-rekon"
 version = "0.29.0"
 
