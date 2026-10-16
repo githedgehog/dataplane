@@ -1577,6 +1577,7 @@ dependencies = [
  "dataplane-match-action",
  "dataplane-net",
  "dataplane-pipeline",
+ "dataplane-policer",
  "dataplane-tracectl",
  "derive_builder",
  "ipnet",
