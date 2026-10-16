@@ -21,6 +21,7 @@ use thiserror::Error;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
+use tokio::task::coop::consume_budget;
 use tokio::time::{Duration, MissedTickBehavior, interval};
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
@@ -186,6 +187,7 @@ impl<Buf: PacketBufferMut> ArpNd<Buf> {
                     check_stale = true;
                 }
                 () = added.notified() => debug!("ARP/ND cache was updated."),
+
                 Some(packet) = self.inq.pop_async() => {
                     debug!("Got packets to resolve");
                     self.packet_resolve(&mut backlog, packet, &enabled_ifs);
@@ -219,6 +221,14 @@ impl<Buf: PacketBufferMut> ArpNd<Buf> {
                     self.querier.multi_confirm(stale.into_iter()).await;
                 }
             }
+
+            // Spend tokio's cooperative budget, so that this task yields once the budget is exhausted.
+            // The task yields whenever the inq runs empty, but nothing else makes it yield: the
+            // inq is not a tokio resource (it does not spend the budget). So producers that kept
+            // the inq from ever becoming empty could starve the netlink listener and the cancellation,
+            // which share this task. So, bound the number of passes between yields. Yielding here
+            // with tokio::task::yield_now().await would have a similar effect.
+            consume_budget().await;
         }
     }
 
