@@ -74,8 +74,21 @@ pub(crate) fn available(pool: &crate::mem::Pool<'_>) -> usize {
     clippy::disallowed_types,
     reason = "the DPDK port registry is process-wide"
 )]
-pub(crate) static PORT_LOCK: concurrency::process_global::Mutex<()> =
+static PORT_LOCK: concurrency::process_global::Mutex<()> =
     concurrency::process_global::Mutex::new(());
+
+/// Take [`PORT_LOCK`].
+/// It guards no data, so a test that panicked while holding it must not fail the tests after it.
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_types,
+    reason = "the DPDK port registry is process-wide"
+)]
+pub(crate) fn port_lock() -> concurrency::process_global::MutexGuard<'static, ()> {
+    PORT_LOCK
+        .lock()
+        .unwrap_or_else(concurrency::process_global::PoisonError::into_inner)
+}
 
 // The ring PMD is used only by tests. Signature from rte_eth_ring.h.
 #[cfg(test)]
@@ -105,8 +118,7 @@ pub(crate) struct RingPort {
 impl RingPort {
     pub(crate) fn new() -> RingPort {
         let _eal = start_eal();
-        #[allow(clippy::unwrap_used)]
-        let guard = PORT_LOCK.lock().unwrap();
+        let guard = port_lock();
         Self::with_guard(std::rc::Rc::new(guard))
     }
 

@@ -77,7 +77,7 @@ pub struct EalShared<'eal> {
 }
 
 impl<'eal> EalShared<'eal> {
-    /// Device queries for unit tests, serialized with port teardown by `test_support::PORT_LOCK`.
+    /// Device queries for unit tests, serialized with port teardown by `test_support::port_lock`.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn dev(&self) -> &'eal dev::Manager {
@@ -395,6 +395,8 @@ mod tests {
     #[with_eal]
     fn the_projection_answers_queries_from_another_thread() {
         let shared = crate::test_support::start_eal();
+        // Both counts must see the same ports.
+        let _ports = crate::test_support::port_lock();
 
         let here_sockets = shared.socket().count();
         let here_devices = shared.dev().num_devices();
