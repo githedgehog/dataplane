@@ -92,11 +92,11 @@ impl TlvType {
         )
     }
 
-    /// True if `OptionalTlv` decodes this TLV into
+    /// True if [`OptionalTlv`](crate::lldp::OptionalTlv) decodes this TLV into
     /// a structured form rather than keeping its octets verbatim.
     ///
     /// Such a TLV may not be wrapped in
-    /// `UnrecognizedTlv`, which would give the
+    /// [`UnrecognizedTlv`](crate::lldp::UnrecognizedTlv), which would give the
     /// same octets on the wire two different representations in memory.
     #[must_use]
     pub const fn is_modelled(self) -> bool {
@@ -313,6 +313,21 @@ where
         }));
     };
     Ok((value, total))
+}
+
+/// Re-target a [`ParseError`] from an inner parser onto the parser which
+/// contains it, leaving the length and buffer errors alone.
+pub(crate) fn lift<E, T, F>(wrap: F) -> impl FnOnce(ParseError<E>) -> ParseError<T>
+where
+    E: core::error::Error,
+    T: core::error::Error,
+    F: FnOnce(E) -> T,
+{
+    move |error| match error {
+        ParseError::BufferTooLong(len) => ParseError::BufferTooLong(len),
+        ParseError::Length(length) => ParseError::Length(length),
+        ParseError::Invalid(inner) => ParseError::Invalid(wrap(inner)),
+    }
 }
 
 /// Re-target a [`ParseError`] which is statically known not to carry an
