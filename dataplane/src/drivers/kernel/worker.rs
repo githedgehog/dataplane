@@ -29,6 +29,7 @@ use crate::drivers::disposition::Disposition;
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
+use crate::drivers::kernel::multicast::receive_all_multicast;
 use crate::drivers::kernel::sockstats;
 use crate::drivers::status::WorkerId;
 use crate::drivers::supervisor::{RxTaskMonitor, TASK_PAT_PERIOD, WorkerMonitor};
@@ -99,6 +100,16 @@ fn create_worker_interface(
     let buf_size = 4 * 1024 * 1024;
 
     let bfd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd) };
+    // With a tap standing in for this interface, the control plane's multicast arrives here or
+    // nowhere. Not fatal: forwarding does not need it.
+    if punt.is_some()
+        && let Err(e) = receive_all_multicast(bfd, if_name)
+    {
+        error!(
+            "Could not have {if_name} accept all multicast ({e}); LLDP and IPv6 neighbour \
+             discovery from its peers will not reach the control plane"
+        );
+    }
     nix::sys::socket::setsockopt(&bfd, nix::sys::socket::sockopt::RcvBuf, &buf_size).inspect_err(
         |e| {
             error!("Failed to set SO_RCVBUF for interface {if_name}: {e}");
