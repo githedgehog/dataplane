@@ -1,3 +1,58 @@
+SPECIFICATION: https://www.rfc-editor.org/rfc/rfc2697
+  SECTION: [Configuration](#section-2)
+    TEXT[implementation,test]:    The CBS and the EBS and are measured in bytes.  The CBS and EBS must
+    TEXT[implementation,test]:    be configured so that at least one of them is larger than 0.
+
+  SECTION: [Metering](#section-3)
+    TEXT[implementation,test]:    The token buckets C and E are initially (at time 0) full, i.e., the
+    TEXT[implementation,test]:    token count Tc(0) = CBS and the token count Te(0) = EBS.
+    TEXT[implementation,test]: Thereafter,
+    TEXT[implementation,test]:    the token counts Tc and Te are updated CIR times per second as
+    TEXT[implementation,test]:    follows:
+    TEXT[implementation,test]:      o If Tc is less than CBS, Tc is incremented by one, else
+    TEXT[implementation,test]:      o if Te is less then EBS, Te is incremented by one, else
+    TEXT[implementation,test]:      o neither Tc nor Te is incremented.
+    TEXT[implementation,test]:      o the packet is red and neither Tc nor Te is decremented.
+    TEXT[implementation,test]:    When a packet of size B bytes arrives at time t, the following
+    TEXT[implementation,test]:    happens if the srTCM is configured to operate in the Color-Aware
+    TEXT[implementation,test]:    mode:
+    TEXT[implementation,test]:      o If the packet has been precolored as green and Tc(t)-B >= 0, the
+    TEXT[implementation,test]:        packet is green and Tc is decremented by B down to the minimum
+    TEXT[implementation,test]:        value of 0, else
+    TEXT[implementation,test]:      o If the packet has been precolored as green or yellow and if
+    TEXT[implementation,test]:        Te(t)-B >= 0, the packets is yellow and Te is decremented by B
+    TEXT[implementation,test]:        down to the minimum value of 0, else
+    TEXT[implication]:    The actual implementation of a Meter doesn't need to be modeled
+    TEXT[implication]:    according to the above formal specification.
+
+SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4115
+  SECTION: [Configuration](#section-2)
+    TEXT[exception]:    The CBS and EBS are measured in bytes and must configure to be
+    TEXT[exception]:    greater than the expected maximum length of the incoming PDU.
+    TEXT[exception]: The
+    TEXT[exception]:    CIR and EIR are both measured in bits/s.
+    TEXT[implementation,test]: The CIR and EIR can be set
+    TEXT[implementation,test]:    independently of each other.
+
+  SECTION: [Metering and Marking](#section-3)
+    TEXT[implementation,test]:    The token buckets C and E are initially (at time 0) full; i.e., the
+    TEXT[implementation,test]:    token count Tc(0) = CBS and Te(0) = EBS.
+    TEXT[implementation,test]: Thereafter, the token count
+    TEXT[implementation,test]:    Tc is incremented by one CIR times per second (up to CBS), and the
+    TEXT[implementation,test]:    token count Te is incremented by one EIR times per second (up to
+    TEXT[implementation,test]:    EBS).
+    TEXT[implementation,test]:    When a green packet of size B arrives at time t, then
+    TEXT[implementation,test]:       o  if Tc(t)- B > 0, the packet is green, and Tc(t) is decremented
+    TEXT[implementation,test]:          by B; else
+    TEXT[implementation,test]:       o  if Te(t)- B > 0, the packet is yellow, and Te(t) is decremented
+    TEXT[implementation,test]:          by B; else
+    TEXT[implementation,test]:       o  the packet is red.
+    TEXT[implementation,test]:    When a yellow packet of size B arrives at time t, then
+    TEXT[implementation,test]:    Incoming red packets are not tested against any of the two token
+    TEXT[implementation,test]:    buckets and remain red.
+    TEXT[implementation,test]:    In the color-blind operation, the meter assumes that all incoming
+    TEXT[implementation,test]:    packets are green.
+
 SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
   SECTION: [Address and Port Mapping](#section-4.1)
     TEXT[!MUST,implementation,test,exception]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.

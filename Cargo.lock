@@ -2102,6 +2102,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-policer"
+version = "0.30.1"
+dependencies = [
+ "bolero",
+ "dataplane-clock",
+ "dataplane-concurrency",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "dataplane-rekon"
 version = "0.30.1"
 
