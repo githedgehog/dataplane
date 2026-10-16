@@ -338,6 +338,11 @@ package = "dataplane-args"
 miri = true
 wasm = false # miss
 
+[workspace.metadata.package.arp]
+package = "dataplane-arp"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
 [workspace.metadata.package.cli]
 package = "dataplane-cli"
 miri = true
