@@ -142,6 +142,12 @@ impl Ipv6 {
         self
     }
 
+    /// The payload length: every byte after this header, extension headers included.
+    #[must_use]
+    pub fn payload_length(&self) -> u16 {
+        self.0.payload_length
+    }
+
     /// Set the payload length.
     ///
     /// # Safety
