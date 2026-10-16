@@ -14,6 +14,7 @@
 
 mod fanout;
 mod kif;
+mod multicast;
 mod sockstats;
 mod worker;
 
