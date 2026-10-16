@@ -53,6 +53,7 @@ impl From<DoneReason> for Disposition {
             | DoneReason::VxlanNotForUs
             | DoneReason::Filtered
             | DoneReason::AclDropped
+            | DoneReason::RateLimited
             | DoneReason::NatOutOfResources
             | DoneReason::FlowCapacityExceeded
             | DoneReason::NatUnsupportedProto
@@ -131,6 +132,7 @@ mod test {
             (DoneReason::VxlanNotForUs, Disposition::Drop),
             (DoneReason::Filtered, Disposition::Drop),
             (DoneReason::AclDropped, Disposition::Drop),
+            (DoneReason::RateLimited, Disposition::Drop),
             (DoneReason::NatOutOfResources, Disposition::Drop),
             (DoneReason::FlowCapacityExceeded, Disposition::Drop),
             (DoneReason::NatUnsupportedProto, Disposition::Drop),

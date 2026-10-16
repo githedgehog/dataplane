@@ -104,6 +104,7 @@ pub enum DoneReason {
     VxlanNotForUs,        /* Got vxlan packet not for us */
     Filtered,             /* The packet was administratively filtered */
     AclDropped,           /* The packet was dropped by an ACL rule */
+    RateLimited,          /* Dropped by a rate-limit rule */
     NatOutOfResources,    /* can't do NAT due to lack of resources */
     FlowCapacityExceeded, /* could not create flow state: flow table capacity exceeded */
     NatUnsupportedProto,  /* unsupported transport protocol for NATing */
