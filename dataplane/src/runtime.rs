@@ -784,11 +784,13 @@ pub fn main() {
     };
 
     // start router
+    let workers = std::num::NonZeroUsize::from(config.driver.num_workers());
     let mut setup = start_router(
         &shutdown.router,
         router_params,
         driver_status_reader,
         config.cli.capture_dir.clone(),
+        workers,
     )
     .expect("failed to start router");
 
@@ -997,6 +999,7 @@ pub fn main() {
                     natallocatorw: setup.natallocatorw,
                     flow_filter_writer: setup.flow_filter_writer,
                     aclfilterw: setup.aclfiltertablesw,
+                    rate_limits: setup.rate_limits,
                     portfw_w: setup.portfw_w,
                     vpc_stats_store: setup.vpc_stats_store,
                     dp_status_r: dp_status.clone(),

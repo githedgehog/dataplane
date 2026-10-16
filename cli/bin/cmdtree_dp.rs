@@ -348,6 +348,12 @@ fn cmd_show_link() -> Node {
         .action(CliAction::ShowLink)
 }
 
+fn cmd_show_rate_limits() -> Node {
+    Node::new("rate-limits")
+        .desc("Show rate limits and per-color packet and byte counts")
+        .action(CliAction::ShowRateLimits)
+}
+
 fn cmd_show_capture() -> Node {
     Node::new("capture")
         .desc("Show the running or most recent packet capture")
@@ -388,6 +394,7 @@ fn cmd_show() -> Node {
     root += cmd_show_lldp();
     root += cmd_show_transceivers();
     root += cmd_show_link();
+    root += cmd_show_rate_limits();
     root += cmd_show_tech();
     root
 }

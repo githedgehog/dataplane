@@ -56,11 +56,13 @@ pub mod test {
 
     use config::external::ExternalConfigBuilder;
     use config::external::overlay::Overlay;
+    use config::external::overlay::ratelimit::{ColorActions, RateLimit, RateLimitTables};
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
     use config::external::underlay::Underlay;
+    use policer::{Profile, Rate};
 
     use config::ExternalConfig;
     use config::internal::device::DeviceConfig;
@@ -202,7 +204,25 @@ pub mod test {
         let vpc_table = sample_vpc_table();
         let peering_table = sample_vpc_peering_table();
         /* Overlay config */
-        Overlay::new(vpc_table, peering_table)
+        Overlay::new(vpc_table, peering_table).with_rate_limits(sample_rate_limits())
+    }
+
+    /* A byte limit on what VPC-1 sends VPC-2 */
+    fn sample_rate_limits() -> RateLimitTables {
+        let rate = Rate::new(std::num::NonZeroU64::new(125_000_000).expect("not zero"));
+        let profile = Profile::new(rate, 1_250_000, None, 0).expect("a burst");
+        let mut tables = RateLimitTables::default();
+        tables
+            .bytes
+            .add(RateLimit {
+                name: "vpc-1-to-vpc-2".to_string(),
+                vpc: "VPC-1".to_string(),
+                destination: Prefix::expect_from(("192.168.128.0", 24)),
+                profile,
+                actions: ColorActions::default(),
+            })
+            .expect("one rate limit");
+        tables
     }
 
     /* DEVICE configuration */
@@ -492,6 +512,13 @@ pub mod test {
         /* create AclFilterContext for ACL filtering */
         let aclfilterw = AclFilterContextWriter::new();
 
+        /* create the rate limits */
+        let rate_limits = rate_limit::RateLimitWriter::new(
+            rate_limit::RateLimits::empty(),
+            std::num::NonZeroUsize::MIN,
+        );
+        let enforced = rate_limits.clone();
+
         /* create port forwarding table */
         let portfw_w = PortFwTableWriter::new();
 
@@ -516,6 +543,7 @@ pub mod test {
             natallocatorw,
             flow_filter_writer,
             aclfilterw,
+            rate_limits,
             portfw_w,
             vpc_stats_store,
             dp_status_r,
@@ -542,6 +570,17 @@ pub mod test {
             named.borrow().as_deref(),
             Some("test-gw"),
             "an applied config tells its watchers the gateway's name"
+        );
+        let enforced = enforced.load();
+        assert_eq!(
+            enforced
+                .bytes()
+                .rules()
+                .iter()
+                .map(rate_limit::Rule::name)
+                .collect::<Vec<_>>(),
+            ["vpc-1-to-vpc-2"],
+            "an applied config hands its rate limits to the workers"
         );
 
         /* stop the router */

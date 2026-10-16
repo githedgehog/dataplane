@@ -69,6 +69,7 @@ pub struct CliSources {
     pub lldp_neighbors: Option<Box<dyn CliDataProvider + Send>>,
     pub transceivers: Option<Box<dyn CliDataProvider + Send>>,
     pub link: Option<Box<dyn CliDataProvider + Send>>,
+    pub rate_limits: Option<Box<dyn CliDataProvider + Send>>,
 }
 
 impl Display for RouterParams {
