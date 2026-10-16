@@ -6,7 +6,8 @@
 use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 
-use dpdk_sys::{rte_flow, rte_flow_destroy, rte_flow_error};
+use dpdk_sys::{rte_flow, rte_flow_destroy, rte_flow_error, rte_flow_flush};
+use errno::ErrorCode;
 use tracing::warn;
 
 use crate::dev::DevIndex;
@@ -40,15 +41,42 @@ impl<'dev> FlowRule<'dev> {
     }
 
     /// Destroy the rule and return any PMD error. Drop can only log errors.
-    pub fn destroy(self) -> Result<(), FlowError> {
-        let this = ManuallyDrop::new(self);
-        // SAFETY: the handle is live and owned; ManuallyDrop prevents a second destroy.
-        let result = unsafe { destroy(this.port, this.flow) };
-        if result.is_ok() {
-            this.live_rules.fetch_sub(1, Ordering::AcqRel);
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlowDestroyFailure`] with the still-installed rule, so the caller can retry.
+    #[allow(clippy::result_large_err)] // Preserve rule ownership on failure.
+    pub fn destroy(self) -> Result<(), FlowDestroyFailure<'dev>> {
+        // SAFETY: the handle is live and owned by `self`.
+        match unsafe { destroy(self.port, self.flow) } {
+            Ok(()) => {
+                let this = ManuallyDrop::new(self);
+                this.live_rules.fetch_sub(1, Ordering::AcqRel);
+                Ok(())
+            }
+            Err(error) => Err(FlowDestroyFailure { error, rule: self }),
         }
-        result
     }
+}
+
+impl core::fmt::Debug for FlowRule<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FlowRule")
+            .field("flow", &self.flow)
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A destroy error and the still-installed rule.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to destroy flow rule on port {}: {error}", self.rule.port)]
+pub struct FlowDestroyFailure<'dev> {
+    /// The PMD error.
+    #[source]
+    pub error: FlowError,
+    /// The rule, still installed. Dropping it retries the destroy once more.
+    pub rule: FlowRule<'dev>,
 }
 
 impl Drop for FlowRule<'_> {
@@ -76,4 +104,22 @@ unsafe fn destroy(port: DevIndex, flow: NonNull<rte_flow>) -> Result<(), FlowErr
     } else {
         Err(FlowError::from_raw(&error))
     }
+}
+
+/// Remove every flow rule on `port` (`rte_flow_flush`), logging any failure.
+/// Returns whether the flush succeeded.
+pub(crate) fn flush(port: u16) -> bool {
+    // SAFETY: an all-zero `rte_flow_error` is a valid out-parameter.
+    let mut error: rte_flow_error = unsafe { core::mem::zeroed() };
+    // SAFETY: plain FFI call; DPDK validates the port id.
+    let ret = unsafe { rte_flow_flush(port, &raw mut error) };
+    if ret == 0 {
+        return true;
+    }
+    warn!(
+        "failed to flush flow rules on port {port}: {}: {}",
+        ErrorCode::parse_i32(ret),
+        FlowError::from_raw(&error),
+    );
+    false
 }
