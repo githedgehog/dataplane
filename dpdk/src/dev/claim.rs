@@ -97,6 +97,8 @@ impl Ownership {
                 break;
             }
             warn!("port {port} was never closed; closing it at EAL teardown");
+            // Leaked rule handles may remain; DPDK requires flushing them before stop.
+            crate::flow::flush(port);
             // SAFETY: `port` is a valid port id owned by this EAL, and no queue handle for it
             // can still exist (see above).
             let stopped = unsafe { dpdk_sys::rte_eth_dev_stop(port) };
