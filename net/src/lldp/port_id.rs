@@ -4,7 +4,7 @@
 //! The port ID TLV, which identifies the port that sent an LLDPDU.
 //!
 //! Exactly one port ID TLV appears in every LLDPDU, immediately after the
-//! chassis ID TLV.  `Lldpdu` enforces that by storing it
+//! chassis ID TLV.  [`Lldpdu`](crate::lldp::Lldpdu) enforces that by storing it
 //! in a dedicated field rather than in a list of TLVs.
 //!
 //! The encoding mirrors the chassis ID TLV, but the subtypes are numbered
