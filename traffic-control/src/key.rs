@@ -133,8 +133,6 @@ impl L4 {
     }
 }
 
-/// ICMP's protocol number.
-pub(crate) const ICMP: u8 = 1;
 /// TCP's protocol number.
 pub(crate) const TCP: u8 = 6;
 /// UDP's protocol number.
