@@ -42,6 +42,7 @@ nix = { workspace = true, features = ["fs", "sched", "mount"] }
 clock = { workspace = true }
 dpdk = { workspace = true, features = [] }
 net = { workspace = true, features = ["builder"] }
+caps = { workspace = true, default-features = false, features = [] }
 fixin = { workspace = true, features = [] }
 id = { workspace = true, features = ["serde", "rkyv"] }
 n-vm = { workspace = true }
