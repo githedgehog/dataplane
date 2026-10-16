@@ -10,7 +10,7 @@ use std::net::{IpAddr, Ipv6Addr};
 use net::eth::ethtype::EthType;
 use net::lldp::NEAREST_BRIDGE;
 
-use crate::key::{Frame, ICMP, ICMP6, Ip, Key, L4, Ports, TCP};
+use crate::key::{Frame, ICMP6, Ip, Key, L4, Ports};
 use crate::rules::{self, Rule};
 
 /// BGP's TCP port (RFC 4271).
@@ -19,9 +19,6 @@ pub(crate) const BGP: u16 = 179;
 pub(crate) const BFD_SINGLE_HOP: u16 = 3784;
 /// The UDP destination port of multihop BFD control packets (RFC 5883).
 pub(crate) const BFD_MULTIHOP: u16 = 4784;
-/// The protocols that count as other local traffic to the VTEP's address: ICMP and TCP. The rest,
-/// UDP above all, is VXLAN or nothing the gateway expects there, and stays on the data path.
-pub(crate) const VTEP_LOCAL: [u8; 2] = [ICMP, TCP];
 
 /// A kind of control-plane traffic, policed and counted on its own.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -36,20 +33,16 @@ pub enum Class {
     Arp,
     /// LLDP to the nearest bridge group address.
     Lldp,
-    /// Anything else to a local address; to the VTEP's, only ICMP and TCP, as UDP to it is VXLAN.
-    /// BGP and BFD from addresses that are not neighbours land here, with the smaller budget.
-    OtherLocal,
 }
 
 impl Class {
     /// Every class.
-    pub const ALL: [Class; 6] = [
+    pub const ALL: [Class; 5] = [
         Class::Bfd,
         Class::Bgp,
         Class::Icmpv6,
         Class::Arp,
         Class::Lldp,
-        Class::OtherLocal,
     ];
 
     /// The class's name, for counters and the CLI.
@@ -61,7 +54,6 @@ impl Class {
             Class::Icmpv6 => "icmpv6",
             Class::Arp => "arp",
             Class::Lldp => "lldp",
-            Class::OtherLocal => "other-local",
         }
     }
 }
@@ -75,45 +67,31 @@ impl Display for Class {
 /// What the class table needs to know about the gateway: the addresses it answers on and the
 /// peers it runs BGP and BFD with.
 ///
-/// These come from configuration, not the FIB, so traffic the FIB would deliver locally for other
-/// reasons (VXLAN to the VTEP) is not mistaken for control traffic.
+/// These come from configuration, not the FIB.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ControlPlane {
     local: BTreeSet<IpAddr>,
-    vtep: Option<IpAddr>,
     neighbours: BTreeSet<IpAddr>,
 }
 
 impl ControlPlane {
-    /// The gateway's `local` addresses (interface addresses, BGP update sources), its `vtep`'s
-    /// address, and its BGP and BFD `neighbours`.
-    ///
-    /// The VTEP's address is local too, whether or not `local` lists it.
+    /// The gateway's `local` addresses (interface addresses, the VTEP's, BGP update sources) and
+    /// its BGP and BFD `neighbours`.
     #[must_use]
     pub fn new(
         local: impl IntoIterator<Item = IpAddr>,
-        vtep: Option<IpAddr>,
         neighbours: impl IntoIterator<Item = IpAddr>,
     ) -> ControlPlane {
-        let mut local: BTreeSet<IpAddr> = local.into_iter().collect();
-        local.extend(vtep);
         ControlPlane {
-            local,
-            vtep,
+            local: local.into_iter().collect(),
             neighbours: neighbours.into_iter().collect(),
         }
     }
 
-    /// The addresses the gateway answers on, the VTEP's among them.
+    /// The addresses the gateway answers on.
     #[must_use]
     pub fn local(&self) -> &BTreeSet<IpAddr> {
         &self.local
-    }
-
-    /// The VTEP's address, which receives VXLAN: data, not control.
-    #[must_use]
-    pub fn vtep(&self) -> Option<IpAddr> {
-        self.vtep
     }
 
     /// The BGP and BFD peers.
@@ -166,24 +144,19 @@ impl ClassTable {
         }
     }
 
-    /// The class of an IP packet from `src` to `dst` carrying `l4`, `ICMPv6` aside.
+    /// The class of an IP packet from `src` to `dst` carrying `l4`, `ICMPv6` aside: BGP or BFD
+    /// from a neighbour to a local address.
     fn classify_ip(&self, src: IpAddr, dst: IpAddr, l4: L4) -> Option<Class> {
-        if !self.control.local.contains(&dst) {
+        if !self.control.local.contains(&dst) || !self.control.neighbours.contains(&src) {
             return None;
         }
-        if self.control.neighbours.contains(&src) {
-            match l4 {
-                L4::Tcp(Ports { src, dst }) if src == BGP || dst == BGP => return Some(Class::Bgp),
-                L4::Udp(Ports { dst, .. }) if dst == BFD_SINGLE_HOP || dst == BFD_MULTIHOP => {
-                    return Some(Class::Bfd);
-                }
-                _ => {}
+        match l4 {
+            L4::Tcp(Ports { src, dst }) if src == BGP || dst == BGP => Some(Class::Bgp),
+            L4::Udp(Ports { dst, .. }) if dst == BFD_SINGLE_HOP || dst == BFD_MULTIHOP => {
+                Some(Class::Bfd)
             }
+            _ => None,
         }
-        if Some(dst) == self.control.vtep && !VTEP_LOCAL.contains(&l4.proto()) {
-            return None;
-        }
-        Some(Class::OtherLocal)
     }
 }
 
