@@ -87,7 +87,11 @@ pub(crate) struct RioConf {
 fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
     debug!("Opening UNIX sock; target bind point is {path}");
     let _ = std::fs::remove_file(path);
-    let sock = UnixDatagram::bind(path).map_err(|_| RouterError::InvalidPath(path.to_owned()))?;
+    // The errno is kept, because without it every reason a bind can fail reads identically: a
+    // missing parent directory, a permission problem and an address already in use all print as
+    // the path and nothing else. Diagnosing the first of those from a crash log cost real time.
+    let sock =
+        UnixDatagram::bind(path).map_err(|e| RouterError::InvalidPath(format!("{path}: {e}")))?;
     let mut perms = fs::metadata(path)
         .map_err(|_| RouterError::Internal("Failure retrieving socket metadata"))?
         .permissions();
