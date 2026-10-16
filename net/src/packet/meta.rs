@@ -122,25 +122,32 @@ pub enum DoneReason {
 }
 
 bitflags! {
+    /// Each flag is a bit of its own, given by its position. A bit shared by two flags is a
+    /// compile-time error (see the assertion below).
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     struct MetaFlags: u32 {
-        const INITIALIZED = 0b0000_0001; /* initialized */
-        const IS_L2_BCAST = 0b0000_0010; /* frame is eth broadcast */
-        const NATTED_SRC  = 0b0000_0100; /* set to true if source address of a packet has been NATed */
-        const NATTED_DST  = 0b0000_1000; /* set to true if destination address of a packet has been NATed */
-        const REFR_CHKSUM = 0b0001_0000; /* if true, an indication that packet checksums need to be refreshed */
-        const KEEP        = 0b0010_0000; /* Keep the Packet even if it should be dropped */
-        const IS_OVERLAY  = 0b0100_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
-        const REQ_MASQUERADE      = 0b1000_0000;      /* Packet requires masquerade (source and/or destination) */
-        const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
-        const REQ_STATIC_NAT_SRC  = 0b0010_0000_0000; /* Packet requires static NAT (source) */
-        const REQ_STATIC_NAT_DST  = 0b0100_0000_0000; /* Packet requires static NAT (destination) */
-        const FORCE_FLOW_TRACKING = 0b1000_0000_0000; /* We need to track this flow, e.g. to apply stateful user ACLs */
-        const LOCAL               = 0b0001_0000_0000_0000; /* Packet is to be locally consumed */
-        const SOURCED             = 0b0010_0000_0000_0000; /* Packet is locally originated */
-        const NEED_ARPND          = 0b0100_0000_0000_0000; /* Need ARP/ND resolution */
+        const INITIALIZED         = 1 << 0;  /* initialized */
+        const NATTED_SRC          = 1 << 1;  /* set to true if source address of a packet has been NATed */
+        const NATTED_DST          = 1 << 2;  /* set to true if destination address of a packet has been NATed */
+        const REFR_CHKSUM         = 1 << 3;  /* if true, an indication that packet checksums need to be refreshed */
+        const KEEP                = 1 << 4;  /* Keep the Packet even if it should be dropped */
+        const IS_OVERLAY          = 1 << 5;  /* Packet was obtained by decapsulation and belongs to a VPC */
+        const REQ_MASQUERADE      = 1 << 6;  /* Packet requires masquerade (source and/or destination) */
+        const REQ_PORT_FORWARDING = 1 << 7;  /* Packet requires port forwarding */
+        const REQ_STATIC_NAT_SRC  = 1 << 8;  /* Packet requires static NAT (source) */
+        const REQ_STATIC_NAT_DST  = 1 << 9;  /* Packet requires static NAT (destination) */
+        const FORCE_FLOW_TRACKING = 1 << 10; /* We need to track this flow, e.g. to apply stateful user ACLs */
+        const LOCAL               = 1 << 11; /* Packet is to be locally consumed */
+        const SOURCED             = 1 << 12; /* Packet is locally originated */
+        const NEED_ARPND          = 1 << 13; /* Need ARP/ND resolution */
     }
 }
+
+// No two flags of [`MetaFlags`] share a bit: their union has a bit per flag
+const _: () = assert!(
+    MetaFlags::all().bits().count_ones() as usize == <MetaFlags as bitflags::Flags>::FLAGS.len(),
+    "two MetaFlags flags share a bit"
+);
 
 #[allow(unused)]
 #[derive(Debug, Default, Clone)]
@@ -249,13 +256,6 @@ impl PacketMeta {
     #[must_use]
     pub fn is_initialized(&self) -> bool {
         self.flags.contains(MetaFlags::INITIALIZED)
-    }
-    #[must_use]
-    pub fn is_l2bcast(&self) -> bool {
-        self.flags.contains(MetaFlags::IS_L2_BCAST)
-    }
-    pub fn set_l2bcast(&mut self, value: bool) {
-        self.set_flag(MetaFlags::IS_L2_BCAST, value);
     }
 
     #[must_use]
