@@ -116,7 +116,7 @@ impl DeParse for TimeToLive {
 
 /// The marker which ends an LLDPDU.
 ///
-/// `Lldpdu` writes this itself and consumes it on parse,
+/// [`Lldpdu`](crate::lldp::Lldpdu) writes this itself and consumes it on parse,
 /// so it is not something a caller normally handles.  It is public because it
 /// is occasionally useful to recognize the two zero octets in isolation.
 #[derive(
