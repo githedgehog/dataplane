@@ -62,39 +62,58 @@ pub async fn arp_nd_confirm(
 }
 
 #[cfg(test)]
-pub(crate) mod test_netlink_utils {
-    use super::arp_nd_probe;
-    use crate::cache::{NeighCacheWriter, NeighListener, NeighState};
-
+/// Utils for the tests: set up kernel interfaces, addresses and neighbors
+pub(crate) mod test_utils {
     use futures::TryStreamExt;
-    use std::sync::Arc;
+    use std::net::IpAddr;
     use std::time::Duration;
-    use tokio::sync::Notify;
 
-    use caps::Capability;
-    use fixin::wrap;
     use interface_manager::interface::TapDevice;
-    use net::eth::mac::{DestinationMac, Mac};
+    use net::buffer::TestBuffer;
+    use net::eth::mac::Mac;
     use net::interface::{InterfaceIndex, InterfaceName};
+    use net::packet::test_utils::build_test_udp_ipv4_packet;
+    use net::packet::{DoneReason, Packet};
     use nix::net::if_::if_nametoindex;
-    use test_utils::with_caps;
 
     use rtnetlink::packet_route::AddressFamily;
+    use rtnetlink::packet_route::address::AddressMessage;
+    use rtnetlink::packet_route::link::LinkAttribute;
     use rtnetlink::packet_route::neighbour::{
         NeighbourAddress, NeighbourAttribute, NeighbourState,
     };
     use rtnetlink::packet_route::route::RouteType;
-    use rtnetlink::{LinkUnspec, new_connection};
+    use rtnetlink::{LinkUnspec, LinkVeth, new_connection};
 
-    use std::net::IpAddr;
-    use std::str::FromStr;
-    #[allow(unused)]
     use tracing::{debug, info};
-    use tracing_test::traced_test;
+
+    /// Check that `packet` was returned by the ARP/ND daemon resolved, with destination `mac`
+    #[track_caller]
+    pub(crate) fn assert_resolved(packet: &Packet<TestBuffer>, mac: Mac) {
+        assert_eq!(packet.get_done(), Some(DoneReason::Delivered));
+        assert!(
+            !packet.meta().need_arp_nd(),
+            "a resolved packet needs no resolution"
+        );
+        assert_eq!(packet.eth_destination(), Some(mac));
+    }
+
+    /// Check that `packet` was returned by the ARP/ND daemon unresolved: done with `reason`,
+    /// still in need of resolution, and with its destination mac unchanged. The packet must have
+    /// been built with `build_test_udp_ipv4_packet`, which sets the same mac for any addresses.
+    #[track_caller]
+    pub(crate) fn assert_given_up(packet: &Packet<TestBuffer>, reason: DoneReason) {
+        assert_eq!(packet.get_done(), Some(reason));
+        assert!(
+            packet.meta().need_arp_nd(),
+            "an unresolved packet still needs resolution"
+        );
+        let original = build_test_udp_ipv4_packet("1.2.3.4", "5.6.7.8", 1, 1);
+        assert_eq!(packet.eth_destination(), original.eth_destination());
+    }
 
     // Util: Create a tap `name` and bring it up. The tap is only used as a kernel interface
     // over which ARP/ND can be done (it is not read or written).
-    #[allow(unused)]
     pub(crate) async fn create_tap(name: &str) -> (InterfaceName, InterfaceIndex) {
         let name = InterfaceName::try_from(name).unwrap();
         TapDevice::open(&name).await.expect("Failed to create tap");
@@ -118,6 +137,135 @@ pub(crate) mod test_netlink_utils {
         (name, InterfaceIndex::try_new(ifindex).unwrap())
     }
 
+    // Util: Create a veth pair and bring both sides up. Addresses can be assigned to either
+    // side with `add_address`. Since both sides are in the same network namespace, the source
+    // address of the requests sent over one side is local to the peer too, which would drop them
+    // as martians: the peer is let accept them.
+    // The ARP/ND timers of our side are shortened, so that a neighbor that stops answering
+    // fails within seconds: it is reachable for 0.5-1.5s (instead of 15-45s) and, when
+    // confirmed, it is probed after 1s (instead of 5s).
+    // Return the name and ifindex of our side, the ifindex of the peer, and the MAC of the peer.
+    pub(crate) async fn create_veth(
+        name: &str,
+        peer: &str,
+    ) -> (InterfaceName, InterfaceIndex, InterfaceIndex, Mac) {
+        let (connection, handle, _) = new_connection().unwrap();
+        tokio::spawn(connection);
+
+        // create veth pair
+        handle
+            .link()
+            .add(LinkVeth::new(name, peer).build())
+            .execute()
+            .await
+            .expect("Failed to create veth pair");
+
+        // get their ifindices
+        let ifindex = if_nametoindex(name).expect("Failed to get veth ifindex");
+        let peer_ifindex = if_nametoindex(peer).expect("Failed to get veth peer ifindex");
+
+        for (sysctl, value) in [
+            (format!("/proc/sys/net/ipv4/conf/{peer}/accept_local"), "1"),
+            (
+                format!("/proc/sys/net/ipv4/neigh/{name}/base_reachable_time_ms"),
+                "1000",
+            ),
+            (
+                format!("/proc/sys/net/ipv4/neigh/{name}/delay_first_probe_time"),
+                "1",
+            ),
+        ] {
+            std::fs::write(&sysctl, value)
+                .unwrap_or_else(|e| panic!("Failed to set {sysctl}: {e}"));
+        }
+
+        // make sure both are up
+        bring_up(ifindex).await;
+        bring_up(peer_ifindex).await;
+        bring_up(if_nametoindex("lo").unwrap()).await;
+
+        // get the mac of the peer
+        let peer_link = handle
+            .link()
+            .get()
+            .match_index(peer_ifindex)
+            .execute()
+            .try_next()
+            .await
+            .expect("Failed to get the veth peer")
+            .expect("The veth peer does not exist");
+
+        // get the mac that has been assigned to the peer
+        let peer_mac = peer_link
+            .attributes
+            .iter()
+            .find_map(|attr| match attr {
+                LinkAttribute::Address(mac) => <[u8; 6]>::try_from(mac.as_slice()).ok(),
+                _ => None,
+            })
+            .expect("The veth peer has no mac");
+
+        (
+            InterfaceName::try_from(name).unwrap(),
+            InterfaceIndex::try_new(ifindex).unwrap(),
+            InterfaceIndex::try_new(peer_ifindex).unwrap(),
+            Mac(peer_mac),
+        )
+    }
+
+    // Util: Find address `addr`/`prefix_len` on the interface with `ifindex`
+    async fn find_address(
+        handle: &rtnetlink::Handle,
+        ifindex: InterfaceIndex,
+        addr: IpAddr,
+        prefix_len: u8,
+    ) -> Option<AddressMessage> {
+        handle
+            .address()
+            .get()
+            .set_link_index_filter(ifindex.to_u32())
+            .set_address_filter(addr)
+            .set_prefix_length_filter(prefix_len)
+            .execute()
+            .try_next()
+            .await
+            .unwrap_or_else(|e| panic!("Failed to get the addresses of ifindex {ifindex}: {e}"))
+    }
+
+    // Util: Assign address `addr`/`prefix_len` to the interface with `ifindex`
+    pub(crate) async fn add_address(ifindex: InterfaceIndex, addr: IpAddr, prefix_len: u8) {
+        let (connection, handle, _) = new_connection().unwrap();
+        tokio::spawn(connection);
+        handle
+            .address()
+            .add(ifindex.to_u32(), addr, prefix_len)
+            .execute()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to add {addr}/{prefix_len} to ifindex {ifindex}: {e}")
+            });
+    }
+
+    // Util: Remove address `addr`/`prefix_len` from the interface with `ifindex`. The kernel
+    // deletes an address given its own description of it, so the address is looked up first.
+    pub(crate) async fn del_address(ifindex: InterfaceIndex, addr: IpAddr, prefix_len: u8) {
+        let (connection, handle, _) = new_connection().unwrap();
+        tokio::spawn(connection);
+        let address = find_address(&handle, ifindex, addr, prefix_len)
+            .await
+            .unwrap_or_else(|| {
+                panic!("Interface with ifindex {ifindex} has no {addr}/{prefix_len}")
+            });
+        handle
+            .address()
+            .del(address)
+            .execute()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to remove {addr}/{prefix_len} from ifindex {ifindex}: {e}")
+            });
+    }
+
     // Util: Bring a kernel interface up (e.g. a tap)
     async fn bring_up(ifindex: u32) {
         let (connection, handle, _) = rtnetlink::new_connection().unwrap();
@@ -132,7 +280,6 @@ pub(crate) mod test_netlink_utils {
     }
 
     // Util: Set the kernel neighbor entry for `target` in some `state`, with or without a mac
-    #[allow(unused)]
     pub(crate) async fn set_neigh(
         ifindex: u32,
         target: IpAddr,
@@ -156,7 +303,6 @@ pub(crate) mod test_netlink_utils {
     }
 
     // Util: Get the state of the kernel neighbor entry for `target`, if there is one
-    #[allow(unused)]
     pub(crate) async fn get_neigh_state(ifindex: u32, target: IpAddr) -> Option<NeighbourState> {
         let (connection, handle, _) = rtnetlink::new_connection().unwrap();
         tokio::spawn(connection);
@@ -180,7 +326,6 @@ pub(crate) mod test_netlink_utils {
     }
 
     // Util: Wait until `condition` holds, for at most `timeout`. Returns whether it holds.
-    #[allow(unused)]
     pub(crate) async fn wait_until(
         timeout: Duration,
         mut condition: impl AsyncFnMut() -> bool,
@@ -196,6 +341,27 @@ pub(crate) mod test_netlink_utils {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::arp_nd_probe;
+    use super::test_utils::{create_tap, set_neigh, wait_until};
+    use crate::cache::{NeighCacheWriter, NeighListener, NeighState};
+
+    use std::net::IpAddr;
+    use std::str::FromStr;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    use caps::Capability;
+    use fixin::wrap;
+    use net::eth::mac::{DestinationMac, Mac};
+    use rtnetlink::new_connection;
+    use rtnetlink::packet_route::neighbour::NeighbourState;
+    use test_utils::with_caps;
+    use tracing_test::traced_test;
 
     #[n_vm::test]
     #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]

@@ -207,7 +207,7 @@ impl Default for NeighCache {
 
 #[cfg(test)]
 #[rustfmt::skip]
-pub mod tests {
+mod tests {
     use super::*;
     use net::interface::InterfaceIndex;
     use net::eth::mac::{DestinationMac, Mac};

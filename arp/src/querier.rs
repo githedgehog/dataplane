@@ -73,16 +73,14 @@ impl ArpNdQuerier {
 }
 
 #[cfg(test)]
-pub(crate) mod test {
-    use crate::netlink::test_netlink_utils::create_tap;
+mod tests {
+    use crate::netlink::test_utils::create_tap;
     use crate::querier::{ArpNdQuerier, Target};
     use caps::Capability;
     use fixin::wrap;
     use std::str::FromStr;
     use std::{net::IpAddr, time::Duration};
     use test_utils::with_caps;
-    #[allow(unused)]
-    use tracing::{debug, info};
     use tracing_test::traced_test;
 
     #[n_vm::test]

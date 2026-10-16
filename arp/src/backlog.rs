@@ -381,13 +381,14 @@ impl<Buf: PacketBufferMut> Backlog<Buf> {
 }
 
 #[cfg(test)]
-mod test_backlog {
+mod tests {
     use super::{Backlog, ReturnBuffer};
     use crate::cache::{NeighCacheWriter, NeighEntry, NeighState};
+    use crate::netlink::test_utils::{assert_given_up, assert_resolved};
     use crate::querier::Target;
     use net::buffer::TestBuffer;
     use net::eth::mac::{DestinationMac, SourceMac};
-    use net::headers::{TryEth, TryUdp};
+    use net::headers::TryUdp;
     use net::interface::InterfaceIndex;
     use net::packet::test_utils::build_test_udp_ipv4_packet;
     use net::packet::{DoneReason, Packet};
@@ -502,8 +503,7 @@ mod test_backlog {
         assert_eq!(backlog.num_targets(), 0, "the target should be given up");
         assert_eq!(outq.len(), NUM_PKTS, "all packets should be returned");
         for packet in outq.pop_ready() {
-            assert!(packet.meta().need_arp_nd());
-            assert_eq!(packet.get_done(), Some(DoneReason::MissL2resolution));
+            assert_given_up(&packet, DoneReason::MissL2resolution);
         }
     }
 
@@ -528,9 +528,7 @@ mod test_backlog {
 
         assert_eq!(backlog.num_targets(), 0);
         let packet = outq.pop().expect("the resolved packet was not output");
-        assert!(!packet.meta().need_arp_nd());
-        assert_eq!(packet.get_done(), Some(DoneReason::Delivered));
-        assert_eq!(packet.try_eth().map(|eth| eth.destination()), Some(mac));
+        assert_resolved(&packet, mac.inner());
     }
 
     #[test]
@@ -563,9 +561,7 @@ mod test_backlog {
 
         // check successful resolution
         for packet in outq.pop_ready() {
-            assert!(!packet.meta().need_arp_nd());
-            assert_eq!(packet.get_done(), Some(DoneReason::Delivered));
-            assert_eq!(packet.try_eth().map(|eth| eth.destination()), Some(mac));
+            assert_resolved(&packet, mac.inner());
         }
     }
 
@@ -582,7 +578,6 @@ mod test_backlog {
 
         // feed the backlog with some packets. The cache has no entries
         let (addr, _mac, ifindex) = mapping("10.0.0.2", "02:ca:fe:ba:be:01", 2);
-        let original_mac = packet(addr, ifindex).try_eth().map(|eth| eth.destination());
         for _ in 1..=NUM_PKTS {
             backlog.add(Target::new(addr, ifindex), packet(addr, ifindex));
         }
@@ -608,10 +603,7 @@ mod test_backlog {
 
         // check unsuccessful resolution
         for packet in outq.pop_ready() {
-            assert!(packet.meta().need_arp_nd());
-            assert_eq!(packet.get_done(), Some(DoneReason::MissL2resolution));
-            // the destination MAC is left as it was
-            assert_eq!(packet.try_eth().map(|eth| eth.destination()), original_mac);
+            assert_given_up(&packet, DoneReason::MissL2resolution);
         }
     }
 
@@ -648,7 +640,7 @@ mod test_backlog {
     #[track_caller]
     fn assert_dropped(outq: &PktQueue<TestBuffer>) {
         let packet = outq.pop().expect("the dropped packet was not output");
-        assert_eq!(packet.get_done(), Some(DoneReason::ArpOutOfResources));
+        assert_given_up(&packet, DoneReason::ArpOutOfResources);
     }
 
     #[test]
@@ -737,7 +729,7 @@ mod test_backlog {
         // only the given-up packet is output: the packet for the new target was not dropped
         assert_eq!(outq.len(), 1, "The given-up packet should be output");
         for packet in outq.pop_ready() {
-            assert_eq!(packet.get_done(), Some(DoneReason::MissL2resolution));
+            assert_given_up(&packet, DoneReason::MissL2resolution);
         }
     }
 
@@ -799,7 +791,7 @@ mod test_backlog {
         assert!(backlog.targets_to_query().is_empty());
         assert_eq!(backlog.num_targets(), 0, "The target should be given up");
         let packet = outq.pop().expect("the packet was not output");
-        assert_eq!(packet.get_done(), Some(DoneReason::MissL2resolution));
+        assert_given_up(&packet, DoneReason::MissL2resolution);
         assert!(outq.is_empty());
     }
 
@@ -835,7 +827,7 @@ mod test_backlog {
         );
         for packet in outq.pop_ready() {
             assert_eq!(packet.meta().oif, Some(if2));
-            assert_eq!(packet.get_done(), Some(DoneReason::MissL2resolution));
+            assert_given_up(&packet, DoneReason::MissL2resolution);
         }
     }
 }

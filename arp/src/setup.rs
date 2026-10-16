@@ -83,10 +83,13 @@ impl<Buf: PacketBufferMut> ArpSetup<Buf> {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
     use crate::cache::NeighState;
-    use crate::netlink::test_netlink_utils::{create_tap, get_neigh_state, set_neigh, wait_until};
+    use crate::netlink::test_utils::{
+        add_address, assert_given_up, assert_resolved, create_tap, create_veth, del_address,
+        get_neigh_state, set_neigh, wait_until,
+    };
     use caps::Capability;
     use fixin::wrap;
     use lifecycle::CancellationToken;
@@ -131,8 +134,8 @@ mod test {
 
     /// Drive a pipeline with the ARP/ND `nf`, like a worker would, with `packet`, which must be
     /// punted to the daemon. This blocks, so it runs on a blocking thread, to not keep the daemon
-    /// (on the runtime of the test) from running. Returns the packets returned by the daemon:
-    /// the packet, if returned within 10 seconds.
+    /// (on the runtime of the test) from running. Returns the packets returned by the daemon
+    /// within 10 seconds.
     fn punt_packet(
         nf: PktIo<TestBuffer>,
         packet: Packet<TestBuffer>,
@@ -233,14 +236,10 @@ mod test {
 
         for packet in &returned {
             let dst = packet.ip_destination().expect("Can't get Ip dst address");
-            let dst_mac = packet.eth_destination().unwrap();
             if dst == target_ip {
-                assert_eq!(packet.get_done(), Some(DoneReason::Delivered));
-                assert!(!packet.meta().need_arp_nd());
-                assert_eq!(dst_mac, resolved_mac);
+                assert_resolved(packet, resolved_mac);
             } else {
-                assert!(packet.meta().need_arp_nd());
-                assert_eq!(packet.get_done(), Some(DoneReason::MissL2resolution));
+                assert_given_up(packet, DoneReason::MissL2resolution);
             }
         }
 
@@ -383,9 +382,7 @@ mod test {
         let returned = worker.await.unwrap();
         assert_eq!(returned.len(), 1, "the packet was not returned");
         let packet = &returned[0];
-        assert_eq!(packet.get_done(), Some(DoneReason::Delivered));
-        assert!(!packet.meta().need_arp_nd());
-        assert_eq!(packet.eth_destination().unwrap(), resolved_mac);
+        assert_resolved(packet, resolved_mac);
 
         subs.cancel_token().cancel();
         jh.await.unwrap();
@@ -426,15 +423,80 @@ mod test {
             .unwrap();
         assert_eq!(returned.len(), 1, "the packet was not returned");
         let packet = &returned[0];
-        assert_eq!(packet.get_done(), Some(DoneReason::Delivered));
-        assert!(!packet.meta().need_arp_nd());
-        assert_eq!(packet.eth_destination().unwrap(), static_mac);
+        assert_resolved(packet, static_mac);
 
         // the static entry was not queried: it is still permanent
         assert_eq!(
             get_neigh_state(tap0_ifindex.to_u32(), target_ip).await,
             Some(NeighbourState::Permanent)
         );
+
+        subs.cancel_token().cancel();
+        jh.await.unwrap();
+    }
+
+    /// Test the resolution of a real neighbor: a packet to the peer of a veth, which answers
+    /// the ARP requests for its address, is returned to the pipeline resolved with its mac.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+    #[cfg_attr(not(emulated), traced_test)]
+    async fn test_arp_nd_resolves_neighbor() {
+        const SOME_IP: &str = "10.0.5.2";
+        let target_ip = IpAddr::from_str(SOME_IP).unwrap();
+        let peer_prefix_len = 24;
+
+        let (veth_name, veth_ifindex, peer_ifindex, peer_mac) =
+            create_veth("veth0", "veth0p").await;
+
+        // start the daemon, with ARP/ND enabled over our side of the veth
+        let arpnd: ArpSetup<TestBuffer> = ArpSetup::new();
+        let nf = arpnd.nf();
+        let cacher = arpnd.neigh_cache_factory().handle();
+        let subs = test_subsystem();
+        let (jh, ctl) = arpnd.launch(&Handle::current(), &subs).unwrap();
+        ctl.enable(&[veth_name]).await.unwrap();
+
+        println!(" === Punt packet to {SOME_IP}: it should not be resolved as peer has no address");
+        let returned = punt_packet(nf.clone(), packet_to_resolve(SOME_IP, veth_ifindex))
+            .await
+            .unwrap();
+
+        let packet = &returned[0];
+        assert_given_up(packet, DoneReason::MissL2resolution);
+
+        println!(" === Assigning {SOME_IP} to peer");
+        add_address(peer_ifindex, target_ip, peer_prefix_len).await;
+
+        println!(" === Punt packet to {SOME_IP}: it should be resolved since address was set");
+        let returned = punt_packet(nf.clone(), packet_to_resolve(SOME_IP, veth_ifindex))
+            .await
+            .unwrap();
+
+        let packet = &returned[0];
+        assert_resolved(packet, peer_mac);
+
+        println!(" === Un-assigning {SOME_IP} to peer");
+        del_address(peer_ifindex, target_ip, peer_prefix_len).await;
+
+        // Wait until the arp/nd cache gets reported that the ip failed resolution.
+        // That will happen because the arp/nd daemon keeps on probing existing neighs
+        // when they become stale. If the neigh does not change in 15 secs, that's a failure.
+        let failed = wait_until(Duration::from_secs(15), async || {
+            cacher
+                .get_entry(target_ip, veth_ifindex)
+                .map(|entry| entry.state())
+                == Some(NeighState::Failed)
+        })
+        .await;
+        assert!(failed, "the neigh entry was not marked in time");
+
+        println!(" === Punt packet to {SOME_IP}: it should NOT be resolved");
+        let returned = punt_packet(nf.clone(), packet_to_resolve(SOME_IP, veth_ifindex))
+            .await
+            .unwrap();
+
+        let packet = &returned[0];
+        assert_given_up(packet, DoneReason::MissL2resolution);
 
         subs.cancel_token().cancel();
         jh.await.unwrap();

@@ -157,7 +157,7 @@ impl NeighCacheReaderFactory {
 }
 
 #[cfg(test)]
-mod test_arpnd_cache {
+mod tests {
     use super::NeighCacheWriter;
     use crate::cache::{NeighEntry, NeighState};
     use crate::querier::Target;
