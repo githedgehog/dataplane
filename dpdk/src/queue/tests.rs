@@ -36,7 +36,7 @@ struct Loopback {
 impl Loopback {
     fn new(ring_size: u32) -> Self {
         // Port creation and teardown are not thread-safe in DPDK.
-        let guard = crate::test_support::PORT_LOCK.lock().unwrap();
+        let guard = crate::test_support::port_lock();
         let pool = packet_pool(127);
         // SAFETY: EAL is initialized; the ring outlives the port using it.
         let ring = NonNull::new(unsafe {
