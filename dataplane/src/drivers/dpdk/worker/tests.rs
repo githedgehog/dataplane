@@ -7,6 +7,7 @@ use flow_entry::flow_table::FlowTable;
 use net::buffer::TestBuffer;
 use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
 use net::ip::NextHeader;
+use net::packet::DoneReason;
 use net::packet::test_utils::build_test_ipv4_packet_with_transport;
 use net::{FlowKey, IpProtoKey, TcpProtoKey};
 use std::time::Duration;
@@ -78,6 +79,27 @@ fn drop_verdicts_and_removed_packets_are_counted_once() {
     assert_eq!(counters.ppline_drops, 4);
     assert_eq!(counters.parse_errors, 0);
     assert_eq!(counters.tx_drops, 0);
+}
+
+/// Only `Local` reaches the control plane: the verdicts that used to be punted when the frame was
+/// addressed to us are now drops, since the ingress stage marks `Local` whatever the control plane
+/// should see.
+#[test]
+fn verdicts_other_than_local_and_delivered_are_dropped() {
+    let mut pipeline = DynPipeline::new().add_stage(ReturnVerdicts(&[
+        Some(DoneReason::Unhandled),
+        Some(DoneReason::NotIp),
+        Some(DoneReason::RouteFailure),
+    ]));
+    let mut counters = RxCounters::default();
+    let packets = process_burst(
+        (0..3).map(|_| frame()),
+        InterfaceIndex::try_new(1).unwrap(),
+        &mut pipeline,
+        &mut counters,
+    );
+    assert!(packets.is_empty());
+    assert_eq!(counters.ppline_drops, 3);
 }
 
 #[test]

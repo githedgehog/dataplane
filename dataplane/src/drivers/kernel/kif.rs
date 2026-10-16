@@ -16,6 +16,14 @@ use tracing::{debug, error, info};
 pub struct Kif {
     /// Linux ifindex of the interface
     pub ifindex: InterfaceIndex,
+    /// The MAC the kernel reports for this interface.
+    ///
+    /// Carried because the control-plane bridge needs it: the tap standing in for this interface
+    /// has to answer ARP with the same address, or the peer sends frames this interface will not
+    /// accept. `None` when the kernel reported none, which a physical interface never does.
+    pub mac: Option<net::eth::mac::Mac>,
+    /// The MTU the kernel reports, which the tap is given so both ends agree.
+    pub mtu: Option<u32>,
     /// Name of the interface, must be a name that can bound using bind on a socket
     pub name: String,
 }
@@ -23,14 +31,42 @@ pub struct Kif {
 impl Kif {
     /// Create a kernel interface entry.
     #[allow(clippy::unnecessary_wraps)] // Eventually we'll do work that could return an error
-    fn new(ifindex: InterfaceIndex, name: &str) -> io::Result<Self> {
+    fn new(ifindex: InterfaceIndex, name: &str, interface: &Interface) -> io::Result<Self> {
         let iface = Self {
             ifindex,
+            mac: interface
+                .mac_addr
+                .map(|mac| net::eth::mac::Mac::from(mac.octets())),
+            mtu: interface.mtu,
             name: name.to_owned(),
         };
         debug!("Successfully created interface '{name}'");
         Ok(iface)
     }
+    /// Turn off the kernel's IPv6 stack on this interface.
+    ///
+    /// For an interface a tap stands in for. Left on, bringing the interface up gives it a
+    /// link-local address derived from its MAC, which is the tap's MAC as well, so the kernel in
+    /// the datapath namespace claims the control plane's address and answers connections meant for
+    /// FRR, such as BGP, with resets.
+    ///
+    /// Must run on a thread in the interface's namespace: `/proc/sys/net` is the caller's.
+    pub fn disable_ipv6(&self) -> io::Result<()> {
+        let path = format!("/proc/sys/net/ipv6/conf/{}/disable_ipv6", self.name);
+        match std::fs::write(&path, "1") {
+            Ok(()) => {
+                debug!("IPv6 is disabled on {}", self.name);
+                Ok(())
+            }
+            // A kernel without IPv6 has nothing to turn off.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io::Error::other(format!(
+                "could not disable IPv6 on {}: {e}",
+                self.name
+            ))),
+        }
+    }
+
     /// Bring the kernel interface represented by a [`Kif`] up and double check it went up.
     async fn bring_up(&self, handle: &Handle) -> io::Result<()> {
         info!("Bringing interface {} up ...", self.name);
@@ -151,7 +187,11 @@ pub fn get_interfaces(args: impl IntoIterator<Item = impl AsRef<str>>) -> io::Re
     let mut kifs = Vec::new();
     for ifname in &ifnames {
         let if_index = get_interface_ifindex(&interfaces, ifname)?;
-        kifs.push(Kif::new(if_index, ifname)?);
+        let interface = interfaces
+            .iter()
+            .find(|i| &i.name == ifname)
+            .ok_or_else(|| io::Error::other(format!("interface '{ifname}' vanished mid-scan")))?;
+        kifs.push(Kif::new(if_index, ifname, interface)?);
     }
 
     /* interfaces that will be used */
