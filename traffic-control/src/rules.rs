@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! The class table as prioritized match rules, in the shape NIC flow rules take.
+//! The class table as match rules, in the shape NIC flow rules take.
 //!
 //! A NIC cannot run [`ClassTable::classify`](crate::ClassTable::classify): it matches header fields
-//! against constants and takes the highest priority match. So the table is also compiled to rules
-//! of that kind. Two tiers are enough: specific protocols first, then the catch-all for anything
-//! else to a local address. Within a tier, two rules that match the same frame agree on its class,
-//! so their order does not matter. What no rule matches is the data plane's.
+//! against constants. So the table is also compiled to rules of that kind. Two rules that match
+//! the same frame agree on its class, so they need no priorities. What no rule matches is the data
+//! plane's.
 
 use std::net::{IpAddr, Ipv6Addr};
 
@@ -17,23 +16,11 @@ use net::eth::mac::Mac;
 use net::lldp::NEAREST_BRIDGE;
 
 use crate::key::{Frame, ICMP6, Ip, Key, L4, Ports};
-use crate::table::{BFD_MULTIHOP, BFD_SINGLE_HOP, BGP, Class, ControlPlane, VTEP_LOCAL};
-
-/// A rule's precedence: a frame matching rules in both tiers takes the [`Tier::Protocol`] rule's
-/// class.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Tier {
-    /// Rules for specific protocols.
-    Protocol,
-    /// The catch-all for anything else to a local address.
-    Local,
-}
+use crate::table::{BFD_MULTIHOP, BFD_SINGLE_HOP, BGP, Class, ControlPlane};
 
 /// One match rule: frames it matches go to the control queue, as its class.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
-    /// The rule's precedence.
-    pub tier: Tier,
     /// The frames it matches.
     pub pattern: Pattern,
     /// Their class.
@@ -70,8 +57,6 @@ pub struct IpPattern<P: IpPrefix> {
 /// The protocols and ports a rule matches.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum L4Pattern {
-    /// Any protocol.
-    Any,
     /// One protocol, by the number in the IP header.
     Proto(u8),
     /// TCP with a header to match ports in, and these ports where given.
@@ -119,7 +104,6 @@ impl L4Pattern {
             want_src.is_none_or(|p| p == src) && want_dst.is_none_or(|p| p == dst)
         };
         match (self, l4) {
-            (L4Pattern::Any, _) => true,
             (L4Pattern::Proto(proto), l4) => proto == l4.proto(),
             (L4Pattern::Tcp { src, dst }, L4::Tcp(got))
             | (L4Pattern::Udp { src, dst }, L4::Udp(got)) => ports(src, dst, got),
@@ -223,34 +207,12 @@ pub(crate) fn compile(control: &ControlPlane) -> Vec<Rule> {
         }
     }
 
-    // Everything else to us. Only some protocols to the VTEP: UDP to it is VXLAN, which is data,
-    // and a NIC rule cannot say "anything but UDP".
-    for local in control.local() {
-        let l4s = if Some(*local) == control.vtep() {
-            VTEP_LOCAL.map(L4Pattern::Proto).to_vec()
-        } else {
-            vec![L4Pattern::Any]
-        };
-        for l4 in l4s {
-            if let Some(pattern) = ip_pattern(None, *local, l4) {
-                rules.push(Rule {
-                    tier: Tier::Local,
-                    pattern,
-                    class: Class::OtherLocal,
-                });
-            }
-        }
-    }
     rules
 }
 
-/// A [`Tier::Protocol`] rule.
+/// A rule steering what `pattern` matches as `class`.
 fn protocol(pattern: Pattern, class: Class) -> Rule {
-    Rule {
-        tier: Tier::Protocol,
-        pattern,
-        class,
-    }
+    Rule { pattern, class }
 }
 
 /// IP packets from `src` to the host `dst` carrying `l4`, if the two are of one family.

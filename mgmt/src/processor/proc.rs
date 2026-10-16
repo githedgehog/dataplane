@@ -232,9 +232,8 @@ impl ConfigProcessor {
                 return false;
             }
             info!(
-                "control plane: local addresses {:?}, VTEP {:?}, neighbours {:?}",
+                "control plane: local addresses {:?}, neighbours {:?}",
                 control.local(),
-                control.vtep(),
                 control.neighbours()
             );
             *current = control;

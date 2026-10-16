@@ -233,29 +233,27 @@ impl NetworkFunction<TestBuffer> for Count {
     }
 }
 
+/// An ARP request, broadcast.
+fn arp() -> TestBuffer {
+    let mut frame = vec![0xff; 6];
+    frame.extend([0x02, 0, 0, 0, 0, 1, 0x08, 0x06]);
+    frame.extend([0, 1, 8, 0, 6, 4, 0, 1]);
+    frame.extend([0x02, 0, 0, 0, 0, 1, 10, 0, 0, 2]);
+    frame.extend([0, 0, 0, 0, 0, 0, 10, 0, 0, 1]);
+    frame.resize(60, 0);
+    TestBuffer::from_raw_data(&frame)
+}
+
 #[test]
 fn control_traffic_the_nic_does_not_steer_skips_the_pipeline() {
     use crate::drivers::dpdk::classes::{Fallback, fall_back};
     use std::collections::BTreeSet;
-    use traffic_control::{Class, ClassTable, ControlPlane, Frame};
+    use traffic_control::{Class, ClassTable, ControlPlane};
 
-    // The test frame, to an address the gateway then calls its own.
-    let probe = Packet::new(frame()).unwrap();
-    let Ok(Key {
-        frame: Frame::Ipv4(ip),
-        ..
-    }) = Key::of(probe.headers())
-    else {
-        unreachable!("the test frame is IPv4");
-    };
-    let table = Arc::new(ClassTable::new(ControlPlane::new(
-        [ip.dst.into()],
-        None,
-        [],
-    )));
+    let table = Arc::new(ClassTable::new(ControlPlane::default()));
 
     for (classes, diverted_expected) in [
-        (BTreeSet::from([Class::OtherLocal]), 1),
+        (BTreeSet::from([Class::Arp]), 1),
         // Steered by the NIC, so left alone here.
         (BTreeSet::from([Class::Bgp]), 0),
         (BTreeSet::new(), 0),
@@ -268,7 +266,7 @@ fn control_traffic_the_nic_does_not_steer_skips_the_pipeline() {
         let mut diverted = Vec::new();
         let mut counters = RxCounters::default();
         process_burst(
-            [frame()].into_iter(),
+            [arp(), frame()].into_iter(),
             InterfaceIndex::try_new(1).unwrap(),
             &mut pipeline,
             &mut packets,
@@ -276,8 +274,10 @@ fn control_traffic_the_nic_does_not_steer_skips_the_pipeline() {
             &mut diverted,
             &mut counters,
         );
+        assert_eq!(counters.parse_errors, 0);
         assert_eq!(diverted.len(), diverted_expected);
-        assert_eq!(pipeline.0, 1 - diverted_expected);
-        assert_eq!(counters.rx, 1);
+        // The other frame is not control traffic and always reaches the pipeline.
+        assert_eq!(pipeline.0, 2 - diverted_expected);
+        assert_eq!(counters.rx, 2);
     }
 }
