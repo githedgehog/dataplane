@@ -124,6 +124,8 @@ pub enum DoneReason {
 }
 
 bitflags! {
+    /// Each flag is a bit of its own, given by its position. A bit shared by two flags is a
+    /// compile-time error (see the assertion below).
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     struct MetaFlags: u32 {
         const NATTED_SRC          = 1 << 0; /* set to true if source address of a packet has been NATed */
