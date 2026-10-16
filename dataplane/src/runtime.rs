@@ -8,7 +8,7 @@ use args::{
 };
 
 use crate::drivers::DriverError;
-use crate::drivers::dpdk::{DriverDpdk, Port};
+use crate::drivers::dpdk::{CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::{DriverStatusWriter, driver_status_access};
 use crate::packet_processor::PipelineIngredients;
@@ -359,6 +359,7 @@ struct DatapathHandoff {
 ///
 /// The EAL must be cleaned up on this thread, and only after management has dropped its ACL
 /// classifiers, so this keeps it until `release` disconnects -- whether the driver ran or not.
+#[allow(clippy::too_many_arguments)] // what the datapath thread is handed, once
 fn run_datapath(
     config: &LaunchConfiguration,
     netns: &NetworkNamespace,
@@ -366,6 +367,7 @@ fn run_datapath(
     timer_handle: &tokio::runtime::Handle,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
+    bridge: Option<DatapathEnds>,
     handoff: &DatapathHandoff,
 ) {
     if let Err(detail) = enter_datapath_netns(netns) {
@@ -393,8 +395,9 @@ fn run_datapath(
                 timer_handle,
                 ingredients,
                 status_writer,
+                bridge,
             ),
-            None => run_kernel_driver(config, workers, ingredients, status_writer),
+            None => run_kernel_driver(config, workers, ingredients, status_writer, bridge),
         }
     }
 
@@ -411,6 +414,7 @@ fn run_kernel_driver(
     workers: &lifecycle::Subsystem,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
+    bridge: Option<DatapathEnds>,
 ) {
     concurrency::thread::scope(|scope| {
         info!("Using driver kernel...");
@@ -425,6 +429,7 @@ fn run_kernel_driver(
             config.driver.num_workers().get().into(),
             &ingredients.factory(),
             status_writer,
+            bridge,
         ) {
             error!("Failed to start driver: {e}");
             workers.report_fatal("the kernel driver could not be started");
@@ -433,6 +438,7 @@ fn run_kernel_driver(
 }
 
 /// Bring up the DPDK ports and run their workers until they stop.
+#[allow(clippy::too_many_arguments)]
 fn run_dpdk_driver(
     eal: &mut Eal,
     config: &LaunchConfiguration,
@@ -440,6 +446,7 @@ fn run_dpdk_driver(
     timer_handle: &tokio::runtime::Handle,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
+    mut bridge: Option<DatapathEnds>,
 ) {
     let ports = match bring_up_ports(eal, config) {
         Ok(ports) => ports,
@@ -449,6 +456,17 @@ fn run_dpdk_driver(
             return;
         }
     };
+
+    // Give each TAP its port's MAC and MTU.
+    if let Some(bridge) = &bridge {
+        for port in &ports {
+            bridge.report(PortIdentity {
+                name: port.name.clone(),
+                mac: port.mac,
+                mtu: Some(port.mtu),
+            });
+        }
+    }
 
     // Queue handles borrow the ports, so workers must join before port shutdown.
     concurrency::thread::scope(|scope| {
@@ -461,11 +479,16 @@ fn run_dpdk_driver(
             config.driver.num_workers(),
             &ingredients.factory(),
             status_writer,
+            bridge.as_mut(),
         ) {
             error!("Failed to start driver: {e}");
             workers.report_fatal("the DPDK driver could not be started");
         }
     });
+
+    if let Some(bridge) = &bridge {
+        bridge.report_unclaimed();
+    }
 
     // Explicit shutdown reports errors that the Drop backstop would suppress.
     for port in ports {
@@ -617,6 +640,42 @@ pub fn main() {
     let ingredients = setup.pipeline;
     let pipeline_data = ingredients.data();
 
+    // Both drivers need a bridge when their interfaces occupy a separate namespace.
+    // Create taps from the control namespace, before starting the datapath thread;
+    // otherwise their configured names would collide with physical interfaces.
+    let want_bridge = match datapath_netns.is_current() {
+        Ok(shared) => !shared,
+        Err(e) => {
+            error!("Failed to identify the datapath network namespace: {e}");
+            shutdown.fail();
+            false
+        }
+    };
+    let (_cp_bridge, cp_ends) = if want_bridge {
+        match CpBridge::create(
+            &mgmt_handle,
+            &shutdown.mgmt,
+            config.driver.interfaces().map(|i| i.interface.clone()),
+        ) {
+            Ok((bridge, ends)) => (Some(bridge), Some(ends)),
+            Err(e) => {
+                // Fatal, and not because the bridge is a nicety: with the NICs in a namespace of
+                // their own this is the control plane's *only* path to the wire, so the dataplane
+                // would come up, forward nothing it had not been told about, and never learn a
+                // route.
+                error!("Failed to build the control-plane bridge: {e}");
+                shutdown.fail();
+                (None, None)
+            }
+        }
+    } else {
+        info!(
+            "The datapath shares this network namespace, so no control-plane bridge: the kernel \
+             keeps the netdevs and carries the control plane itself"
+        );
+        (None, None)
+    };
+
     concurrency::thread::scope(|scope| {
         // Management waits for the datapath to be ready, then releases it after its own startup.
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -643,6 +702,7 @@ pub fn main() {
                         timer_handle,
                         ingredients,
                         driver_status_writer,
+                        cp_ends,
                         &handoff,
                     );
                 }
