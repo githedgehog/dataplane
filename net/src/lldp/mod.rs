@@ -9,9 +9,18 @@
 //! is never forwarded and never acknowledged, so the whole protocol reduces to
 //! building and reading one payload, a sequence of type-length-value records.
 //!
-//! So far this holds the TLV framing ([`RawTlv`], [`TlvHeader`]) and the
-//! three records every LLDPDU starts with: [`ChassisId`], [`PortId`] and
-//! [`TimeToLive`].
+//! So far this holds the TLV framing ([`RawTlv`], [`TlvHeader`]), the three
+//! records every LLDPDU starts with ([`ChassisId`], [`PortId`] and
+//! [`TimeToLive`]), and the optional records which may follow them.
+//!
+//! # Scope
+//!
+//! Every TLV [IEEE Std 802.1AB][ieee8021ab] defines is modelled: the mandatory
+//! three, the optional ones ([`OptionalTlv`]), and the IEEE 802.1 and IEEE
+//! 802.3 extensions carried inside the organizationally specific TLV
+//! ([`Dot1Tlv`], [`Dot3Tlv`]).  Within the 802.1 and 802.3 sets the subtypes
+//! this dataplane has a use for are decoded and the rest are kept verbatim, as
+//! is any TLV type or OUI the standard does not define.
 //!
 //! Nothing here is byte-lossy: a value parsed from a frame always deparses back
 //! to the octets it came from, whether or not this library understands what
@@ -20,8 +29,12 @@
 //! [ieee8021ab]: https://standards.ieee.org/ieee/802.1AB/6047/
 
 mod address;
+mod capabilities;
 mod chassis_id;
+mod management;
 mod octets;
+mod optional;
+mod org;
 mod port_id;
 mod tlv;
 mod ttl;
@@ -29,10 +42,20 @@ mod ttl;
 pub use address::{
     AddressOctets, AmbiguousFamily, NetworkAddress, NetworkAddressError, OtherNetworkAddress,
 };
+pub use capabilities::{SystemCapabilities, SystemCapabilitiesError, SystemCapability};
 pub use chassis_id::{
     ChassisId, ChassisIdError, ChassisIdSubtype, IdOctets, ReservedChassisIdSubtype,
 };
+pub use management::{
+    AddressTooLong, InterfaceNumber, InterfaceNumbering, ManagementAddress, ManagementAddressError,
+    ObjectIdentifier, ReservedInterfaceNumbering,
+};
 pub use octets::{Octets, OctetsError};
+pub use optional::{OptionalTlv, OptionalTlvError, RecognizedTlvType, Text, UnrecognizedTlv};
+pub use org::{
+    Dot1Tlv, Dot3Tlv, LinkAggregationStatus, ModelledOrgTlv, OrgInfo, OrgTlvError,
+    OrganizationallySpecific, Oui, VlanId, VlanNameOctets,
+};
 pub use port_id::{PortId, PortIdError, PortIdSubtype, ReservedPortIdSubtype};
 pub use tlv::{
     InvalidTlvType, RawTlv, TlvHeader, TlvType, TlvValue, TlvValueTooLong, UnexpectedTlvType,
