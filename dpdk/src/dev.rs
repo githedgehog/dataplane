@@ -1156,32 +1156,35 @@ impl PortLifecycle<'_> {
     }
 
     /// Flush before stopping, reporting rules left by forgotten handles or failed destroys.
+    /// Skips ports with no recorded rules; the count is cleared only after a successful flush.
     fn flush_flows(&self) {
         let port = self.port;
-        let leaked = self.live_rules.swap(0, Ordering::AcqRel);
+        let leaked = self.live_rules.load(Ordering::Acquire);
+        if leaked == 0 {
+            return;
+        }
+        warn!(
+            "{leaked} flow rule(s) on port {port} outlived their handles; dumping, then flushing"
+        );
         // SAFETY: an all-zero `rte_flow_error` is a valid out-parameter.
         let mut error: rte_flow_error = unsafe { core::mem::zeroed() };
-        if leaked != 0 {
-            warn!(
-                "{leaked} flow rule(s) on port {port} outlived their handles; dumping, then flushing"
-            );
-            // SAFETY: a null flow dumps every rule; DPDK's log stream is a valid open `FILE`.
-            let ret = unsafe {
-                rte_flow_dev_dump(
-                    port.as_u16(),
-                    core::ptr::null_mut(),
-                    rte_log_get_stream(),
-                    &raw mut error,
-                )
-            };
-            if ret != 0 {
-                warn!("failed to dump the leaked flow rules on port {port}: {ret}");
-            }
-        }
-        // SAFETY: plain FFI call on a port this device owns.
-        let ret = unsafe { rte_flow_flush(port.as_u16(), &raw mut error) };
+        // SAFETY: a null flow dumps every rule; DPDK's log stream is a valid open `FILE`.
+        let ret = unsafe {
+            rte_flow_dev_dump(
+                port.as_u16(),
+                core::ptr::null_mut(),
+                rte_log_get_stream(),
+                &raw mut error,
+            )
+        };
         if ret != 0 {
-            warn!("failed to flush flow rules on port {port}: {ret}");
+            warn!(
+                "failed to dump the leaked flow rules on port {port}: {}",
+                ErrorCode::parse_i32(ret)
+            );
+        }
+        if crate::flow::flush(port.as_u16()) {
+            self.live_rules.store(0, Ordering::Release);
         }
     }
 }
