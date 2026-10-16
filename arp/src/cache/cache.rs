@@ -10,6 +10,7 @@ use net::eth::mac::DestinationMac;
 use net::interface::InterfaceIndex;
 use std::collections::HashMap;
 use std::net::IpAddr;
+use tokio::time::Instant;
 
 /// The state of the resolution of a neighbor, as reported by the kernel
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +59,7 @@ pub struct NeighEntry {
     pub(crate) ifindex: InterfaceIndex,
     pub(crate) mac: Option<DestinationMac>,
     pub(crate) state: NeighState,
+    pub(crate) updated: Instant, // when the entry was learnt from the kernel
 }
 
 impl NeighEntry {
@@ -74,6 +76,7 @@ impl NeighEntry {
             ifindex,
             mac,
             state,
+            updated: Instant::now(),
         }
     }
 
@@ -85,6 +88,7 @@ impl NeighEntry {
             ifindex,
             mac: Some(mac),
             state: NeighState::Reachable,
+            updated: Instant::now(),
         }
     }
 
@@ -107,6 +111,16 @@ impl NeighEntry {
     #[must_use]
     pub(crate) fn state(&self) -> NeighState {
         self.state
+    }
+
+    #[must_use]
+    pub(crate) fn failed(&self) -> bool {
+        self.state == NeighState::Failed
+    }
+
+    #[must_use]
+    pub(crate) fn updated(&self) -> Instant {
+        self.updated
     }
 
     /// Tell if the MAC of the entry can be used to send packets
@@ -145,8 +159,8 @@ impl NeighCache {
         self.0.remove(&(ifindex, address));
     }
 
+    /// Get the entry for `address` over `ifindex`, whether usable or not
     #[must_use]
-    #[cfg(test)]
     pub(crate) fn get_entry(
         &self,
         address: IpAddr,

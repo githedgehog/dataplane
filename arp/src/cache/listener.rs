@@ -25,6 +25,7 @@ use rtnetlink::{MulticastGroup, new_connection, new_multicast_connection_with_so
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::Notify;
+use tokio::time::Instant;
 
 use futures::channel::mpsc::UnboundedReceiver;
 
@@ -93,6 +94,7 @@ impl TryFrom<&NeighbourMessage> for NeighEntry {
             ifindex,
             mac,
             state,
+            updated: Instant::now(),
         })
     }
 }

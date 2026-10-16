@@ -2,26 +2,22 @@
 // Copyright Open Network Fabric Authors
 
 //! This module contains the backlog of packets waiting for ARP/ND resolution.
-//! The module keeps no async code; just the storage of state and packets and
-//! the helper logic to deal with it. The owning task ("backlog") governs
-//! how the methods of this backlog are used.
+//! This module keeps no async code; just the storage of state and packets and
+//! the helper logic to deal with it: the resolving task of the ARP/ND daemon
+//! owns this backlog and dictates how/when its methods are used.
 //!
-//! When the ARP/ND daemon gets a packet to resolve, it makes it to the backlog
-//! task which adds the packet to this backlog along with the target to resolve.
-//! The target may exit already (and be in the process of being resolved) or be
-//! newly created. The backlog can be queried to know if the target should be
-//! be queried (sending new ARP/ND requests) or not.
-//!
-//! Packets are stored in this backlog while the ARP/ND resolution takes place
-//! and are ALWAYS sent to the outq at some point, resolved or not.
-//!
-//! Packets are arranged by target. A target represents the IP to resolve.
-//! Packets destined to the same IP over an interface share the same target.
+//! The backlog is organized as a collection of target entries.
+//! A target represents an IP to resolve. An entry, keyed by a target, represents
+//! the current resolution state of the target. When the ARP/ND daemon gets a packet
+//! to resolve, the required target is determined and an entry created, if it
+//! does not exist already (it could exist if the target was already being resolved).
+//! The incoming packet is stored in the entry for its target.
 //! Both the number of targets and the number of packets per target are bounded.
 //! If, when admitting a packet, either limit is exceeded, the backlog will reject
 //! it: the packet will be marked as dropped and sent to the outq. Even if admitted,
-//! the packet may be rejected later; e.g. if resolution does not happen after
-//! a certain number of retries or after some time bound.
+//! the packet may be rejected later; e.g. if the kernel fails to resolve its target,
+//! or if resolution does not happen within some time bound.
+//!
 //!
 //! ```text
 //!                              packets per target (bounded)
@@ -36,28 +32,32 @@
 //!   |    |  target  |     |    | |    | |    | |    |
 //!   |    +----------+     +----+ +----+ +----+ +----+
 //!   |         .
-//!   |         .
 //!   |    +----------+
 //!   v    |  target  |
 //!        +----------+
 //! ```
-//!
-//! The daemon checks the backlog periodically to query again the targets not yet resolved
-//! and to give up those that could not be resolved after a number of retries: a target is
-//! given up when its last query (at most `MAX_RETRIES` after the first one) gets no response
-//! within `RETRY_INTERVAL`. It also checks the backlog when being notified (by the netlink
-//! listener) about ARP/ND cache additions. In that case, the daemon checks if any of the targets
-//! can be resolved. If so, the corresponding awaiting packets get set the destination mac and
-//! metadata and sent back to the outq.
+
+//! All packets are stored in the backlog while their ARP/ND resolution takes place and
+//! are ALWAYS sent to the outq (pipeline) at some point, resolved or not.
+//! The backlog entries allow the daemon to know if a target needs to be queried or it
+//! has already been and when that happened. The daemon checks the backlog periodically
+//! and or when being notified by the netlink listener that the neighbor cache changed.
+//! When detecting that a target (entry) can be resolved with the current neighbor cache,
+//! the corresponding packets get resolved (their destination mac gets set) and returned.
+//! The neighbor cache may indicate that a neighbor/target is unreachable after the daemon
+//! queried it. In that case, the targets and packet get returned to the pipeline as unresolved.
+//! Also, the daemon may detect that no entry in the cache exists for a given target, or,
+//! if it does, that it has not been refreshed within a `RESOLUTION_TIMEOUT`. In this case,
+//! the target is given up too and the corresponding packets returned.
 //!
 //! The backlog:
-//!    - owns a NeighCacheReader (to read the ARP/ND cache, fed by the netlink listener)
-//!    - has a handle to the outq to send resolved/unresolved packets back to the pipeline
-//!    - is owned by the ARP/ND backlog task
-//!    - when driven by the daemon task, it should always attempt to return packets to the outq.
-//!    - If the outq is full when returning a packet, it will be buffered in a local buffer
-//!      and the return be retried later. If that local buffer becomes full, the packet will be
-//!      dropped. However, if the packet is resolved, it may expel an unresolved packet instead.
+//!    - is owned by the ARP/ND resolving task.
+//!    - owns a NeighCacheReader (to read the ARP/ND cache, written by the netlink listener).
+//!    - has a handle to the outq to send resolved/unresolved packets back to the pipeline.
+//!    - to deal with the case where packets cannot be returned because the outq is full,
+//!      it has a local "return buffer" where those get temporarily stored until they can be
+//!      returned. If that local buffer becomes full, packets may be dropped. The eviction of
+//!      packets is such that unresolved packets get dropped first.
 
 use ahash::AHashMap;
 use net::buffer::PacketBufferMut;
@@ -70,36 +70,31 @@ use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::time::Duration;
 use tokio::time::Instant;
+
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
-use crate::cache::NeighCacheReader;
+use crate::cache::{NeighCacheReader, NeighEntry};
 use crate::querier::Target;
 
 /// An entry in the [`Backlog`] associated to a [`Target`] being
 /// resolved, which contains the packets destined to that target.
 struct TargetEntry<Buf: PacketBufferMut> {
     packets: VecDeque<QueuedPacket<Buf>>, // packets using this target
-    last_query: Option<Instant>,          // time when we last queried the target for this entry
-    retries: u8,                          // number of retries (queries from us)
+    queried: Option<Instant>,             // time when we queried the target for this entry
 }
 impl<Buf: PacketBufferMut> TargetEntry<Buf> {
     #[must_use]
     fn new() -> Self {
         Self {
-            last_query: None,
-            retries: 0,
+            queried: None,
             packets: VecDeque::new(),
         }
     }
 
-    /// Record when the target of this entry was last queried and
-    /// track the number of retries after the first query.
+    /// Record when the target of this entry was queried
     fn register_query(&mut self) {
-        if self.last_query.is_some() {
-            self.retries = self.retries.saturating_add(1);
-        }
-        self.last_query = Some(Instant::now());
+        self.queried = Some(Instant::now());
     }
 }
 
@@ -173,11 +168,8 @@ impl<Buf: PacketBufferMut> Backlog<Buf> {
     // the maximum number of packets that will be buffered per target
     const MAX_PACKETS_PER_TARGET: usize = 50;
 
-    // minimum time between queries for a target that is not yet resolved
-    const RETRY_INTERVAL: Duration = Duration::from_secs(3);
-
-    // the maximum number of queries for a target after the first one
-    const MAX_RETRIES: u8 = 3;
+    // the time after which a target that was queried and is not resolved is given up
+    const RESOLUTION_TIMEOUT: Duration = Duration::from_secs(5);
 
     // the maximum number of packets that we will hold if we can't return them
     const RETURN_BUFF_CAPACITY: usize = 1000;
@@ -296,28 +288,10 @@ impl<Buf: PacketBufferMut> Backlog<Buf> {
         self.return_packet(packet);
     }
 
-    // check if targets can be resolved with the neigh cache. If so, take all of the backlogged
-    // packets, resolve them and inject them back to the queue (pipeline)
-    pub(crate) fn check_targets(&mut self) {
-        let Some(cache) = self.cacher.enter() else {
-            unreachable!("the neighbor cache writer is dropped only when the daemon ends");
-        };
-
-        // make a list of the backlogged targets that can be resolved, and the corresponding MAC
-        let newly_resolved: Vec<(Target, DestinationMac)> = self
-            .entries
-            .keys()
-            .filter_map(|target| {
-                cache
-                    .get_mac(target.addr, target.ifindex)
-                    .map(|dst_mac| (*target, dst_mac))
-            })
-            .collect();
-
-        drop(cache);
-
-        // pull out all of the entries for those targets and resolve their packets
-        for (target, dst_mac) in newly_resolved {
+    /// Resolve the entries (and packets) with the given vector of resolutions
+    fn resolve_target_packets(&mut self, resolutions: Vec<(Target, DestinationMac)>) {
+        // pull out all of the entries for resolved targets and resolve their packets
+        for (target, dst_mac) in resolutions {
             debug!("Target {target} is at {dst_mac}");
             if let Some(mut entry) = self.entries.remove(&target) {
                 let num_packets = entry.packets.len();
@@ -329,39 +303,67 @@ impl<Buf: PacketBufferMut> Backlog<Buf> {
         }
     }
 
+    // check the resolution state of backlogged targets with the neigh cache.
+    // We may find:
+    //   - resolved targets: take all of their packets, resolve them and return them.
+    //   - queried targets the listener/kernel report as failed: give them up.
+    //   - queried targets for which no update in the cache happened in RESOLUTION_TIMEOUT.
+    pub(crate) fn check_targets(&mut self) {
+        let Some(cache) = self.cacher.enter() else {
+            unreachable!("the neighbor cache writer is dropped only when the daemon ends");
+        };
+
+        // list of targets that can be resolved (with their mac) with the current cache
+        let mut newly_resolved = vec![];
+
+        // list of targets the kernel failed to resolve
+        let mut failed = vec![];
+
+        // list of targets not resolved in time
+        let mut timed_out = vec![];
+
+        for (target, entry) in &self.entries {
+            let neigh = cache.get_entry(target.addr, target.ifindex);
+            if let Some(dst_mac) = neigh.and_then(NeighEntry::usable_mac) {
+                newly_resolved.push((*target, dst_mac));
+                continue;
+            }
+            let Some(query_t) = entry.queried else {
+                continue; // not queried yet
+            };
+            let kernel_failed = neigh.is_some_and(|n| n.failed() && n.updated() > query_t);
+            if kernel_failed {
+                // an explicit failure was reported by the kernel
+                failed.push(*target);
+            } else if query_t.elapsed() >= Self::RESOLUTION_TIMEOUT {
+                // it was queried a long ago and no (usable) neighbor seems to exist
+                timed_out.push(*target);
+            }
+        }
+        drop(cache);
+
+        // resolve the entries for all the newly-resolved targets
+        self.resolve_target_packets(newly_resolved);
+
+        // give up the targets the kernel explicitly marked as failed, and those not resolved in time
+        self.give_up_targets(&failed, DoneReason::MissL2resolution);
+        self.give_up_targets(&timed_out, DoneReason::MissL2resolution);
+    }
+
     /// Scan the set of registered targets and build a list of those that the caller
-    /// should query. Not all targets should be queried since some:
-    ///    - may have been recently queried
-    ///    - may have reached the max number of retries. If their last query got no
-    ///      response within [`Self::RETRY_INTERVAL`], they are given up: their packets are
-    ///      returned as unresolved and the target and entry removed.
+    /// should query: those not queried yet. Targets are queried only once (the kernel makes
+    /// several attempts on its own); see [`Self::check_targets`] for how they are given up.
     ///
-    /// N.B. The entries of the targets returned by this method get their last time query updated.
+    /// N.B. The entries of the targets returned by this method get their query time recorded.
     #[must_use]
     pub(crate) fn targets_to_query(&mut self) -> Vec<Target> {
         let mut to_query = vec![];
-        let mut to_give_up = vec![];
-
-        // Only query a target if it has never been queried or, if it has, a retry interval
-        // has elapsed since then. If a new retry would be allowed but the max number of
-        // retries has been reached, recall the target and give it up.
         for (target, entry) in &mut self.entries {
-            if entry
-                .last_query
-                .is_none_or(|last| last.elapsed() >= Self::RETRY_INTERVAL)
-            {
-                if entry.retries >= Self::MAX_RETRIES {
-                    to_give_up.push(*target);
-                } else {
-                    entry.register_query();
-                    to_query.push(*target);
-                }
+            if entry.queried.is_none() {
+                entry.register_query();
+                to_query.push(*target);
             }
         }
-
-        // remove entries for targets for which we queried the max number of times
-        self.give_up_targets(to_give_up.as_slice(), DoneReason::MissL2resolution);
-
         to_query
     }
 
@@ -374,7 +376,6 @@ impl<Buf: PacketBufferMut> Backlog<Buf> {
             .copied()
             .collect();
 
-        // remove all entries for those targets
         self.give_up_targets(&targets, DoneReason::MissL2resolution);
     }
 }
@@ -382,7 +383,7 @@ impl<Buf: PacketBufferMut> Backlog<Buf> {
 #[cfg(test)]
 mod test_backlog {
     use super::{Backlog, ReturnBuffer};
-    use crate::cache::{NeighCacheWriter, NeighEntry};
+    use crate::cache::{NeighCacheWriter, NeighEntry, NeighState};
     use crate::querier::Target;
     use net::buffer::TestBuffer;
     use net::eth::mac::{DestinationMac, SourceMac};
@@ -457,6 +458,55 @@ mod test_backlog {
         assert!(buffer.is_empty());
     }
 
+    /// Build a cache entry for a neighbor that the kernel failed to resolve at time `updated`
+    fn failed_entry(addr: IpAddr, ifindex: InterfaceIndex, updated: Instant) -> NeighEntry {
+        let mut entry = NeighEntry::new(addr, ifindex, None, NeighState::Failed);
+        entry.updated = updated;
+        entry
+    }
+
+    #[test]
+    /// Test that a target is given up when the kernel fails to resolve it after it was queried,
+    /// but not because of an earlier failure (the query restarts the resolution).
+    fn test_backlog_gives_up_failed_targets() {
+        const NUM_PKTS: usize = 3;
+        let (addr, _mac, ifindex) = mapping("10.0.0.2", "02:ca:fe:ba:be:01", 2);
+        let target = Target::new(addr, ifindex);
+
+        // the kernel failed to resolve the target before
+        let (mut writer, reader) = NeighCacheWriter::new();
+        let earlier = Instant::now() - Duration::from_secs(10);
+        writer.add_entry(failed_entry(addr, ifindex, earlier));
+
+        let outq = PktQueue::new(10);
+        let mut backlog = Backlog::new(reader, outq.clone());
+        for _ in 1..=NUM_PKTS {
+            backlog.add(target, packet(addr, ifindex));
+        }
+
+        // the earlier failure does not give up the target, neither before nor after querying it
+        backlog.check_targets();
+        assert_eq!(backlog.targets_to_query(), vec![target]);
+        backlog.check_targets();
+        assert_eq!(
+            backlog.num_packets(),
+            NUM_PKTS,
+            "the target should not be given up"
+        );
+        assert!(outq.is_empty());
+
+        // the kernel fails to resolve it after the query: the target is given up
+        let later = Instant::now() + Duration::from_millis(1);
+        writer.add_entry(failed_entry(addr, ifindex, later));
+        backlog.check_targets();
+        assert_eq!(backlog.num_targets(), 0, "the target should be given up");
+        assert_eq!(outq.len(), NUM_PKTS, "all packets should be returned");
+        for packet in outq.pop_ready() {
+            assert!(packet.meta().need_arp_nd());
+            assert_eq!(packet.get_done(), Some(DoneReason::MissL2resolution));
+        }
+    }
+
     #[test]
     /// Test that packets sent to the backlog get resolved if the cache has an entry
     /// and that get sent back to the outq with the proper MAC and flags
@@ -520,7 +570,7 @@ mod test_backlog {
     }
 
     #[test]
-    /// Test that targets not resolved after all the retries are given up, and that the
+    /// Test that targets not resolved in time are given up, and that the
     /// corresponding packets are sent to the outq, indicating done reason and with the
     /// mac unchanged.
     fn test_backlog_gives_up_unresolved_targets() {
@@ -544,12 +594,13 @@ mod test_backlog {
         assert_eq!(backlog.num_packets(), NUM_PKTS, "Packets should be there");
         assert_eq!(outq.len(), 0, "No packet should be expelled");
 
-        // pretend all the retries were made and the last one got no response in time
-        exhaust_queries(&mut backlog, target);
+        // pretend the query got no response in time
+        expire_query(&mut backlog, target);
+        backlog.check_targets();
 
         assert!(
             backlog.targets_to_query().is_empty(),
-            "No retries should be left"
+            "The target should not be queried again"
         );
         assert_eq!(backlog.num_targets(), 0, "Target should be gone");
         assert_eq!(backlog.num_packets(), 0, "No packets should be there");
@@ -577,14 +628,14 @@ mod test_backlog {
 
     /// Pretend that a target was queried as many times as allowed, and that the last query was
     /// made long enough ago for the target to be given up
-    fn exhaust_queries(backlog: &mut Backlog<TestBuffer>, target: Target) {
+    fn expire_query(backlog: &mut Backlog<TestBuffer>, target: Target) {
         let entry = backlog
             .entries
             .get_mut(&target)
             .expect("Entry should be there");
-        entry.retries = Backlog::<TestBuffer>::MAX_RETRIES;
-        entry.last_query =
-            Some(Instant::now() - Backlog::<TestBuffer>::RETRY_INTERVAL - Duration::from_millis(1));
+        entry.queried = Some(
+            Instant::now() - Backlog::<TestBuffer>::RESOLUTION_TIMEOUT - Duration::from_millis(1),
+        );
     }
 
     /// Add a packet for the n-th target to the backlog
@@ -667,13 +718,14 @@ mod test_backlog {
         // all the targets get queried for the first time
         assert_eq!(backlog.targets_to_query().len(), MAX_TARGETS);
 
-        // pretend all the retries for one of the targets were made with no response
+        // pretend the query for one of the targets got no response in time
         let (target, _, _) = nth_target(0);
-        exhaust_queries(&mut backlog, target);
+        expire_query(&mut backlog, target);
 
         // give it up: no other target is due a query yet
         let num_targets = backlog.num_targets();
         let num_packets = backlog.num_packets();
+        backlog.check_targets();
         assert!(backlog.targets_to_query().is_empty());
         assert_eq!(backlog.num_targets(), num_targets - 1);
         assert_eq!(backlog.num_packets(), num_packets - 1);
@@ -690,19 +742,13 @@ mod test_backlog {
     }
 
     #[test]
-    /// Test that the first query of a target is not a retry, and that later ones are
     fn test_backlog_entry_records_queries() {
         let mut entry = super::TargetEntry::<TestBuffer>::new();
-        assert!(entry.last_query.is_none());
-        assert_eq!(entry.retries, 0);
+        assert!(entry.queried.is_none());
 
+        let before = Instant::now();
         entry.register_query();
-        let first = entry.last_query.expect("the query was not recorded");
-        assert_eq!(entry.retries, 0, "the first query is not a retry");
-
-        entry.register_query();
-        assert!(entry.last_query.is_some_and(|last| last >= first));
-        assert_eq!(entry.retries, 1);
+        assert!(entry.queried.is_some_and(|query| query >= before));
     }
 
     #[test]
@@ -731,9 +777,8 @@ mod test_backlog {
     }
 
     #[test]
-    /// Test that unresolved targets are queried again after the retry interval, up to the
-    /// maximum number of retries
-    fn test_backlog_retries_queries() {
+    /// Test that a target is queried only once, and given up if not resolved in time
+    fn test_backlog_times_out_queries() {
         type B = Backlog<TestBuffer>;
         let (_writer, reader) = NeighCacheWriter::new();
         let outq = PktQueue::new(100);
@@ -742,42 +787,16 @@ mod test_backlog {
         add_packet_and_target(&mut backlog, 0);
         assert_eq!(backlog.targets_to_query(), vec![target]);
 
-        for retry in 1..=B::MAX_RETRIES {
-            assert!(backlog.targets_to_query().is_empty(), "Too early to retry");
-
-            // pretend the last query was made one retry interval ago
-            let entry = backlog
-                .entries
-                .get_mut(&target)
-                .expect("Entry should be there");
-            entry.last_query = entry
-                .last_query
-                .map(|last| last - B::RETRY_INTERVAL - Duration::from_millis(1));
-
-            assert_eq!(backlog.targets_to_query(), vec![target]);
-            assert_eq!(backlog.entries[&target].retries, retry);
-        }
-
-        // no more retries: the last query still gets its retry interval to be answered
-        assert!(
-            backlog.targets_to_query().is_empty(),
-            "Too early to give up"
-        );
+        // the target is not queried again, nor given up before the timeout
+        backlog.check_targets();
+        assert!(backlog.targets_to_query().is_empty());
         assert_eq!(backlog.num_targets(), 1);
         assert!(outq.is_empty());
 
-        // once the last query was not answered in time, the target is given up
-        let entry = backlog
-            .entries
-            .get_mut(&target)
-            .expect("Entry should be there");
-        entry.last_query = entry
-            .last_query
-            .map(|last| last - B::RETRY_INTERVAL - Duration::from_millis(1));
-        assert!(
-            backlog.targets_to_query().is_empty(),
-            "No retries should be left"
-        );
+        // once the query was not answered in time, the target is given up (and not queried)
+        expire_query(&mut backlog, target);
+        backlog.check_targets();
+        assert!(backlog.targets_to_query().is_empty());
         assert_eq!(backlog.num_targets(), 0, "The target should be given up");
         let packet = outq.pop().expect("the packet was not output");
         assert_eq!(packet.get_done(), Some(DoneReason::MissL2resolution));

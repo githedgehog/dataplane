@@ -145,7 +145,7 @@ impl<Buf: PacketBufferMut> ArpNd<Buf> {
     ///   - issues queries for the corresponding targets
     ///   - when targets get resolved (it gets notified by the listener), re-processes the
     ///     backlog and returns packets back to the pipeline.
-    ///   - handles the retries for un-answered ARP/ND requests and gives up unresolved targets
+    ///   - gives up the targets that the kernel fails to resolve, or that are not resolved in time
     ///   - periodically, has the kernel confirm the neighbors that are stale in the cache, if they
     ///     are over an enabled interface. Those that the kernel cannot confirm fail, and become
     ///     unusable in the cache.
@@ -202,11 +202,11 @@ impl<Buf: PacketBufferMut> ArpNd<Buf> {
             // return any packets that could not be returned before
             backlog.return_pending();
 
-            // resolve backloged packets if their target got resolved (mac is in cache)
+            // resolve backloged packets if their target got resolved (mac is in cache), and
+            // give up those whose target the kernel failed to resolve
             backlog.check_targets();
 
-            // query the targets that need it (new ones and those to retry), and give up
-            // those with no retries left.
+            // query the new targets, and give up those not resolved in time
             let targets = backlog.targets_to_query();
             if !targets.is_empty() {
                 self.querier.multi_query(targets.iter()).await;
