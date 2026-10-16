@@ -3,6 +3,8 @@
 
 //! A trait for a type that can provide CLI data
 
+use chrono::TimeDelta;
+use clock::{Duration, Instant};
 use concurrency::slot::{Slot, SlotOption};
 use concurrency::sync::Arc;
 use left_right::ReadHandle;
@@ -107,6 +109,45 @@ impl<T: CliString> Display for Frame<T> {
 
 pub fn line(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     Heading("─").fmt(f)
+}
+
+pub struct PrettyDuration(TimeDelta);
+impl PrettyDuration {
+    #[must_use]
+    pub fn new(d: Duration) -> Self {
+        Self(TimeDelta::from_std(d).unwrap_or(TimeDelta::MAX))
+    }
+}
+impl Display for PrettyDuration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let weeks = self.0.num_weeks();
+        let days = self.0.num_days() % 7;
+        let hours = self.0.num_hours() % 24;
+        let minutes = self.0.num_minutes() % 60;
+        let seconds = self.0.num_seconds() % 60;
+
+        if weeks > 0 {
+            write!(f, "{weeks:02}w")?;
+        }
+        if days > 0 {
+            write!(f, "{days:02}d")?;
+        }
+        write!(f, "{hours:02}:{minutes:02}:{seconds:02}")?;
+        Ok(())
+    }
+}
+
+pub struct Age(Instant);
+impl Age {
+    #[must_use]
+    pub fn from_instant(instant: Instant) -> Self {
+        Self(instant)
+    }
+}
+impl Display for Age {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        PrettyDuration::new(clock::elapsed(self.0)).fmt(f)
+    }
 }
 
 #[cfg(test)]

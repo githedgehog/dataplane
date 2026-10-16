@@ -1544,6 +1544,8 @@ name = "dataplane-common"
 version = "0.29.0"
 dependencies = [
  "arc-swap",
+ "chrono",
+ "dataplane-clock",
  "dataplane-concurrency",
  "left-right",
 ]
