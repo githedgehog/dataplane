@@ -277,8 +277,8 @@ pub fn main() {
 
     // start ARP/ND
     let arp = setup.arp;
-    let (_handle, arp_ctl) = match arp.launch(&mgmt_handle, &shutdown.arp) {
-        Ok((handle, arp_ctl)) => (handle, arp_ctl),
+    let arp_ctl = match arp.launch(&mgmt_handle, &shutdown.arp) {
+        Ok(arp_ctl) => arp_ctl,
         Err(e) => {
             panic!("Failed to launch ARP/ND daemon: {e}");
         }

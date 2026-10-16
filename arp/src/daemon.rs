@@ -9,7 +9,7 @@
 //!      up) and queries for those targets via netlink. It also has the kernel confirm the
 //!      neighbors that are stale in the cache.
 
-use lifecycle::Subsystem;
+use lifecycle::{CancellationToken, Subsystem};
 use net::buffer::PacketBufferMut;
 use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::DoneReason;
@@ -21,7 +21,6 @@ use thiserror::Error;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tokio::task::JoinHandle;
 use tokio::time::{Duration, MissedTickBehavior, interval};
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
@@ -225,35 +224,35 @@ impl<Buf: PacketBufferMut> ArpNd<Buf> {
 
     /// Run the daemon: first, learn the neighbors that the kernel already has (see
     /// [`NeighListener::sync`]); then, the main task and the netlink listener, concurrently.
-    /// The daemon ends if `subs` is cancelled, any of its tasks end or the initial sync fails.
+    /// The daemon ends if `cancel` is cancelled, any of its tasks end or the initial sync fails.
+    /// Any end that was not requested (by cancelling) is fatal: it is reported as such, as is a
+    /// panic, by the task that runs the daemon (see [`start_arp_nd`]).
     async fn run(
         self,
         ctl: Receiver<ArpNdCtlMsg>,
         mut listener: NeighListener,
         cacher: NeighCacheReader,
         cache_notify: Arc<Notify>,
-        subsystem: Subsystem,
+        cancel: CancellationToken,
     ) {
         info!("ARP/ND daemon started");
-        let cancel = subsystem.cancel_token();
 
         // learn the neighbors that the kernel already has, before resolving anything: their
         // packets would be queried otherwise, and probing a static neighbor destroys it.
         match listener.sync().await {
             Ok(num_entries) => info!("Learnt {num_entries} existing neighbors"),
             Err(e) => {
-                error!("Could not learn the existing neighbors: {e}");
-                subsystem.report_fatal("ARP/ND failed to learn the existing neighbors");
+                error!("ARP/ND failed to learn the existing neighbors: {e}");
                 return;
             }
         }
 
         tokio::select! {
             () = self.resolving_task(ctl, cacher, cache_notify) => {
-                subsystem.report_fatal("ARP/ND main task ended");
+                error!("ARP/ND main task ended");
             }
             () = listener.start() => {
-                subsystem.report_fatal("ARP/ND netlink listener ended");
+                error!("ARP/ND netlink listener ended");
             }
             () = cancel.cancelled() => info!("ARP/ND daemon cancelled"),
         }
@@ -262,7 +261,8 @@ impl<Buf: PacketBufferMut> ArpNd<Buf> {
 }
 
 /// Spawn the ARP/ND daemon on `handle`, tracked under the given `subsystem`. The daemon
-/// becomes the writer of the ARP/ND cache `cachew`.
+/// becomes the writer of the ARP/ND cache `cachew`. If the daemon ends without `subsystem`
+/// being cancelled, or panics, a fatal error is reported to `subsystem`.
 ///
 /// # Errors
 ///
@@ -274,7 +274,7 @@ pub(crate) fn start_arp_nd<Buf: PacketBufferMut + Send + 'static>(
     inq: PktQueue<Buf>,
     outq: PktQueue<Buf>,
     cachew: NeighCacheWriter,
-) -> Result<(JoinHandle<()>, ArpNdCtl), ArpNdError> {
+) -> Result<ArpNdCtl, ArpNdError> {
     info!("Starting ARP/ND daemon...");
 
     // create cache reader for resolver task
@@ -294,10 +294,13 @@ pub(crate) fn start_arp_nd<Buf: PacketBufferMut + Send + 'static>(
     // create ArpNd control channel
     let (arp_ctl, ctl_rx) = ArpNdCtl::new(100);
 
-    let jh = subsystem.spawn_on(
-        arpd.run(ctl_rx, listener, cacher, cache_notify, subsystem.clone()),
+    // spawn under subsystem. Failure is fatal
+    let cancel = subsystem.cancel_token();
+    subsystem.spawn_fatal_on_exit(
+        "ARP/ND daemon",
+        arpd.run(ctl_rx, listener, cacher, cache_notify, cancel),
         rt_handle,
     );
     info!("Successfully started ARP/ND daemon...");
-    Ok((jh, arp_ctl))
+    Ok(arp_ctl)
 }

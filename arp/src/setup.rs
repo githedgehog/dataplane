@@ -12,7 +12,6 @@ use lifecycle::Subsystem;
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pkt_io::{PktIo, PktQueue};
-use tokio::task::JoinHandle;
 
 #[allow(unused)]
 use tracing::{debug, error, info};
@@ -64,8 +63,9 @@ impl<Buf: PacketBufferMut> ArpSetup<Buf> {
         self.cachew.factory()
     }
 
-    /// Launch the ARP/ND daemon on `rt_handle`, tracked under the given `subsystem`.
-    /// This consumes the setup: the readers of the neighbor cache must be obtained before.
+    /// Launch the ARP/ND daemon on `rt_handle`, tracked under the given `subsystem`, which gets a
+    /// fatal error reported if the daemon ends without being cancelled, or panics. This consumes
+    /// the setup: the readers of the neighbor cache must be obtained before.
     ///
     /// # Errors
     ///
@@ -74,7 +74,7 @@ impl<Buf: PacketBufferMut> ArpSetup<Buf> {
         self,
         rt_handle: &tokio::runtime::Handle,
         subsystem: &Subsystem,
-    ) -> Result<(JoinHandle<()>, ArpNdCtl), ArpNdError>
+    ) -> Result<ArpNdCtl, ArpNdError>
     where
         Buf: Send + 'static,
     {
@@ -119,9 +119,10 @@ mod tests {
     async fn test_arp_nd_setup_and_teardown_async() {
         let arpnd: ArpSetup<TestBuffer> = ArpSetup::new();
         let subs = test_subsystem();
-        let (jh, _ctl) = arpnd.launch(&Handle::current(), &subs).unwrap();
-        subs.cancel_token().cancel();
-        jh.await.unwrap();
+        let _ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
+        subs.drain(Duration::from_secs(5))
+            .await
+            .expect("the ARP/ND daemon did not stop");
     }
 
     /// Build a packet to `dst` over `oif` that needs ARP/ND resolution
@@ -180,7 +181,7 @@ mod tests {
         // start ARP/ND daemon/task
         let rfactory = arpnd.neigh_cache_factory();
         let subs = test_subsystem();
-        let (jh, ctl) = arpnd.launch(&Handle::current(), &subs).unwrap();
+        let ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
 
         // enable ARP/ND over the taps
         ctl.enable(&[tap0_name, tap1_name, tap2_name])
@@ -252,8 +253,9 @@ mod tests {
 
         println!("{}", *cacher.enter().unwrap());
 
-        subs.cancel_token().cancel();
-        jh.await.unwrap();
+        subs.drain(Duration::from_secs(5))
+            .await
+            .expect("the ARP/ND daemon did not stop");
     }
 
     /// Test that the daemon has the kernel confirm the neighbors that become stale over the
@@ -273,7 +275,7 @@ mod tests {
         let arpnd: ArpSetup<TestBuffer> = ArpSetup::new();
         let rfactory = arpnd.neigh_cache_factory();
         let subs = test_subsystem();
-        let (jh, ctl) = arpnd.launch(&Handle::current(), &subs).unwrap();
+        let ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
         ctl.enable(&[tap0_name]).await.unwrap();
 
         // neighbors become stale over both taps
@@ -321,8 +323,9 @@ mod tests {
             Some(NeighbourState::Failed)
         );
 
-        subs.cancel_token().cancel();
-        jh.await.unwrap();
+        subs.drain(Duration::from_secs(5))
+            .await
+            .expect("the ARP/ND daemon did not stop");
     }
 
     /// Test that the daemon resolves a target for which the kernel has a failed entry (e.g.
@@ -351,7 +354,7 @@ mod tests {
         let arpnd: ArpSetup<TestBuffer> = ArpSetup::new();
         let nf = arpnd.nf.clone();
         let subs = test_subsystem();
-        let (jh, ctl) = arpnd.launch(&Handle::current(), &subs).unwrap();
+        let ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
         ctl.enable(&[tap0_name]).await.unwrap();
 
         // punt a packet to the target to the daemon
@@ -384,8 +387,9 @@ mod tests {
         let packet = &returned[0];
         assert_resolved(packet, resolved_mac);
 
-        subs.cancel_token().cancel();
-        jh.await.unwrap();
+        subs.drain(Duration::from_secs(5))
+            .await
+            .expect("the ARP/ND daemon did not stop");
     }
 
     /// Test that the daemon learns the neighbors that the kernel has when it starts: a packet
@@ -414,7 +418,7 @@ mod tests {
         let arpnd: ArpSetup<TestBuffer> = ArpSetup::new();
         let nf = arpnd.nf.clone();
         let subs = test_subsystem();
-        let (jh, ctl) = arpnd.launch(&Handle::current(), &subs).unwrap();
+        let ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
         ctl.enable(&[tap0_name]).await.unwrap();
 
         // the packet to the target comes back resolved with the static mac
@@ -431,8 +435,9 @@ mod tests {
             Some(NeighbourState::Permanent)
         );
 
-        subs.cancel_token().cancel();
-        jh.await.unwrap();
+        subs.drain(Duration::from_secs(5))
+            .await
+            .expect("the ARP/ND daemon did not stop");
     }
 
     /// Test the resolution of a real neighbor: a packet to the peer of a veth, which answers
@@ -453,7 +458,7 @@ mod tests {
         let nf = arpnd.nf();
         let cacher = arpnd.neigh_cache_factory().handle();
         let subs = test_subsystem();
-        let (jh, ctl) = arpnd.launch(&Handle::current(), &subs).unwrap();
+        let ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
         ctl.enable(&[veth_name]).await.unwrap();
 
         println!(" === Punt packet to {SOME_IP}: it should not be resolved as peer has no address");
@@ -498,7 +503,8 @@ mod tests {
         let packet = &returned[0];
         assert_given_up(packet, DoneReason::MissL2resolution);
 
-        subs.cancel_token().cancel();
-        jh.await.unwrap();
+        subs.drain(Duration::from_secs(5))
+            .await
+            .expect("the ARP/ND daemon did not stop");
     }
 }
