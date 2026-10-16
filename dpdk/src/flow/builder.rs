@@ -131,7 +131,8 @@ impl Action {
         }
     }
 
-    /// mlx5 action order: remove headers, mark, rewrite, push headers, forward.
+    /// mlx5 action order: remove headers, mark, rewrite, push VLAN, set its VID/PCP, encap,
+    /// forward. mlx5 accepts `OF_SET_VLAN_PCP` only after `OF_PUSH_VLAN` in the same list.
     /// Actions of equal rank retain their insertion order.
     fn rank(&self) -> u8 {
         match self {
@@ -141,11 +142,11 @@ impl Action {
             | Action::SetIpv4Dst(_)
             | Action::SetTpSrc(_)
             | Action::SetTpDst(_)
-            | Action::OfSetVlanVid(_)
-            | Action::OfSetVlanPcp(_)
             | Action::ModifyField(_) => 2,
-            Action::OfPushVlan(_) | Action::VxlanEncap(_) => 3,
-            Action::Jump(_) | Action::Queue(_) | Action::Drop => 4,
+            Action::OfPushVlan(_) => 3,
+            Action::OfSetVlanVid(_) | Action::OfSetVlanPcp(_) => 4,
+            Action::VxlanEncap(_) => 5,
+            Action::Jump(_) | Action::Queue(_) | Action::Drop => 6,
         }
     }
 
@@ -586,9 +587,10 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
         self
     }
 
-    /// Push a VLAN tag with the given TPID and zero VID/PCP.
-    /// On BlueField-3, set VID/PCP in a later group reached via [`jump`](Self::jump),
-    /// after the new tag exists.
+    /// Push a VLAN tag with the given TPID. Set its VID and PCP with
+    /// [`of_set_vlan_vid`](Self::of_set_vlan_vid) and [`of_set_vlan_pcp`](Self::of_set_vlan_pcp)
+    /// on the same rule; lowering places them right after the push. A pushed tag sits inside
+    /// any [`vxlan_encap`](Self::vxlan_encap) tunnel.
     pub fn of_push_vlan(mut self, tpid: EthType) -> Self {
         self.actions
             .push(Action::OfPushVlan(rte_flow_action_of_push_vlan {
@@ -604,9 +606,8 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
         self
     }
 
-    /// Set the VID of the packet's existing outer VLAN tag (`OF_SET_VLAN_VID`). The tag must already
-    /// be present -- either matched in the pattern or pushed in an earlier group (see
-    /// [`of_push_vlan`](Self::of_push_vlan)).
+    /// Set the VID of the outer VLAN tag (`OF_SET_VLAN_VID`): the tag pushed by
+    /// [`of_push_vlan`](Self::of_push_vlan) on this rule, or else one matched in the pattern.
     pub fn of_set_vlan_vid(mut self, vid: Vid) -> Self {
         self.actions
             .push(Action::OfSetVlanVid(rte_flow_action_of_set_vlan_vid {
@@ -615,8 +616,8 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
         self
     }
 
-    /// Set the PCP of the packet's existing outer VLAN tag (`OF_SET_VLAN_PCP`). Same tag-presence
-    /// requirement as [`of_set_vlan_vid`](Self::of_set_vlan_vid).
+    /// Set the PCP of the VLAN tag pushed by [`of_push_vlan`](Self::of_push_vlan) on this rule
+    /// (`OF_SET_VLAN_PCP`). mlx5 rejects it without that push, even on a matched tag.
     pub fn of_set_vlan_pcp(mut self, pcp: Pcp) -> Self {
         self.actions
             .push(Action::OfSetVlanPcp(rte_flow_action_of_set_vlan_pcp {
@@ -816,9 +817,9 @@ mod tests {
         Ok(())
     }
 
-    /// The validated mlx5 pipeline order: pop -> MARK -> MODIFY_HDR -> push -> terminal.
+    /// The validated mlx5 pipeline order: pop -> MARK -> MODIFY_HDR -> push -> encap -> terminal.
     #[test]
-    fn action_rank_orders_pipeline() {
+    fn action_rank_orders_pipeline() -> Result<(), net::vxlan::InvalidVni> {
         let pop = Action::OfPopVlan;
         let mark = Action::Mark(rte_flow_action_mark { id: 0 });
         let modify = Action::SetIpv4Dst(set_ipv4(Ipv4Addr::UNSPECIFIED));
@@ -829,8 +830,43 @@ mod tests {
             mark.rank() < modify.rank(),
             "MARK must precede MODIFY_HDR (hardware-validated)"
         );
+        let encap = Action::VxlanEncap(build_encap(&VxlanEncap {
+            eth_src: Mac([0; 6]),
+            eth_dst: Mac([0; 6]),
+            ip_src: Ipv4Addr::UNSPECIFIED,
+            ip_dst: Ipv4Addr::UNSPECIFIED,
+            udp_src: 0,
+            vni: Vni::new_checked(Vni::MIN)?,
+        }));
         assert!(modify.rank() < push.rank());
-        assert!(push.rank() < queue.rank());
+        assert!(push.rank() < encap.rank());
+        assert!(encap.rank() < queue.rank());
+        Ok(())
+    }
+
+    /// mlx5 requires VID/PCP after the push in one list, whatever order the caller used.
+    #[test]
+    fn vlan_set_follows_push() {
+        let scrambled = [
+            Action::Queue(rte_flow_action_queue { index: 0 }),
+            Action::OfSetVlanPcp(rte_flow_action_of_set_vlan_pcp { vlan_pcp: 3 }),
+            Action::OfSetVlanVid(rte_flow_action_of_set_vlan_vid { vlan_vid: 0 }),
+            Action::SetIpv4Dst(set_ipv4(Ipv4Addr::UNSPECIFIED)),
+            Action::OfPushVlan(rte_flow_action_of_push_vlan { ethertype: 0 }),
+        ];
+        let mut ordered: Vec<&Action> = scrambled.iter().collect();
+        ordered.sort_by_key(|a| a.rank());
+        let types: Vec<at::Type> = ordered.iter().map(|a| a.type_()).collect();
+        assert_eq!(
+            types,
+            [
+                at::RTE_FLOW_ACTION_TYPE_SET_IPV4_DST,
+                at::RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN,
+                at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP,
+                at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID,
+                at::RTE_FLOW_ACTION_TYPE_QUEUE,
+            ]
+        );
     }
 
     /// Actions added in a HW-invalid order are canonicalized by the lowering sort.
