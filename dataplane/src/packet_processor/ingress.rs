@@ -90,7 +90,6 @@ impl Ingress {
         packet: &mut Packet<Buf>,
     ) {
         let nfi = self.name();
-        packet.meta_mut().set_l2bcast(true);
         packet.done(DoneReason::Unhandled);
         debug!(
             "{nfi}: Processing of broadcast frames is not supported (iif:{ifname})",

@@ -168,6 +168,8 @@ pub mod default_deadlines {
     use std::time::Duration;
     /// Drain workers' tokio tasks.
     pub const WORKERS: Duration = Duration::from_secs(5);
+    /// Drain the ARP/ND daemon
+    pub const ARP: Duration = Duration::from_secs(3);
     /// Drain RIO's tokio tasks.
     pub const ROUTER: Duration = Duration::from_secs(5);
     /// Drain mgmt's tasks (config processor, status updater, watcher).
@@ -187,6 +189,8 @@ pub struct Shutdown {
     fatal: Arc<AtomicBool>,
     /// Data-plane workers.
     pub workers: Subsystem,
+    /// ARP/ND resolution daemon.
+    pub arp: Subsystem,
     /// Routing/control I/O.
     pub router: Subsystem,
     /// Management plane.
@@ -204,6 +208,7 @@ impl Shutdown {
         let fatal = Arc::new(AtomicBool::new(false));
         Self {
             workers: Subsystem::with_fatal("workers", root.clone(), fatal.clone()),
+            arp: Subsystem::with_fatal("arp", root.clone(), fatal.clone()),
             router: Subsystem::with_fatal("router", root.clone(), fatal.clone()),
             mgmt: Subsystem::with_fatal("mgmt", root.clone(), fatal.clone()),
             metrics: Subsystem::with_fatal("metrics", root.clone(), fatal.clone()),
@@ -225,11 +230,12 @@ impl Shutdown {
         self.fatal.load(Ordering::Relaxed)
     }
 
-    /// Drain in order: workers, router, metrics, mgmt. Workers stop
+    /// Drain in order: workers, arp, router, metrics, mgmt. Workers stop
     /// touching packets before the control plane goes away. Subsystems
     /// that miss their deadline are logged and abandoned.
     pub async fn drain_in_order(&self) {
         Self::drain_one(&self.workers, default_deadlines::WORKERS).await;
+        Self::drain_one(&self.arp, default_deadlines::ARP).await;
         Self::drain_one(&self.router, default_deadlines::ROUTER).await;
         Self::drain_one(&self.metrics, default_deadlines::METRICS).await;
         Self::drain_one(&self.mgmt, default_deadlines::MGMT).await;
@@ -444,6 +450,7 @@ mod tests {
         assert!(shutdown.root.is_cancelled());
         assert!(shutdown.is_fatal());
         assert!(shutdown.workers.is_cancelled());
+        assert!(!shutdown.arp.is_cancelled());
         assert!(!shutdown.mgmt.is_cancelled());
         assert!(!shutdown.router.is_cancelled());
         assert!(!shutdown.metrics.is_cancelled());

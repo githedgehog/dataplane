@@ -127,7 +127,7 @@ fn generate_router_interface_config_per_vrf(
     // loop over all of the interface configurations in the VRF. Skip VTEPs as our vtep is mapped to multiple kernel interfaces
     for if_config in vrf_cfg.interfaces.values().filter(|ifc| !ifc.is_vtep()) {
         // lookup kernel interface in cached hash map
-        let name = &if_config.name;
+        let name = if_config.name.as_ref();
         let kiface = kernel_interfaces.get(name).ok_or_else(|| {
             let msg = format!("Unable to find kernel interface '{name}'");
             error!("{msg}");
@@ -182,7 +182,7 @@ fn generate_router_interfaces_config(
 }
 pub(crate) fn generate_router_config(
     kernel_vrfs: &HashMap<InterfaceName, Interface>,
-    config: Arc<ValidatedGwConfig>,
+    config: &Arc<ValidatedGwConfig>,
 ) -> Result<RouterConfig, ConfigError> {
     let genid = config.genid();
     debug!("Generating router config for genid {genid}...");

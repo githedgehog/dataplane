@@ -95,6 +95,7 @@ pub enum DoneReason {
     InvalidDstMac,        /* dropped the packet since it had to have an invalid destination mac */
     MissingEtherType,     /* couldn't determine ethertype to use */
     NotIp,                /* could not get IP header or packet is not IP */
+    ArpOutOfResources,    /* required ARP/ND resolution but had no resources to admit packet */
     RouteFailure,         /* missing routing information */
     RouteDrop,            /* routing explicitly requests pkts to be dropped */
     HopLimitExceeded,     /* TTL / Hop count was exceeded */
@@ -114,29 +115,39 @@ pub enum DoneReason {
     InvalidChecksum,      /* the validation of a checksum for this packet failed */
     IcmpErrorIncomplete,  /* the packet is an ICMP error but it does not contain data it should */
     InternalDrop,         /* the packet was dropped internally due to a queue being full */
-    Local,                /* the packet has to be locally consumed by kernel */
+    Local,                /* the packet has been handed to the system for local consumption */
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
     DeparseError, /* the packet was processed and delivered to driver, but not be sent due to serialization issue */
     NoHeadRoom, /* the packet was processed and delivered to driver, but not serialized due lack of headroom */
 }
 
 bitflags! {
+    /// Each flag is a bit of its own, given by its position. A bit shared by two flags is a
+    /// compile-time error (see the assertion below).
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     struct MetaFlags: u32 {
-        const INITIALIZED = 0b0000_0001; /* initialized */
-        const IS_L2_BCAST = 0b0000_0010; /* frame is eth broadcast */
-        const NATTED_SRC  = 0b0000_0100; /* set to true if source address of a packet has been NATed */
-        const NATTED_DST  = 0b0000_1000; /* set to true if destination address of a packet has been NATed */
-        const REFR_CHKSUM = 0b0001_0000; /* if true, an indication that packet checksums need to be refreshed */
-        const KEEP        = 0b0010_0000; /* Keep the Packet even if it should be dropped */
-        const IS_OVERLAY  = 0b0100_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
-        const REQ_MASQUERADE      = 0b1000_0000;      /* Packet requires masquerade (source and/or destination) */
-        const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
-        const REQ_STATIC_NAT_SRC  = 0b0010_0000_0000;      /* Packet requires static NAT (source) */
-        const REQ_STATIC_NAT_DST  = 0b0100_0000_0000;      /* Packet requires static NAT (destination) */
-        const FORCE_FLOW_TRACKING = 0b1000_0000_0000;      /* We need to track this flow, e.g. to apply stateful user ACLs */
+        const INITIALIZED         = 1 << 0;  /* initialized */
+        const NATTED_SRC          = 1 << 1;  /* set to true if source address of a packet has been NATed */
+        const NATTED_DST          = 1 << 2;  /* set to true if destination address of a packet has been NATed */
+        const REFR_CHKSUM         = 1 << 3;  /* if true, an indication that packet checksums need to be refreshed */
+        const KEEP                = 1 << 4;  /* Keep the Packet even if it should be dropped */
+        const IS_OVERLAY          = 1 << 5;  /* Packet was obtained by decapsulation and belongs to a VPC */
+        const REQ_MASQUERADE      = 1 << 6;  /* Packet requires masquerade (source and/or destination) */
+        const REQ_PORT_FORWARDING = 1 << 7;  /* Packet requires port forwarding */
+        const REQ_STATIC_NAT_SRC  = 1 << 8;  /* Packet requires static NAT (source) */
+        const REQ_STATIC_NAT_DST  = 1 << 9;  /* Packet requires static NAT (destination) */
+        const FORCE_FLOW_TRACKING = 1 << 10; /* We need to track this flow, e.g. to apply stateful user ACLs */
+        const LOCAL               = 1 << 11; /* Packet is to be locally consumed */
+        const SOURCED             = 1 << 12; /* Packet is locally originated */
+        const NEED_ARPND          = 1 << 13; /* Need ARP/ND resolution */
     }
 }
+
+// No two flags of [`MetaFlags`] share a bit: their union has a bit per flag
+const _: () = assert!(
+    MetaFlags::all().bits().count_ones() as usize == <MetaFlags as bitflags::Flags>::FLAGS.len(),
+    "two MetaFlags flags share a bit"
+);
 
 #[allow(unused)]
 #[derive(Debug, Default, Clone)]
@@ -246,13 +257,6 @@ impl PacketMeta {
     pub fn is_initialized(&self) -> bool {
         self.flags.contains(MetaFlags::INITIALIZED)
     }
-    #[must_use]
-    pub fn is_l2bcast(&self) -> bool {
-        self.flags.contains(MetaFlags::IS_L2_BCAST)
-    }
-    pub fn set_l2bcast(&mut self, value: bool) {
-        self.set_flag(MetaFlags::IS_L2_BCAST, value);
-    }
 
     #[must_use]
     pub fn is_overlay(&self) -> bool {
@@ -302,6 +306,30 @@ impl PacketMeta {
             flags |= FlowInfoFlags::REQ_STATIC_NAT_SRC;
         }
         flags
+    }
+
+    pub fn set_local(&mut self, value: bool) {
+        self.set_flag(MetaFlags::LOCAL, value);
+    }
+
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        self.flags.contains(MetaFlags::LOCAL)
+    }
+
+    #[must_use]
+    pub fn is_sourced(&self) -> bool {
+        self.flags.contains(MetaFlags::SOURCED)
+    }
+    pub fn set_sourced(&mut self, value: bool) {
+        self.set_flag(MetaFlags::SOURCED, value);
+    }
+    #[must_use]
+    pub fn need_arp_nd(&self) -> bool {
+        self.flags.contains(MetaFlags::NEED_ARPND)
+    }
+    pub fn set_need_arp_nd(&mut self, value: bool) {
+        self.set_flag(MetaFlags::NEED_ARPND, value);
     }
 }
 impl Drop for PacketMeta {

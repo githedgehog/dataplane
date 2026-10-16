@@ -142,11 +142,18 @@ impl From<FlowStatus> for AtomicFlowStatus {
 bitflags! {
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     pub struct FlowInfoFlags: u8 {
-        const INITIATOR     = 0b0000_0001; /* the flow is the initiator within a pair */
-        const REQ_STATIC_NAT_SRC = 0b0000_0010; /* Packet requires static NAT (source) */
-        const REQ_STATIC_NAT_DST = 0b0000_0100; /* Packet requires static NAT (destination) */
+        const INITIATOR          = 1 << 0; /* the flow is the initiator within a pair */
+        const REQ_STATIC_NAT_SRC = 1 << 1; /* Packet requires static NAT (source) */
+        const REQ_STATIC_NAT_DST = 1 << 2; /* Packet requires static NAT (destination) */
     }
 }
+
+// No two flags of [`FlowInfoFlags`] share a bit: their union has a bit per flag
+const _: () = assert!(
+    FlowInfoFlags::all().bits().count_ones() as usize
+        == <FlowInfoFlags as bitflags::Flags>::FLAGS.len(),
+    "two FlowInfoFlags flags share a bit"
+);
 
 impl FlowInfoFlags {
     #[must_use]

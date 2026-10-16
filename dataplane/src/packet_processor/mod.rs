@@ -16,6 +16,7 @@ use super::packet_processor::ipforward::IpForwarder;
 use concurrency::sync::Arc;
 
 use acl_filter::{AclFilter, AclFilterContextWriter};
+use arp::ArpSetup;
 use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterContextWriter};
 
@@ -50,10 +51,11 @@ where
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
     pub portfw_w: PortFwTableWriter,
+    pub arp: ArpSetup<Buf>,
 }
 
 /// Start a router and provide the associated pipeline
-pub(crate) fn start_router<'nf, Buf: PacketBufferMut + 'nf>(
+pub(crate) fn start_router<'nf, Buf: PacketBufferMut + Send + 'nf>(
     router: &lifecycle::Subsystem,
     params: RouterParams,
     driver_status: DriverStatusReader,
@@ -81,8 +83,14 @@ pub(crate) fn start_router<'nf, Buf: PacketBufferMut + 'nf>(
     let pdata = Arc::from(PipelineData::new(0));
     let pkt_stats = Arc::from(PacketStats::new());
 
+    // create ARP/ND setup object
+    let arp = ArpSetup::<Buf>::new();
+    let arp_nf = arp.nf();
+    let neigh_cache_factory = arp.neigh_cache_factory();
+
     // collect readers and the like for cli
     let cli_sources = CliSources {
+        neigh_cache: Some(Box::new(neigh_cache_factory.handle().inner())),
         flow_table: Some(Box::new(flow_table.clone())),
         flow_filter: Some(Box::new(flow_filter_reader_factory.handle().inner())),
         portfw_table: Some(Box::new(portfw_w.reader().inner())),
@@ -96,16 +104,20 @@ pub(crate) fn start_router<'nf, Buf: PacketBufferMut + 'nf>(
     let router = Router::new(router, params, Some(cli_sources))?;
     let iftr_factory = router.get_iftabler_factory();
     let fibtr_factory = router.get_fibtr_factory();
-    let atabler_factory = router.get_atabler_factory();
 
     // create pipeline builder
     let flow_table_clone = flow_table.clone();
     let pipeline_builder = move || {
         let pdata_clone = pdata.clone();
+        let arp_nf = arp_nf.clone();
 
         // Build network functions
         let stage_ingress = Ingress::new("Ingress", iftr_factory.handle());
-        let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
+        let stage_egress = Egress::new(
+            "Egress",
+            iftr_factory.handle(),
+            neigh_cache_factory.handle(),
+        );
         let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr_factory.handle());
         let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr_factory.handle());
         let static_nat = StaticNat::with_reader(
@@ -133,7 +145,7 @@ pub(crate) fn start_router<'nf, Buf: PacketBufferMut + 'nf>(
         let pkt_stats_nf = PacketStatsNF::new(pkt_stats.clone());
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
-        // hard-coded. Flow expiration is handled by per-flow tokio timers; no ExpirationsNF needed.
+        // hard-coded.
         DynPipeline::new()
             .set_data(pdata_clone)
             .add_stage(stage_ingress)
@@ -148,6 +160,7 @@ pub(crate) fn start_router<'nf, Buf: PacketBufferMut + 'nf>(
             .add_stage(flow_tracker)
             .add_stage(iprouter2)
             .add_stage(stage_egress)
+            .add_stage(arp_nf)
             .add_stage(pktdump)
             .add_stage(pkt_stats_nf)
             .add_stage(stats_stage)
@@ -165,5 +178,6 @@ pub(crate) fn start_router<'nf, Buf: PacketBufferMut + 'nf>(
         stats,
         vpc_stats_store,
         portfw_w,
+        arp,
     })
 }

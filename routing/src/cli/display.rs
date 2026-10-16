@@ -12,7 +12,6 @@
 //!    - Cli thread does not need a read handle cache to inspect Fib contents
 //!    - Still, FIXME(fredi): make that distinction clearer
 
-use crate::atable::adjacency::{Adjacency, AdjacencyTable};
 use crate::fib::fibgroupstore::FibRoute;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtype::{Fib, FibKey, FibRouteV4Filter, FibRouteV6Filter};
@@ -37,17 +36,15 @@ use crate::interfaces::interface::{IfState, IfType, Interface};
 use crate::evpn::rmac::RmacFilter;
 use crate::evpn::{RmacEntry, RmacStore, Vtep};
 
-use chrono::{DateTime, TimeDelta};
-use common::cliprovider::Heading;
+use chrono::DateTime;
+use common::cliprovider::{Age, Heading, PrettyDuration};
 
-use clock::{Duration, Instant};
 use lpm::prefix::IpPrefix;
 use lpm::trie::{PrefixMapTrie, TrieMap};
 use net::interface::InterfaceIndex;
 use net::vxlan::Vni;
 use std::borrow::Cow;
 use std::fmt::Display;
-use std::fmt::Write;
 use std::os::unix::net::SocketAddr;
 use std::rc::{Rc, Weak};
 
@@ -108,38 +105,6 @@ impl Display for RouteFlags {
             write!(f, "s")?;
         }
         Ok(())
-    }
-}
-pub struct PrettyDuration(TimeDelta);
-impl PrettyDuration {
-    #[must_use]
-    pub fn new(d: Duration) -> Self {
-        Self(TimeDelta::from_std(d).unwrap_or(TimeDelta::MAX))
-    }
-}
-impl Display for PrettyDuration {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let weeks = self.0.num_weeks();
-        let days = self.0.num_days() % 7;
-        let hours = self.0.num_hours() % 24;
-        let minutes = self.0.num_minutes() % 60;
-        let seconds = self.0.num_seconds() % 60;
-
-        if weeks > 0 {
-            write!(f, "{weeks:02}w")?;
-        }
-        if days > 0 {
-            write!(f, "{days:02}d")?;
-        }
-        write!(f, "{hours:02}:{minutes:02}:{seconds:02}")?;
-        Ok(())
-    }
-}
-
-struct Age(Instant);
-impl Display for Age {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        PrettyDuration::new(clock::elapsed(self.0)).fmt(f)
     }
 }
 
@@ -223,7 +188,7 @@ fn fmt_route(
     route: &Route,
     iftable: Option<&IfTable>,
 ) -> std::fmt::Result {
-    let age = Age(route.tstamp);
+    let age = Age::from_instant(route.tstamp);
     writeln!(
         f,
         "{} [{}/{}] {age}",
@@ -736,45 +701,6 @@ impl Display for Vtep {
     }
 }
 
-// ======================= Adjacencies ======================= //
-macro_rules! ADJ_TBL_FMT {
-    () => {
-        " {:<10} {:<20} {:<18}"
-    };
-}
-fn fmt_adjacency_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    writeln!(
-        f,
-        "{}",
-        format_args!(ADJ_TBL_FMT!(), "ifindex", "address", "mac")
-    )
-}
-
-impl Display for Adjacency {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            format_args!(
-                ADJ_TBL_FMT!(),
-                self.get_ifindex(),
-                self.get_ip(),
-                self.get_mac()
-            )
-        )
-    }
-}
-impl Display for AdjacencyTable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading(format!("Adjacency table ({})", self.len())).fmt(f)?;
-        fmt_adjacency_heading(f)?;
-        for a in self.values() {
-            writeln!(f, "{a}")?;
-        }
-        Ok(())
-    }
-}
-
 // =========================== FIB =========================== //
 impl Display for FibKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
@@ -1029,33 +955,13 @@ impl Display for FibGroups<'_> {
 // ===================== Time utilities ====================== //
 use chrono::Local;
 pub(crate) fn fmt_time(time: &DateTime<Local>) -> String {
-    //let fmt_iso8 = "%Y-%m-%dT%H:%M:%S%.3f%:z";
-    let fmt_simple = "%Y-%m-%dT %H:%M:%S";
-    let mut out = time.format(fmt_simple).to_string();
-    out += " (";
-
-    let now = Local::now();
-    let elapsed = (now - time).num_seconds();
-    let weeks = elapsed / (7 * 24 * 60 * 60);
-    let days = (elapsed % (7 * 24 * 60 * 60)) / (24 * 60 * 60);
-    let hours = (elapsed % (24 * 60 * 60)) / (60 * 60);
-    let minutes = (elapsed % (60 * 60)) / 60;
-    let seconds = elapsed % 60;
-
-    if weeks > 0 {
-        let _ = write!(out, "{weeks} weeks ");
-    }
-    if days > 0 {
-        let _ = write!(out, "{days} days ");
-    }
-    if hours > 0 {
-        let _ = write!(out, "{hours} hours ");
-    }
-    if minutes > 0 {
-        let _ = write!(out, "{minutes} min ");
-    }
-    let _ = write!(out, "{seconds} s ago)");
-    out
+    // a time in the future (e.g. after the clock was set back) is shown as no time ago
+    let elapsed = (Local::now() - *time).to_std().unwrap_or_default();
+    format!(
+        "{} ({} ago)",
+        time.format("%Y-%m-%dT %H:%M:%S"),
+        PrettyDuration::new(elapsed)
+    )
 }
 
 // =========================== CPI =========================== //
