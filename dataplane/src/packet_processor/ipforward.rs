@@ -247,6 +247,16 @@ impl IpForwarder {
                 debug!("{nfi}: VxLAN encap peeking failed: {e}");
                 packet.done(DoneReason::VxlanDecapFailure);
             }
+            // Addressed to the gateway from inside a VPC. Nothing in the control plane serves a VPC:
+            // punting would hand the kernel the inner frame on the underlay port's tap, stripped of
+            // its VNI, where it means something else or nothing at all.
+            Ok(None) if packet.meta().is_overlay() => {
+                let nfi = &self.name;
+                debug!(
+                    "{nfi}: decapsulated packet is addressed to the gateway itself; dropping it"
+                );
+                packet.done(DoneReason::Unhandled);
+            }
             Ok(None) => {
                 // Packet does not include VxLAN encap. Consume it.
                 packet.done(DoneReason::Local);
@@ -742,6 +752,19 @@ mod test {
         exec_local(&forwarder, &mut packet);
 
         assert_eq!(packet.get_done(), Some(DoneReason::Local));
+    }
+
+    /// A packet for the gateway is punted from the underlay, and dropped from inside a VPC.
+    #[test]
+    fn only_underlay_packets_for_the_gateway_are_local() {
+        let forwarder = IpForwarder::new("test", RouterTables::new().fibs());
+        let ifindex = InterfaceIndex::try_new(1).unwrap();
+        for (overlay, expected) in [(false, DoneReason::Local), (true, DoneReason::Unhandled)] {
+            let mut packet = build_test_ipv4_packet(64).unwrap();
+            packet.meta_mut().set_overlay(overlay);
+            forwarder.packet_exec_instruction_local(&mut packet, ifindex, &mut FibMemo::default());
+            assert_eq!(packet.get_done(), Some(expected), "overlay: {overlay}");
+        }
     }
 }
 
