@@ -8,7 +8,7 @@ use core::str::Utf8Error;
 
 /// An octet string of between `MIN` and `MAX` octets inclusive.
 ///
-/// Nearly every variable length field in an LLDPDU is an octet string with a
+/// Nearly every variable length field in an [LLDPDU] is an octet string with a
 /// protocol-imposed length range, and the ranges differ from field to field: a
 /// chassis identifier is 1 to 255 octets, a system name is 0 to 255, a VLAN
 /// name is 1 to 32.  `Octets` puts those bounds in the type, so a parsed field
@@ -20,7 +20,7 @@ use core::str::Utf8Error;
 /// The octets live on the heap.  LLDP is a control plane protocol which sees a
 /// handful of frames per port per minute, so an allocation costs nothing worth
 /// counting, while storing the worst case inline would make every enum that
-/// holds one hundreds of octets wide.  `Lldpdu` holds a list of TLVs, so that
+/// holds one hundreds of octets wide.  [`Lldpdu`] holds a list of TLVs, so that
 /// width would be multiplied by the number of TLVs in a frame.
 ///
 /// # Encoding
@@ -32,6 +32,8 @@ use core::str::Utf8Error;
 /// as text.  This keeps parsing byte-exact: an `Octets` always deparses to the
 /// octets it was parsed from.
 ///
+/// [LLDPDU]: crate::lldp::Lldpdu
+/// [`Lldpdu`]: crate::lldp::Lldpdu
 /// [IEEE Std 802.1AB]: https://standards.ieee.org/ieee/802.1AB/6047/
 #[derive(
     Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,

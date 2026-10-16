@@ -28,7 +28,7 @@ use crate::parse::{DeParse, DeParseError, Parse, ParseError};
 /// omitting it.
 pub type Text = Octets<0, 255>;
 
-/// A TLV from the optional section of an `Lldpdu`.
+/// A TLV from the optional section of an [`Lldpdu`](crate::lldp::Lldpdu).
 ///
 /// # Unrecognized TLVs
 ///
@@ -96,7 +96,7 @@ impl UnrecognizedTlv {
     ///
     /// Returns [`RecognizedTlvType`] if `tlv` is of a type which has a
     /// dedicated [`OptionalTlv`] variant, or which an
-    /// `Lldpdu` models structurally.
+    /// [`Lldpdu`](crate::lldp::Lldpdu) models structurally.
     pub fn new(tlv: RawTlv) -> Result<UnrecognizedTlv, RecognizedTlvType> {
         if tlv.typ().is_structural() || tlv.typ().is_modelled() {
             return Err(RecognizedTlvType(tlv.typ()));
@@ -154,7 +154,7 @@ pub enum OptionalTlvError {
     /// An organizationally specific TLV was malformed.
     #[error("invalid organizationally specific TLV: {0}")]
     OrganizationallySpecific(OrgTlvError),
-    /// A TLV which an `Lldpdu` models structurally
+    /// A TLV which an [`Lldpdu`](crate::lldp::Lldpdu) models structurally
     /// appeared in the optional section, where it does not belong.
     #[error("a {0} TLV may not appear in the optional section of an LLDPDU")]
     Structural(TlvType),

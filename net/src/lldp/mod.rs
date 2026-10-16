@@ -7,11 +7,44 @@
 //! frame describing itself and the port it emitted from, and neighbours cache
 //! what they hear for as long as the sender's time to live allows.  The frame
 //! is never forwarded and never acknowledged, so the whole protocol reduces to
-//! building and reading one payload, a sequence of type-length-value records.
+//! building and reading one payload, the [`Lldpdu`].
 //!
-//! So far this holds the TLV framing ([`RawTlv`], [`TlvHeader`]), the three
-//! records every LLDPDU starts with ([`ChassisId`], [`PortId`] and
-//! [`TimeToLive`]), and the optional records which may follow them.
+//! # Wire format
+//!
+//! An LLDPDU is a sequence of type-length-value records:
+//!
+//! ```text
+//! +--------------+---------+-----+-----------+-----+---------------+
+//! | chassis ID   | port ID | TTL | optional  | ... | end of LLDPDU |
+//! +--------------+---------+-----+-----------+-----+---------------+
+//! ```
+//!
+//! The first three records are mandatory and must appear in that order; the end
+//! marker is mandatory and must come last.  [`Lldpdu`] holds the mandatory
+//! records in named fields and emits the end marker itself, so those rules are
+//! properties of the type rather than checks a caller has to remember.
+//!
+//! # Example
+//!
+//! ```
+//! use dataplane_net::eth::mac::Mac;
+//! use dataplane_net::lldp::{ChassisId, IdOctets, Lldpdu, PortId, TimeToLive};
+//! use dataplane_net::parse::{DeParse, Parse};
+//!
+//! let pdu = Lldpdu::new(
+//!     ChassisId::MacAddress(Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01])),
+//!     PortId::InterfaceName(IdOctets::new(b"swp1")?),
+//!     TimeToLive::new(120),
+//! );
+//!
+//! let mut frame = vec![0u8; pdu.size().get() as usize];
+//! pdu.deparse(&mut frame).expect("the buffer is exactly the right size");
+//!
+//! let (parsed, consumed) = Lldpdu::parse(&frame)?;
+//! assert_eq!(parsed, pdu);
+//! assert_eq!(consumed, pdu.size());
+//! # Ok::<(), Box<dyn core::error::Error>>(())
+//! ```
 //!
 //! # Scope
 //!
@@ -35,6 +68,7 @@ mod management;
 mod octets;
 mod optional;
 mod org;
+mod pdu;
 mod port_id;
 mod tlv;
 mod ttl;
@@ -56,6 +90,7 @@ pub use org::{
     Dot1Tlv, Dot3Tlv, LinkAggregationStatus, ModelledOrgTlv, OrgInfo, OrgTlvError,
     OrganizationallySpecific, Oui, VlanId, VlanNameOctets,
 };
+pub use pdu::{Lldpdu, LldpduError, LldpduTooLong};
 pub use port_id::{PortId, PortIdError, PortIdSubtype, ReservedPortIdSubtype};
 pub use tlv::{
     InvalidTlvType, RawTlv, TlvHeader, TlvType, TlvValue, TlvValueTooLong, UnexpectedTlvType,
