@@ -3,6 +3,8 @@
 
 use thiserror::Error;
 
+pub(crate) mod cpbridge;
+pub(crate) mod disposition;
 pub mod dpdk;
 pub mod kernel;
 pub mod status;

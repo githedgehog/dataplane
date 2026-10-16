@@ -30,6 +30,7 @@ pub struct RxTaskStatus {
     pub total_tx: u64,
     pub total_ppline_drops: u64,
     pub total_tx_drops: u64,
+    pub total_punt_drops: u64,
     pub total_parse_errors: u64,
     pub total_truncated: u64,
     pub total_zero_len: u64,
@@ -47,6 +48,7 @@ impl RxTaskStatus {
             total_tx: 0,
             total_ppline_drops: 0,
             total_tx_drops: 0,
+            total_punt_drops: 0,
             total_parse_errors: 0,
             total_truncated: 0,
             total_zero_len: 0,
@@ -62,6 +64,7 @@ impl RxTaskStatus {
         self.total_tx += counters.tx;
         self.total_ppline_drops += counters.ppline_drops;
         self.total_tx_drops += counters.tx_drops;
+        self.total_punt_drops += counters.punt_drops;
         self.total_parse_errors += counters.parse_errors;
         self.total_truncated += counters.truncated;
         self.total_zero_len += counters.zero_len;
@@ -169,7 +172,7 @@ macro_rules! RX_TASK_TBL_FMT {
 
 macro_rules! RX_DROP_TBL_FMT {
     () => {
-        "   {:<16}  {:>12}  {:>10}  {:>10}  {:>10}  {:>10}  {:>12}"
+        "   {:<16}  {:>12}  {:>10}  {:>10}  {:>10}  {:>10}  {:>10}  {:>12}"
     };
 }
 
@@ -205,6 +208,7 @@ fn fmt_rx_drop_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             "iface",
             "ppline-drops",
             "tx-drops",
+            "punt-drops",
             "parse-err",
             "truncated",
             "zero-len",
@@ -222,6 +226,7 @@ fn fmt_rx_drop(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::
             rx.ifname,
             rx.total_ppline_drops,
             rx.total_tx_drops,
+            rx.total_punt_drops,
             rx.total_parse_errors,
             rx.total_truncated,
             rx.total_zero_len,
@@ -278,6 +283,7 @@ mod test {
             tx: 2,
             ppline_drops: 3,
             tx_drops: 4,
+            punt_drops: 9,
             parse_errors: 5,
             truncated: 6,
             zero_len: 7,
@@ -291,6 +297,7 @@ mod test {
         assert_eq!(status.total_tx, 4);
         assert_eq!(status.total_ppline_drops, 6);
         assert_eq!(status.total_tx_drops, 8);
+        assert_eq!(status.total_punt_drops, 18);
         assert_eq!(status.total_parse_errors, 10);
         assert_eq!(status.total_truncated, 12);
         assert_eq!(status.total_zero_len, 14);
