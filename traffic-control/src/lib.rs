@@ -33,5 +33,5 @@ mod table;
 mod tests;
 
 pub use key::{Frame, Ip, Key, L4, NotEthernet, Ports};
-pub use rules::{IpPattern, L4Pattern, Pattern, Rule, Tier};
+pub use rules::{IpPattern, L4Pattern, Pattern, Rule};
 pub use table::{Class, ClassTable, ControlPlane};

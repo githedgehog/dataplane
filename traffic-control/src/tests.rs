@@ -67,7 +67,6 @@ struct RawControl {
     local_v6: u8,
     neighbours_v4: u8,
     neighbours_v6: u8,
-    vtep: Option<(bool, u8)>,
 }
 
 impl RawControl {
@@ -78,14 +77,7 @@ impl RawControl {
         let neighbours = subset(&V4, self.neighbours_v4)
             .map(IpAddr::from)
             .chain(subset(&V6, self.neighbours_v6).map(IpAddr::from));
-        let vtep = self.vtep.map(|(v6, i)| {
-            if v6 {
-                IpAddr::from(pick(&V6, i % 8, V6[0]))
-            } else {
-                IpAddr::from(pick(&V4, i % 8, V4[0]))
-            }
-        });
-        ControlPlane::new(local, vtep, neighbours)
+        ControlPlane::new(local, neighbours)
     }
 }
 
@@ -147,24 +139,16 @@ impl RawKey {
     }
 }
 
-/// What a NIC does with `rules`: the class of the highest tier rule that matches.
+/// What a NIC does with `rules`: the class of a rule that matches.
 ///
 /// # Panics
 ///
-/// If two rules of that tier match with different classes: the NIC would pick either.
+/// If two rules match with different classes: the NIC would pick either.
 fn steer(rules: &[Rule], key: &Key) -> Option<Class> {
-    let tier = rules
-        .iter()
-        .filter(|r| r.matches(key))
-        .map(|r| r.tier)
-        .min()?;
-    let mut classes = rules
-        .iter()
-        .filter(|r| r.tier == tier && r.matches(key))
-        .map(|r| r.class);
+    let mut classes = rules.iter().filter(|r| r.matches(key)).map(|r| r.class);
     let class = classes.next()?;
     for other in classes {
-        assert_eq!(class, other, "rules of one tier disagree on {key:?}");
+        assert_eq!(class, other, "rules disagree on {key:?}");
     }
     Some(class)
 }
@@ -206,11 +190,10 @@ fn udp(src: u16, dst: u16) -> L4 {
     L4::Udp(Ports { src, dst })
 }
 
-/// Local `10.0.0.1` and `2001:db8::1`, VTEP `10.0.0.2`, neighbour `10.0.0.3`.
+/// Local `10.0.0.1`, `10.0.0.2` and `2001:db8::1`, neighbour `10.0.0.3`.
 fn table() -> ClassTable {
     ClassTable::new(ControlPlane::new(
-        [V4[0].into(), V6[0].into()],
-        Some(V4[1].into()),
+        [V4[0].into(), V4[1].into(), V6[0].into()],
         [V4[2].into()],
     ))
 }
@@ -237,13 +220,10 @@ fn bgp_and_bfd_count_only_from_neighbours() {
     );
     assert_eq!(
         table.classify(&ipv4(stranger, local, tcp(40000, 179))),
-        Some(Class::OtherLocal)
+        None
     );
-    // BFD echo is looped back by the neighbour, from our own address: just local traffic.
-    assert_eq!(
-        table.classify(&ipv4(local, local, udp(3785, 3785))),
-        Some(Class::OtherLocal)
-    );
+    // BFD echo is looped back by the neighbour, from our own address.
+    assert_eq!(table.classify(&ipv4(local, local, udp(3785, 3785))), None);
     // Passing through is the data plane's.
     assert_eq!(
         table.classify(&ipv4(neighbour, stranger, tcp(40000, 179))),
@@ -252,21 +232,18 @@ fn bgp_and_bfd_count_only_from_neighbours() {
 }
 
 #[test]
-fn vxlan_to_the_vtep_is_data() {
+fn nothing_else_to_us_is_control_traffic() {
     let table = table();
     let (local, vtep, neighbour) = (V4[0], V4[1], V4[2]);
-    assert_eq!(
-        table.classify(&ipv4(neighbour, vtep, udp(50000, 4789))),
-        None
-    );
-    assert_eq!(
-        table.classify(&ipv4(neighbour, vtep, L4::Proto(1))),
-        Some(Class::OtherLocal)
-    );
-    assert_eq!(
-        table.classify(&ipv4(neighbour, local, udp(50000, 4789))),
-        Some(Class::OtherLocal)
-    );
+    for l4 in [
+        udp(50000, 4789),
+        tcp(50000, 22),
+        L4::Proto(1),
+        udp(33434, 33434),
+    ] {
+        assert_eq!(table.classify(&ipv4(neighbour, vtep, l4)), None);
+        assert_eq!(table.classify(&ipv4(neighbour, local, l4)), None);
+    }
 }
 
 #[test]
