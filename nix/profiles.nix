@@ -161,6 +161,10 @@ let
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.leak.NIX_CFLAGS_LINK);
   sanitize.thread.NIX_CFLAGS_COMPILE = [
     "-fsanitize=thread"
+    # DPDK's x86 spinlocks and atomics are inline asm, which TSan cannot see, so every critical
+    # section they guard (e.g. the EAL interrupt thread's callback list) reports as a race.
+    # This switches them to the __atomic builtins TSan instruments.
+    "-DRTE_FORCE_INTRINSICS"
   ];
   sanitize.thread.NIX_CXXFLAGS_COMPILE = sanitize.thread.NIX_CFLAGS_COMPILE;
   sanitize.thread.NIX_CFLAGS_LINK = sanitize.thread.NIX_CFLAGS_COMPILE ++ [
