@@ -787,7 +787,7 @@ pub fn main() {
             &shutdown.mgmt,
             config.driver.interfaces().map(|i| i.interface.clone()),
         ) {
-            Ok((bridge, ends)) => {
+            Ok((mut bridge, ends)) => {
                 crate::lldp_agent::start(
                     &mgmt_handle,
                     &shutdown.mgmt,
@@ -795,6 +795,15 @@ pub fn main() {
                     &gateway_named,
                     &management_addressed,
                 );
+                if let Some(heard) = bridge.take_heard() {
+                    crate::lldp_agent::listen(
+                        &mgmt_handle,
+                        &shutdown.mgmt,
+                        heard,
+                        bridge.ports(),
+                        setup.lldp_neighbors.clone(),
+                    );
+                }
                 (Some(bridge), Some(ends))
             }
             Err(e) => {
