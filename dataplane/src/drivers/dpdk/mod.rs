@@ -135,6 +135,7 @@ impl DriverDpdk {
             workers_subsystem,
             monitors,
             status_writer,
+            dpdk::mem::MBUF_BURST,
             move || publish_port_counters(&port_metrics, &mut counters_unavailable),
         )?;
         info!("DPDK driver started successfully");

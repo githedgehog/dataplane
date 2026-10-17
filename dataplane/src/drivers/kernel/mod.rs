@@ -185,6 +185,7 @@ impl DriverKernel {
             workers_subsystem,
             worker_monitors,
             status_writer,
+            Self::MAX_RX_PKT_BATCH,
             || {},
         )?;
         info!("Kernel driver started successfully");
