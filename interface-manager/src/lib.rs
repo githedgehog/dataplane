@@ -36,7 +36,7 @@ pub struct Manager<R: ?Sized> {
 }
 
 impl<R> Manager<R> {
-    /// Crate a new `Manager` from an [`Arc<Handle>`].
+    /// Create a new `Manager` from an [`Arc<Handle>`].
     #[must_use]
     pub fn new(handle: Arc<Handle>) -> Self {
         Manager {
@@ -52,7 +52,7 @@ pub fn manager_of<T>(other: impl Into<Manager<T>>) -> Manager<T> {
 }
 
 impl<T, U> From<&Manager<T>> for Manager<U> {
-    fn from(handle: &Manager<T>) -> Self {
-        Self::new(handle.handle.clone())
+    fn from(other: &Manager<T>) -> Self {
+        Self::new(other.handle.clone())
     }
 }

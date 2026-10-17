@@ -37,7 +37,6 @@ pub use netdevsim::*;
 
 use crate::{Manager, manager_of};
 use derive_builder::Builder;
-use futures::TryFutureExt;
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
 use net::eth::mac::SourceMac;
@@ -149,7 +148,7 @@ impl Create for Manager<Interface> {
                 LinkBridge::new(requirement.name.as_ref())
                     .set_info_data(InfoData::Bridge(vec![
                         InfoBridge::VlanFiltering(properties.vlan_filtering),
-                        InfoBridge::VlanProtocol(properties.vlan_protocol.as_u16()),
+                        InfoBridge::VlanProtocol(properties.vlan_protocol.as_u16().into()),
                     ]))
                     .build()
             }
@@ -169,14 +168,6 @@ impl Create for Manager<Interface> {
             InterfacePropertiesSpec::Pci(_) => {
                 warn!("expected pci device missing: {requirement:#?}");
                 return Err(rtnetlink::Error::RequestFailed);
-            }
-            InterfacePropertiesSpec::Tap => {
-                return TapDevice::open(&requirement.name)
-                    .map_err(|err| {
-                        warn!("failed to create tap device: {err:?}");
-                        rtnetlink::Error::RequestFailed
-                    })
-                    .await;
             }
         };
         if let Some(mac) = requirement.mac {
@@ -203,6 +194,10 @@ impl Remove for Manager<Interface> {
     where
         Self: 'a,
     {
+        // A tap the dataplane still holds does not appear here: the reconciler is not told to
+        // plan taps any more, so the only ones it ever meets are strays -- a `<name>-tap` from a
+        // build which generated them, or one left behind by a build which persisted them.  Both
+        // have a netdev for netlink to unlink, which is exactly what this does.
         self.handle
             .link()
             .del(observation.index.to_u32())
@@ -327,7 +322,7 @@ impl Update for Manager<InterfaceProperties> {
                     .set_port(
                         LinkUnspec::new_with_index(observation.index.to_u32())
                             .set_info_data(InfoData::Bridge(vec![
-                                InfoBridge::VlanProtocol(req.vlan_protocol.as_u16()),
+                                InfoBridge::VlanProtocol(req.vlan_protocol.as_u16().into()),
                                 InfoBridge::VlanFiltering(req.vlan_filtering),
                             ]))
                             .build(),
@@ -682,7 +677,9 @@ fn extract_bridge_info(builder: &mut BridgePropertiesBuilder, datas: &[InfoBridg
                 builder.vlan_filtering(*f);
             }
             InfoBridge::VlanProtocol(p) => {
-                builder.vlan_protocol(EthType::from(*p));
+                // netlink-packet-route models this as an enum of the two protocols the kernel
+                // accepts, so it no longer round-trips an arbitrary ethertype.
+                builder.vlan_protocol(EthType::from(u16::from(*p)));
             }
             _ => {}
         }
