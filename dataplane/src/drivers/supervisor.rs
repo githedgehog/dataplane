@@ -31,8 +31,8 @@ use tracectl::trace_target;
 use tracing::{debug, error, info, trace, warn};
 
 use super::status::{
-    DriverStatus, DriverStatusWriter, RxTaskStatus, WorkerEndResult, WorkerId, WorkerState,
-    WorkerStatus,
+    DriverLimits, DriverStatus, DriverStatusWriter, RxTaskStatus, WorkerEndResult, WorkerId,
+    WorkerState, WorkerStatus,
 };
 use super::watchdog::{Activity, Watchdog};
 
@@ -112,6 +112,12 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
     let poll_period = Duration::from_secs(u64::from(TASK_POLL_PERIOD));
 
     let subsystem = subsystem.clone();
+    let limits = DriverLimits {
+        max_rx_batch,
+        poll_period_s: TASK_POLL_PERIOD,
+        pat_period_s: TASK_PAT_PERIOD,
+        check_period_s: TASK_CHECK_PERIOD,
+    };
 
     thread::Builder::new()
         .name(format!("{driver}-worker-supervisor"))
@@ -191,8 +197,8 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
 
                 // publish the status of the driver
                 status_writer.publish(DriverStatus {
-                    max_rx_batch,
                     workers: workers_status.clone(),
+                    limits,
                 });
 
                 // sleep for the poll period
@@ -204,8 +210,8 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
             // update status on termination. This is in case we
             // want to log the last state
             let last = DriverStatus {
-                max_rx_batch,
                 workers: workers_status.clone(),
+                limits,
             };
             status_writer.publish(last);
 
