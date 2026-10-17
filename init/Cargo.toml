@@ -34,8 +34,12 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [dev-dependencies]
 # internal
+n-vm = { workspace = true }
+test-utils = { workspace = true }
 
 # external
+caps = { workspace = true }
+fixin = { workspace = true }
 
 [build-dependencies]
 # internal

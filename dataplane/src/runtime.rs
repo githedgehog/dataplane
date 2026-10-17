@@ -6,11 +6,12 @@ use std::os::fd::AsRawFd;
 use crate::packet_processor::start_router;
 use crate::statistics::spawn_metrics;
 use args::{
-    CmdArgs, DriverConfigSection, LaunchConfiguration, Parser, PortArg, TracingDisplayOption,
+    CmdArgs, DriverConfigSection, InterfaceArg, LaunchConfiguration, Parser, PortArg,
+    TracingDisplayOption,
 };
 
 use crate::drivers::DriverError;
-use crate::drivers::dpdk::{CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity};
+use crate::drivers::dpdk::{CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity, report_links};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::{DriverStatusWriter, driver_status_access};
 use crate::packet_processor::PipelineIngredients;
@@ -319,7 +320,7 @@ fn init_eal(config: &LaunchConfiguration) -> dpdk::eal::Eal {
 /// Validate every interface before probing any device.
 fn configured_pci_ports(
     config: &LaunchConfiguration,
-) -> Result<Vec<(String, PciAddress)>, DriverError> {
+) -> Result<Vec<(&InterfaceArg, PciAddress)>, DriverError> {
     let mut selected = Vec::new();
     let mut addresses = std::collections::BTreeSet::new();
     for interface in config.driver.interfaces() {
@@ -339,7 +340,7 @@ fn configured_pci_ports(
                 "PCI device {address} is configured more than once"
             )));
         }
-        selected.push((name, address));
+        selected.push((interface, address));
     }
     if selected.is_empty() {
         return Err(DriverError::PortSetup(
@@ -361,9 +362,10 @@ fn bring_up_ports<'eal>(
         ))
     })?;
     let selected = configured_pci_ports(config)?;
-    for (name, address) in &selected {
-        eal.probe_pci(*address)
-            .map_err(|e| DriverError::PortSetup(format!("interface '{name}': {e}")))?;
+    for (interface, address) in &selected {
+        eal.probe_pci(*address).map_err(|e| {
+            DriverError::PortSetup(format!("interface '{}': {e}", interface.interface))
+        })?;
     }
 
     // Index probed ports whose ethdev names parse as PCI addresses.
@@ -390,7 +392,8 @@ fn bring_up_ports<'eal>(
     );
 
     let mut ports = Vec::new();
-    for (name, wanted) in selected {
+    for (interface, wanted) in selected {
+        let name = interface.interface.to_string();
         // TODO: Resolve suffixed PMD port names when init supports eswitch configuration.
         let at = probed.iter().position(|(addr, _)| *addr == wanted).ok_or_else(|| {
             DriverError::PortSetup(format!(
@@ -404,8 +407,16 @@ fn bring_up_ports<'eal>(
             .claim(index)
             .map_err(|e| DriverError::PortSetup(format!("cannot use port {index}: {e}")))?;
 
-        ports.push(Port::bring_up(eal, port, name, num_workers)?);
+        ports.push(Port::bring_up(
+            eal,
+            port,
+            name,
+            num_workers,
+            interface.mtu,
+            interface.rx_descriptors,
+        )?);
     }
+    report_links(&ports, num_workers);
 
     if !probed.is_empty() {
         warn!(
@@ -517,11 +528,7 @@ fn run_kernel_driver(
         if let Err(e) = DriverKernel::start(
             scope,
             workers,
-            config
-                .driver
-                .interfaces()
-                .map(|i| i.interface.to_string())
-                .collect::<Vec<_>>(),
+            config.driver.interfaces().cloned().collect::<Vec<_>>(),
             config.driver.num_workers(),
             &ingredients.factory(),
             status_writer,
@@ -1011,8 +1018,13 @@ mod probe_tests {
             "eth1=pci@0000:02:00.0,eth0=pci@0000:01:00.0",
         ])
         .unwrap();
+        let config = launch_config(&args);
         assert_eq!(
-            configured_pci_ports(&launch_config(&args)).unwrap(),
+            configured_pci_ports(&config)
+                .unwrap()
+                .into_iter()
+                .map(|(interface, address)| (interface.interface.to_string(), address))
+                .collect::<Vec<_>>(),
             vec![
                 (
                     "eth1".to_string(),

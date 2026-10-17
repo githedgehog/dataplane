@@ -3,14 +3,18 @@
 
 //! Bringing DPDK ports up, and the queue split that gives each worker its own.
 
-use dpdk::dev::{Dev, DevConfig, PortClaim, RxOffload, Started, TxOffloadConfig};
+use concurrency::thread;
+use dpdk::dev::{Dev, DevConfig, DevInfo, PortClaim, RssConf, RxOffload, Started, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::mem::{Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use dpdk::socket;
+use errno::ErrorCode;
 use net::eth::mac::Mac;
 use net::interface::InterfaceIndex;
+use stats::PortCounters;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -23,8 +27,130 @@ const RX_DESCRIPTORS: u16 = 1024;
 /// Transmit descriptors per queue.
 const TX_DESCRIPTORS: u16 = 1024;
 
-/// Mbufs per worker, covering RX descriptors, pipeline processing, and pending TX.
-const POOL_MBUFS_PER_WORKER: u32 = 4 * RX_DESCRIPTORS as u32;
+/// Mbufs per RX descriptor, including room for pipeline processing and pending TX.
+const POOL_MBUFS_PER_RX_DESCRIPTOR: u32 = 4;
+
+/// `sizeof(struct rte_mbuf)`, for estimating a pool's footprint in error messages.
+const MBUF_HEADER_BYTES: u64 = 128;
+
+/// Use the driver's RSS key and supported L3/L4 hash types; warn if no requested type is supported.
+/// Symmetric hashing would not co-locate NAT's translated reverse tuples. Shared flow state
+/// lets any worker process either direction.
+fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
+    let rss = RssConf::supported_on(info);
+    if rss.is_none() && num_workers > 1 {
+        warn!(
+            "port {index} ({name}) advertises no RSS hash functions, so all {num_workers} workers \
+             will share receive queue 0 and only one of them will do any work",
+            index = info.index()
+        );
+    }
+    rss
+}
+
+/// How often [`report_links`] re-reads link state while waiting for carrier.
+const LINK_POLL: Duration = Duration::from_millis(100);
+
+/// How many polls [`report_links`] waits for autonegotiation before calling a link down.
+const LINK_POLLS: u32 = 50;
+
+/// Report carrier state separately from successful device startup, once every port has started.
+///
+/// A link read straight after `rte_eth_dev_start` is usually still down while autonegotiation
+/// runs, so ports get [`LINK_POLLS`] × [`LINK_POLL`] between them to come up before one is
+/// reported down. On bifurcated devices, a down kernel netdev can leave a started DPDK port
+/// without carrier.
+pub(crate) fn report_links(ports: &[Port<'_>], num_workers: u16) {
+    let mut waiting: Vec<&Port<'_>> = ports.iter().collect();
+    for poll in 0..=LINK_POLLS {
+        waiting.retain(|port| match port.dev.link() {
+            Ok(link) if link.up => {
+                info!(
+                    "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+                     {num_workers} rx/tx queue pair(s), link {link}",
+                    index = port.dev.info().index(),
+                    name = port.name,
+                    if_index = port.if_index,
+                    mac = port.mac,
+                    mtu = port.mtu,
+                );
+                false
+            }
+            Ok(_) => true,
+            Err(e) => {
+                info!(
+                    "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+                     {num_workers} rx/tx queue pair(s); link state unavailable ({e:?})",
+                    index = port.dev.info().index(),
+                    name = port.name,
+                    if_index = port.if_index,
+                    mac = port.mac,
+                    mtu = port.mtu,
+                );
+                false
+            }
+        });
+        if waiting.is_empty() || poll == LINK_POLLS {
+            break;
+        }
+        thread::sleep(LINK_POLL);
+    }
+    for port in waiting {
+        warn!(
+            "DPDK port {index} ({name}) is configured and started but its link is still down \
+             after {waited:?}: ifindex {if_index}, mac {mac}, mtu {mtu}, {num_workers} rx/tx \
+             queue pair(s). No traffic will pass until it comes up. For a bifurcated device such \
+             as mlx5 the port follows its kernel netdev, so check that the netdev is up inside \
+             the datapath network namespace.",
+            index = port.dev.info().index(),
+            name = port.name,
+            if_index = port.if_index,
+            mac = port.mac,
+            mtu = port.mtu,
+            waited = LINK_POLL * LINK_POLLS,
+        );
+    }
+}
+
+/// Honor `/rxd=N`, fitted to the device's advertised minimum, maximum and alignment.
+fn rx_descriptor_count(
+    info: &DevInfo<'_>,
+    index: dpdk::dev::DevIndex,
+    name: &str,
+    asked: Option<u16>,
+) -> u16 {
+    let asked = asked.unwrap_or(RX_DESCRIPTORS);
+    let limits = info.rx_desc_limits();
+    let fitted = fit_descriptors(asked, limits.nb_min, limits.nb_max, limits.nb_align);
+    if fitted != asked {
+        warn!(
+            "port {index} ({name}) needs between {min} and {max} rx descriptors per queue in \
+             multiples of {align}; using {fitted} rather than the {asked} asked for",
+            min = limits.nb_min,
+            max = limits.nb_max,
+            align = limits.nb_align,
+        );
+    }
+    fitted
+}
+
+/// The descriptor count nearest `asked` that `rte_eth_rx_queue_setup` accepts.
+///
+/// Rounds up to a multiple of `align`, or down when rounding up would pass `max`. A zero `max` or
+/// `align` is treated as unconstrained.
+fn fit_descriptors(asked: u16, min: u16, max: u16, align: u16) -> u16 {
+    let max = if max == 0 { u16::MAX } else { max };
+    let align = u32::from(align.max(1));
+    let clamped = u32::from(asked.clamp(min.min(max), max));
+    let up = clamped.div_ceil(align) * align;
+    let fitted = if up <= u32::from(max) {
+        up
+    } else {
+        u32::from(max) / align * align
+    };
+    // `fitted <= max`, so the fallback is never taken.
+    u16::try_from(fitted).unwrap_or(max)
+}
 
 /// A started port and its receive pool. Workers borrow its queue handles.
 pub(crate) struct Port<'eal> {
@@ -61,8 +187,15 @@ impl<'eal> Port<'eal> {
         port: PortClaim<'eal>,
         name: String,
         num_workers: u16,
+        mtu: Option<u16>,
+        rx_descriptors: Option<u16>,
     ) -> Result<Self, DriverError> {
-        let index = port.info().index();
+        let info = port.info();
+        let index = info.index();
+
+        let rx_descriptors = rx_descriptor_count(info, index, &name, rx_descriptors);
+
+        let rss = rss_for(info, &name, num_workers);
 
         // Each worker receives its own RX/TX queue pair on every port.
         let config = DevConfig {
@@ -70,11 +203,13 @@ impl<'eal> Port<'eal> {
             num_tx_queues: num_workers,
             num_hairpin_queues: 0,
             // The pipeline handles checksums in software and requires uncoalesced packets.
+            // RSS spreads queues without `RSS_HASH`, which only copies the hash into mbufs, and
+            // nothing reads it yet.
             rx_offloads: RxOffload::NONE,
             tx_offloads: TxOffloadConfig::none(),
-            mtu: None,
-            // TODO: Enable symmetric RSS to distribute flows across workers.
-            rss: None,
+            // An omitted MTU uses the device-clamped default; jumbo frames require an explicit MTU.
+            mtu,
+            rss,
         };
 
         let mut dev = config
@@ -91,30 +226,42 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
+        // Checked: `/rxd` times the worker count can pass `u32` for absurd worker counts, and a
+        // wrapped product would make a uselessly small pool rather than an error.
+        let pool_mbufs = POOL_MBUFS_PER_RX_DESCRIPTOR
+            .checked_mul(u32::from(rx_descriptors))
+            .and_then(|n| n.checked_mul(u32::from(num_workers)))
+            .ok_or_else(|| {
+                DriverError::PortSetup(format!(
+                    "port {index} ({name}): {rx_descriptors} rx descriptors for each of \
+                     {num_workers} workers needs more mbufs than one pool can hold"
+                ))
+            })?;
+        let params = PoolParams {
+            size: pool_mbufs,
+            ..Default::default()
+        };
+        let pool_mib = u64::from(pool_mbufs)
+            * (u64::from(params.data_size) + u64::from(params.private_size) + MBUF_HEADER_BYTES)
+            / (1 << 20);
         let rx_pool = eal
             .mem
-            .new_pkt_pool(
-                PoolConfig::new(
-                    format!("rx_{index}"),
-                    PoolParams {
-                        size: POOL_MBUFS_PER_WORKER * u32::from(num_workers),
-                        ..Default::default()
-                    },
-                )
-                .map_err(|e| {
-                    DriverError::PortSetup(format!(
-                        "invalid rx pool config for port {index}: {e:?}"
-                    ))
-                })?,
-            )
+            .new_pkt_pool(PoolConfig::new(format!("rx_{index}"), params).map_err(|e| {
+                DriverError::PortSetup(format!("invalid rx pool config for port {index}: {e:?}"))
+            })?)
             .map_err(|e| {
-                DriverError::PortSetup(format!("failed to create rx pool for port {index}: {e:?}"))
+                DriverError::PortSetup(format!(
+                    "failed to create the rx pool for port {index} ({name}): {e:?}. It holds \
+                     {pool_mbufs} mbufs (about {pool_mib} MiB of hugepages), sized as \
+                     {POOL_MBUFS_PER_RX_DESCRIPTOR} per rx descriptor x {rx_descriptors} \
+                     descriptors x {num_workers} workers; lower /rxd or reserve more hugepages"
+                ))
             })?;
 
         for queue in 0..num_workers {
             dev.new_rx_queue(RxQueueConfig {
                 queue_index: RxQueueIndex(queue),
-                num_descriptors: RX_DESCRIPTORS,
+                num_descriptors: rx_descriptors,
                 socket_preference: socket::Preference::Dev(index),
                 offloads: RxOffload::NONE,
                 pool: rx_pool.clone(),
@@ -159,11 +306,6 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
-        info!(
-            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
-             {num_workers} rx/tx queue pair(s)"
-        );
-
         Ok(Port {
             dev,
             if_index,
@@ -171,6 +313,24 @@ impl<'eal> Port<'eal> {
             mac: mac.into(),
             mtu,
             rx_pool,
+        })
+    }
+
+    /// Read cumulative device counters, including drops before packets reach a worker.
+    ///
+    /// # Errors
+    /// Returns the driver's error code; unsupported statistics report `ENOTSUP`.
+    pub(crate) fn counters(&self) -> Result<PortCounters, ErrorCode> {
+        let stats = self.dev.stats()?;
+        Ok(PortCounters {
+            rx_packets: stats.ipackets,
+            tx_packets: stats.opackets,
+            rx_bytes: stats.ibytes,
+            tx_bytes: stats.obytes,
+            rx_missed: stats.imissed,
+            rx_errors: stats.ierrors,
+            tx_errors: stats.oerrors,
+            rx_no_mbuf: stats.rx_nombuf,
         })
     }
 
@@ -292,4 +452,37 @@ pub(crate) fn deal_queues<'p>(
     }
 
     Ok(per_worker)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_descriptors;
+
+    #[test]
+    fn a_fitting_count_is_kept() {
+        assert_eq!(fit_descriptors(1024, 64, 4096, 32), 1024);
+    }
+
+    #[test]
+    fn a_misaligned_count_rounds_up() {
+        // i40e: 32-descriptor alignment.
+        assert_eq!(fit_descriptors(1000, 64, 4096, 32), 1024);
+    }
+
+    #[test]
+    fn rounding_up_past_the_maximum_rounds_down_instead() {
+        assert_eq!(fit_descriptors(4090, 64, 4095, 32), 4064);
+    }
+
+    #[test]
+    fn counts_are_clamped_into_range() {
+        assert_eq!(fit_descriptors(8, 64, 4096, 32), 64);
+        assert_eq!(fit_descriptors(8192, 64, 4096, 32), 4096);
+    }
+
+    #[test]
+    fn zero_limits_are_unconstrained() {
+        assert_eq!(fit_descriptors(1000, 0, 0, 0), 1000);
+        assert_eq!(fit_descriptors(u16::MAX, 0, 0, 0), u16::MAX);
+    }
 }
