@@ -4,7 +4,7 @@
 //! The chassis ID TLV, which identifies the system that sent an LLDPDU.
 //!
 //! Exactly one chassis ID TLV appears in every LLDPDU, and it is always the
-//! first one.  `Lldpdu` enforces that by storing it in a
+//! first one.  [`Lldpdu`](crate::lldp::Lldpdu) enforces that by storing it in a
 //! dedicated field rather than in a list of TLVs.
 
 use core::num::NonZero;

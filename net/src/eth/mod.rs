@@ -13,6 +13,7 @@ use crate::eth::mac::{
 use crate::headers::Header;
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
+use crate::lldp::Lldpdu;
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, Reader};
 use crate::vlan::Vlan;
 use etherparse::{EtherType, Ethernet2Header};
@@ -176,6 +177,10 @@ impl DeParse for Eth {
     }
 }
 
+/// [`EthType::LLDP`] as a bare [`EtherType`], so it can be used as a match
+/// pattern alongside the constants `etherparse` supplies.
+const LLDP: EtherType = EthType::LLDP.0;
+
 pub(crate) fn parse_from_ethertype(ether_type: EtherType, cursor: &mut Reader) -> Option<EthNext> {
     match ether_type {
         EtherType::IPV4 => cursor
@@ -191,6 +196,13 @@ pub(crate) fn parse_from_ethertype(ether_type: EtherType, cursor: &mut Reader) -
                 debug!("failed to parse ipv6: {:?}", e);
             })
             .map(|(ipv6, _)| EthNext::Ipv6(ipv6))
+            .ok(),
+        LLDP => cursor
+            .parse::<Lldpdu>()
+            .map_err(|e| {
+                debug!("failed to parse lldp: {:?}", e);
+            })
+            .map(|(lldp, _)| EthNext::Lldp(Box::new(lldp)))
             .ok(),
         EtherType::VLAN_TAGGED_FRAME
         | EtherType::VLAN_DOUBLE_TAGGED_FRAME
@@ -212,6 +224,7 @@ pub(crate) enum EthNext {
     Vlan(Vlan),
     Ipv4(Ipv4),
     Ipv6(Ipv6),
+    Lldp(Box<Lldpdu>),
 }
 
 impl From<EthNext> for Header {
@@ -220,6 +233,7 @@ impl From<EthNext> for Header {
             EthNext::Vlan(x) => Header::Vlan(x),
             EthNext::Ipv4(x) => Header::Ipv4(x),
             EthNext::Ipv6(x) => Header::Ipv6(x),
+            EthNext::Lldp(x) => Header::Lldp(x),
         }
     }
 }
