@@ -14,9 +14,10 @@
 //! Each state is a type, and a step consumes the port in one state and returns it in the next.
 //! Only the advertising states hold an [`Advertisement`], so sending without one does not compile.
 //!
-//! Two deliberate departures from the standard:
-//! * Fast start is triggered by the link coming up, not by `newNeighbor` from the receive machine,
-//!   which this dataplane does not have yet. A neighbour learns about us within a second either way.
+//! Fast start (§9.2.9) follows both the link coming up and a neighbour we had not heard before: either
+//! way someone new is listening, and should not wait a full interval to learn about us.
+//!
+//! One deliberate departure from the standard:
 //! * A dataplane that stops while a link is up sends a shutdown frame, so neighbours forget it at once
 //!   instead of when its time to live runs out.
 
@@ -43,6 +44,9 @@ pub struct Inputs<S> {
     pub link: watch::Receiver<Link>,
     /// What to advertise, or `None` for nothing. Dropping the sender stops the transmitter.
     pub advertisement: watch::Receiver<Option<Advertisement>>,
+    /// Marked changed whenever a neighbour we had not heard before appears on the port
+    /// (`newNeighbor`). Dropping the sender just ends the signal.
+    pub new_neighbor: watch::Receiver<()>,
     /// Where frames go.
     pub sink: S,
     /// How often to send.
@@ -57,6 +61,7 @@ pub async fn transmit<S: FrameSink>(inputs: Inputs<S>, cancel: CancellationToken
             credit: Credit::new(inputs.timing.credit_max.get(), now),
             link: inputs.link,
             advertisement: inputs.advertisement,
+            new_neighbor: Some(inputs.new_neighbor),
             sink: inputs.sink,
             timing: inputs.timing,
             cancel,
@@ -114,6 +119,8 @@ struct Advertising {
 struct Io<S> {
     link: watch::Receiver<Link>,
     advertisement: watch::Receiver<Option<Advertisement>>,
+    /// `None` once the sender is gone.
+    new_neighbor: Option<watch::Receiver<()>>,
     sink: S,
     timing: Timing,
     credit: Credit,
@@ -180,6 +187,9 @@ enum Event {
     AdvertisementGone,
     Due,
     CreditBack,
+    NewNeighbor,
+    /// Nothing happened that matters; look again.
+    Nothing,
 }
 
 impl<S: FrameSink> Io<S> {
@@ -197,6 +207,14 @@ impl<S: FrameSink> Io<S> {
             },
             () = sleep_until(due) => Event::Due,
             () = sleep_until(credit_back) => Event::CreditBack,
+            changed = new_neighbor(self.new_neighbor.as_mut()) => {
+                if changed.is_err() {
+                    self.new_neighbor = None;
+                    Event::Nothing
+                } else {
+                    Event::NewNeighbor
+                }
+            },
         }
     }
 
@@ -231,6 +249,34 @@ impl<S: FrameSink> Io<S> {
     }
 }
 
+/// How long a stopping transmitter waits for its shutdown frame to leave.
+const FLUSH_DEADLINE: Duration = Duration::from_millis(500);
+/// How often it looks.
+const FLUSH_POLL: Duration = Duration::from_millis(5);
+
+impl<S: FrameSink> Io<S> {
+    /// Wait, briefly, until the sink has taken everything queued.
+    async fn flush(&self) {
+        let deadline = clock::now() + FLUSH_DEADLINE;
+        while !self.sink.is_drained() {
+            if clock::now() >= deadline {
+                warn!("LLDP: the shutdown frame did not leave before the deadline");
+                return;
+            }
+            tokio::time::sleep(FLUSH_POLL).await;
+        }
+    }
+}
+
+async fn new_neighbor(
+    signal: Option<&mut watch::Receiver<()>>,
+) -> Result<(), watch::error::RecvError> {
+    match signal {
+        Some(signal) => signal.changed().await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn sleep_until(deadline: Option<Instant>) {
     match deadline {
         Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
@@ -250,9 +296,13 @@ impl<S: FrameSink> Port<S, Silent> {
         }
         match self.io.next_event(settling, None).await {
             Event::Cancelled | Event::LinkGone | Event::AdvertisementGone => Machine::Done,
-            Event::LinkChanged | Event::AdvertisementChanged | Event::Due | Event::CreditBack => {
-                Machine::Silent(self)
-            }
+            // A neighbour heard while we are silent will hear the fast start when we speak.
+            Event::LinkChanged
+            | Event::AdvertisementChanged
+            | Event::Due
+            | Event::CreditBack
+            | Event::NewNeighbor
+            | Event::Nothing => Machine::Silent(self),
         }
     }
 
@@ -299,6 +349,8 @@ enum Next {
     Continue {
         sent_routine: bool,
     },
+    /// A new neighbour was just told about us: send fast from here.
+    FastStart,
     /// Stop advertising, and stay quiet until `resume_at` (if any).
     Silence {
         resume_at: Option<Instant>,
@@ -311,7 +363,14 @@ impl<S: FrameSink> Io<S> {
     async fn advertising_step(&mut self, current: &mut Advertising, interval: Duration) -> Next {
         let credit_back = current.owed.then(|| self.credit.next_at());
         match self.next_event(Some(current.next), credit_back).await {
-            Event::Cancelled | Event::AdvertisementGone => {
+            Event::Cancelled => {
+                // The dataplane is stopping: the frame has to leave before the datapath does.
+                if self.send(current.advertisement.shutdown_frame()) {
+                    self.flush().await;
+                }
+                Next::Done
+            }
+            Event::AdvertisementGone => {
                 self.send(current.advertisement.shutdown_frame());
                 Next::Done
             }
@@ -340,6 +399,17 @@ impl<S: FrameSink> Io<S> {
                 }
             },
             Event::CreditBack => self.owe(current),
+            Event::Nothing => Next::Continue {
+                sent_routine: false,
+            },
+            Event::NewNeighbor => {
+                // TX_FAST_START then TX_TIMER_EXPIRES: tell the newcomer now, and keep it up fast.
+                current.next = clock::now() + self.timing.fast_tx();
+                match self.owe(current) {
+                    Next::Continue { .. } => Next::FastStart,
+                    other => other,
+                }
+            }
             Event::Due => {
                 current.next = clock::now() + interval;
                 match self.owe(current) {
@@ -374,21 +444,26 @@ impl<S: FrameSink> Port<S, Fast> {
         {
             Next::Done => Machine::Done,
             Next::Silence { resume_at } => silence(self.io, resume_at),
-            Next::Continue { sent_routine } => {
-                if sent_routine {
-                    self.state.remaining -= 1;
-                }
-                if self.state.remaining > 0 {
-                    return Machine::Fast(self);
-                }
-                let mut current = self.state.current;
-                current.next = clock::now() + self.io.timing.tx_interval();
-                Machine::Steady(Port {
-                    io: self.io,
-                    state: Steady { current },
-                })
-            }
+            // Already sending fast, so the newcomer's send counts as one of the fast ones.
+            Next::FastStart | Next::Continue { sent_routine: true } => self.after_fast_send(),
+            Next::Continue {
+                sent_routine: false,
+            } => Machine::Fast(self),
         }
+    }
+
+    /// One of the fast sends has gone: keep going, or settle into the routine interval.
+    fn after_fast_send(mut self) -> Machine<S> {
+        self.state.remaining -= 1;
+        if self.state.remaining > 0 {
+            return Machine::Fast(self);
+        }
+        let mut current = self.state.current;
+        current.next = clock::now() + self.io.timing.tx_interval();
+        Machine::Steady(Port {
+            io: self.io,
+            state: Steady { current },
+        })
     }
 }
 
@@ -403,6 +478,20 @@ impl<S: FrameSink> Port<S, Steady> {
             Next::Done => Machine::Done,
             Next::Silence { resume_at } => silence(self.io, resume_at),
             Next::Continue { .. } => Machine::Steady(self),
+            // The send just made was the first of `txFastInit`.
+            Next::FastStart => match self.io.timing.fast_init.get().checked_sub(1) {
+                Some(remaining) if remaining > 0 => Machine::Fast(Port {
+                    io: self.io,
+                    state: Fast {
+                        current: self.state.current,
+                        remaining,
+                    },
+                }),
+                _ => {
+                    self.state.current.next = clock::now() + self.io.timing.tx_interval();
+                    Machine::Steady(self)
+                }
+            },
         }
     }
 }
