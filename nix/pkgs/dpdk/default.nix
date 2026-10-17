@@ -42,6 +42,15 @@ stdenv.mkDerivation {
     sed -i 's/#define RTE_TRACE 1/#undef RTE_TRACE/g' config/rte_config.h
     # We have no use for receive or transmit callbacks at this time so disable them
     sed -i 's/#define RTE_ETHDEV_RXTX_CALLBACKS 1/#undef RTE_ETHDEV_RXTX_CALLBACKS/g' config/rte_config.h
+  ''
+  + lib.optionalString stdenv.hostPlatform.isx86_64 ''
+    # Keep AVX out of the e1000 driver's register accesses.
+    # At -O3 clang folds a volatile MMIO load into a VEX instruction (e.g. `vpbroadcastd` in
+    # e1000_read_mac_addr_generic). KVM must emulate every access to an emulated device's BAR and its
+    # instruction emulator rejects VEX encodings, so the guest takes #UD (SIGILL) while probing QEMU's
+    # e1000e. Passed-through NICs are unaffected; their BARs are mapped directly.
+    test -f drivers/net/intel/e1000/meson.build
+    echo "cflags += ['-mno-avx']" >> drivers/net/intel/e1000/meson.build
   '';
 
   mesonFlags =
