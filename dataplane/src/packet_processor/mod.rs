@@ -13,6 +13,7 @@ use super::packet_processor::egress::Egress;
 use super::packet_processor::ingress::Ingress;
 use super::packet_processor::ipforward::IpForwarder;
 
+use capture::{CaptureController, CaptureDirectory, CaptureStage, Direction};
 use concurrency::sync::Arc;
 
 use acl_filter::{AclFilter, AclFilterContextReaderFactory, AclFilterContextWriter};
@@ -68,6 +69,7 @@ pub(crate) struct PipelineIngredients {
     stats_w: PacketStatsWriter,
     pkt_stats: Arc<PacketStats>,
     flow_table: Arc<FlowTable>,
+    capture: CaptureController,
 }
 
 impl PipelineIngredients {
@@ -115,12 +117,18 @@ impl PipelineIngredients {
                 self.flow_table.clone(),
             );
             let pkt_stats_nf = PacketStatsNF::new(self.pkt_stats.clone());
+            // First and right after egress, so the two views of a packet can be compared.
+            let capture_ingress =
+                CaptureStage::new(Direction::Ingress, self.capture.sink(Direction::Ingress));
+            let capture_egress =
+                CaptureStage::new(Direction::Egress, self.capture.sink(Direction::Egress));
 
             // Build the pipeline for a router. The composition of the pipeline (in stages) is
             // currently hard-coded. Flow expiration is handled by per-flow tokio timers; no
             // ExpirationsNF needed.
             DynPipeline::new()
                 .set_data(self.pdata.clone())
+                .add_stage(capture_ingress)
                 .add_stage(stage_ingress)
                 .add_stage(iprouter1)
                 .add_stage(icmp_error_handler)
@@ -133,6 +141,7 @@ impl PipelineIngredients {
                 .add_stage(flow_tracker)
                 .add_stage(iprouter2)
                 .add_stage(stage_egress)
+                .add_stage(capture_egress)
                 .add_stage(pktdump)
                 .add_stage(pkt_stats_nf)
                 .add_stage(stats_stage)
@@ -168,6 +177,7 @@ pub(crate) fn start_router(
     let portfw_factory = portfw_w.reader().factory();
     let pdata = Arc::from(PipelineData::new(0));
     let pkt_stats = Arc::from(PacketStats::new());
+    let capture = CaptureController::new();
 
     // collect readers and the like for cli
     let cli_sources = CliSources {
@@ -178,6 +188,10 @@ pub(crate) fn start_router(
         masquerade_state: Some(Box::new(natallocator_factory.handle().inner())),
         pkt_stats: Some(Box::new(pkt_stats.clone())),
         driver_status: Some(Box::new(driver_status)),
+        capture: Some(CaptureDirectory::new(
+            capture.clone(),
+            args::DEFAULT_CAPTURE_DIR,
+        )),
     };
 
     // create router
@@ -199,6 +213,7 @@ pub(crate) fn start_router(
         stats_w,
         pkt_stats,
         flow_table: flow_table.clone(),
+        capture,
     };
 
     Ok(InternalSetup {

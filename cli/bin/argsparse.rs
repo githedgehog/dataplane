@@ -3,7 +3,7 @@
 
 //! Adds main parser for command arguments
 
-use dataplane_cli::cliproto::{RequestArgs, RouteProtocol};
+use dataplane_cli::cliproto::{CaptureVpc, RequestArgs, RouteProtocol};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -46,6 +46,21 @@ pub enum CliArgId {
 
     #[strum(serialize = "protocol")]
     Protocol,
+
+    #[strum(serialize = "ingress")]
+    Ingress,
+
+    #[strum(serialize = "egress")]
+    Egress,
+
+    #[strum(serialize = "packets")]
+    Packets,
+
+    #[strum(serialize = "seconds")]
+    Seconds,
+
+    #[strum(serialize = "sample")]
+    Sample,
 }
 impl CliArgId {
     #[must_use]
@@ -189,6 +204,20 @@ fn parse_vni(value: &str) -> Result<u32, ArgsError> {
         Err(ArgsError::BadValue(value.to_owned()))
     }
 }
+/// A count which must be at least one.
+fn parse_positive<T: FromStr + Default + PartialEq>(value: &str) -> Result<T, ArgsError> {
+    match value.parse::<T>() {
+        Ok(count) if count != T::default() => Ok(count),
+        _ => Err(ArgsError::BadValue(value.to_owned())),
+    }
+}
+fn parse_capture_vpc(value: &str) -> CaptureVpc {
+    if value == CaptureVpc::ANY {
+        CaptureVpc::Any
+    } else {
+        CaptureVpc::Named(value.to_owned())
+    }
+}
 fn parse_protocol(value: &str) -> Result<RouteProtocol, ArgsError> {
     RouteProtocol::from_str(value).map_err(|_| ArgsError::UnknownProtocol(value.to_owned()))
 }
@@ -225,6 +254,11 @@ impl CliArgs {
                 CliArgId::VrfId => args.remote.vrfid = Some(parse_u32(value)?),
                 CliArgId::Vni => args.remote.vni = Some(parse_vni(value)?),
                 CliArgId::Protocol => args.remote.protocol = Some(parse_protocol(value)?),
+                CliArgId::Ingress => args.remote.capture_ingress = Some(parse_capture_vpc(value)),
+                CliArgId::Egress => args.remote.capture_egress = Some(parse_capture_vpc(value)),
+                CliArgId::Packets => args.remote.capture_packets = Some(parse_positive(value)?),
+                CliArgId::Seconds => args.remote.capture_seconds = Some(parse_positive(value)?),
+                CliArgId::Sample => args.remote.capture_sample = Some(parse_positive(value)?),
             }
         }
         Ok(args)
@@ -253,6 +287,11 @@ mod test_args_parsing {
                 CliArgId::Ifname => "eth0.100",
                 CliArgId::VrfId => "1879",
                 CliArgId::Protocol => "Bgp",
+                CliArgId::Ingress => "vpc-1",
+                CliArgId::Egress => "*",
+                CliArgId::Packets => "1000",
+                CliArgId::Seconds => "30",
+                CliArgId::Sample => "10",
             }
             .to_string();
             args_map.insert(argid.to_string(), value);
@@ -301,5 +340,21 @@ mod test_args_parsing {
         args_map.insert(CliArgId::Vni.to_string(), "16777216".to_string());
         let parsed = CliArgs::from_args_map(&args_map);
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn test_reject_bad_capture_values() {
+        for (arg, value) in [
+            (CliArgId::Packets, "0"),
+            (CliArgId::Seconds, "0"),
+            (CliArgId::Sample, "0"),
+            (CliArgId::Sample, "-3"),
+        ] {
+            let args_map = HashMap::from([(arg.to_string(), value.to_owned())]);
+            assert!(
+                CliArgs::from_args_map(&args_map).is_err(),
+                "{arg}={value} was accepted"
+            );
+        }
     }
 }
