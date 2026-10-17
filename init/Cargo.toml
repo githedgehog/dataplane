@@ -12,6 +12,7 @@ sysroot = ["dep:dpdk-sysroot-helper"]
 [dependencies]
 # internal
 args = { workspace = true }
+clock = { workspace = true }
 hardware = { workspace = true, features = ["serde", "scan"] }
 id = { workspace = true }
 sysfs = { workspace = true }
@@ -21,14 +22,14 @@ command-fds = { workspace = true }
 # Devlink reload moves both the netdev and RDMA device.
 devlink = { workspace = true }
 futures = { workspace = true }
-nix = { workspace = true, features = ["mount", "fs"] }
+nix = { workspace = true, features = ["mount", "fs", "process", "signal", "user"] }
 procfs = { workspace = true, features = [] }
 strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true, features = [] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["macros", "process", "rt", "signal", "time"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [dev-dependencies]

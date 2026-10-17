@@ -1385,10 +1385,20 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
         long,
         value_name = "path to a network namespace",
         help = "Run the control plane in this network namespace instead of a fresh one. \
-                dataplane-init enters it before exec'ing the dataplane, so FRR started under the \
+                dataplane-init enters it before starting the dataplane, so FRR started under the \
                 same namespace can reach the dataplane's taps."
     )]
     control_netns: Option<String>,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Run FRR and frr-agent as children of dataplane-init, in the same network \
+                namespace as the control plane, instead of expecting them in a container of \
+                their own. They share this process's fate: if any of the three stops, all of \
+                them do."
+    )]
+    supervise_frr: bool,
 
     #[arg(
         long,
@@ -1689,6 +1699,18 @@ impl CmdArgs {
     #[must_use]
     pub fn control_netns(&self) -> Option<&String> {
         self.control_netns.as_ref()
+    }
+
+    /// Whether `dataplane-init` should run FRR and `frr-agent` itself.
+    ///
+    /// Absent from [`LaunchConfiguration`] for the same reason as
+    /// [`control_netns`](Self::control_netns): by the time the dataplane runs, the decision has
+    /// been acted on, and the dataplane reaches FRR over unix sockets whose paths it already
+    /// knows. Whether the process on the other end is a sibling container or a sibling child is
+    /// not something it can or should behave differently about.
+    #[must_use]
+    pub fn supervise_frr(&self) -> bool {
+        self.supervise_frr
     }
 }
 
