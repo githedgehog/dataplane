@@ -142,9 +142,30 @@ impl Mac {
     /// [spanning tree protocol]: https://en.wikipedia.org/wiki/Spanning_Tree_Protocol
     /// [LACP]: https://en.wikipedia.org/wiki/Link_aggregation#Link_Aggregation_Control_Protocol
     #[must_use]
-    pub fn is_link_local(&self) -> bool {
+    pub fn is_link_local_control(&self) -> bool {
         let bytes = self.as_ref();
         (bytes[0..5] == [0x01, 0x80, 0xc2, 0x00, 0x00]) && (bytes[5] & 0x0f == bytes[5])
+    }
+
+    /// Returns true if the [`Mac`] corresponds to an IPv4 multicast range
+    #[must_use]
+    pub fn is_ipv4_multicast(&self) -> bool {
+        let bytes = self.as_ref();
+        (bytes[0..3]) == [0x01, 0x00, 0x5e]
+    }
+
+    /// Returns true if the [`Mac`] corresponds to an IPv6 multicast range
+    #[must_use]
+    pub fn is_ipv6_multicast(&self) -> bool {
+        let bytes = self.as_ref();
+        (bytes[0..2]) == [0x33, 0x33]
+    }
+
+    /// Returns true if the [`Mac`] corresponds to an IPv4 link-local multicast range (224.0.0.0/24)
+    #[must_use]
+    pub fn is_ipv4_link_local_multicast(&self) -> bool {
+        let bytes = self.as_ref();
+        (bytes[0..5]) == [0x01, 0x00, 0x5e, 0x00, 0x00]
     }
 
     /// Returns `Ok(())` iff the [`Mac`] is a legal source `Mac`.
