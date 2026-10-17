@@ -89,6 +89,7 @@ let
     .${profile};
   overlays = import ./nix/overlays {
     inherit
+      instrumentation
       libc
       nightly
       sanitizers
@@ -1056,6 +1057,14 @@ let
                       ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
                       ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
                     done
+
+                    # Inline-header assertions embed DPDK's dev path through __FILE__.
+                    # Erase that store reference from runtime binaries without changing their size.
+                    # Keep the debug files and their debuglink CRCs intact.
+                    for f in $out/bin/*; do
+                      ${pkgs.pkgsBuildHost.removeReferencesTo}/bin/remove-references-to \
+                        -t ${pkgs.pkgsHostHost.fancy.dpdk.dev} "$f"
+                    done
                   ''
                 else
                   ''
@@ -1560,6 +1569,54 @@ let
           # busybox applets referencing a `ld-musl-*.so.1` / `libc.so` that
           # isn't present in the image.
           libc-tar-input = "${libc-pkg.out}";
+          # FRR, and the pieces that carry configuration into it, composed once so that the
+          # collisions between busybox's applets, coreutils and FRR's own binaries are
+          # `buildEnv`'s problem rather than this build phase's.
+          #
+          # This has to be laid down as a *tree*, not merely reached through the store, because
+          # FRR is configured with absolute image paths and nothing else will do:
+          # `--bindir=/bin`, `--libdir=/lib`, `--sbindir=/libexec/frr`, `--sysconfdir=/etc`,
+          # `--localstatedir=/run/frr` and `--with-moduledir=/lib/frr/modules`
+          # (nix/pkgs/frr/default.nix).  zebra looks for `hh_dplane` at `/lib/frr/modules` and
+          # will not look anywhere else.
+          #
+          # The same set as `containers.frr.dataplane` less `tini`: `dataplane-init` is pid 1 in
+          # this image and reaps its own orphans, which is the whole reason the two images
+          # became one.
+          frr-env = pkgs.buildEnv {
+            name = "dataplane-gateway-frr-env";
+            # No `/share`: the only things in it are locale, man pages and bash completions, and
+            # FRR's own data lives under its `--prefix`.
+            pathsToLink = [
+              "/bin"
+              "/etc"
+              "/lib"
+              "/libexec"
+            ];
+            paths = with pkgs; [
+              bash
+              coreutils
+              fancy.dplane-plugin
+              fancy.dplane-rpc
+              fancy.frr-agent
+              fancy.frr-config
+              fancy.frr.dataplane
+              findutils
+              gnugrep
+              iproute2
+              # Runs as a sidecar in the merged pod rather than under the supervisor: it reads
+              # FRR's vty sockets, which are files, so it does not care which network namespace
+              # FRR ends up in -- and it is a metrics endpoint, whose fate should not be the
+              # gateway's.
+              prometheus-frr-exporter
+              python3Minimal
+            ];
+          };
+          # The tree above is symlinks into the store, so the targets have to be in the tar too or
+          # every one of them dangles.  `closureInfo` is what knows the full set -- notably the
+          # python interpreter, which nothing links against and which `frr-reload.py` reaches only
+          # through its `#!` line.
+          frr-closure = pkgs.closureInfo { rootPaths = [ frr-env ]; };
         in
         ''
           tmp="$(mktemp -d)"
@@ -1578,6 +1635,42 @@ let
           ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/dataplane"
           ln -s "${workspace.init}/bin/dataplane-init" "$tmp/dataplane-init"
           ln -s "${workspace.cli}/bin/cli" "$tmp/dataplane-cli"
+          # FRR, laid over busybox rather than beside it: where both provide a name -- `ip`, most
+          # of coreutils -- the full implementation wins, as it does in the FRR image this
+          # replaces.  `frrcommon.sh` and `watchfrr.sh` were written against those, not against
+          # busybox's approximations of them.
+          for i in "${frr-env}/bin/"*; do
+              ln -sf "$i" "$tmp/bin/$(basename "$i")"
+          done
+          # Real directories holding symlinks, which is `buildEnv`'s own shape and not an
+          # accident of it: FRR creates files beside its configuration and its state, and a
+          # directory that is itself a symlink into the store is one it cannot write into.
+          mkdir -p "$tmp/libexec"
+          cp --archive "${frr-env}/lib/." "$tmp/lib/"
+          cp --archive "${frr-env}/libexec/." "$tmp/libexec/"
+          # `--remove-destination`, because `fakeNss` was copied here first and arrived read-only
+          # from the store.  Its `/etc/passwd` has never heard of `frr`, which is the user every
+          # FRR daemon drops to, so this file has to be FRR's rather than merged with it.
+          cp --archive --remove-destination "${frr-env}/etc/." "$tmp/etc/"
+          # One deduplicated list rather than a run of positional arguments.  FRR's closure and
+          # the dataplane's overlap -- libc at least, and everything under it -- and a path named
+          # twice is archived twice.  `sort -u` also fixes the order, which `--sort=name` alone
+          # does not do across separate arguments.
+          #
+          # `$inputs` is a sibling of `$tmp`, not a child: anything inside `$tmp` is archived by
+          # the `.` below, and a build's own scratch file has no business in the image.
+          inputs="$(mktemp)"
+          {
+            printf '%s\n' \
+              ${libc-tar-input} \
+              ${libgcc-tar-input} \
+              ${workspace.dataplane} \
+              ${workspace.init} \
+              ${workspace.cli} \
+              ${pkgs.pkgsHostHost.busybox}
+            cat "${frr-closure}/store-paths"
+          } | sed '/^$/d' | sort -u > "$inputs"
+
           # we take some care to make the tar file reproducible here
           tar \
             --create \
@@ -1636,13 +1729,8 @@ let
             --verbose \
             --file "$out" \
             \
-            . \
-            ${libc-tar-input} \
-            ${libgcc-tar-input} \
-            ${workspace.dataplane} \
-            ${workspace.init} \
-            ${workspace.cli} \
-            ${pkgs.pkgsHostHost.busybox}
+            --files-from "$inputs" \
+            .
         '';
     }).overrideAttrs
       source-volatile;
@@ -1901,11 +1989,243 @@ let
     }).overrideAttrs
       source-volatile;
 
+  # What ships, checked against what has no business shipping.
+  #
+  # A container image's contents are decided by nix's reference scanner, which
+  # reads store hashes out of file *contents* -- so a single path in a debug
+  # string, a libtool archive or a `__FILE__` quietly adds that path's whole
+  # closure. Nothing warns, and the damage does not show up in review: it shows
+  # up months later as an image that is inexplicably a few hundred megabytes
+  # larger than the binaries in it. Two measured instances, both of them one
+  # file reaching for one small thing:
+  #
+  #   * FRR's `-latomic` resolved through `libgccjit`, whose other 137 MB came
+  #     along for a 20 KB library (nix/overlays/frr.nix, `libatomic`).
+  #   * `rte_pause.h` named in an assertion string dragged in DPDK's `dev`
+  #     output -- headers, at runtime (see the `remove-references-to` note in
+  #     the crane `postInstall` above).
+  #
+  # So this is a gate rather than a report. Once a build tool is out of the
+  # image, the way to keep it out is to make its return a build failure at the
+  # commit that causes it, not a size graph somebody notices later.
+  #
+  # Deliberately matched on path *names* rather than on a pinned set of
+  # derivations: the point is to catch a toolchain arriving by a route nobody
+  # anticipated, and naming the routes we already know about would only catch
+  # the ones we have already fixed.
+  closure-check =
+    let
+      # Extended regexes, matched against the name half of each store path.
+      forbidden = [
+        {
+          pattern = "(^|-)(clang|llvm|libclang)";
+          why = "a compiler; reaches an image through debug info or an assertion string";
+        }
+        {
+          pattern = "(^|-)(rustc|rust-minimal|rust-toolchain)";
+          why = "the Rust toolchain; `removeReferencesToRustToolchain` should have blanked this";
+        }
+        {
+          pattern = "(^|-)(vendor-cargo-deps|cargo-)";
+          why = "vendored crate sources; `removeReferencesToVendorDir` should have blanked this";
+        }
+        {
+          pattern = "(^|-)python3";
+          why = "an interpreter: one more thing in the image able to run code it was not built with. FRR needs one and is exempted below; nothing else gets to arrive quietly beside it";
+        }
+        {
+          pattern = "(^|-)(binutils|gcc-wrapper|cmake|meson|ninja|pkg-config|autoconf|automake)";
+          why = "a build tool";
+        }
+        {
+          pattern = "-dev$";
+          why = "a `dev` output: headers, pkg-config files and static archives, none of which a running binary reads";
+        }
+        {
+          pattern = "^source$|-source$";
+          why = "a source tree, usually via `-ffile-prefix-map` landing in a runtime string";
+        }
+      ];
+
+      # Names that every one of these rules must agree are bad.
+      #
+      # A matcher that matches nothing passes this check silently, and a
+      # gate that cannot fail is worse than no gate: it reports a clean
+      # image forever. This ran vacuously once already -- the patterns were
+      # escaped for a shell they were never passed to, so every comparison
+      # was against a quoted string that no name could equal -- and the
+      # build said "clean" over a closure with two source trees in it. So
+      # the check now proves it can fail before it is allowed to pass.
+      canaries = [
+        "clang-19.1.7"
+        "rust-minimal-1.98.0"
+        "vendor-cargo-deps"
+        "python3-minimal-3.14.7"
+        "cmake-3.31.7"
+        "dpdk-v26.07-hh-dev"
+        "source"
+      ];
+
+      # Names that trip a rule and ship anyway, each with the reason it is not
+      # the thing that rule is looking for.
+      #
+      # An exemption is deliberately not a rule change. The pattern still
+      # matches, the canary that proves the pattern works still fires, and
+      # anything else matching it still fails the build -- what changes is that
+      # this one name is permitted in the closure. Widening the pattern instead
+      # would have retired the rule quietly.
+      #
+      # Every exemption has to be *used*, or the build fails. An exemption
+      # nobody needs is a hole nobody is watching: if FRR ever stops reaching
+      # for an interpreter, this should be deleted at that commit rather than
+      # left behind to cover the next thing that reaches for one.
+      exempt = [
+        {
+          pattern = "^python3-minimal-";
+          why = "FRR's `frr-reload.py` is how any configuration reaches FRR at all, and its `#!` line names this interpreter; the gateway image ships FRR because the control plane and the datapath share one process tree";
+        }
+      ];
+
+      # Names that must *not* trip any rule, so a pattern cannot be widened
+      # into one that flags the whole image.
+      allowed = [
+        "glibc-2.42-84"
+        "gcc-15.3.0-lib"
+        "gcc-15.3.0-libgcc"
+        "dpdk-v26.07-hh"
+        "dataplane-0.27.0"
+        "busybox-1.37.0"
+        "rdma-core-fix-lto-64.0"
+        "libnl-3.12.0"
+      ];
+
+      # Tab-separated, and *not* shell-escaped: this is read by `read`, which
+      # would take the quotes as part of the value.
+      #
+      # Every line is newline-*terminated*, not newline-separated. `while read`
+      # returns non-zero at EOF, so a final line without a newline is read into
+      # the variable and then dropped by the loop condition. `concatStringsSep`
+      # produces exactly that shape, and it cost a silent false pass here: the
+      # last rule and the last canary were both discarded, so the check proved
+      # itself working and then failed to look for a source tree.
+      lines = f: xs: pkgs.lib.concatMapStrings (x: "${f x}\n") xs;
+      rules = lines (r: "${r.pattern}\t${r.why}") forbidden;
+    in
+    pkgs.runCommandLocal "dataplane-closure-check"
+      {
+        closure = pkgs.closureInfo { rootPaths = [ dataplane.tar ]; };
+        inherit rules;
+        canaries = lines (c: c) canaries;
+        allowed = lines (a: a) allowed;
+        exemptions = lines (e: "${e.pattern}\t${e.why}") exempt;
+        passAsFile = [
+          "rules"
+          "canaries"
+          "allowed"
+          "exemptions"
+        ];
+      }
+      ''
+        set -euo pipefail
+
+        # Prints every rule the given name trips, one "pattern<TAB>why" per line.
+        matches() {
+          local name="$1"
+          while IFS=$'\t' read -r pattern why; do
+            [ -n "$pattern" ] || continue
+            # `-e`, because a pattern may legitimately begin with `-`
+            # (`-dev$`), which grep would otherwise read as an option.
+            if printf '%s' "$name" | grep -Eq -e "$pattern"; then
+              printf '%s\t%s\n' "$pattern" "$why"
+            fi
+          done < "$rulesPath"
+        }
+
+        # Prove the matcher works before trusting it to say "clean".
+        while read -r canary; do
+          [ -n "$canary" ] || continue
+          if [ -z "$(matches "$canary")" ]; then
+            echo "closure-check is broken: '$canary' should have been flagged and was not." >&2
+            exit 1
+          fi
+        done < "$canariesPath"
+
+        while read -r ok; do
+          [ -n "$ok" ] || continue
+          hit="$(matches "$ok" || true)"
+          if [ -n "$hit" ]; then
+            echo "closure-check is too greedy: '$ok' is legitimate but matched:" >&2
+            printf '%s\n' "$hit" >&2
+            exit 1
+          fi
+        done < "$allowedPath"
+
+        # The exemption, if any, that permits this name. Prints "pattern<TAB>why".
+        exemption() {
+          local name="$1"
+          while IFS=$'\t' read -r pattern why; do
+            [ -n "$pattern" ] || continue
+            if printf '%s' "$name" | grep -Eq -e "$pattern"; then
+              printf '%s\t%s\n' "$pattern" "$why"
+              return
+            fi
+          done < "$exemptionsPath"
+        }
+
+        status=0
+        count=0
+        used=""
+        while read -r path; do
+          count=$((count + 1))
+          rest="''${path#/nix/store/}"
+          name="''${rest#*-}"
+          hit="$(matches "$name" || true)"
+          [ -n "$hit" ] || continue
+          pass="$(exemption "$name" || true)"
+          if [ -n "$pass" ]; then
+            used="$used''${pass%%$'\t'*}"$'\n'
+            echo "permitted in the runtime closure: $name" >&2
+            echo "    ''${pass#*$'\t'}" >&2
+            continue
+          fi
+          status=1
+          echo "forbidden in the runtime closure: $name" >&2
+          printf '%s\n' "$hit" | while IFS=$'\t' read -r _ why; do
+            echo "    $why" >&2
+          done
+          echo "    $path" >&2
+          echo >&2
+        done < "$closure/store-paths"
+
+        # An exemption nobody needed is one nobody is watching. See the comment
+        # on `exempt` in default.nix.
+        while IFS=$'\t' read -r pattern _; do
+          [ -n "$pattern" ] || continue
+          if ! printf '%s' "$used" | grep -Fqx -- "$pattern"; then
+            echo "closure-check has a stale exemption: nothing in the closure matches '$pattern'." >&2
+            echo "Delete it from \`exempt\` in default.nix; the rule it covers is doing its job again." >&2
+            exit 1
+          fi
+        done < "$exemptionsPath"
+
+        if [ "$status" -ne 0 ]; then
+          echo "dataplane.tar's runtime closure contains build-only paths (listed above)." >&2
+          echo "To find who pulled one in:" >&2
+          echo "    nix why-depends --all \$(nix build -f default.nix dataplane.tar --print-out-paths --no-link) <path>" >&2
+          echo "Then either stop creating the reference, or blank it with remove-references-to." >&2
+          exit 1
+        fi
+
+        echo "runtime closure clean: $count paths, none build-only"
+        touch "$out"
+      '';
+
 in
 {
   inherit
     benches
     check
+    closure-check
     clippy
     containers
     dataplane
