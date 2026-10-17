@@ -26,7 +26,11 @@ const ETHTYPE_LLDP: EthType = EthType::new(0x88CC);
 /// Tell if a multicast frame is one the control plane needs: LLDP, or IPv6 neighbor discovery
 /// (the `ICMPv6` messages of RFC 4861: router and neighbor solicitations and advertisements, and
 /// redirects).
-fn is_control_plane_multicast<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+fn is_control_plane_multicast<Buf: PacketBufferMut>(dst_mac: Mac, packet: &Packet<Buf>) -> bool {
+    if dst_mac.is_ipv4_link_local_multicast() {
+        return true;
+    }
+
     if packet
         .try_eth()
         .is_some_and(|eth| eth.ether_type() == ETHTYPE_LLDP)
@@ -141,7 +145,7 @@ impl Ingress {
     ) {
         let nfi = self.name();
         let ifname = &interface.name;
-        if is_control_plane_multicast(packet) {
+        if is_control_plane_multicast(dst_mac, packet) {
             debug!(
                 "{nfi}: Multicast frame for {dst_mac} handed to the control plane (iif:{ifname})"
             );
@@ -382,11 +386,22 @@ mod test {
 
     #[test]
     fn other_multicast_is_not_for_us() {
-        // IPv4 multicast to 224.0.0.5 (OSPF), and an ARP frame to the LLDP address
-        let ipv4 = ingress(ip_packet_to(Mac([0x01, 0x00, 0x5e, 0, 0, 0x05])));
+        // non-ipv4 link-local multicast and an ARP frame to the LLDP address
+        let ipv4 = ingress(ip_packet_to(Mac([0x01, 0x00, 0x5e, 0, 01, 0x05])));
         assert_eq!(ipv4.get_done(), Some(DoneReason::MacNotForUs));
         let arp = ingress(frame_to(LLDP_MAC, 0x0806));
         assert_eq!(arp.get_done(), Some(DoneReason::MacNotForUs));
+    }
+
+    #[test]
+    fn ipv4_link_local_multicast_is_for_us() {
+        // 01:00:5E:00:00:01 -- 224.0.0.1 (all hosts)
+        let ipv4 = ingress(ip_packet_to(Mac([0x01, 0x00, 0x5e, 0, 00, 0x01])));
+        assert_eq!(ipv4.get_done(), Some(DoneReason::Local));
+
+        // 01:00:5E:00:00:05 -- 224.0.0.5 (all ospf routers)
+        let ipv4 = ingress(ip_packet_to(Mac([0x01, 0x00, 0x5e, 0, 00, 0x05])));
+        assert_eq!(ipv4.get_done(), Some(DoneReason::Local));
     }
 
     #[test]
