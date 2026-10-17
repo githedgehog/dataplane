@@ -394,6 +394,24 @@ mod tests {
     use crate::test_support::{RingPort, packet_pool, start_eal};
     use core::ffi::CStr;
 
+    /// Addresses of deliberately leaked values. LeakSanitizer scans statics, so a value parked
+    /// here is reachable rather than reported.
+    #[allow(
+        clippy::disallowed_types,
+        reason = "LeakSanitizer only scans process-wide roots"
+    )]
+    static LEAKED: concurrency::process_global::Mutex<Vec<usize>> =
+        concurrency::process_global::Mutex::new(Vec::new());
+
+    /// Leak `value` without dropping it, as `core::mem::forget` would, but keep it reachable.
+    fn leak<T>(value: T) {
+        let raw = Box::into_raw(Box::new(value));
+        LEAKED
+            .lock()
+            .unwrap_or_else(concurrency::process_global::PoisonError::into_inner)
+            .push(raw.expose_provenance());
+    }
+
     #[test]
     fn a_port_has_one_claim_at_a_time() {
         let shared = start_eal();
@@ -542,7 +560,7 @@ mod tests {
         .unwrap();
         let started = dev.start().unwrap();
 
-        core::mem::forget(started);
+        leak(started);
         assert_eq!(
             owner.close_abandoned(),
             AbandonedPorts {
