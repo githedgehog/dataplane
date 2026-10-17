@@ -7,6 +7,11 @@ use crate::queue::tx::TxQueueIndex;
 use crate::socket::Preference;
 use crate::test_support::{RingPort, packet_pool, start_eal};
 
+/// One owner for every device these tests configure; a static rather than a leak so
+/// LeakSanitizer can still reach it.
+static OWNER: concurrency::process_global::LazyLock<Ownership> =
+    concurrency::process_global::LazyLock::new(|| Ownership::new().unwrap());
+
 fn configured(ring: &RingPort) -> Dev<'static> {
     let config = DevConfig {
         num_rx_queues: 1,
@@ -17,8 +22,7 @@ fn configured(ring: &RingPort) -> Dev<'static> {
         mtu: None,
         rss: None,
     };
-    let owner = Box::leak(Box::new(Ownership::new().unwrap()));
-    let claim = PortClaim::new(owner, start_eal().dev().info(ring.index).unwrap()).unwrap();
+    let claim = PortClaim::new(&OWNER, start_eal().dev().info(ring.index).unwrap()).unwrap();
     config.apply(claim).unwrap()
 }
 
