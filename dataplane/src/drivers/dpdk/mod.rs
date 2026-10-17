@@ -208,6 +208,9 @@ where
     let handle = thread::Builder::new()
         .name("dpdk-control".to_string())
         .spawn_scoped(scope, move || {
+            // As for the data workers: an exit before shutdown is fatal. Forwarding would carry on
+            // without it, but BGP and BFD would not, and nothing else would notice.
+            let _guard = subsystem.new_exit_guard("control worker".to_string(), true);
             if let Some(cpu) = cpu {
                 pin("the DPDK control worker", &[cpu]);
             }
