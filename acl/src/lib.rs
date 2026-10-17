@@ -29,6 +29,8 @@ pub mod dpdk;
 #[cfg(feature = "reference")]
 pub mod reference;
 #[cfg(feature = "dpdk")]
+pub mod table;
+#[cfg(feature = "dpdk")]
 #[macro_export]
 macro_rules! dpdk_table_alias {
     ($vis:vis type $alias:ident < $action:ident > = $key:ty) => {

@@ -336,6 +336,12 @@ fn cmd_show_lldp() -> Node {
     root
 }
 
+fn cmd_show_rate_limits() -> Node {
+    Node::new("rate-limits")
+        .desc("Show the rate limits, with what each has passed, remarked and dropped")
+        .action(CliAction::ShowRateLimits)
+}
+
 fn cmd_show_capture() -> Node {
     Node::new("capture")
         .desc("Show the running or most recent packet capture")
@@ -374,6 +380,7 @@ fn cmd_show() -> Node {
     root += cmd_show_driver_status();
     root += cmd_show_capture();
     root += cmd_show_lldp();
+    root += cmd_show_rate_limits();
     root += cmd_show_tech();
     root
 }

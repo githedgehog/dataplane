@@ -1,0 +1,25 @@
+[package]
+name = "dataplane-rate-limit"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+acl = { workspace = true }
+clock = { workspace = true }
+common = { workspace = true }
+concurrency = { workspace = true }
+config = { workspace = true }
+lpm = { workspace = true }
+match-action = { workspace = true, features = ["derive"] }
+net = { workspace = true }
+pipeline = { workspace = true }
+policer = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The reference (linear-scan) backend, so the tests run without the EAL.
+acl = { workspace = true, features = ["reference"] }
+dpdk = { workspace = true, features = ["test"] }
+net = { workspace = true, features = ["builder", "test_buffer"] }

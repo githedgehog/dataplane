@@ -67,6 +67,7 @@ pub struct CliSources {
     pub driver_status: Option<Box<dyn CliDataProvider + Send>>,
     pub capture: Option<capture::CaptureDirectory>,
     pub lldp_neighbors: Option<Box<dyn CliDataProvider + Send>>,
+    pub rate_limits: Option<Box<dyn CliDataProvider + Send>>,
 }
 
 impl Display for RouterParams {
