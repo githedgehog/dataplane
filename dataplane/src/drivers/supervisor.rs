@@ -294,7 +294,7 @@ fn check_worker_rx_tasks<E>(
                 rx_task_status.pps = counters.rx as f64 / f64::from(TASK_POLL_PERIOD);
                 debug!(
                     "{driver} worker {} on {}: rx {} ({:.0} pps), tx {}, pipeline drops {}, \
-                     tx drops {}, parse errors {}",
+                     tx drops {}, punt drops {}, parse errors {}",
                     monitor.id,
                     task.ifname,
                     counters.rx,
@@ -302,6 +302,7 @@ fn check_worker_rx_tasks<E>(
                     counters.tx,
                     counters.ppline_drops,
                     counters.tx_drops,
+                    counters.punt_drops,
                     counters.parse_errors,
                 );
             }

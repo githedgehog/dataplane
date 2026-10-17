@@ -1383,6 +1383,15 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
 
     #[arg(
         long,
+        value_name = "path to a network namespace",
+        help = "Run the control plane in this network namespace instead of a fresh one. \
+                dataplane-init enters it before exec'ing the dataplane, so FRR started under the \
+                same namespace can reach the dataplane's taps."
+    )]
+    control_netns: Option<String>,
+
+    #[arg(
+        long,
         value_name = "CPI Unix socket path",
         help = "Unix socket for FRR to send route update messages to the dataplane",
         default_value = DEFAULT_DP_UX_PATH
@@ -1669,6 +1678,17 @@ impl CmdArgs {
     #[must_use]
     pub fn config_dir(&self) -> Option<&String> {
         self.config_dir.as_ref()
+    }
+
+    /// The network namespace `dataplane-init` should put the control plane into, if one was named.
+    ///
+    /// Deliberately absent from [`LaunchConfiguration`]: the dataplane never acts on this. By the
+    /// time it runs, `dataplane-init` has already entered the namespace and `exec`'d, so the
+    /// dataplane's own namespace *is* the answer and there is nothing left for it to decide. Making
+    /// it part of the sealed configuration would invite a second, contradictory opinion.
+    #[must_use]
+    pub fn control_netns(&self) -> Option<&String> {
+        self.control_netns.as_ref()
     }
 }
 

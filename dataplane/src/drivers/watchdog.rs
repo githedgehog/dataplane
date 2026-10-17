@@ -31,6 +31,7 @@ struct WatchdogInner {
     tx: AtomicU64,           // number of packets sent by task
     ppline_drops: AtomicU64, // number of packets dropped by task pipeline
     tx_drops: AtomicU64,     // number of tx failures
+    punt_drops: AtomicU64,   // number of frames for the kernel that could not be punted
     parse_errors: AtomicU64, // number of frames we failed to parse
     truncated: AtomicU64,    // number of frames larger than the rx buffer
     zero_len: AtomicU64,     // number of zero-length reads
@@ -59,6 +60,7 @@ impl Watchdog {
         accumulate(&self.0.tx, counters.tx);
         accumulate(&self.0.ppline_drops, counters.ppline_drops);
         accumulate(&self.0.tx_drops, counters.tx_drops);
+        accumulate(&self.0.punt_drops, counters.punt_drops);
         accumulate(&self.0.parse_errors, counters.parse_errors);
         accumulate(&self.0.truncated, counters.truncated);
         accumulate(&self.0.zero_len, counters.zero_len);
@@ -77,6 +79,7 @@ impl Watchdog {
             tx: self.0.tx.swap(0, Ordering::Relaxed),
             ppline_drops: self.0.ppline_drops.swap(0, Ordering::Relaxed),
             tx_drops: self.0.tx_drops.swap(0, Ordering::Relaxed),
+            punt_drops: self.0.punt_drops.swap(0, Ordering::Relaxed),
             parse_errors: self.0.parse_errors.swap(0, Ordering::Relaxed),
             truncated: self.0.truncated.swap(0, Ordering::Relaxed),
             zero_len: self.0.zero_len.swap(0, Ordering::Relaxed),
@@ -134,6 +137,8 @@ pub struct RxCounters {
     pub ppline_drops: u64,
     /// Pkts received dropped on tx
     pub tx_drops: u64,
+    /// Pkts the pipeline marked for the kernel that could not be punted to it
+    pub punt_drops: u64,
     /// Frames received but that we failed to parse
     pub parse_errors: u64,
     /// Frames received but larger than the rx buffer
@@ -176,6 +181,7 @@ mod test {
         watchdog.pat();
         watchdog.record(&RxCounters {
             tx_drops: 7,
+            punt_drops: 2,
             kernel_drops: 3,
             ..RxCounters::default()
         });
@@ -183,6 +189,7 @@ mod test {
         let (counters, activity) = watchdog.check_and_clear(true);
         assert!(matches!(activity, Activity::Idle));
         assert_eq!(counters.tx_drops, 7);
+        assert_eq!(counters.punt_drops, 2);
         assert_eq!(counters.kernel_drops, 3);
 
         // same, for a task that failed to pat the watchdog
