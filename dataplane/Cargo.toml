@@ -38,13 +38,14 @@ id = { workspace = true }
 interface-manager = { workspace = true }
 lifecycle = { workspace = true }
 linkme = { workspace = true }
+lpm = { workspace = true }
 lldp = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 mgmt = { workspace = true }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
-nix = { workspace = true, features = ["socket", "hostname", "net"] }
+nix = { workspace = true, features = ["socket", "hostname", "net", "sched"] }
 netdev = { workspace = true }
 once_cell = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
@@ -58,6 +59,7 @@ stats = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync"] }
 tracectl = { workspace = true }
+traffic-control = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, default-features = true }
 vpcmap = { workspace = true }

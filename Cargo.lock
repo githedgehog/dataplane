@@ -1393,6 +1393,7 @@ dependencies = [
  "dataplane-stats",
  "dataplane-test-utils",
  "dataplane-tracectl",
+ "dataplane-traffic-control",
  "dataplane-vpcmap",
  "fixin",
  "futures",
@@ -1928,6 +1929,7 @@ dependencies = [
  "dataplane-stats",
  "dataplane-test-utils",
  "dataplane-tracectl",
+ "dataplane-traffic-control",
  "dataplane-vpcmap",
  "derive_builder",
  "fixin",
@@ -2250,6 +2252,16 @@ dependencies = [
  "tracing-error",
  "tracing-subscriber",
  "tracing-test",
+]
+
+[[package]]
+name = "dataplane-traffic-control"
+version = "0.29.0"
+dependencies = [
+ "bolero",
+ "dataplane-lpm",
+ "dataplane-net",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

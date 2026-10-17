@@ -50,6 +50,7 @@ members = [
     "sysfs",
     "test-utils",
     "tracectl",
+    "traffic-control",
     "validator",
     "vpcmap",
 ]
@@ -125,6 +126,7 @@ stats = { path = "./stats", package = "dataplane-stats", features = [] }
 sysfs = { path = "./sysfs", package = "dataplane-sysfs", features = [] }
 test-utils = { path = "./test-utils", package = "dataplane-test-utils", features = [] }
 tracectl = { path = "./tracectl", package = "dataplane-tracectl", features = [] }
+traffic-control = { path = "./traffic-control", package = "dataplane-traffic-control", features = [] }
 validator = { path = "./validator", package = "dataplane-validator", features = [] }
 vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap", features = [] }
 

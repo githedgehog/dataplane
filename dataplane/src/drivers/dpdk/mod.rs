@@ -9,7 +9,13 @@
 //! RSS spreads flows across per-worker queues. Flow state is shared across workers.
 //! Ports need a kernel netdev because the pipeline identifies interfaces by ifindex.
 //! Forwarding runs in software; control frames cross per-port TAPs through [`cpbridge`].
+//!
+//! A control worker owns one more queue pair per port, which the data workers' RSS does not reach:
+//! it receives the control plane's traffic there and transmits what the kernel sends.
 
+mod classes;
+mod control;
+mod placement;
 mod port;
 mod worker;
 
@@ -27,12 +33,15 @@ use stats::PortMetrics;
 use tokio::sync::watch;
 use tracectl::trace_target;
 use tracing::{info, warn};
+use traffic_control::ControlPlane;
 
 use super::DriverError;
 use super::status::DriverStatusWriter;
 use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 
 pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
+use control::{ControlPort, ControlWorker};
+use placement::{Placement, pin};
 pub(crate) use port::{Port, report_links};
 use worker::{Worker, WorkerPort};
 
@@ -50,6 +59,9 @@ impl DriverDpdk {
     /// `bridge` is the datapath's end of the control-plane bridge, if there is one. Its queues are
     /// dealt out alongside the hardware queues, because the two are used from the same loop.
     ///
+    /// `control_plane` is what the control-plane classes are built from; the control worker steers
+    /// them to the control queues and follows its changes.
+    ///
     /// # Errors
     ///
     /// Returns an error for invalid worker counts, missing ports or queues, or thread spawn failures.
@@ -63,6 +75,7 @@ impl DriverDpdk {
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'p, Mbuf<'p>> + 'p>,
         status_writer: DriverStatusWriter,
         bridge: Option<&mut DatapathEnds>,
+        control_plane: watch::Receiver<ControlPlane>,
     ) -> Result<(), DriverError>
     where
         'p: 'scope,
@@ -101,12 +114,13 @@ impl DriverDpdk {
         let dealt = port::deal_queues(ports, num_workers, bridge)?;
 
         info!(
-            "Starting {num_workers} DPDK worker(s) across {} port(s)",
+            "Starting {num_workers} DPDK worker(s) and a control worker across {} port(s)",
             ports.len()
         );
 
-        let mut monitors = Vec::with_capacity(dealt.len());
-        for (id, queues) in dealt.into_iter().enumerate() {
+        let placement = Placement::of_this_process();
+        let mut monitors = Vec::with_capacity(dealt.workers.len() + 1);
+        for (id, queues) in dealt.workers.into_iter().enumerate() {
             let rx_tasks: Vec<RxTaskMonitor> =
                 queues.iter().map(|q| RxTaskMonitor::new(&q.name)).collect();
             let worker_ports = queues
@@ -121,9 +135,13 @@ impl DriverDpdk {
 
             let subsystem = workers_subsystem.clone();
             let setup_pipeline = setup_pipeline.clone();
+            let cpus = placement.data.clone();
             let handle = thread::Builder::new()
                 .name(format!("dpdk-worker-{id}"))
                 .spawn_scoped(scope, move || {
+                    if let Some(cpus) = cpus {
+                        pin(&format!("DPDK worker {id}"), &cpus);
+                    }
                     worker.run(&subsystem, &setup_pipeline, timer_handle);
                     Ok::<(), Infallible>(())
                 })
@@ -133,6 +151,16 @@ impl DriverDpdk {
 
             monitors.push(WorkerMonitor::new(id, handle, rx_tasks));
         }
+
+        // The control worker is numbered after the data workers.
+        monitors.push(spawn_control(
+            scope,
+            workers_subsystem,
+            usize::from(num_workers),
+            placement.control,
+            dealt.control,
+            control_plane,
+        )?);
 
         // Register metrics once; the scoped callback keeps the borrowed ports alive while polling.
         let port_metrics: Vec<(&Port<'_>, PortMetrics)> = ports
@@ -154,6 +182,48 @@ impl DriverDpdk {
         info!("DPDK driver started successfully");
         Ok(())
     }
+}
+
+/// Spawn the control worker over every port's control queues, as worker `id`, on `cpu`.
+fn spawn_control<'p, 'eal, 'scope>(
+    scope: &'scope thread::Scope<'scope, '_>,
+    subsystem: &Subsystem,
+    id: usize,
+    cpu: Option<usize>,
+    control: Vec<port::ControlQueues<'p, 'eal>>,
+    control_plane: watch::Receiver<ControlPlane>,
+) -> Result<WorkerMonitor<'scope, Infallible>, DriverError>
+where
+    'p: 'scope,
+    'eal: 'scope,
+{
+    let rx_tasks: Vec<RxTaskMonitor> = control
+        .iter()
+        .map(|q| RxTaskMonitor::new(&format!("{} (control)", q.name)))
+        .collect();
+    let ports = control
+        .into_iter()
+        .zip(&rx_tasks)
+        .map(|(queues, task)| ControlPort {
+            queues,
+            watchdog: task.watchdog.clone(),
+        })
+        .collect();
+    let worker = ControlWorker::new(id, ports, control_plane);
+    let subsystem = subsystem.clone();
+    let handle = thread::Builder::new()
+        .name("dpdk-control".to_string())
+        .spawn_scoped(scope, move || {
+            if let Some(cpu) = cpu {
+                pin("the DPDK control worker", &[cpu]);
+            }
+            worker.run(&subsystem);
+            Ok::<(), Infallible>(())
+        })
+        .map_err(|e| {
+            DriverError::PortSetup(format!("failed to spawn the DPDK control worker: {e}"))
+        })?;
+    Ok(WorkerMonitor::new(id, handle, rx_tasks))
 }
 
 /// Publish each port's link state where the control plane can see it.

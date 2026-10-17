@@ -9,6 +9,8 @@
 //!
 //! Bounded channels carry owned frames in each direction: workers punt selected
 //! pipeline verdicts to the kernel and inject kernel frames directly onto the wire.
+//! What a control queue receives is punted on a channel of its own, which the tap's pump
+//! drains first, so whatever else is punted cannot crowd out BFD or BGP.
 //! Frames are copied because DPDK mbufs cannot cross threads. This currently allocates
 //! per frame; reusable buffers are a possible later optimization.
 //!
@@ -89,6 +91,8 @@ pub(crate) struct PortCpQueues {
     pub(crate) index: InterfaceIndex,
     /// Frames the datapath is handing to the kernel.
     pub(crate) punt: mpsc::Sender<Frame>,
+    /// Control-plane frames for the kernel, from a control queue: delivered before `punt`'s.
+    pub(crate) control: mpsc::Sender<Frame>,
     /// Frames the kernel wants transmitted, present on exactly one worker.
     ///
     /// Only one worker may drain a given queue, and that is not merely an ownership convenience:
@@ -245,6 +249,7 @@ impl CpBridge {
             let index = tap.index();
 
             let (punt_tx, punt_rx) = mpsc::channel(QUEUE_DEPTH);
+            let (control_tx, control_rx) = mpsc::channel(QUEUE_DEPTH);
             let (inject_tx, inject_rx) = mpsc::channel(QUEUE_DEPTH);
             // Down until the driver says otherwise: nothing should be sent on a port nobody has
             // seen come up.
@@ -261,7 +266,10 @@ impl CpBridge {
 
             handle.spawn(pump(
                 tap,
-                punt_rx,
+                Punted {
+                    control: Some(control_rx),
+                    data: Some(punt_rx),
+                },
                 inject_tx,
                 heard_tx.clone(),
                 cancel.clone(),
@@ -274,6 +282,7 @@ impl CpBridge {
                 PortCpQueues {
                     index,
                     punt: punt_tx,
+                    control: control_tx,
                     inject: Some(inject_rx),
                 },
             );
@@ -340,16 +349,43 @@ impl Drop for CpBridge {
     }
 }
 
+/// The two channels a tap's frames are punted on. A channel is `None` once every sender is gone.
+struct Punted {
+    /// From the control queue: drained first.
+    control: Option<mpsc::Receiver<Frame>>,
+    /// From the data workers.
+    data: Option<mpsc::Receiver<Frame>>,
+}
+
+/// The next frame on `channel`, or `None` once it has closed. A channel already known closed never
+/// yields.
+async fn next(channel: &mut Option<mpsc::Receiver<Frame>>) -> Option<Frame> {
+    match channel {
+        Some(channel) => channel.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// What a tap's pump has failed to deliver, logged at powers of two.
+#[derive(Default)]
+struct PumpDrops {
+    punt_write_errors: u64,
+    inject_drops: u64,
+    heard_drops: u64,
+}
+
 /// Carry frames between one tap and its port, in both directions, until cancelled.
 ///
 /// One task rather than two because [`TapDevice`] reads and writes through `&self`: the descriptor
 /// is registered with the reactor, so both directions can be awaited from the same place without
-/// splitting it. Neither direction can starve the other -- `select!` polls both.
+/// splitting it. The kernel's frames come first: they are its keepalives and replies, and it sends
+/// only as many as the control plane needs. Then frames from the control queue, then the rest of
+/// what the datapath punts, so a busy data path cannot delay BFD.
 ///
 /// Read errors are retried. If they persist, `mgmt` is told the gateway is broken.
 async fn pump(
     tap: Arc<TapDevice>,
-    mut punt: mpsc::Receiver<Frame>,
+    mut punted: Punted,
     inject: mpsc::Sender<Frame>,
     heard: mpsc::Sender<HeardFrame>,
     cancel: CancellationToken,
@@ -357,13 +393,19 @@ async fn pump(
 ) {
     let name = tap.name().clone();
     let mut buf = vec![0u8; TapDevice::MAX_FRAME];
-    let mut punt_write_errors: u64 = 0;
-    let mut inject_drops: u64 = 0;
+    let mut drops = PumpDrops::default();
     let mut read_errors: u32 = 0;
-    let mut heard_drops: u64 = 0;
 
     loop {
+        // Both closed means every worker holding a punt sender is gone, so nothing will ever punt
+        // to this tap again.
+        if punted.control.is_none() && punted.data.is_none() {
+            debug!("nothing is punting to {name} any more; stopping its pump");
+            break;
+        }
         tokio::select! {
+            biased;
+
             () = cancel.cancelled() => break,
 
             // The kernel has a frame for the wire.
@@ -377,11 +419,12 @@ async fn pump(
                     // not draining, and blocking here would stop the punt direction as well --
                     // turning a slow datapath into a dead control plane.
                     if inject.try_send(buf[..len].to_vec()).is_err() {
-                        inject_drops += 1;
-                        if inject_drops.is_power_of_two() {
+                        drops.inject_drops += 1;
+                        if drops.inject_drops.is_power_of_two() {
                             warn!(
-                                "dropped {inject_drops} frame(s) the kernel sent on {name}: the \
-                                 datapath is not draining its injection queue"
+                                "dropped {} frame(s) the kernel sent on {name}: the datapath is not \
+                                 draining its injection queue",
+                                drops.inject_drops
                             );
                         }
                     }
@@ -403,36 +446,57 @@ async fn pump(
                 }
             },
 
-            // The datapath has a frame for the kernel.
-            frame = punt.recv() => {
-                // `None` means every worker holding a punt sender is gone, so nothing will ever
-                // punt to this tap again.
-                let Some(frame) = frame else {
-                    debug!("nothing is punting to {name} any more; stopping its pump");
-                    break;
-                };
-                // LLDP is the dataplane's own business; the kernel gets a copy as well, which costs
-                // nothing and keeps a capture on the tap honest.
-                if is_lldp(&frame) {
-                    let copy = HeardFrame { port: name.clone(), frame: frame.clone() };
-                    if heard.try_send(copy).is_err() {
-                        heard_drops += 1;
-                        if heard_drops.is_power_of_two() {
-                            warn!("dropped {heard_drops} LLDP frame(s) received on {name}: the LLDP agent is not keeping up");
-                        }
-                    }
-                }
-                if let Err(e) = tap.write(&frame).await {
-                    punt_write_errors += 1;
-                    if punt_write_errors.is_power_of_two() {
-                        warn!("could not hand a frame to the kernel on {name} ({punt_write_errors} so far): {e}");
-                    }
-                }
+            // The control queue has a frame for the kernel.
+            frame = next(&mut punted.control) => match frame {
+                Some(frame) => deliver(&name, &tap, &heard, frame, &mut drops).await,
+                None => punted.control = None,
+            },
+
+            // The data path has a frame for the kernel.
+            frame = next(&mut punted.data) => match frame {
+                Some(frame) => deliver(&name, &tap, &heard, frame, &mut drops).await,
+                None => punted.data = None,
             },
         }
     }
 
     debug!("control-plane pump for {name} stopped");
+}
+
+/// Hand a punted frame to the kernel through its tap, and LLDP to the LLDP agent as well.
+async fn deliver(
+    name: &InterfaceName,
+    tap: &TapDevice,
+    heard: &mpsc::Sender<HeardFrame>,
+    frame: Frame,
+    drops: &mut PumpDrops,
+) {
+    // LLDP is the dataplane's own business; the kernel gets a copy as well, which costs nothing and
+    // keeps a capture on the tap honest.
+    if is_lldp(&frame) {
+        let copy = HeardFrame {
+            port: name.clone(),
+            frame: frame.clone(),
+        };
+        if heard.try_send(copy).is_err() {
+            drops.heard_drops += 1;
+            if drops.heard_drops.is_power_of_two() {
+                warn!(
+                    "dropped {} LLDP frame(s) received on {name}: the LLDP agent is not keeping up",
+                    drops.heard_drops
+                );
+            }
+        }
+    }
+    if let Err(e) = tap.write(&frame).await {
+        drops.punt_write_errors += 1;
+        if drops.punt_write_errors.is_power_of_two() {
+            warn!(
+                "could not hand a frame to the kernel on {name} ({} so far): {e}",
+                drops.punt_write_errors
+            );
+        }
+    }
 }
 
 /// Whether `frame` is an untagged LLDP frame.
@@ -723,9 +787,10 @@ mod test {
                 "could not give {PORT_NAME} an address; the bridge never brought its tap up"
             );
 
-            // A worker punting a frame it received on this port.
+            // The control worker punting a frame its control queue received on this port. (The
+            // LLDP test below punts the way a data worker does.)
             queues
-                .punt
+                .control
                 .send(arp_request(PEER_MAC, PEER, OURS))
                 .await
                 .unwrap_or_else(|e| panic!("nothing is reading the punt queue: {e}"));
