@@ -1,0 +1,18 @@
+[package]
+name = "dataplane-lldp"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+clock = { workspace = true }
+net = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+clock = { workspace = true, features = ["virtual"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
