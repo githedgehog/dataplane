@@ -406,6 +406,69 @@ pub enum DriverConfigSection {
     Kernel(KernelDriverConfigSection),
 }
 
+/// Hugepage capacity checked by init and requested from EAL through the launch configuration.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
+)]
+#[rkyv(attr(derive(Debug, PartialEq, Eq)))]
+pub struct HugepagePlan {
+    /// Page size checked by init, in KiB (1048576 or 2048).
+    pub page_size_kb: u64,
+    /// Memory requested in MiB, sorted by NUMA node OS index.
+    pub per_node_mb: Vec<(u32, u64)>,
+}
+
+impl HugepagePlan {
+    /// Render EAL's `--numa-mem` value, padding unrequested node indices with zero.
+    ///
+    /// Returns `None` for an empty or all-zero plan.
+    #[must_use]
+    pub fn numa_mem_arg(&self) -> Option<String> {
+        let highest = self.per_node_mb.iter().map(|(node, _)| *node).max()?;
+        if self.per_node_mb.iter().all(|(_, mb)| *mb == 0) {
+            return None;
+        }
+        let mut per_node = vec![0u64; (highest as usize) + 1];
+        for (node, mb) in &self.per_node_mb {
+            per_node[*node as usize] = *mb;
+        }
+        Some(
+            per_node
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    }
+}
+
+impl std::fmt::Display for HugepagePlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let size = if self.page_size_kb >= 1024 * 1024 {
+            format!("{} GiB", self.page_size_kb / (1024 * 1024))
+        } else {
+            format!("{} MiB", self.page_size_kb / 1024)
+        };
+        let total: u64 = self.per_node_mb.iter().map(|(_, mb)| *mb).sum();
+        write!(f, "{total} MiB in {size} pages (")?;
+        for (i, (node, mb)) in self.per_node_mb.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "node {node}: {mb} MiB")?;
+        }
+        write!(f, ")")
+    }
+}
+
 /// Configuration for the DPDK (Data Plane Development Kit) driver.
 ///
 /// DPDK provides kernel-bypass networking for high-performance packet processing.
@@ -429,6 +492,8 @@ pub struct DpdkDriverConfigSection {
     pub eal_args: Vec<String>,
     /// Packet-processing worker threads to run, each owning one rx/tx queue pair per port
     pub num_workers: u16,
+    /// Hugepage placement selected by init, or `None` for EAL defaults.
+    pub hugepages: Option<HugepagePlan>,
 }
 
 /// Configuration for the Linux kernel networking driver.
@@ -1315,6 +1380,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                 DriverConfigSection::Dpdk(DpdkDriverConfigSection {
                     interfaces: value.interfaces().collect(),
                     eal_args,
+                    hugepages: None,
                     num_workers: value.num_workers,
                 })
             }
@@ -1911,5 +1977,74 @@ mod tests {
         assert_eq!(err, "Burst must be greater than 0");
         let err = TracingRateLimit::from_str("10:0").unwrap_err();
         assert_eq!(err, "Replenish-per-second must be greater than 0");
+    }
+}
+
+#[cfg(test)]
+mod hugepage_plan_test {
+    use super::HugepagePlan;
+
+    #[test]
+    fn a_single_node_plan_names_that_node_positionally() {
+        let plan = HugepagePlan {
+            page_size_kb: 1024 * 1024,
+            per_node_mb: vec![(0, 4096)],
+        };
+        assert_eq!(plan.numa_mem_arg().as_deref(), Some("4096"));
+    }
+
+    #[test]
+    fn a_plan_on_a_later_node_pads_the_earlier_ones_with_zero() {
+        let plan = HugepagePlan {
+            page_size_kb: 1024 * 1024,
+            per_node_mb: vec![(1, 4096)],
+        };
+        assert_eq!(plan.numa_mem_arg().as_deref(), Some("0,4096"));
+    }
+
+    #[test]
+    fn a_plan_spanning_two_nodes_names_both() {
+        let plan = HugepagePlan {
+            page_size_kb: 2048,
+            per_node_mb: vec![(0, 4096), (2, 2048)],
+        };
+        assert_eq!(plan.numa_mem_arg().as_deref(), Some("4096,0,2048"));
+    }
+
+    #[test]
+    fn a_plan_that_secured_nothing_yields_no_argument() {
+        let plan = HugepagePlan {
+            page_size_kb: 2048,
+            per_node_mb: vec![(0, 0)],
+        };
+        assert_eq!(plan.numa_mem_arg(), None);
+        assert_eq!(
+            HugepagePlan {
+                page_size_kb: 2048,
+                per_node_mb: vec![]
+            }
+            .numa_mem_arg(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_display_form_reports_the_page_size_an_operator_asked_for() {
+        let gib = HugepagePlan {
+            page_size_kb: 1024 * 1024,
+            per_node_mb: vec![(1, 4096)],
+        };
+        assert_eq!(
+            gib.to_string(),
+            "4096 MiB in 1 GiB pages (node 1: 4096 MiB)"
+        );
+        let mib = HugepagePlan {
+            page_size_kb: 2048,
+            per_node_mb: vec![(0, 4096)],
+        };
+        assert_eq!(
+            mib.to_string(),
+            "4096 MiB in 2 MiB pages (node 0: 4096 MiB)"
+        );
     }
 }
