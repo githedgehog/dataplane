@@ -50,6 +50,7 @@ pub struct Manager {
 struct Registered {
     pool: NonNull<dpdk_sys::rte_mempool>,
     /// Leaked once per pool to provide a stable reference for every cloned handle.
+    /// Reclaimed in [`Manager::release_all`].
     config: &'static PoolConfig,
 }
 
@@ -122,6 +123,12 @@ impl Manager {
             // SAFETY: from a successful `rte_pktmbuf_pool_create`, and freed exactly once because
             // the `drain` removes it from the registry.
             unsafe { dpdk_sys::rte_mempool_free(entry.pool.as_ptr()) };
+            // SAFETY: leaked from a `Box` in `new_pkt_pool` and reclaimed exactly once because the
+            // `drain` removes it from the registry; the caller guarantees no `Pool` handle (the only
+            // other holders of this reference) is used after this call.
+            drop(unsafe {
+                alloc::boxed::Box::from_raw(core::ptr::from_ref(entry.config).cast_mut())
+            });
         }
     }
 }
