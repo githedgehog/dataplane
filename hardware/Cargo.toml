@@ -34,6 +34,8 @@ tracing = { workspace = true, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 sysfs = { workspace = true }
+# `netns` needs setns/unshare (`sched`), the fresh sysfs mount (`mount`), and fcntl/stat (`fs`).
+nix = { workspace = true, features = ["fs", "sched", "mount"] }
 
 [dev-dependencies]
 # internal

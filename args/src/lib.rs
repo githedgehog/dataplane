@@ -18,7 +18,8 @@
 //!    - Serializes the configuration using `rkyv` for zero-copy deserialization
 //!    - Writes serialized data to a [`MemFile`] and finalizes it into a [`FinalizedMemFile`]
 //!    - Computes an [`IntegrityCheck`] (SHA-384 hash) of the configuration
-//!    - Passes both file descriptors to the child process at known FD numbers
+//!    - Passes both file descriptors, and the datapath network namespace, to the child process
+//!      at known FD numbers
 //!
 //! 2. **Child Process (dataplane)**:
 //!    - Inherits the configuration via [`LaunchConfiguration::inherit()`]
@@ -372,7 +373,7 @@ impl From<MemFile> for FinalizedMemFile {
 #[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct GeneralConfigSection {
     /// Name to give to this dataplane/gateway
-    name: Option<String>,
+    pub name: Option<String>,
 }
 
 /// Configuration for the packet processing driver used by the dataplane.
@@ -426,6 +427,8 @@ pub struct DpdkDriverConfigSection {
     pub interfaces: Vec<InterfaceArg>,
     /// DPDK EAL (Environment Abstraction Layer) initialization arguments
     pub eal_args: Vec<String>,
+    /// Packet-processing worker threads to run, each owning one rx/tx queue pair per port
+    pub num_workers: u16,
 }
 
 /// Configuration for the Linux kernel networking driver.
@@ -447,6 +450,8 @@ pub struct DpdkDriverConfigSection {
 pub struct KernelDriverConfigSection {
     /// Kernel network interfaces to manage
     pub interfaces: Vec<InterfaceArg>,
+    /// Packet-processing worker threads to run
+    pub num_workers: u16,
 }
 
 /// Configuration for the dataplane's command-line interface (CLI).
@@ -693,7 +698,85 @@ impl Default for ProfilingConfigSection {
     }
 }
 
+impl DriverConfigSection {
+    /// The driver's name, as the `--driver` flag spells it.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            DriverConfigSection::Dpdk(_) => "dpdk",
+            DriverConfigSection::Kernel(_) => "kernel",
+        }
+    }
+
+    /// The interfaces this driver was configured with.
+    pub fn interfaces(&self) -> impl Iterator<Item = &InterfaceArg> {
+        match self {
+            DriverConfigSection::Dpdk(dpdk) => dpdk.interfaces.iter(),
+            DriverConfigSection::Kernel(kernel) => kernel.interfaces.iter(),
+        }
+    }
+
+    /// The number of packet-processing workers to run.
+    #[must_use]
+    pub fn num_workers(&self) -> usize {
+        match self {
+            DriverConfigSection::Dpdk(dpdk) => dpdk.num_workers.into(),
+            DriverConfigSection::Kernel(kernel) => kernel.num_workers.into(),
+        }
+    }
+}
+
+/// Probe a raw descriptor without constructing a borrow of a possibly closed file.
+#[allow(unsafe_code)]
+fn descriptor_is_open(fd: RawFd) -> std::io::Result<bool> {
+    // SAFETY: F_GETFD takes no pointer argument and reports EBADF for a closed descriptor.
+    if unsafe { nix::libc::fcntl(fd, nix::libc::F_GETFD) } != -1 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(nix::libc::EBADF) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+/// The caller must exclusively own the raw descriptor and prevent concurrent close or replacement.
+#[allow(unsafe_code)]
+unsafe fn take_inherited_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
+    if !descriptor_is_open(fd)? {
+        return Err(std::io::Error::from_raw_os_error(nix::libc::EBADF));
+    }
+    // SAFETY: the descriptor is open, and the caller guarantees exclusive ownership.
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    nix::fcntl::fcntl(
+        &owned,
+        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
+    )?;
+    Ok(owned)
+}
+
 impl LaunchConfiguration {
+    /// Whether init supplied the configuration, its integrity check, and the datapath namespace.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an incomplete handoff or a failed descriptor lookup.
+    pub fn was_inherited() -> std::io::Result<bool> {
+        match (
+            descriptor_is_open(Self::STANDARD_INTEGRITY_CHECK_FD)?,
+            descriptor_is_open(Self::STANDARD_CONFIG_FD)?,
+            descriptor_is_open(Self::STANDARD_NETNS_FD)?,
+        ) {
+            (true, true, true) => Ok(true),
+            (false, false, false) => Ok(false),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "incomplete launch configuration handoff: expected descriptors 30, 40 and 50",
+            )),
+        }
+    }
+
     /// Standard file descriptor number for the integrity check memfd.
     ///
     /// The parent process must pass the integrity check (SHA-384 hash) file at this
@@ -706,12 +789,42 @@ impl LaunchConfiguration {
     /// file descriptor number.
     pub const STANDARD_CONFIG_FD: RawFd = 40;
 
+    /// Standard file descriptor number for the datapath network namespace.
+    ///
+    /// The parent process must pass the namespace the datapath runs in at this file descriptor
+    /// number. The descriptor also keeps that namespace alive across `exec`.
+    pub const STANDARD_NETNS_FD: RawFd = 50;
+
+    /// Claim the datapath network namespace descriptor.
+    /// The caller must validate its namespace type before using it.
+    ///
+    /// # Safety
+    ///
+    /// Call only once for a descriptor supplied by init. FD 50 must belong exclusively to this
+    /// handoff, have no other owner, and not be closed or replaced concurrently.
+    /// Claim it at startup before other components can reuse that number.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the descriptor is missing or cannot be marked close-on-exec.
+    #[allow(unsafe_code)]
+    pub unsafe fn inherit_netns() -> std::io::Result<OwnedFd> {
+        // SAFETY: the caller guarantees exclusive ownership of the inherited descriptor.
+        unsafe { take_inherited_fd(Self::STANDARD_NETNS_FD) }
+    }
+
     /// Inherit the launch configuration from the parent process.
     ///
     /// This method is called by the dataplane worker process to receive its configuration
     /// from the init process. It expects two sealed memory file descriptors at the standard
     /// FD numbers ([`STANDARD_INTEGRITY_CHECK_FD`](Self::STANDARD_INTEGRITY_CHECK_FD) and
     /// [`STANDARD_CONFIG_FD`](Self::STANDARD_CONFIG_FD)).
+    ///
+    /// # Safety
+    ///
+    /// Call only once for descriptors supplied by init. Both standard descriptors must belong
+    /// exclusively to this handoff, have no other owner, and not be closed or replaced concurrently.
+    /// The method consumes them; claim them at startup before other components can reuse them.
     ///
     /// # Process
     ///
@@ -734,9 +847,12 @@ impl LaunchConfiguration {
     /// These panics are intentional as the dataplane cannot start without valid configuration.
     #[must_use]
     #[allow(unsafe_code)] // no-escape from unsafety in this function as it involves constraints the compiler can't see
-    pub fn inherit() -> LaunchConfiguration {
-        let integrity_check_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_INTEGRITY_CHECK_FD) };
-        let launch_configuration_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_CONFIG_FD) };
+    pub unsafe fn inherit() -> LaunchConfiguration {
+        // SAFETY: the caller guarantees exclusive ownership of both inherited descriptors.
+        let integrity_check_fd = unsafe { take_inherited_fd(Self::STANDARD_INTEGRITY_CHECK_FD) }
+            .expect("missing integrity check descriptor");
+        let launch_configuration_fd = unsafe { take_inherited_fd(Self::STANDARD_CONFIG_FD) }
+            .expect("missing launch configuration descriptor");
         let integrity_check_file = unsafe { FinalizedMemFile::from_fd(integrity_check_fd) };
         let mut launch_configuration_file =
             unsafe { FinalizedMemFile::from_fd(launch_configuration_fd) };
@@ -747,10 +863,13 @@ impl LaunchConfiguration {
 
         let mut mmap_options = memmap2::MmapOptions::new();
         let mmap_options = mmap_options.no_reserve_swap();
-        let launch_config_memmap = unsafe { mmap_options.map(launch_configuration_file.as_ref()) }
-            .into_diagnostic()
-            .wrap_err("failed to memory map launch configuration")
-            .unwrap();
+        // Private and read-only: older kernels refuse any shared mapping of a memfd sealed
+        // with `F_SEAL_WRITE`, even a read-only one, and nothing here writes to it.
+        let launch_config_memmap =
+            unsafe { mmap_options.map_copy_read_only(launch_configuration_file.as_ref()) }
+                .into_diagnostic()
+                .wrap_err("failed to memory map launch configuration")
+                .unwrap();
 
         // VERY IMPORTANT: we must check for unaligned pointer here or risk undefined behavior.
 
@@ -1111,6 +1230,8 @@ pub enum InvalidCmdArguments {
     NoDriverSpecified,
     #[error("No network interfaces specified")]
     NoInterfacesSpecified,
+    #[error("DPDK interface \"{0}\" must specify a PCI address")]
+    NoPciAddress(InterfaceName),
     #[error(transparent)]
     UnsupportedByDriver(#[from] UnsupportedByDriver),
 }
@@ -1132,6 +1253,48 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
     type Error = InvalidCmdArguments;
 
     fn try_from(value: CmdArgs) -> Result<Self, InvalidCmdArguments> {
+        let driver = match value.driver_name() {
+            Some("dpdk" | "kernel") if value.interface.is_empty() => {
+                return Err(InvalidCmdArguments::NoInterfacesSpecified);
+            }
+            Some("dpdk") => {
+                let eal_args = value
+                    .interfaces()
+                    .map(|nic| match nic.port {
+                        Some(PortArg::PCI(pci_address)) => {
+                            Ok(["--allow".to_string(), format!("{pci_address}")])
+                        }
+                        Some(PortArg::KERNEL(interface_name)) => {
+                            Err(InvalidCmdArguments::UnsupportedByDriver(
+                                UnsupportedByDriver::Dpdk(interface_name),
+                            ))
+                        }
+                        None => Err(InvalidCmdArguments::NoPciAddress(nic.interface)),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                DriverConfigSection::Dpdk(DpdkDriverConfigSection {
+                    interfaces: value.interfaces().collect(),
+                    eal_args,
+                    num_workers: value.num_workers,
+                })
+            }
+            Some("kernel") => {
+                for nic in &value.interface {
+                    if let Some(PortArg::PCI(address)) = &nic.port {
+                        return Err(UnsupportedByDriver::Kernel(address.clone()).into());
+                    }
+                }
+                DriverConfigSection::Kernel(KernelDriverConfigSection {
+                    interfaces: value.interfaces().collect(),
+                    num_workers: value.num_workers,
+                })
+            }
+            Some(other) => return Err(InvalidCmdArguments::InvalidDriver(other.to_string())),
+            None => return Err(InvalidCmdArguments::NoDriverSpecified),
+        };
         Ok(LaunchConfiguration {
             general: GeneralConfigSection {
                 name: value.get_name().cloned(),
@@ -1139,39 +1302,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             config_server: Some(ConfigServerSection {
                 config_dir: value.config_dir().cloned(),
             }),
-            driver: match &value.driver {
-                Some(driver) if driver == "dpdk" => {
-                    // TODO: adjust command line to specify lcore usage more flexibly in next PR
-                    let eal_args = value
-                        .interfaces()
-                        .map(|nic| match nic.port {
-                            Some(PortArg::PCI(pci_address)) => {
-                                Ok(["--allow".to_string(), format!("{pci_address}")])
-                            }
-                            Some(PortArg::KERNEL(interface_name)) => {
-                                Err(InvalidCmdArguments::UnsupportedByDriver(
-                                    UnsupportedByDriver::Dpdk(interface_name.clone()),
-                                ))
-                            }
-                            None => Err(InvalidCmdArguments::NoInterfacesSpecified),
-                        })
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into_iter()
-                        .flatten()
-                        .collect();
-                    DriverConfigSection::Dpdk(DpdkDriverConfigSection {
-                        interfaces: value.interfaces().collect(),
-                        eal_args,
-                    })
-                }
-                Some(driver) if driver == "kernel" => {
-                    DriverConfigSection::Kernel(KernelDriverConfigSection {
-                        interfaces: value.interfaces().collect(),
-                    })
-                }
-                Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone()))?,
-                None => Err(InvalidCmdArguments::NoDriverSpecified)?,
-            },
+            driver,
             cli: CliConfigSection {
                 cli_sock_path: value.cli_sock_path(),
             },
@@ -1220,7 +1351,11 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
 #[command(about = "A dataplane for hedgehog's fabric gateway", long_about = None)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CmdArgs {
-    #[arg(long, value_name = "packet driver to use: kernel or dpdk")]
+    #[arg(
+        long,
+        value_name = "kernel|dpdk",
+        help = "Packet driver (required for startup)"
+    )]
     driver: Option<String>,
     #[arg(
         long,
@@ -1359,16 +1494,16 @@ elsewhere and copy it in the configuration directory. This mode is meant mostly 
 }
 
 impl CmdArgs {
-    /// Get the configured driver name.
-    ///
-    /// Returns `"dpdk"` if no driver was explicitly specified (the default),
-    /// otherwise returns the specified driver name (`"dpdk"` or `"kernel"`).
+    /// The explicitly selected driver, if any.
     #[must_use]
-    pub fn driver_name(&self) -> &str {
-        match &self.driver {
-            None => "dpdk",
-            Some(name) => name,
-        }
+    pub fn driver_name(&self) -> Option<&str> {
+        self.driver.as_deref()
+    }
+
+    /// Whether the command displays tracing information and exits without starting the dataplane.
+    #[must_use]
+    pub fn is_informational(&self) -> bool {
+        self.tracing_config_generate || self.show_tracing_tags || self.show_tracing_targets
     }
 
     /// Check if the `--show-tracing-tags` flag was set.
@@ -1542,8 +1677,100 @@ mod tests {
     use net::interface::InterfaceName;
 
     use super::TracingRateLimit;
-    use crate::{InterfaceArg, PortArg};
+    use crate::{
+        CmdArgs, InterfaceArg, InvalidCmdArguments, LaunchConfiguration, Parser, PortArg,
+        UnsupportedByDriver,
+    };
     use std::str::FromStr;
+
+    #[test]
+    fn launch_requires_explicit_driver_and_interfaces() {
+        for argv in [
+            vec!["dataplane"],
+            vec!["dataplane", "--interface", "eth0=pci@0000:01:00.0"],
+        ] {
+            let args = CmdArgs::try_parse_from(argv).unwrap();
+            assert_eq!(args.driver_name(), None);
+            assert!(matches!(
+                LaunchConfiguration::try_from(args),
+                Err(InvalidCmdArguments::NoDriverSpecified)
+            ));
+        }
+        for driver in ["dpdk", "kernel"] {
+            let args = CmdArgs::try_parse_from(["dataplane", "--driver", driver]).unwrap();
+            assert!(matches!(
+                LaunchConfiguration::try_from(args),
+                Err(InvalidCmdArguments::NoInterfacesSpecified)
+            ));
+        }
+        let args = CmdArgs::try_parse_from(["dataplane", "--driver", "unknown"]).unwrap();
+        assert!(matches!(
+            LaunchConfiguration::try_from(args),
+            Err(InvalidCmdArguments::InvalidDriver(_))
+        ));
+    }
+
+    #[test]
+    fn launch_rejects_incompatible_interfaces() {
+        for (driver, interfaces) in [
+            ("dpdk", "eth0=kernel@eth0"),
+            ("dpdk", "eth0=pci@0000:01:00.0,eth1=kernel@eth1"),
+            ("kernel", "eth0=pci@0000:01:00.0"),
+            ("kernel", "eth0,eth1=pci@0000:01:00.0"),
+        ] {
+            let args = CmdArgs::try_parse_from([
+                "dataplane",
+                "--driver",
+                driver,
+                "--interface",
+                interfaces,
+            ])
+            .unwrap();
+            let err = LaunchConfiguration::try_from(args).unwrap_err();
+            assert!(matches!(
+                (driver, err),
+                (
+                    "dpdk",
+                    InvalidCmdArguments::UnsupportedByDriver(UnsupportedByDriver::Dpdk(_))
+                ) | (
+                    "kernel",
+                    InvalidCmdArguments::UnsupportedByDriver(UnsupportedByDriver::Kernel(_))
+                )
+            ));
+        }
+        let args =
+            CmdArgs::try_parse_from(["dataplane", "--driver", "dpdk", "--interface", "eth0"])
+                .unwrap();
+        assert!(matches!(
+            LaunchConfiguration::try_from(args),
+            Err(InvalidCmdArguments::NoPciAddress(_))
+        ));
+    }
+
+    #[test]
+    fn launch_accepts_explicit_driver_and_compatible_interfaces() {
+        for (driver, interfaces) in [
+            ("dpdk", "eth1=pci@0000:02:00.0,eth0=pci@0000:01:00.0"),
+            ("kernel", "eth1,eth0"),
+            ("kernel", "eth1=kernel@eth1,eth0=kernel@eth0"),
+        ] {
+            let args = CmdArgs::try_parse_from([
+                "dataplane",
+                "--driver",
+                driver,
+                "--interface",
+                interfaces,
+            ])
+            .unwrap();
+            let expected: Vec<_> = args.interfaces().collect();
+            let config = LaunchConfiguration::try_from(args).unwrap();
+            assert_eq!(config.driver.name(), driver);
+            assert_eq!(
+                config.driver.interfaces().cloned().collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn test_parse_interface() {
