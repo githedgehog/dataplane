@@ -12,6 +12,9 @@ use sysfs::{SysfsErr, SysfsFile, SysfsPath, sysfs_root};
 use tracing::{error, info, warn};
 
 use crate::pci::address::PciAddress;
+use crate::pci::device::DeviceId;
+use crate::pci::vendor::VendorId;
+use crate::support::{DpdkDriverType, SupportedDevice};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DriverErr {
@@ -21,28 +24,82 @@ pub enum DriverErr {
     MissingDriver(PciDriver),
     #[error("driver {driver_name} is not supported")]
     NotSupported { driver_name: String },
+    #[error("{device} is driven through its kernel driver, not vfio-pci; refusing to unbind it")]
+    NotVfioPci { device: SupportedDevice },
+}
+
+/// Errors opening a PCI network card with [`PciNic::new`].
+#[derive(Debug, thiserror::Error)]
+pub enum PciNicError {
+    #[error(transparent)]
+    Sysfs(#[from] SysfsErr),
+    #[error("cannot read the {attribute} of PCI device {address}: {reason}")]
+    UnreadableId {
+        address: PciAddress,
+        attribute: &'static str,
+        reason: String,
+    },
+    #[error(
+        "PCI device {address} (vendor {vendor:#06x}, device {device:#06x}) is not a supported \
+         network card; refusing to touch it"
+    )]
+    Unsupported {
+        address: PciAddress,
+        vendor: u16,
+        device: u16,
+    },
 }
 
 /// Structure to represent a network interface card using a PCI address.
 ///
 /// Note that the NIC may or may not be visible to the OS, depending on the state of
 /// the system.
+///
+/// The vendor and device IDs must identify a [`SupportedDevice`].
+/// This prevents driver binding operations on unrelated devices, such as storage controllers.
 #[derive(Debug)]
 pub struct PciNic {
     address: PciAddress,
+    device: SupportedDevice,
 }
 
 impl PciNic {
-    /// Create a new [`PciNic`] instance.
+    /// Open the network card at `address`.
     ///
     /// # Errors
     ///
-    /// [`SysfsErr`] - If the device does not exist or is not accessible.
-    pub fn new(address: PciAddress) -> Result<PciNic, SysfsErr> {
-        let nominal = PciNic { address };
-        // check to see if device actually exists
-        nominal.device_path()?;
-        Ok(PciNic { address })
+    /// - [`PciNicError::Sysfs`] if the device does not exist or is not accessible.
+    /// - [`PciNicError::UnreadableId`] if its vendor or device ID cannot be read.
+    /// - [`PciNicError::Unsupported`] if it is not a [`SupportedDevice`].
+    pub fn new(address: PciAddress) -> Result<PciNic, PciNicError> {
+        let device_path = sysfs_root().relative(format!("bus/pci/devices/{address}"))?;
+        let read_id = |attribute: &'static str| -> Result<u16, PciNicError> {
+            let unreadable = |reason: String| PciNicError::UnreadableId {
+                address,
+                attribute,
+                reason,
+            };
+            let text = std::fs::read_to_string(device_path.inner().join(attribute))
+                .map_err(|e| unreadable(e.to_string()))?;
+            let hex = text.trim().trim_start_matches("0x");
+            u16::from_str_radix(hex, 16).map_err(|e| unreadable(format!("{text:?}: {e}")))
+        };
+        let (vendor, device) = (read_id("vendor")?, read_id("device")?);
+        let unsupported = || PciNicError::Unsupported {
+            address,
+            vendor,
+            device,
+        };
+        let vendor_id = VendorId::new(vendor).map_err(|_| unsupported())?;
+        let device = SupportedDevice::try_from((vendor_id, DeviceId::new(device)))
+            .map_err(|_| unsupported())?;
+        Ok(PciNic { address, device })
+    }
+
+    /// The supported device identified by its PCI IDs.
+    #[must_use]
+    pub fn device(&self) -> SupportedDevice {
+        self.device
     }
 
     /// Get the path to the "device" directory under sysfs for this NIC.
@@ -106,8 +163,10 @@ impl std::fmt::Display for PciNic {
 /// Enum describing supported PCI drivers.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, strum::EnumString, strum::IntoStaticStr)]
 pub enum PciDriver {
+    /// Intel's e1000 driver, including QEMU's 82540EM.
     #[strum(serialize = "e1000")]
     E1000,
+    /// Intel's e1000e driver, including QEMU's 82574L.
     #[strum(serialize = "e1000e")]
     E1000E,
     /// Intel's i40e driver.
@@ -119,7 +178,7 @@ pub enum PciDriver {
     /// NVIDIA/Mellanox's mlx5 driver
     #[strum(serialize = "mlx5_core")]
     Mlx5Core,
-    /// The driver you get when you are bound to nothing else, but linux can still see the device.
+    /// PCI Express port services driver for root and downstream bridges.
     #[strum(serialize = "pcieport")]
     PciePort,
     /// The vfio-pci driver.
@@ -170,15 +229,6 @@ impl PciDriver {
         options.write(true);
         SysfsFile::open(path, &options).map_err(DriverErr::Sysfs)
     }
-
-    fn unbind_file(self) -> Result<SysfsFile, DriverErr> {
-        let driver_path = self.driver_path()?;
-        let path = format!("{driver_path}/unbind");
-        info!("opening unbind file {path}");
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true);
-        SysfsFile::open(path, &options).map_err(DriverErr::Sysfs)
-    }
 }
 
 impl std::fmt::Display for PciDriver {
@@ -216,7 +266,7 @@ trait UnbindPciDriver {
     /// Attempt to unbind the device from its current driver.
     ///
     /// Implementations should expect that the device is currently bound to
-    /// some driver (neglecting [`PciDriver::PciePort`], which functionally means "unbound").
+    /// some driver, including drivers absent from [`PciDriver`].
     ///
     /// # Errors
     ///
@@ -235,7 +285,7 @@ trait OverridePciDriver {
     /// Attempt to override the driver for a pci device.
     ///
     /// Implementations should expect that the device is currently unbound from
-    /// any driver (neglecting [`PciDriver::PciePort`], which functionally means "unbound").
+    /// any driver.
     ///
     /// Note: override is not the same as bind.  See [`BindPciDriver`].
     ///
@@ -248,12 +298,22 @@ trait OverridePciDriver {
 impl UnbindPciDriver for PciNic {
     type Error = DriverErr;
     fn unbind(&mut self) -> Result<(), DriverErr> {
-        let Some(driver) = self.driver()? else {
-            info!("no driver bound to {self}");
-            return Ok(());
+        let device_path = self.device_path().map_err(DriverErr::Sysfs)?;
+        // Follow the device's driver link to support drivers absent from `PciDriver`.
+        let driver_path = match device_path.relative("driver") {
+            Ok(path) => path,
+            Err(SysfsErr::IoError(e)) if e.kind() == ErrorKind::NotFound => {
+                info!("no driver bound to {self}");
+                return Ok(());
+            }
+            Err(e) => return Err(DriverErr::Sysfs(e)),
         };
-        driver
-            .unbind_file()?
+        let path = format!("{driver_path}/unbind");
+        info!("opening unbind file {path}");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true);
+        SysfsFile::open(path, &options)
+            .map_err(DriverErr::Sysfs)?
             .write_all(format!("{self}").as_bytes())
             .map_err(|e| DriverErr::Sysfs(SysfsErr::IoError(e)))
     }
@@ -278,7 +338,7 @@ trait BindPciDriver {
     /// Attempt to bind the device to a specific [`PciDriver`].
     ///
     /// Implementations should expect that the device is currently "unbound" from
-    /// any driver (neglecting [`PciDriver::PciePort`], which functionally means "unbound").
+    /// any driver.
     ///
     /// # Errors
     ///
@@ -315,18 +375,24 @@ impl BindToVfioPci for PciNic {
     type Error = DriverErr;
 
     fn bind_to_vfio_pci(&mut self) -> Result<(), DriverErr> {
+        // A bifurcated device (mlx5) must keep its kernel driver; DPDK reaches it through verbs.
+        if DpdkDriverType::from(self.device) != DpdkDriverType::VfioPci {
+            return Err(DriverErr::NotVfioPci {
+                device: self.device,
+            });
+        }
         match self.driver() {
+            Ok(Some(PciDriver::VfioPci)) => {
+                info!("device {self} is already bound to vfio-pci");
+                return Ok(());
+            }
             Ok(Some(known_driver)) => {
-                if known_driver == PciDriver::VfioPci {
-                    info!("device {self} is already bound to vfio-pci");
-                    return Ok(());
-                }
-                if known_driver == PciDriver::PciePort {
-                    info!("device {self} is currently unbound ({known_driver} driver)");
-                } else {
-                    info!("unbinding device {self} from {known_driver}");
-                    self.unbind()?;
-                }
+                info!("unbinding device {self} from {known_driver}");
+                self.unbind()?;
+            }
+            Err(DriverErr::NotSupported { driver_name }) => {
+                info!("unbinding device {self} from unrecognized driver {driver_name}");
+                self.unbind()?;
             }
             Ok(None) => {
                 info!("device {self} has no driver bound; proceeding to vfio-pci bind");

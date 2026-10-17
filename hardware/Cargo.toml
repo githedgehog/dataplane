@@ -37,6 +37,9 @@ sysfs = { workspace = true }
 
 [dev-dependencies]
 # internal
+clock = { workspace = true }
+dpdk = { workspace = true, features = [] }
+net = { workspace = true, features = ["builder"] }
 fixin = { workspace = true, features = [] }
 id = { workspace = true, features = ["serde", "rkyv"] }
 n-vm = { workspace = true }
@@ -53,3 +56,7 @@ tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 dpdk-sysroot-helper = { workspace = true }
+
+# Opt-in VM tests that require 1 GiB host hugepages.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(host_hugepage_tests)'] }
