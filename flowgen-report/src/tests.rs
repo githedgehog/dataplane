@@ -32,6 +32,12 @@ enum Op {
     Counter { observed: Option<u8>, max: u8 },
     /// Check a condition.
     Condition { holds: bool, evidence: u8 },
+    /// Check a counter, or a condition, whose expectation is unsettled.
+    Unsettled {
+        observed: Option<u8>,
+        max: u8,
+        counter: bool,
+    },
     /// End the open case, explicitly rather than by dropping it.
     Finish,
 }
@@ -91,6 +97,36 @@ fn write(ops: &[Op]) -> (Vec<u8>, Expected) {
                         .unwrap();
                     tally.count(if holds { Status::Pass } else { Status::Fail });
                 }
+                Op::Unsettled {
+                    observed,
+                    max,
+                    counter,
+                } => {
+                    checks += 1;
+                    let id = format!("check-{checks}");
+                    let got = if counter {
+                        case.unsettled_counter(
+                            id,
+                            "path.0",
+                            Bound::at_most(u64::from(max)),
+                            observed.map(u64::from),
+                            "not yet decided",
+                            vec![],
+                        )
+                    } else {
+                        let holds = observed.is_some_and(|n| n <= max);
+                        case.unsettled(id, "it holds", holds, "not yet decided", vec![])
+                    }
+                    .unwrap();
+                    // Unsettled, it is not judged; unmeasured, it cannot be.
+                    let status = if counter && observed.is_none() {
+                        Status::Error
+                    } else {
+                        Status::Skip
+                    };
+                    assert_eq!(got, status);
+                    tally.count(status);
+                }
             }
         }
         // Finished or merely dropped, a case ends as its checks came out.
@@ -126,6 +162,7 @@ fn a_report_reads_back_as_it_was_written() {
                     assert!(check.evidence.len() <= crate::record::MAX_EVIDENCE);
                 }
                 total.pass += tally.pass;
+                total.skip += tally.skip;
                 total.fail += tally.fail;
                 total.error += tally.error;
                 worst = worst.max(tally.status());
@@ -160,6 +197,48 @@ fn a_report_cut_short_reads_as_a_crash() {
                 Err(e) => panic!("a report cut at {cut} of {} did not read: {e}", bytes.len()),
             }
         });
+}
+
+/// An unsettled check is recorded with why and whether it held, and does not fail its run however
+/// it came out.
+#[test]
+fn an_unsettled_check_records_what_happened_and_fails_nothing() {
+    let mut out = Vec::new();
+    let mut report = Report::new(&mut out, header()).unwrap();
+    let mut case = report.case("c", serde_json::json!({})).unwrap();
+    case.expect("settled", "it holds", true, vec![]).unwrap();
+    case.unsettled_counter(
+        "missed",
+        "path.0",
+        Bound::exactly(1),
+        Some(2),
+        "undecided",
+        vec![],
+    )
+    .unwrap();
+    case.unsettled("met", "it holds", true, "undecided", vec![])
+        .unwrap();
+    case.finish().unwrap();
+    assert_eq!(report.finish().unwrap(), Status::Pass);
+
+    let run = read(out.as_slice()).unwrap();
+    let case = run.case("c").unwrap();
+    assert_eq!(case.status(), Status::Pass);
+    let held: Vec<_> = case
+        .checks
+        .iter()
+        .map(|check| (check.status, check.unsettled.as_ref().map(|u| u.held)))
+        .collect();
+    assert_eq!(
+        held,
+        [
+            (Status::Pass, None),
+            (Status::Skip, Some(false)),
+            (Status::Skip, Some(true)),
+        ]
+    );
+    let end = case.end.as_ref().unwrap();
+    assert_eq!((end.checks.pass, end.checks.skip), (1, 2));
 }
 
 #[test]
