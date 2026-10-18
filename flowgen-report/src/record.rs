@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Raised for any change a reader of the previous version would misread; additions that a reader
 /// can ignore do not raise it.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 
 /// The most evidence one check keeps. More is counted in [`Check::evidence_dropped`] and not kept,
 /// so that a run dropping a million packets does not leave a million-line report.
@@ -187,6 +187,9 @@ impl Sample {
 pub enum Status {
     /// As expected.
     Pass,
+    /// Not judged: what to expect is not yet settled. What happened is recorded, in
+    /// [`Check::unsettled`], and a case or run is not the worse for it.
+    Skip,
     /// Not as expected.
     Fail,
     /// Could not be judged: what was to be checked was never measured.
@@ -214,6 +217,18 @@ pub struct Check {
     /// Evidence beyond [`MAX_EVIDENCE`], counted and not kept.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub evidence_dropped: u64,
+    /// Why the check was not judged, if it is [`Status::Skip`], and how it would have come out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsettled: Option<Unsettled>,
+}
+
+/// An expectation not yet settled: why, and whether what happened met it as it stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unsettled {
+    /// What is unsettled about it.
+    pub why: String,
+    /// Whether what happened met the expectation as written.
+    pub held: bool,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
@@ -338,6 +353,9 @@ impl Evidence {
 pub struct Tally {
     /// Passed.
     pub pass: u64,
+    /// Not judged: unsettled.
+    #[serde(default)]
+    pub skip: u64,
     /// Failed.
     pub fail: u64,
     /// Could not be judged.
@@ -349,12 +367,14 @@ impl Tally {
     pub fn count(&mut self, status: Status) {
         match status {
             Status::Pass => self.pass += 1,
+            Status::Skip => self.skip += 1,
             Status::Fail => self.fail += 1,
             Status::Error | Status::Crashed => self.error += 1,
         }
     }
 
-    /// The worst way any counted check came out; [`Status::Pass`] if none was counted.
+    /// The worst way any counted check came out, unsettled ones aside; [`Status::Pass`] if none
+    /// was counted.
     #[must_use]
     pub fn status(&self) -> Status {
         if self.error > 0 {

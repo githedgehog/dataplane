@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use crate::record::{
     Bound, CaseEnd, CaseStart, Check, End, Evidence, Expectation, Header, MAX_EVIDENCE, Record,
-    Sample, Status, Tally,
+    Sample, Status, Tally, Unsettled,
 };
 
 /// A report being written.
@@ -194,7 +194,40 @@ impl<W: Write> Case<'_, W> {
             path: path.into(),
             bound,
         };
-        self.check(id.into(), expected, observed, status, evidence)
+        self.check(id.into(), expected, observed, status, evidence, None)
+    }
+
+    /// As [`expect_counter`](Self::expect_counter), for an expectation not yet settled, for the
+    /// reason `why`: recorded as [`Status::Skip`], with whether it held, and judged no further.
+    /// A counter never measured is still an [`Status::Error`]: nothing was learned.
+    ///
+    /// # Errors
+    ///
+    /// If the id was already used in this case, or the record cannot be written.
+    pub fn unsettled_counter(
+        &mut self,
+        id: impl Into<String>,
+        path: impl Into<String>,
+        bound: Bound,
+        observed: Option<u64>,
+        why: impl Into<String>,
+        evidence: Vec<Evidence>,
+    ) -> io::Result<Status> {
+        let (status, unsettled) = match observed {
+            Some(n) => (
+                Status::Skip,
+                Some(Unsettled {
+                    why: why.into(),
+                    held: bound.admits(n),
+                }),
+            ),
+            None => (Status::Error, None),
+        };
+        let expected = Expectation::Counter {
+            path: path.into(),
+            bound,
+        };
+        self.check(id.into(), expected, observed, status, evidence, unsettled)
     }
 
     /// Check that what `description` says `holds`.
@@ -213,7 +246,38 @@ impl<W: Write> Case<'_, W> {
         let expected = Expectation::Condition {
             description: description.into(),
         };
-        self.check(id.into(), expected, None, status, evidence)
+        self.check(id.into(), expected, None, status, evidence, None)
+    }
+
+    /// As [`expect`](Self::expect), for an expectation not yet settled, for the reason `why`:
+    /// recorded as [`Status::Skip`], with whether it held, and judged no further.
+    ///
+    /// # Errors
+    ///
+    /// If the id was already used in this case, or the record cannot be written.
+    pub fn unsettled(
+        &mut self,
+        id: impl Into<String>,
+        description: impl Into<String>,
+        holds: bool,
+        why: impl Into<String>,
+        evidence: Vec<Evidence>,
+    ) -> io::Result<Status> {
+        let expected = Expectation::Condition {
+            description: description.into(),
+        };
+        let unsettled = Unsettled {
+            why: why.into(),
+            held: holds,
+        };
+        self.check(
+            id.into(),
+            expected,
+            None,
+            Status::Skip,
+            evidence,
+            Some(unsettled),
+        )
     }
 
     /// End the case, and say how it came out: the worst of its checks.
@@ -234,6 +298,7 @@ impl<W: Write> Case<'_, W> {
         observed: Option<u64>,
         status: Status,
         mut evidence: Vec<Evidence>,
+        unsettled: Option<Unsettled>,
     ) -> io::Result<Status> {
         if !self.ids.insert(id.clone()) {
             return Err(io::Error::new(
@@ -253,6 +318,7 @@ impl<W: Write> Case<'_, W> {
             status,
             evidence,
             evidence_dropped,
+            unsettled,
         }))?;
         Ok(status)
     }

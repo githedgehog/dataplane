@@ -54,7 +54,7 @@ mod write;
 pub use read::{CaseRun, ReadError, Run, read};
 pub use record::{
     Bound, Build, CaseEnd, CaseStart, Check, End, Environment, Evidence, Expectation, Header,
-    MAX_EVIDENCE, Port, Record, SCHEMA, Sample, Status, Tally,
+    MAX_EVIDENCE, Port, Record, SCHEMA, Sample, Status, Tally, Unsettled,
 };
 pub use write::{Case, Report};
 

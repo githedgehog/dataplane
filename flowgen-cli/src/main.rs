@@ -97,7 +97,8 @@ fn main() -> ExitCode {
                 Ok(status) => {
                     eprintln!("flowgen: {status:?}; the report is {}", report.display());
                     ExitCode::from(match status {
-                        Status::Pass => 0,
+                        // A run is never unsettled: only its checks are.
+                        Status::Pass | Status::Skip => 0,
                         Status::Fail => 1,
                         Status::Error | Status::Crashed => 2,
                     })

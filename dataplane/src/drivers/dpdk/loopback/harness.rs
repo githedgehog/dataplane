@@ -740,7 +740,7 @@ fn assert_passed(path: &Path) {
         .cases
         .iter()
         .flat_map(|case| &case.checks)
-        .filter(|check| check.status != Status::Pass)
+        .filter(|check| !matches!(check.status, Status::Pass | Status::Skip))
         .map(|check| {
             format!(
                 "{} ({:?}): expected {:?}, observed {:?}",
