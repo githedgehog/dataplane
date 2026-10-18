@@ -4,11 +4,15 @@
 //! The whole DPDK driver over a ring cable, with the test standing in for the far end of the wire
 //! and for the kernel behind the port's tap.
 
-use std::num::NonZero;
+use std::net::IpAddr;
+use std::num::{NonZero, NonZeroUsize};
 use std::time::Duration;
 
 use concurrency::sync::Arc;
 use concurrency::thread;
+use config::external::overlay::vpcpeering::contract::{
+    LOCAL_VNI, REMOTE_VNI, overlay_with_exposes_and_acl,
+};
 use dpdk::dev::ring::RingCable;
 use dpdk::dev::{Dev, DevConfig, RxOffload, Started, TxOffloadConfig};
 use dpdk::eal::{self, Eal};
@@ -16,11 +20,15 @@ use dpdk::mem::{Mbuf, MbufArray, Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use dpdk::socket::Preference;
+use flow_entry::flow_table::FlowTable;
 use lifecycle::{CancellationToken, Subsystem};
 use lldp::Link;
-use net::buffer::Append;
+use net::buffer::{Append, TestBuffer};
 use net::eth::mac::Mac;
+use net::headers::{TryEth, TryVxlan};
 use net::interface::{InterfaceIndex, InterfaceName};
+use net::packet::Packet;
+use net::vxlan::Vxlan;
 use pipeline::DynPipeline;
 use tokio::sync::watch;
 use traffic_control::ControlPlane;
@@ -29,14 +37,16 @@ use super::source::{PortSettings, RingPort, attach_ports, bring_up_ports};
 use super::{DatapathEnds, DriverDpdk};
 use crate::drivers::cpbridge::DetachedPort;
 use crate::drivers::status::driver_status_access;
+use crate::packet_processor::PipelineIngredients;
+use crate::packet_processor::fixture::{
+    Fleet, GATEWAY_MAC, LOCAL_VTEP, PEER_MAC, PEER_VTEP, exposes, inner, inside, topology,
+    tunnelled, uplink, vni,
+};
 
 const WORKERS: u16 = 2;
 
 /// Data queues and the control queue.
 const QUEUES: u16 = WORKERS + 1;
-
-/// The dataplane port's address, which a ring port cannot supply itself.
-const PORT_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0x10]);
 
 /// The configured name of the dataplane's end of the cable.
 fn loop0() -> InterfaceName {
@@ -159,15 +169,6 @@ fn arp_request(sender: [u8; 6]) -> Vec<u8> {
 
 /// Check, through a running driver, that control frames cross the port both ways.
 fn exchange_control_frames(far: &mut FarEnd<'_>, kernel: &mut DetachedPort) {
-    let deadline = clock::now() + PATIENCE;
-    while *kernel.link.borrow() != Link::Up {
-        assert!(
-            clock::now() < deadline,
-            "a started ring port should be reported up"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
     // Until the control worker finds the ring port has no rules and falls back to software,
     // ARP goes through the (empty) pipeline and is dropped; keep asking.
     let request = arp_request([0x02, 0, 0, 0, 0, 1]);
@@ -201,12 +202,25 @@ fn exchange_control_frames(far: &mut FarEnd<'_>, kernel: &mut DetachedPort) {
     );
 }
 
-/// A ring cable carries control traffic both ways through the full DPDK driver: an ARP request
-/// sent into a data queue is taken off the data path in software (a ring port has no `rte_flow`
-/// to steer it) and reaches the kernel's side of the bridge, and a frame the kernel injects
-/// leaves on the control queue.
-#[test]
-fn control_frames_cross_a_ring_cable_both_ways() {
+/// What stands on the dataplane's side of the cable.
+struct Gateway {
+    /// The port's address.
+    mac: Mac,
+    /// What the pipeline calls the port.
+    index: InterfaceIndex,
+    /// The pipeline the workers run; one that does nothing if `None`.
+    pipeline: Option<PipelineIngredients>,
+}
+
+/// Bring the DPDK driver up on one end of a ring cable and run `exchange` against the other end
+/// and the kernel's side of the port's bridge.
+///
+/// `setup` runs once the EAL exists and inside the timer runtime, as the gateway's state needs;
+/// whatever else it returns is kept alive until the driver has stopped.
+fn over_cable<K>(
+    setup: impl FnOnce() -> (Gateway, K),
+    exchange: impl FnOnce(&mut FarEnd<'_>, &mut DetachedPort),
+) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let mut eal = eal::init([
         "--no-huge",
@@ -222,6 +236,16 @@ fn control_frames_cross_a_ring_cable_both_ways() {
         "--lcores",
         &eal::main_lcore_arg(),
     ]);
+    let timers = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (gateway, _upkeep) = {
+        let _runtime = timers.enter();
+        setup()
+    };
+
     let cable = eal.attach_ring_cable("loop", QUEUES, 1024).unwrap();
     let sources = attach_ports(
         &mut eal,
@@ -230,7 +254,7 @@ fn control_frames_cross_a_ring_cable_both_ways() {
                 name: loop0(),
                 mtu: None,
                 rx_descriptors: None,
-                fallback_mac: Some(PORT_MAC),
+                fallback_mac: Some(gateway.mac),
             },
             dev: cable.a,
         }],
@@ -241,23 +265,17 @@ fn control_frames_cross_a_ring_cable_both_ways() {
     assert_eq!(ports[0].if_index, None, "a ring port has no kernel netdev");
     assert_eq!(
         ports[0].mac.inner(),
-        PORT_MAC,
+        gateway.mac,
         "a ring port has no address of its own"
     );
 
     let (far_dev, far_pool) = FarEnd::start(eal, cable);
     let mut far = FarEnd::queues(&far_dev, far_pool, QUEUES);
 
-    let (mut bridge, mut kernel, _identities) =
-        DatapathEnds::detached([(loop0(), InterfaceIndex::try_new(1000).unwrap())]);
+    let (mut bridge, mut kernel, _identities) = DatapathEnds::detached([(loop0(), gateway.index)]);
     let mut kernel = kernel.pop().unwrap();
     assert_eq!(kernel.name, loop0());
 
-    let timers = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .unwrap();
     let workers = Subsystem::new("workers", CancellationToken::new());
     let (status, _status_reader) = driver_status_access();
     let (_control_plane_tx, control_plane) = watch::channel(ControlPlane::new([], []));
@@ -266,7 +284,9 @@ fn control_frames_cross_a_ring_cable_both_ways() {
         // Stop the workers however this closure ends, or a failed assertion would leave the scope
         // waiting on them forever.
         let _stop = workers.cancel_token().drop_guard();
-        let pipeline = empty_pipeline();
+        let pipeline = gateway
+            .pipeline
+            .map_or_else(empty_pipeline, PipelineIngredients::factory);
         DriverDpdk::start(
             scope,
             &workers,
@@ -280,7 +300,16 @@ fn control_frames_cross_a_ring_cable_both_ways() {
         )
         .unwrap();
 
-        exchange_control_frames(&mut far, &mut kernel);
+        let deadline = clock::now() + PATIENCE;
+        while *kernel.link.borrow() != Link::Up {
+            assert!(
+                clock::now() < deadline,
+                "a started ring port should be reported up"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        exchange(&mut far, &mut kernel);
     });
 
     drop(far);
@@ -288,4 +317,82 @@ fn control_frames_cross_a_ring_cable_both_ways() {
     for port in ports {
         port.shutdown();
     }
+}
+
+/// A ring cable carries control traffic both ways through the full DPDK driver: an ARP request
+/// sent into a data queue is taken off the data path in software (a ring port has no `rte_flow`
+/// to steer it) and reaches the kernel's side of the bridge, and a frame the kernel injects
+/// leaves on the control queue.
+#[test]
+fn control_frames_cross_a_ring_cable_both_ways() {
+    over_cable(
+        || {
+            let gateway = Gateway {
+                mac: Mac([0x02, 0, 0, 0, 0, 0x10]),
+                index: InterfaceIndex::try_new(1000).unwrap(),
+                pipeline: None,
+            };
+            (gateway, ())
+        },
+        exchange_control_frames,
+    );
+}
+
+/// A tunnelled frame crosses the cable, the production pipeline and the cable again: decapsulated,
+/// masqueraded and sent back out to the peer VTEP in the remote VPC.
+#[test]
+fn a_tunnelled_frame_makes_a_round_trip_through_the_pipeline() {
+    over_cable(
+        || {
+            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .unwrap()
+                .validate()
+                .unwrap();
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let workers = NonZeroUsize::new(usize::from(WORKERS)).unwrap();
+            let (pipeline, upkeep) = fleet.ingredients(&tables, workers);
+            let gateway = Gateway {
+                mac: GATEWAY_MAC,
+                index: uplink(),
+                pipeline: Some(pipeline),
+            };
+            (gateway, (tables, fleet, upkeep))
+        },
+        |far, kernel| {
+            let sent = tunnelled(&inner());
+            far.send(0, sent.serialize().unwrap().as_ref());
+
+            // A worker transmits on its own queue, and only worker 0 receives on queue 0.
+            let frame = far
+                .receive(0)
+                .expect("the frame should come back out of the gateway");
+            let back = Packet::new(TestBuffer::from_raw_data(&frame))
+                .expect("what the gateway sends should parse");
+            assert_eq!(
+                back.try_eth()
+                    .map(|eth| (eth.source().inner(), eth.destination().inner())),
+                Some((GATEWAY_MAC, PEER_MAC)),
+                "from this gateway to the resolved next hop"
+            );
+            assert_eq!(back.ip_source(), Some(LOCAL_VTEP.parse().unwrap()));
+            assert_eq!(back.ip_destination(), Some(PEER_VTEP.parse().unwrap()));
+            assert_eq!(
+                back.try_vxlan().map(Vxlan::vni),
+                Some(vni(REMOTE_VNI)),
+                "encapsulated towards the remote VPC"
+            );
+
+            let carried = inside(&back).expect("the frame should still be encapsulated");
+            let Some(IpAddr::V4(source)) = carried.ip_source() else {
+                panic!("the carried packet has no IPv4 source: {carried:?}");
+            };
+            assert_eq!(source.octets()[..2], [2, 2], "masqueraded into 2.2.0.0/16");
+            assert_eq!(carried.ip_destination(), Some("3.3.3.1".parse().unwrap()));
+            assert!(
+                kernel.punted.try_recv().is_err(),
+                "a forwarded frame should not also reach the kernel"
+            );
+        },
+    );
 }

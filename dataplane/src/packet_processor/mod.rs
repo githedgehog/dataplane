@@ -3,7 +3,7 @@
 
 mod egress;
 #[cfg(all(test, not(miri)))]
-mod fixture;
+pub(crate) mod fixture;
 #[cfg(test)]
 mod fuzz;
 mod ingress;
