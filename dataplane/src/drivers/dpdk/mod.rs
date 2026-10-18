@@ -17,7 +17,7 @@
 mod classes;
 mod control;
 #[cfg(all(test, not(miri), not(feature = "shuttle")))]
-mod loopback_tests;
+mod loopback;
 mod placement;
 mod port;
 mod source;

@@ -240,3 +240,65 @@ fn damage_is_noticed() {
     assert_eq!(sample.counters["generator.s.bad_udp_checksum"], 1);
     assert_eq!(sample.counters["generator.s.corrupt"], 1);
 }
+
+/// A schedule sends every flow it names, each flow's packets numbered from zero without gaps,
+/// exactly `window` distinct flows a round, and each flow in consecutive rounds only.
+#[test]
+fn a_schedule_sends_each_flow_a_gapless_run_of_packets() {
+    use crate::schedule::Schedule;
+    use std::collections::BTreeMap;
+
+    bolero::check!()
+        .with_type::<(u8, u8, u8)>()
+        .for_each(|&(window, churn, rounds)| {
+            let window = u64::from(window % 32) + 1;
+            let churn = u64::from(churn) % (window + 1);
+            let rounds = u64::from(rounds % 16);
+            let schedule = Schedule {
+                window,
+                churn,
+                rounds,
+            }
+            .validate()
+            .unwrap();
+
+            // Each flow's sequence numbers and the rounds they were sent in.
+            let mut flows: BTreeMap<u64, Vec<(u64, u64)>> = BTreeMap::new();
+            for k in 0..schedule.packets() {
+                let slot = schedule.slot(k).unwrap();
+                flows
+                    .entry(slot.flow)
+                    .or_default()
+                    .push((slot.seq, k / window));
+            }
+            assert!(schedule.slot(schedule.packets()).is_none());
+            assert_eq!(flows.len() as u64, schedule.flows());
+            assert_eq!(
+                flows.keys().copied().collect::<Vec<_>>(),
+                (0..schedule.flows()).collect::<Vec<_>>()
+            );
+            for (flow, sent) in &flows {
+                let first_round = sent[0].1;
+                for (i, &(seq, round)) in sent.iter().enumerate() {
+                    assert_eq!(seq, i as u64, "flow {flow} skipped or repeated a packet");
+                    assert_eq!(round, first_round + i as u64, "flow {flow} sat a round out");
+                }
+            }
+            for round in 0..rounds {
+                let distinct: BTreeSet<u64> = (round * window..(round + 1) * window)
+                    .map(|k| schedule.slot(k).unwrap().flow)
+                    .collect();
+                assert_eq!(distinct.len() as u64, window);
+            }
+        });
+}
+
+#[test]
+fn churn_beyond_the_window_is_refused() {
+    let schedule = crate::schedule::Schedule {
+        window: 4,
+        churn: 5,
+        rounds: 2,
+    };
+    assert!(schedule.validate().is_err());
+}
