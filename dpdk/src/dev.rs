@@ -36,6 +36,8 @@ mod reta;
 pub use reta::RetaError;
 #[cfg(test)]
 mod queue_tests;
+#[cfg(feature = "ring")]
+pub mod ring;
 #[cfg(test)]
 mod rss_tests;
 
