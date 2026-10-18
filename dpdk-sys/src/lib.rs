@@ -18,6 +18,15 @@
 )]
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
+/// Choices DPDK made when it was built, that its bindings cannot express.
+pub mod build_config {
+    /// Whether DPDK was built to wait with WFET on 64-bit ARM (`RTE_ARM_FEATURE_WFXT`).
+    ///
+    /// Runtime CPU support alone is insufficient: the DPDK build must emit the instruction.
+    /// This boolean is always available, including when the macro is absent from the bindings.
+    pub const RTE_ARM_FEATURE_WFXT: bool = cfg!(rte_arm_feature_wfxt);
+}
+
 /// Stable accessors for ACL enum values that DPDK declares in anonymous enums.
 ///
 /// Bindgen names each anonymous enum after its discovery order
