@@ -255,3 +255,21 @@ fn bounds_are_inclusive_and_open_where_unset() {
     assert!(Bound::at_most(3).admits(0));
     assert!(Bound::default().admits(42));
 }
+
+#[test]
+fn counters_since_a_baseline_leave_gauges_alone() {
+    let baseline = Sample::new().counter("a", 10).counter("b", 3).gauge("g", 7);
+    let now = Sample::new()
+        .counter("a", 15)
+        .counter("c", 4)
+        .gauge("g", 9)
+        .merge(Sample::new().counter("b", 3));
+    let since = now.since(&baseline);
+    assert_eq!(since.counters["a"], 5);
+    assert_eq!(since.counters["b"], 0);
+    assert_eq!(
+        since.counters["c"], 4,
+        "a counter new since the baseline is all new"
+    );
+    assert_eq!(since.gauges["g"], 9);
+}

@@ -159,6 +159,26 @@ impl Sample {
         self.gauges.insert(path.into(), value);
         self
     }
+
+    /// With every counter and gauge of `other` too; `other`'s win where both have one.
+    #[must_use]
+    pub fn merge(mut self, other: Sample) -> Sample {
+        self.counters.extend(other.counters);
+        self.gauges.extend(other.gauges);
+        self
+    }
+
+    /// Counters since `baseline` was taken: each less its value there, or as it is if `baseline`
+    /// has none. Gauges are instantaneous and left as they are.
+    #[must_use]
+    pub fn since(mut self, baseline: &Sample) -> Sample {
+        for (path, total) in &mut self.counters {
+            if let Some(before) = baseline.counters.get(path) {
+                *total = total.saturating_sub(*before);
+            }
+        }
+        self
+    }
 }
 
 /// How a check, a case or a run came out, from best to worst.
