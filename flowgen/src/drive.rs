@@ -65,7 +65,7 @@ pub struct Load<'s, 'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ending {
     /// Everything every stream sent came back; and if any stream should have had nothing back,
-    /// the quiet period passed after the last packet was sent.
+    /// the quiet period passed after the last packet was sent and the last came back.
     AllBack,
     /// Everything was sent, and then nothing came back for the quiet period.
     Quiet,
@@ -77,7 +77,8 @@ pub enum Ending {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Patience {
     /// How long, once everything is sent, to wait for the rest to come back after the last did;
-    /// and how long after the last packet is sent to wait for any that should not come back.
+    /// and how long after the last packet is sent, and the last came back, to wait for any that
+    /// should not come back.
     pub quiet: Duration,
     /// The longest the whole run may take.
     pub limit: Duration,
@@ -158,8 +159,12 @@ pub fn run(
         if held && agents_done && load.senders.iter().all(|(_, sender)| sender.done()) {
             if ledgers.all_back() {
                 // Nothing is missing; but a stream that should have nothing back is only known to
-                // have had nothing once the quiet has passed after its last packet.
-                if !ledgers.awaits_silence() || clock::elapsed(last_sent) > patience.quiet {
+                // have had nothing once the quiet has passed after its last packet, and after the
+                // last of anything that did come back: a gateway still working through a backlog
+                // is not yet silent.
+                let silent = clock::elapsed(last_sent) > patience.quiet
+                    && clock::elapsed(last_heard) > patience.quiet;
+                if !ledgers.awaits_silence() || silent {
                     break Ending::AllBack;
                 }
             } else if clock::elapsed(last_heard) > patience.quiet {

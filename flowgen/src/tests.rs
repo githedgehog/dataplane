@@ -502,51 +502,6 @@ fn a_stream_expecting_nothing_waits_out_the_quiet_and_counts_escapes() {
     }
 }
 
-/// One of every kind of change, chosen by `kind`, its values drawn from `a` and `b`.
-fn change(kind: u8, a: u16, b: u32) -> crate::mutate::Change {
-    use crate::mutate::Change;
-
-    let mac = {
-        let [b0, b1, b2, b3] = b.to_be_bytes();
-        let [a0, a1] = a.to_be_bytes();
-        [b0, b1, b2, b3, a0, a1]
-    };
-    let addr = Ipv4Addr::from(b);
-    let [lo, _] = a.to_le_bytes();
-    let delta = i16::from_le_bytes(a.to_le_bytes());
-    match kind % 26 {
-        0 => Change::SourceMac { mac },
-        1 => Change::DestinationMac { mac },
-        2 => Change::EtherType { ethertype: a },
-        3 => Change::VlanTag { vid: a },
-        4 => Change::Truncate { len: a % 200 },
-        5 => Change::Padding { bytes: a % 64 },
-        6 => Change::IpVersion { version: lo },
-        7 => Change::HeaderLength { words: lo },
-        8 => Change::TotalLength { delta },
-        9 => Change::IpOptions { words: lo % 11 },
-        10 => Change::IpChecksum,
-        11 => Change::Ttl { ttl: lo },
-        12 => Change::Protocol { protocol: lo },
-        13 => Change::SourceIp { addr },
-        14 => Change::DestinationIp { addr },
-        15 => Change::Fragment {
-            more: a & 1 == 1,
-            offset: a >> 1,
-        },
-        16 => Change::L4Checksum,
-        17 => Change::UdpChecksumZero,
-        18 => Change::UdpLength { delta },
-        19 => Change::TcpDataOffset { words: lo },
-        20 => Change::TcpFlags { flags: lo },
-        21 => Change::SourcePort { port: a },
-        22 => Change::DestinationPort { port: a },
-        23 => Change::VxlanFlags { flags: lo },
-        24 => Change::VxlanReserved,
-        _ => Change::Vni { vni: b },
-    }
-}
-
 /// `spec`, mutated in `layer` by `change`.
 fn mutated(
     vxlan: bool,
@@ -581,7 +536,8 @@ fn any_mutation_builds_and_stamps_and_keeps_its_tunnel_sound() {
                 Transport::Udp
             };
             let layer = if *outer { Layer::Outer } else { Layer::Inner };
-            let change = change(*kind, *a, *b);
+            let bits = u64::from(*kind) | u64::from(*a) << 16 | u64::from(*b) << 32;
+            let change = Mutation::from_bits(bits).change;
             let spec = mutated(*vxlan, transport, layer, change);
             let mutation = Mutation { layer, change };
             if mutation.check(&spec).is_err() {
@@ -784,4 +740,23 @@ fn the_catalog_is_well_formed() {
         let spec = mutated(true, transport, entry.mutation.layer, entry.mutation.change);
         assert_eq!(entry.mutation.check(&spec), Ok(()), "{}", entry.id);
     }
+}
+
+/// A seeded sequence of mutations is the same every time, and soon ranges over every kind of
+/// change, in both layers.
+#[test]
+fn seeded_mutations_repeat_and_range_widely() {
+    use crate::mutate::{Layer, Mutations};
+
+    let first: Vec<_> = Mutations::seeded(7).take(1000).collect();
+    let again: Vec<_> = Mutations::seeded(7).take(1000).collect();
+    assert_eq!(first, again);
+    assert_ne!(first, Mutations::seeded(8).take(1000).collect::<Vec<_>>());
+    let kinds: std::collections::HashSet<_> = first
+        .iter()
+        .map(|m| std::mem::discriminant(&m.change))
+        .collect();
+    assert_eq!(kinds.len(), 26, "every kind of change");
+    assert!(first.iter().any(|m| m.layer == Layer::Outer));
+    assert!(first.iter().any(|m| m.layer == Layer::Inner));
 }
