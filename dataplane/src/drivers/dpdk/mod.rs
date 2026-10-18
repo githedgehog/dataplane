@@ -7,8 +7,9 @@
 //! receiving thread. Queue handles borrow their devices; mbufs borrow the EAL.
 //!
 //! RSS spreads flows across per-worker queues. Flow state is shared across workers.
-//! Ports need a kernel netdev because the pipeline identifies interfaces by ifindex.
-//! Forwarding runs in software; control frames cross per-port TAPs through [`cpbridge`](crate::drivers::cpbridge).
+//! The pipeline identifies a port by its tap's ifindex; a port without a tap needs a kernel netdev.
+//! A [`PortSource`] is where a port's device comes from, which is all that differs between kinds.
+//! Forwarding runs in software; control frames cross per-port TAPs through [`cpbridge`].
 //!
 //! A control worker owns one more queue pair per port, which the data workers' RSS does not reach:
 //! it receives the control plane's traffic there and transmits what the kernel sends.
@@ -17,6 +18,7 @@ mod classes;
 mod control;
 mod placement;
 mod port;
+mod source;
 mod worker;
 
 use std::convert::Infallible;
@@ -43,7 +45,8 @@ use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
 use control::{ControlPort, ControlWorker};
 use placement::{Placement, pin};
-pub(crate) use port::{Port, report_links};
+pub(crate) use port::Port;
+pub(crate) use source::{PciPort, PortSettings, bring_up_ports};
 use worker::{Worker, WorkerPort};
 
 trace_target!("dpdk-driver", LevelFilter::INFO, &["driver"]);
