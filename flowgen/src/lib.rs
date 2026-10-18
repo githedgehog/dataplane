@@ -42,6 +42,7 @@ pub mod catalog;
 mod checksum;
 pub mod drive;
 pub mod frame;
+pub mod host;
 pub mod ledger;
 pub mod mutate;
 #[cfg(feature = "dpdk")]

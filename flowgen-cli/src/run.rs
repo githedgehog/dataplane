@@ -126,6 +126,20 @@ fn agents(scenario: &Scenario, now_ns: u64) -> Vec<Box<dyn Agent>> {
                     *endpoints,
                     Session::new(*session, now_ns),
                 )),
+                AgentSpec::Host {
+                    name,
+                    mac,
+                    addresses,
+                    announce_every,
+                } => Box::new(flowgen::host::Host::new(
+                    name,
+                    0,
+                    flowgen::host::Config {
+                        mac: *mac,
+                        addresses: addresses.clone(),
+                        announce_every: (!announce_every.is_zero()).then_some(*announce_every),
+                    },
+                )),
                 AgentSpec::Tcp {
                     name,
                     addressing,

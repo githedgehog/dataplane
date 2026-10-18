@@ -132,6 +132,21 @@ pub enum AgentSpec {
         /// Its session.
         session: bfd::Config,
     },
+    /// The generating host's own network stack, as far as the switch needs one: it answers ARP
+    /// for the streams' addresses on their VLANs, announces them, and takes other link traffic
+    /// (`host.<name>.*`). Needed on a real port, where the kernel sees nothing.
+    Host {
+        /// Its name, under which it reports.
+        name: String,
+        /// The port's MAC.
+        #[serde(with = "flowgen::frame::mac_text")]
+        mac: flowgen::frame::Mac,
+        /// The addresses it answers for.
+        addresses: Vec<flowgen::host::Address>,
+        /// How often to announce them again after the first time; never, if zero.
+        #[serde(default, with = "duration_text")]
+        announce_every: Duration,
+    },
     /// A smoltcp host.
     Tcp {
         /// Its name, under which it reports (`tcp.<name>.*`, and `bgp.<name>.*` for a BGP speaker).
@@ -283,6 +298,7 @@ impl Scenario {
         for agent in &self.agents {
             let (kind, name) = match agent {
                 AgentSpec::Bfd { name, .. } => ("bfd", name),
+                AgentSpec::Host { name, .. } => ("host", name),
                 AgentSpec::Tcp { name, .. } => ("tcp", name),
             };
             if !agents.insert((kind, name.clone())) {
