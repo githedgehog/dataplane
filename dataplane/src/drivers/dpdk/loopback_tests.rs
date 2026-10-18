@@ -23,6 +23,10 @@ use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use dpdk::socket::Preference;
 use flow_entry::flow_table::FlowTable;
+use flowgen::frame::{FrameSpec, Vxlan as GeneratedVxlan};
+use flowgen::ledger::Ledger;
+use flowgen::port::{Clock, Ending, Patience, Sender, Stream, run as generate};
+use flowgen::space::{Addresses, FlowSpace, Order, Ports, SpaceSpec};
 use flowgen_report::{
     Bound, Build, Case, Environment, Evidence, Header, Port as ReportPort, Report, Sample, Status,
 };
@@ -80,7 +84,9 @@ impl<'eal> FarEnd<'eal> {
                 PoolConfig::new(
                     "far_end",
                     PoolParams {
-                        size: 1023,
+                        // Ring ports pass mbufs across rather than copying, so the far end's pool
+                        // backs every frame in flight in both directions.
+                        size: 8191,
                         ..Default::default()
                     },
                 )
@@ -645,5 +651,197 @@ fn a_tunnelled_frame_makes_a_round_trip_through_the_pipeline() {
             ("one-frame-out", "port.loop0.tx_packets", Bound::exactly(1)),
             ("none-missed", "port.loop0.rx_missed", Bound::exactly(0)),
         ],
+    );
+}
+
+/// The fixture gateway, built as the pipeline tests build it.
+fn fixture_gateway() -> (Gateway, impl Sized) {
+    let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+    let overlay = overlay_with_exposes_and_acl(exposes(), None)
+        .unwrap()
+        .validate()
+        .unwrap();
+    let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+    let workers = NonZeroUsize::new(usize::from(WORKERS)).unwrap();
+    let (pipeline, upkeep) = fleet.ingredients(&tables, workers);
+    let gateway = Gateway {
+        mac: GATEWAY_MAC,
+        index: uplink(),
+        pipeline: Some(pipeline),
+    };
+    (gateway, (tables, fleet, upkeep))
+}
+
+/// Flows the many-flows test sends.
+const FLOWS: usize = 2000;
+
+/// Two thousand flows, a few packets each, from the local VPC through the fixture gateway: every
+/// packet comes back, masqueraded into the pool, each flow the same way every time and no two
+/// flows the same way.
+#[test]
+fn many_flows_come_back_masqueraded_and_distinct() {
+    over_cable(
+        "many_flows_come_back_masqueraded_and_distinct",
+        fixture_gateway,
+        |far, _kernel, case| {
+            let stream = many_flows();
+            let run = 1;
+            let mut ledger = Ledger::new(run, FLOWS);
+            let data_queues = usize::from(WORKERS);
+            let mut sender = Sender::new(stream.clone(), run, data_queues);
+            let clock = Clock::start();
+            let ending = generate(
+                &mut sender,
+                &mut far.tx[..data_queues],
+                &mut far.rx,
+                &far.pool,
+                &mut ledger,
+                &clock,
+                Patience {
+                    quiet: Duration::from_secs(1),
+                    limit: PATIENCE,
+                },
+            );
+            case.sample(ledger.sample(&stream.name, Sample::new()))
+                .expect("the report should take the sample");
+            expect(
+                case,
+                "all-back",
+                "everything sent comes back before the time allowed runs out",
+                ending == Ending::AllBack,
+                || {
+                    let mut evidence = vec![Evidence::text(format!("{ending:?}"))];
+                    evidence.extend_from_slice(ledger.evidence());
+                    evidence
+                },
+            );
+            check_ledger(case, &stream, &ledger);
+            check_translations(case, &stream, &ledger);
+        },
+        &[("none-missed", "port.loop0.rx_missed", Bound::exactly(0))],
+    );
+}
+
+/// The stream the many-flows test sends: [`FLOWS`] flows from the local VPC to the remote one, four
+/// packets each, tunnelled from the peer VTEP.
+fn many_flows() -> Stream {
+    let space = FlowSpace::new(SpaceSpec {
+        src: Addresses {
+            first: "1.1.0.1".parse().unwrap(),
+            count: 1000,
+        },
+        dst: Addresses {
+            first: "3.3.3.1".parse().unwrap(),
+            count: 4,
+        },
+        sport: Ports {
+            first: 1024,
+            count: 8,
+        },
+        dport: Ports {
+            first: 80,
+            count: 1,
+        },
+        order: Order::Shuffled(0x5eed),
+    })
+    .unwrap();
+    Stream {
+        name: "flows".to_string(),
+        space,
+        flows: FLOWS,
+        frame: FrameSpec {
+            src_mac: [0x02, 0, 0, 0, 1, 1],
+            // The gateway takes inner frames addressed to its VTEP's MAC.
+            dst_mac: GATEWAY_MAC.0,
+            vxlan: Some(GeneratedVxlan {
+                vni: LOCAL_VNI,
+                src_mac: PEER_MAC.0,
+                dst_mac: GATEWAY_MAC.0,
+                src: PEER_VTEP.parse().unwrap(),
+                dst: LOCAL_VTEP.parse().unwrap(),
+            }),
+            payload_len: 64,
+            ttl: 64,
+        },
+        packets_per_flow: 4,
+        rate_pps: None,
+    }
+}
+
+/// Check the ledger's counters: everything sent, and back, unharmed and translated stably.
+fn check_ledger(case: &mut TestCase<'_>, stream: &Stream, ledger: &Ledger) {
+    let totals = ledger.sample(&stream.name, Sample::new()).counters;
+    for (id, counter, bound) in [
+        ("all-sent", "sent", Bound::exactly(FLOWS as u64 * 4)),
+        ("none-lost", "lost", Bound::exactly(0)),
+        (
+            "every-flow-back",
+            "flows_returned",
+            Bound::exactly(FLOWS as u64),
+        ),
+        ("none-foreign", "foreign", Bound::exactly(0)),
+        ("no-bad-ip-checksums", "bad_ip_checksum", Bound::exactly(0)),
+        (
+            "no-bad-udp-checksums",
+            "bad_udp_checksum",
+            Bound::exactly(0),
+        ),
+        ("none-corrupt", "corrupt", Bound::exactly(0)),
+        ("stable-translations", "unstable", Bound::exactly(0)),
+    ] {
+        let path = format!("generator.{}.{counter}", stream.name);
+        let observed = totals.get(&path).copied();
+        let evidence = if observed.is_some_and(|n| bound.admits(n)) {
+            Vec::new()
+        } else {
+            ledger.evidence().to_vec()
+        };
+        case.expect_counter(id, path, bound, observed, evidence)
+            .expect("the report should take the check");
+    }
+}
+
+/// Check how each flow came back: masqueraded into 2.2.0.0/16, to the same destination, in the
+/// remote VPC's VNI, and as no other flow did.
+fn check_translations(case: &mut TestCase<'_>, stream: &Stream, ledger: &Ledger) {
+    let mut wrong = Vec::new();
+    let mut seen = std::collections::HashMap::new();
+    let mut collisions = Vec::new();
+    for n in 0..stream.flows {
+        let sent = stream.space.flow(n as u64);
+        let Some(back) = ledger.returned_as(n) else {
+            continue;
+        };
+        let translated = back.tuple.src.octets()[..2] == [2, 2]
+            && back.tuple.dst == sent.dst
+            && back.tuple.dport == sent.dport
+            && back.tunnel.map(|(vni, _, _)| vni) == Some(REMOTE_VNI);
+        if !translated {
+            wrong.push(Evidence::text(format!(
+                "flow {n}: sent as {sent:?}, came back as {back:?}"
+            )));
+        }
+        if let Some(other) = seen.insert(back.tuple, n) {
+            collisions.push(Evidence::text(format!(
+                "flows {other} and {n} both came back as {:?}",
+                back.tuple
+            )));
+        }
+    }
+    let ok = wrong.is_empty();
+    expect(
+        case,
+        "masqueraded",
+        "every flow comes back from 2.2.0.0/16, to its own destination, in the remote VPC",
+        ok,
+        || wrong,
+    );
+    let ok = collisions.is_empty();
+    expect(
+        case,
+        "distinct-translations",
+        "no two flows come back with the same addresses and ports",
+        ok,
+        || collisions,
     );
 }

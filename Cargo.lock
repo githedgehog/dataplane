@@ -1377,6 +1377,7 @@ dependencies = [
  "dataplane-errno",
  "dataplane-flow-entry",
  "dataplane-flow-filter",
+ "dataplane-flowgen",
  "dataplane-flowgen-report",
  "dataplane-hardware",
  "dataplane-id",
