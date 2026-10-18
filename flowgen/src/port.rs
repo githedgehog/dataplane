@@ -3,6 +3,7 @@
 
 //! Sending a stream on DPDK queues and accounting for what comes back on them.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use dpdk::mem::{MBUF_BURST, MbufArray, Pool};
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::frame::{FrameSpec, Template};
 use crate::ledger::Ledger;
+use crate::schedule::{Schedule, Slot};
 use crate::space::{self, FlowSpace};
 
 /// What a stream sends.
@@ -22,12 +24,10 @@ pub struct Stream {
     pub name: String,
     /// The flows it draws from.
     pub space: FlowSpace,
-    /// How many of them it sends: flows `0..flows` of the space.
-    pub flows: usize,
+    /// Which flows it sends to, when: flows `0..schedule.flows()` of the space.
+    pub schedule: Schedule,
     /// How every frame is built.
     pub frame: FrameSpec,
-    /// Packets sent per flow. Flows take turns: packet 0 of every flow, then packet 1, and so on.
-    pub packets_per_flow: u64,
     /// The most packets a second, or as fast as the queues take them if `None`.
     pub rate_pps: Option<u64>,
 }
@@ -50,17 +50,67 @@ impl Clock {
     }
 }
 
+/// The templates of the flows in a stream's current window, built as flows enter it and dropped
+/// as they leave, so that a stream of millions of flows holds only a window's worth.
+struct Templates {
+    frame: FrameSpec,
+    space: FlowSpace,
+    run: u32,
+    queues: usize,
+    /// The flow number of the front template.
+    base: u64,
+    window: VecDeque<(Template, usize)>,
+    /// A retired flow's template, rebuilt for a retry.
+    spare: Option<(Template, usize)>,
+}
+
+impl Templates {
+    fn build(&self, flow: u64) -> (Template, usize) {
+        let tuple = self.space.flow(flow);
+        let queue = space::hash(&tuple) % self.queues.max(1) as u64;
+        (
+            Template::new(&self.frame, self.run, flow, &tuple),
+            usize::try_from(queue).unwrap_or(0),
+        )
+    }
+
+    /// Drop the templates of flows below `flow`.
+    fn retire(&mut self, flow: u64) {
+        while self.base < flow && self.window.pop_front().is_some() {
+            self.base += 1;
+        }
+        self.base = self.base.max(flow);
+    }
+
+    /// Stamp `slot`'s flow's template as `slot`, sent at `tx_ns`; return the frame and its queue.
+    ///
+    /// A flow already retired -- a retry, refused by a full queue as the window moved on -- has
+    /// its template built afresh.
+    fn stamp(&mut self, slot: Slot, tx_ns: u64) -> (&[u8], usize) {
+        let entry = if slot.flow < self.base {
+            &mut *self.spare.insert(self.build(slot.flow))
+        } else {
+            while slot.flow >= self.base + self.window.len() as u64 {
+                let next = self.build(self.base + self.window.len() as u64);
+                self.window.push_back(next);
+            }
+            let at = usize::try_from(slot.flow - self.base).unwrap_or(usize::MAX);
+            &mut self.window[at]
+        };
+        entry.0.stamp(slot.seq, tx_ns);
+        (entry.0.bytes(), entry.1)
+    }
+}
+
 /// Sends a [`Stream`], spreading its flows over transmit queues the way RSS would spread them
 /// over a receiver's.
 pub struct Sender {
     stream: Stream,
-    templates: Vec<Template>,
-    /// Each flow's queue.
-    queue_of: Vec<usize>,
-    /// The next packet to send: `(seq, flow)`.
-    next: (u64, usize),
+    templates: Templates,
+    /// The next packet to send.
+    next: u64,
     /// Packets a full queue refused, to send before anything new.
-    retry: Vec<(u64, usize)>,
+    retry: Vec<Slot>,
     started: Option<Instant>,
 }
 
@@ -68,20 +118,19 @@ impl Sender {
     /// A sender for `stream` in run `run`, over `queues` transmit queues.
     #[must_use]
     pub fn new(stream: Stream, run: u32, queues: usize) -> Sender {
-        let flows = stream.flows;
-        let mut templates = Vec::with_capacity(flows);
-        let mut queue_of = Vec::with_capacity(flows);
-        for n in 0..flows {
-            let tuple = stream.space.flow(n as u64);
-            templates.push(Template::new(&stream.frame, run, n as u64, &tuple));
-            let queue = space::hash(&tuple) % queues.max(1) as u64;
-            queue_of.push(usize::try_from(queue).unwrap_or(0));
-        }
+        let templates = Templates {
+            frame: stream.frame,
+            space: stream.space,
+            run,
+            queues,
+            base: 0,
+            window: VecDeque::new(),
+            spare: None,
+        };
         Sender {
             stream,
             templates,
-            queue_of,
-            next: (0, 0),
+            next: 0,
             retry: Vec::new(),
             started: None,
         }
@@ -96,20 +145,22 @@ impl Sender {
     /// Whether every packet has been sent.
     #[must_use]
     pub fn done(&self) -> bool {
-        self.retry.is_empty()
-            && (self.stream.flows == 0 || self.next.0 >= self.stream.packets_per_flow)
+        self.retry.is_empty() && self.next >= self.stream.schedule.packets()
     }
 
     /// The next packets to send, at most `max`, retries first.
-    fn take(&mut self, max: usize) -> Vec<(u64, usize)> {
+    fn take(&mut self, max: usize) -> Vec<Slot> {
         let mut out: Vec<_> = self.retry.drain(..self.retry.len().min(max)).collect();
-        while out.len() < max && self.next.0 < self.stream.packets_per_flow && self.stream.flows > 0
-        {
-            out.push(self.next);
-            self.next.1 += 1;
-            if self.next.1 == self.stream.flows {
-                self.next = (self.next.0 + 1, 0);
-            }
+        while out.len() < max {
+            let Some(slot) = self.stream.schedule.slot(self.next) else {
+                break;
+            };
+            out.push(slot);
+            self.next += 1;
+        }
+        if let Some(window) = self.next.checked_div(self.stream.schedule.window) {
+            self.templates
+                .retire(self.stream.schedule.window_start(window));
         }
         out
     }
@@ -147,23 +198,21 @@ impl Sender {
             self.retry.extend(packets);
             return 0;
         };
-        let mut by_queue: Vec<(MbufArray<'d>, Vec<(u64, usize)>)> = (0..queues.len())
+        let mut by_queue: Vec<(MbufArray<'d>, Vec<Slot>)> = (0..queues.len())
             .map(|_| (MbufArray::new_empty(), Vec::new()))
             .collect();
-        for (mbuf, &(seq, flow)) in mbufs.drain_all().zip(&packets) {
+        for (mbuf, &slot) in mbufs.drain_all().zip(&packets) {
             let mut mbuf = mbuf;
-            let template = &mut self.templates[flow];
-            template.stamp(seq, clock.now_ns());
-            let bytes = template.bytes();
+            let (bytes, queue) = self.templates.stamp(slot, clock.now_ns());
             let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
             match mbuf.append(len) {
                 Ok(room) => room.copy_from_slice(bytes),
                 Err(_) => continue, // the template outgrew the mbuf: a misconfigured stream
             }
-            let queue = self.queue_of[flow].min(queues.len().saturating_sub(1));
+            let queue = queue.min(queues.len().saturating_sub(1));
             let (batch, sent) = &mut by_queue[queue];
             if batch.try_push(mbuf).is_ok() {
-                sent.push((seq, flow));
+                sent.push(slot);
             }
         }
         let mut total = 0;
@@ -171,8 +220,8 @@ impl Sender {
             let offered = batch.len();
             let refused = queue.transmit(batch).len();
             let accepted = offered - refused;
-            for &(_, flow) in &packets[..accepted] {
-                ledger.sent(flow);
+            for slot in &packets[..accepted] {
+                ledger.sent(usize::try_from(slot.flow).unwrap_or(usize::MAX));
             }
             self.retry.extend_from_slice(&packets[accepted..]);
             total += accepted;
@@ -215,34 +264,51 @@ pub struct Patience {
     pub limit: Duration,
 }
 
-/// Send `sender`'s stream on `tx` and count what comes back on `rx`, until everything sent has
-/// come back or `patience` runs out.
-pub fn run<'d>(
+/// The queues a stream is sent and received on, and the pool its frames come from.
+pub struct Queues<'q, 'd> {
+    /// Where frames are sent.
+    pub tx: &'q mut [TxQueue<'d>],
+    /// Where they come back.
+    pub rx: &'q mut [RxQueue<'d>],
+    /// What they are built in.
+    pub pool: &'q Pool<'d>,
+}
+
+/// Send `sender`'s stream and count what comes back, until everything sent has come back or
+/// `patience` runs out. `sample` is shown the ledger every `every`, and once more at the end.
+pub fn run(
     sender: &mut Sender,
-    tx: &mut [TxQueue<'d>],
-    rx: &mut [RxQueue<'d>],
-    pool: &Pool<'d>,
+    queues: &mut Queues<'_, '_>,
     ledger: &mut Ledger,
     clock: &Clock,
     patience: Patience,
+    every: Duration,
+    mut sample: impl FnMut(&Ledger),
 ) -> Ending {
     let started = clock::now();
     let mut last_heard = clock::now();
-    loop {
-        sender.send(tx, pool, ledger, clock);
-        if receive(rx, ledger, clock) > 0 {
+    let mut last_sample = clock::now();
+    let ending = loop {
+        sender.send(queues.tx, queues.pool, ledger, clock);
+        if receive(queues.rx, ledger, clock) > 0 {
             last_heard = clock::now();
+        }
+        if clock::elapsed(last_sample) >= every {
+            sample(ledger);
+            last_sample = clock::now();
         }
         if sender.done() {
             if ledger.total_received() >= ledger.total_sent() {
-                return Ending::AllBack;
+                break Ending::AllBack;
             }
             if clock::elapsed(last_heard) > patience.quiet {
-                return Ending::Quiet;
+                break Ending::Quiet;
             }
         }
         if clock::elapsed(started) > patience.limit {
-            return Ending::OutOfTime;
+            break Ending::OutOfTime;
         }
-    }
+    };
+    sample(ledger);
+    ending
 }

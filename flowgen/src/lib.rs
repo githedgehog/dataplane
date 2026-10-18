@@ -17,6 +17,7 @@
 //! - [`space`]: the flows a stream can send, numbered, so that a million of them need no table.
 //! - [`frame`]: building each flow's frame once and stamping it per packet; reading frames back.
 //! - [`signature`]: what every packet's payload carries to name its flow and place.
+//! - [`schedule`]: which flow each packet belongs to, as a window of flows slides on (churn).
 //! - [`ledger`]: what was sent against what came back: loss, reordering, latency, and whether
 //!   each flow came back the same way every time.
 //! - `port` (with the `dpdk` feature): sending a stream on DPDK queues and receiving on them.
@@ -29,6 +30,7 @@ pub mod frame;
 pub mod ledger;
 #[cfg(feature = "dpdk")]
 pub mod port;
+pub mod schedule;
 pub mod signature;
 pub mod space;
 
