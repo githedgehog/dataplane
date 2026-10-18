@@ -55,7 +55,6 @@ fn packet_for(summary: &PacketSummary) -> Option<Packet<TestBuffer>> {
     meta.src_vpcd = Some(VpcDiscriminant::from_vni(summary.src_vni));
     meta.dst_vpcd = Some(VpcDiscriminant::from_vni(summary.dst_vni));
     meta.set_overlay(true);
-    meta.set_keep(true);
     Some(packet)
 }
 
