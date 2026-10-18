@@ -21,18 +21,23 @@
 //! - [`ledger`]: what was sent against what came back: loss, reordering, latency, and whether
 //!   each flow came back the same way every time.
 //! - [`prometheus`]: reading the gateway's own telemetry into a report sample.
-//! - `port` (with the `dpdk` feature): sending a stream on DPDK queues and receiving on them.
+//! - [`sender`]: what a stream sends, paced, frame by frame.
+//! - [`drive`]: sending several streams at once, each over its own [`drive::Wire`], and counting
+//!   what comes back on any of them.
+//! - `port` (with the `dpdk` feature): DPDK queues as a wire.
 //!
 //! Frames are built and read by this crate's own code, not the dataplane's, so that the two
 //! cannot agree on a bug.
 
 mod checksum;
+pub mod drive;
 pub mod frame;
 pub mod ledger;
 #[cfg(feature = "dpdk")]
 pub mod port;
 pub mod prometheus;
 pub mod schedule;
+pub mod sender;
 pub mod signature;
 pub mod space;
 
