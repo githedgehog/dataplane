@@ -374,6 +374,7 @@ fn a_full_port_drops_or_defers_as_the_stream_says() {
             frame: spec(false, 64),
             rate_pps: None,
             when_full,
+            returns: crate::sender::Returns::Everything,
         };
         let mut ledger = Ledger::new(1, 1);
         let mut sender = Sender::new(stream, 1, 1);
@@ -400,5 +401,102 @@ fn a_full_port_drops_or_defers_as_the_stream_says() {
                 assert_eq!(again, first[2..].to_vec());
             }
         }
+    }
+}
+
+/// A wire that hands back whatever is sent on it, or swallows it.
+struct Mirror {
+    swallow: bool,
+    pending: Vec<Vec<u8>>,
+}
+
+impl crate::drive::Wire for Mirror {
+    fn send(
+        &mut self,
+        sender: &mut crate::sender::Sender,
+        ledger: &mut Ledger,
+        clock: &crate::sender::Clock,
+    ) -> usize {
+        let slots = sender.plan(ledger.total_offered());
+        for &slot in &slots {
+            let (frame, _) = sender.stamp(slot, clock.now_ns());
+            if !self.swallow {
+                self.pending.push(frame.to_vec());
+            }
+            sender.accepted(slot, ledger);
+        }
+        slots.len()
+    }
+
+    fn send_frame(&mut self, frame: &[u8]) -> bool {
+        self.pending.push(frame.to_vec());
+        true
+    }
+
+    fn receive(&mut self, deliver: &mut dyn FnMut(&[u8])) -> usize {
+        let n = self.pending.len();
+        for frame in self.pending.drain(..) {
+            deliver(&frame);
+        }
+        n
+    }
+}
+
+/// A stream that should have nothing back ends its run once the quiet period has passed after its
+/// last packet, and whatever does come back is counted as received: it escaped.
+#[test]
+fn a_stream_expecting_nothing_waits_out_the_quiet_and_counts_escapes() {
+    use std::time::Duration;
+
+    use crate::drive::{Ending, Load, Patience, run};
+    use crate::ledger::Ledgers;
+    use crate::schedule::Schedule;
+    use crate::sender::{Clock, Returns, Sender, Stream, WhenFull};
+
+    let quiet = Duration::from_millis(50);
+    for swallow in [true, false] {
+        let stream = Stream {
+            name: "dropped".to_string(),
+            space: space((1, 1, 1, 1, None)),
+            schedule: Schedule::steady(1, 4),
+            frame: spec(false, 64),
+            rate_pps: None,
+            when_full: WhenFull::Retry,
+            returns: Returns::Nothing,
+        };
+        let mut ledgers = Ledgers::new();
+        ledgers.add_stream(&stream, 1);
+        assert!(ledgers.awaits_silence());
+        let mut senders = [(0, Sender::new(stream, 1, 1))];
+        let mut wire = Mirror {
+            swallow,
+            pending: Vec::new(),
+        };
+        let started = clock::now();
+        let ending = run(
+            &mut Load {
+                senders: &mut senders,
+                agents: &mut [],
+            },
+            &mut [&mut wire],
+            &mut ledgers,
+            &Clock::start(),
+            Patience {
+                quiet,
+                limit: Duration::from_secs(10),
+                hold: Duration::ZERO,
+            },
+            Duration::from_secs(1),
+            |_| {},
+        );
+        assert_eq!(ending, Ending::AllBack);
+        assert!(
+            clock::elapsed(started) >= quiet,
+            "the run waited for silence"
+        );
+        let sample = ledgers.sample(flowgen_report::Sample::new());
+        assert_eq!(sample.counters["generator.dropped.sent"], 4);
+        let escaped = if swallow { 0 } else { 4 };
+        assert_eq!(sample.counters["generator.dropped.received"], escaped);
     }
 }

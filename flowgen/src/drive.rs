@@ -64,7 +64,8 @@ pub struct Load<'s, 'a> {
 /// How a [`run`] ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ending {
-    /// Everything every stream sent came back.
+    /// Everything every stream sent came back; and if any stream should have had nothing back,
+    /// the quiet period passed after the last packet was sent.
     AllBack,
     /// Everything was sent, and then nothing came back for the quiet period.
     Quiet,
@@ -75,7 +76,8 @@ pub enum Ending {
 /// How long a [`run`] waits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Patience {
-    /// How long, once everything is sent, to wait for the rest to come back after the last did.
+    /// How long, once everything is sent, to wait for the rest to come back after the last did;
+    /// and how long after the last packet is sent to wait for any that should not come back.
     pub quiet: Duration,
     /// The longest the whole run may take.
     pub limit: Duration,
@@ -103,6 +105,7 @@ pub fn run(
 ) -> Ending {
     let started = clock::now();
     let mut last_heard = clock::now();
+    let mut last_sent = clock::now();
     let mut last_sample = clock::now();
     let snapshot = |ledgers: &Ledgers, agents: &[&mut dyn Agent]| {
         let now = clock.now_ns();
@@ -117,7 +120,9 @@ pub fn run(
             let ledger: &mut Ledger = ledgers
                 .for_run(sender.run())
                 .unwrap_or_else(|| unreachable!("every sender has a ledger"));
-            wires[*wire].send(sender, ledger, clock);
+            if wires[*wire].send(sender, ledger, clock) > 0 {
+                last_sent = clock::now();
+            }
         }
         for agent in load.agents.iter_mut() {
             while let Some(frame) = agent.transmit(clock.now_ns()) {
@@ -152,9 +157,12 @@ pub fn run(
         let agents_done = load.agents.iter().all(|agent| agent.finished());
         if held && agents_done && load.senders.iter().all(|(_, sender)| sender.done()) {
             if ledgers.all_back() {
-                break Ending::AllBack;
-            }
-            if clock::elapsed(last_heard) > patience.quiet {
+                // Nothing is missing; but a stream that should have nothing back is only known to
+                // have had nothing once the quiet has passed after its last packet.
+                if !ledgers.awaits_silence() || clock::elapsed(last_sent) > patience.quiet {
+                    break Ending::AllBack;
+                }
+            } else if clock::elapsed(last_heard) > patience.quiet {
                 break Ending::Quiet;
             }
         }
