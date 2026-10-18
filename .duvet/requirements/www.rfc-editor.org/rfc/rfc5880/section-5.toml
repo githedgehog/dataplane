@@ -1,0 +1,25 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-5"
+
+# BFD Echo Packet Format
+#
+#    BFD Echo packets are sent in an encapsulation appropriate to the
+#    environment.  See the appropriate application documents for the
+#    specifics of particular environments.
+# 
+#    The payload of a BFD Echo packet is a local matter, since only the
+#    sending system ever processes the content.  The only requirement is
+#    that sufficient information is included to demultiplex the received
+#    packet to the correct BFD session after it is looped back to the
+#    sender.  The contents are otherwise outside the scope of this
+#    specification.
+# 
+#    Some form of authentication SHOULD be included, since Echo packets
+#    may be spoofed.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Some form of authentication SHOULD be included, since Echo packets
+may be spoofed.
+'''
+

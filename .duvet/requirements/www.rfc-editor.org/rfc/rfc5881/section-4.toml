@@ -1,0 +1,125 @@
+target = "https://www.rfc-editor.org/rfc/rfc5881#section-4"
+
+# Encapsulation
+#
+#    BFD Control packets MUST be transmitted in UDP packets with
+#    destination port 3784, within an IPv4 or IPv6 packet.  The source
+#    port MUST be in the range 49152 through 65535.  The same UDP source
+#    port number MUST be used for all BFD Control packets associated with
+#    a particular session.  The source port number SHOULD be unique among
+#    all BFD sessions on the system.  If more than 16384 BFD sessions are
+#    simultaneously active, UDP source port numbers MAY be reused on
+#    multiple sessions, but the number of distinct uses of the same UDP
+#    source port number SHOULD be minimized.  An implementation MAY use
+#    the UDP port source number to aid in demultiplexing incoming BFD
+#    Control packets, but ultimately the mechanisms in [BFD] MUST be used
+#    to demultiplex incoming packets to the proper session.
+# 
+#    BFD Echo packets MUST be transmitted in UDP packets with destination
+#    UDP port 3785 in an IPv4 or IPv6 packet.  The setting of the UDP
+#    source port is outside the scope of this specification.  The
+# 
+#    destination address MUST be chosen in such a way as to cause the
+#    remote system to forward the packet back to the local system.  The
+#    source address MUST be chosen in such a way as to preclude the remote
+#    system from generating ICMP or Neighbor Discovery Redirect messages.
+#    In particular, the source address SHOULD NOT be part of the subnet
+#    bound to the interface over which the BFD Echo packet is being
+#    transmitted, and it SHOULD NOT be an IPv6 link-local address, unless
+#    it is known by other means that the remote system will not send
+#    Redirects.
+# 
+#    BFD Echo packets MUST be transmitted in such a way as to ensure that
+#    they are received by the remote system.  On multiaccess media, for
+#    example, this requires that the destination datalink address
+#    corresponds to the remote system.
+# 
+#    The above requirements may require the bypassing of some common IP
+#    layer functionality, particularly in host implementations.
+
+[[spec]]
+level = "MUST"
+quote = '''
+BFD Control packets MUST be transmitted in UDP packets with
+destination port 3784, within an IPv4 or IPv6 packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The source
+port MUST be in the range 49152 through 65535.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The same UDP source
+port number MUST be used for all BFD Control packets associated with
+a particular session.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The source port number SHOULD be unique among
+all BFD sessions on the system.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If more than 16384 BFD sessions are
+simultaneously active, UDP source port numbers MAY be reused on
+multiple sessions, but the number of distinct uses of the same UDP
+source port number SHOULD be minimized.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation MAY use
+the UDP port source number to aid in demultiplexing incoming BFD
+Control packets, but ultimately the mechanisms in [BFD] MUST be used
+to demultiplex incoming packets to the proper session.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+BFD Echo packets MUST be transmitted in UDP packets with destination
+UDP port 3785 in an IPv4 or IPv6 packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+destination address MUST be chosen in such a way as to cause the
+remote system to forward the packet back to the local system.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The
+source address MUST be chosen in such a way as to preclude the remote
+system from generating ICMP or Neighbor Discovery Redirect messages.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+In particular, the source address SHOULD NOT be part of the subnet
+bound to the interface over which the BFD Echo packet is being
+transmitted, and it SHOULD NOT be an IPv6 link-local address, unless
+it is known by other means that the remote system will not send
+Redirects.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+BFD Echo packets MUST be transmitted in such a way as to ensure that
+they are received by the remote system.
+'''
+

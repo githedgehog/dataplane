@@ -10,14 +10,17 @@
 
 use std::net::Ipv4Addr;
 
+use std::time::Duration;
+
 use flowgen::frame::{FrameSpec, Mac as GeneratedMac, Transport, tcp};
 use flowgen::schedule::Schedule;
-use flowgen::sender::{Stream, WhenFull};
+use flowgen::sender::{Clock, Stream, WhenFull};
 use flowgen::space::{Addresses, FlowSpace, Order, Ports, SpaceSpec};
 use flowgen_report::{Bound, Sample};
 
 use super::harness::{
-    Loopback, Side, await_software_classes, check_all_back, drive, fixture_gateway, over_cable,
+    Loopback, Side, Traffic, await_software_classes, check_all_back, drive, fixture_gateway,
+    over_cable,
 };
 use crate::packet_processor::fixture::{GATEWAY_MAC, LOCAL_VTEP, PEER_MAC, PEER_VTEP};
 
@@ -128,8 +131,13 @@ fn control_probes_cross_the_control_path_both_ways() {
                     lb.kernel,
                     lb.probe,
                     &mut case,
-                    &[(side, stream.clone())],
-                    run,
+                    Traffic {
+                        streams: &[(side, stream.clone())],
+                        first_run: run,
+                        agents: &mut [],
+                        hold: Duration::ZERO,
+                        clock: Clock::start(),
+                    },
                 );
                 check_all_back(&mut case, &ledgers, ending);
                 let lost_path = format!("generator.{}.lost", stream.name);

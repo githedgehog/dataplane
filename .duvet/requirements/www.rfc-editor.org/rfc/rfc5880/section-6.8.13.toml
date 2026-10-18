@@ -1,0 +1,30 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.8.13"
+
+# Enabling or Disabling The Echo Function
+#
+#    If it is desired to start or stop the transmission of BFD Echo
+#    packets, this MAY be done at any time (subject to the transmission
+#    requirements detailed in section 6.8.9).
+# 
+#    If it is desired to enable or disable the looping back of received
+#    BFD Echo packets, this MAY be done at any time by changing the value
+#    of Required Min Echo RX Interval to zero or nonzero in outgoing BFD
+#    Control packets.
+
+[[spec]]
+level = "MAY"
+quote = '''
+If it is desired to start or stop the transmission of BFD Echo
+packets, this MAY be done at any time (subject to the transmission
+requirements detailed in section 6.8.9).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+If it is desired to enable or disable the looping back of received
+BFD Echo packets, this MAY be done at any time by changing the value
+of Required Min Echo RX Interval to zero or nonzero in outgoing BFD
+Control packets.
+'''
+

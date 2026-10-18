@@ -1,0 +1,272 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.8.6"
+
+# Reception of BFD Control Packets
+#
+#    When a BFD Control packet is received, the following procedure MUST
+#    be followed, in the order specified.  If the packet is discarded
+#    according to these rules, processing of the packet MUST cease at that
+#    point.
+# 
+#       If the version number is not correct (1), the packet MUST be
+#       discarded.
+# 
+#       If the Length field is less than the minimum correct value (24 if
+#       the A bit is clear, or 26 if the A bit is set), the packet MUST be
+#       discarded.
+# 
+#       If the Length field is greater than the payload of the
+#       encapsulating protocol, the packet MUST be discarded.
+# 
+#       If the Detect Mult field is zero, the packet MUST be discarded.
+# 
+#       If the Multipoint (M) bit is nonzero, the packet MUST be
+#       discarded.
+# 
+#       If the My Discriminator field is zero, the packet MUST be
+#       discarded.
+# 
+#       If the Your Discriminator field is nonzero, it MUST be used to
+#       select the session with which this BFD packet is associated.  If
+#       no session is found, the packet MUST be discarded.
+# 
+#       If the Your Discriminator field is zero and the State field is not
+#       Down or AdminDown, the packet MUST be discarded.
+# 
+#       If the Your Discriminator field is zero, the session MUST be
+#       selected based on some combination of other fields, possibly
+#       including source addressing information, the My Discriminator
+#       field, and the interface over which the packet was received.  The
+#       exact method of selection is application specific and is thus
+#       outside the scope of this specification.  If a matching session is
+#       not found, a new session MAY be created, or the packet MAY be
+#       discarded.  This choice is outside the scope of this
+#       specification.
+# 
+#       If the A bit is set and no authentication is in use (bfd.AuthType
+#       is zero), the packet MUST be discarded.
+# 
+#       If the A bit is clear and authentication is in use (bfd.AuthType
+#       is nonzero), the packet MUST be discarded.
+# 
+#       If the A bit is set, the packet MUST be authenticated under the
+#       rules of section 6.7, based on the authentication type in use
+#       (bfd.AuthType).  This may cause the packet to be discarded.
+# 
+#       Set bfd.RemoteDiscr to the value of My Discriminator.
+# 
+#       Set bfd.RemoteState to the value of the State (Sta) field.
+# 
+#       Set bfd.RemoteDemandMode to the value of the Demand (D) bit.
+# 
+#       Set bfd.RemoteMinRxInterval to the value of Required Min RX
+#       Interval.
+# 
+#       If the Required Min Echo RX Interval field is zero, the
+#       transmission of Echo packets, if any, MUST cease.
+# 
+#       If a Poll Sequence is being transmitted by the local system and
+#       the Final (F) bit in the received packet is set, the Poll Sequence
+#       MUST be terminated.
+# 
+#       Update the transmit interval as described in section 6.8.2.
+# 
+#       Update the Detection Time as described in section 6.8.4.
+# 
+#       If bfd.SessionState is AdminDown
+# 
+#           Discard the packet
+# 
+#       If received state is AdminDown
+#           If bfd.SessionState is not Down
+#               Set bfd.LocalDiag to 3 (Neighbor signaled
+#                   session down)
+#               Set bfd.SessionState to Down
+# 
+#       Else
+# 
+#           If bfd.SessionState is Down
+#               If received State is Down
+#                   Set bfd.SessionState to Init
+#               Else if received State is Init
+#                   Set bfd.SessionState to Up
+# 
+#           Else if bfd.SessionState is Init
+#               If received State is Init or Up
+#                   Set bfd.SessionState to Up
+# 
+#           Else (bfd.SessionState is Up)
+#               If received State is Down
+#                   Set bfd.LocalDiag to 3 (Neighbor signaled
+#                       session down)
+#                   Set bfd.SessionState to Down
+# 
+#       Check to see if Demand mode should become active or not (see
+#       section 6.6).
+# 
+#       If bfd.RemoteDemandMode is 1, bfd.SessionState is Up, and
+#       bfd.RemoteSessionState is Up, Demand mode is active on the remote
+#       system and the local system MUST cease the periodic transmission
+#       of BFD Control packets (see section 6.8.7).
+# 
+#       If bfd.RemoteDemandMode is 0, or bfd.SessionState is not Up, or
+#       bfd.RemoteSessionState is not Up, Demand mode is not active on the
+#       remote system and the local system MUST send periodic BFD Control
+#       packets (see section 6.8.7).
+# 
+#       If the Poll (P) bit is set, send a BFD Control packet to the
+#       remote system with the Poll (P) bit clear, and the Final (F) bit
+#       set (see section 6.8.7).
+# 
+#       If the packet was not discarded, it has been received for purposes
+#       of the Detection Time expiration rules in section 6.8.4.
+
+[[spec]]
+level = "MUST"
+quote = '''
+When a BFD Control packet is received, the following procedure MUST
+be followed, in the order specified.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the packet is discarded
+according to these rules, processing of the packet MUST cease at that
+point.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the version number is not correct (1), the packet MUST be
+discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Length field is less than the minimum correct value (24 if
+the A bit is clear, or 26 if the A bit is set), the packet MUST be
+discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Length field is greater than the payload of the
+encapsulating protocol, the packet MUST be discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Detect Mult field is zero, the packet MUST be discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Multipoint (M) bit is nonzero, the packet MUST be
+discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the My Discriminator field is zero, the packet MUST be
+discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Your Discriminator field is nonzero, it MUST be used to
+select the session with which this BFD packet is associated.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If
+no session is found, the packet MUST be discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Your Discriminator field is zero and the State field is not
+Down or AdminDown, the packet MUST be discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Your Discriminator field is zero, the session MUST be
+selected based on some combination of other fields, possibly
+including source addressing information, the My Discriminator
+field, and the interface over which the packet was received.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+If a matching session is
+not found, a new session MAY be created, or the packet MAY be
+discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the A bit is set and no authentication is in use (bfd.AuthType
+is zero), the packet MUST be discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the A bit is clear and authentication is in use (bfd.AuthType
+is nonzero), the packet MUST be discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the A bit is set, the packet MUST be authenticated under the
+rules of section 6.7, based on the authentication type in use
+(bfd.AuthType).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Required Min Echo RX Interval field is zero, the
+transmission of Echo packets, if any, MUST cease.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a Poll Sequence is being transmitted by the local system and
+the Final (F) bit in the received packet is set, the Poll Sequence
+MUST be terminated.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If bfd.RemoteDemandMode is 1, bfd.SessionState is Up, and
+bfd.RemoteSessionState is Up, Demand mode is active on the remote
+system and the local system MUST cease the periodic transmission
+of BFD Control packets (see section 6.8.7).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If bfd.RemoteDemandMode is 0, or bfd.SessionState is not Up, or
+bfd.RemoteSessionState is not Up, Demand mode is not active on the
+remote system and the local system MUST send periodic BFD Control
+packets (see section 6.8.7).
+'''
+

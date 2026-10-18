@@ -1,0 +1,252 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.8.7"
+
+# Transmitting BFD Control Packets
+#
+#    With the exceptions listed in the remainder of this section, a system
+#    MUST NOT transmit BFD Control packets at an interval less than the
+#    larger of bfd.DesiredMinTxInterval and bfd.RemoteMinRxInterval, less
+#    applied jitter (see below).  In other words, the system reporting the
+#    slower rate determines the transmission rate.
+# 
+#    The periodic transmission of BFD Control packets MUST be jittered on
+#    a per-packet basis by up to 25%, that is, the interval MUST be
+#    reduced by a random value of 0 to 25%, in order to avoid self-
+#    synchronization with other systems on the same subnetwork.  Thus, the
+#    average interval between packets will be roughly 12.5% less than that
+#    negotiated.
+# 
+#    If bfd.DetectMult is equal to 1, the interval between transmitted BFD
+#    Control packets MUST be no more than 90% of the negotiated
+#    transmission interval, and MUST be no less than 75% of the negotiated
+#    transmission interval.  This is to ensure that, on the remote system,
+#    the calculated Detection Time does not pass prior to the receipt of
+#    the next BFD Control packet.
+# 
+#    The transmit interval MUST be recalculated whenever
+#    bfd.DesiredMinTxInterval changes, or whenever bfd.RemoteMinRxInterval
+#    changes, and is equal to the greater of those two values.  See
+#    sections 6.8.2 and 6.8.3 for details on transmit timers.
+# 
+#    A system MUST NOT transmit BFD Control packets if bfd.RemoteDiscr is
+#    zero and the system is taking the Passive role.
+# 
+#    A system MUST NOT periodically transmit BFD Control packets if
+#    bfd.RemoteMinRxInterval is zero.
+# 
+#    A system MUST NOT periodically transmit BFD Control packets if Demand
+#    mode is active on the remote system (bfd.RemoteDemandMode is 1,
+#    bfd.SessionState is Up, and bfd.RemoteSessionState is Up) and a Poll
+#    Sequence is not being transmitted.
+# 
+#    If a BFD Control packet is received with the Poll (P) bit set to 1,
+#    the receiving system MUST transmit a BFD Control packet with the Poll
+#    (P) bit clear and the Final (F) bit set as soon as practicable,
+#    without respect to the transmission timer or any other transmission
+#    limitations, without respect to the session state, and without
+#    respect to whether Demand mode is active on either system.  A system
+#    MAY limit the rate at which such packets are transmitted.  If rate
+#    limiting is in effect, the advertised value of Desired Min TX
+#    Interval MUST be greater than or equal to the interval between
+#    transmitted packets imposed by the rate limiting function.
+# 
+#    A system MUST NOT set the Demand (D) bit unless bfd.DemandMode is 1,
+#    bfd.SessionState is Up, and bfd.RemoteSessionState is Up.
+# 
+#    A BFD Control packet SHOULD be transmitted during the interval
+#    between periodic Control packet transmissions when the contents of
+#    that packet would differ from that in the previously transmitted
+#    packet (other than the Poll and Final bits) in order to more rapidly
+#    communicate a change in state.
+# 
+#    The contents of transmitted BFD Control packets MUST be set as
+#    follows:
+# 
+#    Version
+# 
+#       Set to the current version number (1).
+# 
+#    Diagnostic (Diag)
+# 
+#       Set to bfd.LocalDiag.
+# 
+#    State (Sta)
+# 
+#       Set to the value indicated by bfd.SessionState.
+# 
+#    Poll (P)
+# 
+#       Set to 1 if the local system is sending a Poll Sequence, or 0 if
+#       not.
+# 
+#    Final (F)
+# 
+#       Set to 1 if the local system is responding to a Control packet
+#       received with the Poll (P) bit set, or 0 if not.
+# 
+#    Control Plane Independent (C)
+# 
+#       Set to 1 if the local system's BFD implementation is independent
+#       of the control plane (it can continue to function through a
+#       disruption of the control plane).
+# 
+#    Authentication Present (A)
+# 
+#       Set to 1 if authentication is in use on this session (bfd.AuthType
+#       is nonzero), or 0 if not.
+# 
+#    Demand (D)
+# 
+#       Set to bfd.DemandMode if bfd.SessionState is Up and
+#       bfd.RemoteSessionState is Up.  Otherwise, it is set to 0.
+# 
+#    Multipoint (M)
+# 
+#       Set to 0.
+# 
+#    Detect Mult
+# 
+#       Set to bfd.DetectMult.
+# 
+#    Length
+# 
+#       Set to the appropriate length, based on the fixed header length
+#       (24) plus any Authentication Section.
+# 
+#    My Discriminator
+# 
+#       Set to bfd.LocalDiscr.
+# 
+#    Your Discriminator
+# 
+#       Set to bfd.RemoteDiscr.
+# 
+#    Desired Min TX Interval
+# 
+#       Set to bfd.DesiredMinTxInterval.
+# 
+#    Required Min RX Interval
+# 
+#       Set to bfd.RequiredMinRxInterval.
+# 
+#    Required Min Echo RX Interval
+# 
+#       Set to the minimum required Echo packet receive interval for this
+#       session.  If this field is set to zero, the local system is
+#       unwilling or unable to loop back BFD Echo packets to the remote
+#       system, and the remote system will not send Echo packets.
+# 
+#    Authentication Section
+# 
+#       Included and set according to the rules in section 6.7 if
+#       authentication is in use (bfd.AuthType is nonzero).  Otherwise,
+#       this section is not present.
+
+[[spec]]
+level = "MUST"
+quote = '''
+With the exceptions listed in the remainder of this section, a system
+MUST NOT transmit BFD Control packets at an interval less than the
+larger of bfd.DesiredMinTxInterval and bfd.RemoteMinRxInterval, less
+applied jitter (see below).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The periodic transmission of BFD Control packets MUST be jittered on
+a per-packet basis by up to 25%, that is, the interval MUST be
+reduced by a random value of 0 to 25%, in order to avoid self-
+synchronization with other systems on the same subnetwork.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If bfd.DetectMult is equal to 1, the interval between transmitted BFD
+Control packets MUST be no more than 90% of the negotiated
+transmission interval, and MUST be no less than 75% of the negotiated
+transmission interval.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The transmit interval MUST be recalculated whenever
+bfd.DesiredMinTxInterval changes, or whenever bfd.RemoteMinRxInterval
+changes, and is equal to the greater of those two values.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A system MUST NOT transmit BFD Control packets if bfd.RemoteDiscr is
+zero and the system is taking the Passive role.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A system MUST NOT periodically transmit BFD Control packets if
+bfd.RemoteMinRxInterval is zero.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A system MUST NOT periodically transmit BFD Control packets if Demand
+mode is active on the remote system (bfd.RemoteDemandMode is 1,
+bfd.SessionState is Up, and bfd.RemoteSessionState is Up) and a Poll
+Sequence is not being transmitted.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a BFD Control packet is received with the Poll (P) bit set to 1,
+the receiving system MUST transmit a BFD Control packet with the Poll
+(P) bit clear and the Final (F) bit set as soon as practicable,
+without respect to the transmission timer or any other transmission
+limitations, without respect to the session state, and without
+respect to whether Demand mode is active on either system.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A system
+MAY limit the rate at which such packets are transmitted.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If rate
+limiting is in effect, the advertised value of Desired Min TX
+Interval MUST be greater than or equal to the interval between
+transmitted packets imposed by the rate limiting function.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A system MUST NOT set the Demand (D) bit unless bfd.DemandMode is 1,
+bfd.SessionState is Up, and bfd.RemoteSessionState is Up.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A BFD Control packet SHOULD be transmitted during the interval
+between periodic Control packet transmissions when the contents of
+that packet would differ from that in the previously transmitted
+packet (other than the Poll and Final bits) in order to more rapidly
+communicate a change in state.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The contents of transmitted BFD Control packets MUST be set as
+follows:
+'''
+

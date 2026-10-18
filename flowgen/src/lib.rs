@@ -14,6 +14,7 @@
 //! A traffic generator for testing the dataplane: many flows, each packet signed so that what
 //! comes back can be traced to what was sent, and an account of the difference.
 //!
+//! - [`bfd`]: a BFD peer, to hold a session with a gateway and say how it fared.
 //! - [`space`]: the flows a stream can send, numbered, so that a million of them need no table.
 //! - [`frame`]: building each flow's frame once and stamping it per packet; reading frames back.
 //! - [`signature`]: what every packet's payload carries to name its flow and place.
@@ -29,6 +30,7 @@
 //! Frames are built and read by this crate's own code, not the dataplane's, so that the two
 //! cannot agree on a bug.
 
+pub mod bfd;
 mod checksum;
 pub mod drive;
 pub mod frame;

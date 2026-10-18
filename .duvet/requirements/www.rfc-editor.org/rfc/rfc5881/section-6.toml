@@ -1,0 +1,76 @@
+target = "https://www.rfc-editor.org/rfc/rfc5881#section-6"
+
+# Addressing Issues
+#
+#    Implementations MUST ensure that all BFD Control packets are
+#    transmitted over the one-hop path being protected by BFD.
+# 
+#    On a multiaccess network, BFD Control packets MUST be transmitted
+#    with source and destination addresses that are part of the subnet
+#    (addressed from and to interfaces on the subnet).
+# 
+#    On a point-to-point link, the source address of a BFD Control packet
+#    MUST NOT be used to identify the session.  This means that the
+#    initial BFD packet MUST be accepted with any source address, and that
+#    subsequent BFD packets MUST be demultiplexed solely by the Your
+#    Discriminator field (as is always the case).  This allows the source
+#    address to change if necessary.  If the received source address
+#    changes, the local system MUST NOT use that address as the
+#    destination in outgoing BFD Control packets; rather, it MUST continue
+#    to use the address configured at session creation.  An implementation
+#    MAY notify the application that the neighbor's source address has
+#    changed, so that the application might choose to change the
+#    destination address or take some other action.  Note that the TTL/Hop
+#    Limit check described in section 5 (or the use of authentication)
+#    precludes the BFD packets from having come from any source other than
+#    the immediate neighbor.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Implementations MUST ensure that all BFD Control packets are
+transmitted over the one-hop path being protected by BFD.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+On a multiaccess network, BFD Control packets MUST be transmitted
+with source and destination addresses that are part of the subnet
+(addressed from and to interfaces on the subnet).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+On a point-to-point link, the source address of a BFD Control packet
+MUST NOT be used to identify the session.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+This means that the
+initial BFD packet MUST be accepted with any source address, and that
+subsequent BFD packets MUST be demultiplexed solely by the Your
+Discriminator field (as is always the case).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the received source address
+changes, the local system MUST NOT use that address as the
+destination in outgoing BFD Control packets; rather, it MUST continue
+to use the address configured at session creation.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+An implementation
+MAY notify the application that the neighbor's source address has
+changed, so that the application might choose to change the
+destination address or take some other action.
+'''
+

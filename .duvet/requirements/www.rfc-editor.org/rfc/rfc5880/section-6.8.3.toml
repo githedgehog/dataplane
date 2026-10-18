@@ -1,0 +1,167 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.8.3"
+
+# Timer Manipulation
+#
+#    The time values used to determine BFD packet transmission intervals
+#    and the session Detection Time may be modified at any time without
+#    affecting the state of the session.  When the timer parameters are
+#    changed for any reason, the requirements of this section apply.
+# 
+#    If either bfd.DesiredMinTxInterval is changed or
+#    bfd.RequiredMinRxInterval is changed, a Poll Sequence MUST be
+#    initiated (see section 6.5).  If the timing is such that a system
+#    receiving a Poll Sequence wishes to change the parameters described
+#    in this paragraph, the new parameter values MAY be carried in packets
+#    with the Final (F) bit set, even if the Poll Sequence has not yet
+#    been sent.
+# 
+#    If bfd.DesiredMinTxInterval is increased and bfd.SessionState is Up,
+#    the actual transmission interval used MUST NOT change until the Poll
+#    Sequence described above has terminated.  This is to ensure that the
+#    remote system updates its Detection Time before the transmission
+#    interval increases.
+# 
+#    If bfd.RequiredMinRxInterval is reduced and bfd.SessionState is Up,
+#    the previous value of bfd.RequiredMinRxInterval MUST be used when
+#    calculating the Detection Time for the remote system until the Poll
+#    Sequence described above has terminated.  This is to ensure that the
+#    remote system is transmitting packets at the higher rate (and those
+#    packets are being received) prior to the Detection Time being
+#    reduced.
+# 
+#    When bfd.SessionState is not Up, the system MUST set
+#    bfd.DesiredMinTxInterval to a value of not less than one second
+#    (1,000,000 microseconds).  This is intended to ensure that the
+#    bandwidth consumed by BFD sessions that are not Up is negligible,
+#    particularly in the case where a neighbor may not be running BFD.
+# 
+#    If the local system reduces its transmit interval due to
+#    bfd.RemoteMinRxInterval being reduced (the remote system has
+#    advertised a reduced value in Required Min RX Interval), and the
+#    remote system is not in Demand mode, the local system MUST honor the
+#    new interval immediately.  In other words, the local system cannot
+#    wait longer than the new interval between the previous packet
+#    transmission and the next one.  If this interval has already passed
+#    since the last transmission (because the new interval is
+#    significantly shorter), the local system MUST send the next periodic
+#    BFD Control packet as soon as practicable.
+# 
+#    When the Echo function is active, a system SHOULD set
+#    bfd.RequiredMinRxInterval to a value of not less than one second
+#    (1,000,000 microseconds).  This is intended to keep received BFD
+#    Control traffic at a negligible level, since the actual detection
+#    function is being performed using BFD Echo packets.
+# 
+#    In any case other than those explicitly called out above, timing
+#    parameter changes MUST be effected immediately (changing the
+#    transmission rate and/or the Detection Time).
+# 
+#    Note that the Poll Sequence mechanism is ambiguous if more than one
+#    parameter change is made that would require its use, and those
+#    multiple changes are spread across multiple packets (since the
+#    semantics of the returning Final are unclear).  Therefore, if
+#    multiple changes are made that require the use of a Poll Sequence,
+#    there are three choices: 1) they MUST be communicated in a single BFD
+#    Control packet (so the semantics of the Final reply are clear), or 2)
+#    sufficient time must have transpired since the Poll Sequence was
+#    completed to disambiguate the situation (at least a round trip time
+#    since the last Poll was transmitted) prior to the initiation of
+#    another Poll Sequence, or 3) an additional BFD Control packet with
+#    the Final (F) bit *clear* MUST be received after the Poll Sequence
+#    has completed prior to the initiation of another Poll Sequence (this
+#    option is not available when Demand mode is active).
+
+[[spec]]
+level = "MUST"
+quote = '''
+If either bfd.DesiredMinTxInterval is changed or
+bfd.RequiredMinRxInterval is changed, a Poll Sequence MUST be
+initiated (see section 6.5).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+If the timing is such that a system
+receiving a Poll Sequence wishes to change the parameters described
+in this paragraph, the new parameter values MAY be carried in packets
+with the Final (F) bit set, even if the Poll Sequence has not yet
+been sent.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If bfd.DesiredMinTxInterval is increased and bfd.SessionState is Up,
+the actual transmission interval used MUST NOT change until the Poll
+Sequence described above has terminated.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If bfd.RequiredMinRxInterval is reduced and bfd.SessionState is Up,
+the previous value of bfd.RequiredMinRxInterval MUST be used when
+calculating the Detection Time for the remote system until the Poll
+Sequence described above has terminated.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When bfd.SessionState is not Up, the system MUST set
+bfd.DesiredMinTxInterval to a value of not less than one second
+(1,000,000 microseconds).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the local system reduces its transmit interval due to
+bfd.RemoteMinRxInterval being reduced (the remote system has
+advertised a reduced value in Required Min RX Interval), and the
+remote system is not in Demand mode, the local system MUST honor the
+new interval immediately.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If this interval has already passed
+since the last transmission (because the new interval is
+significantly shorter), the local system MUST send the next periodic
+BFD Control packet as soon as practicable.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When the Echo function is active, a system SHOULD set
+bfd.RequiredMinRxInterval to a value of not less than one second
+(1,000,000 microseconds).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In any case other than those explicitly called out above, timing
+parameter changes MUST be effected immediately (changing the
+transmission rate and/or the Detection Time).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Therefore, if
+multiple changes are made that require the use of a Poll Sequence,
+there are three choices: 1) they MUST be communicated in a single BFD
+Control packet (so the semantics of the Final reply are clear), or 2)
+sufficient time must have transpired since the Poll Sequence was
+completed to disambiguate the situation (at least a round trip time
+since the last Poll was transmitted) prior to the initiation of
+another Poll Sequence, or 3) an additional BFD Control packet with
+the Final (F) bit *clear* MUST be received after the Poll Sequence
+has completed prior to the initiation of another Poll Sequence (this
+option is not available when Demand mode is active).
+'''
+

@@ -1,0 +1,48 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.8.17"
+
+# Concatenated Paths
+#
+#    If the path being monitored by BFD is concatenated with other paths
+#    (connected end-to-end in series), it may be desirable to propagate
+#    the indication of a failure of one of those paths across the BFD
+#    session (providing an interworking function for liveness monitoring
+#    between BFD and other technologies).
+# 
+#    Two diagnostic codes are defined for this purpose: Concatenated Path
+#    Down and Reverse Concatenated Path Down.  The first propagates
+#    forward path failures (in which the concatenated path fails in the
+#    direction toward the interworking system), and the second propagates
+# 
+#    reverse path failures (in which the concatenated path fails in the
+#    direction away from the interworking system, assuming a bidirectional
+#    link).
+# 
+#    A system MAY signal one of these failure states by simply setting
+#    bfd.LocalDiag to the appropriate diagnostic code.  Note that the BFD
+#    session is not taken down.  If Demand mode is not active on the
+#    remote system, no other action is necessary, as the diagnostic code
+#    will be carried via the periodic transmission of BFD Control packets.
+#    If Demand mode is active on the remote system (the local system is
+#    not transmitting periodic BFD Control packets), a Poll Sequence MUST
+#    be initiated to ensure that the diagnostic code is transmitted.  Note
+#    that if the BFD session subsequently fails, the diagnostic code will
+#    be overwritten with a code detailing the cause of the failure.  It is
+#    up to the interworking agent to perform the above procedure again,
+#    once the BFD session reaches Up state, if the propagation of the
+#    concatenated path failure is to resume.
+
+[[spec]]
+level = "MAY"
+quote = '''
+A system MAY signal one of these failure states by simply setting
+bfd.LocalDiag to the appropriate diagnostic code.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If Demand mode is active on the remote system (the local system is
+not transmitting periodic BFD Control packets), a Poll Sequence MUST
+be initiated to ensure that the diagnostic code is transmitted.
+'''
+

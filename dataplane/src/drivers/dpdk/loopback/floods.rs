@@ -16,14 +16,16 @@
 use std::net::Ipv4Addr;
 
 use config::external::overlay::vpcpeering::contract::LOCAL_VNI;
+use std::time::Duration;
+
 use flowgen::frame::{FrameSpec, Transport, Vxlan as GeneratedVxlan, tcp};
 use flowgen::schedule::Schedule;
-use flowgen::sender::{Stream, WhenFull};
+use flowgen::sender::{Clock, Stream, WhenFull};
 use flowgen::space::{Addresses, FlowSpace, Order, Ports, SpaceSpec};
 use flowgen_report::{Bound, Sample};
 
 use super::harness::{
-    Loopback, Side, TestCase, await_software_classes, drive, fixture_gateway, over_cable,
+    Loopback, Side, TestCase, Traffic, await_software_classes, drive, fixture_gateway, over_cable,
 };
 use super::probes::{BFD, BGP, probes};
 use crate::packet_processor::fixture::{GATEWAY_MAC, LOCAL_VTEP, PEER_MAC, PEER_VTEP};
@@ -112,6 +114,25 @@ fn flood(
     }
 }
 
+/// A flood of TCP SYNs from the local VPC through the gateway's NAT to the remote one, every
+/// SYN a new flow: the flood that saturates the new-flow path.
+pub(super) fn syn_flood() -> Stream {
+    flood(
+        "syn",
+        addresses("1.1.0.1", 1000),
+        addresses("3.3.3.1", 4),
+        443,
+        Transport::Tcp { flags: tcp::SYN },
+        Some(GeneratedVxlan {
+            vni: LOCAL_VNI,
+            src_mac: PEER_MAC.0,
+            dst_mac: GATEWAY_MAC.0,
+            src: PEER_VTEP.parse().unwrap(),
+            dst: LOCAL_VTEP.parse().unwrap(),
+        }),
+    )
+}
+
 fn addresses(first: &str, count: u32) -> Addresses {
     Addresses {
         first: first.parse::<Ipv4Addr>().unwrap(),
@@ -160,20 +181,7 @@ fn probes_the_port_takes_survive_floods() {
                     Transport::Udp,
                     None,
                 ),
-                flood(
-                    "syn",
-                    addresses("1.1.0.1", 1000),
-                    addresses("3.3.3.1", 4),
-                    443,
-                    Transport::Tcp { flags: tcp::SYN },
-                    Some(GeneratedVxlan {
-                        vni: LOCAL_VNI,
-                        src_mac: PEER_MAC.0,
-                        dst_mac: GATEWAY_MAC.0,
-                        src: PEER_VTEP.parse().unwrap(),
-                        dst: LOCAL_VTEP.parse().unwrap(),
-                    }),
-                ),
+                syn_flood(),
             ];
             let mut run = 1;
             for aggressor in floods {
@@ -187,7 +195,19 @@ fn probes_the_port_takes_survive_floods() {
                     .expect("the report should take the case");
                 let mut streams = victims().to_vec();
                 streams.push((Side::Far, aggressor));
-                let (ledgers, _, _) = drive(lb.far, lb.kernel, lb.probe, &mut case, &streams, run);
+                let (ledgers, _, _) = drive(
+                    lb.far,
+                    lb.kernel,
+                    lb.probe,
+                    &mut case,
+                    Traffic {
+                        streams: &streams,
+                        first_run: run,
+                        agents: &mut [],
+                        hold: Duration::ZERO,
+                        clock: Clock::start(),
+                    },
+                );
                 run += 3;
                 let totals = ledgers.sample(Sample::new());
                 for victim in ["bfd", "bgp"] {
@@ -196,30 +216,46 @@ fn probes_the_port_takes_survive_floods() {
                 case.finish()
                     .expect("the report should take the case's end");
 
-                // Once the flood is over, the probes get through, none dropped anywhere.
-                let mut case = lb
-                    .report
-                    .case(format!("after-{name}-flood"), serde_json::json!({}))
-                    .expect("the report should take the case");
-                let (ledgers, _, _) =
-                    drive(lb.far, lb.kernel, lb.probe, &mut case, &victims(), run);
+                recover(lb, &name, run);
                 run += 2;
-                let totals = ledgers.sample(Sample::new());
-                for victim in ["bfd", "bgp"] {
-                    check_probes(&mut case, &totals, victim);
-                    let path = format!("generator.{victim}.dropped_at_port");
-                    case.expect_counter(
-                        format!("{victim}.none-dropped-at-the-port"),
-                        path.clone(),
-                        Bound::exactly(0),
-                        totals.counters.get(&path).copied(),
-                        vec![],
-                    )
-                    .expect("the report should take the check");
-                }
-                case.finish()
-                    .expect("the report should take the case's end");
             }
         },
     );
+}
+
+/// Once a flood named `name` is over, the probes get through, none dropped anywhere: sent as runs
+/// `run` and `run + 1`.
+fn recover(lb: &mut Loopback<'_, '_, '_, '_>, name: &str, run: u32) {
+    let mut case = lb
+        .report
+        .case(format!("after-{name}-flood"), serde_json::json!({}))
+        .expect("the report should take the case");
+    let (ledgers, _, _) = drive(
+        lb.far,
+        lb.kernel,
+        lb.probe,
+        &mut case,
+        Traffic {
+            streams: &victims(),
+            first_run: run,
+            agents: &mut [],
+            hold: Duration::ZERO,
+            clock: Clock::start(),
+        },
+    );
+    let totals = ledgers.sample(Sample::new());
+    for victim in ["bfd", "bgp"] {
+        check_probes(&mut case, &totals, victim);
+        let path = format!("generator.{victim}.dropped_at_port");
+        case.expect_counter(
+            format!("{victim}.none-dropped-at-the-port"),
+            path.clone(),
+            Bound::exactly(0),
+            totals.counters.get(&path).copied(),
+            vec![],
+        )
+        .expect("the report should take the check");
+    }
+    case.finish()
+        .expect("the report should take the case's end");
 }

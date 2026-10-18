@@ -1,0 +1,53 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.7.1"
+
+# Enabling and Disabling Authentication
+#
+#    It may be desirable to enable or disable authentication on a session
+#    without disturbing the session state.  The exact mechanism for doing
+#    so is outside the scope of this specification.  However, it is useful
+#    to point out some issues in supporting this mechanism.
+# 
+#    In a simple implementation, a BFD session will fail when
+#    authentication is either turned on or turned off, because the packet
+#    acceptance rules essentially require the local and remote machines to
+# 
+#    do so in a more or less synchronized fashion (within the Detection
+#    Time) -- a packet with authentication will only be accepted if
+#    authentication is "in use" (and likewise packets without
+#    authentication).
+# 
+#    One possible approach is to build an implementation such that
+#    authentication is configured, but not considered "in use" until the
+#    first packet containing a matching authentication section is received
+#    (providing the necessary synchronization).  Likewise, authentication
+#    could be configured off, but still considered "in use" until the
+#    receipt of the first packet without the authentication section.
+# 
+#    In order to avoid security risks, implementations using this method
+#    SHOULD only allow the authentication state to be changed at most once
+#    without some form of intervention (so that authentication cannot be
+#    turned on and off repeatedly simply based on the receipt of BFD
+#    Control packets from remote systems).  Unless it is desired to enable
+#    or disable authentication, an implementation SHOULD NOT allow the
+#    authentication state to change based on the receipt of BFD Control
+#    packets.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+In order to avoid security risks, implementations using this method
+SHOULD only allow the authentication state to be changed at most once
+without some form of intervention (so that authentication cannot be
+turned on and off repeatedly simply based on the receipt of BFD
+Control packets from remote systems).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Unless it is desired to enable
+or disable authentication, an implementation SHOULD NOT allow the
+authentication state to change based on the receipt of BFD Control
+packets.
+'''
+

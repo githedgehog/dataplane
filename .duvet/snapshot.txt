@@ -723,6 +723,664 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5508
     TEXT[!SHOULD]:    Discovery) and some applications (e.g., ping, traceroute), and such
     TEXT[!SHOULD]:    blocking is NOT RECOMMENDED.
 
+SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5880
+  SECTION: [Generic BFD Control Packet Format](#section-4.1)
+    TEXT[!MAY]:    An optional Authentication Section MAY be present:
+    TEXT[!MUST]: It MUST be zero on both transmit and receipt.
+
+  SECTION: [Simple Password Authentication Section Format](#section-4.2)
+    TEXT[!MUST]: The password is a
+    TEXT[!MUST]:       binary string, and MUST be from 1 to 16 bytes in length.
+    TEXT[!MUST]: The
+    TEXT[!MUST]:       password MUST be encoded and configured according to section
+    TEXT[!MUST]:       6.7.2.
+
+  SECTION: [Keyed MD5 and Meticulous Keyed MD5 Authentication Section Format](#section-4.3)
+    TEXT[!MUST]:       This byte MUST be set to zero on transmit, and ignored on receipt.
+    TEXT[!MUST]: The
+    TEXT[!MUST]:       shared key MUST be encoded and configured to section 6.7.3.
+
+  SECTION: [Keyed SHA1 and Meticulous Keyed SHA1 Authentication Section Format](#section-4.4)
+    TEXT[!MUST]:       This byte MUST be set to zero on transmit and ignored on receipt.
+    TEXT[!MUST]:       The shared key MUST be encoded and configured to section 6.7.4.
+
+  SECTION: [BFD Echo Packet Format](#section-5)
+    TEXT[!SHOULD]:    Some form of authentication SHOULD be included, since Echo packets
+    TEXT[!SHOULD]:    may be spoofed.
+
+  SECTION: [Overview](#section-6.1)
+    TEXT[!MUST]: A system taking the Active role MUST send BFD
+    TEXT[!MUST]:    Control packets for a particular session, regardless of whether it
+    TEXT[!MUST]:    has received any BFD packets for that session.
+    TEXT[!MUST]: A system taking the
+    TEXT[!MUST]:    Passive role MUST NOT begin sending BFD packets for a particular
+    TEXT[!MUST]:    session until it has received a BFD packet for that session, and thus
+    TEXT[!MUST]:    has learned the remote system's discriminator value.
+    TEXT[!MUST]: At least one
+    TEXT[!MUST]:    system MUST take the Active role (possibly both).
+    TEXT[!MAY]:    A session MAY be kept administratively down by entering the AdminDown
+    TEXT[!MAY]:    state and sending an explanatory diagnostic code in the Diagnostic
+    TEXT[!MAY]:    field.
+
+  SECTION: [BFD State Machine](#section-6.2)
+    TEXT[!MAY]: A system MAY
+    TEXT[!MAY]:    hold a session in Down state indefinitely (by simply refusing to
+    TEXT[!MAY]:    advance the session state).
+
+  SECTION: [Demultiplexing and the Discriminator Fields](#section-6.3)
+    TEXT[!MUST]:    Each system MUST choose an opaque discriminator value that identifies
+    TEXT[!MUST]:    each session, and which MUST be unique among all BFD sessions on the
+    TEXT[!MUST]:    system.
+
+  SECTION: [The Echo Function and Asymmetry](#section-6.4)
+    TEXT[!SHOULD]:    A system SHOULD otherwise advertise the lowest value of Required Min
+    TEXT[!SHOULD]:    RX Interval and Required Min Echo RX Interval that it can under the
+    TEXT[!SHOULD]:    circumstances, to give the other system more freedom in choosing its
+    TEXT[!SHOULD]:    transmission rate.
+
+  SECTION: [The Poll Sequence](#section-6.5)
+    TEXT[!MUST]: A BFD Control packet MUST NOT have both the Poll
+    TEXT[!MUST]:    (P) and Final (F) bits set.
+    TEXT[!MUST]:    If periodic BFD Control packets are already being sent (the remote
+    TEXT[!MUST]:    system is not in Demand mode), the Poll Sequence MUST be performed by
+    TEXT[!MUST]:    setting the Poll (P) bit on those scheduled periodic transmissions;
+    TEXT[!MUST]:    additional packets MUST NOT be sent.
+
+  SECTION: [Demand Mode](#section-6.6)
+    TEXT[!MAY]:    Demand mode MAY be enabled or disabled at any time, independently in
+    TEXT[!MAY]:    each direction, by setting or clearing the Demand (D) bit in the BFD
+    TEXT[!MAY]:    Control packet, without affecting the BFD session state.
+    TEXT[!MUST]: Note that
+    TEXT[!MUST]:    the Demand bit MUST NOT be set unless both systems perceive the
+    TEXT[!MUST]:    session to be Up (the local system thinks the session is Up, and the
+    TEXT[!MUST]:    remote system last reported Up state in the State (Sta) field of the
+    TEXT[!MUST]:    BFD Control packet).
+    TEXT[!MUST]:    When the transmitted value of the Demand (D) bit is to be changed,
+    TEXT[!MUST]:    the transmitting system MUST initiate a Poll Sequence in conjunction
+    TEXT[!MUST]:    with changing the bit in order to ensure that both systems are aware
+    TEXT[!MUST]:    of the change.
+    TEXT[!MUST]:    If Demand mode is active on either or both systems, a Poll Sequence
+    TEXT[!MUST]:    MUST be initiated whenever the contents of the next BFD Control
+    TEXT[!MUST]:    packet to be sent would be different than the contents of the
+    TEXT[!MUST]:    previous packet, with the exception of the Poll (P) and Final (F)
+    TEXT[!MUST]:    bits.
+
+  SECTION: [Authentication](#section-6.7)
+    TEXT[!MAY]:    An optional Authentication Section MAY be present in the BFD Control
+    TEXT[!MAY]:    packet.
+    TEXT[!MUST]:    Implementations supporting authentication MUST support both types of
+    TEXT[!MUST]:    SHA1 authentication.
+
+  SECTION: [Enabling and Disabling Authentication](#section-6.7.1)
+    TEXT[!SHOULD]:    In order to avoid security risks, implementations using this method
+    TEXT[!SHOULD]:    SHOULD only allow the authentication state to be changed at most once
+    TEXT[!SHOULD]:    without some form of intervention (so that authentication cannot be
+    TEXT[!SHOULD]:    turned on and off repeatedly simply based on the receipt of BFD
+    TEXT[!SHOULD]:    Control packets from remote systems).
+    TEXT[!SHOULD]: Unless it is desired to enable
+    TEXT[!SHOULD]:    or disable authentication, an implementation SHOULD NOT allow the
+    TEXT[!SHOULD]:    authentication state to change based on the receipt of BFD Control
+    TEXT[!SHOULD]:    packets.
+
+  SECTION: [Simple Password Authentication](#section-6.7.2)
+    TEXT[!MUST]:       The currently selected password and Key ID for the session MUST be
+    TEXT[!MUST]:       stored in the Authentication Section of each outgoing BFD Control
+    TEXT[!MUST]:       packet.
+    TEXT[!MUST]: The Auth Type field MUST be set to 1 (Simple Password).
+    TEXT[!MUST]:       The Auth Len field MUST be set to the proper length (4 to 19
+    TEXT[!MUST]:       bytes).
+    TEXT[!MUST]:       The password is a binary string, and MUST be 1 to 16 bytes in
+    TEXT[!MUST]:       length.
+    TEXT[!MUST]: For interoperability, the management interface by which
+    TEXT[!MUST]:       the password is configured MUST accept ASCII strings, and SHOULD
+    TEXT[!MUST]:       also allow for the configuration of any arbitrary binary string in
+    TEXT[!MUST]:       hexadecimal form.
+    TEXT[!MAY]: Other configuration methods MAY be supported.
+    TEXT[!MUST]:       If the received BFD Control packet does not contain an
+    TEXT[!MUST]:       Authentication Section, or the Auth Type is not 1 (Simple
+    TEXT[!MUST]:       Password), then the received packet MUST be discarded.
+    TEXT[!MUST]:       If the Auth Key ID field does not match the ID of a configured
+    TEXT[!MUST]:       password, the received packet MUST be discarded.
+    TEXT[!MUST]:       If the Auth Len field is not equal to the length of the password
+    TEXT[!MUST]:       selected by the key ID, plus three, the packet MUST be discarded.
+    TEXT[!MUST]:       If the Password field does not match the password selected by the
+    TEXT[!MUST]:       key ID, the packet MUST be discarded.
+    TEXT[!MUST]:       Otherwise, the packet MUST be accepted.
+
+  SECTION: [Keyed MD5 and Meticulous Keyed MD5 Authentication](#section-6.7.3)
+    TEXT[!MUST]:       The Auth Type field MUST be set to 2 (Keyed MD5) or 3 (Meticulous
+    TEXT[!MUST]:       Keyed MD5).
+    TEXT[!MUST]: The Auth Len field MUST be set to 24.
+    TEXT[!MUST]: The Auth Key
+    TEXT[!MUST]:       ID field MUST be set to the ID of the current authentication key.
+    TEXT[!MUST]:       The Sequence Number field MUST be set to bfd.XmitAuthSeq.
+    TEXT[!MUST]:       The authentication key value is a binary string of up to 16 bytes,
+    TEXT[!MUST]:       and MUST be placed into the Auth Key/Digest field, padded with
+    TEXT[!MUST]:       trailing zero bytes as necessary.
+    TEXT[!MUST]: For interoperability, the
+    TEXT[!MUST]:       management interface by which the key is configured MUST accept
+    TEXT[!SHOULD]:       ASCII strings, and SHOULD also allow for the configuration of any
+    TEXT[!SHOULD]:       arbitrary binary string in hexadecimal form.
+    TEXT[!MAY]: Other configuration
+    TEXT[!MAY]:       methods MAY be supported.
+    TEXT[!MUST]:       An MD5 digest MUST be calculated over the entire BFD Control
+    TEXT[!MUST]:       packet.
+    TEXT[!MUST]: The resulting digest MUST be stored in the Auth
+    TEXT[!MUST]:       Key/Digest field prior to transmission (replacing the secret key,
+    TEXT[!MUST]:       which MUST NOT be carried in the packet).
+    TEXT[!MAY]:       For Keyed MD5, bfd.XmitAuthSeq MAY be incremented in a circular
+    TEXT[!MAY]:       fashion (when treated as an unsigned 32-bit value).
+    TEXT[!SHOULD]:       bfd.XmitAuthSeq SHOULD be incremented when the session state
+    TEXT[!SHOULD]:       changes, or when the transmitted BFD Control packet carries
+    TEXT[!SHOULD]:       different contents than the previously transmitted packet.
+    TEXT[!MUST]:       For Meticulous Keyed MD5, bfd.XmitAuthSeq MUST be incremented in a
+    TEXT[!MUST]:       circular fashion (when treated as an unsigned 32-bit value).
+    TEXT[!MUST]:       If the received BFD Control packet does not contain an
+    TEXT[!MUST]:       Authentication Section, or the Auth Type is not correct (2 for
+    TEXT[!MUST]:       Keyed MD5 or 3 for Meticulous Keyed MD5), then the received packet
+    TEXT[!MUST]:       MUST be discarded.
+    TEXT[!MUST]:       If the Auth Key ID field does not match the ID of a configured
+    TEXT[!MUST]:       authentication key, the received packet MUST be discarded.
+    TEXT[!MUST]:       If the Auth Len field is not equal to 24, the packet MUST be
+    TEXT[!MUST]:       discarded.
+    TEXT[!MUST]: For
+    TEXT[!MUST]:       Keyed MD5, if the sequence number lies outside of the range of
+    TEXT[!MUST]:       bfd.RcvAuthSeq to bfd.RcvAuthSeq+(3*Detect Mult) inclusive (when
+    TEXT[!MUST]:       treated as an unsigned 32-bit circular number space), the received
+    TEXT[!MUST]:       packet MUST be discarded.
+    TEXT[!MUST]: For Meticulous Keyed MD5, if the
+    TEXT[!MUST]:       sequence number lies outside of the range of bfd.RcvAuthSeq+1 to
+    TEXT[!MUST]:       bfd.RcvAuthSeq+(3*Detect Mult) inclusive (when treated as an
+    TEXT[!MUST]:       unsigned 32-bit circular number space) the received packet MUST be
+    TEXT[!MUST]:       discarded.
+    TEXT[!MUST]:       Otherwise (bfd.AuthSeqKnown is 0), bfd.AuthSeqKnown MUST be set to
+    TEXT[!MUST]:       1, and bfd.RcvAuthSeq MUST be set to the value of the received
+    TEXT[!MUST]:       Sequence Number field.
+    TEXT[!MUST]: If
+    TEXT[!MUST]:       the MD5 digest of the entire BFD Control packet is equal to the
+    TEXT[!MUST]:       received value of the Auth Key/Digest field, the received packet
+    TEXT[!MUST]:       MUST be accepted.
+    TEXT[!MUST]: Otherwise (the digest does not match the Auth
+    TEXT[!MUST]:       Key/Digest field), the received packet MUST be discarded.
+
+  SECTION: [Keyed SHA1 and Meticulous Keyed SHA1 Authentication](#section-6.7.4)
+    TEXT[!MUST]:       The Auth Type field MUST be set to 4 (Keyed SHA1) or 5 (Meticulous
+    TEXT[!MUST]:       Keyed SHA1).
+    TEXT[!MUST]: The Auth Len field MUST be set to 28.
+    TEXT[!MUST]: The Auth Key
+    TEXT[!MUST]:       ID field MUST be set to the ID of the current authentication key.
+    TEXT[!MUST]:       The Sequence Number field MUST be set to bfd.XmitAuthSeq.
+    TEXT[!MUST]:       The authentication key value is a binary string of up to 20 bytes,
+    TEXT[!MUST]:       and MUST be placed into the Auth Key/Hash field, padding with
+    TEXT[!MUST]:       trailing zero bytes as necessary.
+    TEXT[!MUST]: For interoperability, the
+    TEXT[!MUST]:       management interface by which the key is configured MUST accept
+    TEXT[!MUST]:       ASCII strings, and SHOULD also allow for the configuration of any
+    TEXT[!MUST]:       arbitrary binary string in hexadecimal form.
+    TEXT[!MAY]: Other configuration
+    TEXT[!MAY]:       methods MAY be supported.
+    TEXT[!MUST]:       A SHA1 hash MUST be calculated over the entire BFD control packet.
+    TEXT[!MUST]:       The resulting hash MUST be stored in the Auth Key/Hash field prior
+    TEXT[!MUST]:       to transmission (replacing the secret key, which MUST NOT be
+    TEXT[!MUST]:       carried in the packet).
+    TEXT[!MAY]:       For Keyed SHA1, bfd.XmitAuthSeq MAY be incremented in a circular
+    TEXT[!MAY]:       fashion (when treated as an unsigned 32-bit value).
+    TEXT[!SHOULD]:       bfd.XmitAuthSeq SHOULD be incremented when the session state
+    TEXT[!SHOULD]:       changes, or when the transmitted BFD Control packet carries
+    TEXT[!SHOULD]:       different contents than the previously transmitted packet.
+    TEXT[!MUST]:       For Meticulous Keyed SHA1, bfd.XmitAuthSeq MUST be incremented in
+    TEXT[!MUST]:       a circular fashion (when treated as an unsigned 32-bit value).
+    TEXT[!MUST]:       If the received BFD Control packet does not contain an
+    TEXT[!MUST]:       Authentication Section, or the Auth Type is not correct (4 for
+    TEXT[!MUST]:       Keyed SHA1 or 5 for Meticulous Keyed SHA1), then the received
+    TEXT[!MUST]:       packet MUST be discarded.
+    TEXT[!MUST]:       If the Auth Key ID field does not match the ID of a configured
+    TEXT[!MUST]:       authentication key, the received packet MUST be discarded.
+    TEXT[!MUST]:       If the Auth Len field is not equal to 28, the packet MUST be
+    TEXT[!MUST]:       discarded.
+    TEXT[!MUST]: For
+    TEXT[!MUST]:       Keyed SHA1, if the sequence number lies outside of the range of
+    TEXT[!MUST]:       bfd.RcvAuthSeq to bfd.RcvAuthSeq+(3*Detect Mult) inclusive (when
+    TEXT[!MUST]:       treated as an unsigned 32-bit circular number space), the received
+    TEXT[!MUST]:       packet MUST be discarded.
+    TEXT[!MUST]: For Meticulous Keyed SHA1, if the
+    TEXT[!MUST]:       sequence number lies outside of the range of bfd.RcvAuthSeq+1 to
+    TEXT[!MUST]:       bfd.RcvAuthSeq+(3*Detect Mult) inclusive (when treated as an
+    TEXT[!MUST]:       unsigned 32-bit circular number space, the received packet MUST be
+    TEXT[!MUST]:       discarded.
+    TEXT[!MUST]:       Otherwise (bfd.AuthSeqKnown is 0), bfd.AuthSeqKnown MUST be set to
+    TEXT[!MUST]:       1, bfd.RcvAuthSeq MUST be set to the value of the received
+    TEXT[!MUST]:       Sequence Number field, and the received packet MUST be accepted.
+    TEXT[!MUST]: If
+    TEXT[!MUST]:       the SHA1 hash of the entire BFD Control packet is equal to the
+    TEXT[!MUST]:       received value of the Auth Key/Hash field, the received packet
+    TEXT[!MUST]:       MUST be accepted.
+    TEXT[!MUST]: Otherwise (the hash does not match the Auth
+    TEXT[!MUST]:       Key/Hash field), the received packet MUST be discarded.
+
+  SECTION: [State Variables](#section-6.8.1)
+    TEXT[!MUST]:    Once session state is created, and at least one BFD Control packet is
+    TEXT[!MUST]:    received from the remote end, it MUST be preserved for at least one
+    TEXT[!MUST]:    Detection Time (see section 6.8.4) subsequent to the receipt of the
+    TEXT[!MUST]:    last BFD Control packet, regardless of the session state.
+    TEXT[!MAY]: A system MAY
+    TEXT[!MAY]:    preserve session state longer than this.
+    TEXT[!MUST]: This variable MUST be initialized
+    TEXT[!MUST]:       to Down.
+    TEXT[!MUST]: It MUST be unique across all BFD sessions on this
+    TEXT[!MUST]:       system, and nonzero.
+    TEXT[!SHOULD]: It SHOULD be set to a random (but still
+    TEXT[!SHOULD]:       unique) value to improve security.
+    TEXT[!MUST]: This MUST be initialized to zero.
+    TEXT[!MUST]: If a
+    TEXT[!MUST]:       period of a Detection Time passes without the receipt of a valid,
+    TEXT[!MUST]:       authenticated BFD packet from the remote system, this variable
+    TEXT[!MUST]:       MUST be set to zero.
+    TEXT[!MUST]: This MUST be initialized to
+    TEXT[!MUST]:       zero (No Diagnostic).
+    TEXT[!MUST]: This MUST be
+    TEXT[!MUST]:       initialized to a value of at least one second (1,000,000
+    TEXT[!MUST]:       microseconds) according to the rules described in section 6.8.3.
+    TEXT[!MUST]: This variable MUST be
+    TEXT[!MUST]:       initialized to 1.
+    TEXT[!MUST]: This variable MUST be initialized to zero.
+    TEXT[!MUST]: This variable
+    TEXT[!MUST]:       MUST be a nonzero integer, and is otherwise outside the scope of
+    TEXT[!MUST]:       this specification.
+    TEXT[!MUST]: This variable
+    TEXT[!MUST]:       MUST be initialized to a random 32-bit value.
+    TEXT[!MUST]:       This variable MUST be set to zero after no packets have been
+    TEXT[!MUST]:       received on this session for at least twice the Detection Time.
+
+  SECTION: [Timer Manipulation](#section-6.8.3)
+    TEXT[!MUST,implementation]:    If either bfd.DesiredMinTxInterval is changed or
+    TEXT[!MUST,implementation]:    bfd.RequiredMinRxInterval is changed, a Poll Sequence MUST be
+    TEXT[!MUST,implementation]:    initiated (see section 6.5).
+    TEXT[!MAY]: If the timing is such that a system
+    TEXT[!MAY]:    receiving a Poll Sequence wishes to change the parameters described
+    TEXT[!MAY]:    in this paragraph, the new parameter values MAY be carried in packets
+    TEXT[!MAY]:    with the Final (F) bit set, even if the Poll Sequence has not yet
+    TEXT[!MAY]:    been sent.
+    TEXT[!MUST]:    If bfd.DesiredMinTxInterval is increased and bfd.SessionState is Up,
+    TEXT[!MUST]:    the actual transmission interval used MUST NOT change until the Poll
+    TEXT[!MUST]:    Sequence described above has terminated.
+    TEXT[!MUST]:    If bfd.RequiredMinRxInterval is reduced and bfd.SessionState is Up,
+    TEXT[!MUST]:    the previous value of bfd.RequiredMinRxInterval MUST be used when
+    TEXT[!MUST]:    calculating the Detection Time for the remote system until the Poll
+    TEXT[!MUST]:    Sequence described above has terminated.
+    TEXT[!MUST,implementation,test]:    When bfd.SessionState is not Up, the system MUST set
+    TEXT[!MUST,implementation,test]:    bfd.DesiredMinTxInterval to a value of not less than one second
+    TEXT[!MUST,implementation,test]:    (1,000,000 microseconds).
+    TEXT[!MUST]:    If the local system reduces its transmit interval due to
+    TEXT[!MUST]:    bfd.RemoteMinRxInterval being reduced (the remote system has
+    TEXT[!MUST]:    advertised a reduced value in Required Min RX Interval), and the
+    TEXT[!MUST]:    remote system is not in Demand mode, the local system MUST honor the
+    TEXT[!MUST]:    new interval immediately.
+    TEXT[implementation]: In other words, the local system cannot
+    TEXT[implementation]:    wait longer than the new interval between the previous packet
+    TEXT[implementation]:    transmission and the next one.
+    TEXT[!MUST]: If this interval has already passed
+    TEXT[!MUST]:    since the last transmission (because the new interval is
+    TEXT[!MUST]:    significantly shorter), the local system MUST send the next periodic
+    TEXT[!MUST]:    BFD Control packet as soon as practicable.
+    TEXT[!SHOULD]:    When the Echo function is active, a system SHOULD set
+    TEXT[!SHOULD]:    bfd.RequiredMinRxInterval to a value of not less than one second
+    TEXT[!SHOULD]:    (1,000,000 microseconds).
+    TEXT[!MUST]:    In any case other than those explicitly called out above, timing
+    TEXT[!MUST]:    parameter changes MUST be effected immediately (changing the
+    TEXT[!MUST]:    transmission rate and/or the Detection Time).
+    TEXT[!MUST]: Therefore, if
+    TEXT[!MUST]:    multiple changes are made that require the use of a Poll Sequence,
+    TEXT[!MUST]:    there are three choices: 1) they MUST be communicated in a single BFD
+    TEXT[!MUST]:    Control packet (so the semantics of the Final reply are clear), or 2)
+    TEXT[!MUST]:    sufficient time must have transpired since the Poll Sequence was
+    TEXT[!MUST]:    completed to disambiguate the situation (at least a round trip time
+    TEXT[!MUST]:    since the last Poll was transmitted) prior to the initiation of
+    TEXT[!MUST]:    another Poll Sequence, or 3) an additional BFD Control packet with
+    TEXT[!MUST]:    the Final (F) bit *clear* MUST be received after the Poll Sequence
+    TEXT[!MUST]:    has completed prior to the initiation of another Poll Sequence (this
+    TEXT[!MUST]:    option is not available when Demand mode is active).
+
+  SECTION: [Calculating the Detection Time](#section-6.8.4)
+    TEXT[implementation]:    In Asynchronous mode, the Detection Time calculated in the local
+    TEXT[implementation]:    system is equal to the value of Detect Mult received from the remote
+    TEXT[implementation]:    system, multiplied by the agreed transmit interval of the remote
+    TEXT[implementation]:    system (the greater of bfd.RequiredMinRxInterval and the last
+    TEXT[implementation]:    received Desired Min TX Interval).
+    TEXT[!MUST,implementation,test]:    If Demand mode is not active, and a period of time equal to the
+    TEXT[!MUST,implementation,test]:    Detection Time passes without receiving a BFD Control packet from the
+    TEXT[!MUST,implementation,test]:    remote system, and bfd.SessionState is Init or Up, the session has
+    TEXT[!MUST,implementation,test]:    gone down -- the local system MUST set bfd.SessionState to Down and
+    TEXT[!MUST,implementation,test]:    bfd.LocalDiag to 1 (Control Detection Time Expired).
+    TEXT[!MUST]:    If Demand mode is active, and a period of time equal to the Detection
+    TEXT[!MUST]:    Time passes after the initiation of a Poll Sequence (the transmission
+    TEXT[!MUST]:    of the first BFD Control packet with the Poll bit set), the session
+    TEXT[!MUST]:    has gone down -- the local system MUST set bfd.SessionState to Down,
+    TEXT[!MUST]:    and bfd.LocalDiag to 1 (Control Detection Time Expired).
+
+  SECTION: [Detecting Failures with the Echo Function](#section-6.8.5)
+    TEXT[!MUST]:    When the Echo function is active and a sufficient number of Echo
+    TEXT[!MUST]:    packets have not arrived as they should, the session has gone down --
+    TEXT[!MUST]:    the local system MUST set bfd.SessionState to Down and bfd.LocalDiag
+    TEXT[!MUST]:    to 2 (Echo Function Failed).
+
+  SECTION: [Reception of BFD Control Packets](#section-6.8.6)
+    TEXT[!MUST]:    When a BFD Control packet is received, the following procedure MUST
+    TEXT[!MUST]:    be followed, in the order specified.
+    TEXT[!MUST]: If the packet is discarded
+    TEXT[!MUST]:    according to these rules, processing of the packet MUST cease at that
+    TEXT[!MUST]:    point.
+    TEXT[!MUST,implementation,test]:       If the version number is not correct (1), the packet MUST be
+    TEXT[!MUST,implementation,test]:       discarded.
+    TEXT[!MUST,implementation]:       If the Length field is less than the minimum correct value (24 if
+    TEXT[!MUST,implementation]:       the A bit is clear, or 26 if the A bit is set), the packet MUST be
+    TEXT[!MUST,implementation]:       discarded.
+    TEXT[!MUST,implementation]:       If the Length field is greater than the payload of the
+    TEXT[!MUST,implementation]:       encapsulating protocol, the packet MUST be discarded.
+    TEXT[!MUST,implementation,test]:       If the Detect Mult field is zero, the packet MUST be discarded.
+    TEXT[!MUST,implementation,test]:       If the Multipoint (M) bit is nonzero, the packet MUST be
+    TEXT[!MUST,implementation,test]:       discarded.
+    TEXT[!MUST,implementation,test]:       If the My Discriminator field is zero, the packet MUST be
+    TEXT[!MUST,implementation,test]:       discarded.
+    TEXT[!MUST,implementation]:       If the Your Discriminator field is nonzero, it MUST be used to
+    TEXT[!MUST,implementation]:       select the session with which this BFD packet is associated.
+    TEXT[!MUST,implementation]: If
+    TEXT[!MUST,implementation]:       no session is found, the packet MUST be discarded.
+    TEXT[!MUST,implementation,test]:       If the Your Discriminator field is zero and the State field is not
+    TEXT[!MUST,implementation,test]:       Down or AdminDown, the packet MUST be discarded.
+    TEXT[!MUST]:       If the Your Discriminator field is zero, the session MUST be
+    TEXT[!MUST]:       selected based on some combination of other fields, possibly
+    TEXT[!MUST]:       including source addressing information, the My Discriminator
+    TEXT[!MUST]:       field, and the interface over which the packet was received.
+    TEXT[!MAY]: If a matching session is
+    TEXT[!MAY]:       not found, a new session MAY be created, or the packet MAY be
+    TEXT[!MAY]:       discarded.
+    TEXT[!MUST,implementation,test]:       If the A bit is set and no authentication is in use (bfd.AuthType
+    TEXT[!MUST,implementation,test]:       is zero), the packet MUST be discarded.
+    TEXT[!MUST]:       If the A bit is clear and authentication is in use (bfd.AuthType
+    TEXT[!MUST]:       is nonzero), the packet MUST be discarded.
+    TEXT[!MUST]:       If the A bit is set, the packet MUST be authenticated under the
+    TEXT[!MUST]:       rules of section 6.7, based on the authentication type in use
+    TEXT[!MUST]:       (bfd.AuthType).
+    TEXT[!MUST]:       If the Required Min Echo RX Interval field is zero, the
+    TEXT[!MUST]:       transmission of Echo packets, if any, MUST cease.
+    TEXT[!MUST,implementation,test]:       If a Poll Sequence is being transmitted by the local system and
+    TEXT[!MUST,implementation,test]:       the Final (F) bit in the received packet is set, the Poll Sequence
+    TEXT[!MUST,implementation,test]:       MUST be terminated.
+    TEXT[implementation]:       If bfd.SessionState is AdminDown
+    TEXT[implementation]:           Discard the packet
+    TEXT[implementation]:       If received state is AdminDown
+    TEXT[implementation]:           If bfd.SessionState is not Down
+    TEXT[implementation]:               Set bfd.LocalDiag to 3 (Neighbor signaled
+    TEXT[implementation]:                   session down)
+    TEXT[implementation]:               Set bfd.SessionState to Down
+    TEXT[implementation]:       Else
+    TEXT[implementation]:           If bfd.SessionState is Down
+    TEXT[implementation]:               If received State is Down
+    TEXT[implementation]:                   Set bfd.SessionState to Init
+    TEXT[implementation]:               Else if received State is Init
+    TEXT[implementation]:                   Set bfd.SessionState to Up
+    TEXT[implementation]:           Else if bfd.SessionState is Init
+    TEXT[implementation]:               If received State is Init or Up
+    TEXT[implementation]:                   Set bfd.SessionState to Up
+    TEXT[implementation]:           Else (bfd.SessionState is Up)
+    TEXT[implementation]:               If received State is Down
+    TEXT[implementation]:                   Set bfd.LocalDiag to 3 (Neighbor signaled
+    TEXT[implementation]:                       session down)
+    TEXT[implementation]:                   Set bfd.SessionState to Down
+    TEXT[!MUST]:       If bfd.RemoteDemandMode is 1, bfd.SessionState is Up, and
+    TEXT[!MUST]:       bfd.RemoteSessionState is Up, Demand mode is active on the remote
+    TEXT[!MUST]:       system and the local system MUST cease the periodic transmission
+    TEXT[!MUST]:       of BFD Control packets (see section 6.8.7).
+    TEXT[!MUST]:       If bfd.RemoteDemandMode is 0, or bfd.SessionState is not Up, or
+    TEXT[!MUST]:       bfd.RemoteSessionState is not Up, Demand mode is not active on the
+    TEXT[!MUST]:       remote system and the local system MUST send periodic BFD Control
+    TEXT[!MUST]:       packets (see section 6.8.7).
+
+  SECTION: [Transmitting BFD Control Packets](#section-6.8.7)
+    TEXT[!MUST]:    With the exceptions listed in the remainder of this section, a system
+    TEXT[!MUST]:    MUST NOT transmit BFD Control packets at an interval less than the
+    TEXT[!MUST]:    larger of bfd.DesiredMinTxInterval and bfd.RemoteMinRxInterval, less
+    TEXT[!MUST]:    applied jitter (see below).
+    TEXT[!MUST,implementation]:    The periodic transmission of BFD Control packets MUST be jittered on
+    TEXT[!MUST,implementation]:    a per-packet basis by up to 25%, that is, the interval MUST be
+    TEXT[!MUST,implementation]:    reduced by a random value of 0 to 25%, in order to avoid self-
+    TEXT[!MUST,implementation]:    synchronization with other systems on the same subnetwork.
+    TEXT[!MUST,implementation]:    If bfd.DetectMult is equal to 1, the interval between transmitted BFD
+    TEXT[!MUST,implementation]:    Control packets MUST be no more than 90% of the negotiated
+    TEXT[!MUST,implementation]:    transmission interval, and MUST be no less than 75% of the negotiated
+    TEXT[!MUST,implementation]:    transmission interval.
+    TEXT[!MUST,implementation]:    The transmit interval MUST be recalculated whenever
+    TEXT[!MUST,implementation]:    bfd.DesiredMinTxInterval changes, or whenever bfd.RemoteMinRxInterval
+    TEXT[!MUST,implementation]:    changes, and is equal to the greater of those two values.
+    TEXT[!MUST]:    A system MUST NOT transmit BFD Control packets if bfd.RemoteDiscr is
+    TEXT[!MUST]:    zero and the system is taking the Passive role.
+    TEXT[!MUST,implementation]:    A system MUST NOT periodically transmit BFD Control packets if
+    TEXT[!MUST,implementation]:    bfd.RemoteMinRxInterval is zero.
+    TEXT[!MUST]:    A system MUST NOT periodically transmit BFD Control packets if Demand
+    TEXT[!MUST]:    mode is active on the remote system (bfd.RemoteDemandMode is 1,
+    TEXT[!MUST]:    bfd.SessionState is Up, and bfd.RemoteSessionState is Up) and a Poll
+    TEXT[!MUST]:    Sequence is not being transmitted.
+    TEXT[!MUST,implementation,test]:    If a BFD Control packet is received with the Poll (P) bit set to 1,
+    TEXT[!MUST,implementation,test]:    the receiving system MUST transmit a BFD Control packet with the Poll
+    TEXT[!MUST,implementation,test]:    (P) bit clear and the Final (F) bit set as soon as practicable,
+    TEXT[!MUST,implementation,test]:    without respect to the transmission timer or any other transmission
+    TEXT[!MUST,implementation,test]:    limitations, without respect to the session state, and without
+    TEXT[!MUST,implementation,test]:    respect to whether Demand mode is active on either system.
+    TEXT[!MAY]: A system
+    TEXT[!MAY]:    MAY limit the rate at which such packets are transmitted.
+    TEXT[!MUST]: If rate
+    TEXT[!MUST]:    limiting is in effect, the advertised value of Desired Min TX
+    TEXT[!MUST]:    Interval MUST be greater than or equal to the interval between
+    TEXT[!MUST]:    transmitted packets imposed by the rate limiting function.
+    TEXT[!MUST]:    A system MUST NOT set the Demand (D) bit unless bfd.DemandMode is 1,
+    TEXT[!MUST]:    bfd.SessionState is Up, and bfd.RemoteSessionState is Up.
+    TEXT[!SHOULD,implementation]:    A BFD Control packet SHOULD be transmitted during the interval
+    TEXT[!SHOULD,implementation]:    between periodic Control packet transmissions when the contents of
+    TEXT[!SHOULD,implementation]:    that packet would differ from that in the previously transmitted
+    TEXT[!SHOULD,implementation]:    packet (other than the Poll and Final bits) in order to more rapidly
+    TEXT[!SHOULD,implementation]:    communicate a change in state.
+    TEXT[!MUST]:    The contents of transmitted BFD Control packets MUST be set as
+    TEXT[!MUST]:    follows:
+
+  SECTION: [Reception of BFD Echo Packets](#section-6.8.8)
+    TEXT[!MUST]:    A received BFD Echo packet MUST be demultiplexed to the appropriate
+    TEXT[!MUST]:    session for processing.
+    TEXT[!MUST]: A means of detecting missing Echo packets
+    TEXT[!MUST]:    MUST be implemented, which most likely involves processing of the
+    TEXT[!MUST]:    Echo packets that are received.
+
+  SECTION: [Transmission of BFD Echo Packets](#section-6.8.9)
+    TEXT[!MUST]:    BFD Echo packets MUST NOT be transmitted when bfd.SessionState is not
+    TEXT[!MUST]:    Up.
+    TEXT[!MUST]: BFD Echo packets MUST NOT be transmitted unless the last BFD
+    TEXT[!MUST]:    Control packet received from the remote system contains a nonzero
+    TEXT[!MUST]:    value in Required Min Echo RX Interval.
+    TEXT[!MAY]:    BFD Echo packets MAY be transmitted when bfd.SessionState is Up.
+    TEXT[!MUST]: The
+    TEXT[!MUST]:    interval between transmitted BFD Echo packets MUST NOT be less than
+    TEXT[!MUST]:    the value advertised by the remote system in Required Min Echo RX
+    TEXT[!MUST]:    Interval, except as follows:
+    TEXT[!MAY]:       A 25% jitter MAY be applied to the rate of transmission, such that
+    TEXT[!MAY]:       the actual interval MAY be between 75% and 100% of the advertised
+    TEXT[!MAY]:       value.
+    TEXT[!MAY]: A single BFD Echo packet MAY be transmitted between
+    TEXT[!MAY]:       normally scheduled Echo transmission intervals.
+
+  SECTION: [Enabling or Disabling The Echo Function](#section-6.8.13)
+    TEXT[!MAY]:    If it is desired to start or stop the transmission of BFD Echo
+    TEXT[!MAY]:    packets, this MAY be done at any time (subject to the transmission
+    TEXT[!MAY]:    requirements detailed in section 6.8.9).
+    TEXT[!MAY]:    If it is desired to enable or disable the looping back of received
+    TEXT[!MAY]:    BFD Echo packets, this MAY be done at any time by changing the value
+    TEXT[!MAY]:    of Required Min Echo RX Interval to zero or nonzero in outgoing BFD
+    TEXT[!MAY]:    Control packets.
+
+  SECTION: [Enabling or Disabling Demand Mode](#section-6.8.14)
+    TEXT[!MAY]:    If it is desired to start or stop Demand mode, this MAY be done at
+    TEXT[!MAY]:    any time by setting bfd.DemandMode to the proper value.
+    TEXT[!MUST]:    If Demand mode is no longer active on the remote system, the local
+    TEXT[!MUST]:    system MUST begin transmitting periodic BFD Control packets as
+    TEXT[!MUST]:    described in section 6.8.7.
+
+  SECTION: [Forwarding Plane Reset](#section-6.8.15)
+    TEXT[!MUST]:    When the forwarding plane in the local system is reset for some
+    TEXT[!MUST]:    reason, such that the remote system can no longer rely on the local
+    TEXT[!MUST]:    forwarding state, the local system MUST set bfd.LocalDiag to 4
+    TEXT[!MUST]:    (Forwarding Plane Reset), and set bfd.SessionState to Down.
+
+  SECTION: [Administrative Control](#section-6.8.16)
+    TEXT[!MUST]: When this is desired, the following
+    TEXT[!MUST]:    procedure MUST be followed:
+    TEXT[!MAY]:    If signaling is received from outside BFD that the underlying path
+    TEXT[!MAY]:    has failed, an implementation MAY administratively disable the
+    TEXT[!MAY]:    session with the diagnostic Path Down.
+    TEXT[!MAY]:    Other scenarios MAY use the diagnostic Administratively Down.
+    TEXT[!SHOULD]:    BFD Control packets SHOULD be transmitted for at least a Detection
+    TEXT[!SHOULD]:    Time after transitioning to AdminDown state in order to ensure that
+    TEXT[!SHOULD]:    the remote system is aware of the state change.
+    TEXT[!MAY]: BFD Control packets
+    TEXT[!MAY]:    MAY be transmitted indefinitely after transitioning to AdminDown
+    TEXT[!MAY]:    state in order to maintain session state in each system (see section
+    TEXT[!MAY]:    6.8.18 below).
+
+  SECTION: [Concatenated Paths](#section-6.8.17)
+    TEXT[!MAY]:    A system MAY signal one of these failure states by simply setting
+    TEXT[!MAY]:    bfd.LocalDiag to the appropriate diagnostic code.
+    TEXT[!MUST]:    If Demand mode is active on the remote system (the local system is
+    TEXT[!MUST]:    not transmitting periodic BFD Control packets), a Poll Sequence MUST
+    TEXT[!MUST]:    be initiated to ensure that the diagnostic code is transmitted.
+
+  SECTION: [Holding Down Sessions](#section-6.8.18)
+    TEXT[!MAY]:    A system MAY choose to prevent a BFD session from being established.
+    TEXT[!MUST]: First, a system is REQUIRED to maintain session state
+    TEXT[!MUST]:    (including timing parameters), even when a session is down, until a
+    TEXT[!MUST]:    Detection Time has passed without the receipt of any BFD Control
+    TEXT[!MUST]:    packets.
+    TEXT[!MAY]:    Additionally, a system MAY transmit a value of zero for Required Min
+    TEXT[!MAY]:    RX Interval to indicate that the remote system should send no packets
+    TEXT[!MAY]:    whatsoever.
+    TEXT[!SHOULD]: If the remote system does not receive any
+    TEXT[!SHOULD]:    BFD Control packets for a Detection Time, it SHOULD reset
+    TEXT[!SHOULD]:    bfd.RemoteMinRxInterval to its initial value of 1 (per section 6.8.1,
+    TEXT[!SHOULD]:    since it is no longer required to maintain previous session state)
+    TEXT[!SHOULD]:    and then can transmit at its own rate.
+
+  SECTION: [Operational Considerations](#section-7)
+    TEXT[!MUST]:    When BFD is used across multiple hops, a congestion control mechanism
+    TEXT[!MUST]:    MUST be implemented, and when congestion is detected, the BFD
+    TEXT[!MUST]:    implementation MUST reduce the amount of traffic it generates.
+    TEXT[!SHOULD]:    As such, a congestion control algorithm SHOULD be used even across
+    TEXT[!SHOULD]:    single hops in order to avoid the possibility of catastrophic system
+    TEXT[!SHOULD]:    collapse, as such failures have been seen repeatedly in other
+    TEXT[!SHOULD]:    periodic Hello-based protocols.
+
+  SECTION: [Security Considerations](#section-9)
+    TEXT[!MUST]:    When a BFD session is directly connected across a single link
+    TEXT[!MUST]:    (physical, or a secure tunnel such as IPsec), the TTL or Hop Count
+    TEXT[!MUST]:    MUST be set to the maximum on transmit, and checked to be equal to
+    TEXT[!MUST]:    the maximum value on reception (and the packet dropped if this is not
+    TEXT[!MUST]:    the case).
+    TEXT[!SHOULD]: If
+    TEXT[!SHOULD]:    BFD is run across multiple hops or an insecure tunnel (such as
+    TEXT[!SHOULD]:    Generic Routing Encapsulation (GRE)), the Authentication Section
+    TEXT[!SHOULD]:    SHOULD be utilized.
+
+SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5881
+  SECTION: [Applications and Limitations](#section-2)
+    TEXT[!MUST]:    Each BFD session between a pair of systems MUST traverse a separate
+    TEXT[!MUST]:    network-layer path in both directions.
+    TEXT[!MUST]:    If BFD is to be used in conjunction with both IPv4 and IPv6 on a
+    TEXT[!MUST]:    particular path, a separate BFD session MUST be established for each
+    TEXT[!MUST]:    protocol (and thus encapsulated by that protocol) over that link.
+    TEXT[!MUST]:    Implementations that support the Echo function MUST ensure that
+    TEXT[!MUST]:    ingress filtering is not used on an interface that employs the Echo
+    TEXT[!MUST]:    function or make an exception for ingress filtering Echo packets.
+    TEXT[!MUST]:    system implementing the Echo function MUST be capable of sending
+
+  SECTION: [Initialization and Demultiplexing](#section-3)
+    TEXT[!MUST]: As such, both sides of a session MUST take the "Active"
+    TEXT[!MUST]:    role (sending initial BFD Control packets with a zero value of Your
+    TEXT[!MUST]:    Discriminator), and any BFD packet from the remote machine with a
+    TEXT[!MUST]:    zero value of Your Discriminator MUST be associated with the session
+    TEXT[!MUST]:    bound to the remote system, interface, and protocol.
+
+  SECTION: [Encapsulation](#section-4)
+    TEXT[!MUST,implementation]:    BFD Control packets MUST be transmitted in UDP packets with
+    TEXT[!MUST,implementation]:    destination port 3784, within an IPv4 or IPv6 packet.
+    TEXT[!MUST,implementation]: The source
+    TEXT[!MUST,implementation]:    port MUST be in the range 49152 through 65535.
+    TEXT[!MUST]: The same UDP source
+    TEXT[!MUST]:    port number MUST be used for all BFD Control packets associated with
+    TEXT[!MUST]:    a particular session.
+    TEXT[!SHOULD]: The source port number SHOULD be unique among
+    TEXT[!SHOULD]:    all BFD sessions on the system.
+    TEXT[!SHOULD]: If more than 16384 BFD sessions are
+    TEXT[!SHOULD]:    simultaneously active, UDP source port numbers MAY be reused on
+    TEXT[!SHOULD]:    multiple sessions, but the number of distinct uses of the same UDP
+    TEXT[!SHOULD]:    source port number SHOULD be minimized.
+    TEXT[!MUST]: An implementation MAY use
+    TEXT[!MUST]:    the UDP port source number to aid in demultiplexing incoming BFD
+    TEXT[!MUST]:    Control packets, but ultimately the mechanisms in [BFD] MUST be used
+    TEXT[!MUST]:    to demultiplex incoming packets to the proper session.
+    TEXT[!MUST]:    BFD Echo packets MUST be transmitted in UDP packets with destination
+    TEXT[!MUST]:    UDP port 3785 in an IPv4 or IPv6 packet.
+    TEXT[!MUST]:    destination address MUST be chosen in such a way as to cause the
+    TEXT[!MUST]:    remote system to forward the packet back to the local system.
+    TEXT[!MUST]: The
+    TEXT[!MUST]:    source address MUST be chosen in such a way as to preclude the remote
+    TEXT[!MUST]:    system from generating ICMP or Neighbor Discovery Redirect messages.
+    TEXT[!SHOULD]:    In particular, the source address SHOULD NOT be part of the subnet
+    TEXT[!SHOULD]:    bound to the interface over which the BFD Echo packet is being
+    TEXT[!SHOULD]:    transmitted, and it SHOULD NOT be an IPv6 link-local address, unless
+    TEXT[!SHOULD]:    it is known by other means that the remote system will not send
+    TEXT[!SHOULD]:    Redirects.
+    TEXT[!MUST]:    BFD Echo packets MUST be transmitted in such a way as to ensure that
+    TEXT[!MUST]:    they are received by the remote system.
+
+  SECTION: [TTL/Hop Limit Issues](#section-5)
+    TEXT[!MUST,implementation]:    If BFD authentication is not in use on a session, all BFD Control
+    TEXT[!MUST,implementation]:    packets for the session MUST be sent with a Time to Live (TTL) or Hop
+    TEXT[!MUST,implementation]:    Limit value of 255.
+    TEXT[!MUST,implementation,test]: All received BFD Control packets that are
+    TEXT[!MUST,implementation,test]:    demultiplexed to the session MUST be discarded if the received TTL or
+    TEXT[!MUST,implementation,test]:    Hop Limit is not equal to 255.
+    TEXT[!MUST]:    If BFD authentication is in use on a session, all BFD Control packets
+    TEXT[!MUST]:    MUST be sent with a TTL or Hop Limit value of 255.
+    TEXT[!MAY]: All received BFD
+    TEXT[!MAY]:    Control packets that are demultiplexed to the session MAY be
+    TEXT[!MAY]:    discarded if the received TTL or Hop Limit is not equal to 255.
+    TEXT[!MAY]: If
+    TEXT[!MAY]:    the TTL/Hop Limit check is made, it MAY be done before any
+    TEXT[!MAY]:    cryptographic authentication takes place if this will avoid
+    TEXT[!MAY]:    unnecessary calculation that would be detrimental to the receiving
+    TEXT[!MAY]:    system.
+
+  SECTION: [Addressing Issues](#section-6)
+    TEXT[!MUST]:    Implementations MUST ensure that all BFD Control packets are
+    TEXT[!MUST]:    transmitted over the one-hop path being protected by BFD.
+    TEXT[!MUST]:    On a multiaccess network, BFD Control packets MUST be transmitted
+    TEXT[!MUST]:    with source and destination addresses that are part of the subnet
+    TEXT[!MUST]:    (addressed from and to interfaces on the subnet).
+    TEXT[!MUST]:    On a point-to-point link, the source address of a BFD Control packet
+    TEXT[!MUST]:    MUST NOT be used to identify the session.
+    TEXT[!MUST]: This means that the
+    TEXT[!MUST]:    initial BFD packet MUST be accepted with any source address, and that
+    TEXT[!MUST]:    subsequent BFD packets MUST be demultiplexed solely by the Your
+    TEXT[!MUST]:    Discriminator field (as is always the case).
+    TEXT[!MUST]: If the received source address
+    TEXT[!MUST]:    changes, the local system MUST NOT use that address as the
+    TEXT[!MUST]:    destination in outgoing BFD Control packets; rather, it MUST continue
+    TEXT[!MUST]:    to use the address configured at session creation.
+    TEXT[!MAY]: An implementation
+    TEXT[!MAY]:    MAY notify the application that the neighbor's source address has
+    TEXT[!MAY]:    changed, so that the application might choose to change the
+    TEXT[!MAY]:    destination address or take some other action.
+
+  SECTION: [BFD for Use with Tunnels](#section-7)
+    TEXT[!SHOULD]: The BFD authentication mechanism SHOULD be
+    TEXT[!SHOULD]:    used and is strongly encouraged.
+
 SPECIFICATION: https://www.rfc-editor.org/rfc/rfc6935
   SECTION: [Introduction](#section-1)
     TEXT[!MUST]: However, IPv6 has no

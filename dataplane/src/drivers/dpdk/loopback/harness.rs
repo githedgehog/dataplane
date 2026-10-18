@@ -23,7 +23,7 @@ use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use dpdk::socket::Preference;
 use flow_entry::flow_table::FlowTable;
-use flowgen::drive::{Ending, Patience, Wire, run as generate};
+use flowgen::drive::{Agent, Ending, Load, Patience, Wire, run as generate};
 use flowgen::ledger::{Ledger, Ledgers};
 use flowgen::port::Queues;
 use flowgen::sender::{Clock, Sender, Stream};
@@ -483,17 +483,21 @@ impl Wire for KernelSide<'_> {
         slots.len()
     }
 
-    fn receive(&mut self, ledgers: &mut Ledgers, clock: &Clock) -> usize {
+    fn send_frame(&mut self, frame: &[u8]) -> bool {
+        self.kernel.inject.try_send(frame.to_vec()).is_ok()
+    }
+
+    fn receive(&mut self, deliver: &mut dyn FnMut(&[u8])) -> usize {
         let mut total = 0;
         let mut punted = self.punted.get();
         while let Ok(frame) = self.kernel.control.try_recv() {
             punted.control += 1;
-            ledgers.receive(&frame, clock.now_ns());
+            deliver(&frame);
             total += 1;
         }
         while let Ok(frame) = self.kernel.punted.try_recv() {
             punted.data += 1;
-            ledgers.receive(&frame, clock.now_ns());
+            deliver(&frame);
             total += 1;
         }
         self.punted.set(punted);
@@ -510,18 +514,45 @@ pub(super) struct Punted {
     pub(super) data: u64,
 }
 
-/// Send `streams` at once -- each from its side, stream `i` as run `first_run + i` -- and count
-/// what comes back at the far end or the kernel's side. Samples their progress, the frames punted
-/// on each channel (`kernel.control`, `kernel.punted`) and the dataplane's counts since they
-/// began into `case` as they go. Returns their ledgers, how the run ended, and what was punted.
+/// What a [`drive`] sends, and for how long at least.
+pub(super) struct Traffic<'s, 'a> {
+    /// Streams, each from its side; stream `i` is sent as run `first_run + i`.
+    pub(super) streams: &'s [(Side, Stream)],
+    /// The first run number.
+    pub(super) first_run: u32,
+    /// Protocol speakers; [`FAR`] and [`KERNEL`] are their wires.
+    pub(super) agents: &'s mut [&'a mut dyn Agent],
+    /// How long the run lasts at least, however soon the streams are done.
+    pub(super) hold: Duration,
+    /// The clock the run's packets are stamped and its agents driven by: one an agent's sessions
+    /// were made by, if it has any, since their time must not run backwards between runs.
+    pub(super) clock: Clock,
+}
+
+/// The wire an agent speaks on from the far end of the cable.
+pub(super) const FAR: usize = 0;
+
+/// The wire an agent speaks on from the kernel's side of the port's bridge.
+pub(super) const KERNEL: usize = 1;
+
+/// Send `traffic` and count what comes back at the far end or the kernel's side. Samples its
+/// progress, the agents' reports, the frames punted on each channel (`kernel.control`,
+/// `kernel.punted`) and the dataplane's counts since it began into `case` as it goes. Returns the
+/// streams' ledgers, how the run ended, and what was punted.
 pub(super) fn drive(
     far: &mut FarEnd<'_>,
     kernel: &mut DetachedPort,
     probe: &mut Probe<'_, '_>,
     case: &mut TestCase<'_>,
-    streams: &[(Side, Stream)],
-    first_run: u32,
+    traffic: Traffic<'_, '_>,
 ) -> (Ledgers, Ending, Punted) {
+    let Traffic {
+        streams,
+        first_run,
+        agents,
+        hold,
+        clock,
+    } = traffic;
     let data_queues = usize::from(WORKERS);
     let mut ledgers = Ledgers::new();
     let mut senders: Vec<(usize, Sender)> = (first_run..)
@@ -530,13 +561,12 @@ pub(super) fn drive(
             let flows = usize::try_from(stream.schedule.flows()).expect("the flows fit in memory");
             ledgers.add(&stream.name, run, flows);
             let wire = match side {
-                Side::Far => 0,
-                Side::Kernel => 1,
+                Side::Far => FAR,
+                Side::Kernel => KERNEL,
             };
             (wire, Sender::new(stream.clone(), run, data_queues))
         })
         .collect();
-    let clock = Clock::start();
     let baseline = probe.sample();
     let FarEnd { pool, rx, tx } = far;
     let mut queues = Queues {
@@ -551,20 +581,24 @@ pub(super) fn drive(
     };
     let ending = {
         let mut wires: [&mut dyn Wire; 2] = [&mut queues, &mut kernel];
+        let mut load = Load {
+            senders: &mut senders,
+            agents,
+        };
         generate(
-            &mut senders,
+            &mut load,
             &mut wires,
             &mut ledgers,
             &clock,
             Patience {
                 quiet: Duration::from_secs(1),
-                limit: PATIENCE,
+                limit: PATIENCE.max(hold * 2),
+                hold,
             },
             SAMPLE_EVERY,
-            |ledgers| {
+            |sample| {
                 let punted = counts.get();
-                let sample = ledgers
-                    .sample(Sample::new())
+                let sample = sample
                     .counter("kernel.control", punted.control)
                     .counter("kernel.punted", punted.data)
                     .merge(probe.sample().since(&baseline));

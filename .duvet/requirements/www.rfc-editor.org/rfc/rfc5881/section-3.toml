@@ -1,0 +1,23 @@
+target = "https://www.rfc-editor.org/rfc/rfc5881#section-3"
+
+# Initialization and Demultiplexing
+#
+#    In this application, there will be only a single BFD session between
+#    two systems over a given interface (logical or physical) for a
+#    particular protocol.  The BFD session must be bound to this
+#    interface.  As such, both sides of a session MUST take the "Active"
+#    role (sending initial BFD Control packets with a zero value of Your
+#    Discriminator), and any BFD packet from the remote machine with a
+#    zero value of Your Discriminator MUST be associated with the session
+#    bound to the remote system, interface, and protocol.
+
+[[spec]]
+level = "MUST"
+quote = '''
+As such, both sides of a session MUST take the "Active"
+role (sending initial BFD Control packets with a zero value of Your
+Discriminator), and any BFD packet from the remote machine with a
+zero value of Your Discriminator MUST be associated with the session
+bound to the remote system, interface, and protocol.
+'''
+

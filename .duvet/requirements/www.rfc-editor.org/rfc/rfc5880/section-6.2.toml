@@ -1,0 +1,86 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.2"
+
+# BFD State Machine
+#
+#    The BFD state machine is quite straightforward.  There are three
+#    states through which a session normally proceeds: two for
+#    establishing a session (Init and Up) and one for tearing down a
+#    session (Down).  This allows a three-way handshake for both session
+#    establishment and session teardown (assuring that both systems are
+#    aware of all session state changes).  A fourth state (AdminDown)
+#    exists so that a session can be administratively put down
+#    indefinitely.
+# 
+#    Each system communicates its session state in the State (Sta) field
+#    in the BFD Control packet, and that received state, in combination
+#    with the local session state, drives the state machine.
+# 
+#    Down state means that the session is down (or has just been created).
+#    A session remains in Down state until the remote system indicates
+#    that it agrees that the session is down by sending a BFD Control
+#    packet with the State field set to anything other than Up.  If that
+#    packet signals Down state, the session advances to Init state; if
+#    that packet signals Init state, the session advances to Up state.
+#    Semantically, Down state indicates that the forwarding path is
+#    unavailable, and that appropriate actions should be taken by the
+#    applications monitoring the state of the BFD session.  A system MAY
+#    hold a session in Down state indefinitely (by simply refusing to
+#    advance the session state).  This may be done for operational or
+#    administrative reasons, among others.
+# 
+#    Init state means that the remote system is communicating, and the
+#    local system desires to bring the session up, but the remote system
+#    does not yet realize it.  A session will remain in Init state until
+#    either a BFD Control Packet is received that is signaling Init or Up
+#    state (in which case the session advances to Up state) or the
+#    Detection Time expires, meaning that communication with the remote
+#    system has been lost (in which case the session advances to Down
+#    state).
+# 
+#    Up state means that the BFD session has successfully been
+#    established, and implies that connectivity between the systems is
+#    working.  The session will remain in the Up state until either
+#    connectivity fails or the session is taken down administratively.  If
+#    either the remote system signals Down state or the Detection Time
+#    expires, the session advances to Down state.
+# 
+#    AdminDown state means that the session is being held administratively
+#    down.  This causes the remote system to enter Down state, and remain
+#    there until the local system exits AdminDown state.  AdminDown state
+#    has no semantic implications for the availability of the forwarding
+#    path.
+# 
+#    The following diagram provides an overview of the state machine.
+#    Transitions involving AdminDown state are deleted for clarity (but
+#    are fully specified in sections 6.8.6 and 6.8.16).  The notation on
+#    each arc represents the state of the remote system (as received in
+#    the State field in the BFD Control packet) or indicates the
+#    expiration of the Detection Timer.
+# 
+#                              +--+
+#                              |  | UP, ADMIN DOWN, TIMER
+#                              |  V
+#                      DOWN  +------+  INIT
+#               +------------|      |------------+
+#               |            | DOWN |            |
+#               |  +-------->|      |<--------+  |
+#               |  |         +------+         |  |
+#               |  |                          |  |
+#               |  |               ADMIN DOWN,|  |
+#               |  |ADMIN DOWN,          DOWN,|  |
+#               |  |TIMER                TIMER|  |
+#               V  |                          |  V
+#             +------+                      +------+
+#        +----|      |                      |      |----+
+#    DOWN|    | INIT |--------------------->|  UP  |    |INIT, UP
+#        +--->|      | INIT, UP             |      |<---+
+#             +------+                      +------+
+
+[[spec]]
+level = "MAY"
+quote = '''
+A system MAY
+hold a session in Down state indefinitely (by simply refusing to
+advance the session state).
+'''
+

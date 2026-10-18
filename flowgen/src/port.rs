@@ -9,7 +9,7 @@ use dpdk::queue::tx::TxQueue;
 use net::buffer::Append;
 
 use crate::drive::Wire;
-use crate::ledger::{Ledger, Ledgers};
+use crate::ledger::Ledger;
 use crate::schedule::Slot;
 use crate::sender::{Clock, Sender};
 
@@ -68,13 +68,29 @@ impl Wire for Queues<'_, '_> {
         total
     }
 
-    fn receive(&mut self, ledgers: &mut Ledgers, clock: &Clock) -> usize {
+    /// Send `frame` on the first transmit queue.
+    fn send_frame(&mut self, frame: &[u8]) -> bool {
+        let (Some(queue), Ok(len)) = (self.tx.first_mut(), u16::try_from(frame.len())) else {
+            return false;
+        };
+        let Ok(mut burst) = self.pool.alloc_bulk(1) else {
+            return false;
+        };
+        for mbuf in &mut burst {
+            match mbuf.append(len) {
+                Ok(room) => room.copy_from_slice(frame),
+                Err(_) => return false,
+            }
+        }
+        queue.transmit(burst).is_empty()
+    }
+
+    fn receive(&mut self, deliver: &mut dyn FnMut(&[u8])) -> usize {
         let mut total = 0;
         for queue in self.rx.iter_mut() {
             let burst = queue.receive();
-            let now = clock.now_ns();
             for mbuf in &burst {
-                ledgers.receive(mbuf.raw_data(), now);
+                deliver(mbuf.raw_data());
                 total += 1;
             }
         }

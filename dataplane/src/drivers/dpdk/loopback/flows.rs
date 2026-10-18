@@ -8,10 +8,12 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 
 use config::external::overlay::vpcpeering::contract::{LOCAL_VNI, REMOTE_VNI};
+use std::time::Duration;
+
 use flowgen::frame::{FrameSpec, Transport, Vxlan as GeneratedVxlan};
 use flowgen::ledger::{Ledger, Ledgers};
 use flowgen::schedule::Schedule;
-use flowgen::sender::{Stream, WhenFull};
+use flowgen::sender::{Clock, Stream, WhenFull};
 use flowgen::space::{Addresses, FlowSpace, Order, Ports, SpaceSpec};
 use flowgen_report::{Bound, Evidence, Sample};
 use net::buffer::TestBuffer;
@@ -20,7 +22,7 @@ use net::packet::Packet;
 use net::vxlan::Vxlan;
 
 use super::harness::{
-    FarEnd, Loopback, Side, TestCase, check_all_back, check_counters, drive, expect,
+    FarEnd, Loopback, Side, TestCase, Traffic, check_all_back, check_counters, drive, expect,
     fixture_gateway, frame_evidence, over_cable,
 };
 use crate::drivers::cpbridge::DetachedPort;
@@ -207,8 +209,13 @@ fn many_flows_come_back_masqueraded_and_distinct() {
                 lb.kernel,
                 lb.probe,
                 &mut case,
-                &[(Side::Far, stream.clone())],
-                1,
+                Traffic {
+                    streams: &[(Side::Far, stream.clone())],
+                    first_run: 1,
+                    agents: &mut [],
+                    hold: Duration::ZERO,
+                    clock: Clock::start(),
+                },
             );
             check_all_back(&mut case, &ledgers, ending);
             check_stream(&mut case, &stream, &ledgers);
@@ -253,8 +260,13 @@ fn churning_flows_come_back_masqueraded_and_distinct() {
                     lb.kernel,
                     lb.probe,
                     &mut case,
-                    &[(Side::Far, stream.clone())],
-                    run,
+                    Traffic {
+                        streams: &[(Side::Far, stream.clone())],
+                        first_run: run,
+                        agents: &mut [],
+                        hold: Duration::ZERO,
+                        clock: Clock::start(),
+                    },
                 );
                 check_all_back(&mut case, &ledgers, ending);
                 check_stream(&mut case, &stream, &ledgers);
@@ -370,7 +382,19 @@ fn two_streams_at_once_are_each_accounted_for() {
                 .case("together", serde_json::json!({}))
                 .expect("the report should take the case");
             let streams: Vec<_> = streams.into_iter().map(|s| (Side::Far, s)).collect();
-            let (ledgers, ending, _) = drive(lb.far, lb.kernel, lb.probe, &mut case, &streams, 1);
+            let (ledgers, ending, _) = drive(
+                lb.far,
+                lb.kernel,
+                lb.probe,
+                &mut case,
+                Traffic {
+                    streams: &streams,
+                    first_run: 1,
+                    agents: &mut [],
+                    hold: Duration::ZERO,
+                    clock: Clock::start(),
+                },
+            );
             check_all_back(&mut case, &ledgers, ending);
             for (_, stream) in &streams {
                 check_stream(&mut case, stream, &ledgers);

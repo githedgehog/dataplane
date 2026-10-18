@@ -1,0 +1,67 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.8.16"
+
+# Administrative Control
+#
+#    There may be circumstances where it is desirable to administratively
+#    enable or disable a BFD session.  When this is desired, the following
+#    procedure MUST be followed:
+# 
+#       If enabling session
+#          Set bfd.SessionState to Down
+# 
+#       Else
+#          Set bfd.SessionState to AdminDown
+#          Set bfd.LocalDiag to an appropriate value
+#          Cease the transmission of BFD Echo packets
+# 
+#    If signaling is received from outside BFD that the underlying path
+#    has failed, an implementation MAY administratively disable the
+#    session with the diagnostic Path Down.
+# 
+#    Other scenarios MAY use the diagnostic Administratively Down.
+# 
+#    BFD Control packets SHOULD be transmitted for at least a Detection
+#    Time after transitioning to AdminDown state in order to ensure that
+#    the remote system is aware of the state change.  BFD Control packets
+#    MAY be transmitted indefinitely after transitioning to AdminDown
+#    state in order to maintain session state in each system (see section
+#    6.8.18 below).
+
+[[spec]]
+level = "MUST"
+quote = '''
+When this is desired, the following
+procedure MUST be followed:
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+If signaling is received from outside BFD that the underlying path
+has failed, an implementation MAY administratively disable the
+session with the diagnostic Path Down.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Other scenarios MAY use the diagnostic Administratively Down.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+BFD Control packets SHOULD be transmitted for at least a Detection
+Time after transitioning to AdminDown state in order to ensure that
+the remote system is aware of the state change.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+BFD Control packets
+MAY be transmitted indefinitely after transitioning to AdminDown
+state in order to maintain session state in each system (see section
+6.8.18 below).
+'''
+

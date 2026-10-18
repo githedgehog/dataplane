@@ -1,0 +1,67 @@
+target = "https://www.rfc-editor.org/rfc/rfc5881#section-5"
+
+# TTL/Hop Limit Issues
+#
+#    If BFD authentication is not in use on a session, all BFD Control
+#    packets for the session MUST be sent with a Time to Live (TTL) or Hop
+#    Limit value of 255.  All received BFD Control packets that are
+#    demultiplexed to the session MUST be discarded if the received TTL or
+#    Hop Limit is not equal to 255.  A discussion of this mechanism can be
+#    found in [GTSM].
+# 
+#    If BFD authentication is in use on a session, all BFD Control packets
+#    MUST be sent with a TTL or Hop Limit value of 255.  All received BFD
+#    Control packets that are demultiplexed to the session MAY be
+#    discarded if the received TTL or Hop Limit is not equal to 255.  If
+#    the TTL/Hop Limit check is made, it MAY be done before any
+#    cryptographic authentication takes place if this will avoid
+#    unnecessary calculation that would be detrimental to the receiving
+#    system.
+# 
+#    In the context of this section, "authentication in use" means that
+#    the system is sending BFD Control packets with the Authentication bit
+#    set and with the Authentication Section included and that all
+#    unauthenticated packets demultiplexed to the session are discarded,
+#    per the BFD base specification.
+
+[[spec]]
+level = "MUST"
+quote = '''
+If BFD authentication is not in use on a session, all BFD Control
+packets for the session MUST be sent with a Time to Live (TTL) or Hop
+Limit value of 255.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+All received BFD Control packets that are
+demultiplexed to the session MUST be discarded if the received TTL or
+Hop Limit is not equal to 255.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If BFD authentication is in use on a session, all BFD Control packets
+MUST be sent with a TTL or Hop Limit value of 255.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+All received BFD
+Control packets that are demultiplexed to the session MAY be
+discarded if the received TTL or Hop Limit is not equal to 255.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+If
+the TTL/Hop Limit check is made, it MAY be done before any
+cryptographic authentication takes place if this will avoid
+unnecessary calculation that would be detrimental to the receiving
+system.
+'''
+

@@ -1,0 +1,18 @@
+target = "https://www.rfc-editor.org/rfc/rfc5881#section-7"
+
+# BFD for Use with Tunnels
+#
+#    A number of mechanisms are available to tunnel IPv4 and IPv6 over
+#    arbitrary topologies.  If the tunnel mechanism does not decrement the
+#    TTL or Hop Limit of the network protocol carried within, the
+#    mechanism described in this document may be used to provide liveness
+#    detection for the tunnel.  The BFD authentication mechanism SHOULD be
+#    used and is strongly encouraged.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The BFD authentication mechanism SHOULD be
+used and is strongly encouraged.
+'''
+
