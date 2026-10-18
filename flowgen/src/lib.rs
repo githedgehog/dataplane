@@ -25,6 +25,8 @@
 //! - [`drive`]: sending several streams at once, each over its own [`drive::Wire`], and counting
 //!   what comes back on any of them.
 //! - `port` (with the `dpdk` feature): DPDK queues as a wire.
+//! - [`mutate`]: changing every frame of a stream in one place, to make it one a gateway should
+//!   refuse.
 //!
 //! Frames are built and read by this crate's own code, not the dataplane's, so that the two
 //! cannot agree on a bug.
@@ -33,6 +35,7 @@ mod checksum;
 pub mod drive;
 pub mod frame;
 pub mod ledger;
+pub mod mutate;
 #[cfg(feature = "dpdk")]
 pub mod port;
 pub mod prometheus;
