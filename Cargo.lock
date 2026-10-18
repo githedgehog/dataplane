@@ -1694,6 +1694,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-flowgen"
+version = "0.29.0"
+dependencies = [
+ "bolero",
+ "dataplane-clock",
+ "dataplane-dpdk",
+ "dataplane-flowgen-report",
+ "dataplane-net",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "dataplane-flowgen-report"
 version = "0.29.0"
 dependencies = [
