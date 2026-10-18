@@ -199,6 +199,15 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                 thread::sleep(poll_period);
             }
 
+            // The workers have been joined, and counted their last before they returned: take what
+            // they counted since the last poll, or the final status would miss it.
+            for (monitor, wk_status) in monitors.iter().zip(workers_status.iter_mut()) {
+                for (task, rx_task_status) in monitor.rx_tasks.iter().zip(&mut wk_status.rx_tasks) {
+                    let (counters, _) = task.watchdog.check_and_clear(false);
+                    rx_task_status.accumulate(&counters);
+                }
+            }
+
             publish_counters();
 
             // update status on termination. This is in case we
@@ -317,5 +326,55 @@ fn check_worker_rx_tasks<E>(
             }
             Activity::Idle => rx_task_status.pps = 0.0,
         }
+    }
+}
+
+#[cfg(all(test, not(feature = "shuttle")))]
+mod tests {
+    use std::convert::Infallible;
+
+    use lifecycle::CancellationToken;
+
+    use super::*;
+    use crate::drivers::status::driver_status_access;
+    use crate::drivers::watchdog::RxCounters;
+
+    /// What a worker counts between the supervisor's last poll and its own exit reaches the final
+    /// status: a short run, one that ends before the first poll's interval, still reports its work.
+    #[test]
+    fn the_last_status_carries_the_last_counts() {
+        let subsystem = Subsystem::new("workers", CancellationToken::new());
+        let (writer, reader) = driver_status_access();
+        let task = RxTaskMonitor::new("eth0");
+        let watchdog = task.watchdog.clone();
+        thread::scope(|scope| {
+            let cancel = subsystem.cancel_token();
+            let worker = thread::Builder::new()
+                .spawn_scoped(scope, move || {
+                    // Counted after the supervisor's first poll, which happens immediately.
+                    std::thread::sleep(Duration::from_millis(100));
+                    watchdog.record(&RxCounters {
+                        rx: 7,
+                        tx: 5,
+                        ..RxCounters::default()
+                    });
+                    cancel.cancel();
+                    Ok::<(), Infallible>(())
+                })
+                .unwrap();
+            spawn_supervisor(
+                scope,
+                "test",
+                32,
+                &subsystem,
+                vec![WorkerMonitor::new(0, worker, vec![task])],
+                writer,
+                || {},
+            )
+            .unwrap();
+        });
+        let status = reader.load();
+        let task = &status.workers[0].rx_tasks[0];
+        assert_eq!((task.total_rx, task.total_tx), (7, 5));
     }
 }
