@@ -5,6 +5,7 @@
 //! and the report.
 
 use std::io::Write;
+use std::net::IpAddr;
 use std::num::{NonZero, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -22,6 +23,10 @@ use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use dpdk::socket::Preference;
 use flow_entry::flow_table::FlowTable;
+use flowgen::drive::{Ending, Patience, Wire, run as generate};
+use flowgen::ledger::{Ledger, Ledgers};
+use flowgen::port::Queues;
+use flowgen::sender::{Clock, Sender, Stream};
 use flowgen_report::{
     Bound, Build, Case, Environment, Evidence, Header, Port as ReportPort, Report, Sample, Status,
 };
@@ -41,7 +46,9 @@ use super::super::{DatapathEnds, DriverDpdk};
 use crate::drivers::cpbridge::DetachedPort;
 use crate::drivers::status::driver_status_access;
 use crate::packet_processor::PipelineIngredients;
-use crate::packet_processor::fixture::{Fleet, GATEWAY_MAC, exposes, topology, uplink, vni};
+use crate::packet_processor::fixture::{
+    Fleet, GATEWAY_MAC, LOCAL_VTEP, PEER_VTEP, exposes, topology, uplink, vni,
+};
 use crate::statistics::{Telemetry, TelemetrySources};
 
 /// Data workers.
@@ -197,6 +204,9 @@ pub(super) struct Gateway {
     pub(super) packets: Arc<PacketStats>,
     /// The pipeline's flow table.
     pub(super) flows: Arc<FlowTable>,
+    /// The gateway's addresses and BGP/BFD neighbours, from which its control-plane classes are
+    /// built.
+    pub(super) control_plane: ControlPlane,
 }
 
 /// A counter expectation: check id, counter path, bound.
@@ -343,7 +353,7 @@ pub(super) fn over_cable<K>(
         }),
         exporter,
     };
-    let (_control_plane_tx, control_plane) = watch::channel(ControlPlane::new([], []));
+    let (_control_plane_tx, control_plane) = watch::channel(gateway.control_plane);
 
     thread::scope(|scope| {
         // Stop the workers however this closure ends, or a failed assertion would leave the scope
@@ -436,6 +446,178 @@ fn record_after_stop(report: &mut TestReport, probe: &mut Probe<'_, '_>) {
     after
         .finish()
         .expect("the report should take the case's end");
+}
+
+/// How often a run's progress is sampled into the report: often, since these runs take tens of
+/// milliseconds.
+const SAMPLE_EVERY: Duration = Duration::from_millis(5);
+
+/// Where a stream is sent from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Side {
+    /// The far end of the cable, into the dataplane's port, as a neighbour would.
+    Far,
+    /// The kernel's side of the port's bridge, out of the port, as FRR would.
+    Kernel,
+}
+
+/// The kernel's side of the port's bridge as a [`Wire`]: frames injected for transmission, and
+/// frames punted on either channel, each channel counted apart.
+struct KernelSide<'k> {
+    kernel: &'k mut DetachedPort,
+    /// What has been punted so far, shared with whoever samples the run.
+    punted: &'k std::cell::Cell<Punted>,
+}
+
+impl Wire for KernelSide<'_> {
+    fn send(&mut self, sender: &mut Sender, ledger: &mut Ledger, clock: &Clock) -> usize {
+        let slots = sender.plan(ledger.total_sent());
+        for (n, &slot) in slots.iter().enumerate() {
+            let (frame, _) = sender.stamp(slot, clock.now_ns());
+            if self.kernel.inject.try_send(frame.to_vec()).is_err() {
+                sender.refused(&slots[n..]);
+                return n;
+            }
+            sender.accepted(slot, ledger);
+        }
+        slots.len()
+    }
+
+    fn receive(&mut self, ledgers: &mut Ledgers, clock: &Clock) -> usize {
+        let mut total = 0;
+        let mut punted = self.punted.get();
+        while let Ok(frame) = self.kernel.control.try_recv() {
+            punted.control += 1;
+            ledgers.receive(&frame, clock.now_ns());
+            total += 1;
+        }
+        while let Ok(frame) = self.kernel.punted.try_recv() {
+            punted.data += 1;
+            ledgers.receive(&frame, clock.now_ns());
+            total += 1;
+        }
+        self.punted.set(punted);
+        total
+    }
+}
+
+/// Frames the kernel's side received during a [`drive`], by channel.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Punted {
+    /// On the control channel.
+    pub(super) control: u64,
+    /// On the data path's channel.
+    pub(super) data: u64,
+}
+
+/// Send `streams` at once -- each from its side, stream `i` as run `first_run + i` -- and count
+/// what comes back at the far end or the kernel's side. Samples their progress, the frames punted
+/// on each channel (`kernel.control`, `kernel.punted`) and the dataplane's counts since they
+/// began into `case` as they go. Returns their ledgers, how the run ended, and what was punted.
+pub(super) fn drive(
+    far: &mut FarEnd<'_>,
+    kernel: &mut DetachedPort,
+    probe: &mut Probe<'_, '_>,
+    case: &mut TestCase<'_>,
+    streams: &[(Side, Stream)],
+    first_run: u32,
+) -> (Ledgers, Ending, Punted) {
+    let data_queues = usize::from(WORKERS);
+    let mut ledgers = Ledgers::new();
+    let mut senders: Vec<(usize, Sender)> = (first_run..)
+        .zip(streams)
+        .map(|(run, (side, stream))| {
+            let flows = usize::try_from(stream.schedule.flows()).expect("the flows fit in memory");
+            ledgers.add(&stream.name, run, flows);
+            let wire = match side {
+                Side::Far => 0,
+                Side::Kernel => 1,
+            };
+            (wire, Sender::new(stream.clone(), run, data_queues))
+        })
+        .collect();
+    let clock = Clock::start();
+    let baseline = probe.sample();
+    let FarEnd { pool, rx, tx } = far;
+    let mut queues = Queues {
+        tx: &mut tx[..data_queues],
+        rx,
+        pool,
+    };
+    let counts = std::cell::Cell::new(Punted::default());
+    let mut kernel = KernelSide {
+        kernel,
+        punted: &counts,
+    };
+    let ending = {
+        let mut wires: [&mut dyn Wire; 2] = [&mut queues, &mut kernel];
+        generate(
+            &mut senders,
+            &mut wires,
+            &mut ledgers,
+            &clock,
+            Patience {
+                quiet: Duration::from_secs(1),
+                limit: PATIENCE,
+            },
+            SAMPLE_EVERY,
+            |ledgers| {
+                let punted = counts.get();
+                let sample = ledgers
+                    .sample(Sample::new())
+                    .counter("kernel.control", punted.control)
+                    .counter("kernel.punted", punted.data)
+                    .merge(probe.sample().since(&baseline));
+                case.sample(sample)
+                    .expect("the report should take the sample");
+            },
+        )
+    };
+    (ledgers, ending, counts.get())
+}
+
+/// Check that everything every stream sent came back, and that no frame came back from nowhere.
+pub(super) fn check_all_back(case: &mut TestCase<'_>, ledgers: &Ledgers, ending: Ending) {
+    expect(
+        case,
+        "all-back",
+        "everything sent comes back before the time allowed runs out",
+        ending == Ending::AllBack,
+        || vec![Evidence::text(format!("{ending:?}"))],
+    );
+    let stray = ledgers.sample(Sample::new()).counters["generator.stray"];
+    case.expect_counter(
+        "none-stray",
+        "generator.stray",
+        Bound::exactly(0),
+        Some(stray),
+        ledgers.stray_evidence().to_vec(),
+    )
+    .expect("the report should take the check");
+}
+
+/// Wait until the data workers take control traffic off the data path in software, which they do
+/// once the control worker has found the port's NIC will not steer it: until then, an ARP request
+/// goes through the pipeline. Drains whatever the wait punted.
+pub(super) fn await_software_classes(far: &mut FarEnd<'_>, kernel: &mut DetachedPort) {
+    let mut request = vec![0xff; 6];
+    request.extend_from_slice(&[0x02, 0, 0, 0, 0, 0xfe, 0x08, 0x06]);
+    request.extend_from_slice(&[0x00, 0x01, 0x08, 0x00, 6, 4, 0x00, 0x01]);
+    request.resize(60, 0);
+    let deadline = clock::now() + PATIENCE;
+    while kernel.control.try_recv().is_err() {
+        assert!(
+            clock::now() < deadline,
+            "control traffic was never taken off the data path"
+        );
+        far.send(0, &request);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(10));
+    while kernel.control.try_recv().is_ok() || kernel.punted.try_recv().is_ok() {}
+    for queue in &mut far.rx {
+        drop(queue.receive());
+    }
 }
 
 /// The EAL a loopback test runs in: no hugepages, no PCI, nothing shared.
@@ -586,6 +768,11 @@ pub(super) fn fixture_gateway() -> (Gateway, impl Sized) {
         pipeline: Some(pipeline),
         packets: upkeep.packets.clone(),
         flows: fleet.flow_table(),
+        // The peer VTEP is the BGP and BFD neighbour, and the gateway answers on its own VTEP.
+        control_plane: ControlPlane::new(
+            [LOCAL_VTEP.parse::<IpAddr>().unwrap()],
+            [PEER_VTEP.parse::<IpAddr>().unwrap()],
+        ),
     };
     (gateway, (tables, fleet, upkeep))
 }

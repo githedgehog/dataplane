@@ -40,38 +40,42 @@ pub(crate) fn ipv4_header(header: &[u8]) -> u16 {
     finish(sum(0, header))
 }
 
-/// The checksum of a UDP datagram over IPv4 whose checksum field is zero.
+/// The checksum of a UDP datagram (`protocol` 17) or TCP segment (6) over IPv4 whose checksum
+/// field is zero.
 ///
-/// A computed zero is sent as all ones: a zero checksum means "none" ([RFC 768]).
+/// For UDP, a computed zero is sent as all ones: a zero UDP checksum means "none" ([RFC 768]).
 ///
 /// [RFC 768]: https://www.rfc-editor.org/rfc/rfc768
-pub(crate) fn udp_ipv4(src: Ipv4Addr, dst: Ipv4Addr, datagram: &[u8]) -> u16 {
-    let mut acc = sum(0, &src.octets());
-    acc = sum(acc, &dst.octets());
-    acc += 17; // the protocol, zero-padded
-    acc += datagram.len() as u64;
-    acc = sum(acc, datagram);
-    match finish(acc) {
-        0 => 0xffff,
+pub(crate) fn l4_ipv4(protocol: u8, src: Ipv4Addr, dst: Ipv4Addr, segment: &[u8]) -> u16 {
+    match finish(pseudo_sum(protocol, src, dst, segment)) {
+        0 if protocol == UDP => 0xffff,
         checksum => checksum,
     }
 }
 
-/// Whether a UDP datagram over IPv4 carries a correct, present checksum: summed with it, the
-/// datagram and pseudo-header come to zero.
-pub(crate) fn udp_ipv4_verifies(src: Ipv4Addr, dst: Ipv4Addr, datagram: &[u8]) -> bool {
-    let mut acc = sum(0, &src.octets());
-    acc = sum(acc, &dst.octets());
-    acc += 17;
-    acc += datagram.len() as u64;
-    finish(sum(acc, datagram)) == 0
+/// Whether a UDP datagram or TCP segment over IPv4 carries a correct checksum: summed with it,
+/// the segment and pseudo-header come to zero.
+pub(crate) fn l4_ipv4_verifies(protocol: u8, src: Ipv4Addr, dst: Ipv4Addr, segment: &[u8]) -> bool {
+    finish(pseudo_sum(protocol, src, dst, segment)) == 0
 }
 
-/// `checksum`, updated for `old` bytes becoming `new` ones at the same, even, offset ([RFC 1624]
-/// eqn. 3: `HC' = ~(~HC + ~m + m')`).
+/// The UDP protocol number, whose checksum has a special zero.
+const UDP: u8 = 17;
+
+/// The sum of `segment` and its IPv4 pseudo-header.
+fn pseudo_sum(protocol: u8, src: Ipv4Addr, dst: Ipv4Addr, segment: &[u8]) -> u64 {
+    let mut acc = sum(0, &src.octets());
+    acc = sum(acc, &dst.octets());
+    acc += u64::from(protocol);
+    acc += segment.len() as u64;
+    sum(acc, segment)
+}
+
+/// `checksum`, of protocol `protocol`, updated for `old` bytes becoming `new` ones at the same,
+/// even, offset ([RFC 1624] eqn. 3: `HC' = ~(~HC + ~m + m')`).
 ///
 /// [RFC 1624]: https://www.rfc-editor.org/rfc/rfc1624
-pub(crate) fn adjust(checksum: u16, old: &[u8], new: &[u8]) -> u16 {
+pub(crate) fn adjust(protocol: u8, checksum: u16, old: &[u8], new: &[u8]) -> u16 {
     debug_assert_eq!(old.len(), new.len());
     let mut acc = u64::from(!checksum);
     // Adding the complement of each old word removes it from the sum.
@@ -85,7 +89,7 @@ pub(crate) fn adjust(checksum: u16, old: &[u8], new: &[u8]) -> u16 {
     acc = sum(acc, new);
     match finish(acc) {
         // UDP's zero means "no checksum"; one's complement arithmetic has two zeroes anyway.
-        0 => 0xffff,
+        0 if protocol == UDP => 0xffff,
         checksum => checksum,
     }
 }

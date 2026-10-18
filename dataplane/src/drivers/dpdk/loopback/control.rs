@@ -11,6 +11,7 @@ use flowgen_report::Bound;
 use net::eth::mac::Mac;
 use net::interface::InterfaceIndex;
 use net::packet::PacketStats;
+use traffic_control::ControlPlane;
 
 use super::harness::{
     FarEnd, Gateway, Loopback, PATIENCE, TestCase, WORKERS, check_counters, expect, frame_evidence,
@@ -96,6 +97,7 @@ fn control_frames_cross_a_ring_cable_both_ways() {
                 pipeline: None,
                 packets: Arc::new(PacketStats::new()),
                 flows: Arc::new(FlowTable::default()),
+                control_plane: ControlPlane::new([], []),
             };
             (gateway, ())
         },

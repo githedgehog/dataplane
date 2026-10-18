@@ -10,3 +10,4 @@
 mod control;
 mod flows;
 mod harness;
+mod probes;

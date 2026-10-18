@@ -21,9 +21,56 @@ use crate::space::{self, Tuple};
 const ETH_LEN: usize = 14;
 const IPV4_LEN: usize = 20;
 const UDP_LEN: usize = 8;
+const TCP_LEN: usize = 20;
 const VXLAN_LEN: usize = 8;
 const ETHERTYPE_IPV4: u16 = 0x0800;
 const PROTO_UDP: u8 = 17;
+const PROTO_TCP: u8 = 6;
+
+/// TCP flags, as the header's flag byte carries them.
+pub mod tcp {
+    /// No more data from the sender.
+    pub const FIN: u8 = 0x01;
+    /// Synchronise sequence numbers: open a connection.
+    pub const SYN: u8 = 0x02;
+    /// Reset the connection.
+    pub const RST: u8 = 0x04;
+    /// Push the data to the application.
+    pub const PSH: u8 = 0x08;
+    /// The acknowledgement number is valid.
+    pub const ACK: u8 = 0x10;
+}
+
+/// What a stream's packets carry over IP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Transport {
+    /// UDP.
+    #[default]
+    Udp,
+    /// TCP segments with these flags, and nothing else of a connection: no handshake, no
+    /// acknowledgements, sequence numbers counting packets.
+    Tcp {
+        /// The flags every segment carries; see [`tcp`].
+        flags: u8,
+    },
+}
+
+impl Transport {
+    fn protocol(self) -> u8 {
+        match self {
+            Transport::Udp => PROTO_UDP,
+            Transport::Tcp { .. } => PROTO_TCP,
+        }
+    }
+
+    fn header_len(self) -> usize {
+        match self {
+            Transport::Udp => UDP_LEN,
+            Transport::Tcp { .. } => TCP_LEN,
+        }
+    }
+}
 
 /// The UDP port VXLAN is sent to ([RFC 7348]).
 ///
@@ -57,7 +104,10 @@ pub struct FrameSpec {
     pub dst_mac: Mac,
     /// The tunnel, if the frames travel in one.
     pub vxlan: Option<Vxlan>,
-    /// The inner UDP payload's length, signature included; at least [`signature::LEN`].
+    /// What the inner packet carries.
+    #[serde(default)]
+    pub transport: Transport,
+    /// The inner payload's length, signature included; at least [`signature::LEN`].
     pub payload_len: u16,
     /// The inner packet's TTL.
     pub ttl: u8,
@@ -69,8 +119,10 @@ pub struct Template {
     bytes: Vec<u8>,
     /// Where the signature starts.
     signature: usize,
-    /// Where the inner UDP checksum is.
-    udp_checksum: usize,
+    /// Where the inner transport checksum is.
+    l4_checksum: usize,
+    /// The inner transport protocol.
+    protocol: u8,
 }
 
 impl Template {
@@ -78,7 +130,7 @@ impl Template {
     #[must_use]
     pub fn new(spec: &FrameSpec, run: u32, number: u64, flow: &Tuple) -> Template {
         let payload_len = usize::from(spec.payload_len).max(signature::LEN);
-        let inner_len = ETH_LEN + IPV4_LEN + UDP_LEN + payload_len;
+        let inner_len = ETH_LEN + IPV4_LEN + spec.transport.header_len() + payload_len;
         let outer_len = spec
             .vxlan
             .map_or(0, |_| ETH_LEN + IPV4_LEN + UDP_LEN + VXLAN_LEN);
@@ -89,6 +141,7 @@ impl Template {
             ethernet(&mut outer[..ETH_LEN], vxlan.dst_mac, vxlan.src_mac);
             ipv4(
                 &mut outer[ETH_LEN..ETH_LEN + IPV4_LEN],
+                PROTO_UDP,
                 vxlan.src,
                 vxlan.dst,
                 64,
@@ -106,21 +159,38 @@ impl Template {
 
         let inner = &mut bytes[outer_len..];
         ethernet(&mut inner[..ETH_LEN], spec.dst_mac, spec.src_mac);
+        let l4_len = spec.transport.header_len();
+        let protocol = spec.transport.protocol();
         ipv4(
             &mut inner[ETH_LEN..ETH_LEN + IPV4_LEN],
+            protocol,
             flow.src,
             flow.dst,
             spec.ttl,
-            UDP_LEN + payload_len,
+            l4_len + payload_len,
         );
-        let udp_at = ETH_LEN + IPV4_LEN;
-        udp_header(
-            &mut inner[udp_at..udp_at + UDP_LEN],
-            flow.sport,
-            flow.dport,
-            UDP_LEN + payload_len,
-        );
-        let payload = &mut inner[udp_at + UDP_LEN..];
+        let l4_at = ETH_LEN + IPV4_LEN;
+        let checksum_at = match spec.transport {
+            Transport::Udp => {
+                udp_header(
+                    &mut inner[l4_at..l4_at + UDP_LEN],
+                    flow.sport,
+                    flow.dport,
+                    UDP_LEN + payload_len,
+                );
+                6
+            }
+            Transport::Tcp { flags } => {
+                tcp_header(
+                    &mut inner[l4_at..l4_at + TCP_LEN],
+                    flow.sport,
+                    flow.dport,
+                    flags,
+                );
+                16
+            }
+        };
+        let payload = &mut inner[l4_at + l4_len..];
         Signature {
             run,
             flow: number,
@@ -129,13 +199,15 @@ impl Template {
         }
         .write(payload);
         fill(payload);
-        let checksum = checksum::udp_ipv4(flow.src, flow.dst, &inner[udp_at..]);
-        inner[udp_at + 6..udp_at + 8].copy_from_slice(&checksum.to_be_bytes());
+        let checksum = checksum::l4_ipv4(protocol, flow.src, flow.dst, &inner[l4_at..]);
+        inner[l4_at + checksum_at..l4_at + checksum_at + 2]
+            .copy_from_slice(&checksum.to_be_bytes());
 
         Template {
             bytes,
-            signature: outer_len + udp_at + UDP_LEN,
-            udp_checksum: outer_len + udp_at + 6,
+            signature: outer_len + l4_at + l4_len,
+            l4_checksum: outer_len + l4_at + checksum_at,
+            protocol,
         }
     }
 
@@ -150,9 +222,9 @@ impl Template {
         new[..8].copy_from_slice(&seq.to_be_bytes());
         new[8..].copy_from_slice(&tx_ns.to_be_bytes());
         self.bytes[at..at + 16].copy_from_slice(&new);
-        let c = self.udp_checksum;
+        let c = self.l4_checksum;
         let checksum = u16::from_be_bytes([self.bytes[c], self.bytes[c + 1]]);
-        let checksum = checksum::adjust(checksum, &old, &new);
+        let checksum = checksum::adjust(self.protocol, checksum, &old, &new);
         self.bytes[c..c + 2].copy_from_slice(&checksum.to_be_bytes());
     }
 
@@ -169,13 +241,13 @@ fn ethernet(out: &mut [u8], dst: Mac, src: Mac) {
     out[12..14].copy_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
 }
 
-/// An IPv4 header without options, carrying `payload_len` bytes of UDP.
-fn ipv4(out: &mut [u8], src: Ipv4Addr, dst: Ipv4Addr, ttl: u8, payload_len: usize) {
+/// An IPv4 header without options, carrying `payload_len` bytes of `protocol`.
+fn ipv4(out: &mut [u8], protocol: u8, src: Ipv4Addr, dst: Ipv4Addr, ttl: u8, payload_len: usize) {
     let total = u16::try_from(IPV4_LEN + payload_len).unwrap_or(u16::MAX);
     out[0] = 0x45; // version 4, five words
     out[2..4].copy_from_slice(&total.to_be_bytes());
     out[8] = ttl;
-    out[9] = PROTO_UDP;
+    out[9] = protocol;
     out[12..16].copy_from_slice(&src.octets());
     out[16..20].copy_from_slice(&dst.octets());
     let checksum = checksum::ipv4_header(out);
@@ -188,6 +260,15 @@ fn udp_header(out: &mut [u8], sport: u16, dport: u16, len: usize) {
     out[2..4].copy_from_slice(&dport.to_be_bytes());
     let len = u16::try_from(len).unwrap_or(u16::MAX);
     out[4..6].copy_from_slice(&len.to_be_bytes());
+}
+
+/// A TCP header without options and with a zero checksum, carrying `flags`.
+fn tcp_header(out: &mut [u8], sport: u16, dport: u16, flags: u8) {
+    out[0..2].copy_from_slice(&sport.to_be_bytes());
+    out[2..4].copy_from_slice(&dport.to_be_bytes());
+    out[12] = 0x50; // five words
+    out[13] = flags;
+    out[14..16].copy_from_slice(&u16::MAX.to_be_bytes()); // window
 }
 
 /// Fill a payload past its signature with a pattern a reader can check: byte `i` is `i % 256`.
@@ -249,8 +330,10 @@ pub struct Received {
     pub ttl: u8,
     /// The inner IPv4 header checksum.
     pub ip_checksum: ChecksumState,
-    /// The inner UDP checksum.
-    pub udp_checksum: ChecksumState,
+    /// The inner UDP or TCP checksum.
+    pub l4_checksum: ChecksumState,
+    /// The inner TCP segment's flags, if it is TCP.
+    pub tcp_flags: Option<u8>,
     /// The signature, if the payload carries one.
     pub signature: Option<Signature>,
     /// Whether the payload past the signature is as it was sent.
@@ -269,9 +352,9 @@ pub enum ParseError {
     /// Its IP header is not version 4, or is shorter than its minimum.
     #[error("a malformed IPv4 header")]
     BadIpv4,
-    /// It is not UDP.
-    #[error("not UDP (protocol {0})")]
-    NotUdp(u8),
+    /// It is neither UDP nor TCP.
+    #[error("neither UDP nor TCP (protocol {0})")]
+    NotUdpOrTcp(u8),
     /// It is a fragment, which a stream never sends.
     #[error("an IPv4 fragment")]
     Fragment,
@@ -281,10 +364,10 @@ pub enum ParseError {
 ///
 /// # Errors
 ///
-/// If the frame is not Ethernet, IPv4 and UDP (optionally inside VXLAN), unfragmented.
+/// If the frame is not Ethernet, IPv4 and UDP or TCP (optionally inside VXLAN), unfragmented.
 pub fn parse(frame: &[u8]) -> Result<Received, ParseError> {
     let outer = Layers::parse(frame)?;
-    let (tunnel, inner) = if outer.dport == VXLAN_PORT {
+    let (tunnel, inner) = if outer.tcp_flags.is_none() && outer.tuple.dport == VXLAN_PORT {
         let vx = outer
             .payload
             .get(..VXLAN_LEN)
@@ -309,21 +392,22 @@ pub fn parse(frame: &[u8]) -> Result<Received, ParseError> {
         tuple: inner.tuple,
         ttl: inner.ttl,
         ip_checksum: inner.ip_checksum,
-        udp_checksum: inner.udp_checksum,
+        l4_checksum: inner.l4_checksum,
+        tcp_flags: inner.tcp_flags,
         signature: Signature::read(inner.payload),
         payload_intact: filled(inner.payload),
     })
 }
 
-/// One Ethernet, IPv4 and UDP header stack.
+/// One Ethernet, IPv4 and UDP or TCP header stack.
 struct Layers<'f> {
     src_mac: Mac,
     dst_mac: Mac,
     tuple: Tuple,
-    dport: u16,
     ttl: u8,
     ip_checksum: ChecksumState,
-    udp_checksum: ChecksumState,
+    l4_checksum: ChecksumState,
+    tcp_flags: Option<u8>,
     payload: &'f [u8],
 }
 
@@ -353,8 +437,9 @@ impl<'f> Layers<'f> {
         if u16::from_be_bytes([header[6], header[7]]) & 0x3fff != 0 {
             return Err(ParseError::Fragment);
         }
-        if header[9] != PROTO_UDP {
-            return Err(ParseError::NotUdp(header[9]));
+        let protocol = header[9];
+        if protocol != PROTO_UDP && protocol != PROTO_TCP {
+            return Err(ParseError::NotUdpOrTcp(protocol));
         }
         let ip_checksum = if checksum::finish(checksum::sum(0, header)) == 0 {
             ChecksumState::Valid
@@ -365,17 +450,32 @@ impl<'f> Layers<'f> {
             |at: usize| Ipv4Addr::new(header[at], header[at + 1], header[at + 2], header[at + 3]);
         let (src, dst) = (addr(12), addr(16));
         // Ethernet pads short frames; the IP length says where the packet really ends.
-        let datagram = ip.get(ihl..total).ok_or(ParseError::Short("UDP"))?;
-        let udp = datagram.get(..UDP_LEN).ok_or(ParseError::Short("UDP"))?;
-        let sport = u16::from_be_bytes([udp[0], udp[1]]);
-        let dport = u16::from_be_bytes([udp[2], udp[3]]);
-        let carried = u16::from_be_bytes([udp[6], udp[7]]);
-        let udp_checksum = if carried == 0 {
-            ChecksumState::Absent
-        } else if checksum::udp_ipv4_verifies(src, dst, datagram) {
-            ChecksumState::Valid
+        let segment = ip.get(ihl..total).ok_or(ParseError::Short("transport"))?;
+        let ports = segment.get(..4).ok_or(ParseError::Short("transport"))?;
+        let sport = u16::from_be_bytes([ports[0], ports[1]]);
+        let dport = u16::from_be_bytes([ports[2], ports[3]]);
+        let (l4_checksum, tcp_flags, payload) = if protocol == PROTO_UDP {
+            let udp = segment.get(..UDP_LEN).ok_or(ParseError::Short("UDP"))?;
+            let state = if u16::from_be_bytes([udp[6], udp[7]]) == 0 {
+                ChecksumState::Absent
+            } else if checksum::l4_ipv4_verifies(protocol, src, dst, segment) {
+                ChecksumState::Valid
+            } else {
+                ChecksumState::Invalid
+            };
+            (state, None, &segment[UDP_LEN..])
         } else {
-            ChecksumState::Invalid
+            let tcp = segment.get(..TCP_LEN).ok_or(ParseError::Short("TCP"))?;
+            let offset = usize::from(tcp[12] >> 4) * 4;
+            let payload = segment
+                .get(offset.max(TCP_LEN)..)
+                .ok_or(ParseError::Short("TCP"))?;
+            let state = if checksum::l4_ipv4_verifies(protocol, src, dst, segment) {
+                ChecksumState::Valid
+            } else {
+                ChecksumState::Invalid
+            };
+            (state, Some(tcp[13]), payload)
         };
         Ok(Layers {
             src_mac: mac(6),
@@ -386,11 +486,11 @@ impl<'f> Layers<'f> {
                 sport,
                 dport,
             },
-            dport,
             ttl: header[8],
             ip_checksum,
-            udp_checksum,
-            payload: &datagram[UDP_LEN..],
+            l4_checksum,
+            tcp_flags,
+            payload,
         })
     }
 }

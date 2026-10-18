@@ -68,7 +68,7 @@ pub struct Ledger {
     /// Ours, but naming a flow the stream does not have.
     unknown_flow: u64,
     bad_ip_checksum: u64,
-    bad_udp_checksum: u64,
+    bad_l4_checksum: u64,
     /// Ours, with the payload past the signature changed.
     corrupt: u64,
     /// Ours, but coming back differently from how its flow first came back.
@@ -94,7 +94,7 @@ impl Ledger {
             foreign: 0,
             unknown_flow: 0,
             bad_ip_checksum: 0,
-            bad_udp_checksum: 0,
+            bad_l4_checksum: 0,
             corrupt: 0,
             unstable: 0,
             latency: [0; 65],
@@ -177,9 +177,9 @@ impl Ledger {
             self.bad_ip_checksum += 1;
             problems.push("bad IPv4 header checksum".to_string());
         }
-        if received.udp_checksum == ChecksumState::Invalid {
-            self.bad_udp_checksum += 1;
-            problems.push("bad UDP checksum".to_string());
+        if received.l4_checksum == ChecksumState::Invalid {
+            self.bad_l4_checksum += 1;
+            problems.push("bad transport checksum".to_string());
         }
         if !received.payload_intact {
             self.corrupt += 1;
@@ -257,7 +257,7 @@ impl Ledger {
             ("foreign", self.foreign),
             ("unknown_flow", self.unknown_flow),
             ("bad_ip_checksum", self.bad_ip_checksum),
-            ("bad_udp_checksum", self.bad_udp_checksum),
+            ("bad_l4_checksum", self.bad_l4_checksum),
             ("corrupt", self.corrupt),
             ("unstable", self.unstable),
         ]

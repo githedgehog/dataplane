@@ -6,13 +6,12 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::time::Duration;
 
 use config::external::overlay::vpcpeering::contract::{LOCAL_VNI, REMOTE_VNI};
-use flowgen::frame::{FrameSpec, Vxlan as GeneratedVxlan};
+use flowgen::frame::{FrameSpec, Transport, Vxlan as GeneratedVxlan};
 use flowgen::ledger::{Ledger, Ledgers};
-use flowgen::port::{Clock, Ending, Patience, Queues, Sender, Stream, run as generate};
 use flowgen::schedule::Schedule;
+use flowgen::sender::Stream;
 use flowgen::space::{Addresses, FlowSpace, Order, Ports, SpaceSpec};
 use flowgen_report::{Bound, Evidence, Sample};
 use net::buffer::TestBuffer;
@@ -21,8 +20,8 @@ use net::packet::Packet;
 use net::vxlan::Vxlan;
 
 use super::harness::{
-    FarEnd, Loopback, PATIENCE, Probe, TestCase, WORKERS, check_counters, expect, fixture_gateway,
-    frame_evidence, over_cable,
+    FarEnd, Loopback, Side, TestCase, check_all_back, check_counters, drive, expect,
+    fixture_gateway, frame_evidence, over_cable,
 };
 use crate::drivers::cpbridge::DetachedPort;
 use crate::packet_processor::fixture::{
@@ -131,79 +130,6 @@ fn round_trip(far: &mut FarEnd<'_>, kernel: &mut DetachedPort, case: &mut TestCa
     );
 }
 
-/// How often a stream's progress is sampled into the report: often, since these streams take
-/// tens of milliseconds.
-const SAMPLE_EVERY: Duration = Duration::from_millis(5);
-
-/// Send `streams` at once, stream `i` as run `first_run + i`, and sample their progress, and the
-/// dataplane's counts since they began, into `case` as they go. Returns their ledgers and how the
-/// run ended.
-fn drive(
-    far: &mut FarEnd<'_>,
-    probe: &mut Probe<'_, '_>,
-    case: &mut TestCase<'_>,
-    streams: &[Stream],
-    first_run: u32,
-) -> (Ledgers, Ending) {
-    let data_queues = usize::from(WORKERS);
-    let mut ledgers = Ledgers::new();
-    let mut senders: Vec<Sender> = (first_run..)
-        .zip(streams)
-        .map(|(run, stream)| {
-            let flows = usize::try_from(stream.schedule.flows()).expect("the flows fit in memory");
-            ledgers.add(&stream.name, run, flows);
-            Sender::new(stream.clone(), run, data_queues)
-        })
-        .collect();
-    let clock = Clock::start();
-    let baseline = probe.sample();
-    let FarEnd { pool, rx, tx } = far;
-    let mut queues = Queues {
-        tx: &mut tx[..data_queues],
-        rx,
-        pool,
-    };
-    let ending = generate(
-        &mut senders,
-        &mut queues,
-        &mut ledgers,
-        &clock,
-        Patience {
-            quiet: Duration::from_secs(1),
-            limit: PATIENCE,
-        },
-        SAMPLE_EVERY,
-        |ledgers| {
-            let sample = ledgers
-                .sample(Sample::new())
-                .merge(probe.sample().since(&baseline));
-            case.sample(sample)
-                .expect("the report should take the sample");
-        },
-    );
-    (ledgers, ending)
-}
-
-/// Check that everything every stream sent came back, and that no frame came back from nowhere.
-fn check_all_back(case: &mut TestCase<'_>, ledgers: &Ledgers, ending: Ending) {
-    expect(
-        case,
-        "all-back",
-        "everything sent comes back before the time allowed runs out",
-        ending == Ending::AllBack,
-        || vec![Evidence::text(format!("{ending:?}"))],
-    );
-    let stray = ledgers.sample(Sample::new()).counters["generator.stray"];
-    case.expect_counter(
-        "none-stray",
-        "generator.stray",
-        Bound::exactly(0),
-        Some(stray),
-        ledgers.stray_evidence().to_vec(),
-    )
-    .expect("the report should take the check");
-}
-
 /// Check everything about one driven stream: it all came back, unharmed, each flow masqueraded
 /// into the pool the same way every time and no two flows alike. Check ids are prefixed with the
 /// stream's name.
@@ -253,6 +179,7 @@ fn local_to_remote(name: &str, schedule: Schedule, dport: u16) -> Stream {
                 src: PEER_VTEP.parse().unwrap(),
                 dst: LOCAL_VTEP.parse().unwrap(),
             }),
+            transport: Transport::Udp,
             payload_len: 64,
             ttl: 64,
         },
@@ -274,11 +201,12 @@ fn many_flows_come_back_masqueraded_and_distinct() {
                 .report
                 .case("steady", serde_json::to_value(stream.schedule).unwrap())
                 .expect("the report should take the case");
-            let (ledgers, ending) = drive(
+            let (ledgers, ending, _) = drive(
                 lb.far,
+                lb.kernel,
                 lb.probe,
                 &mut case,
-                std::slice::from_ref(&stream),
+                &[(Side::Far, stream.clone())],
                 1,
             );
             check_all_back(&mut case, &ledgers, ending);
@@ -319,11 +247,12 @@ fn churning_flows_come_back_masqueraded_and_distinct() {
                     )
                     .expect("the report should take the case");
                 let run = u32::try_from(n).unwrap() + 1;
-                let (ledgers, ending) = drive(
+                let (ledgers, ending, _) = drive(
                     lb.far,
+                    lb.kernel,
                     lb.probe,
                     &mut case,
-                    std::slice::from_ref(&stream),
+                    &[(Side::Far, stream.clone())],
                     run,
                 );
                 check_all_back(&mut case, &ledgers, ending);
@@ -352,11 +281,7 @@ fn check_ledger(case: &mut TestCase<'_>, stream: &Stream, ledger: &Ledger) {
         ),
         ("none-foreign", "foreign", Bound::exactly(0)),
         ("no-bad-ip-checksums", "bad_ip_checksum", Bound::exactly(0)),
-        (
-            "no-bad-udp-checksums",
-            "bad_udp_checksum",
-            Bound::exactly(0),
-        ),
+        ("no-bad-l4-checksums", "bad_l4_checksum", Bound::exactly(0)),
         ("none-corrupt", "corrupt", Bound::exactly(0)),
         ("stable-translations", "unstable", Bound::exactly(0)),
     ] {
@@ -443,9 +368,10 @@ fn two_streams_at_once_are_each_accounted_for() {
                 .report
                 .case("together", serde_json::json!({}))
                 .expect("the report should take the case");
-            let (ledgers, ending) = drive(lb.far, lb.probe, &mut case, &streams, 1);
+            let streams: Vec<_> = streams.into_iter().map(|s| (Side::Far, s)).collect();
+            let (ledgers, ending, _) = drive(lb.far, lb.kernel, lb.probe, &mut case, &streams, 1);
             check_all_back(&mut case, &ledgers, ending);
-            for stream in &streams {
+            for (_, stream) in &streams {
                 check_stream(&mut case, stream, &ledgers);
             }
             case.finish()

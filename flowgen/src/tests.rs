@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr};
 
-use crate::frame::{ChecksumState, FrameSpec, Template, Vxlan, parse};
+use crate::frame::{ChecksumState, FrameSpec, Template, Transport, Vxlan, parse, tcp};
 use crate::ledger::{Ledger, Outcome};
 use crate::space::{Addresses, FlowSpace, Order, Ports, SpaceSpec, Tuple};
 
@@ -72,6 +72,10 @@ fn ranges_past_the_end_are_refused() {
 }
 
 fn spec(vxlan: bool, payload_len: u16) -> FrameSpec {
+    spec_carrying(vxlan, payload_len, Transport::Udp)
+}
+
+fn spec_carrying(vxlan: bool, payload_len: u16, transport: Transport) -> FrameSpec {
     FrameSpec {
         src_mac: [2, 0, 0, 0, 0, 1],
         dst_mac: [2, 0, 0, 0, 0, 2],
@@ -82,6 +86,7 @@ fn spec(vxlan: bool, payload_len: u16) -> FrameSpec {
             src: Ipv4Addr::new(192, 0, 2, 1),
             dst: Ipv4Addr::new(192, 0, 2, 2),
         }),
+        transport,
         payload_len,
         ttl: 64,
     }
@@ -92,22 +97,24 @@ fn spec(vxlan: bool, payload_len: u16) -> FrameSpec {
 #[test]
 fn stamped_frames_read_back_as_stamped() {
     bolero::check!()
-        .with_type::<(bool, u8, u16, Vec<(u64, u64)>)>()
-        .for_each(|(vxlan, payload, sport, stamps)| {
+        .with_type::<(bool, Option<u8>, u8, u16, Vec<(u64, u64)>)>()
+        .for_each(|(vxlan, flags, payload, sport, stamps)| {
             let tuple = Tuple {
                 src: Ipv4Addr::new(1, 1, 0, 1),
                 dst: Ipv4Addr::new(3, 3, 3, 1),
                 sport: *sport,
                 dport: 80,
             };
-            let spec = spec(*vxlan, u16::from(*payload));
+            let transport = flags.map_or(Transport::Udp, |flags| Transport::Tcp { flags });
+            let spec = spec_carrying(*vxlan, u16::from(*payload), transport);
             let mut template = Template::new(&spec, 7, 42, &tuple);
             for &(seq, tx_ns) in stamps.iter().chain([&(0, 0)]) {
                 template.stamp(seq, tx_ns);
                 let got = parse(template.bytes()).unwrap();
                 assert_eq!(got.tuple, tuple);
                 assert_eq!(got.ip_checksum, ChecksumState::Valid);
-                assert_eq!(got.udp_checksum, ChecksumState::Valid);
+                assert_eq!(got.l4_checksum, ChecksumState::Valid);
+                assert_eq!(got.tcp_flags, *flags);
                 assert!(got.payload_intact);
                 let signature = got.signature.unwrap();
                 assert_eq!((signature.run, signature.flow), (7, 42));
@@ -125,14 +132,24 @@ fn the_dataplane_reads_generated_frames_the_same_way() {
     use net::headers::TryVxlan;
     use net::packet::Packet;
 
-    for vxlan in [false, true] {
+    for (vxlan, transport) in [
+        (false, Transport::Udp),
+        (true, Transport::Udp),
+        (false, Transport::Tcp { flags: tcp::SYN }),
+        (
+            true,
+            Transport::Tcp {
+                flags: tcp::ACK | tcp::PSH,
+            },
+        ),
+    ] {
         let tuple = Tuple {
             src: Ipv4Addr::new(1, 1, 0, 1),
             dst: Ipv4Addr::new(3, 3, 3, 1),
             sport: 1234,
             dport: 80,
         };
-        let spec = spec(vxlan, 64);
+        let spec = spec_carrying(vxlan, 64, transport);
         let template = Template::new(&spec, 1, 0, &tuple);
         let mut packet = Packet::new(TestBuffer::from_raw_data(template.bytes())).unwrap();
         if vxlan {
@@ -217,7 +234,7 @@ fn the_ledger_accounts_for_every_packet() {
     assert_eq!(counter("unstable"), 1);
     assert_eq!(counter("foreign"), 2);
     assert_eq!(counter("unknown_flow"), 1);
-    assert_eq!(counter("bad_udp_checksum"), 0);
+    assert_eq!(counter("bad_l4_checksum"), 0);
     // Every latency was 1000 ns, which is below 1024.
     assert_eq!(counter("latency_ns.lt_1024"), 4);
     assert_eq!(
@@ -237,7 +254,7 @@ fn damage_is_noticed() {
     damaged[last] ^= 0xff;
     ledger.receive(&damaged, 0);
     let sample = ledger.sample("s", flowgen_report::Sample::new());
-    assert_eq!(sample.counters["generator.s.bad_udp_checksum"], 1);
+    assert_eq!(sample.counters["generator.s.bad_l4_checksum"], 1);
     assert_eq!(sample.counters["generator.s.corrupt"], 1);
 }
 
