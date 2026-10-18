@@ -107,6 +107,22 @@ pub(crate) struct PortCpQueues {
     pub(crate) inject: Option<mpsc::Receiver<Frame>>,
 }
 
+/// The kernel's side of one port's bridge, held by whoever stands in for the kernel and its tap.
+/// See [`DatapathEnds::detached`].
+#[cfg(test)]
+pub(crate) struct DetachedPort {
+    /// The port's configured name.
+    pub(crate) name: InterfaceName,
+    /// Frames the data path punted.
+    pub(crate) punted: mpsc::Receiver<Frame>,
+    /// Control-plane frames punted from a control queue, or taken off the data path in software.
+    pub(crate) control: mpsc::Receiver<Frame>,
+    /// Frames to transmit on the port, as the kernel would send them.
+    pub(crate) inject: mpsc::Sender<Frame>,
+    /// The port's link state, as the driver reports it.
+    pub(crate) link: watch::Receiver<Link>,
+}
+
 /// Everything the datapath thread needs from the bridge.
 ///
 /// Deliberately a separate value from [`CpBridge`]: this half is `Send` and crosses to the datapath
@@ -146,6 +162,58 @@ impl DatapathEnds {
                  keep the MAC the kernel gave it, and ARP for this port will not resolve"
             );
         }
+    }
+
+    /// A bridge with no taps behind it: the kernel's side of each port is handed back to the
+    /// caller, who plays the kernel.
+    ///
+    /// `ports` pairs each port's configured name with the interface index the dataplane above the
+    /// driver will know it by, which a tap would otherwise have supplied. Port identities the
+    /// driver reports arrive on the returned receiver.
+    #[cfg(test)]
+    pub(crate) fn detached(
+        ports: impl IntoIterator<Item = (InterfaceName, InterfaceIndex)>,
+    ) -> (
+        DatapathEnds,
+        Vec<DetachedPort>,
+        mpsc::Receiver<PortIdentity>,
+    ) {
+        let mut ends = HashMap::new();
+        let mut links = HashMap::new();
+        let mut detached = Vec::new();
+        for (name, index) in ports {
+            let (punt_tx, punt_rx) = mpsc::channel(QUEUE_DEPTH);
+            let (control_tx, control_rx) = mpsc::channel(QUEUE_DEPTH);
+            let (inject_tx, inject_rx) = mpsc::channel(QUEUE_DEPTH);
+            let (link_tx, link_rx) = watch::channel(Link::Down);
+            ends.insert(
+                name.clone(),
+                PortCpQueues {
+                    index,
+                    punt: punt_tx,
+                    control: control_tx,
+                    inject: Some(inject_rx),
+                },
+            );
+            links.insert(name.clone(), link_tx);
+            detached.push(DetachedPort {
+                name,
+                punted: punt_rx,
+                control: control_rx,
+                inject: inject_tx,
+                link: link_rx,
+            });
+        }
+        let (identities, identities_rx) = mpsc::channel(detached.len().max(1));
+        (
+            DatapathEnds {
+                ports: ends,
+                identities,
+                links,
+            },
+            detached,
+            identities_rx,
+        )
     }
 
     /// Warn about any port the bridge prepared for which no DPDK port appeared.

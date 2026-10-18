@@ -11,7 +11,8 @@ use args::{
 
 use crate::drivers::DriverError;
 use crate::drivers::dpdk::{
-    CpBridge, DatapathEnds, DriverDpdk, PciPort, PortIdentity, PortSettings, bring_up_ports,
+    CpBridge, DatapathEnds, DriverDpdk, PciPort, Port, PortIdentity, PortSettings, attach_ports,
+    bring_up_ports,
 };
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::{DriverStatusWriter, driver_status_access};
@@ -375,6 +376,7 @@ fn configured_pci_ports(config: &LaunchConfiguration) -> Result<Vec<PciPort>, Dr
                 name,
                 mtu: interface.mtu,
                 rx_descriptors: interface.rx_descriptors,
+                fallback_mac: None,
             },
             address,
         });
@@ -385,6 +387,16 @@ fn configured_pci_ports(config: &LaunchConfiguration) -> Result<Vec<PciPort>, Dr
         ));
     }
     Ok(selected)
+}
+
+/// Probe, configure and start the configured devices. Init must prepare their kernel bindings first.
+fn bring_up_configured_ports<'eal>(
+    eal: &'eal mut Eal,
+    config: &LaunchConfiguration,
+) -> Result<Vec<Port<'eal>>, DriverError> {
+    let sources = attach_ports(eal, configured_pci_ports(config)?)?;
+    let eal: &'eal Eal = eal;
+    bring_up_ports(eal, &sources, config.driver.num_workers().get())
 }
 
 /// Move the calling thread into the datapath namespace, unless it is already there.
@@ -513,9 +525,7 @@ fn run_dpdk_driver(
     mut bridge: Option<DatapathEnds>,
     control_plane: watch::Receiver<ControlPlane>,
 ) {
-    let ports = match configured_pci_ports(config).and_then(|mut sources| {
-        bring_up_ports(eal, &mut sources, config.driver.num_workers().get())
-    }) {
+    let ports = match bring_up_configured_ports(eal, config) {
         Ok(ports) => ports,
         Err(e) => {
             error!("Failed to bring up DPDK ports: {e}");

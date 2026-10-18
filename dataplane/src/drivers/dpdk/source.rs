@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use dpdk::dev::DevIndex;
 use dpdk::eal::Eal;
 use hardware::pci::address::PciAddress;
+use net::eth::mac::Mac;
 use net::interface::InterfaceName;
 use tracing::{info, warn};
 
@@ -27,12 +28,15 @@ pub(crate) struct PortSettings {
     pub(crate) mtu: Option<u16>,
     /// Receive descriptors per queue asked for; the driver's default if `None`.
     pub(crate) rx_descriptors: Option<u16>,
+    /// The address to use if the device has none of its own, as a ring port does not. A device's
+    /// own address always wins.
+    pub(crate) fallback_mac: Option<Mac>,
 }
 
 /// A port's device, and how to find it once it exists.
 ///
-/// Every source is attached before any port is claimed: attaching needs the EAL to itself, and a
-/// claimed port borrows it for as long as the port lives.
+/// Every source is attached ([`attach_ports`]) before any port is claimed ([`bring_up_ports`]):
+/// attaching needs the EAL to itself, and a claimed port borrows it for as long as the port lives.
 pub(crate) trait PortSource {
     /// What the port is called and how it is to be set up.
     fn settings(&self) -> &PortSettings;
@@ -90,26 +94,70 @@ impl PortSource for PciPort {
     }
 }
 
-/// Attach, configure, queue and start every source's port, in order.
+/// One end of a ring cable (see [`dpdk::dev::ring`]), whose other end the caller drives.
+///
+/// The cable exists before the port is brought up -- whoever made it needs the other end -- so
+/// there is nothing to attach.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct RingPort {
+    pub(crate) settings: PortSettings,
+    pub(crate) dev: DevIndex,
+}
+
+#[cfg(test)]
+impl PortSource for RingPort {
+    fn settings(&self) -> &PortSettings {
+        &self.settings
+    }
+
+    fn attach(&mut self, _eal: &mut Eal) -> Result<(), DriverError> {
+        Ok(())
+    }
+
+    fn find(&self, _eal: &Eal) -> Result<DevIndex, DriverError> {
+        Ok(self.dev)
+    }
+}
+
+/// Sources whose devices exist, ready for [`bring_up_ports`].
+pub(crate) struct Attached<S>(Vec<S>);
+
+/// Make every source's device exist.
+///
+/// Separate from [`bring_up_ports`] because attaching needs the EAL to itself, while the ports
+/// brought up afterwards borrow it shared, alongside anything else that does.
+///
+/// # Errors
+///
+/// Returns [`DriverError::PortSetup`] for the first device that cannot be attached.
+pub(crate) fn attach_ports<S: PortSource>(
+    eal: &mut Eal,
+    mut sources: Vec<S>,
+) -> Result<Attached<S>, DriverError> {
+    for source in &mut sources {
+        source.attach(eal)?;
+    }
+    Ok(Attached(sources))
+}
+
+/// Configure, queue and start every attached source's port, in order.
 ///
 /// # Errors
 ///
 /// Returns [`DriverError::PortSetup`] for the first port that cannot be brought up.
 pub(crate) fn bring_up_ports<'eal, S: PortSource>(
-    eal: &'eal mut Eal,
-    sources: &mut [S],
+    eal: &'eal Eal,
+    sources: &Attached<S>,
     num_workers: u16,
 ) -> Result<Vec<Port<'eal>>, DriverError> {
-    for source in sources.iter_mut() {
-        source.attach(eal)?;
-    }
-    let eal: &'eal Eal = eal;
+    let Attached(sources) = sources;
     // Every port's pool backs its packets in every port's transmit rings.
     let num_ports = u32::try_from(sources.len()).unwrap_or(u32::MAX);
 
     let mut ports = Vec::with_capacity(sources.len());
     let mut claimed = BTreeSet::new();
-    for source in sources.iter() {
+    for source in sources {
         let index = source.find(eal)?;
         // Claim before any setup, so a port something else owns is refused up front.
         let port = eal

@@ -98,4 +98,4 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [target.'cfg(not(miri))'.dev-dependencies]
-dpdk = { workspace = true, features = ["test"] }
+dpdk = { workspace = true, features = ["ring", "test"] }
