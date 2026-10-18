@@ -123,20 +123,23 @@ pub enum DoneReason {
 bitflags! {
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     struct MetaFlags: u32 {
-        const INITIALIZED = 0b0000_0001; /* initialized */
-        const IS_L2_BCAST = 0b0000_0010; /* frame is eth broadcast */
-        const NATTED_SRC  = 0b0000_0100; /* set to true if source address of a packet has been NATed */
-        const NATTED_DST  = 0b0000_1000; /* set to true if destination address of a packet has been NATed */
-        const REFR_CHKSUM = 0b0001_0000; /* if true, an indication that packet checksums need to be refreshed */
-        const KEEP        = 0b0010_0000; /* Keep the Packet even if it should be dropped */
-        const IS_OVERLAY  = 0b0100_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
-        const REQ_MASQUERADE      = 0b1000_0000;      /* Packet requires masquerade (source and/or destination) */
-        const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
-        const REQ_STATIC_NAT_SRC  = 0b0010_0000_0000;      /* Packet requires static NAT (source) */
-        const REQ_STATIC_NAT_DST  = 0b0100_0000_0000;      /* Packet requires static NAT (destination) */
-        const FORCE_FLOW_TRACKING = 0b1000_0000_0000;      /* We need to track this flow, e.g. to apply stateful user ACLs */
+        const NATTED_SRC          = 1 << 0; /* set to true if source address of a packet has been NATed */
+        const NATTED_DST          = 1 << 1; /* set to true if destination address of a packet has been NATed */
+        const REFR_CHKSUM         = 1 << 2; /* if true, an indication that packet checksums need to be refreshed */
+        const IS_OVERLAY          = 1 << 3; /* Packet was obtained by decapsulation and belongs to a VPC */
+        const REQ_MASQUERADE      = 1 << 4; /* Packet requires masquerade (source and/or destination) */
+        const REQ_PORT_FORWARDING = 1 << 5; /* Packet requires port forwarding */
+        const REQ_STATIC_NAT_SRC  = 1 << 6; /* Packet requires static NAT (source) */
+        const REQ_STATIC_NAT_DST  = 1 << 7; /* Packet requires static NAT (destination) */
+        const FORCE_FLOW_TRACKING = 1 << 8; /* We need to track this flow, e.g. to apply stateful user ACLs */
     }
 }
+
+// No two flags of [`MetaFlags`] share a bit: their union has a bit per flag
+const _: () = assert!(
+    MetaFlags::all().bits().count_ones() as usize == <MetaFlags as bitflags::Flags>::FLAGS.len(),
+    "two MetaFlags flags share a bit"
+);
 
 #[allow(unused)]
 #[derive(Debug, Default, Clone)]
@@ -164,14 +167,8 @@ pub struct TestMeta {
 }
 impl PacketMeta {
     #[must_use]
-    pub(crate) fn new(keep: bool) -> Self {
-        let mut flags = MetaFlags::INITIALIZED;
-        if keep {
-            flags |= MetaFlags::KEEP;
-        }
-        let mut ret = Self::default();
-        ret.flags = flags;
-        ret
+    pub(crate) fn new() -> Self {
+        Self::default()
     }
 
     fn set_flag(&mut self, flag: MetaFlags, value: bool) {
@@ -243,18 +240,6 @@ impl PacketMeta {
     }
 
     #[must_use]
-    pub fn is_initialized(&self) -> bool {
-        self.flags.contains(MetaFlags::INITIALIZED)
-    }
-    #[must_use]
-    pub fn is_l2bcast(&self) -> bool {
-        self.flags.contains(MetaFlags::IS_L2_BCAST)
-    }
-    pub fn set_l2bcast(&mut self, value: bool) {
-        self.set_flag(MetaFlags::IS_L2_BCAST, value);
-    }
-
-    #[must_use]
     pub fn is_overlay(&self) -> bool {
         self.flags.contains(MetaFlags::IS_OVERLAY)
     }
@@ -269,13 +254,6 @@ impl PacketMeta {
     }
     pub fn set_checksum_refresh(&mut self, value: bool) {
         self.set_flag(MetaFlags::REFR_CHKSUM, value);
-    }
-    #[must_use]
-    pub fn keep(&self) -> bool {
-        self.flags.contains(MetaFlags::KEEP)
-    }
-    pub fn set_keep(&mut self, value: bool) {
-        self.set_flag(MetaFlags::KEEP, value);
     }
 
     #[must_use]
@@ -306,7 +284,7 @@ impl PacketMeta {
 }
 impl Drop for PacketMeta {
     fn drop(&mut self) {
-        if self.done.is_none() && self.is_initialized() {
+        if self.done.is_none() {
             error!("Attempted to drop packet with unspecified verdict!");
         }
     }

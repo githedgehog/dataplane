@@ -122,7 +122,6 @@ impl Ingress {
         packet: &mut Packet<Buf>,
     ) {
         let nfi = self.name();
-        packet.meta_mut().set_l2bcast(true);
         packet.done(DoneReason::Local);
         debug!(
             "{nfi}: Broadcast frame handed to the control plane (iif:{ifname})",
@@ -318,7 +317,6 @@ mod test {
     fn a_broadcast_frame_is_local() {
         let packet = ingress(frame_to(Mac::BROADCAST, 0x0806));
         assert_eq!(packet.get_done(), Some(DoneReason::Local));
-        assert!(packet.meta().is_l2bcast());
     }
 
     /// The IPv6 all-nodes multicast MAC, which router advertisements arrive on
@@ -361,7 +359,6 @@ mod test {
                 Some(DoneReason::Local),
                 "{icmp_type:?} was not handed to the control plane"
             );
-            assert!(!packet.meta().is_l2bcast());
         }
     }
 

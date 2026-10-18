@@ -150,7 +150,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         Ok(Packet {
             headers,
             payload: mbuf,
-            meta: PacketMeta::new(true), /* keep the packet until destructor */
+            meta: PacketMeta::new(),
         })
     }
 
@@ -563,20 +563,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Reset the metadata of this `Packet`
     pub fn meta_reset(&mut self) {
         self.done(DoneReason::Delivered); // this is just to avoid a log from Metadata Drop impl
-        *self.meta_mut() = PacketMeta::new(self.meta.keep());
-    }
-
-    /// Wraps a packet in an `Option` depending on the metadata:
-    /// If [`Packet`] is to be dropped, returns `None`. Else, `Some`.
-    pub fn enforce(self) -> Option<Self> {
-        if self.meta.keep() {
-            // keep packets even if they should be dropped
-            return Some(self);
-        }
-        match self.get_done() {
-            Some(DoneReason::Delivered | DoneReason::Local) | None => Some(self),
-            Some(_) => None,
-        }
+        *self.meta_mut() = PacketMeta::new();
     }
 
     /// Get a reference to the headers of this `Packet`

@@ -209,7 +209,6 @@ impl Arrival {
         meta.src_vpcd = self.src_vpcd.map(VpcDiscriminant::from_vni);
         meta.dst_vpcd = self.dst_vpcd.map(VpcDiscriminant::from_vni);
         meta.set_overlay(true);
-        meta.set_keep(true);
         meta.set_static_nat_src(self.wants_src_nat);
         meta.set_static_nat_dst(self.wants_dst_nat);
         meta.src_natted(self.already_src_natted);

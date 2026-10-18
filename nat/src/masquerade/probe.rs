@@ -219,7 +219,6 @@ impl Arrival {
         let meta = packet.meta_mut();
         meta.src_vpcd = self.src_vpcd.map(VpcDiscriminant::from_vni);
         meta.set_overlay(true);
-        meta.set_keep(true);
         meta.set_masquerade(self.wants_masquerade);
     }
 }
