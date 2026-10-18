@@ -515,7 +515,6 @@ pub(crate) fn remote() -> VpcDiscriminant {
 pub(crate) fn arrive(packet: &mut Packet<TestBuffer>, src: VpcDiscriminant) {
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().src_vpcd = Some(src);
-    packet.meta_mut().set_keep(true);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4080,7 +4079,6 @@ mod routed {
             .set_eth_destination(GATEWAY_MAC)
             .expect("the frame has an ethernet header");
         packet.meta_mut().iif = Some(uplink());
-        packet.meta_mut().set_keep(true);
         packet
     }
 
