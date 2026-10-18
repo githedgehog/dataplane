@@ -15,6 +15,7 @@
 //! comes back can be traced to what was sent, and an account of the difference.
 //!
 //! - [`bfd`]: a BFD peer, to hold a session with a gateway and say how it fared.
+//! - [`tcp`]: real TCP hosts, from smoltcp, that open connections and check what comes back.
 //! - [`space`]: the flows a stream can send, numbered, so that a million of them need no table.
 //! - [`frame`]: building each flow's frame once and stamping it per packet; reading frames back.
 //! - [`signature`]: what every packet's payload carries to name its flow and place.
@@ -42,6 +43,7 @@ pub mod schedule;
 pub mod sender;
 pub mod signature;
 pub mod space;
+pub mod tcp;
 
 #[cfg(test)]
 mod tests;

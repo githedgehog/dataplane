@@ -441,6 +441,70 @@ pub fn udp(endpoints: &Endpoints, ttl: u8, payload: &[u8]) -> Vec<u8> {
     bytes
 }
 
+/// An Ethernet frame from `src` to `dst` carrying the IPv4 packet `packet`.
+#[must_use]
+pub fn ethernet_ipv4(dst: Mac, src: Mac, packet: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![0u8; ETH_LEN + packet.len()];
+    ethernet(&mut bytes[..ETH_LEN], dst, src);
+    bytes[ETH_LEN..].copy_from_slice(packet);
+    bytes
+}
+
+/// The Ethernet frame `inner`, in VXLAN through `tunnel`, with `entropy` as the outer source port's
+/// low bits.
+#[must_use]
+pub fn vxlan(tunnel: &Vxlan, entropy: u16, inner: &[u8]) -> Vec<u8> {
+    let outer_len = ETH_LEN + IPV4_LEN + UDP_LEN + VXLAN_LEN;
+    let mut bytes = vec![0u8; outer_len + inner.len()];
+    ethernet(&mut bytes[..ETH_LEN], tunnel.dst_mac, tunnel.src_mac);
+    ipv4(
+        &mut bytes[ETH_LEN..ETH_LEN + IPV4_LEN],
+        PROTO_UDP,
+        tunnel.src,
+        tunnel.dst,
+        64,
+        UDP_LEN + VXLAN_LEN + inner.len(),
+    );
+    let at = ETH_LEN + IPV4_LEN;
+    udp_header(
+        &mut bytes[at..at + UDP_LEN],
+        0xc000 | (entropy & 0x3fff),
+        VXLAN_PORT,
+        UDP_LEN + VXLAN_LEN + inner.len(),
+    );
+    let vx = &mut bytes[at + UDP_LEN..outer_len];
+    vx[0] = 0x08;
+    vx[4..7].copy_from_slice(&tunnel.vni.to_be_bytes()[1..]);
+    bytes[outer_len..].copy_from_slice(inner);
+    bytes
+}
+
+/// The VNI and inner Ethernet frame of a VXLAN frame, if `frame` is one.
+#[must_use]
+pub fn decapsulate(frame: &[u8]) -> Option<(u32, &[u8])> {
+    let outer = Layers::parse(frame).ok()?;
+    if outer.tcp_flags.is_some() || outer.tuple.dport != VXLAN_PORT {
+        return None;
+    }
+    let vx = outer.payload.get(..VXLAN_LEN)?;
+    let vni = u32::from_be_bytes([0, vx[4], vx[5], vx[6]]);
+    Some((vni, &outer.payload[VXLAN_LEN..]))
+}
+
+/// The destination MAC and IPv4 packet of an Ethernet frame carrying one, trimmed of padding.
+#[must_use]
+pub fn ipv4_packet(frame: &[u8]) -> Option<(Mac, &[u8])> {
+    let eth = frame.get(..ETH_LEN)?;
+    if u16::from_be_bytes([eth[12], eth[13]]) != ETHERTYPE_IPV4 {
+        return None;
+    }
+    let mut dst = [0; 6];
+    dst.copy_from_slice(&eth[..6]);
+    let ip = &frame[ETH_LEN..];
+    let total = usize::from(u16::from_be_bytes([*ip.get(2)?, *ip.get(3)?]));
+    Some((dst, ip.get(..total)?))
+}
+
 /// A received UDP datagram, not tunnelled, as a protocol speaker reads one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Datagram<'f> {

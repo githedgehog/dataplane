@@ -45,6 +45,12 @@ pub trait Agent {
 
     /// `sample`, with what the agent reports about itself as of `now_ns`.
     fn sample(&self, now_ns: u64, sample: Sample) -> Sample;
+
+    /// Whether the agent has done what it set out to; a run waits for every agent that has an end.
+    /// One that runs for as long as it is let, like a BFD peer, is always finished.
+    fn finished(&self) -> bool {
+        true
+    }
 }
 
 /// What a [`run`] drives: streams, each paired with the index of its wire, and agents.
@@ -141,7 +147,8 @@ pub fn run(
             last_sample = clock::now();
         }
         let held = clock::elapsed(started) >= patience.hold;
-        if held && load.senders.iter().all(|(_, sender)| sender.done()) {
+        let agents_done = load.agents.iter().all(|agent| agent.finished());
+        if held && agents_done && load.senders.iter().all(|(_, sender)| sender.done()) {
             if ledgers.all_back() {
                 break Ending::AllBack;
             }

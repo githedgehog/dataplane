@@ -16,6 +16,7 @@ dpdk = { workspace = true, optional = true }
 flowgen-report = { workspace = true }
 net = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive", "std"] }
+smoltcp = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
