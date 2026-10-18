@@ -14,6 +14,7 @@ use std::net::Ipv4Addr;
 use flowgen_report::{Evidence, MAX_EVIDENCE, Sample};
 
 use crate::frame::{self, ChecksumState, Received};
+use crate::signature::Signature;
 use crate::space::Tuple;
 
 /// How a flow came back: its inner addresses and ports, and the tunnel, if any.
@@ -126,6 +127,17 @@ impl Ledger {
             self.keep(frame, "not from this run");
             return Outcome::Foreign;
         };
+        self.account(frame, received, signature, now_ns)
+    }
+
+    /// Count `frame`, already read as `received` and signed by this ledger's run with `signature`.
+    fn account(
+        &mut self,
+        frame: &[u8],
+        received: Received,
+        signature: Signature,
+        now_ns: u64,
+    ) -> Outcome {
         let Some(flow) = usize::try_from(signature.flow)
             .ok()
             .and_then(|n| self.flows.get_mut(n))
@@ -259,5 +271,103 @@ impl Ledger {
             sample = sample.counter(path(&format!("latency_ns.lt_{below}")), n);
         }
         sample.gauge(path("latency_ns.max"), self.max_latency_ns)
+    }
+}
+
+/// The ledgers of several streams sent at once, and the frames none of them claims.
+///
+/// Each stream sends under a run number of its own, which its packets' signatures carry, so a
+/// received frame is read once and counted by the ledger its signature names.
+#[derive(Debug, Clone, Default)]
+pub struct Ledgers {
+    streams: Vec<(String, Ledger)>,
+    /// Received frames no stream claims: unreadable, unsigned, or from a run none of them is.
+    stray: u64,
+    evidence: Vec<Evidence>,
+}
+
+impl Ledgers {
+    /// No streams yet.
+    #[must_use]
+    pub fn new() -> Ledgers {
+        Ledgers::default()
+    }
+
+    /// Account for stream `name`, sent as run `run` with `flows` flows.
+    ///
+    /// # Panics
+    ///
+    /// If another stream already uses `name` or `run`: their counters, or their packets, would
+    /// be confused.
+    pub fn add(&mut self, name: &str, run: u32, flows: usize) {
+        assert!(
+            self.streams.iter().all(|(n, l)| n != name && l.run != run),
+            "stream {name} (run {run}) would share its name or run with another"
+        );
+        self.streams
+            .push((name.to_string(), Ledger::new(run, flows)));
+    }
+
+    /// Stream `name`'s ledger.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&Ledger> {
+        self.streams.iter().find(|(n, _)| n == name).map(|(_, l)| l)
+    }
+
+    /// The ledger counting run `run`'s packets.
+    pub fn for_run(&mut self, run: u32) -> Option<&mut Ledger> {
+        self.streams
+            .iter_mut()
+            .map(|(_, l)| l)
+            .find(|l| l.run == run)
+    }
+
+    /// Read `frame`, received at `now_ns`, and count it against the stream that sent it.
+    pub fn receive(&mut self, frame: &[u8], now_ns: u64) -> Outcome {
+        let stray = |this: &mut Ledgers, what: String| {
+            this.stray += 1;
+            if this.evidence.len() < MAX_EVIDENCE {
+                this.evidence.push(Evidence::frame(what, frame));
+            }
+            Outcome::Foreign
+        };
+        let received = match frame::parse(frame) {
+            Ok(received) => received,
+            Err(e) => return stray(self, format!("unreadable: {e}")),
+        };
+        let Some(signature) = received.signature else {
+            return stray(self, "unsigned".to_string());
+        };
+        match self.for_run(signature.run) {
+            Some(ledger) => ledger.account(frame, received, signature, now_ns),
+            None => stray(
+                self,
+                format!("from run {}, which no stream is", signature.run),
+            ),
+        }
+    }
+
+    /// Whether every stream has had back everything it sent.
+    #[must_use]
+    pub fn all_back(&self) -> bool {
+        self.streams
+            .iter()
+            .all(|(_, l)| l.total_received() >= l.total_sent())
+    }
+
+    /// Frames no stream claimed, kept as evidence; at most [`MAX_EVIDENCE`].
+    #[must_use]
+    pub fn stray_evidence(&self) -> &[Evidence] {
+        &self.evidence
+    }
+
+    /// `sample`, with every stream's counters under `generator.<stream>.`, and the frames no stream
+    /// claimed as `generator.stray`.
+    #[must_use]
+    pub fn sample(&self, sample: Sample) -> Sample {
+        self.streams
+            .iter()
+            .fold(sample, |sample, (name, ledger)| ledger.sample(name, sample))
+            .counter("generator.stray", self.stray)
     }
 }
