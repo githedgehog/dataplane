@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use config::external::overlay::vpcpeering::contract::{LOCAL_VNI, REMOTE_VNI};
 use flowgen::frame::{FrameSpec, Vxlan as GeneratedVxlan};
-use flowgen::ledger::Ledger;
+use flowgen::ledger::{Ledger, Ledgers};
 use flowgen::port::{Clock, Ending, Patience, Queues, Sender, Stream, run as generate};
 use flowgen::schedule::Schedule;
 use flowgen::space::{Addresses, FlowSpace, Order, Ports, SpaceSpec};
@@ -135,19 +135,26 @@ fn round_trip(far: &mut FarEnd<'_>, kernel: &mut DetachedPort, case: &mut TestCa
 /// tens of milliseconds.
 const SAMPLE_EVERY: Duration = Duration::from_millis(5);
 
-/// Send `stream` as run `run` and sample its progress, and the ports' counters, into `case` as it
-/// goes. Returns the ledger and how the run ended.
+/// Send `streams` at once, stream `i` as run `first_run + i`, and sample their progress, and the
+/// dataplane's counts since they began, into `case` as they go. Returns their ledgers and how the
+/// run ended.
 fn drive(
     far: &mut FarEnd<'_>,
     probe: &mut Probe<'_, '_>,
     case: &mut TestCase<'_>,
-    stream: &Stream,
-    run: u32,
-) -> (Ledger, Ending) {
-    let flows = usize::try_from(stream.schedule.flows()).expect("the flows fit in memory");
-    let mut ledger = Ledger::new(run, flows);
+    streams: &[Stream],
+    first_run: u32,
+) -> (Ledgers, Ending) {
     let data_queues = usize::from(WORKERS);
-    let mut sender = Sender::new(stream.clone(), run, data_queues);
+    let mut ledgers = Ledgers::new();
+    let mut senders: Vec<Sender> = (first_run..)
+        .zip(streams)
+        .map(|(run, stream)| {
+            let flows = usize::try_from(stream.schedule.flows()).expect("the flows fit in memory");
+            ledgers.add(&stream.name, run, flows);
+            Sender::new(stream.clone(), run, data_queues)
+        })
+        .collect();
     let clock = Clock::start();
     let baseline = probe.sample();
     let FarEnd { pool, rx, tx } = far;
@@ -157,40 +164,53 @@ fn drive(
         pool,
     };
     let ending = generate(
-        &mut sender,
+        &mut senders,
         &mut queues,
-        &mut ledger,
+        &mut ledgers,
         &clock,
         Patience {
             quiet: Duration::from_secs(1),
             limit: PATIENCE,
         },
         SAMPLE_EVERY,
-        |ledger| {
-            let sample = ledger
-                .sample(&stream.name, Sample::new())
+        |ledgers| {
+            let sample = ledgers
+                .sample(Sample::new())
                 .merge(probe.sample().since(&baseline));
             case.sample(sample)
                 .expect("the report should take the sample");
         },
     );
-    (ledger, ending)
+    (ledgers, ending)
 }
 
-/// Check everything about a driven stream: it all came back, unharmed, each flow masqueraded
-/// into the pool the same way every time and no two flows alike.
-fn check_stream(case: &mut TestCase<'_>, stream: &Stream, ledger: &Ledger, ending: Ending) {
+/// Check that everything every stream sent came back, and that no frame came back from nowhere.
+fn check_all_back(case: &mut TestCase<'_>, ledgers: &Ledgers, ending: Ending) {
     expect(
         case,
         "all-back",
         "everything sent comes back before the time allowed runs out",
         ending == Ending::AllBack,
-        || {
-            let mut evidence = vec![Evidence::text(format!("{ending:?}"))];
-            evidence.extend_from_slice(ledger.evidence());
-            evidence
-        },
+        || vec![Evidence::text(format!("{ending:?}"))],
     );
+    let stray = ledgers.sample(Sample::new()).counters["generator.stray"];
+    case.expect_counter(
+        "none-stray",
+        "generator.stray",
+        Bound::exactly(0),
+        Some(stray),
+        ledgers.stray_evidence().to_vec(),
+    )
+    .expect("the report should take the check");
+}
+
+/// Check everything about one driven stream: it all came back, unharmed, each flow masqueraded
+/// into the pool the same way every time and no two flows alike. Check ids are prefixed with the
+/// stream's name.
+fn check_stream(case: &mut TestCase<'_>, stream: &Stream, ledgers: &Ledgers) {
+    let ledger = ledgers
+        .get(&stream.name)
+        .expect("every driven stream has a ledger");
     check_ledger(case, stream, ledger);
     check_translations(case, stream, ledger);
 }
@@ -254,8 +274,15 @@ fn many_flows_come_back_masqueraded_and_distinct() {
                 .report
                 .case("steady", serde_json::to_value(stream.schedule).unwrap())
                 .expect("the report should take the case");
-            let (ledger, ending) = drive(lb.far, lb.probe, &mut case, &stream, 1);
-            check_stream(&mut case, &stream, &ledger, ending);
+            let (ledgers, ending) = drive(
+                lb.far,
+                lb.probe,
+                &mut case,
+                std::slice::from_ref(&stream),
+                1,
+            );
+            check_all_back(&mut case, &ledgers, ending);
+            check_stream(&mut case, &stream, &ledgers);
             check_counters(
                 &mut case,
                 lb.probe,
@@ -292,8 +319,15 @@ fn churning_flows_come_back_masqueraded_and_distinct() {
                     )
                     .expect("the report should take the case");
                 let run = u32::try_from(n).unwrap() + 1;
-                let (ledger, ending) = drive(lb.far, lb.probe, &mut case, &stream, run);
-                check_stream(&mut case, &stream, &ledger, ending);
+                let (ledgers, ending) = drive(
+                    lb.far,
+                    lb.probe,
+                    &mut case,
+                    std::slice::from_ref(&stream),
+                    run,
+                );
+                check_all_back(&mut case, &ledgers, ending);
+                check_stream(&mut case, &stream, &ledgers);
                 case.finish()
                     .expect("the report should take the case's end");
             }
@@ -327,6 +361,7 @@ fn check_ledger(case: &mut TestCase<'_>, stream: &Stream, ledger: &Ledger) {
         ("stable-translations", "unstable", Bound::exactly(0)),
     ] {
         let path = format!("generator.{}.{counter}", stream.name);
+        let id = format!("{}.{id}", stream.name);
         let observed = totals.get(&path).copied();
         let evidence = if observed.is_some_and(|n| bound.admits(n)) {
             Vec::new()
@@ -368,7 +403,7 @@ fn check_translations(case: &mut TestCase<'_>, stream: &Stream, ledger: &Ledger)
     let ok = wrong.is_empty();
     expect(
         case,
-        "masqueraded",
+        &format!("{}.masqueraded", stream.name),
         "every flow comes back from 2.2.0.0/16, to its own destination, in the remote VPC",
         ok,
         || wrong,
@@ -376,9 +411,45 @@ fn check_translations(case: &mut TestCase<'_>, stream: &Stream, ledger: &Ledger)
     let ok = collisions.is_empty();
     expect(
         case,
-        "distinct-translations",
+        &format!("{}.distinct-translations", stream.name),
         "no two flows come back with the same addresses and ports",
         ok,
         || collisions,
+    );
+}
+
+/// Two streams through the gateway at once -- a steady one, and one churning half its flows a
+/// round -- each accounted for apart: both come back whole, translated, stably, and no frame comes
+/// back that neither sent.
+#[test]
+fn two_streams_at_once_are_each_accounted_for() {
+    over_cable(
+        "two_streams_at_once_are_each_accounted_for",
+        fixture_gateway,
+        |lb: &mut Loopback<'_, '_, '_, '_>| {
+            let streams = [
+                local_to_remote("steady", Schedule::steady(500, 8), 80),
+                local_to_remote(
+                    "churning",
+                    Schedule {
+                        window: 500,
+                        churn: 250,
+                        rounds: 8,
+                    },
+                    9000,
+                ),
+            ];
+            let mut case = lb
+                .report
+                .case("together", serde_json::json!({}))
+                .expect("the report should take the case");
+            let (ledgers, ending) = drive(lb.far, lb.probe, &mut case, &streams, 1);
+            check_all_back(&mut case, &ledgers, ending);
+            for stream in &streams {
+                check_stream(&mut case, stream, &ledgers);
+            }
+            case.finish()
+                .expect("the report should take the case's end");
+        },
     );
 }

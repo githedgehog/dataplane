@@ -302,3 +302,42 @@ fn churn_beyond_the_window_is_refused() {
     };
     assert!(schedule.validate().is_err());
 }
+
+/// Frames from several streams are each counted by their own stream's ledger, and frames from no
+/// stream by none.
+#[test]
+fn ledgers_count_each_stream_apart() {
+    use crate::ledger::Ledgers;
+
+    let mut ledgers = Ledgers::new();
+    ledgers.add("victim", 1, 2);
+    ledgers.add("aggressor", 2, 1);
+    ledgers.for_run(1).unwrap().sent(0);
+    ledgers.for_run(1).unwrap().sent(1);
+    ledgers.for_run(2).unwrap().sent(0);
+
+    ledgers.receive(&frame(1, 0, 0, tuple(10)), 0);
+    ledgers.receive(&frame(1, 1, 0, tuple(11)), 0);
+    ledgers.receive(&frame(3, 0, 0, tuple(12)), 0);
+    ledgers.receive(&[0; 8], 0);
+
+    assert_eq!(ledgers.get("victim").unwrap().total_received(), 2);
+    assert_eq!(ledgers.get("aggressor").unwrap().total_received(), 0);
+    assert!(
+        !ledgers.all_back(),
+        "the aggressor's packet never came back"
+    );
+    let sample = ledgers.sample(flowgen_report::Sample::new());
+    assert_eq!(sample.counters["generator.stray"], 2);
+    assert_eq!(sample.counters["generator.victim.lost"], 0);
+    assert_eq!(sample.counters["generator.aggressor.lost"], 1);
+    assert_eq!(ledgers.stray_evidence().len(), 2);
+}
+
+#[test]
+#[should_panic(expected = "would share its name or run")]
+fn streams_cannot_share_a_run() {
+    let mut ledgers = crate::ledger::Ledgers::new();
+    ledgers.add("a", 1, 1);
+    ledgers.add("b", 1, 1);
+}

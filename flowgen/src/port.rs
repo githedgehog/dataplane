@@ -13,7 +13,7 @@ use net::buffer::Append;
 use serde::{Deserialize, Serialize};
 
 use crate::frame::{FrameSpec, Template};
-use crate::ledger::Ledger;
+use crate::ledger::{Ledger, Ledgers};
 use crate::schedule::{Schedule, Slot};
 use crate::space::{self, FlowSpace};
 
@@ -106,6 +106,7 @@ impl Templates {
 /// over a receiver's.
 pub struct Sender {
     stream: Stream,
+    run: u32,
     templates: Templates,
     /// The next packet to send.
     next: u64,
@@ -129,6 +130,7 @@ impl Sender {
         };
         Sender {
             stream,
+            run,
             templates,
             next: 0,
             retry: Vec::new(),
@@ -140,6 +142,12 @@ impl Sender {
     #[must_use]
     pub fn stream(&self) -> &Stream {
         &self.stream
+    }
+
+    /// The run number its packets are signed with.
+    #[must_use]
+    pub fn run(&self) -> u32 {
+        self.run
     }
 
     /// Whether every packet has been sent.
@@ -230,14 +238,15 @@ impl Sender {
     }
 }
 
-/// Receive whatever is waiting on `queues` and count it in `ledger`. Returns how many frames.
-pub fn receive(queues: &mut [RxQueue<'_>], ledger: &mut Ledger, clock: &Clock) -> usize {
+/// Receive whatever is waiting on `queues` and count it against the streams in `ledgers`. Returns
+/// how many frames.
+pub fn receive(queues: &mut [RxQueue<'_>], ledgers: &mut Ledgers, clock: &Clock) -> usize {
     let mut total = 0;
     for queue in queues {
         let burst = queue.receive();
         let now = clock.now_ns();
         for mbuf in &burst {
-            ledger.receive(mbuf.raw_data(), now);
+            ledgers.receive(mbuf.raw_data(), now);
             total += 1;
         }
     }
@@ -247,7 +256,7 @@ pub fn receive(queues: &mut [RxQueue<'_>], ledger: &mut Ledger, clock: &Clock) -
 /// How a [`run`] ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ending {
-    /// Everything sent came back.
+    /// Everything every stream sent came back.
     AllBack,
     /// Everything was sent, and then nothing came back for the quiet period.
     Quiet,
@@ -274,31 +283,41 @@ pub struct Queues<'q, 'd> {
     pub pool: &'q Pool<'d>,
 }
 
-/// Send `sender`'s stream and count what comes back, until everything sent has come back or
-/// `patience` runs out. `sample` is shown the ledger every `every`, and once more at the end.
+/// Send every one of `senders`' streams at once, each at its own pace, and count what comes back
+/// against `ledgers`, until everything sent has come back or `patience` runs out. `sample` is shown
+/// the ledgers every `every`, and once more at the end.
+///
+/// # Panics
+///
+/// If a sender's run has no ledger in `ledgers`.
 pub fn run(
-    sender: &mut Sender,
+    senders: &mut [Sender],
     queues: &mut Queues<'_, '_>,
-    ledger: &mut Ledger,
+    ledgers: &mut Ledgers,
     clock: &Clock,
     patience: Patience,
     every: Duration,
-    mut sample: impl FnMut(&Ledger),
+    mut sample: impl FnMut(&Ledgers),
 ) -> Ending {
     let started = clock::now();
     let mut last_heard = clock::now();
     let mut last_sample = clock::now();
     let ending = loop {
-        sender.send(queues.tx, queues.pool, ledger, clock);
-        if receive(queues.rx, ledger, clock) > 0 {
+        for sender in senders.iter_mut() {
+            let ledger: &mut Ledger = ledgers
+                .for_run(sender.run())
+                .unwrap_or_else(|| unreachable!("every sender has a ledger"));
+            sender.send(queues.tx, queues.pool, ledger, clock);
+        }
+        if receive(queues.rx, ledgers, clock) > 0 {
             last_heard = clock::now();
         }
         if clock::elapsed(last_sample) >= every {
-            sample(ledger);
+            sample(ledgers);
             last_sample = clock::now();
         }
-        if sender.done() {
-            if ledger.total_received() >= ledger.total_sent() {
+        if senders.iter().all(Sender::done) {
+            if ledgers.all_back() {
                 break Ending::AllBack;
             }
             if clock::elapsed(last_heard) > patience.quiet {
@@ -309,6 +328,6 @@ pub fn run(
             break Ending::OutOfTime;
         }
     };
-    sample(ledger);
+    sample(ledgers);
     ending
 }
