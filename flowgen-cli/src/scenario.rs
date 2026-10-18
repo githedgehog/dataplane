@@ -308,6 +308,12 @@ impl Scenario {
                         case.name, stream.name
                     ));
                 }
+                if let Some(Err(e)) = stream.frame.mutation.map(|m| m.check(&stream.frame)) {
+                    return invalid(format!(
+                        "case {:?}, stream {:?}: {e}",
+                        case.name, stream.name
+                    ));
+                }
             }
             let mut ids = std::collections::BTreeSet::new();
             for expect in &case.expect {
@@ -457,6 +463,44 @@ cases:
         assert!(
             Scenario::from_yaml("port: { vdev: x }\ncases: [{name: a, hodl: 1s}]\n").is_err(),
             "a misspelt field was accepted"
+        );
+    }
+
+    /// A stream's frames can be mutated, but only in headers they have.
+    #[test]
+    fn a_mutation_is_checked_against_the_frames() {
+        let stream = |mutation: &str| {
+            format!(
+                "
+port: {{ vdev: x }}
+cases:
+  - name: a
+    streams:
+      - name: s
+        space:
+          src: {{ first: 10.0.0.1, count: 1 }}
+          dst: {{ first: 10.1.0.1, count: 1 }}
+          sport: {{ first: 1024, count: 1 }}
+          dport: {{ first: 80, count: 1 }}
+          order: sequential
+        schedule: {{ window: 1, churn: 0, rounds: 1 }}
+        frame:
+          src_mac: \"02:00:00:00:00:01\"
+          dst_mac: \"02:00:00:00:00:02\"
+          payload_len: 64
+          ttl: 64
+          mutation: {mutation}
+        rate_pps: null
+        returns: nothing
+"
+            )
+        };
+        let ttl = Scenario::from_yaml(&stream("{ change: { ttl: { ttl: 0 } } }")).unwrap();
+        ttl.check().unwrap();
+        let outer = Scenario::from_yaml(&stream("{ layer: outer, change: ip_checksum }")).unwrap();
+        assert!(
+            outer.check().is_err(),
+            "an untunnelled frame has no outer layer"
         );
     }
 }

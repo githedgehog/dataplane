@@ -19,6 +19,8 @@
 //! - [`tcp`]: real TCP hosts, from smoltcp, that open connections and check what comes back.
 //! - [`space`]: the flows a stream can send, numbered, so that a million of them need no table.
 //! - [`frame`]: building each flow's frame once and stamping it per packet; reading frames back.
+//! - [`mutate`]: changing every frame of a stream in one place, to make it one a gateway should
+//!   refuse.
 //! - [`signature`]: what every packet's payload carries to name its flow and place.
 //! - [`schedule`]: which flow each packet belongs to, as a window of flows slides on (churn).
 //! - [`ledger`]: what was sent against what came back: loss, reordering, latency, and whether
@@ -38,6 +40,7 @@ mod checksum;
 pub mod drive;
 pub mod frame;
 pub mod ledger;
+pub mod mutate;
 #[cfg(feature = "dpdk")]
 pub mod port;
 pub mod prometheus;

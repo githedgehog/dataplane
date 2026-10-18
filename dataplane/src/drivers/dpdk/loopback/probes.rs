@@ -77,6 +77,7 @@ pub(super) fn probes(
             transport,
             payload_len: 64,
             ttl: 255,
+            mutation: None,
         },
         rate_pps: Some(20_000),
         when_full: WhenFull::Retry,

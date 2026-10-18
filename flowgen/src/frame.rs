@@ -15,6 +15,7 @@ use std::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use crate::checksum;
+use crate::mutate::{self, Mutation};
 use crate::signature::{self, Signature};
 use crate::space::{self, Tuple};
 
@@ -157,14 +158,18 @@ pub struct FrameSpec {
     pub payload_len: u16,
     /// The inner packet's TTL.
     pub ttl: u8,
+    /// One change to make to every frame, to make it one a gateway should refuse; see
+    /// [`mutate`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation: Option<Mutation>,
 }
 
 /// One flow's frame, ready to stamp and send.
 #[derive(Debug, Clone)]
 pub struct Template {
     bytes: Vec<u8>,
-    /// Where the signature starts.
-    signature: usize,
+    /// Where the signature starts, if the frame still has all of it and its checksum.
+    signature: Option<usize>,
     /// Where the inner transport checksum is.
     l4_checksum: usize,
     /// The inner transport protocol.
@@ -249,19 +254,41 @@ impl Template {
         inner[l4_at + checksum_at..l4_at + checksum_at + 2]
             .copy_from_slice(&checksum.to_be_bytes());
 
+        let mut signature = outer_len + l4_at + l4_len;
+        let mut l4_checksum = outer_len + l4_at + checksum_at;
+        if let Some(mutation) = spec.mutation {
+            let (outer, inner) = mutate::layouts(spec.vxlan.is_some(), protocol, inner_len);
+            if let Some(resize) = mutate::apply(&mut bytes, outer, inner, mutation) {
+                let moved = |at: usize| {
+                    if at >= resize.at {
+                        at.saturating_add_signed(resize.by)
+                    } else {
+                        at
+                    }
+                };
+                signature = moved(signature);
+                l4_checksum = moved(l4_checksum);
+            }
+        }
+        // A frame cut short of its signature, or of the checksum over it, is sent as it is.
+        let whole = signature + signature::LEN <= bytes.len() && l4_checksum + 2 <= bytes.len();
+
         Template {
             bytes,
-            signature: outer_len + l4_at + l4_len,
-            l4_checksum: outer_len + l4_at + checksum_at,
+            signature: whole.then_some(signature),
+            l4_checksum,
             protocol,
         }
     }
 
     /// Stamp the frame as packet `seq` of its flow, sent at `tx_ns`.
     pub fn stamp(&mut self, seq: u64, tx_ns: u64) {
+        let Some(signature) = self.signature else {
+            return;
+        };
         // The sequence number and time are the signature's last 16 bytes, at an even offset into
         // the datagram, so the checksum can be updated for them alone.
-        let at = self.signature + 16;
+        let at = signature + 16;
         let mut old = [0u8; 16];
         old.copy_from_slice(&self.bytes[at..at + 16]);
         let mut new = [0u8; 16];
@@ -270,6 +297,10 @@ impl Template {
         self.bytes[at..at + 16].copy_from_slice(&new);
         let c = self.l4_checksum;
         let checksum = u16::from_be_bytes([self.bytes[c], self.bytes[c + 1]]);
+        if checksum == 0 && self.protocol == PROTO_UDP {
+            // No checksum: there is nothing to update.
+            return;
+        }
         let checksum = checksum::adjust(self.protocol, checksum, &old, &new);
         self.bytes[c..c + 2].copy_from_slice(&checksum.to_be_bytes());
     }

@@ -184,6 +184,7 @@ fn local_to_remote(name: &str, schedule: Schedule, dport: u16) -> Stream {
             transport: Transport::Udp,
             payload_len: 64,
             ttl: 64,
+            mutation: None,
         },
         rate_pps: None,
         when_full: WhenFull::Retry,
