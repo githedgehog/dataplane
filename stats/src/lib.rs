@@ -6,6 +6,7 @@
 mod dpstats;
 mod dpstats_fuzz;
 mod phy;
+mod pipeline;
 mod pluggable;
 mod port;
 mod rate;
@@ -17,9 +18,11 @@ mod spec;
 mod vpc;
 mod vpc_stats;
 mod vpc_stats_fuzz;
+mod worker;
 
 pub use dpstats::*;
 pub use phy::*;
+pub use pipeline::*;
 pub use pluggable::*;
 pub use port::*;
 pub use rate::*;
@@ -27,6 +30,7 @@ pub use register::*;
 pub use spec::*;
 pub use vpc::*;
 pub use vpc_stats::*;
+pub use worker::*;
 
 use tracectl::trace_target;
 trace_target!("dp-stats", LevelFilter::WARN, &[]);
