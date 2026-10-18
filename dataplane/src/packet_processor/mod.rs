@@ -62,6 +62,8 @@ pub(crate) struct InternalSetup {
     pub transceivers: tokio::sync::watch::Sender<crate::transceiver_agent::ModuleSnapshot>,
     /// Where the phy agent publishes what `mstlink` last said about each port.
     pub phy: tokio::sync::watch::Sender<crate::phy_agent::PhySnapshot>,
+    /// Packets the pipeline finished with, by reason, for telemetry.
+    pub pkt_stats: Arc<PacketStats>,
 }
 
 /// Shared inputs for building a separate pipeline on each worker thread.
@@ -240,7 +242,7 @@ pub(crate) fn start_router(
         rate_limits: rate_limits.reader(),
         portfw_factory,
         stats_w,
-        pkt_stats,
+        pkt_stats: pkt_stats.clone(),
         flow_table: flow_table.clone(),
         capture,
     };
@@ -261,5 +263,6 @@ pub(crate) fn start_router(
         lldp_neighbors,
         transceivers,
         phy,
+        pkt_stats,
     })
 }

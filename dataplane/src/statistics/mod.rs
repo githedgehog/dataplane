@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+mod telemetry;
+
+pub(crate) use telemetry::TelemetrySources;
+
 use axum::{Router, response::Response, routing::get};
 use lifecycle::Subsystem;
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
@@ -45,19 +49,36 @@ async fn metrics_handler(
         .unwrap()
 }
 
-/// Spawn the `/metrics` endpoint on `addr`, a 30s upkeep ticker, and the
-/// stats collector onto `handle`, tracked under `metrics`. Uses
+/// Spawn the `/metrics` endpoint on `addr`, a 30s upkeep ticker, the stats collector, and the
+/// publisher of `telemetry` onto `handle`, tracked under `metrics`. Uses
 /// [`Subsystem::spawn_on`] — a dead metrics endpoint should not take down
 /// the dataplane.
-pub fn spawn_metrics(
+pub(crate) fn spawn_metrics(
     metrics: &Subsystem,
     handle: &tokio::runtime::Handle,
     addr: std::net::SocketAddr,
     stats: StatsCollector,
+    telemetry: TelemetrySources,
 ) {
     let PrometheusHandler {
         handle: prom_handle,
     } = PrometheusHandler::new();
+
+    // Registered after the recorder is installed, or the series would go nowhere.
+    let mut telemetry = telemetry::Telemetry::new(telemetry);
+    let telemetry_cancel = metrics.cancel_token();
+    metrics.spawn_on(
+        async move {
+            let mut ticker = tokio::time::interval(telemetry::PUBLISH_EVERY);
+            loop {
+                tokio::select! {
+                    () = telemetry_cancel.cancelled() => break,
+                    _ = ticker.tick() => telemetry.publish(),
+                }
+            }
+        },
+        handle,
+    );
 
     let upkeep_handle = prom_handle.clone();
     let upkeep_cancel = metrics.cancel_token();
