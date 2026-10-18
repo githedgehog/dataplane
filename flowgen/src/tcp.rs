@@ -28,7 +28,7 @@ use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpCidr};
 
 use crate::drive::Agent;
-use crate::frame::{self, Mac, Vxlan};
+use crate::frame::{self, Mac, Vxlan, mac_text};
 use crate::heartbeat;
 
 /// The largest IP packet a host sends: room left for VXLAN within a 1500-byte underlay.
@@ -43,8 +43,10 @@ pub enum Encap {
     /// In Ethernet, from the host's MAC to its next hop's.
     Ethernet {
         /// The host's MAC.
+        #[serde(with = "mac_text")]
         mac: Mac,
         /// The next hop's MAC.
+        #[serde(with = "mac_text")]
         next_hop: Mac,
     },
     /// In Ethernet inside VXLAN through `tunnel`, the inner frame from the host's MAC to the next
@@ -53,8 +55,10 @@ pub enum Encap {
         /// The tunnel.
         tunnel: Vxlan,
         /// The host's MAC, inside the tunnel.
+        #[serde(with = "mac_text")]
         mac: Mac,
         /// The next hop's MAC, inside the tunnel.
+        #[serde(with = "mac_text")]
         next_hop: Mac,
     },
 }
