@@ -145,7 +145,7 @@ fn check_stream(case: &mut TestCase<'_>, stream: &Stream, ledgers: &Ledgers) {
 
 /// A stream of `schedule`'s flows from the local VPC to the remote one, tunnelled from the peer
 /// VTEP, to destination port `dport`.
-fn local_to_remote(name: &str, schedule: Schedule, dport: u16) -> Stream {
+pub(super) fn local_to_remote(name: &str, schedule: Schedule, dport: u16) -> Stream {
     let space = FlowSpace::new(SpaceSpec {
         src: Addresses {
             first: "1.1.0.1".parse().unwrap(),

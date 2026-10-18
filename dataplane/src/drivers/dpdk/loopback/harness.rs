@@ -546,6 +546,19 @@ pub(super) fn drive(
     case: &mut TestCase<'_>,
     traffic: Traffic<'_, '_>,
 ) -> (Ledgers, Ending, Punted) {
+    drive_quietly(far, kernel, probe, case, traffic, Duration::from_secs(1))
+}
+
+/// As [`drive`], waiting only `quiet` for what has not come back, or, for a stream that should
+/// have nothing back, after its last packet.
+pub(super) fn drive_quietly(
+    far: &mut FarEnd<'_>,
+    kernel: &mut DetachedPort,
+    probe: &mut Probe<'_, '_>,
+    case: &mut TestCase<'_>,
+    traffic: Traffic<'_, '_>,
+    quiet: Duration,
+) -> (Ledgers, Ending, Punted) {
     let Traffic {
         streams,
         first_run,
@@ -590,7 +603,7 @@ pub(super) fn drive(
             &mut ledgers,
             &clock,
             Patience {
-                quiet: Duration::from_secs(1),
+                quiet,
                 limit: PATIENCE.max(hold * 2),
                 hold,
             },
@@ -607,6 +620,24 @@ pub(super) fn drive(
         )
     };
     (ledgers, ending, counts.get())
+}
+
+/// Everything counted, once the counts have stopped moving: once nothing has changed for a few of
+/// the supervisor's polls, so that the workers' counters have caught up with the pipeline's.
+pub(super) fn settle(probe: &mut Probe<'_, '_>) -> Sample {
+    let deadline = clock::now() + PATIENCE;
+    let mut last = probe.sample();
+    let mut steady_since = clock::now();
+    loop {
+        std::thread::sleep(SUPERVISOR_POLL);
+        let now = probe.sample();
+        if now.counters != last.counters {
+            last = now;
+            steady_since = clock::now();
+        } else if clock::elapsed(steady_since) >= SUPERVISOR_POLL * 3 || clock::now() > deadline {
+            return now;
+        }
+    }
 }
 
 /// Check that everything every stream sent came back, and that no frame came back from nowhere.

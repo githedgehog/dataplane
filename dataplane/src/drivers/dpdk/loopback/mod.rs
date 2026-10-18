@@ -9,6 +9,7 @@
 
 mod bfd;
 mod bgp;
+mod catalog;
 mod control;
 mod floods;
 mod flows;
