@@ -15,6 +15,7 @@
 
 mod classes;
 mod control;
+mod idle;
 mod placement;
 mod port;
 mod worker;
@@ -22,6 +23,7 @@ mod worker;
 use std::convert::Infallible;
 use std::num::NonZero;
 
+use args::IdleConfig;
 use concurrency::sync::Arc;
 use concurrency::thread;
 #[allow(unused_imports)] // used under loom/shuttle backends
@@ -73,6 +75,7 @@ impl DriverDpdk {
         timer_handle: &'scope tokio::runtime::Handle,
         ports: &'p [Port<'_>],
         num_workers: NonZero<u16>,
+        idle: IdleConfig,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'p, Mbuf<'p>> + 'p>,
         status_writer: DriverStatusWriter,
         bridge: Option<&mut DatapathEnds>,
@@ -121,7 +124,7 @@ impl DriverDpdk {
                     watchdog: task.watchdog.clone(),
                 })
                 .collect();
-            let worker = Worker::new(id, worker_ports);
+            let worker = Worker::new(id, worker_ports, idle);
 
             let subsystem = workers_subsystem.clone();
             let setup_pipeline = setup_pipeline.clone();
@@ -153,6 +156,7 @@ impl DriverDpdk {
             placement.control,
             dealt.control,
             control_plane,
+            idle,
         )?);
 
         // Register metrics once; the scoped callback keeps the borrowed ports alive while polling.
@@ -186,6 +190,7 @@ fn spawn_control<'p, 'eal, 'scope>(
     cpu: Option<usize>,
     control: Vec<port::ControlQueues<'p, 'eal>>,
     control_plane: watch::Receiver<ControlPlane>,
+    idle: IdleConfig,
 ) -> Result<WorkerMonitor<'scope, Infallible>, DriverError>
 where
     'p: 'scope,
@@ -203,7 +208,7 @@ where
             watchdog: task.watchdog.clone(),
         })
         .collect();
-    let worker = ControlWorker::new(id, ports, control_plane);
+    let worker = ControlWorker::new(id, ports, control_plane, idle);
     let subsystem = subsystem.clone();
     let handle = thread::Builder::new()
         .name("dpdk-control".to_string())

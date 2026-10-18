@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use args::IdleConfig;
 use concurrency::sync::Arc;
 use dpdk::lcore::LCore;
 use dpdk::mem::{Mbuf, MbufArray};
@@ -22,14 +23,12 @@ use crate::drivers::watchdog::{RxCounters, Watchdog};
 
 use super::classes::SoftwareClasses;
 use super::control::addressed_to;
+use super::idle::Idle;
 use super::port::PortQueues;
 use crate::drivers::disposition::Disposition;
 
 #[cfg(all(test, not(feature = "shuttle")))]
 mod tests;
-
-/// Yield after this many consecutive polls without traffic on any port.
-const IDLE_POLLS_BEFORE_YIELD: u32 = 128;
 
 /// Polls between cancellation checks and watchdog updates.
 const CANCEL_CHECK_INTERVAL: u32 = 1024;
@@ -56,11 +55,12 @@ struct Scratch<'p> {
 pub(crate) struct Worker<'p> {
     id: WorkerId,
     ports: Vec<WorkerPort<'p>>,
+    idle: IdleConfig,
 }
 
 impl<'p> Worker<'p> {
-    pub(crate) fn new(id: WorkerId, ports: Vec<WorkerPort<'p>>) -> Self {
-        Self { id, ports }
+    pub(crate) fn new(id: WorkerId, ports: Vec<WorkerPort<'p>>, idle: IdleConfig) -> Self {
+        Self { id, ports, idle }
     }
 
     /// Run until cancelled, constructing the non-Send pipeline on this thread.
@@ -74,7 +74,7 @@ impl<'p> Worker<'p> {
         let _runtime = timer_handle.enter();
         // Registration enables per-lcore mempool caches and releases the id on return or unwind.
         // If registration fails, allocation remains correct through the shared mempool ring.
-        let _lcore = match LCore::register() {
+        let lcore = match LCore::register() {
             Ok(lcore) => Some(lcore),
             Err(e) => {
                 error!(
@@ -108,7 +108,7 @@ impl<'p> Worker<'p> {
                 .join(", ")
         );
 
-        let mut idle_polls: u32 = 0;
+        let mut idle = Idle::new(self.id, self.idle, lcore.as_ref());
         let mut polls: u32 = 0;
         // Counters per port, flushed to that port's watchdog.
         let mut counters = vec![RxCounters::default(); self.ports.len()];
@@ -124,33 +124,33 @@ impl<'p> Worker<'p> {
 
         loop {
             polls = polls.wrapping_add(1);
-            if polls.is_multiple_of(CANCEL_CHECK_INTERVAL) {
+            if polls.is_multiple_of(CANCEL_CHECK_INTERVAL) || idle.checks_due() {
+                idle.checked();
                 if subsystem.is_cancelled() {
                     break;
                 }
                 self.report(&mut counters);
             }
 
-            let mut saw_frames = false;
+            let mut busy = None;
             for (slot, counters) in counters.iter_mut().enumerate() {
                 if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut scratch, counters) {
-                    saw_frames = true;
+                    busy = Some(slot);
                 }
             }
 
-            if saw_frames {
-                idle_polls = 0;
-            } else {
-                idle_polls += 1;
-                if idle_polls >= IDLE_POLLS_BEFORE_YIELD {
-                    idle_polls = 0;
-                    std::thread::yield_now();
-                }
+            match busy {
+                Some(slot) => idle.busy(slot),
+                None => idle.empty(lcore.as_ref(), self.ports.iter().map(|p| &p.queues.rx)),
             }
         }
 
         self.report(&mut counters);
-        debug!(worker = self.id, "DPDK worker stopping");
+        debug!(
+            worker = self.id,
+            sleeps = idle.sleeps(),
+            "DPDK worker stopping"
+        );
     }
 
     /// Pat every port's watchdog and flush its counters to it.
