@@ -28,12 +28,12 @@ impl Wire for Queues<'_, '_> {
     /// queues; count what the queues took. Nothing is sent if the pool has nothing to spare,
     /// which is back-pressure from frames still in flight, not an error.
     fn send(&mut self, sender: &mut Sender, ledger: &mut Ledger, clock: &Clock) -> usize {
-        let packets = sender.plan(ledger.total_sent());
+        let packets = sender.plan(ledger.total_offered());
         if packets.is_empty() {
             return 0;
         }
         let Ok(mut mbufs) = self.pool.alloc_bulk(packets.len()) else {
-            sender.refused(&packets);
+            sender.deferred(&packets);
             return 0;
         };
         let queues = &mut *self.tx;
@@ -62,7 +62,7 @@ impl Wire for Queues<'_, '_> {
             for &slot in &packets[..accepted] {
                 sender.accepted(slot, ledger);
             }
-            sender.refused(&packets[accepted..]);
+            sender.refused(&packets[accepted..], ledger);
             total += accepted;
         }
         total

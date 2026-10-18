@@ -8,6 +8,7 @@
 //! [`harness::over_cable`].
 
 mod control;
+mod floods;
 mod flows;
 mod harness;
 mod probes;

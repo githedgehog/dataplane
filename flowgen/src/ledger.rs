@@ -60,6 +60,8 @@ pub struct Ledger {
     run: u32,
     flows: Vec<Flow>,
     sent: u64,
+    /// Offered to a full port and dropped there, never sent.
+    dropped_at_port: u64,
     received: u64,
     /// Received with a sequence number below one already received: reordered or duplicated.
     late: u64,
@@ -89,6 +91,7 @@ impl Ledger {
             run,
             flows: vec![Flow::default(); flows],
             sent: 0,
+            dropped_at_port: 0,
             received: 0,
             late: 0,
             foreign: 0,
@@ -210,13 +213,25 @@ impl Ledger {
         self.sent
     }
 
+    /// Count a packet as dropped by a full port, never sent.
+    pub fn dropped_at_port(&mut self) {
+        self.dropped_at_port += 1;
+    }
+
+    /// Packets offered to the port: sent, or dropped there for want of room.
+    #[must_use]
+    pub fn total_offered(&self) -> u64 {
+        self.sent + self.dropped_at_port
+    }
+
     /// Packets of ours received.
     #[must_use]
     pub fn total_received(&self) -> u64 {
         self.received
     }
 
-    /// Packets sent and not (yet) received, flow by flow.
+    /// Packets sent and not (yet) received, flow by flow: lost after the port took them. Packets
+    /// the port dropped are counted apart, as `dropped_at_port`.
     #[must_use]
     pub fn lost(&self) -> u64 {
         self.flows
@@ -251,6 +266,7 @@ impl Ledger {
             ("flows", self.flows.len() as u64),
             ("flows_returned", self.flows_returned()),
             ("sent", self.sent),
+            ("dropped_at_port", self.dropped_at_port),
             ("received", self.received),
             ("lost", self.lost()),
             ("late", self.late),

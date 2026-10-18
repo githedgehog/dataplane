@@ -471,11 +471,11 @@ struct KernelSide<'k> {
 
 impl Wire for KernelSide<'_> {
     fn send(&mut self, sender: &mut Sender, ledger: &mut Ledger, clock: &Clock) -> usize {
-        let slots = sender.plan(ledger.total_sent());
+        let slots = sender.plan(ledger.total_offered());
         for (n, &slot) in slots.iter().enumerate() {
             let (frame, _) = sender.stamp(slot, clock.now_ns());
             if self.kernel.inject.try_send(frame.to_vec()).is_err() {
-                sender.refused(&slots[n..]);
+                sender.refused(&slots[n..], ledger);
                 return n;
             }
             sender.accepted(slot, ledger);

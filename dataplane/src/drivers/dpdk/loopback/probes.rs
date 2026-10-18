@@ -12,7 +12,7 @@ use std::net::Ipv4Addr;
 
 use flowgen::frame::{FrameSpec, Mac as GeneratedMac, Transport, tcp};
 use flowgen::schedule::Schedule;
-use flowgen::sender::Stream;
+use flowgen::sender::{Stream, WhenFull};
 use flowgen::space::{Addresses, FlowSpace, Order, Ports, SpaceSpec};
 use flowgen_report::{Bound, Sample};
 
@@ -22,20 +22,20 @@ use super::harness::{
 use crate::packet_processor::fixture::{GATEWAY_MAC, LOCAL_VTEP, PEER_MAC, PEER_VTEP};
 
 /// The UDP port BFD control packets go to, single hop (RFC 5881).
-const BFD: u16 = 3784;
+pub(super) const BFD: u16 = 3784;
 
 /// The TCP port BGP listens on (RFC 4271).
-const BGP: u16 = 179;
+pub(super) const BGP: u16 = 179;
 
 /// Probe packets per session.
 const PER_SESSION: u64 = 250;
 
 /// Concurrent sessions probed.
-const SESSIONS: u16 = 4;
+pub(super) const SESSIONS: u16 = 4;
 
 /// A probe stream: `SESSIONS` sessions from `src` to `dst`, distinguished by source port from
 /// `sport`, to `dport`, carried in `transport`, paced as a busy control plane might be.
-fn probes(
+pub(super) fn probes(
     name: &str,
     transport: Transport,
     (src, src_mac): (Ipv4Addr, GeneratedMac),
@@ -76,6 +76,7 @@ fn probes(
             ttl: 255,
         },
         rate_pps: Some(20_000),
+        when_full: WhenFull::Retry,
     }
 }
 
