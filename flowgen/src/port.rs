@@ -1,17 +1,164 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! DPDK queues as a [`Wire`].
+//! DPDK ports for a generator: bringing one up, and its queues as a [`Wire`].
 
-use dpdk::mem::{MbufArray, Pool};
-use dpdk::queue::rx::RxQueue;
-use dpdk::queue::tx::TxQueue;
+use dpdk::dev::{Dev, DevConfig, DevIndex, RxOffload, Started, TxOffloadConfig};
+use dpdk::eal::Eal;
+use dpdk::mem::{MbufArray, Pool, PoolConfig, PoolParams};
+use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
+use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
+use dpdk::socket::Preference;
+use flowgen_report::Sample;
 use net::buffer::Append;
 
 use crate::drive::Wire;
 use crate::ledger::Ledger;
 use crate::schedule::Slot;
 use crate::sender::{Clock, Sender};
+
+/// How a generator's port is set up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortSetup {
+    /// Receive and transmit queues each.
+    pub queues: u16,
+    /// Descriptors per queue.
+    pub descriptors: u16,
+    /// Mbufs in the port's pool: enough for every descriptor and every frame in flight.
+    pub pool_size: u32,
+    /// The MTU, or the device's default.
+    pub mtu: Option<u16>,
+}
+
+/// Why a generator's port could not be brought up.
+#[derive(Debug, thiserror::Error)]
+#[error("port {index}: {what}")]
+pub struct PortError {
+    /// The port.
+    pub index: DevIndex,
+    /// What went wrong.
+    pub what: String,
+}
+
+/// Claim, configure and start port `index` with `setup`: no RSS, no offloads, every queue
+/// unsteered. Returns the started device and the pool its queues use.
+///
+/// # Errors
+///
+/// If the port cannot be claimed, configured, given its queues or started.
+pub fn start(
+    eal: &Eal,
+    index: DevIndex,
+    setup: PortSetup,
+) -> Result<(Dev<'_, Started>, Pool<'_>), PortError> {
+    let fail = |what: String| PortError { index, what };
+    let pool = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new(
+                format!("flowgen_{index}"),
+                PoolParams {
+                    size: setup.pool_size,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| fail(format!("invalid pool: {e:?}")))?,
+        )
+        .map_err(|e| fail(format!("no pool: {e:?}")))?;
+    let claim = eal
+        .claim(index)
+        .map_err(|e| fail(format!("cannot claim: {e}")))?;
+    let mut dev = DevConfig {
+        num_rx_queues: setup.queues,
+        num_tx_queues: setup.queues,
+        num_hairpin_queues: 0,
+        tx_offloads: TxOffloadConfig::none(),
+        rx_offloads: RxOffload::NONE,
+        mtu: setup.mtu,
+        rss: None,
+    }
+    .apply(claim)
+    .map_err(|e| fail(format!("cannot configure: {e}")))?;
+    for queue in 0..setup.queues {
+        dev.new_rx_queue(RxQueueConfig {
+            queue_index: RxQueueIndex(queue),
+            num_descriptors: setup.descriptors,
+            socket_preference: Preference::Dev(index),
+            offloads: RxOffload::NONE,
+            pool: pool.clone(),
+        })
+        .map_err(|e| fail(format!("no rx queue {queue}: {e:?}")))?;
+        dev.new_tx_queue(TxQueueConfig {
+            queue_index: TxQueueIndex(queue),
+            num_descriptors: setup.descriptors,
+            socket_preference: Preference::Dev(index),
+            config: (),
+        })
+        .map_err(|e| fail(format!("no tx queue {queue}: {e:?}")))?;
+    }
+    let dev = dev
+        .start()
+        .map_err(|e| fail(format!("cannot start: {e}")))?;
+    Ok((dev, pool))
+}
+
+/// Every queue of a started port, taken from it.
+pub struct Owned<'d> {
+    /// Receive queues.
+    pub rx: Vec<RxQueue<'d>>,
+    /// Transmit queues.
+    pub tx: Vec<TxQueue<'d>>,
+}
+
+/// Take `queues` receive and transmit queues each from `dev`.
+///
+/// # Errors
+///
+/// If the queues were taken already, or the device has fewer.
+pub fn take<'d>(dev: &'d Dev<'_, Started>, queues: u16) -> Result<Owned<'d>, PortError> {
+    let index = dev.info().index();
+    let fail = |what: String| PortError { index, what };
+    let mut taken = dev
+        .take_queues()
+        .ok_or_else(|| fail("queues already taken".to_string()))?;
+    let rx = (0..queues)
+        .map(|q| {
+            taken
+                .take_rx(RxQueueIndex(q))
+                .ok_or_else(|| fail(format!("no rx queue {q}")))
+        })
+        .collect::<Result<_, _>>()?;
+    let tx = (0..queues)
+        .map(|q| {
+            taken
+                .take_tx(TxQueueIndex(q))
+                .ok_or_else(|| fail(format!("no tx queue {q}")))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(Owned { rx, tx })
+}
+
+/// `sample`, with `dev`'s device counters under `port.<name>.`.
+#[must_use]
+pub fn counters(dev: &Dev<'_, Started>, name: &str, sample: Sample) -> Sample {
+    let Ok(stats) = dev.stats() else {
+        return sample;
+    };
+    [
+        ("rx_packets", stats.ipackets),
+        ("tx_packets", stats.opackets),
+        ("rx_bytes", stats.ibytes),
+        ("tx_bytes", stats.obytes),
+        ("rx_missed", stats.imissed),
+        ("rx_errors", stats.ierrors),
+        ("tx_errors", stats.oerrors),
+        ("rx_no_mbuf", stats.rx_nombuf),
+    ]
+    .into_iter()
+    .fold(sample, |sample, (counter, n)| {
+        sample.counter(format!("port.{name}.{counter}"), n)
+    })
+}
 
 /// The queues a stream is sent and received on, and the pool its frames come from.
 pub struct Queues<'q, 'd> {
