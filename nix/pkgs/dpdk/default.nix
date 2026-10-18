@@ -21,6 +21,11 @@ stdenv.mkDerivation {
   pname = "dpdk";
   version = src.branch;
   src = src.outPath;
+  patches = [
+    # MWAITX takes a relative tick count, but DPDK handed it the absolute TSC deadline cut to 32
+    # bits, so an idle worker on AMD slept until the next interrupt rather than its deadline.
+    ./amd-mwaitx-relative-timeout.patch
+  ];
   nativeBuildInputs = [
     meson
     ninja
