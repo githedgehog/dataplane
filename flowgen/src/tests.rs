@@ -89,16 +89,18 @@ fn spec_carrying(vxlan: bool, payload_len: u16, transport: Transport) -> FrameSp
         transport,
         payload_len,
         ttl: 64,
+        vlan: None,
     }
 }
 
 /// A stamped frame reads back as what was stamped, with correct checksums, however many times it
-/// was stamped before: the incremental checksum update agrees with computing it afresh.
+/// was stamped before: the incremental checksum update agrees with computing it afresh. Tagged or
+/// not, tunnelled or not.
 #[test]
 fn stamped_frames_read_back_as_stamped() {
     bolero::check!()
-        .with_type::<(bool, Option<u8>, u8, u16, Vec<(u64, u64)>)>()
-        .for_each(|(vxlan, flags, payload, sport, stamps)| {
+        .with_type::<(bool, Option<u8>, u8, u16, Option<u16>, Vec<(u64, u64)>)>()
+        .for_each(|(vxlan, flags, payload, sport, vlan, stamps)| {
             let tuple = Tuple {
                 src: Ipv4Addr::new(1, 1, 0, 1),
                 dst: Ipv4Addr::new(3, 3, 3, 1),
@@ -106,7 +108,8 @@ fn stamped_frames_read_back_as_stamped() {
                 dport: 80,
             };
             let transport = flags.map_or(Transport::Udp, |flags| Transport::Tcp { flags });
-            let spec = spec_carrying(*vxlan, u16::from(*payload), transport);
+            let mut spec = spec_carrying(*vxlan, u16::from(*payload), transport);
+            spec.vlan = vlan.map(|vid| vid & 0x0fff);
             let mut template = Template::new(&spec, 7, 42, &tuple);
             for &(seq, tx_ns) in stamps.iter().chain([&(0, 0)]) {
                 template.stamp(seq, tx_ns);
@@ -120,6 +123,7 @@ fn stamped_frames_read_back_as_stamped() {
                 assert_eq!((signature.run, signature.flow), (7, 42));
                 assert_eq!((signature.seq, signature.tx_ns), (seq, tx_ns));
                 assert_eq!(got.tunnel.map(|t| t.vni), spec.vxlan.map(|v| v.vni));
+                assert_eq!(got.vlan, spec.vlan);
             }
         });
 }
