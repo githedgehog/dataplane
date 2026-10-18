@@ -1,0 +1,28 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.8.14"
+
+# Enabling or Disabling Demand Mode
+#
+#    If it is desired to start or stop Demand mode, this MAY be done at
+#    any time by setting bfd.DemandMode to the proper value.  Demand mode
+#    will subsequently become active under the rules described in section
+#    6.6.
+# 
+#    If Demand mode is no longer active on the remote system, the local
+#    system MUST begin transmitting periodic BFD Control packets as
+#    described in section 6.8.7.
+
+[[spec]]
+level = "MAY"
+quote = '''
+If it is desired to start or stop Demand mode, this MAY be done at
+any time by setting bfd.DemandMode to the proper value.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If Demand mode is no longer active on the remote system, the local
+system MUST begin transmitting periodic BFD Control packets as
+described in section 6.8.7.
+'''
+

@@ -1,0 +1,107 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-9"
+
+# Security Considerations
+#
+#    As BFD may be tied into the stability of the network infrastructure
+#    (such as routing protocols), the effects of an attack on a BFD
+#    session may be very serious: a link may be falsely declared to be
+#    down, or falsely declared to be up; in either case, the effect is
+#    denial of service.
+# 
+#    An attacker who is in complete control of the link between the
+#    systems can easily drop all BFD packets but forward everything else
+#    (causing the link to be falsely declared down), or forward only the
+#    BFD packets but nothing else (causing the link to be falsely declared
+#    up).  This attack cannot be prevented by BFD.
+# 
+#    To mitigate threats from less capable attackers, BFD specifies two
+#    mechanisms to prevent spoofing of BFD Control packets.  The
+#    Generalized TTL Security Mechanism [GTSM] uses the time to live (TTL)
+#    or Hop Count to prevent off-link attackers from spoofing packets.
+#    The Authentication Section authenticates the BFD Control packets.
+#    These mechanisms are described in more detail below.
+# 
+#    When a BFD session is directly connected across a single link
+#    (physical, or a secure tunnel such as IPsec), the TTL or Hop Count
+#    MUST be set to the maximum on transmit, and checked to be equal to
+#    the maximum value on reception (and the packet dropped if this is not
+#    the case).  See [GTSM] for more information on this technique.  If
+#    BFD is run across multiple hops or an insecure tunnel (such as
+#    Generic Routing Encapsulation (GRE)), the Authentication Section
+#    SHOULD be utilized.
+# 
+#    The level of security provided by the Authentication Section varies
+#    based on the authentication type used.  Simple Password
+#    authentication is obviously only as secure as the secrecy of the
+#    passwords used, and should be considered only if the BFD session is
+#    guaranteed to be run over an infrastructure not subject to packet
+#    interception.  Its chief advantage is that it minimizes the
+#    computational effort required for authentication.
+# 
+#    Keyed MD5 Authentication is much stronger than Simple Password
+#    Authentication since the keys cannot be discerned by intercepting
+#    packets.  It is vulnerable to replay attacks in between increments of
+#    the sequence number.  The sequence number can be incremented as
+#    seldom (or as often) as desired, trading off resistance to replay
+#    attacks with the computational effort required for authentication.
+# 
+#    Meticulous Keyed MD5 authentication is stronger yet, as it requires
+#    the sequence number to be incremented for every packet.  Replay
+#    attack vulnerability is reduced due to the requirement that the
+# 
+#    sequence number must be incremented on every packet, the window size
+#    of acceptable packets is small, and the initial sequence number is
+#    randomized.  There is still a window of attack at the beginning of
+#    the session while the sequence number is being determined.  This
+#    authentication scheme requires an MD5 calculation on every packet
+#    transmitted and received.
+# 
+#    Using SHA1 is believed to have stronger security properties than MD5.
+#    All comments about MD5 in this section also apply to SHA1.
+# 
+#    Both Keyed MD5/SHA1 and Meticulous Keyed MD5/SHA1 use the "secret
+#    suffix" construction (also called "append only") in which the shared
+#    secret key is appended to the data before calculating the hash,
+#    instead of the more common Hashed Message Authentication Code (HMAC)
+#    construction [HMAC].  This construction is believed to be appropriate
+#    for BFD, but designers of any additional authentication mechanisms
+#    for BFD are encouraged to read [HMAC] and its references.
+# 
+#    If both systems randomize their Local Discriminator values at the
+#    beginning of a session, replay attacks may be further mitigated,
+#    regardless of the authentication type in use.  Since the Local
+#    Discriminator may be changed at any time during a session, this
+#    mechanism may also help mitigate attacks.
+# 
+#    The security implications of the use of BFD Echo packets are
+#    dependent on how those packets are defined, since their structure is
+#    local to the transmitting system and outside the scope of this
+#    specification.  However, since Echo packets are defined and processed
+#    only by the transmitting system, the use of cryptographic
+#    authentication does not guarantee that the other system is actually
+#    alive; an attacker could loop the Echo packets back (without knowing
+#    any secret keys) and cause the link to be falsely declared to be up.
+#    This can be mitigated by using a suitable interval for BFD Control
+#    packets.  [GTSM] could be applied to BFD Echo packets, though the
+#    TTL/Hop Count will be decremented by 1 in the course of echoing the
+#    packet, so spoofing is possible from one hop away.
+
+[[spec]]
+level = "MUST"
+quote = '''
+When a BFD session is directly connected across a single link
+(physical, or a secure tunnel such as IPsec), the TTL or Hop Count
+MUST be set to the maximum on transmit, and checked to be equal to
+the maximum value on reception (and the packet dropped if this is not
+the case).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If
+BFD is run across multiple hops or an insecure tunnel (such as
+Generic Routing Encapsulation (GRE)), the Authentication Section
+SHOULD be utilized.
+'''
+

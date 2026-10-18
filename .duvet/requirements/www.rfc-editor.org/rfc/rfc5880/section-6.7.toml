@@ -1,0 +1,44 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.7"
+
+# Authentication
+#
+#    An optional Authentication Section MAY be present in the BFD Control
+#    packet.  In its generic form, the purpose of the Authentication
+#    Section is to carry all necessary information, based on the
+#    authentication type in use, to allow the receiving system to
+#    determine the validity of the received packet.  The exact mechanism
+#    depends on the authentication type in use, but in general the
+#    transmitting system will put information in the Authentication
+# 
+#    Section that vouches for the packet's validity, and the receiving
+#    system will examine the Authentication Section and either accept the
+#    packet for further processing or discard it.
+# 
+#    The same authentication type, and any keys or other necessary
+#    information, obviously must be in use by the two systems.  The
+#    negotiation of authentication type, key exchange, etc., are all
+#    outside the scope of this specification and are expected to be
+#    performed by means outside of the protocol.
+# 
+#    Note that in the subsections below, to "accept" a packet means only
+#    that the packet has passed authentication; it may in fact be
+#    discarded for other reasons as described in the general packet
+#    reception rules described in section 6.8.6.
+# 
+#    Implementations supporting authentication MUST support both types of
+#    SHA1 authentication.  Other forms of authentication are optional.
+
+[[spec]]
+level = "MAY"
+quote = '''
+An optional Authentication Section MAY be present in the BFD Control
+packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Implementations supporting authentication MUST support both types of
+SHA1 authentication.
+'''
+

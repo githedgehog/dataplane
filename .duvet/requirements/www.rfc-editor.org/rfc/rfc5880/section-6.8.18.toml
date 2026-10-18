@@ -1,0 +1,62 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.8.18"
+
+# Holding Down Sessions
+#
+#    A system MAY choose to prevent a BFD session from being established.
+#    One possible reason might be to manage the rate at which sessions are
+#    established.  This can be done by holding the session in Down or
+#    AdminDown state, as appropriate.
+# 
+#    There are two related mechanisms that are available to help with this
+#    task.  First, a system is REQUIRED to maintain session state
+#    (including timing parameters), even when a session is down, until a
+#    Detection Time has passed without the receipt of any BFD Control
+#    packets.  This means that a system may take down a session and
+#    transmit an arbitrarily large value in the Required Min RX Interval
+#    field to control the rate at which it receives packets.
+# 
+#    Additionally, a system MAY transmit a value of zero for Required Min
+#    RX Interval to indicate that the remote system should send no packets
+#    whatsoever.
+# 
+#    So long as the local system continues to transmit BFD Control
+#    packets, the remote system is obligated to obey the value carried in
+#    Required Min RX Interval.  If the remote system does not receive any
+#    BFD Control packets for a Detection Time, it SHOULD reset
+#    bfd.RemoteMinRxInterval to its initial value of 1 (per section 6.8.1,
+#    since it is no longer required to maintain previous session state)
+#    and then can transmit at its own rate.
+
+[[spec]]
+level = "MAY"
+quote = '''
+A system MAY choose to prevent a BFD session from being established.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+First, a system is REQUIRED to maintain session state
+(including timing parameters), even when a session is down, until a
+Detection Time has passed without the receipt of any BFD Control
+packets.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Additionally, a system MAY transmit a value of zero for Required Min
+RX Interval to indicate that the remote system should send no packets
+whatsoever.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the remote system does not receive any
+BFD Control packets for a Detection Time, it SHOULD reset
+bfd.RemoteMinRxInterval to its initial value of 1 (per section 6.8.1,
+since it is no longer required to maintain previous session state)
+and then can transmit at its own rate.
+'''
+

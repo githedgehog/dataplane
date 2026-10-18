@@ -1,0 +1,91 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.1"
+
+# Overview
+#
+#    A system may take either an Active role or a Passive role in session
+#    initialization.  A system taking the Active role MUST send BFD
+#    Control packets for a particular session, regardless of whether it
+#    has received any BFD packets for that session.  A system taking the
+#    Passive role MUST NOT begin sending BFD packets for a particular
+#    session until it has received a BFD packet for that session, and thus
+#    has learned the remote system's discriminator value.  At least one
+#    system MUST take the Active role (possibly both).  The role that a
+#    system takes is specific to the application of BFD, and is outside
+#    the scope of this specification.
+# 
+#    A session begins with the periodic, slow transmission of BFD Control
+#    packets.  When bidirectional communication is achieved, the BFD
+#    session becomes Up.
+# 
+#    Once the BFD session is Up, a system can choose to start the Echo
+#    function if it desires and the other system signals that it will
+#    allow it.  The rate of transmission of Control packets is typically
+#    kept low when the Echo function is active.
+# 
+#    If the Echo function is not active, the transmission rate of Control
+#    packets may be increased to a level necessary to achieve the
+#    Detection Time requirements for the session.
+# 
+#    Once the session is Up, a system may signal that it has entered
+#    Demand mode, and the transmission of BFD Control packets by the
+#    remote system ceases.  Other means of implying connectivity are used
+#    to keep the session alive.  If either system wishes to verify
+#    bidirectional connectivity, it can initiate a short exchange of BFD
+#    Control packets (a "Poll Sequence"; see section 6.5) to do so.
+# 
+#    If Demand mode is not active, and no Control packets are received in
+#    the calculated Detection Time (see section 6.8.4), the session is
+#    declared Down.  This is signaled to the remote end via the State
+#    (Sta) field in outgoing packets.
+# 
+#    If sufficient Echo packets are lost, the session is declared Down in
+#    the same manner.  See section 6.8.5.
+# 
+#    If Demand mode is active and no appropriate Control packets are
+#    received in response to a Poll Sequence, the session is declared Down
+#    in the same manner.  See section 6.6.
+# 
+#    If the session goes Down, the transmission of Echo packets (if any)
+#    ceases, and the transmission of Control packets goes back to the slow
+#    rate.
+# 
+#    Once a session has been declared Down, it cannot come back up until
+#    the remote end first signals that it is down (by leaving the Up
+#    state), thus implementing a three-way handshake.
+# 
+#    A session MAY be kept administratively down by entering the AdminDown
+#    state and sending an explanatory diagnostic code in the Diagnostic
+#    field.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A system taking the Active role MUST send BFD
+Control packets for a particular session, regardless of whether it
+has received any BFD packets for that session.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A system taking the
+Passive role MUST NOT begin sending BFD packets for a particular
+session until it has received a BFD packet for that session, and thus
+has learned the remote system's discriminator value.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+At least one
+system MUST take the Active role (possibly both).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A session MAY be kept administratively down by entering the AdminDown
+state and sending an explanatory diagnostic code in the Diagnostic
+field.
+'''
+

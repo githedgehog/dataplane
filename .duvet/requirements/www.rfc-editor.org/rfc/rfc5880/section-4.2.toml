@@ -1,0 +1,54 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-4.2"
+
+# Simple Password Authentication Section Format
+#
+#    If the Authentication Present (A) bit is set in the header, and the
+#    Authentication Type field contains 1 (Simple Password), the
+#    Authentication Section has the following format:
+# 
+#     0                   1                   2                   3
+#     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |   Auth Type   |   Auth Len    |  Auth Key ID  |  Password...  |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                              ...                              |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Auth Type
+# 
+#       The Authentication Type, which in this case is 1 (Simple
+#       Password).
+# 
+#    Auth Len
+# 
+#       The length of the Authentication Section, in bytes.  For Simple
+#       Password authentication, the length is equal to the password
+#       length plus three.
+# 
+#    Auth Key ID
+# 
+#       The authentication key ID in use for this packet.  This allows
+#       multiple keys to be active simultaneously.
+# 
+#    Password
+# 
+#       The simple password in use on this session.  The password is a
+#       binary string, and MUST be from 1 to 16 bytes in length.  The
+#       password MUST be encoded and configured according to section
+#       6.7.2.
+
+[[spec]]
+level = "MUST"
+quote = '''
+The password is a
+binary string, and MUST be from 1 to 16 bytes in length.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The
+password MUST be encoded and configured according to section
+6.7.2.
+'''
+

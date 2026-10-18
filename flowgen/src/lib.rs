@@ -25,10 +25,12 @@
 //! - [`drive`]: sending several streams at once, each over its own [`drive::Wire`], and counting
 //!   what comes back on any of them.
 //! - `port` (with the `dpdk` feature): DPDK queues as a wire.
+//! - [`bfd`]: a BFD peer, to hold a session with a gateway and say how it fared.
 //!
 //! Frames are built and read by this crate's own code, not the dataplane's, so that the two
 //! cannot agree on a bug.
 
+pub mod bfd;
 mod checksum;
 pub mod drive;
 pub mod frame;
