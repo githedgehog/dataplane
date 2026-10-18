@@ -109,6 +109,7 @@ fn flood(
             payload_len: 32,
             ttl: 64,
             mutation: None,
+            vlan: None,
         },
         rate_pps: None,
         when_full: WhenFull::Drop,

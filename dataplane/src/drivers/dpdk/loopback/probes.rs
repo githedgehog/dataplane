@@ -78,6 +78,7 @@ pub(super) fn probes(
             payload_len: 64,
             ttl: 255,
             mutation: None,
+            vlan: None,
         },
         rate_pps: Some(20_000),
         when_full: WhenFull::Retry,

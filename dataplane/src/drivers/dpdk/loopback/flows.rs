@@ -185,6 +185,7 @@ pub(super) fn local_to_remote(name: &str, schedule: Schedule, dport: u16) -> Str
             payload_len: 64,
             ttl: 64,
             mutation: None,
+            vlan: None,
         },
         rate_pps: None,
         when_full: WhenFull::Retry,

@@ -5,7 +5,8 @@
 //!
 //! Each flow's frame is built once, as a [`Template`]; sending a packet stamps the template with
 //! its sequence number and send time and updates the one checksum that covers them, which is
-//! cheap enough to do at line rate. Frames are Ethernet, IPv4 and UDP, optionally inside VXLAN.
+//! cheap enough to do at line rate. Frames are Ethernet, IPv4 and UDP, optionally inside VXLAN,
+//! optionally 802.1Q tagged.
 //!
 //! Both directions are written here, byte by byte, rather than with the dataplane's own header
 //! code: a generator that shared the dataplane's parser would share its bugs, and agree with it.
@@ -25,6 +26,8 @@ const UDP_LEN: usize = 8;
 const TCP_LEN: usize = 20;
 const VXLAN_LEN: usize = 8;
 const ETHERTYPE_IPV4: u16 = 0x0800;
+const ETHERTYPE_VLAN: u16 = 0x8100;
+const VLAN_LEN: usize = 4;
 const PROTO_UDP: u8 = 17;
 const PROTO_TCP: u8 = 6;
 
@@ -162,6 +165,10 @@ pub struct FrameSpec {
     /// [`mutate`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mutation: Option<Mutation>,
+    /// The 802.1Q VLAN the frames are tagged with on the wire, as a server attached to a VPC by
+    /// VLAN sends them; on the tunnel's frame if there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vlan: Option<u16>,
 }
 
 /// One flow's frame, ready to stamp and send.
@@ -270,6 +277,11 @@ impl Template {
                 l4_checksum = moved(l4_checksum);
             }
         }
+        if let Some(vid) = spec.vlan {
+            tag(&mut bytes, vid);
+            signature += VLAN_LEN;
+            l4_checksum += VLAN_LEN;
+        }
         // A frame cut short of its signature, or of the checksum over it, is sent as it is.
         let whole = signature + signature::LEN <= bytes.len() && l4_checksum + 2 <= bytes.len();
 
@@ -309,6 +321,37 @@ impl Template {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+}
+
+/// Tag the Ethernet frame `bytes` with 802.1Q VLAN `vid`, priority 0.
+fn tag(bytes: &mut Vec<u8>, vid: u16) {
+    let mut tci = [0u8; VLAN_LEN];
+    tci[..2].copy_from_slice(&ETHERTYPE_VLAN.to_be_bytes());
+    tci[2..].copy_from_slice(&(vid & 0x0fff).to_be_bytes());
+    bytes.splice(12..12, tci);
+}
+
+/// `frame` tagged with 802.1Q VLAN `vid`, or as it is if `vid` is `None`.
+#[must_use]
+pub fn tagged(mut frame: Vec<u8>, vid: Option<u16>) -> Vec<u8> {
+    if let Some(vid) = vid {
+        tag(&mut frame, vid);
+    }
+    frame
+}
+
+/// The 802.1Q VLAN of an Ethernet frame, if it has a tag, and the frame with the tag taken out of
+/// it: its `EtherType` and what follows, after the MAC addresses.
+#[must_use]
+pub fn untag(frame: &[u8]) -> Option<(Option<u16>, u16, &[u8])> {
+    let ethertype = u16::from_be_bytes([*frame.get(12)?, *frame.get(13)?]);
+    if ethertype == ETHERTYPE_VLAN {
+        let tci = u16::from_be_bytes([*frame.get(14)?, *frame.get(15)?]);
+        let inner = u16::from_be_bytes([*frame.get(16)?, *frame.get(17)?]);
+        Some((Some(tci & 0x0fff), inner, frame.get(18..)?))
+    } else {
+        Some((None, ethertype, frame.get(14..)?))
     }
 }
 
@@ -395,6 +438,8 @@ pub struct Tunnel {
 /// What a received frame turned out to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Received {
+    /// The 802.1Q VLAN of its outermost frame, if it was tagged.
+    pub vlan: Option<u16>,
     /// The tunnel it came in, if any.
     pub tunnel: Option<Tunnel>,
     /// The inner frame's source MAC.
@@ -444,6 +489,7 @@ pub enum ParseError {
 /// If the frame is not Ethernet, IPv4 and UDP or TCP (optionally inside VXLAN), unfragmented.
 pub fn parse(frame: &[u8]) -> Result<Received, ParseError> {
     let outer = Layers::parse(frame)?;
+    let outer_vlan = outer.vlan;
     let (tunnel, inner) = if outer.tcp_flags.is_none() && outer.tuple.dport == VXLAN_PORT {
         let vx = outer
             .payload
@@ -463,6 +509,7 @@ pub fn parse(frame: &[u8]) -> Result<Received, ParseError> {
         (None, outer)
     };
     Ok(Received {
+        vlan: outer_vlan,
         tunnel,
         src_mac: inner.src_mac,
         dst_mac: inner.dst_mac,
@@ -611,6 +658,7 @@ pub fn datagram(frame: &[u8]) -> Option<Datagram<'_>> {
 
 /// One Ethernet, IPv4 and UDP or TCP header stack.
 struct Layers<'f> {
+    vlan: Option<u16>,
     src_mac: Mac,
     dst_mac: Mac,
     tuple: Tuple,
@@ -629,11 +677,10 @@ impl<'f> Layers<'f> {
             m.copy_from_slice(&eth[at..at + 6]);
             m
         };
-        let ethertype = u16::from_be_bytes([eth[12], eth[13]]);
+        let (vlan, ethertype, ip) = untag(frame).ok_or(ParseError::Short("802.1Q"))?;
         if ethertype != ETHERTYPE_IPV4 {
             return Err(ParseError::NotIpv4(ethertype));
         }
-        let ip = &frame[ETH_LEN..];
         let first = *ip.first().ok_or(ParseError::Short("IPv4"))?;
         let ihl = usize::from(first & 0x0f) * 4;
         if first >> 4 != 4 || ihl < IPV4_LEN {
@@ -688,6 +735,7 @@ impl<'f> Layers<'f> {
             (state, Some(tcp[13]), payload)
         };
         Ok(Layers {
+            vlan,
             src_mac: mac(6),
             dst_mac: mac(0),
             tuple: Tuple {
