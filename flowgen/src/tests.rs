@@ -358,3 +358,47 @@ fn streams_cannot_share_a_run() {
     ledgers.add("a", 1, 1);
     ledgers.add("b", 1, 1);
 }
+
+/// A stream that drops what a full port refuses counts it as dropped there, not sent and not lost,
+/// and goes on; one that retries offers it again.
+#[test]
+fn a_full_port_drops_or_defers_as_the_stream_says() {
+    use crate::schedule::Schedule;
+    use crate::sender::{Sender, Stream, WhenFull};
+
+    for when_full in [WhenFull::Drop, WhenFull::Retry] {
+        let stream = Stream {
+            name: "s".to_string(),
+            space: space((1, 1, 1, 1, None)),
+            schedule: Schedule::steady(1, 4),
+            frame: spec(false, 64),
+            rate_pps: None,
+            when_full,
+        };
+        let mut ledger = Ledger::new(1, 1);
+        let mut sender = Sender::new(stream, 1, 1);
+        let first = sender.plan(ledger.total_offered());
+        assert_eq!(first.len(), 4);
+        // The port takes the first two and has no room for the rest.
+        sender.accepted(first[0], &mut ledger);
+        sender.accepted(first[1], &mut ledger);
+        sender.refused(&first[2..], &mut ledger);
+        let again = sender.plan(ledger.total_offered());
+        let sample = ledger.sample("s", flowgen_report::Sample::new());
+        assert_eq!(sample.counters["generator.s.sent"], 2);
+        assert_eq!(
+            sample.counters["generator.s.lost"], 2,
+            "sent and never received"
+        );
+        match when_full {
+            WhenFull::Drop => {
+                assert_eq!(sample.counters["generator.s.dropped_at_port"], 2);
+                assert!(again.is_empty() && sender.done());
+            }
+            WhenFull::Retry => {
+                assert_eq!(sample.counters["generator.s.dropped_at_port"], 0);
+                assert_eq!(again, first[2..].to_vec());
+            }
+        }
+    }
+}

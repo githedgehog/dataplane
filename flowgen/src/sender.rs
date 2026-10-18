@@ -32,6 +32,23 @@ pub struct Stream {
     pub frame: FrameSpec,
     /// The most packets a second, or as fast as the queues take them if `None`.
     pub rate_pps: Option<u64>,
+    /// What becomes of a packet the port has no room for.
+    #[serde(default)]
+    pub when_full: WhenFull,
+}
+
+/// What becomes of a packet the port it is offered to has no room for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WhenFull {
+    /// It is offered again, before anything new: nothing is lost, and the stream slows to what
+    /// the port takes. For tests that need every packet to arrive.
+    #[default]
+    Retry,
+    /// It is dropped, and counted as `dropped_at_port`, as a NIC drops what arrives at a full
+    /// receive ring. A port with a back-pressuring transmit side -- a ring cable, where the
+    /// dataplane's receive ring is the generator's transmit ring -- then behaves like a wire.
+    Drop,
 }
 
 /// A clock both directions read, so that a packet's latency is one clock's difference.
@@ -193,8 +210,22 @@ impl Sender {
         ledger.sent(usize::try_from(slot.flow).unwrap_or(usize::MAX));
     }
 
-    /// Send `slots` again before anything new: whatever they were offered to had no room.
-    pub fn refused(&mut self, slots: &[Slot]) {
+    /// `slots` were offered to a port with no room: send them again before anything new, or drop
+    /// them, as the stream's [`WhenFull`] says.
+    pub fn refused(&mut self, slots: &[Slot], ledger: &mut Ledger) {
+        match self.stream.when_full {
+            WhenFull::Retry => self.retry.extend_from_slice(slots),
+            WhenFull::Drop => {
+                for _ in slots {
+                    ledger.dropped_at_port();
+                }
+            }
+        }
+    }
+
+    /// `slots` could not be offered at all, for want of the sender's own resources: send them
+    /// again before anything new, whatever the stream's [`WhenFull`], since no port saw them.
+    pub fn deferred(&mut self, slots: &[Slot]) {
         self.retry.extend_from_slice(slots);
     }
 
