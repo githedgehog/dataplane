@@ -566,19 +566,6 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         *self.meta_mut() = PacketMeta::new(self.meta.keep());
     }
 
-    /// Wraps a packet in an `Option` depending on the metadata:
-    /// If [`Packet`] is to be dropped, returns `None`. Else, `Some`.
-    pub fn enforce(self) -> Option<Self> {
-        if self.meta.keep() {
-            // keep packets even if they should be dropped
-            return Some(self);
-        }
-        match self.get_done() {
-            Some(DoneReason::Delivered | DoneReason::Local) | None => Some(self),
-            Some(_) => None,
-        }
-    }
-
     /// Get a reference to the headers of this `Packet`
     pub(crate) fn get_headers(&self) -> &Headers {
         &self.headers
