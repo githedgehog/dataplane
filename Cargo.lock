@@ -1709,6 +1709,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-flowgen-cli"
+version = "0.29.0"
+dependencies = [
+ "clap",
+ "dataplane-dpdk",
+ "dataplane-flowgen",
+ "dataplane-flowgen-report",
+ "dataplane-hardware",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "dataplane-flowgen-report"
 version = "0.29.0"
 dependencies = [

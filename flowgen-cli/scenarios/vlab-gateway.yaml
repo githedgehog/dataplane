@@ -1,0 +1,67 @@
+# Against a gateway in vlab, from a test server whose second NIC faces the gateway's uplink: a BFD
+# session and a BGP session with the gateway as its neighbour, then a SYN flood through its NAT
+# while they run. Addresses, MACs, AS numbers and the device are the environment's; adjust them.
+port:
+  pci: "0000:00:05.0"
+  queues: 2
+telemetry:
+  url: http://172.30.1.1:9442/metrics
+agents:
+  - bfd:
+      name: neighbour
+      endpoints:
+        src_mac: "02:00:00:00:00:bb"
+        dst_mac: "02:00:00:00:00:aa"
+        src: [1.2.3.4, 49152]
+        dst: [5.6.7.8, 3784]
+      session:
+        discriminator: 4369
+        desired_min_tx_us: 300000
+        required_min_rx_us: 300000
+        detect_mult: 3
+  - tcp:
+      name: neighbour
+      addressing: { address: 1.2.3.4, prefix: 24, gateway: 1.2.3.254 }
+      encap:
+        Ethernet: { mac: "02:00:00:00:00:bb", next_hop: "02:00:00:00:00:aa" }
+      role:
+        Bgp:
+          config: { asn: 65001, router_id: 1.2.3.4, hold_time_s: 9, peer_asn: 65000 }
+          peer: 5.6.7.8
+          first_port: 40000
+cases:
+  - name: steady
+    hold: 30s
+    expect:
+      - { id: bfd-up, path: bfd.neighbour.state, exactly: 3 }
+      - { id: bfd-no-flaps, path: bfd.neighbour.flaps, exactly: 0 }
+      - { id: bgp-established, path: bgp.neighbour.state, exactly: 5 }
+      - { id: bgp-no-drops, path: bgp.neighbour.drops, exactly: 0 }
+  - name: syn-flood
+    hold: 30s
+    streams:
+      - name: syn
+        space:
+          src: { first: 1.1.0.1, count: 1000 }
+          dst: { first: 3.3.3.1, count: 4 }
+          sport: { first: 1024, count: 64 }
+          dport: { first: 443, count: 1 }
+          order: { shuffled: 61453 }
+        schedule: { window: 10000, churn: 10000, rounds: 100 }
+        frame:
+          src_mac: "02:00:00:00:01:01"
+          dst_mac: "02:00:00:00:00:aa"
+          vxlan:
+            vni: 100
+            src_mac: "02:00:00:00:00:bb"
+            dst_mac: "02:00:00:00:00:aa"
+            src: 1.2.3.4
+            dst: 5.6.7.8
+          transport: { tcp: { flags: 2 } }
+          payload_len: 32
+          ttl: 64
+        rate_pps: 1000000
+        when_full: drop
+    expect:
+      - { id: bfd-no-flaps, path: bfd.neighbour.flaps, exactly: 0 }
+      - { id: bgp-no-drops, path: bgp.neighbour.drops, exactly: 0 }

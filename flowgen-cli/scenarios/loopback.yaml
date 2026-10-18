@@ -1,0 +1,29 @@
+# A self-test: a ring PMD port whose transmit rings are its receive rings, so everything sent comes
+# straight back. Needs no hardware and no hugepages:
+#
+#   flowgen run scenarios/loopback.yaml --eal=--no-huge --eal=-m --eal=512
+port:
+  vdev: net_ring0
+  queues: 2
+sample_every: 100ms
+cases:
+  - name: many-flows
+    streams:
+      - name: flows
+        space:
+          src: { first: 10.0.0.1, count: 100 }
+          dst: { first: 10.1.0.1, count: 10 }
+          sport: { first: 1024, count: 10 }
+          dport: { first: 80, count: 1 }
+          order: { shuffled: 1234 }
+        schedule: { window: 1000, churn: 0, rounds: 4 }
+        frame:
+          src_mac: "02:00:00:00:00:01"
+          dst_mac: "02:00:00:00:00:02"
+          payload_len: 64
+          ttl: 64
+        rate_pps: null
+    expect:
+      - { id: all-sent, path: generator.flows.sent, exactly: 4000 }
+      - { id: none-lost, path: generator.flows.lost, exactly: 0 }
+      - { id: every-flow-back, path: generator.flows.flows_returned, exactly: 1000 }

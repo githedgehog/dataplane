@@ -1,0 +1,65 @@
+# A self-test of the protocol speakers: on a ring PMD port that loops everything back, pairs of
+# agents with mirrored addresses talk to each other -- a BFD session, TCP connections to an echo
+# server, and a BGP session. Needs no hardware and no hugepages:
+#
+#   flowgen run scenarios/loopback-agents.yaml --eal=--no-huge --eal=-m --eal=512
+port:
+  vdev: net_ring0
+sample_every: 250ms
+agents:
+  - bfd:
+      name: a
+      endpoints:
+        src_mac: "02:00:00:00:00:0a"
+        dst_mac: "02:00:00:00:00:0b"
+        src: [10.0.0.10, 49152]
+        dst: [10.0.0.11, 3784]
+      session: { discriminator: 10, desired_min_tx_us: 50000, required_min_rx_us: 50000, detect_mult: 3 }
+  - bfd:
+      name: b
+      endpoints:
+        src_mac: "02:00:00:00:00:0b"
+        dst_mac: "02:00:00:00:00:0a"
+        src: [10.0.0.11, 49152]
+        dst: [10.0.0.10, 3784]
+      session: { discriminator: 11, desired_min_tx_us: 50000, required_min_rx_us: 50000, detect_mult: 3 }
+  - tcp:
+      name: client
+      addressing: { address: 10.0.1.1, prefix: 24, gateway: 10.0.1.254 }
+      encap: { Ethernet: { mac: "02:00:00:00:01:01", next_hop: "02:00:00:00:01:02" } }
+      role: { Client: { server: [10.0.1.2, 80], connections: 4, first_port: 50000, bytes: 100000 } }
+  - tcp:
+      name: server
+      addressing: { address: 10.0.1.2, prefix: 24, gateway: 10.0.1.254 }
+      encap: { Ethernet: { mac: "02:00:00:00:01:02", next_hop: "02:00:00:00:01:01" } }
+      role: { Echo: { port: 80, connections: 4 } }
+  - tcp:
+      name: active
+      addressing: { address: 10.0.2.1, prefix: 24, gateway: 10.0.2.254 }
+      encap: { Ethernet: { mac: "02:00:00:00:02:01", next_hop: "02:00:00:00:02:02" } }
+      role:
+        Bgp:
+          config: { asn: 65001, router_id: 10.0.2.1, hold_time_s: 3, peer_asn: 65002 }
+          peer: 10.0.2.2
+          first_port: 40000
+  - tcp:
+      name: passive
+      addressing: { address: 10.0.2.2, prefix: 24, gateway: 10.0.2.254 }
+      encap: { Ethernet: { mac: "02:00:00:00:02:02", next_hop: "02:00:00:00:02:01" } }
+      role:
+        Bgp:
+          config: { asn: 65002, router_id: 10.0.2.2, hold_time_s: 3, peer_asn: 65001 }
+          peer: null
+          first_port: 40000
+cases:
+  - name: sessions
+    hold: 4s
+    expect:
+      - { id: bfd-a-up, path: bfd.a.state, exactly: 3 }
+      - { id: bfd-b-up, path: bfd.b.state, exactly: 3 }
+      - { id: bfd-no-flaps, path: bfd.a.flaps, exactly: 0 }
+      - { id: echoed, path: tcp.client.bytes_received, exactly: 400000 }
+      - { id: none-mangled, path: tcp.client.bytes_mismatched, exactly: 0 }
+      - { id: all-closed, path: tcp.client.closed, exactly: 4 }
+      - { id: bgp-active-established, path: bgp.active.state, exactly: 5 }
+      - { id: bgp-passive-established, path: bgp.passive.state, exactly: 5 }
