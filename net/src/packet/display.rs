@@ -362,9 +362,6 @@ impl Display for BridgeDomain {
 #[inline]
 fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Result {
     write!(f, "    Flags:")?;
-    if meta.is_l2bcast() {
-        write!(f, " bcast")?;
-    }
     if meta.requires_masquerade() {
         write!(f, " req-masquerade")?;
     }
