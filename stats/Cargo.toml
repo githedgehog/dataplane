@@ -32,6 +32,7 @@ multi_index_map = { workspace = true }
 rand = { workspace = true, features = ["thread_rng"] }
 serde = { workspace = true, features = ["derive"] }
 small-map = { workspace = true, features = [] }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "time", "sync"] }
 tracing = { workspace = true, features = ["attributes"] }
