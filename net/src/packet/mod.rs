@@ -150,7 +150,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         Ok(Packet {
             headers,
             payload: mbuf,
-            meta: PacketMeta::new(true), /* keep the packet until destructor */
+            meta: PacketMeta::new(),
         })
     }
 
@@ -563,7 +563,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Reset the metadata of this `Packet`
     pub fn meta_reset(&mut self) {
         self.done(DoneReason::Delivered); // this is just to avoid a log from Metadata Drop impl
-        *self.meta_mut() = PacketMeta::new(self.meta.keep());
+        *self.meta_mut() = PacketMeta::new();
     }
 
     /// Get a reference to the headers of this `Packet`

@@ -284,14 +284,13 @@ mod nf_test {
             ruleset.extend(aliases);
             let (flow_table, mut pipeline, _writer) = setup_pipeline(&ruleset);
 
-            let mut first = if tcp {
+            let first = if tcp {
                 let mut packet = tcp_packet_to_port_forward();
                 packet.try_tcp_mut().unwrap().set_syn(true);
                 packet
             } else {
                 udp_packet_to_port_forward()
             };
-            first.meta_mut().set_keep(true);
             let first_key = net::FlowKey::try_from(&first).unwrap();
             let mut conflicting = first.deep_copy().expect("copy test packet");
             conflicting

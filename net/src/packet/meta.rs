@@ -123,12 +123,10 @@ pub enum DoneReason {
 bitflags! {
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     struct MetaFlags: u32 {
-        const INITIALIZED = 0b0000_0001; /* initialized */
         const IS_L2_BCAST = 0b0000_0010; /* frame is eth broadcast */
         const NATTED_SRC  = 0b0000_0100; /* set to true if source address of a packet has been NATed */
         const NATTED_DST  = 0b0000_1000; /* set to true if destination address of a packet has been NATed */
         const REFR_CHKSUM = 0b0001_0000; /* if true, an indication that packet checksums need to be refreshed */
-        const KEEP        = 0b0010_0000; /* Keep the Packet even if it should be dropped */
         const IS_OVERLAY  = 0b0100_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
         const REQ_MASQUERADE      = 0b1000_0000;      /* Packet requires masquerade (source and/or destination) */
         const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
@@ -164,14 +162,8 @@ pub struct TestMeta {
 }
 impl PacketMeta {
     #[must_use]
-    pub(crate) fn new(keep: bool) -> Self {
-        let mut flags = MetaFlags::INITIALIZED;
-        if keep {
-            flags |= MetaFlags::KEEP;
-        }
-        let mut ret = Self::default();
-        ret.flags = flags;
-        ret
+    pub(crate) fn new() -> Self {
+        Self::default()
     }
 
     fn set_flag(&mut self, flag: MetaFlags, value: bool) {
@@ -243,10 +235,6 @@ impl PacketMeta {
     }
 
     #[must_use]
-    pub fn is_initialized(&self) -> bool {
-        self.flags.contains(MetaFlags::INITIALIZED)
-    }
-    #[must_use]
     pub fn is_l2bcast(&self) -> bool {
         self.flags.contains(MetaFlags::IS_L2_BCAST)
     }
@@ -269,13 +257,6 @@ impl PacketMeta {
     }
     pub fn set_checksum_refresh(&mut self, value: bool) {
         self.set_flag(MetaFlags::REFR_CHKSUM, value);
-    }
-    #[must_use]
-    pub fn keep(&self) -> bool {
-        self.flags.contains(MetaFlags::KEEP)
-    }
-    pub fn set_keep(&mut self, value: bool) {
-        self.set_flag(MetaFlags::KEEP, value);
     }
 
     #[must_use]
@@ -306,7 +287,7 @@ impl PacketMeta {
 }
 impl Drop for PacketMeta {
     fn drop(&mut self) {
-        if self.done.is_none() && self.is_initialized() {
+        if self.done.is_none() {
             error!("Attempted to drop packet with unspecified verdict!");
         }
     }
