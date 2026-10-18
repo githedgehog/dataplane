@@ -1,0 +1,52 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.5"
+
+# Forwarding of Internet Layer Broadcasts
+#
+#    There are two major types of IP broadcast addresses; limited
+#    broadcast and directed broadcast.  In addition, there are three
+#    subtypes of directed broadcast: a broadcast directed to a specified
+#    network prefix, a broadcast directed to a specified subnetwork, and a
+#    broadcast directed to all subnets of a specified network.
+#    Classification by a router of a broadcast into one of these
+#    categories depends on the broadcast address and on the router's
+#    understanding (if any) of the subnet structure of the destination
+#    network.  The same broadcast will be classified differently by
+#    different routers.
+# 
+#    A limited IP broadcast address is defined to be all-ones: { -1, -1 }
+#    or 255.255.255.255.
+# 
+#    A network-prefix-directed broadcast is composed of the network prefix
+#    of the IP address with a local part of all-ones or { <Network-
+#    prefix>, -1 }.  For example, a Class A net broadcast address is
+#    net.255.255.255, a Class B net broadcast address is net.net.255.255
+#    and a Class C net broadcast address is net.net.net.255 where net is a
+#    byte of the network address.
+# 
+#    The all-subnets-directed-broadcast is not well defined in a CIDR
+#    environment, and was deprecated in version 1 of this memo.
+# 
+#    As was described in Section [4.2.3.1], a router may encounter certain
+#    non-standard IP broadcast addresses:
+# 
+#    o 0.0.0.0 is an obsolete form of the limited broadcast address
+# 
+#    o { <Network-prefix>, 0 } is an obsolete form of a network-prefix-
+#       directed broadcast address.
+# 
+#    As was described in that section, packets addressed to any of these
+#    addresses SHOULD be silently discarded, but if they are not, they
+#    MUST be treated according to the same rules that apply to packets
+#    addressed to the non-obsolete forms of the broadcast addresses
+#    described above.  These rules are described in the next few sections.
+
+[[spec]]
+level = "MUST"
+quote = '''
+As was described in that section, packets addressed to any of these
+addresses SHOULD be silently discarded, but if they are not, they
+MUST be treated according to the same rules that apply to packets
+addressed to the non-obsolete forms of the broadcast addresses
+described above.
+'''
+

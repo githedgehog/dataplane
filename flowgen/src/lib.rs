@@ -25,12 +25,15 @@
 //! - [`drive`]: sending several streams at once, each over its own [`drive::Wire`], and counting
 //!   what comes back on any of them.
 //! - `port` (with the `dpdk` feature): DPDK queues as a wire.
+//! - [`catalog`]: frames a gateway should refuse, each a [`mutate`]d frame, and what should become
+//!   of them.
 //! - [`mutate`]: changing every frame of a stream in one place, to make it one a gateway should
 //!   refuse.
 //!
 //! Frames are built and read by this crate's own code, not the dataplane's, so that the two
 //! cannot agree on a bug.
 
+pub mod catalog;
 mod checksum;
 pub mod drive;
 pub mod frame;

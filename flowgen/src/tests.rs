@@ -773,3 +773,20 @@ fn a_mutation_needs_the_header_it_changes() {
         Ok(())
     );
 }
+
+/// Every catalog entry has a name of its own, and a mutation its frames can take.
+#[test]
+fn the_catalog_is_well_formed() {
+    use crate::catalog::{Base, CATALOG};
+
+    let mut ids = BTreeSet::new();
+    for entry in CATALOG {
+        assert!(ids.insert(entry.id), "{} appears twice", entry.id);
+        let transport = match entry.base {
+            Base::Udp => Transport::Udp,
+            Base::TcpSyn => Transport::Tcp { flags: tcp::SYN },
+        };
+        let spec = mutated(true, transport, entry.mutation.layer, entry.mutation.change);
+        assert_eq!(entry.mutation.check(&spec), Ok(()), "{}", entry.id);
+    }
+}

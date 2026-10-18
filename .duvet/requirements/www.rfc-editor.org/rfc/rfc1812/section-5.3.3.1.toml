@@ -1,0 +1,47 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.3.1"
+
+# Precedence-Ordered Queue Service
+#
+#    Routers SHOULD implement precedence-ordered queue service.
+#    Precedence-ordered queue service means that when a packet is selected
+#    for output on a (logical) link, the packet of highest precedence that
+#    has been queued for that link is sent.  Routers that implement
+#    precedence-ordered queue service MUST also have a configuration
+#    option to suppress precedence-ordered queue service in the Internet
+#    Layer.
+# 
+#    Any router MAY implement other policy-based throughput management
+#    procedures that result in other than strict precedence ordering, but
+#    it MUST be configurable to suppress them (i.e., use strict ordering).
+# 
+#    As detailed in Section [5.3.6], routers that implement precedence-
+#    ordered queue service discard low precedence packets before
+#    discarding high precedence packets for congestion control purposes.
+# 
+#    Preemption (interruption of processing or transmission of a packet)
+#    is not envisioned as a function of the Internet Layer.  Some
+#    protocols at other layers may provide preemption features.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers SHOULD implement precedence-ordered queue service.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers that implement
+precedence-ordered queue service MUST also have a configuration
+option to suppress precedence-ordered queue service in the Internet
+Layer.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Any router MAY implement other policy-based throughput management
+procedures that result in other than strict precedence ordering, but
+it MUST be configurable to suppress them (i.e., use strict ordering).
+'''
+

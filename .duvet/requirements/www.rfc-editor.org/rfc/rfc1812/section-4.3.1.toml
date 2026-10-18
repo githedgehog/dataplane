@@ -1,0 +1,35 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.1"
+
+# INTRODUCTION
+#
+#    ICMP is an auxiliary protocol, which provides routing, diagnostic and
+#    error functionality for IP.  It is described in [INTERNET:8].  A
+#    router MUST support ICMP.
+# 
+#    ICMP messages are grouped in two classes that are discussed in the
+#    following sections:
+# 
+#    ICMP error messages:
+# 
+#    Destination Unreachable     Section 4.3.3.1
+#    Redirect                    Section 4.3.3.2
+#    Source Quench               Section 4.3.3.3
+#    Time Exceeded               Section 4.3.3.4
+#    Parameter Problem           Section 4.3.3.5
+# 
+#    ICMP query messages:
+#    Echo                        Section 4.3.3.6
+#    Information                 Section 4.3.3.7
+#    Timestamp                   Section 4.3.3.8
+#    Address Mask                Section 4.3.3.9
+#    Router Discovery            Section 4.3.3.10
+# 
+#    General ICMP requirements and discussion are in the next section.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A
+router MUST support ICMP.
+'''
+

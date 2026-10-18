@@ -1,0 +1,41 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-3.3.5.3"
+
+# IP Control Protocol (IPCP) Options
+#
+#    A router MAY offer to perform IP address negotiation.  A router MUST
+#    accept a refusal (REJect) to perform IP address negotiation from the
+#    peer.
+# 
+#    Routers operating at link speeds of 19,200 BPS or less SHOULD
+#    implement and offer to perform Van Jacobson header compression.
+#    Routers that implement VJ compression SHOULD implement an
+#    administrative control enabling or disabling it.
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY offer to perform IP address negotiation.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST
+accept a refusal (REJect) to perform IP address negotiation from the
+peer.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers operating at link speeds of 19,200 BPS or less SHOULD
+implement and offer to perform Van Jacobson header compression.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers that implement VJ compression SHOULD implement an
+administrative control enabling or disabling it.
+'''
+

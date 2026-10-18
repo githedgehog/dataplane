@@ -1,0 +1,56 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-10.2.1"
+
+# Minimum Router Configuration
+#
+#    There exists a minimum set of conditions that must be satisfied
+#    before a router may forward packets.  A router MUST NOT enable
+#    forwarding on any physical interface unless either:
+# 
+#    (1) The router knows the IP address and associated subnet mask or
+#         network prefix length of at least one logical interface
+#         associated with that physical interface, or
+# 
+#    (2) The router knows that the interface is an unnumbered interface
+#         and knows its router-id.
+# 
+#    These parameters MUST be explicitly configured:
+# 
+#    o A router MUST NOT use factory-configured default values for its IP
+#       addresses, prefix lengths, or router-id, and
+# 
+#    o A router MUST NOT assume that an unconfigured interface is an
+#       unnumbered interface.
+# 
+#    DISCUSSION
+#       There have been instances in which routers have been shipped with
+#       vendor-installed default addresses for interfaces.  In a few
+#       cases, this has resulted in routers advertising these default
+#       addresses into active networks.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT enable
+forwarding on any physical interface unless either:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+These parameters MUST be explicitly configured:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o A router MUST NOT use factory-configured default values for its IP
+addresses, prefix lengths, or router-id, and
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o A router MUST NOT assume that an unconfigured interface is an
+unnumbered interface.
+'''
+

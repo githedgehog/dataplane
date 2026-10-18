@@ -1,0 +1,21 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.2.4"
+
+# ICMP Message Source Address
+#
+#    Except where this document specifies otherwise, the IP source address
+#    in an ICMP message originated by the router MUST be one of the IP
+#    addresses associated with the physical interface over which the ICMP
+#    message is transmitted.  If the interface has no IP addresses
+# 
+#    associated with it, the router's router-id (see Section [5.2.5]) is
+#    used instead.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Except where this document specifies otherwise, the IP source address
+in an ICMP message originated by the router MUST be one of the IP
+addresses associated with the physical interface over which the ICMP
+message is transmitted.
+'''
+

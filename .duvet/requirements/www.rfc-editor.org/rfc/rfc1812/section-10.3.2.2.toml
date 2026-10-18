@@ -1,0 +1,41 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-10.3.2.2"
+
+# Control - Dumping and Rebooting
+#
+#    A router MUST include both in-band and out-of-band mechanisms to
+#    allow the network manager to reload, stop, and restart the router.  A
+#    router SHOULD also contain a mechanism (such as a watchdog timer)
+#    which will reboot the router automatically if it hangs due to a
+#    software or hardware fault.
+# 
+#    A router SHOULD IMPLEMENT a mechanism for dumping the contents of a
+#    router's memory (and/or other state useful for vendor debugging after
+#    a crash), and either saving them on a stable storage device local to
+# 
+#    the router or saving them on another host via an up-line dump
+#    mechanism such as TFTP (see [OPER:2], [INTRO:3]).
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST include both in-band and out-of-band mechanisms to
+allow the network manager to reload, stop, and restart the router.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A
+router SHOULD also contain a mechanism (such as a watchdog timer)
+which will reboot the router automatically if it hangs due to a
+software or hardware fault.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD IMPLEMENT a mechanism for dumping the contents of a
+router's memory (and/or other state useful for vendor debugging after
+a crash), and either saving them on a stable storage device local to
+'''
+

@@ -1,0 +1,38 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.3.10"
+
+# Router Advertisement and Solicitations
+#
+#    An IP router MUST support the router part of the ICMP Router
+#    Discovery Protocol [INTERNET:13] on all connected networks on which
+#    the router supports either IP multicast or IP broadcast addressing.
+#    The implementation MUST include all the configuration variables
+#    specified for routers, with the specified defaults.
+# 
+#    DISCUSSION
+#       Routers are not required to implement the host part of the ICMP
+#       Router Discovery Protocol, but might find it useful for operation
+#       while IP forwarding is disabled (i.e., when operating as a host).
+# 
+#    DISCUSSION We note that it is quite common for hosts to use RIP
+#       Version 1 as the router discovery protocol.  Such hosts listen to
+#       RIP traffic and use and use information extracted from that
+#       traffic to discover routers and to make decisions as to which
+#       router to use as a first-hop router for a given destination.
+#       While this behavior is discouraged, it is still common and
+#       implementors should be aware of it.
+
+[[spec]]
+level = "MUST"
+quote = '''
+An IP router MUST support the router part of the ICMP Router
+Discovery Protocol [INTERNET:13] on all connected networks on which
+the router supports either IP multicast or IP broadcast addressing.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The implementation MUST include all the configuration variables
+specified for routers, with the specified defaults.
+'''
+

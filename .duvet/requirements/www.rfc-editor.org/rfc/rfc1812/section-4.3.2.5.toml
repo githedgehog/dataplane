@@ -1,0 +1,84 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.2.5"
+
+# TOS and Precedence
+#
+#    ICMP error messages SHOULD have their TOS bits set to the same value
+#    as the TOS bits in the packet that provoked the sending of the ICMP
+#    error message, unless setting them to that value would cause the ICMP
+#    error message to be immediately discarded because it could not be
+#    routed to its destination.  Otherwise, ICMP error messages MUST be
+#    sent with a normal (i.e., zero) TOS.  An ICMP reply message SHOULD
+#    have its TOS bits set to the same value as the TOS bits in the ICMP
+#    request that provoked the reply.
+# 
+#    ICMP Source Quench error messages, if sent at all, MUST have their IP
+#    Precedence field set to the same value as the IP Precedence field in
+#    the packet that provoked the sending of the ICMP Source Quench
+#    message.  All other ICMP error messages (Destination Unreachable,
+#    Redirect, Time Exceeded, and Parameter Problem) SHOULD have their
+#    precedence value set to 6 (INTERNETWORK CONTROL) or 7 (NETWORK
+#    CONTROL).  The IP Precedence value for these error messages MAY be
+#    settable.
+# 
+#    An ICMP reply message MUST have its IP Precedence field set to the
+#    same value as the IP Precedence field in the ICMP request that
+#    provoked the reply.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+ICMP error messages SHOULD have their TOS bits set to the same value
+as the TOS bits in the packet that provoked the sending of the ICMP
+error message, unless setting them to that value would cause the ICMP
+error message to be immediately discarded because it could not be
+routed to its destination.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Otherwise, ICMP error messages MUST be
+sent with a normal (i.e., zero) TOS.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An ICMP reply message SHOULD
+have its TOS bits set to the same value as the TOS bits in the ICMP
+request that provoked the reply.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+ICMP Source Quench error messages, if sent at all, MUST have their IP
+Precedence field set to the same value as the IP Precedence field in
+the packet that provoked the sending of the ICMP Source Quench
+message.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+All other ICMP error messages (Destination Unreachable,
+Redirect, Time Exceeded, and Parameter Problem) SHOULD have their
+precedence value set to 6 (INTERNETWORK CONTROL) or 7 (NETWORK
+CONTROL).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+The IP Precedence value for these error messages MAY be
+settable.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An ICMP reply message MUST have its IP Precedence field set to the
+same value as the IP Precedence field in the ICMP request that
+provoked the reply.
+'''
+

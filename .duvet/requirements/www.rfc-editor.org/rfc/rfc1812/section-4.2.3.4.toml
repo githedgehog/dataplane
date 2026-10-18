@@ -1,0 +1,62 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.3.4"
+
+# Subnetting
+#
+#    Under certain circumstances, it may be desirable to support subnets
+#    of a particular network being interconnected only through a path that
+#    is not part of the subnetted network.  This is known as discontiguous
+#    subnetwork support.
+# 
+#    Routers MUST support discontiguous subnetworks.
+# 
+#    IMPLEMENTATION
+#       In classical IP networks, this was very difficult to achieve; in
+#       CIDR networks, it is a natural by-product.  Therefore, a router
+#       SHOULD NOT make assumptions about subnet architecture, but SHOULD
+#       treat each route as a generalized network prefix.
+# 
+#    DISCUSSION The Internet has been growing at a tremendous rate of
+#       late.  This has been placing severe strains on the IP addressing
+#       technology.  A major factor in this strain is the strict IP
+#       Address class boundaries.  These make it difficult to efficiently
+#       size network prefixes to their networks and aggregate several
+#       network prefixes into a single route advertisement.  By
+#       eliminating the strict class boundaries of the IP address and
+#       treating each route as a generalized network prefix, these strains
+#       may be greatly reduced.
+# 
+#       The technology for currently doing this is Classless Inter Domain
+#       Routing (CIDR) [INTERNET:15].
+# 
+#    For similar reasons, an address block associated with a given network
+#    prefix could be subdivided into subblocks of different sizes, so that
+#    the network prefixes associated with the subblocks would have
+#    different length.  For example, within a block whose network prefix
+#    is 8 bits long, one subblock may have a 16 bit network prefix,
+#    another may have an 18 bit network prefix, and a third a 14 bit
+#    network prefix.
+# 
+#    Routers MUST support variable length network prefixes in both their
+#    interface configurations and their routing databases.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST support discontiguous subnetworks.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Therefore, a router
+SHOULD NOT make assumptions about subnet architecture, but SHOULD
+treat each route as a generalized network prefix.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST support variable length network prefixes in both their
+interface configurations and their routing databases.
+'''
+

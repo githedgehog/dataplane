@@ -1,0 +1,21 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.3.4"
+
+# Time Exceeded
+#
+#    When a router is forwarding a packet and the TTL field of the packet
+#    is reduced to 0, the requirements of section [5.2.3.8] apply.
+# 
+#    When the router is reassembling a packet that is destined for the
+#    router, it is acting as an Internet host.  [INTRO:2]'s reassembly
+#    requirements therefore apply.
+# 
+#    When the router receives (i.e., is destined for the router) a Time
+#    Exceeded message, it MUST comply with [INTRO:2].
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the router receives (i.e., is destined for the router) a Time
+Exceeded message, it MUST comply with [INTRO:2].
+'''
+

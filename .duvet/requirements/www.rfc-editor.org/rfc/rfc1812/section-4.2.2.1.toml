@@ -1,0 +1,275 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.2.1"
+
+# Options: RFC 791 Section 3.2
+#
+#    In datagrams received by the router itself, the IP layer MUST
+#    interpret IP options that it understands and preserve the rest
+#    unchanged for use by higher layer protocols.
+# 
+#    Higher layer protocols may require the ability to set IP options in
+#    datagrams they send or examine IP options in datagrams they receive.
+#    Later sections of this document discuss specific IP option support
+#    required by higher layer protocols.
+# 
+#    DISCUSSION
+#       Neither this memo nor [INTRO:2] define the order in which a
+#       receiver must process multiple options in the same IP header.
+#       Hosts and routers originating datagrams containing multiple
+#       options must be aware that this introduces an ambiguity in the
+#       meaning of certain options when combined with a source-route
+#       option.
+# 
+#    Here are the requirements for specific IP options:
+# 
+#    (a) Security Option
+# 
+#         Some environments require the Security option in every packet
+#         originated or received.  Routers SHOULD IMPLEMENT the revised
+#         security option described in [INTERNET:5].
+# 
+#    DISCUSSION
+#       Note that the security options described in [INTERNET:1] and RFC
+#       1038 ([INTERNET:16]) are obsolete.
+# 
+#    (b) Stream Identifier Option
+# 
+#          This option is obsolete; routers SHOULD NOT place this option
+#          in a datagram that the router originates.  This option MUST be
+#          ignored in datagrams received by the router.
+# 
+#    (c) Source Route Options
+# 
+#          A router MUST be able to act as the final destination of a
+#          source route.  If a router receives a packet containing a
+#          completed source route, the packet has reached its final
+#          destination.  In such an option, the pointer points beyond the
+#          last field and the destination address in the IP header
+# 
+#          addresses the router.  The option as received (the recorded
+#          route) MUST be passed up to the transport layer (or to ICMP
+#          message processing).
+# 
+#          In the general case, a correct response to a source-routed
+#          datagram traverses the same route.  A router MUST provide a
+#          means whereby transport protocols and applications can reverse
+#          the source route in a received datagram.  This reversed source
+#          route MUST be inserted into datagrams they originate (see
+#          [INTRO:2] for details) when the router is unaware of policy
+#          constraints.  However, if the router is policy aware, it MAY
+#          select another path.
+# 
+#          Some applications in the router MAY require that the user be
+#          able to enter a source route.
+# 
+#          A router MUST NOT originate a datagram containing multiple
+#          source route options.  What a router should do if asked to
+#          forward a packet containing multiple source route options is
+#          described in Section [5.2.4.1].
+# 
+#          When a source route option is created (which would happen when
+#          the router is originating a source routed datagram or is
+#          inserting a source route option as a result of a special
+#          filter), it MUST be correctly formed even if it is being
+#          created by reversing a recorded route that erroneously includes
+#          the source host (see case (B) in the discussion below).
+# 
+#    DISCUSSION
+#       Suppose a source routed datagram is to be routed from source S to
+#       destination D via routers G1, G2, Gn.  Source S constructs a
+#       datagram with G1's IP address as its destination address, and a
+#       source route option to get the datagram the rest of the way to its
+#       destination.  However, there is an ambiguity in the specification
+#       over whether the source route option in a datagram sent out by S
+#       should be (A) or (B):
+# 
+#       (A): {>>G2, G3, ... Gn, D} <--- CORRECT
+# 
+#       (B): {S, >>G2, G3, ... Gn, D} <---- WRONG
+# 
+#       (where >> represents the pointer).  If (A) is sent, the datagram
+#       received at D will contain the option: {G1, G2, ... Gn >>}, with S
+#       and D as the IP source and destination addresses.  If (B) were
+#       sent, the datagram received at D would again contain S and D as
+#       the same IP source and destination addresses, but the option would
+#       be: {S, G1, ...Gn >>}; i.e., the originating host would be the
+#       first hop in the route.
+# 
+#    (d) Record Route Option
+# 
+#          Routers MAY support the Record Route option in datagrams
+#          originated by the router.
+# 
+#    (e) Timestamp Option
+# 
+#          Routers MAY support the timestamp option in datagrams
+#          originated by the router.  The following rules apply:
+# 
+#          o When originating a datagram containing a Timestamp Option, a
+#             router MUST record a timestamp in the option if
+# 
+#             - Its Internet address fields are not pre-specified or
+#             - Its first pre-specified address is the IP address of the
+#                logical interface over which the datagram is being sent
+#                (or the router's router-id if the datagram is being sent
+#                over an unnumbered interface).
+# 
+#          o If the router itself receives a datagram containing a
+#             Timestamp Option, the router MUST insert the current time
+#             into the Timestamp Option (if there is space in the option
+#             to do so) before passing the option to the transport layer
+#             or to ICMP for processing.  If space is not present, the
+#             router MUST increment the Overflow Count in the option.
+# 
+#          o A timestamp value MUST follow the rules defined in [INTRO:2].
+# 
+#    IMPLEMENTATION
+#       To maximize the utility of the timestamps contained in the
+#       timestamp option, the timestamp inserted should be, as nearly as
+#       practical, the time at which the packet arrived at the router.
+#       For datagrams originated by the router, the timestamp inserted
+#       should be, as nearly as practical, the time at which the datagram
+#       was passed to the Link Layer for transmission.
+# 
+#       The timestamp option permits the use of a non-standard time clock,
+#       but the use of a non-synchronized clock limits the utility of the
+#       time stamp.  Therefore, routers are well advised to implement the
+#       Network Time Protocol for the purpose of synchronizing their
+#       clocks.
+
+[[spec]]
+level = "MUST"
+quote = '''
+In datagrams received by the router itself, the IP layer MUST
+interpret IP options that it understands and preserve the rest
+unchanged for use by higher layer protocols.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers SHOULD IMPLEMENT the revised
+security option described in [INTERNET:5].
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+This option is obsolete; routers SHOULD NOT place this option
+in a datagram that the router originates.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+This option MUST be
+ignored in datagrams received by the router.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST be able to act as the final destination of a
+source route.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The option as received (the recorded
+route) MUST be passed up to the transport layer (or to ICMP
+message processing).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST provide a
+means whereby transport protocols and applications can reverse
+the source route in a received datagram.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+This reversed source
+route MUST be inserted into datagrams they originate (see
+[INTRO:2] for details) when the router is unaware of policy
+constraints.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+However, if the router is policy aware, it MAY
+select another path.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Some applications in the router MAY require that the user be
+able to enter a source route.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT originate a datagram containing multiple
+source route options.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When a source route option is created (which would happen when
+the router is originating a source routed datagram or is
+inserting a source route option as a result of a special
+filter), it MUST be correctly formed even if it is being
+created by reversing a recorded route that erroneously includes
+the source host (see case (B) in the discussion below).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Routers MAY support the Record Route option in datagrams
+originated by the router.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Routers MAY support the timestamp option in datagrams
+originated by the router.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o When originating a datagram containing a Timestamp Option, a
+router MUST record a timestamp in the option if
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router itself receives a datagram containing a
+Timestamp Option, the router MUST insert the current time
+into the Timestamp Option (if there is space in the option
+to do so) before passing the option to the transport layer
+or to ICMP for processing.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If space is not present, the
+router MUST increment the Overflow Count in the option.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o A timestamp value MUST follow the rules defined in [INTRO:2].
+'''
+

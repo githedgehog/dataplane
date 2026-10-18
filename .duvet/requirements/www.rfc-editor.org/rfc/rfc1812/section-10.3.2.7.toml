@@ -1,0 +1,115 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-10.3.2.7"
+
+# Control - Troubleshooting Problems
+#
+#       (1) A router MUST provide in-band network access, but (except as
+#            required by Section [8.2]) for security considerations this
+#            access SHOULD be disabled by default.  Vendors MUST document
+#            the default state of any in-band access.  This access SHOULD
+#            implement access controls, to prevent unauthorized access.
+# 
+#    DISCUSSION
+#       In-band access primarily refers to access through the normal
+#       network protocols that may or may not affect the permanent
+#       operational state of the router.  This includes, but is not
+#       limited to Telnet/RLOGIN console access and SNMP operations.
+# 
+#       This was a point of contention between the operational out of the
+#       box and secure out of The box contingents.  Any automagic access
+#       to the router may introduce insecurities, but it may be more
+#       important for the customer to have a router that is accessible
+#       over the network as soon as it is plugged in.  At least one vendor
+#       supplies routers without any external console access and depends
+#       on being able to access the router through the network to complete
+#       its configuration.
+# 
+#       It is the vendors call whether in-band access is enabled by
+#       default; but it is also the vendor's responsibility to make its
+#       customers aware of possible insecurities.
+# 
+#       (2) A router MUST provide the ability to initiate an ICMP echo.
+#            The following options SHOULD be implemented:
+# 
+#            o Choice of data patterns
+# 
+#            o Choice of packet size
+# 
+#            o Record route
+# 
+#            and the following additional options MAY be implemented:
+# 
+#            o Loose source route
+# 
+#            o Strict source route
+# 
+#            o Timestamps
+# 
+#       (3) A router SHOULD provide the ability to initiate a traceroute.
+#            If traceroute is provided, then the 3rd party traceroute
+#            SHOULD be implemented.
+# 
+#    Each of the above three facilities (if implemented) SHOULD have
+#    access restrictions placed on it to prevent its abuse by unauthorized
+#    persons.
+
+[[spec]]
+level = "MUST"
+quote = '''
+(1) A router MUST provide in-band network access, but (except as
+required by Section [8.2]) for security considerations this
+access SHOULD be disabled by default.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Vendors MUST document
+the default state of any in-band access.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+This access SHOULD
+implement access controls, to prevent unauthorized access.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+(2) A router MUST provide the ability to initiate an ICMP echo.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The following options SHOULD be implemented:
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+and the following additional options MAY be implemented:
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+(3) A router SHOULD provide the ability to initiate a traceroute.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If traceroute is provided, then the 3rd party traceroute
+SHOULD be implemented.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Each of the above three facilities (if implemented) SHOULD have
+access restrictions placed on it to prevent its abuse by unauthorized
+persons.
+'''
+

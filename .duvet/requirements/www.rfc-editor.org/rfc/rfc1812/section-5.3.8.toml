@@ -1,0 +1,46 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.8"
+
+# Source Address Validation
+#
+#    A router SHOULD IMPLEMENT the ability to filter traffic based on a
+#    comparison of the source address of a packet and the forwarding table
+#    for a logical interface on which the packet was received.  If this
+#    filtering is enabled, the router MUST silently discard a packet if
+#    the interface on which the packet was received is not the interface
+#    on which a packet would be forwarded to reach the address contained
+#    in the source address.  In simpler terms, if a router wouldn't route
+#    a packet containing this address through a particular interface, it
+#    shouldn't believe the address if it appears as a source address in a
+#    packet read from this interface.
+# 
+#    If this feature is implemented, it MUST be disabled by default.
+# 
+#    DISCUSSION
+#       This feature can provide useful security improvements in some
+#       situations, but can erroneously discard valid packets in
+#       situations where paths are asymmetric.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD IMPLEMENT the ability to filter traffic based on a
+comparison of the source address of a packet and the forwarding table
+for a logical interface on which the packet was received.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If this
+filtering is enabled, the router MUST silently discard a packet if
+the interface on which the packet was received is not the interface
+on which a packet would be forwarded to reach the address contained
+in the source address.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If this feature is implemented, it MUST be disabled by default.
+'''
+

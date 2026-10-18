@@ -1,0 +1,95 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.2.9"
+
+# Time to Live: RFC 791 Section 3.2
+#
+#    Time to Live (TTL) handling for packets originated or received by the
+#    router is governed by [INTRO:2]; this section changes none of its
+#    stipulations.  However, since the remainder of the IP Protocol
+#    section of [INTRO:2] is rewritten, this section is as well.
+# 
+#    Note in particular that a router MUST NOT check the TTL of a packet
+#    except when forwarding it.
+# 
+#    A router MUST NOT originate or forward a datagram with a Time-to-Live
+#    (TTL) value of zero.
+# 
+#    A router MUST NOT discard a datagram just because it was received
+#    with TTL equal to zero or one; if it is to the router and otherwise
+#    valid, the router MUST attempt to receive it.
+# 
+#    On messages the router originates, the IP layer MUST provide a means
+#    for the transport layer to set the TTL field of every datagram that
+#    is sent.  When a fixed TTL value is used, it MUST be configurable.
+#    The number SHOULD exceed the typical internet diameter, and current
+#    wisdom suggests that it should exceed twice the internet diameter to
+#    allow for growth.  Current suggested values are normally posted in
+#    the Assigned Numbers RFC.  The TTL field has two functions: limit the
+#    lifetime of TCP segments (see RFC 793 [TCP:1], p. 28), and terminate
+#    Internet routing loops.  Although TTL is a time in seconds, it also
+#    has some attributes of a hop-count, since each router is required to
+#    reduce the TTL field by at least one.
+# 
+#    TTL expiration is intended to cause datagrams to be discarded by
+#    routers, but not by the destination host.  Hosts that act as routers
+#    by forwarding datagrams must therefore follow the router's rules for
+#    TTL.
+# 
+#    A higher-layer protocol may want to set the TTL in order to implement
+#    an "expanding scope" search for some Internet resource.  This is used
+#    by some diagnostic tools, and is expected to be useful for locating
+#    the "nearest" server of a given class using IP multicasting, for
+#    example.  A particular transport protocol may also want to specify
+#    its own TTL bound on maximum datagram lifetime.
+# 
+#    A fixed default value must be at least big enough for the Internet
+#    "diameter," i.e., the longest possible path.  A reasonable value is
+# 
+#    about twice the diameter, to allow for continued Internet growth.  As
+#    of this writing, messages crossing the United States frequently
+#    traverse 15 to 20 routers; this argues for a default TTL value in
+#    excess of 40, and 64 is a common value.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Note in particular that a router MUST NOT check the TTL of a packet
+except when forwarding it.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT originate or forward a datagram with a Time-to-Live
+(TTL) value of zero.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT discard a datagram just because it was received
+with TTL equal to zero or one; if it is to the router and otherwise
+valid, the router MUST attempt to receive it.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+On messages the router originates, the IP layer MUST provide a means
+for the transport layer to set the TTL field of every datagram that
+is sent.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When a fixed TTL value is used, it MUST be configurable.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The number SHOULD exceed the typical internet diameter, and current
+wisdom suggests that it should exceed twice the internet diameter to
+allow for growth.
+'''
+

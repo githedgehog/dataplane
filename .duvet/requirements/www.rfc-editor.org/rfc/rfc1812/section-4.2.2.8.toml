@@ -1,0 +1,14 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.2.8"
+
+# Reassembly: RFC 791 Section 3.2
+#
+#    As specified in the corresponding section of [INTRO:2], a router MUST
+#    support reassembly of datagrams that it delivers to itself.
+
+[[spec]]
+level = "MUST"
+quote = '''
+As specified in the corresponding section of [INTRO:2], a router MUST
+support reassembly of datagrams that it delivers to itself.
+'''
+

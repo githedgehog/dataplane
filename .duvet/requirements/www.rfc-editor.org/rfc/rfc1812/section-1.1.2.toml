@@ -1,0 +1,103 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-1.1.2"
+
+# Requirements
+#
+#   In this memo, the words that are used to define the significance of
+#   each particular requirement are capitalized.  These words are:
+# 
+#   o MUST
+#      This word means that the item is an absolute requirement of the
+#      specification.  Violation of such a requirement is a fundamental
+#      error; there is no case where it is justified.
+# 
+#   o MUST IMPLEMENT
+#      This phrase means that this specification requires that the item be
+#      implemented, but does not require that it be enabled by default.
+# 
+#   o MUST NOT
+#      This phrase means that the item is an absolute prohibition of the
+#      specification.
+# 
+#   o SHOULD
+#      This word means that there may exist valid reasons in particular
+#      circumstances to ignore this item, but the full implications should
+#      be understood and the case carefully weighed before choosing a
+# 
+#      different course.
+# 
+#   o SHOULD IMPLEMENT
+#      This phrase is similar in meaning to SHOULD, but is used when we
+#      recommend that a particular feature be provided but does not
+#      necessarily recommend that it be enabled by default.
+# 
+#   o SHOULD NOT
+#      This phrase means that there may exist valid reasons in particular
+#      circumstances when the described behavior is acceptable or even
+#      useful.  Even so, the full implications should be understood and
+#      the case carefully weighed before implementing any behavior
+#      described with this label.
+# 
+#   o MAY
+#      This word means that this item is truly optional.  One vendor may
+#      choose to include the item because a particular marketplace
+#      requires it or because it enhances the product, for example;
+#      another vendor may omit the same item.
+
+[[spec]]
+level = "MUST"
+quote = '''
+o MUST
+This word means that the item is an absolute requirement of the
+specification.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o MUST IMPLEMENT
+This phrase means that this specification requires that the item be
+implemented, but does not require that it be enabled by default.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o MUST NOT
+This phrase means that the item is an absolute prohibition of the
+specification.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+o SHOULD
+This word means that there may exist valid reasons in particular
+circumstances to ignore this item, but the full implications should
+be understood and the case carefully weighed before choosing a
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+o SHOULD IMPLEMENT
+This phrase is similar in meaning to SHOULD, but is used when we
+recommend that a particular feature be provided but does not
+necessarily recommend that it be enabled by default.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+o SHOULD NOT
+This phrase means that there may exist valid reasons in particular
+circumstances when the described behavior is acceptable or even
+useful.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+o MAY
+This word means that this item is truly optional.
+'''
+

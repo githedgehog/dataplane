@@ -1,0 +1,27 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.2.6"
+
+# Unrecognized Header Options: RFC 791 Section 3.1
+#
+#    A router MUST ignore IP options which it does not recognize.  A
+#    corollary of this requirement is that a router MUST implement the End
+#    of Option List option and the No Operation option, since neither
+#    contains an explicit length.
+# 
+#    DISCUSSION
+#       All future IP options will include an explicit length.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST ignore IP options which it does not recognize.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A
+corollary of this requirement is that a router MUST implement the End
+of Option List option and the No Operation option, since neither
+contains an explicit length.
+'''
+

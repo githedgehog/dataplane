@@ -1,0 +1,45 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.13.4"
+
+# Source Route Options
+#
+#    A router MUST implement support for source route options in forwarded
+#    packets.  A router MAY implement a configuration option that, when
+#    enabled, causes all source-routed packets to be discarded.  However,
+#    such an option MUST NOT be enabled by default.
+# 
+#    DISCUSSION
+#       The ability to source route datagrams through the Internet is
+#       important to various network diagnostic tools.  However, source
+#       routing may be used to bypass administrative and security controls
+#       within a network.  Specifically, those cases where manipulation of
+#       routing tables is used to provide administrative separation in
+#       lieu of other methods such as packet filtering may be vulnerable
+#       through source routed packets.
+# 
+#    EDITORS+COMMENTS
+#       Packet filtering can be defeated by source routing as well, if it
+#       is applied in any router except one on the final leg of the source
+#       routed path.  Neither route nor packet filters constitute a
+#       complete solution for security.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST implement support for source route options in forwarded
+packets.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY implement a configuration option that, when
+enabled, causes all source-routed packets to be discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+However,
+such an option MUST NOT be enabled by default.
+'''
+

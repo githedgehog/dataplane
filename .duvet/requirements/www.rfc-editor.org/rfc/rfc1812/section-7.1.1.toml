@@ -1,0 +1,53 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.1.1"
+
+# Routing Security Considerations
+#
+#    Routing is one of the few places where the Robustness Principle (be
+#    liberal in what you accept) does not apply.  Routers should be
+#    relatively suspicious in accepting routing data from other routing
+#    systems.
+# 
+#    A router SHOULD provide the ability to rank routing information
+#    sources from most trustworthy to least trustworthy and to accept
+#    routing information about any particular destination from the most
+#    trustworthy sources first.  This was implicit in the original
+#    core/stub autonomous system routing model using EGP and various
+#    interior routing protocols.  It is even more important with the
+#    demise of a central, trusted core.
+# 
+#    A router SHOULD provide a mechanism to filter out obviously invalid
+#    routes (such as those for net 127).
+# 
+#    Routers MUST NOT by default redistribute routing data they do not
+#    themselves use, trust or otherwise consider valid.  In rare cases, it
+#    may be necessary to redistribute suspicious information, but this
+#    should only happen under direct intercession by some human agency.
+# 
+#    Routers must be at least a little paranoid about accepting routing
+#    data from anyone, and must be especially careful when they distribute
+#    routing information provided to them by another party.  See below for
+#    specific guidelines.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD provide the ability to rank routing information
+sources from most trustworthy to least trustworthy and to accept
+routing information about any particular destination from the most
+trustworthy sources first.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD provide a mechanism to filter out obviously invalid
+routes (such as those for net 127).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST NOT by default redistribute routing data they do not
+themselves use, trust or otherwise consider valid.
+'''
+

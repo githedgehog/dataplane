@@ -1,0 +1,46 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.12.3"
+
+# When an Interface Fails or is Disabled
+#
+#    If an interface fails or is disabled a router MUST remove and stop
+#    advertising all routes in its forwarding database that make use of
+#    that interface.  It MUST disable all static routes that make use of
+#    that interface.  If other routes to the same destination and TOS are
+#    learned or remembered by the router, the router MUST choose the best
+#    alternate, and add it to its forwarding database.  The router SHOULD
+#    send ICMP destination unreachable or ICMP redirect messages, as
+#    appropriate, in reply to all packets that it is unable to forward due
+#    to the interface being unavailable.
+
+[[spec]]
+level = "MUST"
+quote = '''
+If an interface fails or is disabled a router MUST remove and stop
+advertising all routes in its forwarding database that make use of
+that interface.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+It MUST disable all static routes that make use of
+that interface.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If other routes to the same destination and TOS are
+learned or remembered by the router, the router MUST choose the best
+alternate, and add it to its forwarding database.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The router SHOULD
+send ICMP destination unreachable or ICMP redirect messages, as
+appropriate, in reply to all packets that it is unable to forward due
+to the interface being unavailable.
+'''
+

@@ -1,0 +1,78 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.5.3"
+
+# Advanced Route Filtering
+#
+#    As the topology of a network grows more complex, the need for more
+#    complex route filtering arises.  Therefore, a router SHOULD provide
+#    the ability to specify independently for each routing protocol:
+# 
+#    o Which logical interfaces or routers routing information (routes)
+#       will be accepted from and which routes will be believed from each
+#       other router or logical interface,
+# 
+#    o Which routes will be sent via which logical interface(s), and
+# 
+#    o Which routers routing information will be sent to, if this is
+#       supported by the routing protocol in use.
+# 
+#    In many situations it is desirable to assign a reliability ordering
+#    to routing information received from another router instead of the
+#    simple believe or don't believe choice listed in the first bullet
+#    above.  A router MAY provide the ability to specify:
+# 
+#    o A reliability or preference to be assigned to each route received.
+#       A route with higher reliability will be chosen over one with lower
+#       reliability regardless of the routing metric associated with each
+#       route.
+# 
+#    If a router supports assignment of preferences, the router MUST NOT
+#    propagate any routes it does not prefer as first party information.
+#    If the routing protocol being used to propagate the routes does not
+#    support distinguishing between first and third party information, the
+#    router MUST NOT propagate any routes it does not prefer.
+# 
+#    DISCUSSION
+#       For example, assume a router receives a route to network C from
+#       router R and a route to the same network from router S.  If router
+#       R is considered more reliable than router S traffic destined for
+#       network C will be forwarded to router R regardless of the route
+#       received from router S.
+# 
+#    Routing information for routes which the router does not use (router
+#    S in the above example) MUST NOT be passed to any other router.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Therefore, a router SHOULD provide
+the ability to specify independently for each routing protocol:
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY provide the ability to specify:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a router supports assignment of preferences, the router MUST NOT
+propagate any routes it does not prefer as first party information.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the routing protocol being used to propagate the routes does not
+support distinguishing between first and third party information, the
+router MUST NOT propagate any routes it does not prefer.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routing information for routes which the router does not use (router
+S in the above example) MUST NOT be passed to any other router.
+'''
+

@@ -1,0 +1,72 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.3.1"
+
+# Destination Unreachable
+#
+#    If a router cannot forward a packet because it has no routes at all
+#    (including no default route) to the destination specified in the
+#    packet, then the router MUST generate a Destination Unreachable, Code
+#    0 (Network Unreachable) ICMP message.  If the router does have routes
+#    to the destination network specified in the packet but the TOS
+#    specified for the routes is neither the default TOS (0000) nor the
+#    TOS of the packet that the router is attempting to route, then the
+# 
+#    router MUST generate a Destination Unreachable, Code 11 (Network
+#    Unreachable for TOS) ICMP message.
+# 
+#    If a packet is to be forwarded to a host on a network that is
+#    directly connected to the router (i.e., the router is the last-hop
+#    router) and the router has ascertained that there is no path to the
+#    destination host then the router MUST generate a Destination
+#    Unreachable, Code 1 (Host Unreachable) ICMP message.  If a packet is
+#    to be forwarded to a host that is on a network that is directly
+#    connected to the router and the router cannot forward the packet
+#    because no route to the destination has a TOS that is either equal to
+#    the TOS requested in the packet or is the default TOS (0000) then the
+#    router MUST generate a Destination Unreachable, Code 12 (Host
+#    Unreachable for TOS) ICMP message.
+# 
+#    DISCUSSION
+#       The intent is that a router generates the "generic" host/network
+#       unreachable if it has no path at all (including default routes) to
+#       the destination.  If the router has one or more paths to the
+#       destination, but none of those paths have an acceptable TOS, then
+#       the router generates the "unreachable for TOS" message.
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a router cannot forward a packet because it has no routes at all
+(including no default route) to the destination specified in the
+packet, then the router MUST generate a Destination Unreachable, Code
+0 (Network Unreachable) ICMP message.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+router MUST generate a Destination Unreachable, Code 11 (Network
+Unreachable for TOS) ICMP message.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a packet is to be forwarded to a host on a network that is
+directly connected to the router (i.e., the router is the last-hop
+router) and the router has ascertained that there is no path to the
+destination host then the router MUST generate a Destination
+Unreachable, Code 1 (Host Unreachable) ICMP message.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a packet is
+to be forwarded to a host that is on a network that is directly
+connected to the router and the router cannot forward the packet
+because no route to the destination has a TOS that is either equal to
+the TOS requested in the packet or is the default TOS (0000) then the
+router MUST generate a Destination Unreachable, Code 12 (Host
+Unreachable for TOS) ICMP message.
+'''
+

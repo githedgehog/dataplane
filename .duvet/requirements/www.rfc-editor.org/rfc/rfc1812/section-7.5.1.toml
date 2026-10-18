@@ -1,0 +1,18 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.5.1"
+
+# Route Validation
+#
+#    A router SHOULD log as an error any routing update advertising a
+#    route that violates the specifications of this memo, unless the
+#    routing protocol from which the update was received uses those values
+#    to encode special routes (such as default routes).
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD log as an error any routing update advertising a
+route that violates the specifications of this memo, unless the
+routing protocol from which the update was received uses those values
+to encode special routes (such as default routes).
+'''
+

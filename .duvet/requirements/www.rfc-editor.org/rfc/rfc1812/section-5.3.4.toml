@@ -1,0 +1,62 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.4"
+
+# Forwarding of Link Layer Broadcasts
+#
+#    The encapsulation of IP packets in most Link Layer protocols (except
+#    PPP) allows a receiver to distinguish broadcasts and multicasts from
+#    unicasts simply by examining the Link Layer protocol headers (most
+#    commonly, the Link Layer destination address).  The rules in this
+#    section that refer to Link Layer broadcasts apply only to Link Layer
+#    protocols that allow broadcasts to be distinguished; likewise, the
+#    rules that refer to Link Layer multicasts apply only to Link Layer
+#    protocols that allow multicasts to be distinguished.
+# 
+#    A router MUST NOT forward any packet that the router received as a
+#    Link Layer broadcast, unless it is directed to an IP Multicast
+#    address.  In this latter case, one would presume that link layer
+#    broadcast was used due to the lack of an effective multicast service.
+# 
+#    A router MUST NOT forward any packet which the router received as a
+#    Link Layer multicast unless the packet's destination address is an IP
+#    multicast address.
+# 
+#    A router SHOULD silently discard a packet that is received via a Link
+#    Layer broadcast but does not specify an IP multicast or IP broadcast
+#    destination address.
+# 
+#    When a router sends a packet as a Link Layer broadcast, the IP
+#    destination address MUST be a legal IP broadcast or IP multicast
+#    address.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT forward any packet that the router received as a
+Link Layer broadcast, unless it is directed to an IP Multicast
+address.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT forward any packet which the router received as a
+Link Layer multicast unless the packet's destination address is an IP
+multicast address.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD silently discard a packet that is received via a Link
+Layer broadcast but does not specify an IP multicast or IP broadcast
+destination address.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When a router sends a packet as a Link Layer broadcast, the IP
+destination address MUST be a legal IP broadcast or IP multicast
+address.
+'''
+

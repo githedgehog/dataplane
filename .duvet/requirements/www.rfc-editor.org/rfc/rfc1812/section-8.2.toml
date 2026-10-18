@@ -1,0 +1,166 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-8.2"
+
+# Community Table
+#
+#    For the purposes of this specification, we assume that there is an
+#    abstract `community table' in the router.  This table contains
+#    several entries, each entry for a specific community and containing
+#    the parameters necessary to completely define the attributes of that
+#    community.  The actual implementation method of the abstract
+#    community table is, of course, implementation specific.
+# 
+#    A router's community table MUST allow for at least one entry and
+#    SHOULD allow for at least two entries.
+# 
+#    DISCUSSION
+#       A community table with zero capacity is useless.  It means that
+#       the router will not recognize any communities and, therefore, all
+#       SNMP operations will be rejected.
+# 
+#       Therefore, one entry is the minimal useful size of the table.
+#       Having two entries allows one entry to be limited to read-only
+#       access while the other would have write capabilities.
+# 
+#    Routers MUST allow the user to manually (i.e., without using SNMP)
+#    examine, add, delete and change entries in the SNMP community table.
+#    The user MUST be able to set the community name or construct a MIB
+#    view.  The user MUST be able to configure communities as read-only
+#    (i.e., they do not allow SETs) or read-write (i.e., they do allow
+#    SETs).
+# 
+#    The user MUST be able to define at least one IP address to which
+#    notifications are sent for each community or MIB view, if traps are
+#    used.  These addresses SHOULD be definable on a community or MIB view
+#    basis.  It SHOULD be possible to enable or disable notifications on a
+#    community or MIB view basis.
+# 
+#    A router SHOULD provide the ability to specify a list of valid
+#    network managers for any particular community.  If enabled, a router
+#    MUST validate the source address of the SNMP datagram against the
+#    list and MUST discard the datagram if its address does not appear.
+#    If the datagram is discarded the router MUST take all actions
+#    appropriate to an SNMP authentication failure.
+# 
+#    DISCUSSION
+#       This is a rather limited authentication system, but coupled with
+#       various forms of packet filtering may provide some small measure
+#       of increased security.
+# 
+#    The community table MUST be saved in non-volatile storage.
+# 
+#    The initial state of the community table SHOULD contain one entry,
+#    with the community name string public and read-only access.  The
+#    default state of this entry MUST NOT send traps.  If it is
+#    implemented, then this entry MUST remain in the community table until
+#    the administrator changes it or deletes it.
+# 
+#    DISCUSSION
+#       By default, traps are not sent to this community.  Trap PDUs are
+#       sent to unicast IP addresses.  This address must be configured
+#       into the router in some manner.  Before the configuration occurs,
+#       there is no such address, so to whom should the trap be sent?
+#       Therefore trap sending to the public community defaults to be
+#       disabled.  This can, of course, be changed by an administrative
+#       operation once the router is operational.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router's community table MUST allow for at least one entry and
+SHOULD allow for at least two entries.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST allow the user to manually (i.e., without using SNMP)
+examine, add, delete and change entries in the SNMP community table.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The user MUST be able to set the community name or construct a MIB
+view.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The user MUST be able to configure communities as read-only
+(i.e., they do not allow SETs) or read-write (i.e., they do allow
+SETs).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The user MUST be able to define at least one IP address to which
+notifications are sent for each community or MIB view, if traps are
+used.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+These addresses SHOULD be definable on a community or MIB view
+basis.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+It SHOULD be possible to enable or disable notifications on a
+community or MIB view basis.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD provide the ability to specify a list of valid
+network managers for any particular community.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If enabled, a router
+MUST validate the source address of the SNMP datagram against the
+list and MUST discard the datagram if its address does not appear.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the datagram is discarded the router MUST take all actions
+appropriate to an SNMP authentication failure.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The community table MUST be saved in non-volatile storage.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The initial state of the community table SHOULD contain one entry,
+with the community name string public and read-only access.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The
+default state of this entry MUST NOT send traps.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If it is
+implemented, then this entry MUST remain in the community table until
+the administrator changes it or deletes it.
+'''
+

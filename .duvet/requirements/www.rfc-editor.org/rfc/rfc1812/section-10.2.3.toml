@@ -1,0 +1,64 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-10.2.3"
+
+# Network Booting using BOOTP and TFTP
+#
+#    There has been much discussion of how routers can and should be
+#    booted from the network.  These discussions have revolved around
+#    BOOTP and TFTP.  Currently, there are routers that boot with TFTP
+#    from the network.  There is no reason that BOOTP could not be used
+#    for locating the server that the boot image should be loaded from.
+# 
+#    BOOTP is a protocol used to boot end systems, and requires some
+#    stretching to accommodate its use with routers.  If a router is using
+#    BOOTP to locate the current boot host, it should send a BOOTP Request
+#    with its hardware address for its first interface, or, if it has been
+#    previously configured otherwise, with either another interface's
+#    hardware address, or another number to put in the hardware address
+#    field of the BOOTP packet.  This is to allow routers without hardware
+#    addresses (like synchronous line only routers) to use BOOTP for
+#    bootload discovery.  TFTP can then be used to retrieve the image
+#    found in the BOOTP Reply.  If there are no configured interfaces or
+#    numbers to use, a router MAY cycle through the interface hardware
+#    addresses it has until a match is found by the BOOTP server.
+# 
+#    A router SHOULD IMPLEMENT the ability to store parameters learned
+#    through BOOTP into local non-volatile storage.  A router MAY
+#    implement the ability to store a system image loaded over the network
+#    into local stable storage.
+# 
+#    A router MAY have a facility to allow a remote user to request that
+#    the router get a new boot image.  Differentiation should be made
+#    between getting the new boot image from one of three locations: the
+#    one included in the request, from the last boot image server, and
+#    using BOOTP to locate a server.
+
+[[spec]]
+level = "MAY"
+quote = '''
+If there are no configured interfaces or
+numbers to use, a router MAY cycle through the interface hardware
+addresses it has until a match is found by the BOOTP server.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD IMPLEMENT the ability to store parameters learned
+through BOOTP into local non-volatile storage.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY
+implement the ability to store a system image loaded over the network
+into local stable storage.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY have a facility to allow a remote user to request that
+the router get a new boot image.
+'''
+

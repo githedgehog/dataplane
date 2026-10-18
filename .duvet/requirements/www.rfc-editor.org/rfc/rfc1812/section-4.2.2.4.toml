@@ -1,0 +1,25 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.2.4"
+
+# Type of Service: RFC 791 Section 3.1
+#
+#    The Type-of-Service byte in the IP header is divided into three
+#    sections: the Precedence field (high-order 3 bits), a field that is
+#    customarily called Type of Service or TOS (next 4 bits), and a
+#    reserved bit (the low order bit).
+# 
+#    Rules governing the reserved bit were described in Section [4.2.2.3].
+# 
+#    A more extensive discussion of the TOS field and its use can be found
+#    in [ROUTE:11].
+# 
+#    The description of the IP Precedence field is superseded by Section
+#    [5.3.3].  RFC 795, Service Mappings, is obsolete and SHOULD NOT be
+#    implemented.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+RFC 795, Service Mappings, is obsolete and SHOULD NOT be
+implemented.
+'''
+

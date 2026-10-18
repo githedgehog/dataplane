@@ -1,0 +1,220 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.2.4.3"
+
+# Next Hop Address
+#
+#    EDITORS+COMMENTS
+#       The router applies the algorithm in the previous section to
+#       determine if the IP Destination Address is adjacent.  If so, the
+#       next hop address is the same as the IP Destination Address.
+#       Otherwise, the packet must be forwarded through another router to
+#       reach its Immediate Destination.  The selection of this router is
+#       the topic of this section.
+# 
+#       If the packet contains an SSRR, the router MUST discard the packet
+#       and reply with an ICMP Bad Source Route error.  Otherwise, the
+#       router looks up the IP Destination Address in its routing table to
+#       determine an appropriate next hop address.
+# 
+#    DISCUSSION
+#       Per the IP specification, a Strict Source Route must specify a
+#       sequence of nodes through which the packet must traverse; the
+#       packet must go from one node of the source route to the next,
+#       traversing intermediate networks only.  Thus, if the router is not
+#       adjacent to the next step of the source route, the source route
+#       can not be fulfilled.  Therefore, the router rejects such with an
+#       ICMP Bad Source Route error.
+# 
+#    The goal of the next-hop selection process is to examine the entries
+#    in the router's Forwarding Information Base (FIB) and select the best
+#    route (if there is one) for the packet from those available in the
+#    FIB.
+# 
+#    Conceptually, any route lookup algorithm starts out with a set of
+#    candidate routes that consists of the entire contents of the FIB.
+#    The algorithm consists of a series of steps that discard routes from
+#    the set.  These steps are referred to as Pruning Rules.  Normally,
+#    when the algorithm terminates there is exactly one route remaining in
+#    the set.  If the set ever becomes empty, the packet is discarded
+#    because the destination is unreachable.  It is also possible for the
+#    algorithm to terminate when more than one route remains in the set.
+#    In this case, the router may arbitrarily discard all but one of them,
+#    or may perform "load-splitting" by choosing whichever of the routes
+#    has been least recently used.
+# 
+#    With the exception of rule 3 (Weak TOS), a router MUST use the
+#    following Pruning Rules when selecting a next hop for a packet.  If a
+# 
+#    router does consider TOS when making next-hop decisions, the Rule 3
+#    must be applied in the order indicated below.  These rules MUST be
+#    (conceptually) applied to the FIB in the order that they are
+#    presented.  (For some historical perspective, additional pruning
+#    rules, and other common algorithms in use, see Appendix E.)
+# 
+#    DISCUSSION
+#       Rule 3 is optional in that Section [5.3.2] says that a router only
+#       SHOULD consider TOS when making forwarding decisions.
+# 
+#       (1) Basic Match
+#            This rule discards any routes to destinations other than the
+#            IP Destination Address of the packet.  For example, if a
+#            packet's IP Destination Address is 10.144.2.5, this step
+#            would discard a route to net 128.12.0.0/16 but would retain
+#            any routes to the network prefixes 10.0.0.0/8 and
+#            10.144.0.0/16, and any default routes.
+# 
+#            More precisely, we assume that each route has a destination
+#            attribute, called route.dest and a corresponding prefix
+#            length, called route.length, to specify which bits of
+#            route.dest are significant.  The IP Destination Address of
+#            the packet being forwarded is ip.dest.  This rule discards
+#            all routes from the set of candidates except those for which
+#            the most significant route.length bits of route.dest and
+#            ip.dest are equal.
+# 
+#            For example, if a packet's IP Destination Address is
+#            10.144.2.5 and there are network prefixes 10.144.1.0/24,
+#            10.144.2.0/24, and 10.144.3.0/24, this rule would keep only
+#            10.144.2.0/24; it is the only route whose prefix has the same
+#            value as the corresponding bits in the IP Destination Address
+#            of the packet.
+# 
+#       (2) Longest Match
+#            Longest Match is a refinement of Basic Match, described
+#            above.  After performing Basic Match pruning, the algorithm
+#            examines the remaining routes to determine which among them
+#            have the largest route.length values.  All except these are
+#            discarded.
+# 
+#            For example, if a packet's IP Destination Address is
+#            10.144.2.5 and there are network prefixes 10.144.2.0/24,
+#            10.144.0.0/16, and 10.0.0.0/8, then this rule would keep only
+#            the first (10.144.2.0/24) because its prefix length is
+#            longest.
+# 
+#       (3) Weak TOS
+#            Each route has a type of service attribute, called route.tos,
+#            whose possible values are assumed to be identical to those
+#            used in the TOS field of the IP header.  Routing protocols
+#            that distribute TOS information fill in route.tos
+#            appropriately in routes they add to the FIB; routes from
+#            other routing protocols are treated as if they have the
+#            default TOS (0000).  The TOS field in the IP header of the
+#            packet being routed is called ip.tos.
+# 
+#            The set of candidate routes is examined to determine if it
+#            contains any routes for which route.tos = ip.tos.  If so, all
+#            routes except those for which route.tos = ip.tos are
+#            discarded.  If not, all routes except those for which
+#            route.tos = 0000 are discarded from the set of candidate
+#            routes.
+# 
+#            Additional discussion of routing based on Weak TOS may be
+#            found in [ROUTE:11].
+# 
+#    DISCUSSION
+#       The effect of this rule is to select only those routes that have a
+#       TOS that matches the TOS requested in the packet.  If no such
+#       routes exist then routes with the default TOS are considered.
+#       Routes with a non-default TOS that is not the TOS requested in the
+#       packet are never used, even if such routes are the only available
+#       routes that go to the packet's destination.
+# 
+#      (4) Best Metric
+#           Each route has a metric attribute, called route.metric, and a
+#           routing domain identifier, called route.domain.  Each member
+#           of the set of candidate routes is compared with each other
+#           member of the set.  If route.domain is equal for the two
+#           routes and route.metric is strictly inferior for one when
+#           compared with the other, then the one with the inferior metric
+#           is discarded from the set.  The determination of inferior is
+#           usually by a simple arithmetic comparison, though some
+#           protocols may have structured metrics requiring more complex
+#           comparisons.
+# 
+#      (5) Vendor Policy
+#           Vendor Policy is sort of a catch-all to make up for the fact
+#           that the previously listed rules are often inadequate to
+#           choose from the possible routes.  Vendor Policy pruning rules
+#           are extremely vendor-specific.  See section [5.2.4.4].
+# 
+#      This algorithm has two distinct disadvantages.  Presumably, a
+#      router implementor might develop techniques to deal with these
+# 
+#      disadvantages and make them a part of the Vendor Policy pruning
+#      rule.
+# 
+#      (1) IS-IS and OSPF route classes are not directly handled.
+# 
+#      (2) Path properties other than type of service (e.g., MTU) are
+#           ignored.
+# 
+#      It is also worth noting a deficiency in the way that TOS is
+#      supported: routing protocols that support TOS are implicitly
+#      preferred when forwarding packets that have non-zero TOS values.
+# 
+#      The Basic Match and Longest Match pruning rules generalize the
+#      treatment of a number of particular types of routes.  These routes
+#      are selected in the following, decreasing, order of preference:
+# 
+#      (1) Host Route: This is a route to a specific end system.
+# 
+#      (2) Hierarchical Network Prefix Routes: This is a route to a
+#           particular network prefix.  Note that the FIB may contain
+#           several routes to network prefixes that subsume each other
+#           (one prefix is the other prefix with additional bits).  These
+#           are selected in order of decreasing prefix length.
+# 
+#      (5) Default Route: This is a route to all networks for which there
+#           are no explicit routes.  It is by definition the route whose
+#           prefix length is zero.
+# 
+#      If, after application of the pruning rules, the set of routes is
+#      empty (i.e., no routes were found), the packet MUST be discarded
+#      and an appropriate ICMP error generated (ICMP Bad Source Route if
+#      the IP Destination Address came from a source route option;
+#      otherwise, whichever of ICMP Destination Host Unreachable or
+#      Destination Network Unreachable is appropriate, as described in
+#      Section [4.3.3.1]).
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the packet contains an SSRR, the router MUST discard the packet
+and reply with an ICMP Bad Source Route error.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+With the exception of rule 3 (Weak TOS), a router MUST use the
+following Pruning Rules when selecting a next hop for a packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+These rules MUST be
+(conceptually) applied to the FIB in the order that they are
+presented.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+DISCUSSION
+Rule 3 is optional in that Section [5.3.2] says that a router only
+SHOULD consider TOS when making forwarding decisions.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If, after application of the pruning rules, the set of routes is
+empty (i.e., no routes were found), the packet MUST be discarded
+and an appropriate ICMP error generated (ICMP Bad Source Route if
+the IP Destination Address came from a source route option;
+otherwise, whichever of ICMP Destination Host Unreachable or
+Destination Network Unreachable is appropriate, as described in
+Section [4.3.3.1]).
+'''
+

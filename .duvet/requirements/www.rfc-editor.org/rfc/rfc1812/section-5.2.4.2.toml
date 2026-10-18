@@ -1,0 +1,85 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.2.4.2"
+
+# Local/Remote Decision
+#
+#    After it has been determined that the IP packet needs to be forwarded
+#    according to the rules specified in Section [5.2.3], the following
+#    algorithm MUST be used to determine if the Immediate Destination is
+#    directly accessible (see [INTERNET:2]).
+# 
+#    (1) For each network interface that has not been assigned any IP
+#        address (the unnumbered lines as described in Section [2.2.7]),
+#        compare the router-id of the other end of the line to the IP
+#        Destination Address.  If they are exactly equal, the packet can
+#        be transmitted through this interface.
+# 
+#    DISCUSSION
+#       In other words, the router or host at the remote end of the line
+#       is the destination of the packet or is the next step in the source
+#       route of a source routed packet.
+# 
+#    (2) If no network interface has been selected in the first step, for
+#        each IP address assigned to the router:
+# 
+#    (a) isolate the network prefix used by the interface.
+# 
+#    IMPLEMENTATION
+#       The result of this operation will usually have been computed and
+#       saved during initialization.
+# 
+#    (b) Isolate the corresponding set of bits from the IP Destination
+#       Address of the packet.
+# 
+#    (c) Compare the resulting network prefixes.  If they are equal to
+#       each other, the packet can be transmitted through the
+#       corresponding network interface.
+# 
+#    (3) If the destination was neither the router-id of a neighbor on an
+#        unnumbered interface nor a member of a directly connected network
+#        prefix, the IP Destination is accessible only through some other
+#        router.  The selection of the router and the next hop IP address
+#        is described in Section [5.2.4.3].  In the case of a host that is
+#        not also a router, this may be the configured default router.
+# 
+#    Ongoing work in the IETF [ARCH:9, NRHP] considers some cases such as
+#    when multiple IP (sub)networks are overlaid on the same link layer
+#    network.  Barring policy restrictions, hosts and routers using a
+#    common link layer network can directly communicate even if they are
+#    not in the same IP (sub)network, if there is adequate information
+#    present.  The Next Hop Routing Protocol (NHRP) enables IP entities to
+#    determine the "optimal" link layer address to be used to traverse
+#    such a link layer network towards a remote destination.
+# 
+#    (4) If the selected "next hop" is reachable through an interface
+#    configured to use NHRP, then the following additional steps apply:
+# 
+#      (a) Compare the IP Destination Address to the destination addresses
+#         in the NHRP cache.  If the address is in the cache, then send
+#         the datagram to the corresponding cached link layer address.
+#      (b) If the address is not in the cache, then construct an NHRP
+#         request packet containing the IP Destination Address.  This
+#         message is sent to the NHRP server configured for that
+#         interface.  This may be a logically separate process or entity
+#         in the router itself.
+# 
+#      (c) The NHRP server will respond with the proper link layer address
+#         to use to transmit the datagram and subsequent datagrams to the
+#         same destination.  The system MAY transmit the datagram(s) to
+#         the traditional "next hop" router while awaiting the NHRP reply.
+
+[[spec]]
+level = "MUST"
+quote = '''
+After it has been determined that the IP packet needs to be forwarded
+according to the rules specified in Section [5.2.3], the following
+algorithm MUST be used to determine if the Immediate Destination is
+directly accessible (see [INTERNET:2]).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+The system MAY transmit the datagram(s) to
+the traditional "next hop" router while awaiting the NHRP reply.
+'''
+

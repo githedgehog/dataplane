@@ -1,0 +1,86 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.2.7"
+
+# Fragmentation: RFC 791 Section 3.2
+#
+#    Fragmentation, as described in [INTERNET:1], MUST be supported by a
+#    router.
+# 
+#    When a router fragments an IP datagram, it SHOULD minimize the number
+#    of fragments.  When a router fragments an IP datagram, it SHOULD send
+#    the fragments in order.  A fragmentation method that may generate one
+#    IP fragment that is significantly smaller than the other MAY cause
+#    the first IP fragment to be the smaller one.
+# 
+#    DISCUSSION
+#       There are several fragmentation techniques in common use in the
+#       Internet.  One involves splitting the IP datagram into IP
+#       fragments with the first being MTU sized, and the others being
+#       approximately the same size, smaller than the MTU.  The reason for
+#       this is twofold.  The first IP fragment in the sequence will be
+#       the effective MTU of the current path between the hosts, and the
+#       following IP fragments are sized to minimize the further
+#       fragmentation of the IP datagram.  Another technique is to split
+#       the IP datagram into MTU sized IP fragments, with the last
+#       fragment being the only one smaller, as described in [INTERNET:1].
+# 
+#       A common trick used by some implementations of TCP/IP is to
+#       fragment an IP datagram into IP fragments that are no larger than
+#       576 bytes when the IP datagram is to travel through a router.
+#       This is intended to allow the resulting IP fragments to pass the
+#       rest of the path without further fragmentation.  This would,
+#       though, create more of a load on the destination host, since it
+#       would have a larger number of IP fragments to reassemble into one
+#       IP datagram.  It would also not be efficient on networks where the
+#       MTU only changes once and stays much larger than 576 bytes.
+#       Examples include LAN networks such as an IEEE 802.5 network with a
+#       MTU of 2048 or an Ethernet network with an MTU of 1500).
+# 
+#       One other fragmentation technique discussed was splitting the IP
+#       datagram into approximately equal sized IP fragments, with the
+#       size less than or equal to the next hop network's MTU.  This is
+#       intended to minimize the number of fragments that would result
+#       from additional fragmentation further down the path, and assure
+#       equal delay for each fragment.
+# 
+#       Routers SHOULD generate the least possible number of IP fragments.
+# 
+#       Work with slow machines leads us to believe that if it is
+#       necessary to fragment messages, sending the small IP fragment
+#       first maximizes the chance of a host with a slow interface of
+#       receiving all the fragments.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Fragmentation, as described in [INTERNET:1], MUST be supported by a
+router.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When a router fragments an IP datagram, it SHOULD minimize the number
+of fragments.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When a router fragments an IP datagram, it SHOULD send
+the fragments in order.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A fragmentation method that may generate one
+IP fragment that is significantly smaller than the other MAY cause
+the first IP fragment to be the smaller one.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers SHOULD generate the least possible number of IP fragments.
+'''
+

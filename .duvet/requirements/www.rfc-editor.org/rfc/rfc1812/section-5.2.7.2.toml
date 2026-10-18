@@ -1,0 +1,146 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.2.7.2"
+
+# Redirect
+#
+#    The ICMP Redirect message is generated to inform a local host the it
+#    should use a different next hop router for a certain class of
+#    traffic.
+# 
+#    Routers MUST NOT generate the Redirect for Network or Redirect for
+#    Network and Type of Service messages (Codes 0 and 2) specified in
+# 
+#    [INTERNET:8].  Routers MUST be able to generate the Redirect for Host
+#    message (Code 1) and SHOULD be able to generate the Redirect for Type
+#    of Service and Host message (Code 3) specified in [INTERNET:8].
+# 
+#    DISCUSSION
+#       If the directly connected network is not subnetted (in the
+#       classical sense), a router can normally generate a network
+#       Redirect that applies to all hosts on a specified remote network.
+#       Using a network rather than a host Redirect may economize slightly
+#       on network traffic and on host routing table storage.  However,
+#       the savings are not significant, and subnets create an ambiguity
+#       about the subnet mask to be used to interpret a network Redirect.
+#       In a CIDR environment, it is difficult to specify precisely the
+#       cases in which network Redirects can be used.  Therefore, routers
+#       must send only host (or host and type of service) Redirects.
+# 
+#    A Code 3 (Redirect for Host and Type of Service) message is generated
+#    when the packet provoking the redirect has a destination for which
+#    the path chosen by the router would depend (in part) on the TOS
+#    requested.
+# 
+#    Routers that can generate Code 3 redirects (Host and Type of Service)
+#    MUST have a configuration option (which defaults to on) to enable
+#    Code 1 (Host) redirects to be substituted for Code 3 redirects.  A
+#    router MUST send a Code 1 Redirect in place of a Code 3 Redirect if
+#    it has been configured to do so.
+# 
+#    If a router is not able to generate Code 3 Redirects then it MUST
+#    generate Code 1 Redirects in situations where a Code 3 Redirect is
+#    called for.
+# 
+#    Routers MUST NOT generate a Redirect Message unless all the following
+#    conditions are met:
+# 
+#    o The packet is being forwarded out the same physical interface that
+#       it was received from,
+# 
+#    o The IP source address in the packet is on the same Logical IP
+#       (sub)network as the next-hop IP address, and
+# 
+#    o The packet does not contain an IP source route option.
+# 
+#    The source address used in the ICMP Redirect MUST belong to the same
+#    logical (sub)net as the destination address.
+# 
+#    A router using a routing protocol (other than static routes) MUST NOT
+#    consider paths learned from ICMP Redirects when forwarding a packet.
+#    If a router is not using a routing protocol, a router MAY have a
+# 
+#    configuration that, if set, allows the router to consider routes
+#    learned through ICMP Redirects when forwarding packets.
+# 
+#    DISCUSSION
+#       ICMP Redirect is a mechanism for routers to convey routing
+#       information to hosts.  Routers use other mechanisms to learn
+#       routing information, and therefore have no reason to obey
+#       redirects.  Believing a redirect which contradicted the router's
+#       other information would likely create routing loops.
+# 
+#       On the other hand, when a router is not acting as a router, it
+#       MUST comply with the behavior required of a host.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST NOT generate the Redirect for Network or Redirect for
+Network and Type of Service messages (Codes 0 and 2) specified in
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST be able to generate the Redirect for Host
+message (Code 1) and SHOULD be able to generate the Redirect for Type
+of Service and Host message (Code 3) specified in [INTERNET:8].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers that can generate Code 3 redirects (Host and Type of Service)
+MUST have a configuration option (which defaults to on) to enable
+Code 1 (Host) redirects to be substituted for Code 3 redirects.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A
+router MUST send a Code 1 Redirect in place of a Code 3 Redirect if
+it has been configured to do so.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a router is not able to generate Code 3 Redirects then it MUST
+generate Code 1 Redirects in situations where a Code 3 Redirect is
+called for.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST NOT generate a Redirect Message unless all the following
+conditions are met:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The source address used in the ICMP Redirect MUST belong to the same
+logical (sub)net as the destination address.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router using a routing protocol (other than static routes) MUST NOT
+consider paths learned from ICMP Redirects when forwarding a packet.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+If a router is not using a routing protocol, a router MAY have a
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+On the other hand, when a router is not acting as a router, it
+MUST comply with the behavior required of a host.
+'''
+

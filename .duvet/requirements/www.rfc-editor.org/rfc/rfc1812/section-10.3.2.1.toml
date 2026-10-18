@@ -1,0 +1,31 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-10.3.2.1"
+
+# Maintenance - Hardware Diagnosis
+#
+#    Each router SHOULD operate as a stand-alone device for the purposes
+#    of local hardware maintenance.  Means SHOULD be available to run
+#    diagnostic programs at the router site using only on-site tools.  A
+#    router SHOULD be able to run diagnostics in case of a fault.  For
+#    suggested hardware and software diagnostics see Section [10.3.3].
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Each router SHOULD operate as a stand-alone device for the purposes
+of local hardware maintenance.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Means SHOULD be available to run
+diagnostic programs at the router site using only on-site tools.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A
+router SHOULD be able to run diagnostics in case of a fault.
+'''
+

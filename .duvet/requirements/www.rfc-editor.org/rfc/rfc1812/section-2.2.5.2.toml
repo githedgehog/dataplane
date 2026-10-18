@@ -1,0 +1,72 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-2.2.5.2"
+
+# Classless Inter Domain Routing (CIDR)
+#
+#    The explosive growth of the Internet has forced a review of address
+#    assignment policies.  The traditional uses of general purpose (Class
+#    A, B, and C) networks have been modified to achieve better use of
+#    IP's 32-bit address space.  Classless Inter Domain Routing (CIDR)
+#    [INTERNET:15] is a method currently being deployed in the Internet
+#    backbones to achieve this added efficiency.  CIDR depends on
+#    deploying and routing to arbitrarily sized networks.  In this model,
+#    hosts and routers make no assumptions about the use of addressing in
+#    the internet.  The Class D (IP Multicast) and Class E (Experimental)
+#    address spaces are preserved, although this is primarily an
+#    assignment policy.
+# 
+#    By definition, CIDR comprises three elements:
+# 
+#      o topologically significant address assignment,
+#      o routing protocols that are capable of aggregating network layer
+#         reachability information, and
+#      o consistent forwarding algorithm ("longest match").
+# 
+#    The use of networks and subnets is now historical, although the
+#    language used to describe them remains in current use.  They have
+#    been replaced by the more tractable concept of a network prefix.  A
+#    network prefix is, by definition, a contiguous set of bits at the
+#    more significant end of the address that defines a set of systems;
+#    host numbers select among those systems.  There is no requirement
+#    that all the internet use network prefixes uniformly.  To collapse
+#    routing information, it is useful to divide the internet into
+#    addressing domains.  Within such a domain, detailed information is
+#    available about constituent networks; outside it, only the common
+#    network prefix is advertised.
+# 
+#    The classical IP addressing architecture used addresses and subnet
+#    masks to discriminate the host number from the network prefix.  With
+#    network prefixes, it is sufficient to indicate the number of bits in
+#    the prefix.  Both representations are in common use.  Architecturally
+#    correct subnet masks are capable of being represented using the
+#    prefix length description.  They comprise that subset of all possible
+#    bits patterns that have
+# 
+#      o a contiguous string of ones at the more significant end,
+#      o a contiguous string of zeros at the less significant end, and
+#      o no intervening bits.
+# 
+#    Routers SHOULD always treat a route as a network prefix, and SHOULD
+#    reject configuration and routing information inconsistent with that
+#    model.
+# 
+#       IP-address ::= { <Network-prefix>, <Host-number> }
+# 
+#    An effect of the use of CIDR is that the set of destinations
+#    associated with address prefixes in the routing table may exhibit
+#    subset relationship.  A route describing a smaller set of
+#    destinations (a longer prefix) is said to be more specific than a
+#    route describing a larger set of destinations (a shorter prefix);
+#    similarly, a route describing a larger set of destinations (a shorter
+#    prefix) is said to be less specific than a route describing a smaller
+#    set of destinations (a longer prefix).  Routers must use the most
+#    specific matching route (the longest matching network prefix) when
+#    forwarding traffic.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers SHOULD always treat a route as a network prefix, and SHOULD
+reject configuration and routing information inconsistent with that
+model.
+'''
+

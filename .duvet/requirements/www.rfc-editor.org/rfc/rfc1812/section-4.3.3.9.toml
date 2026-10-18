@@ -1,0 +1,148 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.3.9"
+
+# Address Mask Request/Reply
+#
+#    A router MUST implement support for receiving ICMP Address Mask
+#    Request messages and responding with ICMP Address Mask Reply
+#    messages.  These messages are defined in [INTERNET:2].
+# 
+#    A router SHOULD have a configuration option for each logical
+#    interface specifying whether the router is allowed to answer Address
+#    Mask Requests for that interface; this option MUST default to
+#    allowing responses.  A router MUST NOT respond to an Address Mask
+#    Request before the router knows the correct address mask.
+# 
+#    A router MUST NOT respond to an Address Mask Request that has a
+#    source address of 0.0.0.0 and which arrives on a physical interface
+#    that has associated with it multiple logical interfaces and the
+#    address masks for those interfaces are not all the same.
+# 
+#    A router SHOULD examine all ICMP Address Mask Replies that it
+#    receives to determine whether the information it contains matches the
+#    router's knowledge of the address mask.  If the ICMP Address Mask
+#    Reply appears to be in error, the router SHOULD log the address mask
+#    and the sender's IP address.  A router MUST NOT use the contents of
+#    an ICMP Address Mask Reply to determine the correct address mask.
+# 
+#    Because hosts may not be able to learn the address mask if a router
+#    is down when the host boots up, a router MAY broadcast a gratuitous
+#    ICMP Address Mask Reply on each of its logical interfaces after it
+#    has configured its own address masks.  However, this feature can be
+#    dangerous in environments that use variable length address masks.
+#    Therefore, if this feature is implemented, gratuitous Address Mask
+#    Replies MUST NOT be broadcast over any logical interface(s) which
+#    either:
+# 
+#    o Are not configured to send gratuitous Address Mask Replies.  Each
+#       logical interface MUST have a configuration parameter controlling
+#       this, and that parameter MUST default to not sending the
+#       gratuitous Address Mask Replies.
+# 
+#    o Share subsuming (but not identical) network prefixes and physical
+#       interface.
+# 
+#    The { <Network-prefix>, -1 } form of the IP broadcast address MUST be
+#    used for broadcast Address Mask Replies.
+# 
+#    DISCUSSION
+#       The ability to disable sending Address Mask Replies by routers is
+#       required at a few sites that intentionally lie to their hosts
+#       about the address mask.  The need for this is expected to go away
+# 
+#       as more and more hosts become compliant with the Host Requirements
+#       standards.
+# 
+#       The reason for both the second bullet above and the requirement
+#       about which IP broadcast address to use is to prevent problems
+#       when multiple IP network prefixes are in use on the same physical
+#       network.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST implement support for receiving ICMP Address Mask
+Request messages and responding with ICMP Address Mask Reply
+messages.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router SHOULD have a configuration option for each logical
+interface specifying whether the router is allowed to answer Address
+Mask Requests for that interface; this option MUST default to
+allowing responses.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT respond to an Address Mask
+Request before the router knows the correct address mask.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT respond to an Address Mask Request that has a
+source address of 0.0.0.0 and which arrives on a physical interface
+that has associated with it multiple logical interfaces and the
+address masks for those interfaces are not all the same.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD examine all ICMP Address Mask Replies that it
+receives to determine whether the information it contains matches the
+router's knowledge of the address mask.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the ICMP Address Mask
+Reply appears to be in error, the router SHOULD log the address mask
+and the sender's IP address.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT use the contents of
+an ICMP Address Mask Reply to determine the correct address mask.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Because hosts may not be able to learn the address mask if a router
+is down when the host boots up, a router MAY broadcast a gratuitous
+ICMP Address Mask Reply on each of its logical interfaces after it
+has configured its own address masks.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Therefore, if this feature is implemented, gratuitous Address Mask
+Replies MUST NOT be broadcast over any logical interface(s) which
+either:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Each
+logical interface MUST have a configuration parameter controlling
+this, and that parameter MUST default to not sending the
+gratuitous Address Mask Replies.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The { <Network-prefix>, -1 } form of the IP broadcast address MUST be
+used for broadcast Address Mask Replies.
+'''
+

@@ -1,0 +1,48 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.2.1"
+
+# INTRODUCTION
+#
+#    An Interior Gateway Protocol (IGP) is used to distribute routing
+#    information between the various routers in a particular AS.
+#    Independent of the algorithm used to implement a particular IGP, it
+#    should perform the following functions:
+# 
+#    (1) Respond quickly to changes in the internal topology of an AS
+# 
+#    (2) Provide a mechanism such that circuit flapping does not cause
+#         continuous routing updates
+# 
+#    (3) Provide quick convergence to loop-free routing
+# 
+#    (4) Utilize minimal bandwidth
+# 
+#    (5) Provide equal cost routes to enable load-splitting
+# 
+#    (6) Provide a means for authentication of routing updates
+# 
+#    Current IGPs used in the internet today are characterized as either
+#    being based on a distance-vector or a link-state algorithm.
+# 
+#    Several IGPs are detailed in this section, including those most
+#    commonly used and some recently developed protocols that may be
+#    widely used in the future.  Numerous other protocols intended for use
+#    in intra-AS routing exist in the Internet community.
+# 
+#    A router that implements any routing protocol (other than static
+#    routes) MUST IMPLEMENT OSPF (see Section [7.2.2]).  A router MAY
+#    implement additional IGPs.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router that implements any routing protocol (other than static
+routes) MUST IMPLEMENT OSPF (see Section [7.2.2]).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY
+implement additional IGPs.
+'''
+

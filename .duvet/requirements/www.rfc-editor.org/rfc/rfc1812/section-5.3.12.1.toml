@@ -1,0 +1,91 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.12.1"
+
+# When a Router Ceases Forwarding
+#
+#    When a router ceases forwarding it MUST stop advertising all routes,
+#    except for third party routes.  It MAY continue to receive and use
+#    routes from other routers in its routing domains.  If the forwarding
+#    database is retained, the router MUST NOT cease timing the routes in
+#    the forwarding database.  If routes that have been received from
+#    other routers are remembered, the router MUST NOT cease timing the
+#    routes that it has remembered.  It MUST discard any routes whose
+#    timers expire while forwarding is disabled, just as it would do if
+#    forwarding were enabled.
+# 
+#    DISCUSSION
+#       When a router ceases forwarding, it essentially ceases being a
+#       router.  It is still a host, and must follow all of the
+#       requirements of Host Requirements [INTRO:2].  The router may still
+#       be a passive member of one or more routing domains, however.  As
+#       such, it is allowed to maintain its forwarding database by
+#       listening to other routers in its routing domain.  It may not,
+#       however, advertise any of the routes in its forwarding database,
+#       since it itself is doing no forwarding.  The only exception to
+#       this rule is when the router is advertising a route that uses only
+# 
+#       some other router, but which this router has been asked to
+#       advertise.
+# 
+#    A router MAY send ICMP destination unreachable (host unreachable)
+#    messages to the senders of packets that it is unable to forward.  It
+#    SHOULD NOT send ICMP redirect messages.
+# 
+#    DISCUSSION
+#       Note that sending an ICMP destination unreachable (host
+#       unreachable) is a router action.  This message should not be sent
+#       by hosts.  This exception to the rules for hosts is allowed so
+#       that packets may be rerouted in the shortest possible time, and so
+#       that black holes are avoided.
+
+[[spec]]
+level = "MUST"
+quote = '''
+When a router ceases forwarding it MUST stop advertising all routes,
+except for third party routes.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+It MAY continue to receive and use
+routes from other routers in its routing domains.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the forwarding
+database is retained, the router MUST NOT cease timing the routes in
+the forwarding database.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If routes that have been received from
+other routers are remembered, the router MUST NOT cease timing the
+routes that it has remembered.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+It MUST discard any routes whose
+timers expire while forwarding is disabled, just as it would do if
+forwarding were enabled.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY send ICMP destination unreachable (host unreachable)
+messages to the senders of packets that it is unable to forward.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+It
+SHOULD NOT send ICMP redirect messages.
+'''
+

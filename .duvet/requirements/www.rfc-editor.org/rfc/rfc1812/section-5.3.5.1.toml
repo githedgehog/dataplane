@@ -1,0 +1,37 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.5.1"
+
+# Limited Broadcasts
+#
+#    Limited broadcasts MUST NOT be forwarded.  Limited broadcasts MUST
+#    NOT be discarded.  Limited broadcasts MAY be sent and SHOULD be sent
+#    instead of directed broadcasts where limited broadcasts will suffice.
+# 
+#    DISCUSSION
+#       Some routers contain UDP servers which function by resending the
+#       requests (as unicasts or directed broadcasts) to other servers.
+#       This requirement should not be interpreted as prohibiting such
+#       servers.  Note, however, that such servers can easily cause packet
+#       looping if misconfigured.  Thus, providers of such servers would
+#       probably be well advised to document their setup carefully and to
+#       consider carefully the TTL on packets that are sent.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Limited broadcasts MUST NOT be forwarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Limited broadcasts MUST
+NOT be discarded.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Limited broadcasts MAY be sent and SHOULD be sent
+instead of directed broadcasts where limited broadcasts will suffice.
+'''
+

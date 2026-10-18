@@ -1,0 +1,130 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.3.8"
+
+# Timestamp and Timestamp Reply
+#
+#    A router MAY implement Timestamp and Timestamp Reply.  If they are
+#    implemented then:
+# 
+#    o The ICMP Timestamp server function MUST return a Timestamp Reply to
+#       every Timestamp message that is received.  It SHOULD be designed
+#       for minimum variability in delay.
+# 
+#    o An ICMP Timestamp Request message to an IP broadcast or IP
+#       multicast address MAY be silently discarded.
+# 
+#    o The IP source address in an ICMP Timestamp Reply MUST be the same
+#       as the specific-destination address of the corresponding Timestamp
+#       Request message.
+# 
+#    o If a Source Route option is received in an ICMP Timestamp Request,
+#       the return route MUST be reversed and used as a Source Route
+#       option for the Timestamp Reply message, unless the router is aware
+#       of policy that would prevent the delivery of the message.
+# 
+#    o If a Record Route and/or Timestamp option is received in a
+#       Timestamp Request, this (these) option(s) SHOULD be updated to
+#       include the current router and included in the IP header of the
+#       Timestamp Reply message.
+# 
+#    o If the router provides an application-layer interface for sending
+#       Timestamp Request messages then incoming Timestamp Reply messages
+#       MUST be passed up to the ICMP user interface.
+# 
+#    The preferred form for a timestamp value (the standard value) is
+#    milliseconds since midnight, Universal Time.  However, it may be
+#    difficult to provide this value with millisecond resolution.  For
+#    example, many systems use clocks that update only at line frequency,
+#    50 or 60 times per second.  Therefore, some latitude is allowed in a
+#    standard value:
+# 
+#    (a) A standard value MUST be updated at least 16 times per second
+#         (i.e., at most the six low-order bits of the value may be
+#         undefined).
+# 
+#    (b) The accuracy of a standard value MUST approximate that of
+#         operator-set CPU clocks, i.e., correct within a few minutes.
+# 
+#    IMPLEMENTATION
+#       To meet the second condition, a router may need to query some time
+#       server when the router is booted or restarted.  It is recommended
+#       that the UDP Time Server Protocol be used for this purpose.  A
+#       more advanced implementation would use the Network Time Protocol
+#       (NTP) to achieve nearly millisecond clock synchronization;
+#       however, this is not required.
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY implement Timestamp and Timestamp Reply.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o The ICMP Timestamp server function MUST return a Timestamp Reply to
+every Timestamp message that is received.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+It SHOULD be designed
+for minimum variability in delay.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+o An ICMP Timestamp Request message to an IP broadcast or IP
+multicast address MAY be silently discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o The IP source address in an ICMP Timestamp Reply MUST be the same
+as the specific-destination address of the corresponding Timestamp
+Request message.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If a Source Route option is received in an ICMP Timestamp Request,
+the return route MUST be reversed and used as a Source Route
+option for the Timestamp Reply message, unless the router is aware
+of policy that would prevent the delivery of the message.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+o If a Record Route and/or Timestamp option is received in a
+Timestamp Request, this (these) option(s) SHOULD be updated to
+include the current router and included in the IP header of the
+Timestamp Reply message.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router provides an application-layer interface for sending
+Timestamp Request messages then incoming Timestamp Reply messages
+MUST be passed up to the ICMP user interface.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+(a) A standard value MUST be updated at least 16 times per second
+(i.e., at most the six low-order bits of the value may be
+undefined).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+(b) The accuracy of a standard value MUST approximate that of
+operator-set CPU clocks, i.e., correct within a few minutes.
+'''
+

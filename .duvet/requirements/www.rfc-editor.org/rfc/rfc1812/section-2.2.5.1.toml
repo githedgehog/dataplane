@@ -1,0 +1,79 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-2.2.5.1"
+
+# Classical IP Addressing Architecture
+#
+#    Although well documented elsewhere [INTERNET:2], it is useful to
+#    describe the historical use of the network prefix.  The language
+#    developed to describe it is used in this and other documents and
+#    permeates the thinking behind many protocols.
+# 
+#    The simplest classical network prefix is the Class A, B, C, D, or E
+#    network prefix.  These address ranges are discriminated by observing
+#    the values of the most significant bits of the address, and break the
+#    address into simple prefix and host number fields.  This is described
+#    in [INTERNET:18].  In short, the classification is:
+# 
+#         0xxx - Class A - general purpose unicast addresses with standard
+#         8 bit prefix
+#         10xx - Class B - general purpose unicast addresses with standard
+#         16 bit prefix
+# 
+#         110x - Class C - general purpose unicast addresses with standard
+#         24 bit prefix
+#         1110 - Class D - IP Multicast Addresses - 28 bit prefix, non-
+#         aggregatable
+#         1111 - Class E - reserved for experimental use
+# 
+#    This simple notion has been extended by the concept of subnets.
+#    These were introduced to allow arbitrary complexity of interconnected
+#    LAN structures within an organization, while insulating the Internet
+#    system against explosive growth in assigned network prefixes and
+#    routing complexity.  Subnets provide a multi-level hierarchical
+#    routing structure for the Internet system.  The subnet extension,
+#    described in [INTERNET:2], is a required part of the Internet
+#    architecture.  The basic idea is to partition the <Host-number> field
+#    into two parts: a subnet number, and a true host number on that
+#    subnet:
+# 
+#       IP-address ::=
+#         { <Network-number>, <Subnet-number>, <Host-number> }
+# 
+#    The interconnected physical networks within an organization use the
+#    same network prefix but different subnet numbers.  The distinction
+#    between the subnets of such a subnetted network is not normally
+#    visible outside of that network.  Thus, routing in the rest of the
+#    Internet uses only the <Network-prefix> part of the IP destination
+#    address.  Routers outside the network treat <Network-prefix> and
+#    <Host-number> together as an uninterpreted rest part of the 32-bit IP
+#    address.  Within the subnetted network, the routers use the extended
+#    network prefix:
+# 
+#       { <Network-number>, <Subnet-number> }
+# 
+#    The bit positions containing this extended network number have
+#    historically been indicated by a 32-bit mask called the subnet mask.
+#    The <Subnet-number> bits SHOULD be contiguous and fall between the
+#    <Network-number> and the <Host-number> fields.  More up to date
+#    protocols do not refer to a subnet mask, but to a prefix length; the
+#    "prefix" portion of an address is that which would be selected by a
+#    subnet mask whose most significant bits are all ones and the rest are
+#    zeroes.  The length of the prefix equals the number of ones in the
+#    subnet mask.  This document assumes that all subnet masks are
+#    expressible as prefix lengths.
+# 
+#    The inventors of the subnet mechanism presumed that each piece of an
+#    organization's network would have only a single subnet number.  In
+#    practice, it has often proven necessary or useful to have several
+#    subnets share a single physical cable.  For this reason, routers
+#    should be capable of configuring multiple subnets on the same
+# 
+#    physical interfaces, and treat them (from a routing or forwarding
+#    perspective) as though they were distinct physical interfaces.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The <Subnet-number> bits SHOULD be contiguous and fall between the
+<Network-number> and the <Host-number> fields.
+'''
+

@@ -1,0 +1,64 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-9.1.2"
+
+# BOOTP Relay Agents
+#
+#    In many cases, BOOTP clients and their associated BOOTP server(s) do
+#    not reside on the same IP (sub)network.  In such cases, a third-party
+#    agent is required to transfer BOOTP messages between clients and
+#    servers.  Such an agent was originally referred to as a BOOTP
+#    forwarding agent.  However, to avoid confusion with the IP forwarding
+#    function of a router, the name BOOTP relay agent has been adopted
+#    instead.
+# 
+#    DISCUSSION
+#       A BOOTP relay agent performs a task that is distinct from a
+#       router's normal IP forwarding function.  While a router normally
+#       switches IP datagrams between networks more-or-less transparently,
+#       a BOOTP relay agent may more properly be thought to receive BOOTP
+#       messages as a final destination and then generate new BOOTP
+#       messages as a result.  One should resist the notion of simply
+#       forwarding a BOOTP message straight through like a regular packet.
+# 
+#    This relay-agent functionality is most conveniently located in the
+#    routers that interconnect the clients and servers (although it may
+#    alternatively be located in a host that is directly connected to the
+#    client (sub)net).
+# 
+#    A router MAY provide BOOTP relay-agent capability.  If it does, it
+#    MUST conform to the specifications in [APPL:3].
+# 
+#    Section [5.2.3] discussed the circumstances under which a packet is
+#    delivered locally (to the router).  All locally delivered UDP
+#    messages whose UDP destination port number is BOOTPS (67) are
+#    considered for special processing by the router's logical BOOTP relay
+#    agent.
+# 
+#    Sections [4.2.2.11] and [5.3.7] discussed invalid IP source
+#    addresses.  According to these rules, a router must not forward any
+#    received datagram whose IP source address is 0.0.0.0.  However,
+#    routers that support a BOOTP relay agent MUST accept for local
+#    delivery to the relay agent BOOTREQUEST messages whose IP source
+#    address is 0.0.0.0.
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY provide BOOTP relay-agent capability.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If it does, it
+MUST conform to the specifications in [APPL:3].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+However,
+routers that support a BOOTP relay agent MUST accept for local
+delivery to the relay agent BOOTREQUEST messages whose IP source
+address is 0.0.0.0.
+'''
+

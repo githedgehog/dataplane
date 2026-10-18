@@ -1,0 +1,41 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.2.5"
+
+# Unused IP Header Bits: RFC-791 Section 3.1
+#
+#      The IP header contains several reserved bits, in the Type of
+#      Service field and in the Flags field.  Routers MUST NOT drop
+#      packets merely because one or more of these reserved bits has a
+#      non-zero value.
+# 
+#      Routers MUST ignore and MUST pass through unchanged the values of
+#      these reserved bits.  If a router fragments a packet, it MUST copy
+#      these bits into each fragment.
+# 
+#    DISCUSSION
+#       Future revisions to the IP protocol may make use of these unused
+#       bits.  These rules are intended to ensure that these revisions can
+#       be deployed without having to simultaneously upgrade all routers
+#       in the Internet.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST NOT drop
+packets merely because one or more of these reserved bits has a
+non-zero value.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST ignore and MUST pass through unchanged the values of
+these reserved bits.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a router fragments a packet, it MUST copy
+these bits into each fragment.
+'''
+
