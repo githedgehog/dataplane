@@ -223,6 +223,89 @@ impl Mutation {
     }
 }
 
+impl Mutation {
+    /// The mutation `bits` picks: its layer, its change, and the change's values, all from the 64
+    /// bits, so that a seeded sequence -- [`Mutations`] -- or a fuzzer can range over every mutation
+    /// there is. It may not suit a given stream's frames; see [`Mutation::check`].
+    #[must_use]
+    pub fn from_bits(bits: u64) -> Mutation {
+        let [kind, layer, a0, a1, b0, b1, b2, b3] = bits.to_le_bytes();
+        let a = u16::from_le_bytes([a0, a1]);
+        let b = u32::from_le_bytes([b0, b1, b2, b3]);
+        let mac = [b0, b1, b2, b3, a0, a1];
+        let delta = i16::from_le_bytes([a0, a1]);
+        let change = match kind % 26 {
+            0 => Change::SourceMac { mac },
+            1 => Change::DestinationMac { mac },
+            2 => Change::EtherType { ethertype: a },
+            3 => Change::VlanTag { vid: a },
+            4 => Change::Truncate { len: a % 200 },
+            5 => Change::Padding { bytes: a % 64 },
+            6 => Change::IpVersion { version: a0 },
+            7 => Change::HeaderLength { words: a0 },
+            8 => Change::TotalLength { delta },
+            9 => Change::IpOptions { words: a0 % 11 },
+            10 => Change::IpChecksum,
+            11 => Change::Ttl { ttl: a0 },
+            12 => Change::Protocol { protocol: a0 },
+            13 => Change::SourceIp {
+                addr: Ipv4Addr::from(b),
+            },
+            14 => Change::DestinationIp {
+                addr: Ipv4Addr::from(b),
+            },
+            15 => Change::Fragment {
+                more: a & 1 == 1,
+                offset: a >> 1,
+            },
+            16 => Change::L4Checksum,
+            17 => Change::UdpChecksumZero,
+            18 => Change::UdpLength { delta },
+            19 => Change::TcpDataOffset { words: a0 },
+            20 => Change::TcpFlags { flags: a0 },
+            21 => Change::SourcePort { port: a },
+            22 => Change::DestinationPort { port: a },
+            23 => Change::VxlanFlags { flags: a0 },
+            24 => Change::VxlanReserved,
+            _ => Change::Vni { vni: b },
+        };
+        let layer = if layer & 1 == 0 {
+            Layer::Inner
+        } else {
+            Layer::Outer
+        };
+        Mutation { layer, change }
+    }
+}
+
+/// An endless, reproducible sequence of arbitrary mutations: [`Mutation::from_bits`] of each value
+/// of a `SplitMix64` generator seeded with the seed.
+#[derive(Debug, Clone)]
+pub struct Mutations {
+    state: u64,
+}
+
+impl Mutations {
+    /// The sequence seeded with `seed`.
+    #[must_use]
+    pub fn seeded(seed: u64) -> Mutations {
+        Mutations { state: seed }
+    }
+}
+
+impl Iterator for Mutations {
+    type Item = Mutation;
+
+    fn next(&mut self) -> Option<Mutation> {
+        // SplitMix64 (Steele, Lea and Flood, 2014): every 64-bit value once per period, well mixed.
+        self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        Some(Mutation::from_bits(z ^ (z >> 31)))
+    }
+}
+
 const ETH_LEN: usize = 14;
 const IPV4_LEN: usize = 20;
 const UDP_LEN: usize = 8;
