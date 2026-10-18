@@ -122,6 +122,11 @@ impl RingPort {
         Self::with_guard(std::rc::Rc::new(guard))
     }
 
+    /// The ring behind the port, for a test to write to from another thread.
+    pub(crate) fn ring(&self) -> *mut dpdk_sys::rte_ring {
+        self.ring.as_ptr()
+    }
+
     pub(crate) fn another(&self) -> RingPort {
         Self::with_guard(self._guard.clone())
     }
