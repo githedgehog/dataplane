@@ -1,0 +1,26 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-3.1"
+
+# INTRODUCTION
+#
+#    Routers have essentially the same Link Layer protocol requirements as
+#    other sorts of Internet systems.  These requirements are given in
+#    chapter 3 of Requirements for Internet Gateways [INTRO:1].  A router
+#    MUST comply with its requirements and SHOULD comply with its
+#    recommendations.  Since some of the material in that document has
+#    become somewhat dated, some additional requirements and explanations
+#    are included below.
+# 
+#    DISCUSSION
+#       It is expected that the Internet community will produce a
+#       Requirements for Internet Link Layer standard which will supersede
+#       both this chapter and the chapter entitled "INTERNET LAYER
+#       PROTOCOLS" in [INTRO:1].
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router
+MUST comply with its requirements and SHOULD comply with its
+recommendations.
+'''
+

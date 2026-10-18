@@ -16,6 +16,8 @@
 //!
 //! - [`bgp`]: a minimal BGP speaker, to hold a session with a gateway over [`tcp`].
 //! - [`bfd`]: a BFD peer, to hold a session with a gateway and say how it fared.
+//! - [`catalog`]: frames a gateway should refuse, each a [`mutate`]d frame, and what should become
+//!   of them.
 //! - [`tcp`]: real TCP hosts, from smoltcp, that open connections and check what comes back.
 //! - [`space`]: the flows a stream can send, numbered, so that a million of them need no table.
 //! - [`frame`]: building each flow's frame once and stamping it per packet; reading frames back.
@@ -36,6 +38,7 @@
 
 pub mod bfd;
 pub mod bgp;
+pub mod catalog;
 mod checksum;
 pub mod drive;
 pub mod frame;

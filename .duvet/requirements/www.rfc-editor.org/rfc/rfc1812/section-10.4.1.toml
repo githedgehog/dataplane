@@ -1,0 +1,92 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-10.4.1"
+
+# Auditing and Audit Trails
+#
+#    Auditing and billing are the bane of the network operator, but are
+#    the two features most requested by those in charge of network
+#    security and those who are responsible for paying the bills.  In the
+#    context of security, auditing is desirable if it helps you keep your
+#    network working and protects your resources from abuse, without
+#    costing you more than those resources are worth.
+# 
+#    (1) Configuration Changes
+# 
+#         Router SHOULD provide a method for auditing a configuration
+#         change of a router, even if it's something as simple as
+#         recording the operator's initials and time of change.
+# 
+#    DISCUSSION
+#       Configuration change logging (who made a configuration change,
+#       what was changed, and when) is very useful, especially when
+#       traffic is suddenly routed through Alaska on its way across town.
+#       So is the ability to revert to a previous configuration.
+# 
+#       (2) Packet Accounting
+# 
+#            Vendors should strongly consider providing a system for
+#            tracking traffic levels between pairs of hosts or networks.
+#            A mechanism for limiting the collection of this information
+#            to specific pairs of hosts or networks is also strongly
+#            encouraged.
+# 
+#    DISCUSSION
+#       A host traffic matrix as described above can give the network
+#       operator a glimpse of traffic trends not apparent from other
+#       statistics.  It can also identify hosts or networks that are
+#       probing the structure of the attached networks - e.g., a single
+#       external host that tries to send packets to every IP address in
+#       the network address range for a connected network.
+# 
+#       (3) Security Auditing
+# 
+#            Routers MUST provide a method for auditing security related
+#            failures or violations to include:
+# 
+#            o Authorization Failures: bad passwords, invalid SNMP
+#               communities, invalid authorization tokens,
+# 
+#            o Violations of Policy Controls: Prohibited Source Routes,
+#               Filtered Destinations, and
+# 
+#            o Authorization Approvals: good passwords - Telnet in-band
+#               access, console access.
+# 
+#            Routers MUST provide a method of limiting or disabling such
+#            auditing but auditing SHOULD be on by default.  Possible
+#            methods for auditing include listing violations to a console
+#            if present, logging or counting them internally, or logging
+#            them to a remote security server through the SNMP trap
+#            mechanism or the Unix logging mechanism as appropriate.  A
+#            router MUST implement at least one of these reporting
+#            mechanisms - it MAY implement more than one.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Router SHOULD provide a method for auditing a configuration
+change of a router, even if it's something as simple as
+recording the operator's initials and time of change.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST provide a method for auditing security related
+failures or violations to include:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST provide a method of limiting or disabling such
+auditing but auditing SHOULD be on by default.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A
+router MUST implement at least one of these reporting
+mechanisms - it MAY implement more than one.
+'''
+

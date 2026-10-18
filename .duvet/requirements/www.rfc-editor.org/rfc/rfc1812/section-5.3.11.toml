@@ -1,0 +1,55 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.11"
+
+# Controls on Forwarding
+#
+#    For each physical interface, a router SHOULD have a configuration
+#    option that specifies whether forwarding is enabled on that
+#    interface.  When forwarding on an interface is disabled, the router:
+# 
+#    o MUST silently discard any packets which are received on that
+#       interface but are not addressed to the router
+# 
+#    o MUST NOT send packets out that interface, except for datagrams
+#       originated by the router
+# 
+#    o MUST NOT announce via any routing protocols the availability of
+#       paths through the interface
+# 
+#    DISCUSSION
+#       This feature allows the network manager to essentially turn off an
+#       interface but leaves it accessible for network management.
+# 
+#       Ideally, this control would apply to logical rather than physical
+#       interfaces.  It cannot, because there is no known way for a router
+#       to determine which logical interface a packet arrived absent a
+#       one-to-one correspondence between logical and physical interfaces.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+For each physical interface, a router SHOULD have a configuration
+option that specifies whether forwarding is enabled on that
+interface.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o MUST silently discard any packets which are received on that
+interface but are not addressed to the router
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o MUST NOT send packets out that interface, except for datagrams
+originated by the router
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o MUST NOT announce via any routing protocols the availability of
+paths through the interface
+'''
+

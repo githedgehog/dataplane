@@ -1,0 +1,144 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.4"
+
+# STATIC ROUTING
+#
+#    Static routing provides a means of explicitly defining the next hop
+#    from a router for a particular destination.  A router SHOULD provide
+#    a means for defining a static route to a destination, where the
+#    destination is defined by a network prefix.  The mechanism SHOULD
+#    also allow for a metric to be specified for each static route.
+# 
+#    A router that supports a dynamic routing protocol MUST allow static
+#    routes to be defined with any metric valid for the routing protocol
+#    used.  The router MUST provide the ability for the user to specify a
+#    list of static routes that may or may not be propagated through the
+#    routing protocol.  In addition, a router SHOULD support the following
+#    additional information if it supports a routing protocol that could
+#    make use of the information.  They are:
+# 
+#    o TOS,
+# 
+#    o Subnet Mask, or
+# 
+#    o Prefix Length, or
+# 
+#    o A metric specific to a given routing protocol that can import the
+#       route.
+# 
+#    DISCUSSION
+#       We intend that one needs to support only the things useful to the
+#       given routing protocol.  The need for TOS should not require the
+#       vendor to implement the other parts if they are not used.
+# 
+#       Whether a router prefers a static route over a dynamic route (or
+#       vice versa) or whether the associated metrics are used to choose
+#       between conflicting static and dynamic routes SHOULD be
+#       configurable for each static route.
+# 
+#       A router MUST allow a metric to be assigned to a static route for
+#       each routing domain that it supports.  Each such metric MUST be
+#       explicitly assigned to a specific routing domain.  For example:
+# 
+#            route 10.0.0.0/8 via 192.0.2.3 rip metric 3
+# 
+#            route 10.21.0.0/16 via 192.0.2.4 ospf inter-area metric 27
+# 
+#            route 10.22.0.0/16 via 192.0.2.5 egp 123 metric 99
+# 
+#    DISCUSSION
+#       It has been suggested that, ideally, static routes should have
+#       preference values rather than metrics (since metrics can only be
+#       compared with metrics of other routes in the same routing domain,
+#       the metric of a static route could only be compared with metrics
+#       of other static routes).  This is contrary to some current
+#       implementations, where static routes really do have metrics, and
+#       those metrics are used to determine whether a particular dynamic
+#       route overrides the static route to the same destination.  Thus,
+#       this document uses the term metric rather than preference.
+# 
+#       This technique essentially makes the static route into a RIP
+#       route, or an OSPF route (or whatever, depending on the domain of
+#       the metric).  Thus, the route lookup algorithm of that domain
+#       applies.  However, this is NOT route leaking, in that coercing a
+#       static route into a dynamic routing domain does not authorize the
+#       router to redistribute the route into the dynamic routing domain.
+# 
+#       For static routes not put into a specific routing domain, the
+#       route lookup algorithm is:
+# 
+#       (1) Basic match
+# 
+#       (2) Longest match
+# 
+#       (3) Weak TOS (if TOS supported)
+# 
+#       (4) Best metric (where metric are implementation-defined)
+# 
+#       The last step may not be necessary, but it's useful in the case
+#       where you want to have a primary static route over one interface
+#       and a secondary static route over an alternate interface, with
+#       failover to the alternate path if the interface for the primary
+#       route fails.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD provide
+a means for defining a static route to a destination, where the
+destination is defined by a network prefix.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The mechanism SHOULD
+also allow for a metric to be specified for each static route.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router that supports a dynamic routing protocol MUST allow static
+routes to be defined with any metric valid for the routing protocol
+used.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The router MUST provide the ability for the user to specify a
+list of static routes that may or may not be propagated through the
+routing protocol.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+In addition, a router SHOULD support the following
+additional information if it supports a routing protocol that could
+make use of the information.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Whether a router prefers a static route over a dynamic route (or
+vice versa) or whether the associated metrics are used to choose
+between conflicting static and dynamic routes SHOULD be
+configurable for each static route.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST allow a metric to be assigned to a static route for
+each routing domain that it supports.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Each such metric MUST be
+explicitly assigned to a specific routing domain.
+'''
+

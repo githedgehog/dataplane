@@ -1,0 +1,12 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.13.1"
+
+# Unrecognized Options Unrecognized IP options in forwarded
+#
+#    packets MUST be passed through unchanged.
+
+[[spec]]
+level = "MUST"
+quote = '''
+packets MUST be passed through unchanged.
+'''
+

@@ -1,0 +1,76 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-8.4"
+
+# Vendor Specific MIBS
+#
+#    The Internet Standard and Experimental MIBs do not cover the entire
+#    range of statistical, state, configuration and control information
+#    that may be available in a network element.  This information is,
+#    nevertheless, extremely useful.  Vendors of routers (and other
+#    network devices) generally have developed MIB extensions that cover
+#    this information.  These MIB extensions are called Vendor Specific
+#    MIBs.
+# 
+#    The Vendor Specific MIB for the router MUST provide access to all
+#    statistical, state, configuration, and control information that is
+#    not available through the Standard and Experimental MIBs that have
+#    been implemented.  This information MUST be available for both
+#    monitoring and control operations.
+# 
+#    DISCUSSION
+#       The intent of this requirement is to provide the ability to do
+#       anything on the router through SNMP that can be done through a
+#       console, and vice versa.  A certain minimal amount of
+#       configuration is necessary before SNMP can operate (e.g., the
+#       router must have an IP address).  This initial configuration can
+#       not be done through SNMP.  However, once the initial configuration
+#       is done, full capabilities ought to be available through network
+#       management.
+# 
+#    The vendor SHOULD make available the specifications for all Vendor
+#    Specific MIB variables.  These specifications MUST conform to the SMI
+#    [MGT:1] and the descriptions MUST be in the form specified in
+#    [MGT:4].
+# 
+#    DISCUSSION
+#       Making the Vendor Specific MIB available to the user is necessary.
+#       Without this information the users would not be able to configure
+#       their network management systems to be able to access the Vendor
+#       Specific parameters.  These parameters would then be useless.
+# 
+#       ne 2 The format of the MIB specification is also specified.
+#       Parsers that read MIB specifications and generate the needed
+#       tables for the network management station are available.  These
+#       parsers generally understand only the standard MIB specification
+#       format.
+
+[[spec]]
+level = "MUST"
+quote = '''
+The Vendor Specific MIB for the router MUST provide access to all
+statistical, state, configuration, and control information that is
+not available through the Standard and Experimental MIBs that have
+been implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+This information MUST be available for both
+monitoring and control operations.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The vendor SHOULD make available the specifications for all Vendor
+Specific MIB variables.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+These specifications MUST conform to the SMI
+[MGT:1] and the descriptions MUST be in the form specified in
+[MGT:4].
+'''
+

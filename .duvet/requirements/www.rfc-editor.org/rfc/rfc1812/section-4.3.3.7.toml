@@ -1,0 +1,20 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.3.7"
+
+# Information Request/Reply
+#
+#    A router SHOULD NOT originate or respond to these messages.
+# 
+#    DISCUSSION
+#       The Information Request/Reply pair was intended to support self-
+#       configuring systems such as diskless workstations, to allow them
+#       to discover their IP network prefixes at boot time.  However,
+#       these messages are now obsolete.  The RARP and BOOTP protocols
+#       provide better mechanisms for a host to discover its own IP
+#       address.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD NOT originate or respond to these messages.
+'''
+

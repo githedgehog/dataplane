@@ -1,0 +1,62 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.2.8"
+
+# Rate Limiting
+#
+#    A router which sends ICMP Source Quench messages MUST be able to
+#    limit the rate at which the messages can be generated.  A router
+#    SHOULD also be able to limit the rate at which it sends other sorts
+#    of ICMP error messages (Destination Unreachable, Redirect, Time
+#    Exceeded, Parameter Problem).  The rate limit parameters SHOULD be
+#    settable as part of the configuration of the router.  How the limits
+#    are applied (e.g., per router or per interface) is left to the
+#    implementor's discretion.
+# 
+#    DISCUSSION
+#       Two problems for a router sending ICMP error message are:
+#       (1) The consumption of bandwidth on the reverse path, and
+#       (2) The use of router resources (e.g., memory, CPU time)
+# 
+#       To help solve these problems a router can limit the frequency with
+#       which it generates ICMP error messages.  For similar reasons, a
+#       router may limit the frequency at which some other sorts of
+#       messages, such as ICMP Echo Replies, are generated.
+# 
+#    IMPLEMENTATION
+#       Various mechanisms have been used or proposed for limiting the
+#       rate at which ICMP messages are sent:
+# 
+#       (1) Count-based - for example, send an ICMP error message for
+#            every N dropped packets overall or per given source host.
+#            This mechanism might be appropriate for ICMP Source Quench,
+#            if used, but probably not for other types of ICMP messages.
+# 
+#       (2) Timer-based - for example, send an ICMP error message to a
+#            given source host or overall at most once per T milliseconds.
+# 
+#       (3) Bandwidth-based - for example, limit the rate at which ICMP
+#            messages are sent over a particular interface to some
+#            fraction of the attached network's bandwidth.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router which sends ICMP Source Quench messages MUST be able to
+limit the rate at which the messages can be generated.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router
+SHOULD also be able to limit the rate at which it sends other sorts
+of ICMP error messages (Destination Unreachable, Redirect, Time
+Exceeded, Parameter Problem).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The rate limit parameters SHOULD be
+settable as part of the configuration of the router.
+'''
+

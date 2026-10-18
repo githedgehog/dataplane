@@ -1,0 +1,110 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.1"
+
+# Time to Live (TTL)
+#
+#    The Time-to-Live (TTL) field of the IP header is defined to be a
+#    timer limiting the lifetime of a datagram.  It is an 8-bit field and
+#    the units are seconds.  Each router (or other module) that handles a
+#    packet MUST decrement the TTL by at least one, even if the elapsed
+#    time was much less than a second.  Since this is very often the case,
+#    the TTL is effectively a hop count limit on how far a datagram can
+#    propagate through the Internet.
+# 
+#    When a router forwards a packet, it MUST reduce the TTL by at least
+#    one.  If it holds a packet for more than one second, it MAY decrement
+#    the TTL by one for each second.
+# 
+#    If the TTL is reduced to zero (or less), the packet MUST be
+#    discarded, and if the destination is not a multicast address the
+#    router MUST send an ICMP Time Exceeded message, Code 0 (TTL Exceeded
+#    in Transit) message to the source.  Note that a router MUST NOT
+#    discard an IP unicast or broadcast packet with a non-zero TTL merely
+#    because it can predict that another router on the path to the
+#    packet's final destination will decrement the TTL to zero.  However,
+#    a router MAY do so for IP multicasts, in order to more efficiently
+#    implement IP multicast's expanding ring search algorithm (see
+#    [INTERNET:4]).
+# 
+#    DISCUSSION
+#       The IP TTL is used, somewhat schizophrenically, as both a hop
+#       count limit and a time limit.  Its hop count function is critical
+#       to ensuring that routing problems can't melt down the network by
+#       causing packets to loop infinitely in the network.  The time limit
+#       function is used by transport protocols such as TCP to ensure
+#       reliable data transfer.  Many current implementations treat TTL as
+#       a pure hop count, and in parts of the Internet community there is
+#       a strong sentiment that the time limit function should instead be
+#       performed by the transport protocols that need it.
+# 
+#       In this specification, we have reluctantly decided to follow the
+#       strong belief among the router vendors that the time limit
+#       function should be optional.  They argued that implementation of
+#       the time limit function is difficult enough that it is currently
+#       not generally done.  They further pointed to the lack of
+#       documented cases where this shortcut has caused TCP to corrupt
+#       data (of course, we would expect the problems created to be rare
+#       and difficult to reproduce, so the lack of documented cases
+#       provides little reassurance that there haven't been a number of
+#       undocumented cases).
+# 
+#       IP multicast notions such as the expanding ring search may not
+#       work as expected unless the TTL is treated as a pure hop count.
+#       The same thing is somewhat true of traceroute.
+# 
+#       ICMP Time Exceeded messages are required because the traceroute
+#       diagnostic tool depends on them.
+# 
+#       Thus, the tradeoff is between severely crippling, if not
+#       eliminating, two very useful tools and avoiding a very rare and
+#       transient data transport problem that may not occur at all.  We
+#       have chosen to preserve the tools.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Each router (or other module) that handles a
+packet MUST decrement the TTL by at least one, even if the elapsed
+time was much less than a second.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When a router forwards a packet, it MUST reduce the TTL by at least
+one.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+If it holds a packet for more than one second, it MAY decrement
+the TTL by one for each second.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the TTL is reduced to zero (or less), the packet MUST be
+discarded, and if the destination is not a multicast address the
+router MUST send an ICMP Time Exceeded message, Code 0 (TTL Exceeded
+in Transit) message to the source.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Note that a router MUST NOT
+discard an IP unicast or broadcast packet with a non-zero TTL merely
+because it can predict that another router on the path to the
+packet's final destination will decrement the TTL to zero.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+However,
+a router MAY do so for IP multicasts, in order to more efficiently
+implement IP multicast's expanding ring search algorithm (see
+[INTERNET:4]).
+'''
+

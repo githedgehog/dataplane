@@ -1,0 +1,124 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.3.6"
+
+# Echo Request/Reply
+#
+#    A router MUST implement an ICMP Echo server function that receives
+#    Echo Requests sent to the router, and sends corresponding Echo
+#    Replies.  A router MUST be prepared to receive, reassemble and echo
+#    an ICMP Echo Request datagram at least as the maximum of 576 and the
+#    MTUs of all the connected networks.
+# 
+#    The Echo server function MAY choose not to respond to ICMP echo
+#    requests addressed to IP broadcast or IP multicast addresses.
+# 
+#    A router SHOULD have a configuration option that, if enabled, causes
+#    the router to silently ignore all ICMP echo requests; if provided,
+#    this option MUST default to allowing responses.
+# 
+#    DISCUSSION
+#       The neutral provision about responding to broadcast and multicast
+#       Echo Requests derives from [INTRO:2]'s "Echo Request/Reply"
+#       section.
+# 
+#    As stated in Section [10.3.3], a router MUST also implement a
+#    user/application-layer interface for sending an Echo Request and
+#    receiving an Echo Reply, for diagnostic purposes.  All ICMP Echo
+#    Reply messages MUST be passed to this interface.
+# 
+#    The IP source address in an ICMP Echo Reply MUST be the same as the
+#    specific-destination address of the corresponding ICMP Echo Request
+#    message.
+# 
+#    Data received in an ICMP Echo Request MUST be entirely included in
+#    the resulting Echo Reply.
+# 
+#    If a Record Route and/or Timestamp option is received in an ICMP Echo
+#    Request, this option (these options) SHOULD be updated to include the
+#    current router and included in the IP header of the Echo Reply
+#    message, without truncation.  Thus, the recorded route will be for
+#    the entire round trip.
+# 
+#    If a Source Route option is received in an ICMP Echo Request, the
+#    return route MUST be reversed and used as a Source Route option for
+#    the Echo Reply message, unless the router is aware of policy that
+#    would prevent the delivery of the message.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST implement an ICMP Echo server function that receives
+Echo Requests sent to the router, and sends corresponding Echo
+Replies.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST be prepared to receive, reassemble and echo
+an ICMP Echo Request datagram at least as the maximum of 576 and the
+MTUs of all the connected networks.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+The Echo server function MAY choose not to respond to ICMP echo
+requests addressed to IP broadcast or IP multicast addresses.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router SHOULD have a configuration option that, if enabled, causes
+the router to silently ignore all ICMP echo requests; if provided,
+this option MUST default to allowing responses.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+As stated in Section [10.3.3], a router MUST also implement a
+user/application-layer interface for sending an Echo Request and
+receiving an Echo Reply, for diagnostic purposes.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+All ICMP Echo
+Reply messages MUST be passed to this interface.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The IP source address in an ICMP Echo Reply MUST be the same as the
+specific-destination address of the corresponding ICMP Echo Request
+message.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Data received in an ICMP Echo Request MUST be entirely included in
+the resulting Echo Reply.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a Record Route and/or Timestamp option is received in an ICMP Echo
+Request, this option (these options) SHOULD be updated to include the
+current router and included in the IP header of the Echo Reply
+message, without truncation.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a Source Route option is received in an ICMP Echo Request, the
+return route MUST be reversed and used as a Source Route option for
+the Echo Reply message, unless the router is aware of policy that
+would prevent the delivery of the message.
+'''
+

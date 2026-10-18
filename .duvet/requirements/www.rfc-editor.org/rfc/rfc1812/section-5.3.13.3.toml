@@ -1,0 +1,16 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.13.3"
+
+# Stream Identifier Option
+#
+#    This option is obsolete.  If the Stream Identifier option is present
+#    in a packet forwarded by the router, the option MUST be ignored and
+#    passed through unchanged.
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Stream Identifier option is present
+in a packet forwarded by the router, the option MUST be ignored and
+passed through unchanged.
+'''
+

@@ -1,0 +1,211 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.3.3"
+
+# Precedence Handling For All Routers
+#
+#    A router (whether or not it employs precedence-ordered queue
+#    service):
+# 
+#    (1) MUST accept and process incoming traffic of all precedence levels
+#         normally, unless it has been administratively configured to do
+#         otherwise.
+# 
+#    (2) MAY implement a validation filter to administratively restrict
+#         the use of precedence levels by particular traffic sources.  If
+#         provided, this filter MUST NOT filter out or cut off the
+#         following sorts of ICMP error messages: Destination Unreachable,
+#         Redirect, Time Exceeded, and Parameter Problem.  If this filter
+#         is provided, the procedures required for packet filtering by
+#         addresses are required for this filter also.
+# 
+#    DISCUSSION
+#       Precedence filtering should be applicable to specific
+#       source/destination IP Address pairs, specific protocols, specific
+#       ports, and so on.
+# 
+#    An ICMP Destination Unreachable message with code 14 SHOULD be sent
+#    when a packet is dropped by the validation filter, unless this has
+#    been suppressed by configuration choice.
+# 
+#    (3) MAY implement a cutoff function that allows the router to be set
+#         to refuse or drop traffic with precedence below a specified
+#         level.  This function may be activated by management actions or
+#         by some implementation dependent heuristics, but there MUST be a
+#         configuration option to disable any heuristic mechanism that
+#         operates without human intervention.  An ICMP Destination
+#         Unreachable message with code 15 SHOULD be sent when a packet is
+#         dropped by the cutoff function, unless this has been suppressed
+#         by configuration choice.
+# 
+#         A router MUST NOT refuse to forward datagrams with IP precedence
+#         of 6 (Internetwork Control) or 7 (Network Control) solely due to
+#         precedence cutoff.  However, other criteria may be used in
+#         conjunction with precedence cutoff to filter high precedence
+#         traffic.
+# 
+#    DISCUSSION
+#       Unrestricted precedence cutoff could result in an unintentional
+#       cutoff of routing and control traffic.  In the general case, host
+#       traffic should be restricted to a value of 5 (CRITIC/ECP) or
+#       below; this is not a requirement and may not be correct in certain
+#       systems.
+# 
+#    (4) MUST NOT change precedence settings on packets it did not
+#         originate.
+# 
+#    (5) SHOULD be able to configure distinct precedence values to be used
+#         for each routing or management protocol supported (except for
+#         those protocols, such as OSPF, which specify which precedence
+#         value must be used).
+# 
+#    (6) MAY be able to configure routing or management traffic precedence
+#         values independently for each peer address.
+# 
+#    (7) MUST respond appropriately to Link Layer precedence-related error
+#         indications where provided.  An ICMP Destination Unreachable
+#         message with code 15 SHOULD be sent when a packet is dropped
+#         because a link cannot accept it due to a precedence-related
+#         condition, unless this has been suppressed by configuration
+#         choice.
+# 
+#    DISCUSSION
+#       The precedence cutoff mechanism described in (3) is somewhat
+#       controversial.  Depending on the topological location of the area
+#       affected by the cutoff, transit traffic may be directed by routing
+#       protocols into the area of the cutoff, where it will be dropped.
+#       This is only a problem if another path that is unaffected by the
+#       cutoff exists between the communicating points.  Proposed ways of
+#       avoiding this problem include providing some minimum bandwidth to
+#       all precedence levels even under overload conditions, or
+#       propagating cutoff information in routing protocols.  In the
+#       absence of a widely accepted (and implemented) solution to this
+#       problem, great caution is recommended in activating cutoff
+#       mechanisms in transit networks.
+# 
+#       A transport layer relay could legitimately provide the function
+#       prohibited by (4) above.  Changing precedence levels may cause
+#       subtle interactions with TCP and perhaps other protocols; a
+#       correct design is a non-trivial task.
+# 
+#       The intent of (5) and (6) (and the discussion of IP Precedence in
+#       ICMP messages in Section [4.3.2]) is that the IP precedence bits
+#       should be appropriately set, whether or not this router acts upon
+#       those bits in any other way.  We expect that in the future
+#       specifications for routing protocols and network management
+#       protocols will specify how the IP Precedence should be set for
+#       messages sent by those protocols.
+# 
+#       The appropriate response for (7) depends on the link layer
+#       protocol in use.  Typically, the router should stop trying to send
+#       offensive traffic to that destination for some period of time, and
+# 
+#       should return an ICMP Destination Unreachable message with code 15
+#       (service not available for precedence requested) to the traffic
+#       source.  It also should not try to reestablish a preempted Link
+#       Layer connection for some time.
+
+[[spec]]
+level = "MUST"
+quote = '''
+(1) MUST accept and process incoming traffic of all precedence levels
+normally, unless it has been administratively configured to do
+otherwise.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+(2) MAY implement a validation filter to administratively restrict
+the use of precedence levels by particular traffic sources.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If
+provided, this filter MUST NOT filter out or cut off the
+following sorts of ICMP error messages: Destination Unreachable,
+Redirect, Time Exceeded, and Parameter Problem.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An ICMP Destination Unreachable message with code 14 SHOULD be sent
+when a packet is dropped by the validation filter, unless this has
+been suppressed by configuration choice.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+(3) MAY implement a cutoff function that allows the router to be set
+to refuse or drop traffic with precedence below a specified
+level.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+This function may be activated by management actions or
+by some implementation dependent heuristics, but there MUST be a
+configuration option to disable any heuristic mechanism that
+operates without human intervention.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An ICMP Destination
+Unreachable message with code 15 SHOULD be sent when a packet is
+dropped by the cutoff function, unless this has been suppressed
+by configuration choice.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT refuse to forward datagrams with IP precedence
+of 6 (Internetwork Control) or 7 (Network Control) solely due to
+precedence cutoff.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+(4) MUST NOT change precedence settings on packets it did not
+originate.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+(5) SHOULD be able to configure distinct precedence values to be used
+for each routing or management protocol supported (except for
+those protocols, such as OSPF, which specify which precedence
+value must be used).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+(6) MAY be able to configure routing or management traffic precedence
+values independently for each peer address.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+(7) MUST respond appropriately to Link Layer precedence-related error
+indications where provided.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An ICMP Destination Unreachable
+message with code 15 SHOULD be sent when a packet is dropped
+because a link cannot accept it due to a precedence-related
+condition, unless this has been suppressed by configuration
+choice.
+'''
+

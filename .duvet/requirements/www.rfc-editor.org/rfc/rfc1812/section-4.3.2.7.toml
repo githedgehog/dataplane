@@ -1,0 +1,61 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.2.7"
+
+# When Not to Send ICMP Errors
+#
+#    An ICMP error message MUST NOT be sent as the result of receiving:
+# 
+#    o An ICMP error message, or
+# 
+#    o A packet which fails the IP header validation tests described in
+#       Section [5.2.2] (except where that section specifically permits
+#       the sending of an ICMP error message), or
+# 
+#    o A packet destined to an IP broadcast or IP multicast address, or
+# 
+#    o A packet sent as a Link Layer broadcast or multicast, or
+# 
+#    o A packet whose source address has a network prefix of zero or is an
+#       invalid source address (as defined in Section [5.3.7]), or
+# 
+#    o Any fragment of a datagram other then the first fragment (i.e., a
+#       packet for which the fragment offset in the IP header is nonzero).
+# 
+#    Furthermore, an ICMP error message MUST NOT be sent in any case where
+#    this memo states that a packet is to be silently discarded.
+# 
+#    NOTE: THESE RESTRICTIONS TAKE PRECEDENCE OVER ANY REQUIREMENT
+#    ELSEWHERE IN THIS DOCUMENT FOR SENDING ICMP ERROR MESSAGES.
+# 
+#    DISCUSSION
+#       These rules aim to prevent the broadcast storms that have resulted
+#       from routers or hosts returning ICMP error messages in response to
+#       broadcast packets.  For example, a broadcast UDP packet to a non-
+#       existent port could trigger a flood of ICMP Destination
+#       Unreachable datagrams from all devices that do not have a client
+#       for that destination port.  On a large Ethernet, the resulting
+#       collisions can render the network useless for a second or more.
+# 
+#       Every packet that is broadcast on the connected network should
+#       have a valid IP broadcast address as its IP destination (see
+#       Section [5.3.4] and [INTRO:2]).  However, some devices violate
+#       this rule.  To be certain to detect broadcast packets, therefore,
+#       routers are required to check for a link-layer broadcast as well
+#       as an IP-layer address.
+# 
+#    IMPLEMENTATION+ This requires that the link layer inform the IP layer
+#       when a link-layer broadcast packet has been received; see Section
+#       [3.1].
+
+[[spec]]
+level = "MUST"
+quote = '''
+An ICMP error message MUST NOT be sent as the result of receiving:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Furthermore, an ICMP error message MUST NOT be sent in any case where
+this memo states that a packet is to be silently discarded.
+'''
+

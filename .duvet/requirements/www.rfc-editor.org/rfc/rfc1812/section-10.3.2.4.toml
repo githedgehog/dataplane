@@ -1,0 +1,80 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-10.3.2.4"
+
+# Net Booting of System Software
+#
+#       A router SHOULD keep its system image in local non-volatile
+#       storage such as PROM, NVRAM, or disk.  It MAY also be able to load
+#       its system software over the network from a host or another
+#       router.
+# 
+#       A router that can keep its system image in local non-volatile
+#       storage MAY be configurable to boot its system image over the
+#       network.  A router that offers this option SHOULD be configurable
+#       to boot the system image in its non-volatile local storage if it
+#       is unable to boot its system image over the network.
+# 
+#    DISCUSSION
+#       It is important that the router be able to come up and run on its
+#       own.  NVRAM may be a particular solution for routers used in large
+#       networks, since changing PROMs can be quite time consuming for a
+#       network manager responsible for numerous or geographically
+#       dispersed routers.  It is important to be able to netboot the
+#       system image because there should be an easy way for a router to
+#       get a bug fix or new feature more quickly than getting PROMs
+#       installed.  Also if the router has NVRAM instead of PROMs, it will
+#       netboot the image and then put it in NVRAM.
+# 
+#       Routers SHOULD perform some basic consistency check on any image
+#       loaded, to detect and perhaps prevent incorrect images.
+# 
+#    A router MAY also be able to distinguish between different
+#    configurations based on which software it is running.  If
+#    configuration commands change from one software version to another,
+#    it would be helpful if the router could use the configuration that
+#    was compatible with the software.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD keep its system image in local non-volatile
+storage such as PROM, NVRAM, or disk.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+It MAY also be able to load
+its system software over the network from a host or another
+router.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router that can keep its system image in local non-volatile
+storage MAY be configurable to boot its system image over the
+network.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router that offers this option SHOULD be configurable
+to boot the system image in its non-volatile local storage if it
+is unable to boot its system image over the network.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers SHOULD perform some basic consistency check on any image
+loaded, to detect and perhaps prevent incorrect images.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY also be able to distinguish between different
+configurations based on which software it is running.
+'''
+

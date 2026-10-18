@@ -1,0 +1,27 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.2.2"
+
+# OPEN SHORTEST PATH FIRST - OSPF
+#
+#    Shortest Path First (SPF) based routing protocols are a class of
+#    link-state algorithms that are based on the shortest-path algorithm
+#    of Dijkstra.  Although SPF based algorithms have been around since
+#    the inception of the ARPANET, it is only recently that they have
+#    achieved popularity both inside both the IP and the OSI communities.
+#    In an SPF based system, each router obtains the entire topology
+#    database through a process known as flooding.  Flooding insures a
+#    reliable transfer of the information.  Each router then runs the SPF
+#    algorithm on its database to build the IP routing table.  The OSPF
+#    routing protocol is an implementation of an SPF algorithm.  The
+#    current version, OSPF version 2, is specified in [ROUTE:1].  Note
+#    that RFC-1131, which describes OSPF version 1, is obsolete.
+# 
+#    Note that to comply with Section [8.3] of this memo, a router that
+#    implements OSPF MUST implement the OSPF MIB [MGT:14].
+
+[[spec]]
+level = "MUST"
+quote = '''
+Note that to comply with Section [8.3] of this memo, a router that
+implements OSPF MUST implement the OSPF MIB [MGT:14].
+'''
+

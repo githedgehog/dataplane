@@ -1,0 +1,46 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-3.3.1"
+
+# Trailer Encapsulation
+#
+#    Routers that can connect to ten megabit Ethernets MAY be able to
+#    receive and forward Ethernet packets encapsulated using the trailer
+#    encapsulation described in [LINK:1].  However, a router SHOULD NOT
+#    originate trailer encapsulated packets.  A router MUST NOT originate
+#    trailer encapsulated packets without first verifying, using the
+#    mechanism described in [INTRO:2], that the immediate destination of
+#    the packet is willing and able to accept trailer-encapsulated
+#    packets.  A router SHOULD NOT agree (using these mechanisms) to
+#    accept trailer-encapsulated packets.
+
+[[spec]]
+level = "MAY"
+quote = '''
+Routers that can connect to ten megabit Ethernets MAY be able to
+receive and forward Ethernet packets encapsulated using the trailer
+encapsulation described in [LINK:1].
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+However, a router SHOULD NOT
+originate trailer encapsulated packets.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT originate
+trailer encapsulated packets without first verifying, using the
+mechanism described in [INTRO:2], that the immediate destination of
+the packet is willing and able to accept trailer-encapsulated
+packets.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD NOT agree (using these mechanisms) to
+accept trailer-encapsulated packets.
+'''
+

@@ -1,0 +1,181 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.2.2"
+
+# IP Header Validation
+#
+#    Before a router can process any IP packet, it MUST perform a the
+#    following basic validity checks on the packet's IP header to ensure
+#    that the header is meaningful.  If the packet fails any of the
+#    following tests, it MUST be silently discarded, and the error SHOULD
+#    be logged.
+# 
+#    (1) The packet length reported by the Link Layer must be large enough
+#         to hold the minimum length legal IP datagram (20 bytes).
+# 
+#    (2) The IP checksum must be correct.
+# 
+#    (3) The IP version number must be 4.  If the version number is not 4
+#         then the packet may be another version of IP, such as IPng or
+#         ST-II.
+# 
+#    (4) The IP header length field must be large enough to hold the
+#         minimum length legal IP datagram (20 bytes = 5 words).
+# 
+#    (5) The IP total length field must be large enough to hold the IP
+#         datagram header, whose length is specified in the IP header
+#         length field.
+# 
+#    A router MUST NOT have a configuration option that allows disabling
+#    any of these tests.
+# 
+#    If the packet passes the second and third tests, the IP header length
+#    field is at least 4, and both the IP total length field and the
+#    packet length reported by the Link Layer are at least 16 then,
+#    despite the above rule, the router MAY respond with an ICMP Parameter
+#    Problem message, whose pointer points at the IP header length field
+#    (if it failed the fourth test) or the IP total length field (if it
+#    failed the fifth test).  However, it still MUST discard the packet
+#    and still SHOULD log the error.
+# 
+#    These rules (and this entire document) apply only to version 4 of the
+#    Internet Protocol.  These rules should not be construed as
+#    prohibiting routers from supporting other versions of IP.
+#    Furthermore, if a router can truly classify a packet as being some
+#    other version of IP then it ought not treat that packet as an error
+#    packet within the context of this memo.
+# 
+#    IMPLEMENTATION
+#       It is desirable for purposes of error reporting, though not always
+#       entirely possible, to determine why a header was invalid.  There
+#       are four possible reasons:
+# 
+#       o The Link Layer truncated the IP header
+# 
+#       o The datagram is using a version of IP other than the standard
+#          one (version 4).
+# 
+#       o The IP header has been corrupted in transit.
+# 
+#       o The sender generated an illegal IP header.
+# 
+#       It is probably desirable to perform the checks in the order
+#       listed, since we believe that this ordering is most likely to
+#       correctly categorize the cause of the error.  For purposes of
+#       error reporting, it may also be desirable to check if a packet
+#       that fails these tests has an IP version number indicating IPng or
+#       ST-II; these should be handled according to their respective
+#       specifications.
+# 
+#    Additionally, the router SHOULD verify that the packet length
+#    reported by the Link Layer is at least as large as the IP total
+#    length recorded in the packet's IP header.  If it appears that the
+#    packet has been truncated, the packet MUST be discarded, the error
+#    SHOULD be logged, and the router SHOULD respond with an ICMP
+#    Parameter Problem message whose pointer points at the IP total length
+#    field.
+# 
+#    DISCUSSION
+#       Because any higher layer protocol that concerns itself with data
+#       corruption will detect truncation of the packet data when it
+#       reaches its final destination, it is not absolutely necessary for
+#       routers to perform the check suggested above to maintain protocol
+#       correctness.  However, by making this check a router can simplify
+#       considerably the task of determining which hop in the path is
+#       truncating the packets.  It will also reduce the expenditure of
+#       resources down-stream from the router in that down-stream systems
+#       will not need to deal with the packet.
+# 
+#    Finally, if the destination address in the IP header is not one of
+#    the addresses of the router, the router SHOULD verify that the packet
+#    does not contain a Strict Source and Record Route option.  If a
+#    packet fails this test (if it contains a strict source route option),
+#    the router SHOULD log the error and SHOULD respond with an ICMP
+#    Parameter Problem error with the pointer pointing at the offending
+#    packet's IP destination address.
+# 
+#    DISCUSSION
+#       Some people might suggest that the router should respond with a
+#       Bad Source Route message instead of a Parameter Problem message.
+#       However, when a packet fails this test, it usually indicates a
+# 
+#       protocol error by the previous hop router, whereas Bad Source
+#       Route would suggest that the source host had requested a
+#       nonexistent or broken path through the network.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Before a router can process any IP packet, it MUST perform a the
+following basic validity checks on the packet's IP header to ensure
+that the header is meaningful.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the packet fails any of the
+following tests, it MUST be silently discarded, and the error SHOULD
+be logged.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT have a configuration option that allows disabling
+any of these tests.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+If the packet passes the second and third tests, the IP header length
+field is at least 4, and both the IP total length field and the
+packet length reported by the Link Layer are at least 16 then,
+despite the above rule, the router MAY respond with an ICMP Parameter
+Problem message, whose pointer points at the IP header length field
+(if it failed the fourth test) or the IP total length field (if it
+failed the fifth test).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+However, it still MUST discard the packet
+and still SHOULD log the error.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Additionally, the router SHOULD verify that the packet length
+reported by the Link Layer is at least as large as the IP total
+length recorded in the packet's IP header.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If it appears that the
+packet has been truncated, the packet MUST be discarded, the error
+SHOULD be logged, and the router SHOULD respond with an ICMP
+Parameter Problem message whose pointer points at the IP total length
+field.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Finally, if the destination address in the IP header is not one of
+the addresses of the router, the router SHOULD verify that the packet
+does not contain a Strict Source and Record Route option.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a
+packet fails this test (if it contains a strict source route option),
+the router SHOULD log the error and SHOULD respond with an ICMP
+Parameter Problem error with the pointer pointing at the offending
+packet's IP destination address.
+'''
+

@@ -1,0 +1,39 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.2.3"
+
+# Original Message Header
+#
+#    Historically, every ICMP error message has included the Internet
+#    header and at least the first 8 data bytes of the datagram that
+#    triggered the error.  This is no longer adequate, due to the use of
+#    IP-in-IP tunneling and other technologies.  Therefore, the ICMP
+#    datagram SHOULD contain as much of the original datagram as possible
+#    without the length of the ICMP datagram exceeding 576 bytes.  The
+#    returned IP header (and user data) MUST be identical to that which
+#    was received, except that the router is not required to undo any
+#    modifications to the IP header that are normally performed in
+#    forwarding that were performed before the error was detected (e.g.,
+#    decrementing the TTL, or updating options).  Note that the
+#    requirements of Section [4.3.3.5] supersede this requirement in some
+#    cases (i.e., for a Parameter Problem message, if the problem is in a
+#    modified field, the router must undo the modification).  See Section
+#    [4.3.3.5]).
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Therefore, the ICMP
+datagram SHOULD contain as much of the original datagram as possible
+without the length of the ICMP datagram exceeding 576 bytes.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The
+returned IP header (and user data) MUST be identical to that which
+was received, except that the router is not required to undo any
+modifications to the IP header that are normally performed in
+forwarding that were performed before the error was detected (e.g.,
+decrementing the TTL, or updating options).
+'''
+

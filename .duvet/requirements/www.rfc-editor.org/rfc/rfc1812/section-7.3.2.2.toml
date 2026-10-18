@@ -1,0 +1,81 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.3.2.2"
+
+# Protocol Walk-through
+#
+#    While BGP provides support for quite complex routing policies (as an
+#    example see Section 4.2 in [ROUTE:5]), it is not required for all BGP
+#    implementors to support such policies.  At a minimum, however, a BGP
+#    implementation:
+# 
+#    (1) SHOULD allow an AS to control announcements of the BGP learned
+#         routes to adjacent AS's.  Implementations SHOULD support such
+#         control with at least the granularity of a single network.
+#         Implementations SHOULD also support such control with the
+#         granularity of an autonomous system, where the autonomous system
+#         may be either the autonomous system that originated the route,
+#         or the autonomous system that advertised the route to the local
+#         system (adjacent autonomous system).
+# 
+#    (2) SHOULD allow an AS to prefer a particular path to a destination
+#         (when more than one path is available).  Such function SHOULD be
+#         implemented by allowing system administrator to assign weights
+#         to Autonomous Systems, and making route selection process to
+#         select a route with the lowest weight (where weight of a route
+#         is defined as a sum of weights of all AS's in the AS_PATH path
+#         attribute associated with that route).
+# 
+#    (3) SHOULD allow an AS to ignore routes with certain AS's in the
+#         AS_PATH path attribute.  Such function can be implemented by
+#         using technique outlined in (2), and by assigning infinity as
+#         weights for such AS's.  The route selection process must ignore
+#         routes that have weight equal to infinity.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+(1) SHOULD allow an AS to control announcements of the BGP learned
+routes to adjacent AS's.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Implementations SHOULD support such
+control with at least the granularity of a single network.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Implementations SHOULD also support such control with the
+granularity of an autonomous system, where the autonomous system
+may be either the autonomous system that originated the route,
+or the autonomous system that advertised the route to the local
+system (adjacent autonomous system).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+(2) SHOULD allow an AS to prefer a particular path to a destination
+(when more than one path is available).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Such function SHOULD be
+implemented by allowing system administrator to assign weights
+to Autonomous Systems, and making route selection process to
+select a route with the lowest weight (where weight of a route
+is defined as a sum of weights of all AS's in the AS_PATH path
+attribute associated with that route).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+(3) SHOULD allow an AS to ignore routes with certain AS's in the
+AS_PATH path attribute.
+'''
+

@@ -1,0 +1,91 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.6"
+
+# INTER-ROUTING-PROTOCOL INFORMATION EXCHANGE
+#
+#    Routers MUST be able to exchange routing information between separate
+#    IP interior routing protocols, if independent IP routing processes
+#    can run in the same router.  Routers MUST provide some mechanism for
+#    avoiding routing loops when routers are configured for bi-directional
+#    exchange of routing information between two separate interior routing
+# 
+#    processes.  Routers MUST provide some priority mechanism for choosing
+#    routes from independent routing processes.  Routers SHOULD provide
+#    administrative control of IGP-IGP exchange when used across
+#    administrative boundaries.
+# 
+#    Routers SHOULD provide some mechanism for translating or transforming
+#    metrics on a per network basis.  Routers (or routing protocols) MAY
+#    allow for global preference of exterior routes imported into an IGP.
+# 
+#    DISCUSSION
+#       Different IGPs use different metrics, requiring some translation
+#       technique when introducing information from one protocol into
+#       another protocol with a different form of metric.  Some IGPs can
+#       run multiple instances within the same router or set of routers.
+#       In this case metric information can be preserved exactly or
+#       translated.
+# 
+#       There are at least two techniques for translation between
+#       different routing processes.  The static (or reachability)
+#       approach uses the existence of a route advertisement in one IGP to
+#       generate a route advertisement in the other IGP with a given
+#       metric.  The translation or tabular approach uses the metric in
+#       one IGP to create a metric in the other IGP through use of either
+#       a function (such as adding a constant) or a table lookup.
+# 
+#       Bi-directional exchange of routing information is dangerous
+#       without control mechanisms to limit feedback.  This is the same
+#       problem that distance vector routing protocols must address with
+#       the split horizon technique and that EGP addresses with the
+#       third-party rule.  Routing loops can be avoided explicitly through
+#       use of tables or lists of permitted/denied routes or implicitly
+#       through use of a split horizon rule, a no-third-party rule, or a
+#       route tagging mechanism.  Vendors are encouraged to use implicit
+#       techniques where possible to make administration easier for
+#       network operators.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST be able to exchange routing information between separate
+IP interior routing protocols, if independent IP routing processes
+can run in the same router.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST provide some mechanism for
+avoiding routing loops when routers are configured for bi-directional
+exchange of routing information between two separate interior routing
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST provide some priority mechanism for choosing
+routes from independent routing processes.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers SHOULD provide
+administrative control of IGP-IGP exchange when used across
+administrative boundaries.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers SHOULD provide some mechanism for translating or transforming
+metrics on a per network basis.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Routers (or routing protocols) MAY
+allow for global preference of exterior routes imported into an IGP.
+'''
+

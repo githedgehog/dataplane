@@ -1,0 +1,55 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.3.2"
+
+# IP Multicasting
+#
+#    An IP router SHOULD satisfy the Host Requirements with respect to IP
+#    multicasting, as specified in [INTRO:2].  An IP router SHOULD support
+#    local IP multicasting on all connected networks.  When a mapping from
+#    IP multicast addresses to link-layer addresses has been specified
+#    (see the various IP-over-xxx specifications), it SHOULD use that
+#    mapping, and MAY be configurable to use the link layer broadcast
+#    instead.  On point-to-point links and all other interfaces,
+#    multicasts are encapsulated as link layer broadcasts.  Support for
+# 
+#    local IP multicasting includes originating multicast datagrams,
+#    joining multicast groups and receiving multicast datagrams, and
+#    leaving multicast groups.  This implies support for all of
+#    [INTERNET:4] including IGMP (see Section [4.4]).
+# 
+#    DISCUSSION
+#       Although [INTERNET:4] is entitled Host Extensions for IP
+#       Multicasting, it applies to all IP systems, both hosts and
+#       routers.  In particular, since routers may join multicast groups,
+#       it is correct for them to perform the host part of IGMP, reporting
+#       their group memberships to any multicast routers that may be
+#       present on their attached networks (whether or not they themselves
+#       are multicast routers).
+# 
+#       Some router protocols may specifically require support for IP
+#       multicasting (e.g., OSPF [ROUTE:1]), or may recommend it (e.g.,
+#       ICMP Router Discovery [INTERNET:13]).
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An IP router SHOULD satisfy the Host Requirements with respect to IP
+multicasting, as specified in [INTRO:2].
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An IP router SHOULD support
+local IP multicasting on all connected networks.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When a mapping from
+IP multicast addresses to link-layer addresses has been specified
+(see the various IP-over-xxx specifications), it SHOULD use that
+mapping, and MAY be configurable to use the link layer broadcast
+instead.
+'''
+

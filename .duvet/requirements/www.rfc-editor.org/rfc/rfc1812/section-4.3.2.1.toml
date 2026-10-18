@@ -1,0 +1,16 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.2.1"
+
+# Unknown Message Types
+#
+#    If an ICMP message of unknown type is received, it MUST be passed to
+#    the ICMP user interface (if the router has one) or silently discarded
+#    (if the router does not have one).
+
+[[spec]]
+level = "MUST"
+quote = '''
+If an ICMP message of unknown type is received, it MUST be passed to
+the ICMP user interface (if the router has one) or silently discarded
+(if the router does not have one).
+'''
+

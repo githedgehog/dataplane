@@ -1,0 +1,109 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.2.3"
+
+# Local Delivery Decision
+#
+#    When a router receives an IP packet, it must decide whether the
+#    packet is addressed to the router (and should be delivered locally)
+#    or the packet is addressed to another system (and should be handled
+#    by the forwarder).  There is also a hybrid case, where certain IP
+#    broadcasts and IP multicasts are both delivered locally and
+#    forwarded.  A router MUST determine which of the these three cases
+#    applies using the following rules.
+# 
+#    o An unexpired source route option is one whose pointer value does
+#       not point past the last entry in the source route.  If the packet
+#       contains an unexpired source route option, the pointer in the
+#       option is advanced until either the pointer does point past the
+#       last address in the option or else the next address is not one of
+#       the router's own addresses.  In the latter (normal) case, the
+#       packet is forwarded (and not delivered locally) regardless of the
+#       rules below.
+# 
+#    o The packet is delivered locally and not considered for forwarding
+#       in the following cases:
+# 
+#       - The packet's destination address exactly matches one of the
+#          router's IP addresses,
+# 
+#       - The packet's destination address is a limited broadcast address
+#          ({-1, -1}), or
+# 
+#       - The packet's destination is an IP multicast address which is
+#          never forwarded (such as 224.0.0.1 or 224.0.0.2) and (at least)
+#          one of the logical interfaces associated with the physical
+#          interface on which the packet arrived is a member of the
+#          destination multicast group.
+# 
+#    o The packet is passed to the forwarder AND delivered locally in the
+#       following cases:
+# 
+#       - The packet's destination address is an IP broadcast address that
+#          addresses at least one of the router's logical interfaces but
+#          does not address any of the logical interfaces associated with
+#          the physical interface on which the packet arrived
+# 
+#       - The packet's destination is an IP multicast address which is
+#          permitted to be forwarded (unlike 224.0.0.1 and 224.0.0.2) and
+#          (at least) one of the logical interfaces associated with the
+#          physical interface on which the packet arrived is a member of
+#          the destination multicast group.
+# 
+#    o The packet is delivered locally if the packet's destination address
+#       is an IP broadcast address (other than a limited broadcast
+#       address) that addresses at least one of the logical interfaces
+#       associated with the physical interface on which the packet
+#       arrived.  The packet is ALSO passed to the forwarder unless the
+#       link on which the packet arrived uses an IP encapsulation that
+#       does not encapsulate broadcasts differently than unicasts (e.g.,
+#       by using different Link Layer destination addresses).
+# 
+#    o The packet is passed to the forwarder in all other cases.
+# 
+#    DISCUSSION
+#       The purpose of the requirement in the last sentence of the fourth
+#       bullet is to deal with a directed broadcast to another network
+#       prefix on the same physical cable.  Normally, this works as
+#       expected: the sender sends the broadcast to the router as a Link
+#       Layer unicast.  The router notes that it arrived as a unicast, and
+#       therefore must be destined for a different network prefix than the
+#       sender sent it on.  Therefore, the router can safely send it as a
+#       Link Layer broadcast out the same (physical) interface over which
+#       it arrived.  However, if the router can't tell whether the packet
+#       was received as a Link Layer unicast, the sentence ensures that
+#       the router does the safe but wrong thing rather than the unsafe
+#       but right thing.
+# 
+#    IMPLEMENTATION
+#       As described in Section [5.3.4], packets received as Link Layer
+#       broadcasts are generally not forwarded.  It may be advantageous to
+#       avoid passing to the forwarder packets it would later discard
+#       because of the rules in that section.
+# 
+#       Some Link Layers (either because of the hardware or because of
+#       special code in the drivers) can deliver to the router copies of
+#       all Link Layer broadcasts and multicasts it transmits.  Use of
+#       this feature can simplify the implementation of cases where a
+#       packet has to both be passed to the forwarder and delivered
+#       locally, since forwarding the packet will automatically cause the
+#       router to receive a copy of the packet that it can then deliver
+#       locally.  One must use care in these circumstances to prevent
+#       treating a received loop-back packet as a normal packet that was
+#       received (and then being subject to the rules of forwarding,
+#       etc.).
+# 
+#       Even without such a Link Layer, it is of course hardly necessary
+#       to make a copy of an entire packet to queue it both for forwarding
+#       and for local delivery, though care must be taken with fragments,
+#       since reassembly is performed on locally delivered packets but not
+#       on forwarded packets.  One simple scheme is to associate a flag
+#       with each packet on the router's output queue that indicates
+#       whether it should be queued for local delivery after it has been
+#       sent.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST determine which of the these three cases
+applies using the following rules.
+'''
+

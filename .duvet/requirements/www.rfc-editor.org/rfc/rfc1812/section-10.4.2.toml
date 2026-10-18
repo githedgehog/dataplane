@@ -1,0 +1,92 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-10.4.2"
+
+# Configuration Control
+#
+#    A vendor has a responsibility to use good configuration control
+#    practices in the creation of the software/firmware loads for their
+#    routers.  In particular, if a vendor makes updates and loads
+#    available for retrieval over the Internet, the vendor should also
+#    provide a way for the customer to confirm the load is a valid one,
+#    perhaps by the verification of a checksum over the load.
+# 
+#    DISCUSSION
+#       Many vendors currently provide short notice updates of their
+#       software products through the Internet.  This a good trend and
+#       should be encouraged, but provides a point of vulnerability in the
+#       configuration control process.
+# 
+#    If a vendor provides the ability for the customer to change the
+#    configuration parameters of a router remotely, for example through a
+#    Telnet session, the ability to do so SHOULD be configurable and
+#    SHOULD default to off.  The router SHOULD require  valid
+#    authentication before permitting remote reconfiguration.  This
+#    authentication procedure SHOULD NOT transmit the authentication
+#    secret over the network.  For example, if telnet is implemented, the
+#    vendor SHOULD IMPLEMENT Kerberos, S-Key, or a similar authentication
+#    procedure.
+# 
+#    DISCUSSION
+#       Allowing your properly identified network operator to twiddle with
+#       your routers is necessary; allowing anyone else to do so is
+#       foolhardy.
+# 
+#    A router MUST NOT have undocumented back door access and master
+#    passwords.  A vendor MUST ensure any such access added for purposes
+#    of debugging or product development are deleted before the product is
+#    distributed to its customers.
+# 
+#    DISCUSSION
+#       A vendor has a responsibility to its customers to ensure they are
+#       aware of the vulnerabilities present in its code by intention -
+#       e.g., in-band access.  Trap doors, back doors and master passwords
+#       intentional or unintentional can turn a relatively secure router
+#       into a major problem on an operational network.  The supposed
+#       operational benefits are not matched by the potential problems.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a vendor provides the ability for the customer to change the
+configuration parameters of a router remotely, for example through a
+Telnet session, the ability to do so SHOULD be configurable and
+SHOULD default to off.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The router SHOULD require  valid
+authentication before permitting remote reconfiguration.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+This
+authentication procedure SHOULD NOT transmit the authentication
+secret over the network.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+For example, if telnet is implemented, the
+vendor SHOULD IMPLEMENT Kerberos, S-Key, or a similar authentication
+procedure.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT have undocumented back door access and master
+passwords.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A vendor MUST ensure any such access added for purposes
+of debugging or product development are deleted before the product is
+distributed to its customers.
+'''
+

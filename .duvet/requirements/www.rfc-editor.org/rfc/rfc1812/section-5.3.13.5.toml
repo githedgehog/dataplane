@@ -1,0 +1,40 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.13.5"
+
+# Record Route Option
+#
+#    Routers MUST support the Record Route option in forwarded packets.
+# 
+#    A router MAY provide a configuration option that, if enabled, will
+#    cause the router to ignore (i.e., pass through unchanged) Record
+#    Route options in forwarded packets.  If provided, such an option MUST
+#    default to enabling the record-route.  This option should not affect
+#    the processing of Record Route options in datagrams received by the
+#    router itself (in particular, Record Route options in ICMP echo
+#    requests will still be processed according to Section [4.3.3.6]).
+# 
+#    DISCUSSION
+#       There are some people who believe that Record Route is a security
+#       problem because it discloses information about the topology of the
+#       network.  Thus, this document allows it to be disabled.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST support the Record Route option in forwarded packets.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY provide a configuration option that, if enabled, will
+cause the router to ignore (i.e., pass through unchanged) Record
+Route options in forwarded packets.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If provided, such an option MUST
+default to enabling the record-route.
+'''
+

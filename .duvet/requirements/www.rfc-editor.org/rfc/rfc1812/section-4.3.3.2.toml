@@ -1,0 +1,21 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.3.2"
+
+# Redirect
+#
+#    The ICMP Redirect message is generated to inform a local host that it
+#    should use a different next hop router for certain traffic.
+# 
+#    Contrary to [INTRO:2], a router MAY ignore ICMP Redirects when
+#    choosing a path for a packet originated by the router if the router
+#    is running a routing protocol or if forwarding is enabled on the
+#    router and on the interface over which the packet is being sent.
+
+[[spec]]
+level = "MAY"
+quote = '''
+Contrary to [INTRO:2], a router MAY ignore ICMP Redirects when
+choosing a path for a packet originated by the router if the router
+is running a routing protocol or if forwarding is enabled on the
+router and on the interface over which the packet is being sent.
+'''
+

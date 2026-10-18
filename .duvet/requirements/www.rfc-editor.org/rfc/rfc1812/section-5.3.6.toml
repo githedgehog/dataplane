@@ -1,0 +1,140 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.6"
+
+# Congestion Control
+#
+#    Congestion in a network is loosely defined as a condition where
+#    demand for resources (usually bandwidth or CPU time) exceeds
+#    capacity.  Congestion avoidance tries to prevent demand from
+#    exceeding capacity, while congestion recovery tries to restore an
+#    operative state.  It is possible for a router to contribute to both
+#    of these mechanisms.  A great deal of effort has been spent studying
+#    the problem.  The reader is encouraged to read [FORWARD:2] for a
+#    survey of the work.  Important papers on the subject include
+# 
+#    [FORWARD:3], [FORWARD:4], [FORWARD:5], [FORWARD:10], [FORWARD:11],
+#    [FORWARD:12], [FORWARD:13], [FORWARD:14], and [INTERNET:10], among
+#    others.
+# 
+#    The amount of storage that router should have available to handle
+#    peak instantaneous demand when hosts use reasonable congestion
+#    policies, such as described in [FORWARD:5], is a function of the
+#    product of the bandwidth of the link times the path delay of the
+#    flows using the link, and therefore storage should increase as this
+#    Bandwidth*Delay product increases.  The exact function relating
+#    storage capacity to probability of discard is not known.
+# 
+#    When a router receives a packet beyond its storage capacity it must
+#    (by definition, not by decree) discard it or some other packet or
+#    packets.  Which packet to discard is the subject of much study but,
+#    unfortunately, little agreement so far.  The best wisdom to date
+#    suggests discarding a packet from the data stream most heavily using
+#    the link.  However, a number of additional factors may be relevant,
+#    including the precedence of the traffic, active bandwidth
+#    reservation, and the complexity associated with selecting that
+#    packet.
+# 
+#    A router MAY discard the packet it has just received; this is the
+#    simplest but not the best policy.  Ideally, the router should select
+#    a packet from one of the sessions most heavily abusing the link,
+#    given that the applicable Quality of Service policy permits this.  A
+#    recommended policy in datagram environments using FIFO queues is to
+#    discard a packet randomly selected from the queue (see [FORWARD:5]).
+#    An equivalent algorithm in routers using fair queues is to discard
+#    from the longest queue or that using the greatest virtual time (see
+#    [FORWARD:13]).  A router MAY use these algorithms to determine which
+#    packet to discard.
+# 
+#    If a router implements a discard policy (such as Random Drop) under
+#    which it chooses a packet to discard from a pool of eligible packets:
+# 
+#    o If precedence-ordered queue service (described in Section
+#       [5.3.3.1]) is implemented and enabled, the router MUST NOT discard
+#       a packet whose IP precedence is higher than that of a packet that
+#       is not discarded.
+# 
+#    o A router MAY protect packets whose IP headers request the maximize
+#       reliability TOS, except where doing so would be in violation of
+#       the previous rule.
+# 
+#    o A router MAY protect fragmented IP packets, on the theory that
+#       dropping a fragment of a datagram may increase congestion by
+#       causing all fragments of the datagram to be retransmitted by the
+# 
+#       source.
+# 
+#    o To help prevent routing perturbations or disruption of management
+#       functions, the router MAY protect packets used for routing
+#       control, link control, or network management from being discarded.
+#       Dedicated routers (i.e., routers that are not also general purpose
+#       hosts, terminal servers, etc.) can achieve an approximation of
+#       this rule by protecting packets whose source or destination is the
+#       router itself.
+# 
+#    Advanced methods of congestion control include a notion of fairness,
+#    so that the 'user' that is penalized by losing a packet is the one
+#    that contributed the most to the congestion.  No matter what
+#    mechanism is implemented to deal with bandwidth congestion control,
+#    it is important that the CPU effort expended be sufficiently small
+#    that the router is not driven into CPU congestion also.
+# 
+#    As described in Section [4.3.3.3], this document recommends that a
+#    router SHOULD NOT send a Source Quench to the sender of the packet
+#    that it is discarding.  ICMP Source Quench is a very weak mechanism,
+#    so it is not necessary for a router to send it, and host software
+#    should not use it exclusively as an indicator of congestion.
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY discard the packet it has just received; this is the
+simplest but not the best policy.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY use these algorithms to determine which
+packet to discard.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If precedence-ordered queue service (described in Section
+[5.3.3.1]) is implemented and enabled, the router MUST NOT discard
+a packet whose IP precedence is higher than that of a packet that
+is not discarded.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+o A router MAY protect packets whose IP headers request the maximize
+reliability TOS, except where doing so would be in violation of
+the previous rule.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+o A router MAY protect fragmented IP packets, on the theory that
+dropping a fragment of a datagram may increase congestion by
+causing all fragments of the datagram to be retransmitted by the
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+o To help prevent routing perturbations or disruption of management
+functions, the router MAY protect packets used for routing
+control, link control, or network management from being discarded.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+As described in Section [4.3.3.3], this document recommends that a
+router SHOULD NOT send a Source Quench to the sender of the packet
+that it is discarding.
+'''
+

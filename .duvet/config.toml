@@ -44,3 +44,12 @@ source = "https://www.rfc-editor.org/rfc/rfc5881"
 
 [[specification]]
 source = "https://www.rfc-editor.org/rfc/rfc4271"
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc1122"
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc1812"
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc7348"

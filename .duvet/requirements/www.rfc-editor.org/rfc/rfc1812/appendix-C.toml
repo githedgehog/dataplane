@@ -1,0 +1,111 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#appendix-C"
+
+# FUTURE DIRECTIONS
+#
+#    This appendix lists work that future revisions of this document may
+#    wish to address.
+# 
+#    In the preparation of Router Requirements, we stumbled across several
+#    other architectural issues.  Each of these is dealt with somewhat in
+#    the document, but still ought to be classified as an open issue in
+#    the IP architecture.
+# 
+#    Most of the he topics presented here generally indicate areas where
+#    the technology is still relatively new and it is not appropriate to
+#    develop specific requirements since the community is still gaining
+#    operational experience.
+# 
+#    Other topics represent areas of ongoing research and indicate areas
+#    that the prudent developer would closely monitor.
+# 
+#    (1) SNMP Version 2
+# 
+#    (2) Additional SNMP MIBs
+# 
+#    (7) More detailed requirements for leaking routes between routing
+#         protocols
+# 
+#    (8) Router system security
+# 
+#    (9) Routing protocol security
+# 
+#    (10) Internetwork Protocol layer security.  There has been extensive
+#         work refining the security of IP since the original work writing
+#         this document.  This security work should be included in here.
+# 
+#    (12) Load Splitting
+# 
+#    (13) Sending fragments along different paths
+# 
+#    (15) Multiple logical (sub)nets on the same wire.  Router
+#         Requirements does not require support for this.  We made some
+#         attempt to identify pieces of the architecture (e.g., forwarding
+#         of directed broadcasts and issuing of Redirects) where the
+#         wording of the rules has to be done carefully to make the right
+# 
+#         thing happen, and tried to clearly distinguish logical
+#         interfaces from physical interfaces.  However, we did not study
+#         this issue in detail, and we are not at all confident that all
+#         the rules in the document are correct in the presence of
+#         multiple logical (sub)nets on the same wire.
+# 
+#    (15) Congestion control and resource management.  On the advice of
+#         the IETF's experts (Mankin and Ramakrishnan) we deprecated
+#         (SHOULD NOT) Source Quench and said little else concrete
+#         (Section 5.3.6).
+# 
+#    (16) Developing a Link-Layer requirements document that would be
+#         common for both routers and hosts.
+# 
+#    (17) Developing a common PPP LQM algorithm.
+# 
+#    (18) Investigate of other information (above and beyond section
+#         [3.2]) that passes between the layers, such as physical network
+#         MTU, mappings of IP precedence to Link Layer priority values,
+#         etc.
+# 
+#    (19) Should the Link Layer notify IP if address resolution failed
+#         (just like it notifies IP when there is a Link Layer priority
+#         value problem)?
+# 
+#    (20) Should all routers be required to implement a DNS resolver?
+# 
+#    (21) Should a human user be able to use a host name anywhere you can
+#         use an IP address when configuring the router?  Even in ping and
+#         traceroute?
+# 
+#    (22) Almquist's draft ruminations on the next hop and ruminations on
+#         route leaking need to be reviewed, brought up to date, and
+#         published.
+# 
+#    (23) Investigation is needed to determine if a redirect message for
+#         precedence is needed or not.  If not, are the type-of-service
+#         redirects acceptable?
+# 
+#    (24) RIPv2 and RIP+CIDR and variable length network prefixes.
+# 
+#    (25) BGP-4 CIDR is going to be important, and everyone is betting on
+#         BGP-4.  We can't avoid mentioning it.  Probably need to describe
+#         the differences between BGP-3 and BGP-4, and explore upgrade
+#         issues...
+# 
+#    (26) Loose Source Route Mobile IP and some multicasting may require
+#         this.  Perhaps it should be elevated to a SHOULD (per Fred
+# 
+#         Baker's Suggestion).
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+On the advice of
+the IETF's experts (Mankin and Ramakrishnan) we deprecated
+(SHOULD NOT) Source Quench and said little else concrete
+(Section 5.3.6).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Perhaps it should be elevated to a SHOULD (per Fred
+'''
+

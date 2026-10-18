@@ -1,0 +1,57 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.1"
+
+# INTRODUCTION
+#
+#    Routers MUST implement the IP protocol, as defined by [INTERNET:1].
+#    They MUST also implement its mandatory extensions: subnets (defined
+#    in [INTERNET:2]), IP broadcast (defined in [INTERNET:3]), and
+#    Classless Inter-Domain Routing (CIDR, defined in [INTERNET:15]).
+# 
+#    Router implementors need not consider compliance with the section of
+#    [INTRO:2] entitled "Internet Protocol -- IP," as that section is
+#    entirely duplicated or superseded in this document.  A router MUST be
+#    compliant, and SHOULD be unconditionally compliant, with the
+#    requirements of the section entitled "SPECIFIC ISSUES" relating to IP
+#    in [INTRO:2].
+# 
+#    In the following, the action specified in certain cases is to
+#    silently discard a received datagram.  This means that the datagram
+#    will be discarded without further processing and that the router will
+#    not send any ICMP error message (see Section [4.3]) as a result.
+#    However, for diagnosis of problems a router SHOULD provide the
+#    capability of logging the error (see Section [1.3.3]), including the
+#    contents of the silently discarded datagram, and SHOULD count
+#    datagrams discarded.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST implement the IP protocol, as defined by [INTERNET:1].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+They MUST also implement its mandatory extensions: subnets (defined
+in [INTERNET:2]), IP broadcast (defined in [INTERNET:3]), and
+Classless Inter-Domain Routing (CIDR, defined in [INTERNET:15]).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST be
+compliant, and SHOULD be unconditionally compliant, with the
+requirements of the section entitled "SPECIFIC ISSUES" relating to IP
+in [INTRO:2].
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+However, for diagnosis of problems a router SHOULD provide the
+capability of logging the error (see Section [1.3.3]), including the
+contents of the silently discarded datagram, and SHOULD count
+datagrams discarded.
+'''
+

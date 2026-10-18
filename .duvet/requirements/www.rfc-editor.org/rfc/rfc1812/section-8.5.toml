@@ -1,0 +1,45 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-8.5"
+
+# Saving Changes
+#
+#    Parameters altered by SNMP MAY be saved to non-volatile storage.
+# 
+#    DISCUSSION
+#       Reasons why this requirement is a MAY:
+# 
+#       o The exact physical nature of non-volatile storage is not
+#          specified in this document.  Hence, parameters may be saved in
+#          NVRAM/EEPROM, local floppy or hard disk, or in some TFTP file
+#          server or BOOTP server, etc.  Suppose that this information is
+#          in a file that is retrieved through TFTP.  In that case, a
+#          change made to a configuration parameter on the router would
+#          need to be propagated back to the file server holding the
+#          configuration file.  Alternatively, the SNMP operation would
+#          need to be directed to the file server, and then the change
+#          somehow propagated to the router.  The answer to this problem
+#          does not seem obvious.
+# 
+#          This also places more requirements on the host holding the
+#          configuration information than just having an available TFTP
+#          server, so much more that its probably unsafe for a vendor to
+#          assume that any potential customer will have a suitable host
+#          available.
+# 
+#       o The timing of committing changed parameters to non-volatile
+#          storage is still an issue for debate.  Some prefer to commit
+#          all changes immediately.  Others prefer to commit changes to
+#          non-volatile storage only upon an explicit command.
+
+[[spec]]
+level = "MAY"
+quote = '''
+Parameters altered by SNMP MAY be saved to non-volatile storage.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+DISCUSSION
+Reasons why this requirement is a MAY:
+'''
+

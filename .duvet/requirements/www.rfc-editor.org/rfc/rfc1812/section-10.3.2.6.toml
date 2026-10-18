@@ -1,0 +1,46 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-10.3.2.6"
+
+# Minimizing Disruption
+#
+#    Changing the configuration of a router SHOULD have minimal affect on
+#    the network.  Routing tables SHOULD NOT be unnecessarily flushed when
+#    a simple change is made to the router.  If a router is running
+#    several routing protocols, stopping one routing protocol SHOULD NOT
+#    disrupt other routing protocols, except in the case where one network
+#    is learned by more than one routing protocol.
+# 
+#    DISCUSSION
+#       It is the goal of a network manager to run a network so that users
+#       of the network get the best connectivity possible.  Reloading a
+#       router for simple configuration changes can cause disruptions in
+#       routing and ultimately cause disruptions to the network and its
+#       users.  If routing tables are unnecessarily flushed, for instance,
+#       the default route will be lost as well as specific routes to sites
+#       within the network.  This sort of disruption will cause
+#       significant downtime for the users.  It is the purpose of this
+#       section to point out that whenever possible, these disruptions
+#       should be avoided.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Changing the configuration of a router SHOULD have minimal affect on
+the network.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routing tables SHOULD NOT be unnecessarily flushed when
+a simple change is made to the router.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a router is running
+several routing protocols, stopping one routing protocol SHOULD NOT
+disrupt other routing protocols, except in the case where one network
+is learned by more than one routing protocol.
+'''
+

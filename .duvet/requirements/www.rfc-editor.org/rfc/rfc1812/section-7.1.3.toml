@@ -1,0 +1,54 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.1.3"
+
+# Message Validation
+#
+#    Peer-to-peer authentication involves several tests.  The application
+#    of message passwords and explicit acceptable neighbor lists has in
+#    the past improved the robustness of the route database.  Routers
+#    SHOULD IMPLEMENT management controls that enable explicit listing of
+#    valid routing neighbors.  Routers SHOULD IMPLEMENT peer-to-peer
+#    authentication for those routing protocols that support them.
+# 
+#    Routers SHOULD validate routing neighbors based on their source
+#    address and the interface a message is received on; neighbors in a
+#    directly attached subnet SHOULD be restricted to communicate with the
+#    router via the interface that subnet is posited on or via unnumbered
+#    interfaces.  Messages received on other interfaces SHOULD be silently
+#    discarded.
+# 
+#    DISCUSSION
+#       Security breaches and numerous routing problems are avoided by
+#       this basic testing.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers
+SHOULD IMPLEMENT management controls that enable explicit listing of
+valid routing neighbors.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers SHOULD IMPLEMENT peer-to-peer
+authentication for those routing protocols that support them.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers SHOULD validate routing neighbors based on their source
+address and the interface a message is received on; neighbors in a
+directly attached subnet SHOULD be restricted to communicate with the
+router via the interface that subnet is posited on or via unnumbered
+interfaces.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Messages received on other interfaces SHOULD be silently
+discarded.
+'''
+

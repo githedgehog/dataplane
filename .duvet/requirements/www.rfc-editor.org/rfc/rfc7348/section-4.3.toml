@@ -1,0 +1,56 @@
+target = "https://www.rfc-editor.org/rfc/rfc7348#section-4.3"
+
+# Physical Infrastructure Requirements
+#
+#    When IP multicast is used within the network infrastructure, a
+#    multicast routing protocol like PIM-SM can be used by the individual
+#    Layer 3 IP routers/switches within the network.  This is used to
+#    build efficient multicast forwarding trees so that multicast frames
+#    are only sent to those hosts that have requested to receive them.
+# 
+#    Similarly, there is no requirement that the actual network connecting
+#    the source VM and destination VM should be a Layer 3 network: VXLAN
+#    can also work over Layer 2 networks.  In either case, efficient
+#    multicast replication within the Layer 2 network can be achieved
+#    using IGMP snooping.
+# 
+#    VTEPs MUST NOT fragment VXLAN packets.  Intermediate routers may
+#    fragment encapsulated VXLAN packets due to the larger frame size.
+#    The destination VTEP MAY silently discard such VXLAN fragments.  To
+#    ensure end-to-end traffic delivery without fragmentation, it is
+#    RECOMMENDED that the MTUs (Maximum Transmission Units) across the
+#    physical network infrastructure be set to a value that accommodates
+#    the larger frame size due to the encapsulation.  Other techniques
+#    like Path MTU discovery (see [RFC1191] and [RFC1981]) MAY be used to
+#    address this requirement as well.
+
+[[spec]]
+level = "MUST"
+quote = '''
+VTEPs MUST NOT fragment VXLAN packets.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+The destination VTEP MAY silently discard such VXLAN fragments.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+To
+ensure end-to-end traffic delivery without fragmentation, it is
+RECOMMENDED that the MTUs (Maximum Transmission Units) across the
+physical network infrastructure be set to a value that accommodates
+the larger frame size due to the encapsulation.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Other techniques
+like Path MTU discovery (see [RFC1191] and [RFC1981]) MAY be used to
+address this requirement as well.
+'''
+

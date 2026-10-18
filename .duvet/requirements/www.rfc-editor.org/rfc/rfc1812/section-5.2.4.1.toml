@@ -1,0 +1,52 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.2.4.1"
+
+# IP Destination Address
+#
+#    If:
+# 
+#    o the destination address in the IP header is one of the addresses of
+#       the router,
+# 
+#    o the packet contains a Source Route Option, and
+# 
+#    o the pointer in the Source Route Option does not point past the end
+#       of the option,
+# 
+#    then the next IP Destination Address is the address pointed at by the
+#    pointer in that option.  If:
+# 
+#    o the destination address in the IP header is one of the addresses of
+#       the router,
+# 
+#    o the packet contains a Source Route Option, and
+# 
+#    o the pointer in the Source Route Option points past the end of the
+#       option,
+# 
+#    then the message is addressed to the system analyzing the message.
+# 
+#    A router MUST use the IP Destination Address, not the Ultimate
+#    Destination Address (the last address in the source route option),
+#    when determining how to handle a packet.
+# 
+#    It is an error for more than one source route option to appear in a
+#    datagram.  If it receives such a datagram, it SHOULD discard the
+#    packet and reply with an ICMP Parameter Problem message whose pointer
+#    points at the beginning of the second source route option.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST use the IP Destination Address, not the Ultimate
+Destination Address (the last address in the source route option),
+when determining how to handle a packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If it receives such a datagram, it SHOULD discard the
+packet and reply with an ICMP Parameter Problem message whose pointer
+points at the beginning of the second source route option.
+'''
+

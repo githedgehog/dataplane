@@ -1,0 +1,37 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.2.6"
+
+# Fragmentation and Reassembly: RFC-791 Section 3.2
+#
+#    As was discussed in Section [4.2.2.7], a router MUST support IP
+#    fragmentation.
+# 
+#    A router MUST NOT reassemble any datagram before forwarding it.
+# 
+#    DISCUSSION
+#       A few people have suggested that there might be some topologies
+#       where reassembly of transit datagrams by routers might improve
+#       performance.  The fact that fragments may take different paths to
+#       the destination precludes safe use of such a feature.
+# 
+#       Nothing in this section should be construed to control or limit
+#       fragmentation or reassembly performed as a link layer function by
+#       the router.
+# 
+#       Similarly, if an IP datagram is encapsulated in another IP
+#       datagram (e.g., it is tunnelled), that datagram is in turn
+#       fragmented, the fragments must be reassembled in order to forward
+#       the original datagram.  This section does not preclude this.
+
+[[spec]]
+level = "MUST"
+quote = '''
+As was discussed in Section [4.2.2.7], a router MUST support IP
+fragmentation.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT reassemble any datagram before forwarding it.
+'''
+

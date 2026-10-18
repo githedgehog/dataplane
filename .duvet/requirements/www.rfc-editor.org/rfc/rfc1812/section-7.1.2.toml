@@ -1,0 +1,23 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.1.2"
+
+# Precedence
+#
+#    Except where the specification for a particular routing protocol
+#    specifies otherwise, a router SHOULD set the IP Precedence value for
+#    IP datagrams carrying routing traffic it originates to 6
+#    (INTERNETWORK CONTROL).
+# 
+#    DISCUSSION
+#       Routing traffic with VERY FEW exceptions should be the highest
+#       precedence traffic on any network.  If a system's routing traffic
+#       can't get through, chances are nothing else will.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Except where the specification for a particular routing protocol
+specifies otherwise, a router SHOULD set the IP Precedence value for
+IP datagrams carrying routing traffic it originates to 6
+(INTERNETWORK CONTROL).
+'''
+

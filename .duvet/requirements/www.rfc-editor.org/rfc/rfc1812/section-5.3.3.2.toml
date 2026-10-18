@@ -1,0 +1,70 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.3.2"
+
+# Lower Layer Precedence Mappings
+#
+#    Routers that implement precedence-ordered queuing MUST IMPLEMENT, and
+#    other routers SHOULD IMPLEMENT, Lower Layer Precedence Mapping.
+# 
+#    A router that implements Lower Layer Precedence Mapping:
+# 
+#    o MUST be able to map IP Precedence to Link Layer priority mechanisms
+#       for link layers that have such a feature defined.
+# 
+#    o MUST have a configuration option to select the Link Layer's default
+#       priority treatment for all IP traffic
+# 
+#    o SHOULD be able to configure specific nonstandard mappings of IP
+#       precedence values to Link Layer priority values for each
+#       interface.
+# 
+#    DISCUSSION
+#       Some research questions the workability of the priority features
+#       of some Link Layer protocols, and some networks may have faulty
+#       implementations of the link layer priority mechanism.  It seems
+#       prudent to provide an escape mechanism in case such problems show
+#       up in a network.
+# 
+#       On the other hand, there are proposals to use novel queuing
+#       strategies to implement special services such as multimedia
+#       bandwidth reservation or low-delay service.  Special services and
+#       queuing strategies to support them are current research subjects
+#       and are in the process of standardization.
+# 
+#       Implementors may wish to consider that correct link layer mapping
+#       of IP precedence is required by DOD policy for TCP/IP systems used
+#       on DOD networks.  Since these requirements are intended to
+#       encourage (but not force) the use of precedence features in the
+#       hope of providing better Internet service to all users, routers
+#       supporting precedence-ordered queue service should default to
+#       maintaining strict precedence ordering regardless of the type of
+#       service requested.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers that implement precedence-ordered queuing MUST IMPLEMENT, and
+other routers SHOULD IMPLEMENT, Lower Layer Precedence Mapping.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o MUST be able to map IP Precedence to Link Layer priority mechanisms
+for link layers that have such a feature defined.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o MUST have a configuration option to select the Link Layer's default
+priority treatment for all IP traffic
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+o SHOULD be able to configure specific nonstandard mappings of IP
+precedence values to Link Layer priority values for each
+interface.
+'''
+

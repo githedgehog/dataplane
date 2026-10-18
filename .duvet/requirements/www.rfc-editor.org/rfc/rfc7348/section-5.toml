@@ -1,0 +1,328 @@
+target = "https://www.rfc-editor.org/rfc/rfc7348#section-5"
+
+# VXLAN Frame Format
+#
+#    The VXLAN frame format is shown below.  Parsing this from the bottom
+#    of the frame -- above the outer Frame Check Sequence (FCS), there is
+#    an inner MAC frame with its own Ethernet header with source,
+#    destination MAC addresses along with the Ethernet type, plus an
+#    optional VLAN.  See Section 6 for further details of inner VLAN tag
+#    handling.
+# 
+#    The inner MAC frame is encapsulated with the following four headers
+#    (starting from the innermost header):
+# 
+#    VXLAN Header:  This is an 8-byte field that has:
+# 
+#       - Flags (8 bits): where the I flag MUST be set to 1 for a valid
+#         VXLAN Network ID (VNI).  The other 7 bits (designated "R") are
+#         reserved fields and MUST be set to zero on transmission and
+#         ignored on receipt.
+# 
+#       - VXLAN Segment ID/VXLAN Network Identifier (VNI): this is a
+#         24-bit value used to designate the individual VXLAN overlay
+#         network on which the communicating VMs are situated.  VMs in
+#         different VXLAN overlay networks cannot communicate with each
+#         other.
+# 
+#       - Reserved fields (24 bits and 8 bits): MUST be set to zero on
+#         transmission and ignored on receipt.
+# 
+#    Outer UDP Header:  This is the outer UDP header with a source port
+#       provided by the VTEP and the destination port being a well-known
+#       UDP port.
+# 
+#       -  Destination Port: IANA has assigned the value 4789 for the
+#          VXLAN UDP port, and this value SHOULD be used by default as the
+#          destination UDP port.  Some early implementations of VXLAN have
+#          used other values for the destination port.  To enable
+#          interoperability with these implementations, the destination
+#          port SHOULD be configurable.
+# 
+#       -  Source Port:  It is recommended that the UDP source port number
+#          be calculated using a hash of fields from the inner packet --
+#          one example being a hash of the inner Ethernet frame's headers.
+#          This is to enable a level of entropy for the ECMP/load-
+#          balancing of the VM-to-VM traffic across the VXLAN overlay.
+#          When calculating the UDP source port number in this manner, it
+#          is RECOMMENDED that the value be in the dynamic/private port
+#          range 49152-65535 [RFC6335].
+# 
+#       -  UDP Checksum: It SHOULD be transmitted as zero.  When a packet
+#          is received with a UDP checksum of zero, it MUST be accepted
+#          for decapsulation.  Optionally, if the encapsulating end point
+#          includes a non-zero UDP checksum, it MUST be correctly
+#          calculated across the entire packet including the IP header,
+#          UDP header, VXLAN header, and encapsulated MAC frame.  When a
+#          decapsulating end point receives a packet with a non-zero
+#          checksum, it MAY choose to verify the checksum value.  If it
+#          chooses to perform such verification, and the verification
+#          fails, the packet MUST be dropped.  If the decapsulating
+#          destination chooses not to perform the verification, or
+#          performs it successfully, the packet MUST be accepted for
+#          decapsulation.
+# 
+#    Outer IP Header:  This is the outer IP header with the source IP
+#       address indicating the IP address of the VTEP over which the
+#       communicating VM (as represented by the inner source MAC address)
+#       is running.  The destination IP address can be a unicast or
+#       multicast IP address (see Sections 4.1 and 4.2).  When it is a
+#       unicast IP address, it represents the IP address of the VTEP
+#       connecting the communicating VM as represented by the inner
+#       destination MAC address.  For multicast destination IP addresses,
+#       please refer to the scenarios detailed in Section 4.2.
+# 
+#    Outer Ethernet Header (example):  Figure 1 is an example of an inner
+#       Ethernet frame encapsulated within an outer Ethernet + IP + UDP +
+#       VXLAN header.  The outer destination MAC address in this frame may
+#       be the address of the target VTEP or of an intermediate Layer 3
+#       router.  The outer VLAN tag is optional.  If present, it may be
+#       used for delineating VXLAN traffic on the LAN.
+# 
+#     0                   1                   2                   3
+#     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+# 
+#    Outer Ethernet Header:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |             Outer Destination MAC Address                     |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    | Outer Destination MAC Address | Outer Source MAC Address      |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                Outer Source MAC Address                       |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |OptnlEthtype = C-Tag 802.1Q    | Outer.VLAN Tag Information    |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    | Ethertype = 0x0800            |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Outer IPv4 Header:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |Version|  IHL  |Type of Service|          Total Length         |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |         Identification        |Flags|      Fragment Offset    |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |  Time to Live |Protocl=17(UDP)|   Header Checksum             |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                       Outer Source IPv4 Address               |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                   Outer Destination IPv4 Address              |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Outer UDP Header:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |           Source Port         |       Dest Port = VXLAN Port  |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |           UDP Length          |        UDP Checksum           |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    VXLAN Header:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |R|R|R|R|I|R|R|R|            Reserved                           |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                VXLAN Network Identifier (VNI) |   Reserved    |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Inner Ethernet Header:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |             Inner Destination MAC Address                     |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    | Inner Destination MAC Address | Inner Source MAC Address      |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                Inner Source MAC Address                       |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |OptnlEthtype = C-Tag 802.1Q    | Inner.VLAN Tag Information    |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Payload:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    | Ethertype of Original Payload |                               |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               |
+#    |                                  Original Ethernet Payload    |
+#    |                                                               |
+#    |(Note that the original Ethernet Frame's FCS is not included)  |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Frame Check Sequence:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |   New FCS (Frame Check Sequence) for Outer Ethernet Frame     |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#             Figure 1: VXLAN Frame Format with IPv4 Outer Header
+# 
+#    The frame format above shows tunneling of Ethernet frames using IPv4
+#    for transport.  Use of VXLAN with IPv6 transport is detailed below.
+# 
+#     0                   1                   2                   3
+#     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+# 
+#    Outer Ethernet Header:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |             Outer Destination MAC Address                     |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    | Outer Destination MAC Address | Outer Source MAC Address      |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                Outer Source MAC Address                       |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |OptnlEthtype = C-Tag 802.1Q    | Outer.VLAN Tag Information    |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    | Ethertype = 0x86DD            |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Outer IPv6 Header:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |Version| Traffic Class |           Flow Label                  |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |         Payload Length        | NxtHdr=17(UDP)|   Hop Limit   |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                                                               |
+#    +                                                               +
+#    |                                                               |
+#    +                     Outer Source IPv6 Address                 +
+#    |                                                               |
+#    +                                                               +
+#    |                                                               |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                                                               |
+#    +                                                               +
+#    |                                                               |
+#    +                  Outer Destination IPv6 Address               +
+#    |                                                               |
+#    +                                                               +
+#    |                                                               |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Outer UDP Header:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |           Source Port         |       Dest Port = VXLAN Port  |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |           UDP Length          |        UDP Checksum           |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    VXLAN Header:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |R|R|R|R|I|R|R|R|            Reserved                           |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                VXLAN Network Identifier (VNI) |   Reserved    |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Inner Ethernet Header:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |             Inner Destination MAC Address                     |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    | Inner Destination MAC Address | Inner Source MAC Address      |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                Inner Source MAC Address                       |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |OptnlEthtype = C-Tag 802.1Q    | Inner.VLAN Tag Information    |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Payload:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    | Ethertype of Original Payload |                               |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               |
+#    |                                  Original Ethernet Payload    |
+#    |                                                               |
+#    |(Note that the original Ethernet Frame's FCS is not included)  |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Frame Check Sequence:
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |   New FCS (Frame Check Sequence) for Outer Ethernet Frame     |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#             Figure 2: VXLAN Frame Format with IPv6 Outer Header
+
+[[spec]]
+level = "MUST"
+quote = '''
+- Flags (8 bits): where the I flag MUST be set to 1 for a valid
+VXLAN Network ID (VNI).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The other 7 bits (designated "R") are
+reserved fields and MUST be set to zero on transmission and
+ignored on receipt.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+- Reserved fields (24 bits and 8 bits): MUST be set to zero on
+transmission and ignored on receipt.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+-  Destination Port: IANA has assigned the value 4789 for the
+VXLAN UDP port, and this value SHOULD be used by default as the
+destination UDP port.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+To enable
+interoperability with these implementations, the destination
+port SHOULD be configurable.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When calculating the UDP source port number in this manner, it
+is RECOMMENDED that the value be in the dynamic/private port
+range 49152-65535 [RFC6335].
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+-  UDP Checksum: It SHOULD be transmitted as zero.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When a packet
+is received with a UDP checksum of zero, it MUST be accepted
+for decapsulation.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Optionally, if the encapsulating end point
+includes a non-zero UDP checksum, it MUST be correctly
+calculated across the entire packet including the IP header,
+UDP header, VXLAN header, and encapsulated MAC frame.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+When a
+decapsulating end point receives a packet with a non-zero
+checksum, it MAY choose to verify the checksum value.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If it
+chooses to perform such verification, and the verification
+fails, the packet MUST be dropped.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the decapsulating
+destination chooses not to perform the verification, or
+performs it successfully, the packet MUST be accepted for
+decapsulation.
+'''
+

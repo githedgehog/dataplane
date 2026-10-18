@@ -1,0 +1,69 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-3.3.5"
+
+# Point-to-Point Protocol - PPP
+#
+#    Contrary to [INTRO:1], the Internet does have a standard point to
+#    point line protocol: the Point-to-Point Protocol (PPP), defined in
+#    [LINK:2], [LINK:3], [LINK:4], and [LINK:5].
+# 
+#    A point to point interface is any interface that is designed to send
+#    data over a point to point line.  Such interfaces include telephone,
+#    leased, dedicated or direct lines (either 2 or 4 wire), and may use
+#    point to point channels or virtual circuits of multiplexed interfaces
+#    such as ISDN.  They normally use a standardized modem or bit serial
+#    interface (such as RS-232, RS-449 or V.35), using either synchronous
+#    or asynchronous clocking.  Multiplexed interfaces often have special
+#    physical interfaces.
+# 
+#    A general purpose serial interface uses the same physical media as a
+#    point to point line, but supports the use of link layer networks as
+#    well as point to point connectivity.  Link layer networks (such as
+#    X.25 or Frame Relay) use an alternative IP link layer specification.
+# 
+#    Routers that implement point to point or general purpose serial
+#    interfaces MUST IMPLEMENT PPP.
+# 
+#    PPP MUST be supported on all general purpose serial interfaces on a
+#    router.  The router MAY allow the line to be configured to use point
+#    to point line protocols other than PPP.  Point to point interfaces
+#    SHOULD either default to using PPP when enabled or require
+#    configuration of the link layer protocol before being enabled.
+#    General purpose serial interfaces SHOULD require configuration of the
+#    link layer protocol before being enabled.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers that implement point to point or general purpose serial
+interfaces MUST IMPLEMENT PPP.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+PPP MUST be supported on all general purpose serial interfaces on a
+router.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+The router MAY allow the line to be configured to use point
+to point line protocols other than PPP.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Point to point interfaces
+SHOULD either default to using PPP when enabled or require
+configuration of the link layer protocol before being enabled.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+General purpose serial interfaces SHOULD require configuration of the
+link layer protocol before being enabled.
+'''
+

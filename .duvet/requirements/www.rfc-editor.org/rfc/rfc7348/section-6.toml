@@ -1,0 +1,129 @@
+target = "https://www.rfc-editor.org/rfc/rfc7348#section-6"
+
+# VXLAN Deployment Scenarios
+#
+#    VXLAN is typically deployed in data centers on virtualized hosts,
+#    which may be spread across multiple racks.  The individual racks may
+#    be parts of a different Layer 3 network or they could be in a single
+#    Layer 2 network.  The VXLAN segments/overlay networks are overlaid on
+#    top of these Layer 2 or Layer 3 networks.
+# 
+#    Consider Figure 3, which depicts two virtualized servers attached to
+#    a Layer 3 infrastructure.  The servers could be on the same rack, on
+#    different racks, or potentially across data centers within the same
+#    administrative domain.  There are four VXLAN overlay networks
+#    identified by the VNIs 22, 34, 74, and 98.  Consider the case of
+#    VM1-1 in Server 1 and VM2-4 on Server 2, which are on the same VXLAN
+#    overlay network identified by VNI 22.  The VMs do not know about the
+#    overlay networks and transport method since the encapsulation and
+#    decapsulation happen transparently at the VTEPs on Servers 1 and 2.
+#    The other overlay networks and the corresponding VMs are VM1-2 on
+#    Server 1 and VM2-1 on Server 2, both on VNI 34; VM1-3 on Server 1 and
+#    VM2-2 on Server 2 on VNI 74; and finally VM1-4 on Server 1 and VM2-3
+#    on Server 2 on VNI 98.
+# 
+#    +------------+-------------+
+#    |        Server 1          |
+#    | +----+----+  +----+----+ |
+#    | |VM1-1    |  |VM1-2    | |
+#    | |VNI 22   |  |VNI 34   | |
+#    | |         |  |         | |
+#    | +---------+  +---------+ |
+#    |                          |
+#    | +----+----+  +----+----+ |
+#    | |VM1-3    |  |VM1-4    | |
+#    | |VNI 74   |  |VNI 98   | |
+#    | |         |  |         | |
+#    | +---------+  +---------+ |
+#    | Hypervisor VTEP (IP1)    |
+#    +--------------------------+
+#                          |
+#                          |
+#                          |
+#                          |   +-------------+
+#                          |   |   Layer 3   |
+#                          |---|   Network   |
+#                              |             |
+#                              +-------------+
+#                                  |
+#                                  |
+#                                  +-----------+
+#                                              |
+#                                              |
+#                                       +------------+-------------+
+#                                       |        Server 2          |
+#                                       | +----+----+  +----+----+ |
+#                                       | |VM2-1    |  |VM2-2    | |
+#                                       | |VNI 34   |  |VNI 74   | |
+#                                       | |         |  |         | |
+#                                       | +---------+  +---------+ |
+#                                       |                          |
+#                                       | +----+----+  +----+----+ |
+#                                       | |VM2-3    |  |VM2-4    | |
+#                                       | |VNI 98   |  |VNI 22   | |
+#                                       | |         |  |         | |
+#                                       | +---------+  +---------+ |
+#                                       | Hypervisor VTEP (IP2)    |
+#                                       +--------------------------+
+# 
+#     Figure 3: VXLAN Deployment - VTEPs across a Layer 3 Network
+# 
+#    One deployment scenario is where the tunnel termination point is a
+#    physical server that understands VXLAN.  An alternate scenario is
+#    where nodes on a VXLAN overlay network need to communicate with nodes
+#    on legacy networks that could be VLAN based.  These nodes may be
+#    physical nodes or virtual machines.  To enable this communication, a
+#    network can include VXLAN gateways (see Figure 4 below with a switch
+#    acting as a VXLAN gateway) that forward traffic between VXLAN and
+#    non-VXLAN environments.
+# 
+#    Consider Figure 4 for the following discussion.  For incoming frames
+#    on the VXLAN connected interface, the gateway strips out the VXLAN
+#    header and forwards it to a physical port based on the destination
+#    MAC address of the inner Ethernet frame.  Decapsulated frames with
+#    the inner VLAN ID SHOULD be discarded unless configured explicitly to
+#    be passed on to the non-VXLAN interface.  In the reverse direction,
+#    incoming frames for the non-VXLAN interfaces are mapped to a specific
+#    VXLAN overlay network based on the VLAN ID in the frame.  Unless
+#    configured explicitly to be passed on in the encapsulated VXLAN
+#    frame, this VLAN ID is removed before the frame is encapsulated for
+#    VXLAN.
+# 
+#    These gateways that provide VXLAN tunnel termination functions could
+#    be ToR/access switches or switches higher up in the data center
+#    network topology -- e.g., core or even WAN edge devices.  The last
+#    case (WAN edge) could involve a Provider Edge (PE) router that
+#    terminates VXLAN tunnels in a hybrid cloud environment.  In all these
+#    instances, note that the gateway functionality could be implemented
+#    in software or hardware.
+# 
+#    +---+-----+---+                                    +---+-----+---+
+#    |    Server 1 |                                    |  Non-VXLAN  |
+#    (VXLAN enabled)<-----+                       +---->|  server     |
+#    +-------------+      |                       |     +-------------+
+#                         |                       |
+#    +---+-----+---+      |                       |     +---+-----+---+
+#    |Server 2     |      |                       |     |  Non-VXLAN  |
+#    (VXLAN enabled)<-----+   +---+-----+---+     +---->|    server   |
+#    +-------------+      |   |Switch acting|     |     +-------------+
+#                         |---|  as VXLAN   |-----|
+#    +---+-----+---+      |   |   Gateway   |
+#    | Server 3    |      |   +-------------+
+#    (VXLAN enabled)<-----+
+#    +-------------+      |
+#                         |
+#    +---+-----+---+      |
+#    | Server 4    |      |
+#    (VXLAN enabled)<-----+
+#    +-------------+
+# 
+#            Figure 4: VXLAN Deployment - VXLAN Gateway
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Decapsulated frames with
+the inner VLAN ID SHOULD be discarded unless configured explicitly to
+be passed on to the non-VXLAN interface.
+'''
+

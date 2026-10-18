@@ -1,0 +1,97 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.7"
+
+# Martian Address Filtering
+#
+#    An IP source address is invalid if it is a special IP address, as
+#    defined in 4.2.2.11 or 5.3.7, or is not a unicast address.
+# 
+#    An IP destination address is invalid if it is among those defined as
+#    illegal destinations in 4.2.3.1, or is a Class E address (except
+#    255.255.255.255).
+# 
+#    A router SHOULD NOT forward any packet that has an invalid IP source
+#    address or a source address on network 0.  A router SHOULD NOT
+#    forward, except over a loopback interface, any packet that has a
+#    source address on network 127.  A router MAY have a switch that
+#    allows the network manager to disable these checks.  If such a switch
+#    is provided, it MUST default to performing the checks.
+# 
+#    A router SHOULD NOT forward any packet that has an invalid IP
+#    destination address or a destination address on network 0.  A router
+#    SHOULD NOT forward, except over a loopback interface, any packet that
+#    has a destination address on network 127.  A router MAY have a switch
+#    that allows the network manager to disable these checks.  If such a
+#    switch is provided, it MUST default to performing the checks.
+# 
+#    If a router discards a packet because of these rules, it SHOULD log
+#    at least the IP source address, the IP destination address, and, if
+# 
+#    the problem was with the source address, the physical interface on
+#    which the packet was received and the Link Layer address of the host
+#    or router from which the packet was received.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD NOT forward any packet that has an invalid IP source
+address or a source address on network 0.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD NOT
+forward, except over a loopback interface, any packet that has a
+source address on network 127.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY have a switch that
+allows the network manager to disable these checks.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If such a switch
+is provided, it MUST default to performing the checks.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD NOT forward any packet that has an invalid IP
+destination address or a destination address on network 0.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router
+SHOULD NOT forward, except over a loopback interface, any packet that
+has a destination address on network 127.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY have a switch
+that allows the network manager to disable these checks.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If such a
+switch is provided, it MUST default to performing the checks.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a router discards a packet because of these rules, it SHOULD log
+at least the IP source address, the IP destination address, and, if
+'''
+
