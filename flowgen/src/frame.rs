@@ -80,14 +80,58 @@ pub const VXLAN_PORT: u16 = 4789;
 /// A MAC address.
 pub type Mac = [u8; 6];
 
+/// MAC addresses as people write them, `02:00:00:00:00:01`, for `#[serde(with = "mac_text")]`.
+pub mod mac_text {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    use super::Mac;
+
+    /// Write `mac` as six colon-separated hex octets.
+    ///
+    /// # Errors
+    ///
+    /// If `serializer` fails.
+    pub fn serialize<S: Serializer>(mac: &Mac, serializer: S) -> Result<S::Ok, S::Error> {
+        let text = mac.map(|octet| format!("{octet:02x}")).join(":");
+        serializer.serialize_str(&text)
+    }
+
+    /// Read six colon-separated hex octets.
+    ///
+    /// # Errors
+    ///
+    /// If the text is not a MAC address.
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Mac, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        parse(&text).ok_or_else(|| D::Error::custom(format!("{text:?} is not a MAC address")))
+    }
+
+    /// `text` as a MAC address, if it is one.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Mac> {
+        let mut mac = [0u8; 6];
+        let mut octets = text.split(':');
+        for octet in &mut mac {
+            let part = octets.next()?;
+            if part.len() != 2 {
+                return None;
+            }
+            *octet = u8::from_str_radix(part, 16).ok()?;
+        }
+        octets.next().is_none().then_some(mac)
+    }
+}
+
 /// The tunnel a stream's frames travel in, as the VTEP sending them would build it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vxlan {
     /// The VNI.
     pub vni: u32,
     /// The sending VTEP's MAC.
+    #[serde(with = "mac_text")]
     pub src_mac: Mac,
     /// The next hop's MAC: the gateway's.
+    #[serde(with = "mac_text")]
     pub dst_mac: Mac,
     /// The sending VTEP.
     pub src: Ipv4Addr,
@@ -99,8 +143,10 @@ pub struct Vxlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameSpec {
     /// The inner frame's source MAC.
+    #[serde(with = "mac_text")]
     pub src_mac: Mac,
     /// The inner frame's destination MAC.
+    #[serde(with = "mac_text")]
     pub dst_mac: Mac,
     /// The tunnel, if the frames travel in one.
     pub vxlan: Option<Vxlan>,
@@ -403,8 +449,10 @@ pub fn parse(frame: &[u8]) -> Result<Received, ParseError> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Endpoints {
     /// The sender's MAC.
+    #[serde(with = "mac_text")]
     pub src_mac: Mac,
     /// The next hop's MAC.
+    #[serde(with = "mac_text")]
     pub dst_mac: Mac,
     /// The sender's address and port.
     pub src: (Ipv4Addr, u16),
