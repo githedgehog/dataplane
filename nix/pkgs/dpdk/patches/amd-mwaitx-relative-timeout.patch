@@ -1,0 +1,44 @@
+--- a/lib/eal/x86/rte_power_intrinsics.c
++++ b/lib/eal/x86/rte_power_intrinsics.c
+@@ -6,6 +6,7 @@
+ 
+ #include <eal_export.h>
+ #include <rte_common.h>
++#include <rte_cycles.h>
+ #include <rte_lcore.h>
+ #include <rte_lcore_var.h>
+ #include <rte_rtm.h>
+@@ -89,14 +90,30 @@
+ 
+ static void amd_mwaitx(const uint64_t timeout)
+ {
++	/*
++	 * Convert the absolute TSC deadline to MWAITX's relative 32-bit timeout.
++	 * UINT64_MAX disables the timeout. Hardware timers may run faster than
++	 * the TSC, so callers must tolerate early wakeups.
++	 */
++	uint32_t ticks = 0;
++	uint32_t ext = 0; /* no time-out */
++
++	if (timeout != UINT64_MAX) {
++		const uint64_t now = rte_rdtsc();
++
++		if (timeout <= now)
++			return;
++		ticks = (uint32_t)RTE_MIN(timeout - now, (uint64_t)UINT32_MAX);
++		ext = 2; /* enable time-out */
++	}
+ #if defined(RTE_TOOLCHAIN_MSVC) || defined(__MWAITX__)
+-	_mm_mwaitx(2, 0, (uint32_t)timeout);
++	_mm_mwaitx(ext, 0, ticks);
+ #else
+ 	asm volatile(".byte 0x0f, 0x01, 0xfb;"
+ 			: /* ignore rflags */
+ 			: "a"(0), /* enter C1 */
+-			"b"((uint32_t)timeout),
+-			"c"(2)); /* enable time-out */
++			"b"(ticks),
++			"c"(ext));
+ #endif
+ }
+ 
