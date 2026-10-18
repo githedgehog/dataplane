@@ -7,15 +7,12 @@ pub use crate::rib::nexthop::{FwAction, NhopKey};
 pub use crate::rib::vrf::RouteOrigin;
 
 use std::collections::BTreeMap;
-use std::net::IpAddr;
 
 use lpm::prefix::Prefix;
-use net::eth::mac::{Mac, SourceMac};
+use net::eth::mac::SourceMac;
 use net::interface::{InterfaceIndex, InterfaceName};
 use net::vxlan::Vni;
 
-use crate::atable::adjacency::Adjacency;
-use crate::atable::atablerw::{AtableReader, AtableReaderFactory, AtableWriter};
 use crate::evpn::Vtep;
 
 use crate::fib::fibtable::{FibTableReader, FibTableReaderFactory, FibTableWriter};
@@ -27,10 +24,8 @@ pub struct RouterTables {
     fib_table: FibTableWriter,
     fibs: BTreeMap<VrfId, FibWriter>,
     interfaces: IfTableWriter,
-    adjacencies: AtableWriter,
     fib_reader: FibTableReader,
     if_reader: IfTableReader,
-    adj_reader: AtableReader,
 }
 
 impl Default for RouterTables {
@@ -44,15 +39,12 @@ impl RouterTables {
     pub fn new() -> Self {
         let (fib_table, fib_reader) = FibTableWriter::new();
         let (interfaces, if_reader) = IfTableWriter::new();
-        let (adjacencies, adj_reader) = AtableWriter::new();
         Self {
             fib_table,
             fibs: BTreeMap::new(),
             interfaces,
-            adjacencies,
             fib_reader,
             if_reader,
-            adj_reader,
         }
     }
 
@@ -138,12 +130,6 @@ impl RouterTables {
         self
     }
 
-    pub fn adjacency(&mut self, address: IpAddr, ifindex: InterfaceIndex, mac: Mac) -> &mut Self {
-        self.adjacencies
-            .add_adjacency(Adjacency::new(address, ifindex, mac), true);
-        self
-    }
-
     #[must_use]
     pub fn interfaces(&self) -> IfTableReader {
         self.if_reader.clone()
@@ -155,11 +141,6 @@ impl RouterTables {
     }
 
     #[must_use]
-    pub fn adjacencies(&self) -> AtableReader {
-        self.adj_reader.clone()
-    }
-
-    #[must_use]
     pub fn interface_factory(&self) -> IfTableReaderFactory {
         self.if_reader.factory()
     }
@@ -167,11 +148,6 @@ impl RouterTables {
     #[must_use]
     pub fn fib_factory(&self) -> FibTableReaderFactory {
         self.fib_reader.factory()
-    }
-
-    #[must_use]
-    pub fn adjacency_factory(&self) -> AtableReaderFactory {
-        self.adj_reader.factory()
     }
 
     fn fib_mut(&mut self, vrfid: VrfId) -> &mut FibWriter {

@@ -14,6 +14,7 @@ shuttle = ["concurrency/shuttle", "nat/shuttle", "flow-entry/shuttle", "routing/
 shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
+arp = { workspace = true }
 acl-filter = { workspace = true }
 afpacket = { workspace = true, features = ["async-tokio"] }
 args = { workspace = true }
@@ -60,6 +61,7 @@ vpcmap = { workspace = true }
 clock = { workspace = true, features = ["virtual"] }
 # internal
 config = { workspace = true, features = ["bolero"] }
+arp = { workspace = true, features = ["testing"] }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero", "builder", "test_buffer", "test_meta"] }
 routing = { workspace = true, features = ["testing"] }

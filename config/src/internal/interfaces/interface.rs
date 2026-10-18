@@ -16,6 +16,7 @@ use std::str::FromStr;
 
 use crate::internal::routing::ospf::OspfInterface;
 use crate::{ConfigError, ConfigResult};
+use net::interface::InterfaceName;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// An Ip address configured on a local interface
@@ -54,7 +55,7 @@ pub enum InterfaceType {
 /// A network interface configuration. An interface can be user-specified or internal. This config object
 /// includes data to create the interface in the kernel and configure it for routing (e.g. FRR)
 pub struct InterfaceConfig {
-    pub name: String, /* key */
+    pub name: InterfaceName, /* key */
     pub iftype: InterfaceType,
     pub description: Option<String>,
     pub vrf: Option<String>,
@@ -106,9 +107,9 @@ impl FromStr for InterfaceAddress {
 
 impl InterfaceConfig {
     #[must_use]
-    pub fn new(name: &str, iftype: InterfaceType, internal: bool) -> Self {
+    pub fn new(name: InterfaceName, iftype: InterfaceType, internal: bool) -> Self {
         Self {
-            name: name.to_owned(),
+            name,
             iftype,
             description: None,
             vrf: None,
@@ -154,17 +155,18 @@ impl InterfaceConfig {
     pub fn is_vtep(&self) -> bool {
         matches!(self.iftype, InterfaceType::Vtep(_))
     }
+    #[must_use]
+    pub fn is_eth(&self) -> bool {
+        matches!(self.iftype, InterfaceType::Ethernet(_))
+    }
 
     /// Validate the interface configuration.
     ///
     /// # Errors
     ///
-    /// Returns an error if the interface name is empty.
+    /// None at the moment. This is left as a placeholder
+    /// for future checks
     pub fn validate(&self) -> ConfigResult {
-        // name is mandatory
-        if self.name.is_empty() {
-            return Err(ConfigError::MissingIdentifier("interface name"));
-        }
         Ok(())
     }
 }
@@ -175,7 +177,7 @@ impl InterfaceConfigTable {
         Self(BTreeMap::new())
     }
     pub fn add_interface_config(&mut self, cfg: InterfaceConfig) {
-        self.0.insert(cfg.name.clone(), cfg);
+        self.0.insert(cfg.name.as_ref().to_string(), cfg);
     }
     pub fn values(&self) -> impl Iterator<Item = &InterfaceConfig> {
         self.0.values()

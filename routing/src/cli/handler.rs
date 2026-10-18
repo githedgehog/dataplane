@@ -396,10 +396,6 @@ fn show_vtep(request: CliRequest, db: &RoutingDb) -> CliResponse {
     let config = VtepConfig::new(db.vtep.as_ref());
     CliResponse::from_request_ok(request, config.to_string() + vteps.to_string().as_str())
 }
-fn show_adjacency_table(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
-    let atable = db.atabler.enter().ok_or(CliError::Inaccessible)?;
-    Ok(CliResponse::from_request_ok(request, atable.to_string()))
-}
 fn show_interfaces(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     let iftable = db.iftw.enter().ok_or(CliError::Inaccessible)?;
     Ok(CliResponse::from_request_ok(request, iftable.to_string()))
@@ -579,7 +575,6 @@ fn do_handle_cli_request(
         CliAction::ShowRouterVrfs => show_vrfs(request, &db.vrftable),
         CliAction::ShowRouterEvpnRmacStore => show_rmac_store(request, &db.rmac_store)?,
         CliAction::ShowRouterEvpnVtep => show_vtep(request, db),
-        CliAction::ShowAdjacencies => show_adjacency_table(request, db)?,
         CliAction::ShowRouterIpv4Routes => show_vrf_routes(request, db, true)?,
         CliAction::ShowRouterIpv6Routes => show_vrf_routes(request, db, false)?,
         CliAction::ShowRouterIpv4NextHops => show_vrf_nexthops(request, db, true)?,
@@ -588,6 +583,7 @@ fn do_handle_cli_request(
         CliAction::ShowRouterIpv6FibEntries => show_ip_fib(request, db, false)?,
         CliAction::ShowRouterIpv4FibGroups => show_ip_fib_groups(request, db, true)?,
         CliAction::ShowRouterIpv6FibGroups => show_ip_fib_groups(request, db, false)?,
+        CliAction::ShowNeighCache => show_provider(request, sources.neigh_cache.as_deref()),
         CliAction::ShowFlowTable => show_provider(request, sources.flow_table.as_deref()),
         CliAction::ShowFlowFilter => show_provider(request, sources.flow_filter.as_deref()),
         CliAction::ShowPortForwarding => show_provider(request, sources.portfw_table.as_deref()),

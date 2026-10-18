@@ -1,21 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 //
-//! Implements an egress stage
+//! Implements an egress stage, currently only for IP/ETH traffic.
+//! This stage is responsible for the ethernet re-write accoring to the
+//! interface table and the neighbor cache. It expects packets to be
+//! annotated with an outgoing interface (e.g. as determined by a
+//! routing stage). This NF will:
+//!   - drop all packets if the interface table is not accessible
+//!   - drop all packets if the neighbor cache table is not accessible
+//!   - drop packets if no interface is found for the meta-data interface index
+//!   - drop packets over interfaces that are not admin and oper down
+//!   - attempt to resolve the destination mac for IP packets, according to the
+//!     neighbor cache. If that is not possible, will mark packets to be
+//!     processed by the ARP/ND NF.
 
-use std::net::IpAddr;
+use arp::{NeighCache, NeighCacheReader};
 use tracing::{debug, error, warn};
 
 use net::buffer::PacketBufferMut;
 use net::eth::Eth;
 use net::eth::ethtype::EthType;
-use net::eth::mac::DestinationMac;
-use net::headers::{TryEthMut, TryIpv4, TryIpv6};
-use net::interface::InterfaceIndex;
+use net::eth::mac::{DestinationMac, SourceMac};
+use net::headers::{TryEth, TryIp, TryIpv4, TryIpv6};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
-use routing::{AtableReader, IfState, IfTable, IfTableReader, IfType, Interface};
+use routing::{IfState, IfTable, IfTableReader, IfType, Interface};
 
 use tracectl::trace_target;
 trace_target!("egress", LevelFilter::WARN, &["pipeline"]);
@@ -24,18 +34,19 @@ trace_target!("egress", LevelFilter::WARN, &["pipeline"]);
 pub struct Egress {
     name: String,
     iftr: IfTableReader,
-    atabler: AtableReader,
+    cacher: NeighCacheReader,
 }
 
 #[allow(dead_code)]
-fn determine_ether_type<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<EthType> {
-    // FIXME(fredi): this should consider interface type; e.g. for vlan
+fn ether_type_plain_eth<Buf: PacketBufferMut>(
+    packet: &Packet<Buf>,
+    _interface: &Interface,
+) -> Option<EthType> {
     if packet.try_ipv4().is_some() {
         Some(EthType::IPV4)
     } else if packet.try_ipv6().is_some() {
         Some(EthType::IPV6)
     } else {
-        // FIXME(fredi): support other types
         warn!("Warning, unable to determine ethernet type!");
         None
     }
@@ -43,162 +54,140 @@ fn determine_ether_type<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<Et
 
 #[allow(dead_code)]
 impl Egress {
-    pub fn new(name: &str, iftr: IfTableReader, atabler: AtableReader) -> Self {
+    #[must_use]
+    pub fn new(name: &str, iftr: IfTableReader, cacher: NeighCacheReader) -> Self {
         let name = name.to_owned();
-        Self {
-            name,
-            iftr,
-            atabler,
-        }
+        Self { name, iftr, cacher }
     }
-    fn interface_egress_ethernet<Buf: PacketBufferMut>(
-        &self,
+
+    fn eth_rewrite<Buf: PacketBufferMut>(
         interface: &Interface,
-        dst_mac: DestinationMac,
+        src_mac: SourceMac,
+        dst_mac: Option<DestinationMac>,
         packet: &mut Packet<Buf>,
     ) {
-        let nfi = &self.name;
-        let ifname = &interface.name;
-
-        /* lookup mac to source frame from */
-        let Some(src_mac) = interface.get_mac() else {
-            error!("{nfi}: Failed to get mac address of interface {ifname}!");
-            packet.done(DoneReason::InternalFailure);
+        let Some(eth_type) = packet
+            .eth_type()
+            .or_else(|| ether_type_plain_eth(packet, interface))
+        else {
+            packet.done(DoneReason::MissingEtherType);
             return;
         };
 
-        if let Some(eth) = packet.try_eth_mut() {
-            /* Packet already has an ethernet header -- overwrite */
-            eth.set_source(src_mac);
+        // add/replace ethernet header
+        let mut eth = Eth::new_incomplete(src_mac, eth_type);
+        if let Some(dst_mac) = dst_mac {
             eth.set_destination(dst_mac);
-        } else {
-            /* Packet has no ethernet header -- Add it */
-            if let Some(ether_type) = determine_ether_type(packet) {
-                let eth = Eth::new(src_mac, dst_mac, ether_type);
-                packet.set_eth(eth);
-            } else {
-                warn!("Unable to determine ethernet type");
-                packet.done(DoneReason::MissingEtherType);
-                return;
-            }
         }
-
-        debug!("Packet can be sent over iface {ifname} with dst MAC {dst_mac}");
-        packet.done(DoneReason::Delivered);
+        // the new header may have the dst mac unset
+        packet.set_eth(eth);
     }
 
-    fn interface_egress<Buf: PacketBufferMut>(
+    fn process_packet<Buf: PacketBufferMut>(
         &self,
-        interface: &Interface,
         packet: &mut Packet<Buf>,
-        dst_mac: DestinationMac,
+        iftable: &IfTable,
+        neigh_cache: &NeighCache,
     ) {
-        if interface.admin_state == IfState::Down {
-            packet.done(DoneReason::InterfaceAdmDown);
-        } else if interface.oper_state == IfState::Down {
-            packet.done(DoneReason::InterfaceOperDown);
-        } else {
-            match interface.iftype {
-                IfType::Ethernet(_) | IfType::Dot1q(_) => {
-                    self.interface_egress_ethernet(interface, dst_mac, packet);
-                }
-                _ => packet.done(DoneReason::InterfaceUnsupported),
-            }
-        }
-    }
-
-    fn get_adj_mac<Buf: PacketBufferMut>(
-        &self,
-        packet: &mut Packet<Buf>,
-        addr: IpAddr,
-        ifindex: InterfaceIndex,
-    ) -> Option<DestinationMac> {
         let nfi = &self.name;
 
-        if let Some(atable) = self.atabler.enter() {
-            /* do lookup on the adjacency table */
-            let Some(adj) = atable.get_adjacency(addr, ifindex) else {
-                warn!("{nfi}: missing L2 info for {addr}");
-
-                /* Todo: Trigger ARP */
-
-                packet.done(DoneReason::MissL2resolution);
-                return None;
-            };
-            /* get the mac from the adjacency */
-            let adj_mac = adj.get_mac();
-            let Ok(dst_mac) = DestinationMac::new(adj_mac) else {
-                warn!("{nfi}, Can't use mac {adj_mac} as destination!");
-                packet.done(DoneReason::InvalidDstMac);
-                return None;
-            };
-            Some(dst_mac)
-        } else {
-            warn!("{nfi}: atable not readable!");
-            packet.done(DoneReason::InternalFailure);
-            None
-        }
-    }
-
-    fn resolve_next_mac<Buf: PacketBufferMut>(
-        &self,
-        ifindex: InterfaceIndex,
-        packet: &mut Packet<Buf>,
-    ) -> Option<DestinationMac> {
-        let nfi = &self.name;
-        // if packet was annotated with a next-hop address, try to resolve it using the
-        // adjacency table. Otherwise, that means that the packet is directly connected
-        // to us (on the same subnet). So, fetch the destination IP address and try to
-        // resolve it with the adjacency table as well. If that fails, that's where the
-        // ARP/ND would need to be triggered.
-        if let Some(nh_addr) = packet.meta().nh_addr {
-            self.get_adj_mac(packet, nh_addr, ifindex)
-        } else if let Some(destination) = packet.ip_destination() {
-            self.get_adj_mac(packet, destination, ifindex)
-        } else {
-            warn!("{nfi}: could not determine packet destination IP address");
-            // This should be a bug because if a packet was not IP, we'd have
-            // already determined that we could not process it.
-            packet.done(DoneReason::NotIp);
-            None
-        }
-    }
-
-    #[inline]
-    fn egress_process<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, iftable: &IfTable) {
+        // we can only process a packet if it has annotated the output interface
         let Some(oif) = packet.meta().oif else {
             warn!("{}: Missing oif metadata!", &self.name);
             packet.done(DoneReason::RouteFailure);
             return;
         };
 
-        /* resolve destination mac */
-        let Some(dst_mac) = self.resolve_next_mac(oif, packet) else {
-            // we could not figure out the destination MAC.
-            // resolve_next_mac() already calls packet.done()
+        // oif marking must refer to an interface that is known to us
+        let Some(interface) = iftable.get_interface(oif) else {
+            warn!("{nfi}: Interface with index {oif} is not known");
+            packet.done(DoneReason::InterfaceUnknown);
             return;
         };
 
-        /* get interface to send packet over */
-        if let Some(interface) = iftable.get_interface(oif) {
-            self.interface_egress(interface, packet, dst_mac);
-        } else {
-            warn!("{}: Unknown interface with id {oif}", &self.name);
-            packet.done(DoneReason::InterfaceUnknown);
+        // interface must be admin up
+        if interface.admin_state == IfState::Down {
+            packet.done(DoneReason::InterfaceAdmDown);
+            return;
+        } else if interface.oper_state == IfState::Down {
+            packet.done(DoneReason::InterfaceOperDown); // this should be done on xmit
+            return;
         }
+
+        // temporary sanity
+        if !matches!(interface.iftype, IfType::Ethernet(_)) {
+            warn!("{nfi}: Interface  {} is not ethernet", interface.name);
+            packet.done(DoneReason::InterfaceUnsupported);
+            return;
+        }
+
+        // interface must have a mac to source frames from
+        let Some(smac) = interface.get_mac() else {
+            warn!("{nfi}: Interface {} has no mac", interface.name);
+            packet.done(DoneReason::InterfaceUnsupported);
+            return;
+        };
+
+        // at the moment, we only work with ip packets
+        let Some(net) = packet.try_ip() else {
+            packet.done(DoneReason::NotIp);
+            return;
+        };
+
+        // determine target from metadata or packet
+        let target = packet.meta().nh_addr.unwrap_or_else(|| net.dst_addr());
+
+        // attempt to resolve target mac from neighbor cache
+        let dst_mac = neigh_cache.get_mac(target, oif);
+
+        // re-write ethernet header. The header may be incomplete since the dst mac may not be known
+        Self::eth_rewrite(interface, smac, dst_mac, packet);
+        if packet.is_done() {
+            return;
+        }
+
+        let Some(eth) = packet.try_eth() else {
+            packet.done(DoneReason::InternalFailure);
+            return;
+        };
+
+        // If mac was set, we're done. Otherwise, punt to ARP/ND
+        let ifname = &interface.name;
+        if eth.has_zero_dst_mac() {
+            debug!("{nfi}: Mac of {target} over {ifname} is not known: will punt to ARP/ND");
+            packet.meta_mut().set_need_arp_nd(true);
+        } else {
+            let dmac = eth.destination();
+            debug_assert!(dst_mac.is_some());
+            debug_assert_eq!(Some(dmac), dst_mac);
+            debug!("{nfi}: Packet can be sent over {ifname} with dst MAC {dmac}");
+            packet.done(DoneReason::Delivered);
+        }
+    }
+}
+
+fn drop_all<Buf: PacketBufferMut>(burst: &mut Vec<Packet<Buf>>) {
+    for packet in burst {
+        packet.done(DoneReason::InternalFailure);
     }
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        let Some(iftable) = self.iftr.enter() else {
+            error!("{}: failed to access interface table", self.name);
+            drop_all(burst);
+            return;
+        };
+        let Some(neigh_cache) = self.cacher.enter() else {
+            error!("{}: failed to access neighbor cache", self.name);
+            drop_all(burst);
+            return;
+        };
+
         for packet in burst.iter_mut() {
             if !packet.is_done() {
-                if let Some(iftable) = self.iftr.enter() {
-                    self.egress_process(packet, &iftable);
-                } else {
-                    warn!("{}: Fib iftable no longer readable!", &self.name);
-                    packet.done(DoneReason::InternalFailure);
-                }
+                self.process_packet(packet, &iftable, &neigh_cache);
             }
         }
     }

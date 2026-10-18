@@ -7,6 +7,8 @@
 use acl_filter::{
     AclFilter, AclFilterContext, AclFilterContextReaderFactory, AclFilterContextWriter,
 };
+use arp::NeighCacheReaderFactory;
+use arp::testing::NeighTable;
 use common::cliprovider::CliDataProvider;
 use concurrency::sync::{Arc, Mutex};
 use config::external::GenId;
@@ -35,8 +37,8 @@ use net::vxlan::Vni;
 use pipeline::{DynPipeline, NetworkFunction, PipelineData};
 use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
-use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
 use routing::{EgressObject, Encapsulation, FibEntry, PktInstruction, Vtep, VxlanEncapsulation};
+use routing::{FibTableReaderFactory, IfTableReaderFactory};
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 use std::time::Duration;
@@ -86,7 +88,7 @@ pub(crate) struct Blueprint {
 struct Underlay {
     interfaces: IfTableReaderFactory,
     fibs: FibTableReaderFactory,
-    adjacencies: AtableReaderFactory,
+    neighbors: NeighCacheReaderFactory,
 }
 
 pub(crate) struct Worker {
@@ -96,7 +98,7 @@ pub(crate) struct Worker {
 }
 
 pub(crate) struct Fabric {
-    _tables: Option<RouterTables>,
+    _tables: Option<Tables>,
     fleet: Fleet,
     worker: Worker,
 }
@@ -130,7 +132,7 @@ impl Drop for Fabric {
 impl Fleet {
     pub(crate) fn lowering(
         overlay: &ValidatedOverlay,
-        tables: Option<&RouterTables>,
+        tables: Option<&Tables>,
         flow_table: Arc<FlowTable>,
     ) -> Self {
         let flow_filter = FlowFilterContextWriter::new();
@@ -167,9 +169,9 @@ impl Fleet {
             masquerade: masquerade.get_reader_factory(),
             pipeline: Arc::new(PipelineData::new(FIRST_GENID)),
             underlay: tables.map(|tables| Underlay {
-                interfaces: tables.interface_factory(),
-                fibs: tables.fib_factory(),
-                adjacencies: tables.adjacency_factory(),
+                interfaces: tables.router.interface_factory(),
+                fibs: tables.router.fib_factory(),
+                neighbors: tables.neighbors.factory(),
             }),
             flow_table,
             declared: declared_pools(overlay),
@@ -376,7 +378,7 @@ impl Blueprint {
             pipeline = pipeline.add_stage(Egress::new(
                 "egress",
                 underlay.interfaces.handle(),
-                underlay.adjacencies.handle(),
+                underlay.neighbors.handle(),
             ));
             pipeline = pipeline.add_stage(Checkpoint::new("after egress", contract::finished));
         }
@@ -442,7 +444,7 @@ impl Fabric {
         ))
     }
 
-    pub(crate) fn routed_over(overlay: &Overlay, tables: RouterTables) -> Option<Self> {
+    pub(crate) fn routed_over(overlay: &Overlay, tables: Tables) -> Option<Self> {
         Some(Self::over(
             &overlay.clone().validate().ok()?,
             Some(tables),
@@ -450,15 +452,11 @@ impl Fabric {
         ))
     }
 
-    pub(crate) fn routed_over_validated(overlay: &ValidatedOverlay, tables: RouterTables) -> Self {
+    pub(crate) fn routed_over_validated(overlay: &ValidatedOverlay, tables: Tables) -> Self {
         Self::over(overlay, Some(tables), Arc::new(FlowTable::default()))
     }
 
-    fn assemble(
-        exposes: &[VpcExpose],
-        acl: Option<&Acl>,
-        tables: Option<RouterTables>,
-    ) -> Option<Self> {
+    fn assemble(exposes: &[VpcExpose], acl: Option<&Acl>, tables: Option<Tables>) -> Option<Self> {
         let overlay = overlay_with_exposes_and_acl(exposes.to_vec(), acl)
             .ok()?
             .validate()
@@ -468,7 +466,7 @@ impl Fabric {
 
     fn over(
         overlay: &ValidatedOverlay,
-        tables: Option<RouterTables>,
+        tables: Option<Tables>,
         flow_table: Arc<FlowTable>,
     ) -> Self {
         let fleet = Fleet::lowering(overlay, tables.as_ref(), flow_table);
@@ -1284,7 +1282,13 @@ pub(crate) fn uplink() -> InterfaceIndex {
     InterfaceIndex::try_new(UPLINK).unwrap_or_else(|_| unreachable!())
 }
 
-pub(crate) fn topology(vnis: &[Vni]) -> RouterTables {
+/// The tables of the underlay: those of the router, and the neighbors (ARP/ND cache)
+pub(crate) struct Tables {
+    pub(crate) router: RouterTables,
+    pub(crate) neighbors: NeighTable,
+}
+
+pub(crate) fn topology(vnis: &[Vni]) -> Tables {
     let mut tables = RouterTables::new();
 
     tables.vrf(UNDERLAY_VRF, None);
@@ -1306,13 +1310,17 @@ pub(crate) fn topology(vnis: &[Vni]) -> RouterTables {
         encapsulate_out_of(&mut tables, reachable.as_u32(), *reachable);
     }
 
-    tables.adjacency(
+    let mut neighbors = NeighTable::new();
+    neighbors.neighbor(
         PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()),
         uplink(),
         PEER_MAC,
     );
 
-    tables
+    Tables {
+        router: tables,
+        neighbors,
+    }
 }
 
 fn encapsulate_out_of(tables: &mut RouterTables, vrfid: u32, out_vni: Vni) {
@@ -4133,8 +4141,8 @@ mod routed {
     async fn a_vlan_tag_is_refused_at_decapsulation() {
         let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
         let mut pipeline = DynPipeline::new()
-            .add_stage(Ingress::new("ingress", tables.interfaces()))
-            .add_stage(IpForwarder::new("ip-forward-1", tables.fibs()));
+            .add_stage(Ingress::new("ingress", tables.router.interfaces()))
+            .add_stage(IpForwarder::new("ip-forward-1", tables.router.fibs()));
 
         let plain = one(&mut pipeline, tunnelled(&inner()));
         assert_eq!(
@@ -5893,7 +5901,7 @@ mod model {
                     start.wait();
                     for nth in 0..churn {
                         let prefix = format!("9.9.{nth}.0");
-                        tables.route_via(
+                        tables.router.route_via(
                             UNDERLAY_VRF,
                             Prefix::expect_from((
                                 prefix
@@ -6007,16 +6015,20 @@ mod model {
                     let mut tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
                     for nth in 1..=churn {
                         let (_, oif) = waypoint(nth);
-                        tables.interface(
+                        tables.router.interface(
                             oif,
                             InterfaceName::try_from(format!("uplink-{nth}").as_str()).unwrap(),
                             SourceMac::new(framing(nth)).unwrap_or_else(|_| unreachable!()),
                         );
-                        tables.attach(oif, UNDERLAY_VRF);
+                        tables.router.attach(oif, UNDERLAY_VRF);
                     }
                     for to in 0..=churn {
                         for over in 0..=churn {
-                            tables.adjacency(waypoint(to).0, waypoint(over).1, framing(to));
+                            tables.neighbors.neighbor(
+                                waypoint(to).0,
+                                waypoint(over).1,
+                                framing(to),
+                            );
                         }
                     }
                     let fleet =
@@ -6096,7 +6108,7 @@ mod model {
                         let key = nhop(&PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()));
                         gate.wait();
                         for round in 1..=churn {
-                            tables.nexthop(REMOTE_VNI, &key, &towards(round));
+                            tables.router.nexthop(REMOTE_VNI, &key, &towards(round));
                             gate.wait();
                         }
 
