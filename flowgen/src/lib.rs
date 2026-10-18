@@ -20,6 +20,7 @@
 //! - [`schedule`]: which flow each packet belongs to, as a window of flows slides on (churn).
 //! - [`ledger`]: what was sent against what came back: loss, reordering, latency, and whether
 //!   each flow came back the same way every time.
+//! - [`prometheus`]: reading the gateway's own telemetry into a report sample.
 //! - `port` (with the `dpdk` feature): sending a stream on DPDK queues and receiving on them.
 //!
 //! Frames are built and read by this crate's own code, not the dataplane's, so that the two
@@ -30,6 +31,7 @@ pub mod frame;
 pub mod ledger;
 #[cfg(feature = "dpdk")]
 pub mod port;
+pub mod prometheus;
 pub mod schedule;
 pub mod signature;
 pub mod space;
