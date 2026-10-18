@@ -1,0 +1,60 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-5.1.5"
+
+# LOCAL_PREF
+#
+#    LOCAL_PREF is a well-known attribute that SHALL be included in all
+#    UPDATE messages that a given BGP speaker sends to other internal
+#    peers.  A BGP speaker SHALL calculate the degree of preference for
+#    each external route based on the locally-configured policy, and
+#    include the degree of preference when advertising a route to its
+#    internal peers.  The higher degree of preference MUST be preferred.
+#    A BGP speaker uses the degree of preference learned via LOCAL_PREF in
+#    its Decision Process (see Section 9.1.1).
+# 
+#    A BGP speaker MUST NOT include this attribute in UPDATE messages it
+#    sends to external peers, except in the case of BGP Confederations
+#    [RFC3065].  If it is contained in an UPDATE message that is received
+#    from an external peer, then this attribute MUST be ignored by the
+#    receiving speaker, except in the case of BGP Confederations
+#    [RFC3065].
+
+[[spec]]
+level = "MUST"
+quote = '''
+LOCAL_PREF is a well-known attribute that SHALL be included in all
+UPDATE messages that a given BGP speaker sends to other internal
+peers.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A BGP speaker SHALL calculate the degree of preference for
+each external route based on the locally-configured policy, and
+include the degree of preference when advertising a route to its
+internal peers.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The higher degree of preference MUST be preferred.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A BGP speaker MUST NOT include this attribute in UPDATE messages it
+sends to external peers, except in the case of BGP Confederations
+[RFC3065].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If it is contained in an UPDATE message that is received
+from an external peer, then this attribute MUST be ignored by the
+receiving speaker, except in the case of BGP Confederations
+[RFC3065].
+'''
+

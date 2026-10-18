@@ -1,0 +1,17 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-8.2.1.4"
+
+# FSM Event Numbers
+#
+#    The Event numbers (1-28) utilized in this state machine description
+#    aid in specifying the behavior of the BGP state machine.
+#    Implementations MAY use these numbers to provide network management
+#    information.  The exact form of an FSM or the FSM events are specific
+#    to each implementation.
+
+[[spec]]
+level = "MAY"
+quote = '''
+Implementations MAY use these numbers to provide network management
+information.
+'''
+

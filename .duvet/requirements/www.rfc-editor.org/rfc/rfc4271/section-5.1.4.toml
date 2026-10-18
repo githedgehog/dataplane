@@ -1,0 +1,89 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-5.1.4"
+
+# MULTI_EXIT_DISC
+#
+#    The MULTI_EXIT_DISC is an optional non-transitive attribute that is
+#    intended to be used on external (inter-AS) links to discriminate
+#    among multiple exit or entry points to the same neighboring AS.  The
+#    value of the MULTI_EXIT_DISC attribute is a four-octet unsigned
+#    number, called a metric.  All other factors being equal, the exit
+#    point with the lower metric SHOULD be preferred.  If received over
+#    EBGP, the MULTI_EXIT_DISC attribute MAY be propagated over IBGP to
+#    other BGP speakers within the same AS (see also 9.1.2.2).  The
+#    MULTI_EXIT_DISC attribute received from a neighboring AS MUST NOT be
+#    propagated to other neighboring ASes.
+# 
+#    A BGP speaker MUST implement a mechanism (based on local
+#    configuration) that allows the MULTI_EXIT_DISC attribute to be
+#    removed from a route.  If a BGP speaker is configured to remove the
+# 
+#    MULTI_EXIT_DISC attribute from a route, then this removal MUST be
+#    done prior to determining the degree of preference of the route and
+#    prior to performing route selection (Decision Process phases 1 and
+#    2).
+# 
+#    An implementation MAY also (based on local configuration) alter the
+#    value of the MULTI_EXIT_DISC attribute received over EBGP.  If a BGP
+#    speaker is configured to alter the value of the MULTI_EXIT_DISC
+#    attribute received over EBGP, then altering the value MUST be done
+#    prior to determining the degree of preference of the route and prior
+#    to performing route selection (Decision Process phases 1 and 2).  See
+#    Section 9.1.2.2 for necessary restrictions on this.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+All other factors being equal, the exit
+point with the lower metric SHOULD be preferred.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+If received over
+EBGP, the MULTI_EXIT_DISC attribute MAY be propagated over IBGP to
+other BGP speakers within the same AS (see also 9.1.2.2).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The
+MULTI_EXIT_DISC attribute received from a neighboring AS MUST NOT be
+propagated to other neighboring ASes.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A BGP speaker MUST implement a mechanism (based on local
+configuration) that allows the MULTI_EXIT_DISC attribute to be
+removed from a route.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+MULTI_EXIT_DISC attribute from a route, then this removal MUST be
+done prior to determining the degree of preference of the route and
+prior to performing route selection (Decision Process phases 1 and
+2).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+An implementation MAY also (based on local configuration) alter the
+value of the MULTI_EXIT_DISC attribute received over EBGP.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a BGP
+speaker is configured to alter the value of the MULTI_EXIT_DISC
+attribute received over EBGP, then altering the value MUST be done
+prior to determining the degree of preference of the route and prior
+to performing route selection (Decision Process phases 1 and 2).
+'''
+

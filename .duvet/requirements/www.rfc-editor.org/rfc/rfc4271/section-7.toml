@@ -1,0 +1,33 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-7"
+
+# BGP Version Negotiation
+#
+#    BGP speakers MAY negotiate the version of the protocol by making
+#    multiple attempts at opening a BGP connection, starting with the
+#    highest version number each BGP speaker supports.  If an open attempt
+#    fails with an Error Code, OPEN Message Error, and an Error Subcode,
+#    Unsupported Version Number, then the BGP speaker has available the
+#    version number it tried, the version number its peer tried, the
+#    version number passed by its peer in the NOTIFICATION message, and
+#    the version numbers it supports.  If the two peers do support one or
+#    more common versions, then this will allow them to rapidly determine
+#    the highest common version.  In order to support BGP version
+#    negotiation, future versions of BGP MUST retain the format of the
+#    OPEN and NOTIFICATION messages.
+
+[[spec]]
+level = "MAY"
+quote = '''
+BGP speakers MAY negotiate the version of the protocol by making
+multiple attempts at opening a BGP connection, starting with the
+highest version number each BGP speaker supports.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In order to support BGP version
+negotiation, future versions of BGP MUST retain the format of the
+OPEN and NOTIFICATION messages.
+'''
+

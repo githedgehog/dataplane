@@ -14,6 +14,7 @@
 //! A traffic generator for testing the dataplane: many flows, each packet signed so that what
 //! comes back can be traced to what was sent, and an account of the difference.
 //!
+//! - [`bgp`]: a minimal BGP speaker, to hold a session with a gateway over [`tcp`].
 //! - [`bfd`]: a BFD peer, to hold a session with a gateway and say how it fared.
 //! - [`tcp`]: real TCP hosts, from smoltcp, that open connections and check what comes back.
 //! - [`space`]: the flows a stream can send, numbered, so that a million of them need no table.
@@ -32,6 +33,7 @@
 //! cannot agree on a bug.
 
 pub mod bfd;
+pub mod bgp;
 mod checksum;
 pub mod drive;
 pub mod frame;

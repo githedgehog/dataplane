@@ -1,0 +1,88 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-8.1.3"
+
+# Timer Events
+#
+#       Event 9: ConnectRetryTimer_Expires
+# 
+#          Definition: An event generated when the ConnectRetryTimer
+#                      expires.
+# 
+#          Status:     Mandatory
+# 
+#       Event 10: HoldTimer_Expires
+# 
+#          Definition: An event generated when the HoldTimer expires.
+# 
+#          Status:     Mandatory
+# 
+#       Event 11: KeepaliveTimer_Expires
+# 
+#          Definition: An event generated when the KeepaliveTimer expires.
+# 
+#          Status:     Mandatory
+# 
+#       Event 12: DelayOpenTimer_Expires
+# 
+#          Definition: An event generated when the DelayOpenTimer expires.
+# 
+#                      Status:     Optional
+# 
+#          Optional
+#          Attribute
+#          Status:     If this event occurs,
+#                      1) DelayOpen attribute SHOULD be set to TRUE,
+#                      2) DelayOpenTime attribute SHOULD be supported,
+#                      3) DelayOpenTimer SHOULD be supported.
+# 
+#       Event 13: IdleHoldTimer_Expires
+# 
+#          Definition: An event generated when the IdleHoldTimer expires,
+#                      indicating that the BGP connection has completed
+#                      waiting for the back-off period to prevent BGP peer
+#                      oscillation.
+# 
+#                      The IdleHoldTimer is only used when the persistent
+#                      peer oscillation damping function is enabled by
+#                      setting the DampPeerOscillations optional attribute
+#                      to TRUE.
+# 
+#                      Implementations not implementing the persistent
+#                      peer oscillation damping function may not have the
+#                      IdleHoldTimer.
+# 
+#          Status:     Optional
+# 
+#          Optional
+#          Attribute
+#          Status:     If this event occurs:
+#                      1) DampPeerOscillations attribute SHOULD be set to
+#                         TRUE.
+#                      2) IdleHoldTimer SHOULD have just expired.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Optional
+Attribute
+Status:     If this event occurs,
+1) DelayOpen attribute SHOULD be set to TRUE,
+2) DelayOpenTime attribute SHOULD be supported,
+3) DelayOpenTimer SHOULD be supported.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Optional
+Attribute
+Status:     If this event occurs:
+1) DampPeerOscillations attribute SHOULD be set to
+TRUE.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+2) IdleHoldTimer SHOULD have just expired.
+'''
+

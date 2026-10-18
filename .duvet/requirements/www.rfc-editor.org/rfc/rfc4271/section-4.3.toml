@@ -1,0 +1,384 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-4.3"
+
+# UPDATE Message Format
+#
+#    UPDATE messages are used to transfer routing information between BGP
+#    peers.  The information in the UPDATE message can be used to
+#    construct a graph that describes the relationships of the various
+#    Autonomous Systems.  By applying rules to be discussed, routing
+# 
+#    information loops and some other anomalies may be detected and
+#    removed from inter-AS routing.
+# 
+#    An UPDATE message is used to advertise feasible routes that share
+#    common path attributes to a peer, or to withdraw multiple unfeasible
+#    routes from service (see 3.1).  An UPDATE message MAY simultaneously
+#    advertise a feasible route and withdraw multiple unfeasible routes
+#    from service.  The UPDATE message always includes the fixed-size BGP
+#    header, and also includes the other fields, as shown below (note,
+#    some of the shown fields may not be present in every UPDATE message):
+# 
+#       +-----------------------------------------------------+
+#       |   Withdrawn Routes Length (2 octets)                |
+#       +-----------------------------------------------------+
+#       |   Withdrawn Routes (variable)                       |
+#       +-----------------------------------------------------+
+#       |   Total Path Attribute Length (2 octets)            |
+#       +-----------------------------------------------------+
+#       |   Path Attributes (variable)                        |
+#       +-----------------------------------------------------+
+#       |   Network Layer Reachability Information (variable) |
+#       +-----------------------------------------------------+
+# 
+#       Withdrawn Routes Length:
+# 
+#          This 2-octets unsigned integer indicates the total length of
+#          the Withdrawn Routes field in octets.  Its value allows the
+#          length of the Network Layer Reachability Information field to
+#          be determined, as specified below.
+# 
+#          A value of 0 indicates that no routes are being withdrawn from
+#          service, and that the WITHDRAWN ROUTES field is not present in
+#          this UPDATE message.
+# 
+#       Withdrawn Routes:
+# 
+#          This is a variable-length field that contains a list of IP
+#          address prefixes for the routes that are being withdrawn from
+#          service.  Each IP address prefix is encoded as a 2-tuple of the
+#          form <length, prefix>, whose fields are described below:
+# 
+#                   +---------------------------+
+#                   |   Length (1 octet)        |
+#                   +---------------------------+
+#                   |   Prefix (variable)       |
+#                   +---------------------------+
+# 
+#          The use and the meaning of these fields are as follows:
+# 
+#          a) Length:
+# 
+#             The Length field indicates the length in bits of the IP
+#             address prefix.  A length of zero indicates a prefix that
+#             matches all IP addresses (with prefix, itself, of zero
+#             octets).
+# 
+#          b) Prefix:
+# 
+#             The Prefix field contains an IP address prefix, followed by
+#             the minimum number of trailing bits needed to make the end
+#             of the field fall on an octet boundary.  Note that the value
+#             of trailing bits is irrelevant.
+# 
+#       Total Path Attribute Length:
+# 
+#          This 2-octet unsigned integer indicates the total length of the
+#          Path Attributes field in octets.  Its value allows the length
+#          of the Network Layer Reachability field to be determined as
+#          specified below.
+# 
+#          A value of 0 indicates that neither the Network Layer
+#          Reachability Information field nor the Path Attribute field is
+#          present in this UPDATE message.
+# 
+#       Path Attributes:
+# 
+#          A variable-length sequence of path attributes is present in
+#          every UPDATE message, except for an UPDATE message that carries
+#          only the withdrawn routes.  Each path attribute is a triple
+#          <attribute type, attribute length, attribute value> of variable
+#          length.
+# 
+#          Attribute Type is a two-octet field that consists of the
+#          Attribute Flags octet, followed by the Attribute Type Code
+#          octet.
+# 
+#                0                   1
+#                0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+#                +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#                |  Attr. Flags  |Attr. Type Code|
+#                +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#          The high-order bit (bit 0) of the Attribute Flags octet is the
+#          Optional bit.  It defines whether the attribute is optional (if
+#          set to 1) or well-known (if set to 0).
+# 
+#          The second high-order bit (bit 1) of the Attribute Flags octet
+#          is the Transitive bit.  It defines whether an optional
+#          attribute is transitive (if set to 1) or non-transitive (if set
+#          to 0).
+# 
+#          For well-known attributes, the Transitive bit MUST be set to 1.
+#          (See Section 5 for a discussion of transitive attributes.)
+# 
+#          The third high-order bit (bit 2) of the Attribute Flags octet
+#          is the Partial bit.  It defines whether the information
+#          contained in the optional transitive attribute is partial (if
+#          set to 1) or complete (if set to 0).  For well-known attributes
+#          and for optional non-transitive attributes, the Partial bit
+#          MUST be set to 0.
+# 
+#          The fourth high-order bit (bit 3) of the Attribute Flags octet
+#          is the Extended Length bit.  It defines whether the Attribute
+#          Length is one octet (if set to 0) or two octets (if set to 1).
+# 
+#          The lower-order four bits of the Attribute Flags octet are
+#          unused.  They MUST be zero when sent and MUST be ignored when
+#          received.
+# 
+#          The Attribute Type Code octet contains the Attribute Type Code.
+#          Currently defined Attribute Type Codes are discussed in Section
+#          5.
+# 
+#          If the Extended Length bit of the Attribute Flags octet is set
+#          to 0, the third octet of the Path Attribute contains the length
+#          of the attribute data in octets.
+# 
+#          If the Extended Length bit of the Attribute Flags octet is set
+#          to 1, the third and fourth octets of the path attribute contain
+#          the length of the attribute data in octets.
+# 
+#          The remaining octets of the Path Attribute represent the
+#          attribute value and are interpreted according to the Attribute
+#          Flags and the Attribute Type Code.  The supported Attribute
+#          Type Codes, and their attribute values and uses are as follows:
+# 
+#          a) ORIGIN (Type Code 1):
+# 
+#             ORIGIN is a well-known mandatory attribute that defines the
+#             origin of the path information.  The data octet can assume
+#             the following values:
+# 
+#                Value      Meaning
+# 
+#                0         IGP - Network Layer Reachability Information
+#                             is interior to the originating AS
+# 
+#                1         EGP - Network Layer Reachability Information
+#                             learned via the EGP protocol [RFC904]
+# 
+#                2         INCOMPLETE - Network Layer Reachability
+#                             Information learned by some other means
+# 
+#             Usage of this attribute is defined in 5.1.1.
+# 
+#          b) AS_PATH (Type Code 2):
+# 
+#             AS_PATH is a well-known mandatory attribute that is composed
+#             of a sequence of AS path segments.  Each AS path segment is
+#             represented by a triple <path segment type, path segment
+#             length, path segment value>.
+# 
+#             The path segment type is a 1-octet length field with the
+#             following values defined:
+# 
+#                Value      Segment Type
+# 
+#                1         AS_SET: unordered set of ASes a route in the
+#                             UPDATE message has traversed
+# 
+#                2         AS_SEQUENCE: ordered set of ASes a route in
+#                             the UPDATE message has traversed
+# 
+#             The path segment length is a 1-octet length field,
+#             containing the number of ASes (not the number of octets) in
+#             the path segment value field.
+# 
+#             The path segment value field contains one or more AS
+#             numbers, each encoded as a 2-octet length field.
+# 
+#             Usage of this attribute is defined in 5.1.2.
+# 
+#          c) NEXT_HOP (Type Code 3):
+# 
+#             This is a well-known mandatory attribute that defines the
+#             (unicast) IP address of the router that SHOULD be used as
+#             the next hop to the destinations listed in the Network Layer
+#             Reachability Information field of the UPDATE message.
+# 
+#             Usage of this attribute is defined in 5.1.3.
+# 
+#          d) MULTI_EXIT_DISC (Type Code 4):
+# 
+#             This is an optional non-transitive attribute that is a
+#             four-octet unsigned integer.  The value of this attribute
+#             MAY be used by a BGP speaker's Decision Process to
+#             discriminate among multiple entry points to a neighboring
+#             autonomous system.
+# 
+#             Usage of this attribute is defined in 5.1.4.
+# 
+#          e) LOCAL_PREF (Type Code 5):
+# 
+#             LOCAL_PREF is a well-known attribute that is a four-octet
+#             unsigned integer.  A BGP speaker uses it to inform its other
+#             internal peers of the advertising speaker's degree of
+#             preference for an advertised route.
+# 
+#             Usage of this attribute is defined in 5.1.5.
+# 
+#          f) ATOMIC_AGGREGATE (Type Code 6)
+# 
+#             ATOMIC_AGGREGATE is a well-known discretionary attribute of
+#             length 0.
+# 
+#             Usage of this attribute is defined in 5.1.6.
+# 
+#          g) AGGREGATOR (Type Code 7)
+# 
+#             AGGREGATOR is an optional transitive attribute of length 6.
+#             The attribute contains the last AS number that formed the
+#             aggregate route (encoded as 2 octets), followed by the IP
+#             address of the BGP speaker that formed the aggregate route
+#             (encoded as 4 octets).  This SHOULD be the same address as
+#             the one used for the BGP Identifier of the speaker.
+# 
+#             Usage of this attribute is defined in 5.1.7.
+# 
+#       Network Layer Reachability Information:
+# 
+#          This variable length field contains a list of IP address
+#          prefixes.  The length, in octets, of the Network Layer
+#          Reachability Information is not encoded explicitly, but can be
+#          calculated as:
+# 
+#                UPDATE message Length - 23 - Total Path Attributes Length
+#                - Withdrawn Routes Length
+# 
+#          where UPDATE message Length is the value encoded in the fixed-
+#          size BGP header, Total Path Attribute Length, and Withdrawn
+#          Routes Length are the values encoded in the variable part of
+#          the UPDATE message, and 23 is a combined length of the fixed-
+#          size BGP header, the Total Path Attribute Length field, and the
+#          Withdrawn Routes Length field.
+# 
+#          Reachability information is encoded as one or more 2-tuples of
+#          the form <length, prefix>, whose fields are described below:
+# 
+#                   +---------------------------+
+#                   |   Length (1 octet)        |
+#                   +---------------------------+
+#                   |   Prefix (variable)       |
+#                   +---------------------------+
+# 
+#          The use and the meaning of these fields are as follows:
+# 
+#          a) Length:
+# 
+#             The Length field indicates the length in bits of the IP
+#             address prefix.  A length of zero indicates a prefix that
+#             matches all IP addresses (with prefix, itself, of zero
+#             octets).
+# 
+#          b) Prefix:
+# 
+#             The Prefix field contains an IP address prefix, followed by
+#             enough trailing bits to make the end of the field fall on an
+#             octet boundary.  Note that the value of the trailing bits is
+#             irrelevant.
+# 
+#    The minimum length of the UPDATE message is 23 octets -- 19 octets
+#    for the fixed header + 2 octets for the Withdrawn Routes Length + 2
+#    octets for the Total Path Attribute Length (the value of Withdrawn
+#    Routes Length is 0 and the value of Total Path Attribute Length is
+#    0).
+# 
+#    An UPDATE message can advertise, at most, one set of path attributes,
+#    but multiple destinations, provided that the destinations share these
+#    attributes.  All path attributes contained in a given UPDATE message
+#    apply to all destinations carried in the NLRI field of the UPDATE
+#    message.
+# 
+#    An UPDATE message can list multiple routes that are to be withdrawn
+#    from service.  Each such route is identified by its destination
+#    (expressed as an IP prefix), which unambiguously identifies the route
+#    in the context of the BGP speaker - BGP speaker connection to which
+#    it has been previously advertised.
+# 
+#    An UPDATE message might advertise only routes that are to be
+#    withdrawn from service, in which case the message will not include
+#    path attributes or Network Layer Reachability Information.
+#    Conversely, it may advertise only a feasible route, in which case the
+#    WITHDRAWN ROUTES field need not be present.
+# 
+#    An UPDATE message SHOULD NOT include the same address prefix in the
+#    WITHDRAWN ROUTES and Network Layer Reachability Information fields.
+#    However, a BGP speaker MUST be able to process UPDATE messages in
+#    this form.  A BGP speaker SHOULD treat an UPDATE message of this form
+#    as though the WITHDRAWN ROUTES do not contain the address prefix.
+
+[[spec]]
+level = "MAY"
+quote = '''
+An UPDATE message MAY simultaneously
+advertise a feasible route and withdraw multiple unfeasible routes
+from service.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+For well-known attributes, the Transitive bit MUST be set to 1.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+For well-known attributes
+and for optional non-transitive attributes, the Partial bit
+MUST be set to 0.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+They MUST be zero when sent and MUST be ignored when
+received.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+This is a well-known mandatory attribute that defines the
+(unicast) IP address of the router that SHOULD be used as
+the next hop to the destinations listed in the Network Layer
+Reachability Information field of the UPDATE message.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+The value of this attribute
+MAY be used by a BGP speaker's Decision Process to
+discriminate among multiple entry points to a neighboring
+autonomous system.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+This SHOULD be the same address as
+the one used for the BGP Identifier of the speaker.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An UPDATE message SHOULD NOT include the same address prefix in the
+WITHDRAWN ROUTES and Network Layer Reachability Information fields.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+However, a BGP speaker MUST be able to process UPDATE messages in
+this form.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A BGP speaker SHOULD treat an UPDATE message of this form
+as though the WITHDRAWN ROUTES do not contain the address prefix.
+'''
+

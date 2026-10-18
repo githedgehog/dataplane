@@ -1,0 +1,31 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-9.4"
+
+# Originating BGP routes
+#
+#    A BGP speaker may originate BGP routes by injecting routing
+#    information acquired by some other means (e.g., via an IGP) into BGP.
+#    A BGP speaker that originates BGP routes assigns the degree of
+#    preference (e.g., according to local configuration) to these routes
+#    by passing them through the Decision Process (see Section 9.1).
+#    These routes MAY also be distributed to other BGP speakers within the
+#    local AS as part of the update process (see Section 9.2).  The
+#    decision of whether to distribute non-BGP acquired routes within an
+#    AS via BGP depends on the environment within the AS (e.g., type of
+#    IGP) and SHOULD be controlled via configuration.
+
+[[spec]]
+level = "MAY"
+quote = '''
+These routes MAY also be distributed to other BGP speakers within the
+local AS as part of the update process (see Section 9.2).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The
+decision of whether to distribute non-BGP acquired routes within an
+AS via BGP depends on the environment within the AS (e.g., type of
+IGP) and SHOULD be controlled via configuration.
+'''
+

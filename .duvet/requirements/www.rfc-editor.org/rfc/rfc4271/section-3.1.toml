@@ -1,0 +1,53 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-3.1"
+
+# Routes: Advertisement and Storage
+#
+#    For the purpose of this protocol, a route is defined as a unit of
+#    information that pairs a set of destinations with the attributes of a
+#    path to those destinations.  The set of destinations are systems
+#    whose IP addresses are contained in one IP address prefix that is
+#    carried in the Network Layer Reachability Information (NLRI) field of
+#    an UPDATE message, and the path is the information reported in the
+#    path attributes field of the same UPDATE message.
+# 
+#    Routes are advertised between BGP speakers in UPDATE messages.
+#    Multiple routes that have the same path attributes can be advertised
+#    in a single UPDATE message by including multiple prefixes in the NLRI
+#    field of the UPDATE message.
+# 
+#    Routes are stored in the Routing Information Bases (RIBs): namely,
+#    the Adj-RIBs-In, the Loc-RIB, and the Adj-RIBs-Out, as described in
+#    Section 3.2.
+# 
+#    If a BGP speaker chooses to advertise a previously received route, it
+#    MAY add to, or modify, the path attributes of the route before
+#    advertising it to a peer.
+# 
+#    BGP provides mechanisms by which a BGP speaker can inform its peers
+#    that a previously advertised route is no longer available for use.
+#    There are three methods by which a given BGP speaker can indicate
+#    that a route has been withdrawn from service:
+# 
+#       a) the IP prefix that expresses the destination for a previously
+#          advertised route can be advertised in the WITHDRAWN ROUTES
+#          field in the UPDATE message, thus marking the associated route
+#          as being no longer available for use,
+# 
+#       b) a replacement route with the same NLRI can be advertised, or
+# 
+#       c) the BGP speaker connection can be closed, which implicitly
+#          removes all routes the pair of speakers had advertised to each
+#          other from service.
+# 
+#    Changing the attribute(s) of a route is accomplished by advertising a
+#    replacement route.  The replacement route carries new (changed)
+#    attributes and has the same address prefix as the original route.
+
+[[spec]]
+level = "MAY"
+quote = '''
+If a BGP speaker chooses to advertise a previously received route, it
+MAY add to, or modify, the path attributes of the route before
+advertising it to a peer.
+'''
+

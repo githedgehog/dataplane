@@ -27,6 +27,7 @@ use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpCidr};
 
+use crate::bgp;
 use crate::drive::Agent;
 use crate::frame::{self, Mac, Vxlan};
 
@@ -92,6 +93,31 @@ pub enum Role {
         /// Bytes each connection sends and expects back.
         bytes: usize,
     },
+    /// Speak BGP over one connection at a time: to `peer` from ports counting up from
+    /// `first_port`, reconnecting a second after each connection ends, or, with no `peer`,
+    /// listening on port 179.
+    Bgp {
+        /// The session's configuration.
+        config: bgp::Config,
+        /// Whom to connect to; `None` to listen instead.
+        peer: Option<Ipv4Addr>,
+        /// The first local port, for connecting.
+        first_port: u16,
+    },
+}
+
+/// How long a BGP speaker waits after a connection ends before trying again.
+const CONNECT_RETRY_NS: u64 = 1_000_000_000;
+
+/// A host's BGP speaker and its connection.
+struct Speaker {
+    session: bgp::Session,
+    /// The session has been told of the current connection.
+    live: bool,
+    /// Connections attempted, which pick the next local port.
+    attempts: u16,
+    /// When the next connection may be attempted.
+    retry_at_ns: u64,
 }
 
 /// One connection a client opens, and how it is getting on.
@@ -192,6 +218,7 @@ pub struct Host {
     connections: Vec<Connection>,
     tally: Tally,
     started: bool,
+    speaker: Option<Speaker>,
 }
 
 fn now(ns: u64) -> Instant {
@@ -235,6 +262,16 @@ impl Host {
             .unwrap_or_else(|_| unreachable!("a new interface has room for one route"));
         let count = match role {
             Role::Echo { connections, .. } | Role::Client { connections, .. } => connections,
+            Role::Bgp { .. } => 1,
+        };
+        let speaker = match role {
+            Role::Bgp { config, .. } => Some(Speaker {
+                session: bgp::Session::new(config),
+                live: false,
+                attempts: 0,
+                retry_at_ns: now_ns,
+            }),
+            _ => None,
         };
         let mut sockets = SocketSet::new(Vec::new());
         let handles = (0..count).map(|_| sockets.add(socket())).collect();
@@ -256,6 +293,7 @@ impl Host {
                 .collect(),
             tally: Tally::default(),
             started: false,
+            speaker,
         }
     }
 
@@ -282,11 +320,92 @@ impl Host {
                     self.connections[n].opened_ns = now_ns;
                 }
             }
+            // A speaker connects, and reconnects, as it goes.
+            Role::Bgp { .. } => {}
+        }
+    }
+
+    /// Carry the BGP session over the host's one socket: (re)connect or listen when there is no
+    /// connection, tell the session when one comes up or goes down, and move its bytes.
+    fn speak(&mut self, now_ns: u64) {
+        let Role::Bgp {
+            peer, first_port, ..
+        } = self.role
+        else {
+            return;
+        };
+        let Some(speaker) = self.speaker.as_mut() else {
+            return;
+        };
+        let socket = self.sockets.get_mut::<tcp::Socket>(self.handles[0]);
+        match socket.state() {
+            tcp::State::Closed => {
+                if speaker.live {
+                    speaker.live = false;
+                    speaker.session.disconnected(now_ns);
+                    speaker.retry_at_ns = now_ns + CONNECT_RETRY_NS;
+                }
+                if now_ns >= speaker.retry_at_ns {
+                    match peer {
+                        Some(peer) => {
+                            let port = first_port.wrapping_add(speaker.attempts);
+                            speaker.attempts = speaker.attempts.wrapping_add(1);
+                            let _ = socket.connect(self.iface.context(), (peer, bgp::PORT), port);
+                        }
+                        None => {
+                            let _ = socket.listen(bgp::PORT);
+                        }
+                    }
+                }
+                return;
+            }
+            tcp::State::Established if !speaker.live => {
+                speaker.live = true;
+                speaker.session.connected(now_ns);
+                self.tally.established += 1;
+            }
+            // The connection is ending: the session is over, and the socket is freed for the next.
+            tcp::State::CloseWait | tcp::State::TimeWait | tcp::State::FinWait2
+                if speaker.live && speaker.session.state() == bgp::State::Idle =>
+            {
+                socket.abort();
+                return;
+            }
+            tcp::State::CloseWait | tcp::State::TimeWait if speaker.live => {
+                speaker.session.disconnected(now_ns);
+                socket.abort();
+                return;
+            }
+            _ => {}
+        }
+        if !speaker.live {
+            return;
+        }
+        let mut buf = [0u8; 4096];
+        while socket.can_recv() {
+            match socket.recv_slice(&mut buf) {
+                Ok(got) if got > 0 => {
+                    self.tally.bytes_received += got as u64;
+                    speaker.session.receive(&buf[..got], now_ns);
+                }
+                _ => break,
+            }
+        }
+        if let Some(bytes) = speaker.session.transmit(now_ns) {
+            let sent = socket.send_slice(&bytes).unwrap_or(0);
+            self.tally.bytes_sent += sent as u64;
+        }
+        if speaker.session.wants_close() && socket.state() == tcp::State::Established {
+            socket.close();
         }
     }
 
     /// Do what the role says with every socket, and follow each connection's life.
     fn serve(&mut self, now_ns: u64) {
+        if self.speaker.is_some() {
+            self.speak(now_ns);
+            return;
+        }
         let role = self.role.clone();
         for (n, handle) in self.handles.iter().enumerate() {
             let socket = self.sockets.get_mut::<tcp::Socket>(*handle);
@@ -320,6 +439,7 @@ impl Host {
             match role {
                 Role::Echo { .. } => echo(socket, connection, &mut self.tally),
                 Role::Client { bytes, .. } => client(socket, connection, bytes, &mut self.tally),
+                Role::Bgp { .. } => {}
             }
         }
     }
@@ -401,8 +521,20 @@ impl Host {
     /// When the host next has something to do on its own -- a retransmission, a timer -- in
     /// nanoseconds, if anything; for a driver with a clock of its own to skip ahead to.
     pub fn next_poll_ns(&mut self, now_ns: u64) -> Option<u64> {
-        let at = self.iface.poll_at(now(now_ns), &self.sockets)?;
-        u64::try_from(at.total_micros()).ok().map(|us| us * 1_000)
+        let iface = self
+            .iface
+            .poll_at(now(now_ns), &self.sockets)
+            .and_then(|at| u64::try_from(at.total_micros()).ok())
+            .map(|us| us * 1_000);
+        let speaker = self.speaker.as_ref().map(|speaker| {
+            let session = speaker.session.next_deadline_ns();
+            if speaker.live {
+                session
+            } else {
+                session.min(speaker.retry_at_ns)
+            }
+        });
+        [iface, speaker].into_iter().flatten().min()
     }
 }
 
@@ -460,10 +592,10 @@ impl Agent for Host {
         to_us
     }
 
-    fn sample(&self, _now_ns: u64, sample: Sample) -> Sample {
+    fn sample(&self, now_ns: u64, sample: Sample) -> Sample {
         let path = |what: &str| format!("tcp.{}.{what}", self.name);
         let t = self.tally;
-        [
+        let sample = [
             ("connections", self.handles.len() as u64),
             ("established", t.established),
             ("closed", t.closed),
@@ -476,12 +608,16 @@ impl Agent for Host {
         ]
         .into_iter()
         .fold(sample, |sample, (what, n)| sample.counter(path(what), n))
-        .gauge(path("max_connect_ns"), t.max_connect_ns)
+        .gauge(path("max_connect_ns"), t.max_connect_ns);
+        match &self.speaker {
+            Some(speaker) => speaker.session.sample(&self.name, now_ns, sample),
+            None => sample,
+        }
     }
 
     fn finished(&self) -> bool {
         match self.role {
-            Role::Echo { .. } => true,
+            Role::Echo { .. } | Role::Bgp { .. } => true,
             Role::Client { .. } => self.connections.iter().all(|c| c.closed || c.reset),
         }
     }
@@ -492,6 +628,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+    use crate::bgp;
 
     const MS: u64 = 1_000_000;
 
@@ -633,5 +770,100 @@ mod tests {
                 assert_eq!(counter("bytes_received"), 40_000);
                 assert_eq!(counter("bytes_mismatched"), 0);
             });
+    }
+
+    fn speaker(
+        name: &str,
+        address: [u8; 4],
+        mac: u8,
+        peer: u8,
+        asn: u32,
+        connect: Option<[u8; 4]>,
+    ) -> Host {
+        host(
+            name,
+            address,
+            mac,
+            peer,
+            Role::Bgp {
+                config: bgp::Config {
+                    asn,
+                    router_id: Ipv4Addr::from(address),
+                    hold_time_s: 9,
+                    peer_asn: None,
+                },
+                peer: connect.map(Ipv4Addr::from),
+                first_port: 40000,
+            },
+        )
+    }
+
+    /// Run two hosts for `span` from `from`, losing every frame while `dead` says the link is down.
+    fn run_for(a: &mut Host, b: &mut Host, from: u64, span: u64, dead: bool) -> u64 {
+        let mut now = from;
+        while now < from + span {
+            let mut moved = false;
+            for a_to_b in [true, false] {
+                let (from, to) = if a_to_b {
+                    (&mut *a, &mut *b)
+                } else {
+                    (&mut *b, &mut *a)
+                };
+                while let Some(frame) = from.transmit(now) {
+                    moved = true;
+                    if !dead {
+                        to.receive(&frame, now);
+                    }
+                }
+            }
+            let next = if moved {
+                now + MS
+            } else {
+                [a.next_poll_ns(now), b.next_poll_ns(now)]
+                    .into_iter()
+                    .flatten()
+                    .min()
+                    .unwrap_or(from + span)
+            };
+            now = next.max(now + MS).min(from + span);
+        }
+        now
+    }
+
+    fn bgp_counter(host: &Host, now: u64, what: &str) -> u64 {
+        host.sample(now, Sample::new()).counters[&format!("bgp.{}.{what}", host.name)]
+    }
+
+    /// BGP over smoltcp: the session reaches Established and holds, and when the link dies for
+    /// longer than the Hold Time, both ends notice, and they re-establish once it is back.
+    #[test]
+    fn a_bgp_session_holds_and_recovers() {
+        let mut active = speaker("active", [10, 0, 0, 1], 1, 2, 65001, Some([10, 0, 0, 2]));
+        let mut passive = speaker("passive", [10, 0, 0, 2], 2, 1, 65002, None);
+        let now = run_for(&mut active, &mut passive, 0, 60_000 * MS, false);
+        for host in [&active, &passive] {
+            let state = host.sample(now, Sample::new()).gauges[&format!("bgp.{}.state", host.name)];
+            assert_eq!(state, bgp::State::Established as u64, "{}", host.name);
+            assert_eq!(bgp_counter(host, now, "established"), 1);
+            assert_eq!(bgp_counter(host, now, "drops"), 0);
+            assert!(bgp_counter(host, now, "keepalives_received") >= 19);
+        }
+        // Twenty seconds dead: more than the nine-second Hold Time.
+        let now = run_for(&mut active, &mut passive, now, 20_000 * MS, true);
+        for host in [&active, &passive] {
+            assert_eq!(bgp_counter(host, now, "hold_expiries"), 1, "{}", host.name);
+            assert_eq!(bgp_counter(host, now, "drops"), 1);
+        }
+        let now = run_for(&mut active, &mut passive, now, 120_000 * MS, false);
+        for host in [&active, &passive] {
+            let state = host.sample(now, Sample::new()).gauges[&format!("bgp.{}.state", host.name)];
+            assert_eq!(
+                state,
+                bgp::State::Established as u64,
+                "{} never came back",
+                host.name
+            );
+            assert_eq!(bgp_counter(host, now, "established"), 2);
+        }
     }
 }

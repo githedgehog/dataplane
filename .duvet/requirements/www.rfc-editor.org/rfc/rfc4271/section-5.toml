@@ -1,0 +1,181 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-5"
+
+# Path Attributes
+#
+#    This section discusses the path attributes of the UPDATE message.
+# 
+#    Path attributes fall into four separate categories:
+# 
+#          1. Well-known mandatory.
+#          2. Well-known discretionary.
+#          3. Optional transitive.
+#          4. Optional non-transitive.
+# 
+#    BGP implementations MUST recognize all well-known attributes.  Some
+#    of these attributes are mandatory and MUST be included in every
+#    UPDATE message that contains NLRI.  Others are discretionary and MAY
+#    or MAY NOT be sent in a particular UPDATE message.
+# 
+#    Once a BGP peer has updated any well-known attributes, it MUST pass
+#    these attributes to its peers in any updates it transmits.
+# 
+#    In addition to well-known attributes, each path MAY contain one or
+#    more optional attributes.  It is not required or expected that all
+#    BGP implementations support all optional attributes.  The handling of
+#    an unrecognized optional attribute is determined by the setting of
+#    the Transitive bit in the attribute flags octet.  Paths with
+#    unrecognized transitive optional attributes SHOULD be accepted.  If a
+#    path with an unrecognized transitive optional attribute is accepted
+#    and passed to other BGP peers, then the unrecognized transitive
+#    optional attribute of that path MUST be passed, along with the path,
+#    to other BGP peers with the Partial bit in the Attribute Flags octet
+#    set to 1.  If a path with a recognized, transitive optional attribute
+#    is accepted and passed along to other BGP peers and the Partial bit
+#    in the Attribute Flags octet is set to 1 by some previous AS, it MUST
+#    NOT be set back to 0 by the current AS.  Unrecognized non-transitive
+#    optional attributes MUST be quietly ignored and not passed along to
+#    other BGP peers.
+# 
+#    New, transitive optional attributes MAY be attached to the path by
+#    the originator or by any other BGP speaker in the path.  If they are
+#    not attached by the originator, the Partial bit in the Attribute
+#    Flags octet is set to 1.  The rules for attaching new non-transitive
+#    optional attributes will depend on the nature of the specific
+#    attribute.  The documentation of each new non-transitive optional
+#    attribute will be expected to include such rules (the description of
+#    the MULTI_EXIT_DISC attribute gives an example).  All optional
+#    attributes (both transitive and non-transitive), MAY be updated (if
+#    appropriate) by BGP speakers in the path.
+# 
+#    The sender of an UPDATE message SHOULD order path attributes within
+#    the UPDATE message in ascending order of attribute type.  The
+#    receiver of an UPDATE message MUST be prepared to handle path
+#    attributes within UPDATE messages that are out of order.
+# 
+#    The same attribute (attribute with the same type) cannot appear more
+#    than once within the Path Attributes field of a particular UPDATE
+#    message.
+# 
+#    The mandatory category refers to an attribute that MUST be present in
+#    both IBGP and EBGP exchanges if NLRI are contained in the UPDATE
+#    message.  Attributes classified as optional for the purpose of the
+#    protocol extension mechanism may be purely discretionary,
+#    discretionary, required, or disallowed in certain contexts.
+# 
+#         attribute           EBGP                    IBGP
+#          ORIGIN             mandatory               mandatory
+#          AS_PATH            mandatory               mandatory
+#          NEXT_HOP           mandatory               mandatory
+#          MULTI_EXIT_DISC    discretionary           discretionary
+#          LOCAL_PREF         see Section 5.1.5       required
+#          ATOMIC_AGGREGATE   see Section 5.1.6 and 9.1.4
+#          AGGREGATOR         discretionary           discretionary
+
+[[spec]]
+level = "MUST"
+quote = '''
+BGP implementations MUST recognize all well-known attributes.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Some
+of these attributes are mandatory and MUST be included in every
+UPDATE message that contains NLRI.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Others are discretionary and MAY
+or MAY NOT be sent in a particular UPDATE message.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Once a BGP peer has updated any well-known attributes, it MUST pass
+these attributes to its peers in any updates it transmits.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+In addition to well-known attributes, each path MAY contain one or
+more optional attributes.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Paths with
+unrecognized transitive optional attributes SHOULD be accepted.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a
+path with an unrecognized transitive optional attribute is accepted
+and passed to other BGP peers, then the unrecognized transitive
+optional attribute of that path MUST be passed, along with the path,
+to other BGP peers with the Partial bit in the Attribute Flags octet
+set to 1.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a path with a recognized, transitive optional attribute
+is accepted and passed along to other BGP peers and the Partial bit
+in the Attribute Flags octet is set to 1 by some previous AS, it MUST
+NOT be set back to 0 by the current AS.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Unrecognized non-transitive
+optional attributes MUST be quietly ignored and not passed along to
+other BGP peers.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+New, transitive optional attributes MAY be attached to the path by
+the originator or by any other BGP speaker in the path.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+All optional
+attributes (both transitive and non-transitive), MAY be updated (if
+appropriate) by BGP speakers in the path.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The sender of an UPDATE message SHOULD order path attributes within
+the UPDATE message in ascending order of attribute type.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The
+receiver of an UPDATE message MUST be prepared to handle path
+attributes within UPDATE messages that are out of order.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The mandatory category refers to an attribute that MUST be present in
+both IBGP and EBGP exchanges if NLRI are contained in the UPDATE
+message.
+'''
+

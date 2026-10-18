@@ -1,0 +1,36 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#appendix-E"
+
+# TCP Options that May Be Used with BGP
+#
+#    If a local system TCP user interface supports the TCP PUSH function,
+#    then each BGP message SHOULD be transmitted with PUSH flag set.
+#    Setting PUSH flag forces BGP messages to be transmitted to the
+#    receiver promptly.
+# 
+#    If a local system TCP user interface supports setting the DSCP field
+#    [RFC2474] for TCP connections, then the TCP connection used by BGP
+#    SHOULD be opened with bits 0-2 of the DSCP field set to 110 (binary).
+# 
+#    An implementation MUST support the TCP MD5 option [RFC2385].
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a local system TCP user interface supports the TCP PUSH function,
+then each BGP message SHOULD be transmitted with PUSH flag set.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a local system TCP user interface supports setting the DSCP field
+[RFC2474] for TCP connections, then the TCP connection used by BGP
+SHOULD be opened with bits 0-2 of the DSCP field set to 110 (binary).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation MUST support the TCP MD5 option [RFC2385].
+'''
+

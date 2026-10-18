@@ -1,0 +1,80 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-9.2"
+
+# Update-Send Process
+#
+#    The Update-Send process is responsible for advertising UPDATE
+#    messages to all peers.  For example, it distributes the routes chosen
+#    by the Decision Process to other BGP speakers, which may be located
+#    in either the same autonomous system or a neighboring autonomous
+#    system.
+# 
+#    When a BGP speaker receives an UPDATE message from an internal peer,
+#    the receiving BGP speaker SHALL NOT re-distribute the routing
+#    information contained in that UPDATE message to other internal peers
+#    (unless the speaker acts as a BGP Route Reflector [RFC2796]).
+# 
+#    As part of Phase 3 of the route selection process, the BGP speaker
+#    has updated its Adj-RIBs-Out.  All newly installed routes and all
+#    newly unfeasible routes for which there is no replacement route SHALL
+#    be advertised to its peers by means of an UPDATE message.
+# 
+#    A BGP speaker SHOULD NOT advertise a given feasible BGP route from
+#    its Adj-RIB-Out if it would produce an UPDATE message containing the
+#    same BGP route as was previously advertised.
+# 
+#    Any routes in the Loc-RIB marked as unfeasible SHALL be removed.
+#    Changes to the reachable destinations within its own autonomous
+#    system SHALL also be advertised in an UPDATE message.
+# 
+#    If, due to the limits on the maximum size of an UPDATE message (see
+#    Section 4), a single route doesn't fit into the message, the BGP
+#    speaker MUST not advertise the route to its peers and MAY choose to
+#    log an error locally.
+
+[[spec]]
+level = "MUST"
+quote = '''
+When a BGP speaker receives an UPDATE message from an internal peer,
+the receiving BGP speaker SHALL NOT re-distribute the routing
+information contained in that UPDATE message to other internal peers
+(unless the speaker acts as a BGP Route Reflector [RFC2796]).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+All newly installed routes and all
+newly unfeasible routes for which there is no replacement route SHALL
+be advertised to its peers by means of an UPDATE message.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A BGP speaker SHOULD NOT advertise a given feasible BGP route from
+its Adj-RIB-Out if it would produce an UPDATE message containing the
+same BGP route as was previously advertised.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Any routes in the Loc-RIB marked as unfeasible SHALL be removed.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Changes to the reachable destinations within its own autonomous
+system SHALL also be advertised in an UPDATE message.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If, due to the limits on the maximum size of an UPDATE message (see
+Section 4), a single route doesn't fit into the message, the BGP
+speaker MUST not advertise the route to its peers and MAY choose to
+log an error locally.
+'''
+

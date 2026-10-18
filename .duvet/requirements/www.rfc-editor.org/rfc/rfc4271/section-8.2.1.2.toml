@@ -1,0 +1,18 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-8.2.1.2"
+
+# FSM and Collision Detection
+#
+#    There is one FSM per BGP connection.  When the connection collision
+#    occurs prior to determining what peer a connection is associated
+#    with, there may be two connections for one peer.  After the
+#    connection collision is resolved (see Section 6.8), the FSM for the
+#    connection that is closed SHOULD be disposed.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+After the
+connection collision is resolved (see Section 6.8), the FSM for the
+connection that is closed SHOULD be disposed.
+'''
+

@@ -1,0 +1,43 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-9.1.1"
+
+# Phase 1: Calculation of Degree of Preference
+#
+#    The Phase 1 decision function is invoked whenever the local BGP
+#    speaker receives, from a peer, an UPDATE message that advertises a
+#    new route, a replacement route, or withdrawn routes.
+# 
+#    The Phase 1 decision function is a separate process,f which completes
+#    when it has no further work to do.
+# 
+#    The Phase 1 decision function locks an Adj-RIB-In prior to operating
+#    on any route contained within it, and unlocks it after operating on
+#    all new or unfeasible routes contained within it.
+# 
+#    For each newly received or replacement feasible route, the local BGP
+#    speaker determines a degree of preference as follows:
+# 
+#       If the route is learned from an internal peer, either the value of
+#       the LOCAL_PREF attribute is taken as the degree of preference, or
+#       the local system computes the degree of preference of the route
+#       based on preconfigured policy information.  Note that the latter
+#       may result in formation of persistent routing loops.
+# 
+#       If the route is learned from an external peer, then the local BGP
+#       speaker computes the degree of preference based on preconfigured
+#       policy information.  If the return value indicates the route is
+#       ineligible, the route MAY NOT serve as an input to the next phase
+#       of route selection; otherwise, the return value MUST be used as
+#       the LOCAL_PREF value in any IBGP readvertisement.
+# 
+#       The exact nature of this policy information, and the computation
+#       involved, is a local matter.
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the return value indicates the route is
+ineligible, the route MAY NOT serve as an input to the next phase
+of route selection; otherwise, the return value MUST be used as
+the LOCAL_PREF value in any IBGP readvertisement.
+'''
+

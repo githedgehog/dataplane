@@ -1,0 +1,62 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-6.7"
+
+# Cease
+#
+#    In the absence of any fatal errors (that are indicated in this
+#    section), a BGP peer MAY choose, at any given time, to close its BGP
+#    connection by sending the NOTIFICATION message with the Error Code
+#    Cease.  However, the Cease NOTIFICATION message MUST NOT be used when
+#    a fatal error indicated by this section does exist.
+# 
+#    A BGP speaker MAY support the ability to impose a locally-configured,
+#    upper bound on the number of address prefixes the speaker is willing
+#    to accept from a neighbor.  When the upper bound is reached, the
+#    speaker, under control of local configuration, either (a) discards
+#    new address prefixes from the neighbor (while maintaining the BGP
+#    connection with the neighbor), or (b) terminates the BGP connection
+#    with the neighbor.  If the BGP speaker decides to terminate its BGP
+#    connection with a neighbor because the number of address prefixes
+#    received from the neighbor exceeds the locally-configured, upper
+#    bound, then the speaker MUST send the neighbor a NOTIFICATION message
+#    with the Error Code Cease.  The speaker MAY also log this locally.
+
+[[spec]]
+level = "MAY"
+quote = '''
+In the absence of any fatal errors (that are indicated in this
+section), a BGP peer MAY choose, at any given time, to close its BGP
+connection by sending the NOTIFICATION message with the Error Code
+Cease.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+However, the Cease NOTIFICATION message MUST NOT be used when
+a fatal error indicated by this section does exist.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A BGP speaker MAY support the ability to impose a locally-configured,
+upper bound on the number of address prefixes the speaker is willing
+to accept from a neighbor.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the BGP speaker decides to terminate its BGP
+connection with a neighbor because the number of address prefixes
+received from the neighbor exceeds the locally-configured, upper
+bound, then the speaker MUST send the neighbor a NOTIFICATION message
+with the Error Code Cease.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+The speaker MAY also log this locally.
+'''
+

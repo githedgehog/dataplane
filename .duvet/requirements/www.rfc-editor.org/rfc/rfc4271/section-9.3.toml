@@ -1,0 +1,31 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-9.3"
+
+# Route Selection Criteria
+#
+#    Generally, additional rules for comparing routes among several
+#    alternatives are outside the scope of this document.  There are two
+#    exceptions:
+# 
+#       - If the local AS appears in the AS path of the new route being
+#         considered, then that new route cannot be viewed as better than
+#         any other route (provided that the speaker is configured to
+#         accept such routes).  If such a route were ever used, a routing
+#         loop could result.
+# 
+#       - In order to achieve a successful distributed operation, only
+#         routes with a likelihood of stability can be chosen.  Thus, an
+#         AS SHOULD avoid using unstable routes, and it SHOULD NOT make
+#         rapid, spontaneous changes to its choice of route.  Quantifying
+#         the terms "unstable" and "rapid" (from the previous sentence)
+#         will require experience, but the principle is clear.  Routes
+#         that are unstable can be "penalized" (e.g., by using the
+#         procedures described in [RFC2439]).
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Thus, an
+AS SHOULD avoid using unstable routes, and it SHOULD NOT make
+rapid, spontaneous changes to its choice of route.
+'''
+

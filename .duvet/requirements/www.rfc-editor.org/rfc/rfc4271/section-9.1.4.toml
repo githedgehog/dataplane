@@ -1,0 +1,88 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-9.1.4"
+
+# Overlapping Routes
+#
+#    A BGP speaker may transmit routes with overlapping Network Layer
+#    Reachability Information (NLRI) to another BGP speaker.  NLRI overlap
+#    occurs when a set of destinations are identified in non-matching
+#    multiple routes.  Because BGP encodes NLRI using IP prefixes, overlap
+#    will always exhibit subset relationships.  A route describing a
+#    smaller set of destinations (a longer prefix) is said to be more
+#    specific than a route describing a larger set of destinations (a
+#    shorter prefix); similarly, a route describing a larger set of
+#    destinations is said to be less specific than a route describing a
+#    smaller set of destinations.
+# 
+#    The precedence relationship effectively decomposes less specific
+#    routes into two parts:
+# 
+#       - a set of destinations described only by the less specific route,
+#         and
+# 
+#       - a set of destinations described by the overlap of the less
+#         specific and the more specific routes
+# 
+#    The set of destinations described by the overlap represents a portion
+#    of the less specific route that is feasible, but is not currently in
+#    use.  If a more specific route is later withdrawn, the set of
+#    destinations described by the overlap will still be reachable using
+#    the less specific route.
+# 
+#    If a BGP speaker receives overlapping routes, the Decision Process
+#    MUST consider both routes based on the configured acceptance policy.
+#    If both a less and a more specific route are accepted, then the
+#    Decision Process MUST install, in Loc-RIB, either both the less and
+# 
+#    the more specific routes or aggregate the two routes and install, in
+#    Loc-RIB, the aggregated route, provided that both routes have the
+#    same value of the NEXT_HOP attribute.
+# 
+#    If a BGP speaker chooses to aggregate, then it SHOULD either include
+#    all ASes used to form the aggregate in an AS_SET, or add the
+#    ATOMIC_AGGREGATE attribute to the route.  This attribute is now
+#    primarily informational.  With the elimination of IP routing
+#    protocols that do not support classless routing, and the elimination
+#    of router and host implementations that do not support classless
+#    routing, there is no longer a need to de-aggregate.  Routes SHOULD
+#    NOT be de-aggregated.  In particular, a route that carries the
+#    ATOMIC_AGGREGATE attribute MUST NOT be de-aggregated.  That is, the
+#    NLRI of this route cannot be more specific.  Forwarding along such a
+#    route does not guarantee that IP packets will actually traverse only
+#    ASes listed in the AS_PATH attribute of the route.
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a BGP speaker receives overlapping routes, the Decision Process
+MUST consider both routes based on the configured acceptance policy.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If both a less and a more specific route are accepted, then the
+Decision Process MUST install, in Loc-RIB, either both the less and
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a BGP speaker chooses to aggregate, then it SHOULD either include
+all ASes used to form the aggregate in an AS_SET, or add the
+ATOMIC_AGGREGATE attribute to the route.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routes SHOULD
+NOT be de-aggregated.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In particular, a route that carries the
+ATOMIC_AGGREGATE attribute MUST NOT be de-aggregated.
+'''
+

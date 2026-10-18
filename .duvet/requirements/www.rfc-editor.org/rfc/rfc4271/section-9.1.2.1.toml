@@ -1,0 +1,73 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-9.1.2.1"
+
+# Route Resolvability Condition
+#
+#    As indicated in Section 9.1.2, BGP speakers SHOULD exclude
+#    unresolvable routes from the Phase 2 decision.  This ensures that
+#    only valid routes are installed in Loc-RIB and the Routing Table.
+# 
+#    The route resolvability condition is defined as follows:
+# 
+#       1) A route Rte1, referencing only the intermediate network
+#          address, is considered resolvable if the Routing Table contains
+#          at least one resolvable route Rte2 that matches Rte1's
+#          intermediate network address and is not recursively resolved
+#          (directly or indirectly) through Rte1.  If multiple matching
+#          routes are available, only the longest matching route SHOULD be
+#          considered.
+# 
+#       2) Routes referencing interfaces (with or without intermediate
+#          addresses) are considered resolvable if the state of the
+#          referenced interface is up and if IP processing is enabled on
+#          this interface.
+# 
+#    BGP routes do not refer to interfaces, but can be resolved through
+#    the routes in the Routing Table that can be of both types (those that
+#    specify interfaces or those that do not).  IGP routes and routes to
+#    directly connected networks are expected to specify the outbound
+#    interface.  Static routes can specify the outbound interface, the
+#    intermediate address, or both.
+# 
+#    Note that a BGP route is considered unresolvable in a situation where
+#    the BGP speaker's Routing Table contains no route matching the BGP
+#    route's NEXT_HOP.  Mutually recursive routes (routes resolving each
+#    other or themselves) also fail the resolvability check.
+# 
+#    It is also important that implementations do not consider feasible
+#    routes that would become unresolvable if they were installed in the
+#    Routing Table, even if their NEXT_HOPs are resolvable using the
+#    current contents of the Routing Table (an example of such routes
+# 
+#    would be mutually recursive routes).  This check ensures that a BGP
+#    speaker does not install routes in the Routing Table that will be
+#    removed and not used by the speaker.  Therefore, in addition to local
+#    Routing Table stability, this check also improves behavior of the
+#    protocol in the network.
+# 
+#    Whenever a BGP speaker identifies a route that fails the
+#    resolvability check because of mutual recursion, an error message
+#    SHOULD be logged.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+As indicated in Section 9.1.2, BGP speakers SHOULD exclude
+unresolvable routes from the Phase 2 decision.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If multiple matching
+routes are available, only the longest matching route SHOULD be
+considered.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Whenever a BGP speaker identifies a route that fails the
+resolvability check because of mutual recursion, an error message
+SHOULD be logged.
+'''
+

@@ -1,0 +1,81 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-6.1"
+
+# Message Header Error Handling
+#
+#    All errors detected while processing the Message Header MUST be
+#    indicated by sending the NOTIFICATION message with the Error Code
+#    Message Header Error.  The Error Subcode elaborates on the specific
+#    nature of the error.
+# 
+#    The expected value of the Marker field of the message header is all
+#    ones.  If the Marker field of the message header is not as expected,
+#    then a synchronization error has occurred and the Error Subcode MUST
+#    be set to Connection Not Synchronized.
+# 
+#    If at least one of the following is true:
+# 
+#       - if the Length field of the message header is less than 19 or
+#         greater than 4096, or
+# 
+#       - if the Length field of an OPEN message is less than the minimum
+#         length of the OPEN message, or
+# 
+#       - if the Length field of an UPDATE message is less than the
+#         minimum length of the UPDATE message, or
+# 
+#       - if the Length field of a KEEPALIVE message is not equal to 19,
+#         or
+# 
+#       - if the Length field of a NOTIFICATION message is less than the
+#         minimum length of the NOTIFICATION message,
+# 
+#    then the Error Subcode MUST be set to Bad Message Length.  The Data
+#    field MUST contain the erroneous Length field.
+# 
+#    If the Type field of the message header is not recognized, then the
+#    Error Subcode MUST be set to Bad Message Type.  The Data field MUST
+#    contain the erroneous Type field.
+
+[[spec]]
+level = "MUST"
+quote = '''
+All errors detected while processing the Message Header MUST be
+indicated by sending the NOTIFICATION message with the Error Code
+Message Header Error.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Marker field of the message header is not as expected,
+then a synchronization error has occurred and the Error Subcode MUST
+be set to Connection Not Synchronized.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+then the Error Subcode MUST be set to Bad Message Length.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The Data
+field MUST contain the erroneous Length field.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Type field of the message header is not recognized, then the
+Error Subcode MUST be set to Bad Message Type.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The Data field MUST
+contain the erroneous Type field.
+'''
+

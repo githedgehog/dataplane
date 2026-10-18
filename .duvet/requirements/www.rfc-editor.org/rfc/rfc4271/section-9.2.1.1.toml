@@ -1,0 +1,63 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-9.2.1.1"
+
+# Frequency of Route Advertisement
+#
+#    The parameter MinRouteAdvertisementIntervalTimer determines the
+#    minimum amount of time that must elapse between an advertisement
+#    and/or withdrawal of routes to a particular destination by a BGP
+#    speaker to a peer.  This rate limiting procedure applies on a per-
+#    destination basis, although the value of
+#    MinRouteAdvertisementIntervalTimer is set on a per BGP peer basis.
+# 
+#    Two UPDATE messages sent by a BGP speaker to a peer that advertise
+#    feasible routes and/or withdrawal of unfeasible routes to some common
+#    set of destinations MUST be separated by at least
+#    MinRouteAdvertisementIntervalTimer.  This can only be achieved by
+#    keeping a separate timer for each common set of destinations.  This
+#    would be unwarranted overhead.  Any technique that ensures that the
+#    interval between two UPDATE messages sent from a BGP speaker to a
+#    peer that advertise feasible routes and/or withdrawal of unfeasible
+#    routes to some common set of destinations will be at least
+#    MinRouteAdvertisementIntervalTimer, and will also ensure that a
+#    constant upper bound on the interval is acceptable.
+# 
+#    Since fast convergence is needed within an autonomous system, either
+#    (a) the MinRouteAdvertisementIntervalTimer used for internal peers
+#    SHOULD be shorter than the MinRouteAdvertisementIntervalTimer used
+#    for external peers, or (b) the procedure describe in this section
+#    SHOULD NOT apply to routes sent to internal peers.
+# 
+#    This procedure does not limit the rate of route selection, but only
+#    the rate of route advertisement.  If new routes are selected multiple
+#    times while awaiting the expiration of
+#    MinRouteAdvertisementIntervalTimer, the last route selected SHALL be
+#    advertised at the end of MinRouteAdvertisementIntervalTimer.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Two UPDATE messages sent by a BGP speaker to a peer that advertise
+feasible routes and/or withdrawal of unfeasible routes to some common
+set of destinations MUST be separated by at least
+MinRouteAdvertisementIntervalTimer.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Since fast convergence is needed within an autonomous system, either
+(a) the MinRouteAdvertisementIntervalTimer used for internal peers
+SHOULD be shorter than the MinRouteAdvertisementIntervalTimer used
+for external peers, or (b) the procedure describe in this section
+SHOULD NOT apply to routes sent to internal peers.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If new routes are selected multiple
+times while awaiting the expiration of
+MinRouteAdvertisementIntervalTimer, the last route selected SHALL be
+advertised at the end of MinRouteAdvertisementIntervalTimer.
+'''
+

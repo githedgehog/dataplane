@@ -1,0 +1,118 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-6.2"
+
+# OPEN Message Error Handling
+#
+#    All errors detected while processing the OPEN message MUST be
+#    indicated by sending the NOTIFICATION message with the Error Code
+#    OPEN Message Error.  The Error Subcode elaborates on the specific
+#    nature of the error.
+# 
+#    If the version number in the Version field of the received OPEN
+#    message is not supported, then the Error Subcode MUST be set to
+#    Unsupported Version Number.  The Data field is a 2-octet unsigned
+#    integer, which indicates the largest, locally-supported version
+#    number less than the version the remote BGP peer bid (as indicated in
+# 
+#    the received OPEN message), or if the smallest, locally-supported
+#    version number is greater than the version the remote BGP peer bid,
+#    then the smallest, locally-supported version number.
+# 
+#    If the Autonomous System field of the OPEN message is unacceptable,
+#    then the Error Subcode MUST be set to Bad Peer AS.  The determination
+#    of acceptable Autonomous System numbers is outside the scope of this
+#    protocol.
+# 
+#    If the Hold Time field of the OPEN message is unacceptable, then the
+#    Error Subcode MUST be set to Unacceptable Hold Time.  An
+#    implementation MUST reject Hold Time values of one or two seconds.
+#    An implementation MAY reject any proposed Hold Time.  An
+#    implementation that accepts a Hold Time MUST use the negotiated value
+#    for the Hold Time.
+# 
+#    If the BGP Identifier field of the OPEN message is syntactically
+#    incorrect, then the Error Subcode MUST be set to Bad BGP Identifier.
+#    Syntactic correctness means that the BGP Identifier field represents
+#    a valid unicast IP host address.
+# 
+#    If one of the Optional Parameters in the OPEN message is not
+#    recognized, then the Error Subcode MUST be set to Unsupported
+#    Optional Parameters.
+# 
+#    If one of the Optional Parameters in the OPEN message is recognized,
+#    but is malformed, then the Error Subcode MUST be set to 0
+#    (Unspecific).
+
+[[spec]]
+level = "MUST"
+quote = '''
+All errors detected while processing the OPEN message MUST be
+indicated by sending the NOTIFICATION message with the Error Code
+OPEN Message Error.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the version number in the Version field of the received OPEN
+message is not supported, then the Error Subcode MUST be set to
+Unsupported Version Number.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Autonomous System field of the OPEN message is unacceptable,
+then the Error Subcode MUST be set to Bad Peer AS.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Hold Time field of the OPEN message is unacceptable, then the
+Error Subcode MUST be set to Unacceptable Hold Time.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An
+implementation MUST reject Hold Time values of one or two seconds.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+An implementation MAY reject any proposed Hold Time.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An
+implementation that accepts a Hold Time MUST use the negotiated value
+for the Hold Time.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the BGP Identifier field of the OPEN message is syntactically
+incorrect, then the Error Subcode MUST be set to Bad BGP Identifier.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If one of the Optional Parameters in the OPEN message is not
+recognized, then the Error Subcode MUST be set to Unsupported
+Optional Parameters.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If one of the Optional Parameters in the OPEN message is recognized,
+but is malformed, then the Error Subcode MUST be set to 0
+(Unspecific).
+'''
+

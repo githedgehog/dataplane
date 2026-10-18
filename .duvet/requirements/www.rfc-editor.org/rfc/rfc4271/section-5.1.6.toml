@@ -1,0 +1,57 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-5.1.6"
+
+# ATOMIC_AGGREGATE
+#
+#    ATOMIC_AGGREGATE is a well-known discretionary attribute.
+# 
+#    When a BGP speaker aggregates several routes for the purpose of
+#    advertisement to a particular peer, the AS_PATH of the aggregated
+#    route normally includes an AS_SET formed from the set of ASes from
+#    which the aggregate was formed.  In many cases, the network
+#    administrator can determine if the aggregate can safely be advertised
+#    without the AS_SET, and without forming route loops.
+# 
+#    If an aggregate excludes at least some of the AS numbers present in
+#    the AS_PATH of the routes that are aggregated as a result of dropping
+#    the AS_SET, the aggregated route, when advertised to the peer, SHOULD
+#    include the ATOMIC_AGGREGATE attribute.
+# 
+#    A BGP speaker that receives a route with the ATOMIC_AGGREGATE
+#    attribute SHOULD NOT remove the attribute when propagating the route
+#    to other speakers.
+# 
+#    A BGP speaker that receives a route with the ATOMIC_AGGREGATE
+#    attribute MUST NOT make any NLRI of that route more specific (as
+#    defined in 9.1.4) when advertising this route to other BGP speakers.
+# 
+#    A BGP speaker that receives a route with the ATOMIC_AGGREGATE
+#    attribute needs to be aware of the fact that the actual path to
+#    destinations, as specified in the NLRI of the route, while having the
+#    loop-free property, may not be the path specified in the AS_PATH
+#    attribute of the route.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If an aggregate excludes at least some of the AS numbers present in
+the AS_PATH of the routes that are aggregated as a result of dropping
+the AS_SET, the aggregated route, when advertised to the peer, SHOULD
+include the ATOMIC_AGGREGATE attribute.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A BGP speaker that receives a route with the ATOMIC_AGGREGATE
+attribute SHOULD NOT remove the attribute when propagating the route
+to other speakers.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A BGP speaker that receives a route with the ATOMIC_AGGREGATE
+attribute MUST NOT make any NLRI of that route more specific (as
+defined in 9.1.4) when advertising this route to other BGP speakers.
+'''
+

@@ -53,6 +53,753 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4115
     TEXT[implementation,test]:    In the color-blind operation, the meter assumes that all incoming
     TEXT[implementation,test]:    packets are green.
 
+SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4271
+  SECTION: [Summary of Operation](#section-3)
+    TEXT[!SHOULD]: To allow local
+    TEXT[!SHOULD]:    policy changes to have the correct effect without resetting any BGP
+    TEXT[!SHOULD]:    connections, a BGP speaker SHOULD either (a) retain the current
+    TEXT[!SHOULD]:    version of the routes advertised to it by all of its peers for the
+    TEXT[!SHOULD]:    duration of the connection, or (b) make use of the Route Refresh
+    TEXT[!SHOULD]:    extension [RFC2918].
+
+  SECTION: [Routes: Advertisement and Storage](#section-3.1)
+    TEXT[!MAY]:    If a BGP speaker chooses to advertise a previously received route, it
+    TEXT[!MAY]:    MAY add to, or modify, the path attributes of the route before
+    TEXT[!MAY]:    advertising it to a peer.
+
+  SECTION: [Routing Information Base](#section-3.2)
+    TEXT[!MUST]: The
+    TEXT[!MUST]:          next hop for each of these routes MUST be resolvable via the
+    TEXT[!MUST]:          local BGP speaker's Routing Table.
+
+  SECTION: [Message Header Format](#section-4.1)
+    TEXT[!MUST]:          This 16-octet field is included for compatibility; it MUST be
+    TEXT[!MUST]:          set to all ones.
+    TEXT[!MUST]: The value of the Length field MUST always be at least
+    TEXT[!MUST]:          19 and no greater than 4096, and MAY be further constrained,
+    TEXT[!MUST]:          depending on the message type.
+    TEXT[!MUST]: Therefore, the Length field MUST
+    TEXT[!MUST]:          have the smallest value required, given the rest of the
+    TEXT[!MUST]:          message.
+
+  SECTION: [OPEN Message Format](#section-4.2)
+    TEXT[!MUST,implementation]: Upon
+    TEXT[!MUST,implementation]:          receipt of an OPEN message, a BGP speaker MUST calculate the
+    TEXT[!MUST,implementation]:          value of the Hold Timer by using the smaller of its configured
+    TEXT[!MUST,implementation]:          Hold Time and the Hold Time received in the OPEN message.
+    TEXT[!MUST,implementation]: The
+    TEXT[!MUST,implementation]:          Hold Time MUST be either zero or at least three seconds.
+    TEXT[!MAY]: An
+    TEXT[!MAY]:          implementation MAY reject connections on the basis of the Hold
+
+  SECTION: [UPDATE Message Format](#section-4.3)
+    TEXT[!MAY]: An UPDATE message MAY simultaneously
+    TEXT[!MAY]:    advertise a feasible route and withdraw multiple unfeasible routes
+    TEXT[!MAY]:    from service.
+    TEXT[!MUST]:          For well-known attributes, the Transitive bit MUST be set to 1.
+    TEXT[!MUST]: For well-known attributes
+    TEXT[!MUST]:          and for optional non-transitive attributes, the Partial bit
+    TEXT[!MUST]:          MUST be set to 0.
+    TEXT[!MUST]: They MUST be zero when sent and MUST be ignored when
+    TEXT[!MUST]:          received.
+    TEXT[!SHOULD]:             This is a well-known mandatory attribute that defines the
+    TEXT[!SHOULD]:             (unicast) IP address of the router that SHOULD be used as
+    TEXT[!SHOULD]:             the next hop to the destinations listed in the Network Layer
+    TEXT[!SHOULD]:             Reachability Information field of the UPDATE message.
+    TEXT[!MAY]: The value of this attribute
+    TEXT[!MAY]:             MAY be used by a BGP speaker's Decision Process to
+    TEXT[!MAY]:             discriminate among multiple entry points to a neighboring
+    TEXT[!MAY]:             autonomous system.
+    TEXT[!SHOULD]: This SHOULD be the same address as
+    TEXT[!SHOULD]:             the one used for the BGP Identifier of the speaker.
+    TEXT[!SHOULD]:    An UPDATE message SHOULD NOT include the same address prefix in the
+    TEXT[!SHOULD]:    WITHDRAWN ROUTES and Network Layer Reachability Information fields.
+    TEXT[!MUST]:    However, a BGP speaker MUST be able to process UPDATE messages in
+    TEXT[!MUST]:    this form.
+    TEXT[!SHOULD]: A BGP speaker SHOULD treat an UPDATE message of this form
+    TEXT[!SHOULD]:    as though the WITHDRAWN ROUTES do not contain the address prefix.
+
+  SECTION: [KEEPALIVE Message Format](#section-4.4)
+    TEXT[!MUST,implementation,test]: KEEPALIVE messages MUST NOT be sent more
+    TEXT[!MUST,implementation,test]:    frequently than one per second.
+    TEXT[!MAY]: An implementation MAY adjust the
+    TEXT[!MAY]:    rate at which it sends KEEPALIVE messages as a function of the Hold
+    TEXT[!MAY]:    Time interval.
+    TEXT[!MUST,implementation]:    If the negotiated Hold Time interval is zero, then periodic KEEPALIVE
+    TEXT[!MUST,implementation]:    messages MUST NOT be sent.
+
+  SECTION: [Path Attributes](#section-5)
+    TEXT[!MUST]:    BGP implementations MUST recognize all well-known attributes.
+    TEXT[!MUST]: Some
+    TEXT[!MUST]:    of these attributes are mandatory and MUST be included in every
+    TEXT[!MUST]:    UPDATE message that contains NLRI.
+    TEXT[!MAY]: Others are discretionary and MAY
+    TEXT[!MAY]:    or MAY NOT be sent in a particular UPDATE message.
+    TEXT[!MUST]:    Once a BGP peer has updated any well-known attributes, it MUST pass
+    TEXT[!MUST]:    these attributes to its peers in any updates it transmits.
+    TEXT[!MAY]:    In addition to well-known attributes, each path MAY contain one or
+    TEXT[!MAY]:    more optional attributes.
+    TEXT[!SHOULD]: Paths with
+    TEXT[!SHOULD]:    unrecognized transitive optional attributes SHOULD be accepted.
+    TEXT[!MUST]: If a
+    TEXT[!MUST]:    path with an unrecognized transitive optional attribute is accepted
+    TEXT[!MUST]:    and passed to other BGP peers, then the unrecognized transitive
+    TEXT[!MUST]:    optional attribute of that path MUST be passed, along with the path,
+    TEXT[!MUST]:    to other BGP peers with the Partial bit in the Attribute Flags octet
+    TEXT[!MUST]:    set to 1.
+    TEXT[!MUST]: If a path with a recognized, transitive optional attribute
+    TEXT[!MUST]:    is accepted and passed along to other BGP peers and the Partial bit
+    TEXT[!MUST]:    in the Attribute Flags octet is set to 1 by some previous AS, it MUST
+    TEXT[!MUST]:    NOT be set back to 0 by the current AS.
+    TEXT[!MUST]: Unrecognized non-transitive
+    TEXT[!MUST]:    optional attributes MUST be quietly ignored and not passed along to
+    TEXT[!MUST]:    other BGP peers.
+    TEXT[!MAY]:    New, transitive optional attributes MAY be attached to the path by
+    TEXT[!MAY]:    the originator or by any other BGP speaker in the path.
+    TEXT[!MAY]: All optional
+    TEXT[!MAY]:    attributes (both transitive and non-transitive), MAY be updated (if
+    TEXT[!MAY]:    appropriate) by BGP speakers in the path.
+    TEXT[!SHOULD]:    The sender of an UPDATE message SHOULD order path attributes within
+    TEXT[!SHOULD]:    the UPDATE message in ascending order of attribute type.
+    TEXT[!MUST]: The
+    TEXT[!MUST]:    receiver of an UPDATE message MUST be prepared to handle path
+    TEXT[!MUST]:    attributes within UPDATE messages that are out of order.
+    TEXT[!MUST]:    The mandatory category refers to an attribute that MUST be present in
+    TEXT[!MUST]:    both IBGP and EBGP exchanges if NLRI are contained in the UPDATE
+    TEXT[!MUST]:    message.
+
+  SECTION: [ORIGIN](#section-5.1.1)
+    TEXT[!SHOULD]: Its value SHOULD NOT be changed by any other speaker.
+
+  SECTION: [AS_PATH](#section-5.1.2)
+    TEXT[!MUST]:       a) When a given BGP speaker advertises the route to an internal
+    TEXT[!MUST]:          peer, the advertising speaker SHALL NOT modify the AS_PATH
+    TEXT[!MUST]:          attribute associated with the route.
+    TEXT[!SHOULD]: If the act of prepending will cause an
+    TEXT[!SHOULD]:             overflow in the AS_PATH segment (i.e., more than 255 ASes),
+    TEXT[!SHOULD]:             it SHOULD prepend a new segment of type AS_SEQUENCE and
+    TEXT[!SHOULD]:             prepend its own AS number to this new segment.
+    TEXT[!MAY]:    Whenever the modification of the AS_PATH attribute calls for
+    TEXT[!MAY]:    including or prepending the AS number of the local system, the local
+    TEXT[!MAY]:    system MAY include/prepend more than one instance of its own AS
+    TEXT[!MAY]:    number in the AS_PATH attribute.
+
+  SECTION: [NEXT_HOP](#section-5.1.3)
+    TEXT[!SHOULD]:    The NEXT_HOP is a well-known mandatory attribute that defines the IP
+    TEXT[!SHOULD]:    address of the router that SHOULD be used as the next hop to the
+    TEXT[!SHOULD]:    destinations listed in the UPDATE message.
+    TEXT[!SHOULD]:       1) When sending a message to an internal peer, if the route is not
+    TEXT[!SHOULD]:          locally originated, the BGP speaker SHOULD NOT modify the
+    TEXT[!SHOULD]:          NEXT_HOP attribute unless it has been explicitly configured to
+    TEXT[!SHOULD]:          announce its own IP address as the NEXT_HOP.
+    TEXT[!SHOULD]:          locally-originated route to an internal peer, the BGP speaker
+    TEXT[!SHOULD]:          SHOULD use the interface address of the router through which
+    TEXT[!SHOULD]:          the announced network is reachable for the speaker as the
+    TEXT[!SHOULD]:          NEXT_HOP.
+    TEXT[!SHOULD]: If the route is directly connected to the speaker,
+    TEXT[!SHOULD]:          or if the interface address of the router through which the
+    TEXT[!SHOULD]:          announced network is reachable for the speaker is the internal
+    TEXT[!SHOULD]:          peer's address, then the BGP speaker SHOULD use its own IP
+    TEXT[!SHOULD]:          address for the NEXT_HOP attribute (the address of the
+    TEXT[!SHOULD]:          interface that is used to reach the peer).
+    TEXT[!MAY]:          - Otherwise, if the external peer to which the route is being
+    TEXT[!MAY]:            advertised shares a common subnet with one of the interfaces
+    TEXT[!MAY]:            of the announcing BGP speaker, the speaker MAY use the IP
+    TEXT[!MAY]:            address associated with such an interface in the NEXT_HOP
+    TEXT[!MAY]:            attribute.
+    TEXT[!SHOULD]:          - By default (if none of the above conditions apply), the BGP
+    TEXT[!SHOULD]:            speaker SHOULD use the IP address of the interface that the
+    TEXT[!SHOULD]:            speaker uses to establish the BGP connection to peer X in the
+    TEXT[!SHOULD]:            NEXT_HOP attribute.
+    TEXT[!MAY]:          - The speaker MAY be configured to propagate the NEXT_HOP
+    TEXT[!MAY]:            attribute.
+    TEXT[!SHOULD]:          - By default, the BGP speaker SHOULD use the IP address of the
+    TEXT[!SHOULD]:            interface that the speaker uses in the NEXT_HOP attribute to
+    TEXT[!SHOULD]:            establish the BGP connection to peer X.
+    TEXT[!MUST]: A BGP speaker MUST be able to support
+    TEXT[!MUST]:    the disabling advertisement of third party NEXT_HOP attributes in
+    TEXT[!MUST]:    order to handle imperfectly bridged media.
+    TEXT[!MUST]:    A route originated by a BGP speaker SHALL NOT be advertised to a peer
+    TEXT[!MUST]:    using an address of that peer as NEXT_HOP.
+    TEXT[!MUST]: A BGP speaker SHALL NOT
+    TEXT[!MUST]:    install a route with itself as the next hop.
+    TEXT[!SHOULD]:    The NEXT_HOP attribute is used by the BGP speaker to determine the
+    TEXT[!SHOULD]:    actual outbound interface and immediate next-hop address that SHOULD
+    TEXT[!SHOULD]:    be used to forward transit packets to the associated destinations.
+    TEXT[!SHOULD]: If the entry specifies an
+    TEXT[!SHOULD]:    attached subnet, but does not specify a next-hop address, then the
+    TEXT[!SHOULD]:    address in the NEXT_HOP attribute SHOULD be used as the immediate
+    TEXT[!SHOULD]:    next-hop address.
+    TEXT[!SHOULD]: If the entry also specifies the next-hop address,
+    TEXT[!SHOULD]:    this address SHOULD be used as the immediate next-hop address for
+    TEXT[!SHOULD]:    packet forwarding.
+
+  SECTION: [MULTI_EXIT_DISC](#section-5.1.4)
+    TEXT[!SHOULD]: All other factors being equal, the exit
+    TEXT[!SHOULD]:    point with the lower metric SHOULD be preferred.
+    TEXT[!MAY]: If received over
+    TEXT[!MAY]:    EBGP, the MULTI_EXIT_DISC attribute MAY be propagated over IBGP to
+    TEXT[!MAY]:    other BGP speakers within the same AS (see also 9.1.2.2).
+    TEXT[!MUST]: The
+    TEXT[!MUST]:    MULTI_EXIT_DISC attribute received from a neighboring AS MUST NOT be
+    TEXT[!MUST]:    propagated to other neighboring ASes.
+    TEXT[!MUST]:    A BGP speaker MUST implement a mechanism (based on local
+    TEXT[!MUST]:    configuration) that allows the MULTI_EXIT_DISC attribute to be
+    TEXT[!MUST]:    removed from a route.
+    TEXT[!MUST]:    MULTI_EXIT_DISC attribute from a route, then this removal MUST be
+    TEXT[!MUST]:    done prior to determining the degree of preference of the route and
+    TEXT[!MUST]:    prior to performing route selection (Decision Process phases 1 and
+    TEXT[!MUST]:    2).
+    TEXT[!MAY]:    An implementation MAY also (based on local configuration) alter the
+    TEXT[!MAY]:    value of the MULTI_EXIT_DISC attribute received over EBGP.
+    TEXT[!MUST]: If a BGP
+    TEXT[!MUST]:    speaker is configured to alter the value of the MULTI_EXIT_DISC
+    TEXT[!MUST]:    attribute received over EBGP, then altering the value MUST be done
+    TEXT[!MUST]:    prior to determining the degree of preference of the route and prior
+    TEXT[!MUST]:    to performing route selection (Decision Process phases 1 and 2).
+
+  SECTION: [LOCAL_PREF](#section-5.1.5)
+    TEXT[!MUST]:    LOCAL_PREF is a well-known attribute that SHALL be included in all
+    TEXT[!MUST]:    UPDATE messages that a given BGP speaker sends to other internal
+    TEXT[!MUST]:    peers.
+    TEXT[!MUST]: A BGP speaker SHALL calculate the degree of preference for
+    TEXT[!MUST]:    each external route based on the locally-configured policy, and
+    TEXT[!MUST]:    include the degree of preference when advertising a route to its
+    TEXT[!MUST]:    internal peers.
+    TEXT[!MUST]: The higher degree of preference MUST be preferred.
+    TEXT[!MUST]:    A BGP speaker MUST NOT include this attribute in UPDATE messages it
+    TEXT[!MUST]:    sends to external peers, except in the case of BGP Confederations
+    TEXT[!MUST]:    [RFC3065].
+    TEXT[!MUST]: If it is contained in an UPDATE message that is received
+    TEXT[!MUST]:    from an external peer, then this attribute MUST be ignored by the
+    TEXT[!MUST]:    receiving speaker, except in the case of BGP Confederations
+    TEXT[!MUST]:    [RFC3065].
+
+  SECTION: [ATOMIC_AGGREGATE](#section-5.1.6)
+    TEXT[!SHOULD]:    If an aggregate excludes at least some of the AS numbers present in
+    TEXT[!SHOULD]:    the AS_PATH of the routes that are aggregated as a result of dropping
+    TEXT[!SHOULD]:    the AS_SET, the aggregated route, when advertised to the peer, SHOULD
+    TEXT[!SHOULD]:    include the ATOMIC_AGGREGATE attribute.
+    TEXT[!SHOULD]:    A BGP speaker that receives a route with the ATOMIC_AGGREGATE
+    TEXT[!SHOULD]:    attribute SHOULD NOT remove the attribute when propagating the route
+    TEXT[!SHOULD]:    to other speakers.
+    TEXT[!MUST]:    A BGP speaker that receives a route with the ATOMIC_AGGREGATE
+    TEXT[!MUST]:    attribute MUST NOT make any NLRI of that route more specific (as
+    TEXT[!MUST]:    defined in 9.1.4) when advertising this route to other BGP speakers.
+
+  SECTION: [AGGREGATOR](#section-5.1.7)
+    TEXT[!MAY]:    AGGREGATOR is an optional transitive attribute, which MAY be included
+    TEXT[!MAY]:    in updates that are formed by aggregation (see Section 9.2.2.2).
+    TEXT[!MUST]:    BGP speaker that performs route aggregation MAY add the AGGREGATOR
+    TEXT[!MUST]:    attribute, which SHALL contain its own AS number and IP address.
+    TEXT[!SHOULD]: The
+    TEXT[!SHOULD]:    IP address SHOULD be the same as the BGP Identifier of the speaker.
+
+  SECTION: [BGP Error Handling.](#section-6)
+    TEXT[!MUST]: If no Error Subcode is
+    TEXT[!MUST]:    specified, then a zero MUST be used.
+
+  SECTION: [Message Header Error Handling](#section-6.1)
+    TEXT[!MUST]:    All errors detected while processing the Message Header MUST be
+    TEXT[!MUST]:    indicated by sending the NOTIFICATION message with the Error Code
+    TEXT[!MUST]:    Message Header Error.
+    TEXT[implementation,test]:    The expected value of the Marker field of the message header is all
+    TEXT[implementation,test]:    ones.
+    TEXT[!MUST,implementation,test]: If the Marker field of the message header is not as expected,
+    TEXT[!MUST,implementation,test]:    then a synchronization error has occurred and the Error Subcode MUST
+    TEXT[!MUST,implementation,test]:    be set to Connection Not Synchronized.
+    TEXT[!MUST]:    then the Error Subcode MUST be set to Bad Message Length.
+    TEXT[!MUST]: The Data
+    TEXT[!MUST]:    field MUST contain the erroneous Length field.
+    TEXT[!MUST,implementation]:    If the Type field of the message header is not recognized, then the
+    TEXT[!MUST,implementation]:    Error Subcode MUST be set to Bad Message Type.
+    TEXT[!MUST,implementation]: The Data field MUST
+    TEXT[!MUST,implementation]:    contain the erroneous Type field.
+
+  SECTION: [OPEN Message Error Handling](#section-6.2)
+    TEXT[!MUST]:    All errors detected while processing the OPEN message MUST be
+    TEXT[!MUST]:    indicated by sending the NOTIFICATION message with the Error Code
+    TEXT[!MUST]:    OPEN Message Error.
+    TEXT[!MUST,implementation]:    If the version number in the Version field of the received OPEN
+    TEXT[!MUST,implementation]:    message is not supported, then the Error Subcode MUST be set to
+    TEXT[!MUST,implementation]:    Unsupported Version Number.
+    TEXT[!MUST,implementation,test]:    If the Autonomous System field of the OPEN message is unacceptable,
+    TEXT[!MUST,implementation,test]:    then the Error Subcode MUST be set to Bad Peer AS.
+    TEXT[!MUST,implementation,test]:    If the Hold Time field of the OPEN message is unacceptable, then the
+    TEXT[!MUST,implementation,test]:    Error Subcode MUST be set to Unacceptable Hold Time.
+    TEXT[!MUST,implementation,test]: An
+    TEXT[!MUST,implementation,test]:    implementation MUST reject Hold Time values of one or two seconds.
+    TEXT[!MAY]:    An implementation MAY reject any proposed Hold Time.
+    TEXT[!MUST]: An
+    TEXT[!MUST]:    implementation that accepts a Hold Time MUST use the negotiated value
+    TEXT[!MUST]:    for the Hold Time.
+    TEXT[!MUST,implementation,test]:    If the BGP Identifier field of the OPEN message is syntactically
+    TEXT[!MUST,implementation,test]:    incorrect, then the Error Subcode MUST be set to Bad BGP Identifier.
+    TEXT[!MUST,implementation]:    If one of the Optional Parameters in the OPEN message is not
+    TEXT[!MUST,implementation]:    recognized, then the Error Subcode MUST be set to Unsupported
+    TEXT[!MUST,implementation]:    Optional Parameters.
+    TEXT[!MUST]:    If one of the Optional Parameters in the OPEN message is recognized,
+    TEXT[!MUST]:    but is malformed, then the Error Subcode MUST be set to 0
+    TEXT[!MUST]:    (Unspecific).
+
+  SECTION: [UPDATE Message Error Handling](#section-6.3)
+    TEXT[!MUST]:    All errors detected while processing the UPDATE message MUST be
+    TEXT[!MUST]:    indicated by sending the NOTIFICATION message with the Error Code
+    TEXT[!MUST]:    UPDATE Message Error.
+    TEXT[!MUST]: If the Withdrawn Routes Length or Total Attribute Length
+    TEXT[!MUST]:    is too large (i.e., if Withdrawn Routes Length + Total Attribute
+    TEXT[!MUST]:    Length + 23 exceeds the message Length), then the Error Subcode MUST
+    TEXT[!MUST]:    be set to Malformed Attribute List.
+    TEXT[!MUST]:    If any recognized attribute has Attribute Flags that conflict with
+    TEXT[!MUST]:    the Attribute Type Code, then the Error Subcode MUST be set to
+    TEXT[!MUST]:    Attribute Flags Error.
+    TEXT[!MUST]: The Data field MUST contain the erroneous
+    TEXT[!MUST]:    attribute (type, length, and value).
+    TEXT[!MUST]:    If any recognized attribute has an Attribute Length that conflicts
+    TEXT[!MUST]:    with the expected length (based on the attribute type code), then the
+    TEXT[!MUST]:    Error Subcode MUST be set to Attribute Length Error.
+    TEXT[!MUST]:    If any of the well-known mandatory attributes are not present, then
+    TEXT[!MUST]:    the Error Subcode MUST be set to Missing Well-known Attribute.
+    TEXT[!MUST]: The
+    TEXT[!MUST]:    Data field MUST contain the Attribute Type Code of the missing,
+    TEXT[!MUST]:    well-known attribute.
+    TEXT[!MUST]:    If any of the well-known mandatory attributes are not recognized,
+    TEXT[!MUST]:    then the Error Subcode MUST be set to Unrecognized Well-known
+    TEXT[!MUST]:    Attribute.
+    TEXT[!MUST]: The Data field MUST contain the unrecognized attribute
+    TEXT[!MUST]:    (type, length, and value).
+    TEXT[!MUST]:    If the ORIGIN attribute has an undefined value, then the Error Sub-
+    TEXT[!MUST]:    code MUST be set to Invalid Origin Attribute.
+    TEXT[!MUST]:    If the NEXT_HOP attribute field is syntactically incorrect, then the
+    TEXT[!MUST]:    Error Subcode MUST be set to Invalid NEXT_HOP Attribute.
+    TEXT[!MUST]: The Data
+    TEXT[!MUST]:    field MUST contain the incorrect attribute (type, length, and value).
+    TEXT[!MUST]:    The IP address in the NEXT_HOP MUST meet the following criteria to be
+    TEXT[!MUST]:    considered semantically correct:
+    TEXT[!MUST]:       a) It MUST NOT be the IP address of the receiving speaker.
+    TEXT[!MUST]:       b) In the case of an EBGP, where the sender and receiver are one
+    TEXT[!MUST]:          IP hop away from each other, either the IP address in the
+    TEXT[!MUST]:          NEXT_HOP MUST be the sender's IP address that is used to
+    TEXT[!MUST]:          establish the BGP connection, or the interface associated with
+    TEXT[!MUST]:          the NEXT_HOP IP address MUST share a common subnet with the
+    TEXT[!MUST]:          receiving BGP speaker.
+    TEXT[!SHOULD]:    If the NEXT_HOP attribute is semantically incorrect, the error SHOULD
+    TEXT[!SHOULD]:    be logged, and the route SHOULD be ignored.
+    TEXT[!SHOULD]: In this case, a
+    TEXT[!SHOULD]:    NOTIFICATION message SHOULD NOT be sent, and the connection SHOULD
+    TEXT[!SHOULD]:    NOT be closed.
+    TEXT[!MUST]: If the
+    TEXT[!MUST]:    path is syntactically incorrect, then the Error Subcode MUST be set
+    TEXT[!MUST]:    to Malformed AS_PATH.
+    TEXT[!MAY]:    If the UPDATE message is received from an external peer, the local
+    TEXT[!MAY]:    system MAY check whether the leftmost (with respect to the position
+    TEXT[!MAY]:    of octets in the protocol message) AS in the AS_PATH attribute is
+    TEXT[!MAY]:    equal to the autonomous system number of the peer that sent the
+    TEXT[!MAY]:    message.
+    TEXT[!MUST]: If the check determines this is not the case, the Error
+    TEXT[!MUST]:    Subcode MUST be set to Malformed AS_PATH.
+    TEXT[!MUST]:    If an optional attribute is recognized, then the value of this
+    TEXT[!MUST]:    attribute MUST be checked.
+    TEXT[!MUST]: If an error is detected, the attribute
+    TEXT[!MUST]:    MUST be discarded, and the Error Subcode MUST be set to Optional
+    TEXT[!MUST]:    Attribute Error.
+    TEXT[!MUST]: The Data field MUST contain the attribute (type,
+    TEXT[!MUST]:    length, and value).
+    TEXT[!MUST]:    If any attribute appears more than once in the UPDATE message, then
+    TEXT[!MUST]:    the Error Subcode MUST be set to Malformed Attribute List.
+    TEXT[!MUST]: If the field is syntactically incorrect, then the Error
+    TEXT[!MUST]:    Subcode MUST be set to Invalid Network Field.
+    TEXT[!SHOULD]:    If a prefix in the NLRI field is semantically incorrect (e.g., an
+    TEXT[!SHOULD]:    unexpected multicast IP address), an error SHOULD be logged locally,
+    TEXT[!SHOULD]:    and the prefix SHOULD be ignored.
+    TEXT[!MUST]:    An UPDATE message that contains correct path attributes, but no NLRI,
+    TEXT[!MUST]:    SHALL be treated as a valid UPDATE message.
+
+  SECTION: [NOTIFICATION Message Error Handling](#section-6.4)
+    TEXT[!SHOULD]: Any such
+    TEXT[!SHOULD]:    error (e.g., an unrecognized Error Code or Error Subcode) SHOULD be
+    TEXT[!SHOULD]:    noticed, logged locally, and brought to the attention of the
+    TEXT[!SHOULD]:    administration of the peer.
+
+  SECTION: [Hold Timer Expired Error Handling](#section-6.5)
+    TEXT[implementation,test]:    If a system does not receive successive KEEPALIVE, UPDATE, and/or
+    TEXT[implementation,test]:    NOTIFICATION messages within the period specified in the Hold Time
+    TEXT[implementation,test]:    field of the OPEN message, then the NOTIFICATION message with the
+    TEXT[implementation,test]:    Hold Timer Expired Error Code is sent and the BGP connection is
+    TEXT[implementation,test]:    closed.
+
+  SECTION: [Cease](#section-6.7)
+    TEXT[!MAY]:    In the absence of any fatal errors (that are indicated in this
+    TEXT[!MAY]:    section), a BGP peer MAY choose, at any given time, to close its BGP
+    TEXT[!MAY]:    connection by sending the NOTIFICATION message with the Error Code
+    TEXT[!MAY]:    Cease.
+    TEXT[!MUST]: However, the Cease NOTIFICATION message MUST NOT be used when
+    TEXT[!MUST]:    a fatal error indicated by this section does exist.
+    TEXT[!MAY]:    A BGP speaker MAY support the ability to impose a locally-configured,
+    TEXT[!MAY]:    upper bound on the number of address prefixes the speaker is willing
+    TEXT[!MAY]:    to accept from a neighbor.
+    TEXT[!MUST]: If the BGP speaker decides to terminate its BGP
+    TEXT[!MUST]:    connection with a neighbor because the number of address prefixes
+    TEXT[!MUST]:    received from the neighbor exceeds the locally-configured, upper
+    TEXT[!MUST]:    bound, then the speaker MUST send the neighbor a NOTIFICATION message
+    TEXT[!MUST]:    with the Error Code Cease.
+    TEXT[!MAY]: The speaker MAY also log this locally.
+
+  SECTION: [BGP Connection Collision Detection](#section-6.8)
+    TEXT[!MUST]: In the
+    TEXT[!MUST]:    event of connection collision, one of the connections MUST be closed.
+    TEXT[!MUST]:    Upon receipt of an OPEN message, the local system MUST examine all of
+    TEXT[!MUST]:    its connections that are in the OpenConfirm state.
+    TEXT[!MAY]: A BGP speaker MAY
+    TEXT[!MAY]:    also examine connections in an OpenSent state if it knows the BGP
+    TEXT[!MAY]:    Identifier of the peer by means outside of the protocol.
+
+  SECTION: [BGP Version Negotiation](#section-7)
+    TEXT[!MAY]:    BGP speakers MAY negotiate the version of the protocol by making
+    TEXT[!MAY]:    multiple attempts at opening a BGP connection, starting with the
+    TEXT[!MAY]:    highest version number each BGP speaker supports.
+    TEXT[!MUST]: In order to support BGP version
+    TEXT[!MUST]:    negotiation, future versions of BGP MUST retain the format of the
+    TEXT[!MUST]:    OPEN and NOTIFICATION messages.
+
+  SECTION: [Administrative Events](#section-8.1.2)
+    TEXT[!SHOULD]: Each event below has a name, definition,
+    TEXT[!SHOULD]:    status (mandatory or optional), and the optional session attributes
+    TEXT[!SHOULD]:    that SHOULD be set at each stage.
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attribute
+    TEXT[!SHOULD]:          Status:     The PassiveTcpEstablishment attribute SHOULD be set
+    TEXT[!SHOULD]:                      to FALSE.
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attribute
+    TEXT[!SHOULD]:          Status:     1) The AllowAutomaticStart attribute SHOULD be set
+    TEXT[!SHOULD]:                         to TRUE if this event occurs.
+    TEXT[!SHOULD]:                      2) If the PassiveTcpEstablishment optional session
+    TEXT[!SHOULD]:                         attribute is supported, it SHOULD be set to
+    TEXT[!SHOULD]:                         FALSE.
+    TEXT[!SHOULD]:                      3) If the DampPeerOscillations is supported, it
+    TEXT[!SHOULD]:                         SHOULD be set to FALSE when this event occurs.
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attribute
+    TEXT[!SHOULD]:          Status:     1) The PassiveTcpEstablishment attribute SHOULD be
+    TEXT[!SHOULD]:                         set to TRUE if this event occurs.
+    TEXT[!SHOULD]:                      2) The DampPeerOscillations attribute SHOULD be set
+    TEXT[!SHOULD]:                         to FALSE when this event occurs.
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attribute
+    TEXT[!SHOULD]:          Status:     1) The AllowAutomaticStart attribute SHOULD be set
+    TEXT[!SHOULD]:                         to TRUE.
+    TEXT[!SHOULD]:                      2) The PassiveTcpEstablishment attribute SHOULD be
+    TEXT[!SHOULD]:                         set to TRUE.
+    TEXT[!SHOULD]:                      3) If the DampPeerOscillations attribute is
+    TEXT[!SHOULD]:                         supported, the DampPeerOscillations SHOULD be
+    TEXT[!SHOULD]:                         set to FALSE.
+    TEXT[!SHOULD]:                      2) The DampPeerOscillations attribute SHOULD be set
+    TEXT[!SHOULD]:                         to TRUE.
+    TEXT[!SHOULD]:                      3) The PassiveTcpEstablishment attribute SHOULD be
+    TEXT[!SHOULD]:                         set to FALSE.
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attributes
+    TEXT[!SHOULD]:          Status:     1) The AllowAutomaticStart attribute SHOULD be set
+    TEXT[!SHOULD]:                         to TRUE.
+    TEXT[!SHOULD]:                      3) The PassiveTcpEstablishment attribute SHOULD be
+    TEXT[!SHOULD]:                         set to TRUE.
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attribute
+    TEXT[!SHOULD]:          Status:     1) The AllowAutomaticStop attribute SHOULD be TRUE.
+
+  SECTION: [Timer Events](#section-8.1.3)
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attribute
+    TEXT[!SHOULD]:          Status:     If this event occurs,
+    TEXT[!SHOULD]:                      1) DelayOpen attribute SHOULD be set to TRUE,
+    TEXT[!SHOULD]:                      2) DelayOpenTime attribute SHOULD be supported,
+    TEXT[!SHOULD]:                      3) DelayOpenTimer SHOULD be supported.
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attribute
+    TEXT[!SHOULD]:          Status:     If this event occurs:
+    TEXT[!SHOULD]:                      1) DampPeerOscillations attribute SHOULD be set to
+    TEXT[!SHOULD]:                         TRUE.
+    TEXT[!SHOULD]:                      2) IdleHoldTimer SHOULD have just expired.
+
+  SECTION: [TCP Connection-Based Events](#section-8.1.4)
+    TEXT[!SHOULD]:                      BGP's destination port SHOULD be port 179, as
+    TEXT[!SHOULD]:                      defined by IANA.
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attribute
+    TEXT[!SHOULD]:          Status:     1) The TrackTcpState attribute SHOULD be set to
+    TEXT[!SHOULD]:                         TRUE if this event occurs.
+    TEXT[!SHOULD]:                      BGP destination port number SHOULD be 179, as
+    TEXT[!SHOULD]:                      defined by IANA.
+
+  SECTION: [BGP Message-Based Events](#section-8.1.5)
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attribute
+    TEXT[!SHOULD]:          Status:     1) The DelayOpen optional attribute SHOULD be set
+    TEXT[!SHOULD]:                         to FALSE.
+    TEXT[!SHOULD]:                      2) The DelayOpenTimer SHOULD not be running.
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attribute
+    TEXT[!SHOULD]:          Status:     1) The DelayOpen attribute SHOULD be set to TRUE.
+    TEXT[!SHOULD]:                      2) The DelayOpenTimer SHOULD be running.
+    TEXT[!SHOULD]:          Optional
+    TEXT[!SHOULD]:          Attribute
+    TEXT[!SHOULD]:          Status:     If the state machine is to process this event in
+    TEXT[!SHOULD]:                      the Established state,
+    TEXT[!SHOULD]:                      1) CollisionDetectEstablishedState optional
+    TEXT[!SHOULD]:                         attribute SHOULD be set to TRUE.
+
+  SECTION: [FSM Definition](#section-8.2.1)
+    TEXT[!MUST]:    BGP MUST maintain a separate FSM for each configured peer.
+    TEXT[!MUST]:    A BGP implementation MUST connect to and listen on TCP port 179 for
+    TEXT[!MUST]:    incoming connections in addition to trying to connect to peers.
+    TEXT[!MUST]: For
+    TEXT[!MUST]:    each incoming connection, a state machine MUST be instantiated.
+
+  SECTION: [FSM and Collision Detection](#section-8.2.1.2)
+    TEXT[!SHOULD]: After the
+    TEXT[!SHOULD]:    connection collision is resolved (see Section 6.8), the FSM for the
+    TEXT[!SHOULD]:    connection that is closed SHOULD be disposed.
+
+  SECTION: [FSM Event Numbers](#section-8.2.1.4)
+    TEXT[!MAY]:    Implementations MAY use these numbers to provide network management
+    TEXT[!MAY]:    information.
+
+  SECTION: [Finite State Machine](#section-8.2.2)
+    TEXT[!SHOULD]:       The exact value of the ConnectRetryTimer is a local matter, but it
+    TEXT[!SHOULD]:       SHOULD be sufficiently large to allow TCP initialization.
+    TEXT[!MUST]:       In response to an indication that the TCP connection is
+    TEXT[!MUST]:       successfully established (Event 16 or Event 17), the second
+    TEXT[!MUST]:       connection SHALL be tracked until it sends an OPEN message.
+
+  SECTION: [UPDATE Message Handling](#section-9)
+    TEXT[!MUST]:    If the UPDATE message contains a non-empty WITHDRAWN ROUTES field,
+    TEXT[!MUST]:    the previously advertised routes, whose destinations (expressed as IP
+    TEXT[!MUST]:    prefixes) are contained in this field, SHALL be removed from the
+    TEXT[!MUST]:    Adj-RIB-In.
+    TEXT[!MUST]: This BGP speaker SHALL run its Decision Process because
+    TEXT[!MUST]:    the previously advertised route is no longer available for use.
+    TEXT[!MUST]:    If the UPDATE message contains a feasible route, the Adj-RIB-In will
+    TEXT[!MUST]:    be updated with this route as follows: if the NLRI of the new route
+    TEXT[!MUST]:    is identical to the one the route currently has stored in the Adj-
+    TEXT[!MUST]:    RIB-In, then the new route SHALL replace the older route in the Adj-
+    TEXT[!MUST]:    RIB-In, thus implicitly withdrawing the older route from service.
+    TEXT[!MUST]:    Otherwise, if the Adj-RIB-In has no route with NLRI identical to the
+    TEXT[!MUST]:    new route, the new route SHALL be placed in the Adj-RIB-In.
+    TEXT[!MUST]:    Once the BGP speaker updates the Adj-RIB-In, the speaker SHALL run
+    TEXT[!MUST]:    its Decision Process.
+
+  SECTION: [Decision Process](#section-9.1)
+    TEXT[!MUST]:    The function that calculates the degree of preference for a given
+    TEXT[!MUST]:    route SHALL NOT use any of the following as its inputs: the existence
+    TEXT[!MUST]:    of other routes, the non-existence of other routes, or the path
+    TEXT[!MUST]:    attributes of other routes.
+
+  SECTION: [Phase 1: Calculation of Degree of Preference](#section-9.1.1)
+    TEXT[!MUST]: If the return value indicates the route is
+    TEXT[!MUST]:       ineligible, the route MAY NOT serve as an input to the next phase
+    TEXT[!MUST]:       of route selection; otherwise, the return value MUST be used as
+    TEXT[!MUST]:       the LOCAL_PREF value in any IBGP readvertisement.
+
+  SECTION: [Phase 2: Route Selection](#section-9.1.2)
+    TEXT[!MUST]:    If the NEXT_HOP attribute of a BGP route depicts an address that is
+    TEXT[!MUST]:    not resolvable, or if it would become unresolvable if the route was
+    TEXT[!MUST]:    installed in the routing table, the BGP route MUST be excluded from
+    TEXT[!MUST]:    the Phase 2 decision function.
+    TEXT[!MUST]:    The local speaker SHALL then install that route in the Loc-RIB,
+    TEXT[!MUST]:    replacing any route to the same destination that is currently being
+    TEXT[!MUST]:    held in the Loc-RIB.
+    TEXT[!MUST]:    The local speaker MUST determine the immediate next-hop address from
+    TEXT[!MUST]:    the NEXT_HOP attribute of the selected route (see Section 5.1.3).
+    TEXT[!MUST]: If
+    TEXT[!MUST]:    either the immediate next-hop or the IGP cost to the NEXT_HOP (where
+    TEXT[!MUST]:    the NEXT_HOP is resolved through an IGP route) changes, Phase 2 Route
+    TEXT[!MUST]:    Selection MUST be performed again.
+    TEXT[!MUST]:    Notice that even though BGP routes do not have to be installed in the
+    TEXT[!MUST]:    Routing Table with the immediate next-hop(s), implementations MUST
+    TEXT[!MUST]:    take care that, before any packets are forwarded along a BGP route,
+    TEXT[!MUST]:    its associated NEXT_HOP address is resolved to the immediate
+    TEXT[!MUST]:    (directly connected) next-hop address, and that this address (or
+    TEXT[!MUST]:    multiple addresses) is finally used for actual packet forwarding.
+    TEXT[!MUST]:    Unresolvable routes SHALL be removed from the Loc-RIB and the routing
+    TEXT[!MUST]:    table.
+    TEXT[!SHOULD]: However, corresponding unresolvable routes SHOULD be kept in
+    TEXT[!SHOULD]:    the Adj-RIBs-In (in case they become resolvable).
+
+  SECTION: [Route Resolvability Condition](#section-9.1.2.1)
+    TEXT[!SHOULD]:    As indicated in Section 9.1.2, BGP speakers SHOULD exclude
+    TEXT[!SHOULD]:    unresolvable routes from the Phase 2 decision.
+    TEXT[!SHOULD]: If multiple matching
+    TEXT[!SHOULD]:          routes are available, only the longest matching route SHOULD be
+    TEXT[!SHOULD]:          considered.
+    TEXT[!SHOULD]:    Whenever a BGP speaker identifies a route that fails the
+    TEXT[!SHOULD]:    resolvability check because of mutual recursion, an error message
+    TEXT[!SHOULD]:    SHOULD be logged.
+
+  SECTION: [Breaking Ties (Phase 2)](#section-9.1.2.2)
+    TEXT[!MUST]: The criteria MUST be
+    TEXT[!MUST]:    applied in the order specified.
+    TEXT[!MAY]: BGP
+    TEXT[!MAY]:    implementations MAY use any algorithm that produces the same results
+    TEXT[!MAY]:    as those described here.
+    TEXT[!MAY]:          If a MULTI_EXIT_DISC attribute is removed before re-advertising
+    TEXT[!MAY]:          a route into IBGP, then comparison based on the received EBGP
+    TEXT[!MAY]:          MULTI_EXIT_DISC attribute MAY still be performed.
+    TEXT[!MUST]: If an
+    TEXT[!MUST]:          implementation chooses to remove MULTI_EXIT_DISC, then the
+    TEXT[!MUST]:          optional comparison on MULTI_EXIT_DISC, if performed, MUST be
+    TEXT[!MUST]:          performed only among EBGP-learned routes.
+    TEXT[!MUST]: For IBGP-
+    TEXT[!MUST]:          learned routes, the MULTI_EXIT_DISC MUST be used in route
+    TEXT[!MUST]:          comparisons that reach this step in the Decision Process.
+
+  SECTION: [Phase 3: Route Dissemination](#section-9.1.3)
+    TEXT[!MAY]: This policy MAY exclude a route in the Loc-RIB
+    TEXT[!MAY]:    from being installed in a particular Adj-RIB-Out.
+    TEXT[!MUST]: A route SHALL NOT
+    TEXT[!MUST]: If a route in Loc-RIB is excluded from a particular
+    TEXT[!MUST]:    Adj-RIB-Out, the previously advertised route in that Adj-RIB-Out MUST
+    TEXT[!MUST]:    be withdrawn from service by means of an UPDATE message (see 9.2).
+
+  SECTION: [Overlapping Routes](#section-9.1.4)
+    TEXT[!MUST]:    If a BGP speaker receives overlapping routes, the Decision Process
+    TEXT[!MUST]:    MUST consider both routes based on the configured acceptance policy.
+    TEXT[!MUST]:    If both a less and a more specific route are accepted, then the
+    TEXT[!MUST]:    Decision Process MUST install, in Loc-RIB, either both the less and
+    TEXT[!SHOULD]:    If a BGP speaker chooses to aggregate, then it SHOULD either include
+    TEXT[!SHOULD]:    all ASes used to form the aggregate in an AS_SET, or add the
+    TEXT[!SHOULD]:    ATOMIC_AGGREGATE attribute to the route.
+    TEXT[!SHOULD]: Routes SHOULD
+    TEXT[!SHOULD]:    NOT be de-aggregated.
+    TEXT[!MUST]: In particular, a route that carries the
+    TEXT[!MUST]:    ATOMIC_AGGREGATE attribute MUST NOT be de-aggregated.
+
+  SECTION: [Update-Send Process](#section-9.2)
+    TEXT[!MUST]:    When a BGP speaker receives an UPDATE message from an internal peer,
+    TEXT[!MUST]:    the receiving BGP speaker SHALL NOT re-distribute the routing
+    TEXT[!MUST]:    information contained in that UPDATE message to other internal peers
+    TEXT[!MUST]:    (unless the speaker acts as a BGP Route Reflector [RFC2796]).
+    TEXT[!MUST]: All newly installed routes and all
+    TEXT[!MUST]:    newly unfeasible routes for which there is no replacement route SHALL
+    TEXT[!MUST]:    be advertised to its peers by means of an UPDATE message.
+    TEXT[!SHOULD]:    A BGP speaker SHOULD NOT advertise a given feasible BGP route from
+    TEXT[!SHOULD]:    its Adj-RIB-Out if it would produce an UPDATE message containing the
+    TEXT[!SHOULD]:    same BGP route as was previously advertised.
+    TEXT[!MUST]:    Any routes in the Loc-RIB marked as unfeasible SHALL be removed.
+    TEXT[!MUST]:    Changes to the reachable destinations within its own autonomous
+    TEXT[!MUST]:    system SHALL also be advertised in an UPDATE message.
+    TEXT[!MUST]:    If, due to the limits on the maximum size of an UPDATE message (see
+    TEXT[!MUST]:    Section 4), a single route doesn't fit into the message, the BGP
+    TEXT[!MUST]:    speaker MUST not advertise the route to its peers and MAY choose to
+    TEXT[!MUST]:    log an error locally.
+
+  SECTION: [Frequency of Route Advertisement](#section-9.2.1.1)
+    TEXT[!MUST]:    Two UPDATE messages sent by a BGP speaker to a peer that advertise
+    TEXT[!MUST]:    feasible routes and/or withdrawal of unfeasible routes to some common
+    TEXT[!MUST]:    set of destinations MUST be separated by at least
+    TEXT[!MUST]:    MinRouteAdvertisementIntervalTimer.
+    TEXT[!SHOULD]:    Since fast convergence is needed within an autonomous system, either
+    TEXT[!SHOULD]:    (a) the MinRouteAdvertisementIntervalTimer used for internal peers
+    TEXT[!SHOULD]:    SHOULD be shorter than the MinRouteAdvertisementIntervalTimer used
+    TEXT[!SHOULD]:    for external peers, or (b) the procedure describe in this section
+    TEXT[!SHOULD]:    SHOULD NOT apply to routes sent to internal peers.
+    TEXT[!MUST]: If new routes are selected multiple
+    TEXT[!MUST]:    times while awaiting the expiration of
+    TEXT[!MUST]:    MinRouteAdvertisementIntervalTimer, the last route selected SHALL be
+    TEXT[!MUST]:    advertised at the end of MinRouteAdvertisementIntervalTimer.
+
+  SECTION: [Aggregating Routing Information](#section-9.2.2.2)
+    TEXT[!MUST]:    Routes that have different MULTI_EXIT_DISC attributes SHALL NOT be
+    TEXT[!MUST]:    aggregated.
+    TEXT[!SHOULD]:    If the aggregated route has an AS_SET as the first element in its
+    TEXT[!SHOULD]:    AS_PATH attribute, then the router that originates the route SHOULD
+    TEXT[!SHOULD]:    NOT advertise the MULTI_EXIT_DISC attribute with this route.
+    TEXT[!MUST]:       NEXT_HOP:
+    TEXT[!MUST]:          When aggregating routes that have different NEXT_HOP
+    TEXT[!MUST]:          attributes, the NEXT_HOP attribute of the aggregated route
+    TEXT[!MUST]:          SHALL identify an interface on the BGP speaker that performs
+    TEXT[!MUST]:          the aggregation.
+    TEXT[!MUST]:       ORIGIN attribute:
+    TEXT[!MUST]:          If at least one route among routes that are aggregated has
+    TEXT[!MUST]:          ORIGIN with the value INCOMPLETE, then the aggregated route
+    TEXT[!MUST]:          MUST have the ORIGIN attribute with the value INCOMPLETE.
+    TEXT[!MUST]:          Otherwise, if at least one route among routes that are
+    TEXT[!MUST]:          aggregated has ORIGIN with the value EGP, then the aggregated
+    TEXT[!MUST]:          route MUST have the ORIGIN attribute with the value EGP.
+    TEXT[!MUST]: If the routes to be aggregated have different
+    TEXT[!MUST]:          AS_PATH attributes, then the aggregated AS_PATH attribute SHALL
+    TEXT[!MUST]:          satisfy all of the following conditions:
+    TEXT[!MUST]:            - all tuples of type AS_SEQUENCE in the aggregated AS_PATH
+    TEXT[!MUST]:              SHALL appear in all of the AS_PATHs in the initial set of
+    TEXT[!MUST]:              routes to be aggregated.
+    TEXT[!MUST]:            - all tuples of type AS_SET in the aggregated AS_PATH SHALL
+    TEXT[!MUST]:              appear in at least one of the AS_PATHs in the initial set
+    TEXT[!MUST]:              (they may appear as either AS_SET or AS_SEQUENCE types).
+    TEXT[!MUST]:            - No tuple of type AS_SET with the same value SHALL appear
+    TEXT[!MUST]:              more than once in the aggregated AS_PATH.
+    TEXT[!MUST]: At a minimum, a conformant implementation SHALL
+    TEXT[!MUST]:          be able to perform the following algorithm that meets all of
+    TEXT[!MUST]:          the above conditions:
+    TEXT[!MUST]:       ATOMIC_AGGREGATE:
+    TEXT[!MUST]:          If at least one of the routes to be aggregated has
+    TEXT[!MUST]:          ATOMIC_AGGREGATE path attribute, then the aggregated route
+    TEXT[!MUST]:          SHALL have this attribute as well.
+    TEXT[!MUST]:       AGGREGATOR:
+    TEXT[!MUST]:          Any AGGREGATOR attributes from the routes to be aggregated MUST
+    TEXT[!MUST]:          NOT be included in the aggregated route.
+    TEXT[!MAY]: The BGP speaker
+    TEXT[!MAY]:          performing the route aggregation MAY attach a new AGGREGATOR
+    TEXT[!MAY]:          attribute (see Section 5.1.7).
+
+  SECTION: [Route Selection Criteria](#section-9.3)
+    TEXT[!SHOULD]: Thus, an
+    TEXT[!SHOULD]:         AS SHOULD avoid using unstable routes, and it SHOULD NOT make
+    TEXT[!SHOULD]:         rapid, spontaneous changes to its choice of route.
+
+  SECTION: [Originating BGP routes](#section-9.4)
+    TEXT[!MAY]:    These routes MAY also be distributed to other BGP speakers within the
+    TEXT[!MAY]:    local AS as part of the update process (see Section 9.2).
+    TEXT[!SHOULD]: The
+    TEXT[!SHOULD]:    decision of whether to distribute non-BGP acquired routes within an
+    TEXT[!SHOULD]:    AS via BGP depends on the environment within the AS (e.g., type of
+    TEXT[!SHOULD]:    IGP) and SHOULD be controlled via configuration.
+
+  SECTION: [BGP Timers](#section-10)
+    TEXT[!MAY]:    Two optional timers MAY be supported: DelayOpenTimer, IdleHoldTimer
+    TEXT[!MAY]:    by BGP (see Section 8).
+    TEXT[!MUST]:    An implementation of BGP MUST allow the HoldTimer to be configurable
+    TEXT[!MUST]:    on a per-peer basis, and MAY allow the other timers to be
+    TEXT[!MUST]:    configurable.
+    TEXT[!SHOULD]:    To minimize the likelihood that the distribution of BGP messages by a
+    TEXT[!SHOULD]:    given BGP speaker will contain peaks, jitter SHOULD be applied to the
+    TEXT[!SHOULD]:    timers associated with MinASOriginationIntervalTimer, KeepaliveTimer,
+    TEXT[!SHOULD]:    MinRouteAdvertisementIntervalTimer, and ConnectRetryTimer.
+    TEXT[!MAY]: A given
+    TEXT[!MAY]:    BGP speaker MAY apply the same jitter to each of these quantities,
+    TEXT[!MAY]:    regardless of the destinations to which the updates are being sent;
+    TEXT[!MAY]:    that is, jitter need not be configured on a per-peer basis.
+    TEXT[!MUST]:    The suggested default amount of jitter SHALL be determined by
+    TEXT[!MUST]:    multiplying the base value of the appropriate timer by a random
+    TEXT[!MUST]:    factor, which is uniformly distributed in the range from 0.75 to 1.0.
+    TEXT[!SHOULD]:    A new random value SHOULD be picked each time the timer is set.
+    TEXT[!MAY]: The
+    TEXT[!MAY]:    range of the jitter's random value MAY be configurable.
+
+  SECTION: [Comparison with RFC 1771](#appendix-A)
+    TEXT[!MUST]:       Implementations MUST support TCP MD5 [RFC2385] for authentication.
+
+  SECTION: [TCP Options that May Be Used with BGP](#appendix-E)
+    TEXT[!SHOULD]:    If a local system TCP user interface supports the TCP PUSH function,
+    TEXT[!SHOULD]:    then each BGP message SHOULD be transmitted with PUSH flag set.
+    TEXT[!SHOULD]:    If a local system TCP user interface supports setting the DSCP field
+    TEXT[!SHOULD]:    [RFC2474] for TCP connections, then the TCP connection used by BGP
+    TEXT[!SHOULD]:    SHOULD be opened with bits 0-2 of the DSCP field set to 110 (binary).
+    TEXT[!MUST]:    An implementation MUST support the TCP MD5 option [RFC2385].
+
+  SECTION: [Security Considerations](#name-security-considerations)
+    TEXT[!MUST]:    A BGP implementation MUST support the authentication mechanism
+    TEXT[!MUST]:    specified in RFC 2385 [RFC2385].
+
 SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
   SECTION: [Address and Port Mapping](#section-4.1)
     TEXT[!MUST,implementation,test,exception]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.

@@ -1,0 +1,126 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-9.1.2"
+
+# Phase 2: Route Selection
+#
+#    The Phase 2 decision function is invoked on completion of Phase 1.
+#    The Phase 2 function is a separate process, which completes when it
+#    has no further work to do.  The Phase 2 process considers all routes
+#    that are eligible in the Adj-RIBs-In.
+# 
+#    The Phase 2 decision function is blocked from running while the Phase
+#    3 decision function is in process.  The Phase 2 function locks all
+#    Adj-RIBs-In prior to commencing its function, and unlocks them on
+#    completion.
+# 
+#    If the NEXT_HOP attribute of a BGP route depicts an address that is
+#    not resolvable, or if it would become unresolvable if the route was
+#    installed in the routing table, the BGP route MUST be excluded from
+#    the Phase 2 decision function.
+# 
+#    If the AS_PATH attribute of a BGP route contains an AS loop, the BGP
+#    route should be excluded from the Phase 2 decision function.  AS loop
+#    detection is done by scanning the full AS path (as specified in the
+#    AS_PATH attribute), and checking that the autonomous system number of
+#    the local system does not appear in the AS path.  Operations of a BGP
+#    speaker that is configured to accept routes with its own autonomous
+#    system number in the AS path are outside the scope of this document.
+# 
+#    It is critical that BGP speakers within an AS do not make conflicting
+#    decisions regarding route selection that would cause forwarding loops
+#    to occur.
+# 
+#    For each set of destinations for which a feasible route exists in the
+#    Adj-RIBs-In, the local BGP speaker identifies the route that has:
+# 
+#       a) the highest degree of preference of any route to the same set
+#          of destinations, or
+# 
+#       b) is the only route to that destination, or
+# 
+#       c) is selected as a result of the Phase 2 tie breaking rules
+#          specified in Section 9.1.2.2.
+# 
+#    The local speaker SHALL then install that route in the Loc-RIB,
+#    replacing any route to the same destination that is currently being
+#    held in the Loc-RIB.  When the new BGP route is installed in the
+#    Routing Table, care must be taken to ensure that existing routes to
+#    the same destination that are now considered invalid are removed from
+#    the Routing Table.  Whether the new BGP route replaces an existing
+#    non-BGP route in the Routing Table depends on the policy configured
+#    on the BGP speaker.
+# 
+#    The local speaker MUST determine the immediate next-hop address from
+#    the NEXT_HOP attribute of the selected route (see Section 5.1.3).  If
+#    either the immediate next-hop or the IGP cost to the NEXT_HOP (where
+#    the NEXT_HOP is resolved through an IGP route) changes, Phase 2 Route
+#    Selection MUST be performed again.
+# 
+#    Notice that even though BGP routes do not have to be installed in the
+#    Routing Table with the immediate next-hop(s), implementations MUST
+#    take care that, before any packets are forwarded along a BGP route,
+#    its associated NEXT_HOP address is resolved to the immediate
+#    (directly connected) next-hop address, and that this address (or
+#    multiple addresses) is finally used for actual packet forwarding.
+# 
+#    Unresolvable routes SHALL be removed from the Loc-RIB and the routing
+#    table.  However, corresponding unresolvable routes SHOULD be kept in
+#    the Adj-RIBs-In (in case they become resolvable).
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the NEXT_HOP attribute of a BGP route depicts an address that is
+not resolvable, or if it would become unresolvable if the route was
+installed in the routing table, the BGP route MUST be excluded from
+the Phase 2 decision function.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The local speaker SHALL then install that route in the Loc-RIB,
+replacing any route to the same destination that is currently being
+held in the Loc-RIB.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The local speaker MUST determine the immediate next-hop address from
+the NEXT_HOP attribute of the selected route (see Section 5.1.3).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If
+either the immediate next-hop or the IGP cost to the NEXT_HOP (where
+the NEXT_HOP is resolved through an IGP route) changes, Phase 2 Route
+Selection MUST be performed again.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Notice that even though BGP routes do not have to be installed in the
+Routing Table with the immediate next-hop(s), implementations MUST
+take care that, before any packets are forwarded along a BGP route,
+its associated NEXT_HOP address is resolved to the immediate
+(directly connected) next-hop address, and that this address (or
+multiple addresses) is finally used for actual packet forwarding.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Unresolvable routes SHALL be removed from the Loc-RIB and the routing
+table.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+However, corresponding unresolvable routes SHOULD be kept in
+the Adj-RIBs-In (in case they become resolvable).
+'''
+

@@ -1,0 +1,213 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-5.1.3"
+
+# NEXT_HOP
+#
+#    The NEXT_HOP is a well-known mandatory attribute that defines the IP
+#    address of the router that SHOULD be used as the next hop to the
+#    destinations listed in the UPDATE message.  The NEXT_HOP attribute is
+#    calculated as follows:
+# 
+#       1) When sending a message to an internal peer, if the route is not
+#          locally originated, the BGP speaker SHOULD NOT modify the
+#          NEXT_HOP attribute unless it has been explicitly configured to
+#          announce its own IP address as the NEXT_HOP.  When announcing a
+# 
+#          locally-originated route to an internal peer, the BGP speaker
+#          SHOULD use the interface address of the router through which
+#          the announced network is reachable for the speaker as the
+#          NEXT_HOP.  If the route is directly connected to the speaker,
+#          or if the interface address of the router through which the
+#          announced network is reachable for the speaker is the internal
+#          peer's address, then the BGP speaker SHOULD use its own IP
+#          address for the NEXT_HOP attribute (the address of the
+#          interface that is used to reach the peer).
+# 
+#       2) When sending a message to an external peer, X, and the peer is
+#          one IP hop away from the speaker:
+# 
+#          - If the route being announced was learned from an internal
+#            peer or is locally originated, the BGP speaker can use an
+#            interface address of the internal peer router (or the
+#            internal router) through which the announced network is
+#            reachable for the speaker for the NEXT_HOP attribute,
+#            provided that peer X shares a common subnet with this
+#            address.  This is a form of "third party" NEXT_HOP attribute.
+# 
+#          - Otherwise, if the route being announced was learned from an
+#            external peer, the speaker can use an IP address of any
+#            adjacent router (known from the received NEXT_HOP attribute)
+#            that the speaker itself uses for local route calculation in
+#            the NEXT_HOP attribute, provided that peer X shares a common
+#            subnet with this address.  This is a second form of "third
+#            party" NEXT_HOP attribute.
+# 
+#          - Otherwise, if the external peer to which the route is being
+#            advertised shares a common subnet with one of the interfaces
+#            of the announcing BGP speaker, the speaker MAY use the IP
+#            address associated with such an interface in the NEXT_HOP
+#            attribute.  This is known as a "first party" NEXT_HOP
+#            attribute.
+# 
+#          - By default (if none of the above conditions apply), the BGP
+#            speaker SHOULD use the IP address of the interface that the
+#            speaker uses to establish the BGP connection to peer X in the
+#            NEXT_HOP attribute.
+# 
+#       3) When sending a message to an external peer X, and the peer is
+#          multiple IP hops away from the speaker (aka "multihop EBGP"):
+# 
+#          - The speaker MAY be configured to propagate the NEXT_HOP
+#            attribute.  In this case, when advertising a route that the
+#            speaker learned from one of its peers, the NEXT_HOP attribute
+#            of the advertised route is exactly the same as the NEXT_HOP
+# 
+#            attribute of the learned route (the speaker does not modify
+#            the NEXT_HOP attribute).
+# 
+#          - By default, the BGP speaker SHOULD use the IP address of the
+#            interface that the speaker uses in the NEXT_HOP attribute to
+#            establish the BGP connection to peer X.
+# 
+#    Normally, the NEXT_HOP attribute is chosen such that the shortest
+#    available path will be taken.  A BGP speaker MUST be able to support
+#    the disabling advertisement of third party NEXT_HOP attributes in
+#    order to handle imperfectly bridged media.
+# 
+#    A route originated by a BGP speaker SHALL NOT be advertised to a peer
+#    using an address of that peer as NEXT_HOP.  A BGP speaker SHALL NOT
+#    install a route with itself as the next hop.
+# 
+#    The NEXT_HOP attribute is used by the BGP speaker to determine the
+#    actual outbound interface and immediate next-hop address that SHOULD
+#    be used to forward transit packets to the associated destinations.
+# 
+#    The immediate next-hop address is determined by performing a
+#    recursive route lookup operation for the IP address in the NEXT_HOP
+#    attribute, using the contents of the Routing Table, selecting one
+#    entry if multiple entries of equal cost exist.  The Routing Table
+#    entry that resolves the IP address in the NEXT_HOP attribute will
+#    always specify the outbound interface.  If the entry specifies an
+#    attached subnet, but does not specify a next-hop address, then the
+#    address in the NEXT_HOP attribute SHOULD be used as the immediate
+#    next-hop address.  If the entry also specifies the next-hop address,
+#    this address SHOULD be used as the immediate next-hop address for
+#    packet forwarding.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The NEXT_HOP is a well-known mandatory attribute that defines the IP
+address of the router that SHOULD be used as the next hop to the
+destinations listed in the UPDATE message.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+1) When sending a message to an internal peer, if the route is not
+locally originated, the BGP speaker SHOULD NOT modify the
+NEXT_HOP attribute unless it has been explicitly configured to
+announce its own IP address as the NEXT_HOP.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+locally-originated route to an internal peer, the BGP speaker
+SHOULD use the interface address of the router through which
+the announced network is reachable for the speaker as the
+NEXT_HOP.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the route is directly connected to the speaker,
+or if the interface address of the router through which the
+announced network is reachable for the speaker is the internal
+peer's address, then the BGP speaker SHOULD use its own IP
+address for the NEXT_HOP attribute (the address of the
+interface that is used to reach the peer).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+- Otherwise, if the external peer to which the route is being
+advertised shares a common subnet with one of the interfaces
+of the announcing BGP speaker, the speaker MAY use the IP
+address associated with such an interface in the NEXT_HOP
+attribute.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+- By default (if none of the above conditions apply), the BGP
+speaker SHOULD use the IP address of the interface that the
+speaker uses to establish the BGP connection to peer X in the
+NEXT_HOP attribute.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+- The speaker MAY be configured to propagate the NEXT_HOP
+attribute.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+- By default, the BGP speaker SHOULD use the IP address of the
+interface that the speaker uses in the NEXT_HOP attribute to
+establish the BGP connection to peer X.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A BGP speaker MUST be able to support
+the disabling advertisement of third party NEXT_HOP attributes in
+order to handle imperfectly bridged media.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A route originated by a BGP speaker SHALL NOT be advertised to a peer
+using an address of that peer as NEXT_HOP.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A BGP speaker SHALL NOT
+install a route with itself as the next hop.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The NEXT_HOP attribute is used by the BGP speaker to determine the
+actual outbound interface and immediate next-hop address that SHOULD
+be used to forward transit packets to the associated destinations.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the entry specifies an
+attached subnet, but does not specify a next-hop address, then the
+address in the NEXT_HOP attribute SHOULD be used as the immediate
+next-hop address.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the entry also specifies the next-hop address,
+this address SHOULD be used as the immediate next-hop address for
+packet forwarding.
+'''
+

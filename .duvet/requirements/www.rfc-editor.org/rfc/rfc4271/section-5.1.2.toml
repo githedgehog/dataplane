@@ -1,0 +1,85 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-5.1.2"
+
+# AS_PATH
+#
+#    AS_PATH is a well-known mandatory attribute.  This attribute
+#    identifies the autonomous systems through which routing information
+#    carried in this UPDATE message has passed.  The components of this
+#    list can be AS_SETs or AS_SEQUENCEs.
+# 
+#    When a BGP speaker propagates a route it learned from another BGP
+#    speaker's UPDATE message, it modifies the route's AS_PATH attribute
+#    based on the location of the BGP speaker to which the route will be
+#    sent:
+# 
+#       a) When a given BGP speaker advertises the route to an internal
+#          peer, the advertising speaker SHALL NOT modify the AS_PATH
+#          attribute associated with the route.
+# 
+#       b) When a given BGP speaker advertises the route to an external
+#          peer, the advertising speaker updates the AS_PATH attribute as
+#          follows:
+# 
+#          1) if the first path segment of the AS_PATH is of type
+#             AS_SEQUENCE, the local system prepends its own AS number as
+#             the last element of the sequence (put it in the leftmost
+#             position with respect to the position of octets in the
+#             protocol message).  If the act of prepending will cause an
+#             overflow in the AS_PATH segment (i.e., more than 255 ASes),
+#             it SHOULD prepend a new segment of type AS_SEQUENCE and
+#             prepend its own AS number to this new segment.
+# 
+#          2) if the first path segment of the AS_PATH is of type AS_SET,
+#             the local system prepends a new path segment of type
+#             AS_SEQUENCE to the AS_PATH, including its own AS number in
+#             that segment.
+# 
+#          3) if the AS_PATH is empty, the local system creates a path
+#             segment of type AS_SEQUENCE, places its own AS into that
+#             segment, and places that segment into the AS_PATH.
+# 
+#    When a BGP speaker originates a route then:
+# 
+#       a) the originating speaker includes its own AS number in a path
+#          segment, of type AS_SEQUENCE, in the AS_PATH attribute of all
+#          UPDATE messages sent to an external peer.  In this case, the AS
+#          number of the originating speaker's autonomous system will be
+#          the only entry the path segment, and this path segment will be
+#          the only segment in the AS_PATH attribute.
+# 
+#       b) the originating speaker includes an empty AS_PATH attribute in
+#          all UPDATE messages sent to internal peers.  (An empty AS_PATH
+#          attribute is one whose length field contains the value zero).
+# 
+#    Whenever the modification of the AS_PATH attribute calls for
+#    including or prepending the AS number of the local system, the local
+#    system MAY include/prepend more than one instance of its own AS
+#    number in the AS_PATH attribute.  This is controlled via local
+#    configuration.
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) When a given BGP speaker advertises the route to an internal
+peer, the advertising speaker SHALL NOT modify the AS_PATH
+attribute associated with the route.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the act of prepending will cause an
+overflow in the AS_PATH segment (i.e., more than 255 ASes),
+it SHOULD prepend a new segment of type AS_SEQUENCE and
+prepend its own AS number to this new segment.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Whenever the modification of the AS_PATH attribute calls for
+including or prepending the AS number of the local system, the local
+system MAY include/prepend more than one instance of its own AS
+number in the AS_PATH attribute.
+'''
+

@@ -1,0 +1,104 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-8.1.4"
+
+# TCP Connection-Based Events
+#
+#       Event 14: TcpConnection_Valid
+# 
+#          Definition: Event indicating the local system reception of a
+#                      TCP connection request with a valid source IP
+#                      address, TCP port, destination IP address, and TCP
+#                      Port.  The definition of invalid source and invalid
+#                      destination IP address is determined by the
+#                      implementation.
+# 
+#                      BGP's destination port SHOULD be port 179, as
+#                      defined by IANA.
+# 
+#                      TCP connection request is denoted by the local
+#                      system receiving a TCP SYN.
+# 
+#          Status:     Optional
+# 
+#          Optional
+#          Attribute
+#          Status:     1) The TrackTcpState attribute SHOULD be set to
+#                         TRUE if this event occurs.
+# 
+#       Event 15: Tcp_CR_Invalid
+# 
+#          Definition: Event indicating the local system reception of a
+#                      TCP connection request with either an invalid
+#                      source address or port number, or an invalid
+#                      destination address or port number.
+# 
+#                      BGP destination port number SHOULD be 179, as
+#                      defined by IANA.
+# 
+#                      A TCP connection request occurs when the local
+#                      system receives a TCP SYN.
+# 
+#          Status:     Optional
+# 
+#          Optional
+#          Attribute
+#          Status:     1) The TrackTcpState attribute should be set to
+#                         TRUE if this event occurs.
+# 
+#       Event 16: Tcp_CR_Acked
+# 
+#          Definition: Event indicating the local system's request to
+#                      establish a TCP connection to the remote peer.
+# 
+#                      The local system's TCP connection sent a TCP SYN,
+#                      received a TCP SYN/ACK message, and sent a TCP ACK.
+# 
+#          Status:     Mandatory
+# 
+#       Event 17: TcpConnectionConfirmed
+# 
+#          Definition: Event indicating that the local system has received
+#                      a confirmation that the TCP connection has been
+#                      established by the remote site.
+# 
+#                      The remote peer's TCP engine sent a TCP SYN.  The
+#                      local peer's TCP engine sent a SYN, ACK message and
+#                      now has received a final ACK.
+# 
+#          Status:     Mandatory
+# 
+#       Event 18: TcpConnectionFails
+# 
+#          Definition: Event indicating that the local system has received
+#                      a TCP connection failure notice.
+# 
+#                      The remote BGP peer's TCP machine could have sent a
+#                      FIN.  The local peer would respond with a FIN-ACK.
+#                      Another possibility is that the local peer
+#                      indicated a timeout in the TCP connection and
+#                      downed the connection.
+# 
+#          Status:     Mandatory
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+BGP's destination port SHOULD be port 179, as
+defined by IANA.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Optional
+Attribute
+Status:     1) The TrackTcpState attribute SHOULD be set to
+TRUE if this event occurs.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+BGP destination port number SHOULD be 179, as
+defined by IANA.
+'''
+

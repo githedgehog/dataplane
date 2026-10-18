@@ -1,0 +1,21 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-6.4"
+
+# NOTIFICATION Message Error Handling
+#
+#    If a peer sends a NOTIFICATION message, and the receiver of the
+#    message detects an error in that message, the receiver cannot use a
+#    NOTIFICATION message to report this error back to the peer.  Any such
+#    error (e.g., an unrecognized Error Code or Error Subcode) SHOULD be
+#    noticed, logged locally, and brought to the attention of the
+#    administration of the peer.  The means to do this, however, lies
+#    outside the scope of this document.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Any such
+error (e.g., an unrecognized Error Code or Error Subcode) SHOULD be
+noticed, logged locally, and brought to the attention of the
+administration of the peer.
+'''
+

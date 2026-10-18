@@ -125,10 +125,11 @@ pub fn run(
                 wires[agent.wire()].send_frame(&frame);
             }
         }
+        // Only what the streams hear counts towards their quiet: agents speak on regardless.
         let mut heard = 0;
         for (index, wire) in wires.iter_mut().enumerate() {
             let agents = &mut *load.agents;
-            heard += wire.receive(&mut |frame| {
+            wire.receive(&mut |frame| {
                 let now = clock.now_ns();
                 let claimed = agents
                     .iter_mut()
@@ -136,6 +137,7 @@ pub fn run(
                     .any(|agent| agent.receive(frame, now));
                 if !claimed {
                     ledgers.receive(frame, now);
+                    heard += 1;
                 }
             });
         }

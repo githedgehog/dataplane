@@ -1,0 +1,221 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-9.2.2.2"
+
+# Aggregating Routing Information
+#
+#    Aggregation is the process of combining the characteristics of
+#    several different routes in such a way that a single route can be
+#    advertised.  Aggregation can occur as part of the Decision Process to
+#    reduce the amount of routing information that will be placed in the
+#    Adj-RIBs-Out.
+# 
+#    Aggregation reduces the amount of information that a BGP speaker must
+#    store and exchange with other BGP speakers.  Routes can be aggregated
+#    by applying the following procedure, separately, to path attributes
+#    of the same type and to the Network Layer Reachability Information.
+# 
+#    Routes that have different MULTI_EXIT_DISC attributes SHALL NOT be
+#    aggregated.
+# 
+#    If the aggregated route has an AS_SET as the first element in its
+#    AS_PATH attribute, then the router that originates the route SHOULD
+#    NOT advertise the MULTI_EXIT_DISC attribute with this route.
+# 
+#    Path attributes that have different type codes cannot be aggregated
+#    together.  Path attributes of the same type code may be aggregated,
+#    according to the following rules:
+# 
+#       NEXT_HOP:
+#          When aggregating routes that have different NEXT_HOP
+#          attributes, the NEXT_HOP attribute of the aggregated route
+#          SHALL identify an interface on the BGP speaker that performs
+#          the aggregation.
+# 
+#       ORIGIN attribute:
+#          If at least one route among routes that are aggregated has
+#          ORIGIN with the value INCOMPLETE, then the aggregated route
+#          MUST have the ORIGIN attribute with the value INCOMPLETE.
+#          Otherwise, if at least one route among routes that are
+#          aggregated has ORIGIN with the value EGP, then the aggregated
+#          route MUST have the ORIGIN attribute with the value EGP.  In
+#          all other cases,, the value of the ORIGIN attribute of the
+#          aggregated route is IGP.
+# 
+#       AS_PATH attribute:
+#          If routes to be aggregated have identical AS_PATH attributes,
+#          then the aggregated route has the same AS_PATH attribute as
+#          each individual route.
+# 
+#          For the purpose of aggregating AS_PATH attributes, we model
+#          each AS within the AS_PATH attribute as a tuple <type, value>,
+#          where "type" identifies a type of the path segment the AS
+# 
+#          belongs to (e.g., AS_SEQUENCE, AS_SET), and "value" identifies
+#          the AS number.  If the routes to be aggregated have different
+#          AS_PATH attributes, then the aggregated AS_PATH attribute SHALL
+#          satisfy all of the following conditions:
+# 
+#            - all tuples of type AS_SEQUENCE in the aggregated AS_PATH
+#              SHALL appear in all of the AS_PATHs in the initial set of
+#              routes to be aggregated.
+# 
+#            - all tuples of type AS_SET in the aggregated AS_PATH SHALL
+#              appear in at least one of the AS_PATHs in the initial set
+#              (they may appear as either AS_SET or AS_SEQUENCE types).
+# 
+#            - for any tuple X of type AS_SEQUENCE in the aggregated
+#              AS_PATH, which precedes tuple Y in the aggregated AS_PATH,
+#              X precedes Y in each AS_PATH in the initial set, which
+#              contains Y, regardless of the type of Y.
+# 
+#            - No tuple of type AS_SET with the same value SHALL appear
+#              more than once in the aggregated AS_PATH.
+# 
+#            - Multiple tuples of type AS_SEQUENCE with the same value may
+#              appear in the aggregated AS_PATH only when adjacent to
+#              another tuple of the same type and value.
+# 
+#          An implementation may choose any algorithm that conforms to
+#          these rules.  At a minimum, a conformant implementation SHALL
+#          be able to perform the following algorithm that meets all of
+#          the above conditions:
+# 
+#            - determine the longest leading sequence of tuples (as
+#              defined above) common to all the AS_PATH attributes of the
+#              routes to be aggregated.  Make this sequence the leading
+#              sequence of the aggregated AS_PATH attribute.
+# 
+#            - set the type of the rest of the tuples from the AS_PATH
+#              attributes of the routes to be aggregated to AS_SET, and
+#              append them to the aggregated AS_PATH attribute.
+# 
+#            - if the aggregated AS_PATH has more than one tuple with the
+#              same value (regardless of tuple's type), eliminate all but
+#              one such tuple by deleting tuples of the type AS_SET from
+#              the aggregated AS_PATH attribute.
+# 
+#            - for each pair of adjacent tuples in the aggregated AS_PATH,
+#              if both tuples have the same type, merge them together, as
+#              long as doing so will not cause a segment with a length
+#              greater than 255 to be generated.
+# 
+#          Appendix F, Section F.6 presents another algorithm that
+#          satisfies the conditions and allows for more complex policy
+#          configurations.
+# 
+#       ATOMIC_AGGREGATE:
+#          If at least one of the routes to be aggregated has
+#          ATOMIC_AGGREGATE path attribute, then the aggregated route
+#          SHALL have this attribute as well.
+# 
+#       AGGREGATOR:
+#          Any AGGREGATOR attributes from the routes to be aggregated MUST
+#          NOT be included in the aggregated route.  The BGP speaker
+#          performing the route aggregation MAY attach a new AGGREGATOR
+#          attribute (see Section 5.1.7).
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routes that have different MULTI_EXIT_DISC attributes SHALL NOT be
+aggregated.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the aggregated route has an AS_SET as the first element in its
+AS_PATH attribute, then the router that originates the route SHOULD
+NOT advertise the MULTI_EXIT_DISC attribute with this route.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+NEXT_HOP:
+When aggregating routes that have different NEXT_HOP
+attributes, the NEXT_HOP attribute of the aggregated route
+SHALL identify an interface on the BGP speaker that performs
+the aggregation.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+ORIGIN attribute:
+If at least one route among routes that are aggregated has
+ORIGIN with the value INCOMPLETE, then the aggregated route
+MUST have the ORIGIN attribute with the value INCOMPLETE.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Otherwise, if at least one route among routes that are
+aggregated has ORIGIN with the value EGP, then the aggregated
+route MUST have the ORIGIN attribute with the value EGP.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the routes to be aggregated have different
+AS_PATH attributes, then the aggregated AS_PATH attribute SHALL
+satisfy all of the following conditions:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+- all tuples of type AS_SEQUENCE in the aggregated AS_PATH
+SHALL appear in all of the AS_PATHs in the initial set of
+routes to be aggregated.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+- all tuples of type AS_SET in the aggregated AS_PATH SHALL
+appear in at least one of the AS_PATHs in the initial set
+(they may appear as either AS_SET or AS_SEQUENCE types).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+- No tuple of type AS_SET with the same value SHALL appear
+more than once in the aggregated AS_PATH.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+At a minimum, a conformant implementation SHALL
+be able to perform the following algorithm that meets all of
+the above conditions:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+ATOMIC_AGGREGATE:
+If at least one of the routes to be aggregated has
+ATOMIC_AGGREGATE path attribute, then the aggregated route
+SHALL have this attribute as well.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+AGGREGATOR:
+Any AGGREGATOR attributes from the routes to be aggregated MUST
+NOT be included in the aggregated route.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+The BGP speaker
+performing the route aggregation MAY attach a new AGGREGATOR
+attribute (see Section 5.1.7).
+'''
+

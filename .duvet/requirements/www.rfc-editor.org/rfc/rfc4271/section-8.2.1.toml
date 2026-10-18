@@ -1,0 +1,53 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-8.2.1"
+
+# FSM Definition
+#
+#    BGP MUST maintain a separate FSM for each configured peer.  Each BGP
+#    peer paired in a potential connection will attempt to connect to the
+#    other, unless configured to remain in the idle state, or configured
+#    to remain passive.  For the purpose of this discussion, the active or
+#    connecting side of the TCP connection (the side of a TCP connection
+#    sending the first TCP SYN packet) is called outgoing.  The passive or
+#    listening side (the sender of the first SYN/ACK) is called an
+#    incoming connection.  (See Section 8.2.1.1 for information on the
+#    terms active and passive used below.)
+# 
+#    A BGP implementation MUST connect to and listen on TCP port 179 for
+#    incoming connections in addition to trying to connect to peers.  For
+#    each incoming connection, a state machine MUST be instantiated.
+#    There exists a period in which the identity of the peer on the other
+#    end of an incoming connection is known, but the BGP identifier is not
+#    known.  During this time, both an incoming and outgoing connection
+#    may exist for the same configured peering.  This is referred to as a
+#    connection collision (see Section 6.8).
+# 
+#    A BGP implementation will have, at most, one FSM for each configured
+#    peering, plus one FSM for each incoming TCP connection for which the
+#    peer has not yet been identified.  Each FSM corresponds to exactly
+#    one TCP connection.
+# 
+#    There may be more than one connection between a pair of peers if the
+#    connections are configured to use a different pair of IP addresses.
+#    This is referred to as multiple "configured peerings" to the same
+#    peer.
+
+[[spec]]
+level = "MUST"
+quote = '''
+BGP MUST maintain a separate FSM for each configured peer.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A BGP implementation MUST connect to and listen on TCP port 179 for
+incoming connections in addition to trying to connect to peers.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+For
+each incoming connection, a state machine MUST be instantiated.
+'''
+

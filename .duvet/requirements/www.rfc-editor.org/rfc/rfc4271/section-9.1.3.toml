@@ -1,0 +1,60 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-9.1.3"
+
+# Phase 3: Route Dissemination
+#
+#    The Phase 3 decision function is invoked on completion of Phase 2, or
+#    when any of the following events occur:
+# 
+#       a) when routes in the Loc-RIB to local destinations have changed
+# 
+#       b) when locally generated routes learned by means outside of BGP
+#          have changed
+# 
+#       c) when a new BGP speaker connection has been established
+# 
+#    The Phase 3 function is a separate process that completes when it has
+#    no further work to do.  The Phase 3 Routing Decision function is
+#    blocked from running while the Phase 2 decision function is in
+#    process.
+# 
+#    All routes in the Loc-RIB are processed into Adj-RIBs-Out according
+#    to configured policy.  This policy MAY exclude a route in the Loc-RIB
+#    from being installed in a particular Adj-RIB-Out.  A route SHALL NOT
+# 
+#    be installed in the Adj-Rib-Out unless the destination, and NEXT_HOP
+#    described by this route, may be forwarded appropriately by the
+#    Routing Table.  If a route in Loc-RIB is excluded from a particular
+#    Adj-RIB-Out, the previously advertised route in that Adj-RIB-Out MUST
+#    be withdrawn from service by means of an UPDATE message (see 9.2).
+# 
+#    Route aggregation and information reduction techniques (see Section
+#    9.2.2.1) may optionally be applied.
+# 
+#    Any local policy that results in routes being added to an Adj-RIB-Out
+#    without also being added to the local BGP speaker's forwarding table
+#    is outside the scope of this document.
+# 
+#    When the updating of the Adj-RIBs-Out and the Routing Table is
+#    complete, the local BGP speaker runs the Update-Send process of 9.2.
+
+[[spec]]
+level = "MAY"
+quote = '''
+This policy MAY exclude a route in the Loc-RIB
+from being installed in a particular Adj-RIB-Out.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A route SHALL NOT
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a route in Loc-RIB is excluded from a particular
+Adj-RIB-Out, the previously advertised route in that Adj-RIB-Out MUST
+be withdrawn from service by means of an UPDATE message (see 9.2).
+'''
+

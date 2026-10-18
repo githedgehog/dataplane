@@ -1,0 +1,80 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-6.8"
+
+# BGP Connection Collision Detection
+#
+#    If a pair of BGP speakers try to establish a BGP connection with each
+#    other simultaneously, then two parallel connections well be formed.
+#    If the source IP address used by one of these connections is the same
+#    as the destination IP address used by the other, and the destination
+#    IP address used by the first connection is the same as the source IP
+#    address used by the other, connection collision has occurred.  In the
+#    event of connection collision, one of the connections MUST be closed.
+# 
+#    Based on the value of the BGP Identifier, a convention is established
+#    for detecting which BGP connection is to be preserved when a
+#    collision occurs.  The convention is to compare the BGP Identifiers
+#    of the peers involved in the collision and to retain only the
+#    connection initiated by the BGP speaker with the higher-valued BGP
+#    Identifier.
+# 
+#    Upon receipt of an OPEN message, the local system MUST examine all of
+#    its connections that are in the OpenConfirm state.  A BGP speaker MAY
+#    also examine connections in an OpenSent state if it knows the BGP
+#    Identifier of the peer by means outside of the protocol.  If, among
+#    these connections, there is a connection to a remote BGP speaker
+# 
+#    whose BGP Identifier equals the one in the OPEN message, and this
+#    connection collides with the connection over which the OPEN message
+#    is received, then the local system performs the following collision
+#    resolution procedure:
+# 
+#       1) The BGP Identifier of the local system is compared to the BGP
+#          Identifier of the remote system (as specified in the OPEN
+#          message).  Comparing BGP Identifiers is done by converting them
+#          to host byte order and treating them as 4-octet unsigned
+#          integers.
+# 
+#       2) If the value of the local BGP Identifier is less than the
+#          remote one, the local system closes the BGP connection that
+#          already exists (the one that is already in the OpenConfirm
+#          state), and accepts the BGP connection initiated by the remote
+#          system.
+# 
+#       3) Otherwise, the local system closes the newly created BGP
+#          connection (the one associated with the newly received OPEN
+#          message), and continues to use the existing one (the one that
+#          is already in the OpenConfirm state).
+# 
+#    Unless allowed via configuration, a connection collision with an
+#    existing BGP connection that is in the Established state causes
+#    closing of the newly created connection.
+# 
+#    Note that a connection collision cannot be detected with connections
+#    that are in Idle, Connect, or Active states.
+# 
+#    Closing the BGP connection (that results from the collision
+#    resolution procedure) is accomplished by sending the NOTIFICATION
+#    message with the Error Code Cease.
+
+[[spec]]
+level = "MUST"
+quote = '''
+In the
+event of connection collision, one of the connections MUST be closed.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Upon receipt of an OPEN message, the local system MUST examine all of
+its connections that are in the OpenConfirm state.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A BGP speaker MAY
+also examine connections in an OpenSent state if it knows the BGP
+Identifier of the peer by means outside of the protocol.
+'''
+

@@ -1,0 +1,60 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-3.2"
+
+# Routing Information Base
+#
+#    The Routing Information Base (RIB) within a BGP speaker consists of
+#    three distinct parts:
+# 
+#       a) Adj-RIBs-In: The Adj-RIBs-In stores routing information learned
+#          from inbound UPDATE messages that were received from other BGP
+#          speakers.  Their contents represent routes that are available
+#          as input to the Decision Process.
+# 
+#       b) Loc-RIB: The Loc-RIB contains the local routing information the
+#          BGP speaker selected by applying its local policies to the
+#          routing information contained in its Adj-RIBs-In.  These are
+#          the routes that will be used by the local BGP speaker.  The
+#          next hop for each of these routes MUST be resolvable via the
+#          local BGP speaker's Routing Table.
+# 
+#       c) Adj-RIBs-Out: The Adj-RIBs-Out stores information the local BGP
+#          speaker selected for advertisement to its peers.  The routing
+#          information stored in the Adj-RIBs-Out will be carried in the
+#          local BGP speaker's UPDATE messages and advertised to its
+#          peers.
+# 
+#    In summary, the Adj-RIBs-In contains unprocessed routing information
+#    that has been advertised to the local BGP speaker by its peers; the
+#    Loc-RIB contains the routes that have been selected by the local BGP
+# 
+#    speaker's Decision Process; and the Adj-RIBs-Out organizes the routes
+#    for advertisement to specific peers (by means of the local speaker's
+#    UPDATE messages).
+# 
+#    Although the conceptual model distinguishes between Adj-RIBs-In,
+#    Loc-RIB, and Adj-RIBs-Out, this neither implies nor requires that an
+#    implementation must maintain three separate copies of the routing
+#    information.  The choice of implementation (for example, 3 copies of
+#    the information vs 1 copy with pointers) is not constrained by the
+#    protocol.
+# 
+#    Routing information that the BGP speaker uses to forward packets (or
+#    to construct the forwarding table used for packet forwarding) is
+#    maintained in the Routing Table.  The Routing Table accumulates
+#    routes to directly connected networks, static routes, routes learned
+#    from the IGP protocols, and routes learned from BGP.  Whether a
+#    specific BGP route should be installed in the Routing Table, and
+#    whether a BGP route should override a route to the same destination
+#    installed by another source, is a local policy decision, and is not
+#    specified in this document.  In addition to actual packet forwarding,
+#    the Routing Table is used for resolution of the next-hop addresses
+#    specified in BGP updates (see Section 5.1.3).
+
+[[spec]]
+level = "MUST"
+quote = '''
+The
+next hop for each of these routes MUST be resolvable via the
+local BGP speaker's Routing Table.
+'''
+

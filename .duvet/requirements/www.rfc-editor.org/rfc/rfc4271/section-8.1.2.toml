@@ -1,0 +1,283 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-8.1.2"
+
+# Administrative Events
+#
+#    An administrative event is an event in which the operator interface
+#    and BGP Policy engine signal the BGP-finite state machine to start or
+#    stop the BGP state machine.  The basic start and stop indications are
+#    augmented by optional connection attributes that signal a certain
+#    type of start or stop mechanism to the BGP FSM.  An example of this
+#    combination is Event 5, AutomaticStart_with_PassiveTcpEstablishment.
+#    With this event, the BGP implementation signals to the BGP FSM that
+#    the implementation is using an Automatic Start with the option to use
+#    a Passive TCP Establishment.  The Passive TCP establishment signals
+#    that this BGP FSM will wait for the remote side to start the TCP
+#    establishment.
+# 
+#    Note that only Event 1 (ManualStart) and Event 2 (ManualStop) are
+#    mandatory administrative events.  All other administrative events are
+#    optional (Events 3-8).  Each event below has a name, definition,
+#    status (mandatory or optional), and the optional session attributes
+#    that SHOULD be set at each stage.  When generating Event 1 through
+#    Event 8 for the BGP FSM, the conditions specified in the "Optional
+#    Attribute Status" section are verified.  If any of these conditions
+#    are not satisfied, then the local system should log an FSM error.
+# 
+#    The settings of optional session attributes may be implicit in some
+#    implementations, and therefore may not be set explicitly by an
+#    external operator action.  Section 8.2.1.5 describes these implicit
+#    settings of the optional session attributes.  The administrative
+#    states described below may also be implicit in some implementations
+#    and not directly configurable by an external operator.
+# 
+#       Event 1: ManualStart
+# 
+#          Definition: Local system administrator manually starts the peer
+#                      connection.
+# 
+#          Status:     Mandatory
+# 
+#          Optional
+#          Attribute
+#          Status:     The PassiveTcpEstablishment attribute SHOULD be set
+#                      to FALSE.
+# 
+#       Event 2: ManualStop
+# 
+#          Definition: Local system administrator manually stops the peer
+#                      connection.
+# 
+#          Status:     Mandatory
+# 
+#          Optional
+#          Attribute
+#          Status:     No interaction with any optional attributes.
+# 
+#       Event 3: AutomaticStart
+# 
+#          Definition: Local system automatically starts the BGP
+#                      connection.
+# 
+#          Status:     Optional, depending on local system
+# 
+#          Optional
+#          Attribute
+#          Status:     1) The AllowAutomaticStart attribute SHOULD be set
+#                         to TRUE if this event occurs.
+#                      2) If the PassiveTcpEstablishment optional session
+#                         attribute is supported, it SHOULD be set to
+#                         FALSE.
+#                      3) If the DampPeerOscillations is supported, it
+#                         SHOULD be set to FALSE when this event occurs.
+# 
+#       Event 4: ManualStart_with_PassiveTcpEstablishment
+# 
+#          Definition: Local system administrator manually starts the peer
+#                      connection, but has PassiveTcpEstablishment
+#                      enabled.  The PassiveTcpEstablishment optional
+#                      attribute indicates that the peer will listen prior
+#                      to establishing the connection.
+# 
+#          Status:     Optional, depending on local system
+# 
+#          Optional
+#          Attribute
+#          Status:     1) The PassiveTcpEstablishment attribute SHOULD be
+#                         set to TRUE if this event occurs.
+#                      2) The DampPeerOscillations attribute SHOULD be set
+#                         to FALSE when this event occurs.
+# 
+#       Event 5: AutomaticStart_with_PassiveTcpEstablishment
+# 
+#          Definition: Local system automatically starts the BGP
+#                      connection with the PassiveTcpEstablishment
+#                      enabled.  The PassiveTcpEstablishment optional
+#                      attribute indicates that the peer will listen prior
+#                      to establishing a connection.
+# 
+#          Status:     Optional, depending on local system
+# 
+#          Optional
+#          Attribute
+#          Status:     1) The AllowAutomaticStart attribute SHOULD be set
+#                         to TRUE.
+#                      2) The PassiveTcpEstablishment attribute SHOULD be
+#                         set to TRUE.
+#                      3) If the DampPeerOscillations attribute is
+#                         supported, the DampPeerOscillations SHOULD be
+#                         set to FALSE.
+# 
+#       Event 6: AutomaticStart_with_DampPeerOscillations
+# 
+#          Definition: Local system automatically starts the BGP peer
+#                      connection with peer oscillation damping enabled.
+#                      The exact method of damping persistent peer
+#                      oscillations is determined by the implementation
+#                      and is outside the scope of this document.
+# 
+#          Status:     Optional, depending on local system.
+# 
+#          Optional
+#          Attribute
+#          Status:     1) The AllowAutomaticStart attribute SHOULD be set
+#                         to TRUE.
+#                      2) The DampPeerOscillations attribute SHOULD be set
+#                         to TRUE.
+#                      3) The PassiveTcpEstablishment attribute SHOULD be
+#                         set to FALSE.
+# 
+#       Event 7: AutomaticStart_with_DampPeerOscillations_and_
+#       PassiveTcpEstablishment
+# 
+#          Definition: Local system automatically starts the BGP peer
+#                      connection with peer oscillation damping enabled
+#                      and PassiveTcpEstablishment enabled.  The exact
+#                      method of damping persistent peer oscillations is
+#                      determined by the implementation and is outside the
+#                      scope of this document.
+# 
+#          Status:     Optional, depending on local system
+# 
+#          Optional
+#          Attributes
+#          Status:     1) The AllowAutomaticStart attribute SHOULD be set
+#                         to TRUE.
+#                      2) The DampPeerOscillations attribute SHOULD be set
+#                         to TRUE.
+#                      3) The PassiveTcpEstablishment attribute SHOULD be
+#                         set to TRUE.
+# 
+#       Event 8: AutomaticStop
+# 
+#          Definition: Local system automatically stops the BGP
+#                      connection.
+# 
+#                      An example of an automatic stop event is exceeding
+#                      the number of prefixes for a given peer and the
+#                      local system automatically disconnecting the peer.
+# 
+#          Status:     Optional, depending on local system
+# 
+#          Optional
+#          Attribute
+#          Status:     1) The AllowAutomaticStop attribute SHOULD be TRUE.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Each event below has a name, definition,
+status (mandatory or optional), and the optional session attributes
+that SHOULD be set at each stage.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Optional
+Attribute
+Status:     The PassiveTcpEstablishment attribute SHOULD be set
+to FALSE.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Optional
+Attribute
+Status:     1) The AllowAutomaticStart attribute SHOULD be set
+to TRUE if this event occurs.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+2) If the PassiveTcpEstablishment optional session
+attribute is supported, it SHOULD be set to
+FALSE.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+3) If the DampPeerOscillations is supported, it
+SHOULD be set to FALSE when this event occurs.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Optional
+Attribute
+Status:     1) The PassiveTcpEstablishment attribute SHOULD be
+set to TRUE if this event occurs.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+2) The DampPeerOscillations attribute SHOULD be set
+to FALSE when this event occurs.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Optional
+Attribute
+Status:     1) The AllowAutomaticStart attribute SHOULD be set
+to TRUE.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+2) The PassiveTcpEstablishment attribute SHOULD be
+set to TRUE.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+3) If the DampPeerOscillations attribute is
+supported, the DampPeerOscillations SHOULD be
+set to FALSE.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+2) The DampPeerOscillations attribute SHOULD be set
+to TRUE.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+3) The PassiveTcpEstablishment attribute SHOULD be
+set to FALSE.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Optional
+Attributes
+Status:     1) The AllowAutomaticStart attribute SHOULD be set
+to TRUE.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+3) The PassiveTcpEstablishment attribute SHOULD be
+set to TRUE.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Optional
+Attribute
+Status:     1) The AllowAutomaticStop attribute SHOULD be TRUE.
+'''
+

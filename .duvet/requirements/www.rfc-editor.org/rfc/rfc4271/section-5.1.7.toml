@@ -1,0 +1,32 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-5.1.7"
+
+# AGGREGATOR
+#
+#    AGGREGATOR is an optional transitive attribute, which MAY be included
+#    in updates that are formed by aggregation (see Section 9.2.2.2).  A
+#    BGP speaker that performs route aggregation MAY add the AGGREGATOR
+#    attribute, which SHALL contain its own AS number and IP address.  The
+#    IP address SHOULD be the same as the BGP Identifier of the speaker.
+
+[[spec]]
+level = "MAY"
+quote = '''
+AGGREGATOR is an optional transitive attribute, which MAY be included
+in updates that are formed by aggregation (see Section 9.2.2.2).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A
+BGP speaker that performs route aggregation MAY add the AGGREGATOR
+attribute, which SHALL contain its own AS number and IP address.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The
+IP address SHOULD be the same as the BGP Identifier of the speaker.
+'''
+

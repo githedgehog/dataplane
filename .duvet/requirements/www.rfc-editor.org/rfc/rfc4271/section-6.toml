@@ -1,0 +1,34 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-6"
+
+# BGP Error Handling.
+#
+#    This section describes actions to be taken when errors are detected
+#    while processing BGP messages.
+# 
+#    When any of the conditions described here are detected, a
+#    NOTIFICATION message, with the indicated Error Code, Error Subcode,
+#    and Data fields, is sent, and the BGP connection is closed (unless it
+#    is explicitly stated that no NOTIFICATION message is to be sent and
+#    the BGP connection is not to be closed).  If no Error Subcode is
+#    specified, then a zero MUST be used.
+# 
+#    The phrase "the BGP connection is closed" means the TCP connection
+#    has been closed, the associated Adj-RIB-In has been cleared, and all
+#    resources for that BGP connection have been deallocated.  Entries in
+#    the Loc-RIB associated with the remote peer are marked as invalid.
+#    The local system recalculates its best routes for the destinations of
+#    the routes marked as invalid.  Before the invalid routes are deleted
+#    from the system, it advertises, to its peers, either withdraws for
+#    the routes marked as invalid, or the new best routes before the
+#    invalid routes are deleted from the system.
+# 
+#    Unless specified explicitly, the Data field of the NOTIFICATION
+#    message that is sent to indicate an error is empty.
+
+[[spec]]
+level = "MUST"
+quote = '''
+If no Error Subcode is
+specified, then a zero MUST be used.
+'''
+

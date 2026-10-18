@@ -1,0 +1,66 @@
+target = "https://www.rfc-editor.org/rfc/rfc4271#section-9.1"
+
+# Decision Process
+#
+#    The Decision Process selects routes for subsequent advertisement by
+#    applying the policies in the local Policy Information Base (PIB) to
+#    the routes stored in its Adj-RIBs-In.  The output of the Decision
+#    Process is the set of routes that will be advertised to peers; the
+#    selected routes will be stored in the local speaker's Adj-RIBs-Out,
+#    according to policy.
+# 
+#    The BGP Decision Process described here is conceptual, and does not
+#    have to be implemented precisely as described, as long as the
+#    implementations support the described functionality and they exhibit
+#    the same externally visible behavior.
+# 
+#    The selection process is formalized by defining a function that takes
+#    the attribute of a given route as an argument and returns either (a)
+#    a non-negative integer denoting the degree of preference for the
+#    route, or (b) a value denoting that this route is ineligible to be
+#    installed in Loc-RIB and will be excluded from the next phase of
+#    route selection.
+# 
+#    The function that calculates the degree of preference for a given
+#    route SHALL NOT use any of the following as its inputs: the existence
+#    of other routes, the non-existence of other routes, or the path
+#    attributes of other routes.  Route selection then consists of the
+#    individual application of the degree of preference function to each
+#    feasible route, followed by the choice of the one with the highest
+#    degree of preference.
+# 
+#    The Decision Process operates on routes contained in the Adj-RIBs-In,
+#    and is responsible for:
+# 
+#       - selection of routes to be used locally by the speaker
+# 
+#       - selection of routes to be advertised to other BGP peers
+# 
+#       - route aggregation and route information reduction
+# 
+#    The Decision Process takes place in three distinct phases, each
+#    triggered by a different event:
+# 
+#       a) Phase 1 is responsible for calculating the degree of preference
+#          for each route received from a peer.
+# 
+#       b) Phase 2 is invoked on completion of phase 1.  It is responsible
+#          for choosing the best route out of all those available for each
+#          distinct destination, and for installing each chosen route into
+#          the Loc-RIB.
+# 
+#       c) Phase 3 is invoked after the Loc-RIB has been modified.  It is
+#          responsible for disseminating routes in the Loc-RIB to each
+#          peer, according to the policies contained in the PIB.  Route
+#          aggregation and information reduction can optionally be
+#          performed within this phase.
+
+[[spec]]
+level = "MUST"
+quote = '''
+The function that calculates the degree of preference for a given
+route SHALL NOT use any of the following as its inputs: the existence
+of other routes, the non-existence of other routes, or the path
+attributes of other routes.
+'''
+
