@@ -8,6 +8,7 @@
 //! [`harness::over_cable`].
 
 mod bfd;
+mod bgp;
 mod control;
 mod floods;
 mod flows;
