@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use flowgen::frame::{FrameSpec, Mac as GeneratedMac, Transport, tcp};
 use flowgen::schedule::Schedule;
-use flowgen::sender::{Clock, Stream, WhenFull};
+use flowgen::sender::{Clock, Returns, Stream, WhenFull};
 use flowgen::space::{Addresses, FlowSpace, Order, Ports, SpaceSpec};
 use flowgen_report::{Bound, Sample};
 
@@ -80,6 +80,7 @@ pub(super) fn probes(
         },
         rate_pps: Some(20_000),
         when_full: WhenFull::Retry,
+        returns: Returns::Everything,
     }
 }
 

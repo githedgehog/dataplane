@@ -35,6 +35,21 @@ pub struct Stream {
     /// What becomes of a packet the port has no room for.
     #[serde(default)]
     pub when_full: WhenFull,
+    /// What should come back of what it sends.
+    #[serde(default)]
+    pub returns: Returns,
+}
+
+/// What should come back of what a stream sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Returns {
+    /// Everything: whatever does not is lost.
+    #[default]
+    Everything,
+    /// Nothing: the stream is one the gateway should drop, and whatever comes back escaped it.
+    /// A run waits a quiet period after the stream's last packet for any that would.
+    Nothing,
 }
 
 /// What becomes of a packet the port it is offered to has no room for.

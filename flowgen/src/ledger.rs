@@ -14,6 +14,7 @@ use std::net::Ipv4Addr;
 use flowgen_report::{Evidence, MAX_EVIDENCE, Sample};
 
 use crate::frame::{self, ChecksumState, Received};
+use crate::sender::{Returns, Stream};
 use crate::signature::Signature;
 use crate::space::Tuple;
 
@@ -58,6 +59,8 @@ pub enum Outcome {
 #[derive(Debug, Clone)]
 pub struct Ledger {
     run: u32,
+    /// What should come back.
+    returns: Returns,
     flows: Vec<Flow>,
     sent: u64,
     /// Offered to a full port and dropped there, never sent.
@@ -84,11 +87,18 @@ pub struct Ledger {
 }
 
 impl Ledger {
-    /// An empty account for `flows` flows, of run `run`.
+    /// An empty account for `flows` flows, of run `run`, all of whose packets should come back.
     #[must_use]
     pub fn new(run: u32, flows: usize) -> Ledger {
+        Ledger::expecting(run, flows, Returns::Everything)
+    }
+
+    /// An empty account for `flows` flows, of run `run`, of which `returns` should come back.
+    #[must_use]
+    pub fn expecting(run: u32, flows: usize, returns: Returns) -> Ledger {
         Ledger {
             run,
+            returns,
             flows: vec![Flow::default(); flows],
             sent: 0,
             dropped_at_port: 0,
@@ -230,6 +240,22 @@ impl Ledger {
         self.received
     }
 
+    /// What should come back.
+    #[must_use]
+    pub fn returns(&self) -> Returns {
+        self.returns
+    }
+
+    /// Whether everything that should come back has: everything sent, or, for a stream that
+    /// should have nothing back, anything at all.
+    #[must_use]
+    pub fn back(&self) -> bool {
+        match self.returns {
+            Returns::Everything => self.received >= self.sent,
+            Returns::Nothing => true,
+        }
+    }
+
     /// Packets sent and not (yet) received, flow by flow: lost after the port took them. Packets
     /// the port dropped are counted apart, as `dropped_at_port`.
     #[must_use]
@@ -309,19 +335,37 @@ impl Ledgers {
         Ledgers::default()
     }
 
-    /// Account for stream `name`, sent as run `run` with `flows` flows.
+    /// Account for stream `name`, sent as run `run` with `flows` flows, all of which should come
+    /// back.
     ///
     /// # Panics
     ///
     /// If another stream already uses `name` or `run`: their counters, or their packets, would
     /// be confused.
     pub fn add(&mut self, name: &str, run: u32, flows: usize) {
+        self.push(name, Ledger::new(run, flows));
+    }
+
+    /// Account for `stream`, sent as run `run`.
+    ///
+    /// # Panics
+    ///
+    /// If another stream already uses its name or `run`, or its flows do not fit in memory.
+    pub fn add_stream(&mut self, stream: &Stream, run: u32) {
+        let flows = usize::try_from(stream.schedule.flows())
+            .unwrap_or_else(|_| unreachable!("a stream's flows fit in memory"));
+        self.push(&stream.name, Ledger::expecting(run, flows, stream.returns));
+    }
+
+    fn push(&mut self, name: &str, ledger: Ledger) {
         assert!(
-            self.streams.iter().all(|(n, l)| n != name && l.run != run),
-            "stream {name} (run {run}) would share its name or run with another"
+            self.streams
+                .iter()
+                .all(|(n, l)| n != name && l.run != ledger.run),
+            "stream {name} (run {}) would share its name or run with another",
+            ledger.run
         );
-        self.streams
-            .push((name.to_string(), Ledger::new(run, flows)));
+        self.streams.push((name.to_string(), ledger));
     }
 
     /// Stream `name`'s ledger.
@@ -363,12 +407,19 @@ impl Ledgers {
         }
     }
 
-    /// Whether every stream has had back everything it sent.
+    /// Whether every stream has had back everything it should: see [`Ledger::back`].
     #[must_use]
     pub fn all_back(&self) -> bool {
+        self.streams.iter().all(|(_, l)| l.back())
+    }
+
+    /// Whether any stream should have nothing back, so that a run must wait to be sure nothing
+    /// comes.
+    #[must_use]
+    pub fn awaits_silence(&self) -> bool {
         self.streams
             .iter()
-            .all(|(_, l)| l.total_received() >= l.total_sent())
+            .any(|(_, l)| l.returns == Returns::Nothing)
     }
 
     /// Frames no stream claimed, kept as evidence; at most [`MAX_EVIDENCE`].

@@ -13,7 +13,7 @@ use std::time::Duration;
 use flowgen::frame::{FrameSpec, Transport, Vxlan as GeneratedVxlan};
 use flowgen::ledger::{Ledger, Ledgers};
 use flowgen::schedule::Schedule;
-use flowgen::sender::{Clock, Stream, WhenFull};
+use flowgen::sender::{Clock, Returns, Stream, WhenFull};
 use flowgen::space::{Addresses, FlowSpace, Order, Ports, SpaceSpec};
 use flowgen_report::{Bound, Evidence, Sample};
 use net::buffer::TestBuffer;
@@ -187,6 +187,7 @@ fn local_to_remote(name: &str, schedule: Schedule, dport: u16) -> Stream {
         },
         rate_pps: None,
         when_full: WhenFull::Retry,
+        returns: Returns::Everything,
     }
 }
 

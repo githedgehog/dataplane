@@ -558,8 +558,7 @@ pub(super) fn drive(
     let mut senders: Vec<(usize, Sender)> = (first_run..)
         .zip(streams)
         .map(|(run, (side, stream))| {
-            let flows = usize::try_from(stream.schedule.flows()).expect("the flows fit in memory");
-            ledgers.add(&stream.name, run, flows);
+            ledgers.add_stream(stream, run);
             let wire = match side {
                 Side::Far => FAR,
                 Side::Kernel => KERNEL,

@@ -257,8 +257,7 @@ fn run_case(
     let mut senders: Vec<(usize, Sender)> = (first_run..)
         .zip(&spec.streams)
         .map(|(run, stream)| {
-            let flows = usize::try_from(stream.schedule.flows()).unwrap_or(usize::MAX);
-            ledgers.add(&stream.name, run, flows);
+            ledgers.add_stream(stream, run);
             (0, Sender::new(stream.clone(), run, queues))
         })
         .collect();
