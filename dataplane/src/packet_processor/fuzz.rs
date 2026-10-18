@@ -4,12 +4,9 @@
 #![cfg(test)]
 #![cfg(not(miri))]
 
-use acl_filter::{
-    AclFilter, AclFilterContext, AclFilterContextReaderFactory, AclFilterContextWriter,
-};
+use acl_filter::AclFilter;
 use common::cliprovider::CliDataProvider;
 use concurrency::sync::{Arc, Mutex};
-use config::external::GenId;
 use config::external::overlay::acl::Acl;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{
@@ -17,77 +14,30 @@ use config::external::overlay::vpcpeering::contract::{
 };
 use config::external::overlay::{Overlay, ValidatedOverlay};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
-use flow_filter::{
-    FlowFilter, FlowFilterContext, FlowFilterContextReaderFactory, FlowFilterContextWriter,
-};
+use flow_filter::FlowFilter;
 use lpm::prefix::Prefix;
-use nat::masquerade::{MasqueradeConfig, NatAllocatorReaderFactory, NatAllocatorWriter};
-use nat::portfw::{PortForwarder, PortFwTableReaderFactory, PortFwTableWriter};
-use nat::static_nat::invalidate_stale_static_nat_flows;
-use nat::static_nat::setup::build_nat_configuration;
-use nat::static_nat::{NatTablesReaderFactory, NatTablesWriter};
-use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat, migrate_tracked_flows};
+use nat::portfw::PortForwarder;
+use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::{Mac, SourceMac};
 use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
-use pipeline::{DynPipeline, NetworkFunction, PipelineData};
+use pipeline::{DynPipeline, NetworkFunction};
+use routing::testing::FibGroup;
 use routing::testing::RouterTables;
-use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
-use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
-use routing::{EgressObject, Encapsulation, FibEntry, PktInstruction, Vtep, VxlanEncapsulation};
-use std::cell::{Cell, RefCell};
+use routing::{EgressObject, Encapsulation, FibEntry, PktInstruction, VxlanEncapsulation};
 use std::net::IpAddr;
 use std::time::Duration;
 
-const FIRST_GENID: GenId = 1;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Enact {
-    FlowFilter,
-    Acl,
-    StaticNat,
-    OpenGeneration,
-    Masquerade,
-    PortForward,
-    FlowTracking,
-    PublishGeneration,
-    Everything,
-}
+use super::fixture::{
+    Blueprint, DeclaredPool, Enact, FIRST_GENID, Fleet, LOCAL_VTEP, PEER_MAC, PEER_VTEP,
+    UNDERLAY_VRF, UPLINK, nhop, topology, uplink, vni,
+};
 
 use super::egress::Egress;
 use super::ingress::Ingress;
 use super::ipforward::IpForwarder;
-
-pub(crate) struct Fleet {
-    flow_filter: FlowFilterContextWriter,
-    acl: AclFilterContextWriter,
-    static_nat: RefCell<NatTablesWriter>,
-    portfw: RefCell<PortFwTableWriter>,
-    masquerade: RefCell<NatAllocatorWriter>,
-    genid: Cell<GenId>,
-    randomize: Cell<bool>,
-    blueprint: Blueprint,
-}
-
-pub(crate) struct Blueprint {
-    flow_filter: FlowFilterContextReaderFactory,
-    acl: AclFilterContextReaderFactory,
-    static_nat: NatTablesReaderFactory,
-    portfw: PortFwTableReaderFactory,
-    masquerade: NatAllocatorReaderFactory,
-    pipeline: Arc<PipelineData>,
-    underlay: Option<Underlay>,
-    flow_table: Arc<FlowTable>,
-    declared: Arc<[DeclaredPool]>,
-}
-
-struct Underlay {
-    interfaces: IfTableReaderFactory,
-    fibs: FibTableReaderFactory,
-    adjacencies: AtableReaderFactory,
-}
 
 pub(crate) struct Worker {
     pipeline: DynPipeline<'static, TestBuffer>,
@@ -124,155 +74,6 @@ impl Drop for Fabric {
         for flow in table.snapshot(|_, _| true) {
             table.remove(flow.flowkey());
         }
-    }
-}
-
-impl Fleet {
-    pub(crate) fn lowering(
-        overlay: &ValidatedOverlay,
-        tables: Option<&RouterTables>,
-        flow_table: Arc<FlowTable>,
-    ) -> Self {
-        let flow_filter = FlowFilterContextWriter::new();
-        flow_filter.store(
-            FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
-        );
-
-        let acl = AclFilterContextWriter::new();
-        acl.store(AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"));
-
-        let mut static_nat = NatTablesWriter::new();
-        static_nat.update_nat_tables(
-            build_nat_configuration(overlay.vpc_table())
-                .expect("a validated overlay lowers to nat"),
-        );
-
-        let mut portfw = PortFwTableWriter::new();
-        portfw
-            .update_from_vpc_table(overlay.vpc_table(), &flow_table, FIRST_GENID)
-            .expect("a validated overlay lowers to port forwarding");
-
-        let mut masquerade = NatAllocatorWriter::new();
-        masquerade.update_nat_allocator(
-            MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
-            FIRST_GENID,
-            &flow_table,
-        );
-
-        let blueprint = Blueprint {
-            flow_filter: flow_filter.get_reader_factory(),
-            acl: acl.get_reader_factory(),
-            static_nat: static_nat.get_reader_factory(),
-            portfw: portfw.reader().factory(),
-            masquerade: masquerade.get_reader_factory(),
-            pipeline: Arc::new(PipelineData::new(FIRST_GENID)),
-            underlay: tables.map(|tables| Underlay {
-                interfaces: tables.interface_factory(),
-                fibs: tables.fib_factory(),
-                adjacencies: tables.adjacency_factory(),
-            }),
-            flow_table,
-            declared: declared_pools(overlay),
-        };
-
-        Self {
-            flow_filter,
-            acl,
-            static_nat: RefCell::new(static_nat),
-            portfw: RefCell::new(portfw),
-            masquerade: RefCell::new(masquerade),
-            genid: Cell::new(FIRST_GENID),
-            randomize: Cell::new(false),
-            blueprint,
-        }
-    }
-
-    pub(crate) fn reconfigure(&self, overlay: &ValidatedOverlay) {
-        self.enact(overlay, Enact::Everything);
-    }
-
-    pub(crate) fn enact_with_router_gap(&self, overlay: &ValidatedOverlay, gap: Duration) {
-        for step in [
-            Enact::FlowFilter,
-            Enact::Acl,
-            Enact::StaticNat,
-            Enact::OpenGeneration,
-            Enact::Masquerade,
-            Enact::PortForward,
-            Enact::FlowTracking,
-        ] {
-            self.enact(overlay, step);
-        }
-        std::thread::sleep(gap);
-        self.enact(overlay, Enact::PublishGeneration);
-    }
-
-    pub(crate) fn randomizing(&self, on: bool) -> &Self {
-        self.randomize.set(on);
-        self
-    }
-
-    pub(crate) fn enact(&self, overlay: &ValidatedOverlay, which: Enact) {
-        let doing = |step: Enact| which == Enact::Everything || which == step;
-        if doing(Enact::FlowFilter) {
-            self.flow_filter.store(
-                FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
-            );
-        }
-        if doing(Enact::Acl) {
-            self.acl.store(
-                AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
-            );
-        }
-        if doing(Enact::StaticNat) {
-            self.static_nat.borrow_mut().update_nat_tables(
-                build_nat_configuration(overlay.vpc_table())
-                    .expect("a validated overlay lowers to nat"),
-            );
-        }
-        if doing(Enact::OpenGeneration) {
-            self.genid.set(self.genid.get() + 1);
-            // Match `mgmt`: open the generation before migration and publish it after apply.
-            self.blueprint.pipeline.open_generation(self.genid.get());
-        }
-        if doing(Enact::Masquerade) {
-            self.masquerade.borrow_mut().update_nat_allocator(
-                MasqueradeConfig::new(overlay.vpc_table()).set_randomize(self.randomize.get()),
-                self.genid.get(),
-                &self.blueprint.flow_table,
-            );
-        }
-        if doing(Enact::PortForward) {
-            self.portfw
-                .borrow_mut()
-                .update_from_vpc_table(
-                    overlay.vpc_table(),
-                    &self.blueprint.flow_table,
-                    self.genid.get(),
-                )
-                .expect("a validated overlay lowers to port forwarding");
-        }
-        if doing(Enact::FlowTracking) {
-            let context = self.flow_filter.get_reader().load();
-            let nat_tables_reader = self.static_nat.borrow().get_reader();
-            let nat_tables = nat_tables_reader
-                .enter()
-                .expect("a writer can always read its own tables");
-            migrate_tracked_flows(
-                &self.blueprint.flow_table,
-                &nat_tables,
-                self.genid.get(),
-                |flow| context.keeps_tracked_flow(flow),
-            );
-            invalidate_stale_static_nat_flows(&self.blueprint.flow_table, &nat_tables);
-        }
-        if doing(Enact::PublishGeneration) {
-            self.blueprint.pipeline.set_genid(self.genid.get());
-        }
-    }
-
-    pub(crate) fn blueprint(&self) -> &Blueprint {
-        &self.blueprint
     }
 }
 
@@ -681,67 +482,6 @@ impl Translations {
             ..Self::default()
         }
     }
-}
-
-/// An expose's private range and the public pool allowed to translate it.
-///
-/// Keep them paired so the check rejects translations into another tenant's pool.
-#[cfg(test)]
-pub(crate) struct DeclaredPool {
-    private: Vec<Prefix>,
-    public: Vec<Prefix>,
-    /// Destination VPC. The same private range may use different pools for different peers.
-    towards: Option<VpcDiscriminant>,
-}
-
-#[cfg(test)]
-impl DeclaredPool {
-    /// Whether this expose allows the translation from `private` to `public` towards `towards`.
-    /// If the flow filter has not assigned a destination, check only the address ranges.
-    fn admits(&self, private: IpAddr, public: IpAddr, towards: Option<VpcDiscriminant>) -> bool {
-        (towards.is_none() || self.towards.is_none() || self.towards == towards)
-            && self.private.iter().any(|p| p.covers_addr(&private))
-            && self.public.iter().any(|p| p.covers_addr(&public))
-    }
-}
-
-#[cfg(test)]
-fn declared_pools(overlay: &ValidatedOverlay) -> Arc<[DeclaredPool]> {
-    fn prefixes<'a, S>(set: S) -> Vec<Prefix>
-    where
-        S: IntoIterator<Item = &'a lpm::prefix::PrefixWithOptionalPorts>,
-    {
-        set.into_iter()
-            .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
-            .collect()
-    }
-
-    let discriminant = |name: &str| {
-        overlay
-            .vpc_table()
-            .values()
-            .find(|vpc| vpc.name() == name)
-            .map(|vpc| VpcDiscriminant::VNI(vpc.vni()))
-    };
-
-    let mut declared = Vec::new();
-    for vpc in overlay.vpc_table().values() {
-        for peering in vpc.peerings() {
-            let (local, remote) = (peering.local(), peering.remote());
-            // Each manifest exposes addresses to the other manifest's VPC.
-            for (mine, theirs) in [(local, remote), (remote, local)] {
-                let towards = discriminant(theirs.name());
-                for expose in mine.valexp() {
-                    declared.push(DeclaredPool {
-                        private: prefixes(expose.ips()),
-                        public: prefixes(expose.public_ips()),
-                        towards,
-                    });
-                }
-            }
-        }
-    }
-    declared.into()
 }
 
 #[cfg(test)]
@@ -1269,92 +1009,6 @@ mod contract {
             "{at}: a packet left the last stage of the pipeline without a verdict"
         );
     }
-}
-
-pub(crate) const UPLINK: u32 = 1;
-pub(crate) const LOCAL_VTEP: &str = "5.6.7.8";
-pub(crate) const PEER_VTEP: &str = "1.2.3.4";
-pub(crate) const GATEWAY_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0xaa]);
-pub(crate) const PEER_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0xbb]);
-
-const UNDERLAY_VRF: u32 = 0;
-
-pub(crate) fn uplink() -> InterfaceIndex {
-    InterfaceIndex::try_new(UPLINK).unwrap_or_else(|_| unreachable!())
-}
-
-pub(crate) fn topology(vnis: &[Vni]) -> RouterTables {
-    let mut tables = RouterTables::new();
-
-    tables.vrf(UNDERLAY_VRF, None);
-    tables.interface(
-        uplink(),
-        InterfaceName::try_from("uplink").unwrap(),
-        SourceMac::new(GATEWAY_MAC).unwrap_or_else(|_| unreachable!()),
-    );
-    tables.attach(uplink(), UNDERLAY_VRF);
-    tables.route_via(
-        UNDERLAY_VRF,
-        Prefix::expect_from((LOCAL_VTEP, 32)),
-        nhop(&LOCAL_VTEP.parse().unwrap_or_else(|_| unreachable!())),
-        &FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Local(uplink()))),
-    );
-
-    for reachable in vnis {
-        tables.vrf(reachable.as_u32(), Some(*reachable));
-        encapsulate_out_of(&mut tables, reachable.as_u32(), *reachable);
-    }
-
-    tables.adjacency(
-        PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()),
-        uplink(),
-        PEER_MAC,
-    );
-
-    tables
-}
-
-fn encapsulate_out_of(tables: &mut RouterTables, vrfid: u32, out_vni: Vni) {
-    tables.vtep(
-        vrfid,
-        Vtep::new(
-            LOCAL_VTEP.parse().unwrap_or_else(|_| unreachable!()),
-            SourceMac::new(GATEWAY_MAC).unwrap_or_else(|_| unreachable!()),
-        ),
-    );
-    let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
-    let mut out = FibEntry::with_inst(PktInstruction::Encap(Encapsulation::Vxlan(
-        VxlanEncapsulation {
-            vni: out_vni,
-            remote: peer,
-            rmac: SourceMac::new(PEER_MAC).unwrap_or_else(|_| unreachable!()),
-        },
-    )));
-    out.add(PktInstruction::Egress(EgressObject::new(
-        Some(uplink()),
-        Some(peer),
-    )));
-    tables.route_via(
-        vrfid,
-        Prefix::root_v4(),
-        nhop(&peer),
-        &FibGroup::with_entry(out),
-    );
-}
-
-fn nhop(address: &IpAddr) -> NhopKey {
-    NhopKey::new(
-        0,
-        RouteOrigin::default(),
-        Some(*address),
-        None,
-        None,
-        FwAction::Forward,
-    )
-}
-
-fn vni(raw: u32) -> Vni {
-    Vni::new_checked(raw).unwrap_or_else(|_| unreachable!())
 }
 
 #[cfg(test)]
@@ -3979,6 +3633,10 @@ mod destination {
 
 #[cfg(test)]
 mod routed {
+    pub(super) use crate::packet_processor::fixture::{
+        exposes, inner, inside, tunnelled, tunnelled_from,
+    };
+
     use super::round_trip::udp;
     use super::shapes::{Batch, Shape, aim, wire};
     use super::*;
@@ -3986,11 +3644,6 @@ mod routed {
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use net::buffer::TestBuffer;
     use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryIpv4, TryVxlan};
-    use net::ip::dscp::Dscp;
-    use net::ip::ecn::Ecn;
-    use net::packet::test_utils::{
-        build_test_udp_ipv4_packet, build_test_vxlan_ipv4_packet_carrying_vni,
-    };
     use net::parse::DeParse;
     use net::vlan::Vid;
 
@@ -4026,17 +3679,6 @@ mod routed {
         super::assert_within_budget("routed::Flows", &Flows);
     }
 
-    pub(super) fn exposes() -> Vec<VpcExpose> {
-        vec![
-            VpcExpose::empty()
-                .make_masquerade(None)
-                .unwrap()
-                .ip("1.1.0.0/16".parse::<Prefix>().unwrap().into())
-                .as_range("2.2.0.0/16".parse::<Prefix>().unwrap().into())
-                .unwrap(),
-        ]
-    }
-
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct Path {
         pub(crate) from: Vni,
@@ -4059,40 +3701,6 @@ mod routed {
         fn reversed(self) -> Self {
             Self::new(self.to, self.from)
         }
-    }
-
-    pub(super) fn tunnelled_from(from: Vni, inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
-        // The gateway only accepts inner frames addressed to its vtep mac
-        let mut inner = inner.deep_copy().unwrap();
-        inner
-            .set_eth_destination(GATEWAY_MAC)
-            .expect("the inner frame has an ethernet header");
-        let bytes = inner.serialize().expect("the inner frame serializes");
-        let mut packet = build_test_vxlan_ipv4_packet_carrying_vni(
-            from,
-            Dscp::default(),
-            Ecn::default(),
-            bytes.as_ref(),
-        )
-        .expect("a well-formed tunnelled frame");
-        packet
-            .set_eth_destination(GATEWAY_MAC)
-            .expect("the frame has an ethernet header");
-        packet.meta_mut().iif = Some(uplink());
-        packet
-    }
-
-    pub(super) fn tunnelled(inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
-        tunnelled_from(vni(LOCAL_VNI), inner)
-    }
-
-    pub(super) fn inside(delivered: &Packet<TestBuffer>) -> Option<Packet<TestBuffer>> {
-        let mut copy = delivered.deep_copy().unwrap();
-        matches!(copy.vxlan_decap(), Some(Ok(_))).then_some(copy)
-    }
-
-    pub(super) fn inner() -> Packet<TestBuffer> {
-        build_test_udp_ipv4_packet("1.1.0.1", "3.3.3.1", 1234, 80)
     }
 
     #[tokio::test]
