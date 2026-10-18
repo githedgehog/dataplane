@@ -9,9 +9,11 @@
 
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use acl_filter::{AclFilterContext, AclFilterContextReaderFactory, AclFilterContextWriter};
+use capture::CaptureController;
 use concurrency::sync::Arc;
 use config::external::GenId;
 use config::external::overlay::ValidatedOverlay;
@@ -34,13 +36,18 @@ use net::ip::ecn::Ecn;
 use net::packet::test_utils::{
     build_test_udp_ipv4_packet, build_test_vxlan_ipv4_packet_carrying_vni,
 };
-use net::packet::{Packet, VpcDiscriminant};
+use net::packet::{Packet, PacketStats, VpcDiscriminant};
 use net::vxlan::Vni;
 use pipeline::PipelineData;
+use rate_limit::{RateLimitWriter, RateLimits, VpcDestination};
 use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
 use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
 use routing::{EgressObject, Encapsulation, FibEntry, PktInstruction, Vtep, VxlanEncapsulation};
+use stats::{StatsCollector, VpcMapName, VpcStatsStore};
+use vpcmap::map::VpcMapWriter;
+
+use super::PipelineIngredients;
 
 pub(crate) const FIRST_GENID: GenId = 1;
 
@@ -436,4 +443,52 @@ pub(crate) fn inside(delivered: &Packet<TestBuffer>) -> Option<Packet<TestBuffer
 /// A UDP packet from the local VPC towards the remote one.
 pub(crate) fn inner() -> Packet<TestBuffer> {
     build_test_udp_ipv4_packet("1.1.0.1", "3.3.3.1", 1234, 80)
+}
+
+/// The writers and collectors that must outlive the readers in a fixture gateway's
+/// [`PipelineIngredients`].
+pub(crate) struct Upkeep {
+    _rate_limits: RateLimitWriter<VpcDestination>,
+    _stats: StatsCollector,
+    _vpcs: VpcMapWriter<VpcMapName>,
+}
+
+impl Fleet {
+    /// What the production pipeline needs to run this fleet's overlay over `tables`, for
+    /// `workers` workers.
+    ///
+    /// The pipeline is the one `start_router` assembles, stage for stage; only where its tables
+    /// come from differs. No rate limits are set and nothing reads the statistics it sends.
+    pub(crate) fn ingredients(
+        &self,
+        tables: &RouterTables,
+        workers: NonZeroUsize,
+    ) -> (PipelineIngredients, Upkeep) {
+        let vpcs = VpcMapWriter::<VpcMapName>::new();
+        let (stats, stats_w, _) =
+            StatsCollector::new_with_store(vpcs.get_reader(), VpcStatsStore::new());
+        let rate_limits = RateLimitWriter::new(RateLimits::empty(), workers);
+        let pipeline = PipelineIngredients {
+            pdata: self.blueprint.pipeline.clone(),
+            iftr_factory: tables.interface_factory(),
+            fibtr_factory: tables.fib_factory(),
+            atabler_factory: tables.adjacency_factory(),
+            nattabler_factory: self.static_nat.borrow().get_reader_factory(),
+            natallocator_factory: self.masquerade.borrow().get_reader_factory(),
+            flow_filter_reader_factory: self.flow_filter.get_reader_factory(),
+            aclfiltertablesr_factory: self.acl.get_reader_factory(),
+            rate_limits: rate_limits.reader(),
+            portfw_factory: self.portfw.borrow().reader().factory(),
+            stats_w,
+            pkt_stats: Arc::new(PacketStats::new()),
+            flow_table: self.blueprint.flow_table.clone(),
+            capture: CaptureController::new(),
+        };
+        let upkeep = Upkeep {
+            _rate_limits: rate_limits,
+            _stats: stats,
+            _vpcs: vpcs,
+        };
+        (pipeline, upkeep)
+    }
 }
