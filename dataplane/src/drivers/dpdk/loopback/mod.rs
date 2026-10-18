@@ -7,6 +7,7 @@
 //! Every test records what it checks in a flowgen report and passes only if the report does; see
 //! [`harness::over_cable`].
 
+mod bfd;
 mod control;
 mod floods;
 mod flows;
