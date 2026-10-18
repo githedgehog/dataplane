@@ -5,9 +5,12 @@
 
 use std::time::Duration;
 
+use concurrency::sync::Arc;
+use flow_entry::flow_table::FlowTable;
 use flowgen_report::Bound;
 use net::eth::mac::Mac;
 use net::interface::InterfaceIndex;
+use net::packet::PacketStats;
 
 use super::harness::{
     FarEnd, Gateway, Loopback, PATIENCE, TestCase, WORKERS, check_counters, expect, frame_evidence,
@@ -91,10 +94,12 @@ fn control_frames_cross_a_ring_cable_both_ways() {
                 mac: Mac([0x02, 0, 0, 0, 0, 0x10]),
                 index: InterfaceIndex::try_new(1000).unwrap(),
                 pipeline: None,
+                packets: Arc::new(PacketStats::new()),
+                flows: Arc::new(FlowTable::default()),
             };
             (gateway, ())
         },
-        |lb: &mut Loopback<'_, '_, '_>| {
+        |lb: &mut Loopback<'_, '_, '_, '_>| {
             let name = "control_frames_cross_a_ring_cable_both_ways";
             let mut case = lb
                 .report
@@ -103,7 +108,7 @@ fn control_frames_cross_a_ring_cable_both_ways() {
             exchange_control_frames(lb.far, lb.kernel, &mut case);
             check_counters(
                 &mut case,
-                &lb.ports,
+                lb.probe,
                 &[
                     ("arp-received", "port.loop0.rx_packets", Bound::at_least(1)),
                     ("one-frame-sent", "port.loop0.tx_packets", Bound::exactly(1)),

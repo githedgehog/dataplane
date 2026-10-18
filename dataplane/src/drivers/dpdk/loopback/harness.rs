@@ -27,9 +27,11 @@ use flowgen_report::{
 };
 use lifecycle::{CancellationToken, Subsystem};
 use lldp::Link;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use net::buffer::Append;
 use net::eth::mac::Mac;
 use net::interface::{InterfaceIndex, InterfaceName};
+use net::packet::PacketStats;
 use pipeline::DynPipeline;
 use tokio::sync::watch;
 use traffic_control::ControlPlane;
@@ -40,6 +42,7 @@ use crate::drivers::cpbridge::DetachedPort;
 use crate::drivers::status::driver_status_access;
 use crate::packet_processor::PipelineIngredients;
 use crate::packet_processor::fixture::{Fleet, GATEWAY_MAC, exposes, topology, uplink, vni};
+use crate::statistics::{Telemetry, TelemetrySources};
 
 /// Data workers.
 pub(super) const WORKERS: u16 = 2;
@@ -190,6 +193,10 @@ pub(super) struct Gateway {
     pub(super) index: InterfaceIndex,
     /// The pipeline the workers run; one that does nothing if `None`.
     pub(super) pipeline: Option<PipelineIngredients>,
+    /// What the pipeline counts of the packets it finishes with.
+    pub(super) packets: Arc<PacketStats>,
+    /// The pipeline's flow table.
+    pub(super) flows: Arc<FlowTable>,
 }
 
 /// A counter expectation: check id, counter path, bound.
@@ -199,15 +206,61 @@ pub(super) type CounterExpectation = (&'static str, &'static str, Bound);
 pub(super) type TestReport = Report<Box<dyn Write>>;
 
 /// What a test drives once the driver is up.
-pub(super) struct Loopback<'a, 'eal, 'far> {
+pub(super) struct Loopback<'a, 'p, 'eal, 'far> {
     /// The far end of the cable.
     pub(super) far: &'a mut FarEnd<'far>,
     /// The kernel's side of the port's bridge.
     pub(super) kernel: &'a mut DetachedPort,
     /// The report, in which the test begins its cases.
     pub(super) report: &'a mut TestReport,
+    /// What the ports and the dataplane count.
+    pub(super) probe: &'a mut Probe<'p, 'eal>,
+}
+
+/// Reads what the dataplane counts: both ends' device counters, and the dataplane's own telemetry
+/// as its Prometheus exporter renders it, as production's would be scraped.
+pub(super) struct Probe<'p, 'eal> {
     /// Both ends of the cable, by the names their counters are reported under.
-    pub(super) ports: [(&'static str, &'a Dev<'eal, Started>); 2],
+    ports: [(&'static str, &'p Dev<'eal, Started>); 2],
+    telemetry: Telemetry,
+    exporter: PrometheusHandle,
+}
+
+impl Probe<'_, '_> {
+    /// Everything counted so far: totals since the ports started, not since any case began; see
+    /// [`Sample::since`].
+    ///
+    /// The pipeline's counts and the flow table are current. Worker counters are as of the driver's
+    /// last status, which its supervisor publishes every [`SUPERVISOR_POLL`].
+    pub(super) fn sample(&mut self) -> Sample {
+        self.telemetry.publish();
+        let devices = self
+            .ports
+            .iter()
+            .fold(Sample::new(), |sample, (port, dev)| match dev.stats() {
+                Ok(stats) => port_counters(sample, port, &stats),
+                Err(_) => sample,
+            });
+        flowgen::prometheus::sample(&self.exporter.render(), "dataplane", devices)
+    }
+}
+
+/// The process's Prometheus exporter, installed as the global metrics recorder on first use.
+///
+/// The recorder is process-wide and can be installed once, so every loopback test in a process
+/// shares it, as they share the EAL.
+fn exporter() -> PrometheusHandle {
+    static EXPORTER: concurrency::sync::OnceLock<PrometheusHandle> =
+        concurrency::sync::OnceLock::new();
+    EXPORTER
+        .get_or_init(|| {
+            let recorder = PrometheusBuilder::new().build_recorder();
+            let handle = recorder.handle();
+            metrics::set_global_recorder(recorder)
+                .expect("no other metrics recorder should be installed in a loopback test");
+            handle
+        })
+        .clone()
 }
 
 /// Bring the DPDK driver up on one end of a ring cable and run `exchange` against the other end,
@@ -222,9 +275,11 @@ pub(super) struct Loopback<'a, 'eal, 'far> {
 pub(super) fn over_cable<K>(
     name: &str,
     setup: impl FnOnce() -> (Gateway, K),
-    exchange: impl FnOnce(&mut Loopback<'_, '_, '_>),
+    exchange: impl FnOnce(&mut Loopback<'_, '_, '_, '_>),
 ) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    // Installed before anything registers a metric, or the registration would go nowhere.
+    let exporter = exporter();
     let eal_args = eal_args();
     let mut eal = eal::init(eal_args.iter());
     let timers = tokio::runtime::Builder::new_multi_thread()
@@ -268,18 +323,26 @@ pub(super) fn over_cable<K>(
     assert_eq!(kernel.name, loop0());
 
     let path = report_path(name);
-    let header = header(
-        name,
-        &eal_args,
-        &[("loop0", &ports[0].dev), ("far", &far_dev)],
+    let mut report = open_report(
+        &path,
+        header(
+            name,
+            &eal_args,
+            &[("loop0", &ports[0].dev), ("far", &far_dev)],
+        ),
     );
-    let out: Box<dyn Write> = Box::new(std::io::BufWriter::new(
-        std::fs::File::create(&path).expect("the report should be writable"),
-    ));
-    let mut report = Report::new(out, header).expect("the report should take its header");
 
     let workers = Subsystem::new("workers", CancellationToken::new());
-    let (status, _status_reader) = driver_status_access();
+    let (status, status_reader) = driver_status_access();
+    let mut probe = Probe {
+        ports: [("loop0", &ports[0].dev), ("far", &far_dev)],
+        telemetry: Telemetry::new(TelemetrySources {
+            packets: gateway.packets,
+            flows: gateway.flows,
+            driver: status_reader,
+        }),
+        exporter,
+    };
     let (_control_plane_tx, control_plane) = watch::channel(ControlPlane::new([], []));
 
     thread::scope(|scope| {
@@ -309,9 +372,13 @@ pub(super) fn over_cable<K>(
             far: &mut far,
             kernel: &mut kernel,
             report: &mut report,
-            ports: [("loop0", &ports[0].dev), ("far", &far_dev)],
+            probe: &mut probe,
         });
     });
+
+    // The driver has stopped and published its last status, so every count is final.
+    record_after_stop(&mut report, &mut probe);
+    drop(probe);
 
     report
         .finish()
@@ -324,6 +391,51 @@ pub(super) fn over_cable<K>(
     }
 
     assert_passed(&path);
+}
+
+/// A report at `path`, beginning with `header`.
+fn open_report(path: &Path, header: Header) -> TestReport {
+    let out: Box<dyn Write> = Box::new(std::io::BufWriter::new(
+        std::fs::File::create(path).expect("the report should be writable"),
+    ));
+    Report::new(out, header).expect("the report should take its header")
+}
+
+/// Record everything the run counted, once the driver has stopped, as a case of its own, and check
+/// that the workers account for every packet the port received.
+fn record_after_stop(report: &mut TestReport, probe: &mut Probe<'_, '_>) {
+    let mut after = report
+        .case("after-stop", serde_json::json!({}))
+        .expect("the report should take the case");
+    let sample = probe.sample();
+    let port = sample
+        .counters
+        .get("dataplane.port_rx_packets.port=loop0")
+        .copied();
+    // Data workers report the port by its name, the control worker as "<name> (control)".
+    let workers: u64 = sample
+        .counters
+        .iter()
+        .filter(|(path, _)| path.starts_with("dataplane.worker_rx_packets.port=loop0"))
+        .map(|(_, n)| n)
+        .sum();
+    after
+        .sample(sample)
+        .expect("the report should take the sample");
+    expect(
+        &mut after,
+        "workers-account-for-the-port",
+        "the workers' telemetry accounts for every packet the port's telemetry says it received",
+        port == Some(workers),
+        || {
+            vec![Evidence::text(format!(
+                "port received {port:?}, workers {workers}"
+            ))]
+        },
+    );
+    after
+        .finish()
+        .expect("the report should take the case's end");
 }
 
 /// The EAL a loopback test runs in: no hugepages, no PCI, nothing shared.
@@ -384,36 +496,14 @@ fn header(name: &str, eal_args: &[String], ports: &[(&str, &Dev<'_, Started>)]) 
     )
 }
 
-/// `sample`, with `ports`' device counters less `baseline`: counters since the case began, when
-/// `baseline` is what they were then.
-pub(super) fn with_ports(
-    sample: Sample,
-    ports: &[(&str, &Dev<'_, Started>)],
-    baseline: &Sample,
-) -> Sample {
-    let devices = ports
-        .iter()
-        .fold(Sample::new(), |sample, (port, dev)| match dev.stats() {
-            Ok(stats) => port_counters(sample, port, &stats),
-            Err(_) => sample,
-        });
-    devices
-        .counters
-        .into_iter()
-        .fold(sample, |sample, (path, n)| {
-            let before = baseline.counters.get(&path).copied().unwrap_or(0);
-            sample.counter(path, n.saturating_sub(before))
-        })
-}
-
-/// Sample `ports`' device counters into `case` and check them against `counters`: totals since
-/// the ports started, for a test whose only case is all their traffic.
+/// Sample everything into `case` and check it against `counters`: totals since the ports started,
+/// for a test whose only case is all their traffic.
 pub(super) fn check_counters(
     case: &mut TestCase<'_>,
-    ports: &[(&str, &Dev<'_, Started>)],
+    probe: &mut Probe<'_, '_>,
     counters: &[CounterExpectation],
 ) {
-    let sample = with_ports(Sample::new(), ports, &Sample::new());
+    let sample = probe.sample();
     let totals = sample.counters.clone();
     case.sample(sample)
         .expect("the report should take the sample");
@@ -494,6 +584,8 @@ pub(super) fn fixture_gateway() -> (Gateway, impl Sized) {
         mac: GATEWAY_MAC,
         index: uplink(),
         pipeline: Some(pipeline),
+        packets: upkeep.packets.clone(),
+        flows: fleet.flow_table(),
     };
     (gateway, (tables, fleet, upkeep))
 }

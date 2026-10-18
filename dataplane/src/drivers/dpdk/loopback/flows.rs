@@ -9,7 +9,6 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use config::external::overlay::vpcpeering::contract::{LOCAL_VNI, REMOTE_VNI};
-use dpdk::dev::{Dev, Started};
 use flowgen::frame::{FrameSpec, Vxlan as GeneratedVxlan};
 use flowgen::ledger::Ledger;
 use flowgen::port::{Clock, Ending, Patience, Queues, Sender, Stream, run as generate};
@@ -22,8 +21,8 @@ use net::packet::Packet;
 use net::vxlan::Vxlan;
 
 use super::harness::{
-    FarEnd, Loopback, PATIENCE, TestCase, WORKERS, check_counters, expect, fixture_gateway,
-    frame_evidence, over_cable, with_ports,
+    FarEnd, Loopback, PATIENCE, Probe, TestCase, WORKERS, check_counters, expect, fixture_gateway,
+    frame_evidence, over_cable,
 };
 use crate::drivers::cpbridge::DetachedPort;
 use crate::packet_processor::fixture::{
@@ -37,7 +36,7 @@ fn a_tunnelled_frame_makes_a_round_trip_through_the_pipeline() {
     over_cable(
         "a_tunnelled_frame_makes_a_round_trip_through_the_pipeline",
         fixture_gateway,
-        |lb: &mut Loopback<'_, '_, '_>| {
+        |lb: &mut Loopback<'_, '_, '_, '_>| {
             let mut case = lb
                 .report
                 .case("round-trip", serde_json::json!({}))
@@ -45,7 +44,7 @@ fn a_tunnelled_frame_makes_a_round_trip_through_the_pipeline() {
             round_trip(lb.far, lb.kernel, &mut case);
             check_counters(
                 &mut case,
-                &lb.ports,
+                lb.probe,
                 &[
                     ("one-frame-in", "port.loop0.rx_packets", Bound::exactly(1)),
                     ("one-frame-out", "port.loop0.tx_packets", Bound::exactly(1)),
@@ -140,7 +139,7 @@ const SAMPLE_EVERY: Duration = Duration::from_millis(5);
 /// goes. Returns the ledger and how the run ended.
 fn drive(
     far: &mut FarEnd<'_>,
-    ports: &[(&str, &Dev<'_, Started>)],
+    probe: &mut Probe<'_, '_>,
     case: &mut TestCase<'_>,
     stream: &Stream,
     run: u32,
@@ -150,7 +149,7 @@ fn drive(
     let data_queues = usize::from(WORKERS);
     let mut sender = Sender::new(stream.clone(), run, data_queues);
     let clock = Clock::start();
-    let baseline = with_ports(Sample::new(), ports, &Sample::new());
+    let baseline = probe.sample();
     let FarEnd { pool, rx, tx } = far;
     let mut queues = Queues {
         tx: &mut tx[..data_queues],
@@ -168,7 +167,9 @@ fn drive(
         },
         SAMPLE_EVERY,
         |ledger| {
-            let sample = with_ports(ledger.sample(&stream.name, Sample::new()), ports, &baseline);
+            let sample = ledger
+                .sample(&stream.name, Sample::new())
+                .merge(probe.sample().since(&baseline));
             case.sample(sample)
                 .expect("the report should take the sample");
         },
@@ -247,17 +248,17 @@ fn many_flows_come_back_masqueraded_and_distinct() {
     over_cable(
         "many_flows_come_back_masqueraded_and_distinct",
         fixture_gateway,
-        |lb: &mut Loopback<'_, '_, '_>| {
+        |lb: &mut Loopback<'_, '_, '_, '_>| {
             let stream = local_to_remote("flows", Schedule::steady(2000, 4), 80);
             let mut case = lb
                 .report
                 .case("steady", serde_json::to_value(stream.schedule).unwrap())
                 .expect("the report should take the case");
-            let (ledger, ending) = drive(lb.far, &lb.ports, &mut case, &stream, 1);
+            let (ledger, ending) = drive(lb.far, lb.probe, &mut case, &stream, 1);
             check_stream(&mut case, &stream, &ledger, ending);
             check_counters(
                 &mut case,
-                &lb.ports,
+                lb.probe,
                 &[("none-missed", "port.loop0.rx_missed", Bound::exactly(0))],
             );
             case.finish()
@@ -274,7 +275,7 @@ fn churning_flows_come_back_masqueraded_and_distinct() {
     over_cable(
         "churning_flows_come_back_masqueraded_and_distinct",
         fixture_gateway,
-        |lb: &mut Loopback<'_, '_, '_>| {
+        |lb: &mut Loopback<'_, '_, '_, '_>| {
             for (n, churn) in [0u16, 50, 250, 500].into_iter().enumerate() {
                 let schedule = Schedule {
                     window: 500,
@@ -291,7 +292,7 @@ fn churning_flows_come_back_masqueraded_and_distinct() {
                     )
                     .expect("the report should take the case");
                 let run = u32::try_from(n).unwrap() + 1;
-                let (ledger, ending) = drive(lb.far, &lb.ports, &mut case, &stream, run);
+                let (ledger, ending) = drive(lb.far, lb.probe, &mut case, &stream, run);
                 check_stream(&mut case, &stream, &ledger, ending);
                 case.finish()
                     .expect("the report should take the case's end");

@@ -3,6 +3,8 @@
 
 mod telemetry;
 
+#[cfg(test)]
+pub(crate) use telemetry::Telemetry;
 pub(crate) use telemetry::TelemetrySources;
 
 use axum::{Router, response::Response, routing::get};

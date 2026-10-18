@@ -239,6 +239,11 @@ impl Fleet {
         }
     }
 
+    /// The flow table the fleet's pipelines share.
+    pub(crate) fn flow_table(&self) -> Arc<FlowTable> {
+        self.blueprint.flow_table.clone()
+    }
+
     pub(crate) fn blueprint(&self) -> &Blueprint {
         &self.blueprint
     }
@@ -448,6 +453,8 @@ pub(crate) fn inner() -> Packet<TestBuffer> {
 /// The writers and collectors that must outlive the readers in a fixture gateway's
 /// [`PipelineIngredients`].
 pub(crate) struct Upkeep {
+    /// What the pipeline counts of the packets it finishes with, for telemetry.
+    pub(crate) packets: Arc<PacketStats>,
     _rate_limits: RateLimitWriter<VpcDestination>,
     _stats: StatsCollector,
     _vpcs: VpcMapWriter<VpcMapName>,
@@ -468,6 +475,7 @@ impl Fleet {
         let (stats, stats_w, _) =
             StatsCollector::new_with_store(vpcs.get_reader(), VpcStatsStore::new());
         let rate_limits = RateLimitWriter::new(RateLimits::empty(), workers);
+        let packets = Arc::new(PacketStats::new());
         let pipeline = PipelineIngredients {
             pdata: self.blueprint.pipeline.clone(),
             iftr_factory: tables.interface_factory(),
@@ -480,11 +488,12 @@ impl Fleet {
             rate_limits: rate_limits.reader(),
             portfw_factory: self.portfw.borrow().reader().factory(),
             stats_w,
-            pkt_stats: Arc::new(PacketStats::new()),
+            pkt_stats: packets.clone(),
             flow_table: self.blueprint.flow_table.clone(),
             capture: CaptureController::new(),
         };
         let upkeep = Upkeep {
+            packets,
             _rate_limits: rate_limits,
             _stats: stats,
             _vpcs: vpcs,
