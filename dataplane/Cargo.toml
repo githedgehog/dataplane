@@ -5,6 +5,13 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "dataplane"
+path = "src/main.rs"
+# The tests live in the library; a test harness for the bin would be one more full link.
+test = false
+bench = false
+
 [features]
 default = []
 # Bin is gated out under loom (see `src/main.rs`); the feature exists so

@@ -655,6 +655,13 @@ fn run_dpdk_driver(
     }
 }
 
+/// Run the gateway: take the launch configuration init handed over, start management, routing and
+/// the datapath, and return once they have all shut down.
+///
+/// # Panics
+///
+/// If a runtime, the router or the shutdown machinery cannot be started. An invalid launch
+/// configuration exits the process instead.
 #[allow(clippy::too_many_lines)]
 pub fn main() {
     // Consume the handoff before runtimes or other components can acquire these FD numbers.
