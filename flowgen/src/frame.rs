@@ -399,6 +399,73 @@ pub fn parse(frame: &[u8]) -> Result<Received, ParseError> {
     })
 }
 
+/// A UDP datagram's endpoints, as a protocol speaker addresses one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Endpoints {
+    /// The sender's MAC.
+    pub src_mac: Mac,
+    /// The next hop's MAC.
+    pub dst_mac: Mac,
+    /// The sender's address and port.
+    pub src: (Ipv4Addr, u16),
+    /// The receiver's address and port.
+    pub dst: (Ipv4Addr, u16),
+}
+
+/// An Ethernet frame carrying `payload` in UDP between `endpoints`, with `ttl`: for a protocol
+/// speaker, whose payload is the protocol's rather than a signature.
+#[must_use]
+pub fn udp(endpoints: &Endpoints, ttl: u8, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![0u8; ETH_LEN + IPV4_LEN + UDP_LEN + payload.len()];
+    ethernet(&mut bytes[..ETH_LEN], endpoints.dst_mac, endpoints.src_mac);
+    let (src, sport) = endpoints.src;
+    let (dst, dport) = endpoints.dst;
+    ipv4(
+        &mut bytes[ETH_LEN..ETH_LEN + IPV4_LEN],
+        PROTO_UDP,
+        src,
+        dst,
+        ttl,
+        UDP_LEN + payload.len(),
+    );
+    let at = ETH_LEN + IPV4_LEN;
+    udp_header(
+        &mut bytes[at..at + UDP_LEN],
+        sport,
+        dport,
+        UDP_LEN + payload.len(),
+    );
+    bytes[at + UDP_LEN..].copy_from_slice(payload);
+    let checksum = checksum::l4_ipv4(PROTO_UDP, src, dst, &bytes[at..]);
+    bytes[at + 6..at + 8].copy_from_slice(&checksum.to_be_bytes());
+    bytes
+}
+
+/// A received UDP datagram, not tunnelled, as a protocol speaker reads one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Datagram<'f> {
+    /// Its addresses and ports.
+    pub tuple: Tuple,
+    /// The TTL it arrived with.
+    pub ttl: u8,
+    /// Its payload.
+    pub payload: &'f [u8],
+}
+
+/// `frame` as a plain UDP datagram, if it is one with a correct or absent checksum.
+#[must_use]
+pub fn datagram(frame: &[u8]) -> Option<Datagram<'_>> {
+    let layers = Layers::parse(frame).ok()?;
+    if layers.tcp_flags.is_some() || layers.l4_checksum == ChecksumState::Invalid {
+        return None;
+    }
+    Some(Datagram {
+        tuple: layers.tuple,
+        ttl: layers.ttl,
+        payload: layers.payload,
+    })
+}
+
 /// One Ethernet, IPv4 and UDP or TCP header stack.
 struct Layers<'f> {
     src_mac: Mac,
