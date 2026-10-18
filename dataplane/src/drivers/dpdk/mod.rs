@@ -16,6 +16,8 @@
 
 mod classes;
 mod control;
+#[cfg(all(test, not(miri), not(feature = "shuttle")))]
+mod loopback_tests;
 mod placement;
 mod port;
 mod source;
@@ -47,7 +49,7 @@ pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
 use control::{ControlPort, ControlWorker};
 use placement::{Placement, pin};
 pub(crate) use port::Port;
-pub(crate) use source::{PciPort, PortSettings, bring_up_ports};
+pub(crate) use source::{PciPort, PortSettings, attach_ports, bring_up_ports};
 use worker::{Worker, WorkerPort};
 
 trace_target!("dpdk-driver", LevelFilter::INFO, &["driver"]);

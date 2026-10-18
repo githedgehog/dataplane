@@ -20,7 +20,7 @@ use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use dpdk::socket;
 use errno::ErrorCode;
-use net::eth::mac::SourceMac;
+use net::eth::mac::{Mac, SourceMac};
 use net::interface::{InterfaceIndex, InterfaceName};
 use stats::PortCounters;
 use std::time::Duration;
@@ -364,6 +364,7 @@ impl<'eal> Port<'eal> {
             name,
             mtu,
             rx_descriptors,
+            fallback_mac,
         } = settings;
         let info = port.info();
         let index = info.index();
@@ -456,14 +457,21 @@ impl<'eal> Port<'eal> {
         // came from the PMD. A port whose identity cannot be read is still usable for forwarding
         // but cannot have a working control plane, which is worth failing over rather than
         // discovering as an adjacency that never forms.
-        let mac = dev.mac_address().map_err(|e| {
-            DriverError::PortSetup(format!(
-                "port {index} ({name}) is up but would not report its MAC address: {e:?}. Its tap \
-                 could not then answer ARP for it."
-            ))
-        })?;
+        let mac: Mac = match (dev.mac_address(), fallback_mac) {
+            (Ok(mac), _) => mac.into(),
+            (Err(e), Some(mac)) => {
+                debug!("port {index} ({name}) has no MAC address of its own ({e:?}); using {mac}");
+                mac
+            }
+            (Err(e), None) => {
+                return Err(DriverError::PortSetup(format!(
+                    "port {index} ({name}) is up but would not report its MAC address: {e:?}. Its \
+                     tap could not then answer ARP for it."
+                )));
+            }
+        };
         // A port's own MAC is what its frames go out with, so a multicast one is a broken PMD.
-        let mac = SourceMac::new(mac.into()).map_err(|e| {
+        let mac = SourceMac::new(mac).map_err(|e| {
             DriverError::PortSetup(format!(
                 "port {index} ({name}) reports {e:?}, which cannot be a port's own address"
             ))
