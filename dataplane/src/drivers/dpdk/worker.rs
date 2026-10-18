@@ -390,10 +390,8 @@ fn process_burst<Buf: PacketBufferMut>(
         })
         .collect();
 
-    let parsed = packets.len();
     pipeline.process_burst(&mut packets);
-    // Some stages remove packets instead of returning a drop verdict.
-    counters.ppline_drops += parsed.saturating_sub(packets.len()) as u64;
+
     packets.retain(|packet| {
         if Disposition::of(packet) == Disposition::Drop {
             counters.ppline_drops += 1;
