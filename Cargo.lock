@@ -2177,6 +2177,7 @@ dependencies = [
  "bolero",
  "dataplane-clock",
  "dataplane-concurrency",
+ "dataplane-mstlink",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-tracectl",
