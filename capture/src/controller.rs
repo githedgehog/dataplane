@@ -452,7 +452,14 @@ fn write_capture<W: Write>(
     };
 
     // Close admission; from here the number admitted is final.
-    let admitted = session.budget - session.remaining.swap(0, Ordering::AcqRel);
+    let left = session.remaining.swap(0, Ordering::AcqRel);
+    let admitted = session.budget - left;
+    // The budget is read before the stop flag, but a worker can use the last of it between the two
+    // reads. Settle it here, where admission is closed, so the report does not depend on that race.
+    let end = match end {
+        CaptureEnd::Stopped if left == 0 => CaptureEnd::Budget,
+        end => end,
+    };
     while tally.received + session.dropped.load(Ordering::Acquire) < admitted {
         match records.try_recv() {
             Ok(Message::Record(record)) => tally.take(&record, session),
