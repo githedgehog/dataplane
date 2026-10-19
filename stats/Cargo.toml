@@ -13,6 +13,7 @@ bolero = ["dep:bolero", "vpcmap/bolero", "net/bolero"]
 # internal
 clock = { workspace = true }
 concurrency = { workspace = true }
+mstlink = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 tracectl = { workspace = true }
