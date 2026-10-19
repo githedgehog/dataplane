@@ -21,6 +21,8 @@ use concurrency::sync::Arc;
 use concurrency::thread;
 use lifecycle::Subsystem;
 use net::buffer::test_buffer::TestBuffer;
+use net::eth::mac::SourceMac;
+use net::interface::InterfaceName;
 use pipeline::DynPipeline;
 use tracectl::trace_target;
 #[allow(unused)]
@@ -67,7 +69,8 @@ impl DriverKernel {
         let mut bridge: Vec<BridgedPort> = Vec::new();
         if let Some(ends) = cp_ends.as_mut() {
             for kif in interfaces {
-                if let Some(queues) = ends.take(&kif.name) {
+                let name = InterfaceName::try_from(kif.name.as_str()).ok();
+                if let Some(queues) = name.and_then(|name| ends.take(&name)) {
                     bridge.push(BridgedPort {
                         name: kif.name.clone(),
                         index: queues.index,
@@ -155,17 +158,19 @@ impl DriverKernel {
         // address and the peer's frames arrive with a destination this interface will not accept.
         if let Some(ends) = &cp_ends {
             for kif in &interfaces {
-                if let Some(mac) = kif.mac {
+                let name = InterfaceName::try_from(kif.name.as_str());
+                let mac = kif.mac.map(SourceMac::new);
+                if let (Ok(name), Some(Ok(mac))) = (name, mac) {
                     ends.report(PortIdentity {
-                        name: kif.name.clone(),
+                        name,
                         mac,
                         mtu: kif.mtu.and_then(|mtu| u16::try_from(mtu).ok()),
                     });
                 } else {
                     warn!(
-                        "the kernel reports no MAC for {}, so its tap keeps the one it was given \
-                         and ARP for this interface will not resolve",
-                        kif.name
+                        "the kernel reports no usable name and unicast MAC for {} ({:?}), so its \
+                         tap keeps the MAC it was given and ARP for this interface will not resolve",
+                        kif.name, kif.mac
                     );
                 }
             }

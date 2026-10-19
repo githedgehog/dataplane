@@ -21,7 +21,7 @@ use std::time::Duration;
 use concurrency::sync::Arc;
 use interface_manager::interface::{TapDevice, TapRegistry};
 use lifecycle::{CancellationToken, Subsystem};
-use net::eth::mac::Mac;
+use net::eth::mac::SourceMac;
 use net::interface::{InterfaceIndex, InterfaceName};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -55,9 +55,9 @@ const READ_RETRY: Duration = Duration::from_millis(10);
 #[derive(Debug, Clone)]
 pub(crate) struct PortIdentity {
     /// The configured interface name, which is also the tap's name.
-    pub(crate) name: String,
+    pub(crate) name: InterfaceName,
     /// The MAC the PMD reports for the port.
-    pub(crate) mac: Mac,
+    pub(crate) mac: SourceMac,
     /// The MTU the port settled on, which may not be the one that was asked for. `None` if the
     /// driver could not learn it, in which case the tap keeps its own.
     pub(crate) mtu: Option<u16>,
@@ -85,7 +85,7 @@ pub(crate) struct PortCpQueues {
 /// thread, while the half that owns the tap descriptors and their tasks stays on the management
 /// runtime.
 pub(crate) struct DatapathEnds {
-    ports: HashMap<String, PortCpQueues>,
+    ports: HashMap<InterfaceName, PortCpQueues>,
     identities: mpsc::Sender<PortIdentity>,
 }
 
@@ -94,7 +94,7 @@ impl DatapathEnds {
     ///
     /// Taken rather than borrowed, so a port claimed twice gets `None` the second time instead of
     /// two workers quietly sharing one injection queue.
-    pub(crate) fn take(&mut self, name: &str) -> Option<PortCpQueues> {
+    pub(crate) fn take(&mut self, name: &InterfaceName) -> Option<PortCpQueues> {
         self.ports.remove(name)
     }
 
@@ -128,7 +128,7 @@ impl DatapathEnds {
 pub(crate) enum BridgeError {
     /// A netlink socket could not be opened in the control namespace.
     #[error("could not open a netlink socket for the control-plane bridge: {0}")]
-    Netlink(String),
+    Netlink(#[source] std::io::Error),
     /// A tap device could not be created, or the kernel would not say what index it got.
     ///
     /// Fatal rather than skipped: without the index the datapath has no name for this interface
@@ -178,8 +178,7 @@ impl CpBridge {
 
         // The bridge's own netlink socket, opened here so that it belongs to the control namespace
         // like everything else on this runtime. It is only ever used to dress the taps.
-        let (connection, netlink, _) =
-            rtnetlink::new_connection().map_err(|e| BridgeError::Netlink(e.to_string()))?;
+        let (connection, netlink, _) = rtnetlink::new_connection().map_err(BridgeError::Netlink)?;
         handle.spawn(connection);
         let netlink = Arc::new(netlink);
 
@@ -204,7 +203,7 @@ impl CpBridge {
 
             debug!("tap {name} is interface index {index}");
             ports.insert(
-                name.to_string(),
+                name.clone(),
                 PortCpQueues {
                     index,
                     punt: punt_tx,
@@ -376,7 +375,7 @@ async fn dress_one(netlink: &rtnetlink::Handle, identity: &PortIdentity) {
     let index = match netlink
         .link()
         .get()
-        .match_name(name.clone())
+        .match_name(name.to_string())
         .execute()
         .try_next()
         .await
@@ -396,7 +395,7 @@ async fn dress_one(netlink: &rtnetlink::Handle, identity: &PortIdentity) {
         .link()
         .set(
             LinkUnspec::new_with_index(index)
-                .address(identity.mac.0.to_vec())
+                .address(identity.mac.inner().0.to_vec())
                 .up()
                 .build(),
         )
@@ -443,8 +442,9 @@ mod test {
     use fixin::wrap;
     use futures::TryStreamExt;
     use lifecycle::Shutdown;
-    use net::eth::mac::Mac;
+    use net::eth::mac::{Mac, SourceMac};
     use net::interface::InterfaceName;
+    use net::ipv4::UnicastIpv4Addr;
     use std::future::Future;
     use std::net::{IpAddr, Ipv4Addr};
     use std::time::Duration;
@@ -483,7 +483,8 @@ mod test {
     ///
     /// Hand-built rather than produced by the packet builders, because the point of the test is
     /// what a foreign station puts on the wire: nothing in this crate should get a say in it.
-    fn arp_request(sender_mac: Mac, sender: Ipv4Addr, target: Ipv4Addr) -> Vec<u8> {
+    fn arp_request(sender_mac: SourceMac, sender: UnicastIpv4Addr, target: Ipv4Addr) -> Vec<u8> {
+        let (sender_mac, sender) = (sender_mac.inner(), sender.inner());
         let mut frame = Vec::with_capacity(42);
         frame.extend_from_slice(&[0xff; 6]); // destination: broadcast
         frame.extend_from_slice(&sender_mac.0);
@@ -554,7 +555,7 @@ mod test {
             );
 
             let mut queues = ends
-                .take(PORT_NAME)
+                .take(&name)
                 .unwrap_or_else(|| panic!("the bridge made no queues for {PORT_NAME}"));
             let mut inject = queues
                 .inject
@@ -565,8 +566,8 @@ mod test {
             // address below is what waits for it: `addr add` needs the link to exist, and the ARP
             // needs it to be up with the right MAC.
             ends.report(PortIdentity {
-                name: PORT_NAME.to_string(),
-                mac: PORT_MAC,
+                name: name.clone(),
+                mac: SourceMac::new(PORT_MAC).unwrap(),
                 mtu: Some(MTU),
             });
 
@@ -608,7 +609,11 @@ mod test {
             // A worker punting a frame it received on this port.
             queues
                 .punt
-                .send(arp_request(PEER_MAC, PEER, OURS))
+                .send(arp_request(
+                    SourceMac::new(PEER_MAC).unwrap(),
+                    UnicastIpv4Addr::new(PEER).unwrap(),
+                    OURS,
+                ))
                 .await
                 .unwrap_or_else(|e| panic!("nothing is reading the punt queue: {e}"));
 
@@ -722,8 +727,8 @@ mod test {
             );
 
             ends.report(PortIdentity {
-                name: PORT_NAME.to_string(),
-                mac: PORT_MAC,
+                name: name.clone(),
+                mac: SourceMac::new(PORT_MAC).unwrap(),
                 mtu: Some(MTU),
             });
 
