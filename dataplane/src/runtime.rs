@@ -37,6 +37,7 @@ use tracing::{error, info, level_filters::LevelFilter, warn};
 use concurrency::sync::Arc;
 use config::internal::routing::bmp::BmpOptions;
 use config::internal::status::DataplaneStatus;
+use net::interface::InterfaceName;
 use net::tcp::TcpPort;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -221,11 +222,11 @@ fn init_eal(config: &LaunchConfiguration) -> dpdk::eal::Eal {
 /// Validate every interface before probing any device.
 fn configured_pci_ports(
     config: &LaunchConfiguration,
-) -> Result<Vec<(String, PciAddress)>, DriverError> {
+) -> Result<Vec<(InterfaceName, PciAddress)>, DriverError> {
     let mut selected = Vec::new();
     let mut addresses = std::collections::BTreeSet::new();
     for interface in config.driver.interfaces() {
-        let name = interface.interface.to_string();
+        let name = interface.interface.clone();
         let Some(PortArg::PCI(ebdf)) = &interface.port else {
             return Err(DriverError::PortSetup(format!(
                 "interface '{name}' needs a PCI address (--interface {name}=pci@0000:xx:yy.z)"
@@ -903,11 +904,11 @@ mod probe_tests {
             configured_pci_ports(&launch_config(&args)).unwrap(),
             vec![
                 (
-                    "eth1".to_string(),
+                    InterfaceName::try_from("eth1").unwrap(),
                     PciAddress::try_from("0000:02:00.0").unwrap()
                 ),
                 (
-                    "eth0".to_string(),
+                    InterfaceName::try_from("eth0").unwrap(),
                     PciAddress::try_from("0000:01:00.0").unwrap()
                 ),
             ]

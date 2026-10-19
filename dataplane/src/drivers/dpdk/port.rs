@@ -9,8 +9,8 @@ use dpdk::mem::{Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use dpdk::socket;
-use net::eth::mac::Mac;
-use net::interface::InterfaceIndex;
+use net::eth::mac::SourceMac;
+use net::interface::{InterfaceIndex, InterfaceName};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -36,12 +36,12 @@ pub(crate) struct Port<'eal> {
     ///
     /// This is the *configured* interface name, which is also the name of the tap that stands in
     /// for this port in the kernel. It is the key the control-plane bridge is addressed by.
-    pub(crate) name: String,
+    pub(crate) name: InterfaceName,
     /// The MAC the PMD reports for this port.
     ///
     /// The port's tap has to be given this, or the peer resolves the wrong address for it and the
     /// frames it sends back come in as `MacNotForUs`.
-    pub(crate) mac: Mac,
+    pub(crate) mac: SourceMac,
     /// The MTU the port settled on, which is not necessarily the one that was requested: it is
     /// clamped into the device's advertised range at configuration time.
     pub(crate) mtu: u16,
@@ -59,7 +59,7 @@ impl<'eal> Port<'eal> {
     pub(crate) fn bring_up(
         eal: &'eal Eal,
         port: PortClaim<'eal>,
-        name: String,
+        name: InterfaceName,
         num_workers: u16,
     ) -> Result<Self, DriverError> {
         let index = port.info().index();
@@ -155,6 +155,12 @@ impl<'eal> Port<'eal> {
                  could not then answer ARP for it."
             ))
         })?;
+        // A port's own MAC is what its frames go out with, so a multicast one is a broken PMD.
+        let mac = SourceMac::new(mac.into()).map_err(|e| {
+            DriverError::PortSetup(format!(
+                "port {index} ({name}) reports {e:?}, which cannot be a port's own address"
+            ))
+        })?;
         let mtu = dev.mtu().map_err(|e| {
             DriverError::PortSetup(format!(
                 "port {index} ({name}) is up but would not report its MTU: {e:?}"
@@ -170,7 +176,7 @@ impl<'eal> Port<'eal> {
             dev,
             if_index,
             name,
-            mac: mac.into(),
+            mac,
             mtu,
             rx_pool,
         })
@@ -289,7 +295,7 @@ pub(crate) fn deal_queues<'p>(
             })?;
             per_worker[worker as usize].push(PortQueues {
                 if_index,
-                name: port.name.clone(),
+                name: port.name.to_string(),
                 rx,
                 tx,
                 pool: port.rx_pool.clone(),
