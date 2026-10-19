@@ -35,7 +35,7 @@ const CONFIG_DIR: &str = "/etc/frr";
 ///
 /// Each daemon opens `<state>/<daemon>.vty` here once it is serving, which is how `watchfrr`
 /// decides a daemon is up and how [`readiness`] decides FRR is.
-const STATE_DIR: &str = "/run/frr";
+pub const STATE_DIR: &str = "/run/frr";
 
 /// The agent that applies dataplane-generated configuration to FRR.
 const AGENT_BINARY: &str = "/bin/frr-agent";
@@ -308,12 +308,6 @@ fn remove_stale_status(path: &Path) -> std::io::Result<()> {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
     }
-}
-
-/// Where FRR keeps its state, for callers that have to prepare it.
-#[must_use]
-pub fn state_dir() -> PathBuf {
-    PathBuf::from(STATE_DIR)
 }
 
 /// Run FRR.
