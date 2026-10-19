@@ -12,7 +12,8 @@
 
 use std::ffi::CString;
 use std::fs;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
+use std::net::{SocketAddr, TcpStream};
 use std::os::fd::AsRawFd as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,10 @@ const ROOT: &str = "/tmp/gateway";
 /// The gateway's port, and its peer, which stays behind to stand in for the fabric.
 const PORT: &str = "dp0";
 const FABRIC: &str = "fabric0";
+
+/// The dataplane's metrics endpoint. Its host runtime serves it from init's original namespace,
+/// which here is the guest's own, while the control plane sits in a namespace of its own.
+const METRICS: &str = "127.0.0.1:9090";
 
 /// What init has to stop: everything it starts, and every daemon watchfrr starts.
 const GATEWAY_PROCESSES: &[&str] = &[
@@ -163,7 +168,8 @@ fn assemble_root(image: &Path) -> PathBuf {
     root
 }
 
-/// Create the gateway's port and the fabric's end of it, both up.
+/// Create the gateway's port and the fabric's end of it, both up, and bring up the guest's loopback,
+/// which the metrics endpoint is reached over.
 fn create_port() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -178,13 +184,17 @@ fn create_port() {
             .execute()
             .await
             .expect("a veth pair");
-        let peer = if_nametoindex(FABRIC).unwrap();
-        handle
-            .link()
-            .set(LinkUnspec::new_with_index(peer).up().build())
-            .execute()
-            .await
-            .unwrap();
+        for index in [
+            if_nametoindex(FABRIC).unwrap(),
+            if_nametoindex("lo").unwrap(),
+        ] {
+            handle
+                .link()
+                .set(LinkUnspec::new_with_index(index).up().build())
+                .execute()
+                .await
+                .unwrap();
+        }
         connection.abort();
     });
 }
@@ -213,6 +223,19 @@ fn log(path: &Path) -> String {
         let _ = file.read_to_string(&mut text);
     }
     text
+}
+
+/// One scrape of the metrics endpoint, or `None` if nothing answered.
+fn scrape_metrics() -> Option<String> {
+    let address: SocketAddr = METRICS.parse().unwrap();
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(1)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    stream
+        .write_all(b"GET /metrics HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+        .ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    Some(response)
 }
 
 fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
@@ -327,6 +350,30 @@ fn supervised_frr_starts_and_stops_with_the_gateway() {
         ));
     }
     drop(control);
+
+    // The outward-facing services are not in the control namespace with everything else: metrics
+    // answer here, in the namespace init started in. That covers the whole path -- the namespace
+    // handed to the dataplane, its host runtime, and the listener bound there.
+    let deadline = clock::deadline(Duration::from_secs(30));
+    loop {
+        match scrape_metrics() {
+            Some(response)
+                if response.lines().next().is_some_and(|status| {
+                    status.starts_with("HTTP/1.") && status.contains(" 200 ")
+                }) =>
+            {
+                break;
+            }
+            Some(response) if clock::now() >= deadline => fail(&format!(
+                "metrics answered, but not with a success: {}",
+                response.lines().next().unwrap_or_default()
+            )),
+            None if clock::now() >= deadline => fail(&format!(
+                "nothing served metrics at {METRICS} in init's own namespace"
+            )),
+            _ => std::thread::sleep(Duration::from_millis(200)),
+        }
+    }
 
     // Shutdown: init stops on SIGTERM, successfully, within its budget.
     kill(
