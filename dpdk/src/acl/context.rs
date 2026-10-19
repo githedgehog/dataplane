@@ -52,6 +52,7 @@ use super::error::{
 };
 use super::field::FieldDef;
 use super::rule::Rule;
+use crate::eal::EalLease;
 
 /// Serialize creation, deletion, and inspection of DPDK's global ACL registry.
 ///
@@ -241,6 +242,8 @@ pub struct AclContext<const N: usize, State = Configuring<N>> {
     /// mismatch is a compile-time error rather than UB at `rte_acl_add_rules`
     /// time.
     params: AclCreateParams<N>,
+    /// Keeps the EAL's memory, which holds the context, alive until the context is freed.
+    eal: EalLease,
     /// Per-state data: both [`Configuring<N>`] and [`Built<N>`] carry the
     /// [`AclBuildConfig<N>`] (the [`Built`] copy is the one used by
     /// `rte_acl_build`; the [`Configuring`] copy is used to validate rules
@@ -401,7 +404,14 @@ impl<const N: usize, State> AclContext<N, State> {
     /// Used internally to implement typestate transitions: the raw pointer,
     /// params, and per-state data are moved out, and [`ManuallyDrop`] prevents
     /// the old value's [`Drop`] from freeing the DPDK handle.
-    fn into_parts(self) -> (NonNull<dpdk_sys::rte_acl_ctx>, AclCreateParams<N>, State) {
+    fn into_parts(
+        self,
+    ) -> (
+        NonNull<dpdk_sys::rte_acl_ctx>,
+        AclCreateParams<N>,
+        EalLease,
+        State,
+    ) {
         let this = ManuallyDrop::new(self);
         let ctx = this.ctx;
         // SAFETY: `this` is wrapped in ManuallyDrop, so its Drop will not run
@@ -409,10 +419,12 @@ impl<const N: usize, State> AclContext<N, State> {
         // Moving `params` out via ptr::read yields exactly one owner of the
         // AclCreateParams<N>.
         let params = unsafe { core::ptr::read(&this.params) };
+        // SAFETY: as above, a single owner of the lease.
+        let eal = unsafe { core::ptr::read(&this.eal) };
         // SAFETY: same reasoning as the params move above -- `this` is
         // ManuallyDrop, so reading `state` produces a single owner.
         let state = unsafe { core::ptr::read(&this.state) };
-        (ctx, params, state)
+        (ctx, params, eal, state)
     }
 }
 
@@ -452,12 +464,8 @@ impl<const N: usize> AclContext<N, Configuring<N>> {
     ///
     /// # Errors
     ///
-    /// Returns [`AclCreateError`] if DPDK fails to allocate the context.  This
-    /// includes the case where the DPDK EAL has not been initialized:
-    /// `rte_acl_create` returns NULL with `rte_errno` set, which surfaces as
-    /// [`AclCreateError::InvalidParams`] or [`AclCreateError::Unknown`].  The
-    /// failure is graceful -- this is a regular error path, not undefined
-    /// behavior.
+    /// Returns [`AclCreateError::EalNotRunning`] if no EAL is running, and
+    /// another [`AclCreateError`] if DPDK fails to allocate the context.
     #[cold]
     #[tracing::instrument(level = "debug", skip(params, config), fields(name = params.name()))]
     pub fn new(
@@ -479,6 +487,9 @@ impl<const N: usize> AclContext<N, Configuring<N>> {
         // silently could lead to use-after-free.  Aborting via the
         // panic is the only safe answer.
         let _create_guard = hold_acl_registry();
+
+        // The context lives in EAL memory; the lease keeps the EAL from being cleaned up first.
+        let eal = EalLease::acquire()?;
 
         // Pre-flight: DPDK's `rte_acl_create` silently returns the existing
         // context for a duplicate name.  Refuse if one is already registered.
@@ -532,6 +543,7 @@ impl<const N: usize> AclContext<N, Configuring<N>> {
         Ok(Self {
             ctx,
             params,
+            eal,
             state: Configuring { config },
         })
     }
@@ -707,10 +719,11 @@ impl<const N: usize> AclContext<N, Configuring<N>> {
         // Transition: Configuring -> Built.  The config moves from
         // Configuring into Built without a clone -- both states hold the
         // same logical artifact.
-        let (ctx, params, old_state) = self.into_parts();
+        let (ctx, params, eal, old_state) = self.into_parts();
         Ok(AclContext {
             ctx,
             params,
+            eal,
             state: Built {
                 config: old_state.config,
             },
@@ -1060,10 +1073,11 @@ impl<const N: usize> AclContext<N, Built<N>> {
 
         // Transition: Built -> Configuring.  Carry the config forward; the
         // post-reset context still describes the same field layout.
-        let (ctx, params, old_state) = self.into_parts();
+        let (ctx, params, eal, old_state) = self.into_parts();
         AclContext {
             ctx,
             params,
+            eal,
             state: Configuring {
                 config: old_state.config,
             },

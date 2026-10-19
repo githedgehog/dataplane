@@ -112,6 +112,71 @@ impl<'eal> EalShared<'eal> {
     }
 }
 
+/// Whether an EAL is running, and how many [`EalLease`]s are outstanding.
+#[derive(Debug)]
+struct Leases {
+    running: bool,
+    held: usize,
+}
+
+#[allow(
+    clippy::disallowed_types,
+    reason = "the EAL is process-wide and outlives model executions"
+)]
+static LEASES: concurrency::process_global::Mutex<Leases> =
+    concurrency::process_global::Mutex::new(Leases {
+        running: false,
+        held: 0,
+    });
+
+#[allow(
+    clippy::disallowed_types,
+    reason = "the EAL is process-wide and outlives model executions"
+)]
+fn leases() -> concurrency::process_global::MutexGuard<'static, Leases> {
+    LEASES
+        .lock()
+        .unwrap_or_else(concurrency::process_global::PoisonError::into_inner)
+}
+
+/// Keeps EAL memory alive for an object that cannot borrow the [`Eal`].
+///
+/// Some EAL-backed objects are owned by threads or async tasks that outlive any borrow of the
+/// [`Eal`]; management's ACL classifiers are the example. Such an object takes a lease when it is
+/// created and holds it until it is freed. While any lease is outstanding, dropping the [`Eal`]
+/// skips `rte_eal_cleanup`, so tearing down in the wrong order leaks EAL memory rather than
+/// freeing it out from under its users.
+#[derive(Debug)]
+#[must_use]
+pub struct EalLease(());
+
+/// No EAL is running, so EAL-backed objects cannot be created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the DPDK EAL is not running")]
+pub struct EalNotRunning;
+
+impl EalLease {
+    /// Take a lease on the running EAL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EalNotRunning`] if no EAL has been initialized, or if it is being torn down.
+    pub fn acquire() -> Result<Self, EalNotRunning> {
+        let mut leases = leases();
+        if !leases.running {
+            return Err(EalNotRunning);
+        }
+        leases.held += 1;
+        Ok(EalLease(()))
+    }
+}
+
+impl Drop for EalLease {
+    fn drop(&mut self) {
+        leases().held -= 1;
+    }
+}
+
 /// Error type for EAL initialization failures.
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
@@ -249,6 +314,7 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     let port_owner = dev::Ownership::new().unwrap_or_else(|e| {
         Eal::fatal_error(format!("failed to allocate a port owner id: {e:?}"));
     });
+    leases().running = true;
     Eal {
         mem: mem::Manager::init(),
         dev: dev::Manager::init(),
@@ -323,6 +389,8 @@ impl Drop for Eal {
     /// This is called automatically when the `Eal` is dropped and generally should not be called
     /// manually.
     ///
+    /// Cleanup is skipped, and EAL memory leaked, while any [`EalLease`] is outstanding.
+    ///
     /// # Panics
     ///
     /// Panics if the EAL cleanup fails for some reason.
@@ -334,6 +402,13 @@ impl Drop for Eal {
     #[allow(clippy::panic)]
     #[tracing::instrument(level = "info", skip(self))]
     fn drop(&mut self) {
+        // Refuse new leases first, so the count read here can only fall.
+        let leased = {
+            let mut leases = leases();
+            leases.running = false;
+            leases.held
+        };
+
         info!("waiting on EAL threads");
         unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
 
@@ -352,6 +427,14 @@ impl Drop for Eal {
             unsafe { self.mem.release_all() };
         }
         self.port_owner.release_all();
+
+        if leased != 0 {
+            error!(
+                "{leased} object(s) still hold EAL leases; skipping EAL cleanup rather than \
+                 freeing memory they may still use"
+            );
+            return;
+        }
 
         info!("Closing EAL");
         let ret = unsafe { dpdk_sys::rte_eal_cleanup() };
