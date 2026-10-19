@@ -16,6 +16,7 @@ concurrency = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 tracectl = { workspace = true }
+transceiver = { workspace = true }
 vpcmap = { workspace = true }
 
 # external
