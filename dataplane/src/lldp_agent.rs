@@ -11,17 +11,19 @@
 //!
 //! | TLV | Value |
 //! |---|---|
-//! | Chassis ID | locally assigned: the gateway's name from its k8s config |
+//! | Chassis ID | locally assigned: the dataplane's name (`--name`, else the hostname) |
 //! | Port ID | interface name: the name the port was configured with |
 //! | Port Description | the device behind the port: bus address and driver |
-//! | System Name | the gateway's name |
-//! | System Description | this dataplane and its version |
+//! | System Name | the gateway's name from its k8s config, else the chassis ID |
+//! | System Description | this dataplane and its version, and whether it awaits configuration |
 //! | System Capabilities | router, enabled |
 //! | Management Address | the host's address (see [`management_address`]) |
 //! | 802.3 Maximum Frame Size | the port's MTU plus Ethernet header and FCS |
 //!
-//! Nothing is advertised until a config has named the gateway: the chassis ID must not change while
-//! neighbours are listening, and the k8s name is the only one a person will recognise.
+//! A port advertises as soon as it is known, before any configuration: a gateway whose configuration
+//! never arrives is the one most worth finding. The chassis ID is therefore a name the dataplane has
+//! from startup, and it does not change when a configuration arrives, since neighbours key on it;
+//! the k8s name, the one a person will recognise, is the system name.
 
 use crate::drivers::cpbridge::{BridgePort, PortIdentity};
 use lifecycle::Subsystem;
@@ -40,14 +42,26 @@ use tracing::{debug, warn};
 /// What every port says this system is.
 const SYSTEM_DESCRIPTION: &str = concat!("Hedgehog gateway dataplane ", env!("CARGO_PKG_VERSION"));
 
+/// What every port says this system is, until a configuration has named the gateway.
+const SYSTEM_DESCRIPTION_UNCONFIGURED: &str = concat!(
+    "Hedgehog gateway dataplane ",
+    env!("CARGO_PKG_VERSION"),
+    " (awaiting configuration)"
+);
+
 /// Octets an Ethernet frame adds around its payload: the header and the frame check sequence.
 const ETHERNET_OVERHEAD: u16 = 14 + 4;
 
-/// Start advertising on every port in `ports`.
+/// Start advertising on every port in `ports`, as `chassis`.
+///
+/// `chassis` is the dataplane's own name (`--name`, else the hostname), which it has from startup and
+/// keeps across restarts, so a gateway whose configuration never arrives can still be found by its
+/// neighbours. The configured gateway name becomes the system name once there is one.
 pub(crate) fn start(
     handle: &tokio::runtime::Handle,
     mgmt: &Subsystem,
     ports: &[BridgePort],
+    chassis: &str,
     gateway_name: &watch::Receiver<Option<String>>,
     management: &watch::Receiver<Option<IpAddr>>,
 ) {
@@ -57,6 +71,7 @@ pub(crate) fn start(
             compose(
                 port.name.clone(),
                 port.identity.clone(),
+                chassis.to_owned(),
                 gateway_name.clone(),
                 management.clone(),
                 advertisement,
@@ -86,6 +101,7 @@ pub(crate) fn start(
 async fn compose(
     port: InterfaceName,
     mut identity: watch::Receiver<Option<PortIdentity>>,
+    chassis: String,
     mut gateway_name: watch::Receiver<Option<String>>,
     mut management: watch::Receiver<Option<IpAddr>>,
     advertisement: watch::Sender<Option<Advertisement>>,
@@ -95,6 +111,7 @@ async fn compose(
         let now = advertise(
             &port,
             identity.borrow_and_update().as_ref(),
+            &chassis,
             gateway_name.borrow_and_update().as_deref(),
             *management.borrow_and_update(),
         );
@@ -118,18 +135,19 @@ async fn compose(
 }
 
 /// What `port` advertises, or `None` if there is not yet enough to say.
+///
+/// Only the port's identity is waited for. Without a configured `gateway_name` the system name is the
+/// `chassis` name and the system description says that configuration is awaited.
 fn advertise(
     port: &InterfaceName,
     identity: Option<&PortIdentity>,
+    chassis: &str,
     gateway_name: Option<&str>,
     management: Option<IpAddr>,
 ) -> Option<Advertisement> {
     let identity = identity?;
-    let gateway_name = gateway_name?;
-    let Ok(chassis) = IdOctets::new(gateway_name.as_bytes()) else {
-        warn!(
-            "LLDP: the gateway name {gateway_name:?} is too long for a chassis ID; not advertising"
-        );
+    let Ok(chassis_id) = IdOctets::new(chassis.as_bytes()) else {
+        warn!("LLDP: the name {chassis:?} is too long for a chassis ID; not advertising");
         return None;
     };
     let Ok(port_id) = IdOctets::new(port.to_string().as_bytes()) else {
@@ -141,8 +159,12 @@ fn advertise(
         OptionalTlv::PortDescription(text(
             identity.hardware.as_deref().unwrap_or("unknown device"),
         )),
-        OptionalTlv::SystemName(text(gateway_name)),
-        OptionalTlv::SystemDescription(text(SYSTEM_DESCRIPTION)),
+        OptionalTlv::SystemName(text(gateway_name.unwrap_or(chassis))),
+        OptionalTlv::SystemDescription(text(if gateway_name.is_some() {
+            SYSTEM_DESCRIPTION
+        } else {
+            SYSTEM_DESCRIPTION_UNCONFIGURED
+        })),
         OptionalTlv::SystemCapabilities(SystemCapabilities::new(
             SystemCapability::ROUTER,
             SystemCapability::ROUTER,
@@ -175,7 +197,7 @@ fn advertise(
 
     match Advertisement::new(
         source,
-        ChassisId::LocallyAssigned(chassis),
+        ChassisId::LocallyAssigned(chassis_id),
         PortId::InterfaceName(port_id),
         optional,
     ) {
@@ -271,10 +293,43 @@ mod tests {
         InterfaceName::try_from("eth1").unwrap()
     }
 
+    fn system_name_and_description(advertised: &lldp::Advertisement) -> (String, String) {
+        let optional = advertised.lldpdu().optional();
+        let find = |pick: fn(&OptionalTlv) -> Option<String>| {
+            optional.iter().find_map(pick).expect("advertised")
+        };
+        (
+            find(|tlv| match tlv {
+                OptionalTlv::SystemName(name) => Some(name.to_string()),
+                _ => None,
+            }),
+            find(|tlv| match tlv {
+                OptionalTlv::SystemDescription(description) => Some(description.to_string()),
+                _ => None,
+            }),
+        )
+    }
+
     #[test]
-    fn nothing_is_advertised_before_the_gateway_has_a_name() {
-        assert_eq!(advertise(&port(), Some(&identity()), None, None), None);
-        assert_eq!(advertise(&port(), None, Some("gw-1"), None), None);
+    fn nothing_is_advertised_before_the_port_is_known() {
+        assert_eq!(advertise(&port(), None, "dp-1", Some("gw-1"), None), None);
+    }
+
+    /// A gateway whose configuration never arrives is exactly the one someone will want to find.
+    #[test]
+    fn an_unconfigured_gateway_advertises_and_says_it_is_waiting() {
+        let advertised = advertise(&port(), Some(&identity()), "dp-1", None, None)
+            .expect("advertised before configuration");
+        assert_eq!(
+            *advertised.lldpdu().chassis_id(),
+            ChassisId::LocallyAssigned(IdOctets::new(b"dp-1").unwrap())
+        );
+        let (name, description) = system_name_and_description(&advertised);
+        assert_eq!(name, "dp-1");
+        assert!(
+            description.ends_with("(awaiting configuration)"),
+            "{description}"
+        );
     }
 
     #[test]
@@ -283,20 +338,26 @@ mod tests {
         assert_eq!(text(&long).len(), 254);
     }
 
+    /// The chassis ID stays put when the configuration arrives: neighbours key on it, so changing it
+    /// would look to them like a new neighbour.
     #[test]
-    fn a_named_gateway_advertises_its_name_as_chassis() {
+    fn a_configured_gateway_advertises_its_name_as_system_name() {
         let advertised = advertise(
             &port(),
             Some(&identity()),
+            "dp-1",
             Some("gw-1"),
             Some("10.0.0.1".parse().unwrap()),
         )
-        .expect("a named gateway advertises");
+        .expect("a configured gateway advertises");
         let pdu = advertised.lldpdu();
         assert_eq!(
             *pdu.chassis_id(),
-            ChassisId::LocallyAssigned(IdOctets::new(b"gw-1").unwrap())
+            ChassisId::LocallyAssigned(IdOctets::new(b"dp-1").unwrap())
         );
+        let (name, description) = system_name_and_description(&advertised);
+        assert_eq!(name, "gw-1");
+        assert!(!description.contains("awaiting"), "{description}");
         assert!(
             pdu.optional()
                 .iter()
