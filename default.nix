@@ -1882,39 +1882,43 @@ let
     }).overrideAttrs
       source-volatile;
 
+  # The FRR image's contents, which closure-check reads: the image itself is
+  # compressed, so nix finds no store references in it.
+  frr-dataplane-contents = pkgs.buildEnv {
+    name = "dataplane-frr-env";
+    pathsToLink = [
+      "/bin"
+      "/etc"
+      "/lib"
+      "/libexec"
+      "/share"
+      "/usr"
+      "/var"
+    ];
+    paths = with pkgs; [
+      bash
+      coreutils
+      dockerTools.usrBinEnv
+      fancy.dplane-plugin
+      fancy.dplane-rpc
+      fancy.frr-agent
+      fancy.frr-config
+      fancy.frr.dataplane
+      findutils
+      gnugrep
+      iproute2
+      jq
+      prometheus-frr-exporter
+      python3Minimal
+      tini
+    ];
+  };
+
   containers.frr.dataplane =
     (pkgs.dockerTools.buildLayeredImage {
       name = "ghcr.io/githedgehog/dataplane/frr";
       inherit tag;
-      contents = pkgs.buildEnv {
-        name = "dataplane-frr-env";
-        pathsToLink = [
-          "/bin"
-          "/etc"
-          "/lib"
-          "/libexec"
-          "/share"
-          "/usr"
-          "/var"
-        ];
-        paths = with pkgs; [
-          bash
-          coreutils
-          dockerTools.usrBinEnv
-          fancy.dplane-plugin
-          fancy.dplane-rpc
-          fancy.frr-agent
-          fancy.frr-config
-          fancy.frr.dataplane
-          findutils
-          gnugrep
-          iproute2
-          jq
-          prometheus-frr-exporter
-          python3Minimal
-          tini
-        ];
-      };
+      contents = frr-dataplane-contents;
 
       fakeRootCommands = ''
         #!${pkgs.bash}/bin/bash
@@ -1938,7 +1942,15 @@ let
       ];
       config.Cmd = [ "/libexec/frr/docker-start" ];
     }).overrideAttrs
-      source-volatile;
+      (
+        orig:
+        source-volatile orig
+        // {
+          passthru = (orig.passthru or { }) // {
+            contents = frr-dataplane-contents;
+          };
+        }
+      );
 
   containers.frr.host =
     (pkgs.dockerTools.buildLayeredImage {
@@ -2021,6 +2033,9 @@ let
   # derivations: the point is to catch a toolchain arriving by a route nobody
   # anticipated, and naming the routes we already know about would only catch
   # the ones we have already fixed.
+  #
+  # One check per published image, named like the image's `just build-container`
+  # target: `closure-check.dataplane` and `closure-check.frr.dataplane`.
   closure-check =
     let
       # Extended regexes, matched against the name half of each store path.
@@ -2090,7 +2105,7 @@ let
       exempt = [
         {
           pattern = "^python3-minimal-";
-          why = "FRR's `frr-reload.py` is how any configuration reaches FRR at all, and its `#!` line names this interpreter; the gateway image ships FRR because the control plane and the datapath share one process tree";
+          why = "FRR's `frr-reload.py` is how any configuration reaches FRR at all, and its `#!` line names this interpreter; both images ship FRR";
         }
       ];
 
@@ -2118,115 +2133,125 @@ let
       # itself working and then failed to look for a source tree.
       lines = f: xs: pkgs.lib.concatMapStrings (x: "${f x}\n") xs;
       rules = lines (r: "${r.pattern}\t${r.why}") forbidden;
+
+      # `attr` is the image's attribute path in default.nix, for the error message.
+      check =
+        name: attr: image:
+        pkgs.runCommandLocal "${name}-closure-check"
+          {
+            closure = pkgs.closureInfo { rootPaths = [ image ]; };
+            inherit rules;
+            canaries = lines (c: c) canaries;
+            allowed = lines (a: a) allowed;
+            exemptions = lines (e: "${e.pattern}\t${e.why}") exempt;
+            passAsFile = [
+              "rules"
+              "canaries"
+              "allowed"
+              "exemptions"
+            ];
+          }
+          ''
+            set -euo pipefail
+
+            # Prints every rule the given name trips, one "pattern<TAB>why" per line.
+            matches() {
+              local name="$1"
+              while IFS=$'\t' read -r pattern why; do
+                [ -n "$pattern" ] || continue
+                # `-e`, because a pattern may legitimately begin with `-`
+                # (`-dev$`), which grep would otherwise read as an option.
+                if printf '%s' "$name" | grep -Eq -e "$pattern"; then
+                  printf '%s\t%s\n' "$pattern" "$why"
+                fi
+              done < "$rulesPath"
+            }
+
+            # Prove the matcher works before trusting it to say "clean".
+            while read -r canary; do
+              [ -n "$canary" ] || continue
+              if [ -z "$(matches "$canary")" ]; then
+                echo "closure-check is broken: '$canary' should have been flagged and was not." >&2
+                exit 1
+              fi
+            done < "$canariesPath"
+
+            while read -r ok; do
+              [ -n "$ok" ] || continue
+              hit="$(matches "$ok" || true)"
+              if [ -n "$hit" ]; then
+                echo "closure-check is too greedy: '$ok' is legitimate but matched:" >&2
+                printf '%s\n' "$hit" >&2
+                exit 1
+              fi
+            done < "$allowedPath"
+
+            # The exemption, if any, that permits this name. Prints "pattern<TAB>why".
+            exemption() {
+              local name="$1"
+              while IFS=$'\t' read -r pattern why; do
+                [ -n "$pattern" ] || continue
+                if printf '%s' "$name" | grep -Eq -e "$pattern"; then
+                  printf '%s\t%s\n' "$pattern" "$why"
+                  return
+                fi
+              done < "$exemptionsPath"
+            }
+
+            status=0
+            count=0
+            used=""
+            while read -r path; do
+              count=$((count + 1))
+              rest="''${path#/nix/store/}"
+              name="''${rest#*-}"
+              hit="$(matches "$name" || true)"
+              [ -n "$hit" ] || continue
+              pass="$(exemption "$name" || true)"
+              if [ -n "$pass" ]; then
+                used="$used''${pass%%$'\t'*}"$'\n'
+                echo "permitted in the runtime closure: $name" >&2
+                echo "    ''${pass#*$'\t'}" >&2
+                continue
+              fi
+              status=1
+              echo "forbidden in the runtime closure: $name" >&2
+              printf '%s\n' "$hit" | while IFS=$'\t' read -r _ why; do
+                echo "    $why" >&2
+              done
+              echo "    $path" >&2
+              echo >&2
+            done < "$closure/store-paths"
+
+            # An exemption nobody needed is one nobody is watching. See the comment
+            # on `exempt` in default.nix.
+            while IFS=$'\t' read -r pattern _; do
+              [ -n "$pattern" ] || continue
+              if ! printf '%s' "$used" | grep -Fqx -- "$pattern"; then
+                echo "closure-check has a stale exemption: nothing in the closure matches '$pattern'." >&2
+                echo "Delete it from \`exempt\` in default.nix; the rule it covers is doing its job again." >&2
+                exit 1
+              fi
+            done < "$exemptionsPath"
+
+            if [ "$status" -ne 0 ]; then
+              echo "${attr}'s runtime closure contains build-only paths (listed above)." >&2
+              echo "To find who pulled one in:" >&2
+              echo "    nix why-depends --all \$(nix build -f default.nix ${attr} --print-out-paths --no-link) <path>" >&2
+              echo "Then either stop creating the reference, or blank it with remove-references-to." >&2
+              exit 1
+            fi
+
+            echo "runtime closure clean: $count paths, none build-only"
+            touch "$out"
+          '';
     in
-    pkgs.runCommandLocal "dataplane-closure-check"
-      {
-        closure = pkgs.closureInfo { rootPaths = [ dataplane.tar ]; };
-        inherit rules;
-        canaries = lines (c: c) canaries;
-        allowed = lines (a: a) allowed;
-        exemptions = lines (e: "${e.pattern}\t${e.why}") exempt;
-        passAsFile = [
-          "rules"
-          "canaries"
-          "allowed"
-          "exemptions"
-        ];
-      }
-      ''
-        set -euo pipefail
-
-        # Prints every rule the given name trips, one "pattern<TAB>why" per line.
-        matches() {
-          local name="$1"
-          while IFS=$'\t' read -r pattern why; do
-            [ -n "$pattern" ] || continue
-            # `-e`, because a pattern may legitimately begin with `-`
-            # (`-dev$`), which grep would otherwise read as an option.
-            if printf '%s' "$name" | grep -Eq -e "$pattern"; then
-              printf '%s\t%s\n' "$pattern" "$why"
-            fi
-          done < "$rulesPath"
-        }
-
-        # Prove the matcher works before trusting it to say "clean".
-        while read -r canary; do
-          [ -n "$canary" ] || continue
-          if [ -z "$(matches "$canary")" ]; then
-            echo "closure-check is broken: '$canary' should have been flagged and was not." >&2
-            exit 1
-          fi
-        done < "$canariesPath"
-
-        while read -r ok; do
-          [ -n "$ok" ] || continue
-          hit="$(matches "$ok" || true)"
-          if [ -n "$hit" ]; then
-            echo "closure-check is too greedy: '$ok' is legitimate but matched:" >&2
-            printf '%s\n' "$hit" >&2
-            exit 1
-          fi
-        done < "$allowedPath"
-
-        # The exemption, if any, that permits this name. Prints "pattern<TAB>why".
-        exemption() {
-          local name="$1"
-          while IFS=$'\t' read -r pattern why; do
-            [ -n "$pattern" ] || continue
-            if printf '%s' "$name" | grep -Eq -e "$pattern"; then
-              printf '%s\t%s\n' "$pattern" "$why"
-              return
-            fi
-          done < "$exemptionsPath"
-        }
-
-        status=0
-        count=0
-        used=""
-        while read -r path; do
-          count=$((count + 1))
-          rest="''${path#/nix/store/}"
-          name="''${rest#*-}"
-          hit="$(matches "$name" || true)"
-          [ -n "$hit" ] || continue
-          pass="$(exemption "$name" || true)"
-          if [ -n "$pass" ]; then
-            used="$used''${pass%%$'\t'*}"$'\n'
-            echo "permitted in the runtime closure: $name" >&2
-            echo "    ''${pass#*$'\t'}" >&2
-            continue
-          fi
-          status=1
-          echo "forbidden in the runtime closure: $name" >&2
-          printf '%s\n' "$hit" | while IFS=$'\t' read -r _ why; do
-            echo "    $why" >&2
-          done
-          echo "    $path" >&2
-          echo >&2
-        done < "$closure/store-paths"
-
-        # An exemption nobody needed is one nobody is watching. See the comment
-        # on `exempt` in default.nix.
-        while IFS=$'\t' read -r pattern _; do
-          [ -n "$pattern" ] || continue
-          if ! printf '%s' "$used" | grep -Fqx -- "$pattern"; then
-            echo "closure-check has a stale exemption: nothing in the closure matches '$pattern'." >&2
-            echo "Delete it from \`exempt\` in default.nix; the rule it covers is doing its job again." >&2
-            exit 1
-          fi
-        done < "$exemptionsPath"
-
-        if [ "$status" -ne 0 ]; then
-          echo "dataplane.tar's runtime closure contains build-only paths (listed above)." >&2
-          echo "To find who pulled one in:" >&2
-          echo "    nix why-depends --all \$(nix build -f default.nix dataplane.tar --print-out-paths --no-link) <path>" >&2
-          echo "Then either stop creating the reference, or blank it with remove-references-to." >&2
-          exit 1
-        fi
-
-        echo "runtime closure clean: $count paths, none build-only"
-        touch "$out"
-      '';
+    {
+      dataplane = check "dataplane" "dataplane.tar" dataplane.tar;
+      frr.dataplane =
+        check "frr-dataplane" "containers.frr.dataplane.contents"
+          containers.frr.dataplane.contents;
+    };
 
 in
 {
