@@ -21,7 +21,11 @@ pub use contract::*;
 #[cfg(any(doc, test, feature = "test_buffer"))]
 pub mod test_utils;
 
-use crate::buffer::{DeepCopy, Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
+#[cfg(any(doc, test, feature = "test_buffer"))]
+use crate::buffer::TestBuffer;
+use crate::buffer::{
+    Append, DeepCopy, Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart,
+};
 use crate::eth::Eth;
 use crate::eth::EthError;
 use crate::eth::ethtype::EthType;
@@ -69,6 +73,75 @@ impl<Buf: PacketBufferMut + DeepCopy> Packet<Buf> {
             payload: self.payload.deep_copy()?,
             meta: self.meta.clone(),
         })
+    }
+}
+
+impl<Buf: PacketBufferMut> Packet<Buf> {
+    /// Convert a packet into one that uses the target buffer `buf`, possibly
+    /// of distinct type. This method consumes the original packet and is meant
+    /// to allow changing the underlying buffer type of a `Packet`.
+    ///
+    /// The headers and metadata of the original packet are transferred to the
+    /// new `Packet` and its payload is copied into the new one. This method can
+    /// be useful to convert a `Packet<TestBuffer>` into one using a DPDK `Mbuf`
+    /// provided by the calling DPDK worker.
+    ///
+    /// # Errors
+    ///
+    /// The original packet is returned if the target `buf` lacks the room to
+    /// store the payload of the original packet.
+    ///
+    /// # Panics
+    ///
+    /// This method panics if the provided buffer is chained or already contains
+    /// data.
+    #[allow(clippy::result_large_err)]
+    pub fn rebuffer<Target: PacketBufferMut + Append>(
+        self,
+        mut buf: Target,
+    ) -> Result<Packet<Target>, Packet<Buf>> {
+        // sanities
+        assert!(!buf.is_chained(), "buf does not come from pool");
+        assert_eq!(buf.packet_len(), 0, "buf is dirty");
+
+        let len = self.payload_len();
+        let Ok(segment) = buf.append(len) else {
+            // target buf is released here
+            return Err(self);
+        };
+        let start = segment.len() - usize::from(len);
+        segment[start..].copy_from_slice(self.payload.as_ref());
+        Ok(Packet {
+            headers: self.headers,
+            payload: buf,
+            meta: self.meta,
+        })
+    }
+
+    /// Convert a `Packet` into one that uses a [`TestBuffer`] as backing store.
+    /// Like [`Packet::rebuffer`], it consumes the packet, but it cannot fail:
+    /// the new buffer is built to fit the payload.
+    /// This method is meant to allow converting packets with DPDK `Mbuf`s into
+    /// vanilla `Packets` so that the original `Mbuf`s can be early returned to
+    /// their pools, when packets need to be handed off outside from the worker
+    /// owning them. The new buffer keeps the original's headroom, so that the
+    /// headers can still grow (e.g. by an encap), but only the default
+    /// [`TestBuffer::TAILROOM`]: an `Mbuf`'s tailroom spans most of its data
+    /// room, which would make every copy as large as a jumbo frame. The packet
+    /// inherits the headers and metadata.
+    #[must_use]
+    #[cfg(any(doc, test, feature = "test_buffer"))]
+    pub fn into_test_buffer(self) -> Packet<TestBuffer> {
+        let payload = TestBuffer::from_raw_data_with_room(
+            self.payload.as_ref(),
+            self.payload.headroom(),
+            TestBuffer::TAILROOM,
+        );
+        Packet {
+            headers: self.headers,
+            payload,
+            meta: self.meta,
+        }
     }
 }
 
@@ -1421,6 +1494,103 @@ mod padding_tests {
                     .expect("no inner tcp header")
                     .validate_checksum(&TcpChecksumPayload::new(&net, payload))
                     .expect("inner trailing octets leaked into the tcp checksum");
+            });
+    }
+}
+
+#[cfg(test)]
+mod rebuffer_tests {
+    use crate::buffer::{Headroom, Tailroom, TestBuffer};
+    use crate::headers::{Headers, TryHeaders};
+    use crate::packet::{DoneReason, Packet};
+    use crate::parse::DeParse;
+
+    /// The packet `headers` followed by `payload` parse into, if they parse.
+    fn packet(headers: &Headers, payload: &[u8]) -> Option<Packet<TestBuffer>> {
+        let mut bytes = vec![0; headers.size().get() as usize];
+        headers.deparse(&mut bytes).ok()?;
+        bytes.extend_from_slice(payload);
+        Packet::new(TestBuffer::from_raw_data(&bytes)).ok()
+    }
+
+    /// Give `packet` a verdict, so that dropping it does not log an error.
+    fn retire<Buf: crate::buffer::PacketBufferMut>(mut packet: Packet<Buf>) -> Packet<Buf> {
+        packet.done(DoneReason::Delivered);
+        packet
+    }
+
+    fn serialized(packet: Packet<TestBuffer>) -> Vec<u8> {
+        retire(packet).serialize().unwrap().as_ref().to_vec()
+    }
+
+    #[test]
+    fn rebuffer_preserves_the_packet() {
+        bolero::check!()
+            .with_type::<(Headers, Vec<u8>)>()
+            .for_each(|(headers, payload)| {
+                let Some(original) = packet(headers, &payload[..payload.len().min(512)]) else {
+                    return;
+                };
+                let rebuffered = original
+                    .deep_copy()
+                    .unwrap()
+                    .rebuffer(TestBuffer::from_raw_data_with_room(&[], 1024, 1024))
+                    .unwrap();
+                assert_eq!(rebuffered.headers(), original.headers());
+                assert_eq!(rebuffered.payload().as_ref(), original.payload().as_ref());
+                assert_eq!(serialized(rebuffered), serialized(original));
+            });
+    }
+
+    #[test]
+    fn into_test_buffer_preserves_the_packet_and_its_headroom() {
+        bolero::check!()
+            .with_type::<(Headers, Vec<u8>)>()
+            .for_each(|(headers, payload)| {
+                let Some(original) = packet(headers, &payload[..payload.len().min(512)]) else {
+                    return;
+                };
+                let converted = original.deep_copy().unwrap().into_test_buffer();
+                assert_eq!(
+                    converted.payload().headroom(),
+                    original.payload().headroom()
+                );
+                assert_eq!(converted.payload().tailroom(), TestBuffer::TAILROOM);
+                assert_eq!(converted.headers(), original.headers());
+                assert_eq!(converted.payload().as_ref(), original.payload().as_ref());
+                assert_eq!(serialized(converted), serialized(original));
+            });
+    }
+
+    #[test]
+    #[should_panic(expected = "buf is dirty")]
+    fn rebuffer_panics_on_a_non_empty_target() {
+        let original = crate::packet::test_utils::build_test_ipv4_packet(64).unwrap();
+        let _ = original.rebuffer(TestBuffer::from_raw_data(&[0xab; 8]));
+    }
+
+    #[test]
+    fn rebuffer_rejects_a_target_without_tailroom() {
+        bolero::check!()
+            .with_type::<(Headers, u16)>()
+            .for_each(|(headers, extra)| {
+                let payload = vec![0xab; usize::from(TestBuffer::TAILROOM + 1 + extra % 512)];
+                let Some(original) = packet(headers, &payload) else {
+                    return;
+                };
+                // An empty buffer made from no data has only `TAILROOM` octets of tailroom.
+                let len = original.payload_len();
+                if len <= TestBuffer::TAILROOM {
+                    return;
+                }
+                let expected = retire(original.deep_copy().unwrap());
+                let returned = retire(
+                    original
+                        .rebuffer(TestBuffer::from_raw_data(&[]))
+                        .unwrap_err(),
+                );
+                assert_eq!(returned.headers(), expected.headers());
+                assert_eq!(returned.payload().as_ref(), expected.payload().as_ref());
             });
     }
 }
