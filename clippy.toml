@@ -9,3 +9,4 @@ disallowed-types = [
     "std::sync::RwLockReadGuard",
     "std::sync::RwLockWriteGuard",
 ]
+doc-valid-idents = ["PCIe", "ConnectX", ".."] # hardware names, not code

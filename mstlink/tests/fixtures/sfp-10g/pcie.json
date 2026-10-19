@@ -1,0 +1,28 @@
+{
+	"result" : 
+	{
+		"output" : 
+		{
+			"Management PCIe Performance Counters Info" : 
+			{
+				"CRC Error dllp" : "0",
+				"CRC Error tlp" : "0",
+				"Effective ber" : "15E-255",
+				"RX Errors" : "0",
+				"TX Errors" : "2"
+			},
+			"PCIe Operational (Enabled) Info" : 
+			{
+				"Depth, pcie index, node" : "0, 0, 0",
+				"Link Speed Active (Enabled)" : "32G-Gen 5 (32G-Gen 5)",
+				"Link Width Active (Enabled)" : "8X (16X)"
+			}
+		}
+	},
+	"status" : 
+	{
+		"code" : 0,
+		"message" : "success"
+	}
+}
+
