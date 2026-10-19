@@ -1703,6 +1703,7 @@ dependencies = [
  "dataplane-sysfs",
  "devlink",
  "futures",
+ "libc",
  "nix",
  "procfs",
  "rtnetlink",

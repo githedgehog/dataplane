@@ -217,6 +217,7 @@ test package="tests.all" *args: (setup-roots) (build (if package == "tests.all" 
         export N_VM_TEST_ROOT="$(pwd)/testroot"
         export N_VM_VM_ROOT="$(pwd)/vmroot"
     fi
+    just n_vm_host_share="{{ n_vm_host_share }}" _export-test-extras
     # `trybuild` (n-vm-macros' compile-fail suite) shells out to
     # `cargo --offline` for a scratch project under `target/tests/trybuild`,
     # which resolves against the local registry cache rather than the nix
@@ -394,6 +395,7 @@ test-each *args: (setup-roots) (build "tests.pkg" args)
         export N_VM_TEST_ROOT="$(pwd)/testroot"
         export N_VM_VM_ROOT="$(pwd)/vmroot"
     fi
+    just n_vm_host_share="{{ n_vm_host_share }}" _export-test-extras
     cargo fetch --locked
     declare -a fail=()
     for test_archive in results/tests.pkg*/*.tar.zst; do
@@ -510,10 +512,25 @@ setup-roots *args:
       just n_vm_host_share="{{ n_vm_host_share }}" export-scratch-roots
     fi
 
+# Export what test archives link beyond the scratch roots (init's gateway image), which is built
+# with the archives and so after `setup-roots` has exported the rest. A no-op without the share.
+[private]
+[script]
+_export-test-extras:
+    {{ _just_debuggable_ }}
+    if [ -z "{{ n_vm_host_share }}" ]; then
+      exit 0
+    fi
+    shopt -s nullglob
+    declare -a extras=( results/tests*/gateway-rootfs )
+    if (( ${#extras[@]} > 0 )); then
+      just n_vm_host_share="{{ n_vm_host_share }}" export-scratch-roots "${extras[@]}"
+    fi
+
 # Copy the scratch roots' nix closure somewhere the Docker daemon can read it.
 # See `n_vm_host_share`; a no-op unless that is set.
 [script]
-export-scratch-roots:
+export-scratch-roots *extra:
     {{ _just_debuggable_ }}
     declare -r share="{{ n_vm_host_share }}"
     if [ -z "${share}" ]; then
@@ -542,7 +559,8 @@ export-scratch-roots:
     #
     # devroot is deliberately not here. It is the toolchain -- 4.6 GiB against
     # sysroot's 2.0 -- and nothing inside the container compiles.
-    declare -a roots=( testroot vmroot sysroot )
+    # `extra`: what a test archive needs beyond these, built after them (see `_export-test-extras`).
+    declare -a roots=( testroot vmroot sysroot {{ extra }} )
     declare -a resolved=()
     for root in "${roots[@]}"; do
       if [ ! -e "${root}" ]; then
@@ -1214,6 +1232,10 @@ coverage *args: (setup-roots)
       export N_VM_TEST_ROOT="$(pwd)/testroot"
       export N_VM_VM_ROOT="$(pwd)/vmroot"
     fi
+    # init's end-to-end test runs the gateway image. Nix builds compile its path in; this build is
+    # cargo's own, so it is handed over here.
+    just build gateway-rootfs
+    export DATAPLANE_TEST_GATEWAY_ROOTFS="$(readlink -f results/gateway-rootfs)"
     # See the `test` recipe: trybuild resolves its scratch project against the
     # local registry cache.
     cargo fetch --locked
@@ -1369,6 +1391,7 @@ coverage-archive package="tests.all" *args: (setup-roots)
         export N_VM_TEST_ROOT="${root}/testroot"
         export N_VM_VM_ROOT="${root}/vmroot"
     fi
+    just n_vm_host_share="{{ n_vm_host_share }}" _export-test-extras
     # See the `test` recipe: trybuild resolves its scratch project against the
     # local registry cache, which a nix-only CI job never populates.
     cargo fetch --locked

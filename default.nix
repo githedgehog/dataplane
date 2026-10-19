@@ -1307,6 +1307,15 @@ let
     }
   ) package-list;
 
+  # The gateway image's root filesystem, unpacked, for init's end-to-end `--supervise-frr` VM test.
+  #
+  # The image's store closure is left out: the tree is symlinks into /nix/store, which nix reads as
+  # references, so the closure stays alive (and is exported for the VM) without a second copy.
+  gateway-rootfs = pkgs.runCommandLocal "dataplane-gateway-rootfs" { } ''
+    mkdir -p "$out"
+    tar --extract --file ${dataplane.tar} --directory "$out" --exclude='nix/store/*'
+  '';
+
   test-builder =
     {
       package ? null,
@@ -1314,12 +1323,26 @@ let
     }:
     let
       pname = if package != null then package else "all";
+      # init's VM test runs the real image. Its path is compiled into the test, and linked from the
+      # archive's output, since nix cannot read references out of the compressed archive itself.
+      # Not under a model checker's features: the image's own crates do not have them, and only
+      # model-checked tests run then anyway.  Not in instrumented builds either, whose image
+      # closure carries the whole toolchain.
+      wants-gateway =
+        cargo-features == [ ]
+        && !(builtins.elem "coverage" instrumentations)
+        && (package == null || package == "dataplane-init");
     in
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
       profile = profile-tests';
       args = {
         inherit pname cargoArtifacts;
+      }
+      // pkgs.lib.optionalAttrs wants-gateway {
+        DATAPLANE_TEST_GATEWAY_ROOTFS = "${gateway-rootfs}";
+      }
+      // {
         buildPhaseCargoCommand =
           (builtins.concatStringsSep " " (
             [
@@ -1340,7 +1363,8 @@ let
               "; echo -n '${src-prefix}' > $out/source-prefix"
             else
               ""
-          );
+          )
+          + (if wants-gateway then "; ln -s ${gateway-rootfs} $out/gateway-rootfs" else "");
       };
     };
 
@@ -2264,6 +2288,7 @@ in
     dataplane
     devenv
     devroot
+    gateway-rootfs
     doctests
     docs
     mk-initramfs
