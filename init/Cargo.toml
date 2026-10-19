@@ -37,6 +37,8 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 n-vm = { workspace = true }
 
 # external
+libc = { workspace = true }
+nix = { workspace = true, features = ["mount", "net", "sched", "signal"] }
 
 [build-dependencies]
 # internal

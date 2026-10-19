@@ -119,6 +119,11 @@ pub mod features {
     /// `tc` action support.  Cannot be modular.
     pub const NET_CLS_ACT: KernelFeature = KernelFeature::builtin_only("NET_CLS_ACT");
 
+    /// Virtual ethernet pairs.
+    pub const VETH: KernelFeature = KernelFeature::modular("VETH", "veth");
+    /// TUN/TAP devices.
+    pub const TUN: KernelFeature = KernelFeature::modular("TUN", "tun");
+
     /// Userspace device passthrough.
     pub const VFIO: KernelFeature = KernelFeature::modular("VFIO", "vfio");
     /// PCI passthrough via VFIO.
