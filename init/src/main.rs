@@ -642,7 +642,7 @@ async fn run_gateway(
     // Nothing starts until `supervisor.run`, so FRR's state directory is still ready before the
     // dataplane binds its control-plane socket there.
     if supervise_frr {
-        frr::prepare_state_dir(&frr::state_dir())?;
+        frr::prepare_state_dir(std::path::Path::new(frr::STATE_DIR))?;
         let (config_dir, daemon_dir) = frr::install();
         let daemons = frr::enabled_daemons(&config_dir, &daemon_dir)?;
         processes.push(frr::watchfrr(&daemons));
