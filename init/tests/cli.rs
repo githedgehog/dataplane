@@ -19,8 +19,8 @@ fn invalid_launch_configuration_fails_before_device_preparation() {
         (vec!["--driver", "dpdk"], "No network interfaces"),
         (vec!["--driver", "kernel"], "No network interfaces"),
         (
-            vec!["--driver", "kernel", "--interface", "eth0=pci@0000:01:00.0"],
-            "Kernel driver does not support",
+            vec!["--driver", "dpdk", "--interface", "eth0=kernel@eth0"],
+            "DPDK driver does not support",
         ),
         (
             vec!["--driver", "dpdk", "--interface", "eth0"],
