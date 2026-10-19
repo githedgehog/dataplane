@@ -9,12 +9,10 @@
 
 #![allow(clippy::unwrap_used, clippy::float_cmp, clippy::panic)]
 
-use dataplane_transceiver::sff8472::{
-    CableKind, Calibration, Length, Links, Reach, SignalingRate, Status,
-};
+use dataplane_transceiver::sff8472::{CableKind, Calibration, Links, SignalingRate, Status};
 use dataplane_transceiver::{
-    Block, Bounds, Capture, Crossings, Current, Detail, Eeprom, HALF, I2cAddress, Image, Module,
-    Power, Region, RxPowerKind, Temperature, Voltage, read,
+    Block, Bounds, Capture, Crossings, Current, Detail, Eeprom, HALF, I2cAddress, Image, Length,
+    Module, Power, Reach, Region, RxPowerKind, Temperature, Voltage, read,
 };
 
 /// An SFP's memory, remembering what was asked for.
