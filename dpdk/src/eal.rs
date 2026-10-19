@@ -336,7 +336,8 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     if ret != 0 {
         Eal::fatal_error(format!(
             "failed to register RX metadata: {}",
-            errno::ErrorCode::parse_i32(ret)
+            // DPDK returns `-rte_errno`.
+            errno::ErrorCode::parse_i32(-ret)
         ));
     }
     let port_owner = dev::Ownership::new().unwrap_or_else(|e| {
