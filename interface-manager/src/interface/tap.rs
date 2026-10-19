@@ -18,6 +18,7 @@ use net::interface::{InterfaceIndex, InterfaceName};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::num::NonZero;
 use tokio::io::unix::AsyncFd;
 use tracing::{info, warn};
 
@@ -230,14 +231,31 @@ mod helper {
 }
 
 impl TapDevice {
-    /// The largest frame this module will move across a tap in one go.
+    /// The largest frame a tap can hand over: the largest MTU a tap accepts, plus an ethernet
+    /// header and a VLAN tag.
     ///
-    /// Sized for a jumbo frame plus ethernet and VLAN headers, which is more than any port the
-    /// dataplane drives is configured for.  A read is a single `read(2)` on a character device and
-    /// returns exactly one frame, so a buffer shorter than the frame silently truncates it rather
-    /// than returning the remainder on the next call -- which is why this is generous rather than
-    /// tuned.
-    pub const MAX_FRAME: usize = 9216;
+    /// An interface's MTU excludes its link-layer header, so a tap whose MTU is `m` can produce
+    /// frames of `m + 18` bytes. A read is a single `read(2)` on a character device and returns
+    /// exactly one frame, so a buffer shorter than the frame silently truncates it rather than
+    /// returning the remainder on the next call. Sizing for the largest possible MTU, rather than
+    /// the one configured, means no MTU can cause that.
+    pub const MAX_FRAME: usize = u16::MAX as usize + Self::ETH_HLEN + Self::VLAN_HLEN;
+
+    /// A zeroed buffer for [`Self::read`], on the heap: at 64 KiB it is too large to want on a
+    /// stack.
+    #[must_use]
+    pub fn frame_buffer() -> Box<[u8; Self::MAX_FRAME]> {
+        vec![0u8; Self::MAX_FRAME]
+            .into_boxed_slice()
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("the vector has exactly MAX_FRAME elements"))
+    }
+
+    /// Length of an ethernet header.
+    const ETH_HLEN: usize = 14;
+
+    /// Length of an 802.1Q tag.
+    const VLAN_HLEN: usize = 4;
 
     /// Create a tap device with the provided name.
     ///
@@ -277,16 +295,24 @@ impl TapDevice {
 
     /// Wait for one frame to arrive on the tap and copy it into `buf`.
     ///
-    /// Returns how many bytes the frame occupies.  A frame longer than `buf` is truncated by the
-    /// kernel and its remainder is lost, so `buf` should be at least [`Self::MAX_FRAME`].
+    /// Returns how many bytes the frame occupies. `buf` holds the largest frame a tap can produce,
+    /// so no frame is truncated.
+    ///
+    /// A tap has no end-of-file: a tap whose device has gone away reports an error instead, so
+    /// the length is never zero.
     ///
     /// Takes `&self`, which is the point of the readiness-based implementation: one task can hold
     /// the tap and await both directions without splitting the descriptor in two.
     ///
     /// # Errors
     ///
-    /// Returns the underlying `io::Error` if the read fails.
-    pub async fn read(&self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+    /// Returns the underlying `io::Error` if the read fails, and
+    /// [`std::io::ErrorKind::UnexpectedEof`] if the kernel returns an empty frame, which a tap
+    /// does not do.
+    pub async fn read(
+        &self,
+        buf: &mut [u8; Self::MAX_FRAME],
+    ) -> Result<NonZero<usize>, std::io::Error> {
         loop {
             let mut ready = self.fd.readable().await?;
             // `try_io` clears the readiness on `WouldBlock` rather than trusting it, which is what
@@ -298,7 +324,12 @@ impl TapDevice {
                 let mut file: &File = inner.get_ref();
                 file.read(buf)
             }) {
-                return result;
+                return NonZero::new(result?).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        format!("tap {} returned an empty frame", self.name),
+                    )
+                });
             }
         }
     }
@@ -413,5 +444,89 @@ impl TapRegistry {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.held.lock().is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TapDevice;
+    use net::interface::InterfaceName;
+    use nix::libc;
+    use rtnetlink::LinkUnspec;
+    use std::time::Duration;
+
+    /// An experimental ethertype, so the test can tell its frame from the kernel's own traffic.
+    const ETHERTYPE: u16 = 0x88b5;
+
+    /// Send `frame` out of the interface at `index` with a raw packet socket.
+    fn send_raw(index: u32, frame: &[u8]) {
+        #[allow(unsafe_code)] // test code: plain socket calls on a descriptor owned here
+        unsafe {
+            let fd = libc::socket(libc::AF_PACKET, libc::SOCK_RAW, 0);
+            assert!(fd >= 0, "{}", std::io::Error::last_os_error());
+            let mut address: libc::sockaddr_ll = std::mem::zeroed();
+            address.sll_family = u16::try_from(libc::AF_PACKET).unwrap();
+            address.sll_ifindex = i32::try_from(index).unwrap();
+            address.sll_halen = 6;
+            let sent = libc::sendto(
+                fd,
+                frame.as_ptr().cast(),
+                frame.len(),
+                0,
+                (&raw const address).cast(),
+                u32::try_from(size_of::<libc::sockaddr_ll>()).unwrap(),
+            );
+            let error = std::io::Error::last_os_error();
+            libc::close(fd);
+            assert_eq!(usize::try_from(sent).ok(), Some(frame.len()), "{error}");
+        }
+    }
+
+    /// A full-size frame at a jumbo MTU arrives whole: the MTU excludes the ethernet header, so
+    /// the frame is longer than the MTU.
+    #[n_vm::test]
+    fn a_full_size_jumbo_frame_is_read_whole() {
+        const MTU: u16 = 9216;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let tap = TapDevice::open(&InterfaceName::try_from("jumbo0").unwrap()).unwrap();
+            let (connection, handle, _) = rtnetlink::new_connection().unwrap();
+            tokio::spawn(connection);
+            handle
+                .link()
+                .set(
+                    LinkUnspec::new_with_index(tap.index().to_u32())
+                        .mtu(u32::from(MTU))
+                        .up()
+                        .build(),
+                )
+                .execute()
+                .await
+                .unwrap();
+
+            let mut frame = vec![0xa5u8; usize::from(MTU) + 14];
+            frame[..6].fill(0xff);
+            frame[6..12].copy_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+            frame[12..14].copy_from_slice(&ETHERTYPE.to_be_bytes());
+            send_raw(tap.index().to_u32(), &frame);
+
+            // The kernel sends its own traffic (IPv6 neighbour discovery) once the tap is up.
+            let mut buf = TapDevice::frame_buffer();
+            let read = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let len = tap.read(&mut buf).await.unwrap().get();
+                    if buf[12..14] == ETHERTYPE.to_be_bytes() {
+                        return len;
+                    }
+                }
+            })
+            .await
+            .expect("the frame reached the tap");
+            assert_eq!(read, frame.len());
+            assert_eq!(buf[..read], frame[..]);
+        });
     }
 }

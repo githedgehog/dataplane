@@ -40,6 +40,7 @@ test-utils = { workspace = true }
 
 # external
 caps = { workspace = true, default-features = false, features = [] }
+tokio = { workspace = true, features = ["rt", "time"] }
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
