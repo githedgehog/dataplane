@@ -19,9 +19,6 @@ use routing::{Attachment, IfState, IfTableReader, IfType, Interface};
 use tracectl::trace_target;
 trace_target!("ingress", LevelFilter::WARN, &["pipeline"]);
 
-/// Ethertype of LLDP (IEEE 802.1AB)
-const ETHTYPE_LLDP: EthType = EthType::new(0x88CC);
-
 /// Tell if a multicast frame is one the control plane needs: LLDP, or IP multicast that cannot
 /// leave the link.
 ///
@@ -32,7 +29,7 @@ const ETHTYPE_LLDP: EthType = EthType::new(0x88CC);
 fn is_control_plane_multicast<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
     if packet
         .try_eth()
-        .is_some_and(|eth| eth.ether_type() == ETHTYPE_LLDP)
+        .is_some_and(|eth| eth.ether_type() == EthType::LLDP)
     {
         return true;
     }
@@ -348,7 +345,7 @@ mod test {
     /// The IPv6 all-nodes multicast MAC, which router advertisements arrive on
     const ALL_NODES_MAC: Mac = Mac([0x33, 0x33, 0, 0, 0, 0x01]);
     /// The nearest-bridge MAC that LLDP is sent to
-    const LLDP_MAC: Mac = Mac([0x01, 0x80, 0xc2, 0, 0, 0x0e]);
+    const LLDP_MAC: Mac = net::lldp::NEAREST_BRIDGE;
 
     /// A neighbor discovery message of type `icmp_type`, received on `ifindex()` and sent to the
     /// IPv6 all-nodes multicast address
@@ -396,7 +393,7 @@ mod test {
 
     #[test]
     fn lldp_multicast_is_local() {
-        let packet = ingress(frame_to(LLDP_MAC, 0x88CC));
+        let packet = ingress(frame_to(LLDP_MAC, net::lldp::ETHTYPE.as_u16()));
         assert_eq!(packet.get_done(), Some(DoneReason::Local));
     }
 
