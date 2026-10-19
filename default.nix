@@ -1755,6 +1755,7 @@ let
             workspace.cli
             workspace.dataplane
             workspace.init
+            pkgs.pkgsHostHost.fancy.mstlink
           ];
         }).overrideAttrs
           source-volatile;

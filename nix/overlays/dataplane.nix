@@ -303,4 +303,7 @@ in
 
   # This isn't directly required by dataplane,
   fancy.perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
+
+  # Not `dataplane-dep`: nothing links against it, and mstflint's build is not one to tune.
+  fancy.mstlink = final.callPackage ../pkgs/mstlink { };
 }
