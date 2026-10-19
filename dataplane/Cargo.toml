@@ -43,6 +43,7 @@ lldp = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 mgmt = { workspace = true }
+mstlink = { workspace = true, features = ["tokio"] }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
 nix = { workspace = true, features = ["socket", "hostname", "net", "sched"] }
