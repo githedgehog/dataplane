@@ -459,12 +459,18 @@ pub enum DriverConfigSection {
 /// Shared by init, which reserves the memory, and the dataplane, which allocates it, so that the
 /// two cannot drift apart.
 pub mod dpdk_memory {
-    /// Receive descriptors per queue.
+    /// Receive descriptors per queue, unless an interface's `/rxd=N` says otherwise.
     pub const RX_DESCRIPTORS: u16 = 1024;
 
-    /// Mbufs in a port's receive pool per receive descriptor of each worker's queue: room for the
-    /// ring, the per-core caches, and frames in the pipeline or waiting to transmit.
-    pub const MBUFS_PER_RXD: u32 = 4;
+    /// Transmit descriptors per queue.
+    pub const TX_DESCRIPTORS: u16 = 1024;
+
+    /// Frames one burst carries: received and through the pipeline, or injected. The dataplane
+    /// checks this against `dpdk::mem::MBUF_BURST`.
+    pub const MBUF_BURST: u32 = 64;
+
+    /// Each worker's per-core cache in a pool.
+    pub const POOL_CACHE: u32 = 256;
 
     /// Data room of every mbuf, headroom included: one jumbo frame. MTU changes do not resize
     /// existing pools.
@@ -480,18 +486,44 @@ pub mod dpdk_memory {
 
     /// Hugepage memory needed besides the receive pools: control pools, rings, and the PMD's own
     /// allocations. Measured below 0.25 GiB on a BF-3 gateway with 32 workers and two ports
-    /// (2026-10-18), whose receive pools came to 3.07 GiB and started on four 1 GiB pages but not
-    /// three.
+    /// (2026-10-18).
     pub const OVERHEAD_MIB: u64 = 256;
 
-    /// The hugepage memory `ports` ports on one NUMA node need with `workers` workers, in MiB.
+    /// Mbufs a port's receive pool needs for each worker, with `ports` ports in all.
+    ///
+    /// Everything that can hold one of the pool's mbufs at once: the worker's receive ring, a burst
+    /// in the pipeline and one being injected, the worker's cache, and the transmit ring of every
+    /// port the worker sends out of. A packet keeps its mbuf until the NIC that transmits it
+    /// completes the descriptor, so a link that stops completing strands up to a whole ring of
+    /// another port's mbufs; sized for less, a dead link elsewhere starves this port's receive
+    /// ring, and its BGP and BFD go with it.
     #[must_use]
-    pub fn required_mib(ports: u32, workers: u16) -> u64 {
-        let mbufs = u64::from(ports)
-            * u64::from(workers)
-            * u64::from(RX_DESCRIPTORS)
-            * u64::from(MBUFS_PER_RXD);
-        (mbufs * MBUF_FOOTPRINT).div_ceil(1024 * 1024) + OVERHEAD_MIB
+    pub fn pool_mbufs_per_worker(rx_descriptors: u16, ports: u32) -> u64 {
+        u64::from(rx_descriptors)
+            + 2 * u64::from(MBUF_BURST)
+            + u64::from(POOL_CACHE)
+            + u64::from(TX_DESCRIPTORS) * u64::from(ports)
+    }
+
+    /// Mbufs in a port's receive pool: [`pool_mbufs_per_worker`] for every worker.
+    #[must_use]
+    pub fn pool_mbufs(rx_descriptors: u16, ports: u32, workers: u16) -> u64 {
+        pool_mbufs_per_worker(rx_descriptors, ports) * u64::from(workers)
+    }
+
+    /// The hugepage memory one NUMA node needs, in MiB: the receive pools of the ports on it, one
+    /// per entry of `rx_descriptors`, with `ports` ports in all and `workers` workers.
+    #[must_use]
+    pub fn required_mib(
+        rx_descriptors: impl IntoIterator<Item = u16>,
+        ports: u32,
+        workers: u16,
+    ) -> u64 {
+        let bytes: u64 = rx_descriptors
+            .into_iter()
+            .map(|rxd| pool_mbufs(rxd, ports, workers) * MBUF_FOOTPRINT)
+            .sum();
+        bytes.div_ceil(1024 * 1024) + OVERHEAD_MIB
     }
 }
 
@@ -2181,15 +2213,26 @@ mod hugepage_plan_test {
         assert_eq!(plan.to_string(), "3584 MiB in 2 MiB pages (on any node)");
     }
 
-    /// The figures measured on a BF-3 gateway: two ports and 32 workers fill 3.07 GiB of receive
-    /// pools, which started on four 1 GiB pages and not on three.
+    /// At the defaults a worker's share of a port's pool covers its receive ring, two bursts, its
+    /// cache and a full transmit ring on each port.
     #[test]
-    fn the_requirement_covers_the_measured_gateway() {
+    fn a_pool_covers_everything_that_can_hold_its_mbufs() {
+        use super::dpdk_memory::{pool_mbufs, pool_mbufs_per_worker};
+        assert_eq!(pool_mbufs_per_worker(1024, 2), 1024 + 128 + 256 + 2048);
+        // Shrinking the receive ring cannot let a dead link elsewhere take the whole pool.
+        assert!(pool_mbufs_per_worker(256, 3) > 3 * 1024);
+        assert_eq!(pool_mbufs(1024, 2, 32), 32 * 3456);
+    }
+
+    /// The BF-3 gateway measured on 2026-10-18 (two ports, 32 workers, default rings).
+    #[test]
+    fn the_requirement_scales_with_ports_rings_and_workers() {
         use super::dpdk_memory::required_mib;
-        let mib = required_mib(2, 32);
-        assert!(mib > 3 * 1024 && mib <= 4 * 1024, "{mib} MiB");
-        assert!(required_mib(1, 1) < required_mib(1, 2));
-        assert!(required_mib(1, 2) < required_mib(2, 2));
+        let mib = required_mib([1024, 1024], 2, 32);
+        assert!(mib > 2 * 1024 && mib <= 3 * 1024, "{mib} MiB");
+        assert!(required_mib([1024], 1, 1) < required_mib([1024], 1, 2));
+        assert!(required_mib([1024], 2, 2) < required_mib([1024, 1024], 2, 2));
+        assert!(required_mib([256], 1, 2) < required_mib([1024], 1, 2));
     }
 
     #[test]
