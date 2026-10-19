@@ -77,7 +77,9 @@ impl TestBuffer {
         }
     }
 
-    /// Create a new `TestBuffer` from a given slice of octets
+    /// Create a new `TestBuffer` from a given slice of octets. The buffer has capacity
+    /// `TestBuffer::CAPACITY` and fixed headroom equal to `TestBuffer::HEADROOM` and
+    /// tailroom equal to `TestBuffer::TAILROOM`.
     #[must_use]
     pub fn from_raw_data(data: &[u8]) -> TestBuffer {
         let mut buffer = Vec::with_capacity(TestBuffer::CAPACITY as usize);
@@ -88,6 +90,22 @@ impl TestBuffer {
             buffer,
             headroom: TestBuffer::HEADROOM,
             tailroom: TestBuffer::TAILROOM,
+        }
+    }
+
+    /// Create a new `TestBuffer` from a given slice of octets, with exactly `headroom` octets of
+    /// headroom before them and `tailroom` octets of tailroom after them.
+    #[must_use]
+    pub fn from_raw_data_with_room(data: &[u8], headroom: u16, tailroom: u16) -> TestBuffer {
+        let mut buffer =
+            Vec::with_capacity(usize::from(headroom) + data.len() + usize::from(tailroom));
+        buffer.resize(usize::from(headroom), 0);
+        buffer.extend_from_slice(data);
+        buffer.resize(buffer.len() + usize::from(tailroom), 0);
+        TestBuffer {
+            buffer,
+            headroom,
+            tailroom,
         }
     }
 }
