@@ -471,7 +471,7 @@ fn run_dpdk_driver(
     // Queue handles borrow the ports, so workers must join before port shutdown.
     concurrency::thread::scope(|scope| {
         info!("Using driver DPDK...");
-        if let Err(e) = DriverDpdk::start(
+        match DriverDpdk::start(
             scope,
             workers,
             timer_handle,
@@ -481,14 +481,19 @@ fn run_dpdk_driver(
             status_writer,
             bridge.as_mut(),
         ) {
-            error!("Failed to start driver: {e}");
-            workers.report_fatal("the DPDK driver could not be started");
+            Ok(()) => {
+                // Inside the scope: it waits for every worker, so after it this would only run at
+                // shutdown. The ports have claimed their taps once `start` returns.
+                if let Some(bridge) = &bridge {
+                    bridge.report_unclaimed();
+                }
+            }
+            Err(e) => {
+                error!("Failed to start driver: {e}");
+                workers.report_fatal("the DPDK driver could not be started");
+            }
         }
     });
-
-    if let Some(bridge) = &bridge {
-        bridge.report_unclaimed();
-    }
 
     // Explicit shutdown reports errors that the Drop backstop would suppress.
     for port in ports {
