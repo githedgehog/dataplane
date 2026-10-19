@@ -17,6 +17,10 @@ Bifurcated devices (mlx5) are moved into it; when the dataplane exits the kernel
 them to the host.
 With the kernel driver, the datapath shares this program's namespace, because routing still depends on the host stack
 seeing its interfaces.
+Each interface given as `pci@ADDR` or `kernel@IFNAME` is renamed to its configured name, since that is the name the
+dataplane, management and routing use.
+A PCI device with no kernel interface that an earlier DPDK run left on [vfio-pci] is first returned to whichever kernel
+driver matches it.
 
 For most network cards, this configuration step involves unbinding the NIC from the kernel driver and re-binding it to
 the [vfio-pci] driver.
@@ -26,8 +30,8 @@ Some network cards use the so-called bifurcated driver and must remain bound to 
 In particular, all network cards which use the mlx5 driver must remain bound to the [mlx5] kernel driver.
 
 **Warning**: This program is _not_ responsible for full life cycle management of the NIC.
-In particular, it makes no attempt to rebind the NIC back to the kernel driver.
-Thus, expect this program to make network cards disappear from the perspective of tooling like [iproute2] and [ethtool].
+A NIC bound to [vfio-pci] stays there until a later start with the kernel driver names it by PCI address.
+Until then, expect it to be missing from tooling like [iproute2] and [ethtool].
 
 Only a very limited set of network cards are currently supported, although this set can easily be expanded over time.
 

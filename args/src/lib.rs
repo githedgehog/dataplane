@@ -71,8 +71,8 @@ use std::time::Duration;
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum PortArg {
-    PCI(net::pci::PciEbdf), // DPDK driver
-    KERNEL(InterfaceName),  // kernel driver
+    PCI(net::pci::PciEbdf),
+    KERNEL(InterfaceName), // kernel driver only
 }
 
 #[derive(
@@ -1245,10 +1245,6 @@ pub enum UnsupportedByDriver {
         "DPDK driver does not support interfaces specified by their kernel driver name; {0} given"
     )]
     Dpdk(InterfaceName),
-    #[error(
-        "Kernel driver does not support interfaces specified by their dpdk driver name; {0} given"
-    )]
-    Kernel(net::pci::PciEbdf),
 }
 
 impl TryFrom<CmdArgs> for LaunchConfiguration {
@@ -1283,17 +1279,10 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     num_workers: value.num_workers,
                 })
             }
-            Some("kernel") => {
-                for nic in &value.interface {
-                    if let Some(PortArg::PCI(address)) = &nic.port {
-                        return Err(UnsupportedByDriver::Kernel(address.clone()).into());
-                    }
-                }
-                DriverConfigSection::Kernel(KernelDriverConfigSection {
-                    interfaces: value.interfaces().collect(),
-                    num_workers: value.num_workers,
-                })
-            }
+            Some("kernel") => DriverConfigSection::Kernel(KernelDriverConfigSection {
+                interfaces: value.interfaces().collect(),
+                num_workers: value.num_workers,
+            }),
             Some(other) => return Err(InvalidCmdArguments::InvalidDriver(other.to_string())),
             None => return Err(InvalidCmdArguments::NoDriverSpecified),
         };
@@ -1365,7 +1354,10 @@ pub struct CmdArgs {
         value_parser=InterfaceArg::from_str,
         value_delimiter=',',
         help = "Interface name mapping, with syntax INTERFACE=DISCRIMINANT@{PCI,IFNAME}. Two discriminants are possible: pci and kernel.
-Pci should be followed by a PCI address. Kernel should be followed by a valid kernel interface name.
+Pci should be followed by a PCI address. Kernel should be followed by a valid kernel interface name
+and is only valid with the kernel driver. With the kernel driver, the named interface, or the PCI
+device's interface, is renamed to INTERFACE; a PCI device left on vfio-pci is first returned to its
+kernel driver.
 Examples:
    --interface eth0=pci@0000:02:01.0
    --interface eth1=kernel@enp2s1
@@ -1717,8 +1709,6 @@ mod tests {
         for (driver, interfaces) in [
             ("dpdk", "eth0=kernel@eth0"),
             ("dpdk", "eth0=pci@0000:01:00.0,eth1=kernel@eth1"),
-            ("kernel", "eth0=pci@0000:01:00.0"),
-            ("kernel", "eth0,eth1=pci@0000:01:00.0"),
         ] {
             let args = CmdArgs::try_parse_from([
                 "dataplane",
@@ -1728,16 +1718,11 @@ mod tests {
                 interfaces,
             ])
             .unwrap();
-            let err = LaunchConfiguration::try_from(args).unwrap_err();
             assert!(matches!(
-                (driver, err),
-                (
-                    "dpdk",
-                    InvalidCmdArguments::UnsupportedByDriver(UnsupportedByDriver::Dpdk(_))
-                ) | (
-                    "kernel",
-                    InvalidCmdArguments::UnsupportedByDriver(UnsupportedByDriver::Kernel(_))
-                )
+                LaunchConfiguration::try_from(args),
+                Err(InvalidCmdArguments::UnsupportedByDriver(
+                    UnsupportedByDriver::Dpdk(_)
+                ))
             ));
         }
         let args =
@@ -1755,6 +1740,8 @@ mod tests {
             ("dpdk", "eth1=pci@0000:02:00.0,eth0=pci@0000:01:00.0"),
             ("kernel", "eth1,eth0"),
             ("kernel", "eth1=kernel@eth1,eth0=kernel@eth0"),
+            ("kernel", "eth0=pci@0000:01:00.0"),
+            ("kernel", "eth0,eth1=pci@0000:01:00.0"),
         ] {
             let args = CmdArgs::try_parse_from([
                 "dataplane",
