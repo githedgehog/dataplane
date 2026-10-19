@@ -4,7 +4,9 @@ Init prepares the configured NICs, separates the datapath and control plane into
 and supervises the gateway processes. Driver and interface selection must be explicit.
 
 DPDK devices that require [vfio-pci] are rebound to it. Bifurcated devices, including [mlx5], retain their kernel
-driver. Init does not restore driver bindings on exit. Dropping elevated privileges remains future work.
+driver. Init does not restore driver bindings on exit. Dropping elevated privileges remains future work; note
+that the dataplane needs `CAP_SYS_ADMIN` for its whole life, not just at startup, because its host runtime's
+threads `setns` into the original namespace whenever tokio starts one (see `host_runtime` in the dataplane).
 
 The dataplane refuses to start without the descriptors init passes it, so init is the container's entrypoint and
 takes the dataplane's command line unchanged.
@@ -33,8 +35,12 @@ dataplane:  main + management runtime     control namespace (taps, netlink, FRR 
 FRR:                                      control namespace
 ```
 
+The control plane needs a namespace of its own because the taps carry the configured interface names: in the host
+namespace a leftover tap would block udev from renaming the NIC when it returns.
+
 Move NICs before leaving their original namespace so their devlink instances remain reachable. Init then enters
-the control namespace, mounts a matching sysfs, and brings up loopback. Children inherit that placement.
+the control namespace, mounts a matching sysfs, and brings up loopback, since FRR's vty listens on `127.0.0.1` and
+with `lo` down the failure looks like an agent that will not connect. Children inherit that placement.
 The dataplane receives validated descriptors for its datapath namespace and the original namespace, and runs a
 separate host runtime only when the original namespace is not its own.
 

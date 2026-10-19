@@ -196,6 +196,12 @@ fn start_pyroscope(
 
 /// Place host-facing async and blocking work in init's original network namespace.
 /// Each runtime thread enters that namespace; a spawned task checks placement at startup.
+///
+/// Tokio starts runtime threads lazily and retires idle blocking-pool threads, so this `setns` can
+/// run at any point in the process's life. That needs `CAP_SYS_ADMIN` for as long as the dataplane
+/// runs: dropping it would abort the process when the next host-runtime thread starts, possibly
+/// hours later. Whoever drops privileges must either keep this capability deliberately or pre-start
+/// a fixed set of threads (no blocking pool, or a bounded one that never retires its threads).
 fn host_runtime(host_netns: &NetworkNamespace) -> Result<tokio::runtime::Runtime, String> {
     let expected = std::fs::read_link(format!("/proc/self/fd/{}", host_netns.as_raw().as_raw_fd()))
         .map_err(|e| format!("could not identify the host network namespace: {e}"))?
