@@ -708,7 +708,12 @@ bitflags::bitflags! {
 
 impl<'eal> Mbuf<'eal> {
     /// The mbuf's raw offload flags.
-    fn ol_flags(&self) -> u64 {
+    ///
+    /// Public only for the diagnostic probes in `dpdk/examples`, which report bits [`RxFlags`] does
+    /// not model (checksum validation, for one). Everything else should use [`Mbuf::rx_flags`].
+    #[doc(hidden)]
+    #[must_use]
+    pub fn ol_flags(&self) -> u64 {
         // SAFETY: `self.raw` is a live mbuf for the lifetime of `&self`.
         unsafe { self.raw.as_ref() }.ol_flags
     }
