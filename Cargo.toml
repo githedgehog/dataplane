@@ -49,6 +49,7 @@ members = [
     "test-utils",
     "tracectl",
     "traffic-control",
+    "transceiver",
     "validator",
     "vpcmap",
 ]
@@ -123,6 +124,7 @@ sysfs = { path = "./sysfs", package = "dataplane-sysfs", features = [] }
 test-utils = { path = "./test-utils", package = "dataplane-test-utils", features = [] }
 tracectl = { path = "./tracectl", package = "dataplane-tracectl", features = [] }
 traffic-control = { path = "./traffic-control", package = "dataplane-traffic-control", features = [] }
+transceiver = { path = "./transceiver", package = "dataplane-transceiver", features = [] }
 validator = { path = "./validator", package = "dataplane-validator", features = [] }
 vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap", features = [] }
 
@@ -518,6 +520,11 @@ wasm = false # hopeless + pointless
 package = "dataplane-tracectl"
 miri = false # hopeless + pointless
 wasm = false # hopeless + pointless
+
+[workspace.metadata.package.transceiver]
+package = "dataplane-transceiver"
+miri = true
+wasm = true
 
 [workspace.metadata.package.vpcmap]
 package = "dataplane-vpcmap"
