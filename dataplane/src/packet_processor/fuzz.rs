@@ -5105,8 +5105,8 @@ mod model {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("build tokio runtime")
-            )
+                    .expect("build tokio runtime"),
+            ),
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
@@ -5181,8 +5181,8 @@ mod model {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("build tokio runtime")
-            )
+                    .expect("build tokio runtime"),
+            ),
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
@@ -5341,8 +5341,8 @@ mod model {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("build tokio runtime")
-            )
+                    .expect("build tokio runtime"),
+            ),
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
@@ -5475,8 +5475,8 @@ mod model {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("build tokio runtime")
-            )
+                    .expect("build tokio runtime"),
+            ),
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
@@ -5651,8 +5651,8 @@ mod model {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("build tokio runtime")
-            )
+                    .expect("build tokio runtime"),
+            ),
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
@@ -5845,8 +5845,8 @@ mod model {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("build tokio runtime")
-            )
+                    .expect("build tokio runtime"),
+            ),
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
@@ -6006,8 +6006,8 @@ mod model {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("build tokio runtime")
-            )
+                    .expect("build tokio runtime"),
+            ),
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
@@ -6200,8 +6200,8 @@ mod model {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("build tokio runtime")
-            )
+                    .expect("build tokio runtime"),
+            ),
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
@@ -6336,8 +6336,8 @@ mod model {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("build tokio runtime")
-            )
+                    .expect("build tokio runtime"),
+            ),
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
@@ -6520,8 +6520,8 @@ mod model {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("build tokio runtime")
-            )
+                    .expect("build tokio runtime"),
+            ),
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 

@@ -154,6 +154,7 @@ pub(crate) fn start_router(
     router: &lifecycle::Subsystem,
     params: RouterParams,
     driver_status: DriverStatusReader,
+    capture_dir: Option<String>,
 ) -> Result<InternalSetup, RouterError> {
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
     let vpc_stats_store: Arc<VpcStatsStore> = VpcStatsStore::new();
@@ -190,7 +191,7 @@ pub(crate) fn start_router(
         driver_status: Some(Box::new(driver_status)),
         capture: Some(CaptureDirectory::new(
             capture.clone(),
-            args::DEFAULT_CAPTURE_DIR,
+            capture_dir.map(std::path::PathBuf::from),
         )),
     };
 

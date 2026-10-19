@@ -20,6 +20,7 @@
 //!
 //! [`CaptureStage`]: crate::CaptureStage
 
+use crate::buffer::{BufferPool, CaptureBuffer};
 use crate::filter::CaptureFilter;
 use crate::names::CaptureNames;
 use crate::record::{CaptureRecord, Direction};
@@ -56,6 +57,8 @@ pub struct CaptureRequest {
     pub duration: Duration,
     /// How many records may wait for the writer before further records are dropped.
     pub queue_depth: NonZeroUsize,
+    /// Keep up to this many bytes of each frame; `None` keeps whole frames.
+    pub snaplen: Option<NonZeroU32>,
 }
 
 /// Why a capture ended.
@@ -89,7 +92,7 @@ pub struct CaptureReport {
     pub admitted: u64,
     /// Admitted packets whose records were written to the file.
     pub written: u64,
-    /// Admitted packets whose records were dropped because the writer's queue was full.
+    /// Admitted packets whose records were dropped: the writer's queue was full, or no buffer was free.
     pub dropped: u64,
     /// Why the capture ended.
     pub end: CaptureEnd,
@@ -152,6 +155,9 @@ struct Session {
     id: u64,
     filter: CaptureFilter,
     sample_one_in: NonZeroU32,
+    snaplen: Option<NonZeroU32>,
+    /// How many buffers each capture point may hold; as many as records may wait for the writer.
+    buffers_per_sink: usize,
     budget: u64,
     remaining: AtomicU64,
     dropped: AtomicU64,
@@ -182,8 +188,13 @@ impl Session {
     /// Queue the record of an admitted packet, counting it as dropped if the queue is full.
     fn send(&self, record: CaptureRecord) {
         if self.queue.try_send(Message::Record(record)).is_err() {
-            self.dropped.fetch_add(1, Ordering::AcqRel);
+            self.drop_one();
         }
+    }
+
+    /// Count an admitted packet whose record will never reach the writer.
+    fn drop_one(&self) {
+        self.dropped.fetch_add(1, Ordering::AcqRel);
     }
 
     fn admitted(&self) -> u64 {
@@ -269,6 +280,7 @@ impl CaptureController {
             direction,
             session: None,
             skip: 0,
+            pool: None,
         }
     }
 
@@ -294,6 +306,8 @@ impl CaptureController {
             id: control.next_id,
             filter: request.filter,
             sample_one_in: request.sample_one_in,
+            snaplen: request.snaplen,
+            buffers_per_sink: request.queue_depth.get(),
             budget: request.packets.get(),
             remaining: AtomicU64::new(request.packets.get()),
             dropped: AtomicU64::new(0),
@@ -358,19 +372,36 @@ struct Tally<W: Write> {
     writer: CaptureWriter<W>,
     received: u64,
     written: u64,
+    /// The session's drop count when the last packet was written, so the next one can carry the gap.
+    dropped_seen: u64,
     failure: Option<CaptureWriteError>,
 }
 
 impl<W: Write> Tally<W> {
     /// Write a received record, or discard it if an earlier write already failed.
-    fn take(&mut self, record: &CaptureRecord) {
+    ///
+    /// The record carries how many packets were dropped since the last one written, so a gap in the
+    /// trace shows where it happened. The count is the whole capture's, not the record's interface's.
+    fn take(&mut self, record: &CaptureRecord, session: &Session) {
         self.received += 1;
         if self.failure.is_some() {
             return;
         }
-        match self.writer.write(record) {
+        let dropped = session.dropped.load(Ordering::Acquire);
+        let gap = dropped - self.dropped_seen;
+        self.dropped_seen = dropped;
+        match self.writer.write(record, gap) {
             Ok(()) => self.written += 1,
             Err(error) => self.failure = Some(error),
+        }
+    }
+
+    /// Push what has been written so far to the file, so that it is reasonably current.
+    fn flush(&mut self) {
+        if self.failure.is_none()
+            && let Err(error) = self.writer.flush()
+        {
+            self.failure = Some(error);
         }
     }
 }
@@ -391,6 +422,7 @@ fn write_capture<W: Write>(
         writer,
         received: 0,
         written: 0,
+        dropped_seen: 0,
         failure: None,
     };
 
@@ -410,8 +442,9 @@ fn write_capture<W: Write>(
             break CaptureEnd::Deadline;
         }
         match records.recv_timeout(WRITER_TICK.min(deadline - now)) {
-            Ok(Message::Record(record)) => tally.take(&record),
-            Ok(Message::Wake) | Err(RecvTimeoutError::Timeout) => {}
+            Ok(Message::Record(record)) => tally.take(&record, session),
+            Ok(Message::Wake) => {}
+            Err(RecvTimeoutError::Timeout) => tally.flush(),
             Err(RecvTimeoutError::Disconnected) => {
                 unreachable!("the session holds the sender for as long as the writer runs")
             }
@@ -422,7 +455,7 @@ fn write_capture<W: Write>(
     let admitted = session.budget - session.remaining.swap(0, Ordering::AcqRel);
     while tally.received + session.dropped.load(Ordering::Acquire) < admitted {
         match records.try_recv() {
-            Ok(Message::Record(record)) => tally.take(&record),
+            Ok(Message::Record(record)) => tally.take(&record, session),
             Ok(Message::Wake) => {}
             Err(TryRecvError::Empty) => thread::yield_now(),
             Err(TryRecvError::Disconnected) => {
@@ -469,6 +502,8 @@ pub struct ControlledSink {
     session: Option<Arc<Session>>,
     /// Packets to pass over before the next one is sampled.
     skip: u32,
+    /// This capture point's buffers, and the session they belong to.
+    pool: Option<(u64, BufferPool)>,
 }
 
 impl CaptureSink for ControlledSink {
@@ -492,23 +527,32 @@ impl CaptureSink for ControlledSink {
         true
     }
 
-    fn admits<Buf: PacketBufferMut>(&mut self, packet: &Packet<Buf>) -> bool {
-        let Some(session) = &self.session else {
-            return false;
-        };
+    fn admits<Buf: PacketBufferMut>(&mut self, packet: &Packet<Buf>) -> Option<CaptureBuffer> {
+        let session = self.session.as_ref()?;
         // Filter before sampling, so that sampling picks among the packets asked for.
         if !session.filter.matches(packet) {
-            return false;
+            return None;
         }
         if self.skip > 0 {
             self.skip -= 1;
-            return false;
+            return None;
         }
         if !session.admit() {
-            return false;
+            return None;
         }
         self.skip = session.sample_one_in.get() - 1;
-        true
+        if self.pool.as_ref().map(|(id, _)| *id) != Some(session.id) {
+            self.pool = Some((
+                session.id,
+                BufferPool::new(session.buffers_per_sink, session.snaplen),
+            ));
+        }
+        let buffer = self.pool.as_mut().and_then(|(_, pool)| pool.take());
+        if buffer.is_none() {
+            // Admitted, so it counts against the budget; it is accounted as dropped.
+            session.drop_one();
+        }
+        buffer
     }
 
     fn submit(&mut self, record: CaptureRecord) {

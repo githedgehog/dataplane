@@ -746,8 +746,13 @@ pub fn main() {
     };
 
     // start router
-    let mut setup = start_router(&shutdown.router, router_params, driver_status_reader)
-        .expect("failed to start router");
+    let mut setup = start_router(
+        &shutdown.router,
+        router_params,
+        driver_status_reader,
+        config.cli.capture_dir.clone(),
+    )
+    .expect("failed to start router");
 
     // start bmp server if indicated via cmd line. It is fine to start it after the router since no bgp session may be up
     // until a configuration is applied, and the mgmt is not yet up.
