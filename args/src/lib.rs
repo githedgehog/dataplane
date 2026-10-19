@@ -490,6 +490,8 @@ pub struct CliConfigSection {
 pub struct MetricsConfigSection {
     /// Socket address (IP and port) where metrics HTTP endpoint listens
     pub address: SocketAddr,
+    /// How often to read the monitors of the ports' pluggable modules, or `None` not to read them.
+    pub transceiver_interval: Option<Duration>,
 }
 
 /// Configuration for the tracing / logging service used by the dataplane.
@@ -1199,6 +1201,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             },
             metrics: MetricsConfigSection {
                 address: value.metrics_address(),
+                transceiver_interval: value.transceiver_interval(),
             },
             bmp: if value.bmp_enabled() {
                 Some(BmpConfigSection {
@@ -1280,6 +1283,18 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
         help = "Bind address and port for Prometheus metrics HTTP endpoint"
     )]
     metrics_address: SocketAddr,
+
+    /// How often to read the ports' pluggable modules.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = 30,
+        value_parser = clap::value_parser!(u16).range(0..=3600),
+        help = "Seconds between reads of each port's transceiver monitors, in [0..3600]; 0 disables \
+                them. A read is a firmware transaction on the module's bus, so very short \
+                intervals cost the NIC more than they tell you"
+    )]
+    transceiver_interval: u16,
 
     /// Pyroscope server address for profiling uploads
     #[arg(
@@ -1525,6 +1540,13 @@ impl CmdArgs {
     pub fn bmp_address(&self) -> SocketAddr {
         self.bmp_address
     }
+    /// How often to read the ports' pluggable modules, or `None` if that is disabled.
+    #[must_use]
+    pub fn transceiver_interval(&self) -> Option<Duration> {
+        (self.transceiver_interval != 0)
+            .then(|| Duration::from_secs(u64::from(self.transceiver_interval)))
+    }
+
     #[must_use]
     pub fn bmp_interval(&self) -> Duration {
         Duration::from_millis(self.bmp_interval)
