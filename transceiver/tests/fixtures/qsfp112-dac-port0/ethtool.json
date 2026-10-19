@@ -1,0 +1,29 @@
+[ {
+        "identifier": 30,
+        "identifier_description": "QSFP+ or later with Common Management Interface Specification (CMIS)",
+        "power_class": 1,
+        "max_power": 0.25,
+        "connector": 35,
+        "connector_description": "No separable connector",
+        "cable_assembly_length": 1.5,
+        "transmitter_technology": 10,
+        "transmitter_technology_description": "Copper cable, unequalized",
+        "attenuation_at_5ghz": 0,
+        "attenuation_at_7ghz": 0,
+        "attenuation_at_12.9ghz": 0,
+        "attenuation_at_25.8ghz": 0,
+        "vendor_name": "OEM",
+        "vendor_oui": [ 0,0,0 ],
+        "vendor_pn": "CAB-Q112-P1.5M",
+        "vendor_rev": "01",
+        "vendor_sn": "WTN11Q51001",
+        "date_code": "260511",
+        "revision_compliance": {
+            "major": 5,
+            "minor": 1
+        },
+        "module_state": 3,
+        "module_state_description": "ModuleReady",
+        "low_pwr_allow_request_hw": false,
+        "low_pwr_request_sw": false
+    } ]
