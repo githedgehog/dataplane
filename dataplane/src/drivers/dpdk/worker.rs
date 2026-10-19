@@ -150,6 +150,8 @@ impl<'p> Worker<'p> {
 
         // Batch transmission by output port.
         let mut batches: HashMap<usize, MbufArray<'p>> = HashMap::new();
+        // Freed in one `rte_pktmbuf_free_bulk` when this goes out of scope.
+        let mut dropped: MbufArray<'p> = MbufArray::new_empty();
         // Borrowed for the packet loop rather than cloned per poll: an `mpsc::Sender` clone is an
         // atomic increment, which is not free at burst rates and buys nothing here.
         let punt = self.ports[slot].queues.punt.as_ref();
@@ -166,10 +168,11 @@ impl<'p> Worker<'p> {
                     );
                     continue;
                 }
-                // A packet the pipeline finished with and the kernel has no business seeing.
-                // Dropping it here frees its mbuf.
+                // A packet the pipeline finished with and the kernel has no business seeing. A
+                // burst that outgrew the array (a pipeline can add packets) frees the rest singly.
                 Disposition::Drop => {
                     counters.ppline_drops += 1;
+                    drop(dropped.try_push(packet.discard()));
                     continue;
                 }
             }
@@ -368,7 +371,9 @@ impl<'p> Worker<'p> {
     }
 }
 
-/// Parse a burst and retain forwarded packets and possible control-plane traffic.
+/// Parse a burst and run it through the pipeline.
+///
+/// Every packet comes back, whatever its verdict: the caller counts and frees the drops, in bulk.
 fn process_burst<Buf: PacketBufferMut>(
     burst: impl ExactSizeIterator<Item = Buf>,
     rx_if: InterfaceIndex,
@@ -390,15 +395,13 @@ fn process_burst<Buf: PacketBufferMut>(
         })
         .collect();
 
+    let parsed = packets.len();
     pipeline.process_burst(&mut packets);
-
-    packets.retain(|packet| {
-        if Disposition::of(packet) == Disposition::Drop {
-            counters.ppline_drops += 1;
-            false
-        } else {
-            true
-        }
-    });
+    // Stages mark packets to drop rather than removing them, so a drop is always counted.
+    debug_assert!(
+        packets.len() >= parsed,
+        "the pipeline removed {} packet(s) instead of marking them dropped",
+        parsed - packets.len()
+    );
     packets
 }

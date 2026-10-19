@@ -32,6 +32,14 @@ impl NetworkFunction<TestBuffer> for ReturnVerdicts {
     }
 }
 
+/// How many of `packets` the caller will drop.
+fn drops(packets: &[Packet<TestBuffer>]) -> usize {
+    packets
+        .iter()
+        .filter(|packet| Disposition::of(packet) == Disposition::Drop)
+        .count()
+}
+
 #[test]
 fn parse_failures_are_not_pipeline_drops() {
     let rx_if = InterfaceIndex::try_new(1).unwrap();
@@ -47,17 +55,19 @@ fn parse_failures_are_not_pipeline_drops() {
     assert_eq!(packets[0].meta().iif, Some(rx_if));
     assert_eq!(counters.rx, 2);
     assert_eq!(counters.parse_errors, 1);
-    assert_eq!(counters.ppline_drops, 0);
+    assert_eq!(drops(&packets), 0);
 
     let packets = process_burst([frame()].into_iter(), rx_if, &mut pipeline, &mut counters);
     assert_eq!(packets.len(), 1);
     assert_eq!(counters.rx, 3);
     assert_eq!(counters.parse_errors, 1);
-    assert_eq!(counters.ppline_drops, 0);
+    assert_eq!(drops(&packets), 0);
 }
 
+/// Every packet comes back for the caller to count and free, drops included; `process_burst` counts
+/// none of them itself.
 #[test]
-fn drop_verdicts_and_removed_packets_are_counted_once() {
+fn drop_verdicts_come_back_to_the_caller() {
     let mut pipeline = DynPipeline::new().add_stage(ReturnVerdicts(&[
         Some(DoneReason::Delivered),
         Some(DoneReason::Local),
@@ -67,18 +77,34 @@ fn drop_verdicts_and_removed_packets_are_counted_once() {
     ]));
     let mut counters = RxCounters::default();
     let packets = process_burst(
-        (0..6).map(|_| frame()),
+        (0..5).map(|_| frame()),
         InterfaceIndex::try_new(1).unwrap(),
         &mut pipeline,
         &mut counters,
     );
-    assert_eq!(packets.len(), 2);
+    assert_eq!(packets.len(), 5);
     assert_eq!(packets[0].get_done(), Some(DoneReason::Delivered));
     assert_eq!(packets[1].get_done(), Some(DoneReason::Local));
-    assert_eq!(counters.rx, 6);
-    assert_eq!(counters.ppline_drops, 4);
+    assert_eq!(drops(&packets), 3);
+    assert_eq!(counters.rx, 5);
+    assert_eq!(counters.ppline_drops, 0);
     assert_eq!(counters.parse_errors, 0);
     assert_eq!(counters.tx_drops, 0);
+}
+
+/// Stages mark packets dropped; one that removes them instead would hide the drop.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "removed 1 packet(s)")]
+fn a_pipeline_that_removes_packets_is_a_bug() {
+    let mut pipeline = DynPipeline::new().add_stage(ReturnVerdicts(&[Some(DoneReason::Delivered)]));
+    let mut counters = RxCounters::default();
+    let _ = process_burst(
+        (0..2).map(|_| frame()),
+        InterfaceIndex::try_new(1).unwrap(),
+        &mut pipeline,
+        &mut counters,
+    );
 }
 
 /// Only `Local` reaches the control plane: the verdicts that used to be punted when the frame was
@@ -98,8 +124,7 @@ fn verdicts_other_than_local_and_delivered_are_dropped() {
         &mut pipeline,
         &mut counters,
     );
-    assert!(packets.is_empty());
-    assert_eq!(counters.ppline_drops, 3);
+    assert_eq!(drops(&packets), 3);
 }
 
 #[test]
@@ -115,7 +140,7 @@ fn additional_pipeline_outputs_do_not_count_as_drops() {
     );
     assert_eq!(packets.len(), 2);
     assert_eq!(counters.rx, 1);
-    assert_eq!(counters.ppline_drops, 0);
+    assert_eq!(drops(&packets), 0);
     assert_eq!(counters.parse_errors, 0);
 }
 
