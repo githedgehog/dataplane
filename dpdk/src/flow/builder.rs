@@ -131,20 +131,25 @@ impl Action {
         }
     }
 
-    /// mlx5 action order: remove headers, mark, rewrite, push VLAN, set its VID/PCP, encap,
-    /// forward. mlx5 accepts `OF_SET_VLAN_PCP` only after `OF_PUSH_VLAN` in the same list.
-    /// Actions of equal rank retain their insertion order.
+    /// mlx5 action order: mark, remove headers, push VLAN, set its VID/PCP, rewrite, encap,
+    /// forward.
+    ///
+    /// This is the order mlx5 documents for hardware steering (`dv_flow_en=2`, "The supported
+    /// actions order" in `doc/guides/nics/mlx5.rst`), which the PMD may select on its own by
+    /// device capability. Software steering (`mlx5_flow_dv.c`) accepts it too: it constrains only
+    /// fate actions to come last and VID/PCP to follow `OF_PUSH_VLAN` in the same list. Actions of
+    /// equal rank retain their insertion order.
     fn rank(&self) -> u8 {
         match self {
-            Action::OfPopVlan | Action::VxlanDecap => 0,
-            Action::Mark(_) => 1,
+            Action::Mark(_) => 0,
+            Action::OfPopVlan | Action::VxlanDecap => 1,
+            Action::OfPushVlan(_) => 2,
+            Action::OfSetVlanVid(_) | Action::OfSetVlanPcp(_) => 3,
             Action::SetIpv4Src(_)
             | Action::SetIpv4Dst(_)
             | Action::SetTpSrc(_)
             | Action::SetTpDst(_)
-            | Action::ModifyField(_) => 2,
-            Action::OfPushVlan(_) => 3,
-            Action::OfSetVlanVid(_) | Action::OfSetVlanPcp(_) => 4,
+            | Action::ModifyField(_) => 4,
             Action::VxlanEncap(_) => 5,
             Action::Jump(_) | Action::Queue(_) | Action::Drop => 6,
         }
@@ -818,7 +823,8 @@ mod tests {
         Ok(())
     }
 
-    /// The validated mlx5 pipeline order: pop -> MARK -> MODIFY_HDR -> push -> encap -> terminal.
+    /// mlx5's documented order: MARK -> decap/pop -> push -> VID/PCP -> MODIFY_HDR -> encap ->
+    /// terminal.
     #[test]
     fn action_rank_orders_pipeline() -> Result<(), net::vxlan::InvalidVni> {
         let pop = Action::OfPopVlan;
@@ -826,7 +832,8 @@ mod tests {
         let modify = Action::SetIpv4Dst(set_ipv4(Ipv4Addr::UNSPECIFIED));
         let push = Action::OfPushVlan(rte_flow_action_of_push_vlan { ethertype: 0 });
         let queue = Action::Queue(rte_flow_action_queue { index: 0 });
-        assert!(pop.rank() < mark.rank());
+        let vid = Action::OfSetVlanVid(rte_flow_action_of_set_vlan_vid { vlan_vid: 0 });
+        assert!(mark.rank() < pop.rank(), "MARK must precede decapsulation");
         assert!(
             mark.rank() < modify.rank(),
             "MARK must precede MODIFY_HDR (hardware-validated)"
@@ -839,8 +846,13 @@ mod tests {
             udp_src: 0,
             vni: Vni::new_checked(Vni::MIN)?,
         }));
-        assert!(modify.rank() < push.rank());
-        assert!(push.rank() < encap.rank());
+        assert!(pop.rank() < push.rank());
+        assert!(push.rank() < vid.rank());
+        assert!(
+            vid.rank() < modify.rank(),
+            "OF_PUSH_VLAN must precede MODIFY_FIELD"
+        );
+        assert!(modify.rank() < encap.rank());
         assert!(encap.rank() < queue.rank());
         Ok(())
     }
@@ -861,10 +873,10 @@ mod tests {
         assert_eq!(
             types,
             [
-                at::RTE_FLOW_ACTION_TYPE_SET_IPV4_DST,
                 at::RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN,
                 at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP,
                 at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID,
+                at::RTE_FLOW_ACTION_TYPE_SET_IPV4_DST,
                 at::RTE_FLOW_ACTION_TYPE_QUEUE,
             ]
         );
