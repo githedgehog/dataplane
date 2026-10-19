@@ -54,6 +54,8 @@ const DEVLINK_RETURN_TIMEOUT: Duration = Duration::from_secs(10);
 struct ResolvedDevice {
     address: PciAddress,
     supported: SupportedDevice,
+    /// Receive descriptors per queue: the interface's `/rxd`, or the default.
+    rx_descriptors: u16,
 }
 
 fn init_tracing() {
@@ -127,6 +129,9 @@ fn resolve_devices(
             ));
             continue;
         };
+        let rx_descriptors = interface
+            .rx_descriptors
+            .unwrap_or(args::dpdk_memory::RX_DESCRIPTORS);
         let address = match PciAddress::try_from(ebdf.to_string().as_str()) {
             Ok(address) => address,
             Err(e) => {
@@ -144,7 +149,11 @@ fn resolve_devices(
                         "interface '{name}' is {address}: {supported} ({driver})",
                         driver = DpdkDriverType::from(supported)
                     );
-                    resolved.push(ResolvedDevice { address, supported });
+                    resolved.push(ResolvedDevice {
+                        address,
+                        supported,
+                        rx_descriptors,
+                    });
                 }
                 Err(e) => problems.push(format!("interface '{name}': {e}")),
             }
@@ -162,7 +171,11 @@ fn resolve_devices(
                     "interface '{name}' is {address}: {supported} ({driver})",
                     driver = DpdkDriverType::from(supported)
                 );
-                resolved.push(ResolvedDevice { address, supported });
+                resolved.push(ResolvedDevice {
+                    address,
+                    supported,
+                    rx_descriptors,
+                });
             }
             Err(_) => problems.push(format!(
                 "interface '{name}' names PCI device {address}, which is not a supported network \
@@ -961,7 +974,10 @@ fn main() {
             // Check hugepage capacity on the NICs' nodes before changing device bindings.
             hugepage_plan = Some(
                 hugepages::reserve_for(
-                    &devices.iter().map(|d| d.address).collect::<Vec<_>>(),
+                    &devices
+                        .iter()
+                        .map(|d| (d.address, d.rx_descriptors))
+                        .collect::<Vec<_>>(),
                     scan.as_ref(),
                     dpdk.num_workers.get(),
                     dpdk.hugepages_gib,
