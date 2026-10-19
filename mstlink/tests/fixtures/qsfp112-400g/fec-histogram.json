@@ -1,0 +1,214 @@
+{
+	"result" : 
+	{
+		"output" : 
+		{
+			"Histogram of FEC Errors" : 
+			{
+				"Bin 0" : 
+				{
+					"values" : 
+					[
+						"[0]",
+						"9303007741342"
+					]
+				},
+				"Bin 1" : 
+				{
+					"values" : 
+					[
+						"[1]",
+						"1613216"
+					]
+				},
+				"Bin 10" : 
+				{
+					"values" : 
+					[
+						"[10]",
+						"1"
+					]
+				},
+				"Bin 11" : 
+				{
+					"values" : 
+					[
+						"[11]",
+						"0"
+					]
+				},
+				"Bin 12" : 
+				{
+					"values" : 
+					[
+						"[12]",
+						"0"
+					]
+				},
+				"Bin 13" : 
+				{
+					"values" : 
+					[
+						"[13]",
+						"0"
+					]
+				},
+				"Bin 14" : 
+				{
+					"values" : 
+					[
+						"[14]",
+						"0"
+					]
+				},
+				"Bin 15" : 
+				{
+					"values" : 
+					[
+						"[15]",
+						"0"
+					]
+				},
+				"Bin 2" : 
+				{
+					"values" : 
+					[
+						"[2]",
+						"280638"
+					]
+				},
+				"Bin 3" : 
+				{
+					"values" : 
+					[
+						"[3]",
+						"34750"
+					]
+				},
+				"Bin 4" : 
+				{
+					"values" : 
+					[
+						"[4]",
+						"11346"
+					]
+				},
+				"Bin 5" : 
+				{
+					"values" : 
+					[
+						"[5]",
+						"47"
+					]
+				},
+				"Bin 6" : 
+				{
+					"values" : 
+					[
+						"[6]",
+						"25"
+					]
+				},
+				"Bin 7" : 
+				{
+					"values" : 
+					[
+						"[7]",
+						"0"
+					]
+				},
+				"Bin 8" : 
+				{
+					"values" : 
+					[
+						"[8]",
+						"4"
+					]
+				},
+				"Bin 9" : 
+				{
+					"values" : 
+					[
+						"[9]",
+						"1"
+					]
+				},
+				"Header" : 
+				{
+					"values" : 
+					[
+						"Range",
+						"Occurrences"
+					]
+				}
+			},
+			"Operational Info" : 
+			{
+				"Auto Negotiation" : "ON",
+				"FEC" : "Standard_RS-FEC - (544,514)",
+				"Loopback Mode" : "No Loopback",
+				"Physical state" : "LinkUp",
+				"Rx Precoding Status" : "Disabled",
+				"Speed" : "400G",
+				"State" : "Active",
+				"Tx Precoding Status" : "Disabled",
+				"Width" : "4x"
+			},
+			"Port Info" : 
+			{
+				"Label Port" : "1",
+				"Local Port" : "1"
+			},
+			"Supported Info" : 
+			{
+				"Enabled Link Speed (Ext.)" : 
+				{
+					"mask" : "0x00013ff2",
+					"values" : 
+					[
+						"400G_4X",
+						"200G_2X",
+						"200G_4X",
+						"100G_1X",
+						"100G_2X",
+						"100G_4X",
+						"50G_1X",
+						"50G_2X",
+						"40G",
+						"25G",
+						"10G",
+						"1G"
+					]
+				},
+				"Supported Cable Speed (Ext.)" : 
+				{
+					"mask" : "0x00012800",
+					"values" : 
+					[
+						"400G_4X",
+						"200G_2X",
+						"100G_1X"
+					]
+				}
+			},
+			"Tool Information" : 
+			{
+				"Firmware Version" : "32.50.1002",
+				"MSTFLINT Version" : "mstflint 4.37.0",
+				"amBER Version" : "7.5"
+			},
+			"Troubleshooting Info" : 
+			{
+				"Group Opcode" : "N/A",
+				"Recommendation" : "No issue was observed",
+				"Status Opcode" : "0"
+			}
+		}
+	},
+	"status" : 
+	{
+		"code" : 0,
+		"message" : "success"
+	}
+}
+
