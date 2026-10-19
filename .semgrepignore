@@ -3,3 +3,9 @@
 # acknowledged users in the image, not leaking our files.
 nix/pkgs/frr-config/config/etc/passwd
 nix/pkgs/frr-config/config/etc/group
+
+# Hardware probes and road tests run against real NICs on the wall clock; the virtual-clock rule
+# protects tests that run under tokio's paused time, which these never do.
+dpdk/examples/*_probe.rs
+hardware/tests/dpdk_on_nic.rs
+hardware/tests/dpdk_pipeline_on_nic.rs
