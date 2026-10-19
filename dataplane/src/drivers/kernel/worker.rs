@@ -269,10 +269,10 @@ impl Worker {
                 // pipeline marked `Local` has to be carried across, or the control plane never
                 // learns a peer's MAC and BGP never forms an adjacency.
                 //
-                // Without a tap -- interfaces left where the kernel drives them -- there is
-                // nothing to punt to and nowhere to punt from: the kernel saw the frame through
-                // its own stack already. `punt` is `None` then, and this is the drop it has
-                // always been.
+                // Init moves the interfaces out of the host stack, so a tap is the kernel's only
+                // view of them. `punt` is `None` only without a bridge (its creation failed,
+                // which is fatal, or a test), and a frame for the kernel is then lost: a punt drop,
+                // as in the DPDK driver.
                 let mut ppline_drops: u64 = 0;
                 let mut punted: u64 = 0;
                 let mut punt_drops: u64 = 0;
@@ -286,16 +286,12 @@ impl Worker {
                                 tx_drops += 1;
                             }
                         }
-                        // Without a tap, the kernel has this interface and already saw the frame.
-                        Disposition::Punt => {
-                            if let Some(punt) = &intf.punt {
-                                if punt_packet(id, &intf.if_name, punt, out_pkt) {
-                                    punted += 1;
-                                } else {
-                                    punt_drops += 1;
-                                }
+                        Disposition::Punt => match &intf.punt {
+                            Some(punt) if punt_packet(id, &intf.if_name, punt, out_pkt) => {
+                                punted += 1;
                             }
-                        }
+                            _ => punt_drops += 1,
+                        },
                         Disposition::Drop => ppline_drops += 1,
                     }
                 }
