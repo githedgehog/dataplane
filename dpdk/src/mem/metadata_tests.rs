@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use super::RxFlags;
 use crate::test_support::packet_pool;
 use net::buffer::DeepCopy;
 
@@ -18,16 +19,26 @@ fn rss_and_mark_have_independent_values_and_validity() {
             raw.annon2.annon1.annon2.hash.rss = hash;
             raw.annon2.annon1.annon2.hash.fdir.hi = id;
         }
-        for (flags, want_hash, want_mark) in [
-            (0, None, None),
-            (matched, None, None),
-            (rss, Some(hash), None),
-            (matched | mark, None, Some(id)),
-            (rss | matched | mark, Some(hash), Some(id)),
+        for (flags, want_flags, want_hash, want_mark) in [
+            (0, RxFlags::empty(), None, None),
+            (matched, RxFlags::FLOW_MATCHED, None, None),
+            (rss, RxFlags::RSS_HASH, Some(hash), None),
+            (
+                matched | mark,
+                RxFlags::FLOW_MATCHED | RxFlags::MARK,
+                None,
+                Some(id),
+            ),
+            (
+                rss | matched | mark,
+                RxFlags::RSS_HASH | RxFlags::FLOW_MATCHED | RxFlags::MARK,
+                Some(hash),
+                Some(id),
+            ),
         ] {
             // SAFETY: only receive flags on an exclusively owned, direct mbuf are changed.
             unsafe { mbuf.raw.as_mut().ol_flags = flags };
-            assert_eq!(mbuf.ol_flags(), flags);
+            assert_eq!(mbuf.rx_flags(), want_flags);
             assert_eq!(mbuf.rss_hash(), want_hash);
             assert_eq!(mbuf.rx_mark(), want_mark);
             let copy = mbuf.deep_copy().unwrap();
@@ -58,8 +69,10 @@ fn eal_registers_meta_and_presence_is_separate_from_value() {
             mbuf.raw.as_mut().ol_flags &= !mask;
         }
         assert_eq!(mbuf.rx_meta(), None);
+        assert!(!mbuf.rx_flags().contains(RxFlags::META));
         // SAFETY: only the receive metadata flag on this owned mbuf is changed.
         unsafe { mbuf.raw.as_mut().ol_flags |= mask };
+        assert_eq!(mbuf.rx_flags(), RxFlags::META);
         assert_eq!(mbuf.rx_meta(), Some(value));
         let copy = mbuf.deep_copy().unwrap();
         assert_eq!(copy.rx_meta(), Some(value));
