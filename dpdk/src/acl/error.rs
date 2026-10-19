@@ -8,6 +8,8 @@
 
 use errno::Errno;
 
+use crate::eal::EalNotRunning;
+
 /// Ways in which an ACL context name can be invalid.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, thiserror::Error)]
 pub enum InvalidAclName {
@@ -64,6 +66,9 @@ pub enum AclCreateError {
         /// The name that collided.
         name: String,
     },
+    /// No EAL is running, so there is no memory to create the context in.
+    #[error(transparent)]
+    EalNotRunning(#[from] EalNotRunning),
     /// DPDK returned `EINVAL` -- one or more parameters are invalid.
     #[error("Invalid ACL creation parameters")]
     InvalidParams,
