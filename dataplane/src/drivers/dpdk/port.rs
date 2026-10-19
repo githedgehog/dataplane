@@ -199,9 +199,11 @@ pub(crate) struct PortQueues<'p> {
     pub(crate) tx: TxQueue<'p>,
     /// The pool injected control-plane frames are copied into.
     ///
-    /// The port's receive pool, deliberately: a second pool per port would be memory reserved for
-    /// a handful of frames a second. The cost is that a burst of injection competes with receive
-    /// buffering, which at control-plane rates it will not do noticeably.
+    /// The port's receive pool, for now. That ties the control plane's transmit path to forwarding
+    /// load: when forwarding drains the pool (transmit rings backed up behind a congested link, or
+    /// a large burst), injection fails all-or-nothing and its frames count as `tx_drops` -- at the
+    /// moment BGP keepalives, BFD and neighbor replies matter most. A dedicated control pool per
+    /// port, drained by the control worker, replaces this later in the series.
     pub(crate) pool: Pool<'p>,
     /// Where to hand a frame this port received which the kernel should see.
     ///
@@ -212,6 +214,39 @@ pub(crate) struct PortQueues<'p> {
     pub(crate) inject: Option<mpsc::Receiver<Frame>>,
 }
 
+/// The interface index the rest of the dataplane knows `port` by, and the channels to and from its
+/// tap, if the control-plane bridge has one.
+fn map_port_to_cp(
+    port: &Port<'_>,
+    bridge: Option<&mut DatapathEnds>,
+) -> (
+    InterfaceIndex,
+    Option<mpsc::Sender<Frame>>,
+    Option<mpsc::Receiver<Frame>>,
+) {
+    let Some(bridge) = bridge else {
+        debug!(
+            "no control-plane bridge, so port {} delivers nothing to the kernel",
+            port.name
+        );
+        // No bridge, so nothing moved and the port's own index is the one the control plane saw
+        // too.
+        return (port.if_index, None, None);
+    };
+    let Some(queues) = bridge.take(&port.name) else {
+        warn!(
+            "the control-plane bridge has no tap for port {}; frames the kernel should see will be \
+             dropped and nothing can be injected",
+            port.name
+        );
+        return (port.if_index, None, None);
+    };
+    // The tap's index, not the port's. Interface indices are per-namespace and these two live in
+    // different ones; everything above the driver was built from the control plane's view, so it
+    // speaks in tap indices. See `cpbridge::PortCpQueues::index`.
+    (queues.index, Some(queues.punt), queues.inject)
+}
+
 /// Give worker `i` queue pair `i` from every port.
 ///
 /// # Errors
@@ -220,45 +255,17 @@ pub(crate) struct PortQueues<'p> {
 pub(crate) fn deal_queues<'p>(
     ports: &'p [Port<'_>],
     num_workers: u16,
-    bridge: Option<&mut DatapathEnds>,
+    mut bridge: Option<&mut DatapathEnds>,
 ) -> Result<Vec<Vec<PortQueues<'p>>>, DriverError> {
     let mut per_worker: Vec<Vec<PortQueues<'p>>> = (0..num_workers)
         .map(|_| Vec::with_capacity(ports.len()))
         .collect();
 
-    let mut bridge = bridge;
-    // Whether there is a bridge at all, as distinct from whether it knows about a given port. No
-    // bridge is an ordinary configuration -- the kernel still has the netdevs and carries the
-    // control plane itself. A bridge that is missing *this* port is a mismatch worth a warning.
-    let bridged = bridge.is_some();
     for port in ports {
         // The injection queue goes to exactly one worker; the punt sender is cloned to all of them,
         // because any worker can receive a frame the kernel should see but only one may drain a
         // queue without reordering the session it carries.
-        let (if_index, punt, mut inject) = if let Some(queues) =
-            bridge.as_deref_mut().and_then(|b| b.take(&port.name))
-        {
-            // The tap's index, not the port's. Interface indices are per-namespace and these two
-            // live in different ones; everything above the driver was built from the control
-            // plane's view, so it speaks in tap indices. See `cpbridge::PortCpQueues::index`.
-            (queues.index, Some(queues.punt), queues.inject)
-        } else {
-            if bridged {
-                warn!(
-                    "the control-plane bridge has no tap for port {}; frames the kernel should see \
-                     will be dropped and nothing can be injected",
-                    port.name
-                );
-            } else {
-                debug!(
-                    "no control-plane bridge, so port {} delivers nothing to the kernel",
-                    port.name
-                );
-            }
-            // No bridge, so nothing moved and the port's own index is the one the control plane
-            // saw too.
-            (port.if_index, None, None)
-        };
+        let (if_index, punt, mut inject) = map_port_to_cp(port, bridge.as_deref_mut());
 
         let mut queues = port.dev.take_queues().ok_or_else(|| {
             DriverError::PortSetup(format!(
