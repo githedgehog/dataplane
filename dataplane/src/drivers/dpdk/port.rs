@@ -320,9 +320,19 @@ impl<'eal> Port<'eal> {
             })?;
         }
 
-        let dev = dev
+        let mut dev = dev
             .start()
             .map_err(|e| DriverError::PortSetup(format!("failed to start port {index}: {e}")))?;
+
+        // LLDP is sent to a link-local group the device was never told about, and a device that
+        // filters on its address list (virtio-net under QEMU, for one) drops it when not promiscuous.
+        // A port that will not take all multicast can still forward, so this is not fatal.
+        if let Err(e) = dev.set_allmulticast(true) {
+            warn!(
+                "port {index} ({name}) would not accept all multicast ({e:?}); LLDP and IPv6 neighbor \
+                 discovery may not reach the control plane"
+            );
+        }
 
         // Both read after the port has started, because both are properties of the running device
         // rather than of the configuration: the MTU was clamped into the device's range and the MAC

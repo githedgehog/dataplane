@@ -1453,6 +1453,34 @@ impl<'eal, S: Open> Dev<'eal, S> {
             Err(ErrorCode::parse_i32(ret))
         }
     }
+
+    /// Accept, or stop accepting, every multicast frame regardless of the device's address filters.
+    ///
+    /// Promiscuous mode implies this; without it, a device may drop multicast to groups it was not
+    /// told about, such as the link-local groups of LLDP (`01:80:c2:00:00:0e`) or IPv6 neighbor
+    /// discovery's solicited-node groups.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's error, including `ENOTSUP` when unsupported.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn set_allmulticast(&mut self, enable: bool) -> Result<(), ErrorCode> {
+        let port = self.info.index().as_u16();
+        let ret = if enable {
+            unsafe { rte_eth_allmulticast_enable(port) }
+        } else {
+            unsafe { rte_eth_allmulticast_disable(port) }
+        };
+        if ret == 0 {
+            debug!(
+                "All-multicast mode {state} on port {port}",
+                state = if enable { "enabled" } else { "disabled" }
+            );
+            Ok(())
+        } else {
+            Err(ErrorCode::parse_i32(ret))
+        }
+    }
 }
 
 impl<'eal> Dev<'eal, Configured> {
