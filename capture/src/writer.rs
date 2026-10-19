@@ -6,7 +6,6 @@
 use crate::names::CaptureNames;
 use crate::record::{CaptureRecord, Direction};
 use net::interface::InterfaceIndex;
-use net::parse::DeParse;
 use pcap_file::DataLink;
 use pcap_file::pcapng::blocks::enhanced_packet::{EnhancedPacketBlock, EnhancedPacketOption};
 use pcap_file::pcapng::blocks::interface_description::{
@@ -35,9 +34,6 @@ pub enum CaptureWriteError {
     /// The underlying pcapng writer failed (usually an I/O error).
     #[error(transparent)]
     Pcapng(#[from] PcapNgWriteError),
-    /// The record's headers could not be rebuilt into bytes.
-    #[error("failed to deparse captured headers")]
-    Deparse,
 }
 
 /// Writes [`CaptureRecord`]s to a pcapng stream.
@@ -48,7 +44,6 @@ pub struct CaptureWriter<W: Write> {
     pcapng: PcapNgWriter<W>,
     names: CaptureNames,
     interfaces: HashMap<Option<InterfaceIndex>, u32>,
-    frame: Vec<u8>,
     comment: String,
 }
 
@@ -63,30 +58,23 @@ impl<W: Write> CaptureWriter<W> {
             pcapng: PcapNgWriter::new(sink)?,
             names,
             interfaces: HashMap::new(),
-            frame: Vec::new(),
             comment: String::new(),
         })
     }
 
-    /// Append one record.
+    /// Append one record, noting that `dropped` packets were lost since the previous one.
     ///
-    /// The frame holds only the rebuilt headers; the original length still counts the payload, so readers
-    /// see an ordinary snaplen-truncated packet.
+    /// A record truncated at the capture's snap length keeps the frame's full original length, so
+    /// readers see an ordinary snaplen-truncated packet. `dropped` becomes the packet's
+    /// `epb_dropcount` when it is not zero.
     ///
     /// # Errors
     ///
-    /// Fails if the headers cannot be rebuilt or the stream cannot be written.
-    pub fn write(&mut self, record: &CaptureRecord) -> Result<(), CaptureWriteError> {
+    /// Fails if the stream cannot be written.
+    pub fn write(&mut self, record: &CaptureRecord, dropped: u64) -> Result<(), CaptureWriteError> {
         use std::fmt::Write as _;
 
         let interface_id = self.interface_id(record.interface())?;
-
-        let headers = record.headers();
-        self.frame.clear();
-        self.frame.resize(usize::from(headers.size().get()), 0);
-        headers
-            .deparse(&mut self.frame)
-            .map_err(|_| CaptureWriteError::Deparse)?;
 
         self.comment.clear();
         write!(self.comment, "{}", record.annotation(&self.names))
@@ -96,17 +84,33 @@ impl<W: Write> CaptureWriter<W> {
             Direction::Ingress => EPB_FLAGS_INBOUND,
             Direction::Egress => EPB_FLAGS_OUTBOUND,
         };
+        let mut options = vec![
+            EnhancedPacketOption::Flags(direction),
+            EnhancedPacketOption::Common(CommonOption::Comment(Cow::Borrowed(&self.comment))),
+        ];
+        if dropped > 0 {
+            options.push(EnhancedPacketOption::DropCount(dropped));
+        }
         self.pcapng.write_pcapng_block(EnhancedPacketBlock {
             interface_id,
             timestamp: record.timestamp(),
             original_len: record.original_len(),
-            data: Cow::Borrowed(&self.frame),
-            options: vec![
-                EnhancedPacketOption::Flags(direction),
-                EnhancedPacketOption::Common(CommonOption::Comment(Cow::Borrowed(&self.comment))),
-            ],
+            data: Cow::Borrowed(record.data()),
+            options,
         })?;
         Ok(())
+    }
+
+    /// Push everything written so far to the underlying sink.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the sink cannot be flushed.
+    pub fn flush(&mut self) -> Result<(), CaptureWriteError> {
+        self.pcapng
+            .get_mut()
+            .flush()
+            .map_err(|e| PcapNgWriteError::Io(e).into())
     }
 
     /// Close the stream with `summary`, then flush and return the underlying sink.

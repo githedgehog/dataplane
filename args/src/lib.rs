@@ -241,11 +241,6 @@ pub const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh/dataplane.sock";
 /// runtime inspection and control.
 pub const DEFAULT_DP_UX_PATH_CLI: &str = "/var/run/dataplane/cli.sock";
 
-/// Default directory for packet captures started from the CLI.
-///
-/// Temporary: the pod has no persisted location for captures yet.
-pub const DEFAULT_CAPTURE_DIR: &str = "/var/run/dataplane/capture";
-
 /// Default path to the FRR agent socket.
 ///
 /// This socket is used to connect to the FRR agent that controls FRR
@@ -672,6 +667,8 @@ pub struct KernelDriverConfigSection {
 pub struct CliConfigSection {
     /// Unix socket path for CLI connections
     pub cli_sock_path: String,
+    /// Where packet captures go when `capture start` names no file or directory, if anywhere.
+    pub capture_dir: Option<String>,
 }
 
 /// Configuration for metrics collection and export.
@@ -1533,6 +1530,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             driver,
             cli: CliConfigSection {
                 cli_sock_path: value.cli_sock_path(),
+                capture_dir: value.capture_dir.clone(),
             },
             routing: RoutingConfigSection {
                 control_plane_socket: value.cpi_sock_path(),
@@ -1659,6 +1657,15 @@ Separate interfaces with commas and options with slashes."
         default_value = DEFAULT_DP_UX_PATH_CLI
     )]
     cli_sock_path: String,
+
+    #[arg(
+        long,
+        value_name = "DIR",
+        help = "Directory for packet captures that name no file or directory of their own. With \
+                none, such a capture is refused: the gateway's runtime directory is tmpfs, so a \
+                default there would hold captures in the node's memory"
+    )]
+    capture_dir: Option<String>,
 
     #[arg(
         long,
