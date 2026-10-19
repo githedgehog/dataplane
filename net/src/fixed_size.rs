@@ -8,7 +8,7 @@ use fixed_size::{FixedSize, MaskBits};
 use crate::ip::NextHeader;
 use crate::ipv4::UnicastIpv4Addr;
 use crate::ipv6::UnicastIpv6Addr;
-use crate::tcp::TcpPort;
+use crate::tcp::{TcpFlags, TcpPort};
 use crate::udp::UdpPort;
 use crate::vxlan::Vni;
 
@@ -27,6 +27,19 @@ impl FixedSize for NextHeader {
 impl MaskBits for NextHeader {
     const ALL_BITS: Self = NextHeader::new(u8::MAX);
     const NO_BITS: Self = NextHeader::new(0);
+}
+
+impl FixedSize for TcpFlags {
+    const SIZE: usize = 1;
+    fn write_be(&self, out: &mut [u8]) {
+        self.bits().write_be(out);
+    }
+}
+
+/// Every 8-bit pattern is a valid set of flags, so a mask over flags is itself a set of flags.
+impl MaskBits for TcpFlags {
+    const ALL_BITS: Self = TcpFlags::all();
+    const NO_BITS: Self = TcpFlags::empty();
 }
 
 impl FixedSize for TcpPort {
@@ -107,6 +120,14 @@ mod tests {
         let mut buf = [0u8; 1];
         NextHeader::TCP.write_be(&mut buf);
         assert_eq!(buf, [NextHeader::TCP.as_u8()]);
+    }
+
+    #[test]
+    fn tcp_flags_write_one_wire_byte() {
+        assert_eq!(<TcpFlags as FixedSize>::SIZE, 1);
+        let mut buf = [0u8; 1];
+        (TcpFlags::SYN | TcpFlags::ACK).write_be(&mut buf);
+        assert_eq!(buf, [0x12]);
     }
 
     #[test]
