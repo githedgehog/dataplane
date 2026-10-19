@@ -341,12 +341,24 @@ fn enter_datapath_netns(netns: &NetworkNamespace) -> Result<(), String> {
     Ok(())
 }
 
+/// Channels between management and the datapath thread.
+struct DatapathHandoff {
+    /// The datapath reports whether it is ready for management to start.
+    ready: std::sync::mpsc::Sender<Result<(), String>>,
+    /// Management releases the datapath to touch devices; disconnecting stands it down instead.
+    go: std::sync::mpsc::Receiver<()>,
+    /// Disconnected once management has stopped and no longer uses EAL memory.
+    release: std::sync::mpsc::Receiver<()>,
+}
+
 /// Run the packet path on a thread in the datapath namespace.
 ///
 /// Report readiness once the namespace is entered (and, for DPDK, the EAL exists, since management
 /// builds ACL classifiers in it), then wait for management startup before touching any device.
 /// Driver threads inherit this thread's namespaces.
-#[allow(clippy::too_many_arguments)]
+///
+/// The EAL must be cleaned up on this thread, and only after management has dropped its ACL
+/// classifiers, so this keeps it until `release` disconnects -- whether the driver ran or not.
 fn run_datapath(
     config: &LaunchConfiguration,
     netns: &NetworkNamespace,
@@ -354,41 +366,42 @@ fn run_datapath(
     timer_handle: &tokio::runtime::Handle,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
-    ready: &std::sync::mpsc::Sender<Result<(), String>>,
-    go: &std::sync::mpsc::Receiver<()>,
+    handoff: &DatapathHandoff,
 ) {
     if let Err(detail) = enter_datapath_netns(netns) {
         error!("{detail}");
-        drop(ready.send(Err(detail)));
+        drop(handoff.ready.send(Err(detail)));
         return;
     }
 
-    let eal = match config.driver {
+    let mut eal = match config.driver {
         DriverConfigSection::Dpdk(_) => Some(init_eal(config)),
         DriverConfigSection::Kernel(_) => None,
     };
 
-    if ready.send(Ok(())).is_err() {
+    if handoff.ready.send(Ok(())).is_err() {
         info!("The datapath is ready but nothing is waiting for it; stopping");
-        return;
-    }
-
-    // A disconnected channel means management startup failed or was cancelled.
-    if go.recv().is_err() {
+    } else if handoff.go.recv().is_err() {
+        // A disconnected channel means management startup failed or was cancelled.
         info!("Datapath was told to stand down before starting");
-        return;
+    } else {
+        match &mut eal {
+            Some(eal) => run_dpdk_driver(
+                eal,
+                config,
+                workers,
+                timer_handle,
+                ingredients,
+                status_writer,
+            ),
+            None => run_kernel_driver(config, workers, ingredients, status_writer),
+        }
     }
 
-    match eal {
-        Some(mut eal) => run_dpdk_driver(
-            &mut eal,
-            config,
-            workers,
-            timer_handle,
-            ingredients,
-            status_writer,
-        ),
-        None => run_kernel_driver(config, workers, ingredients, status_writer),
+    if eal.is_some() {
+        info!("Waiting for management to stop before cleaning up the EAL");
+        // Only disconnection is ever sent.
+        let _ = handoff.release.recv();
     }
 }
 
@@ -608,6 +621,12 @@ pub fn main() {
         // Management waits for the datapath to be ready, then releases it after its own startup.
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let handoff = DatapathHandoff {
+            ready: ready_tx,
+            go: go_rx,
+            release: release_rx,
+        };
 
         let spawned = thread::Builder::new()
             .name("datapath".to_string())
@@ -624,8 +643,7 @@ pub fn main() {
                         timer_handle,
                         ingredients,
                         driver_status_writer,
-                        &ready_tx,
-                        &go_rx,
+                        &handoff,
                     );
                 }
             });
@@ -704,12 +722,15 @@ pub fn main() {
         mgmt_handle.block_on(shutdown.root.cancelled());
         info!("Shutting down dataplane");
         mgmt_handle.block_on(shutdown.drain_in_order());
+
+        setup.router.stop();
+        mgmt_runtime.shutdown_timeout(Duration::from_secs(2));
+
+        // Management's ACL classifiers are gone; the datapath may now clean up the EAL.
+        drop(release_tx);
     });
 
     let exit_code = i32::from(shutdown.is_fatal());
-
-    setup.router.stop();
-    mgmt_runtime.shutdown_timeout(Duration::from_secs(2));
 
     if let Some(running) = agent_running {
         match running.stop() {
