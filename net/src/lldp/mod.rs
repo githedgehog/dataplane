@@ -70,6 +70,7 @@ mod optional;
 mod org;
 mod pdu;
 mod port_id;
+mod receive;
 mod tlv;
 mod ttl;
 
@@ -92,6 +93,7 @@ pub use org::{
 };
 pub use pdu::{Lldpdu, LldpduError, LldpduTooLong};
 pub use port_id::{PortId, PortIdError, PortIdSubtype, ReservedPortIdSubtype};
+pub use receive::Received;
 pub use tlv::{
     InvalidTlvType, RawTlv, TlvHeader, TlvType, TlvValue, TlvValueTooLong, UnexpectedTlvType,
 };
