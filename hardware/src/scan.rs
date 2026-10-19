@@ -65,6 +65,11 @@ impl<'a> From<&'a TopologyObject> for Node {
     }
 }
 
+/// hwloc could not describe the machine.
+#[derive(Debug, thiserror::Error)]
+#[error("hwloc could not describe this machine: {0}")]
+pub struct ScanError(String);
+
 impl Node {
     /// Set up a scan of the hardware of the running machine and produce a top level node which includes
     /// (as children), all hardware nodes visible to this process.
@@ -152,24 +157,19 @@ impl Node {
     /// The reason is to ensure that we cover the entire hardware topology and avoid filtering out
     /// our own objectives.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This method is intended to run at startup and makes no attempt to recover from errors in
-    /// `hwlocality`.
-    ///
-    /// There is little point propagating this error up, as the inability to find the target network card
-    /// is most certainly fatal to the dataplane.
-    #[must_use]
-    #[allow(clippy::unwrap_used)]
-    pub fn scan_all() -> Node {
+    /// Returns [`ScanError`] if hwloc cannot describe the machine, which happens in some VMs. A
+    /// caller can carry on without the topology: what it costs is NUMA locality, not the NICs.
+    pub fn scan_all() -> Result<Node, ScanError> {
         let total_system = Self::total_topology()
             // attempt to ignore mechanisms which might isolate us from the
             // NIC / cpu set the user needs us to use
             .with_flags(BuildFlags::INCLUDE_DISALLOWED)
-            .unwrap()
+            .map_err(|e| ScanError(e.to_string()))?
             .build()
-            .unwrap();
-        Node::from(total_system.root_object())
+            .map_err(|e| ScanError(e.to_string()))?;
+        Ok(Node::from(total_system.root_object()))
     }
 
     /// Scan the hardware of the running machine and produce a top level node which includes (as children),
@@ -231,7 +231,7 @@ mod test {
 
     #[n_vm::test]
     fn collect_them_all_and_bind_them() {
-        let system = Node::scan_all();
+        let system = Node::scan_all().unwrap();
         let nics: Vec<_> = system
             .iter()
             .filter_map(|node| match node.attributes() {
@@ -256,7 +256,7 @@ mod test {
 
     #[n_vm::test]
     fn bind_fabric_nics_and_skip_mgmt_nic() {
-        let system = Node::scan_all();
+        let system = Node::scan_all().unwrap();
         let mgmt_nic_pci_address = "0000:00:02.0".try_into().unwrap();
         let nics: Vec<_> = system
             .iter()
@@ -283,7 +283,7 @@ mod test {
 
     #[n_vm::test]
     fn bind_nic_test() {
-        let system = Node::scan_all();
+        let system = Node::scan_all().unwrap();
         let target_pci_address = "0001:00:02.0".try_into().unwrap();
         let Some(mut nic) = system.iter().find_map(|node| match node.attributes() {
             Some(NodeAttributes::Pci(dev)) => {

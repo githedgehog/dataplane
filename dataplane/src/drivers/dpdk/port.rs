@@ -17,14 +17,14 @@ use tracing::{debug, error, info, warn};
 use crate::drivers::DriverError;
 use crate::drivers::cpbridge::{DatapathEnds, Frame};
 
-/// Receive descriptors per queue.
-const RX_DESCRIPTORS: u16 = 1024;
+use args::dpdk_memory::{MBUF_DATA_SIZE, MBUF_PRIVATE_SIZE, MBUFS_PER_RXD, RX_DESCRIPTORS};
 
 /// Transmit descriptors per queue.
 const TX_DESCRIPTORS: u16 = 1024;
 
-/// Mbufs per worker, covering RX descriptors, pipeline processing, and pending TX.
-const POOL_MBUFS_PER_WORKER: u32 = 4 * RX_DESCRIPTORS as u32;
+/// Mbufs per worker, covering RX descriptors, pipeline processing, and pending TX. Init reserves
+/// hugepages for exactly this, through `args::dpdk_memory`.
+const POOL_MBUFS_PER_WORKER: u32 = MBUFS_PER_RXD * RX_DESCRIPTORS as u32;
 
 /// A started port and its receive pool. Workers borrow its queue handles.
 pub(crate) struct Port<'eal> {
@@ -100,6 +100,8 @@ impl<'eal> Port<'eal> {
                     format!("rx_{index}"),
                     PoolParams {
                         size: POOL_MBUFS_PER_WORKER * u32::from(num_workers),
+                        data_size: MBUF_DATA_SIZE,
+                        private_size: MBUF_PRIVATE_SIZE,
                         ..Default::default()
                     },
                 )
