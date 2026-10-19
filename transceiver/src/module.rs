@@ -209,3 +209,49 @@ pub enum Detail {
     /// A CMIS module.
     Cmis(cmis::Detail),
 }
+
+/// A length in decimetres, the finest resolution the memory maps use (SFF-8472 Table 6-1, CMIS
+/// Table 8-29).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Length(u32);
+
+impl Length {
+    /// A length in decimetres.
+    #[must_use]
+    pub const fn from_decimetres(decimetres: u32) -> Self {
+        Self(decimetres)
+    }
+
+    /// The length in decimetres.
+    #[must_use]
+    pub const fn decimetres(self) -> u32 {
+        self.0
+    }
+
+    /// The length in metres.
+    #[must_use]
+    pub fn metres(self) -> f64 {
+        f64::from(self.0) / 10.0
+    }
+}
+
+/// How far a link may reach, or how long a cable is, as a length field encodes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Reach {
+    /// Links up to this length.
+    UpTo(Length),
+    /// Longer than this, the largest length the field can express.
+    Beyond(Length),
+}
+
+impl Reach {
+    /// Decode a length field counted in `unit`: 0 means unsupported or unspecified, 255 beyond
+    /// 254 units.
+    pub(crate) fn of(code: u8, unit: Length) -> Option<Self> {
+        match code {
+            0 => None,
+            0xff => Some(Self::Beyond(Length(254 * unit.0))),
+            count => Some(Self::UpTo(Length(u32::from(count) * unit.0))),
+        }
+    }
+}

@@ -8,8 +8,8 @@
 use crate::capture::DecodeError;
 use crate::memory::{Bytes, I2cAddress, Image, Lower, Region, Upper};
 use crate::module::{
-    Bounds, Crossings, Flags, Inventory, LaneFlags, LaneMonitors, Module, Monitors, RxPowerKind,
-    Thresholds, Wavelength,
+    Bounds, Crossings, Flags, Inventory, LaneFlags, LaneMonitors, Length, Module, Monitors, Reach,
+    RxPowerKind, Thresholds, Wavelength,
 };
 use crate::sff8024::{Connector, Identifier};
 use crate::units::{BiasMultiplier, Current, Power, Temperature, Voltage};
@@ -43,7 +43,29 @@ pub struct Detail {
     pub events: ModuleEvents,
     /// The data path state of each host lane (11h:128-131), when the module pages.
     pub data_path: Vec<DataPathState>,
+    /// How long a cable assembly is (00h:202, Table 8-29); [`None`] for separable media.
+    pub cable_length: Option<Reach>,
+    /// What a passive copper cable loses (00h:204-207, Table 8-31), for media type 03h only.
+    pub copper_attenuation: Option<CopperAttenuation>,
+    /// The media side device or cable technology (00h:212, Table 8-36).
+    pub media_technology: u8,
 }
+
+/// The attenuation of a passive copper cable assembly, in whole decibels (Table 8-31).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CopperAttenuation {
+    /// At 5 GHz.
+    pub at_5_ghz: u8,
+    /// At 7 GHz.
+    pub at_7_ghz: u8,
+    /// At 12.9 GHz.
+    pub at_12_9_ghz: u8,
+    /// At 25.8 GHz.
+    pub at_25_8_ghz: u8,
+}
+
+/// The media type code for passive copper cables (00h:85, Table 8-17).
+const PASSIVE_COPPER: u8 = 0x03;
 
 /// A major.minor version number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -288,7 +310,27 @@ pub(crate) fn decode(image: &Image) -> Result<Module, DecodeError> {
             .map(|twentieths| Wavelength::from_twentieths(u32::from(twentieths))),
     };
 
-    let detail = Detail {
+    let detail = detail(lower, page00, &layout, applications, data_path);
+
+    Ok(Module {
+        identifier: Identifier::from_raw(lower.u8(0)),
+        inventory,
+        monitors,
+        thresholds,
+        flags,
+        detail: crate::module::Detail::Cmis(detail),
+    })
+}
+
+/// What only CMIS says.
+fn detail(
+    lower: Lower<'_>,
+    page00: Upper<'_>,
+    layout: &Layout,
+    applications: Vec<Application>,
+    data_path: Vec<DataPathState>,
+) -> Detail {
+    Detail {
         revision: Version {
             major: lower.u8(1) >> 4,
             minor: lower.u8(1) & 0x0f,
@@ -314,16 +356,28 @@ pub(crate) fn decode(image: &Image) -> Result<Module, DecodeError> {
             }
         },
         data_path,
-    };
+        cable_length: cable_length(page00.u8(202)),
+        copper_attenuation: (lower.u8(85) == PASSIVE_COPPER).then(|| CopperAttenuation {
+            at_5_ghz: page00.u8(204),
+            at_7_ghz: page00.u8(205),
+            at_12_9_ghz: page00.u8(206),
+            at_25_8_ghz: page00.u8(207),
+        }),
+        media_technology: page00.u8(212),
+    }
+}
 
-    Ok(Module {
-        identifier: Identifier::from_raw(lower.u8(0)),
-        inventory,
-        monitors,
-        thresholds,
-        flags,
-        detail: crate::module::Detail::Cmis(detail),
-    })
+/// A cable assembly's length (00h:202, Table 8-29): a 6 bit base length in metres times a
+/// multiplier of 0.1, 1, 10 or 100. A zero base length means undefined (separable media). Unlike
+/// the SFF length fields, no code means "longer than this": `0xff` is 63 times 100 m.
+fn cable_length(code: u8) -> Option<Reach> {
+    let decimetres_per_count = 10u32.pow(u32::from(code >> 6));
+    match u32::from(code & 0x3f) {
+        0 => None,
+        base => Some(Reach::UpTo(Length::from_decimetres(
+            base * decimetres_per_count,
+        ))),
+    }
 }
 
 /// Which monitors and flags the module implements (01h:157-160, Tables 8-46 and 8-47).
@@ -544,5 +598,30 @@ fn thresholds(page: Upper<'_>, advertised: &Advertised) -> Thresholds {
             })
         }),
         rx_power: advertised.rx_power.then(|| bounds(page, 192, power)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cable_length_applies_the_multiplier() {
+        let up_to = |decimetres| Some(Reach::UpTo(Length::from_decimetres(decimetres)));
+        assert_eq!(cable_length(0x00), None);
+        assert_eq!(
+            cable_length(0x40),
+            None,
+            "a zero base length is undefined whatever the multiplier"
+        );
+        assert_eq!(
+            cable_length(0x0f),
+            up_to(15),
+            "1.5 m, as the QSFP112 DAC in the lab says"
+        );
+        assert_eq!(cable_length(0x43), up_to(30));
+        assert_eq!(cable_length(0x85), up_to(500));
+        assert_eq!(cable_length(0xfe), up_to(62 * 1_000));
+        assert_eq!(cable_length(0xff), up_to(63 * 1_000));
     }
 }

@@ -24,8 +24,8 @@
 use crate::capture::DecodeError;
 use crate::memory::{Bytes, I2cAddress, Image, Lower, Region};
 use crate::module::{
-    Bounds, Crossings, Flags, Inventory, LaneFlags, LaneMonitors, Module, Monitors, RxPowerKind,
-    Thresholds, Wavelength,
+    Bounds, Crossings, Flags, Inventory, LaneFlags, LaneMonitors, Length, Module, Monitors, Reach,
+    RxPowerKind, Thresholds, Wavelength,
 };
 use crate::sff8024::{Connector, Identifier};
 use crate::units::{BiasMultiplier, Current, Power, Temperature, Voltage};
@@ -70,51 +70,6 @@ impl SignalingRate {
     #[must_use]
     pub const fn megabaud(self) -> u32 {
         self.0
-    }
-}
-
-/// A length in decimetres, the finest resolution SFF-8472 uses (Table 6-1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Length(u32);
-
-impl Length {
-    /// A length in decimetres.
-    #[must_use]
-    pub const fn from_decimetres(decimetres: u32) -> Self {
-        Self(decimetres)
-    }
-
-    /// The length in decimetres.
-    #[must_use]
-    pub const fn decimetres(self) -> u32 {
-        self.0
-    }
-
-    /// The length in metres.
-    #[must_use]
-    pub fn metres(self) -> f64 {
-        f64::from(self.0) / 10.0
-    }
-}
-
-/// How far a link may reach over one kind of medium (section 6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Reach {
-    /// Links up to this length.
-    UpTo(Length),
-    /// Links longer than this, the largest length the field can express (code 255).
-    Beyond(Length),
-}
-
-impl Reach {
-    /// Decode a length field counted in `unit`: 0 means unsupported or unspecified, 255 beyond
-    /// 254 units.
-    fn of(code: u8, unit: Length) -> Option<Self> {
-        match code {
-            0 => None,
-            0xff => Some(Self::Beyond(Length(254 * unit.0))),
-            count => Some(Self::UpTo(Length(u32::from(count) * unit.0))),
-        }
     }
 }
 
@@ -432,12 +387,12 @@ fn nominal_rate(lower: Lower<'_>) -> Option<SignalingRate> {
 }
 
 fn links(lower: Lower<'_>, cable: Option<CableKind>) -> Links {
-    const METRE: Length = Length(10);
-    const TEN_METRES: Length = Length(100);
+    const METRE: Length = Length::from_decimetres(10);
+    const TEN_METRES: Length = Length::from_decimetres(100);
     match cable {
         None => Links::Optical(OpticalLinks {
-            single_mode_km: Reach::of(lower.u8(14), Length(10_000)),
-            single_mode: Reach::of(lower.u8(15), Length(1_000)),
+            single_mode_km: Reach::of(lower.u8(14), Length::from_decimetres(10_000)),
+            single_mode: Reach::of(lower.u8(15), Length::from_decimetres(1_000)),
             om2: Reach::of(lower.u8(16), TEN_METRES),
             om1: Reach::of(lower.u8(17), TEN_METRES),
             om4: Reach::of(lower.u8(18), TEN_METRES),
@@ -458,7 +413,7 @@ fn links(lower: Lower<'_>, cable: Option<CableKind>) -> Links {
                 attenuation_12_9_ghz_db: Some(lower.u8(14)).filter(|db| *db != 0),
                 attenuation_25_78_ghz_db: Some(lower.u8(15)).filter(|db| *db != 0),
                 length: Reach::of(lower.u8(18), METRE),
-                length_additional: (decimetres != 0).then_some(Length(decimetres)),
+                length_additional: (decimetres != 0).then_some(Length::from_decimetres(decimetres)),
                 compliance: lower.u16(60),
             })
         }

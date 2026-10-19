@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 
 use dataplane_transceiver::{
-    Block, Capture, Detail, Eeprom, HALF, I2cAddress, Image, Module, Region, RxPowerKind, decode,
-    read,
+    Block, Capture, Detail, Eeprom, HALF, I2cAddress, Image, Module, Reach, Region, RxPowerKind,
+    decode, read,
 };
 use serde_json::Value;
 
@@ -95,7 +95,8 @@ fn near_power(ours: f64, theirs: &Value) {
     within(0.06, ours, theirs);
 }
 
-fn check_against_ethtool(module: &Module, ethtool: &Value) {
+/// What every module says about itself, optics or not.
+fn check_identity(module: &Module, ethtool: &Value) {
     let inventory = &module.inventory;
     assert_eq!(
         u64::from(module.identifier.raw()),
@@ -114,6 +115,12 @@ fn check_against_ethtool(module: &Module, ethtool: &Value) {
         u64::from(inventory.connector.raw()),
         ethtool["connector"].as_u64().unwrap()
     );
+}
+
+/// Identity, monitors, thresholds and flags of an optical module.
+fn check_against_ethtool(module: &Module, ethtool: &Value) {
+    check_identity(module, ethtool);
+    let inventory = &module.inventory;
     close(
         inventory.wavelength.unwrap().nanometres(),
         &ethtool["laser_wavelength"],
@@ -272,6 +279,72 @@ fn qsfp28_matches_ethtool() {
                 Region::upper(0x03),
             ],
             "{name}"
+        );
+    }
+}
+
+/// A 1.5 m passive copper QSFP112 cable (400G) between the ports. It is flat memory, so it has no
+/// monitors, thresholds or flags, and it answers pages 01h, 02h and 11h with page 00h: a decoder
+/// that ignored the flat memory bit would decode garbage.
+#[test]
+fn qsfp112_dac_matches_ethtool() {
+    use dataplane_transceiver::cmis::{CopperAttenuation, Detail as Cmis};
+
+    for name in ["qsfp112-dac-port0", "qsfp112-dac-port1"] {
+        let mut fixture = Fixture::new(name);
+        let (module, _) = read(&mut fixture, Capture::new()).unwrap();
+        let ethtool = fixture.ethtool();
+        check_identity(&module, &ethtool);
+        assert_eq!(
+            fixture.asked,
+            [Region::Lower(I2cAddress::A0), Region::upper(0x00)],
+            "{name}"
+        );
+        assert_eq!(module.inventory.wavelength, None);
+        assert_eq!(module.monitors, Default::default());
+        assert_eq!(module.thresholds, None);
+        assert_eq!(module.flags, None);
+
+        let Detail::Cmis(Cmis {
+            flat_memory,
+            power_class,
+            max_power_milliwatts,
+            cable_length,
+            copper_attenuation,
+            media_technology,
+            data_path,
+            ..
+        }) = &module.detail
+        else {
+            panic!("{name}: not decoded as CMIS")
+        };
+        assert!(flat_memory);
+        assert!(data_path.is_empty());
+        assert_eq!(
+            u64::from(*power_class),
+            ethtool["power_class"].as_u64().unwrap()
+        );
+        close(
+            f64::from(*max_power_milliwatts) / 1000.0,
+            &ethtool["max_power"],
+        );
+        let Some(Reach::UpTo(length)) = cable_length else {
+            panic!("{name}: no cable length")
+        };
+        close(length.metres(), &ethtool["cable_assembly_length"]);
+        let attenuation = |key: &str| u8::try_from(ethtool[key].as_u64().unwrap()).unwrap();
+        assert_eq!(
+            *copper_attenuation,
+            Some(CopperAttenuation {
+                at_5_ghz: attenuation("attenuation_at_5ghz"),
+                at_7_ghz: attenuation("attenuation_at_7ghz"),
+                at_12_9_ghz: attenuation("attenuation_at_12.9ghz"),
+                at_25_8_ghz: attenuation("attenuation_at_25.8ghz"),
+            })
+        );
+        assert_eq!(
+            u64::from(*media_technology),
+            ethtool["transmitter_technology"].as_u64().unwrap()
         );
     }
 }

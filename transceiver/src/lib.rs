@@ -37,7 +37,7 @@ mod units;
 pub use capture::{Capture, DecodeError, Eeprom, ReadError, decode, read};
 pub use memory::{Block, Bytes, HALF, I2cAddress, Image, Lower, Region, Upper};
 pub use module::{
-    Bounds, Crossings, Detail, Flags, Inventory, LaneFlags, LaneMonitors, Module, Monitors,
-    RxPowerKind, Thresholds, Wavelength,
+    Bounds, Crossings, Detail, Flags, Inventory, LaneFlags, LaneMonitors, Length, Module, Monitors,
+    Reach, RxPowerKind, Thresholds, Wavelength,
 };
 pub use units::{BiasMultiplier, Current, Power, Temperature, Voltage};
