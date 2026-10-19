@@ -363,6 +363,8 @@ fn bring_up_ports<'eal>(
 ) -> Result<Vec<Port<'eal>>, DriverError> {
     let num_workers = config.driver.num_workers().get();
     let selected = configured_pci_ports(config)?;
+    // Every port's pool backs its packets in every port's transmit rings.
+    let num_ports = u32::try_from(selected.len()).unwrap_or(u32::MAX);
     for (interface, address) in &selected {
         eal.probe_pci(*address).map_err(|e| {
             DriverError::PortSetup(format!("interface '{}': {e}", interface.interface))
@@ -414,6 +416,7 @@ fn bring_up_ports<'eal>(
             port,
             name,
             num_workers,
+            num_ports,
             interface.mtu,
             interface.rx_descriptors,
         )?;
