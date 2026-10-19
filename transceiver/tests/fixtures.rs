@@ -74,13 +74,25 @@ fn close(ours: f64, theirs: &Value) {
     assert!((ours - theirs).abs() < 0.000_051, "{ours} != {theirs}");
 }
 
-/// Whether a live reading is near what ethtool read moments later; monitors drift between reads.
-fn near(ours: f64, theirs: &Value) {
+/// Whether a live reading is within `tolerance` (relative) of what ethtool read moments later;
+/// monitors drift between reads.
+fn within(tolerance: f64, ours: f64, theirs: &Value) {
     let theirs = number(theirs);
     assert!(
-        (ours - theirs).abs() <= theirs.abs() * 0.03 + 0.000_051,
+        (ours - theirs).abs() <= theirs.abs() * tolerance + 0.000_051,
         "{ours} !~ {theirs}"
     );
+}
+
+/// A slowly changing reading: temperature, supply, bias.
+fn near(ours: f64, theirs: &Value) {
+    within(0.03, ours, theirs);
+}
+
+/// Optical power, which wanders further between reads: an Intel CWDM4's moved by over 3 %
+/// between a capture and the `ethtool -m` run right after it.
+fn near_power(ours: f64, theirs: &Value) {
+    within(0.06, ours, theirs);
 }
 
 fn check_against_ethtool(module: &Module, ethtool: &Value) {
@@ -122,11 +134,11 @@ fn check_against_ethtool(module: &Module, ethtool: &Value) {
             readings.tx_bias.unwrap().milliamps(),
             &ethtool["laser_tx_bias_current"][lane],
         );
-        near(
+        near_power(
             readings.tx_power.unwrap().milliwatts(),
             &ethtool["transmit_avg_optical_power"][lane],
         );
-        near(
+        near_power(
             readings.rx_power.unwrap().milliwatts(),
             &ethtool["rx_power"]["values"][lane],
         );
@@ -205,14 +217,21 @@ fn qsfp112_matches_ethtool() {
     }
 }
 
-/// Mellanox 100G-QSFP28-SR4 modules in both ports. They claim SFF-8636 revision 2.5-2.7, so they
-/// leave the temperature and supply bits of byte 220 clear and exercise the decoder's fallback for
-/// modules older than revision 2.8.
+/// QSFP28 modules from both ports: Mellanox 100G-QSFP28-SR4 (multimode, describing itself as a
+/// 50 m cable assembly) and Intel CWDM4 (single mode, LC). All claim SFF-8636 revision 2.5-2.7,
+/// so they leave the temperature and supply bits of byte 220 clear and exercise the decoder's
+/// fallback for modules older than revision 2.8. The Intel modules answer page 01h, which they do
+/// not advertise, with page 00h.
 #[test]
 fn qsfp28_matches_ethtool() {
     use dataplane_transceiver::sff8636::Detail as Sff8636;
 
-    for name in ["qsfp28-sr4-mellanox-port0", "qsfp28-sr4-mellanox-port1"] {
+    for name in [
+        "qsfp28-sr4-mellanox-port0",
+        "qsfp28-sr4-mellanox-port1",
+        "qsfp28-cwdm4-intel-port0",
+        "qsfp28-cwdm4-intel-port1",
+    ] {
         let mut fixture = Fixture::new(name);
         let (module, _) = read(&mut fixture, Capture::new()).unwrap();
         let ethtool = fixture.ethtool();
@@ -230,11 +249,20 @@ fn qsfp28_matches_ethtool() {
         };
         assert!(!flat_memory);
         assert_eq!(u64::from(*encoding), ethtool["encoding"].as_u64().unwrap());
-        // Byte 146 of a module without a separable connector is a cable length, as ethtool reads it.
-        assert_eq!(
-            lengths.cable_metres.map(u64::from),
-            ethtool["length_(copper_or_active_cable)"].as_u64()
-        );
+        // ethtool prints an absent length as 0. Byte 146 of a module without a separable connector
+        // is a cable length, as ethtool reads it.
+        let length = |ours: Option<u16>, key: &str| {
+            assert_eq!(
+                u64::from(ours.unwrap_or(0)),
+                ethtool[key].as_u64().unwrap(),
+                "{name}: {key}"
+            );
+        };
+        length(lengths.smf_km, "length_(smf)");
+        length(lengths.om3_metres, "length_(om3)");
+        length(lengths.om2_metres, "length_(om2)");
+        length(lengths.om1_metres, "length_(om1)");
+        length(lengths.cable_metres, "length_(copper_or_active_cable)");
         assert_eq!(lengths.om4_metres, None);
         assert_eq!(
             fixture.asked,
