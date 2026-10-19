@@ -1554,6 +1554,7 @@ name = "dataplane-dpdk"
 version = "0.29.0"
 dependencies = [
  "arrayvec",
+ "bitflags 2.13.2",
  "bolero",
  "dataplane-concurrency",
  "dataplane-dpdk",
