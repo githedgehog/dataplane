@@ -19,11 +19,14 @@
 //! QSFP28) and CMIS (QSFP-DD, OSFP, QSFP112).
 //!
 //! The kernel and DPDK only hand back raw bytes; this crate turns them into a [`Module`].
-//! It does no I/O itself: a [`Capture`] says which [`Region`] to read next and decodes what it is
-//! given, so any source of module memory can drive it.
+//! The decoder does no I/O: a [`Capture`] says which [`Region`] to read next and decodes what it
+//! is given, so any source of module memory can drive it. The `ethtool` feature adds one such
+//! source, the kernel's ethtool netlink interface.
 
 mod capture;
 pub mod cmis;
+#[cfg(feature = "ethtool")]
+pub mod ethtool;
 mod memory;
 mod module;
 pub mod sff8024;
