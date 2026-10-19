@@ -15,14 +15,15 @@
 //!
 //! The dataplane owns its NICs, so host tools such as `tcpdump` never see its traffic.
 //! This crate captures from inside the pipeline instead:
-//! a [`CaptureStage`] copies the parsed headers and metadata of the packets it sees into
-//! [`CaptureRecord`]s, and a [`CaptureWriter`] turns those records back into frames in a pcapng file.
+//! a [`CaptureStage`] copies the frames and metadata of the packets it sees into [`CaptureRecord`]s,
+//! and a [`CaptureWriter`] writes those records to a pcapng file.
 //!
-//! Records carry headers, not packet buffers, so the payload is not captured.
-//! pcapng says so honestly: each packet's captured length is shorter than its original length.
+//! A record holds the frame's bytes up to the capture's snap length, outer encapsulation included.
+//! pcapng says so honestly: a truncated packet's captured length is shorter than its original length.
 //! The metadata (drop reason, interfaces, VNIs, flow key) rides along as a text comment on each packet.
 //! Interfaces and VPCs appear by the names given in [`CaptureNames`].
 
+mod buffer;
 mod controller;
 mod directory;
 mod filter;
@@ -34,13 +35,14 @@ mod writer;
 #[cfg(test)]
 mod tests;
 
+pub use buffer::CaptureBuffer;
 pub use controller::{
     CaptureController, CaptureEnd, CaptureReport, CaptureRequest, CaptureStartError, CaptureStatus,
     ControlledSink,
 };
-pub use directory::{CaptureDirectory, CaptureFileError};
+pub use directory::{CaptureDirectory, CaptureFileError, CaptureTarget};
 pub use filter::{CaptureFilter, VpcMatch};
 pub use names::CaptureNames;
-pub use record::{CaptureRecord, Direction, Frame, ThreadLabel};
+pub use record::{CaptureRecord, Direction, ThreadLabel};
 pub use stage::{CaptureSink, CaptureStage};
 pub use writer::{CaptureWriteError, CaptureWriter};

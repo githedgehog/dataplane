@@ -3,6 +3,7 @@
 
 //! A pipeline stage which copies packets out to a [`CaptureSink`].
 
+use crate::buffer::CaptureBuffer;
 use crate::record::{CaptureRecord, Direction, ThreadLabel};
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
@@ -22,8 +23,12 @@ pub trait CaptureSink {
         true
     }
 
-    /// Whether to capture `packet`.
-    fn admits<Buf: PacketBufferMut>(&mut self, packet: &Packet<Buf>) -> bool;
+    /// Whether to capture `packet`, and if so the buffer to copy it into.
+    ///
+    /// A sink which wants the packet but has no buffer free accounts for it itself and returns
+    /// `None`: this runs on a packet-processing thread and must neither allocate without bound nor
+    /// wait.
+    fn admits<Buf: PacketBufferMut>(&mut self, packet: &Packet<Buf>) -> Option<CaptureBuffer>;
 
     /// Take a record of an admitted packet.
     ///
@@ -31,10 +36,10 @@ pub trait CaptureSink {
     fn submit(&mut self, record: CaptureRecord);
 }
 
-/// Keeps every packet. Meant for tests.
+/// Keeps every packet, whole. Meant for tests.
 impl CaptureSink for Vec<CaptureRecord> {
-    fn admits<Buf: PacketBufferMut>(&mut self, _: &Packet<Buf>) -> bool {
-        true
+    fn admits<Buf: PacketBufferMut>(&mut self, _: &Packet<Buf>) -> Option<CaptureBuffer> {
+        Some(CaptureBuffer::unpooled(None))
     }
 
     fn submit(&mut self, record: CaptureRecord) {
@@ -100,11 +105,12 @@ impl<Buf: PacketBufferMut, S: CaptureSink> NetworkFunction<Buf> for CaptureStage
             return;
         }
         for packet in burst.iter() {
-            if !self.sink.admits(packet) {
+            let Some(buffer) = self.sink.admits(packet) else {
                 continue;
-            }
+            };
             let thread = self.thread();
-            let record = CaptureRecord::new(self.direction, packet, clock::system_now(), thread);
+            let record =
+                CaptureRecord::new(self.direction, packet, clock::system_now(), thread, buffer);
             self.sink.submit(record);
         }
     }
