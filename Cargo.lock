@@ -1372,6 +1372,7 @@ dependencies = [
  "dataplane-lldp",
  "dataplane-lpm",
  "dataplane-mgmt",
+ "dataplane-mstlink",
  "dataplane-n-vm",
  "dataplane-nat",
  "dataplane-net",

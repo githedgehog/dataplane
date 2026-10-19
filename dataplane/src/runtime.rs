@@ -609,6 +609,12 @@ fn run_dpdk_driver(
                 mtu: Some(port.mtu),
                 hardware: port.hardware.clone(),
                 datapath_index: Some(port.if_index),
+                pci_address: port
+                    .dev
+                    .info()
+                    .name()
+                    .ok()
+                    .and_then(|name| PciAddress::try_from(name.as_str()).ok()),
             });
         }
     }
@@ -842,13 +848,18 @@ pub fn main() {
     );
 
     // Module reads need a netlink socket where the ports' netdevs are, and a thread that may block on
-    // the module's bus, so they get a small runtime of their own in the datapath namespace. Losing
-    // them costs telemetry, not forwarding.
-    let transceiver_runtime = config.metrics.transceiver_interval.and_then(|_| {
-        netns_runtime(&datapath_netns, "module-rt", "datapath", Some(1))
-            .inspect_err(|e| warn!("{e}; no transceiver readings"))
-            .ok()
-    });
+    // the module's bus, so they get a small runtime of their own in the datapath namespace; mstlink
+    // runs there too, from the one thread that would keep its privileges. Losing them costs
+    // telemetry, not forwarding.
+    let wants_module_runtime =
+        config.metrics.transceiver_interval.is_some() || config.metrics.mstlink_interval.is_some();
+    let transceiver_runtime = wants_module_runtime
+        .then(|| {
+            netns_runtime(&datapath_netns, "module-rt", "datapath", Some(1))
+                .inspect_err(|e| warn!("{e}; no transceiver or physical layer readings"))
+                .ok()
+        })
+        .flatten();
 
     // Taps are created from the control namespace, before the datapath thread starts; otherwise their
     // configured names would collide with the interfaces they stand for.
@@ -860,15 +871,23 @@ pub fn main() {
         Ok((mut bridge, ends)) => {
             // Under `protocols`, which stops before the workers, so the shutdown frames LLDP sends
             // on the way out still have a datapath to leave by.
-            if let (Some(runtime), Some(interval)) =
-                (&transceiver_runtime, config.metrics.transceiver_interval)
-            {
-                crate::transceiver_agent::start(
-                    runtime.handle(),
-                    &shutdown.metrics,
-                    bridge.ports(),
-                    interval,
-                );
+            if let Some(runtime) = &transceiver_runtime {
+                if let Some(interval) = config.metrics.transceiver_interval {
+                    crate::transceiver_agent::start(
+                        runtime.handle(),
+                        &shutdown.metrics,
+                        bridge.ports(),
+                        interval,
+                    );
+                }
+                if let Some(interval) = config.metrics.mstlink_interval {
+                    crate::phy_agent::start(
+                        runtime.handle(),
+                        &shutdown.metrics,
+                        bridge.ports(),
+                        interval,
+                    );
+                }
             }
             let new_neighbors = crate::lldp_agent::start(
                 &mgmt_handle,

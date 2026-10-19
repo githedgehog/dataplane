@@ -163,6 +163,7 @@ impl DriverKernel {
                         mtu: kif.mtu.and_then(|mtu| u16::try_from(mtu).ok()),
                         hardware: kif.hardware(),
                         datapath_index: Some(kif.ifindex),
+                        pci_address: kif.pci_address(),
                     });
                 } else {
                     warn!(
