@@ -32,7 +32,7 @@ use lldp::{Advertisement, Inputs, Link, Neighbor, Neighbors, Timing, transmit};
 use net::headers::Headers;
 use net::interface::InterfaceName;
 use net::lldp::{
-    ChassisId, Dot3Tlv, IdOctets, InterfaceNumber, InterfaceNumbering, ManagementAddress,
+    ChassisId, Dot3Tlv, IdOctets, InterfaceNumber, InterfaceNumbering, Lldpdu, ManagementAddress,
     NetworkAddress, ObjectIdentifier, OptionalTlv, OrganizationallySpecific, PortId,
     SystemCapabilities, SystemCapability, Text,
 };
@@ -281,17 +281,34 @@ pub(crate) async fn management_address(
 /// How many neighbours one port may have. A point-to-point link has one.
 const MAX_NEIGHBORS_PER_PORT: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
-/// Every neighbour heard, with the port it was heard on.
+/// Every neighbour heard, with the port it was heard on, and what had to be thrown away.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct NeighborSnapshot(Vec<(InterfaceName, Neighbor)>);
+pub(crate) struct NeighborSnapshot {
+    neighbors: Vec<(InterfaceName, Neighbor)>,
+    discards: Discards,
+}
 
 impl NeighborSnapshot {
     /// How many neighbours are known.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.0.len()
+        self.neighbors.len()
     }
 }
+
+/// What the receiver threw away: IEEE 802.1AB's `statsFramesDiscardedTotal` and
+/// `statsTLVsDiscardedTotal`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Discards {
+    /// LLDP frames discarded as a whole.
+    frames: u64,
+    /// TLVs discarded from frames which were otherwise kept.
+    tlvs: u64,
+}
+
+/// How often a discarded frame may be logged. A neighbour sending malformed LLDP does so every
+/// few seconds, forever; the counters keep the tally in between.
+const DISCARD_LOG_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Keep the neighbour table from what arrives on the ports, publishing it on every change.
 pub(crate) fn listen(
@@ -333,12 +350,17 @@ async fn receive(
     cancel: lifecycle::CancellationToken,
 ) {
     let mut table = Neighbors::new(MAX_NEIGHBORS_PER_PORT);
+    let mut reception = Reception::default();
     loop {
         let expiry = table.next_expiry();
         let changed = tokio::select! {
             () = cancel.cancelled() => return,
             frame = heard.recv() => match frame {
-                Some(frame) => hear(&mut table, &frame),
+                Some(frame) => {
+                    let heard = hear(&mut table, &mut reception, &frame);
+                    // Not short-circuited: asking is what marks the counters as published.
+                    reception.discards_changed() | heard
+                }
                 None => return,
             },
             Some(port) = down.recv() => table.forget_port(&port) > 0,
@@ -350,30 +372,108 @@ async fn receive(
             } => table.expire(clock::now()) > 0,
         };
         if changed {
-            publish.send_replace(NeighborSnapshot(
-                table
+            publish.send_replace(NeighborSnapshot {
+                neighbors: table
                     .iter()
                     .map(|(port, neighbor)| (port.clone(), neighbor.clone()))
                     .collect(),
-            ));
+                discards: reception.discards,
+            });
         }
     }
 }
 
+/// The receiver's discard counters, and when a discard was last logged.
+#[derive(Default)]
+struct Reception {
+    discards: Discards,
+    published: Discards,
+    last_logged: Option<std::time::Instant>,
+}
+
+impl Reception {
+    /// Whether the counters moved since this was last asked.
+    fn discards_changed(&mut self) -> bool {
+        let changed = self.discards != self.published;
+        self.published = self.discards;
+        changed
+    }
+
+    fn discard_tlvs(&mut self, port: &InterfaceName, count: u16) {
+        if count == 0 {
+            return;
+        }
+        self.discards.tlvs += u64::from(count);
+        if self.may_log() {
+            warn!("LLDP: discarded {count} malformed TLV(s) from a frame received on {port}");
+        }
+    }
+
+    fn discard_frame(&mut self, port: &InterfaceName, error: &dyn std::fmt::Display) {
+        self.discards.frames += 1;
+        if self.may_log() {
+            warn!("LLDP: discarded a frame received on {port}: {error}");
+        }
+    }
+
+    fn may_log(&mut self) -> bool {
+        let now = clock::now();
+        if self
+            .last_logged
+            .is_some_and(|at| now.saturating_duration_since(at) < DISCARD_LOG_INTERVAL)
+        {
+            return false;
+        }
+        self.last_logged = Some(now);
+        true
+    }
+}
+
 /// Record what `frame` says, returning whether what `show lldp neighbors` displays changed.
-fn hear(table: &mut Neighbors<InterfaceName>, frame: &HeardFrame) -> bool {
-    let Ok((mut headers, _)) = Headers::parse(&frame.frame) else {
+fn hear(
+    table: &mut Neighbors<InterfaceName>,
+    reception: &mut Reception,
+    frame: &HeardFrame,
+) -> bool {
+    let Ok((mut headers, consumed)) = Headers::parse(&frame.frame) else {
         debug!("LLDP: a frame received on {} did not parse", frame.port);
         return false;
     };
-    let (Some(source), Some(lldpdu)) = (
-        headers.eth().map(|eth| eth.source().inner()),
-        headers.take_lldp(),
-    ) else {
-        debug!("LLDP: a frame received on {} carried no LLDPDU", frame.port);
+    let Some(eth) = headers.eth() else {
+        debug!(
+            "LLDP: a frame received on {} had no Ethernet header",
+            frame.port
+        );
         return false;
     };
-    let heard = table.hear(&frame.port, source, *lldpdu, clock::now());
+    let source = eth.source();
+    let is_lldp = eth.ether_type() == net::lldp::ETHTYPE;
+    let lldpdu = match headers.take_lldp() {
+        Some(lldpdu) => *lldpdu,
+        // The byte-exact parse refused the LLDPDU; keep what the receive rules allow
+        // (IEEE 802.1AB-2005 §10.3.2).
+        None if is_lldp => {
+            let payload = frame
+                .frame
+                .get(consumed.get() as usize..)
+                .unwrap_or_default();
+            match Lldpdu::receive(payload) {
+                Ok(received) => {
+                    reception.discard_tlvs(&frame.port, received.discarded);
+                    received.lldpdu
+                }
+                Err(error) => {
+                    reception.discard_frame(&frame.port, &error);
+                    return false;
+                }
+            }
+        }
+        None => {
+            debug!("LLDP: a frame received on {} carried no LLDPDU", frame.port);
+            return false;
+        }
+    };
+    let heard = table.hear(&frame.port, source, lldpdu, clock::now());
     if heard == lldp::Heard::TooMany {
         warn!(
             "LLDP: ignoring a new neighbour on {}, which already has {MAX_NEIGHBORS_PER_PORT}",
@@ -390,7 +490,7 @@ pub(crate) struct NeighborsCli(pub(crate) watch::Receiver<NeighborSnapshot>);
 impl CliDataProvider for NeighborsCli {
     fn provide(&self) -> String {
         let snapshot = self.0.borrow();
-        let mut rows: Vec<_> = snapshot.0.iter().collect();
+        let mut rows: Vec<_> = snapshot.neighbors.iter().collect();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         let now = clock::now();
         let mut out = String::new();
@@ -423,9 +523,11 @@ impl CliDataProvider for NeighborsCli {
                 neighbor.expires.saturating_duration_since(now).as_secs(),
             );
         }
-        if snapshot.0.is_empty() {
+        if snapshot.neighbors.is_empty() {
             let _ = writeln!(out, " (none)");
         }
+        let Discards { frames, tlvs } = snapshot.discards;
+        let _ = writeln!(out, "\n discarded: {frames} frame(s), {tlvs} TLV(s)");
         out
     }
 }
@@ -573,7 +675,7 @@ mod tests {
             }
 
             fn neighbours(&self) -> usize {
-                self.snapshot.borrow().0.len()
+                self.snapshot.borrow().len()
             }
         }
 
@@ -627,7 +729,7 @@ mod tests {
                     .unwrap();
                 settle().await;
 
-                let left = listener.snapshot.borrow().0[0]
+                let left = listener.snapshot.borrow().neighbors[0]
                     .1
                     .expires
                     .saturating_duration_since(clock::now());
@@ -670,6 +772,73 @@ mod tests {
                     .unwrap();
                 settle().await;
                 assert_eq!(listener.neighbours(), 0);
+            });
+        }
+
+        /// A frame from `leaf` whose system name is longer than the 255 octets 802.1AB allows,
+        /// followed by a valid system description. `tlv` builds it by hand, as nothing here
+        /// will serialise a TLV that is wrong.
+        fn from_leaf_with_an_oversized_name(port: &str) -> HeardFrame {
+            fn tlv(typ: u8, value: &[u8]) -> Vec<u8> {
+                let length = u16::try_from(value.len()).unwrap();
+                let mut out = vec![
+                    (typ << 1) | u8::try_from(length >> 8).unwrap(),
+                    u8::try_from(length & 0xff).unwrap(),
+                ];
+                out.extend_from_slice(value);
+                out
+            }
+            let mut frame = from_leaf(port, "leaf-1", 120).frame;
+            frame.truncate(14);
+            frame.extend(tlv(1, b"\x07leaf-1"));
+            frame.extend(tlv(2, b"\x05Ethernet8"));
+            frame.extend(tlv(3, &120u16.to_be_bytes()));
+            frame.extend(tlv(5, &[b'x'; 300]));
+            frame.extend(tlv(6, b"SONiC"));
+            frame.extend([0, 0]);
+            HeardFrame {
+                port: InterfaceName::try_from(port).unwrap(),
+                frame,
+            }
+        }
+
+        /// IEEE 802.1AB-2005 §10.3.2: a TLV with an error of its own is discarded and counted,
+        /// and the rest of the LLDPDU is still heard.
+        #[test]
+        fn a_malformed_tlv_is_discarded_and_the_neighbour_still_heard() {
+            clock::virtual_time::Paused::new().block_on(async {
+                let listener = Listener::start();
+                listener
+                    .heard
+                    .send(from_leaf_with_an_oversized_name("eth1"))
+                    .await
+                    .unwrap();
+                settle().await;
+                assert_eq!(listener.neighbours(), 1);
+                let shown = NeighborsCli(listener.snapshot.clone()).provide();
+                for expected in ["leaf-1", "Ethernet8", "0 frame(s), 1 TLV(s)"] {
+                    assert!(
+                        shown.contains(expected),
+                        "{expected} missing from:\n{shown}"
+                    );
+                }
+            });
+        }
+
+        #[test]
+        fn a_frame_without_a_valid_chassis_id_is_discarded_and_counted() {
+            clock::virtual_time::Paused::new().block_on(async {
+                let listener = Listener::start();
+                let mut frame = from_leaf("eth1", "leaf-1", 120);
+                frame.frame[14] = 0xff; // wreck the chassis ID TLV header
+                listener.heard.send(frame).await.unwrap();
+                settle().await;
+                assert_eq!(listener.neighbours(), 0);
+                let shown = NeighborsCli(listener.snapshot.clone()).provide();
+                assert!(
+                    shown.contains("1 frame(s), 0 TLV(s)"),
+                    "discard missing from:\n{shown}"
+                );
             });
         }
     }
