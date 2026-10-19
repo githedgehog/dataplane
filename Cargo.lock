@@ -2237,6 +2237,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-transceiver"
+version = "0.29.0"
+dependencies = [
+ "bolero",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "dataplane-validator"
 version = "0.29.0"
 dependencies = [
