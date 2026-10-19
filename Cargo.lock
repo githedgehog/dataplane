@@ -2180,6 +2180,7 @@ dependencies = [
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-tracectl",
+ "dataplane-transceiver",
  "dataplane-vpcmap",
  "derive_builder",
  "hashbrown 0.17.1",
