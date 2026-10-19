@@ -29,7 +29,7 @@ strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true, features = [] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
-tokio = { workspace = true, features = ["macros", "process", "rt", "signal", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "signal", "time"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [dev-dependencies]
