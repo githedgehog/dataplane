@@ -91,22 +91,29 @@ fn mount_hugepages() {
 }
 
 /// Resolve and validate all configured PCI devices before changing any driver bindings.
+///
+/// `scan` is `None` when hwloc could not describe the machine; each device is then identified from
+/// its own sysfs entry instead.
 fn resolve_devices(
     dpdk: &DpdkDriverConfigSection,
-    scan: &hardware::Node,
+    scan: Option<&hardware::Node>,
 ) -> Result<Vec<ResolvedDevice>, String> {
     if dpdk.interfaces.is_empty() {
         return Err("the DPDK driver was selected but no interfaces were configured".into());
     }
     // Every PCI device on the machine, by address.
-    let present: BTreeMap<PciAddress, &hardware::pci::PciDeviceAttributes> = scan
-        .iter()
-        .filter_map(|node| match node.attributes() {
-            Some(NodeAttributes::Pci(pci)) => Some((pci.address(), pci)),
-            _ => None,
-        })
-        .collect();
-    debug!("hardware scan found {} PCI device(s)", present.len());
+    let present: Option<BTreeMap<PciAddress, &hardware::pci::PciDeviceAttributes>> =
+        scan.map(|scan| {
+            scan.iter()
+                .filter_map(|node| match node.attributes() {
+                    Some(NodeAttributes::Pci(pci)) => Some((pci.address(), pci)),
+                    _ => None,
+                })
+                .collect()
+        });
+    if let Some(present) = &present {
+        debug!("hardware scan found {} PCI device(s)", present.len());
+    }
 
     let mut resolved = Vec::new();
     let mut problems = Vec::new();
@@ -127,6 +134,20 @@ fn resolve_devices(
                 ));
                 continue;
             }
+        };
+        let Some(present) = &present else {
+            match PciNic::new(address) {
+                Ok(nic) => {
+                    let supported = nic.device();
+                    info!(
+                        "interface '{name}' is {address}: {supported} ({driver})",
+                        driver = DpdkDriverType::from(supported)
+                    );
+                    resolved.push(ResolvedDevice { address, supported });
+                }
+                Err(e) => problems.push(format!("interface '{name}': {e}")),
+            }
+            continue;
         };
         let Some(attributes) = present.get(&address) else {
             problems.push(format!(
@@ -233,7 +254,7 @@ fn warn_if_rdma_shared(bifurcated: &[&ResolvedDevice]) {
         RdmaNetnsMode::Exclusive => {}
         RdmaNetnsMode::Shared => warn!(
             "RDMA shared mode keeps devices {} in init_net after devlink moves. If the PMD \
-             cannot find them, boot with ib_core.netns_mode=0 or omit --datapath-netns. \
+             cannot find them, boot with ib_core.netns_mode=0. \
              Switching to exclusive mode at runtime requires no other network namespaces.",
             bifurcated
                 .iter()
@@ -788,8 +809,14 @@ fn main() {
         DriverConfigSection::Dpdk(dpdk) => {
             mount_hugepages();
             info!("scanning hardware");
-            let scan = hardware::Node::scan_all();
-            let devices = match resolve_devices(dpdk, &scan) {
+            let scan = match hardware::Node::scan_all() {
+                Ok(scan) => Some(scan),
+                Err(e) => {
+                    warn!("{e}; carrying on without NUMA placement");
+                    None
+                }
+            };
+            let devices = match resolve_devices(dpdk, scan.as_ref()) {
                 Ok(devices) => devices,
                 Err(problems) => fail("cannot use the requested network devices", &problems),
             };
@@ -797,7 +824,9 @@ fn main() {
             hugepage_plan = Some(
                 hugepages::reserve_for(
                     &devices.iter().map(|d| d.address).collect::<Vec<_>>(),
-                    &scan,
+                    scan.as_ref(),
+                    dpdk.num_workers.get(),
+                    dpdk.hugepages_gib,
                 )
                 .unwrap_or_else(|e| fail("hugepage configuration is unusable", &e)),
             );
@@ -891,7 +920,7 @@ mod rdma_netns_mode_test {
         assert_ne!(
             rdma_netns_mode(),
             RdmaNetnsMode::Unknown,
-            "{IB_CORE_NETNS_MODE} is readable ({raw:?}), so the mode must be decided, not guessed"
+            "read {raw:?} from {IB_CORE_NETNS_MODE} but parsed it as Unknown"
         );
     }
 }

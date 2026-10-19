@@ -408,6 +408,47 @@ pub enum DriverConfigSection {
     Kernel(KernelDriverConfigSection),
 }
 
+/// How much hugepage memory the DPDK driver needs.
+///
+/// Shared by init, which reserves the memory, and the dataplane, which allocates it, so that the
+/// two cannot drift apart.
+pub mod dpdk_memory {
+    /// Receive descriptors per queue.
+    pub const RX_DESCRIPTORS: u16 = 1024;
+
+    /// Mbufs in a port's receive pool per receive descriptor of each worker's queue: room for the
+    /// ring, the per-core caches, and frames in the pipeline or waiting to transmit.
+    pub const MBUFS_PER_RXD: u32 = 4;
+
+    /// Data room of every mbuf, headroom included: one jumbo frame. MTU changes do not resize
+    /// existing pools.
+    pub const MBUF_DATA_SIZE: u16 = 12_188;
+
+    /// Private area of every mbuf.
+    pub const MBUF_PRIVATE_SIZE: u16 = 256;
+
+    /// What one mbuf occupies in its pool: the `rte_mbuf` itself (two cache lines), its private
+    /// area and data room, and the mempool's per-object header, rounded up to a cache line.
+    pub const MBUF_FOOTPRINT: u64 =
+        (128 + MBUF_PRIVATE_SIZE as u64 + MBUF_DATA_SIZE as u64 + 64).next_multiple_of(64);
+
+    /// Hugepage memory needed besides the receive pools: control pools, rings, and the PMD's own
+    /// allocations. Measured below 0.25 GiB on a BF-3 gateway with 32 workers and two ports
+    /// (2026-10-18), whose receive pools came to 3.07 GiB and started on four 1 GiB pages but not
+    /// three.
+    pub const OVERHEAD_MIB: u64 = 256;
+
+    /// The hugepage memory `ports` ports on one NUMA node need with `workers` workers, in MiB.
+    #[must_use]
+    pub fn required_mib(ports: u32, workers: u16) -> u64 {
+        let mbufs = u64::from(ports)
+            * u64::from(workers)
+            * u64::from(RX_DESCRIPTORS)
+            * u64::from(MBUFS_PER_RXD);
+        (mbufs * MBUF_FOOTPRINT).div_ceil(1024 * 1024) + OVERHEAD_MIB
+    }
+}
+
 /// Hugepage capacity checked by init and requested from EAL through the launch configuration.
 #[derive(
     Debug,
@@ -426,6 +467,9 @@ pub struct HugepagePlan {
     pub page_size_kb: u64,
     /// Memory requested in MiB, sorted by NUMA node OS index.
     pub per_node_mb: Vec<(u32, u64)>,
+    /// Memory requested in MiB on no particular node, when the NICs' NUMA placement is unknown.
+    /// EAL then places it itself.
+    pub unplaced_mb: u64,
 }
 
 impl HugepagePlan {
@@ -459,8 +503,11 @@ impl std::fmt::Display for HugepagePlan {
         } else {
             format!("{} MiB", self.page_size_kb / 1024)
         };
-        let total: u64 = self.per_node_mb.iter().map(|(_, mb)| *mb).sum();
+        let total: u64 = self.per_node_mb.iter().map(|(_, mb)| *mb).sum::<u64>() + self.unplaced_mb;
         write!(f, "{total} MiB in {size} pages (")?;
+        if self.unplaced_mb > 0 {
+            write!(f, "on any node")?;
+        }
         for (i, (node, mb)) in self.per_node_mb.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
@@ -496,6 +543,9 @@ pub struct DpdkDriverConfigSection {
     pub num_workers: NonZero<u16>,
     /// Hugepage placement selected by init, or `None` for EAL defaults.
     pub hugepages: Option<HugepagePlan>,
+    /// Hugepage memory to require on each NIC NUMA node, in GiB, overriding what init computes
+    /// from the ports and workers (`--hugepages-gib`).
+    pub hugepages_gib: Option<u32>,
 }
 
 /// Configuration for the Linux kernel networking driver.
@@ -1379,6 +1429,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     interfaces: value.interfaces().collect(),
                     eal_args,
                     hugepages: None,
+                    hugepages_gib: value.hugepages_gib,
                     num_workers: value.num_workers,
                 })
             }
@@ -1477,6 +1528,16 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
         help = "Number of packet-processing worker threads in [1..64]"
     )]
     num_workers: NonZero<u16>,
+
+    #[arg(
+        long,
+        value_name = "GIB",
+        value_parser = clap::value_parser!(u32).range(1..=256),
+        help = "Hugepage memory dataplane-init requires and EAL preallocates on each NIC's NUMA node, \
+                in GiB, in [1..256]. Overrides the amount init computes from the ports and workers; \
+                it must hold every port's receive pool and the drivers' own allocations"
+    )]
+    hugepages_gib: Option<u32>,
 
     #[arg(
         long,
@@ -1994,6 +2055,7 @@ mod hugepage_plan_test {
         let plan = HugepagePlan {
             page_size_kb: 1024 * 1024,
             per_node_mb: vec![(0, 4096)],
+            unplaced_mb: 0,
         };
         assert_eq!(plan.numa_mem_arg().as_deref(), Some("4096"));
     }
@@ -2003,6 +2065,7 @@ mod hugepage_plan_test {
         let plan = HugepagePlan {
             page_size_kb: 1024 * 1024,
             per_node_mb: vec![(1, 4096)],
+            unplaced_mb: 0,
         };
         assert_eq!(plan.numa_mem_arg().as_deref(), Some("0,4096"));
     }
@@ -2012,6 +2075,7 @@ mod hugepage_plan_test {
         let plan = HugepagePlan {
             page_size_kb: 2048,
             per_node_mb: vec![(0, 4096), (2, 2048)],
+            unplaced_mb: 0,
         };
         assert_eq!(plan.numa_mem_arg().as_deref(), Some("4096,0,2048"));
     }
@@ -2021,12 +2085,14 @@ mod hugepage_plan_test {
         let plan = HugepagePlan {
             page_size_kb: 2048,
             per_node_mb: vec![(0, 0)],
+            unplaced_mb: 0,
         };
         assert_eq!(plan.numa_mem_arg(), None);
         assert_eq!(
             HugepagePlan {
                 page_size_kb: 2048,
-                per_node_mb: vec![]
+                per_node_mb: vec![],
+                unplaced_mb: 0,
             }
             .numa_mem_arg(),
             None
@@ -2034,10 +2100,11 @@ mod hugepage_plan_test {
     }
 
     #[test]
-    fn the_display_form_reports_the_page_size_an_operator_asked_for() {
+    fn display_shows_page_size_and_per_node_totals() {
         let gib = HugepagePlan {
             page_size_kb: 1024 * 1024,
             per_node_mb: vec![(1, 4096)],
+            unplaced_mb: 0,
         };
         assert_eq!(
             gib.to_string(),
@@ -2046,10 +2113,48 @@ mod hugepage_plan_test {
         let mib = HugepagePlan {
             page_size_kb: 2048,
             per_node_mb: vec![(0, 4096)],
+            unplaced_mb: 0,
         };
         assert_eq!(
             mib.to_string(),
             "4096 MiB in 2 MiB pages (node 0: 4096 MiB)"
         );
+    }
+
+    #[test]
+    fn an_unplaced_plan_leaves_placement_to_eal() {
+        let plan = HugepagePlan {
+            page_size_kb: 2048,
+            per_node_mb: vec![],
+            unplaced_mb: 3584,
+        };
+        assert_eq!(plan.numa_mem_arg(), None);
+        assert_eq!(plan.to_string(), "3584 MiB in 2 MiB pages (on any node)");
+    }
+
+    /// The figures measured on a BF-3 gateway: two ports and 32 workers fill 3.07 GiB of receive
+    /// pools, which started on four 1 GiB pages and not on three.
+    #[test]
+    fn the_requirement_covers_the_measured_gateway() {
+        use super::dpdk_memory::required_mib;
+        let mib = required_mib(2, 32);
+        assert!(mib > 3 * 1024 && mib <= 4 * 1024, "{mib} MiB");
+        assert!(required_mib(1, 1) < required_mib(1, 2));
+        assert!(required_mib(1, 2) < required_mib(2, 2));
+    }
+
+    #[test]
+    fn hugepages_gib_is_optional_and_bounded() {
+        use crate::{CmdArgs, Parser};
+        let parse = |n: &str| CmdArgs::try_parse_from(["dataplane", "--hugepages-gib", n]);
+        assert_eq!(
+            CmdArgs::try_parse_from(["dataplane"])
+                .unwrap()
+                .hugepages_gib,
+            None
+        );
+        assert_eq!(parse("3").unwrap().hugepages_gib, Some(3));
+        assert!(parse("0").is_err());
+        assert!(parse("257").is_err());
     }
 }
