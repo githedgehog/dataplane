@@ -36,8 +36,9 @@ Only a very limited set of network cards are currently supported, although this 
 
 ## Network namespaces
 
-Init moves the selected interfaces into a datapath namespace held only by descriptors. Both the DPDK and kernel drivers use a control-plane bridge: one tap per configured
-interface, carrying the configured name in the control namespace. The drivers exchange control traffic with these
+Init moves the selected interfaces into a datapath namespace held only by descriptors.
+Both the DPDK and kernel drivers use a control-plane bridge: one tap per configured interface, carrying the configured
+name in the control namespace. The drivers exchange control traffic with these
 taps.
 
 Init creates a private control namespace unless `--control-netns` selects an existing one.
