@@ -204,51 +204,76 @@ fn start_pyroscope(
 /// hours later. Whoever drops privileges must either keep this capability deliberately or pre-start
 /// a fixed set of threads (no blocking pool, or a bounded one that never retires its threads).
 fn host_runtime(host_netns: &NetworkNamespace) -> Result<tokio::runtime::Runtime, String> {
-    let expected = std::fs::read_link(format!("/proc/self/fd/{}", host_netns.as_raw().as_raw_fd()))
-        .map_err(|e| format!("could not identify the host network namespace: {e}"))?
+    netns_runtime(host_netns, "host-rt", "host", None)
+}
+
+/// A runtime whose threads all live in `netns`; a spawned task checks placement at startup.
+///
+/// Sockets belong to the namespace of the thread that opens them, so work that must reach into
+/// another namespace runs here rather than entering and leaving it on a shared thread.
+/// `workers` bounds the runtime's size, for work that needs only a thread or two.
+///
+/// Its threads `setns` as they start, so they need `CAP_SYS_ADMIN` whenever that is: see
+/// [`host_runtime`].
+fn netns_runtime(
+    netns: &NetworkNamespace,
+    thread_name: &str,
+    what: &str,
+    workers: Option<usize>,
+) -> Result<tokio::runtime::Runtime, String> {
+    let expected = std::fs::read_link(format!("/proc/self/fd/{}", netns.as_raw().as_raw_fd()))
+        .map_err(|e| format!("could not identify the {what} network namespace: {e}"))?
         .display()
         .to_string();
 
     let entering = Arc::new(
-        host_netns
+        netns
             .as_raw()
             .try_clone_to_owned()
-            .map_err(|e| format!("could not duplicate the host namespace descriptor: {e}"))?,
+            .map_err(|e| format!("could not duplicate the {what} namespace descriptor: {e}"))?,
     );
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if let Some(workers) = workers {
+        builder.worker_threads(workers);
+    }
+    let thread_label = thread_name.to_string();
+    let namespace_label = what.to_string();
+    let runtime = builder
         .enable_all()
-        .thread_name("host-rt")
+        .thread_name(thread_name)
         .on_thread_start(move || {
             if let Err(e) =
                 nix::sched::setns(entering.as_ref(), nix::sched::CloneFlags::CLONE_NEWNET)
             {
                 // Fatal for the process, not just this thread. Threads start lazily, so this can
                 // happen long after the check below, and a thread left in the control namespace
-                // would make outward-facing work fail only when it happened to land there.
-                error!("a host-runtime thread could not enter the host network namespace: {e}");
+                // would make its work fail only when it happened to land there.
+                error!(
+                    "a {thread_label} thread could not enter the {namespace_label} network \
+                     namespace: {e}"
+                );
                 std::process::abort();
             }
         })
         .build()
-        .map_err(|e| format!("could not build the host runtime: {e}"))?;
+        .map_err(|e| format!("could not build the {thread_name} runtime: {e}"))?;
 
     // Deliberately `spawn` and then wait, not `block_on`. `block_on` would poll the future on
     // *this* thread -- which is in the control namespace -- and cheerfully report that everything
     // is fine while proving nothing about the runtime's own threads.
     let observed = runtime
         .block_on(runtime.spawn(async { hardware::netns::current() }))
-        .map_err(|e| format!("could not ask the host runtime where it is: {e}"))?;
+        .map_err(|e| format!("could not ask the {thread_name} runtime where it is: {e}"))?;
 
     if observed != expected {
         return Err(format!(
-            "the host runtime's threads are in network namespace {observed}, not {expected}; \
-             setns did not take effect, so anything reaching outside the fabric would be sent \
-             from the control namespace"
+            "the {thread_name} runtime's threads are in network namespace {observed}, not the \
+             {what} namespace {expected}; setns did not take effect"
         ));
     }
 
-    info!("outward-facing work runs in network namespace {observed}");
+    info!("{thread_name} runs in the {what} network namespace, {observed}");
     Ok(runtime)
 }
 
@@ -583,6 +608,7 @@ fn run_dpdk_driver(
                 mac: port.mac,
                 mtu: Some(port.mtu),
                 hardware: port.hardware.clone(),
+                datapath_index: Some(port.if_index),
             });
         }
     }
@@ -815,6 +841,15 @@ pub fn main() {
         &host_handle,
     );
 
+    // Module reads need a netlink socket where the ports' netdevs are, and a thread that may block on
+    // the module's bus, so they get a small runtime of their own in the datapath namespace. Losing
+    // them costs telemetry, not forwarding.
+    let transceiver_runtime = config.metrics.transceiver_interval.and_then(|_| {
+        netns_runtime(&datapath_netns, "module-rt", "datapath", Some(1))
+            .inspect_err(|e| warn!("{e}; no transceiver readings"))
+            .ok()
+    });
+
     // Taps are created from the control namespace, before the datapath thread starts; otherwise their
     // configured names would collide with the interfaces they stand for.
     let (_cp_bridge, cp_ends) = match CpBridge::create(
@@ -825,6 +860,16 @@ pub fn main() {
         Ok((mut bridge, ends)) => {
             // Under `protocols`, which stops before the workers, so the shutdown frames LLDP sends
             // on the way out still have a datapath to leave by.
+            if let (Some(runtime), Some(interval)) =
+                (&transceiver_runtime, config.metrics.transceiver_interval)
+            {
+                crate::transceiver_agent::start(
+                    runtime.handle(),
+                    &shutdown.metrics,
+                    bridge.ports(),
+                    interval,
+                );
+            }
             let new_neighbors = crate::lldp_agent::start(
                 &mgmt_handle,
                 &shutdown.protocols,
@@ -969,6 +1014,10 @@ pub fn main() {
 
         setup.router.stop();
         mgmt_runtime.shutdown_timeout(Duration::from_secs(2));
+
+        if let Some(runtime) = transceiver_runtime {
+            runtime.shutdown_timeout(Duration::from_secs(2));
+        }
 
         // Shut down alongside mgmt, and after it: the k8s status updater is the last thing that
         // should still be talking, and it reports the state mgmt has just finished arriving at.
