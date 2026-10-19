@@ -60,6 +60,20 @@
       "hash": "sha256-LjpoUMPRG22kAb3Y0zyfUC8Y1ejigMpBq0YQZArG6W8=",
       "frozen": true
     },
+    "crate-ethtool2": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "ethtool2"
+      },
+      "branch": "main",
+      "submodules": false,
+      "revision": "4138b66a334e17e145bcff89edd0b5133a03f645",
+      "url": "https://github.com/githedgehog/ethtool2/archive/4138b66a334e17e145bcff89edd0b5133a03f645.tar.gz",
+      "hash": "sha256-X/VXF+oDCbn75SmrFp0Dw4l3lccj0ROPlKoY4FUPO/I=",
+      "frozen": true
+    },
     "crate-fixin": {
       "type": "Git",
       "repository": {
@@ -86,6 +100,20 @@
       "revision": "8e8d1eaef4f22220ac115e551541967c706b361f",
       "url": "https://github.com/githedgehog/left-right/archive/8e8d1eaef4f22220ac115e551541967c706b361f.tar.gz",
       "hash": "sha256-8VJwonSWT9y7vrtsdQ8t7cmMvTQwsBNRCQiRBjnFv0k=",
+      "frozen": true
+    },
+    "crate-netlink-packet-ethtool": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "netlink-packet-ethtool"
+      },
+      "branch": "main",
+      "submodules": false,
+      "revision": "67be0e19672d3bcb9305d1e414660409fa47afb0",
+      "url": "https://github.com/githedgehog/netlink-packet-ethtool/archive/67be0e19672d3bcb9305d1e414660409fa47afb0.tar.gz",
+      "hash": "sha256-FF/ulMf+nfw4j3dl3jBml8l5xBAreT/lS0pLj1NDtC4=",
       "frozen": true
     },
     "crate-netlink-packet-route": {
