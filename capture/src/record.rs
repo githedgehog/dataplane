@@ -3,15 +3,16 @@
 
 //! What a capture copies out of a packet.
 
+use crate::buffer::CaptureBuffer;
 use crate::names::CaptureNames;
 use arrayvec::ArrayString;
 use clock::{Duration, SystemTime};
 use net::FlowKey;
 use net::buffer::PacketBufferMut;
-use net::headers::{Headers, TryHeaders, TryVxlan};
+use net::headers::{TryHeaders, TryVxlan};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
-use net::parse::Parse;
+use net::parse::DeParse;
 use net::vxlan::{Vni, Vxlan};
 use std::fmt::{Display, Formatter};
 
@@ -38,32 +39,12 @@ impl Display for Direction {
 /// Fixed capacity so that taking a record never allocates for it.
 pub type ThreadLabel = ArrayString<32>;
 
-/// Which headers a [`CaptureRecord`] holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Frame {
-    /// The packet's own headers: it was not encapsulated, or its inner frame did not parse.
-    Outer,
-    /// The headers of the frame inside a VXLAN encapsulation.
-    Inner,
-}
-
-impl Display for Frame {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Frame::Outer => "outer",
-            Frame::Inner => "inner",
-        })
-    }
-}
-
 /// A copy of everything a capture keeps from one packet.
 ///
-/// This holds parsed headers rather than the packet buffer: buffers stay on the core that owns them,
-/// and the headers are enough to rebuild the frame (minus its payload) on the capture writer's thread.
-///
-/// For a VXLAN-encapsulated packet it holds the *inner* headers and only the VNI of the encapsulation:
-/// the outer headers repeat almost unchanged from one packet to the next, and the inner ones are what
-/// identifies the traffic.
+/// The frame's bytes as they are on the wire at the capture point -- the packet's headers as they
+/// stand, then its payload -- up to the capture's snap length. The packet buffer itself stays on the
+/// core that owns it. For a VXLAN packet that is the whole encapsulation, outer headers and inner frame
+/// alike, which Wireshark decodes natively.
 /// It deliberately omits [`PacketMeta::flow_info`], since a queued record must not keep a flow alive.
 ///
 /// [`PacketMeta::flow_info`]: net::packet::PacketMeta::flow_info
@@ -72,8 +53,7 @@ pub struct CaptureRecord {
     direction: Direction,
     timestamp: Duration,
     thread: Option<ThreadLabel>,
-    headers: Headers,
-    frame: Frame,
+    data: CaptureBuffer,
     vxlan_vni: Option<Vni>,
     original_len: u32,
     iif: Option<InterfaceIndex>,
@@ -85,10 +65,11 @@ pub struct CaptureRecord {
 }
 
 impl CaptureRecord {
-    /// Copy what a capture needs out of `packet`.
+    /// Copy what a capture needs out of `packet` into `data`, up to its snap length.
     ///
-    /// Parsing the inner frame of an encapsulated packet happens here, on the packet's thread, but only
-    /// for packets a capture has already admitted.
+    /// The headers are written out here, on the packet's thread, but only for packets a capture has
+    /// already admitted. A frame whose headers cannot be written out is recorded with no bytes, at its
+    /// full length, so that it still shows in the trace.
     ///
     /// A `timestamp` before the Unix epoch is recorded as the epoch itself: pcapng cannot express it,
     /// and a wall clock that far off is a host problem the capture should not refuse packets over.
@@ -98,30 +79,33 @@ impl CaptureRecord {
         packet: &Packet<Buf>,
         timestamp: SystemTime,
         thread: Option<ThreadLabel>,
+        mut data: CaptureBuffer,
     ) -> Self {
         let meta = packet.meta();
-        let outer = packet.headers();
-        let vxlan_vni = outer.try_vxlan().map(Vxlan::vni);
-        // The payload of a VXLAN packet starts at the inner frame, both as received (before decap) and as
-        // sent (after encap, which writes the inner headers into the payload).
-        let inner = vxlan_vni.and_then(|_| {
-            let payload = packet.payload().as_ref();
-            let (headers, _) = Headers::parse(payload).ok()?;
-            Some((headers, payload.len()))
+        let headers = packet.headers();
+        let payload = packet.payload().as_ref();
+        let header_len = usize::from(headers.size().get());
+        let original_len = header_len + payload.len();
+        let keep = data.snaplen().map_or(original_len, |snaplen| {
+            original_len.min(snaplen.get() as usize)
         });
-        let (headers, frame, original_len) = match inner {
-            Some((headers, len)) => (headers, Frame::Inner, len),
-            None => (outer.clone(), Frame::Outer, usize::from(packet.total_len())),
-        };
+        let bytes = data.bytes_mut();
+        bytes.clear();
+        bytes.resize(header_len, 0);
+        if headers.deparse(bytes).is_ok() {
+            bytes.extend_from_slice(&payload[..keep.saturating_sub(header_len)]);
+            bytes.truncate(keep);
+        } else {
+            bytes.clear();
+        }
         CaptureRecord {
             direction,
             timestamp: timestamp
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default(),
             thread,
-            headers,
-            frame,
-            vxlan_vni,
+            data,
+            vxlan_vni: headers.try_vxlan().map(Vxlan::vni),
             original_len: u32::try_from(original_len)
                 .unwrap_or_else(|_| unreachable!("packets are shorter than 4 GiB")),
             iif: meta.iif,
@@ -145,16 +129,10 @@ impl CaptureRecord {
         self.timestamp
     }
 
-    /// The headers to write: the inner ones of an encapsulated packet, else the packet's own.
+    /// The captured bytes of the frame: all of it, or its first snap-length bytes.
     #[must_use]
-    pub fn headers(&self) -> &Headers {
-        &self.headers
-    }
-
-    /// Which headers [`CaptureRecord::headers`] are.
-    #[must_use]
-    pub fn frame(&self) -> Frame {
-        self.frame
+    pub fn data(&self) -> &[u8] {
+        self.data.bytes()
     }
 
     /// The VNI of the packet's VXLAN encapsulation, if it had one.
@@ -163,7 +141,7 @@ impl CaptureRecord {
         self.vxlan_vni
     }
 
-    /// The length of the whole frame the headers belong to (headers and payload), when captured.
+    /// The length of the whole frame (headers and payload), however much of it was captured.
     #[must_use]
     pub fn original_len(&self) -> u32 {
         self.original_len
@@ -216,10 +194,8 @@ impl Display for Annotation<'_> {
         let interface = |index: Option<InterfaceIndex>| OrDash(index.map(|i| names.interface(i)));
         write!(
             f,
-            "direction={direction} frame={frame} vxlan_vni={vni} thread={thread} done={done} \
-             iif={iif} oif={oif}",
+            "direction={direction} vxlan_vni={vni} thread={thread} done={done} iif={iif} oif={oif}",
             direction = record.direction,
-            frame = record.frame,
             vni = OrDash(record.vxlan_vni),
             thread = OrDash(record.thread.as_ref()),
             done = OrDash(record.done.map(|done| format!("{done:?}"))),

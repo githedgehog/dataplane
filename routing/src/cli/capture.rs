@@ -5,7 +5,8 @@
 
 use crate::routingdb::RoutingDb;
 use capture::{
-    CaptureDirectory, CaptureFilter, CaptureNames, CaptureRequest, CaptureStatus, VpcMatch,
+    CaptureDirectory, CaptureFilter, CaptureNames, CaptureRequest, CaptureStatus, CaptureTarget,
+    VpcMatch,
 };
 use cli::cliproto::{CaptureVpc, CliAction, CliError, CliRequest, CliResponse};
 use concurrency::sync::Arc;
@@ -19,8 +20,11 @@ use std::time::Duration;
 const DEFAULT_PACKETS: NonZeroU64 = NonZeroU64::new(10_000).unwrap();
 const DEFAULT_SECONDS: u32 = 60;
 const DEFAULT_SAMPLE: NonZeroU32 = NonZeroU32::MIN;
-/// Records waiting for the writer before further ones are dropped; about 1.5 MB at the record's size.
+/// Records waiting for the writer before further ones are dropped.
 const QUEUE_DEPTH: NonZeroUsize = NonZeroUsize::new(4096).unwrap();
+/// Bytes kept of each frame by default: the outer and inner headers of a VXLAN packet, no payload. A
+/// full queue of these is about 1 MiB.
+const DEFAULT_SNAPLEN: NonZeroU32 = NonZeroU32::new(256).unwrap();
 
 /// Handle a capture request (`capture start`, `capture stop`, `show capture`).
 pub(crate) fn handle(
@@ -89,18 +93,36 @@ fn start(
         Some(sample) => NonZeroU32::new(sample).ok_or_else(|| positive("sample"))?,
         None => DEFAULT_SAMPLE,
     };
+    // Zero asks for whole frames.
+    let snaplen = match args.capture_snaplen {
+        Some(snaplen) => NonZeroU32::new(snaplen),
+        None => Some(DEFAULT_SNAPLEN),
+    };
+    let target = match (&args.capture_file, &args.capture_dir) {
+        (Some(_), Some(_)) => {
+            return Err(CliError::Capture("give file= or dir=, not both".to_owned()));
+        }
+        (Some(file), None) => CaptureTarget::File(file.into()),
+        (None, Some(dir)) => CaptureTarget::Dir(dir.into()),
+        (None, None) => CaptureTarget::Default,
+    };
     let capture = CaptureRequest {
         filter,
         sample_one_in,
         packets,
         duration: Duration::from_secs(u64::from(seconds)),
         queue_depth: QUEUE_DEPTH,
+        snaplen,
     };
     let path = captures
-        .start(capture, names(db, gwconfig))
+        .start(capture, names(db, gwconfig), target)
         .map_err(|error| CliError::Capture(error.to_string()))?;
+    let kept = snaplen.map_or_else(
+        || "whole frames".to_owned(),
+        |snaplen| format!("{snaplen} bytes of each frame"),
+    );
     Ok(format!(
-        "\n capturing {described}, one packet in {sample_one_in}, \
+        "\n capturing {described}, one packet in {sample_one_in}, {kept}, \
          until {packets} packets or {seconds}s\n file: {}",
         path.display()
     ))
@@ -168,7 +190,14 @@ fn status(captures: &CaptureDirectory) -> String {
     if let Some(path) = path {
         let _ = write!(out, "\n file: {}", path.display());
     }
-    let _ = write!(out, "\n directory: {}", captures.dir().display());
+    let _ = match captures.default_dir() {
+        Some(dir) => write!(out, "\n default directory: {}", dir.display()),
+        None => write!(
+            out,
+            "\n default directory: none (start the dataplane with --capture-dir, or give file= or \
+             dir=)"
+        ),
+    };
     out
 }
 

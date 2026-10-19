@@ -434,14 +434,19 @@ fn cmd_capture() -> Node {
     root += Node::new("start")
         .desc(
             "Capture packets into a pcapng file on the gateway: ingress=VPC|* from a VPC, \
-             egress=VPC|* to a VPC, both for the conversation between them",
+             egress=VPC|* to a VPC, both for the conversation between them; file=PATH or \
+             dir=PATH for where (default: the dataplane's --capture-dir); snaplen=N bytes of \
+             each frame (default 256, 0 for whole frames)",
         )
         .action(CliAction::CaptureStart)
         .arg_add(capture_vpc_arg(&CliArgId::Ingress))
         .arg_add(capture_vpc_arg(&CliArgId::Egress))
         .arg(CliArgId::Packets.as_str())
         .arg(CliArgId::Seconds.as_str())
-        .arg(CliArgId::Sample.as_str());
+        .arg(CliArgId::Sample.as_str())
+        .arg(CliArgId::File.as_str())
+        .arg(CliArgId::Dir.as_str())
+        .arg(CliArgId::Snaplen.as_str());
     root += Node::new("stop")
         .desc("Stop the running packet capture")
         .action(CliAction::CaptureStop);

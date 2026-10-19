@@ -61,6 +61,15 @@ pub enum CliArgId {
 
     #[strum(serialize = "sample")]
     Sample,
+
+    #[strum(serialize = "file")]
+    File,
+
+    #[strum(serialize = "dir")]
+    Dir,
+
+    #[strum(serialize = "snaplen")]
+    Snaplen,
 }
 impl CliArgId {
     #[must_use]
@@ -259,6 +268,9 @@ impl CliArgs {
                 CliArgId::Packets => args.remote.capture_packets = Some(parse_positive(value)?),
                 CliArgId::Seconds => args.remote.capture_seconds = Some(parse_positive(value)?),
                 CliArgId::Sample => args.remote.capture_sample = Some(parse_positive(value)?),
+                CliArgId::File => args.remote.capture_file = Some(parse_string(value)),
+                CliArgId::Dir => args.remote.capture_dir = Some(parse_string(value)),
+                CliArgId::Snaplen => args.remote.capture_snaplen = Some(parse_u32(value)?),
             }
         }
         Ok(args)
@@ -292,6 +304,9 @@ mod test_args_parsing {
                 CliArgId::Packets => "1000",
                 CliArgId::Seconds => "30",
                 CliArgId::Sample => "10",
+                CliArgId::File => "/var/tmp/gw.pcapng",
+                CliArgId::Dir => "/var/tmp",
+                CliArgId::Snaplen => "256",
             }
             .to_string();
             args_map.insert(argid.to_string(), value);

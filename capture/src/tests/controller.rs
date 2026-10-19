@@ -3,7 +3,7 @@
 
 use crate::{
     CaptureController, CaptureEnd, CaptureFilter, CaptureNames, CaptureRequest, CaptureStage,
-    CaptureStartError, Direction, VpcMatch,
+    CaptureStartError, CaptureTarget, Direction, VpcMatch,
 };
 use concurrency::sync::{Arc, Mutex};
 use concurrency::thread;
@@ -58,6 +58,7 @@ fn request(
         packets: NonZeroU64::new(packets).unwrap(),
         duration: Duration::from_hours(1),
         queue_depth: NonZeroUsize::new(queue_depth).unwrap(),
+        snaplen: None,
     }
 }
 
@@ -216,18 +217,20 @@ mod real_time {
         let dir = std::env::temp_dir().join(format!("capture-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let controller = CaptureController::new();
-        let captures = crate::CaptureDirectory::new(controller.clone(), &dir);
+        let captures = crate::CaptureDirectory::new(controller.clone(), Some(dir.clone()));
 
         let path = captures
             .start(
                 request(CaptureFilter::Everything, 1, 10, 64),
                 CaptureNames::default(),
+                CaptureTarget::Default,
             )
             .unwrap();
         assert!(matches!(
             captures.start(
                 request(CaptureFilter::Everything, 1, 10, 64),
-                CaptureNames::default()
+                CaptureNames::default(),
+                CaptureTarget::Default,
             ),
             Err(crate::CaptureFileError::Start(
                 CaptureStartError::AlreadyRunning
@@ -244,6 +247,75 @@ mod real_time {
         let file = SharedFile(Arc::new(Mutex::new(std::fs::read(&path).unwrap())));
         assert_eq!(file.packets(), 3);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// With no default directory, a capture has to be told where to go; it refuses rather than guess.
+    #[test]
+    fn a_capture_with_nowhere_to_go_is_refused() {
+        let controller = CaptureController::new();
+        let captures = crate::CaptureDirectory::new(controller.clone(), None);
+        assert!(matches!(
+            captures.start(
+                request(CaptureFilter::Everything, 1, 10, 64),
+                CaptureNames::default(),
+                CaptureTarget::Default,
+            ),
+            Err(crate::CaptureFileError::NoLocation)
+        ));
+        assert!(matches!(controller.status(), CaptureStatus::Idle));
+    }
+
+    /// A named file is used as given, and never overwritten.
+    #[test]
+    fn a_capture_goes_to_the_file_it_names() {
+        let dir = std::env::temp_dir().join(format!("capture-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("named.pcapng");
+        let controller = CaptureController::new();
+        let captures = crate::CaptureDirectory::new(controller.clone(), None);
+        let started = captures
+            .start(
+                request(CaptureFilter::Everything, 1, 10, 64),
+                CaptureNames::default(),
+                CaptureTarget::File(path.clone()),
+            )
+            .unwrap();
+        assert_eq!(started, path);
+        let mut stage = CaptureStage::new(Direction::Ingress, controller.sink(Direction::Ingress));
+        stage.process_burst(&mut burst(2));
+        let (report, _) = captures.stop().unwrap();
+        assert_eq!(report.written, 2, "{report}");
+        assert!(matches!(
+            captures.start(
+                request(CaptureFilter::Everything, 1, 10, 64),
+                CaptureNames::default(),
+                CaptureTarget::File(path.clone()),
+            ),
+            Err(crate::CaptureFileError::Create { .. })
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A capture point holds at most as many buffers as records may wait; with none free it drops the
+    /// record, counted, rather than allocate or wait.
+    #[test]
+    fn a_capture_point_with_no_free_buffer_drops_and_counts() {
+        let controller = CaptureController::new();
+        let file = SharedFile::default();
+        controller
+            .start(
+                request(CaptureFilter::Everything, 1, 10, 1),
+                file.clone(),
+                CaptureNames::default(),
+            )
+            .unwrap();
+        let mut stage = CaptureStage::new(Direction::Ingress, controller.sink(Direction::Ingress));
+        // One burst: the first record holds the only buffer while the rest are taken.
+        stage.process_burst(&mut burst(3));
+        let report = controller.stop().unwrap();
+        assert_eq!(report.admitted, 3, "{report}");
+        assert_eq!(report.written + report.dropped, 3, "{report}");
+        assert!(report.dropped >= 2, "{report}");
     }
 
     fn vni(raw: u32) -> net::vxlan::Vni {

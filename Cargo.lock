@@ -1492,9 +1492,11 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-net",
  "dataplane-pipeline",
+ "nix",
  "pcap-file",
  "strum",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

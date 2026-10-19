@@ -85,6 +85,9 @@ pub struct RequestArgs {
     pub capture_packets: Option<u64>,        /* capture budget in packets */
     pub capture_seconds: Option<u32>,        /* capture duration */
     pub capture_sample: Option<u32>,         /* capture one packet in this many */
+    pub capture_file: Option<String>,        /* write the capture to this file */
+    pub capture_dir: Option<String>,         /* write the capture into this directory */
+    pub capture_snaplen: Option<u32>,        /* keep this many bytes of each frame; 0 for all */
 }
 
 /// One end of a capture filter, as typed: `*` or a VPC name.
@@ -589,6 +592,9 @@ mod tests {
                 capture_packets: Some(1_000),
                 capture_seconds: Some(30),
                 capture_sample: Some(10),
+                capture_file: Some("/var/tmp/gw.pcapng".into()),
+                capture_dir: Some("/var/tmp".into()),
+                capture_snaplen: Some(256),
             },
         )
     }

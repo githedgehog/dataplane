@@ -1087,7 +1087,7 @@ mod tests_cli_handling {
         let sources = CliSources {
             capture: Some(CaptureDirectory::new(
                 controller.clone(),
-                dir.path("captures"),
+                Some(dir.path("captures")),
             )),
             ..Default::default()
         };

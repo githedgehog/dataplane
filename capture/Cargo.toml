@@ -16,9 +16,11 @@ chrono = { workspace = true, features = ["alloc", "std"] }
 clock = { workspace = true }
 concurrency = { workspace = true }
 net = { workspace = true }
+nix = { workspace = true, features = ["fs"] }
 pcap-file = { workspace = true }
 pipeline = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, features = ["std"] }
