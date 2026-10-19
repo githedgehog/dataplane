@@ -469,6 +469,15 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             }
         }
     }
+
+    /// Consume a [`Packet`] that is being dropped and give back its buffer, without writing its
+    /// [`Headers`] into it.
+    ///
+    /// For callers that release buffers in bulk; the buffer's contents are not meaningful.
+    #[must_use]
+    pub fn discard(self) -> Buf {
+        self.payload
+    }
 }
 
 impl<Buf: PacketBufferMut> TryHeaders for Packet<Buf> {
