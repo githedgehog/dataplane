@@ -90,6 +90,29 @@ impl Capture {
         self.image.mark_unreadable(region);
     }
 
+    /// Hand over the outcome of reading a region, however it was read.
+    ///
+    /// A region other than the identifying first half page that failed to read is recorded as
+    /// unreadable rather than failing the whole read: modules routinely lack optional pages.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the identifying first half page could not be read, leaving nothing to decode.
+    pub fn supply<E>(
+        &mut self,
+        region: Region,
+        read: Result<Block, E>,
+    ) -> Result<(), ReadError<E>> {
+        match read {
+            Ok(block) => self.provide(region, block),
+            Err(error) if region == Region::Lower(I2cAddress::A0) => {
+                return Err(ReadError::Identity(error));
+            }
+            Err(_) => self.unreadable(region),
+        }
+        Ok(())
+    }
+
     /// The memory read so far.
     #[must_use]
     pub fn image(&self) -> &Image {
@@ -150,10 +173,7 @@ pub enum ReadError<E> {
     Decode(#[from] DecodeError),
 }
 
-/// Drive `capture` to completion against a blocking source.
-///
-/// Regions other than the identifying first half page that fail to read are recorded as unreadable
-/// rather than failing the whole read: modules routinely lack optional pages.
+/// Drive `capture` to completion against a blocking source; see [`Capture::supply`].
 ///
 /// # Errors
 ///
@@ -163,13 +183,7 @@ pub fn read<E: Eeprom>(
     mut capture: Capture,
 ) -> Result<(Module, Image), ReadError<E::Error>> {
     while let Some(region) = capture.next_region() {
-        match eeprom.read(region) {
-            Ok(block) => capture.provide(region, block),
-            Err(error) if region == Region::Lower(I2cAddress::A0) => {
-                return Err(ReadError::Identity(error));
-            }
-            Err(_) => capture.unreadable(region),
-        }
+        capture.supply(region, eeprom.read(region))?;
     }
     Ok(capture.finish()?)
 }

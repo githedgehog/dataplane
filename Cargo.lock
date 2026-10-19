@@ -2241,8 +2241,10 @@ name = "dataplane-transceiver"
 version = "0.29.0"
 dependencies = [
  "bolero",
+ "ethtool2",
  "serde_json",
  "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -2637,6 +2639,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17304d06addb3283cdc4bd528e42dd95e73c8ee2d6492ffce415e93660885449"
 dependencies = [
  "arrayvec",
+]
+
+[[package]]
+name = "ethtool2"
+version = "0.1.0"
+source = "git+https://github.com/githedgehog/ethtool2.git?branch=main#4138b66a334e17e145bcff89edd0b5133a03f645"
+dependencies = [
+ "futures",
+ "genetlink",
+ "netlink-packet-core 0.8.2",
+ "netlink-packet-ethtool",
+ "netlink-packet-generic",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -4593,6 +4609,15 @@ checksum = "2d6e2daf9a8c2e21302714706860a0e6be02e03d17294ecc66b354ea7d4059dd"
 name = "netlink-packet-devlink"
 version = "0.1.0"
 source = "git+https://github.com/githedgehog/netlink-packet-devlink.git?branch=main#4c920fa98461432a7386dc98463e846f8902ba1a"
+dependencies = [
+ "netlink-packet-core 0.8.2",
+ "netlink-packet-generic",
+]
+
+[[package]]
+name = "netlink-packet-ethtool"
+version = "0.1.0"
+source = "git+https://github.com/githedgehog/netlink-packet-ethtool.git?branch=main#67be0e19672d3bcb9305d1e414660409fa47afb0"
 dependencies = [
  "netlink-packet-core 0.8.2",
  "netlink-packet-generic",
