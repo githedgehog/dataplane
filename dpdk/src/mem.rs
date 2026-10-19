@@ -32,6 +32,7 @@ use core::ptr::NonNull;
 use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
 use errno::Errno;
+use net::packet::{DoneReason, Packet};
 use tracing::{error, info, warn};
 
 use dpdk_sys::{
@@ -39,7 +40,8 @@ use dpdk_sys::{
     rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
 use net::buffer::{
-    Append, DeepCopy, Headroom, PacketLength, Prepend, Tailroom, TrimFromEnd, TrimFromStart,
+    Append, DeepCopy, Headroom, PacketLength, Prepend, Tailroom, TestBuffer, TrimFromEnd,
+    TrimFromStart,
 };
 use std::ffi::CString;
 
@@ -912,6 +914,68 @@ impl<'eal> Mbuf<'eal> {
             Some(_) => Ok(unsafe { self.segment_data_mut(tail) }),
         }
     }
+}
+
+/// Convert a burst of `Packet<TestBuffer>` into a burst of `Packet<Mbuf>`, keeping the
+/// original headers and metadata, where the `Mbuf`s are taken from the given `pool`.
+///
+/// Mbufs are allocated in chunks of at most [`MBUF_BURST`]. If an allocation fails, it
+/// is retried with half the size.
+///
+/// Packets are dropped in place when:
+/// - the pool cannot supply even one mbuf: the rest of the burst gets [`DoneReason::InternalDrop`];
+/// - a payload does not fit in an [`Mbuf`]: that packet gets [`DoneReason::InternalFailure`].
+#[must_use]
+pub fn rebuffer_non_dpdk_burst<'eal>(
+    burst: Vec<Packet<TestBuffer>>,
+    pool: &Pool<'eal>,
+) -> Vec<Packet<Mbuf<'eal>>> {
+    if burst.is_empty() {
+        return vec![];
+    }
+
+    // packets we'll return
+    let mut out = Vec::with_capacity(burst.len());
+
+    // packets pending rebuffering
+    let mut remaining = burst.into_iter();
+
+    // number of buffers to request to pool. We'll not request more than MBUF_BURST.
+    // and do several attempts before giving up. Packets for which we could not get
+    // an mbuf will be marked as Done.
+
+    let mut num_mbufs = MBUF_BURST;
+    while remaining.len() > 0 {
+        let num = num_mbufs.min(remaining.len());
+        let Ok(mbufs) = pool.alloc_bulk(num) else {
+            if num == 1 {
+                break;
+            }
+            num_mbufs = num / 2;
+            continue;
+        };
+        // attempt to rebuffer each packet with a distinct mbuf
+        for (mbuf, packet) in mbufs.into_iter().zip(remaining.by_ref()) {
+            match packet.rebuffer(mbuf) {
+                Ok(new) => out.push(new),
+                Err(mut rejected) => {
+                    warn!("Failed to rebuffer packet!");
+                    rejected.done(DoneReason::InternalFailure);
+                }
+            }
+        }
+    }
+    if remaining.len() > 0 {
+        warn!(
+            "Pool {} is exhausted: dropping {} packets",
+            pool.name(),
+            remaining.len()
+        );
+        for mut packet in remaining {
+            packet.done(DoneReason::InternalDrop);
+        }
+    }
+    out
 }
 
 #[non_exhaustive]
