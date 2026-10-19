@@ -6,7 +6,7 @@
 //! Pure bookkeeping, with time passed in, so that the receive task decides when things happen and the
 //! table only decides what they mean.
 
-use net::eth::mac::Mac;
+use net::eth::mac::SourceMac;
 use net::lldp::{ChassisId, Lldpdu, PortId};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Neighbor {
     /// The MAC the neighbour's frames came from.
-    pub source: Mac,
+    pub source: SourceMac,
     /// What the neighbour last advertised.
     pub lldpdu: Lldpdu,
     /// When we first heard it on this port, since it was last forgotten.
@@ -76,7 +76,7 @@ impl<P: Eq + Hash + Clone> Neighbors<P> {
     }
 
     /// Record that `lldpdu` arrived on `port` from `source` at `now`.
-    pub fn hear(&mut self, port: &P, source: Mac, lldpdu: Lldpdu, now: Instant) -> Heard {
+    pub fn hear(&mut self, port: &P, source: SourceMac, lldpdu: Lldpdu, now: Instant) -> Heard {
         let key = (lldpdu.chassis_id().clone(), lldpdu.port_id().clone());
         let ttl = lldpdu.ttl();
         if ttl.is_shutdown() {
@@ -174,12 +174,14 @@ impl<P: Eq + Hash + Clone> Neighbors<P> {
 #[cfg(test)]
 mod tests {
     use super::{Heard, Neighbors};
-    use net::eth::mac::Mac;
+    use net::eth::mac::{Mac, SourceMac};
     use net::lldp::{ChassisId, IdOctets, Lldpdu, OptionalTlv, PortId, Text, TimeToLive};
     use std::num::NonZeroUsize;
     use std::time::Duration;
 
-    const SWITCH: Mac = Mac([0x02, 0, 0, 0, 0, 0x10]);
+    fn switch() -> SourceMac {
+        SourceMac::new(Mac([0x02, 0, 0, 0, 0, 0x10])).unwrap()
+    }
 
     fn lldpdu(chassis: &str, ttl: u16) -> Lldpdu {
         Lldpdu::new(
@@ -198,7 +200,7 @@ mod tests {
         let start = clock::now();
         let mut neighbors = table();
         assert_eq!(
-            neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-1", 120), start),
+            neighbors.hear(&"eth1", switch(), lldpdu("leaf-1", 120), start),
             Heard::New
         );
         assert_eq!(
@@ -214,10 +216,10 @@ mod tests {
     fn hearing_again_extends_the_time_to_live() {
         let start = clock::now();
         let mut neighbors = table();
-        neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-1", 120), start);
+        neighbors.hear(&"eth1", switch(), lldpdu("leaf-1", 120), start);
         let later = start + Duration::from_secs(30);
         assert_eq!(
-            neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-1", 120), later),
+            neighbors.hear(&"eth1", switch(), lldpdu("leaf-1", 120), later),
             Heard::Refreshed
         );
         assert_eq!(neighbors.expire(start + Duration::from_secs(120)), 0);
@@ -229,7 +231,7 @@ mod tests {
     fn news_from_a_neighbour_is_a_change() {
         let start = clock::now();
         let mut neighbors = table();
-        neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-1", 120), start);
+        neighbors.hear(&"eth1", switch(), lldpdu("leaf-1", 120), start);
         let mut renamed = lldpdu("leaf-1", 120);
         renamed
             .try_push(OptionalTlv::SystemName(
@@ -237,7 +239,7 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(
-            neighbors.hear(&"eth1", SWITCH, renamed, start),
+            neighbors.hear(&"eth1", switch(), renamed, start),
             Heard::Changed
         );
         assert_eq!(neighbors.len(), 1);
@@ -247,15 +249,15 @@ mod tests {
     fn a_shutdown_frame_forgets_the_neighbour_at_once() {
         let start = clock::now();
         let mut neighbors = table();
-        neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-1", 120), start);
+        neighbors.hear(&"eth1", switch(), lldpdu("leaf-1", 120), start);
         assert_eq!(
-            neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-1", 0), start),
+            neighbors.hear(&"eth1", switch(), lldpdu("leaf-1", 0), start),
             Heard::Withdrawn
         );
         assert!(neighbors.is_empty());
         // Forgetting a stranger changes nothing.
         assert_eq!(
-            neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-9", 0), start),
+            neighbors.hear(&"eth1", switch(), lldpdu("leaf-9", 0), start),
             Heard::Refreshed
         );
     }
@@ -264,9 +266,9 @@ mod tests {
     fn the_same_neighbour_on_two_ports_is_two_entries() {
         let start = clock::now();
         let mut neighbors = table();
-        neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-1", 120), start);
+        neighbors.hear(&"eth1", switch(), lldpdu("leaf-1", 120), start);
         assert_eq!(
-            neighbors.hear(&"eth2", SWITCH, lldpdu("leaf-1", 120), start),
+            neighbors.hear(&"eth2", switch(), lldpdu("leaf-1", 120), start),
             Heard::New
         );
         assert_eq!(neighbors.forget_port(&"eth1"), 1);
@@ -277,20 +279,20 @@ mod tests {
     fn a_port_holds_a_bounded_number_of_neighbours() {
         let start = clock::now();
         let mut neighbors = table();
-        neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-1", 120), start);
-        neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-2", 120), start);
+        neighbors.hear(&"eth1", switch(), lldpdu("leaf-1", 120), start);
+        neighbors.hear(&"eth1", switch(), lldpdu("leaf-2", 120), start);
         assert_eq!(
-            neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-3", 120), start),
+            neighbors.hear(&"eth1", switch(), lldpdu("leaf-3", 120), start),
             Heard::TooMany
         );
         // Known neighbours still refresh, and a slot that frees up can be taken.
         assert_eq!(
-            neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-1", 120), start),
+            neighbors.hear(&"eth1", switch(), lldpdu("leaf-1", 120), start),
             Heard::Refreshed
         );
-        neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-2", 0), start);
+        neighbors.hear(&"eth1", switch(), lldpdu("leaf-2", 0), start);
         assert_eq!(
-            neighbors.hear(&"eth1", SWITCH, lldpdu("leaf-3", 120), start),
+            neighbors.hear(&"eth1", switch(), lldpdu("leaf-3", 120), start),
             Heard::New
         );
     }
