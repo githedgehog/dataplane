@@ -15,6 +15,7 @@
 //! Create taps on a thread in the control namespace. A tap stays in the namespace
 //! where it was created, even if the thread later calls `setns`.
 
+use hardware::pci::address::PciAddress;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -82,6 +83,8 @@ pub(crate) struct PortIdentity {
     /// The index of the port's own kernel netdev in the datapath namespace, where ethtool can read
     /// its pluggable module. Not the tap's index, which belongs to the control namespace.
     pub(crate) datapath_index: Option<InterfaceIndex>,
+    /// The PCI function behind the port, if it is a PCI device.
+    pub(crate) pci_address: Option<PciAddress>,
 }
 
 /// The datapath's end of one port's bridge.
@@ -690,6 +693,7 @@ mod test {
                 mtu: Some(MTU),
                 hardware: None,
                 datapath_index: None,
+                pci_address: None,
             });
 
             let (connection, netlink, _) = rtnetlink::new_connection().unwrap();
@@ -849,6 +853,7 @@ mod test {
                 mtu: Some(MTU),
                 hardware: None,
                 datapath_index: None,
+                pci_address: None,
             });
 
             // Applying the identity is asynchronous: wait for the MAC to change.
@@ -952,6 +957,7 @@ mod test {
                 mtu: Some(1500),
                 hardware: Some("0000:00:00.0 (test)".to_string()),
                 datapath_index: None,
+                pci_address: None,
             });
             link.send_replace(Link::Up);
             gateway_name.send_replace(Some("gw-test".to_string()));
@@ -1007,6 +1013,7 @@ mod test {
                 mtu: Some(1500),
                 hardware: None,
                 datapath_index: None,
+                pci_address: None,
             });
             drop(ends);
 

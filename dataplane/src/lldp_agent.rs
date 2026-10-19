@@ -456,6 +456,7 @@ mod tests {
             mtu: Some(9000),
             hardware: Some("0000:03:00.0 (mlx5_pci)".to_owned()),
             datapath_index: None,
+            pci_address: None,
         }
     }
 

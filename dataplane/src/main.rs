@@ -22,6 +22,8 @@ mod lldp_agent;
 #[cfg(not(feature = "loom"))]
 mod packet_processor;
 #[cfg(not(feature = "loom"))]
+mod phy_agent;
+#[cfg(not(feature = "loom"))]
 mod runtime;
 #[cfg(not(feature = "loom"))]
 mod statistics;
