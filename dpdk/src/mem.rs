@@ -687,12 +687,54 @@ impl PacketLength for Mbuf<'_> {
     }
 }
 
+bitflags::bitflags! {
+    /// Which receive metadata the NIC delivered with a frame.
+    ///
+    /// Read from the mbuf's offload flags by [`Mbuf::rx_flags`]. The bits are this type's own, not
+    /// DPDK's: META's validity flag is a dynamic field registered at EAL start, so it has no fixed
+    /// position to borrow.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct RxFlags: u8 {
+        /// The NIC's RSS hash is present (`RTE_MBUF_F_RX_RSS_HASH`); see [`Mbuf::rss_hash`].
+        const RSS_HASH = 1 << 0;
+        /// A flow rule matched the frame (`RTE_MBUF_F_RX_FDIR`).
+        const FLOW_MATCHED = 1 << 1;
+        /// The matching rule's `MARK` is present (`RTE_MBUF_F_RX_FDIR_ID`); see [`Mbuf::rx_mark`].
+        const MARK = 1 << 2;
+        /// The registered `META` field is present; see [`Mbuf::rx_meta`].
+        const META = 1 << 3;
+    }
+}
+
 impl<'eal> Mbuf<'eal> {
-    /// Raw mbuf offload flags, including receive metadata validity bits.
-    #[must_use]
-    pub fn ol_flags(&self) -> u64 {
+    /// The mbuf's raw offload flags.
+    fn ol_flags(&self) -> u64 {
         // SAFETY: `self.raw` is a live mbuf for the lifetime of `&self`.
         unsafe { self.raw.as_ref() }.ol_flags
+    }
+
+    /// Which receive metadata the NIC delivered with this frame.
+    #[must_use]
+    pub fn rx_flags(&self) -> RxFlags {
+        let raw = self.ol_flags();
+        // SAFETY: EAL initialization registers metadata before exposing pools or queues, and this
+        // crate does not register it again while mbufs are live.
+        let meta = unsafe { dpdk_sys::rte_flow_dynf_metadata_mask };
+        [
+            (
+                u64::from(dpdk_sys::RTE_MBUF_F_RX_RSS_HASH),
+                RxFlags::RSS_HASH,
+            ),
+            (
+                u64::from(dpdk_sys::RTE_MBUF_F_RX_FDIR),
+                RxFlags::FLOW_MATCHED,
+            ),
+            (u64::from(dpdk_sys::RTE_MBUF_F_RX_FDIR_ID), RxFlags::MARK),
+            (meta, RxFlags::META),
+        ]
+        .into_iter()
+        .filter(|(bit, _)| *bit != 0 && raw & bit != 0)
+        .fold(RxFlags::empty(), |flags, (_, flag)| flags | flag)
     }
 
     /// The NIC-reported RSS hash, or `None` when `RTE_MBUF_F_RX_RSS_HASH` is clear.
@@ -700,7 +742,7 @@ impl<'eal> Mbuf<'eal> {
     /// Queue steering does not guarantee hash delivery: mlx5 CQE compression modes can omit it.
     #[must_use]
     pub fn rss_hash(&self) -> Option<u32> {
-        if self.ol_flags() & u64::from(dpdk_sys::RTE_MBUF_F_RX_RSS_HASH) == 0 {
+        if !self.rx_flags().contains(RxFlags::RSS_HASH) {
             return None;
         }
         // SAFETY: the flag certifies a valid RSS hash, and `self.raw` remains live.
@@ -713,7 +755,7 @@ impl<'eal> Mbuf<'eal> {
     /// and reserved values can limit the usable range; validate rules against the device.
     #[must_use]
     pub fn rx_mark(&self) -> Option<u32> {
-        if self.ol_flags() & u64::from(dpdk_sys::RTE_MBUF_F_RX_FDIR_ID) == 0 {
+        if !self.rx_flags().contains(RxFlags::MARK) {
             return None;
         }
         // SAFETY: the flag certifies a valid FDIR id, and `self.raw` remains live.
@@ -729,12 +771,10 @@ impl<'eal> Mbuf<'eal> {
     /// See the [mlx5 metadata modes](https://doc.dpdk.org/guides-26.07/nics/mlx5.html#runtime-configuration).
     #[must_use]
     pub fn rx_meta(&self) -> Option<u32> {
-        // SAFETY: EAL initialization registers metadata before exposing pools or queues,
-        // and this crate does not register it again while mbufs are live.
-        let mask = unsafe { dpdk_sys::rte_flow_dynf_metadata_mask };
-        if self.ol_flags() & mask == 0 {
+        if !self.rx_flags().contains(RxFlags::META) {
             return None;
         }
+        // SAFETY: as for the mask in `rx_flags`: registered once, before any mbuf exists.
         let offs = unsafe { dpdk_sys::rte_flow_dynf_metadata_offs };
         // SAFETY: registration provides the field offset; the flag confirms the
         // field is populated, and `self.raw` remains live for this read.
