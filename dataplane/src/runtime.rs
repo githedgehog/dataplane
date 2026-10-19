@@ -813,6 +813,7 @@ pub fn main() {
                     &mgmt_handle,
                     &shutdown.mgmt,
                     bridge.ports(),
+                    &gwname,
                     &gateway_named,
                     &management_addressed,
                 );

@@ -842,12 +842,12 @@ mod test {
         });
     }
 
-    /// The whole LLDP path short of a NIC: once the datapath reports a port up and a config names the
-    /// gateway, LLDP frames naming both arrive on the port's injection queue, and stopping retracts
-    /// them.
+    /// The whole LLDP path short of a NIC: once the datapath reports a port up, LLDP frames naming it
+    /// arrive on the port's injection queue, under the dataplane's own name until a config names the
+    /// gateway, and stopping retracts them.
     #[n_vm::test]
     #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
-    fn a_named_gateway_advertises_on_a_port_that_is_up() {
+    fn a_gateway_advertises_on_a_port_that_is_up_and_names_itself_once_configured() {
         use lldp::Link;
         use net::headers::Headers;
         use net::lldp::{ChassisId, IdOctets, Lldpdu, OptionalTlv, PortId, Text};
@@ -887,7 +887,14 @@ mod test {
 
             let (gateway_name, named) = watch::channel(None);
             let (_management, management) = watch::channel(None);
-            crate::lldp_agent::start(&handle, &shutdown.mgmt, bridge.ports(), &named, &management);
+            crate::lldp_agent::start(
+                &handle,
+                &shutdown.mgmt,
+                bridge.ports(),
+                "dp-test",
+                &named,
+                &management,
+            );
 
             ends.report(PortIdentity {
                 name: name.clone(),
@@ -896,12 +903,28 @@ mod test {
                 hardware: Some("0000:00:00.0 (test)".to_string()),
             });
             link.send_replace(Link::Up);
-            gateway_name.send_replace(Some("gw-test".to_string()));
 
+            // Advertised before any configuration, under the dataplane's own name.
             let pdu = next_lldpdu(&mut inject).await;
+            assert!(
+                pdu.optional()
+                    .contains(&OptionalTlv::SystemName(Text::new(b"dp-test").unwrap()))
+            );
+
+            // A configuration names the gateway; the chassis stays the same.
+            gateway_name.send_replace(Some("gw-test".to_string()));
+            let pdu = loop {
+                let pdu = next_lldpdu(&mut inject).await;
+                if pdu
+                    .optional()
+                    .contains(&OptionalTlv::SystemName(Text::new(b"gw-test").unwrap()))
+                {
+                    break pdu;
+                }
+            };
             assert_eq!(
                 *pdu.chassis_id(),
-                ChassisId::LocallyAssigned(IdOctets::new(b"gw-test").unwrap())
+                ChassisId::LocallyAssigned(IdOctets::new(b"dp-test").unwrap())
             );
             assert_eq!(
                 *pdu.port_id(),
@@ -911,10 +934,6 @@ mod test {
             assert!(pdu.optional().contains(&OptionalTlv::PortDescription(
                 Text::new(b"0000:00:00.0 (test)").unwrap()
             )));
-            assert!(
-                pdu.optional()
-                    .contains(&OptionalTlv::SystemName(Text::new(b"gw-test").unwrap()))
-            );
 
             shutdown.mgmt.cancel_token().cancel();
             loop {
