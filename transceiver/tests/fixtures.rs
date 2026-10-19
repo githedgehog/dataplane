@@ -89,11 +89,9 @@ fn check_against_ethtool(module: &Module, ethtool: &Value) {
     assert_eq!(inventory.part_number, ethtool["vendor_pn"]);
     assert_eq!(inventory.revision, ethtool["vendor_rev"]);
     assert_eq!(inventory.serial_number, ethtool["vendor_sn"]);
-    assert!(
-        inventory
-            .date_code
-            .starts_with(ethtool["date_code"].as_str().unwrap())
-    );
+    // ethtool prints a blank lot code as underscores; the decoder trims it.
+    let date_code = ethtool["date_code"].as_str().unwrap();
+    assert_eq!(inventory.date_code, date_code.trim_end_matches(['_', ' ']));
     let oui: Vec<u64> = inventory.oui.iter().map(|b| u64::from(*b)).collect();
     assert_eq!(serde_json::to_value(oui).unwrap(), ethtool["vendor_oui"]);
     assert_eq!(
@@ -200,6 +198,49 @@ fn qsfp112_matches_ethtool() {
         assert_eq!(cmis.data_path.len(), 4);
         assert!(!cmis.applications.is_empty());
         assert_eq!(cmis.applications[0].media_lanes, 4);
+    }
+}
+
+/// Mellanox 100G-QSFP28-SR4 modules in both ports. They claim SFF-8636 revision 2.5-2.7, so they
+/// leave the temperature and supply bits of byte 220 clear and exercise the decoder's fallback for
+/// modules older than revision 2.8.
+#[test]
+fn qsfp28_matches_ethtool() {
+    use dataplane_transceiver::sff8636::Detail as Sff8636;
+
+    for name in ["qsfp28-sr4-mellanox-port0", "qsfp28-sr4-mellanox-port1"] {
+        let mut fixture = Fixture::new(name);
+        let (module, _) = read(&mut fixture, Capture::new()).unwrap();
+        let ethtool = fixture.ethtool();
+        check_against_ethtool(&module, &ethtool);
+
+        assert_eq!(module.monitors.lanes.len(), 4, "{name}");
+        let Detail::Sff8636(Sff8636 {
+            flat_memory,
+            lengths,
+            encoding,
+            ..
+        }) = &module.detail
+        else {
+            panic!("{name}: not decoded as SFF-8636")
+        };
+        assert!(!flat_memory);
+        assert_eq!(u64::from(*encoding), ethtool["encoding"].as_u64().unwrap());
+        // Byte 146 of a module without a separable connector is a cable length, as ethtool reads it.
+        assert_eq!(
+            lengths.cable_metres.map(u64::from),
+            ethtool["length_(copper_or_active_cable)"].as_u64()
+        );
+        assert_eq!(lengths.om4_metres, None);
+        assert_eq!(
+            fixture.asked,
+            [
+                Region::Lower(I2cAddress::A0),
+                Region::upper(0x00),
+                Region::upper(0x03),
+            ],
+            "{name}"
+        );
     }
 }
 
