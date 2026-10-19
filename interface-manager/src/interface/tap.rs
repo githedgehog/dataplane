@@ -158,11 +158,11 @@ mod helper {
                     warn!("failed to learn the interface index of tap device {name}: {err}");
                 })?;
             trace!("tap device {name} is interface index {index}");
-            Ok(TapDevice {
-                fd: AsyncFd::new(tap_file)?,
-                name,
-                index,
-            })
+            // SAFETY: the `File` owns the descriptor, and the `AsyncFd` owns the `File`, so the
+            // descriptor stays open and names the same tap for as long as it is registered.
+            #[allow(unsafe_code)]
+            let fd = unsafe { AsyncFd::register(tap_file) }?;
+            Ok(TapDevice { fd, name, index })
         }
     }
 
