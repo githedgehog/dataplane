@@ -175,7 +175,8 @@ impl metrics::Recorder for Scrape {
             key.labels().map(|label| label.key().to_string()).collect(),
         ));
         self.counters.lock().entry(at.clone()).or_insert(0);
-        metrics::Counter::from_arc(Arc::new(CounterCell {
+        // A real `std::sync::Arc`, for the reason given at `register_gauge`.
+        metrics::Counter::from_arc(concurrency::process_global::Arc::new(CounterCell {
             at,
             into: self.counters.clone(),
         }))
