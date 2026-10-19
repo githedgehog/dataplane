@@ -323,6 +323,26 @@ impl Supervisor {
         // a blunter instrument and runs later.
         process.command.process_group(0);
 
+        // Outside PID 1, a supervisor killed outright (SIGKILL, OOM) runs no shutdown, and its
+        // children would carry on as orphans. Have the kernel kill them with it. This reaches
+        // direct children only; daemons that left their group are swept by `shut_down`, and as
+        // PID 1 the kernel takes down the whole namespace anyway.
+        let parent = unistd::getpid();
+        // SAFETY: the closure runs between fork and exec, and calls only prctl and getppid, both
+        // async-signal-safe system calls. The death signal tracks the forking *thread*, which is
+        // this supervisor's, the current-thread runtime's only one.
+        #[allow(unsafe_code)]
+        unsafe {
+            process.command.pre_exec(move || {
+                nix::sys::prctl::set_pdeathsig(Signal::SIGKILL)?;
+                // The supervisor may have died between fork and prctl, before the signal was armed.
+                if unistd::getppid() != parent {
+                    return Err(io::Error::other("the supervisor exited during spawn"));
+                }
+                Ok(())
+            });
+        }
+
         let child = process
             .command
             .spawn()
@@ -481,24 +501,14 @@ impl Supervisor {
 
     /// Terminate everything still running, politely and then not.
     async fn shut_down(&mut self) -> Result<(), SupervisorError> {
-        // As PID 1, also stop daemonized children that escaped their parent's group.
-        // Outside PID 1, kill(-1) could signal unrelated processes owned by this user.
-        let sweep = unistd::getpid().as_raw() == 1;
-
-        // Reverse start order: a process started because another was ready is likely to be talking
-        // to it, and stopping the dependant first spares the logs a round of connection errors on
-        // the way out.
+        // Every group is signalled at once; the reverse order is cosmetic. Daemons that left their
+        // group (FRR's daemonize with `setsid`) are reached by the sweep in `settle`.
         for group in self.groups.iter().rev() {
             debug!("sending SIGTERM to {} (group {})", group.name, group.pid);
             signal_group(group.pid, Signal::SIGTERM);
         }
-        if sweep {
-            let _ = kill(Pid::from_raw(-1), Signal::SIGTERM);
-        } else {
-            debug!("not PID 1, so not sweeping for processes we did not start");
-        }
 
-        if self.settle(sweep, clock::now() + GRACE).await? {
+        if self.settle(Signal::SIGTERM, clock::now() + GRACE).await? {
             info!("all supervised processes have stopped");
             return Ok(());
         }
@@ -512,12 +522,12 @@ impl Supervisor {
             );
             signal_group(group.pid, Signal::SIGKILL);
         }
-        if sweep {
-            let _ = kill(Pid::from_raw(-1), Signal::SIGKILL);
-        }
 
         // Drain, so nothing is left unreaped when this process exits and the namespace goes.
-        if self.settle(sweep, clock::now() + KILL_WAIT).await? {
+        if self
+            .settle(Signal::SIGKILL, clock::now() + KILL_WAIT)
+            .await?
+        {
             info!("all supervised processes have stopped");
         } else {
             warn!(
@@ -528,19 +538,42 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Reap until every group this supervisor started is empty -- and, when `sweep`ing, until no
-    /// child at all is left -- or until `deadline`. Returns whether it got there.
+    /// Send `signal` to whatever escaped the supervised groups, and reap until every group is empty
+    /// and no child is left, or until `deadline`. Returns whether it got there.
+    ///
+    /// As PID 1, everything in the container is ours, so `kill(-1)` reaches it all at once. Anywhere
+    /// else that would signal everything this user owns, so the sweep is limited to this process's
+    /// own children: as a subreaper those are the processes it started plus their orphaned
+    /// descendants, and nothing else. A daemon becomes our child only when its parent dies, which
+    /// may be partway through, so the sweep repeats for each new one.
     async fn settle(
         &mut self,
-        sweep: bool,
+        signal: Signal,
         deadline: clock::Instant,
     ) -> Result<bool, SupervisorError> {
+        let pid1 = unistd::getpid().as_raw() == 1;
+        if pid1 {
+            let _ = kill(Pid::from_raw(-1), signal);
+        }
+        let mut signalled: Vec<Pid> = Vec::new();
         loop {
             let (_, children_left) = self.collect()?;
             // An empty group is gone for good, and its id may be handed out again.
             self.groups.retain(|group| group_alive(group.pid));
-            if self.groups.is_empty() && !(sweep && children_left) {
+            if self.groups.is_empty() && !children_left {
                 return Ok(true);
+            }
+            if !pid1 {
+                for child in own_children() {
+                    if !signalled.contains(&child) {
+                        debug!("sending {signal} to child {child}");
+                        match kill(child, signal) {
+                            Ok(()) | Err(Errno::ESRCH) => {}
+                            Err(e) => warn!("could not send {signal} to child {child}: {e}"),
+                        }
+                        signalled.push(child);
+                    }
+                }
             }
             if clock::now() >= deadline {
                 return Ok(false);
@@ -548,6 +581,37 @@ impl Supervisor {
             sleep(READY_POLL).await;
         }
     }
+}
+
+/// This process's direct children.
+///
+/// As a subreaper that is what this supervisor started plus their orphaned descendants, and never
+/// a process merely owned by the same user. Found by scanning every process's parent in `/proc`
+/// rather than reading `/proc/self/task/*/children`, which needs `CONFIG_PROC_CHILDREN`: kernels
+/// without it (the test VMs' among them) would report no children and the sweep would miss them.
+fn own_children() -> Vec<Pid> {
+    let me = unistd::getpid();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid: i32 = entry.file_name().to_str()?.parse().ok()?;
+            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            (parent_of(&stat)? == me).then_some(Pid::from_raw(pid))
+        })
+        .collect()
+}
+
+/// The parent pid in a `/proc/<pid>/stat` line: `pid (comm) state ppid ...`.
+///
+/// `comm` may hold spaces and parentheses, so the fields are counted from its closing `)`.
+fn parent_of(stat: &str) -> Option<Pid> {
+    let (_, rest) = stat.rsplit_once(')')?;
+    let mut fields = rest.split_whitespace();
+    let _state = fields.next()?;
+    Some(Pid::from_raw(fields.next()?.parse().ok()?))
 }
 
 /// Send `signal` to a whole process group, tolerating a group that has already gone.
@@ -639,6 +703,15 @@ mod test {
         })
         .await
         .expect("child should exit promptly");
+    }
+
+    #[test]
+    fn the_parent_is_read_past_an_awkward_command_name() {
+        assert_eq!(
+            parent_of("42 (we(ird) name) S 7 42 42 0 -1"),
+            Some(Pid::from_raw(7))
+        );
+        assert_eq!(parent_of("42 (sh) Z"), None);
     }
 
     #[tokio::test]
@@ -1085,21 +1158,94 @@ mod test {
         std::fs::remove_dir_all(scratch).unwrap();
     }
 
-    /// Shutdown ends by sweeping for processes it did not start, which it does with
-    /// `kill(-1, SIGTERM)`. That reaches every process this one may signal -- the container, as
-    /// PID 1, but the whole login session anywhere else.
+    /// A daemon leaves its parent's process group with `setsid`, as FRR's do, so signalling the
+    /// group misses it. Outside PID 1 there is no `kill(-1)` to catch it; it becomes our child when
+    /// its parent dies, and is swept then -- promptly, not at the end of the grace period.
+    #[tokio::test]
+    async fn a_daemon_that_left_its_group_is_stopped() {
+        if run_in_subprocess("a_daemon_that_left_its_group_is_stopped") {
+            return;
+        }
+        let scratch = scratch_dir("daemon");
+        let pidfile = scratch.join("daemon.pid");
+        // The daemon's stdio is detached, so a failure here ends this test instead of leaving the
+        // harness waiting for the daemon to close its output.
+        let mut supervisor = Supervisor::new().unwrap();
+        supervisor
+            .start(Process::new(
+                "watcher",
+                sh(&format!(
+                    "{setsid} sleep 600 </dev/null >/dev/null 2>&1 & \
+                     echo $! > {pidfile}.tmp && mv {pidfile}.tmp {pidfile}; \
+                     sleep 600",
+                    setsid = tool("setsid").display(),
+                    pidfile = pidfile.display(),
+                )),
+            ))
+            .await
+            .unwrap();
+        let daemon = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(pid) = std::fs::read_to_string(&pidfile) {
+                    return Pid::from_raw(pid.trim().parse().unwrap());
+                }
+                sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the watcher should report its daemon");
+        let watcher = supervisor.running[0].pid;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while unistd::getpgid(Some(daemon)) == Ok(watcher) {
+                sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the daemon should leave the watcher's group");
+
+        let started = clock::now();
+        tokio::time::timeout(GRACE * 2, supervisor.shut_down())
+            .await
+            .expect("shutdown should not hang")
+            .expect("shutdown should not fail");
+        assert!(
+            clock::now() - started < GRACE / 2,
+            "the daemon was outlasted rather than signalled"
+        );
+        assert_eq!(
+            kill(daemon, None),
+            Err(Errno::ESRCH),
+            "the daemon outlived shutdown"
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// Shutdown sweeps for processes that escaped their group. As PID 1 it does so with
+    /// `kill(-1, SIGTERM)`, which anywhere else reaches every process this user owns; there it
+    /// signals only its own children instead.
     ///
     /// This test is the guard's only mechanical evidence. If it fails, the sweep has escaped the
-    /// `getpid() == 1` check in [`Supervisor::shut_down`], and running this suite on a
-    /// workstation will terminate the developer's desktop. It has done so before.
+    /// `getpid() == 1` check in [`Supervisor::settle`], or the children it signals include
+    /// processes outside its tree, and running this suite on a workstation will terminate the
+    /// developer's desktop. It has done so before.
     #[tokio::test]
     async fn shutdown_does_not_reach_processes_we_never_started() {
         if run_in_subprocess("shutdown_does_not_reach_processes_we_never_started") {
             return;
         }
         // Deliberately not given to the supervisor: it stands in for every process on the machine
-        // that has nothing to do with the gateway.
-        let mut bystander = sh("sleep 600").spawn().expect("the bystander should start");
+        // that has nothing to do with the gateway. Orphaned before this process becomes a
+        // subreaper, so it is reparented outside our tree, like everything else the user runs.
+        let output = sh("sleep 600 >/dev/null 2>&1 & echo $!")
+            .output()
+            .expect("the bystander should start");
+        let bystander = Pid::from_raw(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap(),
+        );
 
         let mut supervisor = Supervisor::new().unwrap();
         supervisor
@@ -1112,13 +1258,13 @@ mod test {
             .expect("shutdown should not hang")
             .expect("shutdown should not fail");
 
-        assert!(
-            matches!(bystander.try_wait(), Ok(None)),
+        assert_eq!(
+            kill(bystander, None),
+            Ok(()),
             "shutdown signalled a process it did not start; as PID 1 that is the container, but \
              here it is everything this user owns"
         );
 
-        let _ = bystander.kill();
-        let _ = bystander.wait();
+        let _ = kill(bystander, Signal::SIGKILL);
     }
 }
