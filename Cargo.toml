@@ -34,6 +34,7 @@ members = [
     "match-action",
     "match-action-derive",
     "mgmt",
+    "mstlink",
     "n-it",
     "n-preinit",
     "n-vm",
@@ -109,6 +110,7 @@ lpm = { path = "./lpm", package = "dataplane-lpm", features = [] }
 match-action = { path = "./match-action", package = "dataplane-match-action", features = [] }
 match-action-derive = { path = "./match-action-derive", package = "dataplane-match-action-derive", features = [] }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
+mstlink = { path = "./mstlink", package = "dataplane-mstlink", features = [] }
 n-it = { path = "./n-it", package = "dataplane-n-it", features = [] }
 n-preinit = { path = "./n-preinit", package = "dataplane-n-preinit", features = [] }
 n-vm = { path = "./n-vm", package = "dataplane-n-vm", features = [] }
@@ -463,6 +465,11 @@ wasm = false # split
 package = "dataplane-nat"
 miri = true
 wasm = false # split
+
+[workspace.metadata.package.mstlink]
+package = "dataplane-mstlink"
+miri = true
+wasm = true
 
 [workspace.metadata.package.n-it]
 package = "dataplane-n-it"

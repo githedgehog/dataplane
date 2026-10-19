@@ -1,0 +1,22 @@
+[package]
+name = "dataplane-mstlink"
+description = "Run NVIDIA/Mellanox mstlink and parse what it says about a port's physical layer"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[features]
+default = []
+# Run mstlink as a child process on a tokio runtime.
+tokio = ["dep:tokio"]
+
+[dependencies]
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true, features = ["std"] }
+tokio = { workspace = true, optional = true, features = ["process", "time"] }
+
+[dev-dependencies]
+bolero = { workspace = true, features = ["std"] }
+clock = { workspace = true }
+tokio = { workspace = true, features = ["macros", "process", "rt", "time"] }

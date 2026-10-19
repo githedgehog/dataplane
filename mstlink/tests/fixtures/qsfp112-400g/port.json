@@ -1,0 +1,420 @@
+{
+	"result" : 
+	{
+		"output" : 
+		{
+			"EYE Opening Info" : 
+			{
+				"FOM Mode" : 
+				{
+					"values" : 
+					[
+						"SLRG_FOM_MODE_EYEO"
+					]
+				},
+				"Initial FOM" : 
+				{
+					"values" : 
+					[
+						"72",
+						"68",
+						"73",
+						"56"
+					]
+				},
+				"Lane" : 
+				{
+					"values" : 
+					[
+						"0",
+						"1",
+						"2",
+						"3"
+					]
+				},
+				"Last FOM" : 
+				{
+					"values" : 
+					[
+						"68",
+						"68",
+						"74",
+						"62"
+					]
+				},
+				"Lower Grades" : 
+				{
+					"values" : 
+					[
+						"80",
+						"71",
+						"80",
+						"83"
+					]
+				},
+				"Mid Grades" : 
+				{
+					"values" : 
+					[
+						"72",
+						"59",
+						"79",
+						"58"
+					]
+				},
+				"Upper Grades" : 
+				{
+					"values" : 
+					[
+						"72",
+						"67",
+						"75",
+						"59"
+					]
+				}
+			},
+			"Host Class Info" : 
+			{
+				"Local Host Class" : "Unspecified",
+				"Remote Host Class" : "Unspecified"
+			},
+			"KR Info" : 
+			{
+				"BER Target" : "N/A",
+				"Number of Iterations" : "N/A",
+				"PRBS Type" : "N/A",
+				"Support Non-Standard Training Flow" : "N/A",
+				"Time for Iteration" : "N/A"
+			},
+			"Module Info" : 
+			{
+				"Active Set Host Compliance Code" : "IB NDR",
+				"Active Set Media Compliance Code" : "400GBASE-VR4",
+				"Attenuation (5g,7g,12g,25g)[dB]" : "N/A",
+				"Bias Current [mA]" : "6.854,6.230,6.230,6.536 [3..14]",
+				"CDR RX" : 
+				{
+					"values" : 
+					[
+						"ON",
+						"ON",
+						"ON",
+						"ON"
+					]
+				},
+				"CDR TX" : 
+				{
+					"values" : 
+					[
+						"ON",
+						"ON",
+						"ON",
+						"ON"
+					]
+				},
+				"Cable Breakout" : "Unspecified",
+				"Cable Rx AMP" : "1",
+				"Cable Rx Emphasis (Pre)" : "0",
+				"Cable Rx Post Emphasis" : "0",
+				"Cable Technology" : "850 nm VCSEL",
+				"Cable Tx Equalization" : "0",
+				"Cable Type" : "Optical Module (separated)",
+				"Compliance" : "IB NDR,400GBASE-VR4",
+				"DataPath FW Fault" : "0",
+				"DataPath state [per lane]" : 
+				{
+					"values" : 
+					[
+						"DPActivated",
+						"DPActivated",
+						"DPActivated",
+						"DPActivated"
+					]
+				},
+				"Digital Diagnostic Monitoring" : "Yes",
+				"Error Code Response" : "ConfigSuccess",
+				"FW Version" : "0.1.0",
+				"IB Cable Width" : "1x,2x,4x",
+				"Identifier" : "QSFP_CMIS",
+				"LOS Alarm" : "N/A",
+				"Linear Direct Drive" : "0",
+				"MAX Power" : "9.0 W max",
+				"Manufacturing Date" : "05_06_26",
+				"Memory Map Revision" : "82",
+				"Module FW Fault" : "0",
+				"Module State" : "Ready state",
+				"Nominal bit rate" : "N/A",
+				"OUI" : "Other",
+				"Power Class" : "8 (> 5.0 W max)",
+				"Rev" : "01",
+				"Rx CDR LOL [per lane]" : 
+				{
+					"values" : 
+					[
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Rx LOS [per lane]" : 
+				{
+					"values" : 
+					[
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Rx Output Valid [per lane]" : 
+				{
+					"values" : 
+					[
+						"1",
+						"1",
+						"1",
+						"1"
+					]
+				},
+				"Rx Power Current [dBm]" : "2.317,0.648,0.577,1.361 [-7.399..8]",
+				"Rx Power Type" : "Average power",
+				"SMF Length" : "N/A",
+				"SNR Host Lanes [dB]" : 
+				{
+					"values" : 
+					[
+						"N/A"
+					]
+				},
+				"SNR Media Lanes [dB]" : 
+				{
+					"values" : 
+					[
+						"N/A"
+					]
+				},
+				"Temperature [C]" : "39 [-5..80]",
+				"Transfer Distance [m]" : "0.0",
+				"Tx Adaptive EQ Fault [per lane]" : 
+				{
+					"values" : 
+					[
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Tx CDR LOL [per lane]" : 
+				{
+					"values" : 
+					[
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Tx Fault [per lane]" : 
+				{
+					"values" : 
+					[
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Tx LOS [per lane]" : 
+				{
+					"values" : 
+					[
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Tx Power Current [dBm]" : "2.109,2.209,2.320,2.130 [-5.607..5]",
+				"Vendor Name" : "FS",
+				"Vendor Part Number" : "QSFP112-SR4-400G",
+				"Vendor Serial Number" : "C2606276848",
+				"Voltage [mV]" : "3237.4 [2970..3630]",
+				"Wavelength Tolerance" : "10.0nm",
+				"Wavelength [nm]" : "850"
+			},
+			"Operational Info" : 
+			{
+				"Auto Negotiation" : "ON",
+				"FEC" : "Standard_RS-FEC - (544,514)",
+				"Loopback Mode" : "No Loopback",
+				"Physical state" : "LinkUp",
+				"Rx Precoding Status" : "Disabled",
+				"Speed" : "400G",
+				"State" : "Active",
+				"Tx Precoding Status" : "Disabled",
+				"Width" : "4x"
+			},
+			"PLR Info" : 
+			{
+				"PLR Margin Threshold Admin" : "N/A",
+				"PLR Margin Threshold Operational" : "N/A",
+				"PLR Margin Threshold Support" : "N/A",
+				"PLR Reject Mode" : "N/A",
+				"PLR Reject Mode Operational" : "N/A",
+				"PLR Reject Mode Support" : "N/A",
+				"TX CRC PLR" : "N/A",
+				"TX CRC PLR Operational" : "N/A",
+				"TX CRC PLR Support" : "Unsupported"
+			},
+			"Physical Counters and BER Info" : 
+			{
+				"Effective Physical BER" : "15E-255",
+				"Effective Physical Errors" : "0",
+				"Link Down Counter" : "0",
+				"Link Error Recovery Counter" : "0",
+				"Raw Physical BER" : "5E-11",
+				"Raw Physical BER Per Lane" : 
+				{
+					"values" : 
+					[
+						"3E-11",
+						"1E-10",
+						"4E-12",
+						"2E-11"
+					]
+				},
+				"Raw Physical Errors Per Lane" : 
+				{
+					"values" : 
+					[
+						"377636",
+						"1623516",
+						"48684",
+						"274751"
+					]
+				},
+				"Time Since Last Clear [Min]" : "1984.2"
+			},
+			"Port Info" : 
+			{
+				"Label Port" : "1",
+				"Local Port" : "1"
+			},
+			"Serdes Tuning Transmitter Info" : 
+			{
+				"Lane 0" : 
+				{
+					"values" : 
+					[
+						"0",
+						"4",
+						"-13",
+						"46",
+						"0",
+						"50"
+					]
+				},
+				"Lane 1" : 
+				{
+					"values" : 
+					[
+						"0",
+						"4",
+						"-13",
+						"46",
+						"0",
+						"50"
+					]
+				},
+				"Lane 2" : 
+				{
+					"values" : 
+					[
+						"0",
+						"4",
+						"-13",
+						"46",
+						"0",
+						"50"
+					]
+				},
+				"Lane 3" : 
+				{
+					"values" : 
+					[
+						"0",
+						"4",
+						"-13",
+						"46",
+						"0",
+						"50"
+					]
+				},
+				"Serdes TX parameters" : 
+				{
+					"values" : 
+					[
+						"fir_pre3",
+						"fir_pre2",
+						"fir_pre1",
+						"fir_main",
+						"fir_post1",
+						"drv_amp"
+					]
+				}
+			},
+			"Supported Info" : 
+			{
+				"Enabled Link Speed (Ext.)" : 
+				{
+					"mask" : "0x00013ff2",
+					"values" : 
+					[
+						"400G_4X",
+						"200G_2X",
+						"200G_4X",
+						"100G_1X",
+						"100G_2X",
+						"100G_4X",
+						"50G_1X",
+						"50G_2X",
+						"40G",
+						"25G",
+						"10G",
+						"1G"
+					]
+				},
+				"Supported Cable Speed (Ext.)" : 
+				{
+					"mask" : "0x00012800",
+					"values" : 
+					[
+						"400G_4X",
+						"200G_2X",
+						"100G_1X"
+					]
+				}
+			},
+			"Tool Information" : 
+			{
+				"Firmware Version" : "32.50.1002",
+				"MSTFLINT Version" : "mstflint 4.37.0",
+				"amBER Version" : "7.5"
+			},
+			"Troubleshooting Info" : 
+			{
+				"Group Opcode" : "N/A",
+				"Recommendation" : "No issue was observed",
+				"Status Opcode" : "0"
+			}
+		}
+	},
+	"status" : 
+	{
+		"code" : 0,
+		"message" : "success"
+	}
+}
+

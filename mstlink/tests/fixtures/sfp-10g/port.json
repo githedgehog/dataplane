@@ -1,0 +1,127 @@
+{
+	"result" : 
+	{
+		"output" : 
+		{
+			"EYE Opening Info" : 
+			{
+				"FOM Mode" : 
+				{
+					"values" : 
+					[
+						"SLRG_FOM_MODE_EYEO"
+					]
+				},
+				"Initial FOM" : 
+				{
+					"values" : 
+					[
+						"198"
+					]
+				},
+				"Lane" : 
+				{
+					"values" : 
+					[
+						"0"
+					]
+				},
+				"Last FOM" : 
+				{
+					"values" : 
+					[
+						"198"
+					]
+				}
+			},
+			"Operational Info" : 
+			{
+				"Auto Negotiation" : "ON",
+				"FEC" : "No FEC",
+				"Loopback Mode" : "No Loopback",
+				"Physical state" : "ETH_AN_FSM_ENABLE",
+				"Rx Precoding Status" : "Disabled",
+				"Speed" : "10G",
+				"State" : "Active",
+				"Tx Precoding Status" : "Disabled",
+				"Width" : "1x"
+			},
+			"Physical Counters and BER Info" : 
+			{
+				"Effective Physical BER" : "15E-255",
+				"Effective Physical Errors" : "0",
+				"Link Down Counter" : "5",
+				"Link Error Recovery Counter" : "0",
+				"Raw Physical BER" : "15E-255",
+				"Raw Physical BER Per Lane" : 
+				{
+					"values" : 
+					[
+						"15E-255"
+					]
+				},
+				"Raw Physical Errors Per Lane" : 
+				{
+					"values" : 
+					[
+						"0"
+					]
+				},
+				"Time Since Last Clear [Min]" : "30.5"
+			},
+			"Port Info" : 
+			{
+				"Label Port" : "1",
+				"Local Port" : "1"
+			},
+			"Supported Info" : 
+			{
+				"Enabled Link Speed (Ext.)" : 
+				{
+					"mask" : "0x00013ff2",
+					"values" : 
+					[
+						"400G_4X",
+						"200G_2X",
+						"200G_4X",
+						"100G_1X",
+						"100G_2X",
+						"100G_4X",
+						"50G_1X",
+						"50G_2X",
+						"40G",
+						"25G",
+						"10G",
+						"1G"
+					]
+				},
+				"Supported Cable Speed (Ext.)" : 
+				{
+					"mask" : "0x00000010",
+					"values" : 
+					[
+						"10G"
+					]
+				}
+			},
+			"Tool Information" : 
+			{
+				"Firmware Version" : "32.50.1002",
+				"MSTFLINT Version" : "mstflint 4.37.0",
+				"amBER Version" : "7.5"
+			},
+			"Troubleshooting Info" : 
+			{
+				"Group Opcode" : "N/A",
+				"Recommendation" : "No issue was observed",
+				"Status Opcode" : "0"
+			}
+		}
+	},
+	"status" : 
+	{
+		"code" : 0,
+		"message" : "success"
+	}
+}
+
