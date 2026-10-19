@@ -1617,6 +1617,10 @@ let
           # python interpreter, which nothing links against and which `frr-reload.py` reaches only
           # through its `#!` line.
           frr-closure = pkgs.closureInfo { rootPaths = [ frr-env ]; };
+          # mstlink, for the dataplane's physical layer readings on NVIDIA/Mellanox NICs.  It is
+          # dynamically linked against the image's libc and libstdc++, hence its closure.
+          mstlink = pkgs.pkgsHostHost.fancy.mstlink;
+          mstlink-closure = pkgs.closureInfo { rootPaths = [ mstlink ]; };
         in
         ''
           tmp="$(mktemp -d)"
@@ -1629,6 +1633,7 @@ let
           ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/bin/dataplane"
           ln -s "${workspace.cli}/bin/cli" "$tmp/bin/cli"
           ln -s "${workspace.init}/bin/dataplane-init" "$tmp/bin/dataplane-init"
+          ln -s "${mstlink}/bin/mstlink" "$tmp/bin/mstlink"
           for i in "${pkgs.pkgsHostHost.busybox}/bin/"*; do
               ln -s "${pkgs.pkgsHostHost.busybox}/bin/busybox" "$tmp/bin/$(basename "$i")"
           done
@@ -1669,6 +1674,7 @@ let
               ${workspace.cli} \
               ${pkgs.pkgsHostHost.busybox}
             cat "${frr-closure}/store-paths"
+            cat "${mstlink-closure}/store-paths"
           } | sed '/^$/d' | sort -u > "$inputs"
 
           # we take some care to make the tar file reproducible here
