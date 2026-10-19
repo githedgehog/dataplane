@@ -492,6 +492,8 @@ pub struct MetricsConfigSection {
     pub address: SocketAddr,
     /// How often to read the monitors of the ports' pluggable modules, or `None` not to read them.
     pub transceiver_interval: Option<Duration>,
+    /// How often to ask `mstlink` about NVIDIA/Mellanox ports' physical layers, or `None` not to.
+    pub mstlink_interval: Option<Duration>,
 }
 
 /// Configuration for the tracing / logging service used by the dataplane.
@@ -1202,6 +1204,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             metrics: MetricsConfigSection {
                 address: value.metrics_address(),
                 transceiver_interval: value.transceiver_interval(),
+                mstlink_interval: value.mstlink_interval(),
             },
             bmp: if value.bmp_enabled() {
                 Some(BmpConfigSection {
@@ -1295,6 +1298,18 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
                 intervals cost the NIC more than they tell you"
     )]
     transceiver_interval: u16,
+
+    /// How often to ask mstlink about NVIDIA/Mellanox ports.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = 60,
+        value_parser = clap::value_parser!(u16).range(0..=3600),
+        help = "Seconds between mstlink runs for each NVIDIA/Mellanox port (bit error rates, eye, \
+                FEC histogram, PCIe link), in [0..3600]; 0 disables them. Each run spends 0.1 \
+                to 0.4 s in the NIC's firmware"
+    )]
+    mstlink_interval: u16,
 
     /// Pyroscope server address for profiling uploads
     #[arg(
@@ -1545,6 +1560,12 @@ impl CmdArgs {
     pub fn transceiver_interval(&self) -> Option<Duration> {
         (self.transceiver_interval != 0)
             .then(|| Duration::from_secs(u64::from(self.transceiver_interval)))
+    }
+
+    /// How often to ask mstlink about NVIDIA/Mellanox ports, or `None` if that is disabled.
+    #[must_use]
+    pub fn mstlink_interval(&self) -> Option<Duration> {
+        (self.mstlink_interval != 0).then(|| Duration::from_secs(u64::from(self.mstlink_interval)))
     }
 
     #[must_use]
