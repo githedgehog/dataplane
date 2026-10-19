@@ -274,6 +274,7 @@ mod tests {
             mtu: None,
             hardware: None,
             datapath_index: Some(InterfaceIndex::try_new(ifindex).unwrap()),
+            pci_address: None,
         }));
         let (inject, _) = mpsc::channel(1);
         let port = BridgePort {
