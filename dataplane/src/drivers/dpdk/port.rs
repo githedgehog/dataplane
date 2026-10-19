@@ -22,11 +22,12 @@ use crate::drivers::DriverError;
 use crate::drivers::cpbridge::{DatapathEnds, Frame};
 
 use args::dpdk_memory::{
-    MBUF_DATA_SIZE, MBUF_FOOTPRINT, MBUF_PRIVATE_SIZE, MBUFS_PER_RXD, RX_DESCRIPTORS,
+    MBUF_BURST, MBUF_DATA_SIZE, MBUF_FOOTPRINT, MBUF_PRIVATE_SIZE, POOL_CACHE, RX_DESCRIPTORS,
+    TX_DESCRIPTORS, pool_mbufs, pool_mbufs_per_worker,
 };
 
-/// Transmit descriptors per queue.
-const TX_DESCRIPTORS: u16 = 1024;
+// Init sizes hugepages from `args::dpdk_memory`, so its burst has to be the one the queues use.
+const _: () = assert!(MBUF_BURST as usize == dpdk::mem::MBUF_BURST);
 
 /// Use the driver's RSS key and supported L3/L4 hash types; warn if no requested type is supported.
 /// Symmetric hashing would not co-locate NAT's translated reverse tuples. Shared flow state
@@ -183,6 +184,7 @@ impl<'eal> Port<'eal> {
         port: PortClaim<'eal>,
         name: InterfaceName,
         num_workers: u16,
+        num_ports: u32,
         mtu: Option<u16>,
         rx_descriptors: Option<u16>,
     ) -> Result<Self, DriverError> {
@@ -224,19 +226,21 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
-        // Checked: `/rxd` times the worker count can pass `u32` for absurd worker counts, and a
-        // wrapped product would make a uselessly small pool rather than an error.
-        let pool_mbufs = MBUFS_PER_RXD
-            .checked_mul(u32::from(rx_descriptors))
-            .and_then(|n| n.checked_mul(u32::from(num_workers)))
-            .ok_or_else(|| {
+        // Sized from everything that can hold the pool's mbufs at once; see `pool_mbufs_per_worker`.
+        // Checked: an absurd `/rxd` and worker count can pass what one pool holds, and a wrapped
+        // count would make a uselessly small pool rather than an error.
+        let per_worker = pool_mbufs_per_worker(rx_descriptors, num_ports);
+        let pool_mbufs = u32::try_from(pool_mbufs(rx_descriptors, num_ports, num_workers))
+            .map_err(|_| {
                 DriverError::PortSetup(format!(
                     "port {index} ({name}): {rx_descriptors} rx descriptors for each of \
-                     {num_workers} workers needs more mbufs than one pool can hold"
+                     {num_workers} workers on {num_ports} ports needs more mbufs than one pool \
+                     can hold"
                 ))
             })?;
         let params = PoolParams {
             size: pool_mbufs,
+            cache_size: POOL_CACHE,
             data_size: MBUF_DATA_SIZE,
             private_size: MBUF_PRIVATE_SIZE,
             ..Default::default()
@@ -250,9 +254,10 @@ impl<'eal> Port<'eal> {
             .map_err(|e| {
                 DriverError::PortSetup(format!(
                     "failed to create the rx pool for port {index} ({name}): {e:?}. It holds \
-                     {pool_mbufs} mbufs (about {pool_mib} MiB of hugepages), sized as \
-                     {MBUFS_PER_RXD} per rx descriptor x {rx_descriptors} \
-                     descriptors x {num_workers} workers; lower /rxd or reserve more hugepages"
+                     {pool_mbufs} mbufs (about {pool_mib} MiB of hugepages): {per_worker} for each \
+                     of {num_workers} workers, covering {rx_descriptors} rx descriptors and a \
+                     transmit ring on each of {num_ports} ports; lower /rxd or reserve more \
+                     hugepages"
                 ))
             })?;
 

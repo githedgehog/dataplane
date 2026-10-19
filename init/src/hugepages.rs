@@ -110,22 +110,19 @@ fn topology_nodes(scan: Option<&hardware::Node>) -> Option<Vec<u32>> {
 
 /// Decide where the memory goes, and how much, before changing any pool.
 ///
-/// `required(ports)` is the memory one node needs for that many ports. Placement that cannot be
+/// `required(devices)` is the memory one node needs for those devices' ports. Placement that cannot be
 /// established degrades to [`Placement::Anywhere`] with a warning: the NICs still work, only
 /// without locality.
 fn place(
     devices: &[PciAddress],
     topology: Option<&[u32]>,
     mut affinity: impl FnMut(PciAddress) -> Result<i32, String>,
-    required: impl Fn(u32) -> u64,
+    required: impl Fn(&[PciAddress]) -> u64,
 ) -> Result<Placement, String> {
     if devices.is_empty() {
         return Err("no devices were supplied for hugepage reservation".into());
     }
-    let anywhere = || {
-        let ports = u32::try_from(devices.len()).unwrap_or(u32::MAX);
-        Placement::Anywhere(required(ports))
-    };
+    let anywhere = || Placement::Anywhere(required(devices));
     let Some(topology) = topology else {
         warn!(
             "the NUMA topology is unknown; reserving hugepages on no particular node, so the NICs \
@@ -133,7 +130,7 @@ fn place(
         );
         return Ok(anywhere());
     };
-    let mut ports: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut on_node: BTreeMap<u32, Vec<PciAddress>> = BTreeMap::new();
     for &address in devices {
         let node = match (affinity(address)?, topology) {
             (-1, &[node]) => {
@@ -159,12 +156,12 @@ fn place(
             );
             return Ok(anywhere());
         }
-        *ports.entry(node).or_default() += 1;
+        on_node.entry(node).or_default().push(address);
     }
     Ok(Placement::Nodes(
-        ports
+        on_node
             .into_iter()
-            .map(|(node, ports)| (node, required(ports)))
+            .map(|(node, devices)| (node, required(&devices)))
             .collect(),
     ))
 }
@@ -337,25 +334,35 @@ fn plan_for(
 
 /// Prepare the full hugepage requirement, respecting the administrator's cgroup limits.
 ///
-/// `scan` is `None` when hwloc could not describe the machine; the memory is then reserved on no
-/// particular node. `workers` and `gib_per_node` size the requirement (see the module docs).
+/// `ports` are the NICs with each one's receive descriptors per queue. `scan` is `None` when hwloc
+/// could not describe the machine; the memory is then reserved on no particular node. `workers`
+/// and `gib_per_node` size the requirement (see the module docs).
 ///
 /// # Errors
 ///
 /// Returns an error if a NIC's NUMA affinity cannot be read, cgroup controls cannot be read,
 /// or neither hugepage size satisfies the requirement.
 pub fn reserve_for(
-    devices: &[PciAddress],
+    ports: &[(PciAddress, u16)],
     scan: Option<&hardware::Node>,
     workers: u16,
     gib_per_node: Option<u32>,
 ) -> Result<HugepagePlan, String> {
-    let required = |ports: u32| match gib_per_node {
+    let devices: Vec<PciAddress> = ports.iter().map(|(address, _)| *address).collect();
+    let total_ports = u32::try_from(ports.len()).unwrap_or(u32::MAX);
+    let required = |devices: &[PciAddress]| match gib_per_node {
         Some(gib) => u64::from(gib) * 1024,
-        None => required_mib(ports, workers),
+        None => required_mib(
+            ports
+                .iter()
+                .filter(|(address, _)| devices.contains(address))
+                .map(|(_, rxd)| *rxd),
+            total_ports,
+            workers,
+        ),
     };
     let placement = place(
-        devices,
+        &devices,
         topology_nodes(scan).as_deref(),
         numa_node_of,
         required,
@@ -403,8 +410,8 @@ mod tests {
     }
 
     /// 1 GiB per port, so the arithmetic in the assertions stays readable.
-    fn per_port(ports: u32) -> u64 {
-        u64::from(ports) * 1024
+    fn per_port(devices: &[PciAddress]) -> u64 {
+        devices.len() as u64 * 1024
     }
 
     /// Pools that hold `free` pages of each size, keyed by (pool, size), and record what changed.
