@@ -157,6 +157,7 @@ impl DriverKernel {
                         mac,
                         mtu: kif.mtu.and_then(|mtu| u16::try_from(mtu).ok()),
                         hardware: kif.hardware(),
+                        datapath_index: Some(kif.ifindex),
                     });
                 } else {
                     warn!(

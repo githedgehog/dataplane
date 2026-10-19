@@ -79,6 +79,9 @@ pub(crate) struct PortIdentity {
     /// The device behind the port, for people reading what neighbours hear about it: its bus address
     /// and driver, as far as the driver can tell.
     pub(crate) hardware: Option<String>,
+    /// The index of the port's own kernel netdev in the datapath namespace, where ethtool can read
+    /// its pluggable module. Not the tap's index, which belongs to the control namespace.
+    pub(crate) datapath_index: Option<InterfaceIndex>,
 }
 
 /// The datapath's end of one port's bridge.
@@ -686,6 +689,7 @@ mod test {
                 mac: PORT_MAC,
                 mtu: Some(MTU),
                 hardware: None,
+                datapath_index: None,
             });
 
             let (connection, netlink, _) = rtnetlink::new_connection().unwrap();
@@ -844,6 +848,7 @@ mod test {
                 mac: PORT_MAC,
                 mtu: Some(MTU),
                 hardware: None,
+                datapath_index: None,
             });
 
             // Applying the identity is asynchronous: wait for the MAC to change.
@@ -946,6 +951,7 @@ mod test {
                 mac: Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]),
                 mtu: Some(1500),
                 hardware: Some("0000:00:00.0 (test)".to_string()),
+                datapath_index: None,
             });
             link.send_replace(Link::Up);
             gateway_name.send_replace(Some("gw-test".to_string()));
@@ -1000,6 +1006,7 @@ mod test {
                 mac: Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]),
                 mtu: Some(1500),
                 hardware: None,
+                datapath_index: None,
             });
             drop(ends);
 
