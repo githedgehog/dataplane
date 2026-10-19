@@ -26,6 +26,61 @@ pub enum DriverErr {
     NotSupported { driver_name: String },
     #[error("{device} is driven through its kernel driver, not vfio-pci; refusing to unbind it")]
     NotVfioPci { device: SupportedDevice },
+    #[error(
+        "{device} at {address} was released from vfio-pci, but no kernel driver claimed it; \
+         is its driver module loaded?"
+    )]
+    NoKernelDriver {
+        address: PciAddress,
+        device: SupportedDevice,
+    },
+    #[error(
+        "{device} at {address} was released from vfio-pci, but vfio-pci claimed it again; \
+         remove its ID from vfio-pci's new_id"
+    )]
+    ReclaimedByVfioPci {
+        address: PciAddress,
+        device: SupportedDevice,
+    },
+}
+
+/// The kernel network interfaces of the PCI device at `address`, by name.
+///
+/// Matches interfaces whose device is the PCI function or lies below it: virtio-net's netdev
+/// belongs to a virtio device under the PCI function. Only interfaces in the caller's network
+/// namespace are visible.
+///
+/// # Errors
+///
+/// Returns [`SysfsErr`] if the device or the interface list cannot be read.
+pub fn netdevs_of(address: PciAddress) -> Result<Vec<String>, SysfsErr> {
+    let sysfs = sysfs_root();
+    let device = std::fs::canonicalize(
+        sysfs
+            .relative(format!("bus/pci/devices/{address}"))?
+            .inner(),
+    )
+    .map_err(SysfsErr::IoError)?;
+    let mut names = Vec::new();
+    for entry in
+        std::fs::read_dir(sysfs.relative("class/net")?.inner()).map_err(SysfsErr::IoError)?
+    {
+        let entry = entry.map_err(SysfsErr::IoError)?;
+        // Virtual interfaces have no device link.
+        let Ok(parent) = std::fs::canonicalize(entry.path().join("device")) else {
+            continue;
+        };
+        if parent.starts_with(&device) {
+            names.push(
+                entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| SysfsErr::SysfsPathIsNotValidUtf8)?,
+            );
+        }
+    }
+    names.sort();
+    Ok(names)
 }
 
 /// Errors opening a PCI network card with [`PciNic::new`].
@@ -116,6 +171,29 @@ impl PciNic {
     fn device_path(&self) -> Result<SysfsPath, SysfsErr> {
         let sysfs = sysfs_root();
         sysfs.relative(format!("bus/pci/devices/{self}"))
+    }
+
+    /// Clear any driver override, so the kernel matches the device by its IDs again.
+    fn clear_driver_override(&self) -> Result<(), DriverErr> {
+        info!("clearing the driver override of {self}");
+        self.override_file()
+            .map_err(DriverErr::Sysfs)?
+            .write_all(b"\n")
+            .map_err(|e| DriverErr::Sysfs(SysfsErr::IoError(e)))
+    }
+
+    /// Ask the kernel to bind the device to whichever driver matches it.
+    fn probe_drivers(&self) -> Result<(), DriverErr> {
+        let path = sysfs_root()
+            .relative("bus/pci/drivers_probe")
+            .map_err(DriverErr::Sysfs)?;
+        info!("asking the kernel to probe drivers for {self}");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true);
+        SysfsFile::open(path, &options)
+            .map_err(DriverErr::Sysfs)?
+            .write_all(format!("{self}").as_bytes())
+            .map_err(|e| DriverErr::Sysfs(SysfsErr::IoError(e)))
     }
 
     fn override_file(&self) -> Result<SysfsFile, SysfsErr> {
@@ -405,5 +483,66 @@ impl BindToVfioPci for PciNic {
         self.override_driver(PciDriver::VfioPci)?;
         self.bind(PciDriver::VfioPci)?;
         Ok(())
+    }
+}
+
+/// Trait for devices which may be handed back from vfio-pci to their kernel driver.
+pub trait ReleaseFromVfioPci {
+    /// Errors which may occur when releasing the device.
+    type Error: std::error::Error;
+    /// Return the device to the kernel driver that matches it, undoing [`BindToVfioPci`].
+    ///
+    /// A device bound to any other driver is left alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device could not be released, or if no kernel driver claimed it.
+    fn release_from_vfio_pci(&mut self) -> Result<(), Self::Error>;
+}
+
+impl ReleaseFromVfioPci for PciNic {
+    type Error = DriverErr;
+
+    fn release_from_vfio_pci(&mut self) -> Result<(), DriverErr> {
+        match self.driver() {
+            Ok(Some(PciDriver::VfioPci)) => {
+                info!("releasing device {self} from vfio-pci");
+                self.clear_driver_override()?;
+                self.unbind()?;
+            }
+            // An interrupted bind can leave the device unbound with vfio-pci still overriding.
+            Ok(None) => self.clear_driver_override()?,
+            Ok(Some(driver)) => {
+                info!("device {self} is already bound to {driver}");
+                return Ok(());
+            }
+            Err(DriverErr::NotSupported { driver_name }) => {
+                info!("device {self} is already bound to {driver_name}");
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
+        // `bind_to_vfio_pci` claims devices with `driver_override`, so with that cleared the
+        // kernel picks the driver from its ID tables.
+        self.probe_drivers()?;
+        match self.driver() {
+            Ok(Some(PciDriver::VfioPci)) => Err(DriverErr::ReclaimedByVfioPci {
+                address: self.address,
+                device: self.device,
+            }),
+            Ok(None) => Err(DriverErr::NoKernelDriver {
+                address: self.address,
+                device: self.device,
+            }),
+            Ok(Some(driver)) => {
+                info!("device {self} is now bound to {driver}");
+                Ok(())
+            }
+            Err(DriverErr::NotSupported { driver_name }) => {
+                info!("device {self} is now bound to {driver_name}");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 }
