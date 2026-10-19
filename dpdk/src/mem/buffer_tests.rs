@@ -6,6 +6,7 @@ use crate::test_support::{available, packet_pool};
 use net::buffer::{
     Append, DeepCopy, PacketLength, Tailroom, TestBuffer, TrimFromEnd, TrimFromStart,
 };
+use net::packet::Packet;
 
 fn chain<'eal>(pool: &Pool<'eal>, segments: &[&[u8]]) -> Mbuf<'eal> {
     assert!(!segments.is_empty());
@@ -424,4 +425,40 @@ fn vxlan_lengths_include_the_whole_payload() {
         vxlan_lengths(chain(&pool, &[&bytes]), bytes.len(), ipv6);
     }
     assert_eq!(available(&pool), 7);
+}
+
+fn packet_burst(len: usize) -> Vec<Packet<TestBuffer>> {
+    let bytes = frame();
+    (0..len)
+        .map(|_| Packet::new(TestBuffer::from_raw_data(&bytes)).unwrap())
+        .collect()
+}
+
+#[test]
+/// Test that a burst larger than the allocation burst can be fully rebuffered
+fn test_rebuffer_non_dpdk_burst_larger_than_max_burst() {
+    // create a pool with len buffers and a packet burst of the same length
+    let len = 2 * super::MBUF_BURST + 3;
+    let pool = packet_pool(u32::try_from(len).unwrap());
+    let burst = packet_burst(len);
+
+    let rebuffered = super::rebuffer_non_dpdk_burst(burst, &pool);
+
+    assert_eq!(rebuffered.len(), len, "a large burst is chunked, not lost");
+    assert_eq!(available(&pool), 0);
+    drop(rebuffered);
+    assert_eq!(available(&pool), len, "mbufs go back to the pool");
+}
+
+#[test]
+/// Test that rebuffering does its best given the available mbufs in a pool
+fn test_rebuffer_non_dpdk_burst_pool_exhaust() {
+    // 15 is not a power of two, so halving has to succeed at several chunk sizes to reach it.
+    let pool = packet_pool(15);
+    let burst = packet_burst(super::MBUF_BURST + 36);
+    let rebuffered = super::rebuffer_non_dpdk_burst(burst, &pool);
+    assert_eq!(rebuffered.len(), 15, "the pool's every mbuf is used");
+    assert_eq!(available(&pool), 0);
+    drop(rebuffered);
+    assert_eq!(available(&pool), 15, "mbufs go back to the pool");
 }
