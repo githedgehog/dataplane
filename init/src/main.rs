@@ -5,8 +5,10 @@
 #![deny(clippy::pedantic, missing_docs)]
 
 use std::collections::BTreeMap;
+use std::num::NonZero;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
+use std::time::Duration;
 
 use args::{
     AsFinalizedMemFile, CmdArgs, DpdkDriverConfigSection, DriverConfigSection, LaunchConfiguration,
@@ -19,6 +21,7 @@ use hardware::netns::NetworkNamespace;
 use hardware::nic::{BindToVfioPci, PciNic};
 use hardware::pci::address::PciAddress;
 use hardware::support::{DpdkDriverType, SupportedDevice};
+use nix::errno::Errno;
 use nix::mount::MsFlags;
 use tracing::{Level, debug, error, info, span, warn};
 
@@ -30,6 +33,12 @@ const HUGETLBFS_MOUNTS: &[(&str, &str)] = &[
     ("/dev/hugepages/1G", "pagesize=1G,size=20G,rw"),
     ("/dev/hugepages/2M", "pagesize=2M,size=128M,rw"),
 ];
+
+/// How long to wait for a device's devlink instance to appear in init's network namespace.
+///
+/// When a dataplane exits, the kernel destroys its namespace and returns each device to the
+/// host namespace asynchronously, reinitializing its driver. A quick restart can get here first.
+const DEVLINK_RETURN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A device named in the configuration, resolved against the hardware actually present.
 struct ResolvedDevice {
@@ -205,6 +214,8 @@ async fn move_devices_to_netns(
     // Poll the connection to service requests made through the handle.
     let connection = tokio::spawn(connection);
 
+    // A previous dataplane's devices return here asynchronously once its namespace is destroyed.
+    let deadline = clock::deadline(DEVLINK_RETURN_TIMEOUT);
     let mut problems = Vec::new();
     for device in bifurcated {
         let target = DevlinkHandle::new("pci", device.address.to_string());
@@ -214,23 +225,46 @@ async fn move_devices_to_netns(
         );
 
         let as_fd = u32::try_from(netns.as_raw().as_raw_fd()).unwrap_or(u32::MAX);
-        match handle
-            .reload_into(
-                &target,
-                ReloadAction::DriverReinit,
-                None,
-                Some(Netns::Fd(as_fd)),
-            )
-            .await
-        {
-            Ok(_) => info!(
-                "{} is now in the datapath network namespace",
-                device.address
-            ),
-            Err(e) => problems.push(format!(
-                "could not move {} into the datapath network namespace: {e}",
-                device.address
-            )),
+        let mut backoff = Duration::from_millis(50);
+        loop {
+            match handle
+                .reload_into(
+                    &target,
+                    ReloadAction::DriverReinit,
+                    None,
+                    Some(Netns::Fd(as_fd)),
+                )
+                .await
+            {
+                Ok(_) => info!(
+                    "{} is now in the datapath network namespace",
+                    device.address
+                ),
+                Err(devlink::Error::NetlinkError(e))
+                    if e.code.map(NonZero::get) == Some(-(Errno::ENODEV as i32)) =>
+                {
+                    if clock::deadline(backoff) <= deadline {
+                        debug!(
+                            "devlink instance {target} is not here yet; retrying in {backoff:?}"
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(Duration::from_secs(1));
+                        continue;
+                    }
+                    problems.push(format!(
+                        "devlink instance {target} did not appear in this network namespace \
+                         within {DEVLINK_RETURN_TIMEOUT:?}. If a previous dataplane just exited, \
+                         the kernel may still be returning the device; otherwise dataplane-init \
+                         must run in the host network namespace, which is where the kernel \
+                         returns devices from a destroyed namespace"
+                    ));
+                }
+                Err(e) => problems.push(format!(
+                    "could not move {} into the datapath network namespace: {e}",
+                    device.address
+                )),
+            }
+            break;
         }
     }
 

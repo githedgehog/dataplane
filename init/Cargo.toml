@@ -12,6 +12,7 @@ sysroot = ["dep:dpdk-sysroot-helper"]
 [dependencies]
 # internal
 args = { workspace = true }
+clock = { workspace = true }
 hardware = { workspace = true, features = ["serde", "scan"] }
 id = { workspace = true }
 sysfs = { workspace = true }
@@ -27,7 +28,7 @@ strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true, features = [] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "time"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [dev-dependencies]
