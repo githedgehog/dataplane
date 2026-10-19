@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use futures::TryStreamExt;
+use hardware::pci::address::PciAddress;
 use netdev::Interface;
 use std::io;
 
@@ -52,6 +53,13 @@ impl Kif {
             Some(driver) => format!("{bus} ({driver})"),
             None => bus,
         })
+    }
+
+    /// The PCI function behind the interface, if it is a PCI device.
+    #[must_use]
+    pub fn pci_address(&self) -> Option<PciAddress> {
+        let device = std::fs::read_link(self.sysfs().join("device")).ok()?;
+        PciAddress::try_from(device.file_name()?.to_str()?).ok()
     }
 
     /// Whether the interface has carrier.
