@@ -140,7 +140,7 @@ pub struct Bounds<T> {
 ///
 /// SFF-8636 and CMIS latch flags and clear them when read, so each read reports what happened since
 /// the previous read by anyone (including `ethtool -m`), not the present state.
-/// SFF-8472 flags are not latched.
+/// Whether SFF-8472 flags latch is up to the vendor (SFF-8472 section 9.9).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Flags {
     /// Temperature threshold crossings.
