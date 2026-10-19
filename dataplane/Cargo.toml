@@ -27,6 +27,7 @@ concurrency = { workspace = true }
 config = { workspace = true }
 dpdk = { workspace = true }
 errno = { workspace = true }
+ethtool2 = { workspace = true }
 flow-entry = { workspace = true }
 flow-filter = { workspace = true }
 futures = { workspace = true }
@@ -55,8 +56,9 @@ routing = { workspace = true }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["derive"] }
 stats = { workspace = true }
+transceiver = { workspace = true, features = ["ethtool"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 tracectl = { workspace = true }
 traffic-control = { workspace = true }
 tracing = { workspace = true }
