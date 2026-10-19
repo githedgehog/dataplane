@@ -643,13 +643,34 @@ fn icmp6_probe_frame(
     icmp_type: Icmp6Type,
     body: &[u8],
 ) -> Vec<u8> {
+    icmp6_frame(
+        src_mac,
+        PROBE_SRC_IP,
+        dst_mac,
+        dst_ip,
+        hop_limit,
+        icmp_type,
+        body,
+    )
+}
+
+/// [`icmp6_probe_frame`], from `src_ip` rather than [`PROBE_SRC_IP`].
+fn icmp6_frame(
+    src_mac: Mac,
+    src_ip: Ipv6Addr,
+    dst_mac: Mac,
+    dst_ip: Ipv6Addr,
+    hop_limit: u8,
+    icmp_type: Icmp6Type,
+    body: &[u8],
+) -> Vec<u8> {
     let headers = HeaderStack::new()
         .eth(|eth| {
             eth.set_source(SourceMac::new(src_mac).expect("unicast source MAC"))
                 .set_destination(DestinationMac::new(dst_mac).expect("valid destination MAC"));
         })
         .ipv6(|ip| {
-            ip.set_source(UnicastIpv6Addr::new(PROBE_SRC_IP).expect("unicast source address"))
+            ip.set_source(UnicastIpv6Addr::new(src_ip).expect("unicast source address"))
                 .set_destination(dst_ip)
                 .set_hop_limit(hop_limit);
         })
@@ -672,6 +693,23 @@ fn icmp6_probe_frame(
 /// (RFC 4861 section 7.2.3); this test does not answer Neighbor Solicitations.
 /// NDP requires a hop limit of 255 (RFC 4861 section 4.3).
 fn ndp_probe_frame(src_mac: Mac, target: Ipv6Addr) -> Vec<u8> {
+    let (group, group_mac) = solicited_node(target);
+    let mut body = target.octets().to_vec();
+    // Source Link-Layer Address option: type 1, length 1 (in units of 8 octets).
+    body.extend_from_slice(&[1, 1]);
+    body.extend_from_slice(&src_mac.0);
+    icmp6_probe_frame(
+        src_mac,
+        group_mac,
+        group,
+        255,
+        Icmp6Type::NeighborSolicitation,
+        &body,
+    )
+}
+
+/// The solicited-node multicast group of `target` (RFC 4291 section 2.7.1) and its MAC.
+fn solicited_node(target: Ipv6Addr) -> (Ipv6Addr, Mac) {
     let [.., a, b, c] = target.octets();
     let group = Ipv6Addr::new(
         0xff02,
@@ -685,18 +723,7 @@ fn ndp_probe_frame(src_mac: Mac, target: Ipv6Addr) -> Vec<u8> {
     );
     // RFC 2464 section 7: 33:33 followed by the group's last four octets.
     let [.., w, x, y, z] = group.octets();
-    let mut body = target.octets().to_vec();
-    // Source Link-Layer Address option: type 1, length 1 (in units of 8 octets).
-    body.extend_from_slice(&[1, 1]);
-    body.extend_from_slice(&src_mac.0);
-    icmp6_probe_frame(
-        src_mac,
-        Mac([0x33, 0x33, w, x, y, z]),
-        group,
-        255,
-        Icmp6Type::NeighborSolicitation,
-        &body,
-    )
+    (group, Mac([0x33, 0x33, w, x, y, z]))
 }
 
 /// An ICMPv6 Echo Request from `src_mac` to all nodes (`ff02::1`, MAC `33:33:00:00:00:01`).
@@ -1088,6 +1115,102 @@ fn run_leaked_device_test(label: &str, config: &VmConfig) {
     eprintln!("=== {label} complete ===");
 }
 
+/// A link-local address the host has never resolved, so answering it means asking for it.
+const UNRESOLVED_SRC_IP: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x77);
+
+/// Whether `headers` and `body` are the host's Neighbor Solicitation for `target`, sent to the
+/// target's solicited-node group.
+fn solicits(headers: &Headers, body: &[u8], target: Ipv6Addr) -> bool {
+    let (group, group_mac) = solicited_node(target);
+    headers
+        .eth()
+        .is_some_and(|eth| eth.destination().inner() == group_mac)
+        && matches!(headers.net(), Some(Net::Ipv6(ip)) if ip.destination() == group)
+        && matches!(
+            headers.transport(),
+            Some(Transport::Icmp6(icmp))
+                if matches!(icmp.icmp_type(), Icmp6Type::NeighborSolicitation)
+        )
+        && body.get(..16) == Some(&target.octets()[..])
+}
+
+/// With promiscuous mode off, a port in all-multicast mode receives multicast to a group nobody
+/// joined. The frame that proves it is the host's: an Echo Request to all nodes from an address the
+/// host has never resolved makes it solicit that address's group before it can answer. LLDP's
+/// `01:80:c2:00:00:0e` is unjoined in the same way, and is what this is for.
+fn run_allmulticast_test(label: &str, config: &VmConfig) {
+    eprintln!("=== {label} ===");
+
+    let (eal, link) = init_dpdk_eal(config);
+    let SetupDevice {
+        dev: mut started,
+        mac,
+        tx_pool,
+        ..
+    } = setup_dpdk_device(&eal, &link, true);
+    let tx_pool = tx_pool.expect("setup_dpdk_device should return a tx pool");
+
+    started
+        .set_promiscuous(false)
+        .expect("failed to disable promiscuous mode");
+    started
+        .set_allmulticast(true)
+        .expect("failed to enable all-multicast mode");
+
+    let echo = icmp6_frame(
+        mac,
+        UNRESOLVED_SRC_IP,
+        Mac([0x33, 0x33, 0x00, 0x00, 0x00, 0x01]),
+        Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1),
+        64,
+        Icmp6Type::EchoRequest(PROBE_ECHO),
+        &[],
+    );
+
+    let mut queues = started.take_queues().expect("device queues already taken");
+    let mut tx_queue = queues
+        .take_tx(TxQueueIndex(0))
+        .expect("tx queue 0 missing after start");
+    let mut rx_queue = queues
+        .take_rx(RxQueueIndex(0))
+        .expect("rx queue 0 missing after start");
+
+    let deadline = clock::deadline(RX_POLL_TIMEOUT);
+    let mut last_transmit: Option<clock::Instant> = None;
+    let mut received = 0usize;
+    let mut solicited = false;
+    while !solicited && clock::now() < deadline {
+        if last_transmit.is_none_or(|at| clock::elapsed(at) > RETRANSMIT_INTERVAL) {
+            drop(tx_queue.transmit(make_batch(&tx_pool, &[&echo])));
+            last_transmit = Some(clock::now());
+        }
+        for mbuf in rx_queue.receive() {
+            let data = mbuf.raw_data();
+            received += 1;
+            if let Ok((headers, consumed)) = Headers::parse(data) {
+                log_parsed_headers(received, data, &headers);
+                solicited |= solicits(
+                    &headers,
+                    &data[usize::from(consumed.get())..],
+                    UNRESOLVED_SRC_IP,
+                );
+            }
+        }
+        std::thread::sleep(RX_POLL_INTERVAL);
+    }
+
+    assert!(
+        solicited,
+        "the host's solicitation of {UNRESOLVED_SRC_IP} never arrived in all-multicast mode after \
+         {RX_POLL_TIMEOUT:?} ({received} other frame(s) received)"
+    );
+    eprintln!("=== {label} complete ===");
+
+    drop(queues);
+    assert_within_budget("closing the device", time_device_teardown(started));
+    assert_within_budget("dropping the EAL", time_eal_teardown(eal));
+}
+
 // Tests
 
 /// Guest hugepages reserved for DPDK mempools in every configuration.
@@ -1185,6 +1308,14 @@ rx_tests! {
     dpdk_rx_frame_e1000_qemu_iommu: E1000_QEMU_IOMMU_1G => "QEMU / e1000 / vIOMMU (VA)";
     dpdk_rx_frame_e1000e_qemu: E1000E_QEMU_1G => "QEMU / e1000e / no-IOMMU (PA)";
     dpdk_rx_frame_e1000e_qemu_iommu: E1000E_QEMU_IOMMU_1G => "QEMU / e1000e / vIOMMU (VA)";
+}
+
+/// QEMU's virtio-net filters multicast on the guest's address list once promiscuous mode is off,
+/// which is what all-multicast mode has to get past. (cloud-hypervisor's does not filter, so would
+/// pass regardless.)
+#[n_vm::test(config = VIRTIO_QEMU)]
+fn dpdk_allmulticast_virtio_qemu() {
+    run_allmulticast_test("QEMU / virtio-net / all-multicast", &VIRTIO_QEMU);
 }
 
 /// EAL teardown closes a leaked virtio-net device with queued mbufs.
