@@ -405,6 +405,132 @@ fn qsfp_dac_matches_ethtool() {
     }
 }
 
+/// An OEM SFP-10G-T (10GBASE-T over RJ45) in each port, through QSFP-to-SFP adapters. It describes
+/// itself as a 10GBASE-SR optic, LC connector and all, and reports fixed optical readings (6 mA,
+/// 0.5 mW, 0.4 mW) so that hosts accepting only optics take it; its temperature and supply are
+/// real. Its diagnostics are the first real read of SFF-8472's second bus address, A2h.
+#[test]
+fn sfp_matches_ethtool() {
+    use dataplane_transceiver::sff8472::{Detail as Sff8472, Links};
+
+    for name in ["sfp-10g-t-port0", "sfp-10g-t-port1"] {
+        let mut fixture = Fixture::new(name);
+        let (module, _) = read(&mut fixture, Capture::new()).unwrap();
+        let ethtool = fixture.ethtool();
+        check_identity(&module, &ethtool);
+        assert_eq!(
+            fixture.asked,
+            [Region::Lower(I2cAddress::A0), Region::Lower(I2cAddress::A2)],
+            "{name}"
+        );
+        close(
+            module.inventory.wavelength.unwrap().nanometres(),
+            &ethtool["laser_wavelength"],
+        );
+
+        let monitors = &module.monitors;
+        // The 10GBASE-T PHY makes the temperature swing by a degree or two between reads seconds
+        // apart, too far for a relative tolerance against ethtool's later read. Check the decode
+        // exactly against the captured bytes, and ethtool's reading only loosely.
+        let a2 = std::fs::read(fixture.dir.join("a2-lower.bin")).unwrap();
+        let temperature = monitors.temperature.unwrap();
+        assert_eq!(temperature.raw(), i16::from_be_bytes([a2[96], a2[97]]));
+        let theirs = number(&ethtool["module_temperature_measurement"]);
+        assert!(
+            (temperature.celsius() - theirs).abs() < 4.0,
+            "{name}: {temperature} vs {theirs}"
+        );
+        near(
+            monitors.supply.unwrap().volts(),
+            &ethtool["module_voltage_measurement"],
+        );
+        assert_eq!(monitors.rx_power_kind, RxPowerKind::Average);
+        let [lane] = monitors.lanes.as_slice() else {
+            panic!("{name}: an SFP has one lane")
+        };
+        close(
+            lane.tx_bias.unwrap().milliamps(),
+            &ethtool["laser_tx_bias_current"],
+        );
+        close(
+            lane.tx_power.unwrap().milliwatts(),
+            &ethtool["transmit_avg_optical_power"],
+        );
+        close(
+            lane.rx_power.unwrap().milliwatts(),
+            &ethtool["rx_power"]["value"],
+        );
+
+        let thresholds = module.thresholds.unwrap();
+        let bounds = |key: &str| &ethtool[key];
+        let temperature = thresholds.temperature.unwrap();
+        close(
+            temperature.high_alarm.celsius(),
+            &bounds("module_temperature")["high_alarm_threshold"],
+        );
+        close(
+            temperature.low_alarm.celsius(),
+            &bounds("module_temperature")["low_alarm_threshold"],
+        );
+        let supply = thresholds.supply.unwrap();
+        close(
+            supply.low_warning.volts(),
+            &bounds("module_voltage")["low_warning_threshold"],
+        );
+        let bias = thresholds.tx_bias.unwrap();
+        close(
+            bias.high_alarm.milliamps(),
+            &bounds("laser_bias_current")["high_alarm_threshold"],
+        );
+        let tx_power = thresholds.tx_power.unwrap();
+        close(
+            tx_power.low_alarm.milliwatts(),
+            &bounds("laser_output_power")["low_alarm_threshold"],
+        );
+        let rx_power = thresholds.rx_power.unwrap();
+        close(
+            rx_power.low_warning.milliwatts(),
+            &bounds("laser_rx_power")["low_warning_threshold"],
+        );
+
+        let flags = module.flags.as_ref().unwrap();
+        assert!(!flags.temperature.any() && !flags.supply.any());
+        assert!(!flags.lanes[0].tx_power.any() && !flags.lanes[0].rx_power.any());
+
+        let Detail::Sff8472(Sff8472 {
+            compliance,
+            encoding,
+            nominal_rate,
+            links: Links::Optical(links),
+            ..
+        }) = &module.detail
+        else {
+            panic!("{name}: not decoded as an optical SFF-8472 module")
+        };
+        let codes: Vec<u64> = ethtool["transceiver_codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|code| code.as_u64().unwrap())
+            .collect();
+        // ethtool lists byte 36 after bytes 3-10.
+        assert_eq!(compliance.map(u64::from), codes[..8]);
+        assert_eq!(u64::from(*encoding), ethtool["encoding"].as_u64().unwrap());
+        assert_eq!(
+            nominal_rate.map(|rate| u64::from(rate.megabaud())),
+            ethtool["br_nominal"].as_u64()
+        );
+        let metres = |reach: Option<Reach>| match reach {
+            Some(Reach::UpTo(length)) => length.metres(),
+            other => panic!("{name}: unexpected reach {other:?}"),
+        };
+        close(metres(links.om3), &ethtool["length_(om3)"]);
+        close(metres(links.om2), &ethtool["length_(om2)"]);
+        close(metres(links.om1), &ethtool["length_(om1)"]);
+        assert_eq!(links.single_mode_km, None);
+    }
+}
+
 #[test]
 fn only_advertised_pages_are_read() {
     let mut fixture = Fixture::new("qsfp112-sr4-fs-port0");
