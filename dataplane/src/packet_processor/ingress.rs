@@ -10,8 +10,7 @@ use tracing::{debug, trace, warn};
 use net::buffer::PacketBufferMut;
 use net::eth::ethtype::EthType;
 use net::eth::mac::Mac;
-use net::headers::{TryEth, TryIcmp6, TryIp};
-use net::icmp6::Icmp6Type;
+use net::headers::{TryEth, TryIp, TryIpv4, TryIpv6};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
@@ -23,30 +22,38 @@ trace_target!("ingress", LevelFilter::WARN, &["pipeline"]);
 /// Ethertype of LLDP (IEEE 802.1AB)
 const ETHTYPE_LLDP: EthType = EthType::new(0x88CC);
 
-/// Tell if a multicast frame is one the control plane needs: LLDP, or IPv6 neighbor discovery
-/// (the `ICMPv6` messages of RFC 4861: router and neighbor solicitations and advertisements, and
-/// redirects).
-fn is_control_plane_multicast<Buf: PacketBufferMut>(dst_mac: Mac, packet: &Packet<Buf>) -> bool {
-    if dst_mac.is_ipv4_link_local_multicast() {
-        return true;
-    }
-
+/// Tell if a multicast frame is one the control plane needs: LLDP, or IP multicast that cannot
+/// leave the link.
+///
+/// That is IPv4's local network control block, 224.0.0.0/24 (RFC 5771: OSPF, VRRP, IGMP, ...), and
+/// link-scope IPv6 multicast, `ff02::/16` (RFC 4291: neighbor discovery, MLD, `OSPFv3`, ...). The
+/// IP destination is checked rather than the MAC, which carries only 23 bits of an IPv4 group:
+/// `01:00:5e:00:00:05` is also the MAC of 225.0.0.5 and 239.128.0.5.
+fn is_control_plane_multicast<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
     if packet
         .try_eth()
         .is_some_and(|eth| eth.ether_type() == ETHTYPE_LLDP)
     {
         return true;
     }
-    packet.try_icmp6().is_some_and(|icmp6| {
-        matches!(
-            icmp6.icmp_type(),
-            Icmp6Type::RouterSolicitation
-                | Icmp6Type::RouterAdvertisement(_)
-                | Icmp6Type::NeighborSolicitation
-                | Icmp6Type::NeighborAdvertisement(_)
-                | Icmp6Type::Redirect
-        )
-    })
+    if let Some(ipv4) = packet.try_ipv4() {
+        let group = ipv4.destination().octets();
+        return group[..3] == [224, 0, 0];
+    }
+    packet
+        .try_ipv6()
+        .is_some_and(|ipv6| ipv6.destination().segments()[0] == 0xff02)
+}
+
+/// Tell if a packet is addressed to an IPv6 link-local unicast address (`fe80::/10`).
+///
+/// Link-local addresses are never routed (RFC 4291), and zebra installs no routes for them, so the
+/// FIB cannot be relied on to say these are ours: neighbor discovery to our link-local address
+/// would otherwise follow the default route off the link.
+fn is_ipv6_link_local<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+    packet
+        .try_ipv6()
+        .is_some_and(|ipv6| ipv6.destination().is_unicast_link_local())
 }
 
 #[derive(Debug)]
@@ -82,6 +89,13 @@ impl Ingress {
                     // e.g. ARP replies: the datapath does not handle them, the control plane does
                     debug!(
                         "{nfi}: Non-ip frame for us on {ifname}, handing it to the control plane"
+                    );
+                    packet.done(DoneReason::Local);
+                    return;
+                }
+                if is_ipv6_link_local(packet) {
+                    debug!(
+                        "{nfi}: Link-local packet for us on {ifname}, handing it to the control plane"
                     );
                     packet.done(DoneReason::Local);
                     return;
@@ -134,8 +148,8 @@ impl Ingress {
         );
     }
 
-    /// Multicast frames are handed to the control plane if they are LLDP or IPv6 neighbor
-    /// discovery. We are not a member of any other multicast group.
+    /// Multicast frames are handed to the control plane if they are LLDP or link-local IP
+    /// multicast. We are not a member of any other multicast group.
     #[tracing::instrument(level = "trace")]
     fn interface_ingress_eth_mcast<Buf: PacketBufferMut>(
         &self,
@@ -145,7 +159,7 @@ impl Ingress {
     ) {
         let nfi = self.name();
         let ifname = &interface.name;
-        if is_control_plane_multicast(dst_mac, packet) {
+        if is_control_plane_multicast(packet) {
             debug!(
                 "{nfi}: Multicast frame for {dst_mac} handed to the control plane (iif:{ifname})"
             );
@@ -242,9 +256,9 @@ mod test {
     use super::Ingress;
     use net::buffer::TestBuffer;
     use net::eth::mac::{DestinationMac, Mac, SourceMac};
-    use net::headers::TryEthMut;
     use net::headers::builder::HeaderStack;
-    use net::icmp6::{Icmp6, Icmp6EchoRequest, Icmp6Type};
+    use net::headers::{TryEthMut, TryIpv4Mut};
+    use net::icmp6::{Icmp6, Icmp6EchoRequest, Icmp6NeighborAdvertisement, Icmp6Type};
     use net::interface::{InterfaceIndex, InterfaceName};
     use net::ipv6::UnicastIpv6Addr;
     use net::packet::test_utils::build_test_ipv4_packet;
@@ -282,6 +296,14 @@ mod test {
             .unwrap()
             .set_destination(DestinationMac::new(dst).unwrap());
         packet.meta_mut().iif = Some(ifindex());
+        packet
+    }
+
+    /// An IPv4 packet received on `ifindex()` and sent to multicast `group`, at the MAC the group
+    /// maps to (RFC 1112: the low 23 bits of the group)
+    fn ipv4_multicast_packet(group: [u8; 4]) -> Packet<TestBuffer> {
+        let mut packet = ip_packet_to(Mac([0x01, 0x00, 0x5e, group[1] & 0x7f, group[2], group[3]]));
+        packet.try_ipv4_mut().unwrap().set_destination(group.into());
         packet
     }
 
@@ -333,13 +355,19 @@ mod test {
     /// A neighbor discovery message of type `icmp_type`, received on `ifindex()` and sent to the
     /// IPv6 all-nodes multicast address
     fn nd_packet(icmp_type: Icmp6Type) -> Packet<TestBuffer> {
+        icmp6_packet(ALL_NODES_MAC, "ff02::1", icmp_type)
+    }
+
+    /// An `ICMPv6` message of type `icmp_type`, received on `ifindex()` and sent to `dst` at
+    /// `dst_mac`
+    fn icmp6_packet(dst_mac: Mac, dst: &str, icmp_type: Icmp6Type) -> Packet<TestBuffer> {
         let headers = HeaderStack::new()
             .eth(|eth| {
-                eth.set_destination(DestinationMac::new(ALL_NODES_MAC).unwrap());
+                eth.set_destination(DestinationMac::new(dst_mac).unwrap());
             })
             .ipv6(|ip| {
                 ip.set_source(UnicastIpv6Addr::new("fe80::2".parse().unwrap()).unwrap());
-                ip.set_destination("ff02::1".parse().unwrap());
+                ip.set_destination(dst.parse().unwrap());
                 ip.set_hop_limit(255);
             })
             .icmp6(|icmp| *icmp = Icmp6::with_type(icmp_type))
@@ -376,32 +404,75 @@ mod test {
     }
 
     #[test]
-    fn other_icmp6_multicast_is_not_for_us() {
+    fn any_link_scope_icmp6_multicast_is_local() {
+        // An echo request to all-nodes is answered by the kernel, like neighbor discovery.
         let packet = ingress(nd_packet(Icmp6Type::EchoRequest(Icmp6EchoRequest {
             id: 1,
             seq: 1,
         })));
+        assert_eq!(packet.get_done(), Some(DoneReason::Local));
+    }
+
+    #[test]
+    fn wider_scope_ipv6_multicast_is_not_for_us() {
+        // ff05::1:3 (all DHCP servers, site scope) can leave the link
+        let echo = Icmp6Type::EchoRequest(Icmp6EchoRequest { id: 1, seq: 1 });
+        let packet = ingress(icmp6_packet(
+            Mac([0x33, 0x33, 0, 1, 0, 3]),
+            "ff05::1:3",
+            echo,
+        ));
         assert_eq!(packet.get_done(), Some(DoneReason::MacNotForUs));
     }
 
     #[test]
     fn other_multicast_is_not_for_us() {
-        // non-ipv4 link-local multicast and an ARP frame to the LLDP address
-        let ipv4 = ingress(ip_packet_to(Mac([0x01, 0x00, 0x5e, 0, 01, 0x05])));
-        assert_eq!(ipv4.get_done(), Some(DoneReason::MacNotForUs));
+        // 224.0.1.5 is past the local network control block, and 239.128.0.5 shares
+        // 224.0.0.5's MAC; neither is link-local. An ARP frame to the LLDP address isn't LLDP.
+        for group in [[224, 0, 1, 5], [239, 128, 0, 5]] {
+            let ipv4 = ingress(ipv4_multicast_packet(group));
+            assert_eq!(ipv4.get_done(), Some(DoneReason::MacNotForUs), "{group:?}");
+        }
         let arp = ingress(frame_to(LLDP_MAC, 0x0806));
         assert_eq!(arp.get_done(), Some(DoneReason::MacNotForUs));
     }
 
     #[test]
     fn ipv4_link_local_multicast_is_for_us() {
-        // 01:00:5E:00:00:01 -- 224.0.0.1 (all hosts)
-        let ipv4 = ingress(ip_packet_to(Mac([0x01, 0x00, 0x5e, 0, 00, 0x01])));
-        assert_eq!(ipv4.get_done(), Some(DoneReason::Local));
+        // 224.0.0.1 (all hosts) and 224.0.0.5 (all OSPF routers)
+        for group in [[224, 0, 0, 1], [224, 0, 0, 5]] {
+            let ipv4 = ingress(ipv4_multicast_packet(group));
+            assert_eq!(ipv4.get_done(), Some(DoneReason::Local), "{group:?}");
+        }
+    }
 
-        // 01:00:5E:00:00:05 -- 224.0.0.5 (all ospf routers)
-        let ipv4 = ingress(ip_packet_to(Mac([0x01, 0x00, 0x5e, 0, 00, 0x05])));
-        assert_eq!(ipv4.get_done(), Some(DoneReason::Local));
+    /// Unicast neighbor discovery, such as an unreachability probe or the reply to our own
+    /// solicitation, is sent to our MAC and link-local address, for which the FIB has no route.
+    #[test]
+    fn unicast_neighbor_discovery_to_our_link_local_address_is_local() {
+        for icmp_type in [
+            Icmp6Type::NeighborSolicitation,
+            Icmp6Type::NeighborAdvertisement(Icmp6NeighborAdvertisement {
+                router: false,
+                solicited: true,
+                override_flag: true,
+            }),
+        ] {
+            let packet = ingress(icmp6_packet(PORT_MAC, "fe80::1", icmp_type.clone()));
+            assert_eq!(
+                packet.get_done(),
+                Some(DoneReason::Local),
+                "{icmp_type:?} was not handed to the control plane"
+            );
+        }
+    }
+
+    #[test]
+    fn unicast_ipv6_to_a_global_address_continues_in_its_vrf() {
+        let echo = Icmp6Type::EchoRequest(Icmp6EchoRequest { id: 1, seq: 1 });
+        let packet = ingress(icmp6_packet(PORT_MAC, "2001:db8::1", echo));
+        assert_eq!(packet.get_done(), None);
+        assert_eq!(packet.meta().vrf, Some(VRF));
     }
 
     #[test]
