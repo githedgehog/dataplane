@@ -605,7 +605,9 @@ fn clean_up_endpoints(
 
 /// Prepare and supervise the gateway.
 /// When init owns FRR, start dataplane, watchfrr, and agent in that order, waiting
-/// for each socket before starting its consumer.
+/// for each socket before starting its consumer. Zebra's `hh_dplane` connects to the dataplane's
+/// control-plane socket as it loads, so a zebra started first comes up unable to tell the datapath
+/// anything.
 async fn run_gateway(
     config: LaunchConfiguration,
     netns: NetworkNamespace,
