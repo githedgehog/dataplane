@@ -349,6 +349,62 @@ fn qsfp112_dac_matches_ethtool() {
     }
 }
 
+/// An HP-branded Mellanox 40G passive copper QSFP+ cable from 2012 (498385-B25) between the
+/// ports: flat memory, no revision, no monitors, and pages 01h-03h answered with page 00h.
+#[test]
+fn qsfp_dac_matches_ethtool() {
+    use dataplane_transceiver::sff8636::{CopperAttenuation, Detail as Sff8636};
+
+    for name in ["qsfp28-dac-port0", "qsfp28-dac-port1"] {
+        let mut fixture = Fixture::new(name);
+        let (module, _) = read(&mut fixture, Capture::new()).unwrap();
+        let ethtool = fixture.ethtool();
+        check_identity(&module, &ethtool);
+        assert_eq!(
+            fixture.asked,
+            [Region::Lower(I2cAddress::A0), Region::upper(0x00)],
+            "{name}"
+        );
+        assert_eq!(module.inventory.wavelength, None);
+        // ethtool prints 0 for monitors the module does not have.
+        assert_eq!(module.monitors.temperature, None);
+        assert_eq!(module.monitors.supply, None);
+        assert!(module.monitors.lanes.is_empty());
+        assert_eq!(module.thresholds, None);
+
+        let Detail::Sff8636(Sff8636 {
+            flat_memory,
+            lengths,
+            copper_attenuation,
+            ..
+        }) = &module.detail
+        else {
+            panic!("{name}: not decoded as SFF-8636")
+        };
+        assert!(flat_memory);
+        assert_eq!(
+            lengths.cable_metres.map(u64::from),
+            ethtool["length_(copper_or_active_cable)"].as_u64()
+        );
+        let CopperAttenuation {
+            at_2_5_ghz,
+            at_5_ghz,
+            at_7_ghz,
+            at_12_9_ghz,
+            ..
+        } = copper_attenuation.unwrap();
+        let attenuation = |key: &str| ethtool[key].as_u64().map(|db| u8::try_from(db).unwrap());
+        assert_eq!(at_2_5_ghz, attenuation("attenuation_at_2.5ghz"));
+        assert_eq!(at_5_ghz, attenuation("attenuation_at_5.0ghz"));
+        // ethtool 7.1 prints the 2.5 and 5.0 GHz bytes (186, 187) again for 7.0 and 12.9 GHz;
+        // SFF-8636 Table 6-15 puts those at bytes 188 and 189, which this cable leaves at 0.
+        let page00 = std::fs::read(fixture.dir.join("page-00.bin")).unwrap();
+        let raw = |byte: usize| Some(page00[byte - HALF]).filter(|db| *db != 0);
+        assert_eq!(at_7_ghz, raw(188));
+        assert_eq!(at_12_9_ghz, raw(189));
+    }
+}
+
 #[test]
 fn only_advertised_pages_are_read() {
     let mut fixture = Fixture::new("qsfp112-sr4-fs-port0");
