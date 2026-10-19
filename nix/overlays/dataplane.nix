@@ -18,7 +18,9 @@ let
       with builtins; (mapAttrs (var: val: (toString (orig.${var} or "")) + " " + (toString val)) new)
     );
   # Map build paths to source-store paths only for coverage. Other profiles use
-  # relative names so __FILE__ strings do not retain source trees in runtime closures.
+  # the package's name, so __FILE__ strings do not retain source trees in runtime
+  # closures and each dependency stays distinguishable in the binary's debug info
+  # (not `src.name`, which fetchers set to `source` for every package).
   # Read finalAttrs.src because package overrides may replace the original source.
   dataplane-dep =
     pkg:
@@ -26,7 +28,8 @@ let
       finalAttrs: orig: {
         env = helpers.addToEnv (orig.env or { }) (
           let
-            prefix = if instrumentation == "coverage" then "${finalAttrs.src}" else "source";
+            prefix =
+              if instrumentation == "coverage" then "${finalAttrs.src}" else finalAttrs.pname or finalAttrs.name;
             extra-cflags = "-ffile-prefix-map=/build=${prefix} -ffile-prefix-map=/build/source=${prefix}";
             extra-cxxflags = extra-cflags;
           in
