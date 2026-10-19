@@ -199,15 +199,14 @@ pub trait Bytes {
     fn text(&self, offset: u8, len: u8) -> String {
         self.slice(offset, len)
             .into_iter()
-            .map(|b| {
-                if b.is_ascii_graphic() || b == b' ' {
-                    char::from(b)
-                } else {
-                    '\u{fffd}'
-                }
+            .map(|b| match b {
+                // The specifications pad with spaces, but modules in the wild pad with NULs too.
+                b'\0' => ' ',
+                b if b.is_ascii_graphic() || b == b' ' => char::from(b),
+                _ => '\u{fffd}',
             })
             .collect::<String>()
-            .trim_end_matches([' ', '\0'])
+            .trim_end_matches(' ')
             .to_owned()
     }
 }
@@ -257,11 +256,17 @@ mod tests {
     fn text_is_trimmed_and_sanitized() {
         let mut block = [b' '; HALF];
         block[..4].copy_from_slice(b"FS\x01 ");
+        // A lot code padded with a NUL, as one Mellanox QSFP28 has it.
+        block[16..24].copy_from_slice(b"230912\0 ");
         let mut image = Image::new();
         image.insert(Region::upper(0), block);
         assert_eq!(
             image.upper(Region::upper(0)).unwrap().text(128, 16),
             "FS\u{fffd}"
+        );
+        assert_eq!(
+            image.upper(Region::upper(0)).unwrap().text(144, 8),
+            "230912"
         );
     }
 
