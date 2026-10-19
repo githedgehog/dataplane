@@ -819,14 +819,13 @@ jobs:
       # an interpreter or a source tree arrives silently -- nix reads store
       # paths out of file contents, so one `__FILE__` or one RPATH adds a whole
       # closure -- and the only symptom is an image that is quietly hundreds of
-      # megabytes larger than the binaries in it. `dataplane.tar` is already
-      # built by the step above, so this is a cheap re-use of that result.
+      # megabytes larger than the binaries in it. The image is already built
+      # by the step above, so this is a cheap re-use of that result.
       - name: "closure-check"
-        if: "${{ matrix.target == 'dataplane' }}"
         uses: *just
         with:
           recipe: "ci::cross"
-          recipe_args: "${{ matrix.platform }} ${{ matrix.libc }} build closure-check"
+          recipe_args: "${{ matrix.platform }} ${{ matrix.libc }} build closure-check.${{ matrix.target }}"
       - *tmate
 
   concurrency:
