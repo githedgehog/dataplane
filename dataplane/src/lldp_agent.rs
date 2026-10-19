@@ -570,6 +570,7 @@ mod tests {
             mac: SourceMac::new(Mac([0x02, 0, 0, 0, 0, 1])).unwrap(),
             mtu: Some(9000),
             hardware: Some("0000:03:00.0 (mlx5_pci)".to_owned()),
+            datapath_index: None,
         }
     }
 

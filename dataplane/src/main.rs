@@ -26,3 +26,5 @@ mod packet_processor;
 mod runtime;
 #[cfg(not(feature = "loom"))]
 mod statistics;
+#[cfg(not(feature = "loom"))]
+mod transceiver_agent;
