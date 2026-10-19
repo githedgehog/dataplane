@@ -4,6 +4,8 @@
 #![doc = include_str!("../README.md")]
 #![deny(clippy::pedantic, missing_docs)]
 
+mod kernel_interfaces;
+
 use std::collections::BTreeMap;
 use std::num::NonZero;
 use std::os::fd::AsRawFd;
@@ -384,7 +386,10 @@ fn main() {
                 Err(e) => fail("failed to isolate the network devices", &e),
             }
         }
-        DriverConfigSection::Kernel(_) => {
+        DriverConfigSection::Kernel(kernel) => {
+            if let Err(problems) = kernel_interfaces::prepare(kernel) {
+                fail("cannot use the requested network interfaces", &problems);
+            }
             // The router's adjacency resolver and FRR use the host stack on these interfaces,
             // so for now they stay in this namespace and the datapath joins it.
             info!("kernel driver selected; the datapath shares this network namespace");
