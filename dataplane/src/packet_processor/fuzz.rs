@@ -5092,6 +5092,10 @@ mod model {
         feature = "shuttle",
         ignore = "DashMap shard locks can block Shuttle's scheduler thread"
     )]
+    #[cfg_attr(
+        feature = "loom",
+        ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
+    )]
     fn a_pipeline_can_be_driven_inside_a_stress_run() {
         let _eal = dpdk::test_support::start_eal();
 
@@ -5155,6 +5159,10 @@ mod model {
     #[cfg_attr(
         feature = "shuttle",
         ignore = "DashMap shard locks can block Shuttle's scheduler thread"
+    )]
+    #[cfg_attr(
+        feature = "loom",
+        ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
     )]
     fn two_workers_are_not_given_the_same_public_tuple() {
         const CASES: usize = 64;
@@ -5315,6 +5323,10 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        any(feature = "shuttle", feature = "loom"),
+        ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
+    )]
     fn generated_traffic_survives_being_split_across_two_workers() {
         const CASES: usize = 64;
 
@@ -5445,6 +5457,10 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        any(feature = "shuttle", feature = "loom"),
+        ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
+    )]
     fn a_reply_is_translated_by_a_worker_that_never_saw_the_request() {
         const CASES: usize = 64;
 
@@ -5616,6 +5632,10 @@ mod model {
     #[cfg_attr(
         feature = "shuttle",
         ignore = "DashMap shard locks can block Shuttle's scheduler thread"
+    )]
+    #[cfg_attr(
+        feature = "loom",
+        ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
     )]
     fn an_icmp_teardown_leaves_another_workers_flow_alone() {
         const CASES: usize = 64;
@@ -5807,6 +5827,10 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        any(feature = "shuttle", feature = "loom"),
+        ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
+    )]
     fn forwarding_survives_a_route_being_republished_underneath_it() {
         const CASES: usize = 64;
 
@@ -6156,6 +6180,10 @@ mod model {
         feature = "shuttle",
         ignore = "DashMap shard locks can block Shuttle's scheduler thread"
     )]
+    #[cfg_attr(
+        feature = "loom",
+        ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
+    )]
     fn re_enacting_a_configuration_under_load_disturbs_nothing() {
         const CASES: usize = 64;
 
@@ -6287,6 +6315,10 @@ mod model {
         feature = "shuttle",
         ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
                   park the single thread shuttle schedules its green threads onto"
+    )]
+    #[cfg_attr(
+        feature = "loom",
+        ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
     )]
     fn the_cli_can_be_read_while_the_dataplane_works() {
         const CASES: usize = 64;
