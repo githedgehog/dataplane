@@ -55,6 +55,8 @@ pub(crate) struct InternalSetup {
     pub portfw_w: PortFwTableWriter,
     /// Where the LLDP agent publishes its neighbours for the CLI.
     pub lldp_neighbors: tokio::sync::watch::Sender<crate::lldp_agent::NeighborSnapshot>,
+    /// Where the transceiver agent publishes what it last read from each port's module.
+    pub transceivers: tokio::sync::watch::Sender<crate::transceiver_agent::ModuleSnapshot>,
 }
 
 /// Shared inputs for building a separate pipeline on each worker thread.
@@ -183,6 +185,8 @@ pub(crate) fn start_router(
     let capture = CaptureController::new();
     let (lldp_neighbors, lldp_heard) =
         tokio::sync::watch::channel(crate::lldp_agent::NeighborSnapshot::default());
+    let (transceivers, transceivers_read) =
+        tokio::sync::watch::channel(crate::transceiver_agent::ModuleSnapshot::default());
 
     // collect readers and the like for cli
     let cli_sources = CliSources {
@@ -198,6 +202,9 @@ pub(crate) fn start_router(
             capture_dir.map(std::path::PathBuf::from),
         )),
         lldp_neighbors: Some(Box::new(crate::lldp_agent::NeighborsCli(lldp_heard))),
+        transceivers: Some(Box::new(crate::transceiver_agent::ModulesCli(
+            transceivers_read,
+        ))),
     };
 
     // create router
@@ -235,5 +242,6 @@ pub(crate) fn start_router(
         vpc_stats_store,
         portfw_w,
         lldp_neighbors,
+        transceivers,
     })
 }
