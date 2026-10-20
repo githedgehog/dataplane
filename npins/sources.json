@@ -183,20 +183,17 @@
       "hash": "sha256-+f1ws/2oQ3+P3eiDHCuFyIHRn+5E/uHR+clpN0tyl3o="
     },
     "fabric": {
-      "type": "GitRelease",
+      "type": "Git",
       "repository": {
         "type": "GitHub",
         "owner": "githedgehog",
         "repo": "fabric"
       },
-      "pre_releases": false,
-      "version_upper_bound": null,
-      "release_prefix": null,
+      "branch": "pr/qmonnet/acl-proto-blocks",
       "submodules": false,
-      "version": "v0.133.0",
-      "revision": "9229854678dc9636e1f93f2035084b9943d32251",
-      "url": "https://api.github.com/repos/githedgehog/fabric/tarball/refs/tags/v0.133.0",
-      "hash": "sha256-F//ZwZOAuHQ8cd4/VMMYmVcR6T2l58SLPnosDd85jgw=",
+      "revision": "165a0dc94560aa8865f58b2ede5e9b8d8815c5ac",
+      "url": "https://github.com/githedgehog/fabric/archive/165a0dc94560aa8865f58b2ede5e9b8d8815c5ac.tar.gz",
+      "hash": "sha256-X/geOqEr/P6iz2L0h5w9cm9YfNb5VpPA5yS4i2cns5k=",
       "frozen": true
     },
     "flatcar-pxe-image": {
