@@ -336,6 +336,12 @@ fn cmd_show_lldp() -> Node {
     root
 }
 
+fn cmd_show_transceivers() -> Node {
+    Node::new("transceivers")
+        .desc("Show each port's pluggable module: what it is, its readings, limits and alarms")
+        .action(CliAction::ShowTransceivers)
+}
+
 fn cmd_show_capture() -> Node {
     Node::new("capture")
         .desc("Show the running or most recent packet capture")
@@ -374,6 +380,7 @@ fn cmd_show() -> Node {
     root += cmd_show_driver_status();
     root += cmd_show_capture();
     root += cmd_show_lldp();
+    root += cmd_show_transceivers();
     root += cmd_show_tech();
     root
 }
