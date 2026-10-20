@@ -298,8 +298,8 @@
       "type": "Channel",
       "name": "nixpkgs-unstable",
       "artifact": "nixexprs.tar.xz",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1093421.f20cd90e28fe/nixexprs.tar.xz",
-      "hash": "sha256-MTJCMrhDFb+GRbLxBPTp8kB4dDlO+egmQ5qsJgYuaWw="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1097569.e513db7b0a65/nixexprs.tar.xz",
+      "hash": "sha256-jWdazKTNUOJQ3KE+9BAvpBOo6THrD0Qyb3S8F2GduUI="
     },
     "opengrep": {
       "type": "GitRelease",
@@ -326,9 +326,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "68fdb9f2359ce39865daca0c1bc66e381a43afa4",
-      "url": "https://github.com/linux-rdma/perftest/archive/68fdb9f2359ce39865daca0c1bc66e381a43afa4.tar.gz",
-      "hash": "sha256-C6VtY8ufrbZ3zYfUdm9EVqDHC4DzXvnj75MkGTRenSA="
+      "revision": "b559ba370f6e7cac9caa85558c9d1bc0b3c7060f",
+      "url": "https://github.com/linux-rdma/perftest/archive/b559ba370f6e7cac9caa85558c9d1bc0b3c7060f.tar.gz",
+      "hash": "sha256-3KwdWfnSW/6E3fq2TX5dxo1rsYifwzQ2TgxtlDpOSMM="
     },
     "rdma-core": {
       "type": "Git",
@@ -368,9 +368,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "42076d1c6a0fb405ed04f9a674e4a8f69de62ba3",
-      "url": "https://github.com/oxalica/rust-overlay/archive/42076d1c6a0fb405ed04f9a674e4a8f69de62ba3.tar.gz",
-      "hash": "sha256-wJgFFtw/vlzsjWrQFmTn40TTkSkqHM4XXN0nh4q4uMk="
+      "revision": "5424e1e6dda30b0626935d2a03a6526db4858d60",
+      "url": "https://github.com/oxalica/rust-overlay/archive/5424e1e6dda30b0626935d2a03a6526db4858d60.tar.gz",
+      "hash": "sha256-arni7i+yH5ZnkvAN9UotvhMml5+fZyXcMHpiOvI3WFY="
     },
     "ubuntu-kernel-buildinfo": {
       "type": "Url",
