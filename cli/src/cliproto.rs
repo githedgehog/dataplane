@@ -551,6 +551,9 @@ pub enum CliAction {
 
     // LLDP
     ShowLldpNeighbors,
+
+    // Pluggable modules
+    ShowTransceivers,
 }
 impl CliAction {
     #[must_use]
