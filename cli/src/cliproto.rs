@@ -554,6 +554,9 @@ pub enum CliAction {
 
     // Pluggable modules
     ShowTransceivers,
+
+    // Port links (mstlink)
+    ShowLink,
 }
 impl CliAction {
     #[must_use]

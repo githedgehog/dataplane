@@ -57,6 +57,8 @@ pub(crate) struct InternalSetup {
     pub lldp_neighbors: tokio::sync::watch::Sender<crate::lldp_agent::NeighborSnapshot>,
     /// Where the transceiver agent publishes what it last read from each port's module.
     pub transceivers: tokio::sync::watch::Sender<crate::transceiver_agent::ModuleSnapshot>,
+    /// Where the phy agent publishes what `mstlink` last said about each port.
+    pub phy: tokio::sync::watch::Sender<crate::phy_agent::PhySnapshot>,
 }
 
 /// Shared inputs for building a separate pipeline on each worker thread.
@@ -187,6 +189,7 @@ pub(crate) fn start_router(
         tokio::sync::watch::channel(crate::lldp_agent::NeighborSnapshot::default());
     let (transceivers, transceivers_read) =
         tokio::sync::watch::channel(crate::transceiver_agent::ModuleSnapshot::default());
+    let (phy, phy_read) = tokio::sync::watch::channel(crate::phy_agent::PhySnapshot::default());
 
     // collect readers and the like for cli
     let cli_sources = CliSources {
@@ -205,6 +208,7 @@ pub(crate) fn start_router(
         transceivers: Some(Box::new(crate::transceiver_agent::ModulesCli(
             transceivers_read,
         ))),
+        link: Some(Box::new(crate::phy_agent::PhyCli(phy_read))),
     };
 
     // create router
@@ -243,5 +247,6 @@ pub(crate) fn start_router(
         portfw_w,
         lldp_neighbors,
         transceivers,
+        phy,
     })
 }
