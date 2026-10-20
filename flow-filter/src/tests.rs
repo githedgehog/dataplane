@@ -284,7 +284,7 @@ fn acl_context_with_rule(
                 dst: prefixes("20.0.0.0/24"),
                 src_any_ports: Vec::new(),
                 dst_any_ports: Vec::new(),
-                proto: AclProtoMatch::Tcp,
+                proto: AclProtoMatch::tcp(),
             },
             scope,
             log: false,
