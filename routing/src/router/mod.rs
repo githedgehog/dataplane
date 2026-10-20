@@ -68,6 +68,7 @@ pub struct CliSources {
     pub capture: Option<capture::CaptureDirectory>,
     pub lldp_neighbors: Option<Box<dyn CliDataProvider + Send>>,
     pub transceivers: Option<Box<dyn CliDataProvider + Send>>,
+    pub link: Option<Box<dyn CliDataProvider + Send>>,
 }
 
 impl Display for RouterParams {

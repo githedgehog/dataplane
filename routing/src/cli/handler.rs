@@ -597,6 +597,7 @@ fn do_handle_cli_request(
         CliAction::ShowDriverStatus => show_provider(request, sources.driver_status.as_deref()),
         CliAction::ShowLldpNeighbors => show_provider(request, sources.lldp_neighbors.as_deref()),
         CliAction::ShowTransceivers => show_provider(request, sources.transceivers.as_deref()),
+        CliAction::ShowLink => show_provider(request, sources.link.as_deref()),
 
         /* prefetching */
         CliAction::Prefetch => prefetch(request, gwconfig, db),
