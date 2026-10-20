@@ -141,7 +141,11 @@ in
         (orig: {
           doCheck = false; # tests require privileges
           separateDebugInfo = false;
-          CFLAGS = "-ffat-lto-objects -fsplit-lto-unit";
+          # libcap sets __structuredAttrs, so bare attributes no longer reach the
+          # builder's environment; CFLAGS must go through env.
+          env = (orig.env or { }) // {
+            CFLAGS = "-ffat-lto-objects -fsplit-lto-unit";
+          };
           makeFlags = [
             "lib=lib"
             "PAM_CAP=no"
