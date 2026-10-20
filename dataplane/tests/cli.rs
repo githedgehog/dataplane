@@ -5,11 +5,22 @@
 
 use std::process::Command;
 
+/// A command running the dataplane binary, in the emulator `scripts/test-runner.sh` names when the
+/// tests run under one.
+///
 /// nextest exports the binary's runtime location, remapped when tests run from an archive; the
 /// compile-time path only exists in the tree that built it.
-fn dataplane_binary() -> std::path::PathBuf {
-    std::env::var_os("NEXTEST_BIN_EXE_dataplane")
-        .map_or_else(|| env!("CARGO_BIN_EXE_dataplane").into(), Into::into)
+fn dataplane_command() -> Command {
+    let binary: std::path::PathBuf = std::env::var_os("NEXTEST_BIN_EXE_dataplane")
+        .map_or_else(|| env!("CARGO_BIN_EXE_dataplane").into(), Into::into);
+    match std::env::var_os("DATAPLANE_TEST_EMULATOR") {
+        Some(emulator) => {
+            let mut command = Command::new(emulator);
+            command.arg(binary);
+            command
+        }
+        None => Command::new(binary),
+    }
 }
 
 #[test]
@@ -21,7 +32,7 @@ fn informational_commands_need_no_launch_configuration() {
         "--show-tracing-targets",
         "--tracing-config-generate",
     ] {
-        let output = Command::new(dataplane_binary()).arg(flag).output().unwrap();
+        let output = dataplane_command().arg(flag).output().unwrap();
         assert!(
             output.status.success(),
             "{flag}: {}",
@@ -39,10 +50,7 @@ fn launch_without_init_is_refused() {
         vec!["--driver", "kernel", "--interface", "eth0=kernel@eth0"],
         vec!["--driver", "dpdk", "--interface", "eth0=pci@0000:01:00.0"],
     ] {
-        let output = Command::new(dataplane_binary())
-            .args(&args)
-            .output()
-            .unwrap();
+        let output = dataplane_command().args(&args).output().unwrap();
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(

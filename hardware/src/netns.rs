@@ -103,9 +103,18 @@ impl NetworkNamespace {
     pub fn from_fd(fd: OwnedFd) -> Result<Self, NetnsError> {
         // SAFETY: NS_GET_NSTYPE takes no pointer argument, and `fd` stays open during the call.
         let kind = unsafe { nix::libc::ioctl(fd.as_raw_fd(), nix::libc::NS_GET_NSTYPE) };
-        if kind == -1 {
-            return Err(NetnsError::Inspect(io::Error::last_os_error()));
-        }
+        let kind = if kind == -1 {
+            let error = io::Error::last_os_error();
+            // qemu-user does not translate NS_GET_NSTYPE, so under it every descriptor answers
+            // ENOTTY, as an ordinary file does natively. The descriptor's /proc link names the
+            // namespace type either way; anything that is not a namespace keeps the error.
+            if error.raw_os_error() != Some(nix::libc::ENOTTY) {
+                return Err(NetnsError::Inspect(error));
+            }
+            Self::kind_from_link(&fd).ok_or(NetnsError::Inspect(error))?
+        } else {
+            kind
+        };
         if kind != nix::libc::CLONE_NEWNET {
             return Err(NetnsError::WrongType(kind));
         }
@@ -115,6 +124,27 @@ impl NetworkNamespace {
         )
         .map_err(|e| NetnsError::CloseOnExec(e.into()))?;
         Ok(Self { fd })
+    }
+
+    /// The namespace type of `fd`, read from its `/proc/self/fd` link (`net:[4026531840]` and the
+    /// like), or `None` if it is not a namespace.
+    fn kind_from_link(fd: &OwnedFd) -> Option<i32> {
+        let link = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).ok()?;
+        let (name, rest) = link.to_str()?.split_once(":[")?;
+        if !rest.ends_with(']') {
+            return None;
+        }
+        Some(match name {
+            "net" => nix::libc::CLONE_NEWNET,
+            "mnt" => nix::libc::CLONE_NEWNS,
+            "user" => nix::libc::CLONE_NEWUSER,
+            "uts" => nix::libc::CLONE_NEWUTS,
+            "ipc" => nix::libc::CLONE_NEWIPC,
+            "pid" => nix::libc::CLONE_NEWPID,
+            "cgroup" => nix::libc::CLONE_NEWCGROUP,
+            "time" => nix::libc::CLONE_NEWTIME,
+            _ => return None,
+        })
     }
 
     /// Open a namespace by path, such as `/proc/<pid>/ns/net` or `/run/netns/<name>`.
@@ -255,6 +285,25 @@ mod tests {
             let result = NetworkNamespace::open(format!("/proc/thread-self/ns/{name}"));
             assert!(matches!(result, Err(NetnsError::WrongType(actual)) if actual == kind));
         }
+    }
+
+    /// The fallback used where `NS_GET_NSTYPE` is not translated (qemu-user) reads the same types.
+    #[test]
+    fn the_proc_link_names_the_namespace_type() {
+        for (name, kind) in [
+            ("net", nix::libc::CLONE_NEWNET),
+            ("mnt", nix::libc::CLONE_NEWNS),
+            ("user", nix::libc::CLONE_NEWUSER),
+        ] {
+            let fd = OwnedFd::from(File::open(format!("/proc/thread-self/ns/{name}")).unwrap());
+            assert_eq!(NetworkNamespace::kind_from_link(&fd), Some(kind), "{name}");
+        }
+        for path in ["/dev/null", "/proc/self/status"] {
+            let fd = OwnedFd::from(File::open(path).unwrap());
+            assert_eq!(NetworkNamespace::kind_from_link(&fd), None, "{path}");
+        }
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        assert_eq!(NetworkNamespace::kind_from_link(&socket.into()), None);
     }
 
     #[test]
