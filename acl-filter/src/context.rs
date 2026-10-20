@@ -13,10 +13,10 @@ use lpm::prefix::with_ports::KeyPort;
 use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use match_action::{Erased, ExactSpec, FieldPredicate, MatchKey, PrefixSpec, RangeSpec};
 use net::ip::{IpAddress, NextHeader};
+use net::tcp::TcpFlags;
 use net::vxlan::Vni;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::num::NonZero;
 use tracing::error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,7 +146,7 @@ impl From<&ValidatedOverlay> for PeeringAclRuleSet {
 // selected backend (see `Backend`) then consumes those: `Dpdk` converts them to rte_acl fields at
 // build time; `Reference` (test only) matches them directly.
 
-/// A single ACL match key: protocol, VPC pair, address pair, and port pair.
+/// A single ACL match key: protocol, VPC pair, address pair, port pair, and TCP flags.
 ///
 /// `proto` is a `#[mask]` byte on purpose. rte_acl requires the first field to be a single byte,
 /// and a bitmask byte both satisfies that and lets one field express either an exact protocol
@@ -156,7 +156,8 @@ impl From<&ValidatedOverlay> for PeeringAclRuleSet {
 ///
 /// Ports are only meaningful for TCP/UDP; config validation forbids port matching on other
 /// protocols, so non-TCP/UDP rules always carry a wildcard port range and a portless packet looks
-/// up with port `0`.
+/// up with port `0`. Likewise, only TCP rules can match on TCP flags, and packets with no TCP
+/// header look up with no flag set.
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
 pub(super) struct AclKey<I> {
     #[mask]
@@ -179,52 +180,47 @@ pub(super) struct AclKey<I> {
     #[range]
     #[cli(column_name = "dst-port")]
     dst_port_range: KeyPort,
+    #[mask]
+    #[cli(column_name = "tcp-flags")]
+    tcp_flags: TcpFlags,
 }
 
 impl<I> AclKey<I> {
+    /// Build the key for a packet, given its addresses narrowed to this key's IP version.
     #[must_use]
-    fn new(
-        proto: NextHeader,
-        src_vni: Vni,
-        dst_vni: Vni,
-        src_ip: I,
-        dst_ip: I,
-        src_port: Option<NonZero<u16>>,
-        dst_port: Option<NonZero<u16>>,
-    ) -> Self {
+    fn new(p: &PacketSummary, src_ip: I, dst_ip: I) -> Self {
+        let (src_port, dst_port) = p.ports.unzip();
         Self {
-            proto,
-            src_vni,
-            dst_vni,
+            proto: p.proto,
+            src_vni: p.src_vni,
+            dst_vni: p.dst_vni,
             src_ip_range: src_ip,
             dst_ip_range: dst_ip,
             src_port_range: KeyPort::new(src_port),
             dst_port_range: KeyPort::new(dst_port),
+            tcp_flags: p.tcp_flags.unwrap_or(TcpFlags::empty()),
         }
     }
 }
 
 /// Lower one rule to backend-neutral predicates.
+/// Missing prefixes and port ranges become wildcards.
 /// Returns `None` if either prefix does not match `T`.
 fn rule_predicates<T: IpVersion>(
-    proto: AclProtoMatch,
-    src_vni: Vni,
-    dst_vni: Vni,
-    src_ip_range: Prefix,
-    dst_ip_range: Prefix,
-    src_port_range: RangeSpec<KeyPort>,
-    dst_port_range: RangeSpec<KeyPort>,
+    rule: &PeeringAclRule,
 ) -> Option<(AclKeyRule<T>, Vec<FieldPredicate>)> {
-    let rule = AclKeyRule {
-        proto: proto.into(),
-        src_vni: ExactSpec::new(src_vni),
-        dst_vni: ExactSpec::new(dst_vni),
-        src_ip_range: T::prefix_spec(src_ip_range)?,
-        dst_ip_range: T::prefix_spec(dst_ip_range)?,
-        src_port_range,
-        dst_port_range,
+    let wildcard_ports = lpm::prefix::with_ports::PORT_RANGE_WILDCARD;
+    let key_rule = AclKeyRule {
+        proto: rule.proto.into(),
+        src_vni: ExactSpec::new(rule.src_vni),
+        dst_vni: ExactSpec::new(rule.dst_vni),
+        src_ip_range: T::prefix_spec(rule.src_ip_range.unwrap_or_else(T::wildcard))?,
+        dst_ip_range: T::prefix_spec(rule.dst_ip_range.unwrap_or_else(T::wildcard))?,
+        src_port_range: rule.src_port_range.unwrap_or(wildcard_ports),
+        dst_port_range: rule.dst_port_range.unwrap_or(wildcard_ports),
+        tcp_flags: rule.proto.tcp_flags().into(),
     };
-    Some((rule, rule.into_backend_fields::<Erased>()))
+    Some((key_rule, key_rule.into_backend_fields::<Erased>()))
 }
 
 /// Per-IP-version behaviour for the address key fields: the wildcard prefix, and narrowing a
@@ -275,18 +271,7 @@ fn lower_rules<T: IpVersion>(rules: &[PeeringAclRule]) -> Result<Vec<LoweredRule
     rules
         .iter()
         .map(|rule| {
-            let (key_rule, fields) = rule_predicates(
-                rule.proto,
-                rule.src_vni,
-                rule.dst_vni,
-                rule.src_ip_range.unwrap_or_else(T::wildcard),
-                rule.dst_ip_range.unwrap_or_else(T::wildcard),
-                rule.src_port_range
-                    .unwrap_or(lpm::prefix::with_ports::PORT_RANGE_WILDCARD),
-                rule.dst_port_range
-                    .unwrap_or(lpm::prefix::with_ports::PORT_RANGE_WILDCARD),
-            )
-            .ok_or_else(|| {
+            let (key_rule, fields) = rule_predicates(rule).ok_or_else(|| {
                 let (src, dst) = (rule.src_ip_range, rule.dst_ip_range);
                 error!(
                     "ACL rule for {} -> {} does not match the IP version of the table it was \
@@ -373,20 +358,12 @@ impl AclTables {
 impl AclTables {
     #[must_use]
     pub(super) fn lookup(&self, p: &PacketSummary) -> Option<&LookupResult> {
-        let proto = p.proto;
-        let (src_ports, dst_ports) = p.ports.unzip();
         match (p.src_ip, p.dst_ip) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
-                let key = AclKey::new(
-                    proto, p.src_vni, p.dst_vni, src_ip, dst_ip, src_ports, dst_ports,
-                );
-                self.v4.lookup(&key)
+                self.v4.lookup(&AclKey::new(p, src_ip, dst_ip))
             }
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
-                let key = AclKey::new(
-                    proto, p.src_vni, p.dst_vni, src_ip, dst_ip, src_ports, dst_ports,
-                );
-                self.v6.lookup(&key)
+                self.v6.lookup(&AclKey::new(p, src_ip, dst_ip))
             }
             _ => {
                 error!("Found packet with different IP versions for source and destination!");
