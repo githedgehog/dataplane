@@ -170,7 +170,7 @@ n_vm_host_share := env("N_VM_HOST_SHARE_DIR", "")
 
 # Build a nix derivation with standard build arguments
 [script]
-build target="dataplane.tar" *args:
+build target="containers.dataplane" *args:
     {{ _just_debuggable_ }}
     mkdir -p results
     declare -r target="{{target}}"
@@ -653,26 +653,14 @@ _refuse-instrumented-artifact:
 
 # Build the dataplane container image
 [script]
-build-container target="dataplane" *args: _refuse-instrumented-artifact (build (if target == "dataplane" { "dataplane.tar" } else if target == "validator" { "workspace.validator" } else { "containers." + target }) args)
+build-container target="dataplane" *args: _refuse-instrumented-artifact (build (if target == "validator" { "workspace.validator" } else { "containers." + target }) args)
     {{ _just_debuggable_ }}
     declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{docker_sock}}}"
     case "{{target}}" in
         "dataplane")
-            declare docker_platform
-            case "{{platform}}" in
-                aarch64|bluefield2|bluefield3) docker_platform="linux/arm64" ;;
-                x86-64-v3|x86-64-v4|zen3|zen4|zen5) docker_platform="linux/amd64" ;;
-                *)
-                    >&2 echo "build-container: no docker platform mapping for {{platform}}"
-                    exit 1
-                    ;;
-            esac
-            declare -r docker_platform
-            declare img
-            img="$(docker import --platform "${docker_platform}" --change 'ENTRYPOINT ["/bin/dataplane-init"]' ./results/dataplane.tar)"
-            declare -r img
-            docker tag "${img}" "{{oci_image_dataplane}}"
-            echo "imported {{ oci_image_dataplane }} (${docker_platform})"
+            docker load < ./results/containers.dataplane
+            docker tag "ghcr.io/githedgehog/dataplane:{{version}}" "{{oci_image_dataplane}}"
+            echo "imported {{ oci_image_dataplane }}"
             ;;
         "dataplane-debugger")
             docker load < ./results/containers.dataplane-debugger
@@ -1091,9 +1079,7 @@ check-push-filter:
         exit 1
     fi
 
-    # Walk `containers` and `dataplane` both: the latter holds `dataplane.tar`,
-    # which the release build selects directly and which is per-revision for the
-    # same reasons. Both nest, so recurse rather than assume one level.  Each line is "attr outPath drvPath".
+    # `containers` nests, so recurse rather than assume one level.  Each line is "attr outPath drvPath".
     declare -a images=()
     mapfile -t images < <(
         nix eval --impure --raw --expr '
@@ -1107,7 +1093,7 @@ check-push-filter:
                 else if builtins.isAttrs v then flatten nm v
                 else [ ]
               ) set);
-          in lib.concatStringsSep "\n" (flatten "" { inherit (d) containers dataplane; }) + "\n"
+          in lib.concatStringsSep "\n" (flatten "" { inherit (d) containers; }) + "\n"
         '
     )
     if [ "${#images[@]}" -eq 0 ]; then

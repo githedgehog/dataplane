@@ -1242,7 +1242,7 @@ let
     # the writable /run tmpfs mounted by n-it.
     #
     # This mirrors what the dataplane container image already does
-    # (see the `dataplane.tar` buildPhase above).
+    # (see `gateway-rootfs` below).
     ln -s /run $out/var/run
 
     # n-it init system binary.
@@ -1358,15 +1358,6 @@ let
       );
     };
   };
-
-  # The gateway image's root filesystem, unpacked, for init's end-to-end `--supervise-frr` VM test.
-  #
-  # The image's store closure is left out: the tree is symlinks into /nix/store, which nix reads as
-  # references, so the closure stays alive (and is exported for the VM) without a second copy.
-  gateway-rootfs = pkgs.runCommandLocal "dataplane-gateway-rootfs" { } ''
-    mkdir -p "$out"
-    tar --extract --file ${dataplane.tar} --directory "$out" --exclude='nix/store/*'
-  '';
 
   test-builder =
     {
@@ -1616,9 +1607,17 @@ let
     ) package-list;
   };
 
-  dataplane.tar =
+  # The gateway image's root filesystem: everything but /nix/store, which is only reached through
+  # the symlinks here.  Nix reads those as references, so this tree's closure *is* the image's
+  # store, and three things consume it as such:
+  #
+  # - `containers.dataplane` copies it in as the image's top layer and gets the store layers from
+  #   its closure;
+  # - init's end-to-end `--supervise-frr` VM test runs it in place, over the host's /nix/store;
+  # - `closure-check.dataplane` reads that closure.
+  gateway-rootfs =
     (pkgs.stdenv'.mkDerivation {
-      pname = "dataplane.tar";
+      pname = "dataplane-gateway-rootfs";
       inherit version;
       dontUnpack = true;
       src = null;
@@ -1627,32 +1626,6 @@ let
       dontPatchElf = true;
       buildPhase =
         let
-          # `libc-pkg` and not `libc` so the outer function-arg `libc` (the
-          # string "gnu" / "musl" / "none") stays visible inside this scope
-          # for the conditional below.
-          libc-pkg = pkgs.pkgsHostHost.libc;
-          # libgcc_s.so.1 is consumed by glibc-dynamic Rust binaries for
-          # unwinding.  musl Rust targets static-link musl + Rust's
-          # compiler-builtins, so libgcc has no consumer; bundling it would
-          # waste closure space and pull in glibc-targeted build outputs that
-          # are wrong for a musl container.
-          #
-          # IMPORTANT: must be the path baked into the matching ld-linux's
-          # compiled-in search list, which is `pkgs.pkgsHostHost.glibc.libgcc`
-          # (the `xgcc-...-libgcc` / cross `libgcc-<triple>-...` derivation).
-          # `pkgs.stdenv.cc.cc.lib` ships the same `libgcc_s.so.1` content but
-          # at a different store path that ld-linux doesn't search, so the
-          # binary can't find it at runtime even though the file exists in
-          # the tar.
-          libgcc-tar-input = if libc == "gnu" then "${pkgs.pkgsHostHost.glibc.libgcc}" else "";
-          # libc.out is needed by anything dynamically linked in the tar,
-          # regardless of libc choice.  The Rust binaries on musl are
-          # statically linked and don't need it, but busybox (bundled below
-          # for `/bin/*` shell utilities) is dynamically linked against
-          # whichever libc its pkgset uses.  Omitting libc.out on musl leaves
-          # busybox applets referencing a `ld-musl-*.so.1` / `libc.so` that
-          # isn't present in the image.
-          libc-tar-input = "${libc-pkg.out}";
           # FRR, and the pieces that carry configuration into it, composed once so that the
           # collisions between busybox's applets, coreutils and FRR's own binaries are
           # `buildEnv`'s problem rather than this build phase's.
@@ -1696,131 +1669,42 @@ let
               python3Minimal
             ];
           };
-          # The tree above is symlinks into the store, so the targets have to be in the tar too or
-          # every one of them dangles.  `closureInfo` is what knows the full set -- notably the
-          # python interpreter, which nothing links against and which `frr-reload.py` reaches only
-          # through its `#!` line.
-          frr-closure = pkgs.closureInfo { rootPaths = [ frr-env ]; };
-          # mstlink, for the dataplane's physical layer readings on NVIDIA/Mellanox NICs.  It is
-          # dynamically linked against the image's libc and libstdc++, hence its closure.
+          # mstlink, for the dataplane's physical layer readings on NVIDIA/Mellanox NICs.
           mstlink = pkgs.pkgsHostHost.fancy.mstlink;
-          mstlink-closure = pkgs.closureInfo { rootPaths = [ mstlink ]; };
         in
         ''
-          tmp="$(mktemp -d)"
-          mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
-          ln -s /run "$tmp/var/run"
+          mkdir -p "$out/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
+          ln -s /run "$out/var/run"
           for f in "${pkgs.pkgsHostHost.dockerTools.fakeNss}/etc/"* ; do
-            cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"
+            cp --archive "$(readlink -e "$f")" "$out/etc/$(basename "$f")"
           done
-          cd "$tmp"
-          ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/bin/dataplane"
-          ln -s "${workspace.cli}/bin/cli" "$tmp/bin/cli"
-          ln -s "${workspace.init}/bin/dataplane-init" "$tmp/bin/dataplane-init"
-          ln -s "${mstlink}/bin/mstlink" "$tmp/bin/mstlink"
+          ln -s "${workspace.dataplane}/bin/dataplane" "$out/bin/dataplane"
+          ln -s "${workspace.cli}/bin/cli" "$out/bin/cli"
+          ln -s "${workspace.init}/bin/dataplane-init" "$out/bin/dataplane-init"
+          ln -s "${mstlink}/bin/mstlink" "$out/bin/mstlink"
           for i in "${pkgs.pkgsHostHost.busybox}/bin/"*; do
-              ln -s "${pkgs.pkgsHostHost.busybox}/bin/busybox" "$tmp/bin/$(basename "$i")"
+              ln -s "${pkgs.pkgsHostHost.busybox}/bin/busybox" "$out/bin/$(basename "$i")"
           done
-          ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/dataplane"
-          ln -s "${workspace.init}/bin/dataplane-init" "$tmp/dataplane-init"
-          ln -s "${workspace.cli}/bin/cli" "$tmp/dataplane-cli"
+          ln -s "${workspace.dataplane}/bin/dataplane" "$out/dataplane"
+          ln -s "${workspace.init}/bin/dataplane-init" "$out/dataplane-init"
+          ln -s "${workspace.cli}/bin/cli" "$out/dataplane-cli"
           # FRR, laid over busybox rather than beside it: where both provide a name -- `ip`, most
           # of coreutils -- the full implementation wins, as it does in the FRR image this
           # replaces.  `frrcommon.sh` and `watchfrr.sh` were written against those, not against
           # busybox's approximations of them.
           for i in "${frr-env}/bin/"*; do
-              ln -sf "$i" "$tmp/bin/$(basename "$i")"
+              ln -sf "$i" "$out/bin/$(basename "$i")"
           done
           # Real directories holding symlinks, which is `buildEnv`'s own shape and not an
           # accident of it: FRR creates files beside its configuration and its state, and a
           # directory that is itself a symlink into the store is one it cannot write into.
-          mkdir -p "$tmp/libexec"
-          cp --archive "${frr-env}/lib/." "$tmp/lib/"
-          cp --archive "${frr-env}/libexec/." "$tmp/libexec/"
+          mkdir -p "$out/libexec"
+          cp --archive "${frr-env}/lib/." "$out/lib/"
+          cp --archive "${frr-env}/libexec/." "$out/libexec/"
           # `--remove-destination`, because `fakeNss` was copied here first and arrived read-only
           # from the store.  Its `/etc/passwd` has never heard of `frr`, which is the user every
           # FRR daemon drops to, so this file has to be FRR's rather than merged with it.
-          cp --archive --remove-destination "${frr-env}/etc/." "$tmp/etc/"
-          # One deduplicated list rather than a run of positional arguments.  FRR's closure and
-          # the dataplane's overlap -- libc at least, and everything under it -- and a path named
-          # twice is archived twice.  `sort -u` also fixes the order, which `--sort=name` alone
-          # does not do across separate arguments.
-          #
-          # `$inputs` is a sibling of `$tmp`, not a child: anything inside `$tmp` is archived by
-          # the `.` below, and a build's own scratch file has no business in the image.
-          inputs="$(mktemp)"
-          {
-            printf '%s\n' \
-              ${libc-tar-input} \
-              ${libgcc-tar-input} \
-              ${workspace.dataplane} \
-              ${workspace.init} \
-              ${workspace.cli} \
-              ${pkgs.pkgsHostHost.busybox}
-            cat "${frr-closure}/store-paths"
-            cat "${mstlink-closure}/store-paths"
-          } | sed '/^$/d' | sort -u > "$inputs"
-
-          # we take some care to make the tar file reproducible here
-          tar \
-            --create \
-            \
-            --sort=name \
-            \
-            --clamp-mtime \
-            --mtime=0 \
-            \
-            --format=posix \
-            --numeric-owner \
-            --owner=0 \
-            --group=0 \
-            \
-            `# anybody editing the files shipped in the container image is up to no good, block all of that.` \
-            `# More, we expressly forbid setuid / setgid anything.` \
-            --mode='ugo-sw' \
-            \
-            `# acls / setcap / selinux isn't going to be reliably copied into the image; skip to make more reproducible` \
-            --no-acls \
-            --no-xattrs \
-            --no-selinux \
-            \
-            `# we already copied this stuff in to /etc directly, no need to copy it into the store again.` \
-            --exclude '${libc-pkg}/etc' \
-            \
-            `# There are a few components of glibc which have absolutely nothing to do with our goals and present` \
-            `# material and trivially avoided hazards just by their presence.  Thus, we filter them out here.` \
-            `# None of this applies to musl (if we ever decide to ship with musl).  That said, these filters will` \
-            `# just not do anything in that case. ` \
-             \
-            `# Anybody even trying to access the glibc audit functionality in our container environment is ` \
-            `# 100% up to no good.` \
-            `# Intercepting and messing with dynamic library loading is _absolutely_ not on our todo list, and this ` \
-            `# stuff has a history of causing security issues (arbitrary code execution).  Just disarm this.` \
-            `# Go check out this one, it is a classic: ` \
-            `# https://www.exploit-db.com/exploits/18105 ` \
-            \
-            --exclude '${libc-pkg}/lib/audit*' \
-            \
-            `# The glibc character set conversion code is not only useless to us, is is an increasingly common attack ` \
-            `# vector (see CVE-2024-2961 for example).  We are 100% unicode only, so all of these legacy character ` \
-            `# conversion algorithms can and should be excluded.  We wouldn't run on (e.g.) old MAC hardware anyway.` \
-            `# More, we have zero need or desire (or meaningful ability) to change glibc locales in the container ` \
-            `# and it wouldn't be respected by rust's core/std libs anyway. ` \
-            `# This is also how fedora packages glibc, and for the same basic reasons.` \
-            `# See https://fedoraproject.org/wiki/Changes/Gconv_package_split_in_glibc` \
-            --exclude '${libc-pkg}/lib/gconv*' \
-            --exclude '${libc-pkg}/share/i18n*' \
-            --exclude '${libc-pkg}/share/locale*' \
-            \
-            `# getconf isn't even shipped in the container so this is useless.  You couldn't change limits in the ` \
-            `# container like this anyway.  Even if we needed to and could, we wouldn't use setconf et al.` \
-            --exclude '${libc-pkg}/libexec*' \
-            \
-            --verbose \
-            --file "$out" \
-            \
-            --files-from "$inputs" \
-            .
+          cp --archive --remove-destination "${frr-env}/etc/." "$out/etc/"
         '';
     }).overrideAttrs
       source-volatile;
@@ -1829,26 +1713,13 @@ let
     (pkgs.dockerTools.buildLayeredImage {
       name = "ghcr.io/githedgehog/dataplane";
       inherit tag;
-      contents =
-        (pkgs.buildEnv {
-          name = "dataplane-env";
-          pathsToLink = [
-            "/bin"
-            "/etc"
-            "/var"
-            "/lib"
-          ];
-          paths = [
-            pkgs.pkgsHostHost.dockerTools.fakeNss
-            pkgs.pkgsHostHost.busybox
-            pkgs.pkgsHostHost.dockerTools.usrBinEnv
-            workspace.cli
-            workspace.dataplane
-            workspace.init
-            pkgs.pkgsHostHost.fancy.mstlink
-          ];
-        }).overrideAttrs
-          source-volatile;
+      # Copied, not `contents`: `contents` is `symlinkJoin`ed, which would make every directory
+      # writable and every symlink here a symlink to a symlink.  A copy keeps the tree as it is
+      # in the store -- read-only, its links pointing straight at their targets -- and still
+      # names every target, so the store layers are the tree's closure and nothing more.
+      fakeRootCommands = ''
+        cp --archive --no-preserve=ownership ${gateway-rootfs}/. .
+      '';
       config.Entrypoint = [ "/bin/dataplane-init" ];
     }).overrideAttrs
       source-volatile;
@@ -2330,7 +2201,7 @@ let
           '';
     in
     {
-      dataplane = check "dataplane" "dataplane.tar" dataplane.tar;
+      dataplane = check "dataplane" "gateway-rootfs" gateway-rootfs;
       frr.dataplane =
         check "frr-dataplane" "containers.frr.dataplane.contents"
           containers.frr.dataplane.contents;
@@ -2345,7 +2216,6 @@ in
     closure-check
     clippy
     containers
-    dataplane
     devenv
     devroot
     gateway-rootfs
