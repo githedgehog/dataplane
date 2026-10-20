@@ -397,7 +397,7 @@ fn acl_with_nonmatching_rule(default: AclAction) -> Acl {
             "narrow-allow",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS], &["20.0.0.128/25"], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &["20.0.0.128/25"], AclProtoMatch::tcp()),
         )],
     )
 }
@@ -434,7 +434,7 @@ fn explicit_allow_over_default_deny() {
             "allow-tcp",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4(Some(acl));
@@ -467,13 +467,13 @@ fn first_matching_rule_wins() {
                 "allow-lower-half",
                 AclAction::Allow,
                 AclScope::Packet,
-                pattern(&["10.0.0.0/25"], &[V2_IPS], AclProtoMatch::Tcp),
+                pattern(&["10.0.0.0/25"], &[V2_IPS], AclProtoMatch::tcp()),
             ),
             rule(
                 "deny-whole-range",
                 AclAction::Deny,
                 AclScope::Packet,
-                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
             ),
         ],
     );
@@ -505,7 +505,7 @@ fn protocol_specific_rule_does_not_match_other_protocol() {
             "allow-tcp-only",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4(Some(acl));
@@ -707,7 +707,7 @@ fn ipv6_allow_and_default_deny() {
             "allow-v6",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
@@ -761,7 +761,7 @@ fn flow_scope_allows_reply_for_allowed_request() {
             "allow-flow",
             AclAction::Allow,
             AclScope::Flow,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4_masquerade(Some(acl));
@@ -794,7 +794,7 @@ fn packet_scope_denies_reply_for_allowed_request() {
             "allow-packet",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4(Some(acl));
@@ -832,7 +832,7 @@ fn explicit_deny_rule_drops_reply_despite_matching_flow() {
                 "allow-request",
                 AclAction::Allow,
                 AclScope::Flow,
-                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
             ),
             // Reply direction (vpc2 -> vpc1): explicitly denied
             directional_rule(
@@ -841,7 +841,7 @@ fn explicit_deny_rule_drops_reply_despite_matching_flow() {
                 "vpc1",
                 AclAction::Deny,
                 AclScope::Packet,
-                pattern(&[V2_IPS], &[V1_IPS], AclProtoMatch::Tcp),
+                pattern(&[V2_IPS], &[V1_IPS], AclProtoMatch::tcp()),
             ),
         ],
     );
@@ -884,7 +884,7 @@ fn directional_rule_only_applies_to_correct_direction() {
             "deny-forward",
             AclAction::Deny,
             AclScope::Packet,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4(Some(acl));
@@ -1569,7 +1569,7 @@ mod dpdk_backend {
                 "allow-tcp",
                 AclAction::Allow,
                 AclScope::Packet,
-                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
             )],
         );
         let overlay = overlay(
@@ -1650,13 +1650,13 @@ mod dpdk_backend {
                     "allow-lower-half",
                     AclAction::Allow,
                     AclScope::Packet,
-                    pattern(&["10.0.0.0/25"], &[V2_IPS], AclProtoMatch::Tcp),
+                    pattern(&["10.0.0.0/25"], &[V2_IPS], AclProtoMatch::tcp()),
                 ),
                 rule(
                     "deny-whole-range",
                     AclAction::Deny,
                     AclScope::Packet,
-                    pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+                    pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
                 ),
                 rule(
                     "allow-icmp",
@@ -1728,7 +1728,7 @@ fn a_vlan_tagged_overlay_frame_is_refused() {
             "allow-tcp",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4(Some(acl));
@@ -1775,7 +1775,7 @@ fn an_extension_header_does_not_evade_a_protocol_rule() {
             "deny-tcp",
             AclAction::Deny,
             AclScope::Packet,
-            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
@@ -1848,7 +1848,7 @@ fn a_chain_past_the_parser_limit_is_dropped_rather_than_guessed() {
             "allow-tcp",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
@@ -1884,7 +1884,7 @@ fn a_non_first_fragment_does_not_match_a_protocol_rule() {
             "permit-tcp",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));

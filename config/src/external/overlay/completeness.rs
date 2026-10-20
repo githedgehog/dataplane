@@ -119,6 +119,13 @@ const REACH: &[(&str, Reach)] = &[
     ("AclPattern.dst_any_ports", Reach::Spans(&["0", "1"])),
     ("AclPattern.proto", Reach::Spans(&["any", "tcp", "udp"])),
     (
+        "AclPattern.proto.tcp_flags",
+        Reach::Fixed(
+            "any; the algebra never requires TCP flags, which are only valid for packet-scoped \
+             rules. The acl-filter generators cover them instead.",
+        ),
+    ),
+    (
         "VpcManifest.name",
         Reach::Determined("the side's vpc handle"),
     ),
@@ -297,10 +304,18 @@ fn survey_acl(acl: &Acl, seen: &mut Observed) {
         seen.note(
             "AclPattern.proto",
             match proto {
-                AclProtoMatch::Tcp => "tcp".to_owned(),
+                AclProtoMatch::Tcp(_) => "tcp".to_owned(),
                 AclProtoMatch::Udp => "udp".to_owned(),
                 AclProtoMatch::Other(number) => format!("other({number})"),
                 AclProtoMatch::Any => "any".to_owned(),
+            },
+        );
+        seen.note(
+            "AclPattern.proto.tcp_flags",
+            if proto.tcp_flags().is_any() {
+                "any"
+            } else {
+                "constrained"
             },
         );
     }

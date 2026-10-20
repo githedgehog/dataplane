@@ -7,8 +7,9 @@ use super::vpcpeering::ValidatedManifest;
 use crate::utils::normalize;
 use crate::{ConfigError, ConfigResult};
 use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
-use match_action::MaskSpec;
+use match_action::{Accepts, MaskSpec};
 use net::ip::NextHeader;
+use net::tcp::TcpFlags;
 use tracing::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -18,13 +19,96 @@ pub enum AclAction {
     Deny,
 }
 
+/// A match on the flags of TCP segments: each flag in `mask` must have the value it has in `value`,
+/// other flags are ignored.
+///
+/// The only way to build a match is to start from [`AclTcpFlagsMatch::ANY`] and to add
+/// requirements, so `value` never has bits outside of `mask`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AclTcpFlagsMatch {
+    value: TcpFlags,
+    mask: TcpFlags,
+}
+
+impl AclTcpFlagsMatch {
+    /// Match all segments, whatever their flags
+    pub const ANY: Self = Self {
+        value: TcpFlags::empty(),
+        mask: TcpFlags::empty(),
+    };
+
+    /// Require `flags` to be all set (if `set` is true) or all clear (if `set` is false),
+    /// replacing any previous requirement on these flags.
+    #[must_use]
+    pub const fn require(self, flags: TcpFlags, set: bool) -> Self {
+        Self {
+            value: if set {
+                self.value.union(flags)
+            } else {
+                self.value.difference(flags)
+            },
+            mask: self.mask.union(flags),
+        }
+    }
+
+    /// Flags that must be set, among the flags in [`Self::mask`]
+    #[must_use]
+    pub const fn value(&self) -> TcpFlags {
+        self.value
+    }
+
+    /// Flags that must have the value they have in [`Self::value`]
+    #[must_use]
+    pub const fn mask(&self) -> TcpFlags {
+        self.mask
+    }
+
+    /// Whether the match accepts all segments
+    #[must_use]
+    pub const fn is_any(&self) -> bool {
+        self.mask.is_empty()
+    }
+
+    /// Whether a segment with the given flags matches
+    #[must_use]
+    pub fn matches(&self, flags: TcpFlags) -> bool {
+        MaskSpec::from(*self).accepts(&flags)
+    }
+}
+
+/// Lower a TCP flags match to a bitmask predicate on the TCP flags key field.
+impl From<AclTcpFlagsMatch> for MaskSpec<TcpFlags> {
+    fn from(flags: AclTcpFlagsMatch) -> Self {
+        MaskSpec::new(flags.value, flags.mask)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AclProtoMatch {
-    Tcp,
+    Tcp(AclTcpFlagsMatch),
     Udp,
     Other(u8),
     #[default]
     Any,
+}
+
+impl AclProtoMatch {
+    /// Match TCP, whatever the flags of the segments
+    #[must_use]
+    pub const fn tcp() -> Self {
+        AclProtoMatch::Tcp(AclTcpFlagsMatch::ANY)
+    }
+
+    /// The TCP flags to match, [`AclTcpFlagsMatch::ANY`] for protocols other than TCP
+    #[must_use]
+    pub const fn tcp_flags(self) -> AclTcpFlagsMatch {
+        match self {
+            AclProtoMatch::Tcp(flags) => flags,
+            AclProtoMatch::Udp | AclProtoMatch::Other(_) | AclProtoMatch::Any => {
+                AclTcpFlagsMatch::ANY
+            }
+        }
+    }
 }
 
 /// Lower a protocol match to a bitmask predicate on the 1-byte protocol key field. A specific
@@ -35,7 +119,7 @@ pub enum AclProtoMatch {
 impl From<AclProtoMatch> for MaskSpec<NextHeader> {
     fn from(proto: AclProtoMatch) -> Self {
         match proto {
-            AclProtoMatch::Tcp => MaskSpec::exact(NextHeader::TCP),
+            AclProtoMatch::Tcp(_) => MaskSpec::exact(NextHeader::TCP),
             AclProtoMatch::Udp => MaskSpec::exact(NextHeader::UDP),
             AclProtoMatch::Other(p) => MaskSpec::exact(NextHeader::new(p)),
             AclProtoMatch::Any => MaskSpec::wildcard(),
@@ -76,7 +160,7 @@ impl AclPattern {
 
     fn validate_ports(&self) -> bool {
         match self.proto {
-            AclProtoMatch::Tcp | AclProtoMatch::Udp => true,
+            AclProtoMatch::Tcp(_) | AclProtoMatch::Udp => true,
             AclProtoMatch::Other(_) | AclProtoMatch::Any => {
                 !self.src.uses_ports()
                     && !self.dst.uses_ports()
@@ -200,6 +284,14 @@ impl AclRule {
         manifest_right: &ValidatedManifest,
     ) -> Result<ValidatedAclRule, ConfigError> {
         self.validate_from_to(manifest_left, manifest_right)?;
+        // Replies to connections allowed by a flow-scoped rule are looked up without their TCP
+        // flags, and flow tracking already restricts which side opens connections for such rules.
+        if !self.pattern.proto.tcp_flags().is_any() && self.scope != AclScope::Packet {
+            return Err(ConfigError::InvalidAcl(format!(
+                "Rule '{}' matches TCP flags, which is only supported for packet-scoped rules",
+                self.name
+            )));
+        }
         let src_any_ports = self.pattern.src_any_ports.clone();
         let dst_any_ports = self.pattern.dst_any_ports.clone();
         let pattern = self.pattern.validate()?;
@@ -485,12 +577,13 @@ impl ValidatedAcl {
 // =================================================================================================
 #[cfg(test)]
 mod validation_tests {
-    use super::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope};
+    use super::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope, AclTcpFlagsMatch};
     use crate::ConfigError;
     use crate::external::overlay::acl::ValidatedAclRule;
     use crate::external::overlay::vpcpeering::{ValidatedManifest, VpcExpose, VpcManifest};
 
     use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
+    use net::tcp::TcpFlags;
 
     // Helper: build a validated manifest, exposing the given (no-NAT) prefixes
     fn manifest(name: &str, ips: &[&str]) -> ValidatedManifest {
@@ -756,7 +849,7 @@ mod validation_tests {
         let p = pattern(
             [prefix_with_ports("10.0.0.0/24", 1024, 2048)].into(),
             [prefix_with_ports("10.1.0.0/24", 443, 443)].into(),
-            AclProtoMatch::Tcp,
+            AclProtoMatch::tcp(),
         );
         let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
         assert!(validate_rule(rule).is_ok());
@@ -937,7 +1030,7 @@ mod validation_tests {
         let p = pattern(
             prefixes(&["10.0.0.0/24"]),
             prefixes(&["10.1.0.0/24"]),
-            AclProtoMatch::Tcp,
+            AclProtoMatch::tcp(),
         );
         let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
         let validated = validate_rule(rule).expect("should validate");
@@ -967,7 +1060,7 @@ mod validation_tests {
         let mut p = pattern(
             PrefixPortsSet::new(),
             PrefixPortsSet::new(),
-            AclProtoMatch::Tcp,
+            AclProtoMatch::tcp(),
         );
         p.src_any_ports = vec![PortRange::new(443, 443).unwrap()];
         let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
@@ -1020,7 +1113,7 @@ mod validation_tests {
         let mut p = pattern(
             PrefixPortsSet::new(),
             PrefixPortsSet::new(),
-            AclProtoMatch::Tcp,
+            AclProtoMatch::tcp(),
         );
         p.dst_any_ports = vec![PortRange::new(443, 443).unwrap()];
         let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
@@ -1101,7 +1194,7 @@ mod validation_tests {
                     pattern(
                         prefixes(&["10.0.0.0/24"]),
                         [prefix_with_ports("10.1.0.0/24", 443, 443)].into(),
-                        AclProtoMatch::Tcp,
+                        AclProtoMatch::tcp(),
                     ),
                 ),
                 rule("return", "VPC-2", "VPC-1", AclAction::Allow, match_all()),
@@ -1110,5 +1203,121 @@ mod validation_tests {
         let acl = acl.validate(&left, &right).expect("should validate");
         assert_eq!(acl.default_action(), AclAction::Deny);
         assert_eq!(acl.rules().len(), 2);
+    }
+
+    // =============================================================================================
+    // TCP flags
+    // =============================================================================================
+
+    // Helper: a TCP pattern requiring SYN set and ACK clear
+    fn syn_no_ack_pattern() -> AclPattern {
+        let flags = AclTcpFlagsMatch::ANY
+            .require(TcpFlags::SYN, true)
+            .require(TcpFlags::ACK, false);
+        pattern(
+            PrefixPortsSet::new(),
+            PrefixPortsSet::new(),
+            AclProtoMatch::Tcp(flags),
+        )
+    }
+
+    #[test]
+    fn test_tcp_flags_require() {
+        let flags = AclTcpFlagsMatch::ANY
+            .require(TcpFlags::SYN, true)
+            .require(TcpFlags::ACK, false);
+        assert_eq!(flags.value(), TcpFlags::SYN);
+        assert_eq!(flags.mask(), TcpFlags::SYN | TcpFlags::ACK);
+        assert!(flags.matches(TcpFlags::SYN));
+        assert!(flags.matches(TcpFlags::SYN | TcpFlags::ECE | TcpFlags::CWR));
+        assert!(!flags.matches(TcpFlags::SYN | TcpFlags::ACK));
+        assert!(!flags.matches(TcpFlags::ACK));
+        assert!(!flags.matches(TcpFlags::empty()));
+
+        // A later requirement on the same flag replaces the previous one
+        let flags = flags.require(TcpFlags::SYN, false);
+        assert_eq!(flags.value(), TcpFlags::empty());
+        assert!(flags.matches(TcpFlags::FIN));
+        assert!(!flags.matches(TcpFlags::SYN));
+    }
+
+    #[test]
+    fn test_tcp_flags_match_semantics() {
+        bolero::check!()
+            .with_type::<(u8, bool, u8, bool, u8)>()
+            .cloned()
+            .for_each(|(first, first_set, second, second_set, probe)| {
+                let (first, second, probe) = (
+                    TcpFlags::from_bits_retain(first),
+                    TcpFlags::from_bits_retain(second),
+                    TcpFlags::from_bits_retain(probe),
+                );
+                let flags = AclTcpFlagsMatch::ANY
+                    .require(first, first_set)
+                    .require(second, second_set);
+                assert_eq!(flags.value().bits() & !flags.mask().bits(), 0);
+                assert_eq!(flags.is_any(), (first | second) == TcpFlags::empty());
+                // Each flag must have the value of the last requirement mentioning it
+                let expected = TcpFlags::all().iter().all(|flag| {
+                    let required = if second.contains(flag) {
+                        Some(second_set)
+                    } else if first.contains(flag) {
+                        Some(first_set)
+                    } else {
+                        None
+                    };
+                    required.is_none_or(|set| probe.contains(flag) == set)
+                });
+                assert_eq!(flags.matches(probe), expected);
+            });
+    }
+
+    #[test]
+    fn test_proto_tcp_flags() {
+        let flags = AclTcpFlagsMatch::ANY.require(TcpFlags::RST, true);
+        assert_eq!(AclProtoMatch::Tcp(flags).tcp_flags(), flags);
+        assert!(AclProtoMatch::Udp.tcp_flags().is_any());
+        assert!(AclProtoMatch::Other(47).tcp_flags().is_any());
+        assert!(AclProtoMatch::Any.tcp_flags().is_any());
+    }
+
+    // TCP flags are accepted in packet-scoped rules
+    #[test]
+    fn test_tcp_flags_packet_scope_passes() {
+        let rule = rule(
+            "r",
+            "VPC-1",
+            "VPC-2",
+            AclAction::Allow,
+            syn_no_ack_pattern(),
+        );
+        let validated = validate_rule(rule).expect("should validate");
+        assert_eq!(validated.pattern().proto(), syn_no_ack_pattern().proto,);
+    }
+
+    // TCP flags are rejected in flow-scoped rules
+    #[test]
+    fn test_tcp_flags_flow_scope_rejected() {
+        let rule = rule_scope_flow(
+            "r",
+            "VPC-1",
+            "VPC-2",
+            AclAction::Allow,
+            syn_no_ack_pattern(),
+        );
+        let err = validate_rule(rule).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidAcl(_)), "{err:?}");
+    }
+
+    // A TCP rule with no flag requirement remains valid in flow-scoped rules
+    #[test]
+    fn test_tcp_any_flags_flow_scope_passes() {
+        let p = pattern(
+            PrefixPortsSet::new(),
+            PrefixPortsSet::new(),
+            AclProtoMatch::tcp(),
+        );
+        let rule = rule_scope_flow("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        validate_rule(rule).expect("should validate");
     }
 }

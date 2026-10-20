@@ -46,7 +46,7 @@ impl From<&LookupResult> for OracleVerdict {
 fn proto_allows(rule: AclProtoMatch, packet: NextHeader) -> bool {
     match rule {
         AclProtoMatch::Any => true,
-        AclProtoMatch::Tcp => packet == NextHeader::TCP,
+        AclProtoMatch::Tcp(_) => packet == NextHeader::TCP,
         AclProtoMatch::Udp => packet == NextHeader::UDP,
         AclProtoMatch::Other(p) => packet == NextHeader::new(p),
     }
