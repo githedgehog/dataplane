@@ -2053,7 +2053,7 @@ mod acl {
     impl Proto {
         fn as_match(self) -> AclProtoMatch {
             match self {
-                Proto::Tcp => AclProtoMatch::Tcp,
+                Proto::Tcp => AclProtoMatch::tcp(),
                 Proto::Udp => AclProtoMatch::Udp,
                 Proto::Icmp => AclProtoMatch::Other(NextHeader::ICMP.as_u8()),
             }
@@ -2072,7 +2072,7 @@ mod acl {
     impl RuleProto {
         fn as_match(self) -> AclProtoMatch {
             match self {
-                RuleProto::Tcp => AclProtoMatch::Tcp,
+                RuleProto::Tcp => AclProtoMatch::tcp(),
                 RuleProto::Udp => AclProtoMatch::Udp,
                 RuleProto::Icmp => AclProtoMatch::Other(NextHeader::ICMP.as_u8()),
                 RuleProto::Icmp6 => AclProtoMatch::Other(NextHeader::ICMP6.as_u8()),

@@ -167,7 +167,7 @@ impl ProtoSel {
     fn to_config(self) -> AclProtoMatch {
         match self {
             ProtoSel::Any => AclProtoMatch::Any,
-            ProtoSel::Tcp => AclProtoMatch::Tcp,
+            ProtoSel::Tcp => AclProtoMatch::tcp(),
             ProtoSel::Udp => AclProtoMatch::Udp,
             ProtoSel::Other(p) => AclProtoMatch::Other(p),
         }

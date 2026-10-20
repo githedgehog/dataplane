@@ -147,7 +147,7 @@ impl Guard {
                     }
                 }
                 if self == Guard::PermitByProtocol {
-                    denial.pattern.proto = AclProtoMatch::Tcp;
+                    denial.pattern.proto = AclProtoMatch::tcp();
                 }
                 vec![denial, rule(denied_from), rule(denied_from.other())]
             }
@@ -1722,7 +1722,7 @@ mod tests {
                         let inert = acl
                             .rules()
                             .first()
-                            .is_some_and(|rule| rule.pattern.proto == AclProtoMatch::Tcp);
+                            .is_some_and(|rule| rule.pattern.proto == AclProtoMatch::tcp());
                         match (acl.default_action(), acl.rules().len()) {
                             (AclAction::Deny, 1) => Guard::PermitFlow,
                             (AclAction::Deny, 3) if inert => Guard::PermitByProtocol,
