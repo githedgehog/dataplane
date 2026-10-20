@@ -9,11 +9,13 @@ use crate::{AclFilter, AclFilterContext, AclFilterContextWriter, PacketSummary};
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
 use config::external::overlay::acl::AclAction;
 use net::buffer::TestBuffer;
+use net::headers::TryTcpMut;
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::test_utils::{
     build_test_ipv4_packet_with_transport, build_test_ipv6_packet_with_transport,
 };
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
+use net::tcp::TcpFlags;
 use net::tcp::port::TcpPort;
 use net::udp::UdpPort;
 use pipeline::NetworkFunction;
@@ -46,6 +48,9 @@ fn packet_for(summary: &PacketSummary) -> Option<Packet<TestBuffer>> {
     if tcp {
         packet.set_tcp_source_port(TcpPort::new(sport)).ok()?;
         packet.set_tcp_destination_port(TcpPort::new(dport)).ok()?;
+        packet
+            .try_tcp_mut()?
+            .set_flags(summary.tcp_flags.unwrap_or(TcpFlags::empty()));
     } else {
         packet.set_udp_source_port(UdpPort::new(sport)).ok()?;
         packet.set_udp_destination_port(UdpPort::new(dport)).ok()?;
@@ -232,6 +237,10 @@ fn the_summary_survives_the_round_trip_through_a_packet() {
                 assert_eq!(
                     read.ports, expected.ports,
                     "ports came back swapped or wrong\nspec: {overlay_spec:?}"
+                );
+                assert_eq!(
+                    read.tcp_flags, expected.tcp_flags,
+                    "TCP flags came back wrong\nspec: {overlay_spec:?}"
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }

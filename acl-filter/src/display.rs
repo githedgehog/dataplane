@@ -96,15 +96,19 @@ impl Display for PacketSummary {
         if let (Some(sport), Some(dport)) = self.ports.unzip() {
             write!(
                 f,
-                "vni:{} -> vni:{}, {}:{} -> {}:{} ({})",
+                "vni:{} -> vni:{}, {}:{} -> {}:{} ({}",
                 self.src_vni, self.dst_vni, self.src_ip, sport, self.dst_ip, dport, self.proto
-            )
+            )?;
         } else {
             write!(
                 f,
-                "vni:{} -> vni:{}, {} -> {} ({})",
+                "vni:{} -> vni:{}, {} -> {} ({}",
                 self.src_vni, self.dst_vni, self.src_ip, self.dst_ip, self.proto
-            )
+            )?;
         }
+        if let Some(flags) = self.tcp_flags {
+            write!(f, " {flags}")?;
+        }
+        f.write_str(")")
     }
 }

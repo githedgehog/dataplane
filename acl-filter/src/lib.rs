@@ -6,9 +6,10 @@ use config::external::overlay::acl::{AclAction, AclScope};
 use net::buffer::PacketBufferMut;
 use net::flows::FlowInfo;
 use net::flows::FlowStatus;
-use net::headers::{TryHeaders, TryIp, UpperLayerProto};
+use net::headers::{Transport, TryHeaders, TryIp, UpperLayerProto};
 use net::ip::NextHeader;
 use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
+use net::tcp::TcpFlags;
 use net::vxlan::Vni;
 use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
@@ -184,6 +185,8 @@ pub(crate) struct PacketSummary {
     pub(crate) dst_ip: std::net::IpAddr,
     pub(crate) proto: NextHeader,
     pub(crate) ports: Option<(NonZero<u16>, NonZero<u16>)>,
+    /// Only for TCP packets carrying a TCP header, so not for non-first fragments.
+    pub(crate) tcp_flags: Option<TcpFlags>,
 }
 
 impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
@@ -225,10 +228,12 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
                 return Err(DoneReason::Malformed);
             }
         };
-        let ports = match upper {
-            // The parser may have read ports from fragment payload.
-            UpperLayerProto::NonFirstFragment => None,
-            _ => transport.and_then(|t| t.src_port().zip(t.dst_port())),
+        // The parser may have read ports and flags from fragment payload.
+        let transport = transport.filter(|_| !matches!(upper, UpperLayerProto::NonFirstFragment));
+        let ports = transport.and_then(|t| t.src_port().zip(t.dst_port()));
+        let tcp_flags = match transport {
+            Some(Transport::Tcp(tcp)) => Some(tcp.flags()),
+            _ => None,
         };
 
         Ok(Self {
@@ -238,6 +243,7 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
             dst_ip,
             proto,
             ports,
+            tcp_flags,
         })
     }
 }
@@ -253,6 +259,9 @@ impl PacketSummary {
             dst_ip: flow_key.dst_ip(),
             proto: flow_key.proto(),
             ports: flow_key.ports(),
+            // The flow key has no flags. This is fine as long as only packet-scoped rules match
+            // flags, given that this summary is only used to look for a flow-scoped rule.
+            tcp_flags: None,
         })
     }
 }
