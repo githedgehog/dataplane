@@ -342,6 +342,12 @@ fn cmd_show_transceivers() -> Node {
         .action(CliAction::ShowTransceivers)
 }
 
+fn cmd_show_link() -> Node {
+    Node::new("link")
+        .desc("Show each NVIDIA/Mellanox port's physical layer and PCIe link, as mstlink reports them")
+        .action(CliAction::ShowLink)
+}
+
 fn cmd_show_capture() -> Node {
     Node::new("capture")
         .desc("Show the running or most recent packet capture")
@@ -381,6 +387,7 @@ fn cmd_show() -> Node {
     root += cmd_show_capture();
     root += cmd_show_lldp();
     root += cmd_show_transceivers();
+    root += cmd_show_link();
     root += cmd_show_tech();
     root
 }
