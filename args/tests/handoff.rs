@@ -25,6 +25,10 @@ const MODES: [(&str, [bool; 3]); 6] = [
 ];
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns a process and creates a memfd, neither of which miri can do"
+)]
 fn handoff_protocol() {
     for driver in ["dpdk", "kernel"] {
         for (mode, supplied) in MODES {
@@ -63,7 +67,17 @@ fn run_child(driver: &str, mode: &str, supplied: [bool; 3]) {
         .into_iter()
         .zip(supplied)
         .collect::<Vec<_>>();
-    let mut command = Command::new(std::env::current_exe().unwrap());
+    // Under a cross test the binary runs in an emulator, which `scripts/test-runner.sh` names. It
+    // keeps the descriptors `pre_exec` maps across its own exec.
+    let exe = std::env::current_exe().unwrap();
+    let mut command = match std::env::var_os("DATAPLANE_TEST_EMULATOR") {
+        Some(emulator) => {
+            let mut command = Command::new(emulator);
+            command.arg(exe);
+            command
+        }
+        None => Command::new(exe),
+    };
     command.args([
         "--exact",
         "handoff_child",
