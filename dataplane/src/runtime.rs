@@ -878,6 +878,7 @@ pub fn main() {
                         &shutdown.metrics,
                         bridge.ports(),
                         interval,
+                        &setup.transceivers,
                     );
                 }
                 if let Some(interval) = config.metrics.mstlink_interval {
