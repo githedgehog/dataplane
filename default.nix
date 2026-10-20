@@ -1073,9 +1073,17 @@ let
                     # Inline-header assertions embed DPDK's dev path through __FILE__.
                     # Erase that store reference from runtime binaries without changing their size.
                     # Keep the debug files and their debuglink CRCs intact.
+                    #
+                    # Two more ride in with the static libraries, and neither is ever followed:
+                    # DPDK's `RTE_EAL_PMD_PATH`, which EAL reads only when it was itself loaded as a
+                    # shared object, and libnl's `/etc/libnl`, for a `classid` file nobody ships.
+                    # Kept, they would put DPDK's shared build, rdma-core and numactl in the image.
                     for f in $out/bin/*; do
                       ${pkgs.pkgsBuildHost.removeReferencesTo}/bin/remove-references-to \
-                        -t ${pkgs.pkgsHostHost.fancy.dpdk.dev} "$f"
+                        -t ${pkgs.pkgsHostHost.fancy.dpdk.dev} \
+                        -t ${pkgs.pkgsHostHost.fancy.dpdk.out} \
+                        -t ${pkgs.pkgsHostHost.fancy.libnl.out} \
+                        "$f"
                     done
                   ''
                 else
