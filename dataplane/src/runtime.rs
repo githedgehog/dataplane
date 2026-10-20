@@ -887,6 +887,7 @@ pub fn main() {
                         &shutdown.metrics,
                         bridge.ports(),
                         interval,
+                        &setup.phy,
                     );
                 }
             }
