@@ -4,8 +4,8 @@
 use k8s_intf::gateway_agent_crd::{
     GatewayAgentPeeringsAcl, GatewayAgentPeeringsAclDefault, GatewayAgentPeeringsAclRules,
     GatewayAgentPeeringsAclRulesAction, GatewayAgentPeeringsAclRulesMatch,
-    GatewayAgentPeeringsAclRulesMatchDst, GatewayAgentPeeringsAclRulesMatchSrc,
-    GatewayAgentPeeringsAclRulesScope,
+    GatewayAgentPeeringsAclRulesMatchDst, GatewayAgentPeeringsAclRulesMatchProto,
+    GatewayAgentPeeringsAclRulesMatchSrc, GatewayAgentPeeringsAclRulesScope,
 };
 use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
@@ -39,24 +39,27 @@ fn resolve_prefix(
     }
 }
 
-fn parse_proto(proto: Option<&str>) -> Result<AclProtoMatch, FromK8sConversionError> {
+fn parse_proto(
+    proto: Option<&GatewayAgentPeeringsAclRulesMatchProto>,
+) -> Result<AclProtoMatch, FromK8sConversionError> {
     let Some(proto) = proto else {
         return Ok(AclProtoMatch::Any);
     };
-    match proto {
-        "tcp" => Ok(AclProtoMatch::Tcp),
-        "udp" => Ok(AclProtoMatch::Udp),
-        other => {
-            let number = other.parse::<u8>();
-            match number {
-                Ok(n) if n == NextHeader::TCP.as_u8() => Ok(AclProtoMatch::Tcp),
-                Ok(n) if n == NextHeader::UDP.as_u8() => Ok(AclProtoMatch::Udp),
-                Ok(n) => Ok(AclProtoMatch::Other(n)),
-                Err(_) => Err(FromK8sConversionError::InvalidData(format!(
-                    "ACL protocol '{other}': expected \"tcp\", \"udp\", or a numeric protocol"
-                ))),
-            }
-        }
+    match (&proto.tcp, &proto.udp, proto.number) {
+        (None, None, None) => Ok(AclProtoMatch::Any),
+        (Some(_), None, None) => Ok(AclProtoMatch::Tcp),
+        (None, Some(_), None) => Ok(AclProtoMatch::Udp),
+        (None, None, Some(number)) => match u8::try_from(number) {
+            Ok(n) if n == NextHeader::TCP.as_u8() => Ok(AclProtoMatch::Tcp),
+            Ok(n) if n == NextHeader::UDP.as_u8() => Ok(AclProtoMatch::Udp),
+            Ok(n) => Ok(AclProtoMatch::Other(n)),
+            Err(_) => Err(FromK8sConversionError::InvalidData(format!(
+                "ACL protocol number {number}: expected a value between 0 and 255"
+            ))),
+        },
+        _ => Err(FromK8sConversionError::NotAllowed(
+            "ACL protocol must specify at most one of tcp, udp, or number".to_string(),
+        )),
     }
 }
 
@@ -178,7 +181,7 @@ impl TryFrom<(&SubnetMap, &SubnetMap, &GatewayAgentPeeringsAclRulesMatch)> for A
     ) -> Result<Self, Self::Error> {
         let (src, src_any_ports) = convert_match_side(m.src.as_deref(), src_subnets)?;
         let (dst, dst_any_ports) = convert_match_side(m.dst.as_deref(), dst_subnets)?;
-        let proto = parse_proto(m.proto.as_deref())?;
+        let proto = parse_proto(m.proto.as_ref())?;
         Ok(AclPattern::new(
             src,
             dst,
@@ -312,7 +315,10 @@ impl TryFrom<(&VpcSubnetMap, &str, &str, &GatewayAgentPeeringsAcl)> for Acl {
 #[cfg(test)]
 mod test {
     use super::*;
-    use k8s_intf::gateway_agent_crd::GatewayAgentPeeringsAclRulesScope;
+    use k8s_intf::gateway_agent_crd::{
+        GatewayAgentPeeringsAclRulesMatchProtoTcp, GatewayAgentPeeringsAclRulesMatchProtoUdp,
+        GatewayAgentPeeringsAclRulesScope,
+    };
     use lpm::prefix::Prefix as LpmPrefix;
 
     fn subnets(entries: &[(&str, &str)]) -> VpcSubnetMap {
@@ -369,19 +375,67 @@ mod test {
         }
     }
 
+    fn proto_tcp() -> GatewayAgentPeeringsAclRulesMatchProto {
+        GatewayAgentPeeringsAclRulesMatchProto {
+            number: None,
+            tcp: Some(GatewayAgentPeeringsAclRulesMatchProtoTcp {}),
+            udp: None,
+        }
+    }
+
+    fn proto_udp() -> GatewayAgentPeeringsAclRulesMatchProto {
+        GatewayAgentPeeringsAclRulesMatchProto {
+            number: None,
+            tcp: None,
+            udp: Some(GatewayAgentPeeringsAclRulesMatchProtoUdp {}),
+        }
+    }
+
+    fn proto_number(number: u64) -> GatewayAgentPeeringsAclRulesMatchProto {
+        GatewayAgentPeeringsAclRulesMatchProto {
+            number: Some(number),
+            tcp: None,
+            udp: None,
+        }
+    }
+
     #[test]
     fn test_proto_parsing() {
         assert_eq!(parse_proto(None).unwrap(), AclProtoMatch::Any);
-        assert_eq!(parse_proto(Some("tcp")).unwrap(), AclProtoMatch::Tcp);
-        assert_eq!(parse_proto(Some("udp")).unwrap(), AclProtoMatch::Udp);
-        assert_eq!(parse_proto(Some("47")).unwrap(), AclProtoMatch::Other(47));
+        let empty = GatewayAgentPeeringsAclRulesMatchProto {
+            number: None,
+            tcp: None,
+            udp: None,
+        };
+        assert_eq!(parse_proto(Some(&empty)).unwrap(), AclProtoMatch::Any);
+        assert_eq!(parse_proto(Some(&proto_tcp())).unwrap(), AclProtoMatch::Tcp);
+        assert_eq!(parse_proto(Some(&proto_udp())).unwrap(), AclProtoMatch::Udp);
+        assert_eq!(
+            parse_proto(Some(&proto_number(47))).unwrap(),
+            AclProtoMatch::Other(47)
+        );
         // Numeric TCP/UDP protocol numbers normalize to the dedicated variants (not Other), so
         // they route to the TCP/UDP tables in the dataplane rather than the generic proto table.
-        assert_eq!(parse_proto(Some("6")).unwrap(), AclProtoMatch::Tcp);
-        assert_eq!(parse_proto(Some("17")).unwrap(), AclProtoMatch::Udp);
-        assert!(parse_proto(Some("bogus")).is_err());
-        // "icmp" is not supported yet
-        assert!(parse_proto(Some("icmp")).is_err());
+        assert_eq!(
+            parse_proto(Some(&proto_number(6))).unwrap(),
+            AclProtoMatch::Tcp
+        );
+        assert_eq!(
+            parse_proto(Some(&proto_number(17))).unwrap(),
+            AclProtoMatch::Udp
+        );
+        assert!(parse_proto(Some(&proto_number(256))).is_err());
+        // At most one protocol can be set
+        let tcp_and_udp = GatewayAgentPeeringsAclRulesMatchProto {
+            udp: Some(GatewayAgentPeeringsAclRulesMatchProtoUdp {}),
+            ..proto_tcp()
+        };
+        assert!(parse_proto(Some(&tcp_and_udp)).is_err());
+        let tcp_and_number = GatewayAgentPeeringsAclRulesMatchProto {
+            number: Some(6),
+            ..proto_tcp()
+        };
+        assert!(parse_proto(Some(&tcp_and_number)).is_err());
     }
 
     #[test]
@@ -680,7 +734,7 @@ mod test {
         let vpc_subnets = subnets(&[]);
         let m = GatewayAgentPeeringsAclRulesMatch {
             dst: None,
-            proto: Some("tcp".to_string()),
+            proto: Some(proto_tcp()),
             src: Some(vec![GatewayAgentPeeringsAclRulesMatchSrc {
                 cidr: None,
                 ports: Some(vec!["443".to_string()]),
@@ -748,7 +802,7 @@ mod test {
                             ports: Some(vec!["443".to_string()]),
                             vpc_subnet: None,
                         }]),
-                        proto: Some("tcp".to_string()),
+                        proto: Some(proto_tcp()),
                         src: None,
                     }),
                     None,

@@ -8,8 +8,10 @@ use bolero::{Driver, ValueGenerator};
 use crate::gateway_agent_crd::{
     GatewayAgentPeeringsAcl, GatewayAgentPeeringsAclDefault, GatewayAgentPeeringsAclRules,
     GatewayAgentPeeringsAclRulesAction, GatewayAgentPeeringsAclRulesMatch,
-    GatewayAgentPeeringsAclRulesMatchDst, GatewayAgentPeeringsAclRulesMatchSrc,
-    GatewayAgentPeeringsAclRulesScope, GatewayAgentPeeringsPeering,
+    GatewayAgentPeeringsAclRulesMatchDst, GatewayAgentPeeringsAclRulesMatchProto,
+    GatewayAgentPeeringsAclRulesMatchProtoTcp, GatewayAgentPeeringsAclRulesMatchProtoUdp,
+    GatewayAgentPeeringsAclRulesMatchSrc, GatewayAgentPeeringsAclRulesScope,
+    GatewayAgentPeeringsPeering,
 };
 
 const MAX_RULES: u8 = 3;
@@ -189,6 +191,43 @@ impl AclGenerator {
         Some(out)
     }
 
+    /// Draw a protocol match, and whether the protocol accepts ports.
+    fn proto<D: Driver>(
+        d: &mut D,
+    ) -> Option<(Option<GatewayAgentPeeringsAclRulesMatchProto>, bool)> {
+        let block = |tcp, udp, number| GatewayAgentPeeringsAclRulesMatchProto { number, tcp, udp };
+        Some(match d.gen_u8(Bound::Included(&0), Bound::Included(&4))? {
+            0 => (None, false),
+            1 => (
+                Some(block(
+                    Some(GatewayAgentPeeringsAclRulesMatchProtoTcp {}),
+                    None,
+                    None,
+                )),
+                true,
+            ),
+            2 => (
+                Some(block(
+                    None,
+                    Some(GatewayAgentPeeringsAclRulesMatchProtoUdp {}),
+                    None,
+                )),
+                true,
+            ),
+            // An empty protocol block matches any protocol, like an absent one
+            3 => (Some(block(None, None, None)), false),
+            _ => {
+                let number = d.produce::<u8>()?;
+                // Numbers 6 and 17 normalize to TCP and UDP, which accept ports
+                let may_use_ports = number == 6 || number == 17;
+                (
+                    Some(block(None, None, Some(u64::from(number)))),
+                    may_use_ports,
+                )
+            }
+        })
+    }
+
     fn rule<D: Driver>(&self, d: &mut D, index: u8) -> Option<GatewayAgentPeeringsAclRules> {
         let (from, to) = if d.produce::<bool>()? {
             (&self.left, &self.right)
@@ -202,18 +241,7 @@ impl AclGenerator {
             _ => (Some(from.vpc.clone()), Some(to.vpc.clone())),
         };
 
-        let (proto, may_use_ports) = match d.gen_u8(Bound::Included(&0), Bound::Included(&3))? {
-            0 => (None, false),
-            1 => (Some("tcp".to_string()), true),
-            2 => (Some("udp".to_string()), true),
-            _ => (
-                Some(
-                    d.gen_u8(Bound::Included(&1), Bound::Included(&254))?
-                        .to_string(),
-                ),
-                false,
-            ),
-        };
+        let (proto, may_use_ports) = Self::proto(d)?;
 
         let src_entries = Self::entries(
             d,
