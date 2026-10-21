@@ -278,7 +278,7 @@ impl AclRule {
         }
     }
 
-    fn validate(
+    pub(crate) fn validate(
         self,
         manifest_left: &ValidatedManifest,
         manifest_right: &ValidatedManifest,

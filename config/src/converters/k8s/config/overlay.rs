@@ -12,7 +12,7 @@ use crate::external::overlay::Overlay;
 use crate::external::overlay::vpc::{Vpc, VpcTable};
 use crate::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
 
-fn extract_subnets(
+pub(super) fn extract_subnets(
     vpcs: &BTreeMap<String, GatewayAgentVpcs>,
 ) -> Result<VpcSubnetMap, FromK8sConversionError> {
     let mut vpc_subnets = VpcSubnetMap::new();
@@ -65,7 +65,8 @@ impl TryFrom<&GatewayAgentSpec> for Overlay {
     type Error = FromK8sConversionError;
 
     fn try_from(spec: &GatewayAgentSpec) -> Result<Self, Self::Error> {
-        match (spec.vpcs.as_ref(), spec.peerings.as_ref()) {
+        let rate_limits = super::ratelimit::rate_limits(spec)?;
+        let overlay = match (spec.vpcs.as_ref(), spec.peerings.as_ref()) {
             (None, None) => Ok(Overlay::new(VpcTable::new(), VpcPeeringTable::new())),
             (None, Some(peerings)) => Err(FromK8sConversionError::NotAllowed(format!(
                 "Found 0 vpcs but {} peerings",
@@ -83,7 +84,8 @@ impl TryFrom<&GatewayAgentSpec> for Overlay {
                 let overlay = Overlay::new(vpc_table, peering_table);
                 Ok(overlay)
             }
-        }
+        }?;
+        Ok(overlay.with_rate_limits(rate_limits))
     }
 }
 

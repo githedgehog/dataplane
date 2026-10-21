@@ -56,7 +56,9 @@ pub mod test {
 
     use config::external::ExternalConfigBuilder;
     use config::external::overlay::Overlay;
-    use config::external::overlay::ratelimit::{ColorActions, RateLimit, RateLimitTables};
+    use config::external::overlay::ratelimit::{
+        ColorActions, Meter, MeterProfile, RateLimitRule, RateLimitTables,
+    };
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
@@ -211,18 +213,26 @@ pub mod test {
     fn sample_rate_limits() -> RateLimitTables {
         let rate = Rate::new(std::num::NonZeroU64::new(125_000_000).expect("not zero"));
         let profile = Profile::new(rate, 1_250_000, None, 0).expect("a burst");
-        let mut tables = RateLimitTables::default();
-        tables
-            .bytes
-            .add(RateLimit {
-                name: "vpc-1-to-vpc-2".to_string(),
-                vpc: "VPC-1".to_string(),
-                destination: Prefix::expect_from(("192.168.128.0", 24)),
-                profile,
-                actions: ColorActions::default(),
-            })
-            .expect("one rate limit");
-        tables
+        RateLimitTables {
+            meters: [(
+                "vpc-1-to-vpc-2".into(),
+                Meter {
+                    bytes: Some(MeterProfile {
+                        profile,
+                        actions: ColorActions::default(),
+                    }),
+                    packets: None,
+                },
+            )]
+            .into(),
+            rules: vec![RateLimitRule {
+                peering: "VPC-1--VPC-2".into(),
+                from: "VPC-1".into(),
+                to: "VPC-2".into(),
+                pattern: config::external::overlay::acl::AclPattern::default(),
+                meter: "vpc-1-to-vpc-2".into(),
+            }],
+        }
     }
 
     /* DEVICE configuration */
@@ -574,10 +584,9 @@ pub mod test {
         let enforced = enforced.load();
         assert_eq!(
             enforced
-                .bytes()
-                .rules()
+                .meters()
                 .iter()
-                .map(rate_limit::Rule::name)
+                .map(rate_limit::Meter::name)
                 .collect::<Vec<_>>(),
             ["vpc-1-to-vpc-2"],
             "an applied config hands its rate limits to the workers"

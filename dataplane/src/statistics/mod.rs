@@ -12,12 +12,14 @@ use tracectl::trace_target;
 trace_target!("stats-server", LevelFilter::INFO, &[]);
 
 /// Simple Prometheus metrics handler
+#[derive(Clone)]
 pub struct PrometheusHandler {
     handle: PrometheusHandle,
+    rate_limits: rate_limit::RateLimitReader<rate_limit::PeeringRules>,
 }
 
 impl PrometheusHandler {
-    pub fn new() -> Self {
+    pub fn new(rate_limits: rate_limit::RateLimitReader<rate_limit::PeeringRules>) -> Self {
         let prometheus_handle = PrometheusBuilder::new()
             .set_buckets_for_metric(
                 Matcher::Full("http_request_duration_seconds".to_string()),
@@ -31,17 +33,19 @@ impl PrometheusHandler {
 
         Self {
             handle: prometheus_handle,
+            rate_limits,
         }
     }
 }
 
 /// HTTP handler for /metrics endpoint
 async fn metrics_handler(
-    axum::extract::State(handler): axum::extract::State<PrometheusHandle>,
+    axum::extract::State(handler): axum::extract::State<PrometheusHandler>,
 ) -> Response<String> {
+    handler.rate_limits.load().publish_metrics();
     Response::builder()
         .header("Content-Type", "text/plain; version=1.0.0; charset=utf-8")
-        .body(handler.render())
+        .body(handler.handle.render())
         .unwrap()
 }
 
@@ -54,12 +58,11 @@ pub fn spawn_metrics(
     handle: &tokio::runtime::Handle,
     addr: std::net::SocketAddr,
     stats: StatsCollector,
+    rate_limits: rate_limit::RateLimitReader<rate_limit::PeeringRules>,
 ) {
-    let PrometheusHandler {
-        handle: prom_handle,
-    } = PrometheusHandler::new();
+    let handler = PrometheusHandler::new(rate_limits);
 
-    let upkeep_handle = prom_handle.clone();
+    let upkeep_handle = handler.handle.clone();
     let upkeep_cancel = metrics.cancel_token();
     metrics.spawn_on(
         async move {
@@ -92,7 +95,7 @@ pub fn spawn_metrics(
         async move {
             let app = Router::new()
                 .route("/metrics", get(metrics_handler))
-                .with_state(prom_handle);
+                .with_state(handler);
 
             info!("metrics server listening on {}", addr);
 

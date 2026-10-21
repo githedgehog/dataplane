@@ -8,7 +8,7 @@ use acl_filter::AclFilterContextWriter;
 use concurrency::sync::Arc;
 use config::external::overlay::ValidatedOverlay;
 use flow_entry::flow_table::FlowTable;
-use rate_limit::{Backend, RateLimitWriter, VpcDestination};
+use rate_limit::{Backend, PeeringRules, RateLimitWriter};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
@@ -102,7 +102,7 @@ pub struct ConfigProcessorParams {
     pub aclfilterw: AclFilterContextWriter,
 
     // writer for rate limits
-    pub rate_limits: RateLimitWriter<VpcDestination>,
+    pub rate_limits: RateLimitWriter<PeeringRules>,
 
     // writer for port forwarding table
     pub portfw_w: PortFwTableWriter,
@@ -580,7 +580,7 @@ fn apply_acl_filter_config(
 
 fn apply_rate_limit_config(
     overlay: &ValidatedOverlay,
-    rate_limits: &RateLimitWriter<VpcDestination>,
+    rate_limits: &RateLimitWriter<PeeringRules>,
 ) -> ConfigResult {
     rate_limits.apply(overlay, Backend::Dpdk)?;
     debug!("Successfully updated the rate limits");
