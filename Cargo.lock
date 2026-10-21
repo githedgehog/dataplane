@@ -1597,6 +1597,7 @@ dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
  "bolero",
+ "dataplane-clock",
  "dataplane-concurrency",
  "dataplane-dpdk",
  "dataplane-dpdk-sys",

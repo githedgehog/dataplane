@@ -228,7 +228,11 @@ fn flow_timers_progress_while_the_worker_polls() {
     thread::scope(|scope| {
         let _stop_on_failure = shutdown.workers.cancel_token().drop_guard();
         let worker = scope.spawn(|| {
-            Worker::new(0, Vec::new()).run(&shutdown.workers, &setup, runtime.handle());
+            Worker::new(0, Vec::new(), args::IdleConfig::default()).run(
+                &shutdown.workers,
+                &setup,
+                runtime.handle(),
+            );
         });
         let (worker_id, [(forward, reverse), (cancelled, _)]) =
             created_rx.recv_timeout(Duration::from_secs(5)).unwrap();
