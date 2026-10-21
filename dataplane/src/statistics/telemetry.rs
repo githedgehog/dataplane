@@ -4,11 +4,11 @@
 //! Publishing what the pipeline and the workers count as metrics.
 //!
 //! The counts already exist -- per-reason packet counts, the flow table, the driver's per-worker
-//! totals -- for the CLI. [`Telemetry`] polls them and publishes absolute values, so exporting
-//! them costs the packet path nothing.
+//! totals -- for the CLI. [`Telemetry`] reads them and publishes absolute values when asked, which
+//! production does as each scrape comes, so exporting them costs the packet path nothing. The
+//! workers' totals are as of the driver supervisor's last poll.
 
 use std::collections::HashMap;
-use std::time::Duration;
 
 use concurrency::sync::Arc;
 use flow_entry::flow_table::FlowTable;
@@ -16,9 +16,6 @@ use net::packet::PacketStats;
 use stats::{FlowTableMetrics, PipelineMetrics, WorkerCounters, WorkerMetrics};
 
 use crate::drivers::status::{DriverStatusReader, RxTaskStatus};
-
-/// How often production publishes. Scrapers poll far less often than this.
-pub(crate) const PUBLISH_EVERY: Duration = Duration::from_secs(1);
 
 /// Where the published counts come from.
 pub(crate) struct TelemetrySources {
@@ -87,6 +84,7 @@ fn counters(task: &RxTaskStatus) -> WorkerCounters {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::time::Duration;
 
     use metrics_exporter_prometheus::PrometheusBuilder;
     use net::packet::DoneReason;
@@ -119,6 +117,7 @@ mod tests {
         worker.rx_tasks.push(task);
         writer.publish(DriverStatus {
             max_rx_batch: 32,
+            poll_period: Duration::from_secs(1),
             workers: vec![worker],
         });
 

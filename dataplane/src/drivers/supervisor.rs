@@ -47,9 +47,6 @@ pub(crate) const TASK_GRACE_PERIOD: u16 = 4;
 /// Interval, in seconds, at which the supervisor will check rx task watchdogs
 pub(crate) const TASK_CHECK_PERIOD: u16 = TASK_PAT_PERIOD + TASK_GRACE_PERIOD;
 
-/// Interval, in seconds, at which the supervisor checks rx task activity, ignoring watchdogs
-pub(crate) const TASK_POLL_PERIOD: u16 = 1;
-
 /// The supervisor's view of one rx task: the interface it serves and the watchdog it reports on.
 #[derive(Clone)]
 pub(crate) struct RxTaskMonitor {
@@ -93,15 +90,18 @@ impl<'scope, E> WorkerMonitor<'scope, E> {
 ///
 /// `driver` names the driver in the supervisor's thread name and logs. The supervisor
 /// just joins-and-logs on worker termination; worker fatal reporting is left to the driver.
-/// `publish_counters` runs on each status poll and once after all workers have stopped.
+/// The supervisor polls every `poll_period`, collecting the workers' counters into the
+/// [`DriverStatus`]; `publish_counters` runs on each poll and once after all workers have stopped.
 ///
 /// # Errors
 ///
 /// Returns an error if the supervisor thread cannot be spawned.
+#[allow(clippy::too_many_arguments)] // each is the driver's to give
 pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
     scope: &'scope thread::Scope<'scope, '_>,
     driver: &'static str,
     max_rx_batch: usize,
+    poll_period: Duration,
     subsystem: &Subsystem,
     mut monitors: Vec<WorkerMonitor<'scope, E>>,
     status_writer: DriverStatusWriter,
@@ -109,7 +109,6 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
 ) -> std::io::Result<()> {
     // the two time intervals that matter for liveness detection
     let check_period = Duration::from_secs(u64::from(TASK_CHECK_PERIOD));
-    let poll_period = Duration::from_secs(u64::from(TASK_POLL_PERIOD));
 
     let subsystem = subsystem.clone();
 
@@ -135,6 +134,8 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
 
             // the next instant when the rx tasks watchdogs should be checked.
             let mut next_watchdog_check = clock::now().add(check_period);
+            // when the counters were last collected, for rates over the time actually elapsed
+            let mut last_poll = clock::now();
 
             loop {
                 // check if we must run. Otherwise (got cancelled) join all workers
@@ -145,6 +146,8 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                 // check the current time and decide if we should check whether the rx tasks patted the watchdogs.
                 // If so, compute the next time we should check them again in the future.
                 let now = clock::now();
+                let elapsed = now.saturating_duration_since(last_poll);
+                last_poll = now;
                 let check_watchdog = now >= next_watchdog_check;
                 if check_watchdog {
                     while next_watchdog_check <= now {
@@ -174,7 +177,13 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                             any_running = true;
 
                             // check the worker's rx tasks and update the corresponding status
-                            check_worker_rx_tasks(driver, monitor, wk_status, check_watchdog);
+                            check_worker_rx_tasks(
+                                driver,
+                                monitor,
+                                wk_status,
+                                check_watchdog,
+                                elapsed,
+                            );
                         }
                     } else {
                         // A worker monitor without a handle means that the worker was joined already
@@ -192,6 +201,7 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                 // publish the status of the driver
                 status_writer.publish(DriverStatus {
                     max_rx_batch,
+                    poll_period,
                     workers: workers_status.clone(),
                 });
 
@@ -214,6 +224,7 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
             // want to log the last state
             let last = DriverStatus {
                 max_rx_batch,
+                poll_period,
                 workers: workers_status.clone(),
             };
             status_writer.publish(last);
@@ -278,13 +289,15 @@ fn must_run<E: Display>(
 }
 
 /// Check the activity of the rx tasks for a worker (watchdog, if `check_watchdog` is true)
-/// from its `WorkerMonitor` and update the corresponding `WorkerStatus`
+/// from its `WorkerMonitor` and update the corresponding `WorkerStatus`, with rates over `elapsed`,
+/// the time since the last check.
 #[allow(clippy::cast_precision_loss)]
 fn check_worker_rx_tasks<E>(
     driver: &str,
     monitor: &WorkerMonitor<'_, E>,
     wk_status: &mut WorkerStatus,
     check_watchdog: bool,
+    elapsed: Duration,
 ) {
     for (idx, task) in monitor.rx_tasks.iter().enumerate() {
         let rx_task_status = &mut wk_status.rx_tasks[idx];
@@ -309,7 +322,11 @@ fn check_worker_rx_tasks<E>(
                 );
             }
             Activity::Active => {
-                rx_task_status.pps = counters.rx as f64 / f64::from(TASK_POLL_PERIOD);
+                rx_task_status.pps = if elapsed.is_zero() {
+                    0.0
+                } else {
+                    counters.rx as f64 / elapsed.as_secs_f64()
+                };
                 debug!(
                     "{driver} worker {} on {}: rx {} ({:.0} pps), tx {}, pipeline drops {}, \
                      tx drops {}, punt drops {}, parse errors {}",
@@ -366,6 +383,7 @@ mod tests {
                 scope,
                 "test",
                 32,
+                Duration::from_secs(1),
                 &subsystem,
                 vec![WorkerMonitor::new(0, worker, vec![task])],
                 writer,

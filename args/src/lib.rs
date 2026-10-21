@@ -241,6 +241,9 @@ pub const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh/dataplane.sock";
 /// runtime inspection and control.
 pub const DEFAULT_DP_UX_PATH_CLI: &str = "/var/run/dataplane/cli.sock";
 
+/// How often, in milliseconds, a driver's supervisor collects its workers' counters by default.
+pub const DEFAULT_SUPERVISOR_POLL_MS: u32 = 1000;
+
 /// Default path to the FRR agent socket.
 ///
 /// This socket is used to connect to the FRR agent that controls FRR
@@ -619,6 +622,8 @@ pub struct DpdkDriverConfigSection {
     pub eal_args: Vec<String>,
     /// Packet-processing worker threads to run, each owning one rx/tx queue pair per port
     pub num_workers: NonZero<u16>,
+    /// How often, in milliseconds, the driver's supervisor collects its workers' counters.
+    pub supervisor_poll_ms: u32,
     /// Hugepage placement selected by init, or `None` for EAL defaults.
     pub hugepages: Option<HugepagePlan>,
     /// Hugepage memory to require on each NIC NUMA node, in GiB, overriding what init computes
@@ -647,6 +652,8 @@ pub struct KernelDriverConfigSection {
     pub interfaces: Vec<InterfaceArg>,
     /// Packet-processing worker threads to run
     pub num_workers: NonZero<u16>,
+    /// How often, in milliseconds, the driver's supervisor collects its workers' counters.
+    pub supervisor_poll_ms: u32,
 }
 
 /// Configuration for the dataplane's command-line interface (CLI).
@@ -924,6 +931,16 @@ impl DriverConfigSection {
             DriverConfigSection::Dpdk(dpdk) => dpdk.num_workers,
             DriverConfigSection::Kernel(kernel) => kernel.num_workers,
         }
+    }
+
+    /// How often the driver's supervisor collects its workers' counters and checks on them.
+    #[must_use]
+    pub fn supervisor_poll(&self) -> Duration {
+        let ms = match self {
+            DriverConfigSection::Dpdk(dpdk) => dpdk.supervisor_poll_ms,
+            DriverConfigSection::Kernel(kernel) => kernel.supervisor_poll_ms,
+        };
+        Duration::from_millis(u64::from(ms))
     }
 }
 
@@ -1515,11 +1532,13 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     hugepages: None,
                     hugepages_gib: value.hugepages_gib,
                     num_workers: value.num_workers,
+                    supervisor_poll_ms: value.supervisor_poll_ms,
                 })
             }
             Some("kernel") => DriverConfigSection::Kernel(KernelDriverConfigSection {
                 interfaces: value.interfaces().collect(),
                 num_workers: value.num_workers,
+                supervisor_poll_ms: value.supervisor_poll_ms,
             }),
             Some(other) => return Err(InvalidCmdArguments::InvalidDriver(other.to_string())),
             None => return Err(InvalidCmdArguments::NoDriverSpecified),
@@ -1628,6 +1647,17 @@ Separate interfaces with commas and options with slashes."
                 it must hold every port's receive pool and the drivers' own allocations"
     )]
     hugepages_gib: Option<u32>,
+
+    /// How often the driver's supervisor collects its workers' counters, in milliseconds.
+    #[arg(
+        long,
+        value_name = "MS",
+        default_value_t = DEFAULT_SUPERVISOR_POLL_MS,
+        value_parser = clap::value_parser!(u32).range(10..=10_000),
+        help = "How often, in milliseconds in [10..10000], the driver's supervisor collects its \
+                workers' counters: how stale the worker counters in telemetry and the CLI may be"
+    )]
+    supervisor_poll_ms: u32,
 
     #[arg(
         long,
@@ -1881,6 +1911,12 @@ impl CmdArgs {
     #[must_use]
     pub fn num_workers(&self) -> NonZero<u16> {
         self.num_workers
+    }
+
+    /// How often the driver's supervisor collects its workers' counters, in milliseconds.
+    #[must_use]
+    pub fn supervisor_poll_ms(&self) -> u32 {
+        self.supervisor_poll_ms
     }
 
     /// Get the list of kernel network interfaces to use.
@@ -2179,6 +2215,22 @@ mod tests {
         assert_eq!(parse("64").unwrap().num_workers().get(), 64);
         assert!(parse("0").is_err());
         assert!(parse("65").is_err());
+    }
+
+    #[test]
+    fn a_supervisor_poll_outside_ten_ms_to_ten_s_is_refused_at_parse_time() {
+        use crate::{CmdArgs, DEFAULT_SUPERVISOR_POLL_MS, Parser};
+        let parse = |n: &str| CmdArgs::try_parse_from(["dataplane", "--supervisor-poll-ms", n]);
+        assert_eq!(
+            CmdArgs::try_parse_from(["dataplane"])
+                .unwrap()
+                .supervisor_poll_ms(),
+            DEFAULT_SUPERVISOR_POLL_MS
+        );
+        assert_eq!(parse("10").unwrap().supervisor_poll_ms(), 10);
+        assert_eq!(parse("10000").unwrap().supervisor_poll_ms(), 10_000);
+        assert!(parse("9").is_err());
+        assert!(parse("10001").is_err());
     }
 }
 

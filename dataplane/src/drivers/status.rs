@@ -109,6 +109,8 @@ impl WorkerStatus {
 pub struct DriverStatus {
     /// The most frames one receive call can return, which differs between drivers.
     pub max_rx_batch: usize,
+    /// How often the supervisor collects the workers' counters into this status.
+    pub poll_period: std::time::Duration,
     pub workers: Vec<WorkerStatus>,
 }
 
@@ -239,7 +241,7 @@ impl Display for DriverStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading("Packet driver status").fmt(f)?;
         writeln!(f, " max rx batch: {} pkts", self.max_rx_batch)?;
-        write!(f, " activity poll: {} s", supervisor::TASK_POLL_PERIOD)?;
+        write!(f, " activity poll: {:?}", self.poll_period)?;
         write!(f, "  watchdog pat: {} s", supervisor::TASK_PAT_PERIOD)?;
         writeln!(f, "  watchdog check: {} s", supervisor::TASK_CHECK_PERIOD)?;
 
