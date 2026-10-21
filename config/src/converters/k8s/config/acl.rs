@@ -242,7 +242,7 @@ impl TryFrom<(&SubnetMap, &SubnetMap, &GatewayAgentPeeringsAclRulesMatch)> for A
 /// # Errors
 ///
 /// Returns an error if both values are blank, or if a non-blank value matches neither VPC name.
-fn complete_from_to(
+pub(super) fn complete_from_to(
     rule_name: &str,
     from: &str,
     to: &str,

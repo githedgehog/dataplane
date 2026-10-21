@@ -13,12 +13,15 @@ concurrency = { workspace = true }
 config = { workspace = true }
 lpm = { workspace = true }
 match-action = { workspace = true, features = ["derive"] }
+metrics = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 policer = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+bolero = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
 # The reference (linear-scan) backend, so the tests run without the EAL.
 acl = { workspace = true, features = ["reference"] }
 dpdk = { workspace = true, features = ["test"] }

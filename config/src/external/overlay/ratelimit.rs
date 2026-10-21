@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Rate limits by source VPC and destination prefix, before NAT.
+//! Ordered peering rules selecting shared meters, before NAT.
 //!
-//! Each table selects the longest matching destination prefix; nested limits are not cumulative.
-//! Byte rules run before packet rules, whose meters cannot improve the byte meter's color.
-//! Each rule applies its color's action: pass, remark DSCP, or drop.
-//! Drops stop processing; the packet rule's DSCP remark wins if both rules remark.
+//! The first matching rule selects one meter. Its byte profile runs before its packet profile;
+//! packet metering can only preserve or worsen the byte result. Drops stop processing.
 
+use super::acl::{AclAction, AclPattern, AclRule, AclScope, ValidatedAclPattern};
 use super::vpc::ValidatedVpcTable;
 use crate::ConfigError;
-use lpm::prefix::Prefix;
 use net::ip::dscp::Dscp;
 use net::vxlan::Vni;
 use policer::Profile;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 /// What happens to a packet of one color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,317 +44,130 @@ impl Default for ColorActions {
     }
 }
 
-/// One rate limit, as configured.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RateLimit {
-    /// Names the rate limit; unique among them.
-    pub name: String,
-    /// The VPC whose traffic is limited.
-    pub vpc: String,
-    /// Where that traffic is going, as the VPC addresses it (before any NAT).
-    pub destination: Prefix,
-    /// The rates and bursts, in bytes or packets as the rate limit's table counts.
+/// One component of a meter, in bytes or packets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeterProfile {
     pub profile: Profile,
     pub actions: ColorActions,
 }
 
-/// One table of rate limits, by name.
+/// A named meter may enforce both bandwidth and packet-rate limits.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RateLimitTable(BTreeMap<String, RateLimit>);
-
-impl RateLimitTable {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Add `limit`.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a second rate limit by the same name.
-    pub fn add(&mut self, limit: RateLimit) -> Result<(), ConfigError> {
-        if self.0.contains_key(&limit.name) {
-            return Err(ConfigError::DuplicateRateLimit(limit.name));
-        }
-        self.0.insert(limit.name.clone(), limit);
-        Ok(())
-    }
-
-    pub fn values(&self) -> impl Iterator<Item = &RateLimit> {
-        self.0.values()
-    }
-
-    /// Check every rate limit against `vpcs`.
-    ///
-    /// # Errors
-    ///
-    /// Rejects unknown VPCs and duplicate VPC/destination pairs, which would make rule selection
-    /// ambiguous.
-    pub fn validate(&self, vpcs: &ValidatedVpcTable) -> Result<ValidatedRateLimits, ConfigError> {
-        let mut seen: HashMap<(Vni, Prefix), &str> = HashMap::new();
-        let mut validated = Vec::with_capacity(self.0.len());
-        for limit in self.0.values() {
-            let vni = vpcs
-                .get_vpc(&limit.vpc)
-                .ok_or_else(|| ConfigError::RateLimitNoSuchVpc {
-                    limit: limit.name.clone(),
-                    vpc: limit.vpc.clone(),
-                })?
-                .vni();
-            if let Some(other) = seen.insert((vni, limit.destination), &limit.name) {
-                return Err(ConfigError::RateLimitsOverlap(
-                    other.to_string(),
-                    limit.name.clone(),
-                ));
-            }
-            validated.push(ValidatedRateLimit {
-                limit: limit.clone(),
-                vni,
-            });
-        }
-        Ok(ValidatedRateLimits(validated))
-    }
+pub struct Meter {
+    pub bytes: Option<MeterProfile>,
+    pub packets: Option<MeterProfile>,
 }
 
-/// A rate limit whose VPC exists.
+/// A directional rule within a peering. Rules retain their configured order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValidatedRateLimit {
-    limit: RateLimit,
-    vni: Vni,
+pub struct RateLimitRule {
+    pub peering: String,
+    pub from: String,
+    pub to: String,
+    pub pattern: AclPattern,
+    pub meter: String,
 }
 
-impl ValidatedRateLimit {
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.limit.name
-    }
-
-    #[must_use]
-    pub fn vpc(&self) -> &str {
-        &self.limit.vpc
-    }
-
-    /// The VNI of the rate limit's VPC.
-    #[must_use]
-    pub fn vni(&self) -> Vni {
-        self.vni
-    }
-
-    #[must_use]
-    pub fn destination(&self) -> Prefix {
-        self.limit.destination
-    }
-
-    #[must_use]
-    pub fn profile(&self) -> Profile {
-        self.limit.profile
-    }
-
-    #[must_use]
-    pub fn actions(&self) -> ColorActions {
-        self.limit.actions
-    }
-}
-
-/// One table of rate limits, validated, in name order.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ValidatedRateLimits(Vec<ValidatedRateLimit>);
-
-impl ValidatedRateLimits {
-    pub fn iter(&self) -> impl Iterator<Item = &ValidatedRateLimit> {
-        self.0.iter()
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-/// Both tables of rate limits: the byte limits, and the packet limits after them.
+/// Named meters and the ordered rules that select them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RateLimitTables {
-    /// Limits on bytes a second.
-    pub bytes: RateLimitTable,
-    /// Limits on packets a second, color-aware of what the byte limits did.
-    pub packets: RateLimitTable,
+    pub meters: BTreeMap<String, Meter>,
+    pub rules: Vec<RateLimitRule>,
 }
 
 impl RateLimitTables {
-    /// Check both tables against `vpcs`.
+    /// Validate meter references and apply the same peering bounds as ACL matches.
     ///
     /// # Errors
     ///
-    /// As [`RateLimitTable::validate`], and refuses a name used in both tables: names identify rate
-    /// limits wherever they are shown.
+    /// Rejects empty meters, unknown references, and invalid matches.
     pub fn validate(
         &self,
         vpcs: &ValidatedVpcTable,
     ) -> Result<ValidatedRateLimitTables, ConfigError> {
-        if let Some(name) = self
-            .bytes
-            .0
-            .keys()
-            .find(|name| self.packets.0.contains_key(*name))
-        {
-            return Err(ConfigError::DuplicateRateLimit(name.clone()));
+        for (name, meter) in &self.meters {
+            if name.is_empty() || (meter.bytes.is_none() && meter.packets.is_none()) {
+                return Err(ConfigError::InvalidRateLimit(format!(
+                    "meter {name:?} needs a name and a profile"
+                )));
+            }
+        }
+        let mut rules = Vec::new();
+        for (index, rule) in self.rules.iter().enumerate() {
+            if !self.meters.contains_key(&rule.meter) {
+                return Err(ConfigError::InvalidRateLimit(format!(
+                    "rule {index} refers to unknown meter {:?}",
+                    rule.meter
+                )));
+            }
+            let from = vpcs
+                .get_vpc(&rule.from)
+                .ok_or_else(|| ConfigError::RateLimitNoSuchVpc {
+                    limit: rule.meter.clone(),
+                    vpc: rule.from.clone(),
+                })?;
+            let mut found = false;
+            for peering in from
+                .peerings()
+                .iter()
+                .filter(|p| p.name() == rule.peering && p.remote().name() == rule.to)
+            {
+                found = true;
+                let acl = AclRule {
+                    name: format!("rate limit {}/{}", rule.peering, index),
+                    from: rule.from.clone(),
+                    to: rule.to.clone(),
+                    pattern: rule.pattern.clone(),
+                    action: AclAction::Allow,
+                    scope: AclScope::Packet,
+                    log: false,
+                }
+                .validate(peering.local(), peering.remote())?;
+                rules.push(ValidatedRateLimitRule {
+                    meter: rule.meter.clone(),
+                    from: from.vni(),
+                    to: peering.remote_vni(),
+                    pattern: acl.pattern().clone(),
+                    description: format!("{} -> {}: {:?}", rule.from, rule.to, acl.pattern()),
+                });
+            }
+            if !found {
+                return Err(ConfigError::InvalidRateLimit(format!(
+                    "rule {index} has no peering {} from {} to {}",
+                    rule.peering, rule.from, rule.to
+                )));
+            }
         }
         Ok(ValidatedRateLimitTables {
-            bytes: self.bytes.validate(vpcs)?,
-            packets: self.packets.validate(vpcs)?,
+            meters: self.meters.clone(),
+            rules,
         })
     }
 
-    /// How many rate limits there are, in both tables.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.bytes.0.len() + self.packets.0.len()
+        self.meters.len()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.meters.is_empty()
     }
 }
 
-/// Both tables of rate limits, validated.
+/// A rule whose VPCs and match have been validated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedRateLimitRule {
+    pub meter: String,
+    pub from: Vni,
+    pub to: Vni,
+    pub pattern: ValidatedAclPattern,
+    pub description: String,
+}
+
+/// Validated named meters and ordered matches.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidatedRateLimitTables {
-    bytes: ValidatedRateLimits,
-    packets: ValidatedRateLimits,
-}
-
-impl ValidatedRateLimitTables {
-    /// The byte limits.
-    #[must_use]
-    pub fn bytes(&self) -> &ValidatedRateLimits {
-        &self.bytes
-    }
-
-    /// The packet limits.
-    #[must_use]
-    pub fn packets(&self) -> &ValidatedRateLimits {
-        &self.packets
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{RateLimit, RateLimitTable, RateLimitTables};
-    use crate::ConfigError;
-    use crate::external::overlay::vpc::{Vpc, VpcTable};
-    use crate::external::overlay::vpcpeering::VpcPeeringTable;
-    use policer::{Profile, Rate};
-    use std::num::NonZeroU64;
-
-    fn vpcs() -> crate::external::overlay::vpc::ValidatedVpcTable {
-        let mut vpcs = VpcTable::new();
-        vpcs.add(Vpc::new("vpc-1", "AAAAA", 3000).unwrap()).unwrap();
-        vpcs.collect_peerings(&VpcPeeringTable::new())
-            .validate()
-            .unwrap()
-    }
-
-    fn limit(name: &str, vpc: &str, destination: &str) -> RateLimit {
-        let rate = Rate::new(NonZeroU64::new(1_000_000).unwrap());
-        RateLimit {
-            name: name.to_string(),
-            vpc: vpc.to_string(),
-            destination: destination.parse().unwrap(),
-            profile: Profile::new(rate, 10_000, None, 0).unwrap(),
-            actions: super::ColorActions::default(),
-        }
-    }
-
-    #[test]
-    fn a_rate_limit_resolves_its_vpc_to_a_vni() {
-        let mut table = RateLimitTable::new();
-        table.add(limit("web", "vpc-1", "10.1.0.0/16")).unwrap();
-        let validated = table.validate(&vpcs()).unwrap();
-        let only = validated.iter().next().unwrap();
-        assert_eq!(only.vni().as_u32(), 3000);
-    }
-
-    #[test]
-    fn names_are_unique() {
-        let mut table = RateLimitTable::new();
-        table.add(limit("web", "vpc-1", "10.1.0.0/16")).unwrap();
-        assert_eq!(
-            table.add(limit("web", "vpc-1", "10.2.0.0/16")),
-            Err(ConfigError::DuplicateRateLimit("web".to_string()))
-        );
-    }
-
-    #[test]
-    fn the_vpc_must_exist() {
-        let mut table = RateLimitTable::new();
-        table.add(limit("web", "vpc-9", "10.1.0.0/16")).unwrap();
-        assert_eq!(
-            table.validate(&vpcs()),
-            Err(ConfigError::RateLimitNoSuchVpc {
-                limit: "web".to_string(),
-                vpc: "vpc-9".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn two_rate_limits_cannot_meter_the_same_packets() {
-        let mut table = RateLimitTable::new();
-        table.add(limit("a", "vpc-1", "10.1.0.0/16")).unwrap();
-        table.add(limit("b", "vpc-1", "10.1.0.0/16")).unwrap();
-        assert_eq!(
-            table.validate(&vpcs()),
-            Err(ConfigError::RateLimitsOverlap(
-                "a".to_string(),
-                "b".to_string()
-            ))
-        );
-        // Nested destinations are fine: the longest match decides.
-        let mut table = RateLimitTable::new();
-        table.add(limit("a", "vpc-1", "10.1.0.0/16")).unwrap();
-        table.add(limit("b", "vpc-1", "10.1.1.0/24")).unwrap();
-        assert_eq!(table.validate(&vpcs()).unwrap().len(), 2);
-    }
-
-    #[test]
-    fn a_name_is_used_in_one_table_only() {
-        let mut tables = RateLimitTables::default();
-        tables
-            .bytes
-            .add(limit("web", "vpc-1", "10.1.0.0/16"))
-            .unwrap();
-        tables
-            .packets
-            .add(limit("web", "vpc-1", "10.2.0.0/16"))
-            .unwrap();
-        assert_eq!(
-            tables.validate(&vpcs()),
-            Err(ConfigError::DuplicateRateLimit("web".to_string()))
-        );
-    }
-
-    #[test]
-    fn the_tables_meter_independently() {
-        // The same VPC and destination in both tables is a byte limit and a packet limit on the same
-        // traffic, not an overlap.
-        let mut tables = RateLimitTables::default();
-        tables
-            .bytes
-            .add(limit("bytes", "vpc-1", "10.1.0.0/16"))
-            .unwrap();
-        tables
-            .packets
-            .add(limit("packets", "vpc-1", "10.1.0.0/16"))
-            .unwrap();
-        let validated = tables.validate(&vpcs()).unwrap();
-        assert_eq!(validated.bytes().len(), 1);
-        assert_eq!(validated.packets().len(), 1);
-    }
+    pub meters: BTreeMap<String, Meter>,
+    pub rules: Vec<ValidatedRateLimitRule>,
 }

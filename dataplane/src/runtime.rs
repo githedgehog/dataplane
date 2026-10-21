@@ -812,6 +812,7 @@ pub fn main() {
         &host_handle,
         config.metrics.address,
         setup.stats,
+        setup.rate_limits.reader(),
     );
 
     let ingredients = setup.pipeline;
