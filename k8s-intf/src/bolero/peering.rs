@@ -204,6 +204,7 @@ impl LegalValuePeeringsGenerator<'_> {
             peering: Some(peering),
             no_multi_path: Some(false),
             acl,
+            topology: None, // Not used by the dataplane
         })
     }
 }

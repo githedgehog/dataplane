@@ -53,6 +53,7 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
                 d.produce::<UnicastIpv4Addr>()?,
                 d.gen_u8(Bound::Included(&0), Bound::Included(&32))?
             )),
+            topology: None, // Not used by the dataplane
             vtep_ip: Some(format!(
                 "{}/{}",
                 d.produce::<UnicastIpv4Addr>()?,
@@ -82,6 +83,7 @@ impl Normalize for GatewayAgentGateway {
                 .and_then(|item| Some(item.normalize()).filter(|i| !i.is_empty())),
             profiling: self.profiling.clone(),
             protocol_ip: self.protocol_ip.clone(),
+            topology: self.topology.clone(),
             vtep_ip: self.vtep_ip.clone(),
             vtep_mac: self.vtep_mac.clone(),
             vtep_mtu: self.vtep_mtu,
