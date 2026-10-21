@@ -338,6 +338,11 @@ package = "dataplane-args"
 miri = true
 wasm = false # miss
 
+[workspace.metadata.package.arp]
+package = "dataplane-arp"
+miri = true
+wasm = false # hopeless + pointless (netlink)
+
 [workspace.metadata.package.cli]
 package = "dataplane-cli"
 miri = true
@@ -483,6 +488,11 @@ wasm = false # hopeless + pointless
 package = "dataplane-pipeline"
 miri = true
 wasm = false # miss
+
+[workspace.metadata.package.pkt-io]
+package = "dataplane-pkt-io"
+miri = true
+wasm = false # miss (depends on pipeline)
 
 [workspace.metadata.package.routing]
 package = "dataplane-routing"
