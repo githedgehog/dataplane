@@ -89,6 +89,7 @@ fn spec_carrying(vxlan: bool, payload_len: u16, transport: Transport) -> FrameSp
         transport,
         payload_len,
         ttl: 64,
+        mutation: None,
         vlan: None,
     }
 }
@@ -503,4 +504,264 @@ fn a_stream_expecting_nothing_waits_out_the_quiet_and_counts_escapes() {
         let escaped = if swallow { 0 } else { 4 };
         assert_eq!(sample.counters["generator.dropped.received"], escaped);
     }
+}
+
+/// `spec`, mutated in `layer` by `change`.
+fn mutated(
+    vxlan: bool,
+    transport: Transport,
+    layer: crate::mutate::Layer,
+    change: crate::mutate::Change,
+) -> FrameSpec {
+    let mut spec = spec_carrying(vxlan, 64, transport);
+    spec.mutation = Some(crate::mutate::Mutation { layer, change });
+    spec
+}
+
+/// Whether the IPv4 header at the start of `header` has a correct checksum.
+fn ipv4_header_verifies(header: &[u8]) -> bool {
+    let words = usize::from(header[0] & 0x0f) * 4;
+    crate::checksum::finish(crate::checksum::sum(0, &header[..words])) == 0
+}
+
+/// Any mutation a stream's frames can take builds and stamps without fault; the tunnel around a
+/// mutated packet stays sound, its lengths agreeing with what it carries; and a mutation that
+/// leaves the signature whole leaves it readable where it was stamped.
+#[test]
+fn any_mutation_builds_and_stamps_and_keeps_its_tunnel_sound() {
+    use crate::mutate::{Layer, Mutation};
+
+    bolero::check!()
+        .with_type::<(bool, bool, bool, u8, u16, u32, Vec<u64>)>()
+        .for_each(|(vxlan, tcp_transport, outer, kind, a, b, stamps)| {
+            let transport = if *tcp_transport {
+                Transport::Tcp { flags: tcp::ACK }
+            } else {
+                Transport::Udp
+            };
+            let layer = if *outer { Layer::Outer } else { Layer::Inner };
+            let bits = u64::from(*kind) | u64::from(*a) << 16 | u64::from(*b) << 32;
+            let change = Mutation::from_bits(bits).change;
+            let spec = mutated(*vxlan, transport, layer, change);
+            let mutation = Mutation { layer, change };
+            if mutation.check(&spec).is_err() {
+                return;
+            }
+            let mut template = Template::new(&spec, 3, 5, &tuple(1000));
+            for &seq in stamps.iter().chain([&9]) {
+                template.stamp(seq, seq);
+            }
+            let bytes = template.bytes();
+            let cut = matches!(change, crate::mutate::Change::Truncate { .. });
+            if *vxlan && layer == Layer::Inner && !cut {
+                let outer_len = u16::from_be_bytes([bytes[16], bytes[17]]);
+                let udp_len = u16::from_be_bytes([bytes[38], bytes[39]]);
+                assert_eq!(usize::from(outer_len), bytes.len() - 14);
+                assert_eq!(usize::from(udp_len), bytes.len() - 34);
+                assert!(ipv4_header_verifies(&bytes[14..]));
+            }
+            if let Ok(got) = parse(bytes)
+                && let Some(signature) = got.signature
+                && signature.run == 3
+            {
+                assert_eq!((signature.seq, signature.tx_ns), (9, 9));
+            }
+        });
+}
+
+/// Each change breaks what it says it does, and leaves every checksum it does not concern right.
+#[test]
+#[allow(clippy::too_many_lines)] // one short check per kind of change
+fn a_mutation_breaks_only_what_it_says() {
+    use crate::mutate::{Change, Layer};
+
+    let udp = Transport::Udp;
+    let multicast = Ipv4Addr::new(224, 0, 0, 5);
+    for vxlan in [false, true] {
+        let read = |layer: Layer, change: Change, transport: Transport| {
+            let spec = mutated(vxlan, transport, layer, change);
+            let mut template = Template::new(&spec, 1, 0, &tuple(1000));
+            template.stamp(3, 4);
+            template.stamp(5, 6);
+            let bytes = template.bytes().to_vec();
+            (parse(&bytes), bytes)
+        };
+        let sound = |got: &crate::frame::Received| {
+            got.ip_checksum == ChecksumState::Valid
+                && got.l4_checksum == ChecksumState::Valid
+                && got.payload_intact
+                && got.signature.is_some_and(|s| (s.seq, s.tx_ns) == (5, 6))
+        };
+
+        let (got, _) = read(Layer::Inner, Change::Ttl { ttl: 0 }, udp);
+        let got = got.unwrap();
+        assert!(sound(&got) && got.ttl == 0);
+
+        let (got, _) = read(Layer::Inner, Change::SourceIp { addr: multicast }, udp);
+        let got = got.unwrap();
+        assert!(sound(&got) && got.tuple.src == multicast, "{got:?}");
+
+        let (got, _) = read(Layer::Inner, Change::SourcePort { port: 0 }, udp);
+        let got = got.unwrap();
+        assert!(sound(&got) && got.tuple.sport == 0);
+
+        let (got, _) = read(
+            Layer::Inner,
+            Change::SourceMac {
+                mac: [1, 0, 0x5e, 0, 0, 5],
+            },
+            udp,
+        );
+        let got = got.unwrap();
+        assert!(sound(&got) && got.src_mac == [1, 0, 0x5e, 0, 0, 5]);
+
+        let (got, _) = read(Layer::Inner, Change::IpChecksum, udp);
+        let got = got.unwrap();
+        assert_eq!(got.ip_checksum, ChecksumState::Invalid);
+        assert_eq!(got.l4_checksum, ChecksumState::Valid);
+
+        for transport in [udp, Transport::Tcp { flags: tcp::SYN }] {
+            let (got, _) = read(Layer::Inner, Change::L4Checksum, transport);
+            let got = got.unwrap();
+            assert_eq!(got.ip_checksum, ChecksumState::Valid);
+            assert_eq!(
+                got.l4_checksum,
+                ChecksumState::Invalid,
+                "stays wrong when stamped"
+            );
+        }
+
+        let (got, _) = read(Layer::Inner, Change::UdpChecksumZero, udp);
+        assert_eq!(
+            got.unwrap().l4_checksum,
+            ChecksumState::Absent,
+            "stays absent when stamped"
+        );
+
+        let (got, bytes) = read(Layer::Inner, Change::IpOptions { words: 3 }, udp);
+        let got = got.unwrap();
+        assert!(sound(&got), "{got:?}");
+        let ip = if vxlan { 50 + 14 } else { 14 };
+        assert_eq!(bytes[ip] & 0x0f, 8, "five words and three of options");
+
+        let (got, bytes) = read(Layer::Inner, Change::Padding { bytes: 10 }, udp);
+        assert!(sound(&got.unwrap()));
+        let plain = Template::new(&spec(vxlan, 64), 1, 0, &tuple(1000));
+        assert_eq!(bytes.len(), plain.bytes().len() + 10);
+
+        let (got, _) = read(
+            Layer::Inner,
+            Change::Fragment {
+                more: true,
+                offset: 0,
+            },
+            udp,
+        );
+        assert_eq!(got.unwrap_err(), crate::frame::ParseError::Fragment);
+
+        let (got, _) = read(
+            Layer::Inner,
+            Change::TcpFlags {
+                flags: tcp::SYN | tcp::FIN,
+            },
+            Transport::Tcp { flags: tcp::SYN },
+        );
+        let got = got.unwrap();
+        assert!(sound(&got) && got.tcp_flags == Some(tcp::SYN | tcp::FIN));
+
+        let (got, _) = read(Layer::Inner, Change::Truncate { len: 40 }, udp);
+        assert!(got.is_err(), "cut short of its transport header");
+
+        if vxlan {
+            let (got, bytes) = read(Layer::Outer, Change::Vni { vni: 77 }, udp);
+            let got = got.unwrap();
+            assert!(sound(&got) && got.tunnel.unwrap().vni == 77);
+            assert!(ipv4_header_verifies(&bytes[14..]));
+
+            let (got, bytes) = read(Layer::Outer, Change::SourceIp { addr: multicast }, udp);
+            let got = got.unwrap();
+            assert!(sound(&got) && got.tunnel.unwrap().src == multicast);
+            assert!(ipv4_header_verifies(&bytes[14..]));
+
+            let (got, bytes) = read(Layer::Outer, Change::IpChecksum, udp);
+            assert!(sound(&got.unwrap()), "the packet inside is untouched");
+            assert!(!ipv4_header_verifies(&bytes[14..]));
+
+            // The reader takes a tag wherever it is, so the frame still reads, signature and all.
+            let (got, bytes) = read(Layer::Inner, Change::VlanTag { vid: 7 }, udp);
+            assert!(got.unwrap().signature.is_some());
+            assert_eq!(&bytes[50 + 12..50 + 16], &[0x81, 0x00, 0x00, 0x07]);
+        }
+    }
+}
+
+/// A mutation is refused for frames without the header it changes.
+#[test]
+fn a_mutation_needs_the_header_it_changes() {
+    use crate::mutate::{Change, Layer, Mutation, MutationError};
+
+    let bare = spec(false, 64);
+    let tunnelled = spec(true, 64);
+    let tcp_spec = spec_carrying(false, 64, Transport::Tcp { flags: tcp::SYN });
+    let m = |layer, change| Mutation { layer, change };
+    assert_eq!(
+        m(Layer::Outer, Change::IpChecksum).check(&bare),
+        Err(MutationError::NoTunnel)
+    );
+    assert_eq!(
+        m(Layer::Inner, Change::Vni { vni: 1 }).check(&tunnelled),
+        Err(MutationError::NotVxlan)
+    );
+    assert_eq!(
+        m(Layer::Inner, Change::UdpChecksumZero).check(&tcp_spec),
+        Err(MutationError::WrongTransport)
+    );
+    assert_eq!(
+        m(Layer::Inner, Change::TcpFlags { flags: 0 }).check(&bare),
+        Err(MutationError::WrongTransport)
+    );
+    assert_eq!(
+        m(Layer::Inner, Change::IpOptions { words: 11 }).check(&bare),
+        Err(MutationError::TooManyOptions)
+    );
+    assert_eq!(
+        m(Layer::Outer, Change::Vni { vni: 1 }).check(&tunnelled),
+        Ok(())
+    );
+}
+
+/// Every catalog entry has a name of its own, and a mutation its frames can take.
+#[test]
+fn the_catalog_is_well_formed() {
+    use crate::catalog::{Base, CATALOG};
+
+    let mut ids = BTreeSet::new();
+    for entry in CATALOG {
+        assert!(ids.insert(entry.id), "{} appears twice", entry.id);
+        let transport = match entry.base {
+            Base::Udp => Transport::Udp,
+            Base::TcpSyn => Transport::Tcp { flags: tcp::SYN },
+        };
+        let spec = mutated(true, transport, entry.mutation.layer, entry.mutation.change);
+        assert_eq!(entry.mutation.check(&spec), Ok(()), "{}", entry.id);
+    }
+}
+
+/// A seeded sequence of mutations is the same every time, and soon ranges over every kind of
+/// change, in both layers.
+#[test]
+fn seeded_mutations_repeat_and_range_widely() {
+    use crate::mutate::{Layer, Mutations};
+
+    let first: Vec<_> = Mutations::seeded(7).take(1000).collect();
+    let again: Vec<_> = Mutations::seeded(7).take(1000).collect();
+    assert_eq!(first, again);
+    assert_ne!(first, Mutations::seeded(8).take(1000).collect::<Vec<_>>());
+    let kinds: std::collections::HashSet<_> = first
+        .iter()
+        .map(|m| std::mem::discriminant(&m.change))
+        .collect();
+    assert_eq!(kinds.len(), 26, "every kind of change");
+    assert!(first.iter().any(|m| m.layer == Layer::Outer));
+    assert!(first.iter().any(|m| m.layer == Layer::Inner));
 }

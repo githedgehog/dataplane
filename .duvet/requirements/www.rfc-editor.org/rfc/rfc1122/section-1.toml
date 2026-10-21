@@ -1,0 +1,804 @@
+target = "https://www.rfc-editor.org/rfc/rfc1122#section-1"
+
+# INTRODUCTION
+#
+#    This document is one of a pair that defines and discusses the
+#    requirements for host system implementations of the Internet protocol
+#    suite.  This RFC covers the communication protocol layers:  link
+#    layer, IP layer, and transport layer.  Its companion RFC,
+#    "Requirements for Internet Hosts -- Application and Support"
+#    [INTRO:1], covers the application layer protocols.  This document
+#    should also be read in conjunction with "Requirements for Internet
+#    Gateways" [INTRO:2].
+# 
+#    These documents are intended to provide guidance for vendors,
+#    implementors, and users of Internet communication software.  They
+#    represent the consensus of a large body of technical experience and
+#    wisdom, contributed by the members of the Internet research and
+#    vendor communities.
+# 
+#    This RFC enumerates standard protocols that a host connected to the
+#    Internet must use, and it incorporates by reference the RFCs and
+#    other documents describing the current specifications for these
+#    protocols.  It corrects errors in the referenced documents and adds
+#    additional discussion and guidance for an implementor.
+# 
+#    For each protocol, this document also contains an explicit set of
+#    requirements, recommendations, and options.  The reader must
+#    understand that the list of requirements in this document is
+#    incomplete by itself; the complete set of requirements for an
+#    Internet host is primarily defined in the standard protocol
+#    specification documents, with the corrections, amendments, and
+#    supplements contained in this RFC.
+# 
+#    A good-faith implementation of the protocols that was produced after
+#    careful reading of the RFC's and with some interaction with the
+#    Internet technical community, and that followed good communications
+#    software engineering practices, should differ from the requirements
+#    of this document in only minor ways.  Thus, in many cases, the
+#    "requirements" in this RFC are already stated or implied in the
+#    standard protocol documents, so that their inclusion here is, in a
+#    sense, redundant.  However, they were included because some past
+#    implementation has made the wrong choice, causing problems of
+#    interoperability, performance, and/or robustness.
+# 
+#    This document includes discussion and explanation of many of the
+#    requirements and recommendations.  A simple list of requirements
+#    would be dangerous, because:
+# 
+#    o    Some required features are more important than others, and some
+#         features are optional.
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#    o    There may be valid reasons why particular vendor products that
+#         are designed for restricted contexts might choose to use
+#         different specifications.
+# 
+#    However, the specifications of this document must be followed to meet
+#    the general goal of arbitrary host interoperation across the
+#    diversity and complexity of the Internet system.  Although most
+#    current implementations fail to meet these requirements in various
+#    ways, some minor and some major, this specification is the ideal
+#    towards which we need to move.
+# 
+#    These requirements are based on the current level of Internet
+#    architecture.  This document will be updated as required to provide
+#    additional clarifications or to include additional information in
+#    those areas in which specifications are still evolving.
+# 
+#    This introductory section begins with a brief overview of the
+#    Internet architecture as it relates to hosts, and then gives some
+#    general advice to host software vendors.  Finally, there is some
+#    guidance on reading the rest of the document and some terminology.
+# 
+#    1.1  The Internet Architecture
+# 
+#       General background and discussion on the Internet architecture and
+#       supporting protocol suite can be found in the DDN Protocol
+#       Handbook [INTRO:3]; for background see for example [INTRO:9],
+#       [INTRO:10], and [INTRO:11].  Reference [INTRO:5] describes the
+#       procedure for obtaining Internet protocol documents, while
+#       [INTRO:6] contains a list of the numbers assigned within Internet
+#       protocols.
+# 
+#       1.1.1  Internet Hosts
+# 
+#          A host computer, or simply "host," is the ultimate consumer of
+#          communication services.  A host generally executes application
+#          programs on behalf of user(s), employing network and/or
+#          Internet communication services in support of this function.
+#          An Internet host corresponds to the concept of an "End-System"
+#          used in the OSI protocol suite [INTRO:13].
+# 
+#          An Internet communication system consists of interconnected
+#          packet networks supporting communication among host computers
+#          using the Internet protocols.  The networks are interconnected
+#          using packet-switching computers called "gateways" or "IP
+#          routers" by the Internet community, and "Intermediate Systems"
+#          by the OSI world [INTRO:13].  The RFC "Requirements for
+#          Internet Gateways" [INTRO:2] contains the official
+#          specifications for Internet gateways.  That RFC together with
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#          the present document and its companion [INTRO:1] define the
+#          rules for the current realization of the Internet architecture.
+# 
+#          Internet hosts span a wide range of size, speed, and function.
+#          They range in size from small microprocessors through
+#          workstations to mainframes and supercomputers.  In function,
+#          they range from single-purpose hosts (such as terminal servers)
+#          to full-service hosts that support a variety of online network
+#          services, typically including remote login, file transfer, and
+#          electronic mail.
+# 
+#          A host is generally said to be multihomed if it has more than
+#          one interface to the same or to different networks.  See
+#          Section 1.1.3 on "Terminology".
+# 
+#       1.1.2  Architectural Assumptions
+# 
+#          The current Internet architecture is based on a set of
+#          assumptions about the communication system.  The assumptions
+#          most relevant to hosts are as follows:
+# 
+#          (a)  The Internet is a network of networks.
+# 
+#               Each host is directly connected to some particular
+#               network(s); its connection to the Internet is only
+#               conceptual.  Two hosts on the same network communicate
+#               with each other using the same set of protocols that they
+#               would use to communicate with hosts on distant networks.
+# 
+#          (b)  Gateways don't keep connection state information.
+# 
+#               To improve robustness of the communication system,
+#               gateways are designed to be stateless, forwarding each IP
+#               datagram independently of other datagrams.  As a result,
+#               redundant paths can be exploited to provide robust service
+#               in spite of failures of intervening gateways and networks.
+# 
+#               All state information required for end-to-end flow control
+#               and reliability is implemented in the hosts, in the
+#               transport layer or in application programs.  All
+#               connection control information is thus co-located with the
+#               end points of the communication, so it will be lost only
+#               if an end point fails.
+# 
+#          (c)  Routing complexity should be in the gateways.
+# 
+#               Routing is a complex and difficult problem, and ought to
+#               be performed by the gateways, not the hosts.  An important
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#               objective is to insulate host software from changes caused
+#               by the inevitable evolution of the Internet routing
+#               architecture.
+# 
+#          (d)  The System must tolerate wide network variation.
+# 
+#               A basic objective of the Internet design is to tolerate a
+#               wide range of network characteristics -- e.g., bandwidth,
+#               delay, packet loss, packet reordering, and maximum packet
+#               size.  Another objective is robustness against failure of
+#               individual networks, gateways, and hosts, using whatever
+#               bandwidth is still available.  Finally, the goal is full
+#               "open system interconnection": an Internet host must be
+#               able to interoperate robustly and effectively with any
+#               other Internet host, across diverse Internet paths.
+# 
+#               Sometimes host implementors have designed for less
+#               ambitious goals.  For example, the LAN environment is
+#               typically much more benign than the Internet as a whole;
+#               LANs have low packet loss and delay and do not reorder
+#               packets.  Some vendors have fielded host implementations
+#               that are adequate for a simple LAN environment, but work
+#               badly for general interoperation.  The vendor justifies
+#               such a product as being economical within the restricted
+#               LAN market.  However, isolated LANs seldom stay isolated
+#               for long; they are soon gatewayed to each other, to
+#               organization-wide internets, and eventually to the global
+#               Internet system.  In the end, neither the customer nor the
+#               vendor is served by incomplete or substandard Internet
+#               host software.
+# 
+#               The requirements spelled out in this document are designed
+#               for a full-function Internet host, capable of full
+#               interoperation over an arbitrary Internet path.
+# 
+#       1.1.3  Internet Protocol Suite
+# 
+#          To communicate using the Internet system, a host must implement
+#          the layered set of protocols comprising the Internet protocol
+#          suite.  A host typically must implement at least one protocol
+#          from each layer.
+# 
+#          The protocol layers used in the Internet architecture are as
+#          follows [INTRO:4]:
+# 
+#          o  Application Layer
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#               The application layer is the top layer of the Internet
+#               protocol suite.  The Internet suite does not further
+#               subdivide the application layer, although some of the
+#               Internet application layer protocols do contain some
+#               internal sub-layering.  The application layer of the
+#               Internet suite essentially combines the functions of the
+#               top two layers -- Presentation and Application -- of the
+#               OSI reference model.
+# 
+#               We distinguish two categories of application layer
+#               protocols:  user protocols that provide service directly
+#               to users, and support protocols that provide common system
+#               functions.  Requirements for user and support protocols
+#               will be found in the companion RFC [INTRO:1].
+# 
+#               The most common Internet user protocols are:
+# 
+#                 o  Telnet (remote login)
+#                 o  FTP    (file transfer)
+#                 o  SMTP   (electronic mail delivery)
+# 
+#               There are a number of other standardized user protocols
+#               [INTRO:4] and many private user protocols.
+# 
+#               Support protocols, used for host name mapping, booting,
+#               and management, include SNMP, BOOTP, RARP, and the Domain
+#               Name System (DNS) protocols.
+# 
+#          o  Transport Layer
+# 
+#               The transport layer provides end-to-end communication
+#               services for applications.  There are two primary
+#               transport layer protocols at present:
+# 
+#                 o Transmission Control Protocol (TCP)
+#                 o User Datagram Protocol (UDP)
+# 
+#               TCP is a reliable connection-oriented transport service
+#               that provides end-to-end reliability, resequencing, and
+#               flow control.  UDP is a connectionless ("datagram")
+#               transport service.
+# 
+#               Other transport protocols have been developed by the
+#               research community, and the set of official Internet
+#               transport protocols may be expanded in the future.
+# 
+#               Transport layer protocols are discussed in Chapter 4.
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#          o  Internet Layer
+# 
+#               All Internet transport protocols use the Internet Protocol
+#               (IP) to carry data from source host to destination host.
+#               IP is a connectionless or datagram internetwork service,
+#               providing no end-to-end delivery guarantees. Thus, IP
+#               datagrams may arrive at the destination host damaged,
+#               duplicated, out of order, or not at all.  The layers above
+#               IP are responsible for reliable delivery service when it
+#               is required.  The IP protocol includes provision for
+#               addressing, type-of-service specification, fragmentation
+#               and reassembly, and security information.
+# 
+#               The datagram or connectionless nature of the IP protocol
+#               is a fundamental and characteristic feature of the
+#               Internet architecture.  Internet IP was the model for the
+#               OSI Connectionless Network Protocol [INTRO:12].
+# 
+#               ICMP is a control protocol that is considered to be an
+#               integral part of IP, although it is architecturally
+#               layered upon IP, i.e., it uses IP to carry its data end-
+#               to-end just as a transport protocol like TCP or UDP does.
+#               ICMP provides error reporting, congestion reporting, and
+#               first-hop gateway redirection.
+# 
+#               IGMP is an Internet layer protocol used for establishing
+#               dynamic host groups for IP multicasting.
+# 
+#               The Internet layer protocols IP, ICMP, and IGMP are
+#               discussed in Chapter 3.
+# 
+#          o  Link Layer
+# 
+#               To communicate on its directly-connected network, a host
+#               must implement the communication protocol used to
+#               interface to that network.  We call this a link layer or
+#               media-access layer protocol.
+# 
+#               There is a wide variety of link layer protocols,
+#               corresponding to the many different types of networks.
+#               See Chapter 2.
+# 
+#       1.1.4  Embedded Gateway Code
+# 
+#          Some Internet host software includes embedded gateway
+#          functionality, so that these hosts can forward packets as a
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#          gateway would, while still performing the application layer
+#          functions of a host.
+# 
+#          Such dual-purpose systems must follow the Gateway Requirements
+#          RFC [INTRO:2]  with respect to their gateway functions, and
+#          must follow the present document with respect to their host
+#          functions.  In all overlapping cases, the two specifications
+#          should be in agreement.
+# 
+#          There are varying opinions in the Internet community about
+#          embedded gateway functionality.  The main arguments are as
+#          follows:
+# 
+#          o    Pro: in a local network environment where networking is
+#               informal, or in isolated internets, it may be convenient
+#               and economical to use existing host systems as gateways.
+# 
+#               There is also an architectural argument for embedded
+#               gateway functionality: multihoming is much more common
+#               than originally foreseen, and multihoming forces a host to
+#               make routing decisions as if it were a gateway.  If the
+#               multihomed  host contains an embedded gateway, it will
+#               have full routing knowledge and as a result will be able
+#               to make more optimal routing decisions.
+# 
+#          o    Con: Gateway algorithms and protocols are still changing,
+#               and they will continue to change as the Internet system
+#               grows larger.  Attempting to include a general gateway
+#               function within the host IP layer will force host system
+#               maintainers to track these (more frequent) changes.  Also,
+#               a larger pool of gateway implementations will make
+#               coordinating the changes more difficult.  Finally, the
+#               complexity of a gateway IP layer is somewhat greater than
+#               that of a host, making the implementation and operation
+#               tasks more complex.
+# 
+#               In addition, the style of operation of some hosts is not
+#               appropriate for providing stable and robust gateway
+#               service.
+# 
+#          There is considerable merit in both of these viewpoints.  One
+#          conclusion can be drawn: an host administrator must have
+#          conscious control over whether or not a given host acts as a
+#          gateway.  See Section 3.1 for the detailed requirements.
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#    1.2  General Considerations
+# 
+#       There are two important lessons that vendors of Internet host
+#       software have learned and which a new vendor should consider
+#       seriously.
+# 
+#       1.2.1  Continuing Internet Evolution
+# 
+#          The enormous growth of the Internet has revealed problems of
+#          management and scaling in a large datagram-based packet
+#          communication system.  These problems are being addressed, and
+#          as a result there will be continuing evolution of the
+#          specifications described in this document.  These changes will
+#          be carefully planned and controlled, since there is extensive
+#          participation in this planning by the vendors and by the
+#          organizations responsible for operations of the networks.
+# 
+#          Development, evolution, and revision are characteristic of
+#          computer network protocols today, and this situation will
+#          persist for some years.  A vendor who develops computer
+#          communication software for the Internet protocol suite (or any
+#          other protocol suite!) and then fails to maintain and update
+#          that software for changing specifications is going to leave a
+#          trail of unhappy customers.  The Internet is a large
+#          communication network, and the users are in constant contact
+#          through it.  Experience has shown that knowledge of
+#          deficiencies in vendor software propagates quickly through the
+#          Internet technical community.
+# 
+#       1.2.2  Robustness Principle
+# 
+#          At every layer of the protocols, there is a general rule whose
+#          application can lead to enormous benefits in robustness and
+#          interoperability [IP:1]:
+# 
+#                 "Be liberal in what you accept, and
+#                  conservative in what you send"
+# 
+#          Software should be written to deal with every conceivable
+#          error, no matter how unlikely; sooner or later a packet will
+#          come in with that particular combination of errors and
+#          attributes, and unless the software is prepared, chaos can
+#          ensue.  In general, it is best to assume that the network is
+#          filled with malevolent entities that will send in packets
+#          designed to have the worst possible effect.  This assumption
+#          will lead to suitable protective design, although the most
+#          serious problems in the Internet have been caused by
+#          unenvisaged mechanisms triggered by low-probability events;
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#          mere human malice would never have taken so devious a course!
+# 
+#          Adaptability to change must be designed into all levels of
+#          Internet host software.  As a simple example, consider a
+#          protocol specification that contains an enumeration of values
+#          for a particular header field -- e.g., a type field, a port
+#          number, or an error code; this enumeration must be assumed to
+#          be incomplete.  Thus, if a protocol specification defines four
+#          possible error codes, the software must not break when a fifth
+#          code shows up.  An undefined code might be logged (see below),
+#          but it must not cause a failure.
+# 
+#          The second part of the principle is almost as important:
+#          software on other hosts may contain deficiencies that make it
+#          unwise to exploit legal but obscure protocol features.  It is
+#          unwise to stray far from the obvious and simple, lest untoward
+#          effects result elsewhere.  A corollary of this is "watch out
+#          for misbehaving hosts"; host software should be prepared, not
+#          just to survive other misbehaving hosts, but also to cooperate
+#          to limit the amount of disruption such hosts can cause to the
+#          shared communication facility.
+# 
+#       1.2.3  Error Logging
+# 
+#          The Internet includes a great variety of host and gateway
+#          systems, each implementing many protocols and protocol layers,
+#          and some of these contain bugs and mis-features in their
+#          Internet protocol software.  As a result of complexity,
+#          diversity, and distribution of function, the diagnosis of
+#          Internet problems is often very difficult.
+# 
+#          Problem diagnosis will be aided if host implementations include
+#          a carefully designed facility for logging erroneous or
+#          "strange" protocol events.  It is important to include as much
+#          diagnostic information as possible when an error is logged.  In
+#          particular, it is often useful to record the header(s) of a
+#          packet that caused an error.  However, care must be taken to
+#          ensure that error logging does not consume prohibitive amounts
+#          of resources or otherwise interfere with the operation of the
+#          host.
+# 
+#          There is a tendency for abnormal but harmless protocol events
+#          to overflow error logging files; this can be avoided by using a
+#          "circular" log, or by enabling logging only while diagnosing a
+#          known failure.  It may be useful to filter and count duplicate
+#          successive messages.  One strategy that seems to work well is:
+#          (1) always count abnormalities and make such counts accessible
+#          through the management protocol (see [INTRO:1]); and (2) allow
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#          the logging of a great variety of events to be selectively
+#          enabled.  For example, it might useful to be able to "log
+#          everything" or to "log everything for host X".
+# 
+#          Note that different managements may have differing policies
+#          about the amount of error logging that they want normally
+#          enabled in a host.  Some will say, "if it doesn't hurt me, I
+#          don't want to know about it", while others will want to take a
+#          more watchful and aggressive attitude about detecting and
+#          removing protocol abnormalities.
+# 
+#       1.2.4  Configuration
+# 
+#          It would be ideal if a host implementation of the Internet
+#          protocol suite could be entirely self-configuring.  This would
+#          allow the whole suite to be implemented in ROM or cast into
+#          silicon, it would simplify diskless workstations, and it would
+#          be an immense boon to harried LAN administrators as well as
+#          system vendors.  We have not reached this ideal; in fact, we
+#          are not even close.
+# 
+#          At many points in this document, you will find a requirement
+#          that a parameter be a configurable option.  There are several
+#          different reasons behind such requirements.  In a few cases,
+#          there is current uncertainty or disagreement about the best
+#          value, and it may be necessary to update the recommended value
+#          in the future.  In other cases, the value really depends on
+#          external factors -- e.g., the size of the host and the
+#          distribution of its communication load, or the speeds and
+#          topology of nearby networks -- and self-tuning algorithms are
+#          unavailable and may be insufficient.  In some cases,
+#          configurability is needed because of administrative
+#          requirements.
+# 
+#          Finally, some configuration options are required to communicate
+#          with obsolete or incorrect implementations of the protocols,
+#          distributed without sources, that unfortunately persist in many
+#          parts of the Internet.  To make correct systems coexist with
+#          these faulty systems, administrators often have to "mis-
+#          configure" the correct systems.  This problem will correct
+#          itself gradually as the faulty systems are retired, but it
+#          cannot be ignored by vendors.
+# 
+#          When we say that a parameter must be configurable, we do not
+#          intend to require that its value be explicitly read from a
+#          configuration file at every boot time.  We recommend that
+#          implementors set up a default for each parameter, so a
+#          configuration file is only necessary to override those defaults
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#          that are inappropriate in a particular installation.  Thus, the
+#          configurability requirement is an assurance that it will be
+#          POSSIBLE to override the default when necessary, even in a
+#          binary-only or ROM-based product.
+# 
+#          This document requires a particular value for such defaults in
+#          some cases.  The choice of default is a sensitive issue when
+#          the configuration item controls the accommodation to existing
+#          faulty systems.  If the Internet is to converge successfully to
+#          complete interoperability, the default values built into
+#          implementations must implement the official protocol, not
+#          "mis-configurations" to accommodate faulty implementations.
+#          Although marketing considerations have led some vendors to
+#          choose mis-configuration defaults, we urge vendors to choose
+#          defaults that will conform to the standard.
+# 
+#          Finally, we note that a vendor needs to provide adequate
+#          documentation on all configuration parameters, their limits and
+#          effects.
+# 
+#    1.3  Reading this Document
+# 
+#       1.3.1  Organization
+# 
+#          Protocol layering, which is generally used as an organizing
+#          principle in implementing network software, has also been used
+#          to organize this document.  In describing the rules, we assume
+#          that an implementation does strictly mirror the layering of the
+#          protocols.  Thus, the following three major sections specify
+#          the requirements for the link layer, the internet layer, and
+#          the transport layer, respectively.  A companion RFC [INTRO:1]
+#          covers application level software.  This layerist organization
+#          was chosen for simplicity and clarity.
+# 
+#          However, strict layering is an imperfect model, both for the
+#          protocol suite and for recommended implementation approaches.
+#          Protocols in different layers interact in complex and sometimes
+#          subtle ways, and particular functions often involve multiple
+#          layers.  There are many design choices in an implementation,
+#          many of which involve creative "breaking" of strict layering.
+#          Every implementor is urged to read references [INTRO:7] and
+#          [INTRO:8].
+# 
+#          This document describes the conceptual service interface
+#          between layers using a functional ("procedure call") notation,
+#          like that used in the TCP specification [TCP:1].  A host
+#          implementation must support the logical information flow
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#          implied by these calls, but need not literally implement the
+#          calls themselves.  For example, many implementations reflect
+#          the coupling between the transport layer and the IP layer by
+#          giving them shared access to common data structures.  These
+#          data structures, rather than explicit procedure calls, are then
+#          the agency for passing much of the information that is
+#          required.
+# 
+#          In general, each major section of this document is organized
+#          into the following subsections:
+# 
+#          (1)  Introduction
+# 
+#          (2)  Protocol Walk-Through -- considers the protocol
+#               specification documents section-by-section, correcting
+#               errors, stating requirements that may be ambiguous or
+#               ill-defined, and providing further clarification or
+#               explanation.
+# 
+#          (3)  Specific Issues -- discusses protocol design and
+#               implementation issues that were not included in the walk-
+#               through.
+# 
+#          (4)  Interfaces -- discusses the service interface to the next
+#               higher layer.
+# 
+#          (5)  Summary -- contains a summary of the requirements of the
+#               section.
+# 
+#          Under many of the individual topics in this document, there is
+#          parenthetical material labeled "DISCUSSION" or
+#          "IMPLEMENTATION". This material is intended to give
+#          clarification and explanation of the preceding requirements
+#          text.  It also includes some suggestions on possible future
+#          directions or developments.  The implementation material
+#          contains suggested approaches that an implementor may want to
+#          consider.
+# 
+#          The summary sections are intended to be guides and indexes to
+#          the text, but are necessarily cryptic and incomplete.  The
+#          summaries should never be used or referenced separately from
+#          the complete RFC.
+# 
+#       1.3.2  Requirements
+# 
+#          In this document, the words that are used to define the
+#          significance of each particular requirement are capitalized.
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#          These words are:
+# 
+#          *    "MUST"
+# 
+#               This word or the adjective "REQUIRED" means that the item
+#               is an absolute requirement of the specification.
+# 
+#          *    "SHOULD"
+# 
+#               This word or the adjective "RECOMMENDED" means that there
+#               may exist valid reasons in particular circumstances to
+#               ignore this item, but the full implications should be
+#               understood and the case carefully weighed before choosing
+#               a different course.
+# 
+#          *    "MAY"
+# 
+#               This word or the adjective "OPTIONAL" means that this item
+#               is truly optional.  One vendor may choose to include the
+#               item because a particular marketplace requires it or
+#               because it enhances the product, for example; another
+#               vendor may omit the same item.
+# 
+#          An implementation is not compliant if it fails to satisfy one
+#          or more of the MUST requirements for the protocols it
+#          implements.  An implementation that satisfies all the MUST and
+#          all the SHOULD requirements for its protocols is said to be
+#          "unconditionally compliant"; one that satisfies all the MUST
+#          requirements but not all the SHOULD requirements for its
+#          protocols is said to be "conditionally compliant".
+# 
+#       1.3.3  Terminology
+# 
+#          This document uses the following technical terms:
+# 
+#          Segment
+#               A segment is the unit of end-to-end transmission in the
+#               TCP protocol.  A segment consists of a TCP header followed
+#               by application data.  A segment is transmitted by
+#               encapsulation inside an IP datagram.
+# 
+#          Message
+#               In this description of the lower-layer protocols, a
+#               message is the unit of transmission in a transport layer
+#               protocol.  In particular, a TCP segment is a message.  A
+#               message consists of a transport protocol header followed
+#               by application protocol data.  To be transmitted end-to-
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#               end through the Internet, a message must be encapsulated
+#               inside a datagram.
+# 
+#          IP Datagram
+#               An IP datagram is the unit of end-to-end transmission in
+#               the IP protocol.  An IP datagram consists of an IP header
+#               followed by transport layer data, i.e., of an IP header
+#               followed by a message.
+# 
+#               In the description of the internet layer (Section 3), the
+#               unqualified term "datagram" should be understood to refer
+#               to an IP datagram.
+# 
+#          Packet
+#               A packet is the unit of data passed across the interface
+#               between the internet layer and the link layer.  It
+#               includes an IP header and data.  A packet may be a
+#               complete IP datagram or a fragment of an IP datagram.
+# 
+#          Frame
+#               A frame is the unit of transmission in a link layer
+#               protocol, and consists of a link-layer header followed by
+#               a packet.
+# 
+#          Connected Network
+#               A network to which a host is interfaced is often known as
+#               the "local network" or the "subnetwork" relative to that
+#               host.  However, these terms can cause confusion, and
+#               therefore we use the term "connected network" in this
+#               document.
+# 
+#          Multihomed
+#               A host is said to be multihomed if it has multiple IP
+#               addresses.  For a discussion of multihoming, see Section
+#               3.3.4 below.
+# 
+#          Physical network interface
+#               This is a physical interface to a connected network and
+#               has a (possibly unique) link-layer address.  Multiple
+#               physical network interfaces on a single host may share the
+#               same link-layer address, but the address must be unique
+#               for different hosts on the same physical network.
+# 
+#          Logical [network] interface
+#               We define a logical [network] interface to be a logical
+#               path, distinguished by a unique IP address, to a connected
+#               network.  See Section 3.3.4.
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#          Specific-destination address
+#               This is the effective destination address of a datagram,
+#               even if it is broadcast or multicast; see Section 3.2.1.3.
+# 
+#          Path
+#               At a given moment, all the IP datagrams from a particular
+#               source host to a particular destination host will
+#               typically traverse the same sequence of gateways.  We use
+#               the term "path" for this sequence.  Note that a path is
+#               uni-directional; it is not unusual to have different paths
+#               in the two directions between a given host pair.
+# 
+#          MTU
+#               The maximum transmission unit, i.e., the size of the
+#               largest packet that can be transmitted.
+# 
+#          The terms frame, packet, datagram, message, and segment are
+#          illustrated by the following schematic diagrams:
+# 
+#          A. Transmission on connected network:
+#            _______________________________________________
+#           | LL hdr | IP hdr |         (data)              |
+#           |________|________|_____________________________|
+# 
+#            <---------- Frame ----------------------------->
+#                     <----------Packet -------------------->
+# 
+#          B. Before IP fragmentation or after IP reassembly:
+#                     ______________________________________
+#                    | IP hdr | transport| Application Data |
+#                    |________|____hdr___|__________________|
+# 
+#                     <--------  Datagram ------------------>
+#                              <-------- Message ----------->
+#            or, for TCP:
+#                     ______________________________________
+#                    | IP hdr |  TCP hdr | Application Data |
+#                    |________|__________|__________________|
+# 
+#                     <--------  Datagram ------------------>
+#                              <-------- Segment ----------->
+# 
+# RFC1122                       INTRODUCTION                  October 1989
+# 
+#    1.4  Acknowledgments
+# 
+#       This document incorporates contributions and comments from a large
+#       group of Internet protocol experts, including representatives of
+#       university and research labs, vendors, and government agencies.
+#       It was assembled primarily by the Host Requirements Working Group
+#       of the Internet Engineering Task Force (IETF).
+# 
+#       The Editor would especially like to acknowledge the tireless
+#       dedication of the following people, who attended many long
+#       meetings and generated 3 million bytes of electronic mail over the
+#       past 18 months in pursuit of this document: Philip Almquist, Dave
+#       Borman (Cray Research), Noel Chiappa, Dave Crocker (DEC), Steve
+#       Deering (Stanford), Mike Karels (Berkeley), Phil Karn (Bellcore),
+#       John Lekashman (NASA), Charles Lynn (BBN), Keith McCloghrie (TWG),
+#       Paul Mockapetris (ISI), Thomas Narten (Purdue), Craig Partridge
+#       (BBN), Drew Perkins (CMU), and James Van Bokkelen (FTP Software).
+# 
+#       In addition, the following people made major contributions to the
+#       effort: Bill Barns (Mitre), Steve Bellovin (AT&T), Mike Brescia
+#       (BBN), Ed Cain (DCA), Annette DeSchon (ISI), Martin Gross (DCA),
+#       Phill Gross (NRI), Charles Hedrick (Rutgers), Van Jacobson (LBL),
+#       John Klensin (MIT), Mark Lottor (SRI), Milo Medin (NASA), Bill
+#       Melohn (Sun Microsystems), Greg Minshall (Kinetics), Jeff Mogul
+#       (DEC), John Mullen (CMC), Jon Postel (ISI), John Romkey (Epilogue
+#       Technology), and Mike StJohns (DCA).  The following also made
+#       significant contributions to particular areas: Eric Allman
+#       (Berkeley), Rob Austein (MIT), Art Berggreen (ACC), Keith Bostic
+#       (Berkeley), Vint Cerf (NRI), Wayne Hathaway (NASA), Matt Korn
+#       (IBM), Erik Naggum (Naggum Software, Norway), Robert Ullmann
+#       (Prime Computer), David Waitzman (BBN), Frank Wancho (USA), Arun
+#       Welch (Ohio State), Bill Westfield (Cisco), and Rayan Zachariassen
+#       (Toronto).
+# 
+#       We are grateful to all, including any contributors who may have
+#       been inadvertently omitted from this list.
+# 
+# RFC1122                        LINK LAYER                   October 1989
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation is not compliant if it fails to satisfy one
+or more of the MUST requirements for the protocols it
+implements.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation that satisfies all the MUST and
+all the SHOULD requirements for its protocols is said to be
+"unconditionally compliant"; one that satisfies all the MUST
+requirements but not all the SHOULD requirements for its
+protocols is said to be "conditionally compliant".
+'''
+

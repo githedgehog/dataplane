@@ -1,0 +1,42 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-6.1"
+
+# USER DATAGRAM PROTOCOL - UDP
+#
+#    The User Datagram Protocol (UDP) is specified in [TRANS:1].
+# 
+#    A router that implements UDP MUST be compliant, and SHOULD be
+#    unconditionally compliant, with the requirements of [INTRO:2], except
+#    that:
+# 
+#    o This specification does not specify the interfaces between the
+#       various protocol layers.  Thus, a router's interfaces need not
+#       comply with [INTRO:2], except where compliance is required for
+#       proper functioning of Application Layer protocols supported by the
+#       router.
+# 
+#    o Contrary to [INTRO:2], an application SHOULD NOT disable generation
+#       of UDP checksums.
+# 
+#    DISCUSSION
+#       Although a particular application protocol may require that UDP
+#       datagrams it receives must contain a UDP checksum, there is no
+#       general requirement that received UDP datagrams contain UDP
+#       checksums.  Of course, if a UDP checksum is present in a received
+#       datagram, the checksum must be verified and the datagram discarded
+#       if the checksum is incorrect.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router that implements UDP MUST be compliant, and SHOULD be
+unconditionally compliant, with the requirements of [INTRO:2], except
+that:
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+o Contrary to [INTRO:2], an application SHOULD NOT disable generation
+of UDP checksums.
+'''
+

@@ -1,0 +1,42 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.2.5"
+
+# Header Checksum: RFC 791 Section 3.1
+#
+#    As stated in Section [5.2.2], a router MUST verify the IP checksum of
+#    any packet that is received, and MUST discard messages containing
+#    invalid checksums.  The router MUST NOT provide a means to disable
+#    this checksum verification.
+# 
+#    A router MAY use incremental IP header checksum updating when the
+#    only change to the IP header is the time to live.  This will reduce
+#    the possibility of undetected corruption of the IP header by the
+#    router.  See [INTERNET:6] for a discussion of incrementally updating
+#    the checksum.
+# 
+#    IMPLEMENTATION
+#       A more extensive description of the IP checksum, including
+#       extensive implementation hints, can be found in [INTERNET:6] and
+#       [INTERNET:7].
+
+[[spec]]
+level = "MUST"
+quote = '''
+As stated in Section [5.2.2], a router MUST verify the IP checksum of
+any packet that is received, and MUST discard messages containing
+invalid checksums.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The router MUST NOT provide a means to disable
+this checksum verification.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY use incremental IP header checksum updating when the
+only change to the IP header is the time to live.
+'''
+

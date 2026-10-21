@@ -1,0 +1,48 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-3.3.4"
+
+# Maximum Transmission Unit - MTU
+#
+#    The MTU of each logical interface MUST be configurable within the
+#    range of legal MTUs for the interface.
+# 
+#    Many Link Layer protocols define a maximum frame size that may be
+#    sent.  In such cases, a router MUST NOT allow an MTU to be set which
+#    would allow sending of frames larger than those allowed by the Link
+#    Layer protocol.  However, a router SHOULD be willing to receive a
+#    packet as large as the maximum frame size even if that is larger than
+#    the MTU.
+# 
+#    DISCUSSION
+#       Note that this is a stricter requirement than imposed on hosts by
+#       [INTRO:2], which requires that the MTU of each physical interface
+#       be configurable.
+# 
+#       If a network is using an MTU smaller than the maximum frame size
+#       for the Link Layer, a router may receive packets larger than the
+#       MTU from misconfigured and incompletely initialized hosts.  The
+#       Robustness Principle indicates that the router should successfully
+#       receive these packets if possible.
+
+[[spec]]
+level = "MUST"
+quote = '''
+The MTU of each logical interface MUST be configurable within the
+range of legal MTUs for the interface.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In such cases, a router MUST NOT allow an MTU to be set which
+would allow sending of frames larger than those allowed by the Link
+Layer protocol.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+However, a router SHOULD be willing to receive a
+packet as large as the maximum frame size even if that is larger than
+the MTU.
+'''
+

@@ -1,0 +1,64 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-10.3.2.5"
+
+# Detecting and responding to misconfiguration
+#
+#    There MUST be mechanisms for detecting and responding to
+#    misconfigurations.  If a command is executed incorrectly, the router
+#    SHOULD give an error message.  The router SHOULD NOT accept a poorly
+#    formed command as if it were correct.
+# 
+#    DISCUSSION
+#       There are cases where it is not possible to detect errors: the
+#       command is correctly formed, but incorrect with respect to the
+#       network.  This may be detected by the router, but may not be
+#       possible.
+# 
+#    Another form of misconfiguration is misconfiguration of the network
+#    to which the router is attached.  A router MAY detect
+#    misconfigurations in the network.  The router MAY log these findings
+#    to a file, either on the router or a host, so that the network
+#    manager will see that there are possible problems on the network.
+# 
+#    DISCUSSION
+#       Examples of such misconfigurations might be another router with
+#       the same address as the one in question or a router with the wrong
+#       address mask.  If a router detects such problems it is probably
+#       not the best idea for the router to try to fix the situation.
+#       That could cause more harm than good.
+
+[[spec]]
+level = "MUST"
+quote = '''
+There MUST be mechanisms for detecting and responding to
+misconfigurations.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a command is executed incorrectly, the router
+SHOULD give an error message.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The router SHOULD NOT accept a poorly
+formed command as if it were correct.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY detect
+misconfigurations in the network.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+The router MAY log these findings
+to a file, either on the router or a host, so that the network
+manager will see that there are possible problems on the network.
+'''
+

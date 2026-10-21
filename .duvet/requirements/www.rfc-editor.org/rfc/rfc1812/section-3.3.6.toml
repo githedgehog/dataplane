@@ -1,0 +1,65 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-3.3.6"
+
+# Interface Testing
+#
+#    A router MUST have a mechanism to allow routing software to determine
+#    whether a physical interface is available to send packets or not; on
+#    multiplexed interfaces where permanent virtual circuits are opened
+#    for limited sets of neighbors, the router must also be able to
+#    determine whether the virtual circuits are viable.  A router SHOULD
+#    have a mechanism to allow routing software to judge the quality of a
+#    physical interface.  A router MUST have a mechanism for informing the
+#    routing software when a physical interface becomes available or
+#    unavailable to send packets because of administrative action.  A
+#    router MUST have a mechanism for informing the routing software when
+#    it detects a Link level interface has become available or
+#    unavailable, for any reason.
+# 
+#    DISCUSSION
+#       It is crucial that routers have workable mechanisms for
+#       determining that their network connections are functioning
+#       properly.  Failure to detect link loss, or failure to take the
+#       proper actions when a problem is detected, can lead to black
+#       holes.
+# 
+#       The mechanisms available for detecting problems with network
+#       connections vary considerably, depending on the Link Layer
+#       protocols in use and the interface hardware.  The intent is to
+#       maximize the capability to detect failures within the Link-Layer
+#       constraints.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST have a mechanism to allow routing software to determine
+whether a physical interface is available to send packets or not; on
+multiplexed interfaces where permanent virtual circuits are opened
+for limited sets of neighbors, the router must also be able to
+determine whether the virtual circuits are viable.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD
+have a mechanism to allow routing software to judge the quality of a
+physical interface.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST have a mechanism for informing the
+routing software when a physical interface becomes available or
+unavailable to send packets because of administrative action.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A
+router MUST have a mechanism for informing the routing software when
+it detects a Link level interface has become available or
+unavailable, for any reason.
+'''
+

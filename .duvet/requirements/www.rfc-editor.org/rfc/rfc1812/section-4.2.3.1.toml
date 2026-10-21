@@ -1,0 +1,113 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.3.1"
+
+# IP Broadcast Addresses
+#
+#    For historical reasons, there are a number of IP addresses (some
+#    standard and some not) which are used to indicate that an IP packet
+#    is an IP broadcast.  A router
+# 
+#    (1) MUST treat as IP broadcasts packets addressed to 255.255.255.255
+#         or { <Network-prefix>, -1 }.
+# 
+#    (2) SHOULD silently discard on receipt (i.e., do not even deliver to
+#         applications in the router) any packet addressed to 0.0.0.0 or {
+#         <Network-prefix>, 0 }.  If these packets are not silently
+#         discarded, they MUST be treated as IP broadcasts (see Section
+#         [5.3.5]).  There MAY be a configuration option to allow receipt
+#         of these packets.  This option SHOULD default to discarding
+#         them.
+# 
+#    (3) SHOULD (by default) use the limited broadcast address
+#         (255.255.255.255) when originating an IP broadcast destined for
+#         a connected (sub)network (except when sending an ICMP Address
+#         Mask Reply, as discussed in Section [4.3.3.9]).  A router MUST
+#         receive limited broadcasts.
+# 
+#    (4) SHOULD NOT originate datagrams addressed to 0.0.0.0 or {
+#         <Network-prefix>, 0 }.  There MAY be a configuration option to
+#         allow generation of these packets (instead of using the relevant
+#         1s format broadcast).  This option SHOULD default to not
+#         generating them.
+# 
+#    DISCUSSION
+#       In the second bullet, the router obviously cannot recognize
+#       addresses of the form { <Network-prefix>, 0 } if the router has no
+#       interface to that network prefix.  In that case, the rules of the
+#       second bullet do not apply because, from the point of view of the
+#       router, the packet is not an IP broadcast packet.
+
+[[spec]]
+level = "MUST"
+quote = '''
+(1) MUST treat as IP broadcasts packets addressed to 255.255.255.255
+or { <Network-prefix>, -1 }.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+(2) SHOULD silently discard on receipt (i.e., do not even deliver to
+applications in the router) any packet addressed to 0.0.0.0 or {
+<Network-prefix>, 0 }.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If these packets are not silently
+discarded, they MUST be treated as IP broadcasts (see Section
+[5.3.5]).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+There MAY be a configuration option to allow receipt
+of these packets.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+This option SHOULD default to discarding
+them.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+(3) SHOULD (by default) use the limited broadcast address
+(255.255.255.255) when originating an IP broadcast destined for
+a connected (sub)network (except when sending an ICMP Address
+Mask Reply, as discussed in Section [4.3.3.9]).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST
+receive limited broadcasts.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+(4) SHOULD NOT originate datagrams addressed to 0.0.0.0 or {
+<Network-prefix>, 0 }.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+There MAY be a configuration option to
+allow generation of these packets (instead of using the relevant
+1s format broadcast).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+This option SHOULD default to not
+generating them.
+'''
+

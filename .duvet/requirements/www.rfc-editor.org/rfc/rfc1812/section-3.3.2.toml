@@ -1,0 +1,44 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-3.3.2"
+
+# Address Resolution Protocol - ARP
+#
+#    Routers that implement ARP MUST be compliant and SHOULD be
+#    unconditionally compliant with the requirements in [INTRO:2].
+# 
+#    The link layer MUST NOT report a Destination Unreachable error to IP
+#    solely because there is no ARP cache entry for a destination; it
+#    SHOULD queue up to a small number of datagrams breifly while
+#    performing the ARP request/reply sequence, and reply that the
+#    destination is unreachable to one of the queued datagrams only when
+#    this proves fruitless.
+# 
+#    A router MUST not believe any ARP reply that claims that the Link
+#    Layer address of another host or router is a broadcast or multicast
+#    address.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers that implement ARP MUST be compliant and SHOULD be
+unconditionally compliant with the requirements in [INTRO:2].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The link layer MUST NOT report a Destination Unreachable error to IP
+solely because there is no ARP cache entry for a destination; it
+SHOULD queue up to a small number of datagrams breifly while
+performing the ARP request/reply sequence, and reply that the
+destination is unreachable to one of the queued datagrams only when
+this proves fruitless.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST not believe any ARP reply that claims that the Link
+Layer address of another host or router is a broadcast or multicast
+address.
+'''
+

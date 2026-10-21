@@ -1,0 +1,49 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.3.3"
+
+# Source Quench
+#
+#    A router SHOULD NOT originate ICMP Source Quench messages.  As
+#    specified in Section [4.3.2], a router that does originate Source
+#    Quench messages MUST be able to limit the rate at which they are
+#    generated.
+# 
+#    DISCUSSION
+#       Research seems to suggest that Source Quench consumes network
+#       bandwidth but is an ineffective (and unfair) antidote to
+#       congestion.  See, for example, [INTERNET:9] and [INTERNET:10].
+#       Section [5.3.6] discusses the current thinking on how routers
+#       ought to deal with overload and network congestion.
+# 
+#    A router MAY ignore any ICMP Source Quench messages it receives.
+# 
+#    DISCUSSION
+#       A router itself may receive a Source Quench as the result of
+#       originating a packet sent to another router or host.  Such
+#       datagrams might be, e.g., an EGP update sent to another router, or
+#       a telnet stream sent to a host.  A mechanism has been proposed
+#       ([INTERNET:11], [INTERNET:12]) to make the IP layer respond
+#       directly to Source Quench by controlling the rate at which packets
+#       are sent, however, this proposal is currently experimental and not
+#       currently recommended.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD NOT originate ICMP Source Quench messages.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+As
+specified in Section [4.3.2], a router that does originate Source
+Quench messages MUST be able to limit the rate at which they are
+generated.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY ignore any ICMP Source Quench messages it receives.
+'''
+

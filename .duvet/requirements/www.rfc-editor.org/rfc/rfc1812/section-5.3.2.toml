@@ -1,0 +1,102 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.2"
+
+# Type of Service (TOS)
+#
+#       The Type-of-Service byte in the IP header is divided into three
+#       sections: the Precedence field (high-order 3 bits), a field that
+#       is customarily called Type of Service or "TOS (next 4 bits), and a
+#       reserved bit (the low order bit).  Rules governing the reserved
+#       bit were described in Section [4.2.2.3].  The Precedence field
+#       will be discussed in Section [5.3.3].  A more extensive discussion
+#       of the TOS field and its use can be found in [ROUTE:11].
+# 
+#       A router SHOULD consider the TOS field in a packet's IP header
+#       when deciding how to forward it.  The remainder of this section
+#       describes the rules that apply to routers that conform to this
+#       requirement.
+# 
+#       A router MUST maintain a TOS value for each route in its routing
+#       table.  Routes learned through a routing protocol that does not
+#       support TOS MUST be assigned a TOS of zero (the default TOS).
+# 
+#       To choose a route to a destination, a router MUST use an algorithm
+#       equivalent to the following:
+# 
+#       (1) The router locates in its routing table all available routes
+#            to the destination (see Section [5.2.4]).
+# 
+#       (2) If there are none, the router drops the packet because the
+#            destination is unreachable.  See section [5.2.4].
+# 
+#       (3) If one or more of those routes have a TOS that exactly matches
+#            the TOS specified in the packet, the router chooses the route
+#            with the best metric.
+# 
+#       (4) Otherwise, the router repeats the above step, except looking
+#            at routes whose TOS is zero.
+# 
+#       (5) If no route was chosen above, the router drops the packet
+#            because the destination is unreachable.  The router returns
+#            an ICMP Destination Unreachable error specifying the
+#            appropriate code: either Network Unreachable with Type of
+#            Service (code 11) or Host Unreachable with Type of Service
+#            (code 12).
+# 
+#    DISCUSSION
+#       Although TOS has been little used in the past, its use by hosts is
+#       now mandated by the Requirements for Internet Hosts RFCs
+#       ([INTRO:2] and [INTRO:3]).  Support for TOS in routers may become
+#       a MUST in the future, but is a SHOULD for now until we get more
+#       experience with it and can better judge both its benefits and its
+#       costs.
+# 
+#       Various people have proposed that TOS should affect other aspects
+#       of the forwarding function.  For example:
+# 
+#       (1) A router could place packets that have the Low Delay bit set
+#            ahead of other packets in its output queues.
+# 
+#       (2) a router is forced to discard packets, it could try to avoid
+#            discarding those which have the High Reliability bit set.
+# 
+#       These ideas have been explored in more detail in [INTERNET:17] but
+#       we don't yet have enough experience with such schemes to make
+#       requirements in this area.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD consider the TOS field in a packet's IP header
+when deciding how to forward it.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST maintain a TOS value for each route in its routing
+table.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routes learned through a routing protocol that does not
+support TOS MUST be assigned a TOS of zero (the default TOS).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+To choose a route to a destination, a router MUST use an algorithm
+equivalent to the following:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Support for TOS in routers may become
+a MUST in the future, but is a SHOULD for now until we get more
+experience with it and can better judge both its benefits and its
+costs.
+'''
+

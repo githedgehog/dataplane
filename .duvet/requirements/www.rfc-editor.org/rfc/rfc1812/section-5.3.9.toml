@@ -1,0 +1,153 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.9"
+
+# Packet Filtering and Access Lists
+#
+#    As a means of providing security and/or limiting traffic through
+#    portions of a network a router SHOULD provide the ability to
+#    selectively forward (or filter) packets.  If this capability is
+#    provided, filtering of packets SHOULD be configurable either to
+#    forward all packets or to selectively forward them based upon the
+#    source and destination prefixes, and MAY filter on other message
+#    attributes.  Each source and destination address SHOULD allow
+#    specification of an arbitrary prefix length.
+# 
+#    DISCUSSION
+#       This feature can provide a measure of privacy, where systems
+#       outside a boundary are not permitted to exchange certain protocols
+#       with systems inside the boundary, or are limited as to which
+#       systems they may communicate with.  It can also help prevent
+#       certain classes of security breach, wherein a system outside a
+#       boundary masquerades as a system inside the boundary and mimics a
+#       session with it.
+# 
+#    If supported, a router SHOULD be configurable to allow one of an
+# 
+#    o Include list - specification of a list of message definitions to be
+#       forwarded, or an
+# 
+#    o Exclude list - specification of a list of message definitions NOT
+#       to be forwarded.
+# 
+#    A "message definition", in this context, specifies the source and
+#    destination network prefix, and may include other identifying
+#    information such as IP Protocol Type or TCP port number.
+# 
+#    A router MAY provide a configuration switch that allows a choice
+#    between specifying an include or an exclude list, or other equivalent
+#    controls.
+# 
+#    A value matching any address (e.g., a keyword any, an address with a
+#    mask of all 0's, or a network prefix whose length is zero) MUST be
+#    allowed as a source and/or destination address.
+# 
+#    In addition to address pairs, the router MAY allow any combination of
+#    transport and/or application protocol and source and destination
+#    ports to be specified.
+# 
+#    The router MUST allow packets to be silently discarded (i.e.,
+#    discarded without an ICMP error message being sent).
+# 
+#    The router SHOULD allow an appropriate ICMP unreachable message to be
+#    sent when a packet is discarded.  The ICMP message SHOULD specify
+#    Communication Administratively Prohibited (code 13) as the reason for
+#    the destination being unreachable.
+# 
+#    The router SHOULD allow the sending of ICMP destination unreachable
+#    messages (code 13) to be configured for each combination of address
+#    pairs, protocol types, and ports it allows to be specified.
+# 
+#    The router SHOULD count and SHOULD allow selective logging of packets
+#    not forwarded.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+As a means of providing security and/or limiting traffic through
+portions of a network a router SHOULD provide the ability to
+selectively forward (or filter) packets.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If this capability is
+provided, filtering of packets SHOULD be configurable either to
+forward all packets or to selectively forward them based upon the
+source and destination prefixes, and MAY filter on other message
+attributes.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Each source and destination address SHOULD allow
+specification of an arbitrary prefix length.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If supported, a router SHOULD be configurable to allow one of an
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY provide a configuration switch that allows a choice
+between specifying an include or an exclude list, or other equivalent
+controls.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A value matching any address (e.g., a keyword any, an address with a
+mask of all 0's, or a network prefix whose length is zero) MUST be
+allowed as a source and/or destination address.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+In addition to address pairs, the router MAY allow any combination of
+transport and/or application protocol and source and destination
+ports to be specified.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The router MUST allow packets to be silently discarded (i.e.,
+discarded without an ICMP error message being sent).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The router SHOULD allow an appropriate ICMP unreachable message to be
+sent when a packet is discarded.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The ICMP message SHOULD specify
+Communication Administratively Prohibited (code 13) as the reason for
+the destination being unreachable.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The router SHOULD allow the sending of ICMP destination unreachable
+messages (code 13) to be configured for each combination of address
+pairs, protocol types, and ports it allows to be specified.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The router SHOULD count and SHOULD allow selective logging of packets
+not forwarded.
+'''
+

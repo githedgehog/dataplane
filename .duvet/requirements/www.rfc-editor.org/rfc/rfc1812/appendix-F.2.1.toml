@@ -1,0 +1,29 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#appendix-F.2.1"
+
+# Introduction
+#
+#    RIP is specified in [ROUTE:3].  Although RIP is still quite important
+#    in the Internet, it is being replaced in sophisticated applications
+#    by more modern IGPs such as the ones described above.  A router
+#    implementing RIP SHOULD implement RIP Version 2 [ROUTE:?], as it
+#    supports CIDR routes.  If occasional access networking is in use, a
+#    router implementing RIP SHOULD implement Demand RIP [ROUTE:?].
+# 
+#    Another common use for RIP is as a router discovery protocol.
+#    Section [4.3.3.10] briefly touches upon this subject.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router
+implementing RIP SHOULD implement RIP Version 2 [ROUTE:?], as it
+supports CIDR routes.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If occasional access networking is in use, a
+router implementing RIP SHOULD implement Demand RIP [ROUTE:?].
+'''
+

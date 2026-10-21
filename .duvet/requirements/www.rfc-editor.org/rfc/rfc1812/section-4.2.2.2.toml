@@ -1,0 +1,83 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.2.2"
+
+# Addresses in Options: RFC 791 Section 3.1
+#
+#    Routers are called upon to insert their address into Record Route,
+#    Strict Source and Record Route, Loose Source and Record Route, or
+#    Timestamp Options.  When a router inserts its address into such an
+#    option, it MUST use the IP address of the logical interface on which
+# 
+#    the packet is being sent.  Where this rule cannot be obeyed because
+#    the output interface has no IP address (i.e., is an unnumbered
+#    interface), the router MUST instead insert its router-id.  The
+#    router's router-id is one of the router's IP addresses.  The Router
+#    ID may be specified on a system basis or on a per-link basis.  Which
+#    of the router's addresses is used as the router-id MUST NOT change
+#    (even across reboots) unless changed by the network manager.
+#    Relevant management changes include reconfiguration of the router
+#    such that the IP address used as the router-id ceases to be one of
+#    the router's IP addresses.  Routers with multiple unnumbered
+#    interfaces MAY have multiple router-id's.  Each unnumbered interface
+#    MUST be associated with a particular router-id.  This association
+#    MUST NOT change (even across reboots) without reconfiguration of the
+#    router.
+# 
+#    DISCUSSION
+#       This specification does not allow for routers that do not have at
+#       least one IP address.  We do not view this as a serious
+#       limitation, since a router needs an IP address to meet the
+#       manageability requirements of Chapter [8] even if the router is
+#       connected only to point-to-point links.
+# 
+#    IMPLEMENTATION
+# 
+#       One possible method of choosing the router-id that fulfills this
+#       requirement is to use the numerically smallest (or greatest) IP
+#       address (treating the address as a 32-bit integer) that is
+#       assigned to the router.
+
+[[spec]]
+level = "MUST"
+quote = '''
+When a router inserts its address into such an
+option, it MUST use the IP address of the logical interface on which
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Where this rule cannot be obeyed because
+the output interface has no IP address (i.e., is an unnumbered
+interface), the router MUST instead insert its router-id.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Which
+of the router's addresses is used as the router-id MUST NOT change
+(even across reboots) unless changed by the network manager.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Routers with multiple unnumbered
+interfaces MAY have multiple router-id's.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Each unnumbered interface
+MUST be associated with a particular router-id.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+This association
+MUST NOT change (even across reboots) without reconfiguration of the
+router.
+'''
+

@@ -1,0 +1,154 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-6.2"
+
+# TRANSMISSION CONTROL PROTOCOL - TCP
+#
+#    The Transmission Control Protocol (TCP) is specified in [TRANS:2].
+# 
+#    A router that implements TCP MUST be compliant, and SHOULD be
+#    unconditionally compliant, with the requirements of [INTRO:2], except
+#    that:
+# 
+#    o This specification does not specify the interfaces between the
+#       various protocol layers.  Thus, a router need not comply with the
+#       following requirements of [INTRO:2] (except of course where
+#       compliance is required for proper functioning of Application Layer
+#       protocols supported by the router):
+# 
+#       Use of Push: RFC-793 Section 2.8:
+#            Passing a received PSH flag to the application layer is now
+#            OPTIONAL.
+# 
+#       Urgent Pointer: RFC-793 Section 3.1:
+#            A TCP MUST inform the application layer asynchronously
+#            whenever it receives an Urgent pointer and there was
+#            previously no pending urgent data, or whenever the Urgent
+#            pointer advances in the data stream.  There MUST be a way for
+#            the application to learn how much urgent data remains to be
+#            read from the connection, or at least to determine whether or
+#            not more urgent data remains to be read.
+# 
+#       TCP Connection Failures:
+#            An application MUST be able to set the value for R2 for a
+#            particular connection.  For example, an interactive
+#            application might set R2 to ``infinity,'' giving the user
+#            control over when to disconnect.
+# 
+#       TCP Multihoming:
+#            If an application on a multihomed host does not specify the
+#            local IP address when actively opening a TCP connection, then
+#            the TCP MUST ask the IP layer to select a local IP address
+#            before sending the (first) SYN.  See the function
+#            GET_SRCADDR() in Section 3.4.
+# 
+#       IP Options:
+#            An application MUST be able to specify a source route when it
+#            actively opens a TCP connection, and this MUST take
+#            precedence over a source route received in a datagram.
+# 
+#    o For similar reasons, a router need not comply with any of the
+#       requirements of [INTRO:2].
+# 
+#    o The requirements concerning the Maximum Segment Size Option in
+#       [INTRO:2] are amended as follows: a router that implements the
+#       host portion of MTU discovery (discussed in Section [4.2.3.3] of
+#       this memo) uses 536 as the default value of SendMSS only if the
+#       path MTU is unknown; if the path MTU is known, the default value
+#       for SendMSS is the path MTU - 40.
+# 
+#    o The requirements concerning the Maximum Segment Size Option in
+#       [INTRO:2] are amended as follows: ICMP Destination Unreachable
+#       codes 11 and 12 are additional soft error conditions.  Therefore,
+#       these message MUST NOT cause TCP to abort a connection.
+# 
+#    DISCUSSION
+#       It should particularly be noted that a TCP implementation in a
+#       router must conform to the following requirements of [INTRO:2]:
+# 
+#       o Providing a configurable TTL.  [Time to Live: RFC-793 Section
+#          3.9]
+# 
+#       o Providing an interface to configure keep-alive behavior, if
+#          keep-alives are used at all.  [TCP Keep-Alives]
+# 
+#       o Providing an error reporting mechanism, and the ability to
+#          manage it.  [Asynchronous Reports]
+# 
+#       o Specifying type of service.  [Type-of-Service]
+# 
+#       The general paradigm applied is that if a particular interface is
+#       visible outside the router, then all requirements for the
+#       interface must be followed.  For example, if a router provides a
+#       telnet function, then it will be generating traffic, likely to be
+#       routed in the external networks.  Therefore, it must be able to
+#       set the type of service correctly or else the telnet traffic may
+#       not get through.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router that implements TCP MUST be compliant, and SHOULD be
+unconditionally compliant, with the requirements of [INTRO:2], except
+that:
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Use of Push: RFC-793 Section 2.8:
+Passing a received PSH flag to the application layer is now
+OPTIONAL.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Urgent Pointer: RFC-793 Section 3.1:
+A TCP MUST inform the application layer asynchronously
+whenever it receives an Urgent pointer and there was
+previously no pending urgent data, or whenever the Urgent
+pointer advances in the data stream.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+There MUST be a way for
+the application to learn how much urgent data remains to be
+read from the connection, or at least to determine whether or
+not more urgent data remains to be read.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+TCP Connection Failures:
+An application MUST be able to set the value for R2 for a
+particular connection.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+TCP Multihoming:
+If an application on a multihomed host does not specify the
+local IP address when actively opening a TCP connection, then
+the TCP MUST ask the IP layer to select a local IP address
+before sending the (first) SYN.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+IP Options:
+An application MUST be able to specify a source route when it
+actively opens a TCP connection, and this MUST take
+precedence over a source route received in a datagram.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Therefore,
+these message MUST NOT cause TCP to abort a connection.
+'''
+

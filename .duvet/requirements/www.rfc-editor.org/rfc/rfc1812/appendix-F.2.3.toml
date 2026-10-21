@@ -1,0 +1,55 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#appendix-F.2.3"
+
+# Specific Issues
+#
+# RIP Shutdown
+# 
+#      An implementation of RIP SHOULD provide for a graceful shutdown
+#      using the following steps:
+# 
+#      (1) Input processing is terminated,
+# 
+#      (2) Four updates are generated at random intervals of between two
+#           and four seconds, These updates contain all routes that were
+#           previously announced, but with some metric changes.  Routes
+#           that were being announced at a metric of infinity should
+#           continue to use this metric.  Routes that had been announced
+#           with a non-infinite metric should be announced with a metric
+#           of 15 (infinity - 1).
+# 
+#    DISCUSSION
+#       The metric used for the above really ought to be 16 (infinity);
+#       setting it to 15 is a kludge to avoid breaking certain old hosts
+#       that wiretap the RIP protocol.  Such a host will (erroneously)
+#       abort a TCP connection if it tries to send a datagram on the
+#       connection while the host has no route to the destination (even if
+#       the period when the host has no route lasts only a few seconds
+#       while RIP chooses an alternate path to the destination).
+# 
+# RIP Split Horizon and Static Routes
+# 
+#    Split horizon SHOULD be applied to static routes by default.  An
+#    implementation SHOULD provide a way to specify, per static route,
+#    that split horizon should not be applied to this route.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An implementation of RIP SHOULD provide for a graceful shutdown
+using the following steps:
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Split horizon SHOULD be applied to static routes by default.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An
+implementation SHOULD provide a way to specify, per static route,
+that split horizon should not be applied to this route.
+'''
+

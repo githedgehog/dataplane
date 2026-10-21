@@ -1,0 +1,16 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-9"
+
+# APPLICATION LAYER - MISCELLANEOUS PROTOCOLS
+#
+#    For all additional application protocols that a router implements,
+#    the router MUST be compliant and SHOULD be unconditionally compliant
+#    with the relevant requirements of [INTRO:3].
+
+[[spec]]
+level = "MUST"
+quote = '''
+For all additional application protocols that a router implements,
+the router MUST be compliant and SHOULD be unconditionally compliant
+with the relevant requirements of [INTRO:3].
+'''
+

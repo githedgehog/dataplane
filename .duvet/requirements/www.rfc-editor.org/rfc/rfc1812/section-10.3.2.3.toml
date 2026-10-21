@@ -1,0 +1,77 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-10.3.2.3"
+
+# Control - Configuring the Router
+#
+#    Every router has configuration parameters that may need to be set.
+#    It SHOULD be possible to update the parameters without rebooting the
+#    router; at worst, a restart MAY be required.  There may be cases when
+#    it is not possible to change parameters without rebooting the router
+#    (for instance, changing the IP address of an interface).  In these
+#    cases, care should be taken to minimize disruption to the router and
+#    the surrounding network.
+# 
+#    There SHOULD be a way to configure the router over the network either
+#    manually or automatically.  A router SHOULD be able to upload or
+#    download its parameters from a host or another router.  A means
+#    SHOULD be provided, either as an application program or a router
+#    function, to convert between the parameter format and a human-
+#    editable format.  A router SHOULD have some sort of stable storage
+#    for its configuration.  A router SHOULD NOT believe protocols such as
+#    RARP, ICMP Address Mask Reply, and MAY not believe BOOTP.
+# 
+#    DISCUSSION
+#       It is necessary to note here that in the future RARP, ICMP Address
+#       Mask Reply, BOOTP and other mechanisms may be needed to allow a
+#       router to auto-configure.  Although routers may in the future be
+#       able to configure automatically, the intent here is to discourage
+#       this practice in a production environment until auto-configuration
+#       has been tested more thoroughly.  The intent is NOT to discourage
+#       auto-configuration all together.  In cases where a router is
+#       expected to get its configuration automatically it may be wise to
+#       allow the router to believe these things as it comes up and then
+#       ignore them after it has gotten its configuration.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+It SHOULD be possible to update the parameters without rebooting the
+router; at worst, a restart MAY be required.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+There SHOULD be a way to configure the router over the network either
+manually or automatically.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD be able to upload or
+download its parameters from a host or another router.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A means
+SHOULD be provided, either as an application program or a router
+function, to convert between the parameter format and a human-
+editable format.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD have some sort of stable storage
+for its configuration.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD NOT believe protocols such as
+RARP, ICMP Address Mask Reply, and MAY not believe BOOTP.
+'''
+

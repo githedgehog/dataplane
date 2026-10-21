@@ -1,0 +1,67 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.5.2"
+
+# Directed Broadcasts
+#
+#    A router MUST classify as network-prefix-directed broadcasts all
+#    valid, directed broadcasts destined for a remote network or an
+#    attached nonsubnetted network.  Note that in view of CIDR, such
+#    appear to be host addresses within the network prefix; we preclude
+#    inspection of the host part of such network prefixes.  Given a route
+#    and no overriding policy, then, a router MUST forward network-
+#    prefix-directed broadcasts.  Network-Prefix-Directed broadcasts MAY
+# 
+#    be sent.
+# 
+#    A router MAY have an option to disable receiving network-prefix-
+#    directed broadcasts on an interface and MUST have an option to
+#    disable forwarding network-prefix-directed broadcasts.  These options
+#    MUST default to permit receiving and forwarding network-prefix-
+#    directed broadcasts.
+# 
+#    DISCUSSION
+#       There has been some debate about forwarding or not forwarding
+#       directed broadcasts.  In this memo we have made the forwarding
+#       decision depend on the router's knowledge of the destination
+#       network prefix.  Routers cannot determine that a message is
+#       unicast or directed broadcast apart from this knowledge.  The
+#       decision to forward or not forward the message is by definition
+#       only possible in the last hop router.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST classify as network-prefix-directed broadcasts all
+valid, directed broadcasts destined for a remote network or an
+attached nonsubnetted network.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Given a route
+and no overriding policy, then, a router MUST forward network-
+prefix-directed broadcasts.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Network-Prefix-Directed broadcasts MAY
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MAY have an option to disable receiving network-prefix-
+directed broadcasts on an interface and MUST have an option to
+disable forwarding network-prefix-directed broadcasts.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+These options
+MUST default to permit receiving and forwarding network-prefix-
+directed broadcasts.
+'''
+

@@ -1,0 +1,40 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.12.4"
+
+# When an Interface is Enabled
+#
+#    If an interface that had not been available becomes available, a
+#    router MUST reenable any static routes that use that interface.  If
+#    routes that would use that interface are learned by the router, then
+#    these routes MUST be evaluated along with all the other learned
+#    routes, and the router MUST make a decision as to which routes should
+#    be placed in the forwarding database.  The implementor is referred to
+#    Chapter [7], Application Layer - Routing Protocols for further
+#    information on how this decision is made.
+# 
+#    A router SHOULD expedite the sending of new routing information to
+#    all routers with which it normally exchanges routing information.
+
+[[spec]]
+level = "MUST"
+quote = '''
+If an interface that had not been available becomes available, a
+router MUST reenable any static routes that use that interface.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If
+routes that would use that interface are learned by the router, then
+these routes MUST be evaluated along with all the other learned
+routes, and the router MUST make a decision as to which routes should
+be placed in the forwarding database.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD expedite the sending of new routing information to
+all routers with which it normally exchanges routing information.
+'''
+

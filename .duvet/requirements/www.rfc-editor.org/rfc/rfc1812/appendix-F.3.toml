@@ -1,0 +1,14 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#appendix-F.3"
+
+# GATEWAY TO GATEWAY PROTOCOL - GGP
+#
+#    The Gateway to Gateway protocol is considered obsolete and SHOULD NOT
+#    be implemented.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The Gateway to Gateway protocol is considered obsolete and SHOULD NOT
+be implemented.
+'''
+

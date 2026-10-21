@@ -1,0 +1,124 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-1.1.3"
+
+# Compliance
+#
+#   Some requirements are applicable to all routers.  Other requirements
+#   are applicable only to those which implement particular features or
+#   protocols.  In the following paragraphs, relevant refers to the union
+#   of the requirements applicable to all routers and the set of
+#   requirements applicable to a particular router because of the set of
+#   features and protocols it has implemented.
+# 
+#   Note that not all Relevant requirements are stated directly in this
+#   memo.  Various parts of this memo incorporate by reference sections of
+#   the Host Requirements specification, [INTRO:2] and [INTRO:3].  For
+#   purposes of determining compliance with this memo, it does not matter
+#   whether a Relevant requirement is stated directly in this memo or
+#   merely incorporated by reference from one of those documents.
+# 
+#   An implementation is said to be conditionally compliant if it
+#   satisfies all the Relevant MUST, MUST IMPLEMENT, and MUST NOT
+#   requirements.  An implementation is said to be unconditionally
+#   compliant if it is conditionally compliant and also satisfies all the
+#   Relevant SHOULD, SHOULD IMPLEMENT, and SHOULD NOT requirements.  An
+#   implementation is not compliant if it is not conditionally compliant
+#   (i.e., it fails to satisfy one or more of the Relevant MUST, MUST
+#   IMPLEMENT, or MUST NOT requirements).
+# 
+#   This specification occasionally indicates that an implementation
+#   SHOULD implement a management variable, and that it SHOULD have a
+#   certain default value.  An unconditionally compliant implementation
+# 
+#   implements the default behavior, and if there are other implemented
+#   behaviors implements the variable.  A conditionally compliant
+#   implementation clearly documents what the default setting of the
+#   variable is or, in the absence of the implementation of a variable,
+#   may be construed to be.  An implementation that both fails to
+#   implement the variable and chooses a different behavior is not
+#   compliant.
+# 
+#   For any of the SHOULD and SHOULD NOT requirements, a router may
+#   provide a configuration option that will cause the router to act other
+#   than as specified by the requirement.  Having such a configuration
+#   option does not void a router's claim to unconditional compliance if
+#   the option has a default setting, and that setting causes the router
+#   to operate in the required manner.
+# 
+#   Likewise, routers may provide, except where explicitly prohibited by
+#   this memo, options which cause them to violate MUST or MUST NOT
+#   requirements.  A router that provides such options is compliant
+#   (either fully or conditionally) if and only if each such option has a
+#   default setting that causes the router to conform to the requirements
+#   of this memo.  Please note that the authors of this memo, although
+#   aware of market realities, strongly recommend against provision of
+#   such options.  Requirements are labeled MUST or MUST NOT because
+#   experts in the field have judged them to be particularly important to
+#   interoperability or proper functioning in the Internet.  Vendors
+#   should weigh carefully the customer support costs of providing options
+#   that violate those rules.
+# 
+#   Of course, this memo is not a complete specification of an IP router,
+#   but rather is closer to what in the OSI world is called a profile.
+#   For example, this memo requires that a number of protocols be
+#   implemented.  Although most of the contents of their protocol
+#   specifications are not repeated in this memo, implementors are
+#   nonetheless required to implement the protocols according to those
+#   specifications.
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation is said to be conditionally compliant if it
+satisfies all the Relevant MUST, MUST IMPLEMENT, and MUST NOT
+requirements.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An implementation is said to be unconditionally
+compliant if it is conditionally compliant and also satisfies all the
+Relevant SHOULD, SHOULD IMPLEMENT, and SHOULD NOT requirements.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An
+implementation is not compliant if it is not conditionally compliant
+(i.e., it fails to satisfy one or more of the Relevant MUST, MUST
+IMPLEMENT, or MUST NOT requirements).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+This specification occasionally indicates that an implementation
+SHOULD implement a management variable, and that it SHOULD have a
+certain default value.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+For any of the SHOULD and SHOULD NOT requirements, a router may
+provide a configuration option that will cause the router to act other
+than as specified by the requirement.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Likewise, routers may provide, except where explicitly prohibited by
+this memo, options which cause them to violate MUST or MUST NOT
+requirements.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Requirements are labeled MUST or MUST NOT because
+experts in the field have judged them to be particularly important to
+interoperability or proper functioning in the Internet.
+'''
+

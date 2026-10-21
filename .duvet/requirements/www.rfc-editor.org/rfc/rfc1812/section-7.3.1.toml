@@ -1,0 +1,27 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.3.1"
+
+# INTRODUCTION
+#
+#    Exterior Gateway Protocols are utilized for inter-Autonomous System
+#    routing to exchange reachability information for a set of networks
+#    internal to a particular autonomous system to a neighboring
+#    autonomous system.
+# 
+#    The area of inter-AS routing is a current topic of research inside
+#    the Internet Engineering Task Force.  The Exterior Gateway Protocol
+#    (EGP) described in Section [Appendix F.1] has traditionally been the
+#    inter-AS protocol of choice, but is now historical.  The Border
+#    Gateway Protocol (BGP) eliminates many of the restrictions and
+#    limitations of EGP, and is therefore growing rapidly in popularity.
+#    A router is not required to implement any inter-AS routing protocol.
+#    However, if a router does implement EGP it also MUST IMPLEMENT BGP.
+#    Although it was not designed as an exterior gateway protocol, RIP
+#    (described in Section [7.2.4]) is sometimes used for inter-AS
+#    routing.
+
+[[spec]]
+level = "MUST"
+quote = '''
+However, if a router does implement EGP it also MUST IMPLEMENT BGP.
+'''
+

@@ -1,0 +1,427 @@
+target = "https://www.rfc-editor.org/rfc/rfc1122#section-2"
+
+# LINK LAYER
+#
+#    2.1  INTRODUCTION
+# 
+#       All Internet systems, both hosts and gateways, have the same
+#       requirements for link layer protocols.  These requirements are
+#       given in Chapter 3 of "Requirements for Internet Gateways"
+#       [INTRO:2], augmented with the material in this section.
+# 
+#    2.2  PROTOCOL WALK-THROUGH
+# 
+#       None.
+# 
+#    2.3  SPECIFIC ISSUES
+# 
+#       2.3.1  Trailer Protocol Negotiation
+# 
+#          The trailer protocol [LINK:1] for link-layer encapsulation MAY
+#          be used, but only when it has been verified that both systems
+#          (host or gateway) involved in the link-layer communication
+#          implement trailers.  If the system does not dynamically
+#          negotiate use of the trailer protocol on a per-destination
+#          basis, the default configuration MUST disable the protocol.
+# 
+#          DISCUSSION:
+#               The trailer protocol is a link-layer encapsulation
+#               technique that rearranges the data contents of packets
+#               sent on the physical network.  In some cases, trailers
+#               improve the throughput of higher layer protocols by
+#               reducing the amount of data copying within the operating
+#               system.  Higher layer protocols are unaware of trailer
+#               use, but both the sending and receiving host MUST
+#               understand the protocol if it is used.
+# 
+#               Improper use of trailers can result in very confusing
+#               symptoms.  Only packets with specific size attributes are
+#               encapsulated using trailers, and typically only a small
+#               fraction of the packets being exchanged have these
+#               attributes.  Thus, if a system using trailers exchanges
+#               packets with a system that does not, some packets
+#               disappear into a black hole while others are delivered
+#               successfully.
+# 
+#          IMPLEMENTATION:
+#               On an Ethernet, packets encapsulated with trailers use a
+#               distinct Ethernet type [LINK:1], and trailer negotiation
+#               is performed at the time that ARP is used to discover the
+#               link-layer address of a destination system.
+# 
+# RFC1122                        LINK LAYER                   October 1989
+# 
+#               Specifically, the ARP exchange is completed in the usual
+#               manner using the normal IP protocol type, but a host that
+#               wants to speak trailers will send an additional "trailer
+#               ARP reply" packet, i.e., an ARP reply that specifies the
+#               trailer encapsulation protocol type but otherwise has the
+#               format of a normal ARP reply.  If a host configured to use
+#               trailers receives a trailer ARP reply message from a
+#               remote machine, it can add that machine to the list of
+#               machines that understand trailers, e.g., by marking the
+#               corresponding entry in the ARP cache.
+# 
+#               Hosts wishing to receive trailer encapsulations send
+#               trailer ARP replies whenever they complete exchanges of
+#               normal ARP messages for IP.  Thus, a host that received an
+#               ARP request for its IP protocol address would send a
+#               trailer ARP reply in addition to the normal IP ARP reply;
+#               a host that sent the IP ARP request would send a trailer
+#               ARP reply when it received the corresponding IP ARP reply.
+#               In this way, either the requesting or responding host in
+#               an IP ARP exchange may request that it receive trailer
+#               encapsulations.
+# 
+#               This scheme, using extra trailer ARP reply packets rather
+#               than sending an ARP request for the trailer protocol type,
+#               was designed to avoid a continuous exchange of ARP packets
+#               with a misbehaving host that, contrary to any
+#               specification or common sense, responded to an ARP reply
+#               for trailers with another ARP reply for IP.  This problem
+#               is avoided by sending a trailer ARP reply in response to
+#               an IP ARP reply only when the IP ARP reply answers an
+#               outstanding request; this is true when the hardware
+#               address for the host is still unknown when the IP ARP
+#               reply is received.  A trailer ARP reply may always be sent
+#               along with an IP ARP reply responding to an IP ARP
+#               request.
+# 
+#       2.3.2  Address Resolution Protocol -- ARP
+# 
+#          2.3.2.1  ARP Cache Validation
+# 
+#             An implementation of the Address Resolution Protocol (ARP)
+#             [LINK:2] MUST provide a mechanism to flush out-of-date cache
+#             entries.  If this mechanism involves a timeout, it SHOULD be
+#             possible to configure the timeout value.
+# 
+#             A mechanism to prevent ARP flooding (repeatedly sending an
+#             ARP Request for the same IP address, at a high rate) MUST be
+#             included.  The recommended maximum rate is 1 per second per
+# 
+# RFC1122                        LINK LAYER                   October 1989
+# 
+#             destination.
+# 
+#             DISCUSSION:
+#                  The ARP specification [LINK:2] suggests but does not
+#                  require a timeout mechanism to invalidate cache entries
+#                  when hosts change their Ethernet addresses.  The
+#                  prevalence of proxy ARP (see Section 2.4 of [INTRO:2])
+#                  has significantly increased the likelihood that cache
+#                  entries in hosts will become invalid, and therefore
+#                  some ARP-cache invalidation mechanism is now required
+#                  for hosts.  Even in the absence of proxy ARP, a long-
+#                  period cache timeout is useful in order to
+#                  automatically correct any bad ARP data that might have
+#                  been cached.
+# 
+#             IMPLEMENTATION:
+#                  Four mechanisms have been used, sometimes in
+#                  combination, to flush out-of-date cache entries.
+# 
+#                  (1)  Timeout -- Periodically time out cache entries,
+#                       even if they are in use.  Note that this timeout
+#                       should be restarted when the cache entry is
+#                       "refreshed" (by observing the source fields,
+#                       regardless of target address, of an ARP broadcast
+#                       from the system in question).  For proxy ARP
+#                       situations, the timeout needs to be on the order
+#                       of a minute.
+# 
+#                  (2)  Unicast Poll -- Actively poll the remote host by
+#                       periodically sending a point-to-point ARP Request
+#                       to it, and delete the entry if no ARP Reply is
+#                       received from N successive polls.  Again, the
+#                       timeout should be on the order of a minute, and
+#                       typically N is 2.
+# 
+#                  (3)  Link-Layer Advice -- If the link-layer driver
+#                       detects a delivery problem, flush the
+#                       corresponding ARP cache entry.
+# 
+#                  (4)  Higher-layer Advice -- Provide a call from the
+#                       Internet layer to the link layer to indicate a
+#                       delivery problem.  The effect of this call would
+#                       be to invalidate the corresponding cache entry.
+#                       This call would be analogous to the
+#                       "ADVISE_DELIVPROB()" call from the transport layer
+#                       to the Internet layer (see Section 3.4), and in
+#                       fact the ADVISE_DELIVPROB routine might in turn
+#                       call the link-layer advice routine to invalidate
+# 
+# RFC1122                        LINK LAYER                   October 1989
+# 
+#                       the ARP cache entry.
+# 
+#                  Approaches (1) and (2) involve ARP cache timeouts on
+#                  the order of a minute or less.  In the absence of proxy
+#                  ARP, a timeout this short could create noticeable
+#                  overhead traffic on a very large Ethernet.  Therefore,
+#                  it may be necessary to configure a host to lengthen the
+#                  ARP cache timeout.
+# 
+#          2.3.2.2  ARP Packet Queue
+# 
+#             The link layer SHOULD save (rather than discard) at least
+#             one (the latest) packet of each set of packets destined to
+#             the same unresolved IP address, and transmit the saved
+#             packet when the address has been resolved.
+# 
+#             DISCUSSION:
+#                  Failure to follow this recommendation causes the first
+#                  packet of every exchange to be lost.  Although higher-
+#                  layer protocols can generally cope with packet loss by
+#                  retransmission, packet loss does impact performance.
+#                  For example, loss of a TCP open request causes the
+#                  initial round-trip time estimate to be inflated.  UDP-
+#                  based applications such as the Domain Name System are
+#                  more seriously affected.
+# 
+#       2.3.3  Ethernet and IEEE 802 Encapsulation
+# 
+#          The IP encapsulation for Ethernets is described in RFC-894
+#          [LINK:3], while RFC-1042 [LINK:4] describes the IP
+#          encapsulation for IEEE 802 networks.  RFC-1042 elaborates and
+#          replaces the discussion in Section 3.4 of [INTRO:2].
+# 
+#          Every Internet host connected to a 10Mbps Ethernet cable:
+# 
+#          o    MUST be able to send and receive packets using RFC-894
+#               encapsulation;
+# 
+#          o    SHOULD be able to receive RFC-1042 packets, intermixed
+#               with RFC-894 packets; and
+# 
+#          o    MAY be able to send packets using RFC-1042 encapsulation.
+# 
+#          An Internet host that implements sending both the RFC-894 and
+#          the RFC-1042 encapsulations MUST provide a configuration switch
+#          to select which is sent, and this switch MUST default to RFC-
+#          894.
+# 
+# RFC1122                        LINK LAYER                   October 1989
+# 
+#          Note that the standard IP encapsulation in RFC-1042 does not
+#          use the protocol id value (K1=6) that IEEE reserved for IP;
+#          instead, it uses a value (K1=170) that implies an extension
+#          (the "SNAP") which can be used to hold the Ether-Type field.
+#          An Internet system MUST NOT send 802 packets using K1=6.
+# 
+#          Address translation from Internet addresses to link-layer
+#          addresses on Ethernet and IEEE 802 networks MUST be managed by
+#          the Address Resolution Protocol (ARP).
+# 
+#          The MTU for an Ethernet is 1500 and for 802.3 is 1492.
+# 
+#          DISCUSSION:
+#               The IEEE 802.3 specification provides for operation over a
+#               10Mbps Ethernet cable, in which case Ethernet and IEEE
+#               802.3 frames can be physically intermixed.  A receiver can
+#               distinguish Ethernet and 802.3 frames by the value of the
+#               802.3 Length field; this two-octet field coincides in the
+#               header with the Ether-Type field of an Ethernet frame.  In
+#               particular, the 802.3 Length field must be less than or
+#               equal to 1500, while all valid Ether-Type values are
+#               greater than 1500.
+# 
+#               Another compatibility problem arises with link-layer
+#               broadcasts.  A broadcast sent with one framing will not be
+#               seen by hosts that can receive only the other framing.
+# 
+#               The provisions of this section were designed to provide
+#               direct interoperation between 894-capable and 1042-capable
+#               systems on the same cable, to the maximum extent possible.
+#               It is intended to support the present situation where
+#               894-only systems predominate, while providing an easy
+#               transition to a possible future in which 1042-capable
+#               systems become common.
+# 
+#               Note that 894-only systems cannot interoperate directly
+#               with 1042-only systems.  If the two system types are set
+#               up as two different logical networks on the same cable,
+#               they can communicate only through an IP gateway.
+#               Furthermore, it is not useful or even possible for a
+#               dual-format host to discover automatically which format to
+#               send, because of the problem of link-layer broadcasts.
+# 
+#    2.4  LINK/INTERNET LAYER INTERFACE
+# 
+#       The packet receive interface between the IP layer and the link
+#       layer MUST include a flag to indicate whether the incoming packet
+#       was addressed to a link-layer broadcast address.
+# 
+# RFC1122                        LINK LAYER                   October 1989
+# 
+#       DISCUSSION
+#            Although the IP layer does not generally know link layer
+#            addresses (since every different network medium typically has
+#            a different address format), the broadcast address on a
+#            broadcast-capable medium is an important special case.  See
+#            Section 3.2.2, especially the DISCUSSION concerning broadcast
+#            storms.
+# 
+#       The packet send interface between the IP and link layers MUST
+#       include the 5-bit TOS field (see Section 3.2.1.6).
+# 
+#       The link layer MUST NOT report a Destination Unreachable error to
+#       IP solely because there is no ARP cache entry for a destination.
+# 
+#    2.5  LINK LAYER REQUIREMENTS SUMMARY
+# 
+#                                                   |       | | | |S| |
+#                                                   |       | | | |H| |F
+#                                                   |       | | | |O|M|o
+#                                                   |       | |S| |U|U|o
+#                                                   |       | |H| |L|S|t
+#                                                   |       |M|O| |D|T|n
+#                                                   |       |U|U|M| | |o
+#                                                   |       |S|L|A|N|N|t
+#                                                   |       |T|D|Y|O|O|t
+# FEATURE                                           |SECTION| | | |T|T|e
+# --------------------------------------------------|-------|-|-|-|-|-|--
+#                                                   |       | | | | | |
+# Trailer encapsulation                             |2.3.1  | | |x| | |
+# Send Trailers by default without negotiation      |2.3.1  | | | | |x|
+# ARP                                               |2.3.2  | | | | | |
+#   Flush out-of-date ARP cache entries             |2.3.2.1|x| | | | |
+#   Prevent ARP floods                              |2.3.2.1|x| | | | |
+#   Cache timeout configurable                      |2.3.2.1| |x| | | |
+#   Save at least one (latest) unresolved pkt       |2.3.2.2| |x| | | |
+# Ethernet and IEEE 802 Encapsulation               |2.3.3  | | | | | |
+#   Host able to:                                   |2.3.3  | | | | | |
+#     Send & receive RFC-894 encapsulation          |2.3.3  |x| | | | |
+#     Receive RFC-1042 encapsulation                |2.3.3  | |x| | | |
+#     Send RFC-1042 encapsulation                   |2.3.3  | | |x| | |
+#       Then config. sw. to select, RFC-894 dflt    |2.3.3  |x| | | | |
+#   Send K1=6 encapsulation                         |2.3.3  | | | | |x|
+#   Use ARP on Ethernet and IEEE 802 nets           |2.3.3  |x| | | | |
+# Link layer report b'casts to IP layer             |2.4    |x| | | | |
+# IP layer pass TOS to link layer                   |2.4    |x| | | | |
+# No ARP cache entry treated as Dest. Unreach.      |2.4    | | | | |x|
+# 
+# RFC1122                      INTERNET LAYER                 October 1989
+
+[[spec]]
+level = "MAY"
+quote = '''
+The trailer protocol [LINK:1] for link-layer encapsulation MAY
+be used, but only when it has been verified that both systems
+(host or gateway) involved in the link-layer communication
+implement trailers.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the system does not dynamically
+negotiate use of the trailer protocol on a per-destination
+basis, the default configuration MUST disable the protocol.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Higher layer protocols are unaware of trailer
+use, but both the sending and receiving host MUST
+understand the protocol if it is used.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation of the Address Resolution Protocol (ARP)
+[LINK:2] MUST provide a mechanism to flush out-of-date cache
+entries.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If this mechanism involves a timeout, it SHOULD be
+possible to configure the timeout value.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A mechanism to prevent ARP flooding (repeatedly sending an
+ARP Request for the same IP address, at a high rate) MUST be
+included.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The link layer SHOULD save (rather than discard) at least
+one (the latest) packet of each set of packets destined to
+the same unresolved IP address, and transmit the saved
+packet when the address has been resolved.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o    MUST be able to send and receive packets using RFC-894
+encapsulation;
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+o    SHOULD be able to receive RFC-1042 packets, intermixed
+with RFC-894 packets; and
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+o    MAY be able to send packets using RFC-1042 encapsulation.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An Internet host that implements sending both the RFC-894 and
+the RFC-1042 encapsulations MUST provide a configuration switch
+to select which is sent, and this switch MUST default to RFC-
+894.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An Internet system MUST NOT send 802 packets using K1=6.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Address translation from Internet addresses to link-layer
+addresses on Ethernet and IEEE 802 networks MUST be managed by
+the Address Resolution Protocol (ARP).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The packet receive interface between the IP layer and the link
+layer MUST include a flag to indicate whether the incoming packet
+was addressed to a link-layer broadcast address.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The packet send interface between the IP and link layers MUST
+include the 5-bit TOS field (see Section 3.2.1.6).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The link layer MUST NOT report a Destination Unreachable error to
+IP solely because there is no ARP cache entry for a destination.
+'''
+

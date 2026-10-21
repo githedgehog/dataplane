@@ -1,0 +1,29 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.13.2"
+
+# Security Option
+#
+#    Some environments require the Security option in every packet; such a
+#    requirement is outside the scope of this document and the IP standard
+#    specification.  Note, however, that the security options described in
+#    [INTERNET:1] and [INTERNET:16] are obsolete.  Routers SHOULD
+#    IMPLEMENT the revised security option described in [INTERNET:5].
+# 
+#    DISCUSSION
+#       Routers intended for use in networks with multiple security levels
+#       should support packet filtering based on IPSO (RFC-1108) labels.
+#       To implement this support, the router would need to permit the
+#       router administrator to configure both a lower sensitivity limit
+#       (e.g. Unclassified) and an upper sensitivity limit (e.g. Secret)
+#       on each interface.  It is commonly but not always the case that
+#       the two limits are the same (e.g. a single-level interface).
+#       Packets caught by an IPSO filter as being out of range should be
+#       silently dropped and a counter should note the number of packets
+#       dropped because of out of range IPSO labels.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Routers SHOULD
+IMPLEMENT the revised security option described in [INTERNET:5].
+'''
+

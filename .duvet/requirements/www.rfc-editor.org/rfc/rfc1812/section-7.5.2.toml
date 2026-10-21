@@ -1,0 +1,42 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-7.5.2"
+
+# Basic Route Filtering
+#
+#    Filtering of routing information allows control of paths used by a
+#    router to forward packets it receives.  A router should be selective
+#    in which sources of routing information it listens to and what routes
+#    it believes.  Therefore, a router MUST provide the ability to
+#    specify:
+# 
+#    o On which logical interfaces routing information will be accepted
+#       and which routes will be accepted from each logical interface.
+# 
+#    o Whether all routes or only a default route is advertised on a
+#       logical interface.
+# 
+#    Some routing protocols do not recognize logical interfaces as a
+#    source of routing information.  In such cases the router MUST provide
+#    the ability to specify
+# 
+#    o from which other routers routing information will be accepted.
+# 
+#    For example, assume a router connecting one or more leaf networks to
+#    the main portion or backbone of a larger network.  Since each of the
+#    leaf networks has only one path in and out, the router can simply
+#    send a default route to them.  It advertises the leaf networks to the
+#    main network.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Therefore, a router MUST provide the ability to
+specify:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In such cases the router MUST provide
+the ability to specify
+'''
+

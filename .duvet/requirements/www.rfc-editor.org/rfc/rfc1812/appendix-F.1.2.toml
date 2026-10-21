@@ -1,0 +1,270 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#appendix-F.1.2"
+
+# Protocol Walk-through
+#
+#       Indirect Neighbors: RFC-888, page 26
+# 
+#          An implementation of EGP MUST include indirect neighbor
+#          support.
+# 
+#       Polling Intervals: RFC-904, page 10
+# 
+#          The interval between Hello command retransmissions and the
+#          interval between Poll retransmissions SHOULD be configurable
+#          but there MUST be a minimum value defined.
+# 
+#          The interval at which an implementation will respond to Hello
+#          commands and Poll commands SHOULD be configurable but there
+#          MUST be a minimum value defined.
+# 
+#       Network Reachability: RFC-904, page 15
+# 
+#    An implementation MUST default to not providing the external list of
+#    routers in other autonomous systems; only the internal list of
+#    routers together with the nets that are reachable through those
+#    routers should be included in an Update Response/Indication packet.
+#    However, an implementation MAY elect to provide a configuration
+#    option enabling the external list to be provided.  An implementation
+#    MUST NOT include in the external list routers that were learned
+#    through the external list provided by a router in another autonomous
+#    system.  An implementation MUST NOT send a network back to the
+#    autonomous system from which it is learned, i.e.  it MUST do split-
+#    horizon on an autonomous system level.
+# 
+#    If more than 255 internal or 255 external routers need to be
+#    specified in a Network Reachability update, the networks reachable
+#    from routers that can not be listed MUST be merged into the list for
+#    one of the listed routers.  Which of the listed routers is chosen for
+#    this purpose SHOULD be user configurable, but SHOULD default to the
+#    source address of the EGP update being generated.
+# 
+#    An EGP update contains a series of blocks of network numbers, where
+#    each block contains a list of network numbers reachable at a
+#    particular distance through a particular router.  If more than 255
+#    networks are reachable at a particular distance through a particular
+#    router, they are split into multiple blocks (all of which have the
+#    same distance).  Similarly, if more than 255 blocks are required to
+#    list the networks reachable through a particular router, the router's
+#    address is listed as many times as necessary to include all the
+#    blocks in the update.
+# 
+# Unsolicited Updates: RFC-904, page 16
+# 
+#    If a network is shared with the peer, an implementation MUST send an
+#    unsolicited update upon entry to the Up state if the source network
+#    is the shared network.
+# 
+# Neighbor Reachability: RFC-904, page 6, 13-15
+# 
+#    The table on page 6 that describes the values of j and k (the
+#    neighbor up and down thresholds) is incorrect.  It is reproduced
+#    correctly here:
+# 
+#       Name    Active  Passive Description
+#       -----------------------------------------------
+#        j         3       1    neighbor-up threshold
+#        k         1       0    neighbor-down threshold
+# 
+#    The value for k in passive mode also specified incorrectly in RFC-
+#    904, page 14 The values in parenthesis should read:
+# 
+#       (j = 1, k = 0, and T3/T1 = 4)
+# 
+#    As an optimization, an implementation can refrain from sending a
+#    Hello command when a Poll is due.  If an implementation does so, it
+#    SHOULD provide a user configurable option to disable this
+#    optimization.
+# 
+# Abort timer: RFC-904, pages 6, 12, 13
+# 
+#    An EGP implementation MUST include support for the abort timer (as
+#    documented in section 4.1.4 of RFC-904).  An implementation SHOULD
+#    use the abort timer in the Idle state to automatically issue a Start
+#    event to restart the protocol machine.  Recommended values are P4 for
+#    a critical error (Administratively prohibited, Protocol Violation and
+#    Parameter Problem) and P5 for all others.  The abort timer SHOULD NOT
+#    be started when a Stop event was manually initiated (such as through
+#    a network management protocol).
+# 
+# Cease command received in Idle state: RFC-904, page 13
+# 
+#    When the EGP state machine is in the Idle state, it MUST reply to
+#    Cease commands with a Cease-ack response.
+# 
+# Hello Polling Mode: RFC-904, page 11
+# 
+#    An EGP implementation MUST include support for both active and
+#    passive polling modes.
+# 
+# Neighbor Acquisition Messages: RFC-904, page 18
+# 
+#    As noted the Hello and Poll Intervals should only be present in
+#    Request and Confirm messages.  Therefore the length of an EGP
+#    Neighbor Acquisition Message is 14 bytes for a Request or Confirm
+#    message and 10 bytes for a Refuse, Cease or Cease-ack message.
+#    Implementations MUST NOT send 14 bytes for Refuse, Cease or Cease-ack
+#    messages but MUST allow for implementations that send 14 bytes for
+#    these messages.
+# 
+# Sequence Numbers: RFC-904, page 10
+# 
+#    Response or indication packets received with a sequence number not
+#    equal to S MUST be discarded.  The send sequence number S MUST be
+#    incremented just before the time a Poll command is sent and at no
+#    other times.
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation of EGP MUST include indirect neighbor
+support.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The interval between Hello command retransmissions and the
+interval between Poll retransmissions SHOULD be configurable
+but there MUST be a minimum value defined.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The interval at which an implementation will respond to Hello
+commands and Poll commands SHOULD be configurable but there
+MUST be a minimum value defined.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation MUST default to not providing the external list of
+routers in other autonomous systems; only the internal list of
+routers together with the nets that are reachable through those
+routers should be included in an Update Response/Indication packet.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+However, an implementation MAY elect to provide a configuration
+option enabling the external list to be provided.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation
+MUST NOT include in the external list routers that were learned
+through the external list provided by a router in another autonomous
+system.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation MUST NOT send a network back to the
+autonomous system from which it is learned, i.e.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+it MUST do split-
+horizon on an autonomous system level.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If more than 255 internal or 255 external routers need to be
+specified in a Network Reachability update, the networks reachable
+from routers that can not be listed MUST be merged into the list for
+one of the listed routers.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Which of the listed routers is chosen for
+this purpose SHOULD be user configurable, but SHOULD default to the
+source address of the EGP update being generated.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a network is shared with the peer, an implementation MUST send an
+unsolicited update upon entry to the Up state if the source network
+is the shared network.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If an implementation does so, it
+SHOULD provide a user configurable option to disable this
+optimization.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An EGP implementation MUST include support for the abort timer (as
+documented in section 4.1.4 of RFC-904).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An implementation SHOULD
+use the abort timer in the Idle state to automatically issue a Start
+event to restart the protocol machine.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The abort timer SHOULD NOT
+be started when a Stop event was manually initiated (such as through
+a network management protocol).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the EGP state machine is in the Idle state, it MUST reply to
+Cease commands with a Cease-ack response.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An EGP implementation MUST include support for both active and
+passive polling modes.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Implementations MUST NOT send 14 bytes for Refuse, Cease or Cease-ack
+messages but MUST allow for implementations that send 14 bytes for
+these messages.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Response or indication packets received with a sequence number not
+equal to S MUST be discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The send sequence number S MUST be
+incremented just before the time a Poll command is sent and at no
+other times.
+'''
+

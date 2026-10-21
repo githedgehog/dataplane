@@ -1,0 +1,195 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-8.3"
+
+# Standard MIBS
+#
+#    All MIBS relevant to a router's configuration are to be implemented.
+#    To wit:
+# 
+#    o The System, Interface, IP, ICMP, and UDP groups of MIB-II [MGT:2]
+#       MUST be implemented.
+# 
+#    o The Interface Extensions MIB [MGT:18] MUST be implemented.
+# 
+#    o The IP Forwarding Table MIB [MGT:20] MUST be implemented.
+# 
+#    o If the router implements TCP (e.g., for Telnet) then the TCP group
+#       of MIB-II [MGT:2] MUST be implemented.
+# 
+#    o If the router implements EGP then the EGP group of MIB-II [MGT:2]
+#       MUST be implemented.
+# 
+#    o If the router supports OSPF then the OSPF MIB [MGT:14] MUST be
+#       implemented.
+# 
+#    o If the router supports BGP then the BGP MIB [MGT:15] MUST be
+#       implemented.
+# 
+#    o If the router has Ethernet, 802.3, or StarLan interfaces then the
+#       Ethernet-Like MIB [MGT:6] MUST be implemented.
+# 
+#    o If the router has 802.4 interfaces then the 802.4 MIB [MGT:7] MUST
+#       be implemented.
+# 
+#    o If the router has 802.5 interfaces then the 802.5 MIB [MGT:8] MUST
+#       be implemented.
+# 
+#    o If the router has FDDI interfaces that implement ANSI SMT 7.3 then
+#       the FDDI MIB [MGT:9] MUST be implemented.
+# 
+#    o If the router has FDDI interfaces that implement ANSI SMT 6.2 then
+#       the FDDI MIB [MGT:29] MUST be implemented.
+# 
+#    o If the router has interfaces that use V.24 signalling, such as RS-
+#       232, V.10, V.11, V.35, V.36, or RS-422/423/449, then the RS-232
+#       [MGT:10] MIB MUST be implemented.
+# 
+#    o If the router has T1/DS1 interfaces then the T1/DS1 MIB [MGT:16]
+#       MUST be implemented.
+# 
+#    o If the router has T3/DS3 interfaces then the T3/DS3 MIB [MGT:17]
+#       MUST be implemented.
+# 
+#    o If the router has SMDS interfaces then the SMDS Interface Protocol
+#       MIB [MGT:19] MUST be implemented.
+# 
+#    o If the router supports PPP over any of its interfaces then the PPP
+#       MIBs [MGT:11], [MGT:12], and [MGT:13] MUST be implemented.
+# 
+#    o If the router supports RIP Version 2 then the RIP Version 2 MIB
+#       [MGT:21] MUST be implemented.
+# 
+#    o If the router supports X.25 over any of its interfaces then the
+#       X.25 MIBs [MGT:22, MGT:23 and MGT:24] MUST be implemented.
+
+[[spec]]
+level = "MUST"
+quote = '''
+o The System, Interface, IP, ICMP, and UDP groups of MIB-II [MGT:2]
+MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o The Interface Extensions MIB [MGT:18] MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o The IP Forwarding Table MIB [MGT:20] MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router implements TCP (e.g., for Telnet) then the TCP group
+of MIB-II [MGT:2] MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router implements EGP then the EGP group of MIB-II [MGT:2]
+MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router supports OSPF then the OSPF MIB [MGT:14] MUST be
+implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router supports BGP then the BGP MIB [MGT:15] MUST be
+implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router has Ethernet, 802.3, or StarLan interfaces then the
+Ethernet-Like MIB [MGT:6] MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router has 802.4 interfaces then the 802.4 MIB [MGT:7] MUST
+be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router has 802.5 interfaces then the 802.5 MIB [MGT:8] MUST
+be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router has FDDI interfaces that implement ANSI SMT 7.3 then
+the FDDI MIB [MGT:9] MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router has FDDI interfaces that implement ANSI SMT 6.2 then
+the FDDI MIB [MGT:29] MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router has interfaces that use V.24 signalling, such as RS-
+232, V.10, V.11, V.35, V.36, or RS-422/423/449, then the RS-232
+[MGT:10] MIB MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router has T1/DS1 interfaces then the T1/DS1 MIB [MGT:16]
+MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router has T3/DS3 interfaces then the T3/DS3 MIB [MGT:17]
+MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router has SMDS interfaces then the SMDS Interface Protocol
+MIB [MGT:19] MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router supports PPP over any of its interfaces then the PPP
+MIBs [MGT:11], [MGT:12], and [MGT:13] MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router supports RIP Version 2 then the RIP Version 2 MIB
+[MGT:21] MUST be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o If the router supports X.25 over any of its interfaces then the
+X.25 MIBs [MGT:22, MGT:23 and MGT:24] MUST be implemented.
+'''
+

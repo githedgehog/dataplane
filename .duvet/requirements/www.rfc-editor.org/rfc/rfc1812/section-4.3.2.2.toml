@@ -1,0 +1,14 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.2.2"
+
+# ICMP Message TTL
+#
+#    When originating an ICMP message, the router MUST initialize the TTL.
+#    The TTL for ICMP responses must not be taken from the packet that
+#    triggered the response.
+
+[[spec]]
+level = "MUST"
+quote = '''
+When originating an ICMP message, the router MUST initialize the TTL.
+'''
+

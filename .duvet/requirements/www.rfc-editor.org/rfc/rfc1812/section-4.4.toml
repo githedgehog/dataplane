@@ -1,0 +1,18 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.4"
+
+# INTERNET GROUP MANAGEMENT PROTOCOL - IGMP
+#
+#    IGMP [INTERNET:4] is a protocol used between hosts and multicast
+#    routers on a single physical network to establish hosts' membership
+#    in particular multicast groups.  Multicast routers use this
+#    information, in conjunction with a multicast routing protocol, to
+#    support IP multicast forwarding across the Internet.
+# 
+#    A router SHOULD implement the host part of IGMP.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD implement the host part of IGMP.
+'''
+

@@ -1,0 +1,149 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#appendix-A"
+
+# REQUIREMENTS FOR SOURCE-ROUTING HOSTS
+#
+#    Subject to restrictions given below, a host MAY be able to act as an
+#    intermediate hop in a source route, forwarding a source-routed
+#    datagram to the next specified hop.
+# 
+#    However, in performing this router-like function, the host MUST obey
+#    all the relevant rules for a router forwarding source-routed
+#    datagrams [INTRO:2].  This includes the following specific
+#    provisions:
+# 
+#    (A) TTL
+#         The TTL field MUST be decremented and the datagram perhaps
+#         discarded as specified for a router in [INTRO:2].
+# 
+#    (B) ICMP Destination Unreachable
+#         A host MUST be able to generate Destination Unreachable messages
+#         with the following codes:
+#         4 (Fragmentation Required but DF Set) when a source-routed
+#           datagram cannot be fragmented to fit into the target network;
+#         5 (Source Route Failed) when a source-routed datagram cannot be
+#           forwarded, e.g., because of a routing problem or because the
+#           next hop of a strict source route is not on a connected
+#           network.
+# 
+#    (C) IP Source Address
+#         A source-routed datagram being forwarded MAY (and normally will)
+#         have a source address that is not one of the IP addresses of the
+#         forwarding host.
+# 
+#    (D) Record Route Option
+#         A host that is forwarding a source-routed datagram containing a
+#         Record Route option MUST update that option, if it has room.
+# 
+#    (E) Timestamp Option
+#         A host that is forwarding a source-routed datagram containing a
+#         Timestamp Option MUST add the current timestamp to that option,
+#         according to the rules for this option.
+# 
+#    To define the rules restricting host forwarding of source-routed
+#    datagrams, we use the term local source-routing if the next hop will
+#    be through the same physical interface through which the datagram
+#    arrived; otherwise, it is non-local source-routing.
+# 
+#    A host is permitted to perform local source-routing without
+#    restriction.
+# 
+#    A host that supports non-local source-routing MUST have a
+#    configurable switch to disable forwarding, and this switch MUST
+#    default to disabled.
+# 
+#    The host MUST satisfy all router requirements for configurable policy
+#    filters [INTRO:2] restricting non-local forwarding.
+# 
+#    If a host receives a datagram with an incomplete source route but
+#    does not forward it for some reason, the host SHOULD return an ICMP
+#    Destination Unreachable (code 5, Source Route Failed) message, unless
+#    the datagram was itself an ICMP error message.
+
+[[spec]]
+level = "MAY"
+quote = '''
+Subject to restrictions given below, a host MAY be able to act as an
+intermediate hop in a source route, forwarding a source-routed
+datagram to the next specified hop.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+However, in performing this router-like function, the host MUST obey
+all the relevant rules for a router forwarding source-routed
+datagrams [INTRO:2].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+(A) TTL
+The TTL field MUST be decremented and the datagram perhaps
+discarded as specified for a router in [INTRO:2].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+(B) ICMP Destination Unreachable
+A host MUST be able to generate Destination Unreachable messages
+with the following codes:
+4 (Fragmentation Required but DF Set) when a source-routed
+datagram cannot be fragmented to fit into the target network;
+5 (Source Route Failed) when a source-routed datagram cannot be
+forwarded, e.g., because of a routing problem or because the
+next hop of a strict source route is not on a connected
+network.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+(C) IP Source Address
+A source-routed datagram being forwarded MAY (and normally will)
+have a source address that is not one of the IP addresses of the
+forwarding host.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+(D) Record Route Option
+A host that is forwarding a source-routed datagram containing a
+Record Route option MUST update that option, if it has room.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+(E) Timestamp Option
+A host that is forwarding a source-routed datagram containing a
+Timestamp Option MUST add the current timestamp to that option,
+according to the rules for this option.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A host that supports non-local source-routing MUST have a
+configurable switch to disable forwarding, and this switch MUST
+default to disabled.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The host MUST satisfy all router requirements for configurable policy
+filters [INTRO:2] restricting non-local forwarding.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a host receives a datagram with an incomplete source route but
+does not forward it for some reason, the host SHOULD return an ICMP
+Destination Unreachable (code 5, Source Route Failed) message, unless
+the datagram was itself an ICMP error message.
+'''
+

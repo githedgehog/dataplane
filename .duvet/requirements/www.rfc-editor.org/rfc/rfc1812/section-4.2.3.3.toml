@@ -1,0 +1,41 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.3.3"
+
+# Path MTU Discovery
+#
+#    To eliminate fragmentation or minimize it, it is desirable to know
+#    what is the path MTU along the path from the source to destination.
+#    The path MTU is the minimum of the MTUs of each hop in the path.
+#    [INTERNET:14] describes a technique for dynamically discovering the
+#    maximum transmission unit (MTU) of an arbitrary internet path.  For a
+#    path that passes through a router that does not support
+#    [INTERNET:14], this technique might not discover the correct Path
+#    MTU, but it will always choose a Path MTU as accurate as, and in many
+#    cases more accurate than, the Path MTU that would be chosen by older
+#    techniques or the current practice.
+# 
+#    When a router is originating an IP datagram, it SHOULD use the scheme
+#    described in [INTERNET:14] to limit the datagram's size.  If the
+#    router's route to the datagram's destination was learned from a
+#    routing protocol that provides Path MTU information, the scheme
+#    described in [INTERNET:14] is still used, but the Path MTU
+#    information from the routing protocol SHOULD be used as the initial
+#    guess as to the Path MTU and also as an upper bound on the Path MTU.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When a router is originating an IP datagram, it SHOULD use the scheme
+described in [INTERNET:14] to limit the datagram's size.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the
+router's route to the datagram's destination was learned from a
+routing protocol that provides Path MTU information, the scheme
+described in [INTERNET:14] is still used, but the Path MTU
+information from the routing protocol SHOULD be used as the initial
+guess as to the Path MTU and also as an upper bound on the Path MTU.
+'''
+

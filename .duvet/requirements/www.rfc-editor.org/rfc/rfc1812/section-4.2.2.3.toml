@@ -1,0 +1,33 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.2.2.3"
+
+# Unused IP Header Bits: RFC 791 Section 3.1
+#
+#    The IP header contains two reserved bits: one in the Type of Service
+#    byte and the other in the Flags field.  A router MUST NOT set either
+#    of these bits to one in datagrams originated by the router.  A router
+#    MUST NOT drop (refuse to receive or forward) a packet merely because
+#    one or more of these reserved bits has a non-zero value; i.e., the
+#    router MUST NOT check the values of thes bits.
+# 
+#    DISCUSSION
+#       Future revisions to the IP protocol may make use of these unused
+#       bits.  These rules are intended to ensure that these revisions can
+#       be deployed without having to simultaneously upgrade all routers
+#       in the Internet.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST NOT set either
+of these bits to one in datagrams originated by the router.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router
+MUST NOT drop (refuse to receive or forward) a packet merely because
+one or more of these reserved bits has a non-zero value; i.e., the
+router MUST NOT check the values of thes bits.
+'''
+

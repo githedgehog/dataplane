@@ -1,0 +1,37 @@
+target = "https://www.rfc-editor.org/rfc/rfc7348#section-6.1"
+
+# Inner VLAN Tag Handling
+#
+#    Inner VLAN Tag Handling in VTEP and VXLAN gateway should conform to
+#    the following:
+# 
+#    Decapsulated VXLAN frames with the inner VLAN tag SHOULD be discarded
+#    unless configured otherwise.  On the encapsulation side, a VTEP
+#    SHOULD NOT include an inner VLAN tag on tunnel packets unless
+#    configured otherwise.  When a VLAN-tagged packet is a candidate for
+#    VXLAN tunneling, the encapsulating VTEP SHOULD strip the VLAN tag
+#    unless configured otherwise.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Decapsulated VXLAN frames with the inner VLAN tag SHOULD be discarded
+unless configured otherwise.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+On the encapsulation side, a VTEP
+SHOULD NOT include an inner VLAN tag on tunnel packets unless
+configured otherwise.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When a VLAN-tagged packet is a candidate for
+VXLAN tunneling, the encapsulating VTEP SHOULD strip the VLAN tag
+unless configured otherwise.
+'''
+

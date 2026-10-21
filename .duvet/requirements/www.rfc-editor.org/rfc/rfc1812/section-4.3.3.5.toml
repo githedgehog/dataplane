@@ -1,0 +1,33 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.3.5"
+
+# Parameter Problem
+#
+#    A router MUST generate a Parameter Problem message for any error not
+#    specifically covered by another ICMP message.  The IP header field or
+#    IP option including the byte indicated by the pointer field MUST be
+#    included unchanged in the IP header returned with this ICMP message.
+#    Section [4.3.2] defines an exception to this requirement.
+# 
+#    A new variant of the Parameter Problem message was defined in
+#    [INTRO:2]:
+#         Code 1 = required option is missing.
+# 
+#    DISCUSSION
+#       This variant is currently in use in the military community for a
+#       missing security option.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST generate a Parameter Problem message for any error not
+specifically covered by another ICMP message.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The IP header field or
+IP option including the byte indicated by the pointer field MUST be
+included unchanged in the IP header returned with this ICMP message.
+'''
+

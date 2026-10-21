@@ -1,0 +1,414 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#appendix-F.2.2"
+
+# Protocol Walk-Through
+#
+#    Dealing with changes in topology: [ROUTE:3], page 11
+# 
+#         An implementation of RIP MUST provide a means for timing out
+#         routes.  Since messages are occasionally lost, implementations
+#         MUST NOT invalidate a route based on a single missed update.
+# 
+#         Implementations MUST by default wait six times the update
+#         interval before invalidating a route.  A router MAY have
+#         configuration options to alter this value.
+# 
+#    DISCUSSION
+#       It is important to routing stability that all routers in a RIP
+#       autonomous system use similar timeout value for invalidating
+#       routes, and therefore it is important that an implementation
+#       default to the timeout value specified in the RIP specification.
+# 
+#       However, that timeout value is too conservative in environments
+#       where packet loss is reasonably rare.  In such an environment, a
+#       network manager may wish to be able to decrease the timeout period
+#       to promote faster recovery from failures.
+# 
+#    IMPLEMENTATION
+#       There is a very simple mechanism that a router may use to meet the
+#       requirement to invalidate routes promptly after they time out.
+#       Whenever the router scans the routing table to see if any routes
+#       have timed out, it also notes the age of the least recently
+#       updated route that has not yet timed out.  Subtracting this age
+#       from the timeout period gives the amount of time until the router
+#       again needs to scan the table for timed out routes.
+# 
+# Split Horizon: [ROUTE:3], page 14-15
+# 
+#    An implementation of RIP MUST implement split horizon, a scheme used
+#    for avoiding problems caused by including routes in updates sent to
+#    the router from which they were learned.
+# 
+#    An implementation of RIP SHOULD implement Split horizon with poisoned
+#    reverse, a variant of split horizon that includes routes learned from
+#    a router sent to that router, but sets their metric to infinity.
+#    Because of the routing overhead that may be incurred by implementing
+#    split horizon with poisoned reverse, implementations MAY include an
+#    option to select whether poisoned reverse is in effect.  An
+#    implementation SHOULD limit the time in which it sends reverse routes
+#    at an infinite metric.
+# 
+#    IMPLEMENTATION
+#       Each of the following algorithms can be used to limit the time for
+#       which poisoned reverse is applied to a route.  The first algorithm
+#       is more complex but does a more thorough job of limiting poisoned
+#       reverse to only those cases where it is necessary.
+# 
+#       The goal of both algorithms is to ensure that poison reverse is
+#       done for any destination whose route has changed in the last Route
+#       Lifetime (typically 180 seconds), unless it can be sure that the
+#       previous route used the same output interface.  The Route Lifetime
+#       is used because that is the amount of time RIP will keep around an
+#       old route before declaring it stale.
+# 
+#       The time intervals (and derived variables) used in the following
+#       algorithms are as follows:
+# 
+#       Tu The Update Timer; the number of seconds between RIP updates.
+#            This typically defaults to 30 seconds.
+# 
+#       Rl The Route Lifetime, in seconds.  This is the amount of time
+#            that a route is presumed to be good, without requiring an
+#            update.  This typically defaults to 180 seconds.
+# 
+#       Ul The Update Loss; the number of consecutive updates that have to
+#            be lost or fail to mention a route before RIP deletes the
+#            route.  Ul is calculated to be (Rl/Tu)+1.  The +1 is to
+#            account for the fact that the first time the ifcounter is
+#            decremented will be less than Tu seconds after it is
+#            initialized.  Typically, Ul will be 7: (180/30)+1.
+# 
+#       In The value to set ifcounter to when a destination is newly
+#            learned.  This value is Ul-4, where the 4 is RIP's garbage
+#            collection timer/30
+# 
+#       The first algorithm is:
+# 
+#       - Associated with each destination is a counter, called the
+#          ifcounter below.  Poison reverse is done for any route whose
+#          destination's ifcounter is greater than zero.
+# 
+#       - After a regular (not triggered or in response to a request)
+#          update is sent, all the non-zero ifcounters are decremented by
+#          one.
+# 
+#       - When a route to a destination is created, its ifcounter is set
+#          as follows:
+# 
+#          - If the new route is superseding a valid route, and the old
+#             route used a different (logical) output interface, then the
+#             ifcounter is set to Ul.
+# 
+#          - If the new route is superseding a stale route, and the old
+#             route used a different (logical) output interface, then the
+#             ifcounter is set to MAX(0, Ul - INT(seconds that the route
+#             has been stale/Ut).
+# 
+#          - If there was no previous route to the destination, the
+#             ifcounter is set to In.
+# 
+#          - Otherwise, the ifcounter is set to zero
+# 
+#       - RIP also maintains a timer, called the resettimer below.  Poison
+#          reverse is done on all routes whenever resettimer has not
+#          expired (regardless of the ifcounter values).
+# 
+#       - When RIP is started, restarted, reset, or otherwise has its
+#          routing table cleared, it sets the resettimer to go off in Rl
+#          seconds.
+# 
+#       The second algorithm is identical to the first except that:
+# 
+#       - The rules which set the ifcounter to non-zero values are changed
+#          to always set it to Rl/Tu, and
+# 
+#       - The resettimer is eliminated.
+# 
+#  Triggered updates: [ROUTE:3], page 15-16; page 29
+# 
+#       Triggered updates (also called flash updates) are a mechanism for
+#       immediately notifying a router's neighbors when the router adds or
+#       deletes routes or changes their metrics.  A router MUST send a
+#       triggered update when routes are deleted or their metrics are
+#       increased.  A router MAY send a triggered update when routes are
+#       added or their metrics decreased.
+# 
+#       Since triggered updates can cause excessive routing overhead,
+#       implementations MUST use the following mechanism to limit the
+#       frequency of triggered updates:
+# 
+#       (1) When a router sends a triggered update, it sets a timer to a
+#            random time between one and five seconds in the future.  The
+#            router must not generate additional triggered updates before
+#            this timer expires.
+# 
+#       (2) If the router would generate a triggered update during this
+#            interval it sets a flag indicating that a triggered update is
+#            desired.  The router also logs the desired triggered update.
+# 
+#       (3) When the triggered update timer expires, the router checks the
+#            triggered update flag.  If the flag is set then the router
+#            sends a single triggered update which includes all the
+#            changes that were logged.  The router then clears the flag
+#            and, since a triggered update was sent, restarts this
+#            algorithm.
+# 
+#       (4) The flag is also cleared whenever a regular update is sent.
+# 
+#       Triggered updates SHOULD include all routes that have changed
+#       since the most recent regular (non-triggered) update.  Triggered
+#       updates MUST NOT include routes that have not changed since the
+#       most recent regular update.
+# 
+#    DISCUSSION
+#       Sending all routes, whether they have changed recently or not, is
+#       unacceptable in triggered updates because the tremendous size of
+#       many Internet routing tables could otherwise result in
+#       considerable bandwidth being wasted on triggered updates.
+# 
+# Use of UDP: [ROUTE:3], page 18-19.
+# 
+#    RIP packets sent to an IP broadcast address SHOULD have their initial
+#    TTL set to one.
+# 
+#    Note that to comply with Section [6.1] of this memo, a router SHOULD
+#    use UDP checksums in RIP packets that it originates, MUST discard RIP
+#    packets received with invalid UDP checksums, but MUST NOT discard
+#    received RIP packets simply because they do not contain UDP
+#    checksums.
+# 
+# Addressing Considerations: [ROUTE:3], page 22
+# 
+#    A RIP implementation SHOULD support host routes.  If it does not, it
+#    MUST (as described on page 27 of [ROUTE:3]) ignore host routes in
+#    received updates.  A router MAY log ignored hosts routes.
+# 
+#    The special address 0.0.0.0 is used to describe a default route.  A
+#    default route is used as the route of last resort (i.e., when a route
+#    to the specific net does not exist in the routing table).  The router
+#    MUST be able to create a RIP entry for the address 0.0.0.0.
+# 
+# Input Processing - Response: [ROUTE:3], page 26
+# 
+#    When processing an update, the following validity checks MUST be
+#    performed:
+# 
+#    o The response MUST be from UDP port 520.
+# 
+#    o The source address MUST be on a directly connected subnet (or on a
+#       directly connected, non-subnetted network) to be considered valid.
+# 
+#    o The source address MUST NOT be one of the router's addresses.
+# 
+#    DISCUSSION
+#       Some networks, media, and interfaces allow a sending node to
+#       receive packets that it broadcasts.  A router must not accept its
+#       own packets as valid routing updates and process them.  The last
+#       requirement prevents a router from accepting its own routing
+#       updates and processing them (on the assumption that they were sent
+#       by some other router on the network).
+# 
+#    An implementation MUST NOT replace an existing route if the metric
+#    received is equal to the existing metric except in accordance with
+#    the following heuristic.
+# 
+#    An implementation MAY choose to implement the following heuristic to
+#    deal with the above situation.  Normally, it is useless to change the
+#    route to a network from one router to another if both are advertised
+#    at the same metric.  However, the route being advertised by one of
+#    the routers may be in the process of timing out.  Instead of waiting
+#    for the route to timeout, the new route can be used after a specified
+#    amount of time has elapsed.  If this heuristic is implemented, it
+#    MUST wait at least halfway to the expiration point before the new
+#    route is installed.
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation of RIP MUST provide a means for timing out
+routes.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Since messages are occasionally lost, implementations
+MUST NOT invalidate a route based on a single missed update.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Implementations MUST by default wait six times the update
+interval before invalidating a route.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY have
+configuration options to alter this value.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation of RIP MUST implement split horizon, a scheme used
+for avoiding problems caused by including routes in updates sent to
+the router from which they were learned.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An implementation of RIP SHOULD implement Split horizon with poisoned
+reverse, a variant of split horizon that includes routes learned from
+a router sent to that router, but sets their metric to infinity.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Because of the routing overhead that may be incurred by implementing
+split horizon with poisoned reverse, implementations MAY include an
+option to select whether poisoned reverse is in effect.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+An
+implementation SHOULD limit the time in which it sends reverse routes
+at an infinite metric.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST send a
+triggered update when routes are deleted or their metrics are
+increased.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY send a triggered update when routes are
+added or their metrics decreased.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Since triggered updates can cause excessive routing overhead,
+implementations MUST use the following mechanism to limit the
+frequency of triggered updates:
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Triggered updates SHOULD include all routes that have changed
+since the most recent regular (non-triggered) update.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Triggered
+updates MUST NOT include routes that have not changed since the
+most recent regular update.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+RIP packets sent to an IP broadcast address SHOULD have their initial
+TTL set to one.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Note that to comply with Section [6.1] of this memo, a router SHOULD
+use UDP checksums in RIP packets that it originates, MUST discard RIP
+packets received with invalid UDP checksums, but MUST NOT discard
+received RIP packets simply because they do not contain UDP
+checksums.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A RIP implementation SHOULD support host routes.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If it does not, it
+MUST (as described on page 27 of [ROUTE:3]) ignore host routes in
+received updates.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY log ignored hosts routes.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The router
+MUST be able to create a RIP entry for the address 0.0.0.0.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When processing an update, the following validity checks MUST be
+performed:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o The response MUST be from UDP port 520.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o The source address MUST be on a directly connected subnet (or on a
+directly connected, non-subnetted network) to be considered valid.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+o The source address MUST NOT be one of the router's addresses.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An implementation MUST NOT replace an existing route if the metric
+received is equal to the existing metric except in accordance with
+the following heuristic.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+An implementation MAY choose to implement the following heuristic to
+deal with the above situation.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If this heuristic is implemented, it
+MUST wait at least halfway to the expiration point before the new
+route is installed.
+'''
+

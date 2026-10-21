@@ -1,0 +1,78 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-5.3.13.6"
+
+# Timestamp Option
+#
+#    Routers MUST support the timestamp option in forwarded packets.  A
+#    timestamp value MUST follow the rules given [INTRO:2].
+# 
+#    If the flags field = 3 (timestamp and prespecified address), the
+#    router MUST add its timestamp if the next prespecified address
+#    matches any of the router's IP addresses.  It is not necessary that
+#    the prespecified address be either the address of the interface on
+#    which the packet arrived or the address of the interface over which
+#    it will be sent.
+# 
+#    IMPLEMENTATION
+#       To maximize the utility of the timestamps contained in the
+#       timestamp option, it is suggested that the timestamp inserted be,
+#       as nearly as practical, the time at which the packet arrived at
+# 
+#       the router.  For datagrams originated by the router, the timestamp
+#       inserted should be, as nearly as practical, the time at which the
+#       datagram was passed to the network layer for transmission.
+# 
+#    A router MAY provide a configuration option which, if enabled, will
+#    cause the router to ignore (i.e., pass through unchanged) Timestamp
+#    options in forwarded datagrams when the flag word is set to zero
+#    (timestamps only) or one (timestamp and registering IP address).  If
+#    provided, such an option MUST default to off (that is, the router
+#    does not ignore the timestamp).  This option should not affect the
+#    processing of Timestamp options in datagrams received by the router
+#    itself (in particular, a router will insert timestamps into Timestamp
+#    options in datagrams received by the router, and Timestamp options in
+#    ICMP echo requests will still be processed according to Section
+#    [4.3.3.6]).
+# 
+#    DISCUSSION
+#       Like the Record Route option, the Timestamp option can reveal
+#       information about a network's topology.  Some people consider this
+#       to be a security concern.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST support the timestamp option in forwarded packets.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A
+timestamp value MUST follow the rules given [INTRO:2].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the flags field = 3 (timestamp and prespecified address), the
+router MUST add its timestamp if the next prespecified address
+matches any of the router's IP addresses.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY provide a configuration option which, if enabled, will
+cause the router to ignore (i.e., pass through unchanged) Timestamp
+options in forwarded datagrams when the flag word is set to zero
+(timestamps only) or one (timestamp and registering IP address).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If
+provided, such an option MUST default to off (that is, the router
+does not ignore the timestamp).
+'''
+

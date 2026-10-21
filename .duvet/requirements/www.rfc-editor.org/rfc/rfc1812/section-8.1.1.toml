@@ -1,0 +1,96 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-8.1.1"
+
+# SNMP Protocol Elements
+#
+#    Routers MUST be manageable by SNMP [MGT:3].  The SNMP MUST operate
+#    using UDP/IP as its transport and network protocols.  Others MAY be
+#    supported (e.g., see [MGT:25, MGT:26, MGT:27, and MGT:28]).  SNMP
+# 
+#    management operations MUST operate as if the SNMP was implemented on
+#    the router itself.  Specifically, management operations MUST be
+#    effected by sending SNMP management requests to any of the IP
+#    addresses assigned to any of the router's interfaces.  The actual
+#    management operation may be performed either by the router or by a
+#    proxy for the router.
+# 
+#    DISCUSSION
+#       This wording is intended to allow management either by proxy,
+#       where the proxy device responds to SNMP packets that have one of
+#       the router's IP addresses in the packets destination address
+#       field, or the SNMP is implemented directly in the router itself
+#       and receives packets and responds to them in the proper manner.
+# 
+#       It is important that management operations can be sent to one of
+#       the router's IP Addresses.  In diagnosing network problems the
+#       only thing identifying the router that is available may be one of
+#       the router's IP address; obtained perhaps by looking through
+#       another router's routing table.
+# 
+#    All SNMP operations (get, get-next, get-response, set, and trap) MUST
+#    be implemented.
+# 
+#    Routers MUST provide a mechanism for rate-limiting the generation of
+#    SNMP trap messages.  Routers MAY provide this mechanism through the
+#    algorithms for asynchronous alert management described in [MGT:5].
+# 
+#    DISCUSSION
+#       Although there is general agreement about the need to rate-limit
+#       traps, there is not yet consensus on how this is best achieved.
+#       The reference cited is considered experimental.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST be manageable by SNMP [MGT:3].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The SNMP MUST operate
+using UDP/IP as its transport and network protocols.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Others MAY be
+supported (e.g., see [MGT:25, MGT:26, MGT:27, and MGT:28]).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+management operations MUST operate as if the SNMP was implemented on
+the router itself.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Specifically, management operations MUST be
+effected by sending SNMP management requests to any of the IP
+addresses assigned to any of the router's interfaces.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+All SNMP operations (get, get-next, get-response, set, and trap) MUST
+be implemented.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Routers MUST provide a mechanism for rate-limiting the generation of
+SNMP trap messages.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Routers MAY provide this mechanism through the
+algorithms for asynchronous alert management described in [MGT:5].
+'''
+

@@ -1,0 +1,162 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-3.3.5.2"
+
+# Link Control Protocol (LCP) Options
+#
+#    The PPP Link Control Protocol (LCP) offers a number of options that
+#    may be negotiated.  These options include (among others) address and
+#    control field compression, protocol field compression, asynchronous
+#    character map, Maximum Receive Unit (MRU), Link Quality Monitoring
+#    (LQM), magic number (for loopback detection), Password Authentication
+#    Protocol (PAP), Challenge Handshake Authentication Protocol (CHAP),
+#    and the 32-bit Frame Check Sequence (FCS).
+# 
+#    A router MAY use address/control field compression on either
+#    synchronous or asynchronous links.  A router MAY use protocol field
+#    compression on either synchronous or asynchronous links.  A router
+#    that indicates that it can accept these compressions MUST be able to
+#    accept uncompressed PPP header information also.
+# 
+#    DISCUSSION
+#       These options control the appearance of the PPP header.  Normally
+#       the PPP header consists of the address, the control field, and the
+#       protocol field.  The address, on a point to point line, is 0xFF,
+#       indicating "broadcast".  The control field is 0x03, indicating
+#       "Unnumbered Information." The Protocol Identifier is a two byte
+#       value indicating the contents of the data area of the frame.  If a
+#       system negotiates address and control field compression it
+#       indicates to its peer that it will accept PPP frames that have or
+#       do not have these fields at the front of the header.  It does not
+#       indicate that it will be sending frames with these fields removed.
+# 
+#       Protocol field compression, when negotiated, indicates that the
+#       system is willing to receive protocol fields compressed to one
+#       byte when this is legal.  There is no requirement that the sender
+#       do so.
+# 
+#       Use of address/control field compression is inconsistent with the
+#       use of numbered mode (reliable) PPP.
+# 
+#    IMPLEMENTATION
+#       Some hardware does not deal well with variable length header
+#       information.  In those cases it makes most sense for the remote
+#       peer to send the full PPP header.  Implementations may ensure this
+#       by not sending the address/control field and protocol field
+#       compression options to the remote peer.  Even if the remote peer
+#       has indicated an ability to receive compressed headers there is no
+#       requirement for the local router to send compressed headers.
+# 
+#    A router MUST negotiate the Asynchronous Control Character Map (ACCM)
+#    for asynchronous PPP links, but SHOULD NOT negotiate the ACCM for
+#    synchronous links.  If a router receives an attempt to negotiate the
+#    ACCM over a synchronous link, it MUST ACKnowledge the option and then
+#    ignore it.
+# 
+#    DISCUSSION
+#       There are implementations that offer both synchronous and
+#       asynchronous modes of operation and may use the same code to
+#       implement the option negotiation.  In this situation it is
+#       possible that one end or the other may send the ACCM option on a
+#       synchronous link.
+# 
+#    A router SHOULD properly negotiate the maximum receive unit (MRU).
+#    Even if a system negotiates an MRU smaller than 1,500 bytes, it MUST
+#    be able to receive a 1,500 byte frame.
+# 
+#    A router SHOULD negotiate and enable the link quality monitoring
+#    (LQM) option.
+# 
+#    DISCUSSION
+#       This memo does not specify a policy for deciding whether the
+#       link's quality is adequate.  However, it is important (see Section
+#       [3.3.6]) that a router disable failed links.
+# 
+#    A router SHOULD implement and negotiate the magic number option for
+#    loopback detection.
+# 
+#    A router MAY support the authentication options (PAP - Password
+#    Authentication Protocol, and/or CHAP - Challenge Handshake
+#    Authentication Protocol).
+# 
+#    A router MUST support 16-bit CRC frame check sequence (FCS) and MAY
+#    support the 32-bit CRC.
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY use address/control field compression on either
+synchronous or asynchronous links.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY use protocol field
+compression on either synchronous or asynchronous links.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router
+that indicates that it can accept these compressions MUST be able to
+accept uncompressed PPP header information also.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST negotiate the Asynchronous Control Character Map (ACCM)
+for asynchronous PPP links, but SHOULD NOT negotiate the ACCM for
+synchronous links.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If a router receives an attempt to negotiate the
+ACCM over a synchronous link, it MUST ACKnowledge the option and then
+ignore it.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD properly negotiate the maximum receive unit (MRU).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Even if a system negotiates an MRU smaller than 1,500 bytes, it MUST
+be able to receive a 1,500 byte frame.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD negotiate and enable the link quality monitoring
+(LQM) option.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A router SHOULD implement and negotiate the magic number option for
+loopback detection.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A router MAY support the authentication options (PAP - Password
+Authentication Protocol, and/or CHAP - Challenge Handshake
+Authentication Protocol).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A router MUST support 16-bit CRC frame check sequence (FCS) and MAY
+support the 32-bit CRC.
+'''
+

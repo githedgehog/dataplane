@@ -1,0 +1,34 @@
+target = "https://www.rfc-editor.org/rfc/rfc1812#section-4.3.2.6"
+
+# Source Route
+#
+#    If the packet which provokes the sending of an ICMP error message
+#    contains a source route option, the ICMP error message SHOULD also
+#    contain a source route option of the same type (strict or loose),
+#    created by reversing the portion before the pointer of the route
+#    recorded in the source route option of the original packet UNLESS the
+#    ICMP error message is an ICMP Parameter Problem complaining about a
+#    source route option in the original packet, or unless the router is
+#    aware of policy that would prevent the delivery of the ICMP error
+#    message.
+# 
+#    DISCUSSION
+#       In environments which use the U.S.  Department of Defense security
+#       option (defined in [INTERNET:5]), ICMP messages may need to
+#       include a security option.  Detailed information on this topic
+#       should be available from the Defense Communications Agency.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the packet which provokes the sending of an ICMP error message
+contains a source route option, the ICMP error message SHOULD also
+contain a source route option of the same type (strict or loose),
+created by reversing the portion before the pointer of the route
+recorded in the source route option of the original packet UNLESS the
+ICMP error message is an ICMP Parameter Problem complaining about a
+source route option in the original packet, or unless the router is
+aware of policy that would prevent the delivery of the ICMP error
+message.
+'''
+
