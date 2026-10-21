@@ -206,13 +206,12 @@ impl AclGenerator {
             0 => (None, false),
             1 => (Some("tcp".to_string()), true),
             2 => (Some("udp".to_string()), true),
-            _ => (
-                Some(
-                    d.gen_u8(Bound::Included(&1), Bound::Included(&254))?
-                        .to_string(),
-                ),
-                false,
-            ),
+            _ => {
+                let number = d.produce::<u8>()?;
+                // Numbers 6 and 17 normalize to TCP and UDP, which accept ports
+                let may_use_ports = number == 6 || number == 17;
+                (Some(number.to_string()), may_use_ports)
+            }
         };
 
         let src_entries = Self::entries(
