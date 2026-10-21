@@ -6,12 +6,14 @@ use std::os::fd::AsRawFd;
 use crate::packet_processor::start_router;
 use crate::statistics::spawn_metrics;
 use args::{
-    CmdArgs, DriverConfigSection, InterfaceArg, LaunchConfiguration, Parser, PortArg,
-    TracingDisplayOption,
+    CmdArgs, DriverConfigSection, LaunchConfiguration, Parser, PortArg, TracingDisplayOption,
 };
 
 use crate::drivers::DriverError;
-use crate::drivers::dpdk::{CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity, report_links};
+use crate::drivers::dpdk::{
+    CpBridge, DatapathEnds, DriverDpdk, PciPort, Port, PortIdentity, PortSettings, attach_ports,
+    bring_up_ports,
+};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::{DriverStatusWriter, driver_status_access};
 use crate::packet_processor::PipelineIngredients;
@@ -24,7 +26,6 @@ use lifecycle::{
 };
 use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 
-use dpdk::dev::DevInfo;
 use dpdk::eal::Eal;
 use hardware::pci::address::PciAddress;
 use nix::unistd::gethostname;
@@ -350,9 +351,7 @@ fn init_eal(config: &LaunchConfiguration) -> dpdk::eal::Eal {
 }
 
 /// Validate every interface before probing any device.
-fn configured_pci_ports(
-    config: &LaunchConfiguration,
-) -> Result<Vec<(&InterfaceArg, PciAddress)>, DriverError> {
+fn configured_pci_ports(config: &LaunchConfiguration) -> Result<Vec<PciPort>, DriverError> {
     let mut selected = Vec::new();
     let mut addresses = std::collections::BTreeSet::new();
     for interface in config.driver.interfaces() {
@@ -372,7 +371,15 @@ fn configured_pci_ports(
                 "PCI device {address} is configured more than once"
             )));
         }
-        selected.push((interface, address));
+        selected.push(PciPort {
+            settings: PortSettings {
+                name,
+                mtu: interface.mtu,
+                rx_descriptors: interface.rx_descriptors,
+                fallback_mac: None,
+            },
+            address,
+        });
     }
     if selected.is_empty() {
         return Err(DriverError::PortSetup(
@@ -382,87 +389,14 @@ fn configured_pci_ports(
     Ok(selected)
 }
 
-/// Probe, configure and start the selected devices. Init must prepare their kernel bindings first.
-fn bring_up_ports<'eal>(
+/// Probe, configure and start the configured devices. Init must prepare their kernel bindings first.
+fn bring_up_configured_ports<'eal>(
     eal: &'eal mut Eal,
     config: &LaunchConfiguration,
 ) -> Result<Vec<Port<'eal>>, DriverError> {
-    let num_workers = config.driver.num_workers().get();
-    let selected = configured_pci_ports(config)?;
-    // Every port's pool backs its packets in every port's transmit rings.
-    let num_ports = u32::try_from(selected.len()).unwrap_or(u32::MAX);
-    for (interface, address) in &selected {
-        eal.probe_pci(*address).map_err(|e| {
-            DriverError::PortSetup(format!("interface '{}': {e}", interface.interface))
-        })?;
-    }
-
-    // Index probed ports whose ethdev names parse as PCI addresses.
-    let mut probed: Vec<(PciAddress, DevInfo<'eal>)> = Vec::new();
-    for info in eal.dev.iter() {
-        let index = info.index();
-        let name = info.name().map_err(|e| {
-            DriverError::PortSetup(format!("could not read the name of DPDK port {index}: {e}"))
-        })?;
-        match PciAddress::try_from(name.as_str()) {
-            Ok(addr) => probed.push((addr, info)),
-            // Configuration currently accepts only PCI addresses.
-            Err(e) => warn!("DPDK port {index} is named '{name}', which is not a PCI address: {e}"),
-        }
-    }
-    info!(
-        "EAL probed {} DPDK port(s): {}",
-        probed.len(),
-        probed
-            .iter()
-            .map(|(addr, _)| addr.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-
-    let mut ports = Vec::new();
-    for (interface, wanted) in selected {
-        let name = interface.interface.clone();
-        // TODO: Resolve suffixed PMD port names when init supports eswitch configuration.
-        let at = probed.iter().position(|(addr, _)| *addr == wanted).ok_or_else(|| {
-            DriverError::PortSetup(format!(
-                "interface '{name}': probing PCI device {wanted} produced no Ethernet port with that name"
-            ))
-        })?;
-        let (_, info) = probed.remove(at);
-        let index = info.index();
-        // Claim before any setup, so a port something else owns is refused up front.
-        let port = eal
-            .claim(index)
-            .map_err(|e| DriverError::PortSetup(format!("cannot use port {index}: {e}")))?;
-
-        // Configure, queue and start the device; this is where the port actually comes up.
-        let started = Port::bring_up(
-            eal,
-            port,
-            name,
-            num_workers,
-            num_ports,
-            interface.mtu,
-            interface.rx_descriptors,
-        )?;
-        ports.push(started);
-    }
-    report_links(&ports, num_workers);
-
-    if !probed.is_empty() {
-        warn!(
-            "{} probed DPDK port(s) were not named by any interface and will carry no traffic: {}",
-            probed.len(),
-            probed
-                .iter()
-                .map(|(addr, _)| addr.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-
-    Ok(ports)
+    let sources = attach_ports(eal, configured_pci_ports(config)?)?;
+    let eal: &'eal Eal = eal;
+    bring_up_ports(eal, &sources, config.driver.num_workers().get())
 }
 
 /// Move the calling thread into the datapath namespace, unless it is already there.
@@ -591,7 +525,7 @@ fn run_dpdk_driver(
     mut bridge: Option<DatapathEnds>,
     control_plane: watch::Receiver<ControlPlane>,
 ) {
-    let ports = match bring_up_ports(eal, config) {
+    let ports = match bring_up_configured_ports(eal, config) {
         Ok(ports) => ports,
         Err(e) => {
             error!("Failed to bring up DPDK ports: {e}");
@@ -608,7 +542,7 @@ fn run_dpdk_driver(
                 mac: port.mac,
                 mtu: Some(port.mtu),
                 hardware: port.hardware.clone(),
-                datapath_index: Some(port.if_index),
+                datapath_index: port.if_index,
                 pci_address: port
                     .dev
                     .info()
@@ -653,6 +587,13 @@ fn run_dpdk_driver(
     }
 }
 
+/// Run the gateway: take the launch configuration init handed over, start management, routing and
+/// the datapath, and return once they have all shut down.
+///
+/// # Panics
+///
+/// If a runtime, the router or the shutdown machinery cannot be started. An invalid launch
+/// configuration exits the process instead.
 #[allow(clippy::too_many_lines)]
 pub fn main() {
     // Consume the handoff before runtimes or other components can acquire these FD numbers.
@@ -1164,7 +1105,7 @@ mod probe_tests {
             configured_pci_ports(&config)
                 .unwrap()
                 .into_iter()
-                .map(|(interface, address)| (interface.interface.clone(), address))
+                .map(|port| (port.settings.name, port.address))
                 .collect::<Vec<_>>(),
             vec![
                 (

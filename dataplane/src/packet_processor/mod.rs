@@ -2,6 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 mod egress;
+#[cfg(all(test, not(miri)))]
+pub(crate) mod fixture;
 #[cfg(test)]
 mod fuzz;
 mod ingress;
