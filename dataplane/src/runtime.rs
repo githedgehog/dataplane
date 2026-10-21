@@ -4,7 +4,7 @@
 use std::os::fd::AsRawFd;
 
 use crate::packet_processor::start_router;
-use crate::statistics::spawn_metrics;
+use crate::statistics::{TelemetrySources, spawn_metrics};
 use args::{
     CmdArgs, DriverConfigSection, InterfaceArg, LaunchConfiguration, Parser, PortArg,
     TracingDisplayOption,
@@ -569,6 +569,7 @@ fn run_kernel_driver(
             workers,
             config.driver.interfaces().cloned().collect::<Vec<_>>(),
             config.driver.num_workers().get().into(),
+            config.driver.supervisor_poll(),
             &ingredients.factory(),
             status_writer,
             bridge,
@@ -628,6 +629,7 @@ fn run_dpdk_driver(
             timer_handle,
             &ports,
             config.driver.num_workers(),
+            config.driver.supervisor_poll(),
             &ingredients.factory(),
             status_writer,
             bridge.as_mut(),
@@ -788,7 +790,7 @@ pub fn main() {
     let mut setup = start_router(
         &shutdown.router,
         router_params,
-        driver_status_reader,
+        driver_status_reader.clone(),
         config.cli.capture_dir.clone(),
         workers,
     )
@@ -816,6 +818,11 @@ pub fn main() {
         &host_handle,
         config.metrics.address,
         setup.stats,
+        TelemetrySources {
+            packets: setup.pkt_stats.clone(),
+            flows: setup.flow_table.clone(),
+            driver: driver_status_reader,
+        },
     );
 
     let ingredients = setup.pipeline;

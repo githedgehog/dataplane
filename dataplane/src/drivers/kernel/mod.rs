@@ -18,6 +18,8 @@ mod multicast;
 mod sockstats;
 mod worker;
 
+use std::time::Duration;
+
 use concurrency::sync::Arc;
 use concurrency::thread;
 use lifecycle::Subsystem;
@@ -123,11 +125,13 @@ impl DriverKernel {
     ///
     /// # Errors
     /// Returns [`DriverError`] on interface setup or thread spawn failure.
+    #[allow(clippy::too_many_arguments)] // each is the driver's to give
     pub fn start<'scope>(
         scope: &'scope thread::Scope<'scope, '_>,
         workers_subsystem: &Subsystem,
         args: impl IntoIterator<Item = args::InterfaceArg>,
         num_workers: usize,
+        supervisor_poll: Duration,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
         status_writer: DriverStatusWriter,
         mut cp_ends: Option<DatapathEnds>,
@@ -205,6 +209,7 @@ impl DriverKernel {
             scope,
             "kernel",
             Self::MAX_RX_PKT_BATCH,
+            supervisor_poll,
             workers_subsystem,
             worker_monitors,
             status_writer,

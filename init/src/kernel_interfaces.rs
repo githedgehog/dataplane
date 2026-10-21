@@ -185,6 +185,7 @@ mod tests {
         prepare(&KernelDriverConfigSection {
             interfaces: vec![InterfaceArg::from_str(spec).unwrap()],
             num_workers: NonZero::<u16>::MIN,
+            supervisor_poll_ms: args::DEFAULT_SUPERVISOR_POLL_MS,
         })
     }
 

@@ -21,6 +21,7 @@ mod worker;
 
 use std::convert::Infallible;
 use std::num::NonZero;
+use std::time::Duration;
 
 use concurrency::sync::Arc;
 use concurrency::thread;
@@ -73,6 +74,7 @@ impl DriverDpdk {
         timer_handle: &'scope tokio::runtime::Handle,
         ports: &'p [Port<'_>],
         num_workers: NonZero<u16>,
+        supervisor_poll: Duration,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'p, Mbuf<'p>> + 'p>,
         status_writer: DriverStatusWriter,
         bridge: Option<&mut DatapathEnds>,
@@ -165,6 +167,7 @@ impl DriverDpdk {
             scope,
             "dpdk",
             MBUF_BURST,
+            supervisor_poll,
             workers_subsystem,
             monitors,
             status_writer,

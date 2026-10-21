@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+mod telemetry;
+
+pub(crate) use telemetry::TelemetrySources;
+
 use axum::{Router, response::Response, routing::get};
+use concurrency::sync::{Arc, Mutex};
 use lifecycle::Subsystem;
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use stats::StatsCollector;
@@ -35,29 +40,48 @@ impl PrometheusHandler {
     }
 }
 
+/// What the `/metrics` endpoint renders: the exporter, and the counts it publishes first.
+#[derive(Clone)]
+struct Exposition {
+    handle: PrometheusHandle,
+    telemetry: Arc<Mutex<telemetry::Telemetry>>,
+}
+
 /// HTTP handler for /metrics endpoint
+///
+/// Publishes the pipeline's and the workers' counts as they stand before rendering, so a scrape
+/// sees them as of the scrape -- the workers' as of the supervisor's last poll -- and nothing
+/// polls them between scrapes.
 async fn metrics_handler(
-    axum::extract::State(handler): axum::extract::State<PrometheusHandle>,
+    axum::extract::State(exposition): axum::extract::State<Exposition>,
 ) -> Response<String> {
+    exposition.telemetry.lock().publish();
     Response::builder()
         .header("Content-Type", "text/plain; version=1.0.0; charset=utf-8")
-        .body(handler.render())
+        .body(exposition.handle.render())
         .unwrap()
 }
 
-/// Spawn the `/metrics` endpoint on `addr`, a 30s upkeep ticker, and the
-/// stats collector onto `handle`, tracked under `metrics`. Uses
+/// Spawn the `/metrics` endpoint on `addr`, publishing `telemetry` as each scrape comes, a 30s
+/// upkeep ticker, and the stats collector onto `handle`, tracked under `metrics`. Uses
 /// [`Subsystem::spawn_on`] — a dead metrics endpoint should not take down
 /// the dataplane.
-pub fn spawn_metrics(
+pub(crate) fn spawn_metrics(
     metrics: &Subsystem,
     handle: &tokio::runtime::Handle,
     addr: std::net::SocketAddr,
     stats: StatsCollector,
+    telemetry: TelemetrySources,
 ) {
     let PrometheusHandler {
         handle: prom_handle,
     } = PrometheusHandler::new();
+
+    // Registered after the recorder is installed, or the series would go nowhere.
+    let exposition = Exposition {
+        handle: prom_handle.clone(),
+        telemetry: Arc::new(Mutex::new(telemetry::Telemetry::new(telemetry))),
+    };
 
     let upkeep_handle = prom_handle.clone();
     let upkeep_cancel = metrics.cancel_token();
@@ -92,7 +116,7 @@ pub fn spawn_metrics(
         async move {
             let app = Router::new()
                 .route("/metrics", get(metrics_handler))
-                .with_state(prom_handle);
+                .with_state(exposition);
 
             info!("metrics server listening on {}", addr);
 
