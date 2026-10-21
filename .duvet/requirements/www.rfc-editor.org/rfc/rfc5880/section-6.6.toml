@@ -1,0 +1,108 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.6"
+
+# Demand Mode
+#
+#    Demand mode is requested independently in each direction by virtue of
+#    a system setting the Demand (D) bit in its BFD Control packets.  The
+#    system receiving the Demand bit ceases the periodic transmission of
+#    BFD Control packets.  If both systems are operating in Demand mode,
+#    no periodic BFD Control packets will flow in either direction.
+# 
+#    Demand mode requires that some other mechanism is used to imply
+#    continuing connectivity between the two systems.  The mechanism used
+#    does not have to be the same in both directions, and is outside of
+#    the scope of this specification.  One possible mechanism is the
+#    receipt of traffic from the remote system; another is the use of the
+#    Echo function.
+# 
+#    When a system in Demand mode wishes to verify bidirectional
+#    connectivity, it initiates a Poll Sequence (see section 6.5).  If no
+#    response is received to a Poll, the Poll is repeated until the
+#    Detection Time expires, at which point the session is declared to be
+#    Down.  Note that if Demand mode is operating only on the local
+#    system, the Poll Sequence is performed by simply setting the Poll (P)
+#    bit in regular periodic BFD Control packets, as required by section
+#    6.5.
+# 
+#    The Detection Time in Demand mode is calculated differently than in
+#    Asynchronous mode; it is based on the transmit rate of the local
+#    system, rather than the transmit rate of the remote system.  This
+#    ensures that the Poll Sequence mechanism works properly.  See section
+#    6.8.4 for more details.
+# 
+#    Note that the Poll mechanism will always fail unless the negotiated
+#    Detection Time is greater than the round-trip time between the two
+#    systems.  Enforcement of this constraint is outside the scope of this
+#    specification.
+# 
+#    Demand mode MAY be enabled or disabled at any time, independently in
+#    each direction, by setting or clearing the Demand (D) bit in the BFD
+#    Control packet, without affecting the BFD session state.  Note that
+#    the Demand bit MUST NOT be set unless both systems perceive the
+#    session to be Up (the local system thinks the session is Up, and the
+#    remote system last reported Up state in the State (Sta) field of the
+#    BFD Control packet).
+# 
+#    When the transmitted value of the Demand (D) bit is to be changed,
+#    the transmitting system MUST initiate a Poll Sequence in conjunction
+#    with changing the bit in order to ensure that both systems are aware
+#    of the change.
+# 
+#    If Demand mode is active on either or both systems, a Poll Sequence
+#    MUST be initiated whenever the contents of the next BFD Control
+#    packet to be sent would be different than the contents of the
+#    previous packet, with the exception of the Poll (P) and Final (F)
+#    bits.  This ensures that parameter changes are transmitted to the
+#    remote system and that the remote system acknowledges these changes.
+# 
+#    Because the underlying detection mechanism is unspecified, and may
+#    differ between the two systems, the overall Detection Time
+#    characteristics of the path will not be fully known to either system.
+#    The total Detection Time for a particular system is the sum of the
+#    time prior to the initiation of the Poll Sequence, plus the
+#    calculated Detection Time.
+# 
+#    Note that if Demand mode is enabled in only one direction, continuous
+#    bidirectional connectivity verification is lost (only connectivity in
+#    the direction from the system in Demand mode to the other system will
+#    be verified).  Resolving the issue of one system requesting Demand
+#    mode while the other requires continuous bidirectional connectivity
+#    verification is outside the scope of this specification.
+
+[[spec]]
+level = "MAY"
+quote = '''
+Demand mode MAY be enabled or disabled at any time, independently in
+each direction, by setting or clearing the Demand (D) bit in the BFD
+Control packet, without affecting the BFD session state.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Note that
+the Demand bit MUST NOT be set unless both systems perceive the
+session to be Up (the local system thinks the session is Up, and the
+remote system last reported Up state in the State (Sta) field of the
+BFD Control packet).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the transmitted value of the Demand (D) bit is to be changed,
+the transmitting system MUST initiate a Poll Sequence in conjunction
+with changing the bit in order to ensure that both systems are aware
+of the change.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If Demand mode is active on either or both systems, a Poll Sequence
+MUST be initiated whenever the contents of the next BFD Control
+packet to be sent would be different than the contents of the
+previous packet, with the exception of the Poll (P) and Final (F)
+bits.
+'''
+

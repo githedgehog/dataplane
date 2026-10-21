@@ -1,0 +1,51 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.5"
+
+# The Poll Sequence
+#
+#    A Poll Sequence is an exchange of BFD Control packets that is used in
+#    some circumstances to ensure that the remote system is aware of
+#    parameter changes.  It is also used in Demand mode (see section 6.6)
+#    to validate bidirectional connectivity.
+# 
+#    A Poll Sequence consists of a system sending periodic BFD Control
+#    packets with the Poll (P) bit set.  When the other system receives a
+#    Poll, it immediately transmits a BFD Control packet with the Final
+#    (F) bit set, independent of any periodic BFD Control packets it may
+#    be sending (see section 6.8.7).  When the system sending the Poll
+#    sequence receives a packet with Final, the Poll Sequence is
+#    terminated, and any subsequent BFD Control packets are sent with the
+#    Poll bit cleared.  A BFD Control packet MUST NOT have both the Poll
+#    (P) and Final (F) bits set.
+# 
+#    If periodic BFD Control packets are already being sent (the remote
+#    system is not in Demand mode), the Poll Sequence MUST be performed by
+#    setting the Poll (P) bit on those scheduled periodic transmissions;
+#    additional packets MUST NOT be sent.
+# 
+#    After a Poll Sequence is terminated, the system requesting the Poll
+#    Sequence will cease the periodic transmission of BFD Control packets
+#    if the remote end is in Demand mode; otherwise, it will return to the
+#    periodic transmission of BFD Control packets with the Poll (P) bit
+#    clear.
+# 
+#    Typically, the entire sequence consists of a single packet in each
+#    direction, though packet losses or relatively long packet latencies
+#    may result in multiple Poll packets to be sent before the sequence
+#    terminates.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A BFD Control packet MUST NOT have both the Poll
+(P) and Final (F) bits set.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If periodic BFD Control packets are already being sent (the remote
+system is not in Demand mode), the Poll Sequence MUST be performed by
+setting the Poll (P) bit on those scheduled periodic transmissions;
+additional packets MUST NOT be sent.
+'''
+

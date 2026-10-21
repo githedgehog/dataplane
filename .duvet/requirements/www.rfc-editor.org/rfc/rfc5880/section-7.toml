@@ -1,0 +1,73 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-7"
+
+# Operational Considerations
+#
+#    BFD is likely to be deployed as a critical part of network
+#    infrastructure.  As such, care should be taken to avoid disruption.
+# 
+#    Obviously, any mechanism that blocks BFD packets, such as firewalls
+#    or other policy processes, will cause BFD to fail.
+# 
+#    Mechanisms that control packet scheduling, such as policers, traffic
+#    shapers, priority queueing, etc., have the potential of impacting BFD
+#    operations if the Detection Time is similar in scale to the scheduled
+#    packet transmit or receive rate.  The delivery of BFD packets is
+#    time-critical, relative to the magnitude of the Detection Time, so
+#    this may need to be taken into account in implementation and
+#    deployment, particularly when very short Detection Times are to be
+#    used.
+# 
+#    When BFD is used across multiple hops, a congestion control mechanism
+#    MUST be implemented, and when congestion is detected, the BFD
+#    implementation MUST reduce the amount of traffic it generates.  The
+#    exact mechanism used is outside the scope of this specification, and
+#    the requirements of this mechanism may differ depending on how BFD is
+#    deployed, and how it interacts with other parts of the system (for
+#    example, exponential backoff may not be appropriate in cases where
+#    routing protocols are interacting closely with BFD).
+# 
+#    Note that "congestion" is not only a traffic phenomenon, but also a
+#    computational one.  It is possible for systems with a large number of
+#    BFD sessions and/or very short packet intervals to become CPU-bound.
+#    As such, a congestion control algorithm SHOULD be used even across
+#    single hops in order to avoid the possibility of catastrophic system
+#    collapse, as such failures have been seen repeatedly in other
+#    periodic Hello-based protocols.
+# 
+#    The mechanisms for detecting congestion are outside the scope of this
+#    specification, but may include the detection of lost BFD Control
+#    packets (by virtue of holes in the authentication sequence number
+#    space, or by BFD session failure) or other means.
+# 
+#    The mechanisms for reducing BFD's traffic load are the control of the
+#    local and remote packet transmission rate via the Min RX Interval and
+#    Min TX Interval fields.
+# 
+#    Note that any mechanism that increases the transmit or receive
+#    intervals will increase the Detection Time for the session.
+# 
+#    It is worth noting that a single BFD session does not consume a large
+#    amount of bandwidth.  An aggressive session that achieves a detection
+#    time of 50 milliseconds, by using a transmit interval of 16.7
+#    milliseconds and a detect multiplier of 3, will generate 60 packets
+#    per second.  The maximum length of each packet on the wire is on the
+#    order of 100 bytes, for a total of around 48 kilobits per second of
+#    bandwidth consumption in each direction.
+
+[[spec]]
+level = "MUST"
+quote = '''
+When BFD is used across multiple hops, a congestion control mechanism
+MUST be implemented, and when congestion is detected, the BFD
+implementation MUST reduce the amount of traffic it generates.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+As such, a congestion control algorithm SHOULD be used even across
+single hops in order to avoid the possibility of catastrophic system
+collapse, as such failures have been seen repeatedly in other
+periodic Hello-based protocols.
+'''
+

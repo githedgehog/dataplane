@@ -1,0 +1,247 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.7.3"
+
+# Keyed MD5 and Meticulous Keyed MD5 Authentication
+#
+#    The Keyed MD5 and Meticulous Keyed MD5 Authentication mechanisms are
+#    very similar to those used in other protocols.  In these methods of
+#    authentication, one or more secret keys (with corresponding key IDs)
+#    are configured in each system.  One of the keys is included in an MD5
+#    [MD5] digest calculated over the outgoing BFD Control packet, but the
+#    Key itself is not carried in the packet.  To help avoid replay
+#    attacks, a sequence number is also carried in each packet.  For Keyed
+#    MD5, the sequence number is occasionally incremented.  For Meticulous
+#    Keyed MD5, the sequence number is incremented on every packet.
+# 
+#    The receiving system accepts the packet if the key ID matches one of
+#    the configured Keys, an MD5 digest including the selected key matches
+#    that carried in the packet, and the sequence number is greater than
+#    or equal to the last sequence number received (for Keyed MD5), or
+#    strictly greater than the last sequence number received (for
+#    Meticulous Keyed MD5).
+# 
+#    Transmission Using Keyed MD5 and Meticulous Keyed MD5 Authentication
+# 
+#       The Auth Type field MUST be set to 2 (Keyed MD5) or 3 (Meticulous
+#       Keyed MD5).  The Auth Len field MUST be set to 24.  The Auth Key
+#       ID field MUST be set to the ID of the current authentication key.
+#       The Sequence Number field MUST be set to bfd.XmitAuthSeq.
+# 
+#       The authentication key value is a binary string of up to 16 bytes,
+#       and MUST be placed into the Auth Key/Digest field, padded with
+#       trailing zero bytes as necessary.  For interoperability, the
+#       management interface by which the key is configured MUST accept
+# 
+#       ASCII strings, and SHOULD also allow for the configuration of any
+#       arbitrary binary string in hexadecimal form.  Other configuration
+#       methods MAY be supported.
+# 
+#       An MD5 digest MUST be calculated over the entire BFD Control
+#       packet.  The resulting digest MUST be stored in the Auth
+#       Key/Digest field prior to transmission (replacing the secret key,
+#       which MUST NOT be carried in the packet).
+# 
+#       For Keyed MD5, bfd.XmitAuthSeq MAY be incremented in a circular
+#       fashion (when treated as an unsigned 32-bit value).
+#       bfd.XmitAuthSeq SHOULD be incremented when the session state
+#       changes, or when the transmitted BFD Control packet carries
+#       different contents than the previously transmitted packet.  The
+#       decision as to when to increment bfd.XmitAuthSeq is outside the
+#       scope of this specification.  See the section titled "Security
+#       Considerations" below for a discussion.
+# 
+#       For Meticulous Keyed MD5, bfd.XmitAuthSeq MUST be incremented in a
+#       circular fashion (when treated as an unsigned 32-bit value).
+# 
+#    Receipt Using Keyed MD5 and Meticulous Keyed MD5 Authentication
+# 
+#       If the received BFD Control packet does not contain an
+#       Authentication Section, or the Auth Type is not correct (2 for
+#       Keyed MD5 or 3 for Meticulous Keyed MD5), then the received packet
+#       MUST be discarded.
+# 
+#       If the Auth Key ID field does not match the ID of a configured
+#       authentication key, the received packet MUST be discarded.
+# 
+#       If the Auth Len field is not equal to 24, the packet MUST be
+#       discarded.
+# 
+#       If bfd.AuthSeqKnown is 1, examine the Sequence Number field.  For
+#       Keyed MD5, if the sequence number lies outside of the range of
+#       bfd.RcvAuthSeq to bfd.RcvAuthSeq+(3*Detect Mult) inclusive (when
+#       treated as an unsigned 32-bit circular number space), the received
+#       packet MUST be discarded.  For Meticulous Keyed MD5, if the
+#       sequence number lies outside of the range of bfd.RcvAuthSeq+1 to
+#       bfd.RcvAuthSeq+(3*Detect Mult) inclusive (when treated as an
+#       unsigned 32-bit circular number space) the received packet MUST be
+#       discarded.
+# 
+#       Otherwise (bfd.AuthSeqKnown is 0), bfd.AuthSeqKnown MUST be set to
+#       1, and bfd.RcvAuthSeq MUST be set to the value of the received
+#       Sequence Number field.
+# 
+#       Replace the contents of the Auth Key/Digest field with the
+#       authentication key selected by the received Auth Key ID field.  If
+#       the MD5 digest of the entire BFD Control packet is equal to the
+#       received value of the Auth Key/Digest field, the received packet
+#       MUST be accepted.  Otherwise (the digest does not match the Auth
+#       Key/Digest field), the received packet MUST be discarded.
+
+[[spec]]
+level = "MUST"
+quote = '''
+The Auth Type field MUST be set to 2 (Keyed MD5) or 3 (Meticulous
+Keyed MD5).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The Auth Len field MUST be set to 24.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The Auth Key
+ID field MUST be set to the ID of the current authentication key.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The Sequence Number field MUST be set to bfd.XmitAuthSeq.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The authentication key value is a binary string of up to 16 bytes,
+and MUST be placed into the Auth Key/Digest field, padded with
+trailing zero bytes as necessary.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+For interoperability, the
+management interface by which the key is configured MUST accept
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+ASCII strings, and SHOULD also allow for the configuration of any
+arbitrary binary string in hexadecimal form.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+Other configuration
+methods MAY be supported.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+An MD5 digest MUST be calculated over the entire BFD Control
+packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The resulting digest MUST be stored in the Auth
+Key/Digest field prior to transmission (replacing the secret key,
+which MUST NOT be carried in the packet).
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+For Keyed MD5, bfd.XmitAuthSeq MAY be incremented in a circular
+fashion (when treated as an unsigned 32-bit value).
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+bfd.XmitAuthSeq SHOULD be incremented when the session state
+changes, or when the transmitted BFD Control packet carries
+different contents than the previously transmitted packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+For Meticulous Keyed MD5, bfd.XmitAuthSeq MUST be incremented in a
+circular fashion (when treated as an unsigned 32-bit value).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the received BFD Control packet does not contain an
+Authentication Section, or the Auth Type is not correct (2 for
+Keyed MD5 or 3 for Meticulous Keyed MD5), then the received packet
+MUST be discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Auth Key ID field does not match the ID of a configured
+authentication key, the received packet MUST be discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the Auth Len field is not equal to 24, the packet MUST be
+discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+For
+Keyed MD5, if the sequence number lies outside of the range of
+bfd.RcvAuthSeq to bfd.RcvAuthSeq+(3*Detect Mult) inclusive (when
+treated as an unsigned 32-bit circular number space), the received
+packet MUST be discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+For Meticulous Keyed MD5, if the
+sequence number lies outside of the range of bfd.RcvAuthSeq+1 to
+bfd.RcvAuthSeq+(3*Detect Mult) inclusive (when treated as an
+unsigned 32-bit circular number space) the received packet MUST be
+discarded.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Otherwise (bfd.AuthSeqKnown is 0), bfd.AuthSeqKnown MUST be set to
+1, and bfd.RcvAuthSeq MUST be set to the value of the received
+Sequence Number field.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If
+the MD5 digest of the entire BFD Control packet is equal to the
+received value of the Auth Key/Digest field, the received packet
+MUST be accepted.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Otherwise (the digest does not match the Auth
+Key/Digest field), the received packet MUST be discarded.
+'''
+

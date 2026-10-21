@@ -1,0 +1,25 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.8.8"
+
+# Reception of BFD Echo Packets
+#
+#    A received BFD Echo packet MUST be demultiplexed to the appropriate
+#    session for processing.  A means of detecting missing Echo packets
+#    MUST be implemented, which most likely involves processing of the
+#    Echo packets that are received.  The processing of received Echo
+#    packets is otherwise outside the scope of this specification.
+
+[[spec]]
+level = "MUST"
+quote = '''
+A received BFD Echo packet MUST be demultiplexed to the appropriate
+session for processing.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A means of detecting missing Echo packets
+MUST be implemented, which most likely involves processing of the
+Echo packets that are received.
+'''
+

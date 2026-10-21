@@ -1,0 +1,22 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.8.5"
+
+# Detecting Failures with the Echo Function
+#
+#    When the Echo function is active and a sufficient number of Echo
+#    packets have not arrived as they should, the session has gone down --
+#    the local system MUST set bfd.SessionState to Down and bfd.LocalDiag
+#    to 2 (Echo Function Failed).
+# 
+#    The means by which the Echo function failures are detected is outside
+#    of the scope of this specification.  Any means that will detect a
+#    communication failure are acceptable.
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the Echo function is active and a sufficient number of Echo
+packets have not arrived as they should, the session has gone down --
+the local system MUST set bfd.SessionState to Down and bfd.LocalDiag
+to 2 (Echo Function Failed).
+'''
+

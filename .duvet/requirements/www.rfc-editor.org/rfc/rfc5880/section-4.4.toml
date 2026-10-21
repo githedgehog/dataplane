@@ -1,0 +1,66 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-4.4"
+
+# Keyed SHA1 and Meticulous Keyed SHA1 Authentication Section Format
+#
+#    If the Authentication Present (A) bit is set in the header, and the
+#    Authentication Type field contains 4 (Keyed SHA1) or 5 (Meticulous
+#    Keyed SHA1), the Authentication Section has the following format:
+# 
+#     0                   1                   2                   3
+#     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |   Auth Type   |   Auth Len    |  Auth Key ID  |   Reserved    |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                        Sequence Number                        |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                       Auth Key/Hash...                        |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                              ...                              |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# 
+#    Auth Type
+# 
+#       The Authentication Type, which in this case is 4 (Keyed SHA1) or 5
+#       (Meticulous Keyed SHA1).
+# 
+#    Auth Len
+# 
+#       The length of the Authentication Section, in bytes.  For Keyed
+#       SHA1 and Meticulous Keyed SHA1 authentication, the length is 28.
+# 
+#    Auth Key ID
+# 
+#       The authentication key ID in use for this packet.  This allows
+#       multiple keys to be active simultaneously.
+# 
+#    Reserved
+# 
+#       This byte MUST be set to zero on transmit and ignored on receipt.
+# 
+#    Sequence Number
+# 
+#       The sequence number for this packet.  For Keyed SHA1
+#       Authentication, this value is incremented occasionally.  For
+#       Meticulous Keyed SHA1 Authentication, this value is incremented
+#       for each successive packet transmitted for a session.  This
+#       provides protection against replay attacks.
+# 
+#    Auth Key/Hash
+# 
+#       This field carries the 20-byte SHA1 hash for the packet.  When the
+#       hash is calculated, the shared SHA1 key is stored in this field,
+#       padded to a length of 20 bytes with trailing zero bytes if needed.
+#       The shared key MUST be encoded and configured to section 6.7.4.
+
+[[spec]]
+level = "MUST"
+quote = '''
+This byte MUST be set to zero on transmit and ignored on receipt.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The shared key MUST be encoded and configured to section 6.7.4.
+'''
+

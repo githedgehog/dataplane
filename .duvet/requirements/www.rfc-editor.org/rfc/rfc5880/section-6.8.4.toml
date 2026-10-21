@@ -1,0 +1,65 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.8.4"
+
+# Calculating the Detection Time
+#
+#    The Detection Time (the period of time without receiving BFD packets
+#    after which the session is determined to have failed) is not carried
+#    explicitly in the protocol.  Rather, it is calculated independently
+#    in each direction by the receiving system based on the negotiated
+#    transmit interval and the detection multiplier.  Note that there may
+#    be different Detection Times in each direction.
+# 
+#    The calculation of the Detection Time is slightly different when in
+#    Demand mode versus Asynchronous mode.
+# 
+#    In Asynchronous mode, the Detection Time calculated in the local
+#    system is equal to the value of Detect Mult received from the remote
+#    system, multiplied by the agreed transmit interval of the remote
+#    system (the greater of bfd.RequiredMinRxInterval and the last
+#    received Desired Min TX Interval).  The Detect Mult value is (roughly
+#    speaking, due to jitter) the number of packets that have to be missed
+#    in a row to declare the session to be down.
+# 
+#    If Demand mode is not active, and a period of time equal to the
+#    Detection Time passes without receiving a BFD Control packet from the
+#    remote system, and bfd.SessionState is Init or Up, the session has
+#    gone down -- the local system MUST set bfd.SessionState to Down and
+#    bfd.LocalDiag to 1 (Control Detection Time Expired).
+# 
+#    In Demand mode, the Detection Time calculated in the local system is
+#    equal to bfd.DetectMult, multiplied by the agreed transmit interval
+#    of the local system (the greater of bfd.DesiredMinTxInterval and
+#    bfd.RemoteMinRxInterval).  bfd.DetectMult is (roughly speaking, due
+#    to jitter) the number of packets that have to be missed in a row to
+#    declare the session to be down.
+# 
+#    If Demand mode is active, and a period of time equal to the Detection
+#    Time passes after the initiation of a Poll Sequence (the transmission
+#    of the first BFD Control packet with the Poll bit set), the session
+#    has gone down -- the local system MUST set bfd.SessionState to Down,
+#    and bfd.LocalDiag to 1 (Control Detection Time Expired).
+# 
+#    (Note that a packet is considered to have been received, for the
+#    purposes of Detection Time expiration, only if it has not been
+#    "discarded" according to the rules of section 6.8.6).
+
+[[spec]]
+level = "MUST"
+quote = '''
+If Demand mode is not active, and a period of time equal to the
+Detection Time passes without receiving a BFD Control packet from the
+remote system, and bfd.SessionState is Init or Up, the session has
+gone down -- the local system MUST set bfd.SessionState to Down and
+bfd.LocalDiag to 1 (Control Detection Time Expired).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If Demand mode is active, and a period of time equal to the Detection
+Time passes after the initiation of a Poll Sequence (the transmission
+of the first BFD Control packet with the Poll bit set), the session
+has gone down -- the local system MUST set bfd.SessionState to Down,
+and bfd.LocalDiag to 1 (Control Detection Time Expired).
+'''
+

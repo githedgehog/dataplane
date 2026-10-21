@@ -1,0 +1,40 @@
+target = "https://www.rfc-editor.org/rfc/rfc5880#section-6.3"
+
+# Demultiplexing and the Discriminator Fields
+#
+#    Since multiple BFD sessions may be running between two systems, there
+#    needs to be a mechanism for demultiplexing received BFD packets to
+#    the proper session.
+# 
+#    Each system MUST choose an opaque discriminator value that identifies
+#    each session, and which MUST be unique among all BFD sessions on the
+#    system.  The local discriminator is sent in the My Discriminator
+#    field in the BFD Control packet, and is echoed back in the Your
+#    Discriminator field of packets sent from the remote end.
+# 
+#    Once the remote end echoes back the local discriminator, all further
+#    received packets are demultiplexed based on the Your Discriminator
+#    field only (which means that, among other things, the source address
+#    field can change or the interface over which the packets are received
+#    can change, but the packets will still be associated with the proper
+#    session).
+# 
+#    The method of demultiplexing the initial packets (in which Your
+#    Discriminator is zero) is application dependent, and is thus outside
+#    the scope of this specification.
+# 
+#    Note that it is permissible for a system to change its discriminator
+#    during a session without affecting the session state, since only that
+#    system uses its discriminator for demultiplexing purposes (by having
+#    the other system reflect it back).  The implications on an
+#    implementation for changing the discriminator value is outside the
+#    scope of this specification.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Each system MUST choose an opaque discriminator value that identifies
+each session, and which MUST be unique among all BFD sessions on the
+system.
+'''
+
