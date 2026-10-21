@@ -19,7 +19,7 @@ use concurrency::sync::Arc;
 use acl_filter::{AclFilter, AclFilterContextReaderFactory, AclFilterContextWriter};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterContextReaderFactory, FlowFilterContextWriter};
-use rate_limit::{RateLimitReader, RateLimitWriter, RateLimiter, RateLimits, VpcDestination};
+use rate_limit::{PeeringRules, RateLimitReader, RateLimitWriter, RateLimiter, RateLimits};
 use std::num::NonZeroUsize;
 
 use nat::masquerade::{NatAllocatorReaderFactory, NatAllocatorWriter};
@@ -52,7 +52,7 @@ pub(crate) struct InternalSetup {
     pub natallocatorw: NatAllocatorWriter,
     pub flow_filter_writer: FlowFilterContextWriter,
     pub aclfiltertablesw: AclFilterContextWriter,
-    pub rate_limits: RateLimitWriter<VpcDestination>,
+    pub rate_limits: RateLimitWriter<PeeringRules>,
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
     pub portfw_w: PortFwTableWriter,
@@ -74,7 +74,7 @@ pub(crate) struct PipelineIngredients {
     natallocator_factory: NatAllocatorReaderFactory,
     flow_filter_reader_factory: FlowFilterContextReaderFactory,
     aclfiltertablesr_factory: AclFilterContextReaderFactory,
-    rate_limits: RateLimitReader<VpcDestination>,
+    rate_limits: RateLimitReader<PeeringRules>,
     portfw_factory: PortFwTableReaderFactory,
     stats_w: PacketStatsWriter,
     pkt_stats: Arc<PacketStats>,

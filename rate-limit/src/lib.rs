@@ -14,10 +14,10 @@
 //! Polices overlay IP packets against configured [rate limits](config::external::overlay::ratelimit).
 //!
 //! [`RateLimiter`] uses [`Classify`] to select rules and [`policer::SharedMeter`] to meter traffic
-//! across workers. [`VpcDestination`] matches source VNI and destination prefix.
+//! across workers. [`PeeringRules`] applies ordered ACL-style matches.
 //!
-//! [`RateLimitWriter`] publishes rules. Rules with unchanged names and profiles in the same table
-//! retain their meters and counters across configuration changes.
+//! [`RateLimitWriter`] publishes rules and named meters. Unchanged profiles retain their leases;
+//! meter counters survive profile and rule changes.
 
 mod classify;
 mod counts;
@@ -29,7 +29,7 @@ mod stage;
 mod tests;
 
 pub use acl::table::Backend;
-pub use classify::{Classify, RuleIndex, VpcDestination};
+pub use classify::{Classify, PeeringRules, RuleIndex};
 pub use counts::Counts;
-pub use rules::{RateLimitReader, RateLimitWriter, RateLimits, Rule, RuleTable, Unit};
+pub use rules::{Component, Meter, RateLimitReader, RateLimitWriter, RateLimits, Rule, Unit};
 pub use stage::RateLimiter;

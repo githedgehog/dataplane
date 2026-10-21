@@ -1,151 +1,179 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Which rule meters a packet.
+//! Ordered peering matches selecting a named meter.
 
 use acl::table::{Backend, Table, build_table};
 use config::ConfigError;
+use config::external::overlay::ratelimit::ValidatedRateLimitRule;
 use lpm::prefix::Prefix;
-use match_action::{Erased, ExactSpec, MaskSpec, MatchKey, PrefixSpec};
+use lpm::prefix::with_ports::{KeyPort, PORT_RANGE_WILDCARD};
+use match_action::{Erased, ExactSpec, MatchKey, PrefixSpec};
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, TryIp};
+use net::headers::{Net, TryHeaders, UpperLayerProto};
 use net::ip::{IpAddress, NextHeader};
 use net::packet::{Packet, VpcDiscriminant};
 use net::vxlan::Vni;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-/// A rule's place in its [`RuleTable`](crate::RuleTable).
+/// A rule's position in its configuration.
 pub type RuleIndex = usize;
 
-/// Finds the rule that meters a packet.
+/// Selects the first matching rule.
 pub trait Classify: Send + Sync {
-    /// The rule that meters `packet`, if one does.
+    /// The rule matching this packet, if any.
     fn classify<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<RuleIndex>;
 }
 
-/// The key a [`VpcDestination`] looks packets up by.
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-pub(crate) struct VpcDestinationKey<I> {
-    /// Wildcarded protocol byte: `rte_acl` requires a one-byte first field.
+struct PeeringKey<I> {
     #[mask]
     proto: NextHeader,
     #[exact]
-    #[cli(column_name = "src-vni")]
     src_vni: Vni,
+    #[exact]
+    dst_vni: Vni,
     #[prefix]
-    #[cli(column_name = "destination")]
+    source: I,
+    #[prefix]
     destination: I,
+    #[range]
+    src_port: KeyPort,
+    #[range]
+    dst_port: KeyPort,
 }
 
-/// Classifies by the VPC a packet comes from and where it is going.
-///
-/// When several rules match, the one with the longest destination prefix meters the packet.
+/// ACL-style matches scoped to a directed VPC peering, in configuration order.
 #[derive(Debug)]
-pub struct VpcDestination {
-    v4: Table<VpcDestinationKey<Ipv4Addr>, RuleIndex>,
-    v6: Table<VpcDestinationKey<Ipv6Addr>, RuleIndex>,
+pub struct PeeringRules {
+    v4: Table<PeeringKey<Ipv4Addr>, RuleIndex>,
+    v6: Table<PeeringKey<Ipv6Addr>, RuleIndex>,
 }
 
-impl VpcDestination {
-    /// A classifier that matches nothing.
+impl PeeringRules {
+    /// A classifier matching no traffic.
     #[must_use]
-    pub fn empty() -> VpcDestination {
-        VpcDestination {
+    pub fn empty() -> Self {
+        Self {
             v4: Table::empty(),
             v6: Table::empty(),
         }
     }
 
-    /// A classifier for `rules`, whose index is their place in the slice.
+    /// Compile ordered rules for either the DPDK or reference backend.
     ///
     /// # Errors
     ///
-    /// Fails if the classifier's tables cannot be built.
-    pub fn new(rules: &[(Vni, Prefix)], backend: Backend) -> Result<VpcDestination, ConfigError> {
-        // The tables are first match, so the longest destination goes first.
-        let mut order: Vec<RuleIndex> = (0..rules.len()).collect();
-        order.sort_by_key(|&i| std::cmp::Reverse(rules[i].1.length()));
-        Ok(VpcDestination {
-            v4: table::<Ipv4Addr>(rules, &order, backend)?,
-            v6: table::<Ipv6Addr>(rules, &order, backend)?,
+    /// Returns classifier construction errors.
+    pub fn new(rules: &[ValidatedRateLimitRule], backend: Backend) -> Result<Self, ConfigError> {
+        Ok(Self {
+            v4: table::<Ipv4Addr>(rules, backend)?,
+            v6: table::<Ipv6Addr>(rules, backend)?,
         })
     }
 }
 
-/// A table holding those of `rules` whose destination is an `I`, in `order`.
 fn table<I: IpVersion>(
-    rules: &[(Vni, Prefix)],
-    order: &[RuleIndex],
+    rules: &[ValidatedRateLimitRule],
     backend: Backend,
-) -> Result<Table<VpcDestinationKey<I>, RuleIndex>, ConfigError> {
-    let lowered = order
-        .iter()
-        .filter_map(|&i| {
-            let (vni, destination) = rules[i];
-            let rule = VpcDestinationKeyRule {
-                proto: MaskSpec::wildcard(),
-                src_vni: ExactSpec::new(vni),
-                destination: I::prefix_spec(destination)?,
+) -> Result<Table<PeeringKey<I>, RuleIndex>, ConfigError> {
+    let mut lowered = Vec::new();
+    for (index, rule) in rules.iter().enumerate() {
+        for src in rule.pattern.src() {
+            let Some(source) = I::prefix_spec(src.prefix()) else {
+                continue;
             };
-            Some((rule, rule.into_backend_fields::<Erased>(), i))
-        })
-        .collect();
+            for dst in rule.pattern.dst() {
+                let Some(destination) = I::prefix_spec(dst.prefix()) else {
+                    continue;
+                };
+                let key = PeeringKeyRule {
+                    proto: rule.pattern.proto().into(),
+                    src_vni: ExactSpec::new(rule.from),
+                    dst_vni: ExactSpec::new(rule.to),
+                    source,
+                    destination,
+                    src_port: src.ports().map_or(PORT_RANGE_WILDCARD, Into::into),
+                    dst_port: dst.ports().map_or(PORT_RANGE_WILDCARD, Into::into),
+                };
+                lowered.push((key, key.into_backend_fields::<Erased>(), index));
+            }
+        }
+    }
     build_table(backend, I::NAME, lowered).map_err(ConfigError::FailureApply)
 }
 
-impl Classify for VpcDestination {
+impl Classify for PeeringRules {
     fn classify<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<RuleIndex> {
         let VpcDiscriminant::VNI(src_vni) = packet.meta().src_vpcd?;
-        let net = packet.try_ip()?;
-        let proto = net.next_header();
-        match net.dst_addr() {
-            IpAddr::V4(destination) => self.v4.lookup(&VpcDestinationKey {
+        let VpcDiscriminant::VNI(dst_vni) = packet.meta().dst_vpcd?;
+        let (_, net, transport) = packet
+            .headers()
+            .pat()
+            .opt_eth()
+            .net()
+            .opt_transport()
+            .done()?;
+        let upper = packet.upper_layer_proto();
+        let proto = match upper {
+            UpperLayerProto::Carried(proto) => proto,
+            UpperLayerProto::NonFirstFragment => NextHeader::FRAGMENT,
+            UpperLayerProto::Indeterminate => return None,
+        };
+        let ports = match upper {
+            UpperLayerProto::NonFirstFragment => None,
+            _ => transport.and_then(|t| t.src_port().zip(t.dst_port())),
+        };
+        let src_port = KeyPort::new(ports.map(|p| p.0));
+        let dst_port = KeyPort::new(ports.map(|p| p.1));
+        match (net.src_addr(), net.dst_addr()) {
+            (IpAddr::V4(source), IpAddr::V4(destination)) => self.v4.lookup(&PeeringKey {
                 proto,
                 src_vni,
+                dst_vni,
+                source,
                 destination,
+                src_port,
+                dst_port,
             }),
-            IpAddr::V6(destination) => self.v6.lookup(&VpcDestinationKey {
+            (IpAddr::V6(source), IpAddr::V6(destination)) => self.v6.lookup(&PeeringKey {
                 proto,
                 src_vni,
+                dst_vni,
+                source,
                 destination,
+                src_port,
+                dst_port,
             }),
+            _ => None,
         }
         .copied()
     }
 }
 
-/// An address family, as a classifier table sees it.
 trait IpVersion: IpAddress {
-    /// Names the family's table.
     const NAME: &'static str;
-
-    /// `prefix`, if it is of this family.
     fn prefix_spec(prefix: Prefix) -> Option<PrefixSpec<Self>>;
 }
-
 impl IpVersion for Ipv4Addr {
     const NAME: &'static str = "rate_limit_v4";
-
     fn prefix_spec(prefix: Prefix) -> Option<PrefixSpec<Self>> {
         match prefix {
-            Prefix::IPV4(prefix) => Some(prefix.into()),
+            Prefix::IPV4(p) => Some(p.into()),
             Prefix::IPV6(_) => None,
         }
     }
 }
-
 impl IpVersion for Ipv6Addr {
     const NAME: &'static str = "rate_limit_v6";
-
     fn prefix_spec(prefix: Prefix) -> Option<PrefixSpec<Self>> {
         match prefix {
-            Prefix::IPV6(prefix) => Some(prefix.into()),
+            Prefix::IPV6(p) => Some(p.into()),
             Prefix::IPV4(_) => None,
         }
     }
 }
 
-/// IP packet length, including the header, for byte accounting.
 pub(crate) fn ip_bytes(net: &Net) -> u32 {
     match net {
         Net::Ipv4(ip) => u32::from(ip.total_len()),

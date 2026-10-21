@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! What a rule has seen, by color.
+//! What a meter has seen, by color.
 
 use concurrency::sync::atomic::{AtomicU64, Ordering};
 use policer::Color;
@@ -13,7 +13,7 @@ struct Tally {
     bytes: AtomicU64,
 }
 
-/// What one worker has seen of one rule, by color.
+/// What one worker has seen of one meter, by color.
 ///
 /// Only that worker writes it, so a worker's counting never contends with another's; readers sum the
 /// workers' counts.
