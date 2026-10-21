@@ -90,6 +90,7 @@ impl ValueGenerator for VpcGenerator<'_> {
             internal_id: Some(internal_id),
             vni: Some(vni.into()),
             subnets: Some(subnets).filter(|s| !s.is_empty()),
+            topology: None, // Not used by the dataplane
         })
     }
 }
