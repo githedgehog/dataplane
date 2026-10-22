@@ -3540,11 +3540,17 @@ mod opt_properties {
             });
         let diverged = DIVERGED.load(Ordering::Relaxed);
         println!("outer failed while the quote matched: {diverged} packets");
-        assert!(
-            diverged > 0,
-            "the two never diverged, so this test proved nothing about which one the combinators \
-             follow"
-        );
+        // A divergence is a rare case, so whether one turns up depends on how many cases Bolero's
+        // time budget buys. Instrumented, emulated (qemu-user and Miri) and sanitized builds buy too
+        // few to count on one: Miri managed 14 in its 10 s. As elsewhere in the workspace, they keep
+        // the per-case checks above and skip only this sample-size check.
+        if !(cfg!(instrumented) || cfg!(emulated) || cfg!(sanitized)) {
+            assert!(
+                diverged > 0,
+                "the two never diverged, so this test proved nothing about which one the \
+                 combinators follow"
+            );
+        }
     }
 
     #[test]
