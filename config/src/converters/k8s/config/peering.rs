@@ -225,6 +225,7 @@ mod test {
         };
 
         let k8s_peering = GatewayAgentPeerings {
+            annotations: None,
             gateway_group: Some("default".to_string()),
             peering: Some(peerings_map),
             acl: Some(acl),

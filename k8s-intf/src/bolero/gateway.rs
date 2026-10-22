@@ -42,6 +42,7 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
 
         Some(LegalValue(GatewayAgentGateway {
             asn: Some(d.gen_u32(Bound::Included(&1), Bound::Unbounded)?),
+            driver: None, // Not used by the dataplane
             flow_table_capacity: None,
             groups: Some(groups),
             logs: Some(d.produce::<LegalValue<GatewayAgentGatewayLogs>>()?.take()),
@@ -70,6 +71,7 @@ impl Normalize for GatewayAgentGateway {
     fn normalize(&self) -> Self {
         GatewayAgentGateway {
             asn: self.asn,
+            driver: self.driver.clone(),
             flow_table_capacity: self.flow_table_capacity,
             groups: self.groups.clone(),
             logs: self.logs.clone(),

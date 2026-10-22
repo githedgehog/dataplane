@@ -200,6 +200,7 @@ impl LegalValuePeeringsGenerator<'_> {
         };
 
         Some(GatewayAgentPeerings {
+            annotations: None, // Not used by the dataplane
             gateway_group: Some(group),
             peering: Some(peering),
             no_multi_path: Some(false),
