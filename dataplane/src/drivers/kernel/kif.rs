@@ -11,8 +11,12 @@ use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags};
 use rtnetlink::{Handle, LinkUnspec};
 
 use lldp::Link;
+use nix::sched::{CpuSet, sched_getaffinity};
+use nix::unistd::Pid;
 use std::path::PathBuf;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
+
+use super::offload;
 
 #[derive(Debug, Clone)]
 /// Simple representation of a kernel interface.
@@ -43,13 +47,9 @@ impl Kif {
     /// The device behind the interface, `<bus address> (<driver>)`, or `None` for a virtual one.
     #[must_use]
     pub fn hardware(&self) -> Option<String> {
-        let device = self.sysfs().join("device");
-        let bus = std::fs::read_link(&device).ok()?;
+        let bus = std::fs::read_link(self.sysfs().join("device")).ok()?;
         let bus = bus.file_name()?.to_string_lossy().into_owned();
-        let driver = std::fs::read_link(device.join("driver"))
-            .ok()
-            .and_then(|driver| Some(driver.file_name()?.to_string_lossy().into_owned()));
-        Some(match driver {
+        Some(match self.driver() {
             Some(driver) => format!("{bus} ({driver})"),
             None => bus,
         })
@@ -60,6 +60,69 @@ impl Kif {
     pub fn pci_address(&self) -> Option<PciAddress> {
         let device = std::fs::read_link(self.sysfs().join("device")).ok()?;
         PciAddress::try_from(device.file_name()?.to_str()?).ok()
+    }
+
+    /// The bound kernel driver, if available.
+    fn driver(&self) -> Option<String> {
+        let driver = std::fs::read_link(self.sysfs().join("device/driver")).ok()?;
+        Some(driver.file_name()?.to_string_lossy().into_owned())
+    }
+
+    /// Disable GRO; enable RPS on e1000 ports. Failures are nonfatal.
+    ///
+    /// Requires the interface's network namespace and a matching sysfs mount.
+    fn tune(&self) {
+        match offload::disable_gro(&self.name) {
+            Ok(()) => debug!("GRO is off on {}", self.name),
+            Err(e) => warn!(
+                "could not turn GRO off on {} ({e}); frames merged beyond its MTU will be \
+                 dropped",
+                self.name
+            ),
+        }
+        if self.driver().as_deref() == Some("e1000") {
+            self.spread_receive();
+        }
+    }
+
+    /// Spread e1000 receive processing across the calling thread's allowed CPUs.
+    ///
+    /// RPS distributes kernel processing. With `PACKET_FANOUT_QM`, a single receive queue's
+    /// traffic still goes to one worker socket.
+    fn spread_receive(&self) {
+        // Setup runs on the unpinned datapath thread, whose affinity the workers inherit.
+        let cpus = match sched_getaffinity(Pid::from_raw(0)) {
+            Ok(cpus) => cpus,
+            Err(e) => {
+                warn!(
+                    "could not read the CPUs this process may use ({e}); {} keeps its receive \
+                     processing where it is",
+                    self.name
+                );
+                return;
+            }
+        };
+        let mask = cpu_mask((0..CpuSet::count()).filter(|&cpu| cpus.is_set(cpu).unwrap_or(false)));
+        let queues = match std::fs::read_dir(self.sysfs().join("queues")) {
+            Ok(queues) => queues,
+            Err(e) => {
+                warn!("could not list the queues of {} ({e})", self.name);
+                return;
+            }
+        };
+        for queue in queues.flatten() {
+            if !queue.file_name().to_string_lossy().starts_with("rx-") {
+                continue;
+            }
+            let path = queue.path().join("rps_cpus");
+            match std::fs::write(&path, &mask) {
+                Ok(()) => info!("{} steers received packets to CPUs {mask}", path.display()),
+                Err(e) => warn!(
+                    "could not steer received packets with {} ({e})",
+                    path.display()
+                ),
+            }
+        }
     }
 
     /// Whether the interface has carrier.
@@ -182,6 +245,26 @@ impl Kif {
     }
 }
 
+/// Format a sysfs CPU bitmap: comma-separated 32-bit hex groups, most significant first.
+fn cpu_mask(cpus: impl IntoIterator<Item = usize>) -> String {
+    let mut groups: Vec<u32> = Vec::new();
+    for cpu in cpus {
+        if groups.len() <= cpu / 32 {
+            groups.resize(cpu / 32 + 1, 0);
+        }
+        groups[cpu / 32] |= 1 << (cpu % 32);
+    }
+    if groups.is_empty() {
+        return "0".to_owned();
+    }
+    groups
+        .iter()
+        .rev()
+        .map(|group| format!("{group:08x}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Get the ifindex of the interface with the given name.
 pub fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> io::Result<InterfaceIndex> {
     let pos = interfaces
@@ -284,6 +367,7 @@ pub(super) async fn configure_interfaces(
             if disable_ipv6 {
                 kif.disable_ipv6()?;
             }
+            kif.tune();
             kif.bring_up(&handle, mtu).await?;
         }
         Ok(kifs)
@@ -302,7 +386,89 @@ mod tests {
     use fixin::wrap;
     use hardware::netns::NetworkNamespace;
     use rtnetlink::LinkVeth;
+    use std::str::FromStr;
     use test_utils::with_caps;
+
+    /// Parse a sysfs CPU bitmap into CPU IDs.
+    fn cpus_in(mask: &str) -> Vec<usize> {
+        let mut cpus = Vec::new();
+        for (index, group) in mask.trim().rsplit(',').enumerate() {
+            let group = u32::from_str_radix(group, 16).unwrap();
+            cpus.extend(
+                (0..32)
+                    .filter(|bit| group & (1 << bit) != 0)
+                    .map(|bit| index * 32 + bit),
+            );
+        }
+        cpus
+    }
+
+    #[test]
+    fn a_cpu_mask_names_exactly_its_cpus() {
+        bolero::check!().with_type::<Vec<u16>>().for_each(|cpus| {
+            let mut cpus: Vec<usize> = cpus.iter().map(|&cpu| usize::from(cpu % 1024)).collect();
+            let mask = cpu_mask(cpus.iter().copied());
+            cpus.sort_unstable();
+            cpus.dedup();
+            assert_eq!(cpus_in(&mask), cpus, "{mask}");
+        });
+    }
+
+    /// Interfaces using `driver` in the current namespace.
+    fn interfaces_driven_by(driver: &str) -> Vec<String> {
+        std::fs::read_dir("/sys/class/net")
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                std::fs::read_link(entry.path().join("device/driver"))
+                    .is_ok_and(|link| link.file_name().is_some_and(|name| name == driver))
+            })
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    const E1000_QEMU: n_vm::VmConfig = n_vm::VmConfig::DEFAULT
+        .to_builder()
+        .kernel_profile(n_vm::kernel_profiles::QEMU)
+        .nic_model(n_vm::NicModel::E1000)
+        .build();
+
+    #[n_vm::test(config = E1000_QEMU)]
+    #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
+    fn an_e1000_comes_up_without_gro_and_with_receive_spread_over_our_cpus() {
+        let name = interfaces_driven_by("e1000")
+            .pop()
+            .expect("the guest has an e1000 interface");
+        let rps_cpus = format!("/sys/class/net/{name}/queues/rx-0/rps_cpus");
+        // Verify that setup must change both settings.
+        assert!(offload::gro(&name).unwrap(), "e1000 starts with GRO on");
+        assert_eq!(
+            cpus_in(&std::fs::read_to_string(&rps_cpus).unwrap()),
+            Vec::<usize>::new()
+        );
+
+        let config = vec![args::InterfaceArg::from_str(&format!("{name}=kernel@{name}")).unwrap()];
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(configure_interfaces(&config, false))
+            .unwrap();
+
+        assert!(!offload::gro(&name).unwrap(), "GRO is off after setup");
+        let allowed = sched_getaffinity(Pid::from_raw(0)).unwrap();
+        let allowed: Vec<usize> = (0..CpuSet::count())
+            .filter(|&cpu| allowed.is_set(cpu).unwrap())
+            .collect();
+        assert!(
+            allowed.len() > 1,
+            "a single CPU would leave nothing to spread over"
+        );
+        assert_eq!(
+            cpus_in(&std::fs::read_to_string(&rps_cpus).unwrap()),
+            allowed
+        );
+    }
 
     #[n_vm::test]
     #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
