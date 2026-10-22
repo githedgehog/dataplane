@@ -1320,6 +1320,37 @@ let
     }
   ) package-list;
 
+  # Every package checked on its own, all targets, in one derivation. `cargo check --package`
+  # unifies features over the selected package only, so a package (or one of its tests) that
+  # compiles only thanks to features another member turns on fails here, which is what building
+  # each package's tests separately used to catch, at a fraction of the cost: nothing is linked or
+  # run, and the dependency artifacts and target directory are unpacked once rather than once per
+  # package. Not for wasm32, whose members' tests do not build there; `check` covers it.
+  check-each = pkgs.callPackage invoke {
+    builder = craneLib.mkCargoDerivation;
+    profile = profile-tests';
+    no-bins = true;
+    args = {
+      pname = "check-each";
+      cargoArtifacts = cargo-artifacts-tests;
+      buildPhaseCargoCommand = builtins.concatStringsSep "\n" (
+        map (
+          pname:
+          builtins.concatStringsSep " " (
+            [
+              "cargo"
+              "check"
+              "--all-targets"
+              "--package=${pname}"
+              "--profile=${cargo-profile}"
+            ]
+            ++ cargo-cmd-prefix-tests
+          )
+        ) (builtins.attrValues package-list)
+      );
+    };
+  };
+
   # The gateway image's root filesystem, unpacked, for init's end-to-end `--supervise-frr` VM test.
   #
   # The image's store closure is left out: the tree is symlinks into /nix/store, which nix reads as
@@ -2295,6 +2326,7 @@ in
   inherit
     benches
     check
+    check-each
     closure-check
     clippy
     containers
