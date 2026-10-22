@@ -1019,6 +1019,11 @@ let
               )
             else
               "";
+        }
+        # Coverage builds link without LTO; see `lto` in `nix/profiles.nix`. Cargo's own
+        # `lto = "thin"` (release, and checked by inheritance) has to go with the linker's.
+        // lib.optionalAttrs (builtins.elem "coverage" instrumentations) {
+          "CARGO_PROFILE_${lib.toUpper cargo-profile}_LTO" = "false";
         };
       }
       // args

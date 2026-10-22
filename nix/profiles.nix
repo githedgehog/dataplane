@@ -25,6 +25,12 @@ let
   # Test archives are loaded back onto the build host and executed
   # there; when the target arch differs, that means qemu-user.
   is-emulated-test = for-tests && (arch != host-arch);
+  # Coverage builds link without LTO. An instrumented ThinLTO link of the whole program, Rust and
+  # DPDK together, carries coverage maps for all of it, and those links are what exhausted the
+  # CI runner's 20 GiB (see `lto_cores` in `ci.just`). The cost is speed: without cross-crate
+  # inlining the instrumented binaries run slower, so tests on a time budget (the bolero fuzzers)
+  # explore somewhat less of the input space in a coverage run.
+  lto = !(builtins.elem "coverage" instrumentations);
   common.NIX_CFLAGS_COMPILE = [
     "-g3"
     "-gdwarf-5"
@@ -84,19 +90,24 @@ let
   ++ (map (flag: "-Clink-arg=${flag}") optimize-for.debug.NIX_CFLAGS_LINK);
   optimize-for.performance.NIX_CFLAGS_COMPILE = [
     "-O3"
-    "-flto=thin"
-  ];
-  optimize-for.performance.NIX_CXXFLAGS_COMPILE = optimize-for.performance.NIX_CFLAGS_COMPILE ++ [
-    "-fwhole-program-vtables"
-  ];
-  optimize-for.performance.NIX_CFLAGS_LINK = optimize-for.performance.NIX_CXXFLAGS_COMPILE ++ [
-    "-Wl,--lto-whole-program-visibility"
-  ];
-  optimize-for.performance.RUSTFLAGS = [
-    "-Clinker-plugin-lto"
-    "-Cembed-bitcode=yes"
   ]
-  ++ (map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
+  ++ (if lto then [ "-flto=thin" ] else [ ]);
+  optimize-for.performance.NIX_CXXFLAGS_COMPILE =
+    optimize-for.performance.NIX_CFLAGS_COMPILE ++ (if lto then [ "-fwhole-program-vtables" ] else [ ]);
+  optimize-for.performance.NIX_CFLAGS_LINK =
+    optimize-for.performance.NIX_CXXFLAGS_COMPILE
+    ++ (if lto then [ "-Wl,--lto-whole-program-visibility" ] else [ ]);
+  optimize-for.performance.RUSTFLAGS =
+    (
+      if lto then
+        [
+          "-Clinker-plugin-lto"
+          "-Cembed-bitcode=yes"
+        ]
+      else
+        [ ]
+    )
+    ++ (map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
   secure.NIX_CFLAGS_COMPILE = [
     "-fstack-protector-strong"
     "-fstack-clash-protection"
