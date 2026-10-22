@@ -249,10 +249,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.136.1",
-      "revision": "0f39f8e23fead7754f5c15dca8937f83093c2dcf",
-      "url": "https://api.github.com/repos/githedgehog/fabric/tarball/refs/tags/v0.136.1",
-      "hash": "sha256-gr6tTB3HNqExfkYFmZ21E434P2DfkbGlIF/Qd13MsoI=",
+      "version": "v0.138.0",
+      "revision": "a62c693fa3566bd022ed0ec5e16afee28ffc36cc",
+      "url": "https://api.github.com/repos/githedgehog/fabric/tarball/refs/tags/v0.138.0",
+      "hash": "sha256-P43PSjfu6TSdKwi/IE4wXI7h1gTqieclsp5AVVwihI8=",
       "frozen": true
     },
     "flatcar-pxe-image": {
