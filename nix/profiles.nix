@@ -55,7 +55,10 @@ let
     "-Cdwarf-version=5"
     "-Csymbol-mangling-version=v0"
     "-Clink-arg=-Wl,--as-needed,--gc-sections" # FRR builds don't like this, but rust does fine
-    "-Clink-arg=-Wl,--thinlto-jobs=4" # setting this parameter too high causes massive memory load on the linking step
+    # The backend threads of one ThinLTO link, each holding modules of its own. CI runs up to
+    # `lto_cores` such links at once in a 20 GiB cgroup, so the peak is roughly the product; 4 left
+    # too little headroom.
+    "-Clink-arg=-Wl,--thinlto-jobs=2"
   ]
   ++ (
     if needs-unwind then
