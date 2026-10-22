@@ -74,7 +74,7 @@ jobs:
       cross_full: "${{ steps.cross-full.outputs.value }}"
       miri: "${{ steps.miri.outputs.value }}"
       sanitize: "${{ steps.sanitize.outputs.value }}"
-      test_each: "${{ steps.test-each.outputs.value }}"
+      check_each: "${{ steps.check-each.outputs.value }}"
       wasm: "${{ steps.wasm.outputs.value }}"
     steps:
       - name: "Checkout"
@@ -120,10 +120,10 @@ jobs:
         with:
           labels: "concurrency"
 
-      - id: "test-each"
+      - id: "check-each"
         uses: *gate
         with:
-          labels: "test-each"
+          labels: "check-each"
 
       - id: "profiles"
         uses: *gate
@@ -549,9 +549,9 @@ jobs:
           recipe_args: "${{ matrix.sanitizer }}"
       - *tmate
 
-  test_each:
-    if: "${{ needs.plan.outputs.test_each == 'true' }}"
-    name: "test_each"
+  check_each:
+    if: "${{ needs.plan.outputs.check_each == 'true' }}"
+    name: "check_each"
     runs-on: "lab"
     needs:
       - plan
@@ -561,10 +561,10 @@ jobs:
     steps:
       - *checkout
       - *nix-setup
-      - name: "test-each"
+      - name: "check-each"
         uses: *just
         with:
-          recipe: "ci::test-each"
+          recipe: "ci::check-each"
       - *tmate
 
   coverage:
@@ -953,8 +953,8 @@ jobs:
       - miri
       # Include prerequisites so dependent skips cannot hide their failures.
       - plan
+      - check_each
       - sanitize
-      - test_each
       - version
       - vlab
       - wasm
