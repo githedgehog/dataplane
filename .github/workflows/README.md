@@ -59,7 +59,7 @@ Production artifacts are produced via nix builds in a separate CI workflow.
   `main` moved underneath it
 - `ci:+test/all-profiles` - Add release and fuzz checks plus fuzz coverage
 - `ci:+sanitize` - Run address and thread sanitizer tests
-- `ci:+test-each` - Test each workspace package independently
+- `ci:+check-each` - Check each workspace package independently (all targets)
 - `ci:+miri` - Run Miri checks
 - `ci:+wasm` - Run the WASM build check
 - `ci:+concurrency` - Run Shuttle and Loom tests
