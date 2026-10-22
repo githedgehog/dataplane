@@ -16,6 +16,13 @@ jobs := "1"
 
 cores := "10"
 
+# Nextest cannot see that limit either: `num-cpus` reads the host's 32, so it ran 32 test
+# processes at once in a cgroup with ten CPUs and 20 GiB. That starved CPU-bound tests (see the
+# `packet_processor::fuzz` override in `.config/nextest.toml`) and, with coverage-instrumented
+# binaries, added to the memory that took the runner down. Every test job runs through this
+# module, so the nested `just` invocations inherit it.
+export NEXTEST_TEST_THREADS := cores
+
 # What a ThinLTO profile may use, which is not the same question as how many cores there are.
 #
 # `cores` becomes `NIX_BUILD_CORES`, which crane turns into `CARGO_BUILD_JOBS`, so it also sets
