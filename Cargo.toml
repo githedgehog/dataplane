@@ -260,7 +260,7 @@ tracing-error = { version = "0.2.1", default-features = false, features = [] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = [] }
 tracing-test = { version = "0.2.6", default-features = false, features = [] }
 trybuild = { version = "1.0.122", default-features = false, features = [] }
-ureq = { version = "3.4.2", default-features = false, features = [] }
+ureq = { version = "3.5.0", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
 uuid = { version = "1.28.0", default-features = false, features = [] }
 vsock = { version = "0.5.4", default-features = false, features = [] }
