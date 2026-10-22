@@ -208,7 +208,7 @@ priority-queue = { version = "2.7.0", default-features = false, features = [] }
 proc-macro-crate = { version = "3.5.0", default-features = false, features = [] }
 proc-macro2 = { version = "1.0.107", default-features = false, features = [] }
 procfs = { version = "0.18.0", default-features = false, features = [] }
-pyroscope = { version = "2.1.4", default-features = false, features = [] }
+pyroscope = { version = "2.1.5", default-features = false, features = [] }
 qapi-qmp = { version = "0.15.0", default-features = false, features = [] }
 qapi-spec = { version = "0.3.2", default-features = false, features = [] }
 quote = { version = "1.0.47", default-features = false, features = [] }
