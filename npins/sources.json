@@ -239,20 +239,17 @@
       "hash": "sha256-+f1ws/2oQ3+P3eiDHCuFyIHRn+5E/uHR+clpN0tyl3o="
     },
     "fabric": {
-      "type": "GitRelease",
+      "type": "Git",
       "repository": {
         "type": "GitHub",
         "owner": "githedgehog",
         "repo": "fabric"
       },
-      "pre_releases": false,
-      "version_upper_bound": null,
-      "release_prefix": null,
+      "branch": "pr/qmonnet/acl-tcp-filters",
       "submodules": false,
-      "version": "v0.138.0",
-      "revision": "a62c693fa3566bd022ed0ec5e16afee28ffc36cc",
-      "url": "https://api.github.com/repos/githedgehog/fabric/tarball/refs/tags/v0.138.0",
-      "hash": "sha256-P43PSjfu6TSdKwi/IE4wXI7h1gTqieclsp5AVVwihI8=",
+      "revision": "40c97eb67b91d45097ea77b1d730c48da1eea2e2",
+      "url": "https://github.com/githedgehog/fabric/archive/40c97eb67b91d45097ea77b1d730c48da1eea2e2.tar.gz",
+      "hash": "sha256-1TMMEE39ZESLZooMxI3q3HZfOVxHUwFSLFQDUEKPyBo=",
       "frozen": true
     },
     "flatcar-pxe-image": {
