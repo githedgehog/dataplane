@@ -45,11 +45,6 @@ cores := "10"
 # not a build input.
 lto_cores := "4"
 
-# Small per-package derivations use the budget better when split two ways.
-test_each_jobs := "2"
-
-test_each_cores := "5"
-
 [private]
 _lab-common := " docker_sock=/run/docker/docker.sock" + " oci_repo=ghcr.io" + " debug_justfile=" + debug_justfile
 
@@ -59,9 +54,6 @@ _lab := "jobs=" + jobs + " cores=" + cores + _lab-common
 # For the profiles that link with ThinLTO. See `lto_cores`.
 [private]
 _lab-lto := "jobs=" + jobs + " cores=" + lto_cores + _lab-common
-
-[private]
-_lab-test-each := "jobs=" + test_each_jobs + " cores=" + test_each_cores + _lab-common
 
 [default]
 [private]
@@ -88,8 +80,11 @@ check-docs profile:
 sanitize san profile="checked":
     just {{ if profile == "debug" { _lab } else { _lab-lto } }} profile={{ profile }} sanitize={{ san }} test
 
-test-each profile="debug":
-    just {{ _lab-test-each }} profile={{ profile }} test-each
+# Each package checked on its own, all targets, in one derivation; see `check-each` in
+# `default.nix`. It replaces building and running each package's tests separately, which
+# recompiled the shared workspace crates once per package and never reused the results.
+check-each profile="debug":
+    just {{ _lab }} profile={{ profile }} check-each-target
 
 coverage profile="debug":
     just {{ if profile == "debug" { _lab } else { _lab-lto } }} profile={{ profile }} instrument=coverage coverage-archive

@@ -385,6 +385,12 @@ check package="" *args: (build (if package == "" { "check" } else { "check." + p
 check-each *args: (build "check" args)
     {{ _just_debuggable_ }}
 
+# Check every package on its own, all targets, without building or running anything; see
+# `check-each` in `default.nix`.
+[script]
+check-each-target *args: (build "check-each" args)
+    {{ _just_debuggable_ }}
+
 [script]
 test-each *args: (setup-roots) (build "tests.pkg" args)
     {{ _just_debuggable_ }}
