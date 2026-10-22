@@ -25,12 +25,8 @@ let
   # Test archives are loaded back onto the build host and executed
   # there; when the target arch differs, that means qemu-user.
   is-emulated-test = for-tests && (arch != host-arch);
-  # Coverage builds link without LTO. An instrumented ThinLTO link of the whole program, Rust and
-  # DPDK together, carries coverage maps for all of it, and those links are what exhausted the
-  # CI runner's 20 GiB (see `lto_cores` in `ci.just`). The cost is speed: without cross-crate
-  # inlining the instrumented binaries run slower, so tests on a time budget (the bolero fuzzers)
-  # explore somewhat less of the input space in a coverage run.
-  lto = !(builtins.elem "coverage" instrumentations);
+  # Coverage and the run-time sanitizers link without LTO; see `lto.nix`.
+  lto = import ./lto.nix { inherit sanitizers instrumentations; };
   common.NIX_CFLAGS_COMPILE = [
     "-g3"
     "-gdwarf-5"

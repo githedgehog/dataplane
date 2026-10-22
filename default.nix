@@ -1020,9 +1020,9 @@ let
             else
               "";
         }
-        # Coverage builds link without LTO; see `lto` in `nix/profiles.nix`. Cargo's own
-        # `lto = "thin"` (release, and checked by inheritance) has to go with the linker's.
-        // lib.optionalAttrs (builtins.elem "coverage" instrumentations) {
+        # Builds that link without LTO (see `nix/lto.nix`) turn off Cargo's own `lto = "thin"`
+        # (release, and checked by inheritance) to match the linker's.
+        // lib.optionalAttrs (!(import ./nix/lto.nix { inherit sanitizers instrumentations; })) {
           "CARGO_PROFILE_${lib.toUpper cargo-profile}_LTO" = "false";
         };
       }
