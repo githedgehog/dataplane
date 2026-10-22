@@ -250,7 +250,7 @@ thread_local = { version = "1.1.10", default-features = false, features = [] }
 # parking_lot in via `concurrency::sync`, so the only thing scoping this
 # per-crate would buy is divergent runtime behaviour between test binaries
 # and the real dataplane.  Keep it global.
-tokio = { version = "1.54.0", default-features = false, features = ["parking_lot"] }
+tokio = { version = "1.54.1", default-features = false, features = ["parking_lot"] }
 tokio-stream = { version = "0.1.19", default-features = false, features = [] }
 tokio-util = { version = "0.7.20", default-features = false, features = [] }
 tokio-vsock = { version = "0.7.2", default-features = false, features = [] }
