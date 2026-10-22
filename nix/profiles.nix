@@ -84,19 +84,27 @@ let
   ++ (map (flag: "-Clink-arg=${flag}") optimize-for.debug.NIX_CFLAGS_LINK);
   optimize-for.performance.NIX_CFLAGS_COMPILE = [
     "-O3"
+  ];
+  optimize-for.performance.NIX_CXXFLAGS_COMPILE = optimize-for.performance.NIX_CFLAGS_COMPILE;
+  optimize-for.performance.NIX_CFLAGS_LINK = optimize-for.performance.NIX_CXXFLAGS_COMPILE;
+  optimize-for.performance.RUSTFLAGS =
+    [ ] ++ (map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
+  # Cross-language ThinLTO: Rust and the C dependencies (DPDK among them) optimized as one program.
+  # Only `release` carries it; see `profile-map`.
+  link-time.thin.NIX_CFLAGS_COMPILE = [
     "-flto=thin"
   ];
-  optimize-for.performance.NIX_CXXFLAGS_COMPILE = optimize-for.performance.NIX_CFLAGS_COMPILE ++ [
+  link-time.thin.NIX_CXXFLAGS_COMPILE = link-time.thin.NIX_CFLAGS_COMPILE ++ [
     "-fwhole-program-vtables"
   ];
-  optimize-for.performance.NIX_CFLAGS_LINK = optimize-for.performance.NIX_CXXFLAGS_COMPILE ++ [
+  link-time.thin.NIX_CFLAGS_LINK = link-time.thin.NIX_CXXFLAGS_COMPILE ++ [
     "-Wl,--lto-whole-program-visibility"
   ];
-  optimize-for.performance.RUSTFLAGS = [
+  link-time.thin.RUSTFLAGS = [
     "-Clinker-plugin-lto"
     "-Cembed-bitcode=yes"
   ]
-  ++ (map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") link-time.thin.NIX_CFLAGS_LINK);
   secure.NIX_CFLAGS_COMPILE = [
     "-fstack-protector-strong"
     "-fstack-clash-protection"
@@ -282,9 +290,21 @@ let
     release = combine-profiles [
       common
       optimize-for.performance
+      link-time.thin
       secure
     ];
-    checked = release;
+    # The test profile: optimized, with Rust's debug assertions and overflow checks (see
+    # `[profile.checked]` in `Cargo.toml`), and without LTO. Coverage, the sanitizers, shuttle and
+    # loom build with it, and an instrumented ThinLTO link of the whole program is the heaviest
+    # thing CI builds: `coverage/checked` kept losing its 20 GiB runner (see `lto_cores` in
+    # `ci.just`). The binaries run somewhat slower without cross-crate inlining, so tests on a time
+    # budget explore a little less. `release` still builds and tests the ThinLTO binary we ship.
+    # CFI requires LTO, so a CFI build has to use `release`.
+    checked = combine-profiles [
+      common
+      optimize-for.performance
+      secure
+    ];
   };
 in
 combine-profiles (
