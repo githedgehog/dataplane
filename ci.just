@@ -98,8 +98,10 @@ sanitize san profile="checked":
 test-each profile="debug":
     just {{ _lab-test-each }} profile={{ profile }} test-each
 
+# An instrumented link of the whole program is the heaviest the lab runs with or without LTO, and
+# `coverage/checked` kept losing its runner, so every profile gets the smaller link budget.
 coverage profile="debug":
-    just {{ if profile == "debug" { _lab } else { _lab-lto } }} profile={{ profile }} instrument=coverage coverage-archive
+    just {{ _lab-lto }} profile={{ profile }} instrument=coverage coverage-archive
 
 # Optimized fuzz builds let schedule explorers cover more interleavings.
 shuttle profile="checked":
