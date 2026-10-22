@@ -957,6 +957,11 @@ let
       },
       # Dependency builds retain reusable Cargo artifacts rather than binaries.
       for-deps ? false,
+      # Whether the build carries the per-commit `tag` as `VERSION`. Only what ships (the
+      # workspace binaries the images and the validator are made of) needs it. Everything else
+      # gets a constant, so a commit that leaves the Rust sources alone rebuilds none of it, and
+      # the merge queue can reuse what a pull request's run already built for the same tree.
+      stamped ? false,
       # Skip the binary strip/split step for derivations that produce none.
       no-bins ? false,
       profile,
@@ -993,9 +998,16 @@ let
         ];
 
         env = {
-          # Dependencies do not read VERSION, so keep their derivation stable
-          # while workspace consumers receive the per-commit tag.
-          VERSION = if for-deps then "dependencies" else tag;
+          # Dependencies do not read VERSION, so keep their derivation stable, and so do the
+          # builds that do not ship; see `stamped`. "dev" is what the code reports when VERSION
+          # is unset.
+          VERSION =
+            if for-deps then
+              "dependencies"
+            else if stamped then
+              tag
+            else
+              "dev";
           CARGO_PROFILE = cargo-profile;
           DATAPLANE_SYSROOT = "${sysroot}";
           LIBCLANG_PATH = "${pkgs.pkgsBuildHost.llvmPackages'.libclang.lib}/lib";
@@ -1143,6 +1155,7 @@ let
     pkgs.callPackage invoke {
       builder = craneLib.buildPackage;
       profile = profile';
+      stamped = true;
       args = {
         inherit pname cargoArtifacts;
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
