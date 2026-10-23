@@ -5,15 +5,15 @@
 
 #![cfg(test)]
 
-use super::LookupResult;
-use super::tables::RuleRow;
-use super::tables::SourceGate;
-use crate::fuzz_gen::nz;
-use crate::test_utils::*;
-use crate::{FlowFilterContext, NatMode, NatRequirement};
+use crate::context::tables::{Backend, RuleRow, SourceGate};
+use crate::tests::fuzz_gen::nz;
+use crate::tests::test_utils::*;
+use crate::{FlowFilterContext, LookupInput, LookupResult, NatMode, NatRequirement};
 use lpm::prefix::L4Protocol;
 use net::headers::Headers;
+use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
+use std::net::IpAddr;
 use std::num::NonZero;
 
 // Wrapper for the result of a lookup
@@ -661,10 +661,6 @@ fn discrepancy_overlapping_contiguous_prefixes() {
 #[test]
 #[dpdk::with_eal]
 fn reference_and_dpdk_backends_agree() {
-    use super::tables::{Backend, FlowFilterContext};
-    use net::ip::NextHeader;
-    use std::net::IpAddr;
-
     // v4 peering (vpc1<->vpc2, with source static-NAT, a masquerade, a plain dst and a default
     // dst) and a v6 peering (vpc1<->vpc3) so all four tables are populated in both directions.
     // The masquerade expose additionally covers the stage-1 marker rules and the SourceMiss /
@@ -825,7 +821,6 @@ fn reference_and_dpdk_backends_agree() {
 
     // Batched lookup must agree with the single-lookup oracle AND across backends. Repeat the
     // probes past MAX_BATCH so the per-version chunking (32) runs multiple rte_acl calls.
-    use super::tables::LookupInput;
     let inputs: Vec<LookupInput> = std::iter::repeat_n(probes, 5)
         .flatten()
         .map(|&(vni, src_ip, dst_ip, proto, ports)| LookupInput {
@@ -864,8 +859,6 @@ fn reference_and_dpdk_backends_agree() {
 #[test]
 #[dpdk::with_eal]
 fn display_is_identical_across_backends() {
-    use super::tables::{Backend, FlowFilterContext};
-
     let ov = overlay(
         &[("vpc1", 100), ("vpc2", 200)],
         vec![peering(
