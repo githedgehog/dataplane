@@ -5,10 +5,10 @@
 
 #![cfg(test)]
 
+use super::fuzz_gen::Probe;
 use crate::context::SourceGate;
 use crate::context::{FlowFilterContext, FlowFilterContextWriter};
-use crate::fuzz_gen::Probe;
-use crate::test_utils::{
+use crate::tests::test_utils::{
     build_icmp_packet, build_nonip_packet, build_tcp_packet, build_tcp_packet_v6, build_udp_packet,
     context, expose, expose_masquerade, expose_port_forwarding, expose_static, peering, v4, v6,
     vpcd,
@@ -1600,7 +1600,7 @@ fn observed_outcome(pkt: &Packet<TestBuffer>) -> NfOutcome {
 /// Build a packet and normalize its probe to the values carried on the wire.
 /// Returns `None` when the source and destination use different IP versions.
 fn probe_packet(probe: &Probe) -> Option<(Packet<TestBuffer>, Probe)> {
-    use crate::test_utils::{build_icmp_packet_v6, build_udp_packet_v6};
+    use crate::tests::test_utils::{build_icmp_packet_v6, build_udp_packet_v6};
     use net::ip::NextHeader;
 
     let mut probe = *probe;
@@ -1646,8 +1646,8 @@ fn probe_packet(probe: &Probe) -> Option<(Packet<TestBuffer>, Probe)> {
 /// Each routing, drop, NAT, and flow-key outcome must be reached.
 #[test]
 fn nf_metadata_matches_config_oracle() {
-    use crate::context::fuzz::oracle_lookup;
-    use crate::fuzz_gen::{OverlaySpec, ProbeSpec};
+    use super::fuzz_gen::{OverlaySpec, ProbeSpec};
+    use crate::context::tests::fuzz::oracle_lookup;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
 
     static ROUTED: AtomicU64 = AtomicU64::new(0);
@@ -1741,8 +1741,10 @@ mod adversarial_headers {
         observed_outcome, probe_from_packet,
     };
     use crate::context::FlowFilterContext;
-    use crate::context::fuzz::oracle_lookup;
-    use crate::test_utils::{expose, expose_masquerade, expose_static, overlay, peering, vpcd};
+    use crate::context::tests::fuzz::oracle_lookup;
+    use crate::tests::test_utils::{
+        expose, expose_masquerade, expose_static, overlay, peering, vpcd,
+    };
     use bolero::{Driver, ValueGenerator};
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::ValidatedOverlay;
