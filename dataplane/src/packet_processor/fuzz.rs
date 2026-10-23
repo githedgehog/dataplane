@@ -571,20 +571,172 @@ fn assert_within_budget<G: bolero::ValueGenerator>(name: &str, generator: &G) {
     );
 }
 
+/// Counts successful cases for aggregate coverage assertions.
+///
+/// Each property requests enough cases to cover its rarest required branch.
+/// Incomplete samples may skip coverage only with an explicit time cap or reduced
+/// iteration limit. Full samples always enforce coverage.
 #[cfg(test)]
-fn assert_covered(covered: bool, what: &str) {
-    if (cfg!(instrumented) || cfg!(emulated) || cfg!(sanitized)) && !covered {
-        // Instrumentation and emulation reduce the samples collected within Bolero's time
-        // budget. Skip coverage assertions on these small samples; keep the per-case checks.
-        eprintln!("{what} -- not asserted: too few cases under this build");
-        return;
+pub(crate) struct Sample {
+    cases: usize,
+    drawn: concurrency::process_global::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl Sample {
+    pub(crate) const fn new(cases: usize) -> Self {
+        Self {
+            cases,
+            drawn: concurrency::process_global::atomic::AtomicUsize::new(0),
+        }
     }
-    assert!(
-        covered,
-        "{what}. Check for a `__fuzz__` corpus beside this test before reading further: replaying \
-         one can spend the budget on inputs chosen for being unusual. Move it aside and re-run to \
-         tell that apart from a real gap."
-    );
+
+    /// The requested `.with_iterations` count.
+    pub(crate) const fn cases(&self) -> usize {
+        self.cases
+    }
+
+    /// Record a successful draw at the start of the `for_each` body.
+    pub(crate) fn draw(&self) {
+        self.drawn
+            .fetch_add(1, concurrency::process_global::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn assert_covered(&self, covered: bool, what: &str) {
+        self.assert_covered_with_limits(
+            covered,
+            what,
+            std::env::var("BOLERO_RANDOM_TEST_TIME_MS").ok().as_deref(),
+            std::env::var("BOLERO_RANDOM_ITERATIONS").ok().as_deref(),
+        );
+    }
+
+    fn assert_covered_with_limits(
+        &self,
+        covered: bool,
+        what: &str,
+        time_ms: Option<&str>,
+        iterations: Option<&str>,
+    ) {
+        if covered {
+            return;
+        }
+        let drawn = self
+            .drawn
+            .load(concurrency::process_global::atomic::Ordering::Relaxed);
+        if drawn < self.cases {
+            let time_ms = time_ms.and_then(|value| value.parse::<u64>().ok());
+            let iterations = iterations.and_then(|value| value.parse::<usize>().ok());
+            // TODO: Expose Bolero's termination reason and accepted/rejected counts to
+            // distinguish timeouts from generator rejection in capped runs.
+            let reason = if time_ms.is_some() {
+                Some("explicit time cap configured")
+            } else if iterations.is_some_and(|limit| limit < self.cases) {
+                Some("explicit iteration limit below the required sample")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                eprintln!(
+                    "{what} -- not asserted: {drawn}/{} successful draws; {reason}",
+                    self.cases
+                );
+                return;
+            }
+            panic!(
+                "{what}: incomplete sample ({drawn}/{} successful draws) without an explicit \
+                 cap or reduced iteration limit; check for rejected generator inputs",
+                self.cases
+            );
+        }
+        panic!(
+            "{what}. If a `__fuzz__` corpus is present, rerun without it to exclude replay bias."
+        );
+    }
+}
+
+#[cfg(test)]
+mod sample_tests {
+    use super::Sample;
+    use std::panic::catch_unwind;
+
+    #[test]
+    #[should_panic(expected = "incomplete sample")]
+    fn rejected_generation_does_not_waive_uncapped_coverage() {
+        struct Reject;
+
+        impl bolero::ValueGenerator for Reject {
+            type Output = u8;
+
+            fn generate<D: bolero::Driver>(&self, _: &mut D) -> Option<Self::Output> {
+                None
+            }
+        }
+
+        let sample = Sample::new(64);
+        bolero::check!()
+            .with_generator(Reject)
+            .with_iterations(sample.cases())
+            .for_each(|_| sample.draw());
+        sample.assert_covered_with_limits(false, "no case exercised", None, None);
+    }
+
+    #[test]
+    fn invalid_or_unreduced_limits_do_not_waive_coverage() {
+        for (time_ms, iterations) in [
+            (None, None),
+            (Some(""), Some("")),
+            (Some("none"), Some("none")),
+            (Some("-1"), Some("-1")),
+            (Some("18446744073709551616"), Some("18446744073709551616")),
+            (None, Some("2")),
+            (None, Some("3")),
+        ] {
+            let sample = Sample::new(2);
+            sample.draw();
+            assert!(
+                catch_unwind(|| {
+                    sample.assert_covered_with_limits(
+                        false,
+                        "missing coverage",
+                        time_ms,
+                        iterations,
+                    );
+                })
+                .is_err(),
+                "coverage was waived with time_ms={time_ms:?}, iterations={iterations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_limits_only_waive_incomplete_samples() {
+        for (time_ms, iterations) in [
+            (Some("4000"), None),
+            (Some("0"), None),
+            (Some("+4000"), None),
+            (None, Some("1")),
+            (Some("none"), Some("0")),
+        ] {
+            let sample = Sample::new(2);
+            sample.draw();
+            sample.assert_covered_with_limits(false, "missing coverage", time_ms, iterations);
+            sample.draw();
+            assert!(
+                catch_unwind(|| {
+                    sample.assert_covered_with_limits(
+                        false,
+                        "missing coverage",
+                        time_ms,
+                        iterations,
+                    );
+                })
+                .is_err(),
+                "a full sample waived coverage with time_ms={time_ms:?}, iterations={iterations:?}"
+            );
+            sample.assert_covered_with_limits(true, "covered", time_ms, iterations);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1660,6 +1812,7 @@ mod shapes {
 
     #[test]
     fn every_shape_leaves_the_pipeline_with_a_verdict() {
+        static SAMPLE: super::Sample = super::Sample::new(32);
         static FORWARDED: AtomicU64 = AtomicU64::new(0);
         static DROPPED: AtomicU64 = AtomicU64::new(0);
         static BY_SHAPE: [AtomicU64; Shape::ALL.len()] =
@@ -1670,7 +1823,9 @@ mod shapes {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(exposes, stacks)| {
+                SAMPLE.draw();
                 settled(|| {
                     let Some(mut fabric) = Fabric::build(exposes) else {
                         return;
@@ -1753,13 +1908,13 @@ mod shapes {
             by_shape.join(" ")
         );
 
-        super::assert_covered(
+        SAMPLE.assert_covered(
             forwarded > 0,
             "no packet was ever forwarded: the harness is exercising the drop path only",
         );
-        super::assert_covered(dropped > 0, "no packet was ever dropped");
+        SAMPLE.assert_covered(dropped > 0, "no packet was ever dropped");
         for shape in Shape::ALL {
-            super::assert_covered(
+            SAMPLE.assert_covered(
                 BY_SHAPE[shape as usize].load(Ordering::Relaxed) > 0,
                 &format!("no {shape:?} packet ever reached the pipeline"),
             );
@@ -1938,6 +2093,7 @@ mod round_trip {
 
     #[test]
     fn a_translated_flow_comes_back_to_where_it_started() {
+        static SAMPLE: super::Sample = super::Sample::new(8);
         static ROUND_TRIPPED: AtomicU64 = AtomicU64::new(0);
         static NOT_FORWARDED: AtomicU64 = AtomicU64::new(0);
 
@@ -1946,7 +2102,9 @@ mod round_trip {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(exposes, flows)| {
+                SAMPLE.draw();
                 settled(|| {
                     let Some(mut fabric) = Fabric::build(exposes) else {
                         return;
@@ -2034,7 +2192,7 @@ mod round_trip {
             "round-tripped={round_tripped} not-forwarded={}",
             NOT_FORWARDED.load(Ordering::Relaxed)
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             round_tripped > 0,
             "no flow was ever forwarded, so nothing was ever checked to come back",
         );
@@ -2253,7 +2411,12 @@ mod acl {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep case checks and coverage assertions together"
+    )]
     fn the_acl_verdict_follows_the_protocol_the_packet_carries() {
+        static SAMPLE: super::Sample = super::Sample::new(16);
         static DENIED: AtomicU64 = AtomicU64::new(0);
         static PERMITTED: AtomicU64 = AtomicU64::new(0);
         static BEHIND_EXT: AtomicU64 = AtomicU64::new(0);
@@ -2265,7 +2428,9 @@ mod acl {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(exposes, default_allow, rule_proto, packets)| {
+                SAMPLE.draw();
                 settled(|| {
                     let default = if *default_allow {
                         AclAction::Allow
@@ -2343,18 +2508,18 @@ mod acl {
             "permitted={permitted} (forwarded {permitted_out}) denied={denied} \
              (by the acl {denied_by_acl}) behind-extension={behind}"
         );
-        super::assert_covered(permitted > 0, "no packet was ever permitted");
-        super::assert_covered(denied > 0, "no packet was ever denied");
-        super::assert_covered(
+        SAMPLE.assert_covered(permitted > 0, "no packet was ever permitted");
+        SAMPLE.assert_covered(denied > 0, "no packet was ever denied");
+        SAMPLE.assert_covered(
             permitted_out > 0,
             "no permitted packet was ever forwarded: the permit direction is vacuous",
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             denied_by_acl > 0,
             "no denial ever came from the acl: the deny direction is being satisfied by stages \
              ahead of it, and would hold with the acl removed",
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             behind > 0,
             "no packet was ever sent behind an extension header, which is the shape this exists for",
         );
@@ -2843,6 +3008,7 @@ mod acl {
             }
         }
 
+        static SAMPLE: super::super::Sample = super::super::Sample::new(256);
         static DENIED_BY_ACL: AtomicU64 = AtomicU64::new(0);
         static OPENED: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
         static SHADOWED: AtomicU64 = AtomicU64::new(0);
@@ -2860,7 +3026,9 @@ mod acl {
             bolero::check!()
                 .with_max_len(MAX_INPUT_LEN)
                 .with_generator(Batch)
+                .with_iterations(SAMPLE.cases())
                 .for_each(|(nat, exposes, default_allow, rules, connections)| {
+                    SAMPLE.draw();
                     settled(|| {
                         let default_allow = *default_allow;
                         let acl = acl(rules, default_allow);
@@ -2943,22 +3111,22 @@ mod acl {
                  denied={reply_denied} denied by the acl={denied_by_acl}"
             );
             for (nat, count) in opened {
-                super::super::assert_covered(
+                SAMPLE.assert_covered(
                     count > 0,
                     &format!("no reply ever passed on a flow opened by a flow-scoped rule ({nat})"),
                 );
             }
-            super::super::assert_covered(
+            SAMPLE.assert_covered(
                 shadowed > 0,
                 "no reply ever passed under a default deny with a packet-scoped rule matching empty \
                  flags ahead of the flow-scoped rule: nothing tells the opening flags apart from no \
                  flags",
             );
-            super::super::assert_covered(
+            SAMPLE.assert_covered(
                 reply_denied > 0,
                 "no reply was ever denied: the reply direction is vacuous",
             );
-            super::super::assert_covered(
+            SAMPLE.assert_covered(
                 denied_by_acl > 0,
                 "no tcp segment was ever denied by the acl",
             );
@@ -3090,6 +3258,7 @@ mod port_forward {
 
     #[test]
     fn a_forwarded_port_reaches_the_host_behind_it() {
+        static SAMPLE: super::Sample = super::Sample::new(64);
         static FORWARDED: AtomicU64 = AtomicU64::new(0);
         static ANSWERED: AtomicU64 = AtomicU64::new(0);
         static REFUSED: AtomicU64 = AtomicU64::new(0);
@@ -3099,7 +3268,9 @@ mod port_forward {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Reaches)
+            .with_iterations(SAMPLE.cases())
             .for_each(|reaches| {
+                SAMPLE.draw();
                 settled(|| {
                     let Some(mut fabric) = Fabric::routed(&[expose()], None) else {
                         unreachable!("the port-forwarding fixture does not configure")
@@ -3164,9 +3335,9 @@ mod port_forward {
             REFUSED.load(Ordering::Relaxed),
         );
         eprintln!("forwarded={forwarded} answered={answered} refused={refused}");
-        super::assert_covered(forwarded > 0, "no packet was ever forwarded to the service");
-        super::assert_covered(answered > 0, "the service never answered");
-        super::assert_covered(
+        SAMPLE.assert_covered(forwarded > 0, "no packet was ever forwarded to the service");
+        SAMPLE.assert_covered(answered > 0, "the service never answered");
+        SAMPLE.assert_covered(
             refused > 0,
             "no packet was ever aimed past the declared range, so the negative half is vacuous",
         );
@@ -3245,6 +3416,7 @@ mod interleaved {
 
     #[test]
     fn interleaved_traffic_is_each_satisfied() {
+        static SAMPLE: super::Sample = super::Sample::new(64);
         static CHECKED: AtomicU64 = AtomicU64::new(0);
         static ABANDONED: AtomicU64 = AtomicU64::new(0);
         static MIXED_LOADS: AtomicU64 = AtomicU64::new(0);
@@ -3255,7 +3427,9 @@ mod interleaved {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Interleaving)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(senders, schedule)| {
+                SAMPLE.draw();
                 settled(|| {
                     let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
                         return;
@@ -3323,12 +3497,12 @@ mod interleaved {
             "checked={checked} abandoned={abandoned} mixed-loads={mixed_loads} \
              mixed-kinds={mixed_kinds}"
         );
-        super::assert_covered(checked > 0, "no sender ever completed its business");
-        super::assert_covered(
+        SAMPLE.assert_covered(checked > 0, "no sender ever completed its business");
+        SAMPLE.assert_covered(
             mixed_loads > 0,
             "no burst ever carried more than one sender's traffic, so nothing was interleaved",
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             mixed_kinds > 0,
             "no burst ever mixed a conversation with a blast, so the two shapes never met",
         );
@@ -3431,6 +3605,7 @@ mod offers {
 
     #[test]
     fn a_configuration_carries_everything_it_offers() {
+        static SAMPLE: super::Sample = super::Sample::new(64);
         static CHECKED: AtomicU64 = AtomicU64::new(0);
         static ABANDONED: AtomicU64 = AtomicU64::new(0);
         static DERIVED: AtomicU64 = AtomicU64::new(0);
@@ -3445,7 +3620,9 @@ mod offers {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Offered)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(vary, schedule)| {
+                SAMPLE.draw();
                 settled(|| {
                     let mut fabric = Fabric::routed_over_validated(
                         &overlay,
@@ -3495,18 +3672,18 @@ mod offers {
             "checked={checked} abandoned={abandoned} derived={derived} \
              (inbound {inbound}, outbound {outbound}) mixed-bursts={mixed}"
         );
-        super::assert_covered(derived > 0, "the configuration implied no traffic at all");
-        super::assert_covered(
+        SAMPLE.assert_covered(derived > 0, "the configuration implied no traffic at all");
+        SAMPLE.assert_covered(
             inbound > 0,
             "the derivation produced no inbound traffic, so the port-forwarding expose this \
              fixture carries was skipped rather than tested",
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             outbound > 0,
             "the derivation produced no outbound traffic, so the masquerade expose was skipped",
         );
-        super::assert_covered(checked > 0, "no derived sender ever completed its business");
-        super::assert_covered(
+        SAMPLE.assert_covered(checked > 0, "no derived sender ever completed its business");
+        SAMPLE.assert_covered(
             mixed > 0,
             "no burst ever carried more than one sender's traffic, so nothing was interleaved",
         );
@@ -3540,7 +3717,7 @@ mod generated {
     static AGED_MILLIS: AtomicU64 = AtomicU64::new(0);
     static SURVIVED: AtomicU64 = AtomicU64::new(0);
 
-    fn report_and_assert_coverage() {
+    fn report_and_assert_coverage(sample: &super::Sample) {
         let (checked, derived, mixed) = (
             CHECKED.load(Ordering::Relaxed),
             DERIVED.load(Ordering::Relaxed),
@@ -3559,41 +3736,41 @@ mod generated {
             BY_FLOW.load(Ordering::Relaxed),
             EXCEPTING.load(Ordering::Relaxed)
         );
-        super::assert_covered(peered > 0, "no generated configuration ever had a peering");
-        super::assert_covered(
+        sample.assert_covered(peered > 0, "no generated configuration ever had a peering");
+        sample.assert_covered(
             multi > 0,
             "no generated configuration ever had more than two vpcs, so this reached nothing the \
              two-vpc fixtures do not",
         );
-        super::assert_covered(
+        sample.assert_covered(
             derived > 0,
             "no generated configuration ever implied any traffic",
         );
-        super::assert_covered(checked > 0, "no derived sender ever completed its business");
-        super::assert_covered(
+        sample.assert_covered(checked > 0, "no derived sender ever completed its business");
+        sample.assert_covered(
             INBOUND.load(Ordering::Relaxed) > 0,
             "no generated configuration ever produced an inbound load, so a port-forwarding \
              expose was drawn into configurations and then carried no traffic at all",
         );
-        super::assert_covered(
+        sample.assert_covered(
             PERMITTING.load(Ordering::Relaxed) > 0,
             "no traffic was ever derived across a peering whose acl permits it, so every load here \
              ran with no acl in the way and a rule set that lowered to nothing would have gone \
              unnoticed",
         );
-        super::assert_covered(
+        sample.assert_covered(
             EXCEPTING.load(Ordering::Relaxed) > 0,
             "no traffic was ever derived across a peering whose acl excepts one expose from an \
              otherwise permitting rule, so nothing here depended on a lookup returning the \
              *first* rule that matches",
         );
-        super::assert_covered(
+        sample.assert_covered(
             BY_FLOW.load(Ordering::Relaxed) > 0,
             "no traffic was ever derived across a peering permitting only one direction, so no \
              reply here was authorised by the flow it belongs to and the reverse lookup in \
              `AclFilter::lookup` was never entered",
         );
-        super::assert_covered(
+        sample.assert_covered(
             mixed > 0,
             "no burst ever carried more than one sender's traffic, so nothing was interleaved",
         );
@@ -3701,11 +3878,14 @@ mod generated {
 
     #[test]
     fn a_generated_configuration_carries_its_own_traffic() {
+        static SAMPLE: super::Sample = super::Sample::new(512);
         let _eal = dpdk::test_support::start_eal();
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(FlowGuarded)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(ops, vary, schedule)| {
+                SAMPLE.draw();
                 settled(|| {
                     let draft = Sequence::fold(ops);
                     let overlay = draft
@@ -3769,7 +3949,7 @@ mod generated {
                 });
             });
 
-        report_and_assert_coverage();
+        report_and_assert_coverage(&SAMPLE);
     }
 
     pub(super) struct OverTime;
@@ -3795,13 +3975,16 @@ mod generated {
 
     #[test]
     fn time_passing_does_not_disturb_a_flow_inside_its_lifetime() {
+        static SAMPLE: super::Sample = super::Sample::new(64);
         let _eal = dpdk::test_support::start_eal();
         let clock = clock::virtual_time::Paused::new();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(OverTime)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(ops, vary, schedule, waits)| {
+                SAMPLE.draw();
                 let draft = Sequence::fold(ops);
                 let Ok(overlay) = draft.overlay() else {
                     return;
@@ -3850,11 +4033,11 @@ mod generated {
             SURVIVED.load(Ordering::Relaxed),
         );
         println!("aged={aged} cases, {millis}ms of virtual time, survived={survived} loads");
-        super::assert_covered(
+        SAMPLE.assert_covered(
             aged > 0,
             "the clock never moved, so this property checked the same thing as the one above it",
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             survived > 0,
             "no load ever made its claim with the clock moving under it, so nothing was aged",
         );
@@ -3862,6 +4045,7 @@ mod generated {
 
     #[test]
     fn a_configuration_carries_nothing_it_denies() {
+        static SAMPLE: super::Sample = super::Sample::new(1024);
         static SENT: AtomicU64 = AtomicU64::new(0);
         static BY_ACL: AtomicU64 = AtomicU64::new(0);
         static NARROWED: AtomicU64 = AtomicU64::new(0);
@@ -3871,7 +4055,9 @@ mod generated {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Generated)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(ops, vary, _schedule)| {
+                SAMPLE.draw();
                 settled(|| {
                     let draft = Sequence::fold(ops);
                     let validated = draft
@@ -3934,16 +4120,16 @@ mod generated {
              refused by a narrowed rule {})",
             NARROWED.load(Ordering::Relaxed)
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             sent > 0,
             "no refused traffic was ever derived, so this asserted nothing about any packet",
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             NARROWED.load(Ordering::Relaxed) > 0,
             "every refusal came from a peering denied outright, so nothing here was refused by a \
              rule naming part of a peering and the first-match order was not under test",
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             by_acl > 0,
             "no packet was ever dropped by the acl: the claim is being satisfied by stages ahead \
              of it and would hold with the acl removed",
@@ -3952,6 +4138,7 @@ mod generated {
 
     #[test]
     fn an_excluded_address_is_not_reachable() {
+        static SAMPLE: super::Sample = super::Sample::new(64);
         static AIMED: AtomicU64 = AtomicU64::new(0);
         static REFUSED: AtomicU64 = AtomicU64::new(0);
         let _eal = dpdk::test_support::start_eal();
@@ -3959,7 +4146,9 @@ mod generated {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Generated)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(ops, vary, _schedule)| settled(||     {
+                SAMPLE.draw();
                     let draft = Sequence::fold(ops);
                     let validated = draft
                         .overlay()
@@ -4002,13 +4191,13 @@ mod generated {
             REFUSED.load(Ordering::Relaxed),
         );
         eprintln!("excluded-addresses-aimed-at={aimed} (refused as unplaceable {refused})");
-        super::assert_covered(
+        SAMPLE.assert_covered(
             aimed > 0,
             "no packet was ever aimed at an excluded address, so this asserted nothing -- either \
              no generated expose carves a slice out of its advertised range, or none of those was \
              reachable from a peer",
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             refused > 0,
             "every excluded address was refused for some reason other than being unplaceable, so \
              the exclusion may not be what refused any of them",
@@ -4079,6 +4268,7 @@ mod burst {
 
     #[test]
     fn a_burst_of_one_flow_allocates_once() {
+        static SAMPLE: super::Sample = super::Sample::new(64);
         static CHECKED: AtomicU64 = AtomicU64::new(0);
 
         let _eal = dpdk::test_support::start_eal();
@@ -4086,7 +4276,9 @@ mod burst {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Burst)
+            .with_iterations(SAMPLE.cases())
             .for_each(|members| settled(|| {
+                SAMPLE.draw();
                 let m = members[0];
                 let src: IpAddr = format!("1.1.0.{}", m.host)
                     .parse()
@@ -4140,11 +4332,12 @@ mod burst {
 
         let checked = CHECKED.load(Ordering::Relaxed);
         eprintln!("single-flow-bursts={checked}");
-        super::assert_covered(checked > 0, "no burst of a single flow was ever delivered");
+        SAMPLE.assert_covered(checked > 0, "no burst of a single flow was ever delivered");
     }
 
     #[test]
     fn a_burst_of_one_translated_flow_allocates_once() {
+        static SAMPLE: super::Sample = super::Sample::new(64);
         static CHECKED: AtomicU64 = AtomicU64::new(0);
 
         fn two_sided() -> Option<config::external::overlay::Overlay> {
@@ -4175,7 +4368,9 @@ mod burst {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Burst)
+            .with_iterations(SAMPLE.cases())
             .for_each(|members| settled(|| {
+                SAMPLE.draw();
                 let m = members[0];
                 let src: IpAddr = format!("1.1.0.{}", m.host)
                     .parse()
@@ -4240,7 +4435,7 @@ mod burst {
 
         let checked = CHECKED.load(Ordering::Relaxed);
         eprintln!("translated-single-flow-bursts={checked}");
-        super::assert_covered(
+        SAMPLE.assert_covered(
             checked > 0,
             "no burst of a single masqueraded-and-translated flow was ever delivered",
         );
@@ -4248,6 +4443,7 @@ mod burst {
 
     #[test]
     fn a_burst_is_treated_the_same_as_one_packet_at_a_time() {
+        static SAMPLE: super::Sample = super::Sample::new(64);
         static COMPARED: AtomicU64 = AtomicU64::new(0);
         static DELIVERED: AtomicU64 = AtomicU64::new(0);
 
@@ -4256,7 +4452,9 @@ mod burst {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Burst)
+            .with_iterations(SAMPLE.cases())
             .for_each(|members| {
+                SAMPLE.draw();
                 settled(|| {
                     let packets = || {
                         members
@@ -4314,8 +4512,8 @@ mod burst {
             DELIVERED.load(Ordering::Relaxed),
         );
         eprintln!("compared={compared} delivered={delivered}");
-        super::assert_covered(compared > 0, "no burst was ever compared");
-        super::assert_covered(
+        SAMPLE.assert_covered(compared > 0, "no burst was ever compared");
+        SAMPLE.assert_covered(
             delivered > 0,
             "no packet of any burst ever reached the wire, so the comparison is between drops",
         );
@@ -4379,6 +4577,7 @@ mod destination {
 
     #[test]
     fn a_packet_leaves_for_the_vpc_that_exposes_its_destination() {
+        static SAMPLE: super::Sample = super::Sample::new(64);
         static REACHED: [AtomicU64; PEERS as usize] = [const { AtomicU64::new(0) }; PEERS as usize];
         static REFUSED: AtomicU64 = AtomicU64::new(0);
         let _eal = dpdk::test_support::start_eal();
@@ -4386,7 +4585,9 @@ mod destination {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Aims)
+            .with_iterations(SAMPLE.cases())
             .for_each(|aims| {
+                SAMPLE.draw();
                 settled(|| {
                     let vnis: Vec<_> = std::iter::once(vni(LOCAL_VNI))
                         .chain((0..PEERS).map(|n| vni(peer_vni(n))))
@@ -4451,9 +4652,9 @@ mod destination {
         eprintln!("reached-per-peer={reached:?} refused={refused}");
 
         for (n, count) in reached.iter().enumerate() {
-            super::assert_covered(*count > 0, &format!("peer {n} was never reached"));
+            SAMPLE.assert_covered(*count > 0, &format!("peer {n} was never reached"));
         }
-        super::assert_covered(
+        SAMPLE.assert_covered(
             refused > 0,
             "no packet was ever aimed outside every peering, so the negative half is vacuous",
         );
@@ -4669,6 +4870,7 @@ mod routed {
 
     #[test]
     fn a_tagged_shape_never_reaches_the_wire() {
+        static SAMPLE: super::Sample = super::Sample::new(16);
         static TAGGED: AtomicU64 = AtomicU64::new(0);
 
         let _eal = dpdk::test_support::start_eal();
@@ -4676,7 +4878,9 @@ mod routed {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(exposes, stacks)| {
+                SAMPLE.draw();
                 settled(|| {
                     let Some(mut fabric) = Fabric::routed(exposes, None) else {
                         return;
@@ -4720,11 +4924,12 @@ mod routed {
                 "the untagged control did not reach the wire, so no delivery was observable here"
             );
         });
-        super::assert_covered(tagged > 0, "no tagged shape was ever generated");
+        SAMPLE.assert_covered(tagged > 0, "no tagged shape was ever generated");
     }
 
     #[test]
     fn a_tunnelled_flow_comes_back_through_the_tunnel() {
+        static SAMPLE: super::Sample = super::Sample::new(64);
         static ROUND_TRIPPED: AtomicU64 = AtomicU64::new(0);
         static ABANDONED: AtomicU64 = AtomicU64::new(0);
 
@@ -4733,7 +4938,9 @@ mod routed {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Flows)
+            .with_iterations(SAMPLE.cases())
             .for_each(|flows| {
+                SAMPLE.draw();
                 settled(|| {
                     let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
                         return;
@@ -4763,7 +4970,7 @@ mod routed {
             "tunnelled-round-trips={round_tripped} abandoned={}",
             ABANDONED.load(Ordering::Relaxed)
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             round_tripped > 0,
             "no flow ever reached the wire, so no reply was ever checked to come back",
         );
@@ -5461,6 +5668,7 @@ mod icmp_error {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn an_icmp_error_quoting_a_live_flow_judges_that_flow_and_no_other() {
+        static SAMPLE: super::Sample = super::Sample::new(512);
         static HANDLED: AtomicU64 = AtomicU64::new(0);
         static REFUSED: AtomicU64 = AtomicU64::new(0);
         static TORE_DOWN: AtomicU64 = AtomicU64::new(0);
@@ -5470,7 +5678,9 @@ mod icmp_error {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_type::<Reported>()
+            .with_iterations(SAMPLE.cases())
             .for_each(|reported| {
+                SAMPLE.draw();
                 let Some(outcome) = run_case(reported) else {
                     return;
                 };
@@ -5502,14 +5712,14 @@ mod icmp_error {
             "handled={handled} refused={refused} tore-down={tore_down} spared={spared} \
              named-nobody={nobody}"
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             handled > 0,
             "all quotes were rejected before reaching the ICMP handler",
         );
-        super::assert_covered(refused > 0, "no quote exercised truncated-header rejection");
-        super::assert_covered(tore_down > 0, "no ICMP error exercised flow teardown");
-        super::assert_covered(spared > 0, "no ICMP error exercised flow survival");
-        super::assert_covered(nobody > 0, "no quoted tuple exercised a flow-table miss");
+        SAMPLE.assert_covered(refused > 0, "no quote exercised truncated-header rejection");
+        SAMPLE.assert_covered(tore_down > 0, "no ICMP error exercised flow teardown");
+        SAMPLE.assert_covered(spared > 0, "no ICMP error exercised flow survival");
+        SAMPLE.assert_covered(nobody > 0, "no quoted tuple exercised a flow-table miss");
     }
 }
 
@@ -5648,7 +5858,7 @@ mod model {
         ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
     )]
     fn two_workers_are_not_given_the_same_public_tuple() {
-        const CASES: usize = 64;
+        static SAMPLE: super::Sample = super::Sample::new(64);
 
         static ALLOCATED: AtomicU64 = AtomicU64::new(0);
         static BARE: AtomicU64 = AtomicU64::new(0);
@@ -5673,8 +5883,9 @@ mod model {
             .with_max_len(MAX_INPUT_LEN)
             .with_type()
             .cloned()
-            .with_iterations(CASES)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(flows, addr_bits, first_a, first_b): (u8, u8, u16, u16)| {
+                SAMPLE.draw();
                 let flows = u16::from(flows % 6) + 1;
                 let addr_bits = addr_bits % 3;
                 let (first_a, first_b) = (first_a % 20000 + 1000, first_b % 20000 + 30000);
@@ -5796,7 +6007,7 @@ mod model {
             UNBUILT.load(Ordering::Relaxed),
         );
         eprintln!("allocated={allocated} bare={bare} unbuilt={unbuilt}");
-        super::assert_covered(
+        SAMPLE.assert_covered(
             allocated > 0,
             &format!(
                 "no draw translated a single flow, so nothing was ever compared \
@@ -5811,7 +6022,7 @@ mod model {
         ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
     )]
     fn generated_traffic_survives_being_split_across_two_workers() {
-        const CASES: usize = 64;
+        static SAMPLE: super::Sample = super::Sample::new(64);
 
         static SPLIT: AtomicU64 = AtomicU64::new(0);
         static THIN: AtomicU64 = AtomicU64::new(0);
@@ -5832,8 +6043,9 @@ mod model {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(generated::Generated)
-            .with_iterations(CASES)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(ops, vary, schedule)| {
+                SAMPLE.draw();
                 let draft = Sequence::fold(ops);
                 let validated = draft
                     .overlay()
@@ -5901,7 +6113,7 @@ mod model {
 
         let (split, thin) = (SPLIT.load(Ordering::Relaxed), THIN.load(Ordering::Relaxed));
         eprintln!("split={split} thin={thin}");
-        super::assert_covered(
+        SAMPLE.assert_covered(
             split > 0,
             "no generated configuration provided traffic for both workers",
         );
@@ -5945,7 +6157,7 @@ mod model {
         ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
     )]
     fn a_reply_is_translated_by_a_worker_that_never_saw_the_request() {
-        const CASES: usize = 64;
+        static SAMPLE: super::Sample = super::Sample::new(64);
 
         static CLOSED: AtomicU64 = AtomicU64::new(0);
         static ABANDONED: AtomicU64 = AtomicU64::new(0);
@@ -5967,8 +6179,9 @@ mod model {
             .with_max_len(MAX_INPUT_LEN)
             .with_type()
             .cloned()
-            .with_iterations(CASES)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(flows, hosts): (u8, u8)| {
+                SAMPLE.draw();
                 let flows = flows % 4 + 1;
                 let hosts = hosts % 8;
                 let entering = handle.clone();
@@ -6080,7 +6293,7 @@ mod model {
             ABANDONED.load(Ordering::Relaxed),
         );
         eprintln!("closed={closed} abandoned={abandoned}");
-        super::assert_covered(
+        SAMPLE.assert_covered(
             closed > 0,
             "no conversation received a reply through the other worker",
         );
@@ -6121,7 +6334,7 @@ mod model {
         ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
     )]
     fn an_icmp_teardown_leaves_another_workers_flow_alone() {
-        const CASES: usize = 64;
+        static SAMPLE: super::Sample = super::Sample::new(64);
 
         static REPORTED: AtomicU64 = AtomicU64::new(0);
         static SURVIVED: AtomicU64 = AtomicU64::new(0);
@@ -6143,8 +6356,9 @@ mod model {
             .with_max_len(MAX_INPUT_LEN)
             .with_type()
             .cloned()
-            .with_iterations(CASES)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(spare, doomed_port, spared_port): (u8, u16, u16)| {
+                SAMPLE.draw();
                 let spare = spare % 8 + 2;
                 let doomed_port = doomed_port % 20000 + 1000;
                 let spared_port = spared_port % 20000 + 30000;
@@ -6306,7 +6520,7 @@ mod model {
             SURVIVED.load(Ordering::Relaxed),
         );
         eprintln!("reported={reported} survived={survived}");
-        super::assert_covered(reported > 0, "no icmp error ever reached the flow it named");
+        SAMPLE.assert_covered(reported > 0, "no icmp error ever reached the flow it named");
     }
 
     #[concurrency::model_test]
@@ -6315,7 +6529,7 @@ mod model {
         ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
     )]
     fn forwarding_survives_a_route_being_republished_underneath_it() {
-        const CASES: usize = 64;
+        static SAMPLE: super::Sample = super::Sample::new(64);
 
         static COMPLETED: AtomicU64 = AtomicU64::new(0);
         static PUBLISHED: AtomicU64 = AtomicU64::new(0);
@@ -6337,8 +6551,9 @@ mod model {
             .with_max_len(MAX_INPUT_LEN)
             .with_type()
             .cloned()
-            .with_iterations(CASES)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(flows, churn, host): (u8, u8, u8)| {
+                SAMPLE.draw();
                 let flows = flows % 4 + 1;
                 let churn = churn % 8 + 1;
                 let host = host % 8;
@@ -6427,7 +6642,7 @@ mod model {
             PUBLISHED.load(Ordering::Relaxed),
         );
         eprintln!("completed={completed} published={published}");
-        super::assert_covered(
+        SAMPLE.assert_covered(
             completed > 0 && published > 0,
             "expected both completed conversations and route publications",
         );
@@ -6439,7 +6654,7 @@ mod model {
         ignore = "DashMap shard locks can block Shuttle's scheduler thread"
     )]
     fn a_next_hop_that_moves_is_never_seen_half_moved() {
-        const CASES: usize = 64;
+        static SAMPLE: super::Sample = super::Sample::new(64);
 
         static FRESH: AtomicU64 = AtomicU64::new(0);
         static STALE: AtomicU64 = AtomicU64::new(0);
@@ -6498,8 +6713,9 @@ mod model {
             .with_max_len(MAX_INPUT_LEN)
             .with_type()
             .cloned()
-            .with_iterations(CASES)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(churn, per_round, host): (u8, u8, u8)| {
+                SAMPLE.draw();
                 let churn = churn % 4 + 1;
                 let per_round = per_round % 3 + 1;
                 let host = host % 8 + 1;
@@ -6651,7 +6867,7 @@ mod model {
 
         let (fresh, stale) = (FRESH.load(Ordering::Relaxed), STALE.load(Ordering::Relaxed));
         eprintln!("fresh={fresh} stale={stale}");
-        super::assert_covered(
+        SAMPLE.assert_covered(
             fresh > 0,
             "no probe used the next hop published in its round; update visibility was not \
              exercised",
@@ -6668,7 +6884,7 @@ mod model {
         ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
     )]
     fn re_enacting_a_configuration_under_load_disturbs_nothing() {
-        const CASES: usize = 64;
+        static SAMPLE: super::Sample = super::Sample::new(64);
 
         const APPLIES: u8 = 4;
 
@@ -6692,8 +6908,9 @@ mod model {
             .with_max_len(MAX_INPUT_LEN)
             .with_type()
             .cloned()
-            .with_iterations(CASES)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(flows, host): (u8, u8)| {
+                SAMPLE.draw();
                 let flows = flows % 4 + 1;
                 let src_host = host % 8;
                 let handle = handle.clone();
@@ -6787,7 +7004,7 @@ mod model {
             ENACTED.load(Ordering::Relaxed),
         );
         eprintln!("completed={completed} enacted={enacted}");
-        super::assert_covered(
+        SAMPLE.assert_covered(
             completed > 0 && enacted > 0,
             "either no conversation completed or no configuration was enacted, so nothing was raced",
         );
@@ -6804,7 +7021,7 @@ mod model {
         ignore = "the DPDK EAL cannot be initialised under a model checker; see dpdk::sync"
     )]
     fn the_cli_can_be_read_while_the_dataplane_works() {
-        const CASES: usize = 64;
+        static SAMPLE: super::Sample = super::Sample::new(64);
 
         const APPLIES: u8 = 3;
 
@@ -6828,8 +7045,9 @@ mod model {
             .with_max_len(MAX_INPUT_LEN)
             .with_type()
             .cloned()
-            .with_iterations(CASES)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(flows, host): (u8, u8)| {
+                SAMPLE.draw();
                 let flows = flows % 4 + 1;
                 let src_host = host % 8;
                 let handle = handle.clone();
@@ -6954,7 +7172,7 @@ mod model {
             ANSWERED.load(Ordering::Relaxed),
         );
         eprintln!("completed={completed} answered={answered}");
-        super::assert_covered(
+        SAMPLE.assert_covered(
             completed > 0 && answered > 0,
             "either no conversation completed or no cli command was answered, so nothing was raced",
         );
@@ -6967,7 +7185,7 @@ mod model {
                   park the single thread shuttle schedules its green threads onto"
     )]
     fn a_configuration_change_leaves_traffic_outside_its_footprint_alone() {
-        const CASES: usize = 64;
+        static SAMPLE: super::Sample = super::Sample::new(64);
         const ROUNDS: u8 = 3;
 
         static FRAMED: AtomicU64 = AtomicU64::new(0);
@@ -7011,8 +7229,9 @@ mod model {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(generated::Generated)
-            .with_iterations(CASES)
+            .with_iterations(SAMPLE.cases())
             .for_each(|(ops, vary, _schedule)| {
+                SAMPLE.draw();
                 let Some((change, built)) = ops.split_last() else {
                     BARREN.fetch_add(1, Ordering::Relaxed);
                     return;
@@ -7178,16 +7397,16 @@ mod model {
             "carried while the change was being enacted: {raced}, of which disturbed: {}",
             DISTURBED.load(Ordering::Relaxed)
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             framed > 0,
             "no generated change left traffic for two workers outside its write set",
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             raced > 0,
             "no traffic overlapped the configuration change; only unchanged applies were \
              exercised (see re_enacting_a_configuration_under_load_disturbs_nothing)",
         );
-        super::assert_covered(
+        SAMPLE.assert_covered(
             framed_out > 0,
             "no traffic fell inside the write set, so the footprint filter was not exercised",
         );
