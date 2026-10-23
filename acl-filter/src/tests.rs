@@ -1034,9 +1034,9 @@ fn only_flow_scoped_allow_rules_keep_flow_tracking() {
 mod end_to_end {
     use super::{
         Acl, AclAction, AclFilterContext, AclFilterContextWriter, AclProtoMatch, AclScope,
-        build_tcp_packet_with_flags, build_udp_packet, directional_rule, expose, expose_masquerade,
-        expose_static, is_allowed, is_denied, overlay, packet, pattern, peering, rule,
-        syn_no_ack_pattern, v4, vpcd,
+        AclTcpFlagsMatch, build_tcp_packet_with_flags, build_udp_packet, directional_rule, expose,
+        expose_masquerade, expose_static, is_allowed, is_denied, overlay, packet, pattern, peering,
+        rule, syn_no_ack_pattern, tcp_flags_pattern, v4, vpcd,
     };
     use crate::AclFilter;
 
@@ -1433,6 +1433,101 @@ mod end_to_end {
         let overlay = build_overlay_syn_no_ack(vec![expose_static("192.168.0.0/24", "5.6.7.0/24")]);
         let (mut pipeline, _flow_table, _handles) = setup_pipeline(&overlay);
         connections_open_from_one_side_only(&mut pipeline, v4("5.6.7.8"), v4("192.168.0.8"));
+    }
+
+    // vpc1 (10.0.0.0/24) <-> vpc2 (20.0.0.0/24), with default deny. A packet-scoped rule allowing
+    // TCP segments matching `flags` comes before a flow-scoped rule allowing all TCP from vpc1 to
+    // vpc2.
+    fn build_overlay_mixed_scopes(flags: AclTcpFlagsMatch) -> ValidatedOverlay {
+        let acl = Acl::new(
+            AclAction::Deny,
+            vec![
+                rule(
+                    "allow-tcp-packet",
+                    AclAction::Allow,
+                    AclScope::Packet,
+                    tcp_flags_pattern(flags),
+                ),
+                rule(
+                    "allow-tcp-flow",
+                    AclAction::Allow,
+                    AclScope::Flow,
+                    pattern(&[], &[], AclProtoMatch::tcp()),
+                ),
+            ],
+        );
+        overlay(
+            &[("vpc1", 100), ("vpc2", 200)],
+            vec![peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose("10.0.0.0/24")]),
+                ("vpc2", vec![expose("20.0.0.0/24")]),
+                Some(acl),
+            )],
+        )
+    }
+
+    // vpc1 opens a connection with a segment carrying `opening` flags, which the flow-scoped rule
+    // allows, and vpc2 replies with `reply` flags. The replies must pass: classifying the opening
+    // segment again for them must not select the packet-scoped rule instead.
+    fn replies_pass_with_mixed_scopes(flags: AclTcpFlagsMatch, opening: TcpFlags, reply: TcpFlags) {
+        let overlay = build_overlay_mixed_scopes(flags);
+        let (mut pipeline, _flow_table, _handles) = setup_pipeline(&overlay);
+        let (client, server) = (v4("10.0.0.5"), v4("20.0.0.5"));
+        let tcp = |vni, src, dst, sport, dport, flags| {
+            packet(
+                vpcd(vni),
+                None,
+                build_tcp_packet_with_flags(src, dst, sport, dport, flags),
+            )
+        };
+
+        let syn = tcp(100, client, server, 1234, 80, opening);
+        assert!(
+            is_allowed(&process(&mut pipeline, syn)),
+            "vpc1's opening segment was dropped"
+        );
+        let syn_ack = tcp(200, server, client, 80, 1234, reply);
+        assert!(
+            is_allowed(&process(&mut pipeline, syn_ack)),
+            "vpc2's reply to the opening segment was dropped"
+        );
+        let ack = tcp(100, client, server, 1234, 80, TcpFlags::ACK);
+        assert!(
+            is_allowed(&process(&mut pipeline, ack)),
+            "vpc1's ACK was dropped"
+        );
+        let data = tcp(200, server, client, 80, 1234, TcpFlags::PSH | TcpFlags::ACK);
+        assert!(
+            is_allowed(&process(&mut pipeline, data)),
+            "vpc2's data segment was dropped"
+        );
+    }
+
+    // The packet-scoped rule matches segments with SYN clear: it does not match vpc1's SYN, but it
+    // would match it with empty flags
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn replies_pass_after_packet_scoped_rule_requiring_syn_clear() {
+        replies_pass_with_mixed_scopes(
+            AclTcpFlagsMatch::ANY.require(TcpFlags::SYN, false),
+            TcpFlags::SYN,
+            TcpFlags::SYN | TcpFlags::ACK,
+        );
+    }
+
+    // The packet-scoped rule matches segments with ECE clear: it does not match vpc1's ECN-setup
+    // SYN (see RFC 3168), but it would match it with empty flags, or with SYN alone
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn replies_pass_after_packet_scoped_rule_requiring_ece_clear() {
+        replies_pass_with_mixed_scopes(
+            AclTcpFlagsMatch::ANY.require(TcpFlags::ECE, false),
+            TcpFlags::SYN | TcpFlags::ECE | TcpFlags::CWR,
+            TcpFlags::SYN | TcpFlags::ACK | TcpFlags::ECE,
+        );
     }
 
     // Apply `overlay` as generation `genid`, as the management plane does, optionally migrating the

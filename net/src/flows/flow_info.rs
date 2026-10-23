@@ -6,6 +6,7 @@
 use crate::packet::VpcDiscriminant;
 use bitflags::bitflags;
 use concurrency::sync::Arc;
+use concurrency::sync::OnceLock;
 use concurrency::sync::RwLock;
 use concurrency::sync::Weak;
 use concurrency::sync::atomic::{AtomicI64, AtomicU8, Ordering};
@@ -17,6 +18,7 @@ use tracing::debug;
 
 use super::{AtomicConnState, AtomicInstant, FlowInfoItem};
 use crate::FlowKey;
+use crate::tcp::TcpFlags;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FlowInfoError {
@@ -192,6 +194,8 @@ pub struct FlowInfo {
     status: AtomicFlowStatus,
     flags: FlowInfoFlags,
     conn_state: Option<AtomicConnState>,
+    // TCP flags of the segment that created the flow, see [`FlowInfo::opening_tcp_flags`]
+    opening_tcp_flags: OnceLock<TcpFlags>,
     pub locked: RwLock<FlowInfoLocked>,
     pub related: Option<Weak<FlowInfo>>,
     pub token: CancellationToken,
@@ -210,6 +214,7 @@ impl FlowInfo {
             status: AtomicFlowStatus::from(FlowStatus::Detached),
             flags: FlowInfoFlags::default(),
             conn_state: None,
+            opening_tcp_flags: OnceLock::new(),
             locked: RwLock::new(FlowInfoLocked::default()),
             related: None,
             token: CancellationToken::new(),
@@ -249,6 +254,29 @@ impl FlowInfo {
     #[must_use]
     pub fn flowkey(&self) -> &FlowKey {
         &self.flowkey
+    }
+
+    /// The TCP flags of the segment that created the flow, if it is a TCP flow and they were
+    /// recorded.
+    ///
+    /// The flow key holds no TCP flags, but some consumers need them to look at the packet that
+    /// opened the flow again. In particular, the ACL stage classifies again the packet that opened
+    /// a flow, rebuilt from the flow key, to tell whether a flow-scoped rule allows replies on this
+    /// flow. ACL rules can match on TCP flags, so classifying the opening packet with other flags
+    /// than its own could select another rule.
+    #[must_use]
+    pub fn opening_tcp_flags(&self) -> Option<TcpFlags> {
+        self.opening_tcp_flags.get().copied()
+    }
+
+    /// Record the TCP flags of the segment that created the flow, see
+    /// [`FlowInfo::opening_tcp_flags`].
+    ///
+    /// Call this at most once per flow, before inserting the flow into a flow table, so that all
+    /// lookups see the flags.
+    pub fn set_opening_tcp_flags(&self, flags: TcpFlags) {
+        let result = self.opening_tcp_flags.set(flags);
+        debug_assert!(result.is_ok(), "opening TCP flags set twice for a flow");
     }
 
     #[must_use]

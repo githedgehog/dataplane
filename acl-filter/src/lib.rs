@@ -73,6 +73,10 @@ impl AclFilter {
             return;
         }
 
+        // If this packet opens a flow, the flow keeps the flags it was classified with, to classify
+        // it again for replies, see PacketSummary::reverse_summary()
+        packet.meta_mut().tcp_flags = summary.tcp_flags;
+
         // The flow filter requests flow tracking for all packets of a peering with flow-scoped
         // rules. Only flows opened by such a rule need it: we never use the others to let replies
         // through, so they would only take room in the flow table. Packets on a valid flow keep
@@ -259,9 +263,11 @@ impl PacketSummary {
             dst_ip: flow_key.dst_ip(),
             proto: flow_key.proto(),
             ports: flow_key.ports(),
-            // The flow key has no flags. This is fine as long as only packet-scoped rules match
-            // flags, given that this summary is only used to look for a flow-scoped rule.
-            tcp_flags: None,
+            // The flow key has no TCP flags, but rules may match on them: use the flags of the
+            // packet that opened the flow, so that this lookup selects the same rule as that packet
+            // did. Without them, as for flows opened by packets that did not go through this stage,
+            // earlier rules matching empty flags could shadow the flow-scoped rule.
+            tcp_flags: related.opening_tcp_flags(),
         })
     }
 }

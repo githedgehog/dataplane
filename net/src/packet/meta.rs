@@ -8,6 +8,7 @@ use crate::flows::{FlowInfo, FlowInfoFlags};
 use crate::interface::InterfaceIndex;
 use crate::ip::dscp::Dscp;
 use crate::ip::ecn::Ecn;
+use crate::tcp::TcpFlags;
 use crate::vxlan::Vni;
 
 use bitflags::bitflags;
@@ -156,6 +157,7 @@ pub struct PacketMeta {
     pub dscp: Option<Dscp>,               /* Dscp to preserve for egress traffic */
     pub ecn: Option<Ecn>,                 /* Ecn to preserve for egress traffic */
     pub flow_key: Option<Box<FlowKey>>,   /* the flow key to use for NAT flow creation */
+    pub tcp_flags: Option<TcpFlags>,      /* TCP flags seen by the ACL stage, for new flows */
     #[cfg(feature = "test_meta")]
     pub test: Option<Box<TestMeta>>,
 }
