@@ -144,6 +144,25 @@ Running the test suite via `cargo test` or `cargo nextest run` will run the fuzz
 - Coverage information and sanitizers are not enabled.
 - A full fuzzing engine is not set up, so evolutionary feedback is not provided when the tests are run this way,
 
+### How long each property runs
+
+A native `just test` uses each property's duration or iteration count; Bolero defaults to one second.
+Packet-processor coverage checks request fixed sample sizes with `.with_iterations`.
+
+`BOLERO_RANDOM_TEST_TIME_MS` overrides the duration but retains iteration limits.
+Sanitized, emulated and feature-gated runs default to a four-second cap.
+CI also sets this cap for deep runs (push, merge queue, manual dispatch, `ci:+merge-ready` or `ci:+fuzz`).
+To set a longer time cap locally:
+
+```bash
+BOLERO_RANDOM_TEST_TIME_MS=10000 just test
+```
+
+Incomplete samples may skip coverage assertions only when a valid time cap or a smaller
+`BOLERO_RANDOM_ITERATIONS` override is configured.
+Without either override, missing coverage fails even if generation rejected inputs.
+Full samples always enforce coverage.
+
 Using [libfuzzer](https://llvm.org/docs/LibFuzzer.html) or [afl](https://github.com/AFLplusplus/AFLplusplus) can
 change this.
 

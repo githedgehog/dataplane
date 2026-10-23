@@ -16,12 +16,8 @@ jobs := "1"
 
 cores := "10"
 
-# Nextest cannot see that limit either: `num-cpus` reads the host's 32, so it ran 32 test
-# processes at once in a cgroup with ten CPUs and 20 GiB. That starved CPU-bound tests -- a
-# time-boxed bolero property got a fifteenth of a core and too few cases for its coverage
-# assertions (see `Sample` in `dataplane/src/packet_processor/fuzz.rs`) -- and, with
-# coverage-instrumented binaries, added to the memory that took the runner down. Every test job
-# runs through this module, so the nested `just` invocations inherit it.
+# Limit nextest to the cgroup's CPU budget; host core detection would oversubscribe it.
+# Export this limit to nested `just` invocations.
 export NEXTEST_TEST_THREADS := cores
 
 # What a ThinLTO profile may use, which is not the same question as how many cores there are.
