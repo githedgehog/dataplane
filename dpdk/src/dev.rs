@@ -312,6 +312,16 @@ pub enum DevConfigError {
         /// The `RTE_ETH_RSS_*` bits the device advertises.
         supported: u64,
     },
+    /// More queues were requested than the device has.
+    #[error("{requested} {direction} queues were requested but the device has {max}")]
+    TooManyQueues {
+        /// `"rx"` or `"tx"`.
+        direction: &'static str,
+        /// Requested queue count, including hairpins.
+        requested: u16,
+        /// The device's advertised maximum.
+        max: u16,
+    },
 }
 
 impl DevConfig {
@@ -371,6 +381,13 @@ impl DevConfig {
     /// Configure the port and return the configuration it must retain.
     /// DPDK keeps a pointer to this copy's RSS key until the port closes.
     fn configure(&self, dev: &DevInfo<'_>) -> Result<DevConfig, DevConfigError> {
+        // Saturate to reject oversized requests without overflowing.
+        check_queue_counts(
+            self.num_rx_queues.saturating_add(self.num_hairpin_queues),
+            self.num_tx_queues.saturating_add(self.num_hairpin_queues),
+            dev.max_rx_queues(),
+            dev.max_tx_queues(),
+        )?;
         let mtu = self.resolve_mtu(dev)?;
         let mut config = self.clone();
         let rss_conf = config.prepare_rss(dev)?;
@@ -1024,6 +1041,18 @@ impl DevInfo<'_> {
     #[must_use]
     pub fn reta_size(&self) -> u16 {
         self.inner.reta_size
+    }
+
+    /// Maximum supported RX queue count.
+    #[must_use]
+    pub fn max_rx_queues(&self) -> u16 {
+        self.inner.max_rx_queues
+    }
+
+    /// Maximum supported TX queue count.
+    #[must_use]
+    pub fn max_tx_queues(&self) -> u16 {
+        self.inner.max_tx_queues
     }
 }
 
@@ -1739,6 +1768,20 @@ pub struct DevCloseError {
     pub error: ErrorCode,
 }
 
+/// Report queue limits before the driver returns a generic `EINVAL`.
+fn check_queue_counts(rx: u16, tx: u16, max_rx: u16, max_tx: u16) -> Result<(), DevConfigError> {
+    for (direction, requested, max) in [("rx", rx, max_rx), ("tx", tx, max_tx)] {
+        if requested > max {
+            return Err(DevConfigError::TooManyQueues {
+                direction,
+                requested,
+                max,
+            });
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SocketIdLookupError {
     #[error("Invalid port ID")]
@@ -1788,5 +1831,45 @@ mod rss_conf_tests {
     #[test]
     fn an_empty_intersection_is_not_a_configuration() {
         assert_eq!(RssConf::from_hash_types(RTE_ETH_RSS_ESP as u64), None);
+    }
+}
+
+#[cfg(test)]
+mod queue_count_tests {
+    use super::*;
+
+    /// What the e1000 (em) PMD advertises.
+    const EM_MAX: u16 = 2;
+
+    #[test]
+    fn as_many_queues_as_the_device_has_are_fine() {
+        assert!(check_queue_counts(EM_MAX, EM_MAX, EM_MAX, EM_MAX).is_ok());
+    }
+
+    #[test]
+    fn one_queue_too_many_is_refused_by_direction() {
+        let err = check_queue_counts(EM_MAX, EM_MAX + 1, EM_MAX, EM_MAX).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DevConfigError::TooManyQueues {
+                    direction: "tx",
+                    requested: 3,
+                    max: EM_MAX,
+                }
+            ),
+            "{err:?}"
+        );
+        let err = check_queue_counts(EM_MAX + 1, 1, EM_MAX, EM_MAX).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DevConfigError::TooManyQueues {
+                    direction: "rx",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
     }
 }

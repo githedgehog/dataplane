@@ -11,8 +11,8 @@
 
 use concurrency::thread;
 use dpdk::dev::{
-    Configured, Dev, DevConfig, DevIndex, DevInfo, PortClaim, RssConf, RxOffload, Started,
-    TxOffloadConfig,
+    Configured, Dev, DevConfig, DevConfigError, DevIndex, DevInfo, PortClaim, RssConf, RxOffload,
+    Started, TxOffloadConfig,
 };
 use dpdk::eal::Eal;
 use dpdk::mem::{Pool, PoolConfig, PoolParams};
@@ -68,6 +68,57 @@ fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
         );
     }
     rss
+}
+
+/// Advertised queue limits and the supported worker count.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{port} has {max_rx} rx and {max_tx} tx queues, but {num_workers} worker(s) need {rx} and \
+     {tx}: a queue pair per worker and one for the control worker. {}",
+    if *fit == 0 {
+        "It cannot carry even one worker.".to_string()
+    } else {
+        format!("This port carries at most {fit} worker(s) (--num-workers).")
+    }
+)]
+struct QueueShortfall {
+    port: String,
+    num_workers: u16,
+    rx: u16,
+    tx: u16,
+    max_rx: u16,
+    max_tx: u16,
+    /// Maximum supported worker count.
+    fit: u16,
+}
+
+impl QueueShortfall {
+    /// Requires one RX/TX queue pair per worker in `config`.
+    fn new(port: String, num_workers: u16, config: &DevConfig, max_rx: u16, max_tx: u16) -> Self {
+        let rx = config.num_rx_queues + config.num_hairpin_queues;
+        let tx = config.num_tx_queues + config.num_hairpin_queues;
+        // Control and hairpin queues do not scale with worker count.
+        let (fixed_rx, fixed_tx) = (
+            rx.saturating_sub(num_workers),
+            tx.saturating_sub(num_workers),
+        );
+        Self {
+            port,
+            num_workers,
+            rx,
+            tx,
+            max_rx,
+            max_tx,
+            fit: max_rx
+                .saturating_sub(fixed_rx)
+                .min(max_tx.saturating_sub(fixed_tx)),
+        }
+    }
+}
+
+/// RX/TX counts, including control TX and optional control RX.
+fn queue_counts(num_workers: u16, control_rx: bool) -> (u16, u16) {
+    (num_workers + u16::from(control_rx), num_workers + 1)
 }
 
 /// The device behind a port, `<bus address> (<driver>)`.
@@ -375,11 +426,10 @@ impl<'eal> Port<'eal> {
             );
         }
 
-        // Each worker receives its own RX/TX queue pair on every port; the control worker gets the
-        // next pair.
+        let (rx, tx) = queue_counts(num_workers, control_rx);
         let config = DevConfig {
-            num_rx_queues: num_workers + u16::from(control_rx),
-            num_tx_queues: num_workers + 1,
+            num_rx_queues: rx,
+            num_tx_queues: tx,
             num_hairpin_queues: 0,
             // The pipeline handles checksums in software and requires uncoalesced packets.
             // RSS spreads queues without `RSS_HASH`, which only copies the hash into mbufs, and
@@ -391,9 +441,20 @@ impl<'eal> Port<'eal> {
             rss,
         };
 
-        let mut dev = config
-            .apply(port)
-            .map_err(|e| DriverError::PortSetup(e.to_string()))?;
+        let (max_rx, max_tx) = (info.max_rx_queues(), info.max_tx_queues());
+        let mut dev = config.apply(port).map_err(|e| match e.error {
+            DevConfigError::TooManyQueues { .. } => DriverError::PortSetup(
+                QueueShortfall::new(
+                    format!("port {index} ({name})"),
+                    num_workers,
+                    &config,
+                    max_rx,
+                    max_tx,
+                )
+                .to_string(),
+            ),
+            error => DriverError::PortSetup(error.to_string()),
+        })?;
 
         // Ports without a kernel netdev report ifindex 0.
         let if_index = InterfaceIndex::try_new(dev.info().if_index()).ok();
@@ -731,7 +792,52 @@ pub(crate) fn deal_queues<'p, 'eal>(
 
 #[cfg(test)]
 mod tests {
-    use super::fit_descriptors;
+    use dpdk::dev::{DevConfig, RxOffload, TxOffloadConfig};
+
+    use super::{QueueShortfall, fit_descriptors, queue_counts};
+
+    fn shortfall(
+        num_workers: u16,
+        control_rx: bool,
+        hairpins: u16,
+        max_rx: u16,
+        max_tx: u16,
+    ) -> QueueShortfall {
+        let (rx, tx) = queue_counts(num_workers, control_rx);
+        let config = DevConfig {
+            num_rx_queues: rx,
+            num_tx_queues: tx,
+            num_hairpin_queues: hairpins,
+            rx_offloads: RxOffload::NONE,
+            tx_offloads: TxOffloadConfig::none(),
+            mtu: None,
+            rss: None,
+        };
+        QueueShortfall::new("port1".into(), num_workers, &config, max_rx, max_tx)
+    }
+
+    #[test]
+    fn two_queue_pairs_fit_one_worker() {
+        let short = shortfall(8, true, 0, 2, 2);
+        assert_eq!((short.rx, short.tx, short.fit), (9, 9, 1));
+    }
+
+    #[test]
+    fn without_a_control_rx_queue_the_tx_queues_decide() {
+        let short = shortfall(8, false, 0, 4, 4);
+        assert_eq!((short.rx, short.tx, short.fit), (8, 9, 3));
+    }
+
+    #[test]
+    fn a_single_queue_device_fits_no_worker() {
+        assert_eq!(shortfall(1, true, 0, 1, 1).fit, 0);
+    }
+
+    #[test]
+    fn hairpin_queues_count_against_the_fit() {
+        let short = shortfall(8, true, 2, 8, 8);
+        assert_eq!((short.rx, short.tx, short.fit), (11, 11, 5));
+    }
 
     #[test]
     fn a_fitting_count_is_kept() {

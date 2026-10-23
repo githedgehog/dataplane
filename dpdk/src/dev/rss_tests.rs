@@ -9,6 +9,8 @@ fn info(key_size: u8, supports_rss: bool) -> DevInfo<'static> {
         inner: rte_eth_dev_info {
             min_mtu: 68,
             max_mtu: 9000,
+            max_rx_queues: 1,
+            max_tx_queues: 1,
             hash_key_size: key_size,
             flow_type_rss_offloads: u64::from(supports_rss),
             ..Default::default()
