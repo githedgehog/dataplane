@@ -5,12 +5,11 @@
 
 mod flow_data;
 mod flows;
-pub(crate) mod fuzz;
 pub mod natrw;
 pub mod nf;
-pub(crate) mod probe;
 pub mod setup;
-pub(crate) mod test;
+#[cfg(test)]
+pub(crate) mod tests;
 
 // re-exports
 pub(crate) use flow_data::StaticNatFlowData;
@@ -18,6 +17,8 @@ pub use flows::invalidate_stale_static_nat_flows;
 pub use natrw::NatTablesReaderFactory;
 pub(crate) use nf::translate_flow_key;
 pub use nf::{NatTablesWriter, StaticNat};
+#[cfg(test)]
+pub(crate) use tests::probe;
 
 use tracectl::trace_target;
 trace_target!("static-nat", LevelFilter::INFO, &["nat", "pipeline"]);

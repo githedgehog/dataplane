@@ -20,8 +20,8 @@
 #![cfg(test)]
 #![cfg(not(feature = "loom"))]
 
+use super::probe::{destination_of, masquerade_expose, outbound_probe, source_of};
 use crate::Masquerade;
-use crate::masquerade::probe::{destination_of, masquerade_expose, outbound_probe, source_of};
 use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use crate::static_nat::probe::{build, vni};
 use bolero::TypeGenerator;

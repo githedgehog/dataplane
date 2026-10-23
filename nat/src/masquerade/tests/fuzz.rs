@@ -3,10 +3,8 @@
 
 #![cfg(test)]
 
+use super::probe::{Arrival, Fabric, Probe, ProbeSpec, Stray, destination_of, run, source_of};
 use crate::Masquerade;
-use crate::masquerade::probe::{
-    Arrival, Fabric, Probe, ProbeSpec, Stray, destination_of, run, source_of,
-};
 use bolero::{Driver, TypeGenerator, ValueGenerator};
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
 use config::external::overlay::vpcpeering::contract::MasqueradeExposes;

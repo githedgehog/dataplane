@@ -5,14 +5,12 @@
 
 mod flow_state;
 mod flows;
-mod fuzz;
 pub(crate) mod icmp_handling;
 mod nf;
 mod packet;
 mod portfwtable;
-mod probe;
-mod test;
-mod test_expiry;
+#[cfg(test)]
+mod tests;
 
 // re-exports
 pub use flow_state::PortFwState;
@@ -24,6 +22,8 @@ pub use portfwtable::access::{
 pub use portfwtable::objects::{PortFwEntry, PortFwKey, PortFwTable};
 pub use portfwtable::portrange::PortRange;
 pub use portfwtable::setup::build_port_forwarding_configuration;
+#[cfg(test)]
+pub(crate) use tests::probe;
 
 use tracectl::trace_target;
 trace_target!("port-forwarding", LevelFilter::INFO, &["nat", "pipeline"]);

@@ -8,12 +8,12 @@
 
 #![cfg(test)]
 
-use super::alloc::{PoolSet, map_address};
-use super::mapping::{MappingKey, MappingScope};
-use super::port_alloc::AllocatedPort;
-use super::region::AddrInterval;
-use super::setup::{PoolSpec, narrow_budget_specs, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
+use crate::masquerade::apalloc::alloc::{PoolSet, map_address};
+use crate::masquerade::apalloc::mapping::{MappingKey, MappingScope};
+use crate::masquerade::apalloc::port_alloc::AllocatedPort;
+use crate::masquerade::apalloc::region::AddrInterval;
+use crate::masquerade::apalloc::setup::{PoolSpec, narrow_budget_specs, pool_sets_for_specs};
 use crate::port::NatPort;
 use bolero::{Driver, TypeGenerator};
 use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};

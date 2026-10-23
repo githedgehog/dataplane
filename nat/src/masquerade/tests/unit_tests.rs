@@ -57,7 +57,7 @@ use tracing::debug;
 use tracing_test::traced_test;
 
 const ONE_MINUTE: Duration = Duration::from_mins(1);
-use crate::static_nat::test::build_gwconfig_from_overlay;
+use crate::static_nat::tests::build_gwconfig_from_overlay;
 
 fn test_case(msg: &str) {
     println!("{}", Frame(msg));
