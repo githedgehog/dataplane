@@ -9,11 +9,9 @@ use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 
 mod display;
-#[cfg(test)]
-pub(crate) mod fuzz;
 mod tables;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use tables::FlowFilterContext;
 use tables::PRODUCTION_BACKEND;

@@ -19,10 +19,6 @@ trace_target!("flow-filter", LevelFilter::INFO, &["pipeline"]);
 
 mod context;
 #[cfg(test)]
-mod fuzz_gen;
-#[cfg(test)]
-mod test_utils;
-#[cfg(test)]
 mod tests;
 
 pub use context::{
