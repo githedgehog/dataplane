@@ -227,12 +227,55 @@ fn virtiofsd_args(
 
 /// Polls the filesystem until `path` exists, returning an error on timeout
 /// or I/O failure.
+///
+/// The socket file appears at `bind(2)`, before the server calls
+/// `listen(2)`, so existence does not mean a connect will succeed.  Use
+/// [`connect_to_socket`] for a socket this process connects to itself;
+/// this function is for one that only a third party (the hypervisor)
+/// connects to, such as a vhost-user socket, where a probing connection
+/// would take the daemon's only client slot.
 pub(crate) async fn wait_for_socket(path: impl AsRef<Path>) -> Result<(), VmError> {
     let path = path.as_ref();
     for _ in 0..SOCKET_POLL_MAX_ATTEMPTS {
         match tokio::fs::try_exists(path).await {
             Ok(true) => return Ok(()),
             Ok(false) => {
+                tokio::time::sleep(SOCKET_POLL_INTERVAL).await;
+            }
+            Err(err) => {
+                return Err(VmError::SocketPoll {
+                    path: path.to_path_buf(),
+                    source: err,
+                });
+            }
+        }
+    }
+    Err(VmError::SocketTimeout {
+        path: path.to_path_buf(),
+        timeout: SOCKET_POLL_INTERVAL.saturating_mul(SOCKET_POLL_MAX_ATTEMPTS),
+    })
+}
+
+/// Connects to the Unix socket at `path`, retrying until its server is
+/// listening.
+///
+/// A missing socket and a refused connection are both retried: the
+/// second is the window between the server's `bind(2)` and its
+/// `listen(2)`, which a loaded CI runner can stretch far enough to land
+/// a connect in.
+pub(crate) async fn connect_to_socket(
+    path: impl AsRef<Path>,
+) -> Result<tokio::net::UnixStream, VmError> {
+    let path = path.as_ref();
+    for _ in 0..SOCKET_POLL_MAX_ATTEMPTS {
+        match tokio::net::UnixStream::connect(path).await {
+            Ok(stream) => return Ok(stream),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
                 tokio::time::sleep(SOCKET_POLL_INTERVAL).await;
             }
             Err(err) => {
@@ -547,10 +590,7 @@ impl<B: HypervisorBackend> TestVm<B> {
     /// Spawns a background task that reads the kernel serial console.
     fn spawn_kernel_log_reader() -> AbortOnDrop<String> {
         AbortOnDrop::spawn(async move {
-            if let Err(e) = wait_for_socket(KERNEL_CONSOLE_SOCKET_PATH).await {
-                return format!("!!!KERNEL LOG UNAVAILABLE: socket not ready: {e}!!!");
-            }
-            match tokio::net::UnixStream::connect(KERNEL_CONSOLE_SOCKET_PATH).await {
+            match connect_to_socket(KERNEL_CONSOLE_SOCKET_PATH).await {
                 Ok(mut stream) => {
                     let mut log = String::with_capacity(16_384);
                     if let Err(e) = stream.read_to_string(&mut log).await {
@@ -1119,5 +1159,51 @@ mod tests {
             .position(|a| a == "--shared-dir")
             .expect("present");
         assert_eq!(args[i + 1], "/share", "{args:?}");
+    }
+
+    /// A socket path private to one test.
+    fn socket_path(name: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("n-vm-{name}-{pid}.sock", pid = std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// A socket file nobody listens on, as left by a dropped listener.
+    ///
+    /// A connect to it is refused, which is what a connect sees in the window
+    /// between a server's `bind(2)` and its `listen(2)`.
+    fn refusing_socket(path: &Path) {
+        drop(std::os::unix::net::UnixListener::bind(path).expect("bind"));
+    }
+
+    /// A refused connection is retried, not reported: the socket file exists
+    /// before the server listens on it.
+    #[tokio::test]
+    async fn connect_to_socket_retries_until_the_server_listens() {
+        let path = socket_path("listens-late");
+        refusing_socket(&path);
+        let server = {
+            let path = path.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(SOCKET_POLL_INTERVAL * 4).await;
+                std::fs::remove_file(&path).expect("unlink");
+                let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+                listener.accept().await.expect("accept");
+            })
+        };
+        connect_to_socket(&path).await.expect("connect");
+        server.await.expect("server");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A server that never listens is a timeout, not a hang.
+    #[tokio::test]
+    async fn connect_to_socket_times_out_on_a_server_that_never_listens() {
+        let path = socket_path("never-listens");
+        refusing_socket(&path);
+        let err = connect_to_socket(&path).await.expect_err("refused");
+        assert!(matches!(err, VmError::SocketTimeout { .. }), "{err:?}");
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -70,8 +70,6 @@
 //!
 //! [`qapi-rs`]: https://github.com/arcnmx/qapi-rs
 
-use std::path::Path;
-
 use qapi_qmp::QmpMessage;
 use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -172,7 +170,7 @@ struct QmpCommand {
 /// An established QMP connection that has completed capability
 /// negotiation and is ready for command mode.
 ///
-/// Created by [`QmpConnection::connect`], this type is consumed by
+/// Created by [`QmpConnection::negotiate`], this type is consumed by
 /// [`into_split`](Self::into_split) to produce a [`QmpWriter`] (for
 /// sending commands) and a [`QmpEventStream`] (for reading events).
 pub(crate) struct QmpConnection {
@@ -181,7 +179,7 @@ pub(crate) struct QmpConnection {
 }
 
 impl QmpConnection {
-    /// Connects to the QMP socket at `path`, reads the greeting, and
+    /// Reads the greeting from a freshly connected QMP socket and
     /// negotiates capabilities.
     ///
     /// The greeting is deserialized as [`qapi_qmp::QapiCapabilities`],
@@ -193,13 +191,8 @@ impl QmpConnection {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuError`] if the connection, greeting, or negotiation
-    /// fails.
-    pub async fn connect(path: impl AsRef<Path>) -> Result<Self, QemuError> {
-        let stream = UnixStream::connect(path.as_ref())
-            .await
-            .map_err(QemuError::QmpConnect)?;
-
+    /// Returns [`QemuError`] if the greeting or negotiation fails.
+    pub async fn negotiate(stream: UnixStream) -> Result<Self, QemuError> {
         let (read_half, write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
         let mut writer = write_half;

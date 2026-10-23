@@ -241,13 +241,13 @@ pub enum VmError {
     )]
     HypervisorSpawn(#[source] std::io::Error),
 
-    /// A required socket did not appear on the filesystem within the
-    /// polling timeout.
+    /// A required socket did not appear on the filesystem, or did not
+    /// accept a connection, within the polling timeout.
     ///
     /// Several sockets (API socket, virtiofsd socket, etc.) are created
     /// asynchronously by child processes.  This error means the polling
-    /// loop in `wait_for_socket` exhausted
-    /// its retry budget without finding the socket.
+    /// loop in `wait_for_socket` or `connect_to_socket` exhausted its
+    /// retry budget.
     #[error("timed out waiting for socket {path:?} after {timeout:?}")]
     #[diagnostic(
         code(n_vm::socket_timeout),
@@ -264,7 +264,8 @@ pub enum VmError {
         timeout: Duration,
     },
 
-    /// An I/O error occurred while polling for a socket's existence.
+    /// An I/O error occurred while polling for, or connecting to, a
+    /// socket.
     #[error("I/O error while waiting for socket {path:?}")]
     #[diagnostic(code(n_vm::socket_poll))]
     SocketPoll {
