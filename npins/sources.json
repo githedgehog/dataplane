@@ -11,10 +11,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.19.0",
-      "revision": "6ea2dc97188f0cc282e05a9690418ae7fe5457ba",
-      "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.19.0",
-      "hash": "sha256-3ymbUOq7rGXbUG5qE5FXwm2erxAF7eHusND6kKNtfpY="
+      "version": "v0.19.1",
+      "revision": "8000fbd4e29cca2c0cb1e88b745af3ed2f436b66",
+      "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.19.1",
+      "hash": "sha256-Pp+2YTmIZX39Qiu0bLKAxhFiybnwkHP5qJMACISg6tA="
     },
     "crane": {
       "type": "GitRelease",
@@ -257,16 +257,16 @@
     },
     "flatcar-pxe-image": {
       "type": "Url",
-      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.1/flatcar_production_pxe_image.cpio.gz",
+      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.2/flatcar_production_pxe_image.cpio.gz",
       "unpack": false,
-      "hash": "sha256-BNaJkGAxH9zMQSBFhvgKA1n+b2sbls0cwlQdTMJ61oQ=",
+      "hash": "sha256-fTLts3qLlotxQeNwmprskgtWYb5flKoYS2fAwlvUzNA=",
       "frozen": true
     },
     "flatcar-vmlinuz": {
       "type": "Url",
-      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.1/flatcar_production_pxe.vmlinuz",
+      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.2/flatcar_production_pxe.vmlinuz",
       "unpack": false,
-      "hash": "sha256-nq0AhJCSMfFuZj7OQRd78b2ua8lv09kMTQWQWBtzQuU=",
+      "hash": "sha256-H5XomabnoKt6oqM8cLi+uw1GjHRulmJAwVBQef28RxQ=",
       "frozen": true
     },
     "frr": {
@@ -424,9 +424,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "5f267b7f323a4d6df0b9c0e3eaa043cbe85386f2",
-      "url": "https://github.com/oxalica/rust-overlay/archive/5f267b7f323a4d6df0b9c0e3eaa043cbe85386f2.tar.gz",
-      "hash": "sha256-E8zFJilWlORqzIUJizyhZ/0WKBOizuM6s1nRSgPRomo="
+      "revision": "b0829a2cc9f7b596583331d78a942c1e5170d8a0",
+      "url": "https://github.com/oxalica/rust-overlay/archive/b0829a2cc9f7b596583331d78a942c1e5170d8a0.tar.gz",
+      "hash": "sha256-M2rr/yPbTHvgAzCyZ+zHJHflFM0XU7t42Sw2skA3TQM="
     },
     "ubuntu-kernel-buildinfo": {
       "type": "Url",
