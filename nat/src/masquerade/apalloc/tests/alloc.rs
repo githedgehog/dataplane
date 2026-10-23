@@ -7,7 +7,7 @@ use concurrency::concurrency_mode;
 
 // This module does not contain tests, but helpers to build the context (VpcTable, allocator) used
 // by tests in other modules. These helpers are not to be used outside of tests.
-pub(super) mod context {
+pub(crate) mod context {
     use crate::NatPort;
     use crate::masquerade::allocator_writer::MasqueradeConfig;
     use crate::masquerade::apalloc::alloc::{IpAllocator, PoolSet};

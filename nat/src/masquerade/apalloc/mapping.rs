@@ -595,9 +595,9 @@ pub(crate) fn reap_expired_mapping<I: NatIpWithBitmap>(
 mod tests {
     use super::super::region::AddrInterval;
     use super::super::setup::{PoolSpec, narrow_budget_specs, pool_sets_for_specs};
-    use super::super::test_alloc::context::port;
+    use super::super::tests::alloc::context::port;
     use super::*;
-    use crate::masquerade::apalloc::test_alloc::context::TestTimers;
+    use crate::masquerade::apalloc::tests::alloc::context::TestTimers;
     use net::ip::NextHeader;
     use std::net::Ipv4Addr;
 
