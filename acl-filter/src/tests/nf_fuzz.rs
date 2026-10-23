@@ -3,8 +3,8 @@
 
 #![cfg(test)]
 
-use crate::fuzz::oracle_resolved_action;
-use crate::fuzz_gen::{OverlaySpec, ProbeSpec};
+use crate::tests::fuzz::oracle_resolved_action;
+use crate::tests::fuzz_gen::{OverlaySpec, ProbeSpec};
 use crate::{AclFilter, AclFilterContext, AclFilterContextWriter, PacketSummary};
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
 use config::external::overlay::acl::AclAction;
@@ -63,7 +63,7 @@ fn packet_for(summary: &PacketSummary) -> Option<Packet<TestBuffer>> {
     Some(packet)
 }
 
-fn filter(built: &crate::fuzz_gen::BuiltOverlay) -> AclFilter {
+fn filter(built: &crate::tests::fuzz_gen::BuiltOverlay) -> AclFilter {
     let writer = AclFilterContextWriter::new();
     writer.store(AclFilterContext::for_test(&built.overlay));
     AclFilter::new("nf-fuzz-acl-filter", writer.get_reader())

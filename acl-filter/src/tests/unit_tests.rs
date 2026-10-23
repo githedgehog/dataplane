@@ -8,6 +8,8 @@
 //! (if no ACL is configured at all, traffic is allowed). A rule's scope ('flow' or 'packet')
 //! decides whether reply traffic is allowed once the corresponding request is allowed.
 
+#![cfg(test)]
+
 use crate::{AclFilter, AclFilterContext, AclFilterContextWriter};
 
 use config::external::overlay::acl::{
