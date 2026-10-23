@@ -47,13 +47,13 @@ export callgrind_bench := "fib_lookup_callgrind"
 # sanitizers to use, comma-separated (address/cfi/leak/safe-stack/shadow-stack/thread/"")
 sanitize := ""
 
-# Bolero's own default budget is one second. A property that spends it on too few draws can
-# miss the behaviour its coverage assertions require and fail for being under-run rather than
-# for a real gap -- `just coverage` already avoids that with a budget of its own, and the
-# plain run is the one that actually asserts. Exported here rather than per recipe so that
-# every one of them inherits it; `coverage` assigns its own value in its body, which wins.
-# Honour an explicit override if the caller sets one.
-export BOLERO_RANDOM_TEST_TIME_MS := env("BOLERO_RANDOM_TEST_TIME_MS", "4000")
+# Native runs use each property's duration or iteration count.
+# A time cap overrides `.with_test_time` and can truncate `.with_iterations`.
+# Sanitized, emulated and feature-gated runs default to four seconds to bound runtime;
+# CI also requests this cap for deep runs. Explicit numeric values take precedence.
+# Empty or nonnumeric values select the defaults below.
+_bolero_test_time_ms := env("BOLERO_RANDOM_TEST_TIME_MS", "")
+export BOLERO_RANDOM_TEST_TIME_MS := if _bolero_test_time_ms =~ "^[0-9]+$" { _bolero_test_time_ms } else if sanitize != "" { "4000" } else if features != "" { "4000" } else if platform !~ "^x86-64" { "4000" } else { "" }
 
 bolero_coverage_test_time_ms := env("BOLERO_COVERAGE_TEST_TIME_MS", "15000")
 
