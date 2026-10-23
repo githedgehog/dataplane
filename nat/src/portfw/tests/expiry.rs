@@ -3,8 +3,8 @@
 
 #![cfg(test)]
 
+use super::probe::{Arrival, Fabric, PAST_ANY_TIMEOUT, run};
 use crate::portfw::PortForwarder;
-use crate::portfw::probe::{Arrival, Fabric, PAST_ANY_TIMEOUT, run};
 use crate::static_nat::probe::build;
 use clock::Duration;
 use clock::virtual_time::advance;

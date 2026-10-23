@@ -3,7 +3,7 @@
 
 #![cfg(test)]
 
-use crate::portfw::probe::{Arrival, Fabric, ProbeSpec, run};
+use super::probe::{Arrival, Fabric, ProbeSpec, run};
 use bolero::{Driver, TypeGenerator, ValueGenerator};
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
 use config::external::overlay::vpcpeering::VpcExpose;
@@ -134,7 +134,7 @@ fn forward(
     fabric: &Fabric,
     lookup: &mut flow_entry::flow_table::FlowLookup,
     pfw: &mut crate::portfw::PortForwarder,
-    probe: &crate::portfw::probe::Probe,
+    probe: &super::probe::Probe,
 ) -> Option<(IpAddr, u16)> {
     let before = probe.destination;
     let out = run(lookup, pfw, vec![probe.packet()], probe.arrival.dst_vpcd);

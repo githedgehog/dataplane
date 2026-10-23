@@ -16,15 +16,15 @@
 
 #![cfg(test)]
 #![cfg(not(feature = "loom"))]
-use crate::masquerade::apalloc::test_alloc::context::TestTimers;
+use crate::masquerade::apalloc::tests::alloc::context::TestTimers;
 
-use super::alloc::PoolSet;
-use super::mapping::{MappingKey, MappingScope, reap_expired_mapping};
-use super::port_alloc::AllocatedPort;
-use super::region::AddrInterval;
-use super::setup::{PoolSpec, pool_sets_for_specs};
-use super::test_alloc::context::port;
+use super::alloc::context::port;
 use crate::masquerade::allocation::AllocatorError;
+use crate::masquerade::apalloc::alloc::PoolSet;
+use crate::masquerade::apalloc::mapping::{MappingKey, MappingScope, reap_expired_mapping};
+use crate::masquerade::apalloc::port_alloc::AllocatedPort;
+use crate::masquerade::apalloc::region::AddrInterval;
+use crate::masquerade::apalloc::setup::{PoolSpec, pool_sets_for_specs};
 use crate::port::NatPort;
 use concurrency::slot::SlotOption;
 use concurrency::sync::{Arc, Mutex};

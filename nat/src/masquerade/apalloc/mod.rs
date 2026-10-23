@@ -97,16 +97,15 @@ use tracectl::trace_target;
 trace_target!("nat-allocation", LevelFilter::ERROR, &["masquerade"]);
 
 mod alloc;
-mod concurrent_fuzz;
 mod display;
 mod mapping;
 mod natip_with_bitmap;
-mod pool_fuzz;
 mod port_alloc;
 mod region;
 mod reserved;
 mod setup;
-pub(super) mod test_alloc;
+#[cfg(test)]
+pub(super) mod tests;
 
 pub use mapping::Mapping;
 #[cfg(test)]
@@ -706,7 +705,7 @@ mod bolero_tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod unit_tests {
     #![allow(clippy::ip_constant)]
 
     use super::*;
