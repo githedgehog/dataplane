@@ -712,6 +712,9 @@ impl ConfigProcessor {
         /* apply config with VPC manager */
         vpc_mgr.apply_config(internal, genid).await?;
 
+        /* put the ports' addresses on their interfaces, ahead of zebra: see port_addresses.rs */
+        vpc_mgr.put_port_addresses(internal).await;
+
         /* get vrf interfaces from kernel and build a hashmap keyed by name */
         let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
