@@ -29,23 +29,6 @@
 /// [`VmError`](crate::error::VmError) enum free of QEMU-specific variants.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum QemuError {
-    /// Failed to connect to the QMP Unix socket.
-    ///
-    /// After QEMU starts, it creates a QMP control socket at the path
-    /// specified by `-chardev socket,path=...`.  The container tier
-    /// connects to this socket to issue lifecycle commands and receive
-    /// async events.  This error means the connection attempt failed
-    /// after the socket appeared on the filesystem.
-    #[error("failed to connect to QMP socket")]
-    #[diagnostic(
-        code(n_vm::qemu::qmp_connect),
-        help(
-            "QEMU may have exited before creating the QMP socket -- \
-              check the hypervisor stderr for early startup failures"
-        )
-    )]
-    QmpConnect(#[source] std::io::Error),
-
     /// The QMP greeting was not received or could not be parsed.
     ///
     /// Upon connection, QEMU sends a JSON greeting message that is
