@@ -63,6 +63,8 @@ Production artifacts are produced via nix builds in a separate CI workflow.
 - `ci:+miri` - Run Miri checks
 - `ci:+wasm` - Run the WASM build check
 - `ci:+concurrency` - Run Shuttle and Loom tests
+- `ci:+fuzz` - Give every bolero property the deep runs' four-second budget
+  instead of its own (one second, or a fixed case count)
 - `ci:+cross` - Build all cross-platform containers
 - `ci:+cross/full` - Also run the workspace test suite under qemu-user, on the
   two aarch64 musl legs. Gated like every other job, so the merge queue and

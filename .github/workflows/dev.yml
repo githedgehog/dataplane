@@ -76,6 +76,7 @@ jobs:
       sanitize: "${{ steps.sanitize.outputs.value }}"
       check_each: "${{ steps.check-each.outputs.value }}"
       wasm: "${{ steps.wasm.outputs.value }}"
+      bolero_test_time_ms: "${{ steps.bolero-test-time.outputs.value }}"
     steps:
       - name: "Checkout"
         uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" # v7.0.1
@@ -119,6 +120,15 @@ jobs:
         uses: *gate
         with:
           labels: "concurrency"
+
+      # Deep runs search longer. `none` leaves each property to its own budget; see
+      # `BOLERO_RANDOM_TEST_TIME_MS` in the justfile.
+      - id: "bolero-test-time"
+        uses: *gate
+        with:
+          labels: "fuzz"
+          on-value: "4000"
+          off-value: "none"
 
       - id: "check-each"
         uses: *gate
@@ -193,6 +203,7 @@ jobs:
       contents: "read"
     env: &ci-env
       USER: "runner"
+      BOLERO_RANDOM_TEST_TIME_MS: "${{ needs.plan.outputs.bolero_test_time_ms }}"
       # The `just` action runs under `set -u`, so this stays defined.
       JUST_VARS: ""
       # These runners are containers on bare metal talking to the host's
