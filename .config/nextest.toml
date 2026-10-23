@@ -136,28 +136,40 @@ store-failure-output = true
 # filter = 'test(flaky test name here)'
 # retries = 3
 
-# Every package that boots a guest, not just the one that owns the harness.
+# The test binaries whose guests take their memory from a host hugepage pool.
 #
-# A VM claims a 1GiB hugepage for its guest memory and the host pool is small -- two pages on the
-# machine this was found on. Nothing arbitrates that pool, so tests that boot concurrently race for
-# it and the losers fail with "the 1073741824-byte hugepage pool has 0 free page(s)". That is a
-# resource conflict wearing the costume of a flaky test, and it made ten of `dataplane-n-vm`'s
-# eighteen integration tests fail in a whole-workspace run while all eighteen passed with
+# Such a guest claims whole pages from a pool that is small -- two 1GiB pages on the machine this
+# was found on -- and that nothing arbitrates, so guests that boot concurrently race for it and the
+# losers fail with "the 1073741824-byte hugepage pool has 0 free page(s)". That is a resource
+# conflict wearing the costume of a flaky test, and it made ten of `dataplane-n-vm`'s eighteen
+# integration tests fail in a whole-workspace run while all eighteen passed with
 # `--test-threads 1`.
 #
-# The list is `#[n_vm::test]`'s users. It has to be maintained by hand, which is the weakness of
-# fixing this here: a package that starts booting guests and is not added to it fails in a way that
-# looks like its own bug. The durable fix is for `n-vm` to acquire the pool itself and wait rather
-# than fail -- a test harness that only works when the consuming repo's runner config is right is
-# not one that can be handed to another repo.
+# That was when every guest asked for the pool. `VmConfig::DEFAULT` now backs guest memory with
+# 4KiB pages, and only a test that drives DPDK through an IOMMU, or that tests the hugetlbfs path
+# itself, asks for `HostPageSize::Huge1G` or `Huge2M`. All of those are in the two binaries below.
+#
+# The group used to be every package that boots a guest, which also serialized everything else in
+# those packages: 563 tests and 109 of the 181 seconds the group took, against 72 seconds for the
+# guests. Measured 2026-10-22 on a debug run pinned to ten CPUs with ten test threads, each bolero
+# property on its own budget:
+#
+#     every package that boots a guest   179s
+#     every `#[n_vm::test]` by name      105s
+#     no group at all                    107s, 109s, every guest passing
+#     these two binaries                 107s, 113s
+#
+# Past the guests the run is bound by CPU, so the rest of them run alongside everything else and
+# only the pool's users wait for each other.
+#
+# A test elsewhere that starts asking for host hugepages has to join this list or it fails in a way
+# that looks like its own bug. The durable fix is for `n-vm` to acquire the pool itself and wait
+# rather than fail -- a test harness that only works when the consuming repo's runner config is
+# right is not one that can be handed to another repo.
 [[profile.default.overrides]]
 filter = '''
-    package(dataplane)
-  + package(dataplane-n-vm)
-  + package(dataplane-n-it)
-  + package(dataplane-hardware)
-  + package(dataplane-interface-manager)
-  + package(dataplane-mgmt)
+    binary_id(dataplane-n-vm::integration)
+  + binary_id(dataplane-hardware::dpdk_in_vm)
 '''
 platform = 'cfg(unix)'
 test-group = 'vm'
