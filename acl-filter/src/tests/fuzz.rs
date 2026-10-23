@@ -10,7 +10,7 @@
 
 use crate::PacketSummary;
 use crate::context::{AclTables, Backend, LookupResult};
-use crate::fuzz_gen::{OverlaySpec, ProbeSpec, vni};
+use crate::tests::fuzz_gen::{OverlaySpec, ProbeSpec, vni};
 use concurrency::sync::LazyLock;
 use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
@@ -392,7 +392,7 @@ fn absent_acl_and_absent_peering_have_no_default_action() {
 /// Keep the bogus probe VNI distinct from generated VPCs.
 #[test]
 fn generated_overlays_use_the_declared_vnis() {
-    use crate::fuzz_gen::VNIS;
+    use crate::tests::fuzz_gen::VNIS;
 
     bolero::check!()
         .with_type::<OverlaySpec>()

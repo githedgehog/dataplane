@@ -21,13 +21,6 @@ trace_target!("acl-filter", LevelFilter::INFO, &["pipeline"]);
 mod access;
 mod context;
 mod display;
-
-#[cfg(test)]
-mod fuzz;
-#[cfg(test)]
-mod fuzz_gen;
-#[cfg(test)]
-mod nf_fuzz;
 #[cfg(test)]
 mod tests;
 
