@@ -915,6 +915,13 @@ async fn ensure_scratch_image(client: &bollard::Docker) -> Result<(), ContainerE
     })?;
 
     if !output.status.success() {
+        // Tests that boot at once on a daemon without the image all find it missing and all
+        // import it; every import but the first fails with "AlreadyExists". They imported the
+        // same 1024 zero bytes, so the winner's image is the one each loser was making, and
+        // losing the race is success. Ask the daemon rather than parse its message.
+        if client.inspect_image(SCRATCH_IMAGE_TAG).await.is_ok() {
+            return Ok(());
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(ContainerError::ScratchImageCreate(format!(
             "`docker import` exited with {}: {stderr}",
