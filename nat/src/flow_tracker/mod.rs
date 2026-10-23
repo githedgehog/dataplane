@@ -218,6 +218,7 @@ mod test {
     use net::flows::conn_tracking::{AtomicConnState, ConnState, FlowSide};
     use net::headers::TryTcpMut;
     use net::packet::{Packet, VpcDiscriminant};
+    use net::tcp::TcpFlags;
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
     use std::net::IpAddr;
@@ -274,6 +275,35 @@ mod test {
         assert_eq!(side_of(&reverse), Some(FlowSide::Responder));
         assert_eq!(forward.get_dst_vpcd(), Some(vpcd(200)));
         assert_eq!(reverse.get_dst_vpcd(), Some(vpcd(100)));
+    }
+
+    #[tokio::test]
+    async fn the_forward_flow_records_the_opening_tcp_flags() {
+        let table = Arc::new(FlowTable::default());
+        let mut tracker = FlowTracker::new("tracker", table.clone());
+        // An ECN-setup SYN (see RFC 3168)
+        let mut packet = syn("10.0.0.5", "20.0.0.5");
+        let tcp = packet.try_tcp_mut().unwrap_or_else(|| unreachable!());
+        tcp.set_ece(true);
+        tcp.set_cwr(true);
+        // As the ACL stage sets them
+        packet.meta_mut().tcp_flags = Some(TcpFlags::SYN | TcpFlags::ECE | TcpFlags::CWR);
+        let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!());
+
+        let out = run(&mut tracker, packet);
+        assert!(!out.is_done(), "{:?}", out.get_done());
+
+        let forward = table
+            .lookup(&key)
+            .unwrap_or_else(|| unreachable!("the connection got no forward flow"));
+        let reverse = table
+            .lookup(&key.reverse(Some(vpcd(200))))
+            .unwrap_or_else(|| unreachable!("the connection got no reverse flow"));
+        assert_eq!(
+            forward.opening_tcp_flags(),
+            Some(TcpFlags::SYN | TcpFlags::ECE | TcpFlags::CWR)
+        );
+        assert_eq!(reverse.opening_tcp_flags(), None);
     }
 
     #[tokio::test]

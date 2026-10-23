@@ -114,6 +114,10 @@ pub(crate) fn install_pair<S: NatData>(
     )?;
     set_up_flow(&forward_flow, forward.state, forward.dst_vpcd);
     set_up_flow(&reverse_flow, reverse.state, reverse.dst_vpcd);
+    // The forward flow's key is the opening packet's key: keep its flags next to it
+    if let Some(flags) = meta.tcp_flags {
+        forward_flow.set_opening_tcp_flags(flags);
+    }
 
     // Claim both keys before exposing either half to lookups or competing creators.
     let insertion = table
