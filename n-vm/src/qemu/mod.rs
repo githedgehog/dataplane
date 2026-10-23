@@ -66,7 +66,9 @@ use crate::abort_on_drop::AbortOnDrop;
 use crate::backend::{HypervisorBackend, HypervisorVerdict, LaunchedHypervisor};
 use crate::config;
 use crate::error::VmError;
-use crate::vm::{TestVmParams, check_hugepages_accessible, check_kvm_accessible, wait_for_socket};
+use crate::vm::{
+    TestVmParams, check_hugepages_accessible, check_kvm_accessible, connect_to_socket,
+};
 
 use self::qmp::{EventDisplay, QmpCommandName, QmpConnection, QmpEventStream, QmpWriter};
 
@@ -462,16 +464,18 @@ async fn spawn_qemu_process(
         .spawn()
         .map_err(VmError::HypervisorSpawn)?;
 
-    // Wait for QEMU to create the QMP socket, then connect and negotiate.
-    // If either step fails, try to capture QEMU's stderr so the developer
-    // can see why QEMU crashed rather than just "Connection reset by peer".
-    let socket_result = wait_for_socket(HYPERVISOR_API_SOCKET_PATH).await;
-    if let Err(err) = socket_result {
-        config::drain_child_stderr(&mut child, "QEMU").await;
-        return Err(err);
-    }
+    // Wait for QEMU to accept a QMP connection, then negotiate.  If either
+    // step fails, try to capture QEMU's stderr so the developer can see why
+    // QEMU crashed rather than just "Connection reset by peer".
+    let stream = match connect_to_socket(HYPERVISOR_API_SOCKET_PATH).await {
+        Ok(stream) => stream,
+        Err(err) => {
+            config::drain_child_stderr(&mut child, "QEMU").await;
+            return Err(err);
+        }
+    };
 
-    match QmpConnection::connect(HYPERVISOR_API_SOCKET_PATH).await {
+    match QmpConnection::negotiate(stream).await {
         Ok(qmp) => Ok((child, qmp)),
         Err(qmp_err) => {
             config::drain_child_stderr(&mut child, "QEMU").await;

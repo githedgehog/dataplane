@@ -48,7 +48,9 @@ use crate::abort_on_drop::AbortOnDrop;
 use crate::backend::{HypervisorBackend, LaunchedHypervisor};
 use crate::config;
 use crate::error::VmError;
-use crate::vm::{TestVmParams, check_hugepages_accessible, check_kvm_accessible, wait_for_socket};
+use crate::vm::{
+    TestVmParams, check_hugepages_accessible, check_kvm_accessible, connect_to_socket,
+};
 
 // -- Constants --------------------------------------------------------
 
@@ -119,37 +121,41 @@ impl HypervisorBackend for CloudHypervisor {
     type Controller = CloudHypervisorController;
 
     async fn launch(params: &TestVmParams<'_>) -> Result<LaunchedHypervisor<Self>, VmError> {
-        let (child, event_receiver) = spawn_hypervisor_process(
+        let (mut child, event_receiver) = spawn_hypervisor_process(
             params.vm_config.host_page_size,
             params.vm_config.memory_bytes(),
         )
         .await?;
 
-        let config = build_vm_config(params);
+        let vm_config = build_vm_config(params);
 
         let client = Arc::new(tokio::sync::Mutex::new(
             cloud_hypervisor_client::socket_based_api_client(HYPERVISOR_API_SOCKET_PATH),
         ));
 
-        client.lock().await.create_vm(config).await.map_err(|e| {
-            CloudHypervisorError::VmCreate {
+        // The API server was already accepting connections, so a failure
+        // here usually means cloud-hypervisor has exited; its stderr says
+        // why.
+        if let Err(e) = client.lock().await.create_vm(vm_config).await {
+            config::drain_child_stderr(&mut child, "cloud-hypervisor").await;
+            return Err(CloudHypervisorError::VmCreate {
                 reason: format!("{e:?}"),
             }
-        })?;
+            .into());
+        }
 
         let event_watcher = AbortOnDrop::spawn(async {
             let (events, verdict) = events::watch(event_receiver).await;
             (CloudHypervisorEventLog(events), verdict)
         });
 
-        client
-            .lock()
-            .await
-            .boot_vm()
-            .await
-            .map_err(|e| CloudHypervisorError::VmBoot {
+        if let Err(e) = client.lock().await.boot_vm().await {
+            config::drain_child_stderr(&mut child, "cloud-hypervisor").await;
+            return Err(CloudHypervisorError::VmBoot {
                 reason: format!("{e:?}"),
-            })?;
+            }
+            .into());
+        }
 
         Ok(LaunchedHypervisor {
             child,
@@ -217,7 +223,7 @@ async fn spawn_hypervisor_process(
     check_kvm_accessible().await?;
     check_hugepages_accessible(host_page_size, memory_bytes).await?;
 
-    let hypervisor = tokio::process::Command::new(CLOUD_HYPERVISOR_BINARY_PATH)
+    let mut hypervisor = tokio::process::Command::new(CLOUD_HYPERVISOR_BINARY_PATH)
         .args([
             "--api-socket",
             format!("path={HYPERVISOR_API_SOCKET_PATH}").as_str(),
@@ -237,13 +243,17 @@ async fn spawn_hypervisor_process(
         .map_err(VmError::HypervisorSpawn)?;
 
     // The first VMM event becoming readable indicates the hypervisor has
-    // started.  We then poll until the API socket appears on the
-    // filesystem.
+    // started.  We then poll until the API server accepts a connection.
+    // The API client opens a connection per request, so the probe is
+    // dropped; the server takes any number of them.
     event_receiver
         .readable()
         .await
         .map_err(CloudHypervisorError::EventMonitorNotReadable)?;
-    wait_for_socket(HYPERVISOR_API_SOCKET_PATH).await?;
+    if let Err(err) = connect_to_socket(HYPERVISOR_API_SOCKET_PATH).await {
+        config::drain_child_stderr(&mut hypervisor, "cloud-hypervisor").await;
+        return Err(err);
+    }
 
     Ok((hypervisor, event_receiver))
 }
