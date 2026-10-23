@@ -144,6 +144,27 @@ Running the test suite via `cargo test` or `cargo nextest run` will run the fuzz
 - Coverage information and sanitizers are not enabled.
 - A full fuzzing engine is not set up, so evolutionary feedback is not provided when the tests are run this way,
 
+### How long each property runs
+
+A property that only searches runs for bolero's default of one second. A
+property whose assertions depend on how much it saw (one that checks the
+generator ever reached some shape) asks for a fixed number of cases with
+`.with_iterations`, so that it judges the same sample on every machine; see
+`Sample` in `dataplane/src/packet_processor/fuzz.rs`.
+
+`BOLERO_RANDOM_TEST_TIME_MS` overrides both: bolero reads it before anything
+the test asks for and stops at whichever limit comes first. A plain native
+`just test` leaves it unset. Sanitized, emulated and feature-gated runs cap
+every property at four seconds, and so do CI's deep runs (push, merge queue,
+or the `ci:+fuzz` label), to search longer. To search longer locally:
+
+```bash
+BOLERO_RANDOM_TEST_TIME_MS=10000 just test
+```
+
+A coverage assertion whose sample a cap cut short reports that and stands
+down rather than failing.
+
 Using [libfuzzer](https://llvm.org/docs/LibFuzzer.html) or [afl](https://github.com/AFLplusplus/AFLplusplus) can
 change this.
 

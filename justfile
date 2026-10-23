@@ -47,13 +47,22 @@ export callgrind_bench := "fib_lookup_callgrind"
 # sanitizers to use, comma-separated (address/cfi/leak/safe-stack/shadow-stack/thread/"")
 sanitize := ""
 
-# Bolero's own default budget is one second. A property that spends it on too few draws can
-# miss the behaviour its coverage assertions require and fail for being under-run rather than
-# for a real gap -- `just coverage` already avoids that with a budget of its own, and the
-# plain run is the one that actually asserts. Exported here rather than per recipe so that
-# every one of them inherits it; `coverage` assigns its own value in its body, which wins.
-# Honour an explicit override if the caller sets one.
-export BOLERO_RANDOM_TEST_TIME_MS := env("BOLERO_RANDOM_TEST_TIME_MS", "4000")
+# Bolero's wall-clock budget for each property, empty for none.
+#
+# bolero reads this before anything the test asks for and stops at whichever of it and the
+# test's own iteration count comes first, so setting it overrides every `.with_test_time` and
+# caps every `.with_iterations`. A property whose coverage assertions need a sample of a
+# certain size states that size with `.with_iterations`, and that only holds when nothing here
+# cuts it short. A plain native run therefore leaves it empty: a property that only searches
+# gets bolero's own one second, and a property that counts gets its count.
+#
+# Sanitized, emulated and feature-gated runs keep a cap. They buy one to three orders of
+# magnitude fewer cases per second, their coverage guards stand down on `cfg(sanitized)` and
+# `cfg(emulated)` anyway, and without a cap a 64-iteration property under qemu-user takes
+# minutes. CI's deep runs (push, merge queue, `ci:+fuzz`) set it explicitly to search longer.
+# An explicit number always wins; anything else (empty, `none`) counts as unset.
+_bolero_test_time_ms := env("BOLERO_RANDOM_TEST_TIME_MS", "")
+export BOLERO_RANDOM_TEST_TIME_MS := if _bolero_test_time_ms =~ "^[0-9]+$" { _bolero_test_time_ms } else if sanitize != "" { "4000" } else if features != "" { "4000" } else if platform !~ "^x86-64" { "4000" } else { "" }
 
 bolero_coverage_test_time_ms := env("BOLERO_COVERAGE_TEST_TIME_MS", "15000")
 
