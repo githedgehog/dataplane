@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+mod port_addresses;
+
 use crate::processor::confbuild::namegen::VpcInterfacesNames;
 
 use concurrency::sync::Arc;
