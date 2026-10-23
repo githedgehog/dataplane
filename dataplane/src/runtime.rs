@@ -608,7 +608,7 @@ fn run_dpdk_driver(
                 mac: port.mac,
                 mtu: Some(port.mtu),
                 hardware: port.hardware.clone(),
-                datapath_index: Some(port.if_index),
+                datapath_index: port.if_index,
                 pci_address: port
                     .dev
                     .info()

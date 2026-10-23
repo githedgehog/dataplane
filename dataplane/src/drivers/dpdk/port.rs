@@ -144,11 +144,11 @@ pub(crate) fn report_links(ports: &[Port<'_>], num_workers: u16) {
         waiting.retain(|port| match port.dev.link() {
             Ok(link) if link.up => {
                 info!(
-                    "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+                    "DPDK port {index} ({name}) up: {netdev}, mac {mac}, mtu {mtu}, \
                      {num_workers} rx/tx queue pair(s), link {link}",
                     index = port.dev.info().index(),
                     name = port.name,
-                    if_index = port.if_index,
+                    netdev = port.netdev(),
                     mac = port.mac,
                     mtu = port.mtu,
                 );
@@ -157,11 +157,11 @@ pub(crate) fn report_links(ports: &[Port<'_>], num_workers: u16) {
             Ok(_) => true,
             Err(e) => {
                 info!(
-                    "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+                    "DPDK port {index} ({name}) up: {netdev}, mac {mac}, mtu {mtu}, \
                      {num_workers} rx/tx queue pair(s); link state unavailable ({e:?})",
                     index = port.dev.info().index(),
                     name = port.name,
-                    if_index = port.if_index,
+                    netdev = port.netdev(),
                     mac = port.mac,
                     mtu = port.mtu,
                 );
@@ -176,13 +176,13 @@ pub(crate) fn report_links(ports: &[Port<'_>], num_workers: u16) {
     for port in waiting {
         warn!(
             "DPDK port {index} ({name}) is configured and started but its link is still down \
-             after {waited:?}: ifindex {if_index}, mac {mac}, mtu {mtu}, {num_workers} rx/tx \
+             after {waited:?}: {netdev}, mac {mac}, mtu {mtu}, {num_workers} rx/tx \
              queue pair(s). No traffic will pass until it comes up. For a bifurcated device such \
              as mlx5 the port follows its kernel netdev, so check that the netdev is up inside \
              the datapath network namespace.",
             index = port.dev.info().index(),
             name = port.name,
-            if_index = port.if_index,
+            netdev = port.netdev(),
             mac = port.mac,
             mtu = port.mtu,
             waited = LINK_POLL * LINK_POLLS,
@@ -315,8 +315,8 @@ fn keep_rss_off_control(
 pub(crate) struct Port<'eal> {
     /// The started device. Kept so the port can be stopped and closed explicitly at shutdown.
     pub(crate) dev: Dev<'eal, Started>,
-    /// The kernel `ifindex` of this port's netdev, which is what the pipeline knows it by.
-    pub(crate) if_index: InterfaceIndex,
+    /// Kernel netdev index; pipeline fallback when no TAP exists.
+    pub(crate) if_index: Option<InterfaceIndex>,
     /// Human-readable name for logs and status.
     ///
     /// This is the *configured* interface name, which is also the name of the tap that stands in
@@ -347,8 +347,7 @@ impl<'eal> Port<'eal> {
     ///
     /// # Errors
     ///
-    /// Returns [`DriverError`] if the device cannot be configured, queued or started, or if the
-    /// PMD reports an `if_index` the kernel does not recognise.
+    /// Returns [`DriverError`] if the device cannot be configured, queued or started.
     #[allow(clippy::too_many_lines)] // one device's bring-up, step by step in the order it requires
     pub(crate) fn bring_up(
         eal: &'eal Eal,
@@ -396,17 +395,8 @@ impl<'eal> Port<'eal> {
             .apply(port)
             .map_err(|e| DriverError::PortSetup(e.to_string()))?;
 
-        // The pipeline identifies interfaces by ifindex, and here that is the ifindex of the
-        // port's own kernel netdev in this namespace. Only bifurcated PMDs (mlx5) keep a netdev
-        // alongside DPDK; a device bound to vfio-pci has none, so it cannot be mapped yet.
-        let raw_if_index = dev.info().if_index();
-        let if_index = InterfaceIndex::try_new(raw_if_index).map_err(|e| {
-            DriverError::PortSetup(format!(
-                "port {index} ({name}) reports if_index {raw_if_index}, which is not a usable \
-                 interface index: {e}. The DPDK driver currently requires a bifurcated PMD \
-                 (mlx5) that keeps the port's kernel netdev; devices bound to vfio-pci have none."
-            ))
-        })?;
+        // Ports without a kernel netdev report ifindex 0.
+        let if_index = InterfaceIndex::try_new(dev.info().if_index()).ok();
 
         let rx_pool = new_rx_pool(
             eal,
@@ -489,6 +479,29 @@ impl<'eal> Port<'eal> {
             data_queues: num_workers,
             control_rx,
         })
+    }
+
+    /// Return the kernel netdev index for a port without a TAP.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DriverError::PortSetup`] if the port has no kernel netdev.
+    fn own_index(&self) -> Result<InterfaceIndex, DriverError> {
+        self.if_index.ok_or_else(|| {
+            DriverError::PortSetup(format!(
+                "port {} has neither a tap nor a kernel netdev, so nothing above the driver can \
+                 address it",
+                self.name
+            ))
+        })
+    }
+
+    /// Format the kernel netdev index for logs.
+    fn netdev(&self) -> String {
+        self.if_index.map_or_else(
+            || "no kernel netdev".to_string(),
+            |i| format!("ifindex {i}"),
+        )
     }
 
     /// Read cumulative device counters, including drops before packets reach a worker.
@@ -584,7 +597,10 @@ type CpChannels = (
 /// The interface index the rest of the dataplane knows `port` by, and the channels to and from its
 /// tap, if the control-plane bridge has one: the ordinary punt channel, the control queue's
 /// priority punt channel, and the injection queue.
-fn map_port_to_cp(port: &Port<'_>, bridge: Option<&mut DatapathEnds>) -> CpChannels {
+fn map_port_to_cp(
+    port: &Port<'_>,
+    bridge: Option<&mut DatapathEnds>,
+) -> Result<CpChannels, DriverError> {
     let Some(bridge) = bridge else {
         debug!(
             "no control-plane bridge, so port {} delivers nothing to the kernel",
@@ -592,7 +608,7 @@ fn map_port_to_cp(port: &Port<'_>, bridge: Option<&mut DatapathEnds>) -> CpChann
         );
         // No bridge, so nothing moved and the port's own index is the one the control plane saw
         // too.
-        return (port.if_index, None, None, None);
+        return Ok((port.own_index()?, None, None, None));
     };
     let Some(queues) = bridge.take(&port.name) else {
         warn!(
@@ -600,17 +616,17 @@ fn map_port_to_cp(port: &Port<'_>, bridge: Option<&mut DatapathEnds>) -> CpChann
              dropped and nothing can be injected",
             port.name
         );
-        return (port.if_index, None, None, None);
+        return Ok((port.own_index()?, None, None, None));
     };
     // The tap's index, not the port's. Interface indices are per-namespace and these two live in
     // different ones; everything above the driver was built from the control plane's view, so it
     // speaks in tap indices. See `cpbridge::PortCpQueues::index`.
-    (
+    Ok((
         queues.index,
         Some(queues.punt),
         Some(queues.control),
         queues.inject,
-    )
+    ))
 }
 
 /// Every port's queues, split between the data workers and the control worker.
@@ -640,7 +656,7 @@ pub(crate) fn deal_queues<'p, 'eal>(
         // The injection queue goes to the control worker alone; the punt sender is cloned to every
         // worker, because any worker can receive a frame the kernel should see but only one may
         // drain a queue without reordering the session it carries.
-        let (if_index, punt, control_punt, inject) = map_port_to_cp(port, bridge.as_deref_mut());
+        let (if_index, punt, control_punt, inject) = map_port_to_cp(port, bridge.as_deref_mut())?;
 
         let fallback = Fallback::default();
 
