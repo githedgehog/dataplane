@@ -10,6 +10,7 @@ mod kernel_interfaces;
 mod netns_names;
 mod socket;
 mod supervisor;
+mod vfio;
 
 use std::collections::BTreeMap;
 use std::num::NonZero;
@@ -190,6 +191,25 @@ fn resolve_devices(
         Ok(resolved)
     } else {
         Err(problems.join("\n  "))
+    }
+}
+
+/// Validate IOMMU groups for devices that need vfio-pci.
+fn check_vfio(devices: &[ResolvedDevice]) -> Result<(), String> {
+    let vfio: Vec<PciAddress> = devices
+        .iter()
+        .filter(|d| DpdkDriverType::from(d.supported) == DpdkDriverType::VfioPci)
+        .map(|d| d.address)
+        .collect();
+    let problems = vfio::blockers(sysfs::sysfs_root().inner(), &vfio);
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n  "))
     }
 }
 
@@ -971,6 +991,13 @@ fn main() {
                 Ok(devices) => devices,
                 Err(problems) => fail("cannot use the requested network devices", &problems),
             };
+            // Before anything is bound: a failed bind leaves a device with no driver at all.
+            if let Err(problems) = check_vfio(&devices) {
+                fail(
+                    "vfio-pci cannot hand the network devices to DPDK",
+                    &problems,
+                );
+            }
             // Check hugepage capacity on the NICs' nodes before changing device bindings.
             hugepage_plan = Some(
                 hugepages::reserve_for(
