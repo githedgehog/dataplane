@@ -3,7 +3,7 @@
 
 //! A worker's handle on the shared flow table.
 
-use super::expiry::{ExpirySweep, FlowTimers};
+use super::expiry::{ExpirySweep, FlowTimers, Schedule, SideTimer, TimerRegistry, WorkerTimer};
 use super::table::{FlowTable, FlowTableError, Insertion, PairInsertion};
 use concurrency::sync::Arc;
 use net::flows::FlowInfo;
@@ -35,6 +35,15 @@ impl WorkerFlowTable {
             table,
             timers: Rc::new(RefCell::new(FlowTimers::new())),
         }
+    }
+
+    /// A handle on `table` for the calling thread, whose wheel also takes the [`SideTimer`]s other
+    /// threads schedule through `registry`.
+    #[must_use]
+    pub fn registered(table: Arc<FlowTable>, registry: &TimerRegistry) -> Self {
+        let handle = Self::new(table);
+        registry.register(handle.timers.borrow().remote());
+        handle
     }
 
     /// The shared table this handle points at.
@@ -152,6 +161,13 @@ impl WorkerFlowTable {
     }
 }
 
+impl Schedule for WorkerFlowTable {
+    /// Put `timer` on this handle's wheel, on the calling thread.
+    fn schedule(&self, timer: Box<dyn SideTimer>) {
+        self.timers.borrow_mut().insert(WorkerTimer::Side(timer));
+    }
+}
+
 impl Deref for WorkerFlowTable {
     type Target = FlowTable;
 
@@ -163,6 +179,7 @@ impl Deref for WorkerFlowTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flow_table::TimerRegistry;
     use net::FlowKey;
     use net::flows::FlowStatus;
     use net::flows::flow_key::FlowAddrs;
@@ -287,5 +304,97 @@ mod tests {
         );
         assert_eq!(flows.timers(), 0);
         assert!(!forward.has_timer());
+    }
+
+    /// A side timer that counts its firings and stays on the wheel `rearm` times.
+    struct Counting {
+        deadline: Instant,
+        fired: Arc<concurrency::sync::atomic::AtomicUsize>,
+        rearm: usize,
+    }
+
+    impl SideTimer for Counting {
+        fn deadline(&self) -> Instant {
+            self.deadline
+        }
+
+        fn fire(&mut self, now: Instant) -> bool {
+            self.fired
+                .fetch_add(1, concurrency::sync::atomic::Ordering::Relaxed);
+            if self.rearm == 0 {
+                return false;
+            }
+            self.rearm -= 1;
+            self.deadline = now + Duration::from_secs(1);
+            true
+        }
+    }
+
+    fn counting(
+        after: Duration,
+        rearm: usize,
+    ) -> (Box<Counting>, Arc<concurrency::sync::atomic::AtomicUsize>) {
+        let fired = Arc::new(concurrency::sync::atomic::AtomicUsize::new(0));
+        let timer = Box::new(Counting {
+            deadline: clock::now() + after,
+            fired: fired.clone(),
+            rearm,
+        });
+        (timer, fired)
+    }
+
+    /// Timers scheduled before any worker registered wait for the first one; later ones go to the
+    /// registered workers in turn, are adopted on each worker's next sweep and fire there.
+    #[tokio::test(start_paused = true)]
+    async fn remote_side_timers_reach_a_worker_and_fire_there() {
+        use concurrency::sync::atomic::Ordering::Relaxed;
+        let registry = TimerRegistry::new();
+        let (early, early_fired) = counting(Duration::from_secs(1), 0);
+        registry.schedule(early);
+        assert_eq!(registry.parked(), 1);
+
+        let table = Arc::new(FlowTable::default());
+        let first = WorkerFlowTable::registered(table.clone(), &registry);
+        assert_eq!(registry.parked(), 0);
+        let second = WorkerFlowTable::registered(table, &registry);
+        assert_eq!(registry.workers(), 2);
+        let (a, a_fired) = counting(Duration::from_secs(1), 0);
+        let (b, b_fired) = counting(Duration::from_secs(1), 0);
+        registry.schedule(a);
+        registry.schedule(b);
+
+        first.expire_all(clock::now());
+        second.expire_all(clock::now());
+        assert_eq!(
+            first.timers() + second.timers(),
+            3,
+            "every timer was adopted by some worker"
+        );
+        assert!(
+            first.timers() >= 1 && second.timers() >= 1,
+            "the workers took turns"
+        );
+
+        tokio::time::sleep(Duration::from_millis(1020)).await;
+        first.expire_all(clock::now());
+        second.expire_all(clock::now());
+        let fired = [&early_fired, &a_fired, &b_fired].map(|f| f.load(Relaxed));
+        assert_eq!(fired, [1, 1, 1]);
+        assert_eq!(first.timers() + second.timers(), 0);
+    }
+
+    /// A side timer that asks to stay goes back on the wheel at its new deadline, and fires again.
+    #[tokio::test(start_paused = true)]
+    async fn a_side_timer_can_stay_on_the_wheel() {
+        use concurrency::sync::atomic::Ordering::Relaxed;
+        let flows = flows();
+        let (timer, fired) = counting(Duration::from_secs(1), 2);
+        flows.schedule(timer);
+        for expected in 1..=3 {
+            tokio::time::sleep(Duration::from_millis(1020)).await;
+            flows.expire_all(clock::now());
+            assert_eq!(fired.load(Relaxed), expected);
+        }
+        assert_eq!(flows.timers(), 0, "done after its last firing");
     }
 }

@@ -17,7 +17,7 @@ use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{
     MappingPolicy, VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
 };
-use flow_entry::flow_table::{FlowLookup, FlowTable};
+use flow_entry::flow_table::{FlowLookup, FlowTable, TimerRegistry};
 use net::flows::{AtomicConnState, ConnState};
 // The real flow-filter links dpdk-sys, which cannot build under miri; it is only used by tests with
 // #[dpdk::with_eal] below. The miri-eligible tests use the local TestFlowFilter mock instead.
@@ -2232,6 +2232,63 @@ async fn test_masquerade_reconfig_carries_flows_into_a_new_allocator() {
         "a flow created after the change was given what a carried-over flow still holds"
     );
     assert_ne!(fresh, before_vpc2);
+}
+
+// The control plane carries a live flow's mapping into a new allocator, and it has no wheel of its
+// own: the mapping's new reaper goes to a worker through the registry, the old pool's reaper is
+// cancelled, and the carried mapping is reaped on the worker once it goes idle.
+#[tokio::test(start_paused = true)]
+async fn test_masquerade_reconfig_hands_carried_reapers_to_a_worker() {
+    let registry = TimerRegistry::new();
+    let mut allocw = NatAllocatorWriter::with_timers(registry.clone());
+    let flow_table = Arc::new(FlowTable::default());
+    let worker = WorkerFlowTable::registered(flow_table.clone(), &registry);
+
+    let overlay = build_overlay_shared_private_prefix().validate().unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table());
+    let peerings: Vec<_> = nat_config
+        .iter()
+        .map(|p| (p.src_vpcd, p.dst_vpcd))
+        .collect();
+    allocw.update_nat_allocator(nat_config, 1, &flow_table);
+    let mut pipeline: DynPipeline<'static, TestBuffer> = DynPipeline::new()
+        .add_stage(FlowLookup::new("flow-lookup", flow_table.clone()))
+        .add_stage(TestFlowFilter::with_peerings(peerings))
+        .add_stage(Masquerade::new(
+            "masq",
+            worker.clone(),
+            allocw.get_reader_factory().handle(),
+        ));
+
+    process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", 4321, true));
+    assert_eq!(
+        worker.timers(),
+        3,
+        "two flow timers and the mapping's reaper"
+    );
+
+    let overlay = build_overlay_shared_private_prefix_extended()
+        .validate()
+        .unwrap();
+    allocw.update_nat_allocator(MasqueradeConfig::new(overlay.vpc_table()), 2, &flow_table);
+    worker.expire_all(clock::now());
+    assert_eq!(registry.parked(), 0);
+    assert_eq!(
+        worker.timers(),
+        3,
+        "after the change the worker holds the same flows and one reaper: the carried mapping's, \
+         adopted from the control plane, and not the old pool's, which was cancelled"
+    );
+
+    // Long past every timeout: the flows expire, then the carried mapping is reaped.
+    tokio::time::sleep(Duration::from_hours(1)).await;
+    worker.expire_all(clock::now());
+    assert_eq!(flow_table.live_len(), 0);
+    assert_eq!(
+        worker.timers(),
+        0,
+        "the carried mapping's reaper did not finish"
+    );
 }
 
 // Remove one peering without disturbing flows on another.

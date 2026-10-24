@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use flow_entry::flow_table::WorkerFlowTable;
+use flow_entry::flow_table::{TimerRegistry, WorkerFlowTable};
 mod egress;
 #[cfg(test)]
 mod fuzz;
@@ -80,6 +80,8 @@ pub(crate) struct PipelineIngredients {
     stats_w: PacketStatsWriter,
     pkt_stats: Arc<PacketStats>,
     flow_table: Arc<FlowTable>,
+    /// Every worker's timer queue; each worker's pipeline registers its own.
+    timers: TimerRegistry,
     capture: CaptureController,
 }
 
@@ -94,7 +96,7 @@ impl PipelineIngredients {
     pub(crate) fn factory<'nf, Buf: PacketBufferMut + 'nf>(self) -> PipelineFactory<'nf, Buf> {
         Arc::new(move || {
             // This worker's handle on the shared flow table, for the stages that create flows.
-            let flows = WorkerFlowTable::new(self.flow_table.clone());
+            let flows = WorkerFlowTable::registered(self.flow_table.clone(), &self.timers);
 
             // Build network functions
             let stage_ingress = Ingress::new("Ingress", self.iftr_factory.handle());
@@ -208,7 +210,10 @@ pub(crate) fn start_router(
     let aclfiltertablesr_factory = aclfiltertablesw.get_reader_factory();
     let rate_limits = RateLimitWriter::new(RateLimits::empty(), workers);
     let nattablesw = NatTablesWriter::new();
-    let natallocatorw = NatAllocatorWriter::new();
+    // Workers register with this as they build their pipelines. Through it, the control plane puts
+    // the reapers of mappings it carries over on a configuration change on the workers' wheels.
+    let timers = TimerRegistry::new();
+    let natallocatorw = NatAllocatorWriter::with_timers(timers.clone());
     let nattabler_factory = nattablesw.get_reader_factory();
     let natallocator_factory = natallocatorw.get_reader_factory();
     let portfw_w = PortFwTableWriter::new();
@@ -263,6 +268,7 @@ pub(crate) fn start_router(
         stats_w,
         pkt_stats,
         flow_table: flow_table.clone(),
+        timers,
         capture,
     };
 

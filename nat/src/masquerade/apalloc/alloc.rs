@@ -3,22 +3,23 @@
 
 //! Masquerade IP allocation. See the architecture diagram in `mod.rs`.
 
-use super::mapping::{Mapping, MappingKey, ReaperShutdown, Subscriber, SubscribersTable};
+use super::mapping::{Mapping, MappingKey, PoolReapers, Subscriber, SubscribersTable};
 use super::region::AddrInterval;
 use super::reserved::{ReservedForAddr, ReservedPorts};
 use super::{NatIpWithBitmap, port_alloc};
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use crate::ranges::IpRange;
+use concurrency::sync::atomic::AtomicBool;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 use config::external::overlay::vpcpeering::MappingPolicy;
+use flow_entry::flow_table::Schedule;
 use net::ip::IpAddress;
 use port_alloc::PortAllocator;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::Ipv6Addr;
 use std::time::Duration;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -192,18 +193,19 @@ pub(crate) struct PoolSet<I: NatIpWithBitmap> {
     idle_timeout: Duration,
     mapping_policy: MappingPolicy,
     subscribers: SubscribersTable<I>,
-    // wakes this pool's reapers when the last copy of the pool is dropped
-    shutdown: Arc<ReaperShutdown>,
+    // retires this pool's reapers when the last copy of the pool is dropped
+    reapers: Arc<PoolReapers<I>>,
 }
 
 impl<I: NatIpWithBitmap> PoolSet<I> {
     pub(crate) fn new(idle_timeout: Duration, mapping_policy: MappingPolicy) -> Self {
+        let subscribers = SubscribersTable::new();
         Self {
             regions: Vec::new(),
             idle_timeout,
             mapping_policy,
-            subscribers: SubscribersTable::new(),
-            shutdown: Arc::new(ReaperShutdown::new()),
+            subscribers: subscribers.clone(),
+            reapers: Arc::new(PoolReapers::new(subscribers)),
         }
     }
 
@@ -227,8 +229,9 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
         &self.subscribers
     }
 
-    pub(crate) fn reaper_token(&self) -> CancellationToken {
-        self.shutdown.token()
+    // Set once this pool is gone; its reapers check it before reaping.
+    pub(crate) fn reapers_retired(&self) -> Arc<AtomicBool> {
+        self.reapers.retired()
     }
 
     /// Allocate from the first region with room, preserving non-exhaustion errors.
@@ -287,9 +290,10 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
         src_ip: I,
         key: MappingKey<I>,
         allow_null: bool,
+        timers: &dyn Schedule,
     ) -> Result<Arc<Mapping<I>>, AllocatorError> {
         self.with_subscriber(src_ip, |subscriber| {
-            subscriber.get_or_create(src_ip, key, self, allow_null)
+            subscriber.get_or_create(src_ip, key, self, allow_null, timers)
         })
     }
 
@@ -299,9 +303,10 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
         key: MappingKey<I>,
         ip: I,
         port: NatPort,
+        timers: &dyn Schedule,
     ) -> Result<Arc<Mapping<I>>, AllocatorError> {
         self.with_subscriber(src_ip, |subscriber| {
-            subscriber.get_or_reserve(src_ip, key, self, ip, port)
+            subscriber.get_or_reserve(src_ip, key, self, ip, port, timers)
         })
     }
 }

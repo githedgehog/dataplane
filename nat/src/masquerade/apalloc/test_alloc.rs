@@ -25,6 +25,32 @@ pub(super) mod context {
     use std::num::NonZero;
     use std::str::FromStr;
 
+    use concurrency::sync::Arc;
+    use flow_entry::flow_table::{FlowTable, Schedule, SideTimer, WorkerFlowTable};
+
+    /// A test's mapping reapers, released before the test returns. Keeping these in thread-local
+    /// storage defers allocation destructors (which log) until tracing's own TLS may be gone.
+    #[allow(dead_code)]
+    pub struct TestTimers(Option<WorkerFlowTable>);
+
+    impl Default for TestTimers {
+        fn default() -> Self {
+            // The model tests reap explicitly and only use lazy staleness checks otherwise.
+            Self(
+                (!cfg!(any(feature = "shuttle", feature = "loom")))
+                    .then(|| WorkerFlowTable::new(Arc::new(FlowTable::default()))),
+            )
+        }
+    }
+
+    impl Schedule for TestTimers {
+        fn schedule(&self, timer: Box<dyn SideTimer>) {
+            if let Some(wheel) = &self.0 {
+                wheel.schedule(timer);
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub fn addr_v4(ip: &str) -> Ipv4Addr {
         Ipv4Addr::from_str(ip).unwrap()
@@ -43,13 +69,14 @@ pub(super) mod context {
         NatPort::new_port(NonZero::new(n).unwrap())
     }
 
-    /// Move virtual time forward and then let the runtime actually poll what that woke. Advancing
-    /// the clock only makes a spawned reaper ready, it does not run it.
-    #[allow(dead_code)]
-    pub async fn advance(by: std::time::Duration) {
-        tokio::time::advance(by).await;
-        for _ in 0..4 {
-            tokio::task::yield_now().await;
+    impl TestTimers {
+        /// Move virtual time forward and sweep this test's wheel, as a worker's loop would.
+        #[allow(dead_code)]
+        pub async fn advance(&self, by: std::time::Duration) {
+            tokio::time::advance(by).await;
+            if let Some(wheel) = &self.0 {
+                wheel.expire_all(clock::now());
+            }
         }
     }
 
@@ -541,32 +568,38 @@ mod tests {
 
         // Distinct source ports, so each thread draws a distinct mapping
         handles.push(thread::spawn(move || {
+            let timers = TestTimers::default();
             let _allocation1 = allocator1
                 .allocate_typed(
                     vpcd1(),
                     vpcd2(),
                     PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
                     NextHeader::TCP,
+                    &timers,
                 )
                 .unwrap();
         }));
         handles.push(thread::spawn(move || {
+            let timers = TestTimers::default();
             let _allocation2 = allocator2
                 .allocate_typed(
                     vpcd1(),
                     vpcd2(),
                     PrivateTuple::new(addr_v4("1.1.0.0"), port(2), dst_v4(), None),
                     NextHeader::TCP,
+                    &timers,
                 )
                 .unwrap();
         }));
         handles.push(thread::spawn(move || {
+            let timers = TestTimers::default();
             let _allocation3 = allocator3
                 .allocate_typed(
                     vpcd1(),
                     vpcd2(),
                     PrivateTuple::new(addr_v4("1.1.0.0"), port(3), dst_v4(), None),
                     NextHeader::TCP,
+                    &timers,
                 )
                 .unwrap();
         }));
@@ -606,6 +639,37 @@ mod std_tests {
     use net::ip::NextHeader;
     use std::net::{IpAddr, Ipv4Addr};
     use std::num::NonZero;
+
+    #[test]
+    fn mapping_reapers_are_released_before_thread_teardown() {
+        use concurrency::sync::Arc;
+
+        let weak = {
+            let timers = TestTimers::default();
+            let allocator = build_allocator();
+            let mapping = allocator
+                .allocate_typed(
+                    vpcd1(),
+                    vpcd2(),
+                    PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                    NextHeader::TCP,
+                    &timers,
+                )
+                .unwrap();
+            let weak = Arc::downgrade(&mapping.allocation);
+            drop(mapping);
+            drop(allocator);
+            assert!(
+                weak.upgrade().is_some(),
+                "the unswept reaper still owns its mapping"
+            );
+            weak
+        };
+        assert!(
+            weak.upgrade().is_none(),
+            "the test scope must release its reapers"
+        );
+    }
 
     #[test]
     fn test_build_allocator() {
@@ -672,6 +736,7 @@ mod std_tests {
     // the expected IP is allocated.
     #[test]
     fn test_allocate() {
+        let timers = TestTimers::default();
         let mut allocator = build_allocator();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
@@ -690,6 +755,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         println!("{alloc_result}");
@@ -728,6 +794,7 @@ mod std_tests {
     // Allocate an IP for a TCP packet, then for a UDP packet.
     #[test]
     fn test_tcp_udp() {
+        let timers = TestTimers::default();
         let mut allocator = build_allocator();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
@@ -758,6 +825,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         println!("{tcp_allocation}");
@@ -793,6 +861,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
                 NextHeader::UDP,
+                &timers,
             )
             .unwrap();
         println!("{udp_allocation}");
@@ -827,6 +896,7 @@ mod std_tests {
     // each VPC in turn may not yield the same public address and port twice.
     #[test]
     fn test_shared_public_range_is_allocated_once() {
+        let timers = TestTimers::default();
         let allocator = build_allocator_shared_public_range();
 
         let alloc_a = allocator
@@ -835,6 +905,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         let alloc_b = allocator
@@ -843,6 +914,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("2.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
 
@@ -893,6 +965,7 @@ mod std_tests {
     // declares, rather than whichever expose happened to be registered last.
     #[test]
     fn test_overlapping_private_prefixes_use_their_own_pool() {
+        let timers = TestTimers::default();
         let allocator = build_allocator_overlapping_private_prefixes();
 
         let from_vpc1 = allocator
@@ -901,6 +974,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("192.168.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         let from_vpc2 = allocator
@@ -909,6 +983,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("192.168.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
 
@@ -968,6 +1043,7 @@ mod std_tests {
     // handing out the same public address and port.
     #[test]
     fn test_partial_overlap_shares_one_allocator_for_the_shared_region() {
+        let timers = TestTimers::default();
         let allocator = build_allocator_partial_overlap();
 
         let taken = allocator
@@ -976,6 +1052,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("2.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         // VPC-2 can only allocate from the shared region.
@@ -1001,6 +1078,7 @@ mod std_tests {
     // VPC that has nowhere else to go.
     #[test]
     fn test_partial_overlap_prefers_exclusive_space() {
+        let timers = TestTimers::default();
         let allocator = build_allocator_partial_overlap();
 
         let from_vpc1 = allocator
@@ -1009,6 +1087,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         assert_eq!(
@@ -1023,6 +1102,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("2.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         assert_ne!(
@@ -1041,6 +1121,7 @@ mod std_tests {
     // declares.
     #[test]
     fn test_partial_overlap_never_allocates_outside_the_configured_range() {
+        let timers = TestTimers::default();
         let allocator = build_allocator_partial_overlap();
 
         let mut held = Vec::new();
@@ -1051,6 +1132,7 @@ mod std_tests {
                     vpcd3(),
                     PrivateTuple::new(addr_v4("2.1.0.1"), port(i + 1), dst_v4(), None),
                     NextHeader::TCP,
+                    &timers,
                 )
                 .unwrap();
             let ip = allocation.allocation.ip();
@@ -1064,6 +1146,7 @@ mod std_tests {
 
     #[test]
     fn test_masquerade_v6_allocates_within_the_public_range() {
+        let timers = TestTimers::default();
         let allocator = build_allocator_v6();
         assert!(allocator.pools_src44.0.is_empty());
         assert!(!allocator.pools_src66.0.is_empty());
@@ -1080,6 +1163,7 @@ mod std_tests {
                     IpAddr::V6(dst_v6()),
                     None,
                     NextHeader::TCP,
+                    &timers,
                 )
                 .expect("the v6 pool has room");
             let IpAddr::V6(ip) = allocation.allocation.ip() else {
@@ -1102,6 +1186,7 @@ mod std_tests {
 
     #[test]
     fn test_masquerade_v6_reserves_a_carried_address() {
+        let timers = TestTimers::default();
         let allocator = build_allocator_v6();
         let src_port = port(1);
         let dst_ip = IpAddr::V6(dst_v6());
@@ -1114,6 +1199,7 @@ mod std_tests {
                 dst_ip,
                 None,
                 NextHeader::TCP,
+                &timers,
             )
             .expect("the v6 pool has room");
         let held = allocation.allocation.ip();
@@ -1136,6 +1222,7 @@ mod std_tests {
                 .expect("a v6 private source and a v6 allocation"),
                 NextHeader::TCP,
                 held_port,
+                &timers,
             )
             .expect("the next config still serves the tuple");
         assert_eq!((carried.ip(), carried.port()), (held, held_port));
@@ -1149,6 +1236,7 @@ mod std_tests {
                 dst_ip,
                 None,
                 NextHeader::TCP,
+                &timers,
             )
             .expect("the v6 pool has room");
         assert_ne!(
@@ -1303,6 +1391,7 @@ mod std_tests {
     /// have their own port space, which no flow of the forwarded protocol can collide with.
     #[test]
     fn a_claim_is_confined_to_the_protocol_it_forwards() {
+        let timers = TestTimers::default();
         let claimed_port = NatPort::new_port(NonZero::new(8080).unwrap());
         let public_ip = ipaddr("10.1.0.0");
         let private_src_ip = ipaddr("1.1.0.1");
@@ -1324,13 +1413,27 @@ mod std_tests {
             let allocator = build_allocator_port_forward_for(forwarded);
             assert!(
                 matches!(
-                    allocator.reserve_mapping(vpcd1(), vpcd2(), reservation, claimed, claimed_port),
+                    allocator.reserve_mapping(
+                        vpcd1(),
+                        vpcd2(),
+                        reservation,
+                        claimed,
+                        claimed_port,
+                        &timers
+                    ),
                     Err(AllocatorError::Denied)
                 ),
                 "a {forwarded:?} rule must claim the {claimed} tuple"
             );
             allocator
-                .reserve_mapping(vpcd1(), vpcd2(), reservation, untouched, claimed_port)
+                .reserve_mapping(
+                    vpcd1(),
+                    vpcd2(),
+                    reservation,
+                    untouched,
+                    claimed_port,
+                    &timers,
+                )
                 .unwrap_or_else(|e| {
                     panic!("a {forwarded:?} rule must claim nothing from {untouched}: {e}")
                 });
@@ -1368,6 +1471,7 @@ mod std_tests {
     // flow is invalidated.
     #[test]
     fn re_reserving_onto_a_mapping_with_a_different_tuple_is_refused() {
+        let timers = TestTimers::default();
         let allocator = build_allocator();
         let private_src = IpAddr::V4(addr_v4("1.1.0.1"));
         let src_port = port(1);
@@ -1381,6 +1485,7 @@ mod std_tests {
                 IpAddr::V4(dst_v4()),
                 None,
                 NextHeader::TCP,
+                &timers,
             )
             .expect("the pool has room");
         let (held, held_port) = (first.allocation.ip(), first.allocation.port());
@@ -1394,6 +1499,7 @@ mod std_tests {
                 .expect("a v4 private source and a v4 allocation"),
             NextHeader::TCP,
             held_port,
+            &timers,
         )
         .expect("the replacement still serves the first flow's tuple");
 
@@ -1409,6 +1515,7 @@ mod std_tests {
                     .expect("a v4 private source and a v4 allocation"),
                 NextHeader::TCP,
                 other_port,
+                &timers,
             )
             .expect_err("a mapping holding a different tuple must not be handed back");
         assert!(
@@ -1423,6 +1530,7 @@ mod std_tests {
     // causing the same private endpoint to be mapped to two public ones.
     #[tokio::test]
     async fn a_second_flow_joining_a_mapping_refreshes_it() {
+        let timers = TestTimers::default();
         tokio::time::pause();
         let idle_timeout = std::time::Duration::from_secs(120);
         let allocator = build_allocator_short_timeout(idle_timeout);
@@ -1436,6 +1544,7 @@ mod std_tests {
                     IpAddr::V4(dst_v4()),
                     None,
                     NextHeader::TCP,
+                    &timers,
                 )
                 .expect("the pool has room");
             (a.allocation.ip(), a.allocation.port())
@@ -1444,7 +1553,7 @@ mod std_tests {
         let original = draw();
 
         // Three quarters of the way to the deadline, a second flow joins the same mapping
-        advance(idle_timeout * 3 / 4).await;
+        timers.advance(idle_timeout * 3 / 4).await;
         assert_eq!(
             draw(),
             original,
@@ -1452,7 +1561,7 @@ mod std_tests {
         );
 
         // Past the mapping's original deadline, but well inside the refreshed one
-        advance(idle_timeout * 3 / 4).await;
+        timers.advance(idle_timeout * 3 / 4).await;
         assert_eq!(
             draw(),
             original,
@@ -1464,6 +1573,7 @@ mod std_tests {
     // and still be reaped once it finally goes idle.
     #[tokio::test]
     async fn a_refreshed_mapping_is_still_reaped_once_it_goes_idle() {
+        let timers = TestTimers::default();
         tokio::time::pause();
         let idle = std::time::Duration::from_millis(50);
         let mut allocator = build_allocator_short_timeout(idle);
@@ -1474,17 +1584,18 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
 
         // Past the original deadline, but refreshed on the way so the reaper has to go round again
-        advance(idle / 2).await;
+        timers.advance(idle / 2).await;
         alloc.allocation.refresh();
-        advance(idle).await;
+        timers.advance(idle).await;
         drop(alloc);
 
         // Now let it go idle for real
-        advance(idle * 4).await;
+        timers.advance(idle * 4).await;
 
         let (bitmap, _) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
@@ -1507,6 +1618,7 @@ mod std_tests {
     // mapping's own expiry (not an independent subscriber's timer).
     #[tokio::test]
     async fn a_reaped_mapping_frees_its_pinned_address_for_reuse() {
+        let timers = TestTimers::default();
         tokio::time::pause();
         let mut allocator = build_allocator_short_timeout(std::time::Duration::from_millis(50));
 
@@ -1516,6 +1628,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         drop(alloc);
@@ -1535,7 +1648,7 @@ mod std_tests {
 
         // Let the reaper expire the mapping and reap the now-empty subscriber (this runs on the
         // paused clock).
-        advance(std::time::Duration::from_millis(500)).await;
+        timers.advance(std::time::Duration::from_millis(500)).await;
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
@@ -1562,6 +1675,7 @@ mod std_tests {
     // mapping's own table entry was reaped.
     #[tokio::test]
     async fn a_flow_still_holding_a_mapping_blocks_its_port_from_reuse_after_reaping() {
+        let timers = TestTimers::default();
         tokio::time::pause();
         let mut allocator = build_allocator_short_timeout(std::time::Duration::from_millis(50));
 
@@ -1571,6 +1685,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         // Simulates a flow's MasqueradeState holding its own reference, independent of the table
@@ -1580,7 +1695,7 @@ mod std_tests {
 
         // Let the reaper expire the mapping and remove the table's own entry for it (this runs on
         // the paused clock).
-        advance(std::time::Duration::from_millis(500)).await;
+        timers.advance(std::time::Duration::from_millis(500)).await;
 
         // The table's own reference is gone, but held_by_flow is not: the tuple it names must still
         // be refused to anyone else trying to claim it directly
@@ -1625,6 +1740,7 @@ mod std_tests {
     // half alone is not able to tell a wall-clock read from a working one.
     #[tokio::test]
     async fn an_unrefreshed_mapping_expires_in_virtual_time() {
+        let timers = TestTimers::default();
         tokio::time::pause();
         let idle_timeout = std::time::Duration::from_secs(120);
         let allocator = build_allocator_short_timeout(idle_timeout);
@@ -1635,6 +1751,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         let tuple = (alloc.allocation.ip(), alloc.allocation.port());
@@ -1647,6 +1764,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         assert_ne!(
@@ -1663,6 +1781,7 @@ mod std_tests {
     //# refresh behavior" of "True".
     #[tokio::test]
     async fn refreshing_a_mapping_extends_it_in_virtual_time_not_wall_time() {
+        let timers = TestTimers::default();
         tokio::time::pause();
         let idle_timeout = std::time::Duration::from_secs(120);
         let allocator = build_allocator_short_timeout(idle_timeout);
@@ -1673,6 +1792,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         let tuple = (alloc.allocation.ip(), alloc.allocation.port());
@@ -1690,6 +1810,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &timers,
             )
             .unwrap();
         assert_eq!(
@@ -1717,22 +1838,26 @@ mod concurrency_tests {
         let allocator2 = allocator1.clone();
 
         let t1 = thread::spawn(move || {
+            let timers = TestTimers::default();
             let _allocation1 = allocator1
                 .allocate_typed(
                     vpcd1(),
                     vpcd2(),
                     PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
                     NextHeader::TCP,
+                    &timers,
                 )
                 .unwrap();
         });
         let t2 = thread::spawn(move || {
+            let timers = TestTimers::default();
             let _allocation2 = allocator2
                 .allocate_typed(
                     vpcd1(),
                     vpcd2(),
                     PrivateTuple::new(addr_v4("1.2.0.0"), port(1), dst_v4(), None),
                     NextHeader::TCP,
+                    &timers,
                 )
                 .unwrap();
         });
