@@ -84,6 +84,7 @@ pub use crate::masquerade::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicI64, Ordering};
 use config::GenId;
+use flow_entry::flow_table::Schedule;
 use mapping::{MappingKey, MappingScope, PrivateTuple};
 use net::ip::{IpAddress, NextHeader, Unicast};
 use net::packet::VpcDiscriminant;
@@ -381,8 +382,16 @@ impl NatAllocator {
         dst_vpcd: VpcDiscriminant,
         tuple: PrivateTuple<I>,
         next_header: NextHeader,
+        timers: &dyn Schedule,
     ) -> Result<AllocationResult<Arc<Mapping<I>>>, AllocatorError> {
-        Self::allocate_from_tables(src_vpcd, dst_vpcd, tuple, next_header, I::pools(self))
+        Self::allocate_from_tables(
+            src_vpcd,
+            dst_vpcd,
+            tuple,
+            next_header,
+            I::pools(self),
+            timers,
+        )
     }
 
     // Calls allocate_typed(), with the result erased back to the non-generic Allocation
@@ -392,8 +401,9 @@ impl NatAllocator {
         dst_vpcd: VpcDiscriminant,
         tuple: PrivateTuple<I>,
         next_header: NextHeader,
+        timers: &dyn Schedule,
     ) -> Result<AllocationResult<Allocation>, AllocatorError> {
-        self.allocate_typed(src_vpcd, dst_vpcd, tuple, next_header)
+        self.allocate_typed(src_vpcd, dst_vpcd, tuple, next_header, timers)
             .map(|r| AllocationResult {
                 allocation: I::into_allocation(r.allocation),
                 idle_timeout: r.idle_timeout,
@@ -413,6 +423,7 @@ impl NatAllocator {
         dst_ip: IpAddr,
         dst_port: Option<NatPort>,
         next_header: NextHeader,
+        timers: &dyn Schedule,
     ) -> Result<AllocationResult<Allocation>, AllocatorError> {
         match (src_ip, dst_ip) {
             (IpAddr::V4(src), IpAddr::V4(dst)) => self.allocate_any(
@@ -420,12 +431,14 @@ impl NatAllocator {
                 dst_vpcd,
                 PrivateTuple::new(src, src_port, dst, dst_port),
                 next_header,
+                timers,
             ),
             (IpAddr::V6(src), IpAddr::V6(dst)) => self.allocate_any(
                 src_vpcd,
                 dst_vpcd,
                 PrivateTuple::new(src, src_port, dst, dst_port),
                 next_header,
+                timers,
             ),
             _ => Err(AllocatorError::InternalIssue(format!(
                 "IP version mismatch between src={src_ip} and dst={dst_ip}"
@@ -439,6 +452,7 @@ impl NatAllocator {
         tuple: PrivateTuple<I>,
         next_header: NextHeader,
         pools_src: &PoolTable<I, I>,
+        timers: &dyn Schedule,
     ) -> Result<AllocationResult<Arc<Mapping<I>>>, AllocatorError> {
         let PrivateTuple {
             src_ip,
@@ -471,8 +485,12 @@ impl NatAllocator {
         // The default MappingPolicy is EndpointIndependent, which is what REQ-1 requires. We may
         // choose to pick a different variant, which would be a deliberate departure from REQ-1.
         let scope = MappingScope::new(pool.mapping_policy(), dst_ip, dst_port);
-        let allocation =
-            pool.get_or_create_mapping(src_ip, MappingKey::new(src_port, scope), allow_null)?;
+        let allocation = pool.get_or_create_mapping(
+            src_ip,
+            MappingKey::new(src_port, scope),
+            allow_null,
+            timers,
+        )?;
         let idle_timeout = pool.idle_timeout();
 
         Ok(AllocationResult {
@@ -488,13 +506,14 @@ impl NatAllocator {
         reservation: AnyReservation,
         protocol: NextHeader,
         port: NatPort,
+        timers: &dyn Schedule,
     ) -> Result<Allocation, AllocatorError> {
         match reservation {
             AnyReservation::V4(reservation) => {
-                self.reserve(src_vpcd, dst_vpcd, reservation, protocol, port)
+                self.reserve(src_vpcd, dst_vpcd, reservation, protocol, port, timers)
             }
             AnyReservation::V6(reservation) => {
-                self.reserve(src_vpcd, dst_vpcd, reservation, protocol, port)
+                self.reserve(src_vpcd, dst_vpcd, reservation, protocol, port, timers)
             }
         }
     }
@@ -506,6 +525,7 @@ impl NatAllocator {
         reservation: Reservation<I>,
         protocol: NextHeader,
         port: NatPort,
+        timers: &dyn Schedule,
     ) -> Result<Allocation, AllocatorError> {
         let Reservation {
             private_src_ip,
@@ -534,6 +554,7 @@ impl NatAllocator {
             MappingKey::new(private_src_port, scope),
             public_ip,
             port,
+            timers,
         )
         .inspect_err(|e| error!("Failed to reserve ip {public_ip} port {port}: {e}"))
         .map(I::into_allocation)

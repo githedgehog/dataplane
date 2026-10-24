@@ -253,6 +253,7 @@ async fn a_claimed_tuple_cannot_be_reserved_for_masquerade() {
                 .expect("a v4 pair, unicast source"),
                 NextHeader::UDP,
                 NatPort::new_port_checked(1024).unwrap(),
+                &flow_entry::flow_table::TimerRegistry::new(),
             ),
             Err(AllocatorError::Denied)
         )

@@ -13,9 +13,10 @@ mod concurrent_fuzz;
 #[cfg(all(test, not(feature = "loom")))]
 mod pair_tests;
 
-pub use expiry::ExpirySweep;
+pub use expiry::{ExpirySweep, Schedule, SideTimer, TimerRegistry, WorkerTimer};
 pub use nf_lookup::FlowLookup;
 pub use table::{FlowTable, FlowTableReadGuard, Insertion, PairInsertion};
+pub use timer_wheel::TimerRef;
 pub use worker::WorkerFlowTable;
 
 pub use net::flows::atomic_instant::AtomicInstant;
