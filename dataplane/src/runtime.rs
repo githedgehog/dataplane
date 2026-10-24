@@ -739,7 +739,7 @@ pub fn main() {
                 metrics.num_workers(),
                 metrics.num_alive_tasks(),
                 metrics.global_queue_depth(),
-                (now - last).as_millis()
+                now.saturating_sub(last).as_millis()
             );
             last = now;
         }

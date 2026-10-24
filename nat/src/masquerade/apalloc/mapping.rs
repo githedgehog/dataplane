@@ -461,9 +461,25 @@ fn spawn_mapping_reaper<I: NatIpWithBitmap>(
     subscribers: SubscribersTable<I>,
     cancel: CancellationToken,
 ) {
-    if !flow_entry::bench::per_flow_tasks() {
-        return;
-    }
+    use flow_entry::bench::{FlowTasks, flow_tasks};
+    let (subscriber, subscribers, mapping, cancel) = match flow_tasks() {
+        FlowTasks::Off => return,
+        FlowTasks::Wheel if flow_entry::wheel::installed() => {
+            let reaper = Box::new(WheelReaper {
+                subscriber,
+                subscriber_ip,
+                key,
+                mapping,
+                subscribers,
+                cancel,
+            });
+            // Cannot fail: this thread has a wheel.
+            let _ = flow_entry::wheel::insert_other(reaper);
+            return;
+        }
+        // Tokio, or a thread without a wheel.
+        FlowTasks::Wheel | FlowTasks::Tokio => (subscriber, subscribers, mapping, cancel),
+    };
     if tokio::runtime::Handle::try_current().is_err() {
         debug!(
             // See simple staleness checks in Subscriber::get_or_insert_with()
@@ -495,6 +511,43 @@ fn spawn_mapping_reaper<I: NatIpWithBitmap>(
             deadline = mapping.expires_at();
         }
     });
+}
+
+// BENCH PROTOTYPE (B2): the mapping reaper as a wheel entry. Same logic as the task above, without
+// the task: no Notify waiter on the shared pool token, just a flag check when the deadline passes.
+#[cfg(not(any(feature = "shuttle", feature = "loom")))]
+struct WheelReaper<I: NatIpWithBitmap> {
+    subscriber: Arc<Subscriber<I>>,
+    subscriber_ip: I,
+    key: MappingKey<I>,
+    mapping: Arc<Mapping<I>>,
+    subscribers: SubscribersTable<I>,
+    cancel: CancellationToken,
+}
+
+#[cfg(not(any(feature = "shuttle", feature = "loom")))]
+impl<I: NatIpWithBitmap> flow_entry::wheel::Expiring for WheelReaper<I> {
+    fn deadline(&self) -> Instant {
+        self.mapping.expires_at()
+    }
+
+    fn expire(&mut self, now: Instant) -> Option<Instant> {
+        if self.cancel.is_cancelled() {
+            return None;
+        }
+        let at = self.mapping.expires_at();
+        if at > now {
+            return Some(at);
+        }
+        let done = reap_expired_mapping(
+            &self.subscriber,
+            self.subscriber_ip,
+            self.key,
+            &self.mapping,
+            &self.subscribers,
+        );
+        (!done).then(|| self.mapping.expires_at())
+    }
 }
 
 // Drop the mapping from the subscriber's table (verifying identity so a concurrently-inserted

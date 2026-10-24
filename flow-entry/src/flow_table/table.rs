@@ -39,7 +39,7 @@ enum Found {
     Refused(FlowTableError),
 }
 
-type Table = DashMap<FlowKey, Arc<FlowInfo>, RandomState>;
+pub(crate) type Table = DashMap<FlowKey, Arc<FlowInfo>, RandomState>;
 
 /// Counts an insertion before its entry can be removed. An unused reservation is returned.
 struct SlotReservation<'a> {
@@ -200,9 +200,17 @@ impl FlowTable {
     /// Start a timer task for a flow
     #[allow(unused)]
     fn start_timer(table: Arc<RwLock<Table>>, live: Arc<AtomicUsize>, flow_info: Arc<FlowInfo>) {
-        if !crate::bench::per_flow_tasks() {
-            return;
-        }
+        let flow_info = match crate::bench::flow_tasks() {
+            crate::bench::FlowTasks::Off => return,
+            crate::bench::FlowTasks::Wheel => {
+                match crate::wheel::insert_flow(&table, &live, flow_info) {
+                    Ok(()) => return,
+                    // No wheel on this thread: fall back to a task.
+                    Err(flow_info) => flow_info,
+                }
+            }
+            crate::bench::FlowTasks::Tokio => flow_info,
+        };
         tokio::task::spawn(async move {
             let table = table;
             let flow_key = flow_info.flowkey();

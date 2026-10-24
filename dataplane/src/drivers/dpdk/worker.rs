@@ -86,6 +86,14 @@ impl<'p> Worker<'p> {
             }
         };
 
+        // BENCH PROTOTYPE (B2): this worker's timer wheel, swept once per loop below.
+        let wheel = flow_entry::bench::flow_tasks() == flow_entry::bench::FlowTasks::Wheel;
+        if wheel {
+            flow_entry::wheel::install();
+        }
+        let wheel_budget = flow_entry::bench::wheel_budget();
+        let mut wheel_logged = std::time::Instant::now();
+
         let mut pipeline = setup_pipeline();
 
         // Map pipeline output ifindices to this worker's transmit queues.
@@ -129,6 +137,10 @@ impl<'p> Worker<'p> {
                     break;
                 }
                 self.report(&mut counters);
+                if wheel && wheel_logged.elapsed() >= std::time::Duration::from_secs(5) {
+                    wheel_logged = std::time::Instant::now();
+                    tracing::warn!(target: "bench", worker = self.id, "BENCH wheel {:?}", flow_entry::wheel::stats());
+                }
             }
 
             let mut saw_frames = false;
@@ -136,6 +148,10 @@ impl<'p> Worker<'p> {
                 if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut scratch, counters) {
                     saw_frames = true;
                 }
+            }
+
+            if wheel {
+                flow_entry::wheel::sweep(wheel_budget);
             }
 
             if saw_frames {
