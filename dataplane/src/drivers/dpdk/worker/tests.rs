@@ -2,8 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 use super::*;
+use concurrency::sync::Arc;
 use concurrency::thread;
-use flow_entry::flow_table::FlowTable;
+use flow_entry::flow_table::{FlowTable, WorkerFlowTable};
 use net::buffer::TestBuffer;
 use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
 use net::ip::NextHeader;
@@ -186,8 +187,10 @@ fn key(port: u16) -> FlowKey {
     )
 }
 
+/// The worker expires the flows its pipeline created, on its own thread, while it polls: one pair
+/// by deadline, one by invalidation from another thread.
 #[test]
-fn flow_timers_progress_while_the_worker_polls() {
+fn flows_expire_on_the_worker_while_it_polls() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_time()
@@ -196,10 +199,10 @@ fn flow_timers_progress_while_the_worker_polls() {
     let shutdown = lifecycle::Shutdown::new();
     let table = Arc::new(FlowTable::new(2));
     let (created_tx, created_rx) = std::sync::mpsc::channel();
-    let (timer_tx, timer_rx) = std::sync::mpsc::channel();
-    let setup: Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, Mbuf<'static>>> = {
+    let setup: PipelineFactory<'static, Mbuf<'static>> = {
         let table = table.clone();
         Arc::new(move || {
+            let flows = WorkerFlowTable::new(table.clone());
             let pairs = [
                 (1001, Duration::from_millis(100)),
                 (1003, Duration::from_secs(60)),
@@ -213,15 +216,14 @@ fn flow_timers_progress_while_the_worker_polls() {
                     FlowInfoFlags::default(),
                 )
                 .unwrap();
-                table.insert_pair_if_absent(&forward, &reverse).unwrap();
+                flows.insert_pair_if_absent(&forward, &reverse).unwrap();
                 (forward, reverse)
             });
-            created_tx.send((thread::current().id(), pairs)).unwrap();
-            let timer_tx = timer_tx.clone();
-            tokio::spawn(async move {
-                timer_tx.send(thread::current().id()).unwrap();
-            });
-            DynPipeline::new()
+            created_tx.send(pairs).unwrap();
+            WorkerPipeline {
+                pipeline: DynPipeline::new(),
+                flows,
+            }
         })
     };
 
@@ -230,21 +232,18 @@ fn flow_timers_progress_while_the_worker_polls() {
         let worker = scope.spawn(|| {
             Worker::new(0, Vec::new()).run(&shutdown.workers, &setup, runtime.handle());
         });
-        let (worker_id, [(forward, reverse), (cancelled, _)]) =
+        let [(forward, reverse), (cancelled, _)] =
             created_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        let timer_id = timer_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_ne!(worker_id, timer_id);
         cancelled.invalidate_pair();
 
-        runtime.block_on(async {
-            tokio::time::timeout(Duration::from_secs(5), async {
-                while table.live_len() != 0 {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-            })
-            .await
-            .expect("expiration and cancellation must remove both flow pairs");
-        });
+        let deadline = clock::now() + Duration::from_secs(5);
+        while table.live_len() != 0 {
+            assert!(
+                clock::now() < deadline,
+                "expiration and cancellation must remove both flow pairs"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert_eq!(forward.status(), FlowStatus::Expired);
         assert_eq!(reverse.status(), FlowStatus::Expired);
         assert!(!worker.is_finished());

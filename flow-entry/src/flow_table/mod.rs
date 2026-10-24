@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 mod display;
+mod expiry;
 pub mod nf_lookup;
 pub mod table;
 mod worker;
@@ -12,6 +13,7 @@ mod concurrent_fuzz;
 #[cfg(all(test, not(feature = "loom")))]
 mod pair_tests;
 
+pub use expiry::ExpirySweep;
 pub use nf_lookup::FlowLookup;
 pub use table::{FlowTable, FlowTableReadGuard, Insertion, PairInsertion};
 pub use worker::WorkerFlowTable;

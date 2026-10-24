@@ -39,7 +39,7 @@ static_assertions = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
-tokio-util = { workspace = true }
+timer-wheel = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

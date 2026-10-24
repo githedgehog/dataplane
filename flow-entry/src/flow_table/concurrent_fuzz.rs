@@ -44,7 +44,7 @@
 #![cfg(test)]
 #![cfg(not(feature = "loom"))]
 
-use crate::flow_table::FlowTable;
+use crate::flow_table::{FlowTable, WorkerFlowTable};
 use concurrency::sync::atomic::{AtomicU8, Ordering};
 use concurrency::sync::{Arc, Weak};
 use concurrency::thread;
@@ -94,6 +94,8 @@ enum Op {
     ExtendExpiry,
     ReadStubStatus,
     AdvanceStatus,
+    /// The worker sweeps its own timer wheel, removing what other workers invalidated.
+    Expire,
 }
 
 /// One bolero-generated test shape: a key seed plus an op stream for
@@ -156,10 +158,9 @@ fn key_set(base: FlowKey) -> Vec<FlowKey> {
 
 /// Insert one flow per key. Insert two flows as a pair if possible, with only the "base" key marked
 /// as the initiator. Insert the single key otherwise.
-fn insert_flows(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>) {
-    // Far-future expiry so the per-flow timer never fires inside the test
-    // window — we race the insert path, not the expiry path. (The timer task
-    // is also cfg'd out entirely under shuttle.)
+fn insert_flows(table: &WorkerFlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>) {
+    // Far-future expiry so no timer comes due inside the test window: what
+    // `Op::Expire` races is the removal of flows other workers invalidated.
     let expires_at = clock::now() + Duration::from_hours(1);
     let flows: Vec<Arc<FlowInfo>> = match keys {
         [fwd_key, rev_key] => {
@@ -190,7 +191,7 @@ fn insert_flows(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>
 }
 
 /// Apply one [`Op`] across the whole key set.
-fn apply_op(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op: Op) {
+fn apply_op(table: &WorkerFlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op: Op) {
     match op {
         Op::Insert => {
             insert_flows(table, keys, stub_status);
@@ -256,6 +257,12 @@ fn apply_op(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op
                 }
             }
         }
+        Op::Expire => {
+            // Only flows this worker inserted are on its wheel, and the far-future deadlines mean
+            // nothing is due: what it removes, another worker invalidated or displaced. The sweep
+            // races those workers' lookups, invalidations and insertions on the same keys.
+            table.expire(clock::now(), 4);
+        }
     }
 }
 
@@ -264,13 +271,9 @@ impl Scenario {
     /// streams concurrently, then sweep every surviving entry for a legal
     /// status.
     ///
-    /// `rt` is the tokio handle the std backend needs: `FlowTable::insert`
-    /// schedules a per-flow expiry timer via `tokio::task::spawn`, which
-    /// panics outside a runtime context. Each worker enters the handle so
-    /// the spawn succeeds; the queued timer tasks never run (far-future
-    /// expiry) and are dropped with the runtime. Under shuttle the timer
-    /// path is cfg'd out, so `rt` is `None`.
-    fn run(&self, handle: Option<&tokio::runtime::Handle>) {
+    /// Each worker inserts through its own [`WorkerFlowTable`], whose timer
+    /// wheel stays on that worker's thread, as on a gateway.
+    fn run(&self) {
         let keys: Arc<Vec<FlowKey>> = Arc::new(key_set(self.seed_key));
         let table = Arc::new(FlowTable::default());
         // One atomic per scenario, cloned into every inserted stub. Every
@@ -291,9 +294,9 @@ impl Scenario {
                     thread::Builder::new()
                         .name(format!("worker-{i}"))
                         .spawn_scoped(scope, move || {
-                            let _guard = handle.map(tokio::runtime::Handle::enter);
+                            let flows = WorkerFlowTable::new(table);
                             for op in ops {
-                                apply_op(&table, &keys, &stub_status, op);
+                                apply_op(&flows, &keys, &stub_status, op);
                                 // Give the model checker a preemption point
                                 // between ops; a cheap hint under std.
                                 thread::yield_now();
@@ -341,18 +344,8 @@ fn stress_test_concurrency_model() {
         .with_type()
         .cloned()
         .for_each(|scenario: Scenario| {
-            let rt = cfg_select! {
-                feature = "shuttle" => None::<tokio::runtime::Runtime>,
-                _ => Some(
-                        tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .expect("build tokio runtime")
-                     )
-            };
-            let handle = rt.as_ref().map(|rt| rt.handle().clone());
             concurrency::stress(move || {
-                scenario.run(handle.as_ref());
+                scenario.run();
             });
         });
 }

@@ -91,9 +91,7 @@ impl PipelineIngredients {
 
     /// Create a shared factory for the driver's buffer type and lifetime.
     /// The returned pipelines are constructed and used on their worker threads.
-    pub(crate) fn factory<'nf, Buf: PacketBufferMut + 'nf>(
-        self,
-    ) -> Arc<dyn Send + Sync + Fn() -> DynPipeline<'nf, Buf> + 'nf> {
+    pub(crate) fn factory<'nf, Buf: PacketBufferMut + 'nf>(self) -> PipelineFactory<'nf, Buf> {
         Arc::new(move || {
             // This worker's handle on the shared flow table, for the stages that create flows.
             let flows = WorkerFlowTable::new(self.flow_table.clone());
@@ -139,9 +137,9 @@ impl PipelineIngredients {
                 CaptureStage::new(Direction::Egress, self.capture.sink(Direction::Egress));
 
             // Build the pipeline for a router. The composition of the pipeline (in stages) is
-            // currently hard-coded. Flow expiration is handled by per-flow tokio timers; no
-            // ExpirationsNF needed.
-            DynPipeline::new()
+            // currently hard-coded. Flows expire on the worker's timer wheel, which the worker
+            // drives through `WorkerFlowTable::expire`; no stage is needed for it.
+            let pipeline = DynPipeline::new()
                 .set_data(self.pdata.clone())
                 .add_stage(capture_ingress)
                 .add_stage(stage_ingress)
@@ -162,10 +160,29 @@ impl PipelineIngredients {
                 .add_stage(capture_egress)
                 .add_stage(pktdump)
                 .add_stage(pkt_stats_nf)
-                .add_stage(stats_stage)
+                .add_stage(stats_stage);
+            WorkerPipeline { pipeline, flows }
         })
     }
 }
+
+/// A pipeline built on, and for, one worker thread, with that worker's handle on the flow table.
+///
+/// The worker owns the expiry of every flow its pipeline creates, and drives it by calling
+/// [`WorkerFlowTable::expire`] on `flows` from its loop, with up to [`EXPIRY_BUDGET`] timers each
+/// time.
+pub(crate) struct WorkerPipeline<'nf, Buf: PacketBufferMut> {
+    pub(crate) pipeline: DynPipeline<'nf, Buf>,
+    pub(crate) flows: WorkerFlowTable,
+}
+
+/// Flow timers a worker looks at per expiry pass: twice an rx burst, so a burst of expiring flows
+/// turns into a short backlog rather than a stall of the rx loop.
+pub(crate) const EXPIRY_BUDGET: usize = 64;
+
+/// Builds a worker's pipeline, on the worker's thread.
+pub(crate) type PipelineFactory<'nf, Buf> =
+    Arc<dyn Send + Sync + Fn() -> WorkerPipeline<'nf, Buf> + 'nf>;
 
 /// Start a router and provide the ingredients for its pipeline
 pub(crate) fn start_router(
