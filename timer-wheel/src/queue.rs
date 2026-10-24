@@ -82,9 +82,25 @@ impl<P> Clone for Remote<P> {
     }
 }
 
+impl<P> Default for Remote<P> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<P> Remote<P> {
-    pub(crate) fn new(queue: Arc<ScheduleQueue<P>>) -> Self {
+    /// A queue for a wheel that does not exist yet; see [`Wheel::with_remote`](crate::Wheel::with_remote).
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Arc::new(ScheduleQueue::default()))
+    }
+
+    pub(crate) fn from_queue(queue: Arc<ScheduleQueue<P>>) -> Self {
         Self(queue)
+    }
+
+    pub(crate) fn queue(&self) -> &Arc<ScheduleQueue<P>> {
+        &self.0
     }
 
     /// Queue `payload` for the owning wheel.
