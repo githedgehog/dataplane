@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use timer_wheel::TimerRef;
 use tracing::debug;
 
-use super::{AtomicConnState, AtomicInstant, FlowInfoItem};
+use super::nat_state::NatFlowState;
+use super::{AtomicConnState, AtomicInstant};
 use crate::FlowKey;
 
 #[derive(Debug, thiserror::Error)]
@@ -166,15 +167,12 @@ impl FlowInfoFlags {
     }
 }
 
-// We need NAT information to use downcast to avoid circular dependencies between crates.
+/// The state of a flow behind its lock: where it goes, and the NAT stage that created it.
 #[derive(Debug, Default)]
 pub struct FlowInfoLocked {
     pub dst_vpcd: Option<VpcDiscriminant>,
-    pub masquerade_data: Option<Box<dyn FlowInfoItem>>,
-    pub port_fw_data: Option<Box<dyn FlowInfoItem>>,
-    pub static_nat_data: Option<Box<dyn FlowInfoItem>>,
-    // Data for flows tracked without NAT, required for flow-scoped user ACL rules
-    pub tracked_data: Option<Box<dyn FlowInfoItem>>,
+    /// Inline: the packet path reads it on every packet, so it must not be a pointer away.
+    pub nat: NatFlowState,
 }
 
 /// Object that represents a flow of packets.

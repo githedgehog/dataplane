@@ -5,6 +5,7 @@
 
 use crate::nat_flows::NatData;
 use net::flows::FlowInfoLocked;
+use net::flows::nat_state::NatFlowState;
 use std::fmt::Display;
 
 /// Marker for flows tracked without masquerade or port forwarding, for the ACL stage. The flows
@@ -20,14 +21,10 @@ impl Display for TrackedFlowData {
 
 impl NatData for TrackedFlowData {
     fn try_get(locked: &FlowInfoLocked) -> Option<&Self> {
-        locked.tracked_data.as_deref()?.downcast_ref::<Self>()
-    }
-
-    fn try_get_mut(locked: &mut FlowInfoLocked) -> Option<&mut Self> {
-        locked.tracked_data.as_deref_mut()?.downcast_mut::<Self>()
+        matches!(locked.nat, NatFlowState::Tracked).then_some(&TrackedFlowData)
     }
 
     fn set(self, locked: &mut FlowInfoLocked) {
-        locked.tracked_data = Some(Box::new(self));
+        locked.nat = NatFlowState::Tracked;
     }
 }

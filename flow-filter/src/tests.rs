@@ -23,8 +23,10 @@ use config::external::overlay::vpcpeering::VpcExpose;
 use lpm::prefix::{L4Protocol, Prefix, PrefixWithOptionalPorts};
 use net::FlowKey;
 use net::buffer::TestBuffer;
+use net::flows::nat_state::{MasqueradeFlow, NatAction, NatFlowState, NatPort};
 use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
 use net::headers::Headers;
+use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::parse::DeParse;
 use pipeline::{NetworkFunction, PipelineData};
@@ -68,15 +70,18 @@ fn create_flow_pair(
         let mut locked_reply = flow_info_reply.locked.write();
         locked_fwd.dst_vpcd = dst_vpcd;
         locked_reply.dst_vpcd = src_vpcd;
+        // The flow filter only checks which kind of state a flow has, never its contents.
+        assert!(
+            !(nat_state && port_fw_state),
+            "a flow has one kind of NAT state"
+        );
         if nat_state {
-            // The concrete type would be a NatData; a bool is enough here since the flow filter
-            // only checks for presence, never downcasts it.
-            locked_fwd.masquerade_data = Some(Box::new(true));
-            locked_reply.masquerade_data = Some(Box::new(true));
+            locked_fwd.nat = placeholder_masquerade();
+            locked_reply.nat = placeholder_masquerade();
         }
         if port_fw_state {
-            locked_fwd.port_fw_data = Some(Box::new(true));
-            locked_reply.port_fw_data = Some(Box::new(true));
+            locked_fwd.nat = NatFlowState::PortForward(Box::new(true));
+            locked_reply.nat = NatFlowState::PortForward(Box::new(true));
         }
     }
     (flow_info_fwd, flow_info_reply)
@@ -87,6 +92,18 @@ fn create_flow_pair(
 // destination (`None` models a buggy flow with no destination); `nat_state` / `port_fw_state` model
 // stored masquerade / port-forwarding state. Returns the shared `FlowInfo` so a test can inspect it
 // after processing (e.g. to check invalidation).
+
+/// Masquerade state with arbitrary contents: the flow filter only looks at its kind.
+fn placeholder_masquerade() -> NatFlowState {
+    NatFlowState::Masquerade(MasqueradeFlow {
+        action: NatAction::SrcNat,
+        use_ip: UnicastIpAddr::try_from(std::net::IpAddr::from([192, 0, 2, 1])).unwrap(),
+        use_port: NatPort::Identifier(1),
+        idle_timeout: std::time::Duration::from_secs(60),
+        mapping: None,
+    })
+}
+
 fn attach_flow(
     packet: &mut Packet<TestBuffer>,
     dst_vpcd: Option<VpcDiscriminant>,
@@ -1435,7 +1452,12 @@ fn burst_processing_upholds_structural_invariants() {
                 let flow = spec
                     .flow
                     .filter(|_| !spec.non_ip)
-                    .map(|f| attach_flow(&mut p, f.dst_vpcd(), f.active, f.masq_state, f.pf_state));
+                    // A flow carries one kind of NAT state; when the spec asks for both, it is a
+                    // masqueraded flow.
+                    .map(|f| {
+                        let pf_state = f.pf_state && !f.masq_state;
+                        attach_flow(&mut p, f.dst_vpcd(), f.active, f.masq_state, pf_state)
+                    });
                 flows.push(flow);
                 packets.push(p);
             }
@@ -2271,8 +2293,8 @@ fn active_tracked_flow_requires_flow_tracking_on_bypass() {
         build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
     );
     let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, false);
-    // The flow filter only checks for presence, so the type of the state does not matter
-    flow.locked.write().tracked_data = Some(Box::new(true));
+    // The flow filter only checks which kind of state a flow has
+    flow.locked.write().nat = NatFlowState::Tracked;
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert!(
@@ -2378,8 +2400,8 @@ fn forced_flow_tracking_never_comes_with_stateful_nat() {
                             let port_fw = matches!(state, FlowState::PortForwarding);
                             let info = attach_flow(&mut p, Some(dst), active, masquerade, port_fw);
                             if matches!(state, FlowState::Tracked) {
-                                // The flow filter only checks for presence
-                                info.locked.write().tracked_data = Some(Box::new(true));
+                                // The flow filter only checks which kind of state a flow has
+                                info.locked.write().nat = NatFlowState::Tracked;
                             }
                         }
 

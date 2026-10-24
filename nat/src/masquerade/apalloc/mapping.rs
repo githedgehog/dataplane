@@ -20,7 +20,7 @@ use concurrency::sync::atomic::{AtomicBool, Ordering};
 use concurrency::sync::{Arc, Mutex, RwLock};
 use config::external::overlay::vpcpeering::MappingPolicy;
 use flow_entry::flow_table::{Schedule, SideTimer, TimerRef};
-use net::flows::atomic_instant::AtomicInstant;
+use net::flows::nat_state::MappingDeadline;
 #[cfg(not(miri))]
 use shuttle_dashmap::DashMap;
 use smallvec::SmallVec;
@@ -114,8 +114,9 @@ impl<I: NatIpWithBitmap> MappingKey<I> {
 #[derive(Debug)]
 pub struct Mapping<I: NatIpWithBitmap> {
     allocation: AllocatedPort<I>,
-    expires_at: AtomicInstant,
-    idle_timeout: Duration,
+    /// Shared with the flows holding this mapping, which refresh it on outbound traffic without
+    /// reaching the mapping itself.
+    deadline: MappingDeadline,
     /// The reaper's timer, once it is on a worker's wheel.
     timer: Mutex<Option<TimerRef>>,
 }
@@ -124,8 +125,7 @@ impl<I: NatIpWithBitmap> Mapping<I> {
     fn new(allocation: AllocatedPort<I>, idle_timeout: Duration) -> Self {
         Self {
             allocation,
-            expires_at: AtomicInstant::new(clock::deadline(idle_timeout)),
-            idle_timeout,
+            deadline: MappingDeadline::new(idle_timeout),
             timer: Mutex::new(None),
         }
     }
@@ -159,7 +159,12 @@ impl<I: NatIpWithBitmap> Mapping<I> {
     }
 
     pub(crate) fn expires_at(&self) -> Instant {
-        self.expires_at.load(Ordering::Relaxed)
+        self.deadline.expires_at()
+    }
+
+    /// The deadline, for a flow holding this mapping.
+    pub(crate) fn deadline(&self) -> MappingDeadline {
+        self.deadline.clone()
     }
 
     fn is_expired(&self) -> bool {
@@ -170,8 +175,7 @@ impl<I: NatIpWithBitmap> Mapping<I> {
     // independent of that flow's own idle timer. The clock is monotonic, given that several flows
     // on different cores may refresh concurrently, and we must never make it go backwards.
     pub(crate) fn refresh(&self) {
-        let new = clock::deadline(self.idle_timeout);
-        self.expires_at.fetch_max(new, Ordering::Relaxed);
+        self.deadline.refresh();
     }
 }
 

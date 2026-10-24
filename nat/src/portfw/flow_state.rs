@@ -7,6 +7,7 @@
 
 use net::buffer::PacketBufferMut;
 use net::flow_key::FlowKeyError;
+use net::flows::nat_state::NatFlowState;
 use net::flows::{FlowInfoLocked, FlowStatus};
 use net::ip::UnicastIpAddr;
 use net::packet::{Packet, VpcDiscriminant};
@@ -80,17 +81,25 @@ impl PortFwState {
     }
 }
 
+impl PortFwState {
+    fn try_get_mut(locked: &mut FlowInfoLocked) -> Option<&mut Self> {
+        match &mut locked.nat {
+            NatFlowState::PortForward(state) => state.downcast_mut::<Self>(),
+            _ => None,
+        }
+    }
+}
+
 impl NatData for PortFwState {
     fn try_get(locked: &FlowInfoLocked) -> Option<&Self> {
-        locked.port_fw_data.as_deref()?.downcast_ref::<Self>()
-    }
-
-    fn try_get_mut(locked: &mut FlowInfoLocked) -> Option<&mut Self> {
-        locked.port_fw_data.as_deref_mut()?.downcast_mut::<Self>()
+        match &locked.nat {
+            NatFlowState::PortForward(state) => state.downcast_ref::<Self>(),
+            _ => None,
+        }
     }
 
     fn set(self, locked: &mut FlowInfoLocked) {
-        locked.port_fw_data = Some(Box::new(self));
+        locked.nat = NatFlowState::PortForward(Box::new(self));
     }
 }
 

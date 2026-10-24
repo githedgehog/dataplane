@@ -225,6 +225,15 @@ pub enum Allocation {
 }
 
 impl Allocation {
+    /// The mapping's deadline, shared with it.
+    #[must_use]
+    pub(crate) fn deadline(&self) -> net::flows::nat_state::MappingDeadline {
+        match self {
+            Self::V4(a) => a.deadline(),
+            Self::V6(a) => a.deadline(),
+        }
+    }
+
     #[must_use]
     pub fn ip(&self) -> IpAddr {
         match self {
@@ -246,13 +255,6 @@ impl Allocation {
         match self {
             Self::V4(a) => a.expires_at(),
             Self::V6(a) => a.expires_at(),
-        }
-    }
-
-    pub fn refresh(&self) {
-        match self {
-            Self::V4(a) => a.refresh(),
-            Self::V6(a) => a.refresh(),
         }
     }
 }

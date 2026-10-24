@@ -432,10 +432,9 @@ impl FlowSummary {
         Some(Self {
             genid: flow_info.genid(),
             dst_vpcd,
-            needs_masquerade: locked_info.masquerade_data.is_some(),
-            needs_port_forwarding: locked_info.port_fw_data.is_some(),
-            needs_tracking: locked_info.tracked_data.is_some()
-                || locked_info.static_nat_data.is_some(),
+            needs_masquerade: locked_info.nat.is_masquerade(),
+            needs_port_forwarding: locked_info.nat.is_port_forward(),
+            needs_tracking: locked_info.nat.is_tracked(),
             flow_info: flow_info.clone(),
         })
     }
