@@ -19,6 +19,9 @@ trace_target!("flow-lookup", LevelFilter::INFO, &["pipeline"]);
 pub struct FlowLookup {
     name: String,
     flow_table: Arc<FlowTable>,
+    // Per-burst scratch, kept to reuse its capacity.
+    keys: Vec<Option<FlowKey>>,
+    found: Vec<Option<Arc<net::flows::FlowInfo>>>,
 }
 
 impl FlowLookup {
@@ -27,25 +30,34 @@ impl FlowLookup {
         Self {
             name: name.to_string(),
             flow_table,
+            keys: Vec::new(),
+            found: Vec::new(),
         }
     }
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowLookup {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
-        for packet in burst.iter_mut() {
-            let nfi = &self.name;
-            if !packet.is_done() && packet.meta().is_overlay() && packet.meta().dst_vpcd.is_none() {
-                if let Ok(flow_key) = FlowKey::try_from(&*packet) {
-                    if let Some(flow_info) = self.flow_table.lookup(&flow_key) {
-                        debug!("{nfi}: Tagging packet with flow info for flow key {flow_key}",);
-                        packet.meta_mut().flow_info = Some(flow_info);
-                    } else {
-                        debug!("{nfi}: No flow info found for flow key {flow_key}",);
-                    }
-                } else {
-                    debug!("{nfi}: can't build flow key for packet");
-                }
+        let nfi = &self.name;
+        // One key per packet (None for those not looked up), then all lookups at once.
+        self.keys.clear();
+        self.keys.extend(burst.iter().map(|packet| {
+            if packet.is_done() || !packet.meta().is_overlay() || packet.meta().dst_vpcd.is_some() {
+                return None;
+            }
+            FlowKey::try_from(packet)
+                .inspect_err(|_| debug!("{nfi}: can't build flow key for packet"))
+                .ok()
+        }));
+        self.found.clear();
+        self.flow_table.lookup_burst(&self.keys, &mut self.found);
+        for ((packet, key), found) in burst.iter_mut().zip(&self.keys).zip(self.found.drain(..)) {
+            let Some(key) = key else { continue };
+            if let Some(flow_info) = found {
+                debug!("{nfi}: Tagging packet with flow info for flow key {key}",);
+                packet.meta_mut().flow_info = Some(flow_info);
+            } else {
+                debug!("{nfi}: No flow info found for flow key {key}",);
             }
         }
     }

@@ -40,7 +40,7 @@ enum Found {
     Refused(FlowTableError),
 }
 
-type Table = DashMap<FlowKey, Arc<FlowInfo>, RandomState>;
+pub(crate) type Table = DashMap<FlowKey, Arc<FlowInfo>, RandomState>;
 
 /// Counts an insertion before its entry can be removed. An unused reservation is returned.
 struct SlotReservation<'a> {
