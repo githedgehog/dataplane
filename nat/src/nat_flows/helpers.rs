@@ -5,7 +5,8 @@
 
 use super::NatData;
 use concurrency::sync::Arc;
-use flow_entry::flow_table::table::{FlowTable, FlowTableError, PairInsertion};
+use flow_entry::flow_table::WorkerFlowTable;
+use flow_entry::flow_table::table::{FlowTableError, PairInsertion};
 use net::FlowKey;
 use net::buffer::PacketBufferMut;
 use net::flow_key::FlowKeyError;
@@ -98,7 +99,7 @@ fn set_up_flow<S: NatData>(flow: &FlowInfo, state: S, dst_vpcd: VpcDiscriminant)
 ///
 /// If the table already holds a flow with the forward key, return this flow instead.
 pub(crate) fn install_pair<S: NatData>(
-    table: &FlowTable,
+    table: &WorkerFlowTable,
     meta: &PacketMeta,
     timeout: Duration,
     forward: HalfFlow<S>,

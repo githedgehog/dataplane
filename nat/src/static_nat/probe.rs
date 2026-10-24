@@ -12,6 +12,7 @@ use config::external::overlay::vpcpeering::contract::{
     LOCAL_VNI, REMOTE_VNI, overlay_with_exposes,
 };
 use flow_entry::flow_table::FlowTable;
+use flow_entry::flow_table::WorkerFlowTable;
 use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
 use net::ip::{NextHeader, UnicastIpAddr};
@@ -143,7 +144,7 @@ impl Fabric {
         StaticNat::with_reader(
             "probe",
             self.writer.get_reader(),
-            Arc::new(FlowTable::default()),
+            WorkerFlowTable::new(Arc::new(FlowTable::default())),
         )
     }
 

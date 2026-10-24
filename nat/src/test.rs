@@ -20,6 +20,7 @@ use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, 
 use config::external::overlay::{Overlay, ValidatedOverlay};
 use flow_entry::flow_table::FlowLookup;
 use flow_entry::flow_table::FlowTable;
+use flow_entry::flow_table::WorkerFlowTable;
 use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
 use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
@@ -108,7 +109,7 @@ fn setup_masq_pipeline(
     let static_nat = StaticNat::with_reader(
         "static-NAT-1",
         static_nat_writer.get_reader(),
-        flow_table.clone(),
+        WorkerFlowTable::new(flow_table.clone()),
     );
     pipeline = pipeline.add_stage(static_nat);
 
@@ -119,14 +120,22 @@ fn setup_masq_pipeline(
     portfw_writer
         .update_from_vpc_table(overlay.vpc_table(), &flow_table, 0)
         .unwrap();
-    let portfw = PortForwarder::new("port-forwarder", portfw_writer.reader(), flow_table.clone());
+    let portfw = PortForwarder::new(
+        "port-forwarder",
+        portfw_writer.reader(),
+        WorkerFlowTable::new(flow_table.clone()),
+    );
     if let Some(table) = portfw_writer.enter() {
         println!("{}", table.as_ref());
     }
     pipeline = pipeline.add_stage(portfw);
 
     // Masquerade
-    let masquerade = Masquerade::new("masquerade", flow_table.clone(), allocator.get_reader());
+    let masquerade = Masquerade::new(
+        "masquerade",
+        WorkerFlowTable::new(flow_table.clone()),
+        allocator.get_reader(),
+    );
     let masquerade_config = MasqueradeConfig::new(overlay.vpc_table());
     allocator.update_nat_allocator(masquerade_config, 1, &flow_table);
     if let Some(state) = allocator.get_reader().get() {

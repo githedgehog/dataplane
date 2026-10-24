@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use flow_entry::flow_table::WorkerFlowTable;
 mod egress;
 #[cfg(test)]
 mod fuzz;
@@ -94,6 +95,9 @@ impl PipelineIngredients {
         self,
     ) -> Arc<dyn Send + Sync + Fn() -> DynPipeline<'nf, Buf> + 'nf> {
         Arc::new(move || {
+            // This worker's handle on the shared flow table, for the stages that create flows.
+            let flows = WorkerFlowTable::new(self.flow_table.clone());
+
             // Build network functions
             let stage_ingress = Ingress::new("Ingress", self.iftr_factory.handle());
             let stage_egress = Egress::new(
@@ -106,14 +110,14 @@ impl PipelineIngredients {
             let static_nat = StaticNat::with_reader(
                 "static-NAT",
                 self.nattabler_factory.handle(),
-                self.flow_table.clone(),
+                flows.clone(),
             );
             let masquerade = Masquerade::new(
                 "masquerade",
-                self.flow_table.clone(),
+                flows.clone(),
                 self.natallocator_factory.handle(),
             );
-            let flow_tracker = FlowTracker::new("flow-tracker", self.flow_table.clone());
+            let flow_tracker = FlowTracker::new("flow-tracker", flows.clone());
             let pktdump = PacketDumper::new("pipeline-end", true, None);
             let stats_stage = Stats::new("stats", self.stats_w.clone());
             let flow_filter =
@@ -125,7 +129,7 @@ impl PipelineIngredients {
             let portfw = PortForwarder::new(
                 "port-forwarder",
                 self.portfw_factory.handle(),
-                self.flow_table.clone(),
+                flows.clone(),
             );
             let pkt_stats_nf = PacketStatsNF::new(self.pkt_stats.clone());
             // First and right after egress, so the two views of a packet can be compared.

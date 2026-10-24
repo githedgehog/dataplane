@@ -13,6 +13,7 @@ use crate::masquerade::state::MasqueradeState;
 use crate::nat_flows::{HalfFlow, InstallError, NatData, NewFlow, install_pair, packet_flow_keys};
 use clock::Duration;
 use concurrency::sync::Arc;
+use flow_entry::flow_table::WorkerFlowTable;
 use flow_entry::flow_table::table::FlowTable;
 use net::buffer::PacketBufferMut;
 use net::flow_key::{FlowAddrs, IcmpProtoKey};
@@ -75,7 +76,7 @@ pub(crate) enum MasqueradeError {
 #[derive(Debug)]
 pub struct Masquerade {
     name: String,
-    flow_table: Arc<FlowTable>,
+    flow_table: WorkerFlowTable,
     allocator: NatAllocatorReader,
     pipeline_data: Arc<PipelineData>,
 }
@@ -118,7 +119,7 @@ impl Masquerade {
 
     /// Creates a new [`Masquerade`] processor from provided parameters.
     #[must_use]
-    pub fn new(name: &str, flow_table: Arc<FlowTable>, allocator: NatAllocatorReader) -> Self {
+    pub fn new(name: &str, flow_table: WorkerFlowTable, allocator: NatAllocatorReader) -> Self {
         Self {
             name: name.to_string(),
             flow_table,
@@ -136,7 +137,7 @@ impl Masquerade {
         (
             Self::new(
                 "masquerade",
-                Arc::new(FlowTable::default()),
+                WorkerFlowTable::new(Arc::new(FlowTable::default())),
                 allocator_reader,
             ),
             allocator_writer,
@@ -153,7 +154,7 @@ impl Masquerade {
     /// Get session table
     #[must_use]
     pub fn sessions(&self) -> &Arc<FlowTable> {
-        &self.flow_table
+        self.flow_table.shared()
     }
 
     fn get_src_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<VpcDiscriminant> {

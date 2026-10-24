@@ -4,6 +4,7 @@
 mod display;
 pub mod nf_lookup;
 pub mod table;
+mod worker;
 
 #[cfg(test)]
 mod concurrent_fuzz;
@@ -13,6 +14,7 @@ mod pair_tests;
 
 pub use nf_lookup::FlowLookup;
 pub use table::{FlowTable, FlowTableReadGuard, Insertion, PairInsertion};
+pub use worker::WorkerFlowTable;
 
 pub use net::flows::atomic_instant::AtomicInstant;
 pub use net::flows::flow_info::*;

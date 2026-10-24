@@ -66,6 +66,7 @@ mod test {
     use crate::static_nat::probe::build;
     use crate::static_nat::setup::tables::NatTables;
     use concurrency::sync::Arc;
+    use flow_entry::flow_table::WorkerFlowTable;
     use flow_entry::flow_table::table::FlowTable;
     use net::FlowKey;
     use net::buffer::TestBuffer;
@@ -90,7 +91,7 @@ mod test {
         meta.dst_vpcd = Some(vpcd(200));
         meta.set_forced_flow_tracking(true);
         let key = FlowKey::try_from(&syn).unwrap_or_else(|_| unreachable!());
-        let mut tracker = FlowTracker::new("tracker", table.clone());
+        let mut tracker = FlowTracker::new("tracker", WorkerFlowTable::new(table.clone()));
         tracker.process(std::iter::once(syn)).for_each(drop);
         let forward = table.lookup(&key).unwrap_or_else(|| unreachable!());
         let reverse = table
