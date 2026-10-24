@@ -345,8 +345,15 @@ fn bench_newflow() {
                 layout.name()
             );
             report("newflow", &extra, n, rep, &summary);
-            assert_eq!(summary.misses, 0, "some new flows were dropped");
-            assert_eq!(live, 2 * n * flows, "flow pairs missing from the table");
+            // BENCH_ALLOW_MISSES=1: record allocation failures (they are a result) and go on.
+            if env("BENCH_ALLOW_MISSES", 0u8) == 0 {
+                assert_eq!(summary.misses, 0, "some new flows were dropped");
+            }
+            assert_eq!(
+                live,
+                2 * (n * flows - summary.misses),
+                "flow pairs missing from the table"
+            );
         }
     }
 }
