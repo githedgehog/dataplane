@@ -194,7 +194,7 @@ impl Masquerade {
             //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
             //# refresh behavior" of "True".
             ConnState::OneWay => {
-                Self::refreshes_while_unanswered(packet).then_some(Self::MASQUERADE_ONEWAY_TIMEOUT)
+                Self::refreshes_while_unanswered(packet).then_some(flow_entry::bench::oneway_timeout(Self::MASQUERADE_ONEWAY_TIMEOUT))
             }
         });
 
@@ -342,7 +342,7 @@ impl Masquerade {
                 .then(|| allocator.genid())
         };
 
-        let (meta, timeout) = (packet.meta(), Self::MASQUERADE_ONEWAY_TIMEOUT);
+        let (meta, timeout) = (packet.meta(), flow_entry::bench::oneway_timeout(Self::MASQUERADE_ONEWAY_TIMEOUT));
         install_pair(&self.flow_table, meta, timeout, forward, reverse, admit).map_err(
             |e| match e {
                 InstallError::NotAdmitted => MasqueradeError::AllocatorReplaced,

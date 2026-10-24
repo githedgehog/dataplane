@@ -723,6 +723,28 @@ pub fn main() {
         .expect("Failed to build mgmt runtime");
     let mgmt_handle = mgmt_runtime.handle().clone();
 
+    // BENCH ONLY (bench/flow-scaling-20261023): mgmt-rt load, where the per-flow tasks run.
+    mgmt_handle.spawn(async {
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let busy = |m: &tokio::runtime::RuntimeMetrics| {
+            (0..m.num_workers()).map(|w| m.worker_total_busy_duration(w)).sum::<std::time::Duration>()
+        };
+        let mut last = busy(&metrics);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let now = busy(&metrics);
+            tracing::warn!(
+                target: "bench",
+                "BENCH mgmt-rt workers={} alive_tasks={} global_queue={} busy_ms_per_s={}",
+                metrics.num_workers(),
+                metrics.num_alive_tasks(),
+                metrics.global_queue_depth(),
+                (now - last).as_millis()
+            );
+            last = now;
+        }
+    });
+
     // The way back out, if `dataplane-init` moved the control plane into a namespace of its own.
     // Otherwise this process is already where the outward-facing work belongs, and `host_handle`
     // is simply the mgmt runtime's. Nothing downstream has to know which case it is in.

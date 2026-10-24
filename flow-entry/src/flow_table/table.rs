@@ -200,6 +200,9 @@ impl FlowTable {
     /// Start a timer task for a flow
     #[allow(unused)]
     fn start_timer(table: Arc<RwLock<Table>>, live: Arc<AtomicUsize>, flow_info: Arc<FlowInfo>) {
+        if !crate::bench::per_flow_tasks() {
+            return;
+        }
         tokio::task::spawn(async move {
             let table = table;
             let flow_key = flow_info.flowkey();

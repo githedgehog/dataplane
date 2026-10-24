@@ -3,4 +3,5 @@
 
 #![deny(clippy::all, clippy::pedantic)]
 
+pub mod bench;
 pub mod flow_table;

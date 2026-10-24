@@ -461,6 +461,9 @@ fn spawn_mapping_reaper<I: NatIpWithBitmap>(
     subscribers: SubscribersTable<I>,
     cancel: CancellationToken,
 ) {
+    if !flow_entry::bench::per_flow_tasks() {
+        return;
+    }
     if tokio::runtime::Handle::try_current().is_err() {
         debug!(
             // See simple staleness checks in Subscriber::get_or_insert_with()
