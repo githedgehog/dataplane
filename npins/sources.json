@@ -206,11 +206,11 @@
         "owner": "githedgehog",
         "repo": "dplane-plugin"
       },
-      "branch": "hh-master-10.7",
+      "branch": "pr/daniel-noland/addr-install-no-hold",
       "submodules": false,
-      "revision": "e8e262b98ba3c98ec9df14a9bb6806aed02f54ac",
-      "url": "https://github.com/githedgehog/dplane-plugin/archive/e8e262b98ba3c98ec9df14a9bb6806aed02f54ac.tar.gz",
-      "hash": "sha256-DCZEuDr0JmZ8NNBSrk96oCeyjstBoFkfIR3QBmeuJM8="
+      "revision": "1fd19ef93d991a9a893c631a4c603ddf20d3c7a4",
+      "url": "https://github.com/githedgehog/dplane-plugin/archive/1fd19ef93d991a9a893c631a4c603ddf20d3c7a4.tar.gz",
+      "hash": "sha256-xsDU5XyR3D2Ibsq3bSlLM3jpTaZh7KKI2rCwHnrJ9bk="
     },
     "dplane-rpc": {
       "type": "Git",
