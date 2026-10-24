@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 
-use concurrency::sync::Arc;
 use dpdk::lcore::LCore;
 use dpdk::mem::{Mbuf, MbufArray};
 use lifecycle::Subsystem;
@@ -19,6 +18,7 @@ use traffic_control::Key;
 
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
+use crate::packet_processor::{EXPIRY_BUDGET, PipelineFactory, WorkerPipeline};
 
 use super::classes::SoftwareClasses;
 use super::control::addressed_to;
@@ -30,6 +30,8 @@ mod tests;
 
 /// Yield after this many consecutive polls without traffic on any port.
 const IDLE_POLLS_BEFORE_YIELD: u32 = 128;
+/// Idle polls between two flow-expiry passes.
+const EXPIRY_IDLE_POLLS: u32 = 64;
 
 /// Polls between cancellation checks and watchdog updates.
 const CANCEL_CHECK_INTERVAL: u32 = 1024;
@@ -67,10 +69,11 @@ impl<'p> Worker<'p> {
     pub(crate) fn run(
         mut self,
         subsystem: &Subsystem,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'p, Mbuf<'p>> + 'p>,
+        setup_pipeline: &PipelineFactory<'p, Mbuf<'p>>,
         timer_handle: &tokio::runtime::Handle,
     ) {
-        // Run flow and NAT timers on the management runtime until worker helpers replace it.
+        // NAT mapping reapers still run on the management runtime. Flow timers are on this
+        // worker's own wheel (see `expire` below).
         let _runtime = timer_handle.enter();
         // Registration enables per-lcore mempool caches and releases the id on return or unwind.
         // If registration fails, allocation remains correct through the shared mempool ring.
@@ -86,7 +89,10 @@ impl<'p> Worker<'p> {
             }
         };
 
-        let mut pipeline = setup_pipeline();
+        let WorkerPipeline {
+            mut pipeline,
+            flows,
+        } = setup_pipeline();
 
         // Map pipeline output ifindices to this worker's transmit queues.
         let tx_by_if: HashMap<InterfaceIndex, usize> = self
@@ -136,6 +142,12 @@ impl<'p> Worker<'p> {
                 if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut scratch, counters) {
                     saw_frames = true;
                 }
+            }
+
+            // Expire flows after every burst, and now and then while idle: reading the clock on
+            // every idle poll would dominate the idle loop.
+            if saw_frames || idle_polls.is_multiple_of(EXPIRY_IDLE_POLLS) {
+                flows.expire(clock::now(), EXPIRY_BUDGET);
             }
 
             if saw_frames {

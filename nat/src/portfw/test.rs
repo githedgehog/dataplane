@@ -195,19 +195,15 @@ mod nf_test {
     fn setup_pipeline(
         ruleset: &[PortFwEntry],
     ) -> (
-        Arc<FlowTable>,
+        WorkerFlowTable,
         DynPipeline<'static, TestBuffer>,
         PortFwTableWriter,
     ) {
         // build a pipeline with flow lookup + port forwarder
         let mut writer = PortFwTableWriter::new();
-        let flow_table = Arc::new(FlowTable::default());
-        let flow_lookup_nf = FlowLookup::new("flow-lookup", flow_table.clone());
-        let nf = PortForwarder::new(
-            "port-forwarder",
-            writer.reader(),
-            WorkerFlowTable::new(flow_table.clone()),
-        );
+        let flow_table = WorkerFlowTable::new(Arc::new(FlowTable::default()));
+        let flow_lookup_nf = FlowLookup::new("flow-lookup", flow_table.shared().clone());
+        let nf = PortForwarder::new("port-forwarder", writer.reader(), flow_table.clone());
         let pipeline: DynPipeline<'static, TestBuffer> = DynPipeline::new()
             .add_stage(flow_lookup_nf)
             .add_stage(TestFlowFilter)
@@ -489,7 +485,7 @@ mod nf_test {
         assert!(output.meta().flow_info.is_some());
         assert_ne!(get_flow_status(&output), Some(FlowStatus::Active)); // it may be None if the nf expiration removes it
         assert_eq!(get_pfw_flow_status(&output), Some(ConnState::Closed));
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
         assert_eq!(flow_table.len().unwrap(), 2);
     }
 
@@ -525,7 +521,7 @@ mod nf_test {
         assert!(output.meta().flow_info.is_some());
         assert_ne!(get_flow_status(&output), Some(FlowStatus::Active)); // may be cancelled or none
         assert_eq!(get_pfw_flow_status(&output), Some(ConnState::Closed));
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
         assert_eq!(flow_table.len().unwrap(), 2);
     }
 
@@ -568,7 +564,7 @@ mod nf_test {
         assert!(output.meta().flow_info.is_some());
         assert_ne!(get_flow_status(&output), Some(FlowStatus::Active)); // may be cancelled or none
         assert_eq!(get_pfw_flow_status(&output), Some(ConnState::Closed));
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
         assert_eq!(flow_table.len().unwrap(), 2);
     }
 
@@ -603,11 +599,11 @@ mod nf_test {
 
         // the flow table still contains the two flows, although they are unusable
         assert_eq!(flow_table.len(), Some(2));
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
     }
 
     #[cfg_attr(not(emulated), traced_test)]
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_nf_port_forwarding_config_removal_interrupts_traffic() {
         let ruleset = build_test_port_forwarding_ruleset();
 
@@ -643,9 +639,10 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert_eq!(output.get_done(), Some(DoneReason::NatNotPortForwarded));
 
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
 
         tokio::time::sleep(Duration::from_secs(4)).await;
+        flow_table.expire_all(clock::now());
         let _ = pipeline.process(std::iter::empty::<Packet<TestBuffer>>());
 
         let packet = tcp_packet_to_port_forward();
@@ -653,7 +650,7 @@ mod nf_test {
         assert_eq!(output.get_done(), Some(DoneReason::NatNotPortForwarded));
         assert_eq!(get_flow_status(&output), None); // expiration NF should have removed the flow
         assert!(get_pfw_flow_status(&output).is_none());
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
     }
 
     fn build_test_port_forwarding_table_with_ranges() -> Vec<PortFwEntry> {
@@ -743,7 +740,7 @@ mod nf_test {
 
         // the flow table should have 2 flows
         assert_eq!(flow_table.len(), Some(2));
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
 
         // process a reply from the dest vpc. It should hit a flow
         let reply = build_reply(&output);
@@ -763,7 +760,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(hit_port_fw_state_invalid(&output));
 
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
     }
 
     #[cfg_attr(not(emulated), traced_test)]
@@ -784,7 +781,7 @@ mod nf_test {
 
         // the flow table should have 2 flows
         assert_eq!(flow_table.len(), Some(2));
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
 
         // process a reply from the dest vpc. It should hit a flow
         let reply = build_reply(&output);
@@ -804,7 +801,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(hit_port_fw_state_invalid(&output));
 
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
     }
 
     #[cfg_attr(not(emulated), traced_test)]
@@ -855,7 +852,7 @@ mod nf_test {
         let rule_referenced = get_pfw_flow_state_rule(&output);
         assert_eq!(rule_referenced.as_ref().unwrap().as_ref(), &entry);
 
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
     }
 
     #[cfg_attr(not(emulated), traced_test)]
@@ -910,6 +907,6 @@ mod nf_test {
         assert!(rule_referenced.is_none()); // flow did not get a new reference to a rule
         assert_eq!(output.get_done(), Some(DoneReason::NatNotPortForwarded)); // packet was dropped
 
-        println!("{flow_table}");
+        println!("{}", flow_table.shared());
     }
 }

@@ -21,6 +21,7 @@
 #![cfg(not(feature = "loom"))]
 
 use crate::Masquerade;
+use crate::masquerade::allocator_writer::NatAllocatorReader;
 use crate::masquerade::probe::{destination_of, masquerade_expose, outbound_probe, source_of};
 use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use crate::static_nat::probe::{build, vni};
@@ -341,8 +342,8 @@ fn work(masq: &mut Masquerade, wire: &Wire, ops: &[Op]) {
 
 impl Scenario {
     fn run(&self) {
-        // Flow timers need a runtime outside of the model backends. It is never driven, so flows do
-        // not expire during the scenario.
+        // Mapping reapers need a runtime outside of the model backends. It is never driven, and the
+        // workers never sweep their flow wheels, so nothing expires during the scenario.
         #[cfg(not(feature = "shuttle"))]
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
@@ -355,12 +356,10 @@ impl Scenario {
         let mut genid: GenId = 1;
         writer.update_nat_allocator(layout.masquerade_config(self.randomize), genid, &flow_table);
         let reader = writer.get_reader();
-        let masquerade = || {
-            Masquerade::new(
-                "masquerade",
-                WorkerFlowTable::new(flow_table.clone()),
-                reader.clone(),
-            )
+        // Each worker builds its own NF on its own thread: a worker's flow-table handle (and the
+        // timer wheel behind it) stays on the thread that created it.
+        let masquerade = |flow_table: Arc<FlowTable>, reader: NatAllocatorReader| {
+            Masquerade::new("masquerade", WorkerFlowTable::new(flow_table), reader)
         };
         let wire = Arc::new(Wire {
             epoch: AtomicU64::new(0),
@@ -371,13 +370,14 @@ impl Scenario {
             .ops
             .iter()
             .map(|ops| {
-                let mut masq = masquerade();
                 let (ops, wire) = (ops.clone(), wire.clone());
+                let (flow_table, reader) = (flow_table.clone(), reader.clone());
                 #[cfg(not(feature = "shuttle"))]
                 let handle = runtime.handle().clone();
                 thread::spawn(move || {
                     #[cfg(not(feature = "shuttle"))]
                     let _runtime = handle.enter();
+                    let mut masq = masquerade(flow_table, reader);
                     work(&mut masq, &wire, &ops);
                 })
             })
@@ -427,7 +427,7 @@ impl Scenario {
         });
 
         // New flows must not be given the tuple of a live flow
-        let mut masq = masquerade();
+        let mut masq = masquerade(flow_table.clone(), reader.clone());
         let mut fresh = BTreeMap::new();
         for tenant in &TENANTS {
             for host in 0..HOSTS {

@@ -14,6 +14,9 @@ use tokio::io::{AsyncWriteExt, Interest};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, interval};
 
+/// How often a quiet interface's reader still expires flows: the flow wheel's tick.
+const EXPIRY_PERIOD: Duration = Duration::from_millis(10);
+
 use concurrency::sync::Arc;
 use concurrency::thread;
 #[allow(unused_imports)] // used under loom/shuttle backends
@@ -22,7 +25,7 @@ use lifecycle::{CancellationToken, Subsystem};
 use net::buffer::test_buffer::TestBuffer;
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
-use pipeline::{DynPipeline, NetworkFunction};
+use pipeline::NetworkFunction;
 
 use crate::drivers::cpbridge::Frame;
 use crate::drivers::disposition::Disposition;
@@ -34,6 +37,7 @@ use crate::drivers::kernel::sockstats;
 use crate::drivers::status::WorkerId;
 use crate::drivers::supervisor::{RxTaskMonitor, TASK_PAT_PERIOD, WorkerMonitor};
 use crate::drivers::watchdog::{RxCounters, Watchdog};
+use crate::packet_processor::{EXPIRY_BUDGET, PipelineFactory, WorkerPipeline};
 
 use tracing::{debug, error, info, trace, warn};
 
@@ -180,7 +184,7 @@ fn create_worker_interface(
 pub struct Worker {
     id: WorkerId,
     total_workers: usize,
-    setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
+    setup_pipeline: PipelineFactory<'static, TestBuffer>,
     subsystem: Subsystem,
 }
 
@@ -188,7 +192,7 @@ impl Worker {
     pub fn new(
         id: WorkerId,
         total_workers: usize,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
+        setup_pipeline: &PipelineFactory<'static, TestBuffer>,
         subsystem: Subsystem,
     ) -> Self {
         Worker {
@@ -209,7 +213,7 @@ impl Worker {
         id: WorkerId,
         intf: WorkerInterfaceReader,
         reader_handles: &mut tokio::task::JoinSet<()>,
-        setup: Arc<dyn Fn() -> DynPipeline<'static, TestBuffer> + Send + Sync>,
+        setup: PipelineFactory<'static, TestBuffer>,
         if_table: Arc<HashMap<InterfaceIndex, Arc<Mutex<WorkerInterfaceWriter>>>>,
         cancel: CancellationToken,
     ) {
@@ -218,8 +222,15 @@ impl Worker {
 
         reader_handles.spawn_local(async move {
             let intf = intf;
-            let mut pipeline = setup();
+            let WorkerPipeline {
+                mut pipeline,
+                flows,
+            } = setup();
             let mut ticker = interval(pat_period);
+            // Flows created by this pipeline expire on its handle's wheel, driven from here: after
+            // every burst, and on this tick while the interface is quiet.
+            let mut expiry = interval(EXPIRY_PERIOD);
+            expiry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 debug!(worker = id, "awaiting packets");
 
@@ -252,6 +263,10 @@ impl Worker {
                         intf.watchdog.pat();
                         Vec::new()
                     }
+                    _ = expiry.tick() => {
+                        flows.expire(clock::now(), EXPIRY_BUDGET);
+                        continue;
+                    }
                 };
 
                 debug!(
@@ -272,6 +287,9 @@ impl Worker {
                 let out_pkts = pipeline
                     .process(packets.map(|pkt| *pkt))
                     .collect::<Vec<_>>();
+                if rx_pkts > 0 {
+                    flows.expire(clock::now(), EXPIRY_BUDGET);
+                }
 
                 // What becomes of each packet is [`Disposition::of`]'s decision, the same one the
                 // DPDK driver asks. When this interface has a tap standing in for it, the kernel

@@ -19,17 +19,16 @@ mod placement;
 mod port;
 mod worker;
 
+use crate::packet_processor::PipelineFactory;
 use std::convert::Infallible;
 use std::num::NonZero;
 
-use concurrency::sync::Arc;
 use concurrency::thread;
 #[allow(unused_imports)] // used under loom/shuttle backends
 use concurrency::thread::BuilderExt;
 use dpdk::mem::{MBUF_BURST, Mbuf};
 use lifecycle::Subsystem;
 use lldp::Link;
-use pipeline::DynPipeline;
 use stats::PortMetrics;
 use tokio::sync::watch;
 use tracectl::trace_target;
@@ -73,7 +72,7 @@ impl DriverDpdk {
         timer_handle: &'scope tokio::runtime::Handle,
         ports: &'p [Port<'_>],
         num_workers: NonZero<u16>,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'p, Mbuf<'p>> + 'p>,
+        setup_pipeline: &PipelineFactory<'p, Mbuf<'p>>,
         status_writer: DriverStatusWriter,
         bridge: Option<&mut DatapathEnds>,
         control_plane: watch::Receiver<ControlPlane>,

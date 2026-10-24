@@ -25,7 +25,7 @@ linkme = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+timer-wheel = { workspace = true }
 tracectl = { workspace = true }
 tracing = { workspace = true }
 

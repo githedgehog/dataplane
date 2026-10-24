@@ -150,6 +150,12 @@ impl Masquerade {
         &self.name
     }
 
+    /// This NF's (its worker's) handle on the flow table, which also drives flow expiry.
+    #[cfg(test)]
+    pub(crate) fn flows(&self) -> &WorkerFlowTable {
+        &self.flow_table
+    }
+
     #[cfg(test)]
     /// Get session table
     #[must_use]
