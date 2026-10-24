@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod nf_test {
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwState, PortFwTableWriter};
+    use flow_entry::flow_table::WorkerFlowTable;
     use net::flows::{AtomicConnState, ConnState};
 
     use concurrency::sync::Arc;
@@ -202,7 +203,11 @@ mod nf_test {
         let mut writer = PortFwTableWriter::new();
         let flow_table = Arc::new(FlowTable::default());
         let flow_lookup_nf = FlowLookup::new("flow-lookup", flow_table.clone());
-        let nf = PortForwarder::new("port-forwarder", writer.reader(), flow_table.clone());
+        let nf = PortForwarder::new(
+            "port-forwarder",
+            writer.reader(),
+            WorkerFlowTable::new(flow_table.clone()),
+        );
         let pipeline: DynPipeline<'static, TestBuffer> = DynPipeline::new()
             .add_stage(flow_lookup_nf)
             .add_stage(TestFlowFilter)
@@ -413,7 +418,7 @@ mod nf_test {
             .add_stage(PortForwarder::new(
                 "port-forwarder",
                 writer.reader(),
-                flow_table.clone(),
+                WorkerFlowTable::new(flow_table.clone()),
             ));
         writer
             .update_table(&build_test_port_forwarding_ruleset())

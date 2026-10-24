@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 #![cfg(test)]
+use flow_entry::flow_table::WorkerFlowTable;
 
 use crate::portfw::{PortForwarder, PortFwTableWriter, build_port_forwarding_configuration};
 use crate::static_nat::probe::{build, vni};
@@ -159,7 +160,7 @@ impl Fabric {
             PortForwarder::new(
                 "port-forwarder",
                 self.writer.reader(),
-                self.flow_table.clone(),
+                WorkerFlowTable::new(self.flow_table.clone()),
             ),
         )
     }
@@ -168,7 +169,11 @@ impl Fabric {
     ///
     /// This models workers with different rule snapshots racing to create the same flow.
     pub(crate) fn worker_over(&self, flows: &Arc<FlowTable>) -> PortForwarder {
-        PortForwarder::new("port-forwarder-2", self.writer.reader(), flows.clone())
+        PortForwarder::new(
+            "port-forwarder-2",
+            self.writer.reader(),
+            WorkerFlowTable::new(flows.clone()),
+        )
     }
 
     /// Install `exposes`, migrate matching flows to `genid`, and invalidate the rest. Keep the

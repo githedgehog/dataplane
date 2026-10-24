@@ -13,6 +13,7 @@ use crate::nat_flows::NatData;
 use crate::static_nat::StaticNatFlowData;
 pub use crate::static_nat::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use concurrency::sync::Arc;
+use flow_entry::flow_table::WorkerFlowTable;
 use flow_entry::flow_table::table::FlowTable;
 use net::FlowKey;
 use net::buffer::PacketBufferMut;
@@ -112,7 +113,7 @@ impl StaticNatPlan {
 pub struct StaticNat {
     name: String,
     tablesr: NatTablesReader,
-    flow_table: Arc<FlowTable>,
+    flow_table: WorkerFlowTable,
     pipeline_data: Arc<PipelineData>,
 }
 
@@ -124,14 +125,18 @@ impl StaticNat {
         let writer = NatTablesWriter::new();
         let reader = writer.get_reader();
         (
-            Self::with_reader(name, reader, Arc::new(FlowTable::default())),
+            Self::with_reader(
+                name,
+                reader,
+                WorkerFlowTable::new(Arc::new(FlowTable::default())),
+            ),
             writer,
         )
     }
     /// Creates a new [`StaticNat`] processor as `new()`, but uses the provided `NatTablesReader`,
     /// and tracks flows in `flow_table`.
     #[must_use]
-    pub fn with_reader(name: &str, tablesr: NatTablesReader, flow_table: Arc<FlowTable>) -> Self {
+    pub fn with_reader(name: &str, tablesr: NatTablesReader, flow_table: WorkerFlowTable) -> Self {
         Self {
             name: name.to_string(),
             tablesr,
