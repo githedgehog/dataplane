@@ -3,12 +3,12 @@
 
 //! Migrate live port-forwarded flows across configuration changes.
 
+use crate::nat_flows::NatData;
 use concurrency::sync::{Arc, Weak};
 use config::GenId;
 use flow_entry::flow_table::FlowInfo;
 use flow_entry::flow_table::table::{FlowTable, FlowTableReadGuard};
 use net::FlowKey;
-use net::flows::ExtractRef;
 
 use crate::common::NatAction;
 use crate::portfw::flow_state::reassign_port_fw_rule;
@@ -63,7 +63,7 @@ pub(crate) fn migrate_port_forwarded_flows<'a>(
 /// takes write guards.
 fn reverse_state(flow_info: &FlowInfo) -> Option<PortFwState> {
     let locked = flow_info.locked.read();
-    let state = locked.port_fw_data.extract_ref::<PortFwState>()?;
+    let state = PortFwState::try_get(&locked)?;
     (state.action() == NatAction::SrcNat).then(|| state.clone())
 }
 

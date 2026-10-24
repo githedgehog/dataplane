@@ -51,7 +51,7 @@ pub fn invalidate_stale_static_nat_flows(flow_table: &FlowTable, nat_tables: &Na
                 return false;
             }
             let locked = flow.locked.read();
-            locked.masquerade_data.is_some() || locked.port_fw_data.is_some()
+            locked.nat.is_masquerade() || locked.nat.is_port_forward()
         },
         |_, flow| {
             if !static_nat_end_still_valid(nat_tables, flow) {

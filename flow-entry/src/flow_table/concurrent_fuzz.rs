@@ -53,7 +53,8 @@ use clock::Duration;
 #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
 use concurrency::thread::BuilderExt;
 use net::FlowKey;
-use net::flows::{ExtractRef, FlowInfo, FlowInfoFlags};
+use net::flows::nat_state::NatFlowState;
+use net::flows::{FlowInfo, FlowInfoFlags};
 use std::fmt;
 
 /// Stub [`FlowInfoItem`] payload: a single `Arc<AtomicU8>` that all flows
@@ -182,7 +183,8 @@ fn insert_flows(table: &WorkerFlowTable, keys: &[FlowKey], stub_status: &Arc<Ato
         // flippers have something to race on.
         {
             let mut guard = fi.locked.write();
-            guard.masquerade_data = Some(Box::new(StubItem {
+            // Any boxed variant will do: the stub only stands in for NAT state behind the lock.
+            guard.nat = NatFlowState::PortForward(Box::new(StubItem {
                 status: stub_status.clone(),
             }));
         }
@@ -191,6 +193,20 @@ fn insert_flows(table: &WorkerFlowTable, keys: &[FlowKey], stub_status: &Arc<Ato
 }
 
 /// Apply one [`Op`] across the whole key set.
+/// The stub a flow's NAT state stands in for, if any.
+trait Stubbed {
+    fn stub(&self) -> Option<&StubItem>;
+}
+
+impl Stubbed for NatFlowState {
+    fn stub(&self) -> Option<&StubItem> {
+        match self {
+            NatFlowState::PortForward(item) => item.downcast_ref::<StubItem>(),
+            _ => None,
+        }
+    }
+}
+
 fn apply_op(table: &WorkerFlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op: Op) {
     match op {
         Op::Insert => {
@@ -224,12 +240,7 @@ fn apply_op(table: &WorkerFlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU
         Op::ReadStubStatus => {
             for k in keys {
                 if let Some(fi) = table.lookup(k)
-                    && let Some(stub) = fi
-                        .locked
-                        .read()
-                        .masquerade_data
-                        .as_ref()
-                        .extract_ref::<StubItem>()
+                    && let Some(stub) = fi.locked.read().nat.stub()
                 {
                     // The shared status is only ever advanced within
                     // 0..STATE_COUNT; an out-of-range byte means a torn write
@@ -242,12 +253,7 @@ fn apply_op(table: &WorkerFlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU
         Op::AdvanceStatus => {
             for k in keys {
                 if let Some(fi) = table.lookup(k)
-                    && let Some(stub) = fi
-                        .locked
-                        .read()
-                        .masquerade_data
-                        .as_ref()
-                        .extract_ref::<StubItem>()
+                    && let Some(stub) = fi.locked.read().nat.stub()
                 {
                     // Advance the shared status one step, modelling a packet
                     // driving the NAT state machine via this flow.
@@ -327,7 +333,7 @@ impl Scenario {
                 );
             }
             let guard = v.locked.read();
-            if let Some(stub) = guard.masquerade_data.as_ref().extract_ref::<StubItem>() {
+            if let Some(stub) = guard.nat.stub() {
                 let s = stub.status.load(Ordering::Relaxed);
                 assert!(s < STATE_COUNT, "stub status out of range: {s}");
             }

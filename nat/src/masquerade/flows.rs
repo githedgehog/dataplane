@@ -7,12 +7,13 @@ use crate::masquerade::allocation::AllocatorError;
 use crate::masquerade::apalloc::{AnyReservation, NatAllocator};
 use crate::masquerade::nf::{dst_nat_port, src_nat_port};
 use crate::masquerade::state::MasqueradeState;
+use crate::masquerade::state::MasqueradeStateExt;
+use crate::nat_flows::NatData;
+use net::flows::nat_state::NatFlowState;
 
 use config::GenId;
 use flow_entry::flow_table::{FlowTable, FlowTableReadGuard, Schedule};
 use net::FlowKey;
-use net::flows::ExtractMut;
-use net::flows::ExtractRef;
 use net::flows::FlowInfo;
 use std::net::IpAddr;
 use tracing::{debug, error};
@@ -21,7 +22,7 @@ use tracing::{debug, error};
 pub(crate) fn invalidate_masquerade_flows(flow_table: &FlowTable) {
     debug!("INVALIDATING all masquerading flows...");
     flow_table.for_each_flow(|_key, flow_info| {
-        if flow_info.locked.read().masquerade_data.as_ref().is_some() {
+        if flow_info.locked.read().nat.is_masquerade() {
             flow_info.invalidate_pair();
         }
     });
@@ -36,7 +37,7 @@ pub(crate) fn upgrade_all_masquerading_flows(flow_table: &FlowTable, genid: GenI
         |_key, flow_info: &FlowInfo| flow_info.is_active(),
         |_, flow_info| {
             let locked = flow_info.locked.read();
-            if locked.masquerade_data.as_ref().is_some() {
+            if locked.nat.is_masquerade() {
                 flow_info.set_genid(genid);
                 count += 1;
             }
@@ -47,10 +48,7 @@ pub(crate) fn upgrade_all_masquerading_flows(flow_table: &FlowTable, genid: GenI
 
 fn get_flow_masquerading_allocation(flow_info: &FlowInfo) -> Option<(IpAddr, NatPort)> {
     let locked = flow_info.locked.read();
-    let alloc = locked
-        .masquerade_data
-        .extract_ref::<MasqueradeState>()?
-        .allocation()?;
+    let alloc = MasqueradeState::try_get(&locked)?.allocation()?;
 
     debug_assert!(flow_info.get_flags().is_initiator());
     Some((alloc.ip(), alloc.port()))
@@ -100,12 +98,11 @@ fn re_reserve_ip_and_port(
 
     debug!("Successfully re-reserved ip {ip} port/Id {port_u16} ({proto})");
     let mut guard = flow_info.locked.write();
-    let nat_state = guard
-        .masquerade_data
-        .as_mut()
-        .ok_or(ReReserveError::NoNatData)?
-        .extract_mut::<MasqueradeState>()
-        .ok_or(ReReserveError::NotMasquerade)?;
+    let nat_state = match &mut guard.nat {
+        NatFlowState::Masquerade(state) => state,
+        NatFlowState::None => return Err(ReReserveError::NoNatData),
+        _ => return Err(ReReserveError::NotMasquerade),
+    };
     debug_assert!(matches!(nat_state.action(), NatAction::SrcNat));
     nat_state.set_allocation(alloc);
     debug!("Successfully associated ip {ip}, {proto}:{port_u16} to flow {flow_key}");
@@ -212,7 +209,7 @@ pub(crate) fn check_masquerading_flows<'a>(
     let genid = new_allocator.genid();
     debug!("CHECKING flows against new masquerade configuration with genid {genid}...");
     let guard = flow_table.for_each_flow_filtered(
-        |_, f| f.is_active() && f.locked.read().masquerade_data.is_some(),
+        |_, f| f.is_active() && f.locked.read().nat.is_masquerade(),
         |flow_key, flow_info| check_masquerading_flow(flow_key, flow_info, new_allocator, timers),
     );
     debug!("CHECKING flows against new masquerade configuration COMPLETED");

@@ -5,6 +5,7 @@
 
 use crate::nat_flows::NatData;
 use net::flows::FlowInfoLocked;
+use net::flows::nat_state::NatFlowState;
 use std::fmt::Display;
 
 /// State of a flow tracked by the static NAT stage, for the ACL stage. The flows hold the status
@@ -20,17 +21,10 @@ impl Display for StaticNatFlowData {
 
 impl NatData for StaticNatFlowData {
     fn try_get(locked: &FlowInfoLocked) -> Option<&Self> {
-        locked.static_nat_data.as_deref()?.downcast_ref::<Self>()
-    }
-
-    fn try_get_mut(locked: &mut FlowInfoLocked) -> Option<&mut Self> {
-        locked
-            .static_nat_data
-            .as_deref_mut()?
-            .downcast_mut::<Self>()
+        matches!(locked.nat, NatFlowState::StaticNat).then_some(&StaticNatFlowData)
     }
 
     fn set(self, locked: &mut FlowInfoLocked) {
-        locked.static_nat_data = Some(Box::new(self));
+        locked.nat = NatFlowState::StaticNat;
     }
 }
