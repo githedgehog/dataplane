@@ -174,15 +174,33 @@ fn a_refresh_is_permitted_exactly_when_the_status_allows() {
     );
 }
 
+/// Stands in for a flow table's timer: binds the flow, and never comes due on its own.
+struct OnWheel(concurrency::sync::Arc<FlowInfo>);
+
+impl timer_wheel::Timer for OnWheel {
+    fn deadline(&self) -> std::time::Instant {
+        clock::now() + Duration::from_secs(3600)
+    }
+
+    fn bind(&self, timer: timer_wheel::TimerRef) {
+        self.0.bind_timer(timer);
+    }
+}
+
 #[test]
 fn invalidating_is_idempotent_and_cancels_the_timer() {
-    bolero::check!()
-        .with_type::<Status>()
-        .for_each(|status: &Status| {
+    use timer_wheel::{Fired, Wheel, WheelConfig};
+
+    bolero::check!().with_type::<(Status, bool)>().for_each(
+        |(status, invalidate_before_bind): &(Status, bool)| {
             paused(|| {
-                let entry = flow();
-                let started_active = FlowStatus::from(*status) == FlowStatus::Active;
+                let entry = concurrency::sync::Arc::new(flow());
                 entry.update_status((*status).into());
+                if *invalidate_before_bind {
+                    entry.invalidate();
+                }
+                let mut wheel = Wheel::new(WheelConfig::standard(), clock::now());
+                assert!(wheel.insert(OnWheel(entry.clone())).is_ok());
 
                 entry.invalidate();
                 assert_eq!(
@@ -191,13 +209,6 @@ fn invalidating_is_idempotent_and_cancels_the_timer() {
                     "invalidating a {status:?} flow left it in {:?}",
                     entry.status()
                 );
-                if started_active {
-                    assert!(
-                        entry.token.is_cancelled(),
-                        "an active flow was invalidated without cancelling its timer, so its entry \
-                         lingers until the original deadline"
-                    );
-                }
 
                 entry.invalidate();
                 assert_eq!(
@@ -205,8 +216,21 @@ fn invalidating_is_idempotent_and_cancels_the_timer() {
                     FlowStatus::Cancelled,
                     "invalidating twice did not leave the flow cancelled"
                 );
+
+                let mut out = Vec::new();
+                wheel.sweep(clock::now(), usize::MAX, &mut out);
+                let cancelled = out
+                    .iter()
+                    .filter(|f| matches!(f, Fired::Cancelled(_)))
+                    .count();
+                assert_eq!(
+                    cancelled, 1,
+                    "invalidation must cancel the timer once, even before binding or when the \
+                     flow was already inactive"
+                );
             });
-        });
+        },
+    );
 }
 
 #[test]

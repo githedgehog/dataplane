@@ -10,8 +10,9 @@ use net::flows::{FlowInfo, FlowStatus};
 use std::borrow::Borrow;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
-use std::time::Duration;
 use tracing::debug;
+
+use super::expiry::FlowTimers;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FlowTableError {
@@ -87,7 +88,7 @@ fn hasher_state() -> &'static RandomState {
 /// It excludes resharding and pair admission. Single-entry insertion and removal take the same
 /// read lock and can proceed alongside this guard. A caller that must not miss an insertion needs
 /// the inserting side to check its work as part of admitting a pair, see
-/// [`FlowTable::insert_pair_if_admitted`].
+/// [`WorkerFlowTable::insert_pair_if_admitted`](super::WorkerFlowTable::insert_pair_if_admitted).
 pub struct FlowTableReadGuard<'a>(
     #[allow(unused)] RwLockReadGuard<'a, DashMap<FlowKey, Arc<FlowInfo>, RandomState>>,
 );
@@ -172,9 +173,13 @@ impl FlowTable {
     /// # Errors
     ///
     /// Returns [`FlowTableError::CapacityExceeded`] when the table has reached its hard limit.
-    pub fn insert(&self, flow_info: FlowInfo) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
+    pub(crate) fn insert_timed(
+        &self,
+        timers: &mut FlowTimers,
+        flow_info: FlowInfo,
+    ) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
         let val = Arc::new(flow_info);
-        self.insert_common(&val)
+        self.insert_common(timers, &val)
     }
 
     /// Add a flow entry to the table from a `&Arc<FlowInfo>`
@@ -190,68 +195,66 @@ impl FlowTable {
     /// # Errors
     ///
     /// Returns [`FlowTableError::CapacityExceeded`] when the table has reached its hard limit.
-    pub fn insert_from_arc(
+    pub(crate) fn insert_from_arc_timed(
+        &self,
+        timers: &mut FlowTimers,
+        flow_info: &Arc<FlowInfo>,
+    ) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
+        self.insert_common(timers, flow_info)
+    }
+
+    /// Test-only insertions that put flows on a throwaway timer wheel, for tests of the table's
+    /// semantics that do not involve expiry. Tests of expiry go through [`WorkerFlowTable`].
+    ///
+    /// [`WorkerFlowTable`]: super::WorkerFlowTable
+    #[cfg(test)]
+    pub(crate) fn insert(
+        &self,
+        flow_info: FlowInfo,
+    ) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
+        self.insert_timed(&mut FlowTimers::new(), flow_info)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_from_arc(
         &self,
         flow_info: &Arc<FlowInfo>,
     ) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
-        self.insert_common(flow_info)
+        self.insert_from_arc_timed(&mut FlowTimers::new(), flow_info)
     }
 
-    /// Start a timer task for a flow
-    #[allow(unused)]
-    fn start_timer(table: Arc<RwLock<Table>>, live: Arc<AtomicUsize>, flow_info: Arc<FlowInfo>) {
-        tokio::task::spawn(async move {
-            let table = table;
-            let flow_key = flow_info.flowkey();
-            let mut deadline = flow_info.expires_at();
-            loop {
-                tokio::select! {
-                    () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
-                        let status = flow_info.status();
-                        if status != FlowStatus::Active {
-                            debug!("Flow-timer[EXPIRED]: Flow {flow_key} is in status {status}");
-                            break;
-                        }
-                        let new_deadline = flow_info.expires_at();
-                        if new_deadline > deadline {
-                            debug!("Flow-timer[EXTENDED] for Flow {flow_key}");
-                            deadline = new_deadline;
-                            continue;
-                        }
-                        debug!("Flow-timer[EXPIRED] for flow {flow_key}");
-                        flow_info.update_status(FlowStatus::Expired);
-                        break;
-                    },
-                    () = flow_info.token.cancelled() =>  {
-                        debug!("Flow-timer[CANCELLED] for flow {flow_key}");
-                        break;
-                    },
-                }
-            }
-            // no need to remove
-            if flow_info.status() == FlowStatus::Detached {
-                return;
-            }
+    #[cfg(test)]
+    pub(crate) fn insert_if_absent(
+        &self,
+        val: &Arc<FlowInfo>,
+    ) -> Result<Insertion, FlowTableError> {
+        self.insert_if_absent_timed(&mut FlowTimers::new(), val)
+    }
 
-            // The timer for a flow expired or was cancelled. Therefore the flow should be removed.
-            // We use remove_if + ptr_eq so that a concurrently-inserted replacement is left intact
-            // and try_read() instead of read() so as not to block
-            loop {
-                if let Some(table) = table.try_read() {
-                    let res = table.remove_if(flow_key, |_, v| Arc::ptr_eq(v, &flow_info));
-                    if res.is_none() {
-                        debug!("Flow-timer: Unable to remove flow {flow_key}: not found");
-                    } else {
-                        live.fetch_sub(1, Ordering::Relaxed);
-                    }
-                    return;
-                }
-                // Pair admission and resharding hold the outer write lock. Back off so a
-                // contending writer cannot cause this task to spin a tokio worker.
-                debug!("Flow-timer: Waiting for table read access");
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        });
+    // Only `pair_tests` calls these, and it is left out under loom.
+    #[cfg(all(test, not(feature = "loom")))]
+    pub(crate) fn insert_pair_if_absent(
+        &self,
+        forward: &Arc<FlowInfo>,
+        reverse: &Arc<FlowInfo>,
+    ) -> Result<PairInsertion, FlowTableError> {
+        self.insert_pair_if_absent_timed(&mut FlowTimers::new(), forward, reverse)
+    }
+
+    // Only `pair_tests` calls these, and it is left out under loom.
+    #[cfg(all(test, not(feature = "loom")))]
+    pub(crate) fn insert_pair_if_admitted(
+        &self,
+        forward: &Arc<FlowInfo>,
+        reverse: &Arc<FlowInfo>,
+        admit: impl FnOnce() -> bool,
+    ) -> Result<Option<PairInsertion>, FlowTableError> {
+        self.insert_pair_if_admitted_timed(&mut FlowTimers::new(), forward, reverse, admit)
+    }
+
+    /// Count one entry removed from the table.
+    pub(crate) fn live_removed(&self) {
+        self.live.fetch_sub(1, Ordering::Relaxed);
     }
 
     fn reserve(&self, val: &Arc<FlowInfo>) -> Option<SlotReservation<'_>> {
@@ -286,15 +289,18 @@ impl FlowTable {
         let Some(old) = old else {
             return;
         };
-        old.update_status(FlowStatus::Detached);
-        old.token.cancel();
+        old.detach();
         if let Some(related) = old.related.as_ref().and_then(Weak::upgrade) {
             debug!("insert: invalidating the partner of a displaced flow");
             related.invalidate();
         }
     }
 
-    fn insert_common(&self, val: &Arc<FlowInfo>) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
+    fn insert_common(
+        &self,
+        timers: &mut FlowTimers,
+        val: &Arc<FlowInfo>,
+    ) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
         let table = self.table.read();
         let flow_key = val.flowkey();
         debug!("insert: inserting flow {flow_key}");
@@ -314,8 +320,7 @@ impl FlowTable {
         val.update_status(FlowStatus::Active);
         drop(table);
 
-        #[cfg(not(any(feature = "shuttle", feature = "loom")))]
-        Self::start_timer(self.table.clone(), self.live.clone(), val.clone());
+        timers.schedule(val);
 
         Self::displace(result.as_ref());
 
@@ -333,7 +338,11 @@ impl FlowTable {
     /// # Errors
     ///
     /// Returns [`FlowTableError::CapacityExceeded`] if the key is free and the table is full.
-    pub fn insert_if_absent(&self, val: &Arc<FlowInfo>) -> Result<Insertion, FlowTableError> {
+    pub(crate) fn insert_if_absent_timed(
+        &self,
+        timers: &mut FlowTimers,
+        val: &Arc<FlowInfo>,
+    ) -> Result<Insertion, FlowTableError> {
         let table = self.table.read();
         let flow_key = val.flowkey();
         debug!("insert: inserting flow {flow_key} unless it is already held");
@@ -389,8 +398,7 @@ impl FlowTable {
 
         drop(table);
 
-        #[cfg(not(any(feature = "shuttle", feature = "loom")))]
-        Self::start_timer(self.table.clone(), self.live.clone(), val.clone());
+        timers.schedule(val);
 
         Self::displace(displaced.as_ref());
 
@@ -412,12 +420,13 @@ impl FlowTable {
     ///
     /// Panics if the flows are not distinct, detached, and related to each other. The caller must
     /// not hold a table guard.
-    pub fn insert_pair_if_absent(
+    pub(crate) fn insert_pair_if_absent_timed(
         &self,
+        timers: &mut FlowTimers,
         forward: &Arc<FlowInfo>,
         reverse: &Arc<FlowInfo>,
     ) -> Result<PairInsertion, FlowTableError> {
-        self.insert_pair_if_admitted(forward, reverse, || true)
+        self.insert_pair_if_admitted_timed(timers, forward, reverse, || true)
             .map(|insertion| insertion.unwrap_or_else(|| unreachable!("every pair is admitted")))
     }
 
@@ -436,8 +445,9 @@ impl FlowTable {
     ///
     /// Panics if the flows are not distinct, detached, and related to each other. The caller must
     /// not hold a table guard, and `admit` must not access the table.
-    pub fn insert_pair_if_admitted(
+    pub(crate) fn insert_pair_if_admitted_timed(
         &self,
+        timers: &mut FlowTimers,
         forward: &Arc<FlowInfo>,
         reverse: &Arc<FlowInfo>,
         admit: impl FnOnce() -> bool,
@@ -486,10 +496,8 @@ impl FlowTable {
 
         Self::displace(old_forward.as_ref());
         Self::displace(old_reverse.as_ref());
-        #[cfg(not(any(feature = "shuttle", feature = "loom")))]
-        for flow in [forward, reverse] {
-            Self::start_timer(self.table.clone(), self.live.clone(), flow.clone());
-        }
+        timers.schedule(forward);
+        timers.schedule(reverse);
         Ok(Some(PairInsertion::Installed))
     }
 
@@ -525,8 +533,7 @@ impl FlowTable {
             self.live.fetch_sub(1, Ordering::Relaxed);
         }
         if let Some((_key, flow_info)) = result.as_ref() {
-            flow_info.update_status(FlowStatus::Detached);
-            flow_info.token.cancel();
+            flow_info.detach();
         }
         result
     }
@@ -676,6 +683,7 @@ mod tests {
 
     #[concurrency_mode(std)]
     mod std_tests {
+        use crate::flow_table::WorkerFlowTable;
         use net::flows::FlowInfoFlags;
         use tracing_test::traced_test;
 
@@ -704,9 +712,9 @@ mod tests {
             assert_eq!(result.0, flow_key);
         }
 
-        // start_paused so the timer task's sleep_until and the test's sleeps share tokio's
-        // virtual clock; otherwise miri's slow interpretation can drift the wall clock far
-        // enough between Instant::now() and the first sleep that the deadline elapses early.
+        // start_paused so the flow's deadline and the test's sleeps share tokio's virtual clock;
+        // otherwise miri's slow interpretation can drift the wall clock far enough between
+        // Instant::now() and the first sleep that the deadline elapses early.
         // Anchor `now` on the virtual clock too -- a std::Instant::now() here would be many
         // real-time seconds past the paused baseline under miri, putting the deadline beyond
         // any virtual-time advance the test performs.
@@ -716,7 +724,7 @@ mod tests {
             let two_seconds = Duration::from_secs(2);
             let one_second = Duration::from_secs(1);
 
-            let flow_table = FlowTable::default();
+            let flow_table = WorkerFlowTable::new(Arc::new(FlowTable::default()));
             let flow_key = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(42).unwrap())),
                 v4_addrs("10.0.0.1", "10.0.0.2"),
@@ -731,6 +739,7 @@ mod tests {
 
             // Wait 1 second — flow not yet expired, lookup should return Some.
             tokio::time::sleep(one_second).await;
+            assert_eq!(flow_table.expire_all(clock::now()), 0);
             assert!(
                 flow_table.lookup(&flow_key).is_some(),
                 "Flow key should still be present after 1 second"
@@ -738,6 +747,7 @@ mod tests {
 
             // Wait another 2 seconds (total 3s) — flow expired. It should be gone
             tokio::time::sleep(two_seconds).await;
+            assert_eq!(flow_table.expire_all(clock::now()), 1);
             assert!(flow_table.lookup(&flow_key).is_none());
             assert_eq!(flow_table.live_len(), 0);
         }
@@ -813,21 +823,12 @@ mod tests {
                 });
         }
 
-        #[tokio::test]
+        #[tokio::test(start_paused = true)]
         #[cfg_attr(not(emulated), traced_test)]
-        // tokio::time::sleep counts wall-clock seconds, so a 4s sleep under miri's slow
-        // interpreter elapses many real-world seconds and the "extended" flow's std::Instant
-        // deadline gets passed too. Fixing this would require running on tokio's paused
-        // clock, but the per-flow timer task uses tokio::time::Instant::from_std on a
-        // wall-clock std deadline; mixing virtual and real instants is messy. Revisit.
-        #[cfg_attr(
-            miri,
-            ignore = "wall-clock sleep + std::Instant deadlines don't survive miri"
-        )]
         /// Test that invalidating flows causes timer to expire and flows to be removed
         async fn test_flow_table_flow_invalidation() {
             const NUM_FLOWS: u16 = 10;
-            let flow_table = FlowTable::default();
+            let flow_table = WorkerFlowTable::new(Arc::new(FlowTable::default()));
             let now = clock::now();
             let deadline = now + Duration::from_secs(3);
 
@@ -857,19 +858,23 @@ mod tests {
                     _ => {}
                 }
             }
-            // invalidated should be gone
+            // invalidated should be gone, and removed on the next sweep
             assert_eq!(flow_table.active_len().unwrap(), (NUM_FLOWS - 1).into());
+            assert_eq!(flow_table.expire_all(clock::now()), 1);
+            assert_eq!(flow_table.len(), Some(usize::from(NUM_FLOWS - 1)));
 
             // wait 4 > 3 seconds. All except the one extended should be gone
             tokio::time::sleep(Duration::from_secs(4)).await;
+            flow_table.expire_all(clock::now());
             assert_eq!(flow_table.active_len().unwrap(), 1);
+            assert_eq!(flow_table.len(), Some(1));
         }
 
-        #[tokio::test]
+        #[tokio::test(start_paused = true)]
         #[cfg_attr(not(emulated), traced_test)]
-        /// Test that invalidating flows causes timer to expire and flows to be removed
+        /// Test that a flow replaced under its key is detached, and that the replacement expires
         async fn test_flow_table_flow_reinsertion() {
-            let flow_table = FlowTable::default();
+            let flow_table = WorkerFlowTable::new(Arc::new(FlowTable::default()));
             let now = clock::now();
             let deadline = now + Duration::from_secs(2);
 
@@ -891,6 +896,7 @@ mod tests {
             assert_eq!(flow_table.active_len().unwrap(), 1);
 
             let () = tokio::time::sleep(Duration::from_secs(5)).await;
+            flow_table.expire_all(clock::now());
             assert_eq!(flow_table.active_len().unwrap(), 0);
             assert_eq!(flow_table.live_len(), 0);
         }
@@ -1264,7 +1270,7 @@ mod tests {
 
             let mut handles = vec![];
 
-            // "expirer" thread — simulates what the tokio timer would do.
+            // "expirer" thread — does what a worker's expiry sweep does to a due flow.
             handles.push(
                 thread::Builder::new()
                     .name("expirer".to_string())

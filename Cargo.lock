@@ -1646,6 +1646,7 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-net",
  "dataplane-pipeline",
+ "dataplane-timer-wheel",
  "dataplane-tracectl",
  "etherparse",
  "linkme",
@@ -2073,6 +2074,7 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-fixed-size",
  "dataplane-id",
+ "dataplane-timer-wheel",
  "derive_builder",
  "downcast-rs",
  "etherparse",
@@ -2086,7 +2088,6 @@ dependencies = [
  "strum_macros",
  "thiserror 2.0.21",
  "tokio",
- "tokio-util",
  "tracing",
 ]
 

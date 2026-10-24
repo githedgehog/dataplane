@@ -6,6 +6,7 @@
 use crate::packet::VpcDiscriminant;
 use bitflags::bitflags;
 use concurrency::sync::Arc;
+use concurrency::sync::Mutex;
 use concurrency::sync::OnceLock;
 use concurrency::sync::RwLock;
 use concurrency::sync::Weak;
@@ -13,7 +14,7 @@ use concurrency::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::fmt::{Debug, Display};
 use std::mem::MaybeUninit;
 use std::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
+use timer_wheel::TimerRef;
 use tracing::debug;
 
 use super::{AtomicConnState, AtomicInstant, FlowInfoItem};
@@ -198,7 +199,8 @@ pub struct FlowInfo {
     opening_tcp_flags: OnceLock<TcpFlags>,
     pub locked: RwLock<FlowInfoLocked>,
     pub related: Option<Weak<FlowInfo>>,
-    pub token: CancellationToken,
+    /// The expiry timer of this flow, once the flow is in a table.
+    timer: Mutex<Option<TimerRef>>,
 }
 
 // TODO: We need a way to stuff an Arc<FlowInfo> into the packet
@@ -217,7 +219,7 @@ impl FlowInfo {
             opening_tcp_flags: OnceLock::new(),
             locked: RwLock::new(FlowInfoLocked::default()),
             related: None,
-            token: CancellationToken::new(),
+            timer: Mutex::new(None),
         }
     }
 
@@ -471,7 +473,8 @@ impl FlowInfo {
     }
 
     /// Cancel a flow. In other words, invalidate it so that it is not used to process packets.
-    /// Soon after invalidated, the flow's timer is cancelled and the flow removed from the flow table.
+    /// The flow's expiry timer is cancelled, and the worker that owns the timer removes the flow from
+    /// the flow table on its next sweep.
     ///
     /// # Thread Safety
     ///
@@ -480,8 +483,45 @@ impl FlowInfo {
         let status = self.update_status(FlowStatus::Cancelled);
         if status == FlowStatus::Active {
             debug!("Invalidating flow {}...", self.logfmt());
-            self.update_status(FlowStatus::Cancelled);
-            self.token.cancel();
+            self.cancel_timer();
+        }
+    }
+
+    /// Mark a flow as no longer in the flow table (it was displaced or removed) and cancel its
+    /// expiry timer, which has nothing left to remove.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe.
+    pub fn detach(&self) {
+        self.update_status(FlowStatus::Detached);
+        self.cancel_timer();
+    }
+
+    /// Give the flow the timer that expires it, when the flow is inserted in a flow table. A flow
+    /// inserted again gets a new timer; the previous one is cancelled. If the flow was invalidated
+    /// or detached after publication but before binding, cancel the new timer too.
+    pub fn bind_timer(&self, timer: TimerRef) {
+        // Invalidation changes the status before taking this lock. Either it finds the timer we
+        // publish here, or we see its changed status while holding the same lock.
+        let mut held = self.timer.lock();
+        if self.status() != FlowStatus::Active {
+            timer.cancel();
+        }
+        if let Some(previous) = held.replace(timer) {
+            previous.cancel();
+        }
+    }
+
+    /// Whether the flow has been put on an expiry timer.
+    #[must_use]
+    pub fn has_timer(&self) -> bool {
+        self.timer.lock().is_some()
+    }
+
+    fn cancel_timer(&self) {
+        if let Some(timer) = self.timer.lock().as_ref() {
+            timer.cancel();
         }
     }
 

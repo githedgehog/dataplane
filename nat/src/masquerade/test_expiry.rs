@@ -34,6 +34,12 @@ fn vni(raw: u32) -> Vni {
     Vni::new_checked(raw).unwrap_or_else(|_| unreachable!())
 }
 
+/// Let `by` pass, then expire what is due, as the worker's poll loop would.
+async fn pass(masq: &Masquerade, by: Duration) {
+    advance(by).await;
+    masq.flows().expire_all(clock::now());
+}
+
 fn with_paused_clock<F: Future<Output = ()>>(body: impl FnOnce() -> F) {
     clock::virtual_time::Paused::new().block_on(body());
 }
@@ -199,7 +205,7 @@ fn a_flow_inside_its_lifetime_survives() {
         let translated = open_flow(&mut lookup, &mut masq, source, peer, 1234)
             .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
 
-        advance(WITHIN_LIFETIME).await;
+        pass(&masq, WITHIN_LIFETIME).await;
 
         assert_eq!(
             reply_to(&mut lookup, &mut masq, peer, translated),
@@ -220,7 +226,7 @@ fn a_flow_past_its_lifetime_stops_answering() {
         let translated = open_flow(&mut lookup, &mut masq, source, peer, 1234)
             .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
 
-        advance(PAST_EXPIRY).await;
+        pass(&masq, PAST_EXPIRY).await;
 
         let delivered = reply_to(&mut lookup, &mut masq, peer, translated);
         assert_ne!(
@@ -247,7 +253,7 @@ fn traffic_extends_a_flow_past_its_first_deadline() {
             .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
 
         for _ in 0..4 {
-            advance(WITHIN_LIFETIME).await;
+            pass(&masq, WITHIN_LIFETIME).await;
             assert_eq!(
                 reply_to(&mut lookup, &mut masq, peer, translated),
                 Some(source),
@@ -284,7 +290,7 @@ fn outbound_traffic_keeps_an_established_mapping_alive() {
         );
 
         for step in 1..=3 {
-            advance(NEARLY_ESTABLISHED).await;
+            pass(&masq, NEARLY_ESTABLISHED).await;
             assert_eq!(
                 open_flow(&mut lookup, &mut masq, source, peer, 1234),
                 Some(translated),
@@ -293,7 +299,7 @@ fn outbound_traffic_keeps_an_established_mapping_alive() {
             );
         }
 
-        advance(REFRESHED_FOR).await;
+        pass(&masq, REFRESHED_FOR).await;
         assert_eq!(
             reply_to(&mut lookup, &mut masq, peer, translated),
             Some(source),
@@ -301,7 +307,7 @@ fn outbound_traffic_keeps_an_established_mapping_alive() {
              are not refreshing it"
         );
 
-        advance(LONG_SILENCE).await;
+        pass(&masq, LONG_SILENCE).await;
         assert_eq!(
             reply_to(&mut lookup, &mut masq, peer, translated),
             None,
@@ -322,7 +328,7 @@ fn an_expired_flow_is_never_resurrected() {
         let dead = open_flow(&mut lookup, &mut masq, first, peer, 1234)
             .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
 
-        advance(PAST_EXPIRY).await;
+        pass(&masq, PAST_EXPIRY).await;
 
         let live = open_flow(&mut lookup, &mut masq, second, peer, 4321).unwrap_or_else(|| {
             unreachable!(
@@ -369,7 +375,7 @@ fn outbound_traffic_keeps_an_unanswered_mapping_alive() {
         let translated = open_flow(&mut lookup, &mut masq, source, peer, 5300)
             .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
         for _ in 0..=REFRESHES {
-            advance(STEP).await;
+            pass(&masq, STEP).await;
         }
         assert_eq!(
             reply_to(&mut lookup, &mut masq, peer, translated),
@@ -389,14 +395,14 @@ fn outbound_traffic_keeps_an_unanswered_mapping_alive() {
         let translated = open_flow(&mut lookup, &mut masq, source, peer, 5300)
             .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
         for _ in 0..REFRESHES {
-            advance(STEP).await;
+            pass(&masq, STEP).await;
             assert_eq!(
                 open_flow(&mut lookup, &mut masq, source, peer, 5300),
                 Some(translated),
                 "the sender was given a different public tuple mid-stream"
             );
         }
-        advance(STEP).await;
+        pass(&masq, STEP).await;
         assert_eq!(
             reply_to(&mut lookup, &mut masq, peer, translated),
             Some(source),
@@ -425,7 +431,7 @@ fn both_halves_of_a_pair_outlive_one_sided_traffic() {
         );
 
         for elapsed in 1..=8 {
-            advance(WITHIN_LIFETIME).await;
+            pass(&masq, WITHIN_LIFETIME).await;
             assert_eq!(
                 reply_to(&mut lookup, &mut masq, peer, translated),
                 Some(source),
@@ -454,7 +460,7 @@ fn a_live_flows_tuple_is_never_reissued() {
             .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
 
         for _ in 0..6 {
-            advance(WITHIN_LIFETIME).await;
+            pass(&masq, WITHIN_LIFETIME).await;
             assert_eq!(
                 reply_to(&mut lookup, &mut masq, peer, held),
                 Some(first),
