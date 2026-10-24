@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 #![cfg(test)]
+use flow_entry::flow_table::WorkerFlowTable;
 
 use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use bolero::TypeGenerator;
@@ -153,7 +154,7 @@ impl Fabric {
             FlowLookup::new("flow-lookup", self.flow_table.clone()),
             Masquerade::new(
                 "masquerade",
-                self.flow_table.clone(),
+                WorkerFlowTable::new(self.flow_table.clone()),
                 self.allocator.get_reader(),
             ),
         )

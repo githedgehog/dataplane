@@ -3,6 +3,7 @@
 
 #![cfg(test)]
 #![cfg(not(miri))]
+use flow_entry::flow_table::WorkerFlowTable;
 
 use acl_filter::{
     AclFilter, AclFilterContext, AclFilterContextReaderFactory, AclFilterContextWriter,
@@ -337,12 +338,12 @@ impl Blueprint {
         pipeline = pipeline.add_stage(StaticNat::with_reader(
             "static-nat",
             self.static_nat.handle(),
-            self.flow_table.clone(),
+            WorkerFlowTable::new(self.flow_table.clone()),
         ));
         pipeline = pipeline.add_stage(PortForwarder::new(
             "port-forwarder",
             self.portfw.handle(),
-            self.flow_table.clone(),
+            WorkerFlowTable::new(self.flow_table.clone()),
         ));
 
         pipeline = pipeline.add_stage(Checkpoint::new(
@@ -358,7 +359,7 @@ impl Blueprint {
         ));
         pipeline = pipeline.add_stage(Masquerade::new(
             "masquerade",
-            self.flow_table.clone(),
+            WorkerFlowTable::new(self.flow_table.clone()),
             self.masquerade.handle(),
         ));
 
@@ -369,7 +370,10 @@ impl Blueprint {
                 checking.lock().after(at, packet);
             },
         ));
-        pipeline = pipeline.add_stage(FlowTracker::new("flow-tracker", self.flow_table.clone()));
+        pipeline = pipeline.add_stage(FlowTracker::new(
+            "flow-tracker",
+            WorkerFlowTable::new(self.flow_table.clone()),
+        ));
 
         if let Some(underlay) = &self.underlay {
             pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", underlay.fibs.handle()));

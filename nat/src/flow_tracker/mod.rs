@@ -19,7 +19,7 @@ use crate::common::TIMEOUT_SCALE;
 use crate::nat_flows::{HalfFlow, InstallError, NatData, NewFlow, install_pair};
 use crate::static_nat::StaticNatFlowData;
 use concurrency::sync::Arc;
-use flow_entry::flow_table::table::FlowTable;
+use flow_entry::flow_table::WorkerFlowTable;
 use net::buffer::PacketBufferMut;
 use net::flow_key::IcmpProtoKey;
 use net::flows::conn_tracking::{ConnState, advance_flow, transport_proto};
@@ -81,7 +81,7 @@ fn can_open_flow<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
 /// after translation, reversed.
 pub(crate) fn track_new_flow<Buf: PacketBufferMut, S: NatData>(
     nfi: &str,
-    flow_table: &FlowTable,
+    flow_table: &WorkerFlowTable,
     packet: &Packet<Buf>,
     initial_key: FlowKey,
     state: impl Fn() -> S,
@@ -147,14 +147,14 @@ pub(crate) fn refresh_tracked_flow<Buf: PacketBufferMut>(packet: &Packet<Buf>, f
 /// their own traffic.
 pub struct FlowTracker {
     name: String,
-    flow_table: Arc<FlowTable>,
+    flow_table: WorkerFlowTable,
     pipeline_data: Arc<PipelineData>,
 }
 
 impl FlowTracker {
     /// Creates a new [`FlowTracker`].
     #[must_use]
-    pub fn new(name: &str, flow_table: Arc<FlowTable>) -> Self {
+    pub fn new(name: &str, flow_table: WorkerFlowTable) -> Self {
         Self {
             name: name.to_string(),
             flow_table,
@@ -211,6 +211,7 @@ mod test {
     use crate::nat_flows::NatData;
     use crate::static_nat::probe::build;
     use concurrency::sync::Arc;
+    use flow_entry::flow_table::WorkerFlowTable;
     use flow_entry::flow_table::table::FlowTable;
     use net::FlowKey;
     use net::buffer::TestBuffer;
@@ -256,7 +257,7 @@ mod test {
     #[tokio::test]
     async fn a_new_connection_gets_a_tracked_flow_pair() {
         let table = Arc::new(FlowTable::default());
-        let mut tracker = FlowTracker::new("tracker", table.clone());
+        let mut tracker = FlowTracker::new("tracker", WorkerFlowTable::new(table.clone()));
         let packet = syn("10.0.0.5", "20.0.0.5");
         let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!());
 
@@ -279,7 +280,7 @@ mod test {
     #[tokio::test]
     async fn a_tcp_segment_without_syn_opens_no_flow() {
         let table = Arc::new(FlowTable::default());
-        let mut tracker = FlowTracker::new("tracker", table.clone());
+        let mut tracker = FlowTracker::new("tracker", WorkerFlowTable::new(table.clone()));
         let mut packet = syn("10.0.0.5", "20.0.0.5");
         let tcp = packet.try_tcp_mut().unwrap_or_else(|| unreachable!());
         tcp.set_syn(false);
@@ -294,7 +295,7 @@ mod test {
     #[tokio::test]
     async fn static_nat_packets_are_left_to_static_nat() {
         let table = Arc::new(FlowTable::default());
-        let mut tracker = FlowTracker::new("tracker", table.clone());
+        let mut tracker = FlowTracker::new("tracker", WorkerFlowTable::new(table.clone()));
         let mut packet = syn("10.0.0.5", "20.0.0.5");
         packet.meta_mut().set_static_nat_src(true);
         let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!());
@@ -326,7 +327,7 @@ mod test {
     #[tokio::test]
     async fn a_reply_moves_the_status_of_the_pair() {
         let table = Arc::new(FlowTable::default());
-        let mut tracker = FlowTracker::new("tracker", table.clone());
+        let mut tracker = FlowTracker::new("tracker", WorkerFlowTable::new(table.clone()));
         let packet = syn("10.0.0.5", "20.0.0.5");
         let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!());
         run(&mut tracker, packet);
@@ -345,7 +346,7 @@ mod test {
     #[tokio::test]
     async fn a_reset_ends_the_tracking_of_the_pair() {
         let table = Arc::new(FlowTable::default());
-        let mut tracker = FlowTracker::new("tracker", table.clone());
+        let mut tracker = FlowTracker::new("tracker", WorkerFlowTable::new(table.clone()));
         let packet = syn("10.0.0.5", "20.0.0.5");
         let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!());
         run(&mut tracker, packet);

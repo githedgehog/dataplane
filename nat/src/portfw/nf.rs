@@ -5,7 +5,7 @@
 
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable, PortFwTableReader};
 use concurrency::sync::{Arc, Weak};
-use flow_entry::flow_table::table::FlowTable;
+use flow_entry::flow_table::WorkerFlowTable;
 
 use net::buffer::PacketBufferMut;
 use net::headers::{Transport, TryHeaders, TryIp};
@@ -29,7 +29,7 @@ use tracing::{debug, error, trace, warn};
 /// A port-forwarding network function
 pub struct PortForwarder {
     name: String,
-    flow_table: Arc<FlowTable>,
+    flow_table: WorkerFlowTable,
     fwtable: PortFwTableReader,
     pipeline_data: Arc<PipelineData>,
 }
@@ -37,7 +37,7 @@ pub struct PortForwarder {
 impl PortForwarder {
     /// Creates a new [`PortForwarder`]
     #[must_use]
-    pub fn new(name: &str, fwtable: PortFwTableReader, flow_table: Arc<FlowTable>) -> Self {
+    pub fn new(name: &str, fwtable: PortFwTableReader, flow_table: WorkerFlowTable) -> Self {
         Self {
             name: name.to_string(),
             flow_table,

@@ -992,6 +992,7 @@ mod end_to_end {
         packet, pattern, peering, rule, v4, vpcd,
     };
     use crate::AclFilter;
+    use flow_entry::flow_table::WorkerFlowTable;
 
     use config::external::overlay::ValidatedOverlay;
     use config::external::overlay::vpcpeering::VpcExpose;
@@ -1080,7 +1081,7 @@ mod end_to_end {
         pipeline = pipeline.add_stage(StaticNat::with_reader(
             "static-nat",
             static_nat_writer.get_reader(),
-            flow_table.clone(),
+            WorkerFlowTable::new(flow_table.clone()),
         ));
 
         // Share the allocator between port forwarding and masquerade.
@@ -1095,18 +1096,21 @@ mod end_to_end {
         pipeline = pipeline.add_stage(PortForwarder::new(
             "port-forwarder",
             portfw_writer.reader(),
-            flow_table.clone(),
+            WorkerFlowTable::new(flow_table.clone()),
         ));
 
         // Masquerade (creates the related flow pair used by 'flow'-scoped replies)
         pipeline = pipeline.add_stage(Masquerade::new(
             "masquerade",
-            flow_table.clone(),
+            WorkerFlowTable::new(flow_table.clone()),
             allocator.get_reader(),
         ));
 
         // Flow tracking (creates the related flow pair for static NAT or no NAT)
-        pipeline = pipeline.add_stage(FlowTracker::new("flow-tracker", flow_table.clone()));
+        pipeline = pipeline.add_stage(FlowTracker::new(
+            "flow-tracker",
+            WorkerFlowTable::new(flow_table.clone()),
+        ));
 
         let handles = PipelineHandles {
             flow_filter: flow_filter_writer,
