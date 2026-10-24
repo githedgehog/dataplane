@@ -74,11 +74,13 @@ mod test {
     use tracing_test::traced_test;
 
     use crate::flow_table::FlowTable;
+    use crate::flow_table::WorkerFlowTable;
     use crate::flow_table::nf_lookup::FlowLookup;
 
     #[tokio::test]
     async fn test_lookup_nf() {
         let flow_table = Arc::new(FlowTable::default());
+        let flows = WorkerFlowTable::new(flow_table.clone());
         let mut lookup_nf = FlowLookup::new("test_lookup_nf", flow_table.clone());
         let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
         let src_ip = "1.2.3.4".parse::<UnicastIpAddr>().unwrap();
@@ -98,7 +100,7 @@ mod test {
         // Insert matching flow entry
         let flow_key = FlowKey::try_from(&packet).unwrap();
         let flow_info = FlowInfo::new(flow_key, clock::now() + Duration::from_secs(10));
-        flow_table.insert(flow_info).unwrap();
+        flows.insert(flow_info).unwrap();
 
         // Ensure packet is tagged
         let mut output_iter = lookup_nf.process(std::iter::once(packet));
@@ -108,11 +110,11 @@ mod test {
 
     // A dummy NF that creates a flow entry for each packet, with a configurable lifetime
     struct FlowInfoCreator {
-        flow_table: Arc<FlowTable>,
+        flow_table: WorkerFlowTable,
         timeout: Duration,
     }
     impl FlowInfoCreator {
-        fn new(flow_table: Arc<FlowTable>, timeout: Duration) -> Self {
+        fn new(flow_table: WorkerFlowTable, timeout: Duration) -> Self {
             Self {
                 flow_table,
                 timeout,
@@ -132,11 +134,12 @@ mod test {
     }
 
     #[cfg_attr(not(miri), traced_test)]
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_lookup_nf_with_expiration() {
         let flow_table = Arc::new(FlowTable::default());
+        let flows = WorkerFlowTable::new(flow_table.clone());
         let lookup_nf = FlowLookup::new("lookup_nf", flow_table.clone());
-        let flowinfo_creator = FlowInfoCreator::new(flow_table.clone(), Duration::from_secs(1));
+        let flowinfo_creator = FlowInfoCreator::new(flows.clone(), Duration::from_secs(1));
         let mut pipeline: DynPipeline<'static, TestBuffer> = DynPipeline::new()
             .add_stage(lookup_nf)
             .add_stage(flowinfo_creator);
@@ -158,22 +161,24 @@ mod test {
         let num_entries = flow_table.active_len().unwrap();
         assert_eq!(num_entries, NUM_PACKETS as usize);
 
-        // wait twice as much as entry lifetimes — all flow timers should have fired by now
+        // wait twice as much as entry lifetimes — all flow timers are due by now
         tokio::time::sleep(Duration::from_secs(2)).await;
+        flows.expire_all(clock::now());
 
-        // All flows are now expired (marked by per-flow tokio timers)
+        // All flows are now expired (by the wheel of the handle that inserted them)
         let num_entries = flow_table.active_len().unwrap();
         assert_eq!(num_entries, 0);
     }
 
     //#[traced_test]
-    // start_paused so per-flow timer deadlines and the test's sleep share tokio's virtual
+    // start_paused so flow deadlines and the test's sleep share tokio's virtual
     // clock; otherwise miri's slow interpretation lets real wall time blow past flow_2's
     // 1-minute deadline (the whole test takes ~90s under miri), expiring both flows
     // instead of just flow_1. Same root cause as test_flow_table_timeout.
     #[tokio::test(start_paused = true)]
     async fn test_lookups_with_related_flows() {
         let flow_table = Arc::new(FlowTable::default());
+        let flows = WorkerFlowTable::new(flow_table.clone());
         let lookup_nf = FlowLookup::new("lookup_nf", flow_table.clone());
         let mut pipeline: DynPipeline<'static, TestBuffer> =
             DynPipeline::new().add_stage(lookup_nf);
@@ -208,8 +213,8 @@ mod test {
             flow_2.extend_expiry_unchecked(Duration::from_mins(1));
 
             // ... and insert the two flows in the flow table
-            flow_table.insert_from_arc(&flow_1).unwrap();
-            flow_table.insert_from_arc(&flow_2).unwrap();
+            flows.insert_from_arc(&flow_1).unwrap();
+            flows.insert_from_arc(&flow_2).unwrap();
 
             // check that flows can be looked up
             let _ = flow_table.lookup(&key_1).unwrap();
@@ -235,8 +240,9 @@ mod test {
             assert_eq!(flow_table.active_len().unwrap(), 2);
         }
 
-        // wait 3 secs. Flow 1 should have been expired by its tokio timer
+        // wait 3 secs. Flow 1 should have been expired by its timer
         tokio::time::sleep(Duration::from_secs(3)).await;
+        flows.expire_all(clock::now());
 
         assert_eq!(flow_table.active_len().unwrap(), 1);
 
