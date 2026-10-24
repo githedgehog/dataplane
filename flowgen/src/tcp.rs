@@ -7,8 +7,8 @@
 //! A [`Host`] is an [`Agent`]: one smoltcp interface with its own address, speaking IPv4 in frames
 //! of its own -- plain Ethernet to a next hop, or Ethernet inside VXLAN from a VTEP -- so that a host
 //! can stand in a VPC behind the gateway as easily as on its underlay. A [`Role`] says what it does:
-//! serve, echoing everything back, or open connections and check that what comes back is exactly
-//! what went out.
+//! serve, echoing everything back; open connections and check that what comes back is exactly
+//! what went out; or keep a [`heartbeat`] going over one connection, as a BGP session would.
 //!
 //! What a host reports is per connection summed: how many were established, closed cleanly by
 //! both ends or reset, how long establishing took, and bytes sent, received and received wrong -- a byte that
@@ -29,6 +29,7 @@ use smoltcp::wire::{HardwareAddress, IpCidr};
 
 use crate::drive::Agent;
 use crate::frame::{self, Mac, Vxlan};
+use crate::heartbeat;
 
 /// The largest IP packet a host sends: room left for VXLAN within a 1500-byte underlay.
 const MTU: usize = 1400;
@@ -92,6 +93,35 @@ pub enum Role {
         /// Bytes each connection sends and expects back.
         bytes: usize,
     },
+    /// Keep a heartbeat going over one connection at a time: to `peer`'s `port` from ports
+    /// counting up from `first_port`, reconnecting a second after each connection ends, or, with
+    /// no `peer`, listening on `port`. The port is BGP's unless said otherwise, so the gateway
+    /// takes the connection for a BGP session.
+    Heartbeat {
+        /// The heartbeat's configuration.
+        config: heartbeat::Config,
+        /// Whom to connect to; `None` to listen instead.
+        peer: Option<Ipv4Addr>,
+        /// The port connected to, or listened on.
+        #[serde(default = "heartbeat::default_port")]
+        port: u16,
+        /// The first local port, for connecting.
+        first_port: u16,
+    },
+}
+
+/// How long a heartbeat waits after a connection ends before trying again.
+const CONNECT_RETRY_NS: u64 = 1_000_000_000;
+
+/// A host's heartbeat and its connection.
+struct Pulse {
+    session: heartbeat::Session,
+    /// The session has been told of the current connection.
+    live: bool,
+    /// Connections attempted, which pick the next local port.
+    attempts: u16,
+    /// When the next connection may be attempted.
+    retry_at_ns: u64,
 }
 
 /// One connection a client opens, and how it is getting on.
@@ -192,6 +222,7 @@ pub struct Host {
     connections: Vec<Connection>,
     tally: Tally,
     started: bool,
+    pulse: Option<Pulse>,
 }
 
 fn now(ns: u64) -> Instant {
@@ -235,6 +266,16 @@ impl Host {
             .unwrap_or_else(|_| unreachable!("a new interface has room for one route"));
         let count = match role {
             Role::Echo { connections, .. } | Role::Client { connections, .. } => connections,
+            Role::Heartbeat { .. } => 1,
+        };
+        let pulse = match role {
+            Role::Heartbeat { config, .. } => Some(Pulse {
+                session: heartbeat::Session::new(config),
+                live: false,
+                attempts: 0,
+                retry_at_ns: now_ns,
+            }),
+            _ => None,
         };
         let mut sockets = SocketSet::new(Vec::new());
         let handles = (0..count).map(|_| sockets.add(socket())).collect();
@@ -256,6 +297,7 @@ impl Host {
                 .collect(),
             tally: Tally::default(),
             started: false,
+            pulse,
         }
     }
 
@@ -282,11 +324,97 @@ impl Host {
                     self.connections[n].opened_ns = now_ns;
                 }
             }
+            // A heartbeat connects, and reconnects, as it goes.
+            Role::Heartbeat { .. } => {}
+        }
+    }
+
+    /// Carry the heartbeat over the host's one socket: (re)connect or listen when there is no
+    /// connection, tell the session when one comes up or goes down, and move its bytes.
+    fn beat(&mut self, now_ns: u64) {
+        let Role::Heartbeat {
+            peer,
+            port,
+            first_port,
+            ..
+        } = self.role
+        else {
+            return;
+        };
+        let Some(pulse) = self.pulse.as_mut() else {
+            return;
+        };
+        let socket = self.sockets.get_mut::<tcp::Socket>(self.handles[0]);
+        match socket.state() {
+            tcp::State::Closed => {
+                if pulse.live {
+                    pulse.live = false;
+                    pulse.session.disconnected(now_ns);
+                    pulse.retry_at_ns = now_ns + CONNECT_RETRY_NS;
+                }
+                if now_ns >= pulse.retry_at_ns {
+                    match peer {
+                        Some(peer) => {
+                            let local = first_port.wrapping_add(pulse.attempts);
+                            pulse.attempts = pulse.attempts.wrapping_add(1);
+                            let _ = socket.connect(self.iface.context(), (peer, port), local);
+                        }
+                        None => {
+                            let _ = socket.listen(port);
+                        }
+                    }
+                }
+                return;
+            }
+            tcp::State::Established if !pulse.live => {
+                pulse.live = true;
+                pulse.session.connected(now_ns);
+                self.tally.established += 1;
+            }
+            // The far end is closing the connection: it is over, and the socket is freed for the
+            // next.
+            tcp::State::CloseWait | tcp::State::TimeWait if pulse.live => {
+                pulse.live = false;
+                pulse.session.disconnected(now_ns);
+                pulse.retry_at_ns = now_ns + CONNECT_RETRY_NS;
+                socket.abort();
+                return;
+            }
+            _ => {}
+        }
+        if !pulse.live {
+            return;
+        }
+        let mut buf = [0u8; 4096];
+        while socket.can_recv() {
+            match socket.recv_slice(&mut buf) {
+                Ok(got) if got > 0 => {
+                    self.tally.bytes_received += got as u64;
+                    pulse.session.receive(&buf[..got], now_ns);
+                }
+                _ => break,
+            }
+        }
+        if let Some(bytes) = pulse.session.transmit(now_ns) {
+            let sent = socket.send_slice(&bytes).unwrap_or(0);
+            self.tally.bytes_sent += sent as u64;
+        }
+        // Given up, for silence or a mangled stream: reset, as a BGP speaker's NOTIFICATION and
+        // close would end it at once for the far end too.
+        if pulse.session.wants_close() {
+            pulse.live = false;
+            pulse.session.disconnected(now_ns);
+            pulse.retry_at_ns = now_ns + CONNECT_RETRY_NS;
+            socket.abort();
         }
     }
 
     /// Do what the role says with every socket, and follow each connection's life.
     fn serve(&mut self, now_ns: u64) {
+        if self.pulse.is_some() {
+            self.beat(now_ns);
+            return;
+        }
         let role = self.role.clone();
         for (n, handle) in self.handles.iter().enumerate() {
             let socket = self.sockets.get_mut::<tcp::Socket>(*handle);
@@ -320,6 +448,7 @@ impl Host {
             match role {
                 Role::Echo { .. } => echo(socket, connection, &mut self.tally),
                 Role::Client { bytes, .. } => client(socket, connection, bytes, &mut self.tally),
+                Role::Heartbeat { .. } => {}
             }
         }
     }
@@ -401,8 +530,19 @@ impl Host {
     /// When the host next has something to do on its own -- a retransmission, a timer -- in
     /// nanoseconds, if anything; for a driver with a clock of its own to skip ahead to.
     pub fn next_poll_ns(&mut self, now_ns: u64) -> Option<u64> {
-        let at = self.iface.poll_at(now(now_ns), &self.sockets)?;
-        u64::try_from(at.total_micros()).ok().map(|us| us * 1_000)
+        let iface = self
+            .iface
+            .poll_at(now(now_ns), &self.sockets)
+            .and_then(|at| u64::try_from(at.total_micros()).ok())
+            .map(|us| us * 1_000);
+        let pulse = self.pulse.as_ref().map(|pulse| {
+            if pulse.live {
+                pulse.session.next_deadline_ns()
+            } else {
+                pulse.retry_at_ns
+            }
+        });
+        [iface, pulse].into_iter().flatten().min()
     }
 }
 
@@ -460,10 +600,10 @@ impl Agent for Host {
         to_us
     }
 
-    fn sample(&self, _now_ns: u64, sample: Sample) -> Sample {
+    fn sample(&self, now_ns: u64, sample: Sample) -> Sample {
         let path = |what: &str| format!("tcp.{}.{what}", self.name);
         let t = self.tally;
-        [
+        let sample = [
             ("connections", self.handles.len() as u64),
             ("established", t.established),
             ("closed", t.closed),
@@ -476,12 +616,16 @@ impl Agent for Host {
         ]
         .into_iter()
         .fold(sample, |sample, (what, n)| sample.counter(path(what), n))
-        .gauge(path("max_connect_ns"), t.max_connect_ns)
+        .gauge(path("max_connect_ns"), t.max_connect_ns);
+        match &self.pulse {
+            Some(pulse) => pulse.session.sample(&self.name, now_ns, sample),
+            None => sample,
+        }
     }
 
     fn finished(&self) -> bool {
         match self.role {
-            Role::Echo { .. } => true,
+            Role::Echo { .. } | Role::Heartbeat { .. } => true,
             Role::Client { .. } => self.connections.iter().all(|c| c.closed || c.reset),
         }
     }
@@ -633,5 +777,96 @@ mod tests {
                 assert_eq!(counter("bytes_received"), 40_000);
                 assert_eq!(counter("bytes_mismatched"), 0);
             });
+    }
+
+    fn pulse(name: &str, address: [u8; 4], mac: u8, peer: u8, connect: Option<[u8; 4]>) -> Host {
+        host(
+            name,
+            address,
+            mac,
+            peer,
+            Role::Heartbeat {
+                config: heartbeat::Config {
+                    interval_ms: 100,
+                    hold_ms: 1_000,
+                },
+                peer: connect.map(Ipv4Addr::from),
+                port: heartbeat::PORT,
+                first_port: 40000,
+            },
+        )
+    }
+
+    /// Run two hosts for `span` from `from`, losing every frame while `dead` says the link is down.
+    fn run_for(a: &mut Host, b: &mut Host, from: u64, span: u64, dead: bool) -> u64 {
+        let mut now = from;
+        while now < from + span {
+            let mut moved = false;
+            for a_to_b in [true, false] {
+                let (from, to) = if a_to_b {
+                    (&mut *a, &mut *b)
+                } else {
+                    (&mut *b, &mut *a)
+                };
+                while let Some(frame) = from.transmit(now) {
+                    moved = true;
+                    if !dead {
+                        to.receive(&frame, now);
+                    }
+                }
+            }
+            let next = if moved {
+                now + MS
+            } else {
+                [a.next_poll_ns(now), b.next_poll_ns(now)]
+                    .into_iter()
+                    .flatten()
+                    .min()
+                    .unwrap_or(from + span)
+            };
+            now = next.max(now + MS).min(from + span);
+        }
+        now
+    }
+
+    fn beats(host: &Host, now: u64) -> Sample {
+        host.sample(now, Sample::new())
+    }
+
+    fn counter(host: &Host, now: u64, what: &str) -> u64 {
+        beats(host, now).counters[&format!("heartbeat.{}.{what}", host.name)]
+    }
+
+    fn is_up(host: &Host, now: u64) -> bool {
+        beats(host, now).gauges[&format!("heartbeat.{}.is_up", host.name)] == 1
+    }
+
+    /// A heartbeat over smoltcp, on BGP's port: it comes up and keeps time, and when the link dies
+    /// for longer than the hold time, both ends give the connection up, and they come back once
+    /// it is back.
+    #[test]
+    fn a_heartbeat_holds_and_recovers() {
+        let mut active = pulse("active", [10, 0, 0, 1], 1, 2, Some([10, 0, 0, 2]));
+        let mut passive = pulse("passive", [10, 0, 0, 2], 2, 1, None);
+        let now = run_for(&mut active, &mut passive, 0, 10_000 * MS, false);
+        for host in [&active, &passive] {
+            assert!(is_up(host, now), "{}", host.name);
+            assert_eq!(counter(host, now, "up"), 1);
+            assert_eq!(counter(host, now, "down"), 0);
+            assert_eq!(counter(host, now, "late"), 0);
+            assert!(counter(host, now, "beats_received") >= 95);
+        }
+        // Three seconds dead: more than the one-second hold time.
+        let now = run_for(&mut active, &mut passive, now, 3_000 * MS, true);
+        for host in [&active, &passive] {
+            assert_eq!(counter(host, now, "expiries"), 1, "{}", host.name);
+            assert_eq!(counter(host, now, "down"), 1);
+        }
+        let now = run_for(&mut active, &mut passive, now, 30_000 * MS, false);
+        for host in [&active, &passive] {
+            assert!(is_up(host, now), "{} never came back", host.name);
+            assert_eq!(counter(host, now, "up"), 2);
+            assert_eq!(counter(host, now, "mangled"), 0);
+        }
     }
 }
