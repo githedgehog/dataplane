@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+mod burst;
 mod display;
 mod expiry;
 pub mod nf_lookup;
