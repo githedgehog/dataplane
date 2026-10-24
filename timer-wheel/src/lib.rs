@@ -122,6 +122,13 @@ impl<P: Timer> Wheel<P> {
     /// A wheel whose tick 0 starts at `now`.
     #[must_use]
     pub fn new(config: WheelConfig, now: Instant) -> Self {
+        Self::with_remote(config, now, &Remote::new())
+    }
+
+    /// A wheel that adopts the timers queued on `remote`, including those queued before the wheel
+    /// was made: the queue can be handed out first and the wheel built later, on its own thread.
+    #[must_use]
+    pub fn with_remote(config: WheelConfig, now: Instant, remote: &Remote<P>) -> Self {
         Self {
             heads: vec![NONE; config.slots_usize()].into_boxed_slice(),
             config,
@@ -132,7 +139,7 @@ impl<P: Timer> Wheel<P> {
             live: 0,
             cancels: Arc::new(CancelQueue::default()),
             cancel_backlog: Vec::new(),
-            schedules: Arc::new(ScheduleQueue::default()),
+            schedules: Arc::clone(remote.queue()),
             schedule_backlog: Vec::new(),
         }
     }
@@ -140,7 +147,7 @@ impl<P: Timer> Wheel<P> {
     /// A handle through which other threads can put timers on this wheel.
     #[must_use]
     pub fn remote(&self) -> Remote<P> {
-        Remote::new(Arc::clone(&self.schedules))
+        Remote::from_queue(Arc::clone(&self.schedules))
     }
 
     /// The number of timers on the wheel (not counting ones queued through [`Remote`]).
