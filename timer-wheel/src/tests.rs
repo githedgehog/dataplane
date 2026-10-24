@@ -175,6 +175,21 @@ mod single_threaded {
     }
 
     #[test]
+    fn timers_queued_before_the_wheel_exists_are_adopted() {
+        let start = clock::now();
+        let remote = Remote::new();
+        let early = Probe::new(4, start + TICK);
+        remote.schedule(early.clone());
+        let mut w = Wheel::with_remote(WheelConfig::new(TICK, 64).unwrap(), start, &remote);
+        remote.schedule(Probe::new(5, start + TICK));
+        let mut out = Vec::new();
+        assert_eq!(w.sweep(start, usize::MAX, &mut out).adopted, 2);
+        assert!(early.bound.get().is_some());
+        w.sweep(start + TICK, usize::MAX, &mut out);
+        assert_eq!(keys(&out).0, [4, 5]);
+    }
+
+    #[test]
     fn an_idle_wheel_catches_up_without_walking_every_bucket() {
         let start = clock::now();
         let mut w = wheel(64, start);
