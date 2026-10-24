@@ -7,6 +7,7 @@
 //! live tuples, allocations within each expose's ranges, and safe carry-over between generations.
 
 #![cfg(test)]
+use crate::masquerade::apalloc::test_alloc::context::TIMERS;
 
 use super::alloc::{PoolSet, map_address};
 use super::mapping::{MappingKey, MappingScope};
@@ -350,7 +351,7 @@ fn a_subscriber_pins_only_as_many_addresses_as_exhaustion_forces() {
             NatPort::new_port(NonZero::new(draw).unwrap_or_else(|| unreachable!())),
             MappingScope::Independent,
         );
-        let Ok(mapping) = pool.get_or_create_mapping(subscriber_ip, key, false) else {
+        let Ok(mapping) = pool.get_or_create_mapping(subscriber_ip, key, false, &TIMERS) else {
             break;
         };
         if !seen_ips.contains(&mapping.ip()) {
@@ -441,7 +442,7 @@ fn one_subscriber_s_exhaustion_never_pins_an_extra_address_for_another() {
                     NatPort::new_port(NonZero::new(private_port).unwrap_or_else(|| unreachable!())),
                     MappingScope::Independent,
                 );
-                if let Ok(mapping) = pool.get_or_create_mapping(subscriber, key, false) {
+                if let Ok(mapping) = pool.get_or_create_mapping(subscriber, key, false, &TIMERS) {
                     seen.entry(subscriber).or_default().insert(mapping.ip());
                     held.push(mapping);
                 }

@@ -16,18 +16,16 @@ use super::alloc::{AllocatedIp, PoolSet};
 use super::port_alloc::AllocatedPort;
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
-use concurrency::sync::atomic::Ordering;
-use concurrency::sync::{Arc, RwLock};
+use concurrency::sync::atomic::{AtomicBool, Ordering};
+use concurrency::sync::{Arc, Mutex, RwLock};
 use config::external::overlay::vpcpeering::MappingPolicy;
+use flow_entry::flow_table::{Schedule, SideTimer, TimerRef};
 use net::flows::atomic_instant::AtomicInstant;
 #[cfg(not(miri))]
 use shuttle_dashmap::DashMap;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
-#[cfg(not(any(feature = "shuttle", feature = "loom")))]
-use tracing::debug;
 
 ///////////////////////////////////////////////////////////////////////////////
 // MappingScope / MappingKey
@@ -118,6 +116,8 @@ pub struct Mapping<I: NatIpWithBitmap> {
     allocation: AllocatedPort<I>,
     expires_at: AtomicInstant,
     idle_timeout: Duration,
+    /// The reaper's timer, once it is on a worker's wheel.
+    timer: Mutex<Option<TimerRef>>,
 }
 
 impl<I: NatIpWithBitmap> Mapping<I> {
@@ -126,6 +126,20 @@ impl<I: NatIpWithBitmap> Mapping<I> {
             allocation,
             expires_at: AtomicInstant::new(clock::deadline(idle_timeout)),
             idle_timeout,
+            timer: Mutex::new(None),
+        }
+    }
+
+    fn bind_timer(&self, timer: TimerRef) {
+        if let Some(previous) = self.timer.lock().replace(timer) {
+            // A reaper put back on its wheel: the previous timer already fired.
+            previous.cancel();
+        }
+    }
+
+    fn cancel_timer(&self) {
+        if let Some(timer) = self.timer.lock().as_ref() {
+            timer.cancel();
         }
     }
 
@@ -244,6 +258,7 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         // reach the pool's subscriber table: reaping takes that table's lock and then a
         // subscriber's mappings, so we'd risk a deadlock.
         draw: impl FnOnce() -> Result<AllocatedPort<I>, AllocatorError>,
+        timers: &dyn Schedule,
     ) -> Result<Arc<Mapping<I>>, AllocatorError> {
         // Lazy staleness check (common path)
         if let Some(existing) = self.live_mapping(&key) {
@@ -260,14 +275,14 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         let mapping = Arc::new(Mapping::new(draw()?, pool.idle_timeout()));
         guard.insert(key, mapping.clone());
         drop(guard);
-        spawn_mapping_reaper(
-            self.clone(),
-            src_ip,
+        timers.schedule(Box::new(MappingReaper {
+            subscriber: self.clone(),
+            subscriber_ip: src_ip,
             key,
-            mapping.clone(),
-            pool.subscribers().clone(),
-            pool.reaper_token(),
-        );
+            mapping: mapping.clone(),
+            subscribers: pool.subscribers().clone(),
+            retired: pool.reapers_retired(),
+        }));
         Ok(mapping)
     }
 
@@ -279,8 +294,15 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         key: MappingKey<I>,
         pool: &PoolSet<I>,
         allow_null: bool,
+        timers: &dyn Schedule,
     ) -> Result<Arc<Mapping<I>>, AllocatorError> {
-        self.get_or_insert_with(src_ip, key, pool, || self.allocate_paired(pool, allow_null))
+        self.get_or_insert_with(
+            src_ip,
+            key,
+            pool,
+            || self.allocate_paired(pool, allow_null),
+            timers,
+        )
     }
 
     // Same as get_or_create(), but for re-reserving a known (ip, port) tuple during config
@@ -292,12 +314,19 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         pool: &PoolSet<I>,
         ip: I,
         port: NatPort,
+        timers: &dyn Schedule,
     ) -> Result<Arc<Mapping<I>>, AllocatorError> {
-        let mapping = self.get_or_insert_with(src_ip, key, pool, || {
-            let allocated = pool.reserve(ip, port)?;
-            Self::pin_if_absent(&mut self.addresses.write(), allocated.allocated_ip());
-            Ok(allocated)
-        })?;
+        let mapping = self.get_or_insert_with(
+            src_ip,
+            key,
+            pool,
+            || {
+                let allocated = pool.reserve(ip, port)?;
+                Self::pin_if_absent(&mut self.addresses.write(), allocated.allocated_ip());
+                Ok(allocated)
+            },
+            timers,
+        )?;
         // If a mapping is already associated to this key, attach to it, we attach to it, rather
         // than reserving the mapping again. This is what lets two flows sharing one mapping both
         // survive a config change. But we can only do that when the new and old mappings' tuple is
@@ -382,6 +411,13 @@ impl<I: NatIpWithBitmap> SubscribersTable<I> {
         });
     }
 
+    // Call `f` on every mapping of every subscriber.
+    pub(crate) fn for_each_mapping(&self, mut f: impl FnMut(&Mapping<I>)) {
+        for entry in self.0.iter() {
+            entry.value().mappings.read().values().for_each(|m| f(m));
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn get(&self, ip: I) -> Option<Arc<Subscriber<I>>> {
         self.0.get(&ip).map(|entry| entry.value().clone())
@@ -415,83 +451,91 @@ impl<I: NatIpWithBitmap> SubscribersTable<I> {
         }
     }
 
+    pub(crate) fn for_each_mapping(&self, mut f: impl FnMut(&Mapping<I>)) {
+        for subscriber in self.0.read().values() {
+            subscriber.mappings.read().values().for_each(|m| f(m));
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn get(&self, ip: I) -> Option<Arc<Subscriber<I>>> {
         self.0.read().get(&ip).cloned()
     }
 }
 
-// Cancels every reaper a pool started, once the pool itself is gone.
+// Retires every reaper a pool started, once the last copy of the pool is gone.
 //
-// A reaper sleeps until its mapping's deadline, and it holds the Subscriber, the Mapping and the
-// subscriber table alive while it does. Without a way to wake it, replacing the allocator on a
-// config change leaves one parked task per live mapping until every one of those deadlines passes.
+// A reaper holds its Subscriber, its Mapping and the subscriber table until it fires, which is the
+// mapping's deadline: possibly far away, since idle timeouts are configurable. When a config change
+// replaces the allocator, this cancels them all at once, so the old pool is not kept alive.
 #[derive(Debug)]
-pub(crate) struct ReaperShutdown(CancellationToken);
+pub(crate) struct PoolReapers<I: NatIpWithBitmap> {
+    retired: Arc<AtomicBool>,
+    subscribers: SubscribersTable<I>,
+}
 
-impl ReaperShutdown {
-    pub(crate) fn new() -> Self {
-        Self(CancellationToken::new())
+impl<I: NatIpWithBitmap> PoolReapers<I> {
+    pub(crate) fn new(subscribers: SubscribersTable<I>) -> Self {
+        Self {
+            retired: Arc::new(AtomicBool::new(false)),
+            subscribers,
+        }
     }
 
-    pub(crate) fn token(&self) -> CancellationToken {
-        self.0.clone()
+    pub(crate) fn retired(&self) -> Arc<AtomicBool> {
+        self.retired.clone()
     }
 }
 
-impl Drop for ReaperShutdown {
+impl<I: NatIpWithBitmap> Drop for PoolReapers<I> {
     fn drop(&mut self) {
-        self.0.cancel();
+        // Set first: a reaper that fires before its cancellation arrives sees the flag and is done.
+        self.retired.store(true, Ordering::Relaxed);
+        self.subscribers.for_each_mapping(Mapping::cancel_timer);
     }
 }
 
-// This method mirrors the shape of flow_entry::flow_table::table::FlowTable::start_timer. It is a
-// per-mapping tokio task that:
-//
-// - sleeps to the current deadline
-// - re-checks for a concurrent deadline extension, and expires the mapping otherwise
-// - then reaps the owning Subscriber too if it is now empty, so a Paired-pooled address is not
-//   pinned forever once nothing uses it any more
-#[cfg(not(any(feature = "shuttle", feature = "loom")))]
-fn spawn_mapping_reaper<I: NatIpWithBitmap>(
+// A mapping's reaper, on the wheel of the worker that created the mapping (or of the worker a
+// configuration change handed it to). When the mapping's deadline passes, it re-checks for a
+// concurrent refresh and expires the mapping otherwise, then reaps the owning Subscriber too if
+// it is now empty, so a Paired-pooled address is not pinned forever once nothing uses it any more.
+struct MappingReaper<I: NatIpWithBitmap> {
     subscriber: Arc<Subscriber<I>>,
     subscriber_ip: I,
     key: MappingKey<I>,
     mapping: Arc<Mapping<I>>,
     subscribers: SubscribersTable<I>,
-    cancel: CancellationToken,
-) {
-    if tokio::runtime::Handle::try_current().is_err() {
-        debug!(
-            // See simple staleness checks in Subscriber::get_or_insert_with()
-            "No Tokio runtime on this thread; mapping for {subscriber_ip} will not be actively reaped, relying on lazy staleness checks"
-        );
-        return;
-    }
-    tokio::task::spawn(async move {
-        let mut deadline = mapping.expires_at();
-        loop {
-            tokio::select! {
-                () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {}
-                // The pool this mapping belongs to is gone, so there is nothing left to reap it
-                // out of. Unwind now rather than holding the table alive until the deadline.
-                () = cancel.cancelled() => return,
-            }
+    retired: Arc<AtomicBool>,
+}
 
-            let new_deadline = mapping.expires_at();
-            if new_deadline > deadline {
-                deadline = new_deadline;
-                continue;
-            }
-            if reap_expired_mapping(&subscriber, subscriber_ip, key, &mapping, &subscribers) {
-                return;
-            }
-            // A refresh landed between that deadline check and the write lock, so the mapping kept
-            // its entry. It has to keep this reaper too: no other path spawns one for an entry
-            // already in the table.
-            deadline = mapping.expires_at();
+impl<I: NatIpWithBitmap> SideTimer for MappingReaper<I> {
+    fn deadline(&self) -> Instant {
+        self.mapping.expires_at()
+    }
+
+    fn bind(&self, timer: TimerRef) {
+        self.mapping.bind_timer(timer);
+    }
+
+    fn fire(&mut self, now: Instant) -> bool {
+        // The pool this mapping belongs to is gone: there is nothing left to reap it out of.
+        if self.retired.load(Ordering::Relaxed) {
+            return false;
         }
-    });
+        if self.mapping.expires_at() > now {
+            return true;
+        }
+        // A refresh can land between that check and the write lock; then the mapping keeps its
+        // entry, and has to keep this reaper too: no other path starts one for an entry already in
+        // the table.
+        !reap_expired_mapping(
+            &self.subscriber,
+            self.subscriber_ip,
+            self.key,
+            &self.mapping,
+            &self.subscribers,
+        )
+    }
 }
 
 // Drop the mapping from the subscriber's table (verifying identity so a concurrently-inserted
@@ -500,7 +544,6 @@ fn spawn_mapping_reaper<I: NatIpWithBitmap>(
 // Return whether this reaper is finished with the mapping: true if the entry is gone (removed here
 // or already replaced elsewhere), false if a refresh landed between the caller's deadline check and
 // the write lock, meaning the entry is still live and the caller has to keep watching it.
-#[cfg_attr(feature = "loom", allow(dead_code))]
 pub(crate) fn reap_expired_mapping<I: NatIpWithBitmap>(
     subscriber: &Arc<Subscriber<I>>,
     subscriber_ip: I,
@@ -542,26 +585,13 @@ pub(crate) fn reap_expired_mapping<I: NatIpWithBitmap>(
     done
 }
 
-#[cfg(any(feature = "shuttle", feature = "loom"))]
-fn spawn_mapping_reaper<I: NatIpWithBitmap>(
-    _subscriber: Arc<Subscriber<I>>,
-    _subscriber_ip: I,
-    _key: MappingKey<I>,
-    _mapping: Arc<Mapping<I>>,
-    _subscribers: SubscribersTable<I>,
-    _cancel: CancellationToken,
-) {
-    // No task backend under shuttle/loom. Correctness under these modes relies entirely on the lazy
-    // staleness check in Subscriber::{get_or_create,get_or_reserve} (via get_or_insert_with), which
-    // never hands back a Mapping whose expiry time has already passed.
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::region::AddrInterval;
     use super::super::setup::{PoolSpec, narrow_budget_specs, pool_sets_for_specs};
     use super::super::test_alloc::context::port;
     use super::*;
+    use crate::masquerade::apalloc::test_alloc::context::TIMERS;
     use net::ip::NextHeader;
     use std::net::Ipv4Addr;
 
@@ -650,13 +680,15 @@ mod tests {
             .unwrap_or_else(|| unreachable!())
     }
 
-    // A reaper sleeps until its mapping's deadline, holding the subscriber, the mapping and the
+    // A reaper waits for its mapping's deadline, holding the subscriber, the mapping and the
     // subscriber table alive. Replacing the allocator on a config change drops the pool those
-    // belong to, and the reaper has to notice: otherwise every live mapping leaves a parked task
-    // behind, and the old allocator's tables stay reachable, until its deadline passes.
-    #[tokio::test]
+    // belong to, and the reapers have to go with it: otherwise every live mapping keeps a timer, and
+    // the old allocator's tables reachable, until its deadline passes, which may be never.
+    #[tokio::test(start_paused = true)]
     async fn dropping_a_pool_retires_the_reapers_it_started() {
-        let metrics = tokio::runtime::Handle::current().metrics();
+        use flow_entry::flow_table::{FlowTable, WorkerFlowTable};
+
+        let worker = WorkerFlowTable::new(Arc::new(FlowTable::default()));
         let pool = narrow_budget_pool();
         let subscriber_ip = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
         let mapping = pool
@@ -664,27 +696,26 @@ mod tests {
                 subscriber_ip,
                 MappingKey::new(port(1), MappingScope::Independent),
                 false,
+                &worker,
             )
             .expect("the pool has room");
-        assert!(
-            metrics.num_alive_tasks() > 0,
-            "sanity: creating a mapping should have started a reaper"
+        assert_eq!(
+            worker.timers(),
+            1,
+            "sanity: creating a mapping should have put a reaper on the worker's wheel"
         );
 
         // The mapping outlives the pool here, as a flow's own reference would
         drop(pool);
 
-        for _ in 0..1024 {
-            if metrics.num_alive_tasks() == 0 {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-        drop(mapping);
-        panic!(
-            "{} reaper task(s) still parked after their pool was dropped",
-            metrics.num_alive_tasks()
+        // Nowhere near the mapping's deadline: the reaper goes because its pool did.
+        worker.expire_all(clock::now());
+        assert_eq!(
+            worker.timers(),
+            0,
+            "a reaper stayed on the wheel after its pool was dropped"
         );
+        drop(mapping);
     }
 
     // A configured idle timeout has no upper bound (see GH 1854), and deadlines are computed as
@@ -707,6 +738,7 @@ mod tests {
                 subscriber_ip,
                 MappingKey::new(port(1), MappingScope::Independent),
                 false,
+                &TIMERS,
             )
             .expect("the pool has room");
         mapping.refresh();
@@ -729,7 +761,7 @@ mod tests {
             .unwrap_or_else(|| unreachable!())
     }
 
-    // The reaper task re-reads the deadline before it decides to expire a mapping, but an outbound
+    // The reaper re-reads the deadline before it decides to expire a mapping, but an outbound
     // packet's refresh can still land between that read and the write lock. Reaping then would
     // strand the flow holding this Arc on a tuple the next flow for the same private tuple no
     // longer draws, so the removal has to re-check expiry under the lock, which means a mapping
@@ -741,7 +773,7 @@ mod tests {
         let key = MappingKey::new(port(1), MappingScope::Independent);
 
         let mapping = pool
-            .get_or_create_mapping(subscriber_ip, key, false)
+            .get_or_create_mapping(subscriber_ip, key, false, &TIMERS)
             .expect("the pool has room");
         let subscriber = pool
             .subscribers()
@@ -780,7 +812,7 @@ mod tests {
         let expired = pool_with_zero_timeout();
         let key2 = MappingKey::new(port(2), MappingScope::Independent);
         let doomed = expired
-            .get_or_create_mapping(subscriber_ip, key2, false)
+            .get_or_create_mapping(subscriber_ip, key2, false, &TIMERS)
             .expect("the pool has room");
         let owner = expired
             .subscribers()

@@ -25,6 +25,35 @@ pub(super) mod context {
     use std::num::NonZero;
     use std::str::FromStr;
 
+    use concurrency::sync::Arc;
+    use flow_entry::flow_table::{FlowTable, Schedule, SideTimer, WorkerFlowTable};
+
+    std::thread_local! {
+        /// The calling thread's wheel for mapping reapers, swept by [`advance`].
+        static WHEEL: WorkerFlowTable = WorkerFlowTable::new(Arc::new(FlowTable::default()));
+    }
+
+    /// Schedules mapping reapers on the calling thread's wheel, as a worker would on its own.
+    #[allow(dead_code)]
+    pub struct TestTimers;
+
+    impl Schedule for TestTimers {
+        fn schedule(&self, timer: Box<dyn SideTimer>) {
+            // The model checkers run their threads on one OS thread, so they would all share one
+            // thread-local wheel; and nothing sweeps a wheel there anyway. Mappings then only go
+            // stale lazily, as they always have under the model backends.
+            if cfg!(any(feature = "shuttle", feature = "loom")) {
+                drop(timer);
+                return;
+            }
+            WHEEL.with(|wheel| wheel.schedule(timer));
+        }
+    }
+
+    /// Where tests put mapping reapers: the calling thread's wheel.
+    #[allow(dead_code)]
+    pub const TIMERS: TestTimers = TestTimers;
+
     #[allow(dead_code)]
     pub fn addr_v4(ip: &str) -> Ipv4Addr {
         Ipv4Addr::from_str(ip).unwrap()
@@ -43,14 +72,12 @@ pub(super) mod context {
         NatPort::new_port(NonZero::new(n).unwrap())
     }
 
-    /// Move virtual time forward and then let the runtime actually poll what that woke. Advancing
-    /// the clock only makes a spawned reaper ready, it does not run it.
+    /// Move virtual time forward, then sweep the calling thread's wheel, as a worker's loop would:
+    /// advancing the clock only makes a reaper due, it does not run it.
     #[allow(dead_code)]
     pub async fn advance(by: std::time::Duration) {
         tokio::time::advance(by).await;
-        for _ in 0..4 {
-            tokio::task::yield_now().await;
-        }
+        WHEEL.with(|wheel| wheel.expire_all(clock::now()));
     }
 
     #[allow(dead_code)]
@@ -547,6 +574,7 @@ mod tests {
                     vpcd2(),
                     PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
                     NextHeader::TCP,
+                    &TIMERS,
                 )
                 .unwrap();
         }));
@@ -557,6 +585,7 @@ mod tests {
                     vpcd2(),
                     PrivateTuple::new(addr_v4("1.1.0.0"), port(2), dst_v4(), None),
                     NextHeader::TCP,
+                    &TIMERS,
                 )
                 .unwrap();
         }));
@@ -567,6 +596,7 @@ mod tests {
                     vpcd2(),
                     PrivateTuple::new(addr_v4("1.1.0.0"), port(3), dst_v4(), None),
                     NextHeader::TCP,
+                    &TIMERS,
                 )
                 .unwrap();
         }));
@@ -690,6 +720,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         println!("{alloc_result}");
@@ -758,6 +789,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         println!("{tcp_allocation}");
@@ -793,6 +825,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
                 NextHeader::UDP,
+                &TIMERS,
             )
             .unwrap();
         println!("{udp_allocation}");
@@ -835,6 +868,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         let alloc_b = allocator
@@ -843,6 +877,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("2.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
 
@@ -901,6 +936,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("192.168.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         let from_vpc2 = allocator
@@ -909,6 +945,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("192.168.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
 
@@ -976,6 +1013,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("2.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         // VPC-2 can only allocate from the shared region.
@@ -1009,6 +1047,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         assert_eq!(
@@ -1023,6 +1062,7 @@ mod std_tests {
                 vpcd3(),
                 PrivateTuple::new(addr_v4("2.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         assert_ne!(
@@ -1051,6 +1091,7 @@ mod std_tests {
                     vpcd3(),
                     PrivateTuple::new(addr_v4("2.1.0.1"), port(i + 1), dst_v4(), None),
                     NextHeader::TCP,
+                    &TIMERS,
                 )
                 .unwrap();
             let ip = allocation.allocation.ip();
@@ -1080,6 +1121,7 @@ mod std_tests {
                     IpAddr::V6(dst_v6()),
                     None,
                     NextHeader::TCP,
+                    &TIMERS,
                 )
                 .expect("the v6 pool has room");
             let IpAddr::V6(ip) = allocation.allocation.ip() else {
@@ -1114,6 +1156,7 @@ mod std_tests {
                 dst_ip,
                 None,
                 NextHeader::TCP,
+                &TIMERS,
             )
             .expect("the v6 pool has room");
         let held = allocation.allocation.ip();
@@ -1136,6 +1179,7 @@ mod std_tests {
                 .expect("a v6 private source and a v6 allocation"),
                 NextHeader::TCP,
                 held_port,
+                &TIMERS,
             )
             .expect("the next config still serves the tuple");
         assert_eq!((carried.ip(), carried.port()), (held, held_port));
@@ -1149,6 +1193,7 @@ mod std_tests {
                 dst_ip,
                 None,
                 NextHeader::TCP,
+                &TIMERS,
             )
             .expect("the v6 pool has room");
         assert_ne!(
@@ -1324,13 +1369,27 @@ mod std_tests {
             let allocator = build_allocator_port_forward_for(forwarded);
             assert!(
                 matches!(
-                    allocator.reserve_mapping(vpcd1(), vpcd2(), reservation, claimed, claimed_port),
+                    allocator.reserve_mapping(
+                        vpcd1(),
+                        vpcd2(),
+                        reservation,
+                        claimed,
+                        claimed_port,
+                        &TIMERS
+                    ),
                     Err(AllocatorError::Denied)
                 ),
                 "a {forwarded:?} rule must claim the {claimed} tuple"
             );
             allocator
-                .reserve_mapping(vpcd1(), vpcd2(), reservation, untouched, claimed_port)
+                .reserve_mapping(
+                    vpcd1(),
+                    vpcd2(),
+                    reservation,
+                    untouched,
+                    claimed_port,
+                    &TIMERS,
+                )
                 .unwrap_or_else(|e| {
                     panic!("a {forwarded:?} rule must claim nothing from {untouched}: {e}")
                 });
@@ -1381,6 +1440,7 @@ mod std_tests {
                 IpAddr::V4(dst_v4()),
                 None,
                 NextHeader::TCP,
+                &TIMERS,
             )
             .expect("the pool has room");
         let (held, held_port) = (first.allocation.ip(), first.allocation.port());
@@ -1394,6 +1454,7 @@ mod std_tests {
                 .expect("a v4 private source and a v4 allocation"),
             NextHeader::TCP,
             held_port,
+            &TIMERS,
         )
         .expect("the replacement still serves the first flow's tuple");
 
@@ -1409,6 +1470,7 @@ mod std_tests {
                     .expect("a v4 private source and a v4 allocation"),
                 NextHeader::TCP,
                 other_port,
+                &TIMERS,
             )
             .expect_err("a mapping holding a different tuple must not be handed back");
         assert!(
@@ -1436,6 +1498,7 @@ mod std_tests {
                     IpAddr::V4(dst_v4()),
                     None,
                     NextHeader::TCP,
+                    &TIMERS,
                 )
                 .expect("the pool has room");
             (a.allocation.ip(), a.allocation.port())
@@ -1474,6 +1537,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
 
@@ -1516,6 +1580,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         drop(alloc);
@@ -1571,6 +1636,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         // Simulates a flow's MasqueradeState holding its own reference, independent of the table
@@ -1635,6 +1701,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         let tuple = (alloc.allocation.ip(), alloc.allocation.port());
@@ -1647,6 +1714,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         assert_ne!(
@@ -1673,6 +1741,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         let tuple = (alloc.allocation.ip(), alloc.allocation.port());
@@ -1690,6 +1759,7 @@ mod std_tests {
                 vpcd2(),
                 PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
                 NextHeader::TCP,
+                &TIMERS,
             )
             .unwrap();
         assert_eq!(
@@ -1723,6 +1793,7 @@ mod concurrency_tests {
                     vpcd2(),
                     PrivateTuple::new(addr_v4("1.1.0.0"), port(1), dst_v4(), None),
                     NextHeader::TCP,
+                    &TIMERS,
                 )
                 .unwrap();
         });
@@ -1733,6 +1804,7 @@ mod concurrency_tests {
                     vpcd2(),
                     PrivateTuple::new(addr_v4("1.2.0.0"), port(1), dst_v4(), None),
                     NextHeader::TCP,
+                    &TIMERS,
                 )
                 .unwrap();
         });

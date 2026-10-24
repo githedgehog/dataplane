@@ -508,7 +508,6 @@ fn run_datapath(
     config: &LaunchConfiguration,
     netns: &NetworkNamespace,
     workers: &lifecycle::Subsystem,
-    timer_handle: &tokio::runtime::Handle,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
     bridge: Option<DatapathEnds>,
@@ -537,7 +536,6 @@ fn run_datapath(
                 eal,
                 config,
                 workers,
-                timer_handle,
                 ingredients,
                 status_writer,
                 bridge,
@@ -585,7 +583,6 @@ fn run_dpdk_driver(
     eal: &mut Eal,
     config: &LaunchConfiguration,
     workers: &lifecycle::Subsystem,
-    timer_handle: &tokio::runtime::Handle,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
     mut bridge: Option<DatapathEnds>,
@@ -625,7 +622,6 @@ fn run_dpdk_driver(
         match DriverDpdk::start(
             scope,
             workers,
-            timer_handle,
             &ports,
             config.driver.num_workers(),
             &ingredients.factory(),
@@ -941,13 +937,11 @@ pub fn main() {
                 let config = &config;
                 let netns = &datapath_netns;
                 let workers = &shutdown.workers;
-                let timer_handle = &mgmt_handle;
                 move || {
                     run_datapath(
                         config,
                         netns,
                         workers,
-                        timer_handle,
                         ingredients,
                         driver_status_writer,
                         cp_ends,

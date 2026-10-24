@@ -9,7 +9,7 @@ use crate::masquerade::nf::{dst_nat_port, src_nat_port};
 use crate::masquerade::state::MasqueradeState;
 
 use config::GenId;
-use flow_entry::flow_table::{FlowTable, FlowTableReadGuard};
+use flow_entry::flow_table::{FlowTable, FlowTableReadGuard, Schedule};
 use net::FlowKey;
 use net::flows::ExtractMut;
 use net::flows::ExtractRef;
@@ -77,6 +77,7 @@ fn re_reserve_ip_and_port(
     flow_info: &FlowInfo,
     ip: IpAddr,
     port: NatPort,
+    timers: &dyn Schedule,
 ) -> Result<(), ReReserveError> {
     let flow_key = flow_info.flowkey();
     let proto = flow_key.proto();
@@ -94,7 +95,8 @@ fn re_reserve_ip_and_port(
     debug!("Attempting to re-reserve {ip} {proto}:{port_u16} for flow {flow_key}");
 
     let reservation = AnyReservation::new(src_ip, src_port, dst_ip, dst_port, ip)?;
-    let alloc = new_allocator.reserve_mapping(src_vpcd, dst_vpcd, reservation, proto, port)?;
+    let alloc =
+        new_allocator.reserve_mapping(src_vpcd, dst_vpcd, reservation, proto, port, timers)?;
 
     debug!("Successfully re-reserved ip {ip} port/Id {port_u16} ({proto})");
     let mut guard = flow_info.locked.write();
@@ -110,7 +112,12 @@ fn re_reserve_ip_and_port(
     Ok(())
 }
 
-fn check_masquerading_flow(flow_key: &FlowKey, flow_info: &FlowInfo, allocator: &NatAllocator) {
+fn check_masquerading_flow(
+    flow_key: &FlowKey,
+    flow_info: &FlowInfo,
+    allocator: &NatAllocator,
+    timers: &dyn Schedule,
+) {
     // Skip flows that are up-to-date (this could be done by iterator)
     let config = allocator.config();
     let genid = allocator.genid();
@@ -180,7 +187,7 @@ fn check_masquerading_flow(flow_key: &FlowKey, flow_info: &FlowInfo, allocator: 
     }
 
     // Reserve the tuple in the replacement before advancing the flow generation.
-    match re_reserve_ip_and_port(allocator, flow_info, ip, port) {
+    match re_reserve_ip_and_port(allocator, flow_info, ip, port, timers) {
         Ok(()) => {
             debug!("Upgrading flow {} to gen id {genid}...", flow_info.logfmt());
             flow_info.set_genid_pair(genid);
@@ -200,12 +207,13 @@ fn check_masquerading_flow(flow_key: &FlowKey, flow_info: &FlowInfo, allocator: 
 pub(crate) fn check_masquerading_flows<'a>(
     flow_table: &'a FlowTable,
     new_allocator: &NatAllocator,
+    timers: &dyn Schedule,
 ) -> FlowTableReadGuard<'a> {
     let genid = new_allocator.genid();
     debug!("CHECKING flows against new masquerade configuration with genid {genid}...");
     let guard = flow_table.for_each_flow_filtered(
         |_, f| f.is_active() && f.locked.read().masquerade_data.is_some(),
-        |flow_key, flow_info| check_masquerading_flow(flow_key, flow_info, new_allocator),
+        |flow_key, flow_info| check_masquerading_flow(flow_key, flow_info, new_allocator, timers),
     );
     debug!("CHECKING flows against new masquerade configuration COMPLETED");
     guard

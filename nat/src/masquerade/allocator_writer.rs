@@ -7,7 +7,7 @@ use concurrency::sync::Arc;
 use config::GenId;
 use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpcTable};
 use config::external::overlay::vpcpeering::ValidatedExpose;
-use flow_entry::flow_table::FlowTable;
+use flow_entry::flow_table::{FlowTable, TimerRegistry};
 use net::packet::VpcDiscriminant;
 use tracing::debug;
 
@@ -92,17 +92,32 @@ impl MasqueradeConfig {
 }
 
 #[derive(Debug)]
-pub struct NatAllocatorWriter(Arc<SlotOption<NatAllocator>>);
+pub struct NatAllocatorWriter {
+    allocator: Arc<SlotOption<NatAllocator>>,
+    // Where the reapers of mappings carried over by a configuration change go: the workers' wheels.
+    timers: TimerRegistry,
+}
 
 impl NatAllocatorWriter {
+    /// A writer whose carried-over mappings are reaped by the workers registered with `timers`.
+    #[must_use]
+    pub fn with_timers(timers: TimerRegistry) -> Self {
+        Self {
+            allocator: Arc::new(SlotOption::empty()),
+            timers,
+        }
+    }
+
+    /// A writer with a registry of its own, which no worker registers with: carried-over mappings
+    /// are reaped only once a worker registers. Meant for tests.
     #[must_use]
     pub fn new() -> Self {
-        Self(Arc::new(SlotOption::empty()))
+        Self::with_timers(TimerRegistry::new())
     }
 
     #[must_use]
     pub fn get_reader(&self) -> NatAllocatorReader {
-        NatAllocatorReader(self.0.clone())
+        NatAllocatorReader(self.allocator.clone())
     }
 
     #[must_use]
@@ -123,7 +138,7 @@ impl NatAllocatorWriter {
         genid: GenId,
         flow_table: &FlowTable,
     ) {
-        let curr_allocator = self.0.load_full();
+        let curr_allocator = self.allocator.load_full();
 
         // keep state as-is if config did not change, and just upgrade flows' gen id
         if let Some(current) = curr_allocator.as_ref()
@@ -139,17 +154,17 @@ impl NatAllocatorWriter {
         if !nat_config.has_masquerading_peerings() {
             if curr_allocator.is_some() {
                 debug!("Removing NAT allocator");
-                self.0.store(None);
+                self.allocator.store(None);
                 invalidate_masquerade_flows(flow_table);
             }
             return;
         }
 
         let allocator = NatAllocator::new(nat_config, genid);
-        let guard = check_masquerading_flows(flow_table, &allocator);
+        let guard = check_masquerading_flows(flow_table, &allocator, &self.timers);
 
         debug!("Installing NAT allocator (genid {}).", allocator.genid());
-        self.0.store(Some(Arc::new(allocator)));
+        self.allocator.store(Some(Arc::new(allocator)));
         drop(guard);
     }
 }

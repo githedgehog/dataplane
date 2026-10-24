@@ -70,11 +70,9 @@ impl<'p> Worker<'p> {
         mut self,
         subsystem: &Subsystem,
         setup_pipeline: &PipelineFactory<'p, Mbuf<'p>>,
-        timer_handle: &tokio::runtime::Handle,
     ) {
-        // NAT mapping reapers still run on the management runtime. Flow timers are on this
-        // worker's own wheel (see `expire` below).
-        let _runtime = timer_handle.enter();
+        // No tokio here: flows and NAT mappings expire on this worker's own wheel, which this loop
+        // sweeps (see `expire` below).
         // Registration enables per-lcore mempool caches and releases the id on return or unwind.
         // If registration fails, allocation remains correct through the shared mempool ring.
         let _lcore = match LCore::register() {

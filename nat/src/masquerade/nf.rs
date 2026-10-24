@@ -438,7 +438,14 @@ impl Masquerade {
         let dst_port = dst_nat_port(initial_flow_key);
         let proto = initial_flow_key.proto();
         let alloc = match allocator.allocate(
-            src_vpcd, dst_vpcd, src_ip, src_port, dst_ip, dst_port, proto,
+            src_vpcd,
+            dst_vpcd,
+            src_ip,
+            src_port,
+            dst_ip,
+            dst_port,
+            proto,
+            &self.flow_table,
         ) {
             Ok(alloc) => alloc,
             Err(e) => {
@@ -736,6 +743,7 @@ mod race {
                 key.dst_ip(),
                 key.dst_port().map(NatPort::new_port),
                 key.proto(),
+                &flow_entry::flow_table::TimerRegistry::new(),
             )
             .unwrap_or_else(|e| unreachable!("the pool has room: {e}"));
 
@@ -805,6 +813,7 @@ mod race {
                 first_key.dst_ip(),
                 first_key.dst_port().map(NatPort::new_port),
                 first_key.proto(),
+                &flow_entry::flow_table::TimerRegistry::new(),
             )
             .unwrap_or_else(|e| unreachable!("the pool has room: {e}"));
 
@@ -819,6 +828,7 @@ mod race {
                 second_key.dst_ip(),
                 second_key.dst_port().map(NatPort::new_port),
                 second_key.proto(),
+                &flow_entry::flow_table::TimerRegistry::new(),
             )
             .unwrap_or_else(|e| unreachable!("the pool has room: {e}"));
 
@@ -911,6 +921,7 @@ mod race {
                     key.dst_ip(),
                     key.dst_port().map(NatPort::new_port),
                     key.proto(),
+                    &flow_entry::flow_table::TimerRegistry::new(),
                 )
                 .unwrap_or_else(|e| unreachable!("the pool has room: {e}"))
         };
