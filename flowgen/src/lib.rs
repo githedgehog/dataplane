@@ -25,6 +25,8 @@
 //! - [`drive`]: sending several streams at once, each over its own [`drive::Wire`], and counting
 //!   what comes back on any of them.
 //! - `port` (with the `dpdk` feature): DPDK queues as a wire.
+//! - [`heartbeat`]: a heartbeat over [`tcp`] on BGP's port, standing in for a BGP session.
+//! - [`tcp`]: real TCP hosts, from smoltcp, that open connections and check what comes back.
 //!
 //! Frames are built and read by this crate's own code, not the dataplane's, so that the two
 //! cannot agree on a bug.
@@ -32,6 +34,7 @@
 mod checksum;
 pub mod drive;
 pub mod frame;
+pub mod heartbeat;
 pub mod ledger;
 #[cfg(feature = "dpdk")]
 pub mod port;
@@ -41,5 +44,6 @@ pub mod sender;
 pub mod signature;
 pub mod space;
 
+pub mod tcp;
 #[cfg(test)]
 mod tests;
