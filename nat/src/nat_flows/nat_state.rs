@@ -3,16 +3,15 @@
 
 //! Trait to mangle the state that NAT flavors keep in flows.
 
-use net::flows::{FlowInfoItem, FlowInfoLocked};
+use net::flows::FlowInfoLocked;
+use std::fmt::Display;
 
-/// Data that a NAT mode contains in each half of a flow pair
-pub(crate) trait NatData: FlowInfoItem + Sized {
+/// Data that a NAT mode contains in each half of a flow pair, one of the variants of
+/// [`NatFlowState`](net::flows::nat_state::NatFlowState).
+pub(crate) trait NatData: Display + Sized {
     /// The state of this type held by a flow, if any.
     fn try_get(locked: &FlowInfoLocked) -> Option<&Self>;
 
-    /// The state of this type held by a flow, if any, mutable.
-    fn try_get_mut(locked: &mut FlowInfoLocked) -> Option<&mut Self>;
-
-    /// Store this state in a flow, replacing any state of this type it held.
+    /// Store this state in a flow, replacing any NAT state it held.
     fn set(self, locked: &mut FlowInfoLocked);
 }

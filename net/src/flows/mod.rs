@@ -10,6 +10,7 @@ pub mod conn_tracking;
 pub mod flow_info;
 pub mod flow_info_fuzz;
 pub mod flow_info_item;
+pub mod nat_state;
 
 pub mod display;
 pub mod flow_key;

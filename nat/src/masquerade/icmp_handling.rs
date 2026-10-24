@@ -7,6 +7,7 @@ use crate::NatTranslationData;
 use crate::icmp_handler::flow_state::IcmpErrorTranslation;
 use crate::masquerade::packet::{NatPacketError, masquerade};
 use crate::masquerade::state::MasqueradeState;
+use crate::masquerade::state::MasqueradeStateExt;
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 
