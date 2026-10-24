@@ -57,6 +57,9 @@ tracing-test = { workspace = true, features = [] }
 
 [target.'cfg(not(miri))'.dev-dependencies]
 shuttle = { workspace = true, features = [] }
+# BENCH ONLY (masquerade::bench_newflow): thread pinning, and a bare DashMap reference
+nix = { workspace = true, features = ["sched"] }
+dashmap = { workspace = true }
 
 # Dependencies below pull in dpdk-sys, whose build cannot run on the miri cross target. Only
 # #[dpdk::with_eal] tests use them, and those are gated with #[cfg(not(miri))], so keep the deps out

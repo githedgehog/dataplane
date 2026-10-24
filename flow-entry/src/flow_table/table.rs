@@ -464,6 +464,10 @@ impl FlowTable {
             );
         }
 
+        if crate::bench::pair_read_lock() {
+            return self.insert_pair_read_locked(forward, reverse, admit);
+        }
+
         let table = self.table.write();
         let old_forward = table
             .get(forward.flowkey())
@@ -493,6 +497,58 @@ impl FlowTable {
         table.insert(*reverse.flowkey(), reverse.clone());
         forward.update_status(FlowStatus::Active);
         reverse.update_status(FlowStatus::Active);
+        drop(table);
+
+        Self::displace(old_forward.as_ref());
+        Self::displace(old_reverse.as_ref());
+        #[cfg(not(any(feature = "shuttle", feature = "loom")))]
+        for flow in [forward, reverse] {
+            Self::start_timer(self.table.clone(), self.live.clone(), flow.clone());
+        }
+        Ok(Some(PairInsertion::Installed))
+    }
+
+    /// BENCH ONLY, UNSAFE FOR PRODUCTION (variant d, `DATAPLANE_BENCH_PAIR_LOCK=read`): the same
+    /// admission as [`FlowTable::insert_pair_if_admitted`], under the outer *read* lock. The reverse
+    /// half is published first, then the forward half, so a lookup of the forward key never finds
+    /// a pair whose reverse is missing. What is lost: two creators of the same forward key can both
+    /// pass the absence check and both install (the later forward insert wins, its competitor's
+    /// reverse entry and tuple leak until expiry), and `admit` no longer runs exclusive of
+    /// [`FlowTableReadGuard`] holders, so a pair drawn from a replaced allocator can be published
+    /// after the replacement scanned the table.
+    fn insert_pair_read_locked(
+        &self,
+        forward: &Arc<FlowInfo>,
+        reverse: &Arc<FlowInfo>,
+        admit: impl FnOnce() -> bool,
+    ) -> Result<Option<PairInsertion>, FlowTableError> {
+        let table = self.table.read();
+        let old_forward = table
+            .get(forward.flowkey())
+            .map(|entry| entry.value().clone());
+        if let Some(held) = old_forward.as_ref().filter(|held| held.is_active()) {
+            return Ok(Some(PairInsertion::ForwardOccupied(held.clone())));
+        }
+        if !admit() {
+            return Ok(None);
+        }
+        let old_reverse = table
+            .get(reverse.flowkey())
+            .map(|entry| entry.value().clone());
+        if old_reverse.as_ref().is_some_and(|held| held.is_active()) {
+            return Ok(Some(PairInsertion::ReverseOccupied));
+        }
+        if old_forward.is_none()
+            && self.live.load(Ordering::Relaxed) >= self.capacity.load(Ordering::Relaxed)
+        {
+            return Err(FlowTableError::CapacityExceeded);
+        }
+        let added = usize::from(old_forward.is_none()) + usize::from(old_reverse.is_none());
+        self.live.fetch_add(added, Ordering::Relaxed);
+        reverse.update_status(FlowStatus::Active);
+        table.insert(*reverse.flowkey(), reverse.clone());
+        forward.update_status(FlowStatus::Active);
+        table.insert(*forward.flowkey(), forward.clone());
         drop(table);
 
         Self::displace(old_forward.as_ref());

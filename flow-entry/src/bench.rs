@@ -69,3 +69,54 @@ pub fn oneway_timeout(default: Duration) -> Duration {
     })
     .unwrap_or(default)
 }
+
+fn env_flag(name: &str, on: &str) -> bool {
+    let v = std::env::var(name).ok();
+    let set = v.as_deref() == Some(on);
+    tracing::warn!("BENCH: {name}={v:?} -> {set}");
+    set
+}
+
+/// NAT new-flow microbenchmark, variant (b1): `DATAPLANE_BENCH_ALLOC_CLEANUP=lazy` prunes a region
+/// pool's dead in-use entries only when reusing an address fails (right before drawing a new
+/// address), rather than on every allocation.
+#[must_use]
+pub fn alloc_cleanup_lazy() -> bool {
+    static B: OnceLock<bool> = OnceLock::new();
+    *B.get_or_init(|| env_flag("DATAPLANE_BENCH_ALLOC_CLEANUP", "lazy"))
+}
+
+/// Variant (b2): `DATAPLANE_BENCH_ALLOC_TLS=1` keeps each thread's current port block per address in
+/// a real `thread_local!` (as a weak reference), bypassing the `ThreadPortMap` and
+/// `AllocatedPortBlockMap` locks on the fast path, takes the block mutex once per port instead of
+/// twice, and does not clone the shared `Arc<AllocatedIp>` unless a new block is needed.
+#[must_use]
+pub fn alloc_tls_block() -> bool {
+    static B: OnceLock<bool> = OnceLock::new();
+    *B.get_or_init(|| env_flag("DATAPLANE_BENCH_ALLOC_TLS", "1") || port_cache_batch() > 0)
+}
+
+/// Variant (c): `DATAPLANE_BENCH_PORT_CACHE=<batch>` (0 = off) keeps a per-thread stock of
+/// pre-claimed ports per public address, refilled `batch` at a time. Implies (b2).
+#[must_use]
+pub fn port_cache_batch() -> usize {
+    static B: OnceLock<usize> = OnceLock::new();
+    *B.get_or_init(|| {
+        let b = std::env::var("DATAPLANE_BENCH_PORT_CACHE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        tracing::warn!("BENCH: port cache batch {b}");
+        b
+    })
+}
+
+/// Variant (d), UNSAFE FOR PRODUCTION: `DATAPLANE_BENCH_PAIR_LOCK=read` installs flow pairs under
+/// the table's outer *read* lock (reverse first, then forward). Two creators of one forward key can
+/// then both install, and the allocator-replacement admission check is no longer serialised against
+/// a table guard. Only meant to bound what removing the outer write lock would buy.
+#[must_use]
+pub fn pair_read_lock() -> bool {
+    static B: OnceLock<bool> = OnceLock::new();
+    *B.get_or_init(|| env_flag("DATAPLANE_BENCH_PAIR_LOCK", "read"))
+}

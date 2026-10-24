@@ -66,7 +66,7 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
                 if !ip.has_free_ports() {
                     continue;
                 }
-                match ip.allocate_port_for_ip(allow_null) {
+                match AllocatedIp::allocate_port_for_ip_ref(&ip, allow_null) {
                     Ok(port) => {
                         debug!("Allocated port {port}");
                         outcome = Ok(port);
@@ -118,7 +118,12 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         // FIXME: Should we clean up every time??
-        self.cleanup_used_ips();
+        // BENCH (b1): with DATAPLANE_BENCH_ALLOC_CLEANUP=lazy, only clean up once reuse has failed,
+        // right before drawing a new address (the only point where `in_use` grows).
+        let lazy = flow_entry::bench::alloc_cleanup_lazy();
+        if !lazy {
+            self.cleanup_used_ips();
+        }
 
         //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
         //= type=exception
@@ -129,7 +134,12 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         // other allocator errors.
         match self.reuse_allocated_ip(allow_null) {
             Ok(port) => Ok(port),
-            Err(e) if e.is_exhaustion() => self.allocate_from_new_ip(allow_null),
+            Err(e) if e.is_exhaustion() => {
+                if lazy {
+                    self.cleanup_used_ips();
+                }
+                self.allocate_from_new_ip(allow_null)
+            }
             Err(e) => Err(e),
         }
     }
@@ -376,6 +386,21 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
             alloc_port.ip()
         );
         Ok(alloc_port)
+    }
+
+    /// Same as [`AllocatedIp::allocate_port_for_ip`], without consuming a reference to the address.
+    ///
+    /// BENCH (b2/c): with the thread-local switches on, this does not touch the address's shared
+    /// reference count unless a new port block has to be created.
+    pub(crate) fn allocate_port_for_ip_ref(
+        this: &Arc<Self>,
+        allow_null: bool,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+        if flow_entry::bench::alloc_tls_block() {
+            this.port_allocator.allocate_port_tls(this, allow_null)
+        } else {
+            this.clone().allocate_port_for_ip(allow_null)
+        }
     }
 
     pub(crate) fn reserve_port_for_ip(

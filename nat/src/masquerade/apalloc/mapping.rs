@@ -211,7 +211,7 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         {
             let pinned = self.addresses.read();
             for ip in pinned.iter() {
-                match ip.clone().allocate_port_for_ip(allow_null) {
+                match AllocatedIp::allocate_port_for_ip_ref(ip, allow_null) {
                     Ok(port) => return Ok(port),
                     Err(e) if e.is_exhaustion() => {}
                     Err(e) => return Err(e),

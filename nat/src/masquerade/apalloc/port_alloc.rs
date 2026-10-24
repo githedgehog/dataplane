@@ -89,6 +89,17 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
     allocated_blocks: AllocatedPortBlockMap<I>,
     reserved: ReservedForAddr,
     exclude_wellknown_ports: bool,
+    // BENCH (b2/c): process-unique identity, keying this allocator's thread-local state. Never
+    // reused, so a thread-local entry cannot be mistaken for a later allocator's at the same
+    // address.
+    bench_id: u64,
+}
+
+fn next_bench_id() -> u64 {
+    // nosemgrep: rust-no-direct-std-sync-import
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 //= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
@@ -145,6 +156,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             allocated_blocks: AllocatedPortBlockMap::new(),
             reserved,
             exclude_wellknown_ports,
+            bench_id: next_bench_id(),
         }
     }
 
@@ -199,6 +211,9 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             .load(concurrency::sync::atomic::Ordering::Relaxed)
             > 0
             || self.has_allocated_blocks_with_free_ports()
+            // BENCH (c): this thread's own stock counts as free ports for this thread.
+            || (flow_entry::bench::port_cache_batch() > 0
+                && bench_tls::cache_has::<I>(self.bench_id))
     }
 
     pub(crate) fn deallocate_block(&self, index: usize) {
@@ -244,12 +259,23 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         ip: Arc<AllocatedIp<I>>,
         allow_null: bool,
     ) -> Result<AllocatedPortBlock<I>, AllocatorError> {
+        self.allocate_block_inner(ip, allow_null, true)
+    }
+
+    fn allocate_block_inner(
+        &self,
+        ip: Arc<AllocatedIp<I>>,
+        allow_null: bool,
+        record_thread: bool,
+    ) -> Result<AllocatedPortBlock<I>, AllocatorError> {
         // Pick an available block to allocate ports from. This is thread-safe because we atomically
         // compare and exchange the block status. We can then update the other items
         // (current_alloc_index, thread_blocks, usable_blocks) in the rest of the function.
         let (index, base_port_index) = self.pick_available_block()?;
 
-        self.thread_blocks.set(Some(index));
+        if record_thread {
+            self.thread_blocks.set(Some(index));
+        }
 
         self.current_alloc_index
             .store(index, concurrency::sync::atomic::Ordering::Relaxed);
@@ -270,6 +296,11 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         ip: Arc<AllocatedIp<I>>,
         allow_null: bool,
     ) -> Result<AllocatedPort<I>, AllocatorError> {
+        // BENCH (b2/c): every draw goes through the thread-local path once it is on, including the
+        // first port of a freshly allocated address, so the two never track different blocks.
+        if flow_entry::bench::alloc_tls_block() {
+            return self.allocate_port_tls(&ip, allow_null);
+        }
         let thread_block_index = self.thread_blocks.get();
 
         // Try to allocate a port from the block currently used by this thread
@@ -285,6 +316,78 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         self.allocated_blocks
             .insert(block.index, Arc::downgrade(&block));
         block.allocate_port_from_block(allow_null)
+    }
+
+    /// BENCH (b2/c): [`PortAllocator::allocate_port`] with the thread's current block held in a
+    /// `thread_local!`, and, with the port cache on, from the thread's stock of pre-claimed ports.
+    ///
+    /// The port cache only serves TCP/UDP ports (`!allow_null`); ICMP identifiers take the (b2)
+    /// path.
+    pub(crate) fn allocate_port_tls(
+        &self,
+        ip: &Arc<AllocatedIp<I>>,
+        allow_null: bool,
+    ) -> Result<AllocatedPort<I>, AllocatorError> {
+        let batch = flow_entry::bench::port_cache_batch();
+        if batch > 0 && !allow_null {
+            if let Some(port) = bench_tls::cache_pop::<I>(self.bench_id) {
+                return Ok(port);
+            }
+            return self.refill_and_allocate(ip, batch);
+        }
+        if let Some(block) = bench_tls::current_block::<I>(self.bench_id) {
+            match block.allocate_port_from_block(allow_null) {
+                Err(AllocatorError::NoFreePort(_)) => {}
+                outcome => return outcome,
+            }
+        }
+        self.new_tls_block(ip, allow_null)?
+            .allocate_port_from_block(allow_null)
+    }
+
+    fn new_tls_block(
+        &self,
+        ip: &Arc<AllocatedIp<I>>,
+        allow_null: bool,
+    ) -> Result<Arc<AllocatedPortBlock<I>>, AllocatorError> {
+        let block = Arc::new(self.allocate_block_inner(ip.clone(), allow_null, false)?);
+        self.allocated_blocks
+            .insert(block.index, Arc::downgrade(&block));
+        bench_tls::set_current_block(self.bench_id, Arc::downgrade(&block));
+        Ok(block)
+    }
+
+    // Claim up to `batch` ports from the thread's current block(s) under one block lock each, hand
+    // one out and stock the rest in the thread's cache for this address.
+    fn refill_and_allocate(
+        &self,
+        ip: &Arc<AllocatedIp<I>>,
+        batch: usize,
+    ) -> Result<AllocatedPort<I>, AllocatorError> {
+        let mut stock = Vec::with_capacity(batch);
+        let mut block = match bench_tls::current_block::<I>(self.bench_id) {
+            Some(block) => block,
+            None => self.new_tls_block(ip, false)?,
+        };
+        loop {
+            block.allocate_ports_from_block(batch - stock.len(), &mut stock);
+            if stock.len() >= batch {
+                break;
+            }
+            match self.new_tls_block(ip, false) {
+                Ok(next) => block = next,
+                // Out of blocks: hand out what we have, or report exhaustion like the shared path.
+                Err(e) if stock.is_empty() => return Err(e),
+                Err(_) => break,
+            }
+        }
+        // Hand ports out in the order the bitmap gave them, as the shared path does.
+        stock.reverse();
+        let port = stock
+            .pop()
+            .ok_or(AllocatorError::InternalIssue("empty port stock".to_string()))?;
+        bench_tls::cache_store(self.bench_id, stock);
+        Ok(port)
     }
 
     fn try_to_reserve_block(&self, port: NatPort) -> Result<(bool, usize), AllocatorError> {
@@ -481,6 +584,27 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
         }
     }
 
+    // BENCH (c): claim up to `n` TCP/UDP ports under a single lock of the block bitmap.
+    fn allocate_ports_from_block(self: &Arc<Self>, n: usize, out: &mut Vec<AllocatedPort<I>>) {
+        let mut offsets = smallvec::SmallVec::<[u16; 64]>::new();
+        {
+            let mut bitmap = self.usage_bitmap.lock();
+            while offsets.len() < n {
+                let Some(offset) = bitmap.allocate_port_from_bitmap() else {
+                    break;
+                };
+                offsets.push(offset);
+            }
+        }
+        // Built after the lock is released: dropping an AllocatedPort takes it.
+        for offset in offsets {
+            // Port 0 is pre-marked used for non-null blocks, so this cannot fail.
+            if let Ok(port) = NatPort::new_port_checked(self.base_port_idx + offset) {
+                out.push(AllocatedPort::new(port, self.clone()));
+            }
+        }
+    }
+
     fn reserve_port_from_block(
         self: Arc<Self>,
         port: NatPort,
@@ -570,6 +694,18 @@ impl<I: NatIpWithBitmap> AllocatedPort<I> {
 
 impl<I: NatIpWithBitmap> Drop for AllocatedPort<I> {
     fn drop(&mut self) {
+        // BENCH (c): a port freed on a thread that caches ports for its address goes back to that
+        // thread's stock rather than to the bitmap. Remote frees take the shared path.
+        if flow_entry::bench::port_cache_batch() > 0
+            && !matches!(self.port, NatPort::Identifier(_))
+            && bench_tls::cache_push_free(
+                self.block_allocator.ip.port_allocator().bench_id,
+                self.port,
+                &self.block_allocator,
+            )
+        {
+            return;
+        }
         debug!("Dropping allocated port {self}...");
         // Not panicking on a drop path is right; discarding the answer is not. A port that cannot
         // be given back has either been given back already or was never recorded as taken, and
@@ -579,6 +715,153 @@ impl<I: NatIpWithBitmap> Drop for AllocatedPort<I> {
         if let Err(e) = self.block_allocator.deallocate_port_from_block(self.port) {
             error!("Failed to give back {self}: {e}");
         }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// BENCH PROTOTYPE (b2/c): thread-local current blocks and port stock
+///////////////////////////////////////////////////////////////////////////////
+
+/// Thread-local state for the bench allocator variants, keyed by [`PortAllocator`]'s `bench_id`
+/// (one per public address, never reused, so an entry is tied to the allocator generation that
+/// created the address: a replacement allocator builds new addresses with new ids).
+///
+/// Values are type-erased because a `thread_local!` cannot be generic over the address family.
+///
+/// Known gaps (prototype):
+/// - Ports stocked by one thread are invisible to the others: up to `batch - 1` ports per thread
+///   and address can be stranded while another thread reports the address exhausted. Nothing
+///   flushes another thread's stock.
+/// - A stock keeps its blocks, hence its `AllocatedIp`, alive: an address with no mapping left is
+///   not returned to its pool while some thread still stocks ports on it, including after an
+///   allocator replacement, until the entry is evicted (at most `MAX_ENTRIES` addresses per thread)
+///   or the thread exits.
+/// - A freed port is re-stocked by the freeing thread only if that thread has an entry for the
+///   address (bounded at twice the batch); otherwise it takes the shared bitmap path.
+/// - The model-checker backends do not see these thread-locals; the switches are off there.
+mod bench_tls {
+    use super::{AllocatedPort, AllocatedPortBlock, NatIpWithBitmap};
+    use crate::port::NatPort;
+    use concurrency::sync::{Arc, Weak};
+    use std::any::Any;
+    use std::cell::RefCell;
+
+    const MAX_ENTRIES: usize = 32;
+
+    type Entries = RefCell<Vec<(u64, Box<dyn Any>)>>;
+
+    thread_local! {
+        static BLOCKS: Entries = const { RefCell::new(Vec::new()) };
+        static STOCK: Entries = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn current_block<I: NatIpWithBitmap>(id: u64) -> Option<Arc<AllocatedPortBlock<I>>> {
+        BLOCKS
+            .try_with(|blocks| {
+                let blocks = blocks.try_borrow().ok()?;
+                let (_, weak) = blocks.iter().find(|(key, _)| *key == id)?;
+                weak.downcast_ref::<Weak<AllocatedPortBlock<I>>>()?.upgrade()
+            })
+            .ok()
+            .flatten()
+    }
+
+    pub(super) fn set_current_block<I: NatIpWithBitmap>(id: u64, block: Weak<AllocatedPortBlock<I>>) {
+        let _ = BLOCKS.try_with(|blocks| {
+            let Ok(mut blocks) = blocks.try_borrow_mut() else {
+                return;
+            };
+            if let Some(entry) = blocks.iter_mut().find(|(key, _)| *key == id) {
+                entry.1 = Box::new(block);
+                return;
+            }
+            if blocks.len() >= MAX_ENTRIES {
+                // Dropping a Weak runs no allocator code.
+                blocks.remove(0);
+            }
+            blocks.push((id, Box::new(block)));
+        });
+    }
+
+    pub(super) fn cache_pop<I: NatIpWithBitmap>(id: u64) -> Option<AllocatedPort<I>> {
+        STOCK
+            .try_with(|stock| {
+                let mut stock = stock.try_borrow_mut().ok()?;
+                let (_, ports) = stock.iter_mut().find(|(key, _)| *key == id)?;
+                ports.downcast_mut::<Vec<AllocatedPort<I>>>()?.pop()
+            })
+            .ok()
+            .flatten()
+    }
+
+    pub(super) fn cache_has<I: NatIpWithBitmap>(id: u64) -> bool {
+        STOCK
+            .try_with(|stock| {
+                let stock = stock.try_borrow().ok()?;
+                let (_, ports) = stock.iter().find(|(key, _)| *key == id)?;
+                Some(!ports.downcast_ref::<Vec<AllocatedPort<I>>>()?.is_empty())
+            })
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    }
+
+    pub(super) fn cache_store<I: NatIpWithBitmap>(id: u64, ports: Vec<AllocatedPort<I>>) {
+        // Whatever does not make it into the stock is dropped here, after the borrow is released,
+        // and so goes back to the bitmap.
+        let mut leftover: Option<Box<dyn Any>> = None;
+        let mut ports = Some(ports);
+        let _ = STOCK.try_with(|stock| {
+            let Ok(mut stock) = stock.try_borrow_mut() else {
+                return;
+            };
+            if let Some((_, existing)) = stock.iter_mut().find(|(key, _)| *key == id) {
+                if let (Some(existing), Some(ports)) = (
+                    existing.downcast_mut::<Vec<AllocatedPort<I>>>(),
+                    ports.as_mut(),
+                ) {
+                    existing.append(ports);
+                }
+                return;
+            }
+            if stock.len() >= MAX_ENTRIES {
+                leftover = Some(stock.remove(0).1);
+            }
+            if let Some(ports) = ports.take() {
+                stock.push((id, Box::new(ports)));
+            }
+        });
+        drop(leftover);
+        drop(ports);
+    }
+
+    /// Re-stock a port freed on this thread, if this thread stocks ports for its address and has
+    /// room. Returns whether the port was taken.
+    pub(super) fn cache_push_free<I: NatIpWithBitmap>(
+        id: u64,
+        port: NatPort,
+        block: &Arc<AllocatedPortBlock<I>>,
+    ) -> bool {
+        let limit = 2 * flow_entry::bench::port_cache_batch();
+        STOCK
+            .try_with(|stock| {
+                let Ok(mut stock) = stock.try_borrow_mut() else {
+                    return false;
+                };
+                let Some(ports) = stock
+                    .iter_mut()
+                    .find(|(key, _)| *key == id)
+                    .and_then(|(_, ports)| ports.downcast_mut::<Vec<AllocatedPort<I>>>())
+                else {
+                    return false;
+                };
+                if ports.len() >= limit {
+                    return false;
+                }
+                ports.push(AllocatedPort::new(port, block.clone()));
+                true
+            })
+            .unwrap_or(false)
     }
 }
 
