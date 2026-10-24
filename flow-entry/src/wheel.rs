@@ -32,6 +32,8 @@ use std::time::{Duration, Instant};
 pub const TICK: Duration = Duration::from_millis(10);
 /// Buckets in the wheel: span = `SLOTS * TICK` (~82 s). Longer deadlines wrap and are revisited.
 pub const SLOTS: usize = 8192;
+/// A drained bucket buffer up to this many entries is reused for the slot it came from.
+const RECYCLE_CAPACITY: usize = 64;
 
 /// Something other than a flow-table entry that expires on the wheel (e.g. a NAT mapping).
 pub trait Expiring: Send {
@@ -197,8 +199,15 @@ impl Wheel {
                 }
                 #[allow(clippy::cast_possible_truncation)]
                 let slot = (self.cursor % SLOTS as u64) as usize;
-                // Swap the due bucket out; its (empty) replacement keeps the old pending capacity.
-                std::mem::swap(&mut self.pending, &mut self.buckets[slot]);
+                // Take the due bucket and leave an unallocated one behind. Swapping the drained
+                // buffer back in instead (as the first cut did) left every bucket holding the
+                // capacity of a busy tick once the cursor had gone round: ~16x the live entries.
+                // The drained buffer is kept for reuse only while it is small.
+                let due = std::mem::take(&mut self.buckets[slot]);
+                let drained = std::mem::replace(&mut self.pending, due);
+                if drained.capacity() <= RECYCLE_CAPACITY {
+                    self.buckets[slot] = drained;
+                }
                 self.cursor += 1;
                 continue;
             }
@@ -335,6 +344,54 @@ mod tests {
                 dst_port: TcpPort::new_checked(2048).unwrap(),
             }),
         )
+    }
+
+    /// Re-arms forever, `period` after each expiry.
+    struct Rearm {
+        at: Instant,
+        period: Duration,
+    }
+
+    impl Expiring for Rearm {
+        fn deadline(&self) -> Instant {
+            self.at
+        }
+        fn expire(&mut self, now: Instant) -> Option<Instant> {
+            self.at = now + self.period;
+            Some(self.at)
+        }
+    }
+
+    #[test]
+    fn bucket_capacity_follows_live_entries_not_the_busiest_tick() {
+        let base = Instant::now();
+        let mut w = Wheel {
+            base,
+            cursor: 0,
+            buckets: (0..SLOTS).map(|_| Vec::new()).collect(),
+            pending: Vec::new(),
+            owners: Vec::new(),
+            dead: Vec::new(),
+            stats: Stats::default(),
+        };
+        let live = 200_000;
+        let period = Duration::from_secs(5);
+        for n in 0..live {
+            let at = base + period + TICK * (n % 500);
+            w.push(at, Entry::Other(Box::new(Rearm { at, period })));
+        }
+        // Two full revolutions of the wheel on a synthetic clock.
+        for tick in 1..=u32::try_from(2 * SLOTS).unwrap() {
+            w.sweep(base + TICK * tick, usize::MAX);
+        }
+        let capacity: usize =
+            w.buckets.iter().map(Vec::capacity).sum::<usize>() + w.pending.capacity();
+        let entries: usize = w.buckets.iter().map(Vec::len).sum::<usize>() + w.pending.len();
+        assert_eq!(entries, live as usize);
+        assert!(
+            capacity <= 2 * entries + SLOTS * RECYCLE_CAPACITY,
+            "capacity {capacity} for {entries} live entries"
+        );
     }
 
     #[test]
