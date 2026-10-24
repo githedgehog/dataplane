@@ -69,7 +69,6 @@ impl DriverDpdk {
     pub fn start<'p, 'scope>(
         scope: &'scope thread::Scope<'scope, '_>,
         workers_subsystem: &Subsystem,
-        timer_handle: &'scope tokio::runtime::Handle,
         ports: &'p [Port<'_>],
         num_workers: NonZero<u16>,
         setup_pipeline: &PipelineFactory<'p, Mbuf<'p>>,
@@ -134,7 +133,7 @@ impl DriverDpdk {
                     if let Some(cpus) = cpus {
                         pin(&format!("DPDK worker {id}"), &cpus);
                     }
-                    worker.run(&subsystem, &setup_pipeline, timer_handle);
+                    worker.run(&subsystem, &setup_pipeline);
                     Ok::<(), Infallible>(())
                 })
                 .map_err(|e| {

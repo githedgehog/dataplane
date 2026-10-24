@@ -342,14 +342,7 @@ fn work(masq: &mut Masquerade, wire: &Wire, ops: &[Op]) {
 
 impl Scenario {
     fn run(&self) {
-        // Mapping reapers need a runtime outside of the model backends. It is never driven, and the
-        // workers never sweep their flow wheels, so nothing expires during the scenario.
-        #[cfg(not(feature = "shuttle"))]
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap_or_else(|e| unreachable!("{e}"));
-
+        // The workers never sweep their wheels, so nothing expires during the scenario.
         let flow_table = Arc::new(FlowTable::new(16));
         let mut writer = NatAllocatorWriter::new();
         let mut layout = Layout::Base;
@@ -372,11 +365,7 @@ impl Scenario {
             .map(|ops| {
                 let (ops, wire) = (ops.clone(), wire.clone());
                 let (flow_table, reader) = (flow_table.clone(), reader.clone());
-                #[cfg(not(feature = "shuttle"))]
-                let handle = runtime.handle().clone();
                 thread::spawn(move || {
-                    #[cfg(not(feature = "shuttle"))]
-                    let _runtime = handle.enter();
                     let mut masq = masquerade(flow_table, reader);
                     work(&mut masq, &wire, &ops);
                 })
@@ -406,8 +395,6 @@ impl Scenario {
                 .unwrap_or_else(|_| panic!("a packet worker panicked"));
         }
 
-        #[cfg(not(feature = "shuttle"))]
-        let _runtime = runtime.enter();
         let mut live = BTreeSet::new();
         flow_table.for_each_flow(|key, flow| {
             if flow.status() != FlowStatus::Active {

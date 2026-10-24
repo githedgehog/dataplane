@@ -16,6 +16,7 @@
 
 #![cfg(test)]
 #![cfg(not(feature = "loom"))]
+use crate::masquerade::apalloc::test_alloc::context::TestTimers;
 
 use super::alloc::PoolSet;
 use super::mapping::{MappingKey, MappingScope, reap_expired_mapping};
@@ -491,7 +492,7 @@ fn tidying_a_dead_block_entry_does_not_drop_a_live_one() {
     });
 }
 
-/// Test the race `spawn_mapping_reaper`'s own docs accept: a mapping's reaper racing a fresh
+/// Test the race `reap_expired_mapping`'s own docs accept: a mapping's reaper racing a fresh
 /// `get_or_create_mapping` call that lands on the very subscriber the reaper is emptying. The
 /// accepted outcome is self-healing degradation (the new mapping may end up on an orphaned
 /// `Subscriber` row, transiently losing Paired pinning until it too expires), not corruption. The
@@ -504,6 +505,7 @@ fn tidying_a_dead_block_entry_does_not_drop_a_live_one() {
 #[concurrency::model_test]
 fn reaping_a_subscriber_races_a_fresh_mapping_on_it_without_corruption() {
     concurrency::stress(|| {
+        let timers = TestTimers::default();
         let specs = vec![PoolSpec::new(
             vec![AddrInterval::new(BASE, BASE)],
             // Set a zero idle timeout, so every mapping this pool hands out is already expired by
@@ -523,7 +525,7 @@ fn reaping_a_subscriber_races_a_fresh_mapping_on_it_without_corruption() {
         let key2 = MappingKey::new(port(2), MappingScope::Independent);
 
         let mapping1 = pool
-            .get_or_create_mapping(subscriber_ip, key1, false)
+            .get_or_create_mapping(subscriber_ip, key1, false, &timers)
             .expect("room for the first mapping");
         let subscriber = pool
             .subscribers()
@@ -540,7 +542,10 @@ fn reaping_a_subscriber_races_a_fresh_mapping_on_it_without_corruption() {
         };
         let fresh = {
             let pool = pool.clone();
-            thread::spawn(move || pool.get_or_create_mapping(subscriber_ip, key2, false))
+            thread::spawn(move || {
+                let timers = TestTimers::default();
+                pool.get_or_create_mapping(subscriber_ip, key2, false, &timers)
+            })
         };
 
         reaper.join().expect("the reaper thread panicked");

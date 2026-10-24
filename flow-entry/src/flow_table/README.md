@@ -39,6 +39,21 @@ Flows expire no earlier than their deadline and, unless the worker is behind
 from the table between its deadline and the worker's sweep. Lookups do not look
 at deadlines.
 
+## Side timers
+
+A worker's wheel also keeps `SideTimer`s: timers for state that lives beside
+the flows and is owned by the same worker. The masquerade mapping reapers are
+the case in point.
+
+- A side timer is scheduled through the `Schedule` trait.
+  - On the packet path, the worker's `WorkerFlowTable` implements `Schedule`
+    and puts the timer on its own wheel.
+  - The control plane has no wheel. It schedules through the `TimerRegistry`,
+    which hands each timer to a registered worker in turn. Timers scheduled
+    before any worker has registered wait for the first one.
+- When its deadline passes, the timer's `fire` decides whether it stays on the
+  wheel.
+
 ## Tests
 
 Tests that need expiry insert through a `WorkerFlowTable` and call

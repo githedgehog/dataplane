@@ -191,11 +191,7 @@ fn key(port: u16) -> FlowKey {
 /// by deadline, one by invalidation from another thread.
 #[test]
 fn flows_expire_on_the_worker_while_it_polls() {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_time()
-        .build()
-        .unwrap();
+    // No tokio runtime anywhere: the worker needs none.
     let shutdown = lifecycle::Shutdown::new();
     let table = Arc::new(FlowTable::new(2));
     let (created_tx, created_rx) = std::sync::mpsc::channel();
@@ -230,7 +226,7 @@ fn flows_expire_on_the_worker_while_it_polls() {
     thread::scope(|scope| {
         let _stop_on_failure = shutdown.workers.cancel_token().drop_guard();
         let worker = scope.spawn(|| {
-            Worker::new(0, Vec::new()).run(&shutdown.workers, &setup, runtime.handle());
+            Worker::new(0, Vec::new()).run(&shutdown.workers, &setup);
         });
         let [(forward, reverse), (cancelled, _)] =
             created_rx.recv_timeout(Duration::from_secs(5)).unwrap();
