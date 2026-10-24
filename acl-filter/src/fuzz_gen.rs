@@ -15,7 +15,7 @@
 use crate::PacketSummary;
 use bolero::TypeGenerator;
 use config::external::overlay::acl::{
-    Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
+    Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope, AclTcpFlagsMatch,
 };
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
@@ -24,6 +24,7 @@ use std::num::NonZero;
 
 use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
+use net::tcp::TcpFlags;
 use net::vxlan::Vni;
 use std::net::IpAddr;
 
@@ -167,7 +168,7 @@ impl ProtoSel {
     fn to_config(self) -> AclProtoMatch {
         match self {
             ProtoSel::Any => AclProtoMatch::Any,
-            ProtoSel::Tcp => AclProtoMatch::Tcp,
+            ProtoSel::Tcp => AclProtoMatch::tcp(),
             ProtoSel::Udp => AclProtoMatch::Udp,
             ProtoSel::Other(p) => AclProtoMatch::Other(p),
         }
@@ -194,6 +195,10 @@ pub(crate) struct RuleSpec {
     dst: SideSel,
     src_ports: PortSel,
     dst_ports: PortSel,
+    /// TCP flags the rule requires to have the value they have in `tcp_flags_value`; dropped
+    /// unless the rule is a packet-scoped TCP rule.
+    tcp_flags_mask: u8,
+    tcp_flags_value: u8,
 }
 
 /// Ensures a generated ACL is non-empty.
@@ -207,6 +212,8 @@ const FALLBACK_RULE: RuleSpec = RuleSpec {
     dst: SideSel::All,
     src_ports: PortSel::None,
     dst_ports: PortSel::None,
+    tcp_flags_mask: 0,
+    tcp_flags_value: 0,
 };
 
 #[derive(Debug, Clone, Copy, TypeGenerator)]
@@ -414,6 +421,18 @@ fn build_acl(spec: &AclSpec, local: (&str, u8, bool), remote: (&str, u8, bool), 
                 (None, None)
             };
 
+            let proto = match rule.proto {
+                ProtoSel::Tcp if !rule.flow_scope => {
+                    let (mask, value) = (rule.tcp_flags_mask, rule.tcp_flags_value);
+                    AclProtoMatch::Tcp(
+                        AclTcpFlagsMatch::ANY
+                            .require(TcpFlags::from_bits_retain(mask & value), true)
+                            .require(TcpFlags::from_bits_retain(mask & !value), false),
+                    )
+                }
+                proto => proto.to_config(),
+            };
+
             AclRule {
                 name: format!("rule{i}"),
                 from: from.to_owned(),
@@ -428,7 +447,7 @@ fn build_acl(spec: &AclSpec, local: (&str, u8, bool), remote: (&str, u8, bool), 
                     dst: prefix_set(rule.dst.resolve(dst_block, dst_masq, v6), dst_ports),
                     src_any_ports: Vec::new(),
                     dst_any_ports: Vec::new(),
-                    proto: rule.proto.to_config(),
+                    proto,
                 },
                 scope: if rule.flow_scope {
                     AclScope::Flow
@@ -478,8 +497,10 @@ impl ProbeProto {
         }
     }
 
+    // Packets carrying TCP or UDP always have their header, or they are dropped as malformed,
+    // including when the protocol comes as a number
     fn has_ports(self) -> bool {
-        matches!(self, ProbeProto::Tcp | ProbeProto::Udp)
+        matches!(self.next_header(), NextHeader::TCP | NextHeader::UDP)
     }
 }
 
@@ -526,6 +547,8 @@ pub(crate) struct ProbeSpec {
     proto: ProbeProto,
     sport: ProbePort,
     dport: ProbePort,
+    /// TCP flags, only used for TCP probes.
+    tcp_flags: u8,
 }
 
 impl ProbeSpec {
@@ -560,6 +583,9 @@ impl ProbeSpec {
                 .proto
                 .has_ports()
                 .then(|| (self.sport.resolve(), self.dport.resolve())),
+            // Includes TCP as a protocol number, for consistency with the protocol field
+            tcp_flags: (self.proto.next_header() == NextHeader::TCP)
+                .then_some(TcpFlags::from_bits_retain(self.tcp_flags)),
         }
     }
 }

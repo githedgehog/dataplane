@@ -11,7 +11,7 @@
 use crate::{AclFilter, AclFilterContext, AclFilterContextWriter};
 
 use config::external::overlay::acl::{
-    Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
+    Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope, AclTcpFlagsMatch,
 };
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
@@ -28,7 +28,7 @@ use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::parse::DeParse;
-use net::tcp::TcpPort;
+use net::tcp::{TcpFlags, TcpPort};
 use net::udp::UdpPort;
 use net::vxlan::Vni;
 
@@ -190,6 +190,21 @@ fn pattern(src: &[&str], dst: &[&str], proto: AclProtoMatch) -> AclPattern {
     }
 }
 
+// A TCP pattern matching the given flags, for all traffic in the rule's direction
+fn tcp_flags_pattern(flags: AclTcpFlagsMatch) -> AclPattern {
+    pattern(&[], &[], AclProtoMatch::Tcp(flags))
+}
+
+// A TCP pattern matching connection-opening segments only (SYN set, ACK clear), for all traffic
+// in the rule's direction
+fn syn_no_ack_pattern() -> AclPattern {
+    tcp_flags_pattern(
+        AclTcpFlagsMatch::ANY
+            .require(TcpFlags::SYN, true)
+            .require(TcpFlags::ACK, false),
+    )
+}
+
 // A rule in the given direction (`from`/`to` are the peering's VPC manifest names)
 fn directional_rule(
     name: &str,
@@ -219,6 +234,16 @@ fn rule(name: &str, action: AclAction, scope: AclScope, pattern: AclPattern) -> 
 // Packet-header builders (via the HeaderStack builder) and packet assembly
 
 fn build_tcp_packet(src: Ipv4Addr, dst: Ipv4Addr, sport: u16, dport: u16) -> Headers {
+    build_tcp_packet_with_flags(src, dst, sport, dport, TcpFlags::empty())
+}
+
+fn build_tcp_packet_with_flags(
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    sport: u16,
+    dport: u16,
+    flags: TcpFlags,
+) -> Headers {
     HeaderStack::new()
         .eth(|_| {})
         .ipv4(|ip| {
@@ -228,6 +253,7 @@ fn build_tcp_packet(src: Ipv4Addr, dst: Ipv4Addr, sport: u16, dport: u16) -> Hea
         .tcp(|tcp| {
             tcp.set_source(TcpPort::try_from(sport).unwrap());
             tcp.set_destination(TcpPort::try_from(dport).unwrap());
+            tcp.set_flags(flags);
         })
         .build_headers()
         .unwrap()
@@ -319,6 +345,26 @@ fn non_first_fragment_v6_bytes(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: 
     bytes
 }
 
+// An IPv6 packet announcing TCP as its next header, but too short to hold a TCP header.
+fn truncated_tcp_v6_bytes(src: Ipv6Addr, dst: Ipv6Addr) -> Vec<u8> {
+    const TCP: u8 = 6;
+    let body = [0u8; 4];
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]);
+    bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+    bytes.extend_from_slice(&0x86DDu16.to_be_bytes());
+    bytes.extend_from_slice(&[0x60, 0, 0, 0]);
+    #[allow(clippy::cast_possible_truncation)]
+    bytes.extend_from_slice(&(body.len() as u16).to_be_bytes());
+    bytes.push(TCP);
+    bytes.push(64);
+    bytes.extend_from_slice(&src.octets());
+    bytes.extend_from_slice(&dst.octets());
+    bytes.extend_from_slice(&body);
+    bytes
+}
+
 fn packet_from_bytes(
     src_vpcd: VpcDiscriminant,
     dst_vpcd: Option<VpcDiscriminant>,
@@ -397,7 +443,7 @@ fn acl_with_nonmatching_rule(default: AclAction) -> Acl {
             "narrow-allow",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS], &["20.0.0.128/25"], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &["20.0.0.128/25"], AclProtoMatch::tcp()),
         )],
     )
 }
@@ -434,7 +480,7 @@ fn explicit_allow_over_default_deny() {
             "allow-tcp",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4(Some(acl));
@@ -467,13 +513,13 @@ fn first_matching_rule_wins() {
                 "allow-lower-half",
                 AclAction::Allow,
                 AclScope::Packet,
-                pattern(&["10.0.0.0/25"], &[V2_IPS], AclProtoMatch::Tcp),
+                pattern(&["10.0.0.0/25"], &[V2_IPS], AclProtoMatch::tcp()),
             ),
             rule(
                 "deny-whole-range",
                 AclAction::Deny,
                 AclScope::Packet,
-                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
             ),
         ],
     );
@@ -505,7 +551,7 @@ fn protocol_specific_rule_does_not_match_other_protocol() {
             "allow-tcp-only",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4(Some(acl));
@@ -707,7 +753,7 @@ fn ipv6_allow_and_default_deny() {
             "allow-v6",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
@@ -761,7 +807,7 @@ fn flow_scope_allows_reply_for_allowed_request() {
             "allow-flow",
             AclAction::Allow,
             AclScope::Flow,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4_masquerade(Some(acl));
@@ -794,7 +840,7 @@ fn packet_scope_denies_reply_for_allowed_request() {
             "allow-packet",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4(Some(acl));
@@ -832,7 +878,7 @@ fn explicit_deny_rule_drops_reply_despite_matching_flow() {
                 "allow-request",
                 AclAction::Allow,
                 AclScope::Flow,
-                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
             ),
             // Reply direction (vpc2 -> vpc1): explicitly denied
             directional_rule(
@@ -841,7 +887,7 @@ fn explicit_deny_rule_drops_reply_despite_matching_flow() {
                 "vpc1",
                 AclAction::Deny,
                 AclScope::Packet,
-                pattern(&[V2_IPS], &[V1_IPS], AclProtoMatch::Tcp),
+                pattern(&[V2_IPS], &[V1_IPS], AclProtoMatch::tcp()),
             ),
         ],
     );
@@ -884,7 +930,7 @@ fn directional_rule_only_applies_to_correct_direction() {
             "deny-forward",
             AclAction::Deny,
             AclScope::Packet,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4(Some(acl));
@@ -988,10 +1034,14 @@ fn only_flow_scoped_allow_rules_keep_flow_tracking() {
 mod end_to_end {
     use super::{
         Acl, AclAction, AclFilterContext, AclFilterContextWriter, AclProtoMatch, AclScope,
-        build_udp_packet, expose, expose_masquerade, expose_static, is_allowed, is_denied, overlay,
-        packet, pattern, peering, rule, v4, vpcd,
+        AclTcpFlagsMatch, build_tcp_packet_with_flags, build_udp_packet, directional_rule, expose,
+        expose_masquerade, expose_static, is_allowed, is_denied, overlay, packet, pattern, peering,
+        rule, syn_no_ack_pattern, tcp_flags_pattern, v4, vpcd,
     };
     use crate::AclFilter;
+
+    use net::tcp::TcpFlags;
+    use std::net::Ipv4Addr;
 
     use config::external::overlay::ValidatedOverlay;
     use config::external::overlay::vpcpeering::VpcExpose;
@@ -1264,6 +1314,222 @@ mod end_to_end {
         assert_eq!(reply_out.ip_source(), Some(v4("5.6.7.8").into()));
     }
 
+    // vpc1 (10.0.0.0/24) <-> vpc2, with `vpc2` as the exposes of vpc2. Packet-scoped rules let vpc1
+    // open TCP connections to vpc2, and let vpc2 send any TCP segment to vpc1 except those opening
+    // connections (SYN set, ACK clear).
+    fn build_overlay_syn_no_ack(vpc2: Vec<VpcExpose>) -> ValidatedOverlay {
+        let acl = Acl::new(
+            AclAction::Deny,
+            vec![
+                rule(
+                    "allow-tcp-out",
+                    AclAction::Allow,
+                    AclScope::Packet,
+                    pattern(&[], &[], AclProtoMatch::tcp()),
+                ),
+                directional_rule(
+                    "deny-tcp-syn-no-ack-in",
+                    "vpc2",
+                    "vpc1",
+                    AclAction::Deny,
+                    AclScope::Packet,
+                    syn_no_ack_pattern(),
+                ),
+                directional_rule(
+                    "allow-tcp-in",
+                    "vpc2",
+                    "vpc1",
+                    AclAction::Allow,
+                    AclScope::Packet,
+                    pattern(&[], &[], AclProtoMatch::tcp()),
+                ),
+            ],
+        );
+        overlay(
+            &[("vpc1", 100), ("vpc2", 200)],
+            vec![peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose("10.0.0.0/24")]),
+                ("vpc2", vpc2),
+                Some(acl),
+            )],
+        )
+    }
+
+    // vpc1 opens a connection to `dst` (vpc2's advertised address), vpc2 replies from `private`
+    // (its native address), then tries to open a connection of its own.
+    fn connections_open_from_one_side_only(
+        pipeline: &mut DynPipeline<TestBuffer>,
+        dst: Ipv4Addr,
+        private: Ipv4Addr,
+    ) {
+        let client = v4("10.0.0.5");
+        let tcp = |vni, src, dst, sport, dport, flags| {
+            packet(
+                vpcd(vni),
+                None,
+                build_tcp_packet_with_flags(src, dst, sport, dport, flags),
+            )
+        };
+
+        let syn = tcp(100, client, dst, 1234, 80, TcpFlags::SYN);
+        assert!(
+            is_allowed(&process(pipeline, syn)),
+            "vpc1's SYN was dropped"
+        );
+
+        let syn_ack = tcp(
+            200,
+            private,
+            client,
+            80,
+            1234,
+            TcpFlags::SYN | TcpFlags::ACK,
+        );
+        assert!(
+            is_allowed(&process(pipeline, syn_ack)),
+            "vpc2's SYN-ACK was dropped"
+        );
+
+        let ack = tcp(100, client, dst, 1234, 80, TcpFlags::ACK);
+        assert!(
+            is_allowed(&process(pipeline, ack)),
+            "vpc1's ACK was dropped"
+        );
+
+        let data = tcp(
+            200,
+            private,
+            client,
+            80,
+            1234,
+            TcpFlags::PSH | TcpFlags::ACK,
+        );
+        assert!(
+            is_allowed(&process(pipeline, data)),
+            "vpc2's data segment was dropped"
+        );
+
+        let syn_in = tcp(200, private, client, 4321, 22, TcpFlags::SYN);
+        assert!(
+            is_denied(&process(pipeline, syn_in)),
+            "vpc2 opened a connection to vpc1"
+        );
+    }
+
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn syn_no_ack_is_denied_from_one_side_without_nat() {
+        let overlay = build_overlay_syn_no_ack(vec![expose("20.0.0.0/24")]);
+        let (mut pipeline, _flow_table, _handles) = setup_pipeline(&overlay);
+        connections_open_from_one_side_only(&mut pipeline, v4("20.0.0.5"), v4("20.0.0.5"));
+    }
+
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn syn_no_ack_is_denied_from_one_side_with_static_nat() {
+        let overlay = build_overlay_syn_no_ack(vec![expose_static("192.168.0.0/24", "5.6.7.0/24")]);
+        let (mut pipeline, _flow_table, _handles) = setup_pipeline(&overlay);
+        connections_open_from_one_side_only(&mut pipeline, v4("5.6.7.8"), v4("192.168.0.8"));
+    }
+
+    // vpc1 (10.0.0.0/24) <-> vpc2 (20.0.0.0/24), with default deny. A packet-scoped rule allowing
+    // TCP segments matching `flags` comes before a flow-scoped rule allowing all TCP from vpc1 to
+    // vpc2.
+    fn build_overlay_mixed_scopes(flags: AclTcpFlagsMatch) -> ValidatedOverlay {
+        let acl = Acl::new(
+            AclAction::Deny,
+            vec![
+                rule(
+                    "allow-tcp-packet",
+                    AclAction::Allow,
+                    AclScope::Packet,
+                    tcp_flags_pattern(flags),
+                ),
+                rule(
+                    "allow-tcp-flow",
+                    AclAction::Allow,
+                    AclScope::Flow,
+                    pattern(&[], &[], AclProtoMatch::tcp()),
+                ),
+            ],
+        );
+        overlay(
+            &[("vpc1", 100), ("vpc2", 200)],
+            vec![peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose("10.0.0.0/24")]),
+                ("vpc2", vec![expose("20.0.0.0/24")]),
+                Some(acl),
+            )],
+        )
+    }
+
+    // vpc1 opens a connection with a segment carrying `opening` flags, which the flow-scoped rule
+    // allows, and vpc2 replies with `reply` flags. The replies must pass: classifying the opening
+    // segment again for them must not select the packet-scoped rule instead.
+    fn replies_pass_with_mixed_scopes(flags: AclTcpFlagsMatch, opening: TcpFlags, reply: TcpFlags) {
+        let overlay = build_overlay_mixed_scopes(flags);
+        let (mut pipeline, _flow_table, _handles) = setup_pipeline(&overlay);
+        let (client, server) = (v4("10.0.0.5"), v4("20.0.0.5"));
+        let tcp = |vni, src, dst, sport, dport, flags| {
+            packet(
+                vpcd(vni),
+                None,
+                build_tcp_packet_with_flags(src, dst, sport, dport, flags),
+            )
+        };
+
+        let syn = tcp(100, client, server, 1234, 80, opening);
+        assert!(
+            is_allowed(&process(&mut pipeline, syn)),
+            "vpc1's opening segment was dropped"
+        );
+        let syn_ack = tcp(200, server, client, 80, 1234, reply);
+        assert!(
+            is_allowed(&process(&mut pipeline, syn_ack)),
+            "vpc2's reply to the opening segment was dropped"
+        );
+        let ack = tcp(100, client, server, 1234, 80, TcpFlags::ACK);
+        assert!(
+            is_allowed(&process(&mut pipeline, ack)),
+            "vpc1's ACK was dropped"
+        );
+        let data = tcp(200, server, client, 80, 1234, TcpFlags::PSH | TcpFlags::ACK);
+        assert!(
+            is_allowed(&process(&mut pipeline, data)),
+            "vpc2's data segment was dropped"
+        );
+    }
+
+    // The packet-scoped rule matches segments with SYN clear: it does not match vpc1's SYN, but it
+    // would match it with empty flags
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn replies_pass_after_packet_scoped_rule_requiring_syn_clear() {
+        replies_pass_with_mixed_scopes(
+            AclTcpFlagsMatch::ANY.require(TcpFlags::SYN, false),
+            TcpFlags::SYN,
+            TcpFlags::SYN | TcpFlags::ACK,
+        );
+    }
+
+    // The packet-scoped rule matches segments with ECE clear: it does not match vpc1's ECN-setup
+    // SYN (see RFC 3168), but it would match it with empty flags, or with SYN alone
+    #[traced_test]
+    #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
+    async fn replies_pass_after_packet_scoped_rule_requiring_ece_clear() {
+        replies_pass_with_mixed_scopes(
+            AclTcpFlagsMatch::ANY.require(TcpFlags::ECE, false),
+            TcpFlags::SYN | TcpFlags::ECE | TcpFlags::CWR,
+            TcpFlags::SYN | TcpFlags::ACK | TcpFlags::ECE,
+        );
+    }
+
     // Apply `overlay` as generation `genid`, as the management plane does, optionally migrating the
     // tracked flows.
     fn reconfigure(
@@ -1526,9 +1792,9 @@ mod end_to_end {
 mod dpdk_backend {
     use super::{
         Acl, AclAction, AclFilter, AclFilterContext, AclFilterContextWriter, AclProtoMatch,
-        AclScope, Packet, TestBuffer, V1_IPS, V2_IPS, VNI1, VNI2, ValidatedOverlay,
-        build_icmp_packet, build_tcp_packet, build_udp_packet, expose, is_allowed, overlay, packet,
-        pattern, peering, rule, run, v4, vpcd,
+        AclScope, Packet, TcpFlags, TestBuffer, V1_IPS, V2_IPS, VNI1, VNI2, ValidatedOverlay,
+        build_icmp_packet, build_tcp_packet, build_tcp_packet_with_flags, build_udp_packet, expose,
+        is_allowed, overlay, packet, pattern, peering, rule, run, syn_no_ack_pattern, v4, vpcd,
     };
 
     fn filter_with(overlay: &ValidatedOverlay, dpdk: bool) -> AclFilter {
@@ -1569,7 +1835,7 @@ mod dpdk_backend {
                 "allow-tcp",
                 AclAction::Allow,
                 AclScope::Packet,
-                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
             )],
         );
         let overlay = overlay(
@@ -1604,6 +1870,7 @@ mod dpdk_backend {
                 V2_IPS,
                 "*",
                 "*",
+                "*",
                 "|",
                 "Allow",
                 "Packet",
@@ -1629,6 +1896,7 @@ mod dpdk_backend {
                 "destination",
                 "src-port",
                 "dst-port",
+                "tcp-flags",
                 "|",
                 "action",
                 "scope",
@@ -1636,6 +1904,61 @@ mod dpdk_backend {
             ],
             "unexpected heading row:\n{dump}"
         );
+    }
+
+    /// Both backends must agree on TCP flags matching, for every set of flags.
+    #[test]
+    #[dpdk::with_eal]
+    fn dpdk_agrees_with_reference_on_tcp_flags() {
+        let acl = Acl::new(
+            AclAction::Deny,
+            vec![
+                rule(
+                    "deny-syn-no-ack",
+                    AclAction::Deny,
+                    AclScope::Packet,
+                    syn_no_ack_pattern(),
+                ),
+                rule(
+                    "allow-tcp",
+                    AclAction::Allow,
+                    AclScope::Packet,
+                    pattern(&[], &[], AclProtoMatch::tcp()),
+                ),
+            ],
+        );
+        let overlay = overlay(
+            &[("vpc1", VNI1), ("vpc2", VNI2)],
+            vec![peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose(V1_IPS)]),
+                ("vpc2", vec![expose(V2_IPS)]),
+                Some(acl),
+            )],
+        );
+
+        let dump = AclFilterContext::for_test_dpdk(&overlay)
+            .expect("rte_acl backend build")
+            .to_string();
+        let rule_row = dump
+            .lines()
+            .find(|line| line.trim_start().starts_with("[0]"))
+            .unwrap_or_else(|| panic!("no rule row in:\n{dump}"));
+        assert!(
+            rule_row.contains(" 0x02/0x12 "),
+            "unexpected rule rendering:\n{dump}"
+        );
+
+        for bits in 0..=u8::MAX {
+            let flags = TcpFlags::from_bits_retain(bits);
+            assert_backends_agree(&overlay, &format!("tcp with flags {flags}"), || {
+                packet(
+                    vpcd(VNI1),
+                    Some(vpcd(VNI2)),
+                    build_tcp_packet_with_flags(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80, flags),
+                )
+            });
+        }
     }
 
     #[test]
@@ -1650,13 +1973,13 @@ mod dpdk_backend {
                     "allow-lower-half",
                     AclAction::Allow,
                     AclScope::Packet,
-                    pattern(&["10.0.0.0/25"], &[V2_IPS], AclProtoMatch::Tcp),
+                    pattern(&["10.0.0.0/25"], &[V2_IPS], AclProtoMatch::tcp()),
                 ),
                 rule(
                     "deny-whole-range",
                     AclAction::Deny,
                     AclScope::Packet,
-                    pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+                    pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
                 ),
                 rule(
                     "allow-icmp",
@@ -1728,7 +2051,7 @@ fn a_vlan_tagged_overlay_frame_is_refused() {
             "allow-tcp",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter_v4(Some(acl));
@@ -1775,7 +2098,7 @@ fn an_extension_header_does_not_evade_a_protocol_rule() {
             "deny-tcp",
             AclAction::Deny,
             AclScope::Packet,
-            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
@@ -1848,7 +2171,7 @@ fn a_chain_past_the_parser_limit_is_dropped_rather_than_guessed() {
             "allow-tcp",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
@@ -1884,7 +2207,7 @@ fn a_non_first_fragment_does_not_match_a_protocol_rule() {
             "permit-tcp",
             AclAction::Allow,
             AclScope::Packet,
-            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::tcp()),
         )],
     );
     let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
@@ -1898,4 +2221,210 @@ fn a_non_first_fragment_does_not_match_a_protocol_rule() {
         is_denied(&run(&mut filter, fragment)),
         "a fragment carrying no TCP header was admitted by a TCP-only permit"
     );
+}
+
+// -------------------------------------------------------------------------------------------------
+// TCP flags matching
+
+// A rule matching SYN set and ACK clear matches exactly these segments, whatever the other flags
+#[test]
+fn syn_no_ack_rule_matches_syn_without_ack_only() {
+    let acl = Acl::new(
+        AclAction::Deny,
+        vec![rule(
+            "allow-syn-no-ack",
+            AclAction::Allow,
+            AclScope::Packet,
+            syn_no_ack_pattern(),
+        )],
+    );
+    let mut filter = build_filter_v4(Some(acl));
+
+    for bits in 0..=u8::MAX {
+        let flags = TcpFlags::from_bits_retain(bits);
+        let tcp = packet(
+            vpcd(VNI1),
+            Some(vpcd(VNI2)),
+            build_tcp_packet_with_flags(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80, flags),
+        );
+        let opening = flags.contains(TcpFlags::SYN) && !flags.contains(TcpFlags::ACK);
+        let out = run(&mut filter, tcp);
+        assert_eq!(is_allowed(&out), opening, "flags {flags}");
+        assert_eq!(is_denied(&out), !opening, "flags {flags}");
+    }
+}
+
+// Denying SYN without ACK from one side leaves that side free to answer connections, but not to
+// open its own
+#[test]
+fn syn_no_ack_deny_rule_only_blocks_connection_opening() {
+    let acl = Acl::new(
+        AclAction::Deny,
+        vec![
+            directional_rule(
+                "deny-syn-no-ack-in",
+                "vpc2",
+                "vpc1",
+                AclAction::Deny,
+                AclScope::Packet,
+                syn_no_ack_pattern(),
+            ),
+            directional_rule(
+                "allow-tcp-in",
+                "vpc2",
+                "vpc1",
+                AclAction::Allow,
+                AclScope::Packet,
+                pattern(&[], &[], AclProtoMatch::tcp()),
+            ),
+        ],
+    );
+    let mut filter = build_filter_v4(Some(acl));
+
+    for (flags, allowed) in [
+        (TcpFlags::SYN, false),
+        (TcpFlags::SYN | TcpFlags::ECE | TcpFlags::CWR, false),
+        (TcpFlags::SYN | TcpFlags::ACK, true),
+        (TcpFlags::ACK, true),
+        (TcpFlags::PSH | TcpFlags::ACK, true),
+        (TcpFlags::FIN | TcpFlags::ACK, true),
+        (TcpFlags::RST, true),
+        (TcpFlags::empty(), true),
+    ] {
+        let tcp = packet(
+            vpcd(VNI2),
+            Some(vpcd(VNI1)),
+            build_tcp_packet_with_flags(v4("20.0.0.5"), v4("10.0.0.5"), 80, 1234, flags),
+        );
+        assert_eq!(is_allowed(&run(&mut filter, tcp)), allowed, "flags {flags}");
+    }
+}
+
+// A rule matching TCP flags never matches other protocols
+#[test]
+fn tcp_flags_rule_does_not_match_other_protocols() {
+    let acl = Acl::new(
+        AclAction::Deny,
+        vec![
+            rule(
+                "deny-syn-no-ack",
+                AclAction::Deny,
+                AclScope::Packet,
+                syn_no_ack_pattern(),
+            ),
+            rule(
+                "allow-all",
+                AclAction::Allow,
+                AclScope::Packet,
+                pattern(&[], &[], AclProtoMatch::Any),
+            ),
+        ],
+    );
+    let mut filter = build_filter_v4(Some(acl));
+
+    let udp = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        build_udp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80),
+    );
+    assert!(is_allowed(&run(&mut filter, udp)));
+
+    let icmp = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        build_icmp_packet(v4("10.0.0.5"), v4("20.0.0.5")),
+    );
+    assert!(is_allowed(&run(&mut filter, icmp)));
+}
+
+// A non-first fragment carries no TCP header, so it never matches a TCP flags rule, whatever the
+// parser read from its payload
+#[test]
+fn a_non_first_fragment_does_not_match_a_tcp_flags_rule() {
+    let acl = Acl::new(
+        AclAction::Allow,
+        vec![rule(
+            "deny-syn-no-ack",
+            AclAction::Deny,
+            AclScope::Packet,
+            syn_no_ack_pattern(),
+        )],
+    );
+    let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
+
+    let fragment = packet_from_bytes(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        &non_first_fragment_v6_bytes(v6(net::ipv6_doc!("::5")), v6("2001:db9::5"), 1234, 80),
+    );
+    assert!(is_allowed(&run(&mut filter, fragment)));
+}
+
+// A TCP packet with no TCP header has no flags we can match: it must be dropped before it reaches
+// a rule that only requires flags to be clear
+#[test]
+fn a_tcp_packet_without_tcp_header_is_malformed() {
+    let acl = Acl::new(
+        AclAction::Deny,
+        vec![rule(
+            "allow-no-syn",
+            AclAction::Allow,
+            AclScope::Packet,
+            tcp_flags_pattern(AclTcpFlagsMatch::ANY.require(TcpFlags::SYN, false)),
+        )],
+    );
+    let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
+
+    let truncated = packet_from_bytes(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        &truncated_tcp_v6_bytes(v6(net::ipv6_doc!("::5")), v6("2001:db9::5")),
+    );
+    assert_eq!(
+        run(&mut filter, truncated).get_done(),
+        Some(DoneReason::Malformed)
+    );
+}
+
+// Each flag can be required set or clear, independently from the others
+#[test]
+fn tcp_flags_rule_matches_required_flags_only() {
+    let matches = [
+        AclTcpFlagsMatch::ANY.require(TcpFlags::ACK, true),
+        AclTcpFlagsMatch::ANY.require(TcpFlags::SYN, false),
+        AclTcpFlagsMatch::ANY
+            .require(TcpFlags::RST, true)
+            .require(TcpFlags::FIN, false),
+        AclTcpFlagsMatch::ANY
+            .require(TcpFlags::FIN | TcpFlags::PSH | TcpFlags::URG, true)
+            .require(TcpFlags::SYN | TcpFlags::RST | TcpFlags::ACK, false)
+            .require(TcpFlags::ECE | TcpFlags::CWR, true),
+    ];
+    for flags_match in matches {
+        let acl = Acl::new(
+            AclAction::Deny,
+            vec![rule(
+                "allow-flags",
+                AclAction::Allow,
+                AclScope::Packet,
+                tcp_flags_pattern(flags_match),
+            )],
+        );
+        let mut filter = build_filter_v4(Some(acl));
+
+        for bits in 0..=u8::MAX {
+            let flags = TcpFlags::from_bits_retain(bits);
+            let tcp = packet(
+                vpcd(VNI1),
+                Some(vpcd(VNI2)),
+                build_tcp_packet_with_flags(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80, flags),
+            );
+            let expected = flags_match.matches(flags);
+            assert_eq!(
+                is_allowed(&run(&mut filter, tcp)),
+                expected,
+                "match {flags_match:?}, flags {flags}"
+            );
+        }
+    }
 }

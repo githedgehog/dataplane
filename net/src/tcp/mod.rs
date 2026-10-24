@@ -4,12 +4,14 @@
 //! TCP header type and logic.
 
 mod checksum;
+mod flags;
 mod option;
 mod options;
 pub mod port;
 mod truncated;
 
 pub use checksum::*;
+pub use flags::*;
 pub use option::*;
 pub use options::*;
 pub use port::*;
@@ -175,6 +177,21 @@ impl Tcp {
         self.0.cwr
     }
 
+    /// Returns the control bits set in this header.
+    #[must_use]
+    pub fn flags(&self) -> TcpFlags {
+        let mut flags = TcpFlags::empty();
+        flags.set(TcpFlags::FIN, self.0.fin);
+        flags.set(TcpFlags::SYN, self.0.syn);
+        flags.set(TcpFlags::RST, self.0.rst);
+        flags.set(TcpFlags::PSH, self.0.psh);
+        flags.set(TcpFlags::ACK, self.0.ack);
+        flags.set(TcpFlags::URG, self.0.urg);
+        flags.set(TcpFlags::ECE, self.0.ece);
+        flags.set(TcpFlags::CWR, self.0.cwr);
+        flags
+    }
+
     /// Returns true if the (experimental) nonce-sum is set in this header
     ///
     /// See [rfc3540](https://datatracker.ietf.org/doc/html/rfc3540) for details.
@@ -254,6 +271,18 @@ impl Tcp {
     pub fn set_cwr(&mut self, cwr: bool) -> &mut Self {
         self.0.cwr = cwr;
         self
+    }
+
+    /// Set all control bits at once.
+    pub fn set_flags(&mut self, flags: TcpFlags) -> &mut Self {
+        self.set_fin(flags.contains(TcpFlags::FIN))
+            .set_syn(flags.contains(TcpFlags::SYN))
+            .set_rst(flags.contains(TcpFlags::RST))
+            .set_psh(flags.contains(TcpFlags::PSH))
+            .set_ack(flags.contains(TcpFlags::ACK))
+            .set_urg(flags.contains(TcpFlags::URG))
+            .set_ece(flags.contains(TcpFlags::ECE))
+            .set_cwr(flags.contains(TcpFlags::CWR))
     }
 
     /// Set the window size
@@ -430,7 +459,7 @@ mod contract {
 mod test {
     use crate::checksum::Checksum;
     use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};
-    use crate::tcp::Tcp;
+    use crate::tcp::{Tcp, TcpFlags};
 
     const MIN_LEN: usize = Tcp::MIN_LENGTH.get() as usize;
 
@@ -461,6 +490,12 @@ mod test {
             assert_eq!(tcp.rst(), parsed.rst());
             assert_eq!(tcp.syn(), parsed.syn());
             assert_eq!(tcp.urg(), parsed.urg());
+            // The control bits sit in byte 13 of the header (RFC 9293, section 3.1)
+            assert_eq!(tcp.flags().bits(), buffer[13]);
+            assert_eq!(tcp.flags(), parsed.flags());
+            let mut copy = parsed.clone();
+            copy.set_flags(TcpFlags::empty()).set_flags(tcp.flags());
+            assert_eq!(copy, parsed);
             assert_eq!(tcp.window_size(), parsed.window_size());
             assert_eq!(tcp.urgent_pointer(), parsed.urgent_pointer());
             assert_eq!(tcp.options(), parsed.options());

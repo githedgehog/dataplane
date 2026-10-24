@@ -14,11 +14,14 @@ use crate::fuzz_gen::{OverlaySpec, ProbeSpec, vni};
 use concurrency::sync::LazyLock;
 use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
-use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, ValidatedAclRule};
+use config::external::overlay::acl::{
+    AclAction, AclProtoMatch, AclScope, AclTcpFlagsMatch, ValidatedAclRule,
+};
 use config::external::overlay::vpc::ValidatedPeering;
 use lpm::prefix::with_ports::KeyPort;
 use lpm::prefix::{IpPrefix, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
+use net::tcp::TcpFlags;
 use net::vxlan::Vni;
 use std::net::IpAddr;
 
@@ -46,10 +49,18 @@ impl From<&LookupResult> for OracleVerdict {
 fn proto_allows(rule: AclProtoMatch, packet: NextHeader) -> bool {
     match rule {
         AclProtoMatch::Any => true,
-        AclProtoMatch::Tcp => packet == NextHeader::TCP,
+        AclProtoMatch::Tcp(_) => packet == NextHeader::TCP,
         AclProtoMatch::Udp => packet == NextHeader::UDP,
         AclProtoMatch::Other(p) => packet == NextHeader::new(p),
     }
+}
+
+fn tcp_flags_allow(rule: AclTcpFlagsMatch, packet: Option<TcpFlags>) -> bool {
+    // Check flags one by one, rather than with the mask arithmetic of the classifier
+    TcpFlags::all().iter().all(|flag| {
+        !rule.mask().contains(flag)
+            || packet.is_some_and(|flags| flags.contains(flag) == rule.value().contains(flag))
+    })
 }
 
 fn entry_allows(entry: &PrefixWithOptionalPorts, ip: IpAddr, port: u16) -> bool {
@@ -77,6 +88,7 @@ fn rule_matches(rule: &ValidatedAclRule, packet: &PacketSummary) -> bool {
     let (sport, dport) = packet.ports.unzip();
     let (sport, dport) = (KeyPort::new(sport).get(), KeyPort::new(dport).get());
     proto_allows(pattern.proto(), packet.proto)
+        && tcp_flags_allow(pattern.proto().tcp_flags(), packet.tcp_flags)
         && side_allows(pattern.src(), packet.src_ip, sport)
         && side_allows(pattern.dst(), packet.dst_ip, dport)
 }

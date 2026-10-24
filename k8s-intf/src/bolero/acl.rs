@@ -9,6 +9,7 @@ use crate::gateway_agent_crd::{
     GatewayAgentPeeringsAcl, GatewayAgentPeeringsAclDefault, GatewayAgentPeeringsAclRules,
     GatewayAgentPeeringsAclRulesAction, GatewayAgentPeeringsAclRulesMatch,
     GatewayAgentPeeringsAclRulesMatchDst, GatewayAgentPeeringsAclRulesMatchSrc,
+    GatewayAgentPeeringsAclRulesMatchTcpFilters, GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags,
     GatewayAgentPeeringsAclRulesScope, GatewayAgentPeeringsPeering,
 };
 
@@ -189,6 +190,25 @@ impl AclGenerator {
         Some(out)
     }
 
+    /// Draw TCP filters, with requirements on TCP flags each being required set, required clear,
+    /// or ignored.
+    fn tcp_filters<D: Driver>(d: &mut D) -> Option<GatewayAgentPeeringsAclRulesMatchTcpFilters> {
+        if !d.produce::<bool>()? {
+            return Some(GatewayAgentPeeringsAclRulesMatchTcpFilters { flags: None });
+        }
+        let flags = GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags {
+            ack: d.produce::<Option<bool>>()?,
+            cwr: d.produce::<Option<bool>>()?,
+            ece: d.produce::<Option<bool>>()?,
+            fin: d.produce::<Option<bool>>()?,
+            psh: d.produce::<Option<bool>>()?,
+            rst: d.produce::<Option<bool>>()?,
+            syn: d.produce::<Option<bool>>()?,
+            urg: d.produce::<Option<bool>>()?,
+        };
+        Some(GatewayAgentPeeringsAclRulesMatchTcpFilters { flags: Some(flags) })
+    }
+
     fn rule<D: Driver>(&self, d: &mut D, index: u8) -> Option<GatewayAgentPeeringsAclRules> {
         let (from, to) = if d.produce::<bool>()? {
             (&self.left, &self.right)
@@ -202,18 +222,17 @@ impl AclGenerator {
             _ => (Some(from.vpc.clone()), Some(to.vpc.clone())),
         };
 
-        let (proto, may_use_ports) = match d.gen_u8(Bound::Included(&0), Bound::Included(&3))? {
-            0 => (None, false),
-            1 => (Some("tcp".to_string()), true),
-            2 => (Some("udp".to_string()), true),
-            _ => (
-                Some(
-                    d.gen_u8(Bound::Included(&1), Bound::Included(&254))?
-                        .to_string(),
-                ),
-                false,
-            ),
+        let (proto, is_tcp, is_udp) = match d.gen_u8(Bound::Included(&0), Bound::Included(&3))? {
+            0 => (None, false, false),
+            1 => (Some("tcp".to_string()), true, false),
+            2 => (Some("udp".to_string()), false, true),
+            _ => {
+                let number = d.produce::<u8>()?;
+                // Numbers 6 and 17 normalize to TCP and UDP
+                (Some(number.to_string()), number == 6, number == 17)
+            }
         };
+        let may_use_ports = is_tcp || is_udp;
 
         let src_entries = Self::entries(
             d,
@@ -251,12 +270,6 @@ impl AclGenerator {
         )
         .filter(|entries| !entries.is_empty());
 
-        let r#match = if src.is_some() || dst.is_some() || proto.is_some() {
-            Some(GatewayAgentPeeringsAclRulesMatch { dst, proto, src })
-        } else {
-            None
-        };
-
         let scope = if d.produce::<bool>()? {
             if d.produce::<bool>()? {
                 Some(GatewayAgentPeeringsAclRulesScope::Flow)
@@ -265,6 +278,28 @@ impl AclGenerator {
             }
         } else {
             Some(GatewayAgentPeeringsAclRulesScope::Packet)
+        };
+
+        // TCP filters are only valid for packet-scoped TCP rules
+        let tcp_filters = if scope == Some(GatewayAgentPeeringsAclRulesScope::Packet)
+            && is_tcp
+            && d.produce::<bool>()?
+        {
+            Some(Self::tcp_filters(d)?)
+        } else {
+            None
+        };
+
+        let r#match = if src.is_some() || dst.is_some() || proto.is_some() || tcp_filters.is_some()
+        {
+            Some(GatewayAgentPeeringsAclRulesMatch {
+                dst,
+                proto,
+                src,
+                tcp_filters,
+            })
+        } else {
+            None
         };
 
         Some(GatewayAgentPeeringsAclRules {

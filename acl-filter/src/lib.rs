@@ -6,9 +6,10 @@ use config::external::overlay::acl::{AclAction, AclScope};
 use net::buffer::PacketBufferMut;
 use net::flows::FlowInfo;
 use net::flows::FlowStatus;
-use net::headers::{TryHeaders, TryIp, UpperLayerProto};
+use net::headers::{Transport, TryHeaders, TryIp, UpperLayerProto};
 use net::ip::NextHeader;
 use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
+use net::tcp::TcpFlags;
 use net::vxlan::Vni;
 use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
@@ -71,6 +72,10 @@ impl AclFilter {
             packet.done(DoneReason::AclDropped);
             return;
         }
+
+        // If this packet opens a flow, the flow keeps the flags it was classified with, to classify
+        // it again for replies, see PacketSummary::reverse_summary()
+        packet.meta_mut().tcp_flags = summary.tcp_flags;
 
         // The flow filter requests flow tracking for all packets of a peering with flow-scoped
         // rules. Only flows opened by such a rule need it: we never use the others to let replies
@@ -184,6 +189,8 @@ pub(crate) struct PacketSummary {
     pub(crate) dst_ip: std::net::IpAddr,
     pub(crate) proto: NextHeader,
     pub(crate) ports: Option<(NonZero<u16>, NonZero<u16>)>,
+    /// Only for TCP packets carrying a TCP header, so not for non-first fragments.
+    pub(crate) tcp_flags: Option<TcpFlags>,
 }
 
 impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
@@ -225,10 +232,12 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
                 return Err(DoneReason::Malformed);
             }
         };
-        let ports = match upper {
-            // The parser may have read ports from fragment payload.
-            UpperLayerProto::NonFirstFragment => None,
-            _ => transport.and_then(|t| t.src_port().zip(t.dst_port())),
+        // The parser may have read ports and flags from fragment payload.
+        let transport = transport.filter(|_| !matches!(upper, UpperLayerProto::NonFirstFragment));
+        let ports = transport.and_then(|t| t.src_port().zip(t.dst_port()));
+        let tcp_flags = match transport {
+            Some(Transport::Tcp(tcp)) => Some(tcp.flags()),
+            _ => None,
         };
 
         Ok(Self {
@@ -238,6 +247,7 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
             dst_ip,
             proto,
             ports,
+            tcp_flags,
         })
     }
 }
@@ -253,6 +263,11 @@ impl PacketSummary {
             dst_ip: flow_key.dst_ip(),
             proto: flow_key.proto(),
             ports: flow_key.ports(),
+            // The flow key has no TCP flags, but rules may match on them: use the flags of the
+            // packet that opened the flow, so that this lookup selects the same rule as that packet
+            // did. Without them, as for flows opened by packets that did not go through this stage,
+            // earlier rules matching empty flags could shadow the flow-scoped rule.
+            tcp_flags: related.opening_tcp_flags(),
         })
     }
 }

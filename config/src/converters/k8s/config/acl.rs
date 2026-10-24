@@ -5,15 +5,19 @@ use k8s_intf::gateway_agent_crd::{
     GatewayAgentPeeringsAcl, GatewayAgentPeeringsAclDefault, GatewayAgentPeeringsAclRules,
     GatewayAgentPeeringsAclRulesAction, GatewayAgentPeeringsAclRulesMatch,
     GatewayAgentPeeringsAclRulesMatchDst, GatewayAgentPeeringsAclRulesMatchSrc,
+    GatewayAgentPeeringsAclRulesMatchTcpFilters, GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags,
     GatewayAgentPeeringsAclRulesScope,
 };
 use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
+use net::tcp::TcpFlags;
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::expose::parse_port_ranges;
 use crate::converters::k8s::config::{SubnetMap, VpcSubnetMap};
-use crate::external::overlay::acl::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope};
+use crate::external::overlay::acl::{
+    Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope, AclTcpFlagsMatch,
+};
 
 fn resolve_prefix(
     cidr: Option<&str>,
@@ -44,18 +48,59 @@ fn parse_proto(proto: Option<&str>) -> Result<AclProtoMatch, FromK8sConversionEr
         return Ok(AclProtoMatch::Any);
     };
     match proto {
-        "tcp" => Ok(AclProtoMatch::Tcp),
+        "tcp" => Ok(AclProtoMatch::tcp()),
         "udp" => Ok(AclProtoMatch::Udp),
         other => {
             let number = other.parse::<u8>();
             match number {
-                Ok(n) if n == NextHeader::TCP.as_u8() => Ok(AclProtoMatch::Tcp),
+                Ok(n) if n == NextHeader::TCP.as_u8() => Ok(AclProtoMatch::tcp()),
                 Ok(n) if n == NextHeader::UDP.as_u8() => Ok(AclProtoMatch::Udp),
                 Ok(n) => Ok(AclProtoMatch::Other(n)),
                 Err(_) => Err(FromK8sConversionError::InvalidData(format!(
                     "ACL protocol '{other}': expected \"tcp\", \"udp\", or a numeric protocol"
                 ))),
             }
+        }
+    }
+}
+
+fn parse_tcp_flags(
+    flags: Option<&GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags>,
+) -> AclTcpFlagsMatch {
+    let Some(flags) = flags else {
+        return AclTcpFlagsMatch::ANY;
+    };
+    [
+        (flags.fin, TcpFlags::FIN),
+        (flags.syn, TcpFlags::SYN),
+        (flags.rst, TcpFlags::RST),
+        (flags.psh, TcpFlags::PSH),
+        (flags.ack, TcpFlags::ACK),
+        (flags.urg, TcpFlags::URG),
+        (flags.ece, TcpFlags::ECE),
+        (flags.cwr, TcpFlags::CWR),
+    ]
+    .into_iter()
+    .fold(AclTcpFlagsMatch::ANY, |acc, (set, flag)| match set {
+        Some(set) => acc.require(flag, set),
+        None => acc,
+    })
+}
+
+/// Apply TCP filters, if any, to a protocol match. TCP filters are only valid for TCP.
+fn apply_tcp_filters(
+    proto: AclProtoMatch,
+    filters: Option<&GatewayAgentPeeringsAclRulesMatchTcpFilters>,
+) -> Result<AclProtoMatch, FromK8sConversionError> {
+    let Some(filters) = filters else {
+        return Ok(proto);
+    };
+    match proto {
+        AclProtoMatch::Tcp(_) => Ok(AclProtoMatch::Tcp(parse_tcp_flags(filters.flags.as_ref()))),
+        AclProtoMatch::Udp | AclProtoMatch::Other(_) | AclProtoMatch::Any => {
+            Err(FromK8sConversionError::NotAllowed(
+                "ACL TCP filters require protocol \"tcp\"".to_string(),
+            ))
         }
     }
 }
@@ -178,7 +223,7 @@ impl TryFrom<(&SubnetMap, &SubnetMap, &GatewayAgentPeeringsAclRulesMatch)> for A
     ) -> Result<Self, Self::Error> {
         let (src, src_any_ports) = convert_match_side(m.src.as_deref(), src_subnets)?;
         let (dst, dst_any_ports) = convert_match_side(m.dst.as_deref(), dst_subnets)?;
-        let proto = parse_proto(m.proto.as_deref())?;
+        let proto = apply_tcp_filters(parse_proto(m.proto.as_deref())?, m.tcp_filters.as_ref())?;
         Ok(AclPattern::new(
             src,
             dst,
@@ -372,16 +417,109 @@ mod test {
     #[test]
     fn test_proto_parsing() {
         assert_eq!(parse_proto(None).unwrap(), AclProtoMatch::Any);
-        assert_eq!(parse_proto(Some("tcp")).unwrap(), AclProtoMatch::Tcp);
+        assert_eq!(parse_proto(Some("tcp")).unwrap(), AclProtoMatch::tcp());
         assert_eq!(parse_proto(Some("udp")).unwrap(), AclProtoMatch::Udp);
         assert_eq!(parse_proto(Some("47")).unwrap(), AclProtoMatch::Other(47));
         // Numeric TCP/UDP protocol numbers normalize to the dedicated variants (not Other), so
         // they route to the TCP/UDP tables in the dataplane rather than the generic proto table.
-        assert_eq!(parse_proto(Some("6")).unwrap(), AclProtoMatch::Tcp);
+        assert_eq!(parse_proto(Some("6")).unwrap(), AclProtoMatch::tcp());
         assert_eq!(parse_proto(Some("17")).unwrap(), AclProtoMatch::Udp);
         assert!(parse_proto(Some("bogus")).is_err());
         // "icmp" is not supported yet
         assert!(parse_proto(Some("icmp")).is_err());
+    }
+
+    fn no_flags() -> GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags {
+        GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags {
+            ack: None,
+            cwr: None,
+            ece: None,
+            fin: None,
+            psh: None,
+            rst: None,
+            syn: None,
+            urg: None,
+        }
+    }
+
+    fn tcp_filters(
+        flags: Option<GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags>,
+    ) -> GatewayAgentPeeringsAclRulesMatchTcpFilters {
+        GatewayAgentPeeringsAclRulesMatchTcpFilters { flags }
+    }
+
+    #[test]
+    fn test_tcp_flags_parsing() {
+        assert_eq!(parse_tcp_flags(None), AclTcpFlagsMatch::ANY);
+        assert_eq!(parse_tcp_flags(Some(&no_flags())), AclTcpFlagsMatch::ANY);
+
+        let syn_no_ack = GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags {
+            syn: Some(true),
+            ack: Some(false),
+            ..no_flags()
+        };
+        let parsed = parse_tcp_flags(Some(&syn_no_ack));
+        assert_eq!(parsed.value(), TcpFlags::SYN);
+        assert_eq!(parsed.mask(), TcpFlags::SYN | TcpFlags::ACK);
+
+        // Each field maps to its own flag
+        let all_set = GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags {
+            ack: Some(true),
+            cwr: Some(true),
+            ece: Some(true),
+            fin: Some(true),
+            psh: Some(true),
+            rst: Some(true),
+            syn: Some(true),
+            urg: Some(true),
+        };
+        let parsed = parse_tcp_flags(Some(&all_set));
+        assert_eq!(parsed.value(), TcpFlags::all());
+        assert_eq!(parsed.mask(), TcpFlags::all());
+    }
+
+    #[test]
+    fn test_tcp_filters_require_tcp() {
+        let syn_no_ack = GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags {
+            syn: Some(true),
+            ack: Some(false),
+            ..no_flags()
+        };
+        let filters = tcp_filters(Some(syn_no_ack.clone()));
+        let tcp = parse_proto(Some("tcp")).unwrap();
+
+        // No filters: the protocol match is unchanged
+        assert_eq!(apply_tcp_filters(tcp, None).unwrap(), tcp);
+        assert_eq!(
+            apply_tcp_filters(AclProtoMatch::Udp, None).unwrap(),
+            AclProtoMatch::Udp
+        );
+
+        // Filters apply to TCP, given by name or by number
+        let expected = AclProtoMatch::Tcp(parse_tcp_flags(Some(&syn_no_ack)));
+        assert_eq!(apply_tcp_filters(tcp, Some(&filters)).unwrap(), expected);
+        let tcp_number = parse_proto(Some("6")).unwrap();
+        assert_eq!(
+            apply_tcp_filters(tcp_number, Some(&filters)).unwrap(),
+            expected
+        );
+        // Filters with no flags match all TCP segments
+        assert_eq!(
+            apply_tcp_filters(tcp, Some(&tcp_filters(None))).unwrap(),
+            AclProtoMatch::tcp()
+        );
+
+        // Filters are rejected for other protocols, including when no protocol is set
+        for proto in [
+            AclProtoMatch::Udp,
+            AclProtoMatch::Other(47),
+            AclProtoMatch::Any,
+        ] {
+            assert!(
+                apply_tcp_filters(proto, Some(&filters)).is_err(),
+                "{proto:?}"
+            );
+        }
     }
 
     #[test]
@@ -502,6 +640,7 @@ mod test {
         let m = GatewayAgentPeeringsAclRulesMatch {
             dst: None,
             proto: None,
+            tcp_filters: None,
             src: Some(vec![GatewayAgentPeeringsAclRulesMatchSrc {
                 cidr: None,
                 ports: None,
@@ -554,6 +693,7 @@ mod test {
         let m = GatewayAgentPeeringsAclRulesMatch {
             dst: None,
             proto: None,
+            tcp_filters: None,
             src: Some(vec![GatewayAgentPeeringsAclRulesMatchSrc {
                 cidr: Some("10.0.0.0/24".to_string()),
                 ports: Some(vec![]),
@@ -587,6 +727,7 @@ mod test {
         let m = GatewayAgentPeeringsAclRulesMatch {
             dst: None,
             proto: None,
+            tcp_filters: None,
             src: Some(vec![GatewayAgentPeeringsAclRulesMatchSrc {
                 cidr: None,
                 ports: None,
@@ -621,6 +762,7 @@ mod test {
         let ports_only = GatewayAgentPeeringsAclRulesMatch {
             dst: None,
             proto: None,
+            tcp_filters: None,
             src: Some(vec![GatewayAgentPeeringsAclRulesMatchSrc {
                 cidr: None,
                 ports: Some(vec!["443".to_string()]),
@@ -646,6 +788,7 @@ mod test {
         let empty_ports = GatewayAgentPeeringsAclRulesMatch {
             dst: None,
             proto: None,
+            tcp_filters: None,
             src: Some(vec![GatewayAgentPeeringsAclRulesMatchSrc {
                 cidr: None,
                 ports: Some(vec![]),
@@ -681,6 +824,7 @@ mod test {
         let m = GatewayAgentPeeringsAclRulesMatch {
             dst: None,
             proto: Some("tcp".to_string()),
+            tcp_filters: None,
             src: Some(vec![GatewayAgentPeeringsAclRulesMatchSrc {
                 cidr: None,
                 ports: Some(vec!["443".to_string()]),
@@ -749,6 +893,7 @@ mod test {
                             vpc_subnet: None,
                         }]),
                         proto: Some("tcp".to_string()),
+                        tcp_filters: None,
                         src: None,
                     }),
                     None,
