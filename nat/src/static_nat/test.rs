@@ -1402,6 +1402,7 @@ mod flow_tracking {
     use crate::static_nat::{NatTablesWriter, StaticNatFlowData};
     use concurrency::sync::Arc;
     use flow_entry::flow_table::FlowTable;
+    use flow_entry::flow_table::WorkerFlowTable;
     use net::FlowKey;
     use net::buffer::TestBuffer;
     use net::ip::NextHeader;
@@ -1413,7 +1414,11 @@ mod flow_tracking {
         let flow_table = Arc::new(FlowTable::default());
         let mut tablesw = NatTablesWriter::new();
         tablesw.update_nat_tables(build_context());
-        let nat = StaticNat::with_reader("static-nat", tablesw.get_reader(), flow_table.clone());
+        let nat = StaticNat::with_reader(
+            "static-nat",
+            tablesw.get_reader(),
+            WorkerFlowTable::new(flow_table.clone()),
+        );
         (nat, tablesw, flow_table)
     }
 

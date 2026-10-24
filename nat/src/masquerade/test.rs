@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 #![cfg(test)]
+use flow_entry::flow_table::WorkerFlowTable;
 
 use crate::common::NatAction;
 use crate::masquerade::state::MasqueradeState;
@@ -103,7 +104,11 @@ fn setup_pipeline_masquerade(
     let flow_table = Arc::new(FlowTable::default());
     let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
     let icmp_error_handler = IcmpErrorHandler::new(flow_table.clone());
-    let nat = Masquerade::new("masq", flow_table.clone(), alloc_reader);
+    let nat = Masquerade::new(
+        "masq",
+        WorkerFlowTable::new(flow_table.clone()),
+        alloc_reader,
+    );
     let pipeline: DynPipeline<'static, TestBuffer> = DynPipeline::new()
         .add_stage(icmp_error_handler)
         .add_stage(flow_lookup)
@@ -1471,7 +1476,11 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
 
     // Build a new NAT stage
     let mut allocator = NatAllocatorWriter::new();
-    let mut nat = Masquerade::new("masquerade", flow_table.clone(), allocator.get_reader());
+    let mut nat = Masquerade::new(
+        "masquerade",
+        WorkerFlowTable::new(flow_table.clone()),
+        allocator.get_reader(),
+    );
     let nat_config =
         MasqueradeConfig::new(config.external().overlay().vpc_table()).set_randomize(false);
 

@@ -246,6 +246,7 @@ mod test {
     use crate::static_nat::probe::build;
     use concurrency::sync::Arc;
     use flow_entry::flow_table::FlowTable;
+    use flow_entry::flow_table::WorkerFlowTable;
     use net::buffer::TestBuffer;
     use net::ip::NextHeader;
     use net::packet::test_utils::build_test_icmp4_destination_unreachable_packet;
@@ -271,7 +272,7 @@ mod test {
         meta.src_vpcd = Some(vpcd(100));
         meta.dst_vpcd = Some(vpcd(200));
         meta.set_forced_flow_tracking(true);
-        let mut tracker = FlowTracker::new("tracker", flow_table.clone());
+        let mut tracker = FlowTracker::new("tracker", WorkerFlowTable::new(flow_table.clone()));
         tracker.process(std::iter::once(syn)).for_each(drop);
         assert_eq!(
             flow_table.len(),

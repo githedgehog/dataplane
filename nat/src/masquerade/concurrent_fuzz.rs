@@ -33,6 +33,7 @@ use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
 use flow_entry::flow_table::FlowTable;
+use flow_entry::flow_table::WorkerFlowTable;
 use net::buffer::TestBuffer;
 use net::flows::FlowStatus;
 use net::packet::{Packet, VpcDiscriminant};
@@ -354,7 +355,13 @@ impl Scenario {
         let mut genid: GenId = 1;
         writer.update_nat_allocator(layout.masquerade_config(self.randomize), genid, &flow_table);
         let reader = writer.get_reader();
-        let masquerade = || Masquerade::new("masquerade", flow_table.clone(), reader.clone());
+        let masquerade = || {
+            Masquerade::new(
+                "masquerade",
+                WorkerFlowTable::new(flow_table.clone()),
+                reader.clone(),
+            )
+        };
         let wire = Arc::new(Wire {
             epoch: AtomicU64::new(0),
             emissions: Mutex::new(Vec::new()),
