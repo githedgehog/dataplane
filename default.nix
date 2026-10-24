@@ -1062,14 +1062,12 @@ let
               (orig.postInstall or "")
               + (
                 if rustc-target != "wasm32-wasip1" then
+                  # Native binaries keep their DWARF until fixup: `separateDebugInfo` copies it to
+                  # `$debug/lib/debug/.build-id/`, where gdb, perf and llvm-symbolizer look it up
+                  # by build ID, and postFixup strips the binary once that copy exists. Stripping
+                  # here instead would leave that hook only the stripped binary to work from, and
+                  # the build-id file it writes would hold no DWARF at all.
                   ''
-                    mkdir -p $debug/bin
-                    for f in $out/bin/*; do
-                      mv "$f" "$debug/bin/$(basename "$f")"
-                      ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
-                      ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
-                    done
-
                     # Inline-header assertions embed DPDK's dev path through __FILE__.
                     # Erase that store reference from runtime binaries without changing their size.
                     # Keep the debug files and their debuglink CRCs intact.
@@ -1096,9 +1094,27 @@ let
                     done
                   ''
               );
-            postFixup = (orig.postFixup or "") + ''
-              rm -f $out/target.tar.zst
-            '';
+            # `separateDebugInfo` splits with `$OBJCOPY`, which this derivation's native stdenv
+            # sets to the build machine's objcopy. That one cannot read a cross-compiled binary,
+            # and the hook skips what it cannot read, so point it at the target's objcopy.
+            preFixup =
+              (orig.preFixup or "")
+              + lib.optionalString (rustc-target != "wasm32-wasip1") ''
+                export OBJCOPY=${objcopy}
+              '';
+            postFixup =
+              (orig.postFixup or "")
+              + ''
+                rm -f $out/target.tar.zst
+              ''
+              # `separateDebugInfo` only copies the debug info out (this derivation sets
+              # `dontStrip`), so strip the binaries now, and point each at its debug file.
+              + lib.optionalString (rustc-target != "wasm32-wasip1") ''
+                for f in $out/bin/*; do
+                  ${strip} --strip-debug "$f"
+                  ${objcopy} --add-gnu-debuglink="$debug/lib/debug/$(basename "$f")" "$f"
+                done
+              '';
           }
       );
 
