@@ -2245,6 +2245,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-timer-wheel"
+version = "0.31.0"
+dependencies = [
+ "bolero",
+ "dataplane-clock",
+ "dataplane-concurrency",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "dataplane-tracectl"
 version = "0.31.0"
 dependencies = [
