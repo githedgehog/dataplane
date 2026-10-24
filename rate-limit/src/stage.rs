@@ -15,7 +15,7 @@ use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 use policer::{Color, LocalMeter};
 
-/// One worker's hold on one rule.
+/// One worker's lease on one meter component.
 #[derive(Debug)]
 struct Local {
     enforcement: Arc<Enforcement>,
@@ -41,8 +41,8 @@ pub struct RateLimiter<C> {
     reader: RateLimitReader<C>,
     /// The rules `locals` was made for.
     current: Option<Arc<RateLimits<C>>>,
-    /// This worker's hold on each rule of `current`'s byte and packet tables, by index.
-    locals: [Vec<Local>; 2],
+    /// One lease per meter component, shared by every matching rule on this worker.
+    locals: Vec<[Option<Local>; 2]>,
 }
 
 impl<C> RateLimiter<C> {
@@ -52,11 +52,11 @@ impl<C> RateLimiter<C> {
         RateLimiter {
             reader,
             current: None,
-            locals: [Vec::new(), Vec::new()],
+            locals: Vec::new(),
         }
     }
 
-    /// Follow `limits`, keeping this worker's lease and counts of every rule that carries over.
+    /// Follow `limits`, keeping this worker's lease and counts of every meter that carries over.
     fn follow(&mut self, limits: &Arc<RateLimits<C>>) {
         if self
             .current
@@ -65,22 +65,35 @@ impl<C> RateLimiter<C> {
         {
             return;
         }
-        for (locals, table) in self.locals.iter_mut().zip(limits.tables()) {
-            let mut previous = std::mem::take(locals);
-            *locals = table
-                .rules
-                .iter()
-                .map(|rule| {
-                    previous
-                        .iter()
-                        .position(|local| Arc::ptr_eq(&local.enforcement, &rule.enforcement))
-                        .map_or_else(
-                            || Local::new(&rule.enforcement),
-                            |i| previous.swap_remove(i),
-                        )
+        let mut previous: Vec<Local> = std::mem::take(&mut self.locals)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect();
+        self.locals = limits
+            .meters
+            .iter()
+            .map(|meter| {
+                std::array::from_fn(|i| {
+                    meter.components[i].as_ref().map(|component| {
+                        let enforcement = &component.enforcement;
+                        if let Some(index) = previous
+                            .iter()
+                            .position(|local| local.enforcement.shares_counts(enforcement))
+                        {
+                            let mut local = previous.swap_remove(index);
+                            if !Arc::ptr_eq(&local.enforcement, enforcement) {
+                                local.meter = enforcement.meter.local();
+                                local.enforcement = Arc::clone(enforcement);
+                            }
+                            local
+                        } else {
+                            Local::new(enforcement)
+                        }
+                    })
                 })
-                .collect();
-        }
+            })
+            .collect();
         self.current = Some(Arc::clone(limits));
     }
 }
@@ -101,10 +114,10 @@ fn remark<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, dscp: Dscp) {
 impl<Buf: PacketBufferMut, C: Classify> NetworkFunction<Buf> for RateLimiter<C> {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
         let limits = self.reader.load();
-        if limits.tables().iter().all(|table| table.rules.is_empty()) {
+        self.follow(&limits);
+        if limits.rules.is_empty() {
             return;
         }
-        self.follow(&limits);
         let now = clock::now();
         for packet in burst
             .iter_mut()
@@ -113,15 +126,23 @@ impl<Buf: PacketBufferMut, C: Classify> NetworkFunction<Buf> for RateLimiter<C> 
             let Some(bytes) = packet.try_ip().map(ip_bytes) else {
                 continue;
             };
+            let Some(index) = limits.classifier.classify(packet) else {
+                continue;
+            };
+            let meter_index = limits.rules[index].meter;
+            let meter = &limits.meters[meter_index];
             let mut color = Color::Green;
-            for (table, locals) in limits.tables().into_iter().zip(&mut self.locals) {
-                let Some(index) = table.classifier.classify(packet) else {
+            for unit in crate::rules::Unit::ALL {
+                let i = unit.index();
+                let Some(component) = meter.components[i].as_ref() else {
                     continue;
                 };
-                let local = &mut locals[index];
-                color = local.meter.color(now, table.unit().cost(bytes), color);
+                let Some(local) = self.locals[meter_index][i].as_mut() else {
+                    continue;
+                };
+                color = local.meter.color(now, unit.cost(bytes), color);
                 local.counts.add(color, bytes);
-                match table.rules[index].action(color) {
+                match component.action(color) {
                     ColorAction::Pass => {}
                     ColorAction::Remark(dscp) => remark(packet, dscp),
                     ColorAction::Drop => {

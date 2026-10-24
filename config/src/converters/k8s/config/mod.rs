@@ -15,6 +15,7 @@ pub mod gwgroups;
 pub mod interface;
 pub mod overlay;
 pub mod peering;
+pub mod ratelimit;
 pub mod tracecfg;
 pub mod underlay;
 pub mod vpc;
