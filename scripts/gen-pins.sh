@@ -62,7 +62,7 @@ npins add github --name frr-dp githedgehog frr --branch hh-master-10.7.1 # float
 
 npins add github githedgehog frr-agent --branch master # floats with branch on pin bump
 npins add github githedgehog dplane-rpc --branch hh-master-10.7 # floats with branch on pin bump
-npins add github githedgehog dplane-plugin --branch hh-master-10.7 # floats with branch on pin bump
+npins add github githedgehog dplane-plugin --branch pr/daniel-noland/addr-install-no-hold # floats with branch on pin bump
 
 npins add github githedgehog duvet --branch v0.4.3-hh # floats with branch on pin bump
 
