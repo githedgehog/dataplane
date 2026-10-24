@@ -3,8 +3,8 @@
 
 #![cfg(test)]
 
+use super::probe::{Fabric, ProbeSpec, Stray};
 use crate::static_nat::nf::{StaticNat, translate_flow_key};
-use crate::static_nat::probe::{Fabric, ProbeSpec, Stray};
 use crate::static_nat::setup::tables::NatTables;
 use bolero::{Driver, TypeGenerator, ValueGenerator};
 use concurrency::sync::atomic::{AtomicUsize, Ordering};

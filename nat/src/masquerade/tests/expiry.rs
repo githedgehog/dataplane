@@ -3,8 +3,8 @@
 
 #![cfg(test)]
 
+use super::probe::{Arrival, Fabric, run};
 use crate::Masquerade;
-use crate::masquerade::probe::{Arrival, Fabric, run};
 use crate::static_nat::probe::build;
 use clock::Duration;
 use clock::virtual_time::advance;

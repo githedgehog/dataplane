@@ -4,16 +4,13 @@
 pub(crate) mod allocation;
 mod allocator_writer;
 pub(crate) mod apalloc;
-mod concurrent_fuzz;
 mod flows;
-mod fuzz;
 pub(crate) mod icmp_handling;
 mod nf;
 mod packet;
-mod probe;
 mod state;
-mod test;
-mod test_expiry;
+#[cfg(test)]
+mod tests;
 
 //= https://www.rfc-editor.org/rfc/rfc4787#section-6
 //= type=todo
@@ -24,6 +21,8 @@ pub use allocator_writer::MasqueradeConfig;
 pub use allocator_writer::{NatAllocatorReaderFactory, NatAllocatorWriter};
 pub use nf::Masquerade;
 pub(crate) use state::MasqueradeState;
+#[cfg(test)]
+pub(crate) use tests::probe;
 
 use tracectl::trace_target;
 trace_target!("masquerade", LevelFilter::INFO, &["nat", "pipeline"]);
