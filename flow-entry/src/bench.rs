@@ -111,6 +111,22 @@ pub fn port_cache_batch() -> usize {
     })
 }
 
+/// Variant (e): `DATAPLANE_BENCH_REAPER_ARGS=lazy` skips building a mapping reaper's arguments
+/// (pool shutdown token clone, subscriber table clone) when `DATAPLANE_BENCH_FLOW_TASKS=0`.
+#[must_use]
+pub fn reaper_args_lazy() -> bool {
+    static B: OnceLock<bool> = OnceLock::new();
+    *B.get_or_init(|| env_flag("DATAPLANE_BENCH_REAPER_ARGS", "lazy"))
+}
+
+/// Variant (f): `DATAPLANE_BENCH_BLOCK_SCAN=fast` makes the port-block pick skip addresses with no
+/// usable block and read each block flag before its CAS.
+#[must_use]
+pub fn block_scan_fast() -> bool {
+    static B: OnceLock<bool> = OnceLock::new();
+    *B.get_or_init(|| env_flag("DATAPLANE_BENCH_BLOCK_SCAN", "fast"))
+}
+
 /// Variant (d), UNSAFE FOR PRODUCTION: `DATAPLANE_BENCH_PAIR_LOCK=read` installs flow pairs under
 /// the table's outer *read* lock (reverse first, then forward). Two creators of one forward key can
 /// then both install, and the allocator-replacement admission check is no longer serialised against

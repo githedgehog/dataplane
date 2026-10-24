@@ -236,6 +236,36 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
 
     // Find an available block to allocate ports from, and mark it as non-free.
     fn pick_available_block(&self) -> Result<(usize, u16), AllocatorError> {
+        // BENCH (f): DATAPLANE_BENCH_BLOCK_SCAN=fast. Skip the scan when no block is usable (an
+        // exhausted address a Paired subscriber still tries first), and read each flag before the
+        // CAS, so a scan over taken blocks does not take every cache line exclusive. The counter is
+        // only a hint: it is decremented after the CAS and incremented after a free, so it can
+        // transiently say 0 with a block free, and the caller then moves on to another address.
+        if flow_entry::bench::block_scan_fast() {
+            if self
+                .usable_blocks
+                .load(concurrency::sync::atomic::Ordering::Relaxed)
+                == 0
+            {
+                return Err(AllocatorError::NoPortBlock);
+            }
+            let (index, block) = self
+                .cycle_blocks()
+                .find(|(_, block)| {
+                    block.free.load(concurrency::sync::atomic::Ordering::Relaxed)
+                        && block
+                            .free
+                            .compare_exchange(
+                                true,
+                                false,
+                                concurrency::sync::atomic::Ordering::Relaxed,
+                                concurrency::sync::atomic::Ordering::Relaxed,
+                            )
+                            .is_ok()
+                })
+                .ok_or(AllocatorError::NoPortBlock)?;
+            return Ok((index, block.to_port_number()));
+        }
         // Find the first free block in the list, starting from the current self.current_alloc_index
         let (index, block) = self
             .cycle_blocks()

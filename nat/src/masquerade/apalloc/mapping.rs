@@ -260,6 +260,16 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         let mapping = Arc::new(Mapping::new(draw()?, pool.idle_timeout()));
         guard.insert(key, mapping.clone());
         drop(guard);
+        // BENCH (e): DATAPLANE_BENCH_REAPER_ARGS=lazy. With no expiry machinery at all, do not
+        // build the reaper's arguments either: cloning the pool's shutdown token locks a
+        // pool-wide mutex (tokio-util's tree node), and cloning the subscriber table bumps a
+        // pool-wide reference count, on every new mapping.
+        #[cfg(not(any(feature = "shuttle", feature = "loom")))]
+        if flow_entry::bench::reaper_args_lazy()
+            && flow_entry::bench::flow_tasks() == flow_entry::bench::FlowTasks::Off
+        {
+            return Ok(mapping);
+        }
         spawn_mapping_reaper(
             self.clone(),
             src_ip,

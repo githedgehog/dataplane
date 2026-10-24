@@ -83,12 +83,15 @@ fn pin(cpu: usize) {
 fn variant_line() -> String {
     use flow_entry::bench as b;
     format!(
-        "tag={} cleanup_lazy={} tls_block={} port_cache={} pair_read_lock={} flow_tasks={:?}",
+        "tag={} cleanup_lazy={} tls_block={} port_cache={} pair_read_lock={} reaper_lazy={} \
+         block_fast={} flow_tasks={:?}",
         env_str("BENCH_TAG", "-"),
         b::alloc_cleanup_lazy(),
         b::alloc_tls_block(),
         b::port_cache_batch(),
         b::pair_read_lock(),
+        b::reaper_args_lazy(),
+        b::block_scan_fast(),
         b::flow_tasks(),
     )
 }
