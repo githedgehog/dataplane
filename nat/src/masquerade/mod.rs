@@ -3,6 +3,8 @@
 
 pub(crate) mod allocation;
 mod allocator_writer;
+#[cfg(test)]
+mod bench_newflow;
 pub(crate) mod apalloc;
 mod concurrent_fuzz;
 mod flows;

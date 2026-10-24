@@ -512,7 +512,7 @@ impl Masquerade {
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`Masquerade::process`] to iterate over packets.
-    fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
+    pub(crate) fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         // In order to NAT a packet for which a session does not exist, we
         // need (and expect) the packet to be annotated with both src & dst discriminants.
         // A packet without those should have never made it here.
