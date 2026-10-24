@@ -50,6 +50,7 @@ members = [
     "stats",
     "sysfs",
     "test-utils",
+    "timer-wheel",
     "tracectl",
     "traffic-control",
     "transceiver",
@@ -128,6 +129,7 @@ routing = { path = "./routing", package = "dataplane-routing", features = [] }
 stats = { path = "./stats", package = "dataplane-stats", features = [] }
 sysfs = { path = "./sysfs", package = "dataplane-sysfs", features = [] }
 test-utils = { path = "./test-utils", package = "dataplane-test-utils", features = [] }
+timer-wheel = { path = "./timer-wheel", package = "dataplane-timer-wheel", features = [] }
 tracectl = { path = "./tracectl", package = "dataplane-tracectl", features = [] }
 traffic-control = { path = "./traffic-control", package = "dataplane-traffic-control", features = [] }
 transceiver = { path = "./transceiver", package = "dataplane-transceiver", features = [] }
@@ -537,6 +539,11 @@ wasm = false # hopeless + pointless
 package = "dataplane-test-utils"
 miri = true
 wasm = false # hopeless + pointless
+
+[workspace.metadata.package.timer-wheel]
+package = "dataplane-timer-wheel"
+miri = true
+wasm = false # concurrency
 
 [workspace.metadata.package.tracectl]
 package = "dataplane-tracectl"
