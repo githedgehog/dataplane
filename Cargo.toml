@@ -20,6 +20,7 @@ members = [
     "fixed-size",
     "flow-entry",
     "flow-filter",
+    "flowgen-report",
     "hardware",
     "id",
     "init",
@@ -98,6 +99,7 @@ errno = { path = "./errno", package = "dataplane-errno", features = [] }
 fixed-size = { path = "./fixed-size", package = "dataplane-fixed-size", features = [] }
 flow-entry = { path = "./flow-entry", package = "dataplane-flow-entry", features = [] }
 flow-filter = { path = "./flow-filter", package = "dataplane-flow-filter", features = [] }
+flowgen-report = { path = "./flowgen-report", package = "dataplane-flowgen-report", features = [] }
 hardware = { path = "./hardware", package = "dataplane-hardware", features = [] }
 id = { path = "./id", package = "dataplane-id", features = [] }
 init = { path = "./init", package = "dataplane-init", features = [] }
@@ -417,6 +419,11 @@ wasm = false # miss
 package = "dataplane-flow-filter"
 miri = false # hopeless + pointless
 wasm = false # hopeless + pointless
+
+[workspace.metadata.package.flowgen-report]
+package = "dataplane-flowgen-report"
+miri = true
+wasm = false # miss
 
 [workspace.metadata.package.hardware]
 package = "dataplane-hardware"
