@@ -105,6 +105,8 @@ lib.fix (
     # in the dpdk meson.build file, which only goes half way and picks armv8-a instead of 8.2-a, or, better yet
     # cortex-a72, which is the actual CPU of bluefield 2).
     # We don't currently expect to meaningfully support BF2, but it is a handy test target for the build tooling.
+    # The CPU rustc generates code for: the one C code is compiled for (`-mcpu`, or else `-march`).
+    target-cpu = final.mcpu or final.march;
     name =
       {
         bluefield2 = "bluefield";
