@@ -11,6 +11,9 @@
   kernel ? "linux",
   tag ? "dev",
   nightly ? "false",
+  # A BOLT profile (`.fdata`, from perf2bolt) for this build's own dataplane binary. When set, the
+  # image ships the binary as BOLT rewrote it with that profile. Needs a link with relocations.
+  bolt-profile ? "",
 }:
 let
   sources = import ./npins;
@@ -1615,6 +1618,36 @@ let
     ) package-list;
   };
 
+  # The dataplane binary the gateway image ships: as linked, or laid out again by BOLT from a
+  # profile of it (see `bolt-profile`). BOLT moves the code, so the build-id debug file of the
+  # linked binary does not describe the rewritten one.
+  dataplane-bin =
+    if bolt-profile == "" then
+      workspace.dataplane
+    else
+      pkgs.pkgsBuildHost.runCommand "dataplane-bolted-${version}"
+        {
+          nativeBuildInputs = [ pkgs.pkgsBuildHost.llvmPackages'.bolt ];
+          profile = builtins.path {
+            path = bolt-profile;
+            name = "dataplane.fdata";
+          };
+        }
+        ''
+          mkdir -p "$out/bin" "$out/share/bolt"
+          llvm-bolt "${workspace.dataplane}/bin/dataplane" -o "$out/bin/dataplane" \
+            --data="$profile" \
+            --reorder-blocks=ext-tsp \
+            --reorder-functions=cdsort \
+            --split-functions \
+            --split-all-cold \
+            --split-eh \
+            --icf=safe \
+            --use-gnu-stack \
+            --dyno-stats 2>&1 | tee "$out/share/bolt/bolt.log"
+          cp "$profile" "$out/share/bolt/dataplane.fdata"
+        '';
+
   # The gateway image's root filesystem: everything but /nix/store, which is only reached through
   # the symlinks here.  Nix reads those as references, so this tree's closure *is* the image's
   # store, and three things consume it as such:
@@ -1686,14 +1719,14 @@ let
           for f in "${pkgs.pkgsHostHost.dockerTools.fakeNss}/etc/"* ; do
             cp --archive "$(readlink -e "$f")" "$out/etc/$(basename "$f")"
           done
-          ln -s "${workspace.dataplane}/bin/dataplane" "$out/bin/dataplane"
+          ln -s "${dataplane-bin}/bin/dataplane" "$out/bin/dataplane"
           ln -s "${workspace.cli}/bin/cli" "$out/bin/cli"
           ln -s "${workspace.init}/bin/dataplane-init" "$out/bin/dataplane-init"
           ln -s "${mstlink}/bin/mstlink" "$out/bin/mstlink"
           for i in "${pkgs.pkgsHostHost.busybox}/bin/"*; do
               ln -s "${pkgs.pkgsHostHost.busybox}/bin/busybox" "$out/bin/$(basename "$i")"
           done
-          ln -s "${workspace.dataplane}/bin/dataplane" "$out/dataplane"
+          ln -s "${dataplane-bin}/bin/dataplane" "$out/dataplane"
           ln -s "${workspace.init}/bin/dataplane-init" "$out/dataplane-init"
           ln -s "${workspace.cli}/bin/cli" "$out/dataplane-cli"
           # FRR, laid over busybox rather than beside it: where both provide a name -- `ip`, most
