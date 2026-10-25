@@ -512,6 +512,45 @@ impl AsRef<FibReader> for ReadHandle<Fib> {
         unsafe { &*(std::ptr::from_ref::<ReadHandle<Fib>>(self).cast::<FibReader>()) }
     }
 }
+/// A [`FibReader`] held entered, for a burst of packets.
+///
+/// Entering a reader takes two atomic read-modify-writes and a full fence (one of each on the way
+/// in, one RMW on the way out). While a pin lives, entering the same reader again takes a
+/// thread-local counter instead. A pin delays the FIB's writer by as long as it is held, so hold
+/// one for a burst, not longer.
+pub struct FibPin {
+    // Declared first, so dropped first: it borrows from `reader`.
+    _guard: Option<ReadGuard<'static, Fib>>,
+    reader: Rc<FibReader>,
+}
+
+impl FibPin {
+    /// Pin `reader` (entered, or found invalid: then the pin holds nothing).
+    #[must_use]
+    pub fn new(reader: Rc<FibReader>) -> Self {
+        let guard = reader.0.enter();
+        // SAFETY: the guard borrows the `ReadHandle` inside the `Rc`'s allocation, which does not
+        // move and which this pin keeps alive: the pin owns the `Rc`, and drops the guard first
+        // (field order). The guard is never handed out, so nothing can outlive the pin with it.
+        #[allow(unsafe_code)]
+        let guard = unsafe {
+            std::mem::transmute::<Option<ReadGuard<'_, Fib>>, Option<ReadGuard<'static, Fib>>>(
+                guard,
+            )
+        };
+        Self {
+            _guard: guard,
+            reader,
+        }
+    }
+
+    /// The pinned reader.
+    #[must_use]
+    pub fn reader(&self) -> &Rc<FibReader> {
+        &self.reader
+    }
+}
+
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct FibReaderFactory(pub(crate) ReadHandleFactory<Fib>);

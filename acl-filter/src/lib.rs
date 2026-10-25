@@ -30,6 +30,7 @@ mod nf_fuzz;
 #[cfg(test)]
 mod tests;
 
+use context::AclTables;
 pub use access::{
     AclFilterContext, AclFilterContextReader, AclFilterContextReaderFactory, AclFilterContextWriter,
 };
@@ -50,7 +51,7 @@ impl AclFilter {
         }
     }
 
-    fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
+    fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>, tables: &AclTables) {
         let nfi = &self.name;
         let genid = self.pipeline_data.genid();
 
@@ -64,7 +65,7 @@ impl AclFilter {
         let valid_flow = self.packet_has_valid_flow(packet.meta(), genid);
         let has_valid_flow = valid_flow.is_some();
 
-        let (verdict, flow_scoped_allow) = self.lookup(&summary, valid_flow);
+        let (verdict, flow_scoped_allow) = self.lookup(tables, &summary, valid_flow);
         if verdict == AclAction::Deny {
             debug!("{nfi}: Packet rejected by ACLs, dropping packet");
             packet.invalidate_flows();
@@ -111,11 +112,10 @@ impl AclFilter {
     // matching the packet itself.
     fn lookup(
         &self,
+        tables: &AclTables,
         summary: &PacketSummary,
         flow_info: Option<&Arc<FlowInfo>>,
     ) -> (AclAction, bool) {
-        let guard = self.tablesr.load();
-        let tables = &guard.acls;
 
         // Every peering with an ACL has a default action registered for both directions, and only
         // such a peering has rules. Without one, nothing can match either way: allow the packet
@@ -166,9 +166,12 @@ impl AclFilter {
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for AclFilter {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        // Load the tables once per burst, not once per packet: a load takes a reference to them,
+        // an atomic read-modify-write each way.
+        let guard = self.tablesr.load();
         for packet in burst.iter_mut() {
             if !packet.is_done() && packet.meta().is_overlay() {
-                self.process_packet(packet);
+                self.process_packet(packet, &guard.acls);
             }
         }
     }
