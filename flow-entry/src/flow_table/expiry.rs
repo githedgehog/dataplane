@@ -152,14 +152,24 @@ impl FlowTimers {
         self.wheel.as_ref().map_or(0, Wheel::len)
     }
 
-    /// Look at up to `budget` timers that are due or cancelled; fire the side timers and remove the
-    /// flows from `table`.
+    /// Look at up to `budget` timers that are due or cancelled; remove the flows from `table` and
+    /// fire the side timers.
+    ///
+    /// Flows go first, so that a side timer due in the same pass sees what they let go of (a
+    /// masquerade mapping's reaper, the flows' holds on the mapping).
     pub(crate) fn sweep(&mut self, table: &FlowTable, now: Instant, budget: usize) -> ExpirySweep {
         // Finish removing what an earlier pass could not before taking more off the wheel.
+        let mut side = Vec::new();
         let wheel = if self.fired.is_empty() {
-            let mut fired = std::mem::take(&mut self.fired);
+            let mut fired = Vec::new();
             let sweep = self.wheel(|| now).sweep(now, budget, &mut fired);
-            self.fire_side_timers(fired, now);
+            for fired in fired {
+                match fired {
+                    Fired::Due(WorkerTimer::Side(timer)) => side.push(timer),
+                    Fired::Cancelled(WorkerTimer::Side(_)) => {}
+                    flow => self.fired.push(flow),
+                }
+            }
             sweep
         } else {
             Sweep {
@@ -168,6 +178,7 @@ impl FlowTimers {
             }
         };
         let removed = table.remove_fired(&mut self.fired);
+        self.fire_side_timers(side, now);
         ExpirySweep {
             wheel,
             removed,
@@ -175,23 +186,12 @@ impl FlowTimers {
         }
     }
 
-    /// Fire the side timers in `fired` (putting back those that stay) and keep the flows for
-    /// removal.
-    fn fire_side_timers(&mut self, fired: Vec<Fired<WorkerTimer>>, now: Instant) {
-        let mut again = Vec::new();
-        for fired in fired {
-            match fired {
-                Fired::Due(WorkerTimer::Side(mut timer)) => {
-                    if timer.fire(now) {
-                        again.push(timer);
-                    }
-                }
-                Fired::Cancelled(WorkerTimer::Side(_)) => {}
-                flow => self.fired.push(flow),
+    /// Fire the side timers that are due, putting back those that stay.
+    fn fire_side_timers(&mut self, due: Vec<Box<dyn SideTimer>>, now: Instant) {
+        for mut timer in due {
+            if timer.fire(now) {
+                self.insert(WorkerTimer::Side(timer));
             }
-        }
-        for timer in again {
-            self.insert(WorkerTimer::Side(timer));
         }
     }
 }
@@ -227,7 +227,7 @@ impl FlowTable {
                     }
                     flow
                 }
-                // Side timers were fired before the table was locked.
+                // The sweep keeps side timers for itself.
                 Fired::Due(WorkerTimer::Side(_)) | Fired::Cancelled(WorkerTimer::Side(_)) => {
                     continue;
                 }

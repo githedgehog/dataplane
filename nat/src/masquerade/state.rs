@@ -11,7 +11,7 @@ use crate::common::NatAction;
 use crate::nat_flows::NatData;
 use crate::{NatEndpoint, NatPort, NatTranslationData};
 use net::flows::FlowInfoLocked;
-use net::flows::nat_state::{MasqueradeFlow, NatFlowState, Owned};
+use net::flows::nat_state::{MappingHold, MasqueradeFlow, NatFlowState, Owned};
 use net::ip::UnicastIpAddr;
 use std::time::Duration;
 
@@ -32,12 +32,12 @@ pub(crate) trait MasqueradeStateExt: Sized {
     fn action(&self) -> NatAction;
     fn reverse_translation_data(&self) -> NatTranslationData;
     fn set_allocation(&mut self, allocation: Allocation);
-    /// Push the mapping's deadline out, for an outbound packet (only the outbound half has one).
+    /// Push the outbound half's hold on its mapping out, for an outbound packet.
     fn refresh_mapping(&self);
 }
 
-fn holding(allocation: Allocation) -> (net::flows::nat_state::MappingDeadline, Owned) {
-    (allocation.deadline(), Owned::new(allocation))
+fn holding(allocation: Allocation) -> MappingHold {
+    MappingHold::new(allocation.deadline(), Owned::new(allocation))
 }
 
 impl MasqueradeStateExt for MasqueradeState {
@@ -79,7 +79,7 @@ impl MasqueradeStateExt for MasqueradeState {
     }
 
     fn allocation(&self) -> Option<&Allocation> {
-        self.mapping.as_ref()?.1.get::<Allocation>()
+        self.mapping.as_ref()?.owner::<Allocation>()
     }
 
     fn action(&self) -> NatAction {
@@ -96,8 +96,8 @@ impl MasqueradeStateExt for MasqueradeState {
     }
 
     fn refresh_mapping(&self) {
-        if let Some((deadline, _)) = &self.mapping {
-            deadline.refresh();
+        if let Some(hold) = &self.mapping {
+            hold.refresh();
         }
     }
 }

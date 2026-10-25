@@ -249,14 +249,6 @@ impl Allocation {
             Self::V6(a) => a.port(),
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn expires_at(&self) -> std::time::Instant {
-        match self {
-            Self::V4(a) => a.expires_at(),
-            Self::V6(a) => a.expires_at(),
-        }
-    }
 }
 
 trait MasqueradePools: NatIpWithBitmap {

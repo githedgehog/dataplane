@@ -1813,11 +1813,14 @@ async fn test_masquerade_check() {
     assert_eq!(flow_table.active_len(), Some(2));
 }
 
+// The deadline the flow's outbound traffic gives its mapping: published to the mapping when the flow
+// lets go of it.
 fn mapping_deadline(packet: &Packet<TestBuffer>) -> Option<std::time::Instant> {
     with_masquerade_state(packet, |state| {
         state
-            .allocation()
-            .map(crate::masquerade::apalloc::Allocation::expires_at)
+            .mapping
+            .as_ref()
+            .map(net::flows::nat_state::MappingHold::expires_at)
     })
     .flatten()
 }
