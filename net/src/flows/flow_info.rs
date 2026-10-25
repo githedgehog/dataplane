@@ -276,6 +276,13 @@ impl FlowInfo {
         self.pair.as_deref().map(|pair| &pair.conn_state)
     }
 
+    /// Where the state shared with the other half of the pair lives, if the flow is in a pair: for
+    /// a caller that prefetches it. Reading through it is not supported.
+    #[must_use]
+    pub fn pair_ptr(&self) -> Option<*const u8> {
+        self.pair.as_ref().map(|pair| Arc::as_ptr(pair).cast())
+    }
+
     /// The deadline this flow expires at: its pair's, or its own.
     fn deadline(&self) -> &AtomicInstant {
         self.pair
