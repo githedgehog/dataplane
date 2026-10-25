@@ -2,6 +2,7 @@
 # Copyright Open Network Fabric Authors
 {
   arch,
+  target-cpu,
   host-arch,
   profile,
   sanitizers,
@@ -140,13 +141,19 @@ let
     # proved to be broken in Intel's implementation, and AMD never built them in the first place.
     # "-Ctarget-feature=+rtm,+crc32,+ssse3"
     "-Ctarget-feature=+ssse3"
+    # The platform's CPU, as the C code gets from `-march` (the platform's override).
+    "-Ctarget-cpu=${target-cpu}"
     "-Zcf-protection=full"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") march.x86_64.NIX_CFLAGS_LINK);
   march.aarch64.NIX_CFLAGS_COMPILE = [ ];
   march.aarch64.NIX_CXXFLAGS_COMPILE = march.aarch64.NIX_CFLAGS_COMPILE;
   march.aarch64.NIX_CFLAGS_LINK = [ ];
-  march.aarch64.RUSTFLAGS = [ ] ++ (map (flag: "-Clink-arg=${flag}") march.aarch64.NIX_CFLAGS_LINK);
+  march.aarch64.RUSTFLAGS = [
+    # The platform's CPU, as the C code gets from `-mcpu` (the platform's override).
+    "-Ctarget-cpu=${target-cpu}"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") march.aarch64.NIX_CFLAGS_LINK);
   march.wasm32 = { };
   sanitize.address.NIX_CFLAGS_COMPILE = [
     "-fsanitize=address,local-bounds"
