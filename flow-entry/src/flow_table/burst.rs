@@ -44,9 +44,9 @@ impl FlowTable {
 fn lookup_chunk(table: &Table, keys: &[Option<FlowKey>], out: &mut Vec<Option<Arc<FlowInfo>>>) {
     let shards = table.shards();
     let mut hashes = [0u64; CHUNK];
-    let mut shard_of = [0usize; CHUNK];
+    let mut shard_of = [usize::MAX; CHUNK];
 
-    // 1. Hash every key; prefetch its shard (lock word and table header share its line).
+    // 1. Hash every key once; prefetch its shard (lock word and table header share its line).
     for (i, key) in keys.iter().enumerate() {
         if let Some(key) = key {
             // dashmap hashes to usize and widens that for the table; do the same.
@@ -56,10 +56,28 @@ fn lookup_chunk(table: &Table, keys: &[Option<FlowKey>], out: &mut Vec<Option<Ar
         }
     }
 
-    // 2. Prefetch the group of control bytes each key's probe starts at.
+    // 2. Read-lock each shard the chunk needs, once, in shard order (so that two bursts can never
+    //    wait on each other), and keep the guards for the rest of the chunk. Prefetch the group of
+    //    control bytes each key's probe starts at.
+    let mut order = shard_of;
+    order[..keys.len()].sort_unstable();
+    let mut held: [Option<_>; CHUNK] = std::array::from_fn(|_| None);
+    let mut held_shard = [usize::MAX; CHUNK];
+    let mut n_held = 0;
+    for &shard in order[..keys.len()].iter().filter(|&&s| s != usize::MAX) {
+        if n_held == 0 || held_shard[n_held - 1] != shard {
+            held_shard[n_held] = shard;
+            held[n_held] = Some(shards[shard].read());
+            n_held += 1;
+        }
+    }
+    let guard_of = |shard: usize| {
+        let j = held_shard[..n_held].partition_point(|&s| s < shard);
+        held[j].as_ref().unwrap_or_else(|| unreachable!("every key's shard is held"))
+    };
     for (i, key) in keys.iter().enumerate() {
         if key.is_some() {
-            let shard = shards[shard_of[i]].read();
+            let shard = guard_of(shard_of[i]);
             let mask = shard.buckets().wrapping_sub(1);
             let position = usize::try_from(hashes[i]).unwrap_or(usize::MAX) & mask;
             // The control bytes start where the buckets end.
@@ -68,32 +86,48 @@ fn lookup_chunk(table: &Table, keys: &[Option<FlowKey>], out: &mut Vec<Option<Ar
         }
     }
 
-    // 3. Prefetch the slot of each key's first candidate.
+    // 3. Prefetch the slot of each key's first candidate: the whole of it, since a slot (key and
+    //    value) is wider than a line and may straddle two or three.
     for (i, key) in keys.iter().enumerate() {
         if key.is_some() {
-            let shard = shards[shard_of[i]].read();
             // SAFETY: the iterator only reads the table's control bytes, and the shard's read lock
-            // keeps the table alive and unchanged for as long as it is used. The candidate bucket
-            // is not dereferenced: only its address is used, for a prefetch.
-            if let Some(bucket) = unsafe { shard.iter_hash(hashes[i]) }.next() {
-                prefetch(bucket.as_ptr().cast_const());
+            // keeps the table alive and unchanged while the guard is held. The candidate bucket is
+            // not dereferenced: only its address is used, for a prefetch.
+            if let Some(bucket) = unsafe { guard_of(shard_of[i]).iter_hash(hashes[i]) }.next() {
+                let slot: *const u8 = bucket.as_ptr().cast_const().cast();
+                let last = size_of_val(unsafe { bucket.as_ref() }).saturating_sub(1);
+                prefetch(slot);
+                prefetch(slot.wrapping_add(64));
+                prefetch(slot.wrapping_add(last));
             }
         }
     }
 
-    // 4. Find each key; prefetch the flow its slot points to, without touching it yet.
-    for key in keys.iter().flatten() {
-        if let Some(entry) = table.get(key) {
-            prefetch(Arc::as_ptr(entry.value()));
+    // 4. Find each key, once; prefetch both lines of the flow its slot points to (the `Arc`
+    //    counts with the fields every packet reads, then the state behind the lock).
+    let mut found: [Option<&Arc<FlowInfo>>; CHUNK] = [None; CHUNK];
+    for (i, key) in keys.iter().enumerate() {
+        if let Some(key) = key {
+            let shard = guard_of(shard_of[i]);
+            if let Some(bucket) = shard.find(hashes[i], |(k, _)| k == key) {
+                // SAFETY: the bucket was just found in this shard, whose read lock is held for as
+                // long as the reference is used (until the end of this chunk).
+                let flow = unsafe { bucket.as_ref() }.1.get();
+                let counts: *const u8 = Arc::as_ptr(flow).cast::<u8>().wrapping_sub(16);
+                prefetch(counts);
+                prefetch(counts.wrapping_add(64));
+                found[i] = Some(flow);
+            }
         }
     }
 
-    // 5. Look each key up for real: everything it touches is on its way, or there.
-    for key in keys {
-        out.push(
-            key.as_ref()
-                .and_then(|key| table.get(key).map(|entry| entry.value().clone())),
-        );
+    // 5. Take each flow; prefetch the state its pair shares, which the stages after this one read.
+    for flow in &found[..keys.len()] {
+        let flow = flow.map(Arc::clone);
+        if let Some(pair) = flow.as_deref().and_then(FlowInfo::pair_ptr) {
+            prefetch(pair);
+        }
+        out.push(flow);
     }
 }
 
