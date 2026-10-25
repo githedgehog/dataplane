@@ -25,8 +25,8 @@ use std::rc::Rc;
 use tracing::{debug, error, warn};
 
 use routing::{
-    EgressObject, Encapsulation, FibEntry, FibKey, FibReader, FibTableReader, PktInstruction, Vtep,
-    VxlanEncapsulation,
+    EgressObject, Encapsulation, FibEntry, FibKey, FibPin, FibReader, FibTableReader,
+    PktInstruction, Vtep, VxlanEncapsulation,
 };
 
 use tracectl::{custom_target, tdebug, trace_target};
@@ -45,10 +45,11 @@ pub struct IpForwarder {
 /// Cache up to two FIB readers per burst to avoid repeated table lookups.
 ///
 /// Two slots cover the routing FIB and the VNI FIB used after VXLAN decapsulation.
-/// FIB replacements are picked up on eviction or at the next burst.
+/// FIB replacements are picked up on eviction or at the next burst. Each cached reader is held
+/// entered (pinned) while it is cached, so that entering it for each packet is cheap.
 #[derive(Default)]
 struct FibMemo {
-    slots: [Option<(FibKey, Rc<FibReader>)>; 2],
+    slots: [Option<(FibKey, FibPin)>; 2],
 }
 
 impl FibMemo {
@@ -59,9 +60,11 @@ impl FibMemo {
         } else if self.slots[0].as_ref().is_none_or(|(k, _)| *k != key) {
             let reader = fibtr.get_fib_reader(key).ok()?;
             self.slots[1] = self.slots[0].take();
-            self.slots[0] = Some((key, reader));
+            self.slots[0] = Some((key, FibPin::new(reader)));
         }
-        self.slots[0].as_ref().map(|(_, reader)| Rc::clone(reader))
+        self.slots[0]
+            .as_ref()
+            .map(|(_, pin)| Rc::clone(pin.reader()))
     }
 }
 

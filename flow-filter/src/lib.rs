@@ -7,7 +7,7 @@ use concurrency::sync::Arc;
 use config::external::overlay::vpcpeering::{ValidatedExpose, VpcExposeNatConfig};
 use net::FlowKey;
 use net::buffer::PacketBufferMut;
-use net::flows::{FlowInfo, FlowStatus};
+use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
 use net::headers::{TryHeaders, TryIp, UpperLayerProto};
 use net::ip::NextHeader;
 use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
@@ -260,10 +260,10 @@ impl FlowFilter {
         if flow_summary.needs_tracking {
             meta.set_forced_flow_tracking(true);
         }
-        if flow_summary.flow_info.get_flags().requires_static_nat_src() {
+        if flow_summary.flags.requires_static_nat_src() {
             meta.set_static_nat_src(true);
         }
-        if flow_summary.flow_info.get_flags().requires_static_nat_dst() {
+        if flow_summary.flags.requires_static_nat_dst() {
             meta.set_static_nat_dst(true);
         }
     }
@@ -306,7 +306,9 @@ impl FlowFilter {
         if flow_summary.genid == genid {
             return false;
         }
-        let (nfi, flowkey) = (&self.name, flow_summary.flow_info.flowkey());
+        let nfi = &self.name;
+        let flowkey = meta.flow_info.as_deref().map(FlowInfo::flowkey);
+        let flowkey = Displayed(flowkey);
         if flow_summary.dst_vpcd != new_dst_vpcd {
             debug!("{nfi}: Outdated flow {flowkey} (new dst: {new_dst_vpcd}) will be invalidated.");
             return true;
@@ -321,7 +323,7 @@ impl FlowFilter {
         }
         // The reverse key of a flow depends on static NAT, whether or not the flow also uses
         // masquerade or port forwarding, and these NFs do not check it.
-        let flags = flow_summary.flow_info.get_flags();
+        let flags = flow_summary.flags;
         if meta.requires_static_nat_src() != flags.requires_static_nat_src()
             || meta.requires_static_nat_dst() != flags.requires_static_nat_dst()
         {
@@ -351,9 +353,7 @@ impl FlowFilter {
     ) -> (Option<VpcDiscriminant>, SourceGate) {
         // The only case when we need re-validation is when we have an active flow with an outdated
         // genid. If this is not the case, return None.
-        if flow_summary.flow_info.status() != FlowStatus::Active
-            || flow_summary.flow_info.genid() >= genid
-        {
+        if flow_summary.status != FlowStatus::Active || flow_summary.genid >= genid {
             return (None, SourceGate::Ungated);
         }
         // We only need to pass this information when re-validating a flow in the return direction.
@@ -381,11 +381,11 @@ impl FlowFilter {
         genid: i64,
     ) -> Option<VpcDiscriminant> {
         let nfi = &self.name;
-        if flow_summary.flow_info.status() != FlowStatus::Active {
+        if flow_summary.status != FlowStatus::Active {
             debug!("{nfi}: Packet has inactive flow information");
             return None;
         }
-        let flow_genid = flow_summary.flow_info.genid();
+        let flow_genid = flow_summary.genid;
         if flow_genid < genid {
             debug!(
                 "{nfi}: Packet has outdated flow information from a prior configuration ({flow_genid} < {genid})"
@@ -410,14 +410,17 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
     }
 }
 
+/// What the filter needs to know about the flow a packet refers to: copied out, so that it does not
+/// hold the flow (an atomic increment and decrement on the flow's line, per packet).
 #[derive(Debug, Clone)]
 struct FlowSummary {
     genid: i64,
+    status: FlowStatus,
+    flags: FlowInfoFlags,
     dst_vpcd: VpcDiscriminant,
     needs_masquerade: bool,
     needs_port_forwarding: bool,
     needs_tracking: bool,
-    flow_info: Arc<FlowInfo>,
 }
 
 impl FlowSummary {
@@ -431,17 +434,30 @@ impl FlowSummary {
         };
         Some(Self {
             genid: flow_info.genid(),
+            status: flow_info.status(),
+            flags: flow_info.get_flags(),
             dst_vpcd,
             needs_masquerade: locked_info.masquerade_data.is_some(),
             needs_port_forwarding: locked_info.port_fw_data.is_some(),
             needs_tracking: locked_info.tracked_data.is_some()
                 || locked_info.static_nat_data.is_some(),
-            flow_info: flow_info.clone(),
         })
     }
 
     fn is_initiator(&self) -> bool {
-        self.flow_info.get_flags().is_initiator()
+        self.flags.is_initiator()
+    }
+}
+
+/// An optional flow key, for log messages.
+struct Displayed<'a>(Option<&'a FlowKey>);
+
+impl std::fmt::Display for Displayed<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(key) => write!(f, "{key}"),
+            None => f.write_str("(unknown)"),
+        }
     }
 }
 

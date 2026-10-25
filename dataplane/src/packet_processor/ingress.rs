@@ -222,10 +222,12 @@ impl Ingress {
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
     #[tracing::instrument(level = "trace", skip(self, burst))]
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        // Enter the interface table once per burst, not once per packet (see Egress).
+        let iftable = self.iftr.enter();
         for packet in burst.iter_mut() {
             let nfi = self.name();
             if !packet.is_done() {
-                if let Some(iftable) = self.iftr.enter() {
+                if let Some(iftable) = iftable.as_deref() {
                     match packet.meta().iif {
                         None => {
                             warn!("no iif set in packet metadata (driver bug)");

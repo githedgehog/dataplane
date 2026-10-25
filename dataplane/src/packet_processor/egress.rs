@@ -15,7 +15,7 @@ use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
-use routing::{AtableReader, IfState, IfTable, IfTableReader, IfType, Interface};
+use routing::{AdjacencyTable, AtableReader, IfState, IfTable, IfTableReader, IfType, Interface};
 
 use tracectl::trace_target;
 trace_target!("egress", LevelFilter::WARN, &["pipeline"]);
@@ -110,12 +110,13 @@ impl Egress {
     fn get_adj_mac<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
+        atable: Option<&AdjacencyTable>,
         addr: IpAddr,
         ifindex: InterfaceIndex,
     ) -> Option<DestinationMac> {
         let nfi = &self.name;
 
-        if let Some(atable) = self.atabler.enter() {
+        if let Some(atable) = atable {
             /* do lookup on the adjacency table */
             let Some(adj) = atable.get_adjacency(addr, ifindex) else {
                 warn!("{nfi}: missing L2 info for {addr}");
@@ -144,6 +145,7 @@ impl Egress {
         &self,
         ifindex: InterfaceIndex,
         packet: &mut Packet<Buf>,
+        atable: Option<&AdjacencyTable>,
     ) -> Option<DestinationMac> {
         let nfi = &self.name;
         // if packet was annotated with a next-hop address, try to resolve it using the
@@ -152,9 +154,9 @@ impl Egress {
         // resolve it with the adjacency table as well. If that fails, that's where the
         // ARP/ND would need to be triggered.
         if let Some(nh_addr) = packet.meta().nh_addr {
-            self.get_adj_mac(packet, nh_addr, ifindex)
+            self.get_adj_mac(packet, atable, nh_addr, ifindex)
         } else if let Some(destination) = packet.ip_destination() {
-            self.get_adj_mac(packet, destination, ifindex)
+            self.get_adj_mac(packet, atable, destination, ifindex)
         } else {
             warn!("{nfi}: could not determine packet destination IP address");
             // This should be a bug because if a packet was not IP, we'd have
@@ -165,7 +167,12 @@ impl Egress {
     }
 
     #[inline]
-    fn egress_process<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, iftable: &IfTable) {
+    fn egress_process<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        iftable: &IfTable,
+        atable: Option<&AdjacencyTable>,
+    ) {
         let Some(oif) = packet.meta().oif else {
             warn!("{}: Missing oif metadata!", &self.name);
             packet.done(DoneReason::RouteFailure);
@@ -173,7 +180,7 @@ impl Egress {
         };
 
         /* resolve destination mac */
-        let Some(dst_mac) = self.resolve_next_mac(oif, packet) else {
+        let Some(dst_mac) = self.resolve_next_mac(oif, packet, atable) else {
             // we could not figure out the destination MAC.
             // resolve_next_mac() already calls packet.done()
             return;
@@ -191,10 +198,14 @@ impl Egress {
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        // Enter the tables once per burst, not once per packet: each entry and exit is an atomic
+        // read-modify-write, a full barrier on x86. A writer waits for the burst at most.
+        let iftable = self.iftr.enter();
+        let atable = self.atabler.enter();
         for packet in burst.iter_mut() {
             if !packet.is_done() {
-                if let Some(iftable) = self.iftr.enter() {
-                    self.egress_process(packet, &iftable);
+                if let Some(iftable) = iftable.as_deref() {
+                    self.egress_process(packet, iftable, atable.as_deref());
                 } else {
                     warn!("{}: Fib iftable no longer readable!", &self.name);
                     packet.done(DoneReason::InternalFailure);
