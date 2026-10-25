@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use timer_wheel::TimerRef;
 use tracing::debug;
 
-use super::{AtomicConnState, AtomicInstant, FlowInfoItem};
+use super::nat_state::NatFlowState;
+use super::{AtomicConnState, AtomicInstant};
 use crate::FlowKey;
 
 #[derive(Debug, thiserror::Error)]
@@ -166,15 +167,13 @@ impl FlowInfoFlags {
     }
 }
 
-// We need NAT information to use downcast to avoid circular dependencies between crates.
+/// The state of a flow behind its lock: where it goes, and the NAT stage that created it.
 #[derive(Debug, Default)]
+#[repr(C)]
 pub struct FlowInfoLocked {
     pub dst_vpcd: Option<VpcDiscriminant>,
-    pub masquerade_data: Option<Box<dyn FlowInfoItem>>,
-    pub port_fw_data: Option<Box<dyn FlowInfoItem>>,
-    pub static_nat_data: Option<Box<dyn FlowInfoItem>>,
-    // Data for flows tracked without NAT, required for flow-scoped user ACL rules
-    pub tracked_data: Option<Box<dyn FlowInfoItem>>,
+    /// Inline: the packet path reads it on every packet, so it must not be a pointer away.
+    pub nat: NatFlowState,
 }
 
 /// Object that represents a flow of packets.
@@ -185,23 +184,42 @@ pub struct FlowInfoLocked {
 /// changes (if the flow is acceptable under a new configuration), or the flow should
 /// no longer have status `Active`. `conn_state` is the status of the connection that a pair of
 /// related flows tracks, shared by the two flows of the pair; flows outside a pair have none.
+///
+/// # Layout
+///
+/// The pipeline runs each stage over a whole burst before the next, so every stage that reads a
+/// field on a cold line of its own waits for DRAM again, at a different time from the stage before.
+/// The fields every packet reads therefore come first, in the [`HOT_BYTES`](Self::HOT_BYTES) that
+/// share a cache line with the `Arc` counts the flow lookup has just touched; the state behind the
+/// lock follows, and what only the control plane and expiry read comes last. (The allocator only
+/// promises 16-byte alignment, so those 64 bytes may straddle two adjacent lines.)
 #[derive(Debug)]
+#[repr(C)]
 pub struct FlowInfo {
-    expires_at: AtomicInstant,
-    flowkey: FlowKey,
-    genid: AtomicI64,
+    // Hot: read by the stages on every packet.
     status: AtomicFlowStatus,
     flags: FlowInfoFlags,
+    genid: AtomicI64,
     conn_state: Option<AtomicConnState>,
+    expires_at: AtomicInstant,
+    // Warm: read under the lock by the stages that use them.
     pub locked: RwLock<FlowInfoLocked>,
+    // Cold.
     pub related: Option<Weak<FlowInfo>>,
     /// The expiry timer of this flow, once the flow is in a table.
     timer: Mutex<Option<TimerRef>>,
+    flowkey: FlowKey,
 }
 
 // TODO: We need a way to stuff an Arc<FlowInfo> into the packet
 // meta data.  That means this has to move to net or we need a generic
 // meta data extension method.
+impl FlowInfo {
+    /// The bytes after an `Arc`'s two counts that are still in its first cache line: where the
+    /// fields every packet reads have to be.
+    pub const HOT_BYTES: usize = 64 - 2 * size_of::<usize>();
+}
+
 impl FlowInfo {
     #[must_use]
     pub fn new(flowkey: FlowKey, expires_at: Instant) -> Self {
@@ -547,5 +565,31 @@ mod contract {
                 _ => unreachable!(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod layout {
+    use super::*;
+    use core::mem::offset_of;
+
+    /// Every field every packet reads fits after the `Arc` counts in their cache line.
+    #[test]
+    fn the_hot_fields_share_the_first_cache_line() {
+        let hot_end = [
+            offset_of!(FlowInfo, status) + size_of::<AtomicFlowStatus>(),
+            offset_of!(FlowInfo, flags) + size_of::<FlowInfoFlags>(),
+            offset_of!(FlowInfo, genid) + size_of::<AtomicI64>(),
+            offset_of!(FlowInfo, conn_state) + size_of::<Option<AtomicConnState>>(),
+            offset_of!(FlowInfo, expires_at) + size_of::<AtomicInstant>(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or_default();
+        assert!(
+            hot_end <= FlowInfo::HOT_BYTES,
+            "the hot fields end at byte {hot_end}, past the {} that share the Arc counts' line",
+            FlowInfo::HOT_BYTES
+        );
     }
 }

@@ -2,6 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 #![cfg(test)]
+use crate::masquerade::state::MasqueradeStateExt;
+use crate::nat_flows::NatData;
 use flow_entry::flow_table::WorkerFlowTable;
 
 use crate::common::NatAction;
@@ -25,7 +27,6 @@ use net::flows::{AtomicConnState, ConnState};
 use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::Mac;
-use net::flows::flow_info_item::ExtractRef;
 use net::flows::{FlowInfo, FlowStatus};
 use net::headers::{
     EmbeddedTransport, TryEmbeddedTransport as _, TryIcmp4, TryInnerIpv4, TryIpv4, TryUdp,
@@ -1663,12 +1664,7 @@ fn flow_genid(packet: &Packet<TestBuffer>) -> Option<i64> {
 }
 fn nat_flow_status(packet: &Packet<TestBuffer>) -> Option<ConnState> {
     let flow_info = packet.meta().flow_info.as_ref()?;
-    flow_info
-        .locked
-        .read()
-        .masquerade_data
-        .as_ref()?
-        .extract_ref::<MasqueradeState>()?;
+    MasqueradeState::try_get(&flow_info.locked.read())?;
     flow_info.conn_state().map(AtomicConnState::load)
 }
 
@@ -1681,10 +1677,7 @@ fn with_masquerade_state<T>(
     read: impl FnOnce(&MasqueradeState) -> T,
 ) -> Option<T> {
     let locked = packet.meta().flow_info.as_ref()?.locked.read();
-    let state = locked
-        .masquerade_data
-        .as_ref()?
-        .extract_ref::<MasqueradeState>()?;
+    let state = MasqueradeState::try_get(&locked)?;
     Some(read(state))
 }
 

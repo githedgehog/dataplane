@@ -3,6 +3,7 @@
 
 #[cfg(test)]
 mod nf_test {
+    use crate::nat_flows::NatData;
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwState, PortFwTableWriter};
     use flow_entry::flow_table::WorkerFlowTable;
     use net::flows::{AtomicConnState, ConnState};
@@ -12,7 +13,6 @@ mod nf_test {
     use lpm::prefix::Prefix;
     use net::buffer::TestBuffer;
     use net::flows::FlowStatus;
-    use net::flows::flow_info_item::ExtractRef;
     use net::headers::{TryHeaders, TryTcpMut};
     use net::ip::NextHeader;
     use net::packet::test_utils::{build_test_tcp_ipv4_packet, build_test_udp_ipv4_packet};
@@ -43,26 +43,13 @@ mod nf_test {
 
     fn get_pfw_flow_status(packet: &Packet<TestBuffer>) -> Option<ConnState> {
         let flow_info = packet.meta().flow_info.as_ref()?;
-        flow_info
-            .locked
-            .read()
-            .port_fw_data
-            .as_ref()?
-            .extract_ref::<PortFwState>()?;
+        PortFwState::try_get(&flow_info.locked.read())?;
         flow_info.conn_state().map(AtomicConnState::load)
     }
 
     fn get_pfw_flow_state_rule(packet: &Packet<TestBuffer>) -> Option<Arc<PortFwEntry>> {
-        packet
-            .meta()
-            .flow_info
-            .as_ref()?
-            .locked
-            .read()
-            .port_fw_data
-            .as_ref()
-            .and_then(|s| s.extract_ref::<PortFwState>())
-            .and_then(|state| state.rule.upgrade())
+        let locked = packet.meta().flow_info.as_ref()?.locked.read();
+        PortFwState::try_get(&locked)?.rule.upgrade()
     }
 
     // build a reply for a given packet
@@ -695,12 +682,7 @@ mod nf_test {
 
         // flow entry should have port-forwarding state
         let locked = flow.locked.read();
-        let state = locked
-            .port_fw_data
-            .as_ref()
-            .unwrap()
-            .extract_ref::<PortFwState>()
-            .unwrap();
+        let state = PortFwState::try_get(&locked).unwrap();
 
         // tell if port forwarding state is valid
         state.rule().upgrade().is_none()
@@ -711,12 +693,7 @@ mod nf_test {
 
         // flow entry should have port-forwarding state
         let locked = flow.locked.read();
-        let state = locked
-            .port_fw_data
-            .as_ref()
-            .unwrap()
-            .extract_ref::<PortFwState>()
-            .unwrap();
+        let state = PortFwState::try_get(&locked).unwrap();
 
         // tell if port forwarding state is valid
         state.rule().upgrade().is_some()

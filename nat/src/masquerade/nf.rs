@@ -10,6 +10,7 @@ use crate::masquerade::allocator_writer::NatAllocatorReader;
 use crate::masquerade::apalloc::{Allocation, NatAllocator};
 use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
 use crate::masquerade::state::MasqueradeState;
+use crate::masquerade::state::MasqueradeStateExt;
 use crate::nat_flows::{HalfFlow, InstallError, NatData, NewFlow, install_pair, packet_flow_keys};
 use clock::Duration;
 use concurrency::sync::Arc;
@@ -215,10 +216,8 @@ impl Masquerade {
         // to extend its own expiry there, and extending the mapping's would hold the public tuple
         // for a further idle timeout past the close, which is how a pool ends up exhausted by churn
         // rather than by concurrent flows.
-        if new_status.is_some_and(|status| !status.is_terminal())
-            && let Some(allocation) = state.allocation()
-        {
-            allocation.refresh();
+        if new_status.is_some_and(|status| !status.is_terminal()) {
+            state.refresh_mapping();
         }
     }
 

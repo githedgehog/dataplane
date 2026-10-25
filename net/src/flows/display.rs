@@ -5,6 +5,7 @@
 
 use super::flow_info::{FlowInfo, FlowInfoLocked};
 use super::flow_key::FlowKey;
+use crate::flows::nat_state::NatFlowState;
 
 use concurrency::sync::Weak;
 use std::fmt::Display;
@@ -35,18 +36,12 @@ impl Display for FlowInfoLocked {
         if let Some(data) = &self.dst_vpcd {
             writeln!(f, "      dst-vpcd:{data}")?;
         }
-        if let Some(data) = &self.port_fw_data {
-            writeln!(f, "      port-forwarding:{data}")?;
-        }
-        if let Some(data) = &self.masquerade_data {
-            writeln!(f, "      masquerading:{data}")?;
-        }
-        if let Some(data) = &self.static_nat_data {
-            writeln!(f, "      static-nat:{data}")?;
-        }
-        if let Some(_data) = &self.tracked_data {
-            // TODO: Print _data if it ever becomes non-empty in the case of no NAT
-            writeln!(f, "      no-nat")?;
+        match &self.nat {
+            NatFlowState::None => {}
+            NatFlowState::PortForward(_) => writeln!(f, "      port-forwarding:{}", self.nat)?,
+            NatFlowState::Masquerade(_) => writeln!(f, "      masquerading:{}", self.nat)?,
+            NatFlowState::StaticNat => writeln!(f, "      static-nat:{}", self.nat)?,
+            NatFlowState::Tracked => writeln!(f, "      no-nat")?,
         }
         Ok(())
     }
@@ -85,18 +80,12 @@ impl Display for FlowInfoLockedOneLiner<'_> {
         if let Some(data) = &locked.dst_vpcd {
             write!(f, "dst-vpcd:{data} ")?;
         }
-        if let Some(data) = &locked.port_fw_data {
-            write!(f, "port-forwarding:{data} ")?;
-        }
-        if let Some(data) = &locked.masquerade_data {
-            write!(f, "masquerading:{data} ")?;
-        }
-        if let Some(data) = &locked.static_nat_data {
-            write!(f, "static-nat:{data} ")?;
-        }
-        if let Some(_data) = &locked.tracked_data {
-            // TODO: Print _data if it ever becomes non-empty in the case of no NAT
-            write!(f, "no-nat ")?;
+        match &locked.nat {
+            NatFlowState::None => {}
+            NatFlowState::PortForward(_) => write!(f, "port-forwarding:{} ", locked.nat)?,
+            NatFlowState::Masquerade(_) => write!(f, "masquerading:{} ", locked.nat)?,
+            NatFlowState::StaticNat => write!(f, "static-nat:{} ", locked.nat)?,
+            NatFlowState::Tracked => write!(f, "no-nat ")?,
         }
         Ok(())
     }
