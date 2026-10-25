@@ -32,7 +32,7 @@ pub use evpn::Vtep;
 pub use fib::fibgroupstore::FibRoute;
 pub use fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 pub use fib::fibtable::{FibTableReader, FibTableReaderFactory};
-pub use fib::fibtype::{Fib, FibKey, FibReader};
+pub use fib::fibtype::{Fib, FibKey, FibPin, FibReader};
 pub use frr::frrmi::FrrAppliedConfig;
 pub use frr::renderer::builder::Render;
 pub use interfaces::iftable::IfTable;

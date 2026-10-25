@@ -1344,7 +1344,8 @@ fn invalidation_decision_matches_spec() {
                 needs_masquerade: case.flow_masquerade,
                 needs_port_forwarding: case.flow_port_forwarding,
                 needs_tracking: case.flow_tracking,
-                flow_info,
+                status: flow_info.status(),
+                flags: flow_info.get_flags(),
             });
 
             assert_eq!(
