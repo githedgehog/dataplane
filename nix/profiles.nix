@@ -107,6 +107,8 @@ let
   link-time.thin.RUSTFLAGS = [
     "-Clinker-plugin-lto"
     "-Cembed-bitcode=yes"
+    # Bench: keep the relocations, so that BOLT can rewrite the linked binary.
+    "-Clink-arg=-Wl,--emit-relocs"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") link-time.thin.NIX_CFLAGS_LINK);
   secure.NIX_CFLAGS_COMPILE = [
