@@ -117,6 +117,15 @@ impl AclFilter {
         let guard = self.tablesr.load();
         let tables = &guard.acls;
 
+        // Every peering with an ACL has a default action registered for both directions, and only
+        // such a peering has rules. Without one, nothing can match either way: allow the packet
+        // without the lookups, and without reaching the reverse flow (a cold cache line, and an
+        // atomic on it, for every packet of every flow).
+        let Some(default_action) = tables.find_default_action(summary.src_vni, summary.dst_vni)
+        else {
+            return (AclAction::Allow, false);
+        };
+
         // Look up for an ACL directly matching the packet
         let lookup_result = tables.lookup(summary);
         if let Some(result) = lookup_result {
@@ -150,15 +159,8 @@ impl AclFilter {
             }
         }
 
-        // Look for a fallback default action for the peering
-        let verdict = tables
-            .find_default_action(summary.src_vni, summary.dst_vni)
-            .unwrap_or(
-                // No default action was found for this peering, this means no ACL list was
-                // configured for the peering. Allow packet to go through.
-                AclAction::Allow,
-            );
-        (verdict, false)
+        // Fall back to the peering's default action
+        (default_action, false)
     }
 }
 

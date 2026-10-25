@@ -224,6 +224,19 @@ fn reference_lookup_matches_config_oracle() {
                     probe.src_vni, probe.dst_vni,
                 );
 
+                // The filter skips both lookups for a pair with no default action, which is only
+                // right if a rule in either direction implies a default action in both.
+                if got.is_some() {
+                    assert!(
+                        got_default.is_some()
+                            && tables
+                                .find_default_action(probe.dst_vni, probe.src_vni)
+                                .is_some(),
+                        "a rule matches {probe:?} but its peering has no default action both ways\n\
+                         spec: {overlay_spec:?}",
+                    );
+                }
+
                 assert_eq!(
                     resolved_action(got, got_default),
                     resolved_action(want, want_default),
