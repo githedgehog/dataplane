@@ -524,3 +524,30 @@ fn the_destination_vpc_is_remembered() {
             });
         });
 }
+
+// The packet path refreshes the half a packet hits only; the other half must not expire under it.
+#[test]
+fn the_halves_of_a_pair_share_their_state() {
+    let start = clock::now();
+    let (one, two) = FlowInfo::related_pair(
+        start + Duration::from_secs(1),
+        key(1),
+        FlowInfoFlags::INITIATOR,
+        key(2),
+        FlowInfoFlags::default(),
+    )
+    .unwrap_or_else(|_| unreachable!());
+    assert!(one.reset_expiry_unchecked(Duration::from_hours(1)).is_ok());
+    assert_eq!(two.expires_at(), one.expires_at(), "the halves expire apart");
+    assert!(two.expires_at() >= start + Duration::from_hours(1));
+    assert!(
+        one.conn_state()
+            .zip(two.conn_state())
+            .is_some_and(|(a, b)| a.is_shared_with(b))
+    );
+
+    let single = FlowInfo::new(key(3), start + Duration::from_secs(1));
+    single.extend_expiry_unchecked(Duration::from_secs(1));
+    assert_eq!(single.expires_at(), start + Duration::from_secs(2));
+    assert!(single.conn_state().is_none());
+}

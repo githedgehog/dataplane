@@ -114,8 +114,8 @@ impl<I: NatIpWithBitmap> MappingKey<I> {
 #[derive(Debug)]
 pub struct Mapping<I: NatIpWithBitmap> {
     allocation: AllocatedPort<I>,
-    /// Shared with the flows holding this mapping, which refresh it on outbound traffic without
-    /// reaching the mapping itself.
+    /// Shared with the flows holding this mapping: they keep it from expiring, and publish their
+    /// last outbound deadline to it when they let go.
     deadline: MappingDeadline,
     /// The reaper's timer, once it is on a worker's wheel.
     timer: Mutex<Option<TimerRef>>,
@@ -167,13 +167,14 @@ impl<I: NatIpWithBitmap> Mapping<I> {
         self.deadline.clone()
     }
 
+    // Expired once no flow holds it and its deadline has passed.
     fn is_expired(&self) -> bool {
-        self.expires_at() <= clock::now()
+        self.deadline.is_expired(clock::now())
     }
 
-    // From RFC 4787 REQ-6, any outbound packet on any flow sharing a mapping refreshes it,
-    // independent of that flow's own idle timer. The clock is monotonic, given that several flows
-    // on different cores may refresh concurrently, and we must never make it go backwards.
+    // A new flow joins the mapping. Its hold keeps the mapping alive from then on, but that hold is
+    // taken after the flow is built: until then, this keeps a reaper from taking the mapping away.
+    // The deadline never goes backwards, given that several cores may refresh concurrently.
     pub(crate) fn refresh(&self) {
         self.deadline.refresh();
     }
@@ -280,6 +281,7 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         guard.insert(key, mapping.clone());
         drop(guard);
         timers.schedule(Box::new(MappingReaper {
+            recheck: mapping.expires_at(),
             subscriber: self.clone(),
             subscriber_ip: src_ip,
             key,
@@ -503,7 +505,15 @@ impl<I: NatIpWithBitmap> Drop for PoolReapers<I> {
 // configuration change handed it to). When the mapping's deadline passes, it re-checks for a
 // concurrent refresh and expires the mapping otherwise, then reaps the owning Subscriber too if
 // it is now empty, so a Paired-pooled address is not pinned forever once nothing uses it any more.
+//
+// While flows hold the mapping, it does not expire, and the reaper looks again every
+// 1/HELD_RECHECKS of an idle timeout: the last flow to let go publishes the deadline the reaper then
+// waits for, and the mapping outlives that deadline by at most one such period.
+const HELD_RECHECKS: u32 = 8;
+
 struct MappingReaper<I: NatIpWithBitmap> {
+    /// When to look again at a mapping that was held the last time.
+    recheck: Instant,
     subscriber: Arc<Subscriber<I>>,
     subscriber_ip: I,
     key: MappingKey<I>,
@@ -514,7 +524,7 @@ struct MappingReaper<I: NatIpWithBitmap> {
 
 impl<I: NatIpWithBitmap> SideTimer for MappingReaper<I> {
     fn deadline(&self) -> Instant {
-        self.mapping.expires_at()
+        self.mapping.expires_at().max(self.recheck)
     }
 
     fn bind(&self, timer: TimerRef) {
@@ -529,16 +539,22 @@ impl<I: NatIpWithBitmap> SideTimer for MappingReaper<I> {
         if self.mapping.expires_at() > now {
             return true;
         }
-        // A refresh can land between that check and the write lock; then the mapping keeps its
-        // entry, and has to keep this reaper too: no other path starts one for an entry already in
-        // the table.
-        !reap_expired_mapping(
-            &self.subscriber,
-            self.subscriber_ip,
-            self.key,
-            &self.mapping,
-            &self.subscribers,
-        )
+        // A refresh or a new hold can land between that check and the write lock; then the mapping
+        // keeps its entry, and has to keep this reaper too: no other path starts one for an entry
+        // already in the table.
+        let done = !self.mapping.deadline.is_held()
+            && reap_expired_mapping(
+                &self.subscriber,
+                self.subscriber_ip,
+                self.key,
+                &self.mapping,
+                &self.subscribers,
+            );
+        if !done {
+            let period = self.mapping.deadline.idle_timeout() / HELD_RECHECKS;
+            self.recheck = clock::saturating_add(now, period);
+        }
+        !done
     }
 }
 
@@ -720,6 +736,76 @@ mod tests {
             "a reaper stayed on the wheel after its pool was dropped"
         );
         drop(mapping);
+    }
+
+    // A flow's hold keeps its mapping past the mapping's own deadline: the reaper leaves it, and a
+    // new flow from the same private tuple still joins it (EIM).
+    #[tokio::test(start_paused = true)]
+    async fn a_held_mapping_outlives_its_deadline() {
+        use flow_entry::flow_table::{FlowTable, WorkerFlowTable};
+        use net::flows::nat_state::{MappingHold, Owned};
+
+        let worker = WorkerFlowTable::new(Arc::new(FlowTable::default()));
+        let pool = narrow_budget_pool();
+        let subscriber_ip = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+        let key = MappingKey::new(port(1), MappingScope::Independent);
+        let mapping = pool
+            .get_or_create_mapping(subscriber_ip, key, false, &worker)
+            .expect("the pool has room");
+        let hold = MappingHold::new(mapping.deadline(), Owned::new(()));
+
+        tokio::time::advance(pool.idle_timeout() * 2).await;
+        worker.expire_all(clock::now());
+        assert!(!mapping.is_expired(), "a held mapping expired");
+        assert_eq!(worker.timers(), 1, "the reaper of a held mapping is gone");
+        let joined = pool
+            .get_or_create_mapping(subscriber_ip, key, false, &worker)
+            .expect("the pool has room");
+        assert!(
+            Arc::ptr_eq(&joined, &mapping),
+            "a flow from the same private tuple did not join the held mapping"
+        );
+        drop(hold);
+    }
+
+    // Once the last hold goes, the mapping expires at the deadline its flow's outbound traffic gave
+    // it, and the reaper, which last found it held, takes it within 1/HELD_RECHECKS of an idle
+    // timeout.
+    #[tokio::test(start_paused = true)]
+    async fn a_mapping_goes_soon_after_its_last_flow_lets_go() {
+        use flow_entry::flow_table::{FlowTable, WorkerFlowTable};
+        use net::flows::nat_state::{MappingHold, Owned};
+
+        let worker = WorkerFlowTable::new(Arc::new(FlowTable::default()));
+        let pool = narrow_budget_pool();
+        let idle = pool.idle_timeout();
+        let subscriber_ip = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+        let key = MappingKey::new(port(1), MappingScope::Independent);
+        let mapping = pool
+            .get_or_create_mapping(subscriber_ip, key, false, &worker)
+            .expect("the pool has room");
+        let hold = MappingHold::new(mapping.deadline(), Owned::new(()));
+
+        // The flow's last outbound packet, then the flow idles on, past that deadline
+        tokio::time::advance(idle / 2).await;
+        hold.refresh();
+        let last = hold.expires_at();
+        tokio::time::advance(idle * 3 / 2).await;
+        worker.expire_all(clock::now());
+        assert!(!mapping.is_expired(), "sanity: the flow still holds the mapping");
+
+        drop(hold);
+        assert_eq!(mapping.expires_at(), last, "the flow's deadline was not published");
+        assert!(mapping.is_expired(), "the mapping outlived its deadline once let go");
+
+        tokio::time::advance(idle / HELD_RECHECKS).await;
+        worker.expire_all(clock::now());
+        assert_eq!(worker.timers(), 0, "the reaper did not take the mapping in time");
+        let subscriber = pool.subscribers().get(subscriber_ip);
+        assert!(
+            subscriber.is_none_or(|s| s.live_mapping(&key).is_none()),
+            "the mapping is still in its subscriber's table"
+        );
     }
 
     // A configured idle timeout has no upper bound (see GH 1854), and deadlines are computed as

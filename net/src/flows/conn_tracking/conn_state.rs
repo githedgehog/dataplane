@@ -3,7 +3,6 @@
 
 //! Status of the connection tracked by a pair of related flows.
 
-use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicU8, Ordering};
 use std::fmt::Display;
 
@@ -73,13 +72,14 @@ impl Display for ConnState {
     }
 }
 
-/// A thread-safe, shareable and mutable wrapper of [`ConnState`]
-#[derive(Debug, Clone)]
-pub struct AtomicConnState(Arc<AtomicU8>);
+/// A thread-safe, mutable [`ConnState`], shared by the two flows of a pair (it lives in their
+/// shared state).
+#[derive(Debug)]
+pub struct AtomicConnState(AtomicU8);
 impl AtomicConnState {
     #[must_use]
     pub(crate) fn new() -> Self {
-        AtomicConnState(Arc::new(AtomicU8::new(ConnState::OneWay.into())))
+        AtomicConnState(AtomicU8::new(ConnState::OneWay.into()))
     }
 
     #[must_use]
@@ -94,6 +94,6 @@ impl AtomicConnState {
     /// Tell if `self` and `other` are the same shared status.
     #[must_use]
     pub fn is_shared_with(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        std::ptr::eq(self, other)
     }
 }
