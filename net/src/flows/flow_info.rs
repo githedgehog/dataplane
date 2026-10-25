@@ -182,8 +182,8 @@ pub struct FlowInfoLocked {
 /// the flow table gets a key automatically. `genid` is the last generation id where
 /// this flow is valid (accepted by the flow-filter). As such, it increases on config
 /// changes (if the flow is acceptable under a new configuration), or the flow should
-/// no longer have status `Active`. `conn_state` is the status of the connection that a pair of
-/// related flows tracks, shared by the two flows of the pair; flows outside a pair have none.
+/// no longer have status `Active`. The two flows of a related pair share a [`PairState`]: the
+/// status of the connection they track, and their expiry; flows outside a pair have neither.
 ///
 /// # Layout
 ///
@@ -200,7 +200,8 @@ pub struct FlowInfo {
     status: AtomicFlowStatus,
     flags: FlowInfoFlags,
     genid: AtomicI64,
-    conn_state: Option<AtomicConnState>,
+    pair: Option<Arc<PairState>>,
+    /// The expiry of a flow outside a pair. A flow in a pair expires with its pair.
     expires_at: AtomicInstant,
     // Warm: read under the lock by the stages that use them.
     pub locked: RwLock<FlowInfoLocked>,
@@ -209,6 +210,15 @@ pub struct FlowInfo {
     /// The expiry timer of this flow, once the flow is in a table.
     timer: Mutex<Option<TimerRef>>,
     flowkey: FlowKey,
+}
+
+/// What the two flows of a related pair share: one line, for the packet path to read and write,
+/// whichever half a packet hits.
+#[derive(Debug)]
+pub struct PairState {
+    conn_state: AtomicConnState,
+    /// When both halves expire. A packet on either half keeps the pair alive.
+    expires_at: AtomicInstant,
 }
 
 // TODO: We need a way to stuff an Arc<FlowInfo> into the packet
@@ -229,7 +239,7 @@ impl FlowInfo {
             genid: AtomicI64::new(0),
             status: AtomicFlowStatus::from(FlowStatus::Detached),
             flags: FlowInfoFlags::default(),
-            conn_state: None,
+            pair: None,
             locked: RwLock::new(FlowInfoLocked::default()),
             related: None,
             timer: Mutex::new(None),
@@ -253,9 +263,9 @@ impl FlowInfo {
         self.flags
     }
 
-    /// Set the connection status of a flow
-    fn set_conn_state(mut self, conn_state: AtomicConnState) -> Self {
-        self.conn_state = Some(conn_state);
+    /// Make a flow one half of a pair
+    fn set_pair(mut self, pair: Arc<PairState>) -> Self {
+        self.pair = Some(pair);
         self
     }
 
@@ -263,7 +273,14 @@ impl FlowInfo {
     /// of a pair built with [`FlowInfo::related_pair`] share it.
     #[must_use]
     pub fn conn_state(&self) -> Option<&AtomicConnState> {
-        self.conn_state.as_ref()
+        self.pair.as_deref().map(|pair| &pair.conn_state)
+    }
+
+    /// The deadline this flow expires at: its pair's, or its own.
+    fn deadline(&self) -> &AtomicInstant {
+        self.pair
+            .as_deref()
+            .map_or(&self.expires_at, |pair| &pair.expires_at)
     }
 
     #[must_use]
@@ -312,7 +329,8 @@ impl FlowInfo {
     /// So, there is a chicken-and-egg problem which cannot be solved with safe code.
     ///
     /// This associated function creates a pair of related `FlowInfo`s by construction. Both share
-    /// the same connection status, starting as one-way. The intended usage is
+    /// the same connection status, starting as one-way, and the same expiry: a packet on either
+    /// half extends both, and they expire together. The intended usage is
     /// to call this function when a couple of related flow entries are needed and later insert them in the
     /// flow-table.
     ///
@@ -339,7 +357,10 @@ impl FlowInfo {
             ));
         }
 
-        let conn_state = AtomicConnState::new();
+        let pair = Arc::new(PairState {
+            conn_state: AtomicConnState::new(),
+            expires_at: AtomicInstant::new(expires_at),
+        });
         let mut one: Arc<MaybeUninit<Self>> = Arc::new_uninit();
         let mut two: Arc<MaybeUninit<Self>> = Arc::new_uninit();
 
@@ -361,13 +382,13 @@ impl FlowInfo {
             one_p.write(
                 FlowInfo::new(key1, expires_at)
                     .set_flags(flags1)
-                    .set_conn_state(conn_state.clone())
+                    .set_pair(pair.clone())
                     .set_related(two_weak),
             );
             two_p.write(
                 FlowInfo::new(key2, expires_at)
                     .set_flags(flags2)
-                    .set_conn_state(conn_state)
+                    .set_pair(pair)
                     .set_related(one_weak),
             );
             // turn back into Arc's
@@ -375,8 +396,9 @@ impl FlowInfo {
         }
     }
 
+    /// When the flow expires; for a flow in a pair, when the pair does.
     pub fn expires_at(&self) -> Instant {
-        self.expires_at.load(Ordering::Relaxed)
+        self.deadline().load(Ordering::Relaxed)
     }
 
     /// Extend the expiry of the flow if it is not expired.
@@ -400,7 +422,7 @@ impl FlowInfo {
     /// This method is thread-safe.
     ///
     pub fn extend_expiry_unchecked(&self, duration: Duration) {
-        self.expires_at.fetch_add(duration, Ordering::Relaxed);
+        self.deadline().fetch_add(duration, Ordering::Relaxed);
     }
 
     /// Reset the expiry of the flow if it is not expired.
@@ -435,7 +457,7 @@ impl FlowInfo {
     ///
     pub fn reset_expiry_unchecked(&self, duration: Duration) -> Result<(), FlowInfoError> {
         let new = clock::deadline(duration);
-        let previous = self.expires_at.fetch_max(new, Ordering::Relaxed);
+        let previous = self.deadline().fetch_max(new, Ordering::Relaxed);
         if previous > new {
             return Err(FlowInfoError::TimeoutUnchanged);
         }
@@ -580,7 +602,7 @@ mod layout {
             offset_of!(FlowInfo, status) + size_of::<AtomicFlowStatus>(),
             offset_of!(FlowInfo, flags) + size_of::<FlowInfoFlags>(),
             offset_of!(FlowInfo, genid) + size_of::<AtomicI64>(),
-            offset_of!(FlowInfo, conn_state) + size_of::<Option<AtomicConnState>>(),
+            offset_of!(FlowInfo, pair) + size_of::<Option<Arc<PairState>>>(),
             offset_of!(FlowInfo, expires_at) + size_of::<AtomicInstant>(),
         ]
         .into_iter()

@@ -172,9 +172,9 @@ mod test {
 
     //#[traced_test]
     // start_paused so flow deadlines and the test's sleep share tokio's virtual
-    // clock; otherwise miri's slow interpretation lets real wall time blow past flow_2's
-    // 1-minute deadline (the whole test takes ~90s under miri), expiring both flows
-    // instead of just flow_1. Same root cause as test_flow_table_timeout.
+    // clock; otherwise miri's slow interpretation lets real wall time blow past the pair's
+    // 1-minute deadline (the whole test takes ~90s under miri). Same root cause as
+    // test_flow_table_timeout.
     #[tokio::test(start_paused = true)]
     async fn test_lookups_with_related_flows() {
         let flow_table = Arc::new(FlowTable::default());
@@ -182,6 +182,7 @@ mod test {
         let lookup_nf = FlowLookup::new("lookup_nf", flow_table.clone());
         let mut pipeline: DynPipeline<'static, TestBuffer> =
             DynPipeline::new().add_stage(lookup_nf);
+        let doomed;
 
         {
             let mut packet_1 = build_test_udp_ipv4_packet("10.0.0.1", "20.0.0.1", 80, 500);
@@ -193,7 +194,7 @@ mod test {
             let key_1 = FlowKey::try_from(&packet_1).unwrap();
             let key_2 = FlowKey::try_from(&packet_2).unwrap();
 
-            // create a pair of related flow entries; flow_2 will get a longer timeout
+            // create a pair of related flow entries
             let expires_at = clock::now() + Duration::from_secs(2);
             let (flow_1, flow_2) = FlowInfo::related_pair(
                 expires_at,
@@ -209,8 +210,9 @@ mod test {
             assert_eq!(Arc::strong_count(&flow_1), 1);
             assert_eq!(Arc::strong_count(&flow_2), 1);
 
-            // extend flow2's timeout so that it does not expire
+            // the halves share their expiry: extending one extends both
             flow_2.extend_expiry_unchecked(Duration::from_mins(1));
+            assert_eq!(flow_1.expires_at(), flow_2.expires_at());
 
             // ... and insert the two flows in the flow table
             flows.insert_from_arc(&flow_1).unwrap();
@@ -238,10 +240,15 @@ mod test {
             assert!(Arc::ptr_eq(&related_2, &flow_1));
             assert!(Arc::ptr_eq(&related_2, flow_1_pkt));
             assert_eq!(flow_table.active_len().unwrap(), 2);
+            doomed = Arc::downgrade(&flow_1);
         }
 
-        // wait 3 secs. Flow 1 should have been expired by its timer
+        // past the pair's original deadline, both halves live on; then flow 1 is invalidated,
+        // and the worker removes it
         tokio::time::sleep(Duration::from_secs(3)).await;
+        flows.expire_all(clock::now());
+        assert_eq!(flow_table.active_len().unwrap(), 2);
+        doomed.upgrade().unwrap().invalidate();
         flows.expire_all(clock::now());
 
         assert_eq!(flow_table.active_len().unwrap(), 1);
@@ -258,7 +265,7 @@ mod test {
         let packet_1 = &out[0];
         let packet_2 = &out[1];
 
-        // flow 1 should have expired and packet packet_1 no longer refer to it
+        // flow 1 should be gone and packet packet_1 no longer refer to it
         assert!(packet_1.meta().flow_info.is_none());
         assert!(flow_table.lookup(&key_1).is_none());
 
