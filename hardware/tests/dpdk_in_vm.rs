@@ -13,13 +13,14 @@
 //! | virtio-net | cloud-hypervisor | `net_virtio` | no-IOMMU (PA) |
 //! | virtio-net | QEMU | `net_virtio` | no-IOMMU (PA), vIOMMU (VA) |
 //! | e1000 (Intel 82540EM) | QEMU only | `net_e1000_em` | no-IOMMU (PA), vIOMMU (VA) |
-//! | e1000e (Intel 82574L) | QEMU only | `net_e1000_igb` | no-IOMMU (PA), vIOMMU (VA) |
+//! | e1000e (Intel 82574L) | QEMU only | `net_e1000_em` | no-IOMMU (PA), vIOMMU (VA) |
+//! | igb (Intel 82576) | QEMU only | `net_e1000_igb` | no-IOMMU (PA), vIOMMU (VA) |
 //!
 //! # IOMMU variants
 //!
 //! DPDK selects physical addresses (PA) without a virtual IOMMU and virtual addresses (VA)
 //! with QEMU's `intel-iommu` device.
-//! Virtio-net also enables `iommu_platform` and ATS; e1000 and e1000e use PCI bus remapping.
+//! Virtio-net also enables `iommu_platform` and ATS; the emulated Intel NICs use PCI bus remapping.
 //!
 //! # Host page size
 //!
@@ -32,15 +33,15 @@
 //!
 //! The VM image must include:
 //!
-//! - Built-in `vfio-pci` and NIC drivers (`CONFIG_VIRTIO_NET`, `CONFIG_E1000`, `CONFIG_E1000E`),
-//!   since the VM kernel disables module loading.
+//! - Built-in `vfio-pci` and NIC drivers (`CONFIG_VIRTIO_NET`, `CONFIG_E1000`, `CONFIG_E1000E`,
+//!   `CONFIG_IGB`), since the VM kernel disables module loading.
 //! - The guest hugepage reservation requested by each [`VmConfig`].
 
 use clock::Duration;
 use dataplane_hardware::nic::{BindToVfioPci, PciNic, PciNicError};
 use dataplane_hardware::pci::address::PciAddress;
 use dataplane_hardware::support::DpdkDriverType;
-use dpdk::dev::{Dev, DevConfig, RxOffload, Started, TxOffloadConfig};
+use dpdk::dev::{Dev, DevConfig, RssConf, RxOffload, Started, TxOffloadConfig};
 use dpdk::eal::{self, Eal};
 use dpdk::mem::{MbufArray, Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
@@ -1238,6 +1239,8 @@ const E1000_QEMU: VmConfig = VIRTIO_QEMU.to_builder().nic_model(NicModel::E1000)
 const E1000_QEMU_IOMMU: VmConfig = E1000_QEMU.to_builder().iommu(true).build();
 const E1000E_QEMU: VmConfig = VIRTIO_QEMU.to_builder().nic_model(NicModel::E1000E).build();
 const E1000E_QEMU_IOMMU: VmConfig = E1000E_QEMU.to_builder().iommu(true).build();
+const IGB_QEMU: VmConfig = VIRTIO_QEMU.to_builder().nic_model(NicModel::Igb).build();
+const IGB_QEMU_IOMMU: VmConfig = IGB_QEMU.to_builder().iommu(true).build();
 
 // Variants backed by 1 GiB host hugepages.
 const E1000_QEMU_1G: VmConfig = on_1g_host_pages(E1000_QEMU);
@@ -1300,6 +1303,8 @@ rx_tests! {
     dpdk_rx_frame_e1000_qemu_iommu_4k: E1000_QEMU_IOMMU => "QEMU / e1000 / vIOMMU (VA) / host 4K pages";
     dpdk_rx_frame_e1000e_qemu_4k: E1000E_QEMU => "QEMU / e1000e / no-IOMMU (PA) / host 4K pages";
     dpdk_rx_frame_e1000e_qemu_iommu_4k: E1000E_QEMU_IOMMU => "QEMU / e1000e / vIOMMU (VA) / host 4K pages";
+    dpdk_rx_frame_igb_qemu_4k: IGB_QEMU => "QEMU / igb / no-IOMMU (PA) / host 4K pages";
+    dpdk_rx_frame_igb_qemu_iommu_4k: IGB_QEMU_IOMMU => "QEMU / igb / vIOMMU (VA) / host 4K pages";
 }
 
 rx_tests! {
@@ -1308,6 +1313,115 @@ rx_tests! {
     dpdk_rx_frame_e1000_qemu_iommu: E1000_QEMU_IOMMU_1G => "QEMU / e1000 / vIOMMU (VA)";
     dpdk_rx_frame_e1000e_qemu: E1000E_QEMU_1G => "QEMU / e1000e / no-IOMMU (PA)";
     dpdk_rx_frame_e1000e_qemu_iommu: E1000E_QEMU_IOMMU_1G => "QEMU / e1000e / vIOMMU (VA)";
+}
+
+/// Data workers the RSS test spreads over: more than one, so that RSS has something to do.
+const RSS_DATA_QUEUES: u16 = 3;
+
+/// igb is the emulated NIC that can run several data workers: it hashes, has a redirection table
+/// to keep RSS off the control queue, and has a queue pair for each worker and the control worker.
+///
+/// This is the queue layout the dataplane's DPDK ports use, set up the same way.
+#[n_vm::test(config = IGB_QEMU)]
+fn dpdk_rss_spreads_over_data_queues_igb_qemu() {
+    eprintln!("=== QEMU / igb / RSS over data queues ===");
+
+    let (eal, link) = init_dpdk_eal(&IGB_QEMU);
+    let info = eal
+        .dev
+        .iter()
+        .next()
+        .expect("the EAL was allowed the igb NIC but has no port");
+    eprintln!(
+        "[dev] port {}: driver=\"{}\", max rx/tx queues {}/{}, rss hash types {:#x}, reta {}",
+        info.index(),
+        info.driver_name(),
+        info.max_rx_queues(),
+        info.max_tx_queues(),
+        info.rss_hash_types(),
+        info.reta_size(),
+    );
+    assert_eq!(info.driver_name(), "net_e1000_igb");
+
+    let control = RSS_DATA_QUEUES;
+    let queues = RSS_DATA_QUEUES + 1;
+    assert!(
+        info.max_rx_queues() >= queues && info.max_tx_queues() >= queues,
+        "igb should have a queue pair for each of {RSS_DATA_QUEUES} data workers and the control \
+         worker"
+    );
+    let rss = RssConf::supported_on(&info).expect("igb should hash IP and TCP/UDP");
+    assert_ne!(info.reta_size(), 0, "igb should have a redirection table");
+
+    let mut dev = DevConfig {
+        num_rx_queues: queues,
+        num_tx_queues: queues,
+        num_hairpin_queues: 0,
+        rx_offloads: RxOffload::NONE,
+        tx_offloads: TxOffloadConfig::none(),
+        mtu: None,
+        rss: Some(rss),
+    }
+    .apply(eal.claim(info.index()).expect("failed to claim the port"))
+    .expect("igb should take a queue pair per worker and RSS");
+
+    let mac: Mac = dev
+        .mac_address()
+        .expect("read the port's MAC address")
+        .inner();
+    let expected: Mac = link.mac.parse().expect("n-vm MAC address");
+    assert_eq!(mac, expected, "DPDK's port is not the {} NIC", link.id);
+
+    let pool = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new(
+                "rss_pool".to_string(),
+                PoolParams {
+                    size: 2048,
+                    ..Default::default()
+                },
+            )
+            .expect("invalid PoolConfig"),
+        )
+        .expect("failed to create mempool");
+    for queue in 0..queues {
+        dev.new_rx_queue(RxQueueConfig {
+            queue_index: RxQueueIndex(queue),
+            num_descriptors: 256,
+            socket_preference: socket::Preference::CurrentThread,
+            offloads: dev.info().rx_queue_offload_caps(),
+            pool: pool.clone(),
+        })
+        .unwrap_or_else(|e| panic!("failed to set up rx queue {queue}: {e:?}"));
+        dev.new_tx_queue(TxQueueConfig {
+            queue_index: TxQueueIndex(queue),
+            num_descriptors: 256,
+            socket_preference: socket::Preference::CurrentThread,
+            config: (),
+        })
+        .unwrap_or_else(|e| panic!("failed to set up tx queue {queue}: {e:?}"));
+    }
+    let mut started = dev.start().expect("failed to start DPDK device");
+
+    let data: Vec<RxQueueIndex> = (0..RSS_DATA_QUEUES).map(RxQueueIndex).collect();
+    let size = started
+        .spread_rss(&data)
+        .expect("igb should take a redirection table over the data queues");
+    let table = started
+        .rss_reta(size)
+        .expect("igb should report its redirection table");
+    eprintln!("[rss] {size} entry table: {table:?}");
+    assert!(
+        !table.contains(&RxQueueIndex(control)),
+        "RSS sends traffic to control queue {control}"
+    );
+    for queue in &data {
+        assert!(table.contains(queue), "RSS leaves out data queue {queue:?}");
+    }
+
+    assert_within_budget("closing the device", time_device_teardown(started));
+    assert_within_budget("dropping the EAL", time_eal_teardown(eal));
 }
 
 /// QEMU's virtio-net filters multicast on the guest's address list once promiscuous mode is off,
