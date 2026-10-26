@@ -36,21 +36,24 @@ stdenv.mkDerivation {
   ]
   ++ lib.optionals (platform.numa.max-nodes > 1) [ numactl ];
 
+  patches = [
+    # Make each x86 register access a single `mov` through a general-purpose register.
+    # A plain volatile access lets clang pick any encoding: it folded a load into a VEX
+    # `vpbroadcastd` (e1000_read_mac_addr_generic) and stores an OR it computed in SSE registers
+    # with `movd` (igb_hw_rss_hash_set). KVM must emulate every access to an emulated device's BAR,
+    # its instruction emulator rejects those encodings, and the guest takes #UD (SIGILL) on QEMU's
+    # e1000, e1000e and igb. Passed-through NICs are unaffected; their BARs are mapped directly.
+    # This replaces building the e1000 driver with -mno-avx, which kept the VEX load out but not the
+    # SSE store.
+    ./patches/x86-mmio-mov.patch
+  ];
+
   postPatch = ''
     patchShebangs config/arm buildtools
     # We have no use for RTE_TRACE at all and it makes things more difficult from a security POV so disable it
     sed -i 's/#define RTE_TRACE 1/#undef RTE_TRACE/g' config/rte_config.h
     # We have no use for receive or transmit callbacks at this time so disable them
     sed -i 's/#define RTE_ETHDEV_RXTX_CALLBACKS 1/#undef RTE_ETHDEV_RXTX_CALLBACKS/g' config/rte_config.h
-  ''
-  + lib.optionalString stdenv.hostPlatform.isx86_64 ''
-    # Keep AVX out of the e1000 driver's register accesses.
-    # At -O3 clang folds a volatile MMIO load into a VEX instruction (e.g. `vpbroadcastd` in
-    # e1000_read_mac_addr_generic). KVM must emulate every access to an emulated device's BAR and its
-    # instruction emulator rejects VEX encodings, so the guest takes #UD (SIGILL) while probing QEMU's
-    # e1000e. Passed-through NICs are unaffected; their BARs are mapped directly.
-    test -f drivers/net/intel/e1000/meson.build
-    echo "cflags += ['-mno-avx']" >> drivers/net/intel/e1000/meson.build
   '';
 
   mesonFlags =
