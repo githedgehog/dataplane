@@ -10,9 +10,10 @@ use dpdk::lcore::LCore;
 use dpdk::mem::{Mbuf, MbufArray};
 use lifecycle::Subsystem;
 use net::buffer::PacketBufferMut;
+use net::eth::mac::Mac;
 use net::headers::{TryEth, TryHeaders};
 use net::interface::InterfaceIndex;
-use net::packet::Packet;
+use net::packet::{DoneReason, Packet};
 use pipeline::{DynPipeline, NetworkFunction};
 use tracing::{debug, error, trace, warn};
 use traffic_control::Key;
@@ -299,11 +300,8 @@ impl<'p> Worker<'p> {
         counters: &mut RxCounters,
     ) {
         let queues = &self.ports[slot].queues;
-        for packet in diverted.drain(..) {
-            let addressed_to_us = packet
-                .try_eth()
-                .is_some_and(|eth| addressed_to(eth.destination().inner(), queues.mac.inner()));
-            if addressed_to_us {
+        for mut packet in diverted.drain(..) {
+            if divert_verdict(&mut packet, queues.mac.inner()) {
                 Self::punt(
                     self.id,
                     &queues.name,
@@ -358,6 +356,23 @@ impl<'p> Worker<'p> {
             );
         }
     }
+}
+
+/// Give a packet taken off the data path the verdict the pipeline would have: [`DoneReason::Local`]
+/// if it is addressed to the port, for the kernel, and [`DoneReason::MacNotForUs`] if not.
+/// Returns whether it is for the kernel.
+///
+/// A packet dropped without a verdict is reported as an error, once per packet.
+fn divert_verdict<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, port: Mac) -> bool {
+    let addressed_to_us = packet
+        .try_eth()
+        .is_some_and(|eth| addressed_to(eth.destination().inner(), port));
+    packet.done(if addressed_to_us {
+        DoneReason::Local
+    } else {
+        DoneReason::MacNotForUs
+    });
+    addressed_to_us
 }
 
 /// Parse a burst and run it through the pipeline.
