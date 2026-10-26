@@ -310,3 +310,30 @@ fn control_traffic_the_nic_does_not_steer_skips_the_pipeline() {
         assert_eq!(counters.rx, 2);
     }
 }
+
+/// The ARP request [`arp`] builds, sent to `destination` instead of broadcast.
+fn arp_to(destination: [u8; 6]) -> TestBuffer {
+    let mut frame = arp().as_ref().to_vec();
+    frame[..6].copy_from_slice(&destination);
+    TestBuffer::from_raw_data(&frame)
+}
+
+/// A packet taken off the data path is dropped by the worker, so it needs a verdict there: one
+/// dropped without is reported as an error, which with an emulated NIC is every control packet.
+#[test]
+fn diverted_control_traffic_gets_a_verdict() {
+    let port = Mac([0x02, 0, 0, 0, 0, 9]);
+    for (frame, for_kernel, verdict) in [
+        (arp(), true, DoneReason::Local),
+        (arp_to(port.0), true, DoneReason::Local),
+        (
+            arp_to([0x02, 0, 0, 0, 0, 8]),
+            false,
+            DoneReason::MacNotForUs,
+        ),
+    ] {
+        let mut packet = Packet::new(frame).unwrap();
+        assert_eq!(divert_verdict(&mut packet, port), for_kernel);
+        assert_eq!(packet.get_done(), Some(verdict));
+    }
+}
