@@ -856,7 +856,7 @@ jobs:
       - build
       - plan
 
-    name: "${{ matrix.hybrid && 'h' || 'v' }}-${{ matrix.upgradefrom && 'up' || '' }}${{ matrix.upgradefrom }}${{ matrix.upgradefrom && '-' || '' }}${{ matrix.mesh && 'mesh-' || '' }}${{ matrix.gateway && 'gw-' || '' }}${{ matrix.includeonie && 'onie-' || '' }}${{ matrix.buildmode }}-${{ matrix.vpcmode }}"
+    name: "${{ matrix.hybrid && 'h' || 'v' }}-${{ matrix.upgradefrom && 'up' || '' }}${{ matrix.upgradefrom }}${{ matrix.upgradefrom && '-' || '' }}${{ matrix.mesh && 'mesh-' || '' }}${{ matrix.gateway == 'dpdk' && 'gwd-' || matrix.gateway == 'kernel' && 'gwk-' || '' }}iso-${{ matrix.vpcmode }}"
 
     uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
     with:
@@ -875,7 +875,7 @@ jobs:
             || !matrix.hybrid
                && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab')
                && !contains(github.event.pull_request.labels.*.name, 'ci:+merge-ready')
-            || matrix.upgradefrom != ''
+            || matrix.upgradefrom
                && contains(github.event.pull_request.labels.*.name, 'ci:-upgrade')
                && !contains(github.event.pull_request.labels.*.name, 'ci:+merge-ready')
           )
@@ -893,52 +893,30 @@ jobs:
       prebuild: |
         just bump dataplane ${{ needs.version.outputs.version }}-release
         just bump frr ${{ needs.version.outputs.version }}-release
-      fabricmode: ${{ matrix.fabricmode }}
-      gateway: ${{ matrix.gateway }}
-      includeonie: ${{ matrix.includeonie }}
-      buildmode: ${{ matrix.buildmode }}
+      fabricmode: spine-leaf
+      mesh: ${{ !!matrix.mesh }}
+      gateway: ${{ !!matrix.gateway }}
+      gatewaydriver: ${{ matrix.gateway }}
+      includeonie: false
+      buildmode: iso
       vpcmode: ${{ matrix.vpcmode }}
       releasetest: ${{ contains(github.event.pull_request.labels.*.name, 'ci:+release') || inputs.enable_release_tests == true }}
-      hybrid: ${{ matrix.hybrid }}
+      hybrid: ${{ !!matrix.hybrid }}
       upgradefrom: ${{ matrix.upgradefrom }}
 
     strategy:
       fail-fast: false
       matrix:
-        fabricmode:
-          - spine-leaf
-        gateway:
-          - true
-        includeonie:
-          - false
-        buildmode:
-          - iso
-        vpcmode:
-          - l2vni
-        hybrid:
-          - false
-        upgradefrom:
-          - ""
-          - "26.03"
-          - "26.04"
         include:
-          # gateway l3vni
-          - fabricmode: spine-leaf
-            gateway: true
-            includeonie: false
-            buildmode: iso
-            vpcmode: l3vni
-            hybrid: false
-            upgradefrom: ""
+          - { vpcmode: l2vni, gateway: kernel }
+          - { vpcmode: l3vni, gateway: dpdk }
 
-          # hlab gateway l2vni
-          - fabricmode: spine-leaf
-            gateway: true
-            includeonie: false
-            buildmode: iso
-            vpcmode: l2vni
-            hybrid: true
-            upgradefrom: ""
+          # hlab
+          - { hybrid: true, vpcmode: l2vni, gateway: kernel }
+
+          # upgrades keep the driver and older releases only have kernel gateways in vlab
+          - { upgradefrom: "26.03", vpcmode: l2vni, gateway: kernel }
+          - { upgradefrom: "26.04", vpcmode: l2vni, gateway: kernel }
 
   summary:
     name: "Summary"
