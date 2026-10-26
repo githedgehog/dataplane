@@ -354,8 +354,8 @@
       "type": "Channel",
       "name": "nixpkgs-unstable",
       "artifact": "nixexprs.tar.xz",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1097770.5adc50831c25/nixexprs.tar.xz",
-      "hash": "sha256-hVMDyAXU0kxRuG3GygbZkzf5x+aBNEC0NYEJ6KwHtD4="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1100667.674a2028661e/nixexprs.tar.xz",
+      "hash": "sha256-GNxqGToDYDZH2M4YeIj5nLPEyljtn3hEdIFY1/JNm0M="
     },
     "opengrep": {
       "type": "GitRelease",
@@ -424,9 +424,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "b0829a2cc9f7b596583331d78a942c1e5170d8a0",
-      "url": "https://github.com/oxalica/rust-overlay/archive/b0829a2cc9f7b596583331d78a942c1e5170d8a0.tar.gz",
-      "hash": "sha256-M2rr/yPbTHvgAzCyZ+zHJHflFM0XU7t42Sw2skA3TQM="
+      "revision": "fad80eb74614f7dc37c1c83df8caae64361eda22",
+      "url": "https://github.com/oxalica/rust-overlay/archive/fad80eb74614f7dc37c1c83df8caae64361eda22.tar.gz",
+      "hash": "sha256-wjoZGhxH/Yr+OsFRpNyV9DpMGQIdNEjjAOinfzQvadk="
     },
     "ubuntu-kernel-buildinfo": {
       "type": "Url",
