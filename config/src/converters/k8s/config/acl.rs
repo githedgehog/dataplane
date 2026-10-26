@@ -461,21 +461,65 @@ mod test {
         let parsed = parse_tcp_flags(Some(&syn_no_ack));
         assert_eq!(parsed.value(), TcpFlags::SYN);
         assert_eq!(parsed.mask(), TcpFlags::SYN | TcpFlags::ACK);
+    }
 
-        // Each field maps to its own flag
-        let all_set = GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags {
-            ack: Some(true),
-            cwr: Some(true),
-            ece: Some(true),
-            fin: Some(true),
-            psh: Some(true),
-            rst: Some(true),
-            syn: Some(true),
-            urg: Some(true),
-        };
-        let parsed = parse_tcp_flags(Some(&all_set));
-        assert_eq!(parsed.value(), TcpFlags::all());
-        assert_eq!(parsed.mask(), TcpFlags::all());
+    #[test]
+    fn test_tcp_flags_parsing_per_field() {
+        // Each field maps to its own flag. Expected bits are the RFC 9293 values, written
+        // independently from the TcpFlags constants so that a swap in the mapping shows up.
+        type Setter = fn(&mut GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags, Option<bool>);
+        let fields: [(&str, Setter, u8); 8] = [
+            ("fin", |f, v| f.fin = v, 0x01),
+            ("syn", |f, v| f.syn = v, 0x02),
+            ("rst", |f, v| f.rst = v, 0x04),
+            ("psh", |f, v| f.psh = v, 0x08),
+            ("ack", |f, v| f.ack = v, 0x10),
+            ("urg", |f, v| f.urg = v, 0x20),
+            ("ece", |f, v| f.ece = v, 0x40),
+            ("cwr", |f, v| f.cwr = v, 0x80),
+        ];
+        for (name, set, bit) in fields {
+            for required in [true, false] {
+                let mut flags = no_flags();
+                set(&mut flags, Some(required));
+                let parsed = parse_tcp_flags(Some(&flags));
+                let expected_value = if required { bit } else { 0 };
+                assert_eq!(parsed.mask().bits(), bit, "{name}={required}");
+                assert_eq!(parsed.value().bits(), expected_value, "{name}={required}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_tcp_flags_parsing_fuzz() {
+        // Same RFC 9293 values as above, in field order: fin, syn, rst, psh, ack, urg, ece, cwr
+        bolero::check!()
+            .with_type::<[Option<bool>; 8]>()
+            .for_each(|fields| {
+                let [fin, syn, rst, psh, ack, urg, ece, cwr] = *fields;
+                let flags = GatewayAgentPeeringsAclRulesMatchTcpFiltersFlags {
+                    ack,
+                    cwr,
+                    ece,
+                    fin,
+                    psh,
+                    rst,
+                    syn,
+                    urg,
+                };
+                let (mut mask, mut value) = (0u8, 0u8);
+                for (i, field) in fields.iter().enumerate() {
+                    if let Some(required) = field {
+                        mask |= 1 << i;
+                        if *required {
+                            value |= 1 << i;
+                        }
+                    }
+                }
+                let parsed = parse_tcp_flags(Some(&flags));
+                assert_eq!(parsed.mask().bits(), mask);
+                assert_eq!(parsed.value().bits(), value);
+            });
     }
 
     #[test]
