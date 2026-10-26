@@ -720,11 +720,17 @@ fn a_vm_can_present_several_nic_models_at_once() {
             n_vm::NicModel::VirtioNet,
             n_vm::NicModel::E1000,
             n_vm::NicModel::E1000E,
+            n_vm::NicModel::Igb,
         ])
         // Declared, because a kernel missing one of these does not fail --
         // it presents the device and binds nothing, which reads here as
         // "the model never reached the guest" when it did.
-        .kernel_features(&[features::VIRTIO_NET, features::E1000, features::E1000E])
+        .kernel_features(&[
+            features::VIRTIO_NET,
+            features::E1000,
+            features::E1000E,
+            features::IGB,
+        ])
         // Named rather than left to `RequestedBackend::Qemu`.  A pinned
         // backend that the run's profile does not offer resolves to a
         // *skip*, and a skip is reported as a pass -- so this test would
@@ -735,8 +741,8 @@ fn a_vm_can_present_several_nic_models_at_once() {
 
     assert_eq!(
         guest_nic_drivers(),
-        vec!["e1000", "e1000e", "virtio_net", "virtio_net"],
-        "the guest should have bound three different drivers",
+        vec!["e1000", "e1000e", "igb", "virtio_net", "virtio_net"],
+        "the guest should have bound four different drivers",
     );
 }
 
