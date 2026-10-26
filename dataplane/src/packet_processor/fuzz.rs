@@ -1800,6 +1800,7 @@ mod round_trip {
     use net::ipv4::UnicastIpv4Addr;
     use net::ipv6::UnicastIpv6Addr;
     use net::parse::DeParse;
+    use net::tcp::{TcpFlags, TcpPort};
     use net::udp::UdpPort;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -1894,6 +1895,54 @@ mod round_trip {
                         udp.set_source(sport);
                         udp.set_destination(dport);
                     })
+                    .build_headers()
+                    .ok()?
+            }
+            _ => return None,
+        };
+        let mut buffer = TestBuffer::new();
+        headers.deparse(buffer.as_mut()).ok()?;
+        Packet::new(buffer).ok()
+    }
+
+    pub(super) fn tcp(
+        src: IpAddr,
+        dst: IpAddr,
+        sport: u16,
+        dport: u16,
+        flags: TcpFlags,
+    ) -> Option<Packet<TestBuffer>> {
+        let sport = TcpPort::new_checked(sport).ok()?;
+        let dport = TcpPort::new_checked(dport).ok()?;
+        let set_tcp = |tcp: &mut net::tcp::Tcp| {
+            tcp.set_source(sport);
+            tcp.set_destination(dport);
+            tcp.set_flags(flags);
+        };
+        let headers = match (src, dst) {
+            (IpAddr::V4(src), IpAddr::V4(dst)) => {
+                let src = UnicastIpv4Addr::new(src).ok()?;
+                HeaderStack::new()
+                    .eth(|_| {})
+                    .ipv4(|ip| {
+                        ip.set_source(src);
+                        ip.set_destination(dst);
+                        ip.set_ttl(64);
+                    })
+                    .tcp(set_tcp)
+                    .build_headers()
+                    .ok()?
+            }
+            (IpAddr::V6(src), IpAddr::V6(dst)) => {
+                let src = UnicastIpv6Addr::new(src).ok()?;
+                HeaderStack::new()
+                    .eth(|_| {})
+                    .ipv6(|ip| {
+                        ip.set_source(src);
+                        ip.set_destination(dst);
+                        ip.set_hop_limit(64);
+                    })
+                    .tcp(set_tcp)
                     .build_headers()
                     .ok()?
             }
@@ -2514,6 +2563,428 @@ mod acl {
             "a flow created during apply became stale at publication: {after:?}; open its \
              generation before migration"
         );
+    }
+
+    /// TCP flags in ACL rules, through the full pipeline and the NAT flavours.
+    ///
+    /// Packet-scoped rules match on flags, flow-scoped rules do not, and replies on a flow are
+    /// classified with the flags of the segment that opened it. Rules all go from VPC-1 to VPC-2,
+    /// so a reply never matches a rule directly: only the reverse lookup or the default can let
+    /// it through.
+    mod tcp_flags {
+        use super::*;
+        use config::external::overlay::acl::AclTcpFlagsMatch;
+        use config::external::overlay::vpcpeering::contract::StaticNatExposes;
+        use net::tcp::TcpFlags;
+        use std::ops::Bound::Included;
+
+        const MAX_EXPOSES: u8 = 2;
+        // A single rule cannot shadow another one
+        const MIN_RULES: u8 = 2;
+        const MAX_RULES: u8 = 4;
+        const CONNECTIONS_PER_FABRIC: usize = 8;
+        const FIRST_SPORT: u16 = 1024;
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, TypeGenerator)]
+        enum Nat {
+            Masquerade,
+            Static,
+            None,
+        }
+
+        impl Nat {
+            // In declaration order, so that "nat as usize" indexes it
+            const ALL: [Nat; 3] = [Nat::Masquerade, Nat::Static, Nat::None];
+
+            fn name(self) -> &'static str {
+                match self {
+                    Nat::Masquerade => "masquerade",
+                    Nat::Static => "static nat",
+                    Nat::None => "no nat",
+                }
+            }
+        }
+
+        #[derive(Debug, Clone, Copy, TypeGenerator)]
+        struct RuleSpec {
+            // Flow-scoped rules always allow: a flow-scoped deny acts as a packet-scoped one
+            allow: bool,
+            flow: bool,
+            // Both drawn twice and combined, with SYN in the mask 3 times out of 4 on top: rules
+            // require a couple of flags on average, mostly to be clear. They still match a fair
+            // share of segments, and often match empty flags but not an opening SYN, which is
+            // what tells the opening flags of a flow apart from no flags for replies.
+            value: (u8, u8),
+            mask: (u8, u8),
+            syn: (bool, bool),
+        }
+
+        impl RuleSpec {
+            fn allows(self) -> bool {
+                self.flow || self.allow
+            }
+
+            fn value(self) -> u8 {
+                self.value.0 & self.value.1
+            }
+
+            fn mask(self) -> u8 {
+                let syn = if self.syn.0 || self.syn.1 {
+                    TcpFlags::SYN.bits()
+                } else {
+                    0
+                };
+                (self.mask.0 & self.mask.1) | syn
+            }
+
+            // Flow-scoped rules cannot match on flags
+            fn flags(self) -> Option<u8> {
+                (!self.flow).then(|| self.mask())
+            }
+
+            // Written from the bits rather than with AclTcpFlagsMatch::matches(), to compare the
+            // pipeline against an independent model
+            fn matches(self, flags: TcpFlags) -> bool {
+                self.flags()
+                    .is_none_or(|mask| flags.bits() & mask == self.value() & mask)
+            }
+
+            fn as_rule(self, index: usize) -> AclRule {
+                let proto = match self.flags() {
+                    None => AclProtoMatch::tcp(),
+                    Some(mask) => AclProtoMatch::Tcp(
+                        AclTcpFlagsMatch::ANY
+                            .require(TcpFlags::from_bits_retain(mask & self.value()), true)
+                            .require(TcpFlags::from_bits_retain(mask & !self.value()), false),
+                    ),
+                };
+                AclRule {
+                    name: format!("rule-{index}"),
+                    from: "VPC-1".to_owned(),
+                    to: "VPC-2".to_owned(),
+                    action: if self.allows() {
+                        AclAction::Allow
+                    } else {
+                        AclAction::Deny
+                    },
+                    pattern: AclPattern {
+                        src: PrefixPortsSet::new(),
+                        dst: PrefixPortsSet::new(),
+                        src_any_ports: Vec::new(),
+                        dst_any_ports: Vec::new(),
+                        proto,
+                    },
+                    scope: if self.flow {
+                        AclScope::Flow
+                    } else {
+                        AclScope::Packet
+                    },
+                    log: false,
+                }
+            }
+        }
+
+        #[derive(Debug, Clone, Copy)]
+        struct Connection {
+            prefix: u8,
+            dport: u16,
+            opening: TcpFlags,
+            reply: TcpFlags,
+            follow_up: TcpFlags,
+        }
+
+        // Half of the connections open with a segment that can open a flow: SYN, possibly with
+        // ECE and CWR for ECN setup (see RFC 3168). The others carry any flags.
+        fn opening_flags<D: Driver>(driver: &mut D) -> Option<TcpFlags> {
+            let bits = TcpFlags::from_bits_retain(driver.produce()?);
+            Some(if driver.produce()? {
+                TcpFlags::SYN | (bits & (TcpFlags::ECE | TcpFlags::CWR))
+            } else {
+                bits
+            })
+        }
+
+        struct Batch;
+
+        impl ValueGenerator for Batch {
+            type Output = (Nat, Vec<VpcExpose>, bool, Vec<RuleSpec>, Vec<Connection>);
+
+            fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+                let nat = Nat::generate(driver)?;
+                let exposes = match nat {
+                    Nat::Masquerade => MasqueradeExposes(MAX_EXPOSES).generate(driver)?,
+                    Nat::Static => {
+                        StaticNatExposes::addresses_only(MAX_EXPOSES).generate(driver)?
+                    }
+                    Nat::None => {
+                        let private = if driver.produce()? {
+                            "10.0.0.0/24"
+                        } else {
+                            "2001:db8::/64"
+                        };
+                        vec![VpcExpose::empty().ip(prefix(private).into())]
+                    }
+                };
+                // Replies only depend on the rules under a default deny
+                let default_allow = driver.gen_u8(Included(&0), Included(&3))? == 0;
+                let rule_count = driver.gen_u8(Included(&MIN_RULES), Included(&MAX_RULES))?;
+                let rules = (0..rule_count)
+                    .map(|_| RuleSpec::generate(driver))
+                    .collect::<Option<Vec<_>>>()?;
+                let mut connections = Vec::with_capacity(CONNECTIONS_PER_FABRIC);
+                for _ in 0..CONNECTIONS_PER_FABRIC {
+                    connections.push(Connection {
+                        prefix: driver.produce()?,
+                        dport: driver.produce::<u16>()?.max(1),
+                        opening: opening_flags(driver)?,
+                        reply: TcpFlags::from_bits_retain(driver.produce()?),
+                        follow_up: TcpFlags::from_bits_retain(driver.produce()?),
+                    });
+                }
+                Some((nat, exposes, default_allow, rules, connections))
+            }
+        }
+
+        // The rule a segment from VPC-1 to VPC-2 with these flags matches first, if any
+        fn first_match(rules: &[RuleSpec], flags: TcpFlags) -> Option<(usize, RuleSpec)> {
+            rules
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, rule)| rule.matches(flags))
+        }
+
+        fn permits(rules: &[RuleSpec], default_allow: bool, flags: TcpFlags) -> bool {
+            first_match(rules, flags).map_or(default_allow, |(_, rule)| rule.allows())
+        }
+
+        // Same as Tcp::is_first_segment(): the segments the NAT stages and the flow tracker open
+        // flows for
+        fn opens_flow(flags: TcpFlags) -> bool {
+            let forbidden =
+                TcpFlags::ACK | TcpFlags::RST | TcpFlags::FIN | TcpFlags::PSH | TcpFlags::URG;
+            flags.contains(TcpFlags::SYN) && !flags.intersects(forbidden)
+        }
+
+        // Check a segment from VPC-1 to VPC-2 against the model, return whether it was forwarded
+        fn check_forward(
+            out: &Packet<TestBuffer>,
+            rules: &[RuleSpec],
+            default_allow: bool,
+            flags: TcpFlags,
+            what: &str,
+        ) -> bool {
+            let seen = verdict(out);
+            let forwarded = matches!(seen, Verdict::Forwarded { .. });
+            if permits(rules, default_allow, flags) {
+                assert_ne!(
+                    seen,
+                    Verdict::Dropped(DoneReason::AclDropped),
+                    "the acl dropped a {what} segment with flags {flags:?} it permits \
+                     (rules={rules:?} default_allow={default_allow})"
+                );
+            } else {
+                assert!(
+                    !forwarded,
+                    "a {what} segment with flags {flags:?} the acl denies was forwarded \
+                     (rules={rules:?} default_allow={default_allow})"
+                );
+                if seen == Verdict::Dropped(DoneReason::AclDropped) {
+                    DENIED_BY_ACL.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            forwarded
+        }
+
+        fn acl(rules: &[RuleSpec], default_allow: bool) -> Acl {
+            Acl::new(
+                if default_allow {
+                    AclAction::Allow
+                } else {
+                    AclAction::Deny
+                },
+                rules
+                    .iter()
+                    .enumerate()
+                    .map(|(index, rule)| rule.as_rule(index))
+                    .collect(),
+            )
+        }
+
+        // Check a reply from VPC-2 against the model. The reply matches no rule directly. It
+        // passes if the opening segment opened a flow and selected a flow-scoped allow rule,
+        // whatever earlier packet-scoped rules would select for the reply's own flags; otherwise,
+        // it gets the default action.
+        fn check_reply(
+            back: &Verdict,
+            nat: Nat,
+            rules: &[RuleSpec],
+            default_allow: bool,
+            conn: Connection,
+        ) {
+            // The index of the flow-scoped rule that allowed the opening segment, if any
+            let flow_rule = first_match(rules, conn.opening)
+                .filter(|(_, rule)| opens_flow(conn.opening) && rule.flow)
+                .map(|(index, _)| index);
+            if let Some(flow_rule) = flow_rule {
+                assert!(
+                    matches!(back, Verdict::Forwarded { .. }),
+                    "a reply with flags {:?} on a flow opened with flags {:?} by a flow-scoped allow \
+                     rule did not pass: {back:?} (nat={nat:?} rules={rules:?} \
+                     default_allow={default_allow})",
+                    conn.reply,
+                    conn.opening
+                );
+                OPENED[nat as usize].fetch_add(1, Ordering::Relaxed);
+                // An earlier packet-scoped rule would match the empty flags of a lookup without the
+                // opening flags, and the default would then drop the reply
+                if !default_allow
+                    && rules[..flow_rule]
+                        .iter()
+                        .any(|rule| rule.matches(TcpFlags::empty()))
+                {
+                    SHADOWED.fetch_add(1, Ordering::Relaxed);
+                }
+            } else if default_allow {
+                assert_ne!(
+                    *back,
+                    Verdict::Dropped(DoneReason::AclDropped),
+                    "the acl dropped a reply with flags {:?} under a default allow (nat={nat:?} \
+                     rules={rules:?})",
+                    conn.reply
+                );
+            } else {
+                assert!(
+                    !matches!(back, Verdict::Forwarded { .. }),
+                    "a reply with flags {:?} on a connection opened with flags {:?} passed, but no \
+                     flow-scoped allow rule opened it (nat={nat:?} rules={rules:?})",
+                    conn.reply,
+                    conn.opening
+                );
+                REPLY_DENIED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        static DENIED_BY_ACL: AtomicU64 = AtomicU64::new(0);
+        static OPENED: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+        static SHADOWED: AtomicU64 = AtomicU64::new(0);
+        static REPLY_DENIED: AtomicU64 = AtomicU64::new(0);
+
+        #[test]
+        fn the_generator_fits_the_input_budget() {
+            super::super::assert_within_budget("acl::tcp_flags::Batch", &Batch);
+        }
+
+        #[test]
+        fn the_acl_verdict_follows_the_tcp_flags_and_the_flow_they_open() {
+            let _eal = dpdk::test_support::start_eal();
+
+            bolero::check!()
+                .with_max_len(MAX_INPUT_LEN)
+                .with_generator(Batch)
+                .for_each(|(nat, exposes, default_allow, rules, connections)| {
+                    settled(|| {
+                        let default_allow = *default_allow;
+                        let acl = acl(rules, default_allow);
+                        let Some(mut fabric) = Fabric::build_with_acl(exposes, Some(&acl)) else {
+                            return;
+                        };
+                        let privates: Vec<Prefix> = exposes
+                            .iter()
+                            .flat_map(|e| e.ips.iter().map(PrefixWithOptionalPorts::prefix))
+                            .collect();
+                        if privates.is_empty() {
+                            return;
+                        }
+
+                        for (index, conn) in (FIRST_SPORT..).zip(connections) {
+                            let src =
+                                privates[usize::from(conn.prefix) % privates.len()].as_address();
+                            let dst = peer(src);
+                            let sport = index;
+
+                            // The opening segment follows the rules, whatever the scope of the
+                            // rule it matches
+                            let Some(mut opening) =
+                                round_trip::tcp(src, dst, sport, conn.dport, conn.opening)
+                            else {
+                                continue;
+                            };
+                            arrive(&mut opening, local());
+                            let out = fabric.send(opening);
+                            if !check_forward(&out, rules, default_allow, conn.opening, "opening") {
+                                continue;
+                            }
+                            let Verdict::Forwarded {
+                                src: Some(public),
+                                dst: Some(reached),
+                                ..
+                            } = verdict(&out)
+                            else {
+                                continue;
+                            };
+                            let Some(public_port) = out.transport_src_port() else {
+                                continue;
+                            };
+
+                            let Some(mut reply) = round_trip::tcp(
+                                reached,
+                                public,
+                                conn.dport,
+                                public_port.get(),
+                                conn.reply,
+                            ) else {
+                                continue;
+                            };
+                            arrive(&mut reply, remote());
+                            let back = verdict(&fabric.send(reply));
+                            check_reply(&back, *nat, rules, default_allow, *conn);
+
+                            // Next segments from VPC-1 still follow the rules, flow or not
+                            let Some(mut follow_up) =
+                                round_trip::tcp(src, dst, sport, conn.dport, conn.follow_up)
+                            else {
+                                continue;
+                            };
+                            arrive(&mut follow_up, local());
+                            let out = fabric.send(follow_up);
+                            check_forward(&out, rules, default_allow, conn.follow_up, "follow-up");
+                        }
+                    });
+                });
+
+            let opened =
+                Nat::ALL.map(|nat| (nat.name(), OPENED[nat as usize].load(Ordering::Relaxed)));
+            let (shadowed, reply_denied, denied_by_acl) = (
+                SHADOWED.load(Ordering::Relaxed),
+                REPLY_DENIED.load(Ordering::Relaxed),
+                DENIED_BY_ACL.load(Ordering::Relaxed),
+            );
+            eprintln!(
+                "replies through a flow-scoped allow: {opened:?} (shadowed {shadowed}) replies \
+                 denied={reply_denied} denied by the acl={denied_by_acl}"
+            );
+            for (nat, count) in opened {
+                super::super::assert_covered(
+                    count > 0,
+                    &format!("no reply ever passed on a flow opened by a flow-scoped rule ({nat})"),
+                );
+            }
+            super::super::assert_covered(
+                shadowed > 0,
+                "no reply ever passed under a default deny with a packet-scoped rule matching empty \
+                 flags ahead of the flow-scoped rule: nothing tells the opening flags apart from no \
+                 flags",
+            );
+            super::super::assert_covered(
+                reply_denied > 0,
+                "no reply was ever denied: the reply direction is vacuous",
+            );
+            super::super::assert_covered(
+                denied_by_acl > 0,
+                "no tcp segment was ever denied by the acl",
+            );
+        }
     }
 }
 
