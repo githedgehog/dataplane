@@ -213,6 +213,34 @@ fn check_vfio(devices: &[ResolvedDevice]) -> Result<(), String> {
     }
 }
 
+/// Make the VFIO nodes the vfio-pci devices need, where this process's `/dev` lacks them.
+/// See [`vfio::missing_nodes`].
+fn expose_vfio_nodes(devices: &[ResolvedDevice]) -> Result<(), String> {
+    let vfio: Vec<PciAddress> = devices
+        .iter()
+        .filter(|d| DpdkDriverType::from(d.supported) == DpdkDriverType::VfioPci)
+        .map(|d| d.address)
+        .collect();
+    if vfio.is_empty() {
+        return Ok(());
+    }
+    let missing = vfio::missing_nodes(
+        sysfs::sysfs_root().inner(),
+        std::path::Path::new("/dev"),
+        &vfio,
+    )
+    .map_err(|e| e.to_string())?;
+    for node in &missing {
+        info!(
+            "creating {} ({}:{}), which vfio-pci made after this container's /dev was filled in",
+            node.path.display(),
+            node.major,
+            node.minor
+        );
+    }
+    vfio::create_nodes(&missing).map_err(|e| e.to_string())
+}
+
 /// Bind non-bifurcated devices to vfio-pci, removing their kernel netdevs.
 /// Leave mlx5 bound to its kernel driver, which DPDK needs for RDMA verbs access.
 fn prepare_devices(devices: &[ResolvedDevice]) -> Result<(), String> {
@@ -1013,6 +1041,9 @@ fn main() {
             );
             if let Err(e) = prepare_devices(&devices) {
                 fail("failed to prepare a network device for DPDK", &e);
+            }
+            if let Err(e) = expose_vfio_nodes(&devices) {
+                fail("DPDK cannot reach the vfio-pci devices", &e);
             }
             info!("{} network device(s) ready for DPDK", devices.len());
 
