@@ -25,6 +25,7 @@ use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
 use net::headers::Headers;
 use net::headers::builder::HeaderStack;
 use net::ipv4::UnicastIpv4Addr;
+use net::ipv4::frag_offset::FragOffset;
 use net::ipv6::UnicastIpv6Addr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::parse::DeParse;
@@ -312,15 +313,26 @@ fn build_tcp_packet_v6_with_hop_by_hop(
 
 // Build a non-first fragment with TCP-shaped payload; the builder cannot set its offset.
 fn non_first_fragment_v6_bytes(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: u16) -> Vec<u8> {
+    non_first_fragment_v6_bytes_at(src, dst, sport, dport, 185)
+}
+
+// Same as non_first_fragment_v6_bytes(), at the given offset (in 8-octet units)
+fn non_first_fragment_v6_bytes_at(
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    sport: u16,
+    dport: u16,
+    offset: u16,
+) -> Vec<u8> {
     const FRAGMENT: u8 = 44;
     const TCP: u8 = 6;
-    // offset 185 (in 8-octet units) in the top 13 bits, and no more fragments.
-    const OFFSET_AND_FLAGS: u16 = 185 << 3;
+    // Offset in the top 13 bits, and no more fragments
+    let offset_and_flags: u16 = offset << 3;
 
     let mut fragment = Vec::new();
     fragment.push(TCP);
     fragment.push(0);
-    fragment.extend_from_slice(&OFFSET_AND_FLAGS.to_be_bytes());
+    fragment.extend_from_slice(&offset_and_flags.to_be_bytes());
     fragment.extend_from_slice(&1u32.to_be_bytes());
 
     let mut body = vec![0u8; 20];
@@ -2358,6 +2370,92 @@ fn a_non_first_fragment_does_not_match_a_tcp_flags_rule() {
         &non_first_fragment_v6_bytes(v6(net::ipv6_doc!("::5")), v6("2001:db9::5"), 1234, 80),
     );
     assert!(is_allowed(&run(&mut filter, fragment)));
+}
+
+// A TCP fragment at offset 1 starts at byte 8 of the TCP header, and can overwrite the flags of the
+// first fragment when the receiver reassembles them (see RFC 1858 and RFC 3128). Here, a first
+// fragment with ACK set would pass, and an offset-1 fragment would set SYN and clear ACK on
+// reassembly. Fragments at offset 2 or more start past the flags, and get no special treatment.
+fn tcp_fragment_v4(offset: u16) -> Packet<TestBuffer> {
+    let headers = HeaderStack::new()
+        .eth(|_| {})
+        .ipv4(|ip| {
+            ip.set_source(UnicastIpv4Addr::new(v4("10.0.0.5")).unwrap());
+            ip.set_destination(v4("20.0.0.5"));
+            ip.set_fragment_offset(FragOffset::new(offset).unwrap());
+        })
+        .tcp(|tcp| {
+            // Payload bytes shaped as the TCP header of a SYN
+            tcp.set_source(TcpPort::try_from(1234).unwrap());
+            tcp.set_destination(TcpPort::try_from(80).unwrap());
+            tcp.set_flags(TcpFlags::SYN);
+        })
+        .build_headers()
+        .unwrap();
+    packet(vpcd(VNI1), Some(vpcd(VNI2)), headers)
+}
+
+fn deny_syn_no_ack_then_allow_tcp() -> Acl {
+    Acl::new(
+        AclAction::Allow,
+        vec![
+            rule(
+                "deny-syn-no-ack",
+                AclAction::Deny,
+                AclScope::Packet,
+                syn_no_ack_pattern(),
+            ),
+            rule(
+                "allow-tcp",
+                AclAction::Allow,
+                AclScope::Packet,
+                tcp_flags_pattern(AclTcpFlagsMatch::ANY),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn a_tcp_fragment_at_offset_one_is_malformed_v4() {
+    let mut filter = build_filter_v4(Some(deny_syn_no_ack_then_allow_tcp()));
+    assert_eq!(
+        run(&mut filter, tcp_fragment_v4(1)).get_done(),
+        Some(DoneReason::Malformed)
+    );
+    assert!(is_allowed(&run(&mut filter, tcp_fragment_v4(2))));
+}
+
+#[test]
+fn a_tcp_fragment_at_offset_one_is_malformed_v6() {
+    let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(deny_syn_no_ack_then_allow_tcp()));
+    let fragment = |offset| {
+        packet_from_bytes(
+            vpcd(VNI1),
+            Some(vpcd(VNI2)),
+            &non_first_fragment_v6_bytes_at(
+                v6(net::ipv6_doc!("::5")),
+                v6("2001:db9::5"),
+                1234,
+                80,
+                offset,
+            ),
+        )
+    };
+    assert_eq!(
+        run(&mut filter, fragment(1)).get_done(),
+        Some(DoneReason::Malformed)
+    );
+    assert!(is_allowed(&run(&mut filter, fragment(2))));
+}
+
+// The drop does not depend on the rules: it also applies to peerings without ACL
+#[test]
+fn a_tcp_fragment_at_offset_one_is_malformed_without_acl() {
+    let mut filter = build_filter_v4(None);
+    assert_eq!(
+        run(&mut filter, tcp_fragment_v4(1)).get_done(),
+        Some(DoneReason::Malformed)
+    );
 }
 
 // A TCP packet with no TCP header has no flags we can match: it must be dropped before it reaches
