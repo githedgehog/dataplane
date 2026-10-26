@@ -142,6 +142,8 @@ pub mod features {
     /// not presented" when the device was presented and nothing could bind
     /// it.
     pub const E1000E: KernelFeature = KernelFeature::modular("E1000E", "e1000e");
+    /// Intel 82576, the emulated NIC QEMU calls `igb`.
+    pub const IGB: KernelFeature = KernelFeature::modular("IGB", "igb");
 }
 
 /// A feature a kernel does not provide.
