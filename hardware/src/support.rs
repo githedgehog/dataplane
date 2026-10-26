@@ -63,6 +63,8 @@ pub enum SupportedDevice {
     IntelE1000,
     #[strum(props(description = "82574L Gigabit Network Connection"))]
     IntelE1000E,
+    #[strum(props(description = "82576 Gigabit Network Connection"))]
+    IntelIgb,
     #[strum(props(description = "Ethernet Controller X710"))]
     IntelX710,
     #[strum(props(description = "Ethernet Virtual Function 700 Series"))]
@@ -109,6 +111,7 @@ impl From<SupportedDevice> for DpdkDriverType {
         match value {
             SupportedDevice::IntelE1000
             | SupportedDevice::IntelE1000E
+            | SupportedDevice::IntelIgb
             | SupportedDevice::IntelX710
             | SupportedDevice::IntelX710VirtualFunction
             | SupportedDevice::VirtioNet => DpdkDriverType::VfioPci,
@@ -129,7 +132,7 @@ impl SupportedDevice {
         #[allow(clippy::enum_glob_use)]
         use SupportedVendor::*;
         match self {
-            IntelX710 | IntelX710VirtualFunction | IntelE1000 | IntelE1000E => Intel,
+            IntelX710 | IntelX710VirtualFunction | IntelE1000 | IntelE1000E | IntelIgb => Intel,
             MellanoxConnectX6DX | MellanoxConnectX7 | MellanoxConnectX8 | MellanoxBlueField2
             | MellanoxBlueField3 => Mellanox,
             VirtioNet => RedHat,
@@ -157,6 +160,13 @@ impl SupportedDevice {
                 const DEVICES: [DeviceId; 1] = [
                     // 82574L Gigabit Network Connection (QEMU's `e1000e`)
                     DeviceId::new(0x10d3),
+                ];
+                DEVICES.as_slice()
+            }
+            IntelIgb => {
+                const DEVICES: [DeviceId; 1] = [
+                    // 82576 Gigabit Network Connection (QEMU's `igb`)
+                    DeviceId::new(0x10c9),
                 ];
                 DEVICES.as_slice()
             }
@@ -273,6 +283,9 @@ impl TryFrom<(VendorId, DeviceId)> for SupportedDevice {
                     device if SupportedDevice::IntelE1000E.device_ids().contains(&device) => {
                         SupportedDevice::IntelE1000E
                     }
+                    device if SupportedDevice::IntelIgb.device_ids().contains(&device) => {
+                        SupportedDevice::IntelIgb
+                    }
                     device if SupportedDevice::IntelX710.device_ids().contains(&device) => {
                         SupportedDevice::IntelX710
                     }
@@ -338,7 +351,7 @@ impl TryFrom<(VendorId, DeviceId)> for SupportedDevice {
 mod tests {
     use super::*;
 
-    /// QEMU's `e1000` and `e1000e` are different chips with different drivers.
+    /// QEMU's `e1000`, `e1000e` and `igb` are different chips with different drivers.
     #[test]
     fn emulated_intel_nics_are_told_apart() {
         let intel = SupportedVendor::Intel.vendor_id();
@@ -349,6 +362,10 @@ mod tests {
         assert_eq!(
             SupportedDevice::try_from((intel, DeviceId::new(0x10d3))).unwrap(),
             SupportedDevice::IntelE1000E
+        );
+        assert_eq!(
+            SupportedDevice::try_from((intel, DeviceId::new(0x10c9))).unwrap(),
+            SupportedDevice::IntelIgb
         );
     }
 }
