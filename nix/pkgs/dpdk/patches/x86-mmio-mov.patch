@@ -1,0 +1,87 @@
+--- a/lib/eal/include/generic/rte_io.h
++++ b/lib/eal/include/generic/rte_io.h
+@@ -272,6 +272,75 @@
+ 
+ #ifndef RTE_OVERRIDE_IO_H
+ 
++#if defined(__x86_64__) && !defined(RTE_TOOLCHAIN_MSVC)
++
++/*
++ * A plain volatile access leaves the instruction to the compiler, which may
++ * use any encoding of a load or store: an SSE movd of a value it computed in
++ * a vector register, or a VEX broadcast folded from a load. On a device that
++ * a hypervisor emulates, every access to a BAR traps, and KVM's instruction
++ * emulator rejects most vector encodings, so the guest takes #UD instead.
++ * Each access is therefore a single mov through a general-purpose register.
++ */
++
++static __rte_always_inline uint8_t
++rte_read8_relaxed(const volatile void *addr)
++{
++	uint8_t val;
++	asm volatile("movb %1, %0" : "=q" (val) : "m" (*(const volatile uint8_t *)addr));
++	return val;
++}
++
++static __rte_always_inline uint16_t
++rte_read16_relaxed(const volatile void *addr)
++{
++	uint16_t val;
++	asm volatile("movw %1, %0" : "=r" (val) : "m" (*(const volatile uint16_t *)addr));
++	return val;
++}
++
++static __rte_always_inline uint32_t
++rte_read32_relaxed(const volatile void *addr)
++{
++	uint32_t val;
++	asm volatile("movl %1, %0" : "=r" (val) : "m" (*(const volatile uint32_t *)addr));
++	return val;
++}
++
++static __rte_always_inline uint64_t
++rte_read64_relaxed(const volatile void *addr)
++{
++	uint64_t val;
++	asm volatile("movq %1, %0" : "=r" (val) : "m" (*(const volatile uint64_t *)addr));
++	return val;
++}
++
++static __rte_always_inline void
++rte_write8_relaxed(uint8_t value, volatile void *addr)
++{
++	asm volatile("movb %1, %0" : "=m" (*(volatile uint8_t *)addr) : "q" (value));
++}
++
++static __rte_always_inline void
++rte_write16_relaxed(uint16_t value, volatile void *addr)
++{
++	asm volatile("movw %1, %0" : "=m" (*(volatile uint16_t *)addr) : "r" (value));
++}
++
++static __rte_always_inline void
++rte_write32_relaxed(uint32_t value, volatile void *addr)
++{
++	asm volatile("movl %1, %0" : "=m" (*(volatile uint32_t *)addr) : "r" (value));
++}
++
++static __rte_always_inline void
++rte_write64_relaxed(uint64_t value, volatile void *addr)
++{
++	asm volatile("movq %1, %0" : "=m" (*(volatile uint64_t *)addr) : "r" (value));
++}
++
++#else
++
+ static __rte_always_inline uint8_t
+ rte_read8_relaxed(const volatile void *addr)
+ {
+@@ -320,6 +389,8 @@
+ 	*(volatile uint64_t *)addr = value;
+ }
+ 
++#endif /* __x86_64__ && !RTE_TOOLCHAIN_MSVC */
++
+ static __rte_always_inline uint8_t
+ rte_read8(const volatile void *addr)
+ {
