@@ -267,6 +267,10 @@ pub enum NicModel {
 
     /// Intel 82574L Gigabit Ethernet (QEMU `e1000e` device).
     E1000E,
+
+    /// Intel 82576 Gigabit Ethernet (QEMU `igb` device), the emulated Intel NIC with RSS and
+    /// several queue pairs.
+    Igb,
 }
 
 impl NicModel {
@@ -279,7 +283,7 @@ impl NicModel {
     /// Returns `true` if this NIC model requires QEMU.
     #[must_use]
     pub const fn requires_qemu(self) -> bool {
-        matches!(self, Self::E1000 | Self::E1000E)
+        matches!(self, Self::E1000 | Self::E1000E | Self::Igb)
     }
 }
 

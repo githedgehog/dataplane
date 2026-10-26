@@ -817,8 +817,14 @@ fn push_vsock_args(args: &mut Vec<String>, vsock: &VsockAllocation, iommu: bool)
 ///   (MSI-X, hardware offloads).  Like `e1000`, it does not support
 ///   `iommu_platform` or ATS but sits behind the Intel IOMMU on the
 ///   PCI bus.
+///
+/// - [`Igb`](config::NicModel::Igb) -- Intel 82576 (`igb`).  Emulated
+///   with RSS and several queue pairs; same IOMMU story as `e1000e`.
+///   Each one sits behind a `pcie-root-port` of its own: igb can do
+///   SR-IOV, and QEMU reserves the slots its virtual functions would take
+///   on the bus it is on, which the next igb on the same bus collides with.
 fn push_network_args(args: &mut Vec<String>, iommu: bool, ifaces: &[config::NetIface]) {
-    for iface in ifaces {
+    for (index, iface) in ifaces.iter().enumerate() {
         // The TAP netdev is the same regardless of the front-end device
         // model -- it just bridges a host TAP interface into the guest.
         args.extend([
@@ -861,6 +867,24 @@ fn push_network_args(args: &mut Vec<String>, iommu: bool, ifaces: &[config::NetI
                 // by the Intel IOMMU when present.
                 format!(
                     "e1000e,netdev=nd-{id},mac={mac}",
+                    id = iface.id,
+                    mac = iface.mac,
+                )
+            }
+            config::NicModel::Igb => {
+                // igb (Intel 82576): RSS and several queue pairs.  Same
+                // IOMMU story as e1000e.  Root ports need distinct
+                // (chassis, slot) pairs.
+                args.extend([
+                    "-device".into(),
+                    format!(
+                        "pcie-root-port,id=rp-{id},chassis=1,slot={slot}",
+                        id = iface.id,
+                        slot = index + 1,
+                    ),
+                ]);
+                format!(
+                    "igb,bus=rp-{id},netdev=nd-{id},mac={mac}",
                     id = iface.id,
                     mac = iface.mac,
                 )
@@ -1707,6 +1731,57 @@ mod tests {
                 "e1000e should not have iommu_platform: {dev}",
             );
             assert!(!dev.contains("ats="), "e1000e should not have ats: {dev}",);
+        }
+    }
+
+    // -- igb NIC model ------------------------------------------------
+
+    #[test]
+    fn igb_requires_qemu_and_is_not_virtio() {
+        assert!(!config::NicModel::Igb.is_virtio());
+        assert!(config::NicModel::Igb.requires_qemu());
+    }
+
+    #[test]
+    fn each_igb_has_a_root_port_of_its_own() {
+        let mut args = Vec::new();
+        push_network_args(&mut args, false, &ifaces_of(config::NicModel::Igb, 2));
+        let ports: Vec<&String> = args
+            .iter()
+            .filter(|a| a.starts_with("pcie-root-port,"))
+            .collect();
+        let buses: Vec<&str> = args
+            .iter()
+            .filter(|a| a.starts_with("igb,"))
+            .filter_map(|a| a.split(',').find_map(|part| part.strip_prefix("bus=")))
+            .collect();
+        assert_eq!(ports.len(), 3, "{args:?}");
+        assert_eq!(buses.len(), 3, "{args:?}");
+        for bus in &buses {
+            assert!(
+                ports.iter().any(|p| p.contains(&format!("id={bus},"))),
+                "igb on {bus} has no root port: {args:?}"
+            );
+        }
+        let slots: std::collections::BTreeSet<&str> = ports
+            .iter()
+            .filter_map(|p| p.split(',').find_map(|part| part.strip_prefix("slot=")))
+            .collect();
+        assert_eq!(slots.len(), 3, "root ports share a slot: {args:?}");
+    }
+
+    #[test]
+    fn igb_devices_have_no_iommu_platform_even_when_enabled() {
+        let mut args = Vec::new();
+        push_network_args(&mut args, true, &ifaces_of(config::NicModel::Igb, 2));
+        let devices: Vec<&String> = args.iter().filter(|a| a.starts_with("igb,")).collect();
+        assert_eq!(devices.len(), 3);
+        for dev in &devices {
+            assert!(
+                !dev.contains("iommu_platform"),
+                "igb should not have iommu_platform: {dev}",
+            );
+            assert!(!dev.contains("ats="), "igb should not have ats: {dev}",);
         }
     }
 
