@@ -6,7 +6,7 @@ use config::external::overlay::acl::{AclAction, AclScope};
 use net::buffer::PacketBufferMut;
 use net::flows::FlowInfo;
 use net::flows::FlowStatus;
-use net::headers::{Transport, TryHeaders, TryIp, UpperLayerProto};
+use net::headers::{Headers, Net, NetExt, Transport, TryHeaders, TryIp, UpperLayerProto};
 use net::ip::NextHeader;
 use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
 use net::tcp::TcpFlags;
@@ -225,6 +225,12 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
         let upper = packet.upper_layer_proto();
         let proto = match upper {
             UpperLayerProto::Carried(proto) => proto,
+            UpperLayerProto::NonFirstFragment
+                if is_tcp_fragment_at_offset_one(net, packet.headers()) =>
+            {
+                debug!("TCP fragment at offset 1, dropping packet");
+                return Err(DoneReason::Malformed);
+            }
             // Match wildcard and protocol-44 rules, without inferring a transport.
             UpperLayerProto::NonFirstFragment => NextHeader::FRAGMENT,
             UpperLayerProto::Indeterminate => {
@@ -249,6 +255,28 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
             ports,
             tcp_flags,
         })
+    }
+}
+
+/// Tell if a packet is a TCP fragment at offset 1 (in 8-byte units), see RFC 3128.
+///
+/// Such a fragment starts at byte 8 of the TCP header, so it can overwrite the TCP flags of the
+/// first fragment when the receiver reassembles the packet. We would classify the first fragment
+/// with flags other than the ones the receiver sees. A legitimate fragment never starts there: the
+/// first fragment would hold only 8 bytes of TCP header, and we drop it as malformed.
+///
+/// With extension headers in the fragmentable part, such as an IPv4 authentication header, the TCP
+/// header starts further and other offsets could reach the flags. We cannot tell without the first
+/// fragment, and do not look for them.
+fn is_tcp_fragment_at_offset_one(net: &Net, headers: &Headers) -> bool {
+    match net {
+        Net::Ipv4(ip) => {
+            NextHeader::from(ip.protocol()) == NextHeader::TCP && ip.fragment_offset().value() == 1
+        }
+        Net::Ipv6(_) => headers.net_ext().iter().any(|ext| {
+            matches!(ext, NetExt::Fragment(frag)
+                if frag.next_header() == NextHeader::TCP && frag.fragment_offset().value() == 1)
+        }),
     }
 }
 
