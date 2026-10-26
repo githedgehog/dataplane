@@ -10,6 +10,9 @@
 }:
 final: prev:
 let
+  # No FRR object references libatomic on x86_64 glibc; unverified on aarch64 and musl, which
+  # keep linking it.
+  drop-libatomic = final.stdenv.hostPlatform.isx86_64 && libc == "gnu";
   dep =
     pkg:
     (pkg.override { stdenv = final.stdenv'; }).overrideAttrs (orig: {
@@ -36,6 +39,9 @@ let
         // {
           stdenv = final.stdenv';
           inherit frrSrc vtysh-extensions;
+          # `fancy.libatomic` is copied out of a full libgccjit (gcc) build; do not ask for it
+          # where FRR does not link libatomic.
+          libatomic = if drop-libatomic then null else final.fancy.libatomic;
         }
       )).overrideAttrs
         (orig: {
@@ -63,8 +69,14 @@ let
             #     backs the cross-musl clang stdenv (note: stdenv, not
             #     stdenv' -- the prime is the clang stdenv whose cc.cc is
             #     clang and contains no libatomic at all).
+            #
+            # On x86_64 glibc no FRR object references libatomic at all (every atomic is inlined),
+            # so it is not linked there.  `--as-needed` cannot do this for us: libtool hoists the
+            # `-l` flags of a shared-library link ahead of every `-Wl,` flag.
             + (
-              if libc == "musl" then
+              if drop-libatomic then
+                ""
+              else if libc == "musl" then
                 " -L${final.stdenv.cc.cc.lib}/${final.stdenv.hostPlatform.config}/lib -latomic "
               else if libc == "gnu" then
                 " -L${final.fancy.libatomic}/lib -latomic "
@@ -83,6 +95,22 @@ let
             # this overrides the base package's --enable-static-bin.
             "--disable-static-bin"
           ];
+          # Where configure finds a libatomic (the build toolchain has one), it appends -latomic to
+          # LIBS, which ends every link and would leave a DT_NEEDED nothing in the closure provides.
+          postConfigure =
+            (orig.postConfigure or "")
+            + final.lib.optionalString drop-libatomic ''
+              sed -E -i '/^LIBS = /s/ -latomic\b//g' Makefile
+              grep -E '^LIBS = ' Makefile
+            '';
+          postInstall =
+            (orig.postInstall or "")
+            + final.lib.optionalString drop-libatomic ''
+              if grep -rl 'libatomic\.so' "$out"; then
+                echo "FRR still needs libatomic, which is not in its closure" >&2
+                exit 1
+              fi
+            '';
           # `buildPackages.nukeReferences` rather than `prev.nukeReferences`:
           # the `nuke-refs` script substitutes a perl path at build time, and
           # under a cross pkgset `prev.nukeReferences` picks up target-arch
@@ -104,7 +132,7 @@ let
                 -e ${final.fancy.readline} \
                 -e ${final.fancy.libxcrypt} \
                 -e ${final.fancy.json_c} \
-                ${if libc == "gnu" then "-e ${final.fancy.libatomic}" else ""} \
+                ${if libc == "gnu" && !drop-libatomic then "-e ${final.fancy.libatomic}" else ""} \
                 ${if libc == "musl" then "-e ${final.stdenv.cc.cc.lib}" else ""} \
                 '{}' +;
           '';
