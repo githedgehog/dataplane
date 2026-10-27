@@ -128,10 +128,11 @@ impl<'dev> RxQueue<'dev> {
             return Err(err);
         }
 
+        // Start from the PMD's defaults: ethdev only substitutes them for a NULL `rx_conf`, and zero
+        // thresholds are taken literally (ixgbe then drops to its scalar receive path).
         let rx_conf = dpdk_sys::rte_eth_rxconf {
             offloads: config.offloads.into(),
-            // Zero thresholds select the PMD defaults.
-            ..Default::default()
+            ..dev.info.inner.default_rxconf
         };
         match ConfigFailure::check(unsafe {
             dpdk_sys::rte_eth_rx_queue_setup(
