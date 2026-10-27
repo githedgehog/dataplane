@@ -606,10 +606,12 @@ mod tests {
             .open(dev.join("vfio/vfio"))
             .unwrap();
         // SAFETY: the ioctl takes no argument and the descriptor is open.
+        // The request is a `c_ulong` on glibc but a `c_int` on musl; 0x3b64 fits either.
+        #[allow(clippy::cast_possible_truncation)]
         let version = unsafe {
             libc::ioctl(
                 std::os::fd::AsRawFd::as_raw_fd(&container),
-                VFIO_GET_API_VERSION,
+                VFIO_GET_API_VERSION as _,
             )
         };
         assert_eq!(version, 0, "VFIO_API_VERSION");
