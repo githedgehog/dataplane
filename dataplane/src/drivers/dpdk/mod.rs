@@ -11,10 +11,12 @@
 //! Forwarding runs in software; control frames cross per-port TAPs through [`cpbridge`](crate::drivers::cpbridge).
 //!
 //! A control worker owns one more queue pair per port, which the data workers' RSS does not reach:
-//! it receives the control plane's traffic there and transmits what the kernel sends.
+//! it receives the control plane's traffic there and transmits what the kernel sends. A port whose
+//! device cannot keep traffic off such a queue has none; see [`port`].
 
 mod classes;
 mod control;
+mod inject;
 mod placement;
 mod port;
 mod worker;
