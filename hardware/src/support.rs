@@ -65,6 +65,8 @@ pub enum SupportedDevice {
     IntelE1000E,
     #[strum(props(description = "82576 Gigabit Network Connection"))]
     IntelIgb,
+    #[strum(props(description = "82599ES 10-Gigabit SFI/SFP+ Network Connection"))]
+    IntelIxgbe,
     #[strum(props(description = "Ethernet Controller X710"))]
     IntelX710,
     #[strum(props(description = "Ethernet Virtual Function 700 Series"))]
@@ -112,6 +114,7 @@ impl From<SupportedDevice> for DpdkDriverType {
             SupportedDevice::IntelE1000
             | SupportedDevice::IntelE1000E
             | SupportedDevice::IntelIgb
+            | SupportedDevice::IntelIxgbe
             | SupportedDevice::IntelX710
             | SupportedDevice::IntelX710VirtualFunction
             | SupportedDevice::VirtioNet => DpdkDriverType::VfioPci,
@@ -132,7 +135,12 @@ impl SupportedDevice {
         #[allow(clippy::enum_glob_use)]
         use SupportedVendor::*;
         match self {
-            IntelX710 | IntelX710VirtualFunction | IntelE1000 | IntelE1000E | IntelIgb => Intel,
+            IntelX710
+            | IntelX710VirtualFunction
+            | IntelE1000
+            | IntelE1000E
+            | IntelIgb
+            | IntelIxgbe => Intel,
             MellanoxConnectX6DX | MellanoxConnectX7 | MellanoxConnectX8 | MellanoxBlueField2
             | MellanoxBlueField3 => Mellanox,
             VirtioNet => RedHat,
@@ -167,6 +175,13 @@ impl SupportedDevice {
                 const DEVICES: [DeviceId; 1] = [
                     // 82576 Gigabit Network Connection (QEMU's `igb`)
                     DeviceId::new(0x10c9),
+                ];
+                DEVICES.as_slice()
+            }
+            IntelIxgbe => {
+                const DEVICES: [DeviceId; 1] = [
+                    // 82599ES 10-Gigabit SFI/SFP+ Network Connection
+                    DeviceId::new(0x10fb),
                 ];
                 DEVICES.as_slice()
             }
@@ -286,6 +301,9 @@ impl TryFrom<(VendorId, DeviceId)> for SupportedDevice {
                     device if SupportedDevice::IntelIgb.device_ids().contains(&device) => {
                         SupportedDevice::IntelIgb
                     }
+                    device if SupportedDevice::IntelIxgbe.device_ids().contains(&device) => {
+                        SupportedDevice::IntelIxgbe
+                    }
                     device if SupportedDevice::IntelX710.device_ids().contains(&device) => {
                         SupportedDevice::IntelX710
                     }
@@ -367,5 +385,14 @@ mod tests {
             SupportedDevice::try_from((intel, DeviceId::new(0x10c9))).unwrap(),
             SupportedDevice::IntelIgb
         );
+    }
+
+    #[test]
+    fn the_82599es_is_an_ixgbe_bound_to_vfio_pci() {
+        let device =
+            SupportedDevice::try_from((SupportedVendor::Intel.vendor_id(), DeviceId::new(0x10fb)))
+                .unwrap();
+        assert_eq!(device, SupportedDevice::IntelIxgbe);
+        assert_eq!(DpdkDriverType::from(device), DpdkDriverType::VfioPci);
     }
 }
