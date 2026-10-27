@@ -234,6 +234,10 @@ fn acl_match_supports_protocol_ports_and_subnet_references() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "serde_json locates parse errors with memchr, whose aligned word reads miri's symbolic alignment check refuses"
+)]
 fn acl_match_supports_tcp_filters() {
     use crate::external::overlay::acl::{AclProtoMatch, AclTcpFlagsMatch};
     use net::tcp::TcpFlags;
@@ -269,6 +273,10 @@ fn acl_match_supports_tcp_filters() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "serde_json locates parse errors with memchr, whose aligned word reads miri's symbolic alignment check refuses"
+)]
 fn invalid_meter_settings_are_refused() {
     for (meter, expected) in [
         (json!({}), "needs bits or pkts"),
@@ -321,6 +329,10 @@ fn invalid_meter_settings_are_refused() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "serde_json locates parse errors with memchr, whose aligned word reads miri's symbolic alignment check refuses"
+)]
 fn unknown_versions_rules_and_fields_are_refused() {
     let base = policy(json!({"pkts": {"rate": "1k"}}));
     for (pointer, value) in [
