@@ -250,6 +250,9 @@ pub enum PciDriver {
     /// Intel's igb driver, including QEMU's 82576.
     #[strum(serialize = "igb")]
     Igb,
+    /// Intel's ixgbe driver (82599 and later 10 Gb/s NICs).
+    #[strum(serialize = "ixgbe")]
+    Ixgbe,
     /// Intel's i40e driver.
     #[strum(serialize = "i40e")]
     I40e,
