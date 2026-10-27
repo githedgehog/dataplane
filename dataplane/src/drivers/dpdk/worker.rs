@@ -2,6 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 //! The per-worker run-to-completion loop: receive a burst, run the pipeline, transmit the result.
+//!
+//! Worker 0 also transmits the kernel's frames for ports without control queues; see
+//! [`port`](super::port).
 
 use std::collections::HashMap;
 
@@ -137,7 +140,11 @@ impl<'p> Worker<'p> {
             }
 
             let mut saw_frames = false;
+            let mut injected = false;
             for (slot, counters) in counters.iter_mut().enumerate() {
+                if self.inject(slot, counters) {
+                    injected = true;
+                }
                 if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut scratch, counters) {
                     saw_frames = true;
                 }
@@ -149,7 +156,7 @@ impl<'p> Worker<'p> {
                 flows.expire(clock::now(), EXPIRY_BUDGET);
             }
 
-            if saw_frames {
+            if saw_frames || injected {
                 idle_polls = 0;
             } else {
                 idle_polls += 1;
@@ -172,6 +179,16 @@ impl<'p> Worker<'p> {
             port.watchdog.record(counters);
             *counters = RxCounters::default();
         }
+    }
+
+    /// Transmit what the kernel sent out of a port without control queues, if this worker is the
+    /// one that does. Returns whether there was anything to send.
+    fn inject(&mut self, slot: usize, counters: &mut RxCounters) -> bool {
+        let queues = &mut self.ports[slot].queues;
+        let Some(injector) = queues.injector.as_mut() else {
+            return false;
+        };
+        injector.inject(self.id, &mut queues.tx, counters)
     }
 
     /// Do one port's work: receive a burst, run it through the pipeline, and transmit.
