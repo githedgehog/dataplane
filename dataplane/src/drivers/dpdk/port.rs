@@ -3,11 +3,20 @@
 
 //! Bringing DPDK ports up, and the queue split that gives each worker its own.
 //!
-//! A port has one receive and one transmit queue per data worker, and one more of each for the
-//! control worker: queue `W` for `W` data workers. RSS spreads over the data queues only, so the
-//! control receive queue gets nothing but what the control-plane classes' flow rules steer to it,
-//! and a data flood cannot crowd it out. The control queues draw on a pool of their own for the
-//! same reason.
+//! A port has one receive and one transmit queue per data worker, and, if it can keep traffic off
+//! one, one more of each for the control worker: queue `W` for `W` data workers. RSS spreads over
+//! the data queues only, so the control receive queue gets nothing but what the control-plane
+//! classes' flow rules steer to it, and a data flood cannot crowd it out. The control queues draw
+//! on a pool of their own for the same reason.
+//!
+//! A port whose device cannot be told to keep traffic off a queue gets no control queues at all,
+//! because the device, not the flow rules, would decide what lands there. A virtio-net on a
+//! multiqueue tap without the RSS feature is one: the host's tun driver spreads flows over every
+//! queue pair the guest enables, and sends a flow's replies to the queue the guest last sent it
+//! from. A control receive queue there gets a share of the data, which the control worker would
+//! hand to the kernel, and a control transmit queue alone would still enable a pair whose receive
+//! side nobody polls. On such a port the data workers take control traffic off the data path in
+//! software, and data worker 0 transmits the kernel's frames.
 
 use concurrency::thread;
 use dpdk::dev::{
@@ -30,6 +39,7 @@ use tracing::{debug, error, info, warn};
 use concurrency::sync::Arc;
 
 use super::classes::Fallback;
+use super::inject::Injector;
 use crate::drivers::DriverError;
 use crate::drivers::cpbridge::{DatapathEnds, Frame};
 
@@ -62,8 +72,9 @@ fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
     let rss = RssConf::supported_on(info);
     if rss.is_none() && num_workers > 1 {
         warn!(
-            "port {index} ({name}) advertises no RSS hash functions, so all {num_workers} workers \
-             will share receive queue 0 and only one of them will do any work",
+            "port {index} ({name}) advertises no RSS hash functions, so the device alone decides \
+             which of the {num_workers} workers' receive queues a frame lands on: queue 0 on most \
+             NICs, leaving one worker to do all the work",
             index = info.index()
         );
     }
@@ -74,7 +85,7 @@ fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
 #[derive(Debug, thiserror::Error)]
 #[error(
     "{port} has {max_rx} rx and {max_tx} tx queues, but {num_workers} worker(s) need {rx} and \
-     {tx}: a queue pair per worker and one for the control worker. {}",
+     {tx}: a queue pair per worker, and one for the control worker if the port has one. {}",
     if *fit == 0 {
         "It cannot carry even one worker.".to_string()
     } else {
@@ -116,9 +127,25 @@ impl QueueShortfall {
     }
 }
 
-/// RX/TX counts, including control TX and optional control RX.
-fn queue_counts(num_workers: u16, control_rx: bool) -> (u16, u16) {
-    (num_workers + u16::from(control_rx), num_workers + 1)
+/// Whether a port gets control queues: only if the device spreads with RSS through a redirection
+/// table, which is what keeps everything but the flow rules' traffic off the control receive queue.
+///
+/// Without RSS the device decides where each frame goes (a multiqueue virtio-net tap spreads flows
+/// over every enabled queue pair), and RSS without a table spreads over every queue: either way the
+/// control queue would get data, which the control worker cannot forward. Whether the NIC accepts
+/// the flow rules does not matter here: a table that keeps RSS off the control queue leaves it idle,
+/// not misused, and the control transmit queue still keeps the kernel's frames off the data ones.
+fn has_control_queues(spreads: bool, reta_size: u16) -> bool {
+    spreads && reta_size > 0
+}
+
+/// RX/TX counts: a pair per worker, and one for the control worker if the port has control queues.
+///
+/// Never more of one than the other. A virtio-net enables as many queue pairs as the larger of the
+/// two, and its host may deliver to any enabled pair.
+fn queue_counts(num_workers: u16, control: bool) -> (u16, u16) {
+    let queues = num_workers + u16::from(control);
+    (queues, queues)
 }
 
 /// The device behind a port, `<bus address> (<driver>)`.
@@ -387,14 +414,14 @@ pub(crate) struct Port<'eal> {
     pub(crate) control_pool: Pool<'eal>,
     /// The number of data queues, which is also the index of the control queues.
     pub(crate) data_queues: u16,
-    /// Whether the port has a control receive queue. It does unless the device spreads RSS over
-    /// every queue with no table to keep it off one; then control traffic stays on the data path.
-    pub(crate) control_rx: bool,
+    /// Whether the port has control queues; see [`has_control_queues`]. Without them its control
+    /// traffic is taken off the data path in software and data worker 0 transmits for the kernel.
+    pub(crate) control: bool,
 }
 
 impl<'eal> Port<'eal> {
-    /// Configure a device with one receive and one transmit queue per worker and one of each for
-    /// the control worker, and start it.
+    /// Configure a device with one receive and one transmit queue per worker, and one of each for
+    /// the control worker if it can keep traffic off them, and start it.
     ///
     /// # Errors
     ///
@@ -416,17 +443,22 @@ impl<'eal> Port<'eal> {
 
         let rss = rss_for(info, name.as_ref(), num_workers);
 
-        // Without a redirection table, RSS would spread over the control queue too.
         let spreads = rss.is_some();
-        let control_rx = !spreads || info.reta_size() > 0;
-        if !control_rx {
+        let control = has_control_queues(spreads, info.reta_size());
+        if !control {
             warn!(
-                "port {index} ({name}) does RSS but has no redirection table to keep it off a \
-                 control queue; its control traffic will share the data queues"
+                "port {index} ({name}) cannot keep traffic off a control queue (it has {}), so it \
+                 gets none: its control traffic is taken off the data path in software, and data \
+                 worker 0 transmits the kernel's frames",
+                if spreads {
+                    "RSS but no redirection table"
+                } else {
+                    "no RSS"
+                }
             );
         }
 
-        let (rx, tx) = queue_counts(num_workers, control_rx);
+        let (rx, tx) = queue_counts(num_workers, control);
         let config = DevConfig {
             num_rx_queues: rx,
             num_tx_queues: tx,
@@ -482,10 +514,10 @@ impl<'eal> Port<'eal> {
             new_rx_queue(&mut dev, queue, rx_descriptors, &rx_pool)?;
             new_tx_queue(&mut dev, queue, TX_DESCRIPTORS)?;
         }
-        if control_rx {
+        if control {
             new_rx_queue(&mut dev, num_workers, CONTROL_RX_DESCRIPTORS, &control_pool)?;
+            new_tx_queue(&mut dev, num_workers, CONTROL_TX_DESCRIPTORS)?;
         }
-        new_tx_queue(&mut dev, num_workers, CONTROL_TX_DESCRIPTORS)?;
 
         let mut dev = dev
             .start()
@@ -500,7 +532,7 @@ impl<'eal> Port<'eal> {
                  discovery may not reach the control plane"
             );
         }
-        if control_rx && spreads {
+        if control {
             keep_rss_off_control(&mut dev, name.as_ref(), num_workers)?;
         }
 
@@ -538,7 +570,7 @@ impl<'eal> Port<'eal> {
             hardware,
             control_pool,
             data_queues: num_workers,
-            control_rx,
+            control,
         })
     }
 
@@ -619,31 +651,37 @@ pub(crate) struct PortQueues<'p> {
     /// the dataplane is already shutting down. There is then nowhere to punt to and local delivery is
     /// dropped.
     pub(crate) punt: Option<mpsc::Sender<Frame>>,
+    /// The kernel's frames for this port, to transmit on `tx`: worker 0's, on a port without
+    /// control queues, and `None` everywhere else.
+    pub(crate) injector: Option<Injector<'p>>,
 }
 
-/// One port's control queues, as handed to the control worker.
+/// One port as the control worker sees it.
 pub(crate) struct ControlQueues<'p, 'eal> {
-    /// The device, for the flow rules that steer control traffic to `rx`.
+    /// The device, for the flow rules that steer control traffic to the control queue.
     pub(crate) dev: &'p Dev<'eal, Started>,
+    pub(crate) name: String,
+    /// Where to tell the port's data workers which classes the NIC does not steer.
+    pub(crate) fallback: Fallback,
+    /// The port's control queues; `None` if it has none, when every class is taken in software.
+    pub(crate) pair: Option<ControlPair<'p>>,
+}
+
+/// One port's control queue pair.
+pub(crate) struct ControlPair<'p> {
     /// The index of the control queues.
     pub(crate) queue: u16,
-    pub(crate) name: String,
     /// The MAC this port answers to.
     pub(crate) mac: SourceMac,
-    /// Where the control-plane classes' flow rules steer to; `None` if the port has no control
-    /// receive queue.
-    pub(crate) rx: Option<RxQueue<'p>>,
+    /// Where the control-plane classes' flow rules steer to.
+    pub(crate) rx: RxQueue<'p>,
     /// Where the control plane's frames leave, apart from forwarded traffic.
     pub(crate) tx: TxQueue<'p>,
-    /// The port's control pool, which injected frames are copied into.
-    pub(crate) pool: Pool<'p>,
     /// Where to hand the kernel what the control queue receives: the bridge's control channel,
     /// which its pump drains before the data workers' punts.
     pub(crate) punt: Option<mpsc::Sender<Frame>>,
-    /// Frames the kernel wants this port to transmit.
-    pub(crate) inject: Option<mpsc::Receiver<Frame>>,
-    /// Where to tell the port's data workers which classes the NIC does not steer.
-    pub(crate) fallback: Fallback,
+    /// The kernel's frames for this port, to transmit on `tx`.
+    pub(crate) injector: Option<Injector<'p>>,
 }
 
 /// A port's interface index as the control plane knows it, then its punt channel, its control
@@ -721,6 +759,19 @@ pub(crate) fn deal_queues<'p, 'eal>(
 
         let fallback = Fallback::default();
 
+        // The kernel's frames leave on the control queue if there is one, and on worker 0's
+        // otherwise.
+        let injector = inject.map(|frames| Injector {
+            name: port.name.to_string(),
+            pool: port.control_pool.clone(),
+            frames,
+        });
+        let (control_injector, mut worker_injector) = if port.control {
+            (injector, None)
+        } else {
+            (None, injector)
+        };
+
         let mut queues = port.dev.take_queues().ok_or_else(|| {
             DriverError::PortSetup(format!(
                 "queues for port {} were already taken; each device hands its set out once",
@@ -750,37 +801,44 @@ pub(crate) fn deal_queues<'p, 'eal>(
                 fallback: Arc::clone(&fallback),
                 control_punt: control_punt.clone(),
                 punt: punt.clone(),
+                injector: if worker == 0 {
+                    worker_injector.take()
+                } else {
+                    None
+                },
             });
         }
 
-        let queue = port.data_queues;
-        let rx = if port.control_rx {
-            Some(queues.take_rx(RxQueueIndex(queue)).ok_or_else(|| {
+        let pair = if port.control {
+            let queue = port.data_queues;
+            let rx = queues.take_rx(RxQueueIndex(queue)).ok_or_else(|| {
                 DriverError::PortSetup(format!(
                     "control rx queue {queue} missing on port {} after start",
                     port.name
                 ))
-            })?)
+            })?;
+            let tx = queues.take_tx(TxQueueIndex(queue)).ok_or_else(|| {
+                DriverError::PortSetup(format!(
+                    "control tx queue {queue} missing on port {} after start",
+                    port.name
+                ))
+            })?;
+            Some(ControlPair {
+                queue,
+                mac: port.mac,
+                rx,
+                tx,
+                punt: control_punt,
+                injector: control_injector,
+            })
         } else {
             None
         };
-        let tx = queues.take_tx(TxQueueIndex(queue)).ok_or_else(|| {
-            DriverError::PortSetup(format!(
-                "control tx queue {queue} missing on port {} after start",
-                port.name
-            ))
-        })?;
         control.push(ControlQueues {
             dev: &port.dev,
-            queue,
             name: port.name.to_string(),
-            mac: port.mac,
-            rx,
-            tx,
-            pool: port.control_pool.clone(),
-            punt: control_punt,
-            inject,
             fallback,
+            pair,
         });
     }
 
@@ -794,16 +852,16 @@ pub(crate) fn deal_queues<'p, 'eal>(
 mod tests {
     use dpdk::dev::{DevConfig, RxOffload, TxOffloadConfig};
 
-    use super::{QueueShortfall, fit_descriptors, queue_counts};
+    use super::{QueueShortfall, fit_descriptors, has_control_queues, queue_counts};
 
     fn shortfall(
         num_workers: u16,
-        control_rx: bool,
+        control: bool,
         hairpins: u16,
         max_rx: u16,
         max_tx: u16,
     ) -> QueueShortfall {
-        let (rx, tx) = queue_counts(num_workers, control_rx);
+        let (rx, tx) = queue_counts(num_workers, control);
         let config = DevConfig {
             num_rx_queues: rx,
             num_tx_queues: tx,
@@ -823,9 +881,37 @@ mod tests {
     }
 
     #[test]
-    fn without_a_control_rx_queue_the_tx_queues_decide() {
+    fn without_control_queues_every_queue_pair_is_a_workers() {
         let short = shortfall(8, false, 0, 4, 4);
-        assert_eq!((short.rx, short.tx, short.fit), (8, 9, 3));
+        assert_eq!((short.rx, short.tx, short.fit), (8, 8, 4));
+    }
+
+    /// A virtio-net enables as many queue pairs as the larger count, and its host delivers to any
+    /// enabled pair, so a lone extra queue in either direction would be a receive queue nobody
+    /// polls.
+    #[test]
+    fn receive_and_transmit_queues_always_pair_up() {
+        bolero::check!()
+            .with_type::<(u16, bool)>()
+            .for_each(|&(num_workers, control)| {
+                let num_workers = num_workers % 1024;
+                let (rx, tx) = queue_counts(num_workers, control);
+                assert_eq!(rx, tx);
+                assert_eq!(rx, num_workers + u16::from(control));
+            });
+    }
+
+    #[test]
+    fn only_rss_through_a_redirection_table_earns_control_queues() {
+        assert!(
+            !has_control_queues(false, 0),
+            "no RSS: virtio-net on a multiqueue tap"
+        );
+        assert!(!has_control_queues(true, 0), "RSS over every queue");
+        assert!(
+            has_control_queues(true, 128),
+            "igb, i40e, ixgbe, mlx5, virtio-net with RSS"
+        );
     }
 
     #[test]
