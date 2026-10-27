@@ -105,8 +105,8 @@ impl<'dev> TxQueue<'dev> {
         let tx_conf = dpdk_sys::rte_eth_txconf {
             // Inherit port offloads without enabling additional queue offloads.
             offloads: 0,
-            // Zero thresholds select the PMD defaults.
-            ..Default::default()
+            // The PMD's defaults: ethdev only substitutes them for a NULL `tx_conf`.
+            ..dev.info.inner.default_txconf
         };
         let ret = unsafe {
             dpdk_sys::rte_eth_tx_queue_setup(
