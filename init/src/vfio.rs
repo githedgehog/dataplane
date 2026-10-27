@@ -575,7 +575,7 @@ mod tests {
     }
 
     /// `VFIO_GET_API_VERSION`: `_IO(VFIO_TYPE, VFIO_BASE)`.
-    const VFIO_GET_API_VERSION: libc::c_ulong = (b';' as libc::c_ulong) << 8 | 0x64;
+    const VFIO_GET_API_VERSION: libc::Ioctl = (b';' as libc::Ioctl) << 8 | 0x64;
 
     /// A node made into a `/dev` that lacks it is the kernel's VFIO container.
     #[n_vm::test]
