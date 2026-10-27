@@ -93,6 +93,13 @@ sanitize san profile="checked":
 check-each profile="debug":
     just {{ _lab }} profile={{ profile }} check-each-target
 
+# The same check against musl, whose C types are not glibc's (`ioctl`'s request is an `int`, not an
+# `unsigned long`), so code that compiles here can fail there. The cross jobs that build for musl
+# are opt-in on a pull request and do not compile tests unless asked, which is how a test that
+# named glibc's type first failed on a release tag.
+check-musl platform="bluefield3":
+    just {{ _lab }} platform={{ platform }} libc=musl profile=debug check-each-target
+
 # An instrumented link of the whole program is the heaviest the lab runs with or without LTO, and
 # `coverage/checked` kept losing its runner, so every profile gets the smaller link budget.
 coverage profile="debug":
