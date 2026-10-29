@@ -10,8 +10,8 @@ use bollard::models::{
     RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
-    CreateContainerOptions, InspectContainerOptions, RemoveContainerOptionsBuilder,
-    StartContainerOptions,
+    CreateContainerOptions, CreateImageOptionsBuilder, InspectContainerOptions,
+    RemoveContainerOptionsBuilder, RemoveImageOptions, StartContainerOptions,
 };
 use n_vm_protocol::{
     CONTAINER_PLATFORM, ENV_ACCEL, ENV_BACKEND, ENV_IN_TEST_CONTAINER, ENV_MARKER_VALUE,
@@ -199,12 +199,6 @@ fn workspace_root() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Docker image tag for the locally-created empty container image.
-///
-/// Created on-demand by [`ensure_scratch_image`] if it does not already
-/// exist.  Not pulled from a registry.
-const SCRATCH_IMAGE_TAG: &str = "dataplane-test-scratch:local";
-
 /// Linux capabilities required inside the test container.
 const REQUIRED_CAPS: [&str; 16] = [
     "SETPCAP",          // modify own capability bounding set (capset(2))
@@ -376,11 +370,6 @@ impl ContainerParams {
             .expect("validated as UTF-8 in resolve()")
     }
 
-    /// Returns the Docker image tag for the test container.
-    fn container_image(&self) -> &'static str {
-        SCRATCH_IMAGE_TAG
-    }
-
     /// Builds the [`ContainerCreateBody`] for this test invocation.
     ///
     /// `backend` and `accel` are the host-tier-resolved choices, passed to
@@ -397,13 +386,8 @@ impl ContainerParams {
         ContainerCreateBody {
             entrypoint: None,
             cmd: Some(self.build_test_command(qemu_user)),
-            image: Some(self.container_image().to_owned()),
             network_disabled: Some(true),
-            // Marks the container as ours so `n-vm-reap` can find it later.
-            // A SIGKILL leaves no chance to clean up in-process, so something
-            // has to be able to identify the remains after the fact; matching
-            // on image or name would not do, since the scratch image is
-            // shared and names come from the daemon.
+            // Let `n-vm-reap` identify containers left behind by SIGKILL.
             labels: Some(
                 [
                     (LABEL_OWNER.to_owned(), LABEL_OWNER_VALUE.to_owned()),
@@ -870,250 +854,155 @@ impl ContainerParams {
     }
 }
 
-/// Ensures the scratch Docker image exists locally.
-///
-/// # Errors
-///
-/// Returns [`ContainerError::ScratchImageCreate`] if the image does not
-/// exist and cannot be created.
-async fn ensure_scratch_image(client: &bollard::Docker) -> Result<(), ContainerError> {
-    if client.inspect_image(SCRATCH_IMAGE_TAG).await.is_ok() {
-        return Ok(());
-    }
-
-    tracing::info!(
-        image = SCRATCH_IMAGE_TAG,
-        "creating scratch Docker image for test infrastructure",
+/// Imports a private, untagged image and returns its immutable ID.
+async fn create_scratch_image(client: &bollard::Docker) -> Result<String, ContainerError> {
+    // A nonce keeps ownership distinct even if imports share a creation timestamp.
+    let options = CreateImageOptionsBuilder::default()
+        .from_src("-")
+        .message(&format!("n-vm scratch {:032x}", rand::random::<u128>()))
+        .build();
+    // Two 512-byte end-of-archive records form an empty tar archive.
+    let mut import = client.create_image(
+        Some(options),
+        Some(bollard::body_full(vec![0u8; 1024].into())),
+        None,
     );
-
-    // A valid empty tar archive is two 512-byte end-of-archive records
-    // (1024 zero bytes total).  Importing this produces a Docker image
-    // with a single empty layer.
-    let mut child = tokio::process::Command::new("docker")
-        .args(["import", "-", SCRATCH_IMAGE_TAG])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| {
-            ContainerError::ScratchImageCreate(format!("failed to spawn `docker import`: {e}"))
-        })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        if let Err(e) = stdin.write_all(&[0u8; 1024]).await {
-            // Keep going: the exit-status check below still catches the
-            // failure; this just preserves the underlying I/O cause.
-            tracing::warn!("failed to write empty tar to `docker import` stdin: {e}");
+    let mut image_id = None;
+    while let Some(progress) = import.next().await {
+        let progress = progress.map_err(|e| ContainerError::ScratchImageCreate(e.to_string()))?;
+        if let Some(status) = progress.status
+            && status.strip_prefix("sha256:").is_some_and(|digest| {
+                digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        {
+            image_id = Some(status);
         }
-        // Dropping stdin closes the pipe, signaling EOF to `docker import`.
     }
-
-    let output = child.wait_with_output().await.map_err(|e| {
-        ContainerError::ScratchImageCreate(format!("failed to wait for `docker import`: {e}"))
-    })?;
-
-    if !output.status.success() {
-        // Tests that boot at once on a daemon without the image all find it missing and all
-        // import it; every import but the first fails with "AlreadyExists". They imported the
-        // same 1024 zero bytes, so the winner's image is the one each loser was making, and
-        // losing the race is success. Ask the daemon rather than parse its message.
-        if client.inspect_image(SCRATCH_IMAGE_TAG).await.is_ok() {
-            return Ok(());
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ContainerError::ScratchImageCreate(format!(
-            "`docker import` exited with {}: {stderr}",
-            output.status,
-        )));
-    }
-
-    Ok(())
+    image_id.ok_or_else(|| {
+        ContainerError::ScratchImageCreate("Docker import returned no image ID".into())
+    })
 }
 
-/// A dedicated thread that stands ready to perform emergency container
-/// cleanup when the [`ContainerGuard`] is dropped without explicit cleanup.
-///
-/// The thread blocks on a [`oneshot::Receiver`].  There are two outcomes:
-///
-/// - **Normal path**: The sender is dropped without sending (via
-///   [`defuse`](Self::defuse)).  The receiver returns `Err`, the thread
-///   exits immediately, and no cleanup is performed.
-/// - **Emergency path**: The [`ContainerGuard::drop`] impl sends the
-///   container ID through the channel.  The thread receives it, builds a
-///   minimal tokio runtime, and force-removes the container via the Docker
-///   API.
-///
-/// # Why `std::thread` instead of `tokio::task`?
-///
-/// [`run_test_in_vm`] uses a single-threaded tokio runtime.  During panic
-/// unwinding, the runtime may be shutting down, so a `tokio::task::spawn`
-/// from [`Drop`] is unreliable.  A dedicated OS thread with its own
-/// runtime is fully decoupled from the caller's async context.
+/// Resources owned by one test, removed in dependency order.
+struct ContainerResources {
+    image_id: String,
+    container_id: Option<String>,
+}
+
+impl ContainerResources {
+    async fn remove(&mut self, client: &bollard::Docker) -> Result<(), ContainerError> {
+        if let Some(id) = self.container_id.as_deref() {
+            match client
+                .remove_container(
+                    id,
+                    Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+                )
+                .await
+            {
+                Ok(())
+                | Err(bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => {}
+                Err(e) => return Err(ContainerError::ContainerRemove(e)),
+            }
+            self.container_id = None;
+        }
+        // Do not force image removal: a container still using it must retain it.
+        match client
+            .remove_image(&self.image_id, None::<RemoveImageOptions>, None)
+            .await
+        {
+            Ok(_)
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()),
+            Err(e) => Err(ContainerError::ScratchImageRemove(e)),
+        }
+    }
+}
+
+/// Cleans up after unwinding, independently of the caller's async runtime.
 struct CleanupThread {
-    /// Send the container ID to request emergency cleanup.
-    /// Drop without sending to signal "all clear."
-    tx: Option<oneshot::Sender<String>>,
-    /// Handle to the cleanup thread.  Joined on defuse; detached on
-    /// emergency trigger (so that [`Drop`] does not block).
+    tx: Option<oneshot::Sender<ContainerResources>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl CleanupThread {
-    /// Spawns the cleanup thread with its own clone of the Docker client.
-    ///
-    /// The thread blocks immediately on the [`oneshot::Receiver`] and does
-    /// no work until either [`trigger`](Self::trigger) or
-    /// [`defuse`](Self::defuse) is called (or the sender is dropped).
     fn spawn(client: bollard::Docker) -> Self {
-        let (tx, rx) = oneshot::channel::<String>();
-
+        let (tx, rx) = oneshot::channel::<ContainerResources>();
         let thread = std::thread::Builder::new()
             .name("container-cleanup".into())
             .spawn(move || {
-                // Block until we know whether cleanup is needed.
-                let container_id = match rx.blocking_recv() {
-                    Ok(id) => id,
-                    // Sender dropped without sending -- explicit cleanup
-                    // already happened, nothing to do.
-                    Err(_) => return,
+                let Ok(mut resources) = rx.blocking_recv() else {
+                    return;
                 };
-
-                // `eprintln!` rather than `tracing` throughout: this thread
-                // belongs to the host tier, and `init_tracing` runs in the
-                // container tier only, so a `tracing` event here reaches
-                // nobody.  These lines are the sole record that a container
-                // was left behind and dealt with -- the one place where
-                // going unread is worse than being ugly.
-                eprintln!("n-vm: performing emergency cleanup of container {container_id}");
-
                 let rt = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 {
                     Ok(rt) => rt,
                     Err(e) => {
-                        eprintln!(
-                            "n-vm: failed to build emergency cleanup runtime ({e}); \
-                             manual removal needed (e.g. `docker rm -f {container_id}`)",
-                        );
+                        eprintln!("n-vm: failed to build emergency cleanup runtime: {e}");
                         return;
                     }
                 };
-
-                rt.block_on(async {
-                    let opts = RemoveContainerOptionsBuilder::default().force(true).build();
-                    match client.remove_container(&container_id, Some(opts)).await {
-                        Ok(()) => eprintln!(
-                            "n-vm: emergency cleanup of container {container_id} succeeded",
-                        ),
-                        Err(e) => eprintln!(
-                            "n-vm: emergency cleanup of container {container_id} failed ({e}); \
-                             manual removal may be needed \
-                             (e.g. `docker rm -f {container_id}`)",
-                        ),
-                    }
-                });
+                // The host tier has no tracing subscriber.
+                if let Err(e) = rt.block_on(resources.remove(&client)) {
+                    eprintln!(
+                        "n-vm: emergency cleanup failed for container {:?}, image {}: {e:?}",
+                        resources.container_id, resources.image_id,
+                    );
+                }
             })
             .expect("failed to spawn container cleanup thread");
-
         Self {
             tx: Some(tx),
             thread: Some(thread),
         }
     }
 
-    /// Signal that explicit cleanup was performed; the thread will exit
-    /// without doing anything.
-    ///
-    /// Drops the sender (so the receiver sees `RecvError`) and joins the
-    /// thread, which should return almost immediately.
     fn defuse(&mut self) {
-        // Drop the sender without sending -- the receiver unblocks with
-        // Err(RecvError) and the thread exits.
         self.tx.take();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
     }
 
-    /// Send the container ID to trigger emergency cleanup.
-    ///
-    /// The thread is *detached* (not joined) so that [`Drop`] does not
-    /// block waiting for the Docker API call.  The cleanup proceeds in the
-    /// background.
-    fn trigger(&mut self, container_id: String) {
+    fn trigger(&mut self, resources: ContainerResources) {
         if let Some(tx) = self.tx.take() {
-            // The only way send() fails is if the receiver was already
-            // dropped (thread exited), in which case there is nothing to
-            // do.
-            let _ = tx.send(container_id);
+            let _ = tx.send(resources);
         }
-        // Detach the thread -- don't block Drop on the Docker API call.
-        self.thread.take();
+        // Emergency cleanup must finish before a failed test process exits.
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
-/// RAII guard that owns a running Docker container and provides lifecycle
-/// methods.
-///
-/// The expected usage is:
-///
-/// 1. [`create_and_start`](Self::create_and_start) -- create the container
-///    and return an armed guard.
-/// 2. [`stream_logs`](Self::stream_logs) -- forward container
-///    stdout/stderr to the host.
-/// 3. [`into_result`](Self::into_result) -- inspect the exit status,
-///    remove the container, and defuse the guard.
-///
-/// If the guard is dropped *without* calling `into_result` (e.g. due to a
-/// panic or an early return inserted by a future refactor), the [`Drop`]
-/// impl sends the container ID to a [`CleanupThread`] which force-removes
-/// the container via the Docker API.
-///
-/// # Async cleanup via sync Drop
-///
-/// Rust does not support async `Drop`.  This guard bridges the gap by
-/// using a [`tokio::sync::oneshot`] channel whose
-/// [`Sender::send`](oneshot::Sender::send) is synchronous (not async),
-/// making it safe to call from [`Drop`].  A dedicated [`std::thread`]
-/// receives the message and performs the async Docker API call in its own
-/// minimal tokio runtime -- fully decoupled from whatever runtime (if any)
-/// the caller is using.
+/// Owns a test container and its private image through setup, execution and cleanup.
 struct ContainerGuard<'a> {
     client: &'a bollard::Docker,
-    container_id: String,
-    /// Background thread that will force-remove the container if we send
-    /// it the container ID.  Defused on the normal path.
+    resources: Option<ContainerResources>,
     cleanup: CleanupThread,
-    /// Set to `true` once explicit cleanup has been performed via
-    /// [`into_result`](Self::into_result).
-    defused: bool,
 }
 
 impl<'a> ContainerGuard<'a> {
-    /// Creates a Docker container from the given configuration, starts it,
-    /// and returns an armed guard.
-    ///
-    /// This combines container creation, guard construction, and starting
-    /// into a single step so that the container _never_ exists without a
-    /// guard to clean it up -- even if the start request fails after the
-    /// container was created.
-    ///
-    /// A [`CleanupThread`] is spawned that will stand by to force-remove
-    /// the container if this guard is dropped without calling
-    /// [`into_result`](Self::into_result).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ContainerError::ContainerCreate`] or
-    /// [`ContainerError::ContainerStart`] if the Docker daemon rejects the
-    /// request.
+    /// Imports an image, then creates and starts the container by image ID.
+    /// The guard owns the image before the first fallible container operation.
     async fn create_and_start(
         client: &'a bollard::Docker,
-        config: ContainerCreateBody,
+        mut config: ContainerCreateBody,
     ) -> Result<ContainerGuard<'a>, ContainerError> {
+        let image_id = create_scratch_image(client).await?;
+        config.image = Some(image_id.clone());
+        let mut guard = Self {
+            client,
+            resources: Some(ContainerResources {
+                image_id,
+                container_id: None,
+            }),
+            cleanup: CleanupThread::spawn(client.clone()),
+        };
         let container = client
             .create_container(
                 Some(CreateContainerOptions {
@@ -1124,26 +1013,19 @@ impl<'a> ContainerGuard<'a> {
             )
             .await
             .map_err(ContainerError::ContainerCreate)?;
-
-        // Arm the guard as soon as the container exists.  If the start
-        // below fails, the guard drops with `defused == false` and the
-        // cleanup thread force-removes the created-but-never-started
-        // container instead of leaking it.
-        let cleanup = CleanupThread::spawn(client.clone());
-        let guard = Self {
-            client,
-            container_id: container.id,
-            cleanup,
-            defused: false,
-        };
-
-        guard
-            .client
-            .start_container(&guard.container_id, None::<StartContainerOptions>)
+        guard.resources.as_mut().expect("armed guard").container_id = Some(container.id);
+        client
+            .start_container(guard.container_id(), None::<StartContainerOptions>)
             .await
             .map_err(ContainerError::ContainerStart)?;
-
         Ok(guard)
+    }
+
+    fn container_id(&self) -> &str {
+        self.resources
+            .as_ref()
+            .and_then(|resources| resources.container_id.as_deref())
+            .expect("container created before use")
     }
 
     /// Streams container stdout/stderr to the host's stdout/stderr until
@@ -1155,7 +1037,7 @@ impl<'a> ContainerGuard<'a> {
     /// an error from the Docker daemon.
     async fn stream_logs(&self) -> Result<(), ContainerError> {
         let mut logs = self.client.logs(
-            &self.container_id,
+            self.container_id(),
             Some(bollard::query_parameters::LogsOptions {
                 follow: true,
                 stdout: true,
@@ -1188,112 +1070,41 @@ impl<'a> ContainerGuard<'a> {
         Ok(())
     }
 
-    /// Performs the explicit inspect + remove lifecycle.
-    ///
-    /// This defuses the [`CleanupThread`] (so its background thread exits
-    /// without doing anything) and marks the guard so that its [`Drop`]
-    /// impl is a no-op.  Returns the container's exit status on success.
+    /// Collects the exit status and removes the container and image.
     async fn into_result(mut self) -> Result<ContainerTestResult, ContainerError> {
-        let result = self.collect_and_cleanup().await?;
-        // Disarm the safety nets only after the container is actually
-        // removed.  If `collect_and_cleanup` returned early (inspect
-        // failure or missing state) the `?` above propagates while
-        // `defused` is still false, so `Drop` triggers emergency removal
-        // rather than leaking the container.
-        self.defused = true;
-        self.cleanup.defuse();
-        Ok(result)
-    }
-
-    /// Inspects the container's exit status and removes it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ContainerError`] if the container cannot be inspected
-    /// or removed, or if the inspection response is missing the container
-    /// state.
-    async fn collect_and_cleanup(&self) -> Result<ContainerTestResult, ContainerError> {
         let state = self
             .client
-            .inspect_container(&self.container_id, None::<InspectContainerOptions>)
+            .inspect_container(self.container_id(), None::<InspectContainerOptions>)
             .await
             .map_err(ContainerError::ContainerInspect)?
             .state
             .ok_or(ContainerError::MissingState)?;
-
-        // Force removal: if we got here with the container still running
-        // (e.g. the log stream died before the container exited), a plain
-        // remove would fail with HTTP 409 and obscure the real error.
-        self.client
-            .remove_container(
-                &self.container_id,
-                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
-            )
-            .await
-            .map_err(ContainerError::ContainerRemove)?;
-
+        self.remove().await?;
         Ok(ContainerTestResult {
             exit_code: state.exit_code,
         })
     }
 
-    /// Force-removes the container in response to a termination signal, then
-    /// ends this process.  Never returns.
-    ///
-    /// Every other cleanup route here runs from [`Drop`] -- the guard's own
-    /// impl, and the [`CleanupThread`] it dispatches to.  That covers panics
-    /// and early returns, because both unwind.  A signal does not: the
-    /// default disposition for `SIGTERM` terminates the process outright, so
-    /// no destructor runs and neither safety net fires.
-    ///
-    /// Two things leak without this, and the smaller one is the one that
-    /// looks worse.  The container *record* survives, because
-    /// `auto_remove` is deliberately `false`, and accumulates one entry per
-    /// killed run.  More importantly the container keeps *running*: it is
-    /// owned by the daemon, not by this process, so it plays the test out to
-    /// the end with nothing left to collect the result.  For a test that is
-    /// a few seconds; for a fuzz target it is the whole `-max_total_time`
-    /// budget, which means a runner's own timeout would not actually stop
-    /// the work it just gave up waiting for.
-    ///
-    /// Removal is forced, since the container is by definition still running.
-    /// Reports through `eprintln!` rather than `tracing` because this tier
-    /// has no subscriber: [`init_tracing`](crate::dispatch) runs in the
-    /// container, not on the host, which is why the surrounding host-tier
-    /// code prints directly too.  A cleanup notice that goes nowhere is
-    /// worse than none, since it is the only record that the container was
-    /// dealt with.
+    async fn remove(&mut self) -> Result<(), ContainerError> {
+        self.resources
+            .as_mut()
+            .expect("armed guard")
+            .remove(self.client)
+            .await?;
+        self.resources.take();
+        self.cleanup.defuse();
+        Ok(())
+    }
+
+    /// Cleans up before terminating; process exit does not run destructors.
     async fn abort_on_signal(&mut self, signal: &str) -> ! {
         eprintln!(
-            "n-vm: {signal} received; force-removing container {}",
-            self.container_id,
+            "n-vm: {signal} received; removing container {} and its image",
+            self.container_id()
         );
-
-        match self
-            .client
-            .remove_container(
-                &self.container_id,
-                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
-            )
-            .await
-        {
-            Ok(()) => {
-                // Disarm both nets: there is nothing left to remove, and the
-                // process is about to end anyway.
-                self.defused = true;
-                self.cleanup.defuse();
-            }
-            Err(e) => eprintln!(
-                "n-vm: force-removal of container {} after {signal} failed: {e}; \
-                 manual removal may be needed (e.g. `docker rm -f {}`)",
-                self.container_id, self.container_id,
-            ),
+        if let Err(e) = self.remove().await {
+            eprintln!("n-vm: cleanup after {signal} failed: {e:?}");
         }
-
-        // `128 + signo`, the shell's convention for a signal death.  Chosen
-        // over resetting the disposition and re-raising because that needs
-        // `unsafe`, and nothing downstream distinguishes the two: a runner
-        // sees a non-zero status either way.
         std::process::exit(128 + signal_number(signal));
     }
 }
@@ -1350,13 +1161,8 @@ impl TerminationSignals {
 
 impl Drop for ContainerGuard<'_> {
     fn drop(&mut self) {
-        if !self.defused {
-            tracing::error!(
-                container_id = %self.container_id,
-                "ContainerGuard dropped without explicit cleanup; \
-                 dispatching emergency container removal",
-            );
-            self.cleanup.trigger(self.container_id.clone());
+        if let Some(resources) = self.resources.take() {
+            self.cleanup.trigger(resources);
         }
     }
 }
@@ -1544,10 +1350,6 @@ pub fn run_test_in_vm<F: FnOnce()>(
             "resolved hypervisor backend for this host",
         );
 
-        // Ensure the empty Docker image exists before building the
-        // container config (which references it by tag).
-        ensure_scratch_image(&client).await?;
-
         // Which windows this run opens, and where each is backed.  See
         // `resolve_writable_shares`.
         let shares = resolve_writable_shares(&vm_config)?;
@@ -1565,9 +1367,6 @@ pub fn run_test_in_vm<F: FnOnce()>(
             env_host_dir.as_deref(),
         );
 
-        // The guard is armed at creation -- if anything between here and
-        // the explicit cleanup panics or returns early, the CleanupThread
-        // will force-remove the container.
         let mut guard = ContainerGuard::create_and_start(&client, config).await?;
 
         // Streaming the logs is where this tier spends the test's whole
@@ -1649,6 +1448,9 @@ fn find_on_path(program: &str) -> Option<String> {
         .and_then(|candidate| std::fs::canonicalize(candidate).ok())
         .and_then(|p| p.to_str().map(ToOwned::to_owned))
 }
+
+#[cfg(all(test, not(miri)))]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1823,7 +1625,7 @@ mod tests {
     }
 
     #[test]
-    fn config_uses_scratch_image() {
+    fn config_leaves_image_selection_to_the_guard() {
         let config = sample_params().build_config(
             EffectiveBackend::CloudHypervisor,
             Accel::Kvm,
@@ -1831,7 +1633,7 @@ mod tests {
             &[],
             None,
         );
-        assert_eq!(config.image.as_deref(), Some(SCRATCH_IMAGE_TAG));
+        assert!(config.image.is_none());
     }
 
     #[test]
