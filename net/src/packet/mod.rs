@@ -8,11 +8,14 @@
 mod display;
 mod hash;
 mod meta;
+mod rebuffer;
 mod stats;
 mod stats_display;
 
 pub mod icmp_err;
 
+#[cfg(any(doc, test, feature = "test_buffer"))]
+pub use rebuffer::Rebuffer;
 pub use stats::PacketStats;
 
 #[cfg(any(test, feature = "bolero"))]
