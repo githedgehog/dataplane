@@ -767,6 +767,33 @@ pub fn main() {
     spawn_shutdown_watchdog(shutdown.root.clone(), default_deadlines::TOTAL, 124)
         .expect("failed to spawn shutdown watchdog");
 
+    // The control-plane taps must live in a separate namespace from the datapath interfaces.
+    match datapath_netns.is_current() {
+        Ok(false) => {}
+        Ok(true) => {
+            error!(
+                "The datapath network namespace is the control namespace: init must hand off a \
+                 separate one holding the datapath's interfaces"
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            error!("Failed to identify the datapath network namespace: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    // Init starts FRR when the router binds its CPI socket, so create all taps first.
+    let (mut cp_bridge, cp_ends) = CpBridge::create(
+        &mgmt_handle,
+        &shutdown.mgmt,
+        config.driver.interfaces().map(|i| i.interface.clone()),
+    )
+    .unwrap_or_else(|e| {
+        error!("Failed to build the control-plane bridge: {e}");
+        std::process::exit(1);
+    });
+
     // assemble router parameters
     let mut binding = RouterParamsBuilder::default();
     let rp_builder = binding
@@ -818,23 +845,6 @@ pub fn main() {
     let ingredients = setup.pipeline;
     let pipeline_data = ingredients.data();
 
-    // Init moves both drivers' interfaces into a namespace of their own, so the control plane's only
-    // path to them is the bridge. A datapath namespace that is this one means init did not do that,
-    // and nothing downstream (the bridge, LLDP, the taps' indices) would make sense.
-    match datapath_netns.is_current() {
-        Ok(false) => {}
-        Ok(true) => {
-            error!(
-                "The datapath network namespace is the control namespace: init must hand off a \
-                 separate one holding the datapath's interfaces"
-            );
-            shutdown.fail();
-        }
-        Err(e) => {
-            error!("Failed to identify the datapath network namespace: {e}");
-            shutdown.fail();
-        }
-    }
     // What LLDP needs from outside the datapath: the gateway's name, once a config has named it, and
     // the host's management address, which only the host namespace can see.
     let (gateway_name, gateway_named) = tokio::sync::watch::channel(None);
@@ -860,66 +870,45 @@ pub fn main() {
         })
         .flatten();
 
-    // Taps are created from the control namespace, before the datapath thread starts; otherwise their
-    // configured names would collide with the interfaces they stand for.
-    let (_cp_bridge, cp_ends) = match CpBridge::create(
-        &mgmt_handle,
-        &shutdown.mgmt,
-        config.driver.interfaces().map(|i| i.interface.clone()),
-    ) {
-        Ok((mut bridge, ends)) => {
-            // Under `protocols`, which stops before the workers, so the shutdown frames LLDP sends
-            // on the way out still have a datapath to leave by.
-            if let Some(runtime) = &transceiver_runtime {
-                if let Some(interval) = config.metrics.transceiver_interval {
-                    crate::transceiver_agent::start(
-                        runtime.handle(),
-                        &shutdown.metrics,
-                        bridge.ports(),
-                        interval,
-                        &setup.transceivers,
-                    );
-                }
-                if let Some(interval) = config.metrics.mstlink_interval {
-                    crate::phy_agent::start(
-                        runtime.handle(),
-                        &shutdown.metrics,
-                        bridge.ports(),
-                        interval,
-                        &setup.phy,
-                    );
-                }
-            }
-            let new_neighbors = crate::lldp_agent::start(
-                &mgmt_handle,
-                &shutdown.protocols,
-                bridge.ports(),
-                &gwname,
-                &gateway_named,
-                &management_addressed,
+    if let Some(runtime) = &transceiver_runtime {
+        if let Some(interval) = config.metrics.transceiver_interval {
+            crate::transceiver_agent::start(
+                runtime.handle(),
+                &shutdown.metrics,
+                cp_bridge.ports(),
+                interval,
+                &setup.transceivers,
             );
-            if let Some(heard) = bridge.take_heard() {
-                crate::lldp_agent::listen(
-                    &mgmt_handle,
-                    &shutdown.protocols,
-                    heard,
-                    bridge.ports(),
-                    new_neighbors,
-                    setup.lldp_neighbors.clone(),
-                );
-            }
-            (Some(bridge), Some(ends))
         }
-        Err(e) => {
-            // Fatal, and not because the bridge is a nicety: with the NICs in a namespace of
-            // their own this is the control plane's *only* path to the wire, so the dataplane
-            // would come up, forward nothing it had not been told about, and never learn a
-            // route.
-            error!("Failed to build the control-plane bridge: {e}");
-            shutdown.fail();
-            (None, None)
+        if let Some(interval) = config.metrics.mstlink_interval {
+            crate::phy_agent::start(
+                runtime.handle(),
+                &shutdown.metrics,
+                cp_bridge.ports(),
+                interval,
+                &setup.phy,
+            );
         }
-    };
+    }
+    // Stop LLDP before the workers so its shutdown frames can reach the datapath.
+    let new_neighbors = crate::lldp_agent::start(
+        &mgmt_handle,
+        &shutdown.protocols,
+        cp_bridge.ports(),
+        &gwname,
+        &gateway_named,
+        &management_addressed,
+    );
+    if let Some(heard) = cp_bridge.take_heard() {
+        crate::lldp_agent::listen(
+            &mgmt_handle,
+            &shutdown.protocols,
+            heard,
+            cp_bridge.ports(),
+            new_neighbors,
+            setup.lldp_neighbors.clone(),
+        );
+    }
 
     concurrency::thread::scope(|scope| {
         // Management waits for the datapath to be ready, then releases it after its own startup.
@@ -945,7 +934,7 @@ pub fn main() {
                         workers,
                         ingredients,
                         driver_status_writer,
-                        cp_ends,
+                        Some(cp_ends),
                         control_planes,
                         &handoff,
                     );
