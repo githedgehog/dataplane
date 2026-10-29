@@ -32,7 +32,7 @@ use core::ptr::NonNull;
 use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
 use errno::Errno;
-use net::packet::{DoneReason, Packet};
+use net::packet::{DoneReason, Packet, Rebuffer};
 use tracing::{error, info, warn};
 
 use dpdk_sys::{
@@ -966,7 +966,7 @@ impl<'eal> Mbuf<'eal> {
 /// - the pool cannot supply even one mbuf: the rest of the burst gets [`DoneReason::InternalDrop`];
 /// - a payload does not fit in an [`Mbuf`]: that packet gets [`DoneReason::InternalFailure`].
 #[must_use]
-pub fn rebuffer_non_dpdk_burst<'eal>(
+pub(crate) fn rebuffer_non_dpdk_burst<'eal>(
     burst: Vec<Packet<TestBuffer>>,
     pool: &Pool<'eal>,
 ) -> Vec<Packet<Mbuf<'eal>>> {
@@ -1016,6 +1016,16 @@ pub fn rebuffer_non_dpdk_burst<'eal>(
         }
     }
     out
+}
+
+impl<'eal> Rebuffer for Mbuf<'eal> {
+    type Pool = Pool<'eal>;
+    fn into_test_buffer(packet: Packet<Self>) -> Packet<TestBuffer> {
+        packet.into_test_buffer()
+    }
+    fn from_test_buffer(burst: Vec<Packet<TestBuffer>>, pool: &Pool<'eal>) -> Vec<Packet<Self>> {
+        rebuffer_non_dpdk_burst(burst, pool)
+    }
 }
 
 #[non_exhaustive]
