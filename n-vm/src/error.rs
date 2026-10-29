@@ -554,4 +554,9 @@ pub enum ContainerError {
         )
     )]
     ScratchImageCreate(String),
+
+    /// Docker refused to remove the test's private scratch image.
+    #[error("failed to remove scratch Docker image")]
+    #[diagnostic(code(n_vm::container::scratch_image_remove))]
+    ScratchImageRemove(#[source] bollard::errors::Error),
 }
