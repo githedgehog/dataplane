@@ -41,7 +41,7 @@ test-utils = { workspace = true }
 caps = { workspace = true }
 fixin = { workspace = true }
 libc = { workspace = true }
-nix = { workspace = true, features = ["mount", "net", "sched", "signal"] }
+nix = { workspace = true, features = ["inotify", "mount", "net", "sched", "signal"] }
 
 [build-dependencies]
 # internal

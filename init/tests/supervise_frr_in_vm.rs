@@ -10,7 +10,7 @@
 //! namespace and init is chrooted into it. The guest has no PID namespace, so init is not PID 1
 //! here, which is the case where shutdown cannot fall back on `kill(-1)`.
 
-use std::ffi::CString;
+use std::ffi::{CString, OsStr};
 use std::fs;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
@@ -22,9 +22,11 @@ use std::time::Duration;
 
 use n_vm::config::VmConfig;
 use n_vm::features;
+use nix::errno::Errno;
 use nix::mount::{MsFlags, mount};
 use nix::net::if_::if_nametoindex;
 use nix::sched::{CloneFlags, unshare};
+use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use rtnetlink::{LinkUnspec, LinkVeth};
@@ -217,12 +219,31 @@ fn in_root(program: &str) -> Command {
     command
 }
 
+fn start_gateway(log_path: &Path) -> Child {
+    let log_file = fs::File::create(log_path).unwrap();
+    in_root("/bin/dataplane-init")
+        .args([
+            "--driver",
+            "kernel",
+            "--interface",
+            PORT,
+            "--supervise-frr",
+            "--config-dir",
+            "/run/config",
+            "--name",
+            "test-gw",
+        ])
+        .stdout(log_file.try_clone().unwrap())
+        .stderr(log_file)
+        .spawn()
+        .expect("init should start")
+}
+
 fn log(path: &Path) -> String {
-    let mut text = String::new();
-    if let Ok(mut file) = fs::File::open(path) {
-        let _ = file.read_to_string(&mut text);
-    }
-    text
+    fs::read(path).map_or_else(
+        |e| format!("could not read {}: {e}", path.display()),
+        |bytes| String::from_utf8_lossy(&bytes).into_owned(),
+    )
 }
 
 /// One scrape of the metrics endpoint, or `None` if nothing answered.
@@ -287,23 +308,7 @@ fn supervised_frr_starts_and_stops_with_the_gateway() {
     create_port();
 
     let log_path = PathBuf::from("/tmp/gateway.log");
-    let log_file = fs::File::create(&log_path).unwrap();
-    let mut init = in_root("/bin/dataplane-init")
-        .args([
-            "--driver",
-            "kernel",
-            "--interface",
-            PORT,
-            "--supervise-frr",
-            "--config-dir",
-            "/run/config",
-            "--name",
-            "test-gw",
-        ])
-        .stdout(log_file.try_clone().unwrap())
-        .stderr(log_file)
-        .spawn()
-        .expect("init should start");
+    let mut init = start_gateway(&log_path);
     let fail = |what: &str| -> ! { panic!("{what}\n--- gateway log ---\n{}", log(&log_path)) };
 
     // Startup: the dataplane's control-plane socket, zebra serving, zebra's hh_dplane connected
@@ -415,4 +420,69 @@ fn supervised_frr_starts_and_stops_with_the_gateway() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[cfg_attr(instrumented, ignore = "requires the gateway image")]
+#[cfg_attr(
+    all(emulated, not(instrumented)),
+    ignore = "gateway startup under qemu-user is too slow"
+)]
+#[n_vm::test(config = VM)]
+fn a_tap_failure_does_not_publish_readiness_or_start_frr() {
+    let root = assemble_root(&rootfs());
+    create_port();
+
+    // A regular file makes TUNSETIFF fail without affecting other device setup.
+    let fake_tun = root.join("tmp/fake-tun");
+    fs::File::create(&fake_tun).unwrap();
+    bind(&fake_tun, &root.join("dev/net/tun"), MsFlags::empty());
+
+    // Record socket creation even if shutdown later removes it.
+    let readiness = Inotify::init(InitFlags::IN_CLOEXEC | InitFlags::IN_NONBLOCK).unwrap();
+    readiness
+        .add_watch(
+            &root.join("run/frr/hh"),
+            AddWatchFlags::IN_CREATE | AddWatchFlags::IN_MOVED_TO,
+        )
+        .unwrap();
+
+    let log_path = PathBuf::from("/tmp/gateway.log");
+    let mut init = start_gateway(&log_path);
+    let status = wait_with_timeout(&mut init, STARTUP).unwrap_or_else(|| {
+        let _ = init.kill();
+        let _ = init.wait();
+        panic!(
+            "init did not stop after tap creation failed\n{}",
+            log(&log_path)
+        );
+    });
+    let output = log(&log_path);
+    assert!(
+        !status.success(),
+        "init succeeded after tap creation failed\n{output}"
+    );
+    assert!(
+        output.contains("Failed to build the control-plane bridge"),
+        "tap creation did not fail as expected; init exited {status}\n{output}"
+    );
+    let events = match readiness.read_events() {
+        Ok(events) => events,
+        Err(Errno::EAGAIN) => Vec::new(),
+        Err(e) => panic!("could not read readiness events: {e}\n{output}"),
+    };
+    assert!(
+        !events.iter().any(|event| {
+            event.name.as_deref() == Some(OsStr::new("dataplane.sock"))
+                || event.mask.contains(AddWatchFlags::IN_Q_OVERFLOW)
+        }),
+        "failed tap creation published readiness or overflowed its watch: {events:?}\n{output}"
+    );
+    assert!(
+        !output.contains("started frr as pid"),
+        "FRR started without its taps\n{output}"
+    );
+    assert!(
+        gateway_processes().is_empty(),
+        "gateway processes outlived init\n{output}"
+    );
 }
