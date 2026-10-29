@@ -462,3 +462,29 @@ fn test_rebuffer_non_dpdk_burst_pool_exhaust() {
     drop(rebuffered);
     assert_eq!(available(&pool), 15, "mbufs go back to the pool");
 }
+
+#[test]
+/// Test that packets survive a round trip through `Rebuffer`, and that their mbufs go back to
+/// the pool when converted into test buffers
+fn test_rebuffer_round_trip() {
+    use net::headers::TryHeaders;
+    use net::packet::Rebuffer;
+    let len = 5;
+    let pool = packet_pool(u32::try_from(len).unwrap());
+    let burst = packet_burst(len);
+    let headers: Vec<_> = burst.iter().map(|p| p.headers().clone()).collect();
+
+    let mbufs = Mbuf::from_test_buffer(burst, &pool);
+    assert_eq!(mbufs.len(), len);
+    assert_eq!(available(&pool), 0);
+
+    let back: Vec<_> = mbufs.into_iter().map(Mbuf::into_test_buffer).collect();
+    assert_eq!(available(&pool), len, "mbufs go back to the pool");
+    assert_eq!(
+        back.iter().map(|p| p.headers().clone()).collect::<Vec<_>>(),
+        headers
+    );
+    for packet in back {
+        assert_eq!(packet.serialize().unwrap().as_ref(), frame().as_slice());
+    }
+}
