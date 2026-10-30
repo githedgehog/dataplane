@@ -906,6 +906,13 @@ let
     runtimeEnv.LINK_CC = "${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cc}";
     text = builtins.readFile ./nix/scripts/link-slots.sh;
   };
+  # A `RUSTC_WRAPPER` that compiles the crates that link and links them in separate rustc processes,
+  # so that one waiting for a link slot is not holding a compilation session (see the script).
+  rustc-split-link = pkgs.pkgsBuildHost.writeShellApplication {
+    name = "rustc-split-link";
+    runtimeInputs = [ pkgs.pkgsBuildHost.coreutils ];
+    text = builtins.readFile ./nix/scripts/rustc-split-link.sh;
+  };
   objcopy = if is-cross-compile then "${ctarget}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
     builtins.readFile (
@@ -1419,11 +1426,18 @@ let
       #
       # One slot makes the links the critical path for little memory; two keep the peak bounded
       # without that.
+      #
+      # A link waiting for its slot still has its rustc resident, compilation session and all, so
+      # link in a separate rustc (nix/scripts/rustc-split-link.sh). With two slots on 8 cores that
+      # took the peak from 13.2-14.1 to 11.3 GiB and the mean from 6.5-6.8 to 4.2 GiB, at the same
+      # 620 s. `RUSTC_WRAPPER` stays out of cargo's fingerprint, so the dependency artifacts built
+      # without it are reused.
       lto-link-slots =
         pkgs.lib.optionalAttrs (builtins.elem "-Clinker-plugin-lto" profile-tests'.RUSTFLAGS)
           {
             LINK_SLOTS = "2";
             LINK_THINLTO_JOBS = "4";
+            RUSTC_WRAPPER = "${rustc-split-link}/bin/rustc-split-link";
           };
     in
     pkgs.callPackage invoke {
