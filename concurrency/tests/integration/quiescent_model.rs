@@ -15,13 +15,12 @@
 //! Run under loom (the headline use case) with:
 //!
 //! ```sh
-//! cargo test --release -p dataplane-concurrency --features loom --test quiescent_model
+//! cargo test --release -p dataplane-concurrency --features loom --test integration quiescent_model
 //! ```
 //!
 //! Standard protocol tests (real OS threads + `thread::scope` + sleeps)
-//! live in `tests/quiescent_protocol.rs`; bolero property tests in
-//! `tests/quiescent_properties.rs`; bolero x shuttle in
-//! `tests/quiescent_shuttle.rs`.
+//! live in `quiescent_protocol.rs`; bolero property tests in
+//! `quiescent_properties.rs`; bolero x shuttle in `quiescent_shuttle.rs`.
 //!
 //! ## Sizing
 //!

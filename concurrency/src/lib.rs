@@ -74,7 +74,7 @@ pub mod thread;
 // the `#[concurrency::test]` expansion, and is *also* a supported entry
 // point in its own right: a bolero x shuttle suite can call it once per
 // generated shape to explore that shape under the standard portfolio.
-// See `stress` and `concurrency/tests/quiescent_shuttle.rs`.
+// See `stress` and `concurrency/tests/integration/quiescent_shuttle.rs`.
 pub use stress::stress;
 
 // The standard shuttle `Config` (4 MiB stacks). Exposed for suites that

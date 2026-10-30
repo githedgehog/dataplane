@@ -8,7 +8,7 @@
 //! The single-threaded protocol invariants (snapshot legality,
 //! reclamation gating, conservation of `Versioned` allocations) are
 //! covered by the bolero property tests in
-//! `tests/quiescent_properties.rs`.  This file holds only the tests
+//! `quiescent_properties.rs`.  This file holds only the tests
 //! that genuinely need real OS threads:
 //!
 //! - **Drop affinity**: drops must run on the Publisher's

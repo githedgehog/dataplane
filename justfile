@@ -86,20 +86,20 @@ _cargo_profile_flag := if profile == "debug" { "" } else { "--profile " + profil
 # Under `shuttle`, the legacy `dataplane-quiescent` test layout had a
 # `shuttle` binary that hosted the bolero x shuttle suite, and we used
 # `--package=shuttle` (now an `-E 'package(shuttle)'`-style filter
-# embedded in nextest's argv) to isolate it.  Today that suite lives in
-# `concurrency/tests/quiescent_shuttle.rs`, and the test binary is
-# `quiescent_shuttle`; matching the substring `shuttle` is good enough.
+# embedded in nextest's argv) to isolate it.  Today that suite is the
+# `quiescent_shuttle` module of `concurrency/tests/integration/`, so its
+# test names carry that prefix; matching the substring `shuttle` is good
+# enough.
 #
 # Under `loom`, the legacy filter `-E 'binary(loom)'` matched
 # `quiescent_loom`, the single integration-test binary that opted into
 # `loom::model`.  After the concurrency rework, loom-compatible tests
-# are spread across multiple binaries (`quiescent_model`,
-# `thread_scope`, `arc_weak`, `stress_dispatch`); the rest are gated
-# with `#![cfg(not(any(feature = "loom", ...)))]` and compile down to
-# zero tests under the loom feature.  An empty filter is therefore the
-# right answer: nextest walks every archived binary, the cfg-gated
-# ones contain no tests, and the loom-compatible ones run under their
-# `#[concurrency::test]`-routed `loom::model` body.
+# are spread across several modules (`quiescent_model`, `thread_scope`,
+# `arc_weak`, `stress_dispatch`); the rest are gated with
+# `#![cfg(not(any(feature = "loom", ...)))]` and compile down to zero
+# tests under the loom feature.  The `#[concurrency::test]`-routed tests
+# run under a `loom::model` body and are named for it, which is what the
+# filter matches.
 # Match all shuttle variants (`shuttle`, plus the additive
 # `shuttle_dfs` opt-in).
 # Under any shuttle backend, `concurrency::sync` types ARE shuttle
