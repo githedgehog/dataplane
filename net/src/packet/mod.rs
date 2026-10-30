@@ -29,7 +29,7 @@ use crate::eth::mac::{DestinationMac, SourceMac};
 use crate::flows::{FlowInfo, FlowStatus};
 use crate::headers::{
     EmbeddedHeaders, Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut,
-    TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryVxlan,
+    TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryIpv4Mut, TryVxlan,
 };
 use crate::ip::{dscp::Dscp, ecn::Ecn};
 use crate::parse::{DeParse, DeParseError, Parse, ParseError};
@@ -437,7 +437,15 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// serialize or `SerializeError::DeparseError` if it does, but the de-parsing the `Packet` failed.
     #[inline]
     pub(crate) fn do_serialize(&mut self) -> Result<(), SerializeError<()>> {
-        self.update_checksums();
+        // As the VXLAN path does: refresh what a stage asked for, or just the IPv4 header
+        // checksum, which a TTL decrement changes. Recomputing the transport checksum reads the
+        // whole payload, and nothing that leaves it unflagged changed what it covers.
+        if self.meta().checksum_refresh() {
+            self.update_checksums();
+        } else if let Some(ipv4) = self.headers.try_ipv4_mut() {
+            ipv4.update_checksum(&())
+                .unwrap_or_else(|()| unreachable!()); // IPv4 checksum update never fails
+        }
         let needed = self.headers.size().get();
         let buf = self
             .payload
