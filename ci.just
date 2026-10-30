@@ -47,7 +47,25 @@ export NEXTEST_TEST_THREADS := cores
 # Changing this forks nothing: `--cores` is deliberately outside the derivation hash, and
 # `nix path-info --derivation` returns the same `.drv` at 10, 4 and 1. It is a scheduling knob,
 # not a build input.
+#
+# Those numbers predate the test archive bounding its own links; see `release_test_cores`.
 lto_cores := "4"
+
+# The `check/release` test step. Its test archive now bounds how many of its ThinLTO links run at
+# once (`LINK_SLOTS` in default.nix) and carries line-table debug info, so its peak no longer
+# depends on how many links happen to overlap. Measured building the step's whole chain cold on 8
+# cores, one derivation at a time as here, summing every process of each build every two seconds:
+#
+#     dataplane-deps                     74 s    6.2 GiB
+#     dataplane-tests-deps               98 s    4.9 GiB
+#     dataplane (ships: full debug info) 252 s    6.7 GiB
+#     dataplane-cli                      26 s    1.4 GiB
+#     dataplane-init                     51 s    2.3 GiB
+#     tests.all                         650 s   12.4 GiB
+#
+# against `tests.all` alone taking 929 s and peaking at 22 GiB on `lto_cores` before. The other
+# jobs on `lto_cores` were not measured with these changes and stay there.
+release_test_cores := "8"
 
 [private]
 _lab-common := " docker_sock=/run/docker/docker.sock" + " oci_repo=ghcr.io" + " debug_justfile=" + debug_justfile
@@ -58,6 +76,10 @@ _lab := "jobs=" + jobs + " cores=" + cores + _lab-common
 # For the profiles that link with ThinLTO. See `lto_cores`.
 [private]
 _lab-lto := "jobs=" + jobs + " cores=" + lto_cores + _lab-common
+
+# See `release_test_cores`.
+[private]
+_lab-release-test := "jobs=" + jobs + " cores=" + release_test_cores + _lab-common
 
 [default]
 [private]
@@ -70,7 +92,7 @@ check-fmt:
     just {{ _lab }} fmt --check
 
 check-test profile:
-    just {{ if profile == "debug" { _lab } else { _lab-lto } }} profile={{ profile }} test
+    just {{ if profile == "debug" { _lab } else if profile == "release" { _lab-release-test } else { _lab-lto } }} profile={{ profile }} test
 
 check-clippy profile:
     just {{ _lab }} profile={{ profile }} clippy
