@@ -11,13 +11,12 @@
 //! wrong, and bytes the parser does not reproduce count as changes like any other.
 
 use crate::checksum::incremental_update;
-use crate::headers::{EmbeddedTransport, Headers, Net, Transport};
+use crate::headers::{EmbeddedHeaders, EmbeddedTransport, Net, Transport};
 use crate::parse::DeParse;
-use crate::udp::UdpEncap;
 
 /// What a checksummed header is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
+pub(super) enum Kind {
     Ipv4,
     Ipv6,
     Tcp,
@@ -41,7 +40,7 @@ impl Kind {
 
 /// One checksummed header's place in a run of deparsed headers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Layer {
+pub(super) struct Layer {
     offset: u16,
     len: u16,
     kind: Kind,
@@ -61,86 +60,70 @@ pub(crate) struct Layout {
 }
 
 impl Layout {
+    /// A layout with nothing recorded yet.
+    pub(super) const EMPTY: Layout = Layout {
+        len: 0,
+        net: None,
+        transport: None,
+        quoted_net: None,
+        quoted_transport: None,
+    };
+
     /// The length of the whole run of headers.
     pub(crate) fn len(&self) -> u16 {
         self.len
     }
-}
 
-fn net_kind(net: &Net) -> Kind {
-    match net {
-        Net::Ipv4(_) => Kind::Ipv4,
-        Net::Ipv6(_) => Kind::Ipv6,
+    /// Record a network header of `len` octets at `offset`.
+    pub(super) fn net(&mut self, net: &Net, offset: u16, len: u16) {
+        let kind = match net {
+            Net::Ipv4(_) => Kind::Ipv4,
+            Net::Ipv6(_) => Kind::Ipv6,
+        };
+        self.net = Some(Layer { offset, len, kind });
     }
-}
 
-impl Headers {
-    /// Where [`DeParse::deparse`] puts each checksummed header. Mirrors its order.
-    pub(crate) fn layout(&self) -> Layout {
-        let mut at = self.eth.as_ref().map_or(0, |eth| eth.size().get())
-            + self.vlan.iter().map(|vlan| vlan.size().get()).sum::<u16>()
-            + self.lldp.as_ref().map_or(0, |pdu| pdu.size().get());
-        let net = self.net.as_ref().map(|net| {
+    /// Record a transport header of `len` octets at `offset`.
+    pub(super) fn transport(&mut self, transport: &Transport, offset: u16, len: u16) {
+        let kind = match transport {
+            Transport::Tcp(_) => Kind::Tcp,
+            Transport::Udp(_) => Kind::Udp,
+            Transport::Icmp4(_) => Kind::Icmp4,
+            Transport::Icmp6(_) => Kind::Icmp6,
+        };
+        self.transport = Some(Layer { offset, len, kind });
+    }
+
+    /// Record the headers an ICMP error quotes, starting at `offset`.
+    pub(super) fn quoted(&mut self, quoted: &EmbeddedHeaders, offset: u16) {
+        let mut at = offset;
+        self.quoted_net = quoted.net.as_ref().map(|net| {
             let layer = Layer {
                 offset: at,
                 len: net.size().get(),
-                kind: net_kind(net),
-            };
-            at += layer.len + self.net_ext.iter().map(|ext| ext.size().get()).sum::<u16>();
-            layer
-        });
-        let transport = self.transport.as_ref().map(|transport| {
-            let layer = Layer {
-                offset: at,
-                len: transport.size().get(),
-                kind: match transport {
-                    Transport::Tcp(_) => Kind::Tcp,
-                    Transport::Udp(_) => Kind::Udp,
-                    Transport::Icmp4(_) => Kind::Icmp4,
-                    Transport::Icmp6(_) => Kind::Icmp6,
+                kind: match net {
+                    Net::Ipv4(_) => Kind::Ipv4,
+                    Net::Ipv6(_) => Kind::Ipv6,
                 },
             };
-            at += layer.len;
+            at += layer.len + quoted.net_ext_headers_len();
             layer
         });
-        at += match self.udp_encap {
-            None => 0,
-            Some(UdpEncap::Vxlan(vxlan)) => vxlan.size().get(),
-        };
-        let (mut quoted_net, mut quoted_transport) = (None, None);
-        if let Some(quoted) = self.embedded_ip.as_deref() {
-            quoted_net = quoted.net.as_ref().map(|net| {
-                let layer = Layer {
-                    offset: at,
-                    len: net.size().get(),
-                    kind: net_kind(net),
-                };
-                at += layer.len + quoted.net_ext_headers_len();
-                layer
-            });
-            quoted_transport = quoted.transport.as_ref().map(|transport| {
-                let layer = Layer {
-                    offset: at,
-                    len: transport.size().get(),
-                    kind: match transport {
-                        EmbeddedTransport::Tcp(_) => Kind::Tcp,
-                        EmbeddedTransport::Udp(_) => Kind::Udp,
-                        EmbeddedTransport::Icmp4(_) => Kind::Icmp4,
-                        EmbeddedTransport::Icmp6(_) => Kind::Icmp6,
-                    },
-                };
-                at += layer.len;
-                layer
-            });
-        }
-        debug_assert_eq!(at, self.size().get(), "layout disagrees with deparse");
-        Layout {
-            len: at,
-            net,
-            transport,
-            quoted_net,
-            quoted_transport,
-        }
+        self.quoted_transport = quoted.transport.as_ref().map(|transport| Layer {
+            offset: at,
+            len: transport.size().get(),
+            kind: match transport {
+                EmbeddedTransport::Tcp(_) => Kind::Tcp,
+                EmbeddedTransport::Udp(_) => Kind::Udp,
+                EmbeddedTransport::Icmp4(_) => Kind::Icmp4,
+                EmbeddedTransport::Icmp6(_) => Kind::Icmp6,
+            },
+        });
+    }
+
+    /// Record the length of the whole run.
+    pub(super) fn finish(&mut self, len: u16) {
+        self.len = len;
     }
 }
 
@@ -152,7 +135,11 @@ fn word(bytes: &[u8], at: usize) -> u16 {
     }
 }
 
-/// Fold each word of `old[range]` that `new[range]` changed into `checksum`, skipping `skip`.
+/// Fold each word of `old[range]` that `new[range]` changed into `checksum`, skipping the word at
+/// `skip`.
+///
+/// Usually little or nothing changed, so this compares eight octets at a time and looks at words
+/// only where those differ.
 fn fold(
     mut checksum: u16,
     old: &[u8],
@@ -160,12 +147,33 @@ fn fold(
     range: std::ops::Range<usize>,
     skip: Option<usize>,
 ) -> u16 {
-    for at in range.step_by(2) {
-        if Some(at) == skip {
+    let base = range.start;
+    let (old, new) = (&old[range.clone()], &new[range]);
+    let (old_chunks, _) = old.as_chunks::<8>();
+    let (new_chunks, _) = new.as_chunks::<8>();
+    for (chunk, (before, after)) in old_chunks.iter().zip(new_chunks).enumerate() {
+        if u64::from_ne_bytes(*before) == u64::from_ne_bytes(*after) {
             continue;
         }
+        for (pair, (before, after)) in before
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(after.as_chunks::<2>().0)
+            .enumerate()
+        {
+            if before != after && Some(base + chunk * 8 + pair * 2) != skip {
+                checksum = incremental_update(
+                    checksum,
+                    u16::from_be_bytes(*before),
+                    u16::from_be_bytes(*after),
+                );
+            }
+        }
+    }
+    for at in (old_chunks.len() * 8..old.len()).step_by(2) {
         let (before, after) = (word(old, at), word(new, at));
-        if before != after {
+        if before != after && Some(base + at) != skip {
             checksum = incremental_update(checksum, before, after);
         }
     }
@@ -215,59 +223,62 @@ fn adjust_net(net: Layer, old: &[u8], new: &mut [u8]) {
 }
 
 /// Adjust a transport checksum, which covers its pseudo-header, its own header, and everything up to
-/// `end` after it: quoted headers, or a VXLAN header. `payload` follows the run if this is the
-/// outermost transport, and is read only to settle an `ICMPv4` checksum that comes out zero.
+/// `end` after it: quoted headers, or a VXLAN header.
+///
+/// Returns where an `ICMPv4` checksum came out zero over headers that are all zero: whether it
+/// should be `0xffff` instead depends on the payload too.
 fn adjust_transport(
     net: Option<Layer>,
     transport: Layer,
     end: u16,
     old: &[u8],
     new: &mut [u8],
-    payload: Option<&[u8]>,
-) {
-    let Some(checksum_at) = transport.kind.checksum_at() else {
-        return;
-    };
+) -> Option<usize> {
+    let checksum_at = transport.kind.checksum_at()?;
     let start = usize::from(transport.offset);
     let at = start + usize::from(checksum_at);
     if at + 2 > usize::from(end) {
         // A quoted header cut off before its checksum.
-        return;
+        return None;
     }
     let before = read(old, at);
     if transport.kind == Kind::Udp && before == 0 {
         // UDP without a checksum stays without one.
         write(new, at, 0);
-        return;
+        return None;
     }
     let mut checksum = before;
     if let (Some(net), Kind::Tcp | Kind::Udp | Kind::Icmp6) = (net, transport.kind) {
         checksum = fold_pseudo_header(checksum, net, old, new);
     }
     checksum = fold(checksum, old, new, start..usize::from(end), Some(at));
+    let mut ambiguous = None;
     if checksum == 0 {
-        checksum = match transport.kind {
+        match transport.kind {
             // Zero means "no checksum" in UDP.
-            Kind::Udp => 0xffff,
+            Kind::Udp => checksum = 0xffff,
             // ICMPv4 has no pseudo-header, so its data can be all zero, which needs 0xffff.
             Kind::Icmp4
                 if new[start..usize::from(end)]
                     .iter()
                     .enumerate()
-                    .all(|(i, b)| *b == 0 || start + i == at || start + i == at + 1)
-                    && payload.is_some_and(|payload| payload.iter().all(|b| *b == 0)) =>
+                    .all(|(i, b)| *b == 0 || start + i == at || start + i == at + 1) =>
             {
-                0xffff
+                ambiguous = Some(at);
             }
-            _ => 0,
-        };
+            _ => {}
+        }
     }
     write(new, at, checksum);
+    ambiguous
 }
 
 /// Adjust every checksum in `new`, a run of headers with `layout` just written over `old`, by the
-/// words that differ between the two. `payload` follows the run.
-pub(crate) fn adjust_checksums(layout: &Layout, old: &[u8], new: &mut [u8], payload: &[u8]) {
+/// words that differ between the two.
+///
+/// Returns where the outermost checksum is an `ICMPv4` zero that must become `0xffff` if the payload
+/// is all zero as well.
+pub(crate) fn adjust_checksums(layout: &Layout, old: &[u8], new: &mut [u8]) -> Option<usize> {
     // Innermost first: a quoted header's checksums are data to the ICMP checksum around them.
     if let Some(quoted_transport) = layout.quoted_transport {
         adjust_transport(
@@ -276,16 +287,16 @@ pub(crate) fn adjust_checksums(layout: &Layout, old: &[u8], new: &mut [u8], payl
             quoted_transport.offset + quoted_transport.len,
             old,
             new,
-            None,
         );
     }
     if let Some(quoted_net) = layout.quoted_net {
         adjust_net(quoted_net, old, new);
     }
-    if let Some(transport) = layout.transport {
-        adjust_transport(layout.net, transport, layout.len, old, new, Some(payload));
-    }
+    let ambiguous = layout
+        .transport
+        .and_then(|transport| adjust_transport(layout.net, transport, layout.len, old, new));
     if let Some(net) = layout.net {
         adjust_net(net, old, new);
     }
+    ambiguous
 }

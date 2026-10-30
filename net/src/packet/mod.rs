@@ -140,8 +140,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 error: InvalidPacketError::Chained,
             });
         }
-        let (headers, consumed) = match Headers::parse(mbuf.as_ref()) {
-            Ok((headers, consumed)) => (headers, consumed),
+        let (headers, consumed, header_log) = match Headers::parse_logged(mbuf.as_ref()) {
+            Ok(parsed) => parsed,
             Err(error) => {
                 return Err(InvalidPacket {
                     mbuf,
@@ -151,12 +151,11 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         };
         mbuf.trim_from_start(consumed.get())
             .unwrap_or_else(|e| unreachable!("{:?}", e));
-        let header_log = logged(&headers, consumed.get());
 
         Ok(Packet {
             headers,
             payload: mbuf,
-            header_log,
+            header_log: Some(header_log),
             meta: PacketMeta::new(),
         })
     }
@@ -300,25 +299,27 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 // inner. This enables decap -> re-encap paths to keep spine/underlay QoS consistent.
                 let (dscp, ecn) = Self::underlay_qos_from_outer_headers(&self.headers);
 
-                match Headers::parse(self.payload.as_ref()) {
-                    Ok((headers, consumed)) => match self.payload.trim_from_start(consumed.get()) {
-                        Ok(_) => {
-                            let vxlan = *vxlan;
+                match Headers::parse_logged(self.payload.as_ref()) {
+                    Ok((headers, consumed, log)) => {
+                        match self.payload.trim_from_start(consumed.get()) {
+                            Ok(_) => {
+                                let vxlan = *vxlan;
 
-                            // only if parse succeeds to mutate self
-                            self.meta.dscp = dscp;
-                            self.meta.ecn = ecn;
-                            self.header_log = logged(&headers, consumed.get());
-                            self.headers = headers;
+                                // only if parse succeeds to mutate self
+                                self.meta.dscp = dscp;
+                                self.meta.ecn = ecn;
+                                self.header_log = Some(log);
+                                self.headers = headers;
 
-                            Some(Ok(vxlan))
+                                Some(Ok(vxlan))
+                            }
+                            Err(programmer_err) => {
+                                // This most likely indicates a broken implementation of
+                                // `PacketBufferMut`
+                                unreachable!("{programmer_err:?}", programmer_err = programmer_err);
+                            }
                         }
-                        Err(programmer_err) => {
-                            // This most likely indicates a broken implementation of
-                            // `PacketBufferMut`
-                            unreachable!("{programmer_err:?}", programmer_err = programmer_err);
-                        }
-                    },
+                    }
                     Err(error) => Some(Err(error)),
                 }
             }
@@ -464,35 +465,63 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Without a log -- headers built here, or reshaped since they were parsed -- the IPv4 header
     /// checksum is computed afresh, and the transport's only if a stage asked.
     fn write_headers(&mut self) -> Result<(), WriteError<<Buf as Prepend>::Error>> {
-        let layout = self.headers.layout();
-        let len = usize::from(layout.len());
-        match self.header_log.take() {
-            Some(log) if log == layout && len <= MAX_LOGGED_HEADERS => {
-                self.payload
-                    .prepend(layout.len())
-                    .map_err(WriteError::NoHeadRoom)?;
-                let (head, payload) = self.payload.as_mut().split_at_mut(len);
-                let mut old = [0u8; MAX_LOGGED_HEADERS];
-                let old = &mut old[..len];
-                old.copy_from_slice(head);
-                self.headers.deparse(head).map_err(WriteError::Deparse)?;
-                adjust_checksums(&layout, old, head, payload);
-                self.meta.set_checksum_refresh(false);
-            }
-            _ => {
-                if self.meta().checksum_refresh() {
-                    self.update_checksums();
-                } else if let Some(ipv4) = self.headers.try_ipv4_mut() {
-                    ipv4.update_checksum(&())
-                        .unwrap_or_else(|()| unreachable!()); // IPv4 checksum update never fails
-                }
-                let buf = self
-                    .payload
-                    .prepend(layout.len())
-                    .map_err(WriteError::NoHeadRoom)?;
-                self.headers.deparse(buf).map_err(WriteError::Deparse)?;
+        let needed = self.headers.size().get();
+        let Some(log) = self
+            .header_log
+            .take()
+            .filter(|log| log.len() == needed && usize::from(needed) <= MAX_LOGGED_HEADERS)
+        else {
+            return self.write_headers_unlogged(needed);
+        };
+        let len = usize::from(needed);
+        // `prepend` hands back the whole frame from its new start; the headers are the front of it.
+        let head = &mut self
+            .payload
+            .prepend(needed)
+            .map_err(WriteError::NoHeadRoom)?[..len];
+        let mut old = [0u8; MAX_LOGGED_HEADERS];
+        let old = &mut old[..len];
+        old.copy_from_slice(head);
+        let (_, layout) = self
+            .headers
+            .deparse_logged(head)
+            .map_err(WriteError::Deparse)?;
+        if layout != log {
+            // The same length but a different shape: nothing to adjust against. Rare enough to
+            // take the payload back and start over.
+            self.payload
+                .trim_from_start(needed)
+                .unwrap_or_else(|e| unreachable!("{e:?}"));
+            return self.write_headers_unlogged(needed);
+        }
+        if let Some(at) = adjust_checksums(&log, old, head) {
+            // An ICMPv4 checksum of zero over all-zero headers: all-zero data needs 0xffff.
+            let frame = self.payload.as_mut();
+            if frame[len..].iter().all(|b| *b == 0) {
+                frame[at..at + 2].copy_from_slice(&[0xff, 0xff]);
             }
         }
+        self.meta.set_checksum_refresh(false);
+        Ok(())
+    }
+
+    /// Write headers that have no log: the IPv4 header checksum is computed afresh, and the
+    /// transport's only if a stage asked.
+    fn write_headers_unlogged(
+        &mut self,
+        needed: u16,
+    ) -> Result<(), WriteError<<Buf as Prepend>::Error>> {
+        if self.meta().checksum_refresh() {
+            self.update_checksums();
+        } else if let Some(ipv4) = self.headers.try_ipv4_mut() {
+            ipv4.update_checksum(&())
+                .unwrap_or_else(|()| unreachable!()); // IPv4 checksum update never fails
+        }
+        let buf = self
+            .payload
+            .prepend(needed)
+            .map_err(WriteError::NoHeadRoom)?;
+        self.headers.deparse(buf).map_err(WriteError::Deparse)?;
         Ok(())
     }
 
@@ -1195,16 +1224,10 @@ mod qos_roundtrip_tests {
     }
 }
 
-/// The most header bytes [`Packet::write_headers`] will log on the stack; anything longer is
-/// written without a log.
-const MAX_LOGGED_HEADERS: usize = 512;
-
-/// The log for `headers` just parsed from `consumed` bytes, if they deparse to that many: only then
-/// do the bytes left in front of the payload line up with what writing them back will put there.
-fn logged(headers: &Headers, consumed: u16) -> Option<Layout> {
-    let layout = headers.layout();
-    (layout.len() == consumed).then_some(layout)
-}
+/// The most header bytes [`Packet::write_headers`] will log on the stack: enough for Ethernet, two
+/// VLAN tags, IPv6, `ICMPv6` and a quoted IPv6 and TCP header. Anything longer is written without a
+/// log.
+const MAX_LOGGED_HEADERS: usize = 192;
 
 /// Why the headers could not be written back.
 enum WriteError<E> {

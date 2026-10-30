@@ -703,6 +703,17 @@ impl Parse for Headers {
     type Error = EthError;
 
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        Headers::parse_logged(buf).map(|(headers, consumed, _)| (headers, consumed))
+    }
+}
+
+impl Headers {
+    /// [`Parse::parse`], also recording where each checksummed header sat.
+    // One loop over the headers, recording each as it goes.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn parse_logged(
+        buf: &[u8],
+    ) -> Result<(Self, NonZero<u16>, Layout), ParseError<EthError>> {
         let mut cursor =
             Reader::new(buf).map_err(|IllegalBufferLength(len)| ParseError::BufferTooLong(len))?;
         let (eth, _) = cursor.parse::<Eth>()?;
@@ -727,17 +738,46 @@ impl Parse for Headers {
         // entire parse loop, so transport and embedded headers that follow the
         // overflow point are also not parsed.  This matches the MAX_VLANS
         // handling but the caller has no way to detect a partial parse.
+        let mut log = Layout::EMPTY;
         let mut prior = Header::Eth(eth);
+        // Where `prior` starts; it ends where the cursor stands before the next header is parsed.
+        let mut prior_at = 0;
         loop {
+            let next_at = cursor_position(cursor.inner.len(), cursor.remaining);
             let header = prior.parse_payload(&mut cursor);
+            let len = next_at - prior_at;
             match prior {
                 Header::Eth(eth) => this.eth = Some(eth),
-                Header::Ipv4(ip) => this.net = Some(Net::Ipv4(ip)),
-                Header::Ipv6(ip) => this.net = Some(Net::Ipv6(ip)),
-                Header::Tcp(tcp) => this.transport = Some(Transport::Tcp(tcp)),
-                Header::Udp(udp) => this.transport = Some(Transport::Udp(udp)),
-                Header::Icmp4(icmp4) => this.transport = Some(Transport::Icmp4(icmp4)),
-                Header::Icmp6(icmp6) => this.transport = Some(Transport::Icmp6(icmp6)),
+                Header::Ipv4(ip) => {
+                    let net = Net::Ipv4(ip);
+                    log.net(&net, prior_at, len);
+                    this.net = Some(net);
+                }
+                Header::Ipv6(ip) => {
+                    let net = Net::Ipv6(ip);
+                    log.net(&net, prior_at, len);
+                    this.net = Some(net);
+                }
+                Header::Tcp(tcp) => {
+                    let transport = Transport::Tcp(tcp);
+                    log.transport(&transport, prior_at, len);
+                    this.transport = Some(transport);
+                }
+                Header::Udp(udp) => {
+                    let transport = Transport::Udp(udp);
+                    log.transport(&transport, prior_at, len);
+                    this.transport = Some(transport);
+                }
+                Header::Icmp4(icmp4) => {
+                    let transport = Transport::Icmp4(icmp4);
+                    log.transport(&transport, prior_at, len);
+                    this.transport = Some(transport);
+                }
+                Header::Icmp6(icmp6) => {
+                    let transport = Transport::Icmp6(icmp6);
+                    log.transport(&transport, prior_at, len);
+                    this.transport = Some(transport);
+                }
                 Header::Encap(encap) => this.udp_encap = Some(encap),
                 Header::Vlan(vlan) => {
                     if this.vlan.len() < MAX_VLANS {
@@ -788,9 +828,13 @@ impl Parse for Headers {
                         break;
                     }
                 }
-                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(Box::new(embedded)),
+                Header::EmbeddedIp(embedded) => {
+                    log.quoted(&embedded, prior_at);
+                    this.embedded_ip = Some(Box::new(embedded));
+                }
                 Header::Lldp(lldp) => this.lldp = Some(lldp),
             }
+            prior_at = next_at;
             match header {
                 None => {
                     break;
@@ -804,7 +848,8 @@ impl Parse for Headers {
         let consumed = unsafe {
             NonZero::new_unchecked((cursor.inner.len() - cursor.remaining as usize) as u16)
         };
-        Ok((this, consumed))
+        log.finish(consumed.get());
+        Ok((this, consumed, log))
     }
 }
 
@@ -846,6 +891,17 @@ impl DeParse for Headers {
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        self.deparse_logged(buf).map(|(written, _)| written)
+    }
+}
+
+impl Headers {
+    /// [`DeParse::deparse`], also recording where each checksummed header went.
+    pub(crate) fn deparse_logged(
+        &self,
+        buf: &mut [u8],
+    ) -> Result<(NonZero<u16>, Layout), DeParseError<()>> {
+        let mut log = Layout::EMPTY;
         let len = buf.len();
         if len < self.size().into_non_zero_usize().get() {
             return Err(DeParseError::Length(LengthError {
@@ -878,14 +934,18 @@ impl DeParse for Headers {
         match self.net {
             None => {
                 debug_assert!(self.transport.is_none());
-                #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
-                return Ok(
-                    NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
-                        .unwrap_or_else(|| unreachable!()),
-                );
+                let written = cursor_position(cursor.inner.len(), cursor.remaining);
+                log.finish(written);
+                return Ok((NonZero::new(written).unwrap_or_else(|| unreachable!()), log));
             }
             Some(ref net) => {
+                let at = cursor_position(cursor.inner.len(), cursor.remaining);
                 cursor.write(net)?;
+                log.net(
+                    net,
+                    at,
+                    cursor_position(cursor.inner.len(), cursor.remaining) - at,
+                );
             }
         }
 
@@ -895,14 +955,18 @@ impl DeParse for Headers {
 
         match self.transport {
             None => {
-                #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
-                return Ok(
-                    NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
-                        .unwrap_or_else(|| unreachable!()),
-                );
+                let written = cursor_position(cursor.inner.len(), cursor.remaining);
+                log.finish(written);
+                return Ok((NonZero::new(written).unwrap_or_else(|| unreachable!()), log));
             }
             Some(ref transport) => {
+                let at = cursor_position(cursor.inner.len(), cursor.remaining);
                 cursor.write(transport)?;
+                log.transport(
+                    transport,
+                    at,
+                    cursor_position(cursor.inner.len(), cursor.remaining) - at,
+                );
             }
         }
 
@@ -919,17 +983,27 @@ impl DeParse for Headers {
                 self.transport,
                 Some(Transport::Icmp4(_) | Transport::Icmp6(_))
             ) {
+                log.quoted(
+                    embedded_ip,
+                    cursor_position(cursor.inner.len(), cursor.remaining),
+                );
                 cursor.write(embedded_ip)?;
             } else {
                 return Err(DeParseError::Invalid(()));
             }
         }
 
-        #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
-        Ok(
-            NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
-                .unwrap_or_else(|| unreachable!()),
-        )
+        let written = cursor_position(cursor.inner.len(), cursor.remaining);
+        log.finish(written);
+        Ok((NonZero::new(written).unwrap_or_else(|| unreachable!()), log))
+    }
+}
+
+/// How far a cursor over `len` octets with `remaining` left has come.
+fn cursor_position(len: usize, remaining: u16) -> u16 {
+    #[allow(clippy::cast_possible_truncation)] // cursors are bounded to u16 lengths on creation
+    {
+        (len - remaining as usize) as u16
     }
 }
 
