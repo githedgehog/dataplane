@@ -43,6 +43,7 @@ use dataplane_hardware::pci::address::PciAddress;
 use dataplane_hardware::support::DpdkDriverType;
 use dpdk::dev::{Dev, DevConfig, RssConf, RxOffload, Started, TxOffloadConfig};
 use dpdk::eal::{self, Eal};
+use dpdk::interrupt::RxWaiter;
 use dpdk::mem::{MbufArray, Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
@@ -487,6 +488,17 @@ fn setup_dpdk_device<'eal>(
     link: &NetIface,
     with_tx_pool: bool,
 ) -> SetupDevice<'eal> {
+    setup_dpdk_device_with(eal, link, with_tx_pool, false, 1)
+}
+
+/// [`setup_dpdk_device`], with `queue_pairs` RX/TX pairs and receive interrupts if `rx_interrupts`.
+fn setup_dpdk_device_with<'eal>(
+    eal: &'eal Eal,
+    link: &NetIface,
+    with_tx_pool: bool,
+    rx_interrupts: bool,
+    queue_pairs: u16,
+) -> SetupDevice<'eal> {
     let num_ports = eal.dev.num_devices();
     eprintln!("[eal] DPDK reports {num_ports} ethernet port(s)");
     assert_eq!(
@@ -520,15 +532,16 @@ fn setup_dpdk_device<'eal>(
     );
 
     let config = DevConfig {
-        num_rx_queues: 1,
-        num_tx_queues: 1,
+        rx_interrupts,
+        num_rx_queues: queue_pairs,
+        num_tx_queues: queue_pairs,
         num_hairpin_queues: 0,
         // These probes do not require receive offloads.
         rx_offloads: RxOffload::NONE,
         tx_offloads: TxOffloadConfig::none(),
         // The standard MTU, clamped to the device's range, accommodates these small probes.
         mtu: None,
-        // A single RX queue does not need RSS.
+        // Keep replies on queue 0 even when exercising a larger interrupt-vector allocation.
         rss: None,
     };
 
@@ -553,7 +566,7 @@ fn setup_dpdk_device<'eal>(
             PoolConfig::new(
                 "rx_pool".to_string(),
                 PoolParams {
-                    size: 1024,
+                    size: 1024 * u32::from(queue_pairs),
                     ..Default::default()
                 },
             )
@@ -583,25 +596,7 @@ fn setup_dpdk_device<'eal>(
         None
     };
 
-    dev.new_rx_queue(RxQueueConfig {
-        queue_index: RxQueueIndex(0),
-        num_descriptors: 256,
-        socket_preference: socket::Preference::CurrentThread,
-        // Queue offload capabilities can differ from the port's capabilities.
-        offloads: dev.info().rx_queue_offload_caps(),
-        pool: rx_pool.clone(),
-    })
-    .expect("failed to set up rx queue 0");
-    eprintln!("[queue] rx queue 0 ready");
-
-    dev.new_tx_queue(TxQueueConfig {
-        queue_index: TxQueueIndex(0),
-        num_descriptors: 256,
-        socket_preference: socket::Preference::CurrentThread,
-        config: (),
-    })
-    .expect("failed to set up tx queue 0");
-    eprintln!("[queue] tx queue 0 ready");
+    setup_queue_pairs(&mut dev, &rx_pool, queue_pairs);
 
     let dev = dev.start().expect("failed to start DPDK device");
     eprintln!("[dev] device started successfully");
@@ -611,6 +606,29 @@ fn setup_dpdk_device<'eal>(
         mac,
         rx_pool,
         tx_pool,
+    }
+}
+
+/// Set up the same queue pairs for a first start and a retry after reconfiguration.
+fn setup_queue_pairs<'eal>(dev: &mut Dev<'eal>, pool: &Pool<'eal>, count: u16) {
+    for queue in 0..count {
+        dev.new_rx_queue(RxQueueConfig {
+            queue_index: RxQueueIndex(queue),
+            num_descriptors: 256,
+            socket_preference: socket::Preference::CurrentThread,
+            // Queue offload capabilities can differ from the port's capabilities.
+            offloads: dev.info().rx_queue_offload_caps(),
+            pool: pool.clone(),
+        })
+        .unwrap_or_else(|e| panic!("failed to set up rx queue {queue}: {e}"));
+        dev.new_tx_queue(TxQueueConfig {
+            queue_index: TxQueueIndex(queue),
+            num_descriptors: 256,
+            socket_preference: socket::Preference::CurrentThread,
+            config: (),
+        })
+        .unwrap_or_else(|e| panic!("failed to set up tx queue {queue}: {e}"));
+        eprintln!("[queue] rx/tx queue pair {queue} ready");
     }
 }
 
@@ -1354,6 +1372,7 @@ fn dpdk_rss_spreads_over_data_queues_igb_qemu() {
     assert_ne!(info.reta_size(), 0, "igb should have a redirection table");
 
     let mut dev = DevConfig {
+        rx_interrupts: false,
         num_rx_queues: queues,
         num_tx_queues: queues,
         num_hairpin_queues: 0,
@@ -1442,4 +1461,225 @@ fn dpdk_leaked_device_teardown_virtio_cloud_hypervisor() {
 #[n_vm::test(config = E1000_QEMU)]
 fn dpdk_leaked_device_teardown_e1000_qemu() {
     run_leaked_device_test("QEMU / e1000 / leaked device", &E1000_QEMU);
+}
+
+// Receive interrupts
+
+/// How long a test waits for the host's reply to raise the receive interrupt.
+const RX_INTERRUPT_WAIT: Duration = Duration::from_secs(2);
+
+/// Verify that both a receive interrupt and a separate readable descriptor wake the waiter, and
+/// with more than one queue pair, that another queue's arming and disarming leaves queue 0 armed.
+fn run_rx_interrupt_test(label: &str, config: &VmConfig, queue_pairs: u16) {
+    eprintln!("=== {label}: receive interrupts ===");
+
+    let (eal, link) = init_dpdk_eal(config);
+    let SetupDevice {
+        dev: started,
+        mac,
+        tx_pool,
+        ..
+    } = setup_dpdk_device_with(&eal, &link, true, true, queue_pairs);
+    let tx_pool = tx_pool.expect("setup_dpdk_device_with should return a tx pool");
+    let echo_frame = echo_probe_frame(mac);
+    let ndp_frame = ndp_probe_frame(mac, link.host_ipv6);
+
+    let mut queues = started.take_queues().expect("device queues already taken");
+    let mut tx_queue = queues.take_tx(TxQueueIndex(0)).expect("tx queue 0");
+    let mut rx_queue = queues.take_rx(RxQueueIndex(0)).expect("rx queue 0");
+
+    let mut waiter = RxWaiter::new().expect("an epoll set");
+    waiter
+        .watch(&rx_queue)
+        .expect("the driver should offer a receive interrupt for queue 0");
+
+    // Refusing a duplicate registration and dropping its waiter must preserve the first set's
+    // registration; the receive test below verifies it still wakes.
+    let mut other = RxWaiter::new().expect("a second epoll set");
+    assert!(
+        matches!(
+            other.watch(&rx_queue),
+            Err(dpdk::interrupt::InterruptError::Shared { .. })
+        ),
+        "a second set should be refused the interrupt the first holds"
+    );
+    drop(other);
+
+    // Another worker arming and disarming its own queue must leave queue 0's interrupt armed: the
+    // pinned ixgbe PMD clears the mask bit of queue 0's vector when asked to disarm queue 1.
+    let mut neighbour = (queue_pairs > 1).then(|| {
+        let rx = queues.take_rx(RxQueueIndex(1)).expect("rx queue 1");
+        let mut waiter = RxWaiter::new().expect("an epoll set for queue 1");
+        waiter
+            .watch(&rx)
+            .expect("the driver should offer a receive interrupt for queue 1");
+        (rx, waiter)
+    });
+
+    // The host may need a neighbour solicitation answered before it replies; the first rounds
+    // are allowed to be woken by that, or to time out while the host's side of the tap comes up.
+    let mut woken_by_reply = false;
+    for round in 1..=5 {
+        waiter.arm().expect("arming the receive interrupt");
+        if let Some((_, neighbour)) = &mut neighbour {
+            neighbour.arm().expect("arming queue 1's receive interrupt");
+            neighbour.disarm();
+        }
+        // Anything that arrived before arming would not raise the interrupt: take it now.
+        let early = rx_queue.receive().len();
+        let unsent = tx_queue.transmit(make_batch(&tx_pool, &[&ndp_frame, &echo_frame]));
+        assert!(unsent.is_empty(), "the tx queue refused the probes");
+        drop(unsent);
+        let woke = waiter.wait(RX_INTERRUPT_WAIT).expect("the wait");
+        waiter.disarm();
+        let received = rx_queue.receive().len();
+        eprintln!(
+            "[intr] round {round}: {early} frame(s) before arming, woke for {woke:?}, \
+             {received} frame(s) after"
+        );
+        if woke.queues > 0 && received > 0 {
+            woken_by_reply = true;
+            break;
+        }
+    }
+    assert!(
+        woken_by_reply,
+        "no reply raised the receive interrupt; the queue may only work when polled"
+    );
+
+    // Another descriptor in the same set wakes the waiter as well, which is how frames from the
+    // kernel reach a sleeping worker.
+    let (reader, mut writer) = std::io::pipe().expect("a pipe");
+    // SAFETY: the pipe outlives the waiter, which is dropped first below.
+    unsafe { waiter.watch_fd(std::os::fd::AsFd::as_fd(&reader)) }.expect("watching the pipe");
+    std::io::Write::write_all(&mut writer, &[1]).expect("writing to the pipe");
+    let woke = waiter.wait(RX_INTERRUPT_WAIT).expect("the wait");
+    assert_eq!(
+        woke.other, 1,
+        "the readable pipe should end the wait: {woke:?}"
+    );
+
+    drop(waiter);
+    drop(reader);
+}
+
+#[n_vm::test(config = VIRTIO_QEMU)]
+fn dpdk_rx_interrupt_virtio_qemu() {
+    run_rx_interrupt_test("QEMU / virtio-net / no-IOMMU (PA)", &VIRTIO_QEMU, 1);
+}
+
+#[n_vm::test(config = VIRTIO_QEMU_IOMMU)]
+fn dpdk_rx_interrupt_virtio_qemu_iommu() {
+    run_rx_interrupt_test("QEMU / virtio-net / vIOMMU (VA)", &VIRTIO_QEMU_IOMMU, 1);
+}
+
+#[n_vm::test(config = IGB_QEMU)]
+fn dpdk_rx_interrupt_igb_qemu() {
+    run_rx_interrupt_test("QEMU / igb / no-IOMMU (PA)", &IGB_QEMU, 1);
+}
+
+/// Nine queue vectors and one non-queue vector exactly fill QEMU igb's MSI-X table.
+#[n_vm::test(config = IGB_QEMU)]
+fn dpdk_rx_interrupt_max_vectors_igb_qemu() {
+    run_rx_interrupt_test("QEMU / igb / all ten MSI-X vectors", &IGB_QEMU, 9);
+}
+
+/// Exceeding QEMU igb's ten MSI-X vectors must fail at start.
+/// Reconfiguring the same queues without interrupts must restore forwarding and allow teardown.
+#[n_vm::test(config = IGB_QEMU)]
+fn dpdk_rx_interrupt_capacity_igb_qemu() {
+    const QUEUES: u16 = 16;
+    let (eal, link) = init_dpdk_eal(&IGB_QEMU);
+    let info = eal.dev.iter().next().expect("the igb port");
+    assert_eq!(info.driver_name(), "net_e1000_igb");
+    let config = DevConfig {
+        rx_interrupts: true,
+        num_rx_queues: QUEUES,
+        num_tx_queues: QUEUES,
+        num_hairpin_queues: 0,
+        rx_offloads: RxOffload::NONE,
+        tx_offloads: TxOffloadConfig::none(),
+        mtu: None,
+        rss: None,
+    };
+    let mut dev = config.apply(eal.claim(info.index()).unwrap()).unwrap();
+    let pool = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new(
+                "interrupt_capacity".to_string(),
+                PoolParams {
+                    size: 8192,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    setup_queue_pairs(&mut dev, &pool, QUEUES);
+    let dpdk::dev::DevStartFailure { dev, error } = dev
+        .start()
+        .expect_err("16 receive queues need more MSI-X vectors than this NIC exposes");
+    eprintln!("[intr] start refused the interrupt configuration: {error}");
+
+    let without = DevConfig {
+        rx_interrupts: false,
+        ..config
+    };
+    let mut dev = dev.reconfigure(&without).unwrap();
+    setup_queue_pairs(&mut dev, &pool, QUEUES);
+    let started = dev
+        .start()
+        .expect("the port should start without interrupts");
+    assert!(!started.config().rx_interrupts);
+    let mac = started.mac_address().unwrap().inner();
+    let ndp = ndp_probe_frame(mac, link.host_ipv6);
+    let echo = echo_probe_frame(mac);
+    {
+        let mut queues = started.take_queues().unwrap();
+        let mut rx = queues.take_rx(RxQueueIndex(0)).unwrap();
+        let mut tx = queues.take_tx(TxQueueIndex(0)).unwrap();
+        let mut waiter = RxWaiter::new().unwrap();
+        assert!(matches!(
+            waiter.watch(&rx),
+            Err(dpdk::interrupt::InterruptError::NoEventFd { .. })
+        ));
+        let deadline = clock::deadline(RX_POLL_TIMEOUT);
+        let mut replied = false;
+        let mut retry = false;
+        while clock::now() < deadline && !replied {
+            let refused = tx.transmit(make_batch(&pool, &[&ndp, &echo])).len();
+            // The empty ring must take the first probes. Retries may find it full, since igb
+            // reclaims sent descriptors lazily; the next retry sends the probes again.
+            assert!(
+                retry || refused == 0,
+                "the empty tx ring refused {refused} probe frame(s)"
+            );
+            if refused > 0 {
+                eprintln!("[tx] WARNING: tx queue refused {refused} retransmitted frame(s)");
+            }
+            retry = true;
+            for mbuf in rx.receive() {
+                let data = mbuf.raw_data();
+                if let Ok((headers, consumed)) = Headers::parse(data) {
+                    replied |= matches!(
+                        probe_reply(
+                            &headers,
+                            &data[usize::from(consumed.get())..],
+                            mac,
+                            link.host_ipv6
+                        ),
+                        Some(ProbeReply::EchoReply)
+                    );
+                }
+            }
+            std::thread::sleep(RX_POLL_INTERVAL);
+        }
+        assert!(
+            replied,
+            "the port did not forward after retrying without interrupts"
+        );
+    }
+    assert_within_budget("closing the device", time_device_teardown(started));
+    assert_within_budget("dropping the EAL", time_eal_teardown(eal));
 }

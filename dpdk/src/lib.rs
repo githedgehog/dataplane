@@ -37,6 +37,7 @@ pub mod acl;
 pub mod dev;
 pub mod eal;
 pub mod flow;
+pub mod interrupt;
 pub mod lcore;
 pub mod mem;
 pub mod power;
