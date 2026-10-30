@@ -344,7 +344,8 @@ mod tests {
             headers.embedded_ip().map(|quoted| quoted.net_ext().len()),
             Some(1)
         );
-        headers.refresh_transport_checksum(&frame[consumed..]);
+        let covered = headers.transport_payload_len();
+        headers.refresh_transport_checksum(&frame[consumed..], covered);
         let mut out = frame.clone();
         headers.deparse(&mut out[..consumed]).unwrap();
 

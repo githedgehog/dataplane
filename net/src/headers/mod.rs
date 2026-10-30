@@ -4,10 +4,12 @@
 //! Definition of [`Headers`] and related methods and types.
 #![allow(missing_docs)] // temporary
 
+use std::borrow::Cow;
+
 use crate::checksum::Checksum;
 use crate::eth::ethtype::EthType;
 use crate::eth::{Eth, EthError};
-use crate::icmp_any::{IcmpAny, IcmpAnyMut};
+use crate::icmp_any::{IcmpAny, IcmpAnyMut, get_payload_for_checksum};
 use crate::icmp4::{Icmp4, Icmp4Checksum};
 use crate::icmp6::{Icmp6, Icmp6Checksum, Icmp6ChecksumPayload};
 use crate::impl_from_for_enum;
@@ -467,12 +469,9 @@ impl Transport {
         self.set_checksum_from_increment(updated);
     }
 
-    pub(crate) fn update_checksum(
-        &mut self,
-        net: &Net,
-        embedded_headers: Option<&EmbeddedHeaders>,
-        payload: impl AsRef<[u8]>,
-    ) {
+    /// Compute the checksum from scratch over `payload`: everything the checksum covers after the
+    /// header, an ICMP error's quoted headers included.
+    pub(crate) fn update_checksum(&mut self, net: &Net, payload: impl AsRef<[u8]>) {
         match (net, self) {
             (net, Transport::Tcp(tcp)) => {
                 tcp.update_checksum(&TcpChecksumPayload::new(net, payload.as_ref()))
@@ -483,38 +482,18 @@ impl Transport {
                     .unwrap_or_else(|()| unreachable!()); // Updating UDP checksum never fails
             }
             (Net::Ipv4(_), Transport::Icmp4(icmp4)) => {
-                if icmp4.is_error_message() && embedded_headers.is_some() {
-                    let checksum_payload =
-                        icmp4.get_payload_for_checksum(embedded_headers, payload.as_ref());
-                    icmp4
-                        .update_checksum(checksum_payload.as_ref())
-                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv4 checksum never fails
-                } else {
-                    icmp4
-                        .update_checksum(payload.as_ref())
-                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv4 checksum never fails
-                }
+                icmp4
+                    .update_checksum(payload.as_ref())
+                    .unwrap_or_else(|()| unreachable!()); // Updating ICMPv4 checksum never fails
             }
             (Net::Ipv6(ip), Transport::Icmp6(icmp6)) => {
-                if icmp6.is_error_message() && embedded_headers.is_some() {
-                    let checksum_payload =
-                        icmp6.get_payload_for_checksum(embedded_headers, payload.as_ref());
-                    icmp6
-                        .update_checksum(&Icmp6ChecksumPayload::new(
-                            ip.source().inner(),
-                            ip.destination(),
-                            checksum_payload.as_ref(),
-                        ))
-                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv6 checksum never fails
-                } else {
-                    icmp6
-                        .update_checksum(&Icmp6ChecksumPayload::new(
-                            ip.source().inner(),
-                            ip.destination(),
-                            payload.as_ref(),
-                        ))
-                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv6 checksum never fails
-                }
+                icmp6
+                    .update_checksum(&Icmp6ChecksumPayload::new(
+                        ip.source().inner(),
+                        ip.destination(),
+                        payload.as_ref(),
+                    ))
+                    .unwrap_or_else(|()| unreachable!()); // Updating ICMPv6 checksum never fails
             }
             // TODO: statically ensure that this is unreachable
             (Net::Ipv6(_), Transport::Icmp4(_)) => debug!("illegal: icmpv4 in ipv6"),
@@ -1238,6 +1217,11 @@ impl Headers {
         }
     }
 
+    /// How much of the IP datagram follows the transport header: what its checksum covers after
+    /// the header, without whatever trails the datagram in the frame.
+    ///
+    /// `None` without a network or transport header, or if the datagram's length cannot hold
+    /// the headers.
     pub(crate) fn transport_payload_len(&self) -> Option<usize> {
         let ip_payload_len = match self.net.as_ref()? {
             Net::Ipv4(ip) => usize::from(ip.payload_len()?),
@@ -1254,12 +1238,52 @@ impl Headers {
 
     /// Recompute the transport checksum alone; see [`Packet::refresh_transport_checksum`].
     ///
+    /// `payload` is what follows the parsed headers. The checksum covers, after the transport
+    /// header, an ICMP error's quoted headers and then `payload`, the whole cut to `covered` octets
+    /// if given: where the datagram ends, if what trails it in the frame is in `payload`, or even
+    /// in the quoted headers parsed out of it.
+    ///
     /// [`Packet::refresh_transport_checksum`]: crate::packet::Packet::refresh_transport_checksum
-    pub(crate) fn refresh_transport_checksum(&mut self, payload: impl AsRef<[u8]>) {
-        // VXLAN's UDP checksum is zero by design; there is nothing to refresh.
+    pub(crate) fn refresh_transport_checksum(
+        &mut self,
+        payload: impl AsRef<[u8]>,
+        covered: Option<usize>,
+    ) {
+        self.compute_transport_checksum(payload, covered);
+    }
+
+    /// Compute the transport checksum from scratch, leaving IPv4 checksums unchanged.
+    ///
+    /// `payload` follows the parsed headers. Prepend any quoted headers for ICMP errors, then
+    /// limit the combined bytes to `covered` if supplied. This excludes trailing frame bytes,
+    /// even when they were parsed as part of a quoted header.
+    ///
+    /// Skip VXLAN packets and packets without a network or transport header.
+    pub(crate) fn compute_transport_checksum(
+        &mut self,
+        payload: impl AsRef<[u8]>,
+        covered: Option<usize>,
+    ) {
+        // Locally generated VXLAN uses a zero UDP checksum. Preserve received VXLAN checksums,
+        // including nonzero values.
         if self.try_vxlan().is_some() {
             return;
         }
+        let is_error = match &self.transport {
+            Some(Transport::Icmp4(icmp)) => icmp.is_error_message(),
+            Some(Transport::Icmp6(icmp)) => icmp.is_error_message(),
+            _ => false,
+        };
+        let after_header = match self.embedded_ip.as_deref() {
+            Some(quoted) if is_error => {
+                Cow::Owned(get_payload_for_checksum(Some(quoted), payload.as_ref()))
+            }
+            _ => Cow::Borrowed(payload.as_ref()),
+        };
+        let covered = match covered {
+            Some(len) if len <= after_header.len() => &after_header[..len],
+            _ => &after_header[..],
+        };
         let Some(net) = self.net.as_ref() else {
             trace!("no network header: can't update checksum");
             return;
@@ -1268,23 +1292,28 @@ impl Headers {
             trace!("no transport header: can't update checksum");
             return;
         };
-        transport.update_checksum(net, self.embedded_ip.as_deref(), payload.as_ref());
+        transport.update_checksum(net, covered);
     }
 
     /// update the checksums of the headers
+    #[cfg(any(test, feature = "builder"))]
     pub(crate) fn update_checksums(&mut self, payload: impl AsRef<[u8]>) {
-        let is_vxlan = self.try_vxlan().is_some();
+        self.update_checksums_covering(payload, None);
+    }
 
+    /// Recompute checksums for a locally built packet, using the transport coverage described by
+    /// [`Self::compute_transport_checksum`]. The caller must provide the complete datagram;
+    /// fragment flags do not suppress recomputation.
+    pub(crate) fn update_checksums_covering(
+        &mut self,
+        payload: impl AsRef<[u8]>,
+        covered: Option<usize>,
+    ) {
         let Some(net) = self.net.as_mut() else {
             trace!("no network header: can't update checksum");
             return;
         };
         net.update_checksum();
-
-        if is_vxlan {
-            // Only recompute checksum if it is not VXLAN
-            return;
-        }
 
         // Update inner IP header checksum, if any, before updating transport checksum.
         // This is because the inner headers are part of transport header's payload, so updating
@@ -1302,11 +1331,7 @@ impl Headers {
             // changed them (for example: NAT). Leave this to (for example) the NAT code.
         }
 
-        let Some(transport) = self.transport.as_mut() else {
-            trace!("no transport header: can't update checksum");
-            return;
-        };
-        transport.update_checksum(net, self.embedded_ip.as_deref(), payload.as_ref());
+        self.compute_transport_checksum(payload, covered);
     }
 }
 
