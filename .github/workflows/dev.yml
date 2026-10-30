@@ -241,6 +241,14 @@ jobs:
           recipe: "ci::check-clippy"
           recipe_args: "${{ matrix.profile }}"
 
+      # Compile every target, tests included, for musl; nothing is linked or run. Once is
+      # enough, so only the debug entry does it.
+      - name: "musl"
+        if: "${{ matrix.profile == 'debug' }}"
+        uses: *just
+        with:
+          recipe: "ci::check-musl"
+
       - name: "test"
         uses: *just
         with:
