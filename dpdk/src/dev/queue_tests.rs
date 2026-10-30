@@ -106,3 +106,99 @@ fn a_started_device_hands_its_queues_out_once() {
     assert!(queues.take_tx(TxQueueIndex(0)).is_some());
     assert!(queues.take_tx(TxQueueIndex(0)).is_none());
 }
+
+/// Configured again, a device forgets its queues, which are set up afresh before it starts.
+#[test]
+fn a_reconfigured_device_sets_its_queues_up_again() {
+    let ring = RingPort::new();
+    let mut dev = configured(&ring);
+    dev.new_rx_queue(rx_config()).unwrap();
+    dev.new_tx_queue(tx_config()).unwrap();
+
+    let again = dev.config().clone();
+    let mut dev = dev.reconfigure(&again).unwrap();
+    dev.new_rx_queue(rx_config()).unwrap();
+    dev.new_tx_queue(tx_config()).unwrap();
+    let dev = dev.start().unwrap();
+    let queues = dev.take_queues().expect("queues");
+    assert_eq!(queues.rx_indices().collect::<Vec<_>>(), [RxQueueIndex(0)]);
+}
+
+/// Even a Rust-side refusal requires configuration again before queue setup or start.
+#[test]
+fn a_refused_reconfiguration_requires_configuration_again() {
+    let ring = RingPort::new();
+    let mut dev = configured(&ring);
+    dev.new_rx_queue(rx_config()).unwrap();
+
+    let too_many = DevConfig {
+        num_rx_queues: u16::MAX,
+        ..dev.config().clone()
+    };
+    let failure = dev.reconfigure(&too_many).unwrap_err();
+    assert!(matches!(
+        failure.error,
+        DevConfigError::TooManyQueues { .. }
+    ));
+    let dev = failure.dev;
+    assert_eq!(dev.config().num_rx_queues, 1);
+    assert!(matches!(dev.lifecycle.stage, Stage::Unconfigured));
+    assert!(dev.queues.lock().is_none());
+    let previous = dev.config().clone();
+    let mut dev = dev.reconfigure(&previous).unwrap();
+    dev.new_rx_queue(rx_config()).unwrap();
+    dev.new_tx_queue(tx_config()).unwrap();
+    dev.start().unwrap();
+}
+
+/// DPDK clears dev_configured on entry, even if the request fails before queue allocation. A
+/// failed driver configuration can also release the queues; neither failure leaves a Configured
+/// device. Exercise the native error path as well as the Rust-side validation above.
+#[test]
+fn a_native_reconfiguration_failure_can_be_retried_or_closed() {
+    for retry in [false, true] {
+        let ring = RingPort::new();
+        let mut dev = configured(&ring);
+        dev.new_rx_queue(rx_config()).unwrap();
+        dev.new_tx_queue(tx_config()).unwrap();
+        let previous = dev.config().clone();
+
+        // Make the cached capability snapshot admit a request the real ring port rejects, so
+        // this failure comes from rte_eth_dev_configure rather than the Rust queue-count check.
+        let max_rx = dev.info.max_rx_queues();
+        let too_many = DevConfig {
+            num_rx_queues: max_rx + 1,
+            ..previous.clone()
+        };
+        dev.info.inner.max_rx_queues = too_many.num_rx_queues;
+        let failure = dev.reconfigure(&too_many).unwrap_err();
+        assert!(matches!(
+            failure.error,
+            DevConfigError::DriverSpecificError { .. }
+        ));
+        let mut dev = failure.dev;
+        dev.info.inner.max_rx_queues = max_rx;
+        assert_eq!(dev.config(), &previous);
+        assert!(matches!(dev.lifecycle.stage, Stage::Unconfigured));
+        assert!(dev.queues.lock().is_none());
+
+        if retry {
+            // A second failure must still leave retry available.
+            let dev = dev.reconfigure(&too_many).unwrap_err().dev;
+            let mut dev = dev.reconfigure(&previous).unwrap();
+            dev.new_rx_queue(rx_config()).unwrap();
+            dev.new_tx_queue(tx_config()).unwrap();
+            let dev = dev.start().unwrap();
+            let mut queues = dev.take_queues().unwrap();
+            let mut rx = queues.take_rx(RxQueueIndex(0)).unwrap();
+            let mut tx = queues.take_tx(TxQueueIndex(0)).unwrap();
+            assert!(
+                tx.transmit(packet_pool(127).alloc_bulk(1).unwrap())
+                    .is_empty()
+            );
+            assert_eq!(rx.receive().len(), 1);
+        } else {
+            dev.close().unwrap();
+        }
+    }
+}
