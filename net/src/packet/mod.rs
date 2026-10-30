@@ -29,7 +29,7 @@ use crate::eth::mac::{DestinationMac, SourceMac};
 use crate::flows::{FlowInfo, FlowStatus};
 use crate::headers::{
     EmbeddedHeaders, Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut,
-    TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryVxlan,
+    TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryIpv4Mut, TryVxlan,
 };
 use crate::ip::{dscp::Dscp, ecn::Ecn};
 use crate::parse::{DeParse, DeParseError, Parse, ParseError};
@@ -437,7 +437,15 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// serialize or `SerializeError::DeparseError` if it does, but the de-parsing the `Packet` failed.
     #[inline]
     pub(crate) fn do_serialize(&mut self) -> Result<(), SerializeError<()>> {
-        self.update_checksums();
+        // As the VXLAN path does: refresh what a stage asked for, or just the IPv4 header
+        // checksum, which a TTL decrement changes. Recomputing the transport checksum reads the
+        // whole payload, and nothing that leaves it unflagged changed what it covers.
+        if self.meta().checksum_refresh() {
+            self.update_checksums();
+        } else if let Some(ipv4) = self.headers.try_ipv4_mut() {
+            ipv4.update_checksum(&())
+                .unwrap_or_else(|()| unreachable!()); // IPv4 checksum update never fails
+        }
         let needed = self.headers.size().get();
         let buf = self
             .payload
@@ -1162,7 +1170,7 @@ mod padding_tests {
 
     const MIN_ETHERNET_FRAME: usize = 60;
 
-    fn frame(protocol: u8, l4: &[u8]) -> Vec<u8> {
+    pub(super) fn frame(protocol: u8, l4: &[u8]) -> Vec<u8> {
         let mut frame = Vec::new();
         frame.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]); // destination mac
         frame.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]); // source mac
@@ -1190,7 +1198,7 @@ mod padding_tests {
         tcp
     }
 
-    fn udp(payload: &[u8]) -> Vec<u8> {
+    pub(super) fn udp(payload: &[u8]) -> Vec<u8> {
         let mut udp = Vec::new();
         udp.extend_from_slice(&1000_u16.to_be_bytes()); // source port
         udp.extend_from_slice(&2000_u16.to_be_bytes()); // destination port
@@ -1277,7 +1285,7 @@ mod padding_tests {
         packet.update_checksums();
     }
 
-    fn tcp(payload: &[u8]) -> Vec<u8> {
+    pub(super) fn tcp(payload: &[u8]) -> Vec<u8> {
         let mut tcp = tcp_ack();
         tcp.extend_from_slice(payload);
         tcp
@@ -1421,6 +1429,103 @@ mod padding_tests {
                     .expect("no inner tcp header")
                     .validate_checksum(&TcpChecksumPayload::new(&net, payload))
                     .expect("inner trailing octets leaked into the tcp checksum");
+            });
+    }
+}
+
+#[cfg(test)]
+mod serialize_checksum_tests {
+    //! What [`Packet::serialize`] does to checksums: it always updates the IPv4 header's, which a
+    //! TTL decrement changes, and touches a transport checksum only when a stage asked it to.
+
+    use super::padding_tests::{frame, tcp, udp};
+    use crate::buffer::TestBuffer;
+    use crate::checksum::Checksum;
+    use crate::headers::{TryHeaders, TryHeadersMut, TryIp, TryIpv4, TryIpv4Mut, TryTcp};
+    use crate::packet::Packet;
+    use crate::tcp::TcpChecksumPayload;
+
+    /// Where the transport checksum sits in a [`frame`]: past Ethernet and a 20-octet IPv4 header,
+    /// at offset 16 in TCP and 6 in UDP.
+    const TCP_CHECKSUM: usize = 14 + 20 + 16;
+    const UDP_CHECKSUM: usize = 14 + 20 + 6;
+
+    /// Forward `bytes` as a router does, decrementing the TTL, and serialize the result, asking for
+    /// the checksums to be refreshed if `refresh`.
+    fn forward(bytes: &[u8], refresh: bool) -> Vec<u8> {
+        let mut packet =
+            Packet::new(TestBuffer::from_raw_data(bytes)).expect("frame does not parse");
+        packet
+            .headers_mut()
+            .try_ipv4_mut()
+            .expect("no ipv4 header")
+            .decrement_ttl()
+            .expect("ttl already zero");
+        if refresh {
+            packet.meta_mut().set_checksum_refresh(true);
+        }
+        packet
+            .serialize()
+            .expect("does not serialize")
+            .as_ref()
+            .to_vec()
+    }
+
+    fn parse(bytes: &[u8]) -> Packet<TestBuffer> {
+        Packet::new(TestBuffer::from_raw_data(bytes)).expect("output does not parse")
+    }
+
+    /// The router's own change is always reflected: the TTL went down by one and the IPv4 header
+    /// checksum covers it.
+    fn assert_ipv4_header_current(packet: &Packet<TestBuffer>) {
+        let ipv4 = packet.headers().try_ipv4().expect("no ipv4 header");
+        assert_eq!(ipv4.ttl(), 63, "the ttl was not decremented");
+        ipv4.validate_checksum(&())
+            .expect("the ipv4 header checksum does not cover the decremented ttl");
+    }
+
+    #[test]
+    fn an_unrequested_transport_checksum_crosses_unchanged() {
+        // Arbitrary checksums, mostly wrong: refreshing one would read the whole payload, and would
+        // also launder a segment corrupted before it reached us into one that looks intact.
+        bolero::check!()
+            .with_type::<(Vec<u8>, u16, bool)>()
+            .for_each(|(payload, checksum, is_udp)| {
+                let payload = &payload[..payload.len().min(256)];
+                let (mut bytes, at) = if *is_udp {
+                    (frame(17, &udp(payload)), UDP_CHECKSUM)
+                } else {
+                    (frame(6, &tcp(payload)), TCP_CHECKSUM)
+                };
+                bytes[at..at + 2].copy_from_slice(&checksum.to_be_bytes());
+
+                let out = forward(&bytes, false);
+                assert_eq!(
+                    out[at..at + 2],
+                    bytes[at..at + 2],
+                    "serialize rewrote a transport checksum no stage asked it to"
+                );
+                assert_ipv4_header_current(&parse(&out));
+            });
+    }
+
+    #[test]
+    fn a_requested_transport_checksum_is_refreshed() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, u16)>()
+            .for_each(|(payload, checksum)| {
+                let payload = &payload[..payload.len().min(256)];
+                let mut bytes = frame(6, &tcp(payload));
+                bytes[TCP_CHECKSUM..TCP_CHECKSUM + 2].copy_from_slice(&checksum.to_be_bytes());
+
+                let out = parse(&forward(&bytes, true));
+                let net = out.headers().try_ip().expect("no ip header").clone();
+                out.headers()
+                    .try_tcp()
+                    .expect("no tcp header")
+                    .validate_checksum(&TcpChecksumPayload::new(&net, payload))
+                    .expect("a requested refresh left the tcp checksum stale");
+                assert_ipv4_header_current(&out);
             });
     }
 }
