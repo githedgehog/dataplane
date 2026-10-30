@@ -76,9 +76,9 @@ let
     "-Cdwarf-version=5"
     "-Csymbol-mangling-version=v0"
     "-Clink-arg=-Wl,--as-needed,--gc-sections" # FRR builds don't like this, but rust does fine
-    # The backend threads of one ThinLTO link, each holding modules of its own. CI runs up to
-    # `lto_cores` such links at once in a 20 GiB cgroup, so the peak is roughly the product; 4 left
-    # too little headroom.
+    # The backend threads of one ThinLTO link, each holding modules of its own, for links nothing
+    # bounds: up to `lto_cores` of them can overlap in CI's 20 GiB cgroup. A test archive bounds its
+    # links instead and gives each more (`LINK_SLOTS` and `LINK_THINLTO_JOBS` in default.nix).
     "-Clink-arg=-Wl,--thinlto-jobs=2"
   ]
   ++ (
