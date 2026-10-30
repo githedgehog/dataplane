@@ -889,6 +889,23 @@ let
   is-cross-compile = pkgs.stdenv'.buildPlatform.rust.rustcTarget != ctarget;
   cc = if is-cross-compile then "${ctarget}-clang" else "clang";
   strip = if is-cross-compile then "${ctarget}-strip" else "strip";
+  # What rustc links with: the cross or native clang, behind nix/scripts/link-slots.sh, which bounds
+  # how many links run at once where a build sets `LINK_SLOTS` (see `test-builder`) and is
+  # transparent everywhere else.
+  #
+  # The `-clang` is for rustc, which infers how to drive a linker from its name. Under a name it
+  # does not recognize it falls back to the target's default, which on x86_64-unknown-linux-gnu and
+  # aarch64-unknown-linux-gnu adds rustc's own self-contained lld (`-fuse-ld=lld` and its `gcc-ld`
+  # directory). Ending in `-clang` gets the link line it gives clang itself, on every target.
+  link-slots = pkgs.pkgsBuildHost.writeShellApplication {
+    name = "link-slots-clang";
+    runtimeInputs = with pkgs.pkgsBuildHost; [
+      coreutils
+      util-linux
+    ];
+    runtimeEnv.LINK_CC = "${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cc}";
+    text = builtins.readFile ./nix/scripts/link-slots.sh;
+  };
   objcopy = if is-cross-compile then "${ctarget}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
     builtins.readFile (
@@ -1021,7 +1038,7 @@ let
               builtins.concatStringsSep " " (
                 profile.RUSTFLAGS
                 ++ [
-                  "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cc}"
+                  "-Clinker=${link-slots}/bin/link-slots-clang"
                   "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages'.lld}/bin/ld.lld"
                   "-Clink-arg=-L${sysroot}/lib"
                   # Keep debug paths stable across revisions. Source readers
@@ -1391,6 +1408,23 @@ let
         cargo-features == [ ]
         && !(builtins.elem "coverage" instrumentations)
         && (package == null || package == "dataplane-init");
+      # Under cross-language ThinLTO every test binary's link optimizes the whole program, and
+      # cargo cannot see how many of those overlap. Bound them (nix/scripts/link-slots.sh): two at a
+      # time, four backend threads each. Measured building `tests.all` at `profile=release` with
+      # line-table debug info on 8 cores, three runs each:
+      #
+      #     links unbounded (10 cores, full debug info)  514 s   36.2 GiB peak
+      #     2 slots x 4 threads                          614 s   13.2-14.1 GiB
+      #     1 slot  x 8 threads                          924 s   10.4-12.1 GiB
+      #
+      # One slot makes the links the critical path for little memory; two keep the peak bounded
+      # without that.
+      lto-link-slots =
+        pkgs.lib.optionalAttrs (builtins.elem "-Clinker-plugin-lto" profile-tests'.RUSTFLAGS)
+          {
+            LINK_SLOTS = "2";
+            LINK_THINLTO_JOBS = "4";
+          };
     in
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
@@ -1401,6 +1435,7 @@ let
       // pkgs.lib.optionalAttrs wants-gateway {
         DATAPLANE_TEST_GATEWAY_ROOTFS = "${gateway-rootfs}";
       }
+      // lto-link-slots
       // {
         buildPhaseCargoCommand =
           (builtins.concatStringsSep " " (
