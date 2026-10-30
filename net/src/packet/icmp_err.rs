@@ -38,8 +38,13 @@ impl<'a> IcmpErrorPacket<'a> {
         let icmp = packet.try_icmp_any()?;
         let inner_net = packet.try_inner_ip()?;
         let inner_transport = packet.try_embedded_transport()?;
-        let icmp_payload = icmp
+        let mut icmp_payload = icmp
             .get_payload_for_checksum(Some(packet.embedded_headers()?), packet.payload().as_ref());
+        // The checksum covers the message up to where the datagram ends, not what trails it in the
+        // frame.
+        if let Some(len) = packet.headers.transport_payload_len() {
+            icmp_payload.truncate(len);
+        }
         Some(Self {
             net,
             icmp,
@@ -407,15 +412,12 @@ mod req3_properties {
                     && let Some(current) = inner.checksum().map(u16::from)
                 {
                     let _ = inner.set_checksum(Ipv4Checksum::new(current ^ 1));
+                    // Recompute the ICMP checksum alone, leaving the quoted one wrong.
                     let payload: Vec<u8> = inner_broken.payload.as_ref().to_vec();
-                    let headers = &mut inner_broken.headers;
-                    let net = headers.net.clone().unwrap_or_else(|| unreachable!());
-                    let embedded = headers.embedded_ip.as_deref().cloned();
-                    headers
-                        .transport
-                        .as_mut()
-                        .unwrap_or_else(|| unreachable!())
-                        .update_checksum(&net, embedded.as_ref(), payload.as_slice());
+                    let covered = inner_broken.headers.transport_payload_len();
+                    inner_broken
+                        .headers
+                        .compute_transport_checksum(payload.as_slice(), covered);
                     assert!(
                         matches!(
                             IcmpErrorPacket::new(&inner_broken)

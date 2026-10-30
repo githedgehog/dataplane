@@ -119,7 +119,7 @@ pub fn build_test_ipv4_packet_with_transport(
     let net = Net::Ipv4(ipv4);
 
     if let Some(transport) = transport.as_mut() {
-        transport.update_checksum(&net, None, []);
+        transport.update_checksum(&net, []);
     }
 
     headers.net(Some(net));
@@ -290,7 +290,7 @@ pub fn build_test_ipv6_packet_with_transport(
         ipv6.set_payload_length(transport.size().get());
         ipv6.set_next_header(next_header);
         let net = Net::Ipv6(ipv6);
-        transport.update_checksum(&net, None, []);
+        transport.update_checksum(&net, []);
         headers.net(Some(net));
         headers.transport(Some(transport));
     } else {
@@ -453,7 +453,10 @@ pub fn build_test_icmp4_destination_unreachable_packet_with_code(
 
     // More adjustments
     let mut icmp_transport = Transport::Icmp4(icmp);
-    icmp_transport.update_checksum(&outer_net, Some(&embedded_headers), []);
+    icmp_transport.update_checksum(
+        &outer_net,
+        crate::icmp_any::get_payload_for_checksum(Some(&embedded_headers), &[]),
+    );
 
     // Headers
     headers.net(Some(outer_net));
@@ -517,7 +520,7 @@ pub fn build_test_icmp4_echo(
 
     // Update ICMP checksum
     let mut icmp_transport = Transport::Icmp4(icmp);
-    icmp_transport.update_checksum(&net, None, []);
+    icmp_transport.update_checksum(&net, []);
 
     // Build headers
     headers.net(Some(net));
@@ -746,7 +749,10 @@ pub fn build_test_icmp6_error_packet(
     let embedded_headers = embedded_headers.build().unwrap();
 
     let mut icmp_transport = Transport::Icmp6(icmp);
-    icmp_transport.update_checksum(&outer_net, Some(&embedded_headers), []);
+    icmp_transport.update_checksum(
+        &outer_net,
+        crate::icmp_any::get_payload_for_checksum(Some(&embedded_headers), &[]),
+    );
 
     headers.net(Some(outer_net));
     headers.transport(Some(icmp_transport));
@@ -787,7 +793,7 @@ pub fn build_test_icmp6_echo(
     let net = Net::Ipv6(ipv6);
 
     let mut icmp_transport = Transport::Icmp6(icmp);
-    icmp_transport.update_checksum(&net, None, []);
+    icmp_transport.update_checksum(&net, []);
 
     headers.net(Some(net));
     headers.transport(Some(icmp_transport));
