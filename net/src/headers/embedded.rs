@@ -269,6 +269,7 @@ impl ParseWith for EmbeddedHeaders {
     type Error = EthError;
     type Param = EmbeddedIpVersion;
 
+    #[allow(clippy::too_many_lines)] // one arm per header
     fn parse_with(
         param: Self::Param,
         buf: &[u8],
@@ -294,7 +295,11 @@ impl ParseWith for EmbeddedHeaders {
                     }))?
             }
         };
+        // Offset of `prior` from the quoted IP header. When the header stack is full, rewind here
+        // so this header and all following bytes remain in the payload, including any parsed ahead.
+        let mut prior_start = 0;
         loop {
+            let next_start = cursor.position();
             let header = prior.parse_payload(&mut cursor);
             match prior {
                 EmbeddedHeader::Ipv4(ipv4) => {
@@ -307,6 +312,7 @@ impl ParseWith for EmbeddedHeaders {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Ipv4Auth(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -314,6 +320,7 @@ impl ParseWith for EmbeddedHeaders {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Ipv6Auth(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -321,6 +328,7 @@ impl ParseWith for EmbeddedHeaders {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::HopByHop(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -328,6 +336,7 @@ impl ParseWith for EmbeddedHeaders {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::DestOpts(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -335,6 +344,7 @@ impl ParseWith for EmbeddedHeaders {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Routing(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -342,6 +352,7 @@ impl ParseWith for EmbeddedHeaders {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Fragment(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -364,6 +375,7 @@ impl ParseWith for EmbeddedHeaders {
                 }
                 Some(next) => {
                     prior = next;
+                    prior_start = next_start;
                 }
             }
         }
