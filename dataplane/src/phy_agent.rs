@@ -381,7 +381,6 @@ mod tests {
     use super::*;
     use net::eth::mac::{Mac, SourceMac};
     use net::interface::InterfaceName;
-    use tokio::sync::mpsc;
 
     #[test]
     fn show_link_says_what_mstlink_said() {
@@ -501,7 +500,7 @@ mod tests {
             datapath_index: None,
             pci_address: Some(pci),
         }));
-        let (inject, _) = mpsc::channel(1);
+        let (inject, _) = crate::drivers::cpbridge::inject_channel(1).unwrap();
         let port = BridgePort {
             name: InterfaceName::try_from("under-test").unwrap(),
             inject,

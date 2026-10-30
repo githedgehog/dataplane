@@ -9,7 +9,7 @@ version.workspace = true
 default = []
 # Bin is gated out under loom (see `src/main.rs`); the feature exists so
 # `--features loom` resolves at workspace level and propagates to libs.
-loom = ["capture/loom", "concurrency/loom"]
+loom = ["capture/loom", "concurrency/loom", "nat/loom"]
 shuttle = ["capture/shuttle", "concurrency/shuttle", "nat/shuttle", "flow-entry/shuttle", "routing/shuttle"]
 shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
@@ -47,7 +47,7 @@ mgmt = { workspace = true }
 mstlink = { workspace = true, features = ["tokio"] }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
-nix = { workspace = true, features = ["socket", "hostname", "net", "sched"] }
+nix = { workspace = true, features = ["event", "socket", "hostname", "net", "sched"] }
 netdev = { workspace = true }
 once_cell = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
