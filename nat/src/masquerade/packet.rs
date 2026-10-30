@@ -204,7 +204,7 @@ mod checksum_test {
     use super::*;
     use net::buffer::TestBuffer;
     use net::checksum::Checksum;
-    use net::headers::{TryHeaders, TryTransport};
+    use net::headers::{TryHeaders, TryIpv4, TryTransport};
     use net::ip::NextHeader;
     use net::packet::test_utils::build_test_tcp_ipv4_packet;
     use std::num::NonZero;
@@ -330,6 +330,12 @@ mod checksum_test {
             !packet.meta().checksum_refresh(),
             "dnat asked for a full payload recompute; the incremental path was not taken"
         );
+        packet
+            .headers()
+            .try_ipv4()
+            .expect("an IPv4 header")
+            .validate_checksum(&())
+            .expect("translation left the IPv4 header checksum stale");
 
         let checksum_of = |p: &Packet<TestBuffer>| {
             p.headers().try_transport().map(|tp| match tp {
@@ -363,6 +369,12 @@ mod checksum_test {
             !packet.meta().checksum_refresh(),
             "snat asked for a full payload recompute; the incremental path was not taken"
         );
+        packet
+            .headers()
+            .try_ipv4()
+            .expect("an IPv4 header")
+            .validate_checksum(&())
+            .expect("translation left the IPv4 header checksum stale");
 
         let checksum_of = |p: &Packet<TestBuffer>| {
             p.headers().try_transport().map(|tp| match tp {
