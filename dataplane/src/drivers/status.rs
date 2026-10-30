@@ -33,6 +33,7 @@ pub struct RxTaskStatus {
     pub total_punt_drops: u64,
     pub total_parse_errors: u64,
     pub total_truncated: u64,
+    pub total_csum_unknown: u64,
     pub total_zero_len: u64,
     pub total_kernel_drops: u64,
     pub pps: f64,
@@ -51,6 +52,7 @@ impl RxTaskStatus {
             total_punt_drops: 0,
             total_parse_errors: 0,
             total_truncated: 0,
+            total_csum_unknown: 0,
             total_zero_len: 0,
             total_kernel_drops: 0,
             pps: 0.,
@@ -67,6 +69,7 @@ impl RxTaskStatus {
         self.total_punt_drops += counters.punt_drops;
         self.total_parse_errors += counters.parse_errors;
         self.total_truncated += counters.truncated;
+        self.total_csum_unknown += counters.csum_unknown;
         self.total_zero_len += counters.zero_len;
         self.total_kernel_drops += counters.kernel_drops;
     }
@@ -172,7 +175,7 @@ macro_rules! RX_TASK_TBL_FMT {
 
 macro_rules! RX_DROP_TBL_FMT {
     () => {
-        "   {:<16}  {:>12}  {:>10}  {:>10}  {:>10}  {:>10}  {:>10}  {:>12}"
+        "   {:<16}  {:>12}  {:>10}  {:>10}  {:>10}  {:>10}  {:>12}  {:>10}  {:>12}"
     };
 }
 
@@ -211,6 +214,7 @@ fn fmt_rx_drop_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             "punt-drops",
             "parse-err",
             "truncated",
+            "csum-unknown",
             "zero-len",
             "kernel-drops"
         )
@@ -229,6 +233,7 @@ fn fmt_rx_drop(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::
             rx.total_punt_drops,
             rx.total_parse_errors,
             rx.total_truncated,
+            rx.total_csum_unknown,
             rx.total_zero_len,
             rx.total_kernel_drops
         )
@@ -286,6 +291,7 @@ mod test {
             punt_drops: 9,
             parse_errors: 5,
             truncated: 6,
+            csum_unknown: 10,
             zero_len: 7,
             kernel_drops: 8,
         };
@@ -300,6 +306,7 @@ mod test {
         assert_eq!(status.total_punt_drops, 18);
         assert_eq!(status.total_parse_errors, 10);
         assert_eq!(status.total_truncated, 12);
+        assert_eq!(status.total_csum_unknown, 20);
         assert_eq!(status.total_zero_len, 14);
         assert_eq!(status.total_kernel_drops, 16);
     }
