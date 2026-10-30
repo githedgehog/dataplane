@@ -13,8 +13,9 @@ use config::external::overlay::{Overlay, ValidatedOverlay};
 use lpm::prefix::with_ports::PrefixPortsSet;
 use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
+use net::checksum::Checksum;
 use net::headers::builder::HeaderStack;
-use net::headers::{Net, TryIp};
+use net::headers::{Net, TryIp, TryIpv4};
 use net::ip::dscp::Dscp;
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
@@ -236,7 +237,15 @@ fn rules_share_one_budget_and_counter_set_on_a_worker() {
             (Some(DoneReason::RateLimited), 0)
         ]
     );
-    assert!(out[2].meta().checksum_refresh());
+    assert!(
+        !out[2].meta().checksum_refresh(),
+        "a remark needs no transport checksum refresh"
+    );
+    out[2]
+        .try_ipv4()
+        .unwrap()
+        .validate_checksum(&())
+        .expect("the remark left the ipv4 header checksum stale");
     assert_eq!(counts(&w.load(), "shared", Unit::Packets), [2, 1, 1]);
 }
 
@@ -400,7 +409,10 @@ fn ipv6_length_remarking_and_counts_use_the_whole_ip_packet() {
         (0..3).map(|_| packet("fd01::9", 80)).collect(),
     );
     assert_eq!(dscp(&out[1]), 10);
-    assert!(out[1].meta().checksum_refresh());
+    assert!(
+        !out[1].meta().checksum_refresh(),
+        "a remark needs no transport checksum refresh"
+    );
     assert_eq!(out[2].get_done(), Some(DoneReason::RateLimited));
     assert_eq!(
         w.load().meters()[0]

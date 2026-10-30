@@ -97,50 +97,68 @@ impl Checksum for Ipv4 {
 #[cfg(test)]
 mod tests {
     use crate::checksum::Checksum;
-    use crate::ipv4::Ipv4;
+    use crate::ip::NextHeader;
+    use crate::ip::dscp::Dscp;
+    use crate::ip::ecn::Ecn;
+    use crate::ipv4::{BuiltWithNextHeader, Ipv4, Ipv4Checksum, ones_complement_sum};
+    use crate::parse::DeParse;
+    use bolero::{Driver, ValueGenerator};
     use std::net::Ipv4Addr;
 
-    fn update_and_check_checksum(ipv4: &Ipv4, new_len_value: u16, new_addr_value: u32) {
-        let mut ipv4 = ipv4.clone();
+    /// How far `ipv4` is from valid: the one's-complement sum over the whole header, checksum
+    /// included, which is `0xffff` (either zero) for a valid header.
+    fn error(ipv4: &Ipv4) -> u16 {
+        let mut buf = [0u8; Ipv4::MAX_LEN.get() as usize];
+        let written = ipv4.deparse(&mut buf).expect("header does not deparse");
+        match ones_complement_sum(&buf[..written.get() as usize]) {
+            0 => 0xffff,
+            sum => sum,
+        }
+    }
 
-        // Set and validate checksum
-        ipv4.update_checksum(&()).expect("update checksum failed");
-        ipv4.validate_checksum(&())
-            .expect("expected valid checksum after initial update");
+    /// A header built here, carrying any next header.
+    struct Built;
 
-        // Update 16-bit "total length" field
-        let checksum = ipv4.checksum().unwrap();
-        let old_value = ipv4.total_len();
-        ipv4.total_len = new_len_value;
+    impl ValueGenerator for Built {
+        type Output = Ipv4;
 
-        // Update and validate checksum
-        let new_checksum = ipv4.increment_update_checksum(checksum, old_value, new_len_value);
-        ipv4.set_checksum(new_checksum)
-            .expect("set checksum failed");
-        ipv4.validate_checksum(&())
-            .expect("expected valid checksum after total length field change");
-
-        // Update 32-bit destination address
-        let checksum = ipv4.checksum().unwrap();
-        let old_value = ipv4.destination().into();
-        let new_ip = Ipv4Addr::from(new_addr_value);
-        ipv4.set_destination(new_ip);
-
-        // Update and validate checksum
-        let new_checksum =
-            ipv4.increment_update_checksum_32bit(checksum, old_value, new_addr_value);
-        ipv4.set_checksum(new_checksum)
-            .expect("set checksum failed");
-        ipv4.validate_checksum(&())
-            .expect("expected valid checksum after destination address change");
+        fn generate<D: Driver>(&self, u: &mut D) -> Option<Ipv4> {
+            BuiltWithNextHeader(u.produce::<NextHeader>()?).generate(u)
+        }
     }
 
     #[test]
-    fn test_increment_update_checksum() {
+    fn a_built_header_is_valid() {
         bolero::check!()
-            .with_type()
-            .for_each(|(header, len, addr)| {
-                update_and_check_checksum(header, *len, *addr);
+            .with_generator(Built)
+            .for_each(|ipv4: &Ipv4| {
+                ipv4.validate_checksum(&())
+                    .expect("a header built through the setters is invalid");
+            });
+    }
+
+    #[test]
+    fn setters_carry_a_checksum_error_through_exactly() {
+        bolero::check!()
+            .with_type::<(Ipv4, u16, u8, u32, u16, Dscp, Ecn)>()
+            .for_each(|(header, checksum, ttl, destination, id, dscp, ecn)| {
+                let mut ipv4 = header.clone();
+                ipv4.set_checksum(Ipv4Checksum::from(*checksum))
+                    .expect("setting a checksum never fails");
+                let before = error(&ipv4);
+
+                ipv4.set_ttl(*ttl)
+                    .set_destination(Ipv4Addr::from(*destination))
+                    .set_identification(*id)
+                    .set_dscp(*dscp)
+                    .set_ecn(*ecn);
+                let _ = ipv4.decrement_ttl();
+
+                assert_eq!(
+                    error(&ipv4),
+                    before,
+                    "a setter recomputed the checksum rather than adjusting it"
+                );
             });
     }
 }
