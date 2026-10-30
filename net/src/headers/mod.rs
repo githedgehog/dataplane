@@ -1236,20 +1236,41 @@ impl Headers {
         ip_payload_len.checked_sub(after_net)
     }
 
-    /// Recompute the transport checksum alone; see [`Packet::refresh_transport_checksum`].
+    /// Whether the datagram is a fragment of a larger one, as opposed to whole or an atomic
+    /// fragment ([RFC 6946]).
     ///
-    /// `payload` is what follows the parsed headers. The checksum covers, after the transport
-    /// header, an ICMP error's quoted headers and then `payload`, the whole cut to `covered` octets
-    /// if given: where the datagram ends, if what trails it in the frame is in `payload`, or even
-    /// in the quoted headers parsed out of it.
+    /// [RFC 6946]: https://datatracker.ietf.org/doc/html/rfc6946
+    fn is_fragment(&self) -> bool {
+        let ipv4 = matches!(
+            &self.net,
+            Some(Net::Ipv4(ip)) if ip.more_fragments() || ip.fragment_offset().value() != 0
+        );
+        ipv4 || self.net_ext.iter().any(
+            |ext| matches!(ext, NetExt::Fragment(fragment) if fragment.is_fragmenting_payload()),
+        )
+    }
+
+    /// Attempt to refresh the transport checksum; see [`Packet::refresh_transport_checksum`].
+    ///
+    /// `payload` and `covered` have the same meaning as in [`Self::compute_transport_checksum`].
+    ///
+    /// Returns `false` for fragmented datagrams. Otherwise attempts computation and returns
+    /// `true`, even if the update is skipped.
     ///
     /// [`Packet::refresh_transport_checksum`]: crate::packet::Packet::refresh_transport_checksum
     pub(crate) fn refresh_transport_checksum(
         &mut self,
         payload: impl AsRef<[u8]>,
         covered: Option<usize>,
-    ) {
+    ) -> bool {
+        // A transport checksum covers the reassembled datagram. With only a fragment available,
+        // preserve the checksum, including any incremental updates already applied by stages.
+        if self.is_fragment() {
+            debug!("a fragment: can't recompute its transport checksum");
+            return false;
+        }
         self.compute_transport_checksum(payload, covered);
+        true
     }
 
     /// Compute the transport checksum from scratch, leaving IPv4 checksums unchanged.
