@@ -6,7 +6,10 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-default = []
+# BENCH BRANCH ONLY: pollstats on by default so the image builds without --features.
+default = ["pollstats"]
+# Measure how the DPDK workers poll, and read polling knobs from the environment.
+pollstats = []
 # Bin is gated out under loom (see `src/main.rs`); the feature exists so
 # `--features loom` resolves at workspace level and propagates to libs.
 loom = ["capture/loom", "concurrency/loom"]
