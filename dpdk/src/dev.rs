@@ -268,6 +268,10 @@ pub struct DevConfig {
     pub mtu: Option<u16>,
     /// RSS parameters. `None` requests no hash types (`rss_hf = 0`).
     pub rss: Option<RssConf>,
+    /// Request receive queue interrupts for idle waits (see [`interrupt`](crate::interrupt)).
+    /// Unsupported requests may fail during configuration, start, or interrupt registration.
+    /// Callers must handle these failures and fall back to polling or monitor waits.
+    pub rx_interrupts: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -427,6 +431,7 @@ impl DevConfig {
         };
 
         eth_conf.rx_adv_conf.rss_conf = rss_conf;
+        eth_conf.intr_conf.set_rxq(u32::from(self.rx_interrupts));
 
         let nb_rx_queues = self.num_rx_queues + self.num_hairpin_queues;
         let nb_tx_queues = self.num_tx_queues + self.num_hairpin_queues;
