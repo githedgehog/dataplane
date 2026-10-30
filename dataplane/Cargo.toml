@@ -72,7 +72,7 @@ clock = { workspace = true, features = ["virtual"] }
 # internal
 config = { workspace = true, features = ["bolero"] }
 lpm = { workspace = true, features = ["testing"] }
-net = { workspace = true, features = ["bolero", "builder", "test_buffer", "test_meta"] }
+net = { workspace = true, features = ["bolero", "builder", "checksum-audit", "test_buffer", "test_meta"] }
 routing = { workspace = true, features = ["testing"] }
 # Only in tests: `DoneReason::COUNT` is what makes the punt policy table fail when a
 # verdict is added without a decision about what the control plane should see.

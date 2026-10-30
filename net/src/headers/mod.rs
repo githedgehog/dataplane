@@ -366,7 +366,7 @@ impl Transport {
     /// only a full recompute can fix it; callers detect that case with
     /// [`Headers::has_zero_ipv6_udp_checksum`].
     #[must_use]
-    fn checksum_for_increment(&self) -> Option<u16> {
+    pub(crate) fn checksum_for_increment(&self) -> Option<u16> {
         match self {
             Transport::Tcp(tcp) => tcp.checksum().map(u16::from),
             Transport::Udp(udp) => match udp.checksum().map(u16::from) {
