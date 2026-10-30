@@ -26,6 +26,11 @@ let
   # Test archives are loaded back onto the build host and executed
   # there; when the target arch differs, that means qemu-user.
   is-emulated-test = for-tests && (arch != host-arch);
+  # Release test binaries carry line tables only (`debug-info.line-tables`): enough for backtraces,
+  # and much less for rustc and the ThinLTO links to hold. The debug and checked test archives do
+  # not link with ThinLTO, so they keep full debug info for a debugger, as does everything that
+  # ships.
+  line-tables-only = for-tests && profile == "release";
   common.NIX_CFLAGS_COMPILE = [
     "-g3"
     "-gdwarf-5"
@@ -287,6 +292,12 @@ let
     "-Zcoverage-options=branch"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") instrument.coverage.NIX_CFLAGS_LINK);
+  # Comes last where `line-tables-only` is set, overriding `common`'s `-Cdebuginfo=full`: rustc
+  # takes the last one it is given.
+  debug-info.line-tables.RUSTFLAGS = [
+    # A release test archive's ThinLTO links peaked about 27% lower this way.
+    "-Cdebuginfo=line-tables-only"
+  ];
   combine-profiles =
     features:
     builtins.foldl' (
@@ -324,4 +335,5 @@ combine-profiles (
   ]
   ++ (map (i: instrument.${i}) instrumentations)
   ++ (map (s: sanitize.${s}) sanitizers)
+  ++ (if line-tables-only then [ debug-info.line-tables ] else [ ])
 )
