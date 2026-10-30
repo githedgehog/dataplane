@@ -428,16 +428,21 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self
     }
 
-    /// Recompute the transport checksum, for a stage that changed what it covers and could not fold
-    /// the change in, and so set [`checksum_refresh`](super::packet::PacketMeta::checksum_refresh).
+    /// Attempt to recompute the transport checksum. Stages request this when incremental updates
+    /// are insufficient; receive drivers request it for partial or unknown checksum status.
     ///
-    /// Unlike [`Self::update_checksums`], this leaves IPv4 headers alone, quoted ones included: they
-    /// keep their own checksums current (see [`Ipv4`](crate::ipv4::Ipv4)).
+    /// IPv4 header checksums, including quoted ones, remain unchanged: [`Ipv4`](crate::ipv4::Ipv4)
+    /// setters maintain them. Fragmented datagrams retain their transport checksum and pending
+    /// [`checksum_refresh`](PacketMeta::checksum_refresh) request. Otherwise the request is cleared,
+    /// including when VXLAN or missing headers prevent an update.
     pub fn refresh_transport_checksum(&mut self) -> &mut Self {
         let covered = self.headers.transport_payload_len();
-        self.headers
-            .refresh_transport_checksum(self.payload.as_ref(), covered);
-        self.meta_mut().set_checksum_refresh(false);
+        if self
+            .headers
+            .refresh_transport_checksum(self.payload.as_ref(), covered)
+        {
+            self.meta_mut().set_checksum_refresh(false);
+        }
         self
     }
 
@@ -1691,6 +1696,8 @@ mod roundtrip_tests {
         protocol: u8,
         ipv6: bool,
         vxlan: bool,
+        /// Whether the datagram is a fragment of a larger one.
+        fragment: bool,
     }
 
     fn len16(len: usize) -> [u8; 2] {
@@ -1890,6 +1897,13 @@ mod roundtrip_tests {
             bytes.append(&mut segment);
             let end = bytes.len();
             bytes.extend_from_slice(&self.trailer[..self.trailer.len().min(16)]);
+            let fragment = match &self.ip {
+                Ip::V4 { .. } => bytes[ETH + 6] & 0x20 != 0,
+                Ip::V6 { extensions, .. } => extensions
+                    .iter()
+                    .take(extensions.len() % 5)
+                    .any(|extension| matches!(extension, Extension::Fragment(header) if header[3] & 1 != 0)),
+            };
             Frame {
                 bytes,
                 transport,
@@ -1897,6 +1911,7 @@ mod roundtrip_tests {
                 protocol,
                 ipv6,
                 vxlan: matches!(self.transport, Transport::Vxlan { .. }),
+                fragment,
             }
         }
     }
@@ -2062,6 +2077,22 @@ mod roundtrip_tests {
                     assert_eq!(
                         refreshed, forwarded,
                         "a refresh changed an unparsed transport"
+                    );
+                    return;
+                }
+                if frame.fragment {
+                    // Its transport checksum covers octets this fragment does not hold.
+                    assert_eq!(
+                        refreshed, forwarded,
+                        "a refresh recomputed a fragment's transport checksum"
+                    );
+                    // A skipped fragment refresh must leave the request pending.
+                    let mut packet = parse(&frame.bytes);
+                    packet.meta_mut().set_checksum_refresh(true);
+                    packet.refresh_transport_checksum();
+                    assert!(
+                        packet.meta().checksum_refresh(),
+                        "a refresh that did nothing cleared the request"
                     );
                     return;
                 }
