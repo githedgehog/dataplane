@@ -460,6 +460,7 @@ impl<'eal> Port<'eal> {
 
         let (rx, tx) = queue_counts(num_workers, control);
         let config = DevConfig {
+            rx_interrupts: false,
             num_rx_queues: rx,
             num_tx_queues: tx,
             num_hairpin_queues: 0,
@@ -863,6 +864,7 @@ mod tests {
     ) -> QueueShortfall {
         let (rx, tx) = queue_counts(num_workers, control);
         let config = DevConfig {
+            rx_interrupts: false,
             num_rx_queues: rx,
             num_tx_queues: tx,
             num_hairpin_queues: hairpins,
