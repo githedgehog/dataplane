@@ -20,7 +20,6 @@ pub enum Mutation {
     EmptyPrivatePrefixes,
     DropTranslationRange,
     MakeBothSidesStateful,
-    NameAMissingGroup,
     NameAStrangerInARule,
     UsePortZero,
     DuplicateAStaticExpose,
@@ -258,15 +257,6 @@ fn mutate_peering_metadata(agent: &mut GatewayAgent, mutation: Mutation) -> bool
             done
         }
 
-        Mutation::NameAMissingGroup => {
-            if let Some((_, peerings)) = agent.spec.peerings.iter_mut().flatten().next() {
-                peerings.gateway_group = Some("no-such-group".to_string());
-                true
-            } else {
-                false
-            }
-        }
-
         Mutation::NameAStrangerInARule => {
             let mut done = false;
             for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
@@ -474,9 +464,9 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
             done
         }
 
-        Mutation::MakeBothSidesStateful
-        | Mutation::NameAMissingGroup
-        | Mutation::NameAStrangerInARule => mutate_peering_metadata(agent, mutation),
+        Mutation::MakeBothSidesStateful | Mutation::NameAStrangerInARule => {
+            mutate_peering_metadata(agent, mutation)
+        }
         Mutation::UsePortZero => {
             let mut done = false;
             for expose in exposes_mut(agent) {
