@@ -1238,6 +1238,25 @@ impl Headers {
         ip_payload_len.checked_sub(after_net)
     }
 
+    /// Recompute the transport checksum alone; see [`Packet::refresh_transport_checksum`].
+    ///
+    /// [`Packet::refresh_transport_checksum`]: crate::packet::Packet::refresh_transport_checksum
+    pub(crate) fn refresh_transport_checksum(&mut self, payload: impl AsRef<[u8]>) {
+        // VXLAN's UDP checksum is zero by design; there is nothing to refresh.
+        if self.try_vxlan().is_some() {
+            return;
+        }
+        let Some(net) = self.net.as_ref() else {
+            trace!("no network header: can't update checksum");
+            return;
+        };
+        let Some(transport) = self.transport.as_mut() else {
+            trace!("no transport header: can't update checksum");
+            return;
+        };
+        transport.update_checksum(net, self.embedded_ip.as_deref(), payload.as_ref());
+    }
+
     /// update the checksums of the headers
     pub(crate) fn update_checksums(&mut self, payload: impl AsRef<[u8]>) {
         let is_vxlan = self.try_vxlan().is_some();
@@ -2795,16 +2814,10 @@ mod test {
                 let net = headers.net.clone().unwrap();
                 match net {
                     Net::Ipv4(mut ipv4) => {
-                        let old_value = ipv4.source().inner().into();
-                        let new_value = 0x10_20_30_40; // 16.32.48.64
-                        let new_ip = UnicastIpv4Addr::try_from(Ipv4Addr::from(new_value)).unwrap();
+                        // The setter folds the address change into the header checksum itself.
+                        let new_ip =
+                            UnicastIpv4Addr::try_from(Ipv4Addr::from(0x10_20_30_40)).unwrap();
                         ipv4.set_source(new_ip);
-                        let new_checksum = ipv4.increment_update_checksum_32bit(
-                            ipv4.checksum().unwrap(),
-                            old_value,
-                            new_value,
-                        );
-                        ipv4.set_checksum(new_checksum).unwrap();
                         ipv4.validate_checksum(&())
                             .expect("expected valid checksum");
                     }

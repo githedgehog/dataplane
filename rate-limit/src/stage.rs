@@ -98,6 +98,8 @@ impl<C> RateLimiter<C> {
     }
 }
 
+/// Rewrite the packet's DSCP. Nothing needs a refresh: the IPv4 header folds the change into its own
+/// checksum, IPv6 has none, and no transport checksum covers DSCP.
 fn remark<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, dscp: Dscp) {
     match packet.try_ip_mut() {
         Some(Net::Ipv4(ip)) => {
@@ -106,9 +108,8 @@ fn remark<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, dscp: Dscp) {
         Some(Net::Ipv6(ip)) => {
             ip.set_dscp(dscp);
         }
-        None => return,
+        None => {}
     }
-    packet.meta_mut().set_checksum_refresh(true);
 }
 
 impl<Buf: PacketBufferMut, C: Classify> NetworkFunction<Buf> for RateLimiter<C> {
