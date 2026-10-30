@@ -12,6 +12,7 @@
 //! whose control traffic the data workers take off the data path in software and whose kernel
 //! frames data worker 0 transmits.
 
+use args::IdleConfig;
 use concurrency::sync::Arc;
 use dpdk::lcore::LCore;
 use dpdk::mem::MbufArray;
@@ -26,10 +27,8 @@ use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
 use super::classes::{Installed, fall_back};
+use super::idle::Idle;
 use super::port::{ControlPair, ControlQueues};
-
-/// Yield after this many consecutive polls without traffic on any port.
-const IDLE_POLLS_BEFORE_YIELD: u32 = 128;
 
 /// Polls between cancellation checks and watchdog updates.
 const CANCEL_CHECK_INTERVAL: u32 = 1024;
@@ -47,6 +46,8 @@ pub(crate) struct ControlWorker<'p, 'eal> {
     ports: Vec<ControlPort<'p, 'eal>>,
     /// The addresses and peers the classes are built from.
     control_plane: watch::Receiver<ControlPlane>,
+    /// What to do while there is nothing to receive or inject.
+    idle: IdleConfig,
 }
 
 impl<'p, 'eal> ControlWorker<'p, 'eal> {
@@ -54,11 +55,13 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
         id: WorkerId,
         ports: Vec<ControlPort<'p, 'eal>>,
         control_plane: watch::Receiver<ControlPlane>,
+        idle: IdleConfig,
     ) -> Self {
         Self {
             id,
             ports,
             control_plane,
+            idle,
         }
     }
 
@@ -96,7 +99,7 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
     /// Run until cancelled.
     pub(crate) fn run(mut self, subsystem: &Subsystem) {
         // Registration enables the per-lcore mempool cache and releases the id on return or unwind.
-        let _lcore = match LCore::register() {
+        let lcore = match LCore::register() {
             Ok(lcore) => Some(lcore),
             Err(e) => {
                 error!(
@@ -118,7 +121,8 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
                 .join(", ")
         );
 
-        let mut idle_polls: u32 = 0;
+        // Monitor waits cannot watch injection channels; their timeout bounds injection delay.
+        let mut idle = Idle::new(self.id, self.idle, lcore.as_ref());
         let mut polls: u32 = 0;
         let mut counters = vec![RxCounters::default(); self.ports.len()];
         let mut rx_mbufs = MbufArray::new_empty();
@@ -130,7 +134,8 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
 
         loop {
             polls = polls.wrapping_add(1);
-            if polls.is_multiple_of(CANCEL_CHECK_INTERVAL) {
+            if polls.is_multiple_of(CANCEL_CHECK_INTERVAL) || idle.checks_due() {
+                idle.checked();
                 if subsystem.is_cancelled() {
                     break;
                 }
@@ -138,31 +143,41 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
                 self.steer(&mut installed);
             }
 
-            let mut busy = false;
+            let mut busy = None;
+            // Counted over the ports with control queues only, as the queues `idle` watches are.
+            let mut slot = 0;
             for (port, counters) in self.ports.iter_mut().zip(counters.iter_mut()) {
                 let queues = &mut port.queues;
                 let Some(pair) = queues.pair.as_mut() else {
                     continue;
                 };
-                if let Some(injector) = pair.injector.as_mut() {
-                    busy |= injector.inject(self.id, &mut pair.tx, counters);
+                let injected = pair
+                    .injector
+                    .as_mut()
+                    .is_some_and(|injector| injector.inject(self.id, &mut pair.tx, counters));
+                if receive(self.id, &queues.name, pair, &mut rx_mbufs, counters) || injected {
+                    busy = Some(slot);
                 }
-                busy |= receive(self.id, &queues.name, pair, &mut rx_mbufs, counters);
+                slot += 1;
             }
 
-            if busy {
-                idle_polls = 0;
-            } else {
-                idle_polls += 1;
-                if idle_polls >= IDLE_POLLS_BEFORE_YIELD {
-                    idle_polls = 0;
-                    std::thread::yield_now();
-                }
+            match busy {
+                Some(slot) => idle.busy(slot),
+                None => idle.empty(
+                    lcore.as_ref(),
+                    self.ports
+                        .iter()
+                        .filter_map(|p| p.queues.pair.as_ref().map(|pair| &pair.rx)),
+                ),
             }
         }
 
         self.report(&mut counters);
-        debug!(worker = self.id, "control worker stopping");
+        debug!(
+            worker = self.id,
+            sleeps = idle.sleeps(),
+            "control worker stopping"
+        );
     }
 
     /// Pat every port's watchdog and flush its counters to it.
