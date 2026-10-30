@@ -22,6 +22,7 @@ use etherparse::TcpHeader;
 use etherparse::err::tcp::{HeaderError, HeaderSliceError};
 use std::num::NonZero;
 
+use crate::checksum::incremental_update;
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
 #[allow(unused_imports)] // re-export
@@ -29,8 +30,33 @@ use crate::ipv6::Ipv6;
 pub use contract::*;
 
 /// A TCP header.
+///
+/// The second field holds the three reserved bits between the data offset and the flags, which
+/// etherparse does not keep. A header must leave as it arrived, or its checksum stops matching it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Tcp(TcpHeader);
+pub struct Tcp(TcpHeader, ReservedBits);
+
+/// The reserved bits of a TCP header (RFC 9293 section 3.1), shifted down to the low three bits.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ReservedBits(u8);
+
+impl ReservedBits {
+    /// The reserved bits in the 13th octet of a TCP header.
+    const MASK: u8 = 0b0000_1110;
+
+    fn from_header_octet(octet: u8) -> ReservedBits {
+        ReservedBits((octet & Self::MASK) >> 1)
+    }
+
+    fn header_octet(self) -> u8 {
+        self.0 << 1
+    }
+
+    /// What the bits add to the header's 16-bit word at octets 12-13, as the checksum sees it.
+    fn checksum_word(self) -> u16 {
+        u16::from(self.header_octet()) << 8
+    }
+}
 
 impl Tcp {
     /// The minimum length of a [`Tcp`]
@@ -42,31 +68,44 @@ impl Tcp {
     #[must_use]
     /// Build a new `Tcp` object with the given source and destination ports.
     pub fn new(source: TcpPort, destination: TcpPort) -> Self {
-        Self(TcpHeader {
-            source_port: source.into(),
-            destination_port: destination.into(),
-            ..TcpHeader::default()
-        })
+        Self(
+            TcpHeader {
+                source_port: source.into(),
+                destination_port: destination.into(),
+                ..TcpHeader::default()
+            },
+            ReservedBits::default(),
+        )
     }
 
     fn compute_checksum_ipv4(&self, net: &Ipv4, payload: impl AsRef<[u8]>) -> TcpChecksum {
         #[allow(clippy::expect_used)] // DPDK should exclude payload greater than 2^16 bytes
-        self.0
+        let checksum = self
+            .0
             .calc_checksum_ipv4_raw(
                 net.source_octets(),
                 net.destination().octets(),
                 payload.as_ref(),
             )
-            .expect("unreasonable payload")
-            .into()
+            .expect("unreasonable payload");
+        self.with_reserved_bits(checksum)
+    }
+
+    /// Fold the reserved bits, which etherparse's checksum leaves out, into `checksum`.
+    fn with_reserved_bits(&self, checksum: u16) -> TcpChecksum {
+        match self.1.checksum_word() {
+            0 => TcpChecksum::new(checksum),
+            word => TcpChecksum::new(incremental_update(checksum, 0, word)),
+        }
     }
 
     fn compute_checksum_ipv6(&self, net: &Ipv6, payload: impl AsRef<[u8]>) -> TcpChecksum {
         #[allow(clippy::expect_used)] // DPDK should exclude payload greater than 2^16 bytes
-        self.0
+        let checksum = self
+            .0
             .calc_checksum_ipv6(&net.0, payload.as_ref())
-            .expect("unreasonable payload")
-            .into()
+            .expect("unreasonable payload");
+        self.with_reserved_bits(checksum)
     }
 
     /// Get the source port
@@ -393,7 +432,7 @@ impl Parse for Tcp {
         if inner.destination_port == 0 {
             return Err(ParseError::Invalid(TcpParseError::ZeroDestinationPort));
         }
-        let parsed = Self(inner);
+        let parsed = Self(inner, ReservedBits::from_header_octet(buf[12]));
         Ok((parsed, consumed))
     }
 }
@@ -415,6 +454,7 @@ impl DeParse for Tcp {
             }));
         }
         buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&self.0.to_bytes());
+        buf[12] |= self.1.header_octet();
         Ok(self.size())
     }
 }
@@ -422,13 +462,15 @@ impl DeParse for Tcp {
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::checksum::Checksum;
-    use crate::tcp::{Tcp, TcpOptions};
+    use crate::tcp::{ReservedBits, Tcp, TcpOptions};
     use bolero::{Driver, TypeGenerator};
     use etherparse::TcpHeader;
 
     impl TypeGenerator for Tcp {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            let mut header = Tcp(TcpHeader::default());
+            // Any reserved bits: they must survive a round trip, and count in the checksum.
+            let reserved = ReservedBits::from_header_octet(u.produce()?);
+            let mut header = Tcp(TcpHeader::default(), reserved);
             header
                 .set_source(u.produce()?)
                 .set_destination(u.produce()?)
@@ -536,13 +578,10 @@ mod test {
                     Tcp::parse(&slice2[..consumed2.into_non_zero_usize().get()]).unwrap();
                 assert_eq!(consumed2, consumed3);
                 assert_eq!(parsed, parsed_back);
-                assert_eq!(&slice[..12], &slice2[..12]);
-                // check for reserved bits getting zeroed by `write` (regardless of inputs)
-                assert_eq!(slice[12] & 0b1111_0001, slice2[12]);
-                assert_eq!(&slice[13..MIN_LEN], &slice2[13..MIN_LEN]);
+                // The header leaves as it arrived, reserved bits included.
                 assert_eq!(
-                    &slice[MIN_LEN..consumed1.into_non_zero_usize().get()],
-                    &slice2[MIN_LEN..consumed1.into_non_zero_usize().get()]
+                    &slice[..consumed1.into_non_zero_usize().get()],
+                    &slice2[..consumed1.into_non_zero_usize().get()]
                 );
             });
     }

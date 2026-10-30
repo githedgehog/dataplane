@@ -10,7 +10,7 @@ pub use checksum::*;
 pub use truncated::*;
 
 use crate::headers::{AbstractEmbeddedHeaders, EmbeddedHeaders, EmbeddedIpVersion};
-use crate::icmp_any::get_payload_for_checksum;
+use crate::icmp_any::{DroppedBits, get_payload_for_checksum};
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseWith, Reader,
 };
@@ -30,8 +30,10 @@ pub enum Icmp6Error {
 }
 
 /// An `Icmp6` header.
+///
+/// The second field holds the bits of bytes 4 to 7 that the message type does not keep.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Icmp6(pub(crate) Icmpv6Header);
+pub struct Icmp6(pub(crate) Icmpv6Header, DroppedBits);
 
 // -- ICMPv6 message subtypes ------------------------------------------------
 
@@ -514,6 +516,11 @@ impl From<Icmp6Type> for Icmpv6Type {
 }
 
 impl Icmp6 {
+    /// Wrap a header built here, with nothing dropped.
+    pub(crate) fn from_header(header: Icmpv6Header) -> Icmp6 {
+        Icmp6(header, DroppedBits::default())
+    }
+
     /// Work around an etherparse 0.19 bug where `RouterSolicitation` (133),
     /// `RouterAdvertisement` (134), and `Redirect` (137) are not recognised by
     /// `Icmpv6Slice::icmp_type()`, so they arrive as `Unknown` after
@@ -615,7 +622,7 @@ impl Icmp6 {
     /// The checksum will be set to zero.
     #[must_use]
     pub fn with_type(icmp_type: Icmp6Type) -> Self {
-        Self(Icmpv6Header {
+        Self::from_header(Icmpv6Header {
             icmp_type: icmp_type.into(),
             checksum: 0,
         })
@@ -719,7 +726,8 @@ impl Parse for Icmp6 {
         #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
         let consumed =
             NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
-        Ok((Self(inner), consumed))
+        let dropped = DroppedBits::new(buf, &inner.to_bytes());
+        Ok((Self(inner, dropped), consumed))
     }
 }
 
@@ -739,7 +747,9 @@ impl DeParse for Icmp6 {
                 actual: len,
             }));
         }
-        buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&self.0.to_bytes());
+        let mut bytes = self.0.to_bytes();
+        self.1.restore(&mut bytes);
+        buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&bytes);
         Ok(self.size())
     }
 }
@@ -807,7 +817,7 @@ mod contract {
                 ),
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -824,7 +834,7 @@ mod contract {
                 icmp_type: Icmpv6Type::PacketTooBig { mtu },
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -843,7 +853,7 @@ mod contract {
                 ),
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -863,7 +873,7 @@ mod contract {
                 }),
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -879,7 +889,7 @@ mod contract {
                 }),
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -895,7 +905,7 @@ mod contract {
                 }),
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -908,7 +918,7 @@ mod contract {
                 icmp_type: Icmpv6Type::RouterSolicitation,
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -928,7 +938,7 @@ mod contract {
                 ),
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -941,7 +951,7 @@ mod contract {
                 icmp_type: Icmpv6Type::NeighborSolicitation,
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -960,7 +970,7 @@ mod contract {
                 ),
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -973,7 +983,7 @@ mod contract {
                 icmp_type: Icmpv6Type::Redirect,
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -1015,7 +1025,7 @@ mod contract {
                 },
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -1056,7 +1066,7 @@ mod contract {
                 },
                 checksum: driver.produce()?,
             };
-            Some(Icmp6(icmp_header))
+            Some(Icmp6::from_header(icmp_header))
         }
     }
 
@@ -1208,7 +1218,7 @@ mod test {
     use etherparse::{Icmpv6Header, Icmpv6Type};
 
     fn icmp6(icmp_type: Icmpv6Type) -> Icmp6 {
-        Icmp6(Icmpv6Header {
+        Icmp6::from_header(Icmpv6Header {
             icmp_type,
             checksum: 0,
         })
@@ -1279,7 +1289,7 @@ mod test {
             icmp_type: Icmpv6Type::PacketTooBig { mtu: 1000 },
             checksum: 0,
         };
-        let icmp = Icmp6(header);
+        let icmp = Icmp6::from_header(header);
         assert!(
             matches!(icmp.icmp_type(), Icmp6Type::Unknown { type_u8: 2, .. }),
             "sub-minimum MTU should cause PacketTooBig to be treated as unknown"

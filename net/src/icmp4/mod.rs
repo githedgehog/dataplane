@@ -10,7 +10,7 @@ pub use checksum::*;
 pub use truncated::*;
 
 use crate::headers::{AbstractEmbeddedHeaders, EmbeddedHeaders, EmbeddedIpVersion};
-use crate::icmp_any::get_payload_for_checksum;
+use crate::icmp_any::{DroppedBits, get_payload_for_checksum};
 use crate::ipv4::UnicastIpv4Addr;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseWith, Reader,
@@ -32,8 +32,10 @@ pub enum Icmp4Error {
 }
 
 /// An `ICMPv4` header.
+///
+/// The second field holds the bits of bytes 4 to 7 that the message type does not keep.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Icmp4(pub(crate) Icmpv4Header);
+pub struct Icmp4(pub(crate) Icmpv4Header, DroppedBits);
 
 // -- ICMPv4 message subtypes ------------------------------------------------
 //
@@ -518,6 +520,11 @@ impl From<Icmp4Type> for Icmpv4Type {
 }
 
 impl Icmp4 {
+    /// Wrap a header built here, with nothing dropped.
+    pub(crate) fn from_header(header: Icmpv4Header) -> Icmp4 {
+        Icmp4(header, DroppedBits::default())
+    }
+
     /// Get the ICMP message type.
     #[must_use]
     pub fn icmp_type(&self) -> Icmp4Type {
@@ -600,7 +607,7 @@ impl Icmp4 {
     /// The checksum will be set to zero.
     #[must_use]
     pub fn with_type(icmp_type: Icmp4Type) -> Self {
-        Icmp4(Icmpv4Header {
+        Icmp4::from_header(Icmpv4Header {
             icmp_type: icmp_type.into(),
             checksum: 0,
         })
@@ -695,7 +702,8 @@ impl Parse for Icmp4 {
         #[allow(clippy::cast_possible_truncation)] // checked above
         let consumed =
             NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
-        Ok((Self(inner), consumed))
+        let dropped = DroppedBits::new(buf, &inner.to_bytes());
+        Ok((Self(inner, dropped), consumed))
     }
 }
 
@@ -715,7 +723,9 @@ impl DeParse for Icmp4 {
                 actual: len,
             }));
         }
-        buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&self.0.to_bytes());
+        let mut bytes = self.0.to_bytes();
+        self.1.restore(&mut bytes);
+        buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&bytes);
         Ok(self.size())
     }
 }
@@ -782,7 +792,7 @@ mod contract {
                 ),
                 checksum: driver.produce()?,
             };
-            Some(Icmp4(icmp_header))
+            Some(Icmp4::from_header(icmp_header))
         }
     }
 
@@ -803,7 +813,7 @@ mod contract {
                 }),
                 checksum: driver.produce()?,
             };
-            Some(Icmp4(icmp_header))
+            Some(Icmp4::from_header(icmp_header))
         }
     }
 
@@ -824,7 +834,7 @@ mod contract {
                 ),
                 checksum: driver.produce()?,
             };
-            Some(Icmp4(icmp_header))
+            Some(Icmp4::from_header(icmp_header))
         }
     }
 
@@ -844,7 +854,7 @@ mod contract {
                 ),
                 checksum: driver.produce()?,
             };
-            Some(Icmp4(icmp_header))
+            Some(Icmp4::from_header(icmp_header))
         }
     }
 
@@ -860,7 +870,7 @@ mod contract {
                 }),
                 checksum: driver.produce()?,
             };
-            Some(Icmp4(icmp_header))
+            Some(Icmp4::from_header(icmp_header))
         }
     }
 
@@ -876,7 +886,7 @@ mod contract {
                 }),
                 checksum: driver.produce()?,
             };
-            Some(Icmp4(icmp_header))
+            Some(Icmp4::from_header(icmp_header))
         }
     }
 
@@ -895,7 +905,7 @@ mod contract {
                 }),
                 checksum: driver.produce()?,
             };
-            Some(Icmp4(icmp_header))
+            Some(Icmp4::from_header(icmp_header))
         }
     }
 
@@ -914,7 +924,7 @@ mod contract {
                 }),
                 checksum: driver.produce()?,
             };
-            Some(Icmp4(icmp_header))
+            Some(Icmp4::from_header(icmp_header))
         }
     }
 
@@ -950,7 +960,7 @@ mod contract {
                 },
                 checksum: driver.produce()?,
             };
-            Some(Icmp4(icmp_header))
+            Some(Icmp4::from_header(icmp_header))
         }
     }
 
@@ -988,7 +998,7 @@ mod contract {
                 },
                 checksum: driver.produce()?,
             };
-            Some(Icmp4(icmp_header))
+            Some(Icmp4::from_header(icmp_header))
         }
     }
 
@@ -1155,7 +1165,7 @@ mod test {
         use etherparse::{Icmpv4Type, icmpv4};
 
         fn icmp4(icmp_type: Icmpv4Type) -> Icmp4 {
-            Icmp4(Icmpv4Header {
+            Icmp4::from_header(Icmpv4Header {
                 icmp_type,
                 checksum: 0,
             })
@@ -1201,7 +1211,7 @@ mod test {
     fn the_icmpv4_length_attribute_counts_32_bit_words() {
         use etherparse::{Icmpv4Type, icmpv4};
 
-        let unreachable = Icmp4(Icmpv4Header {
+        let unreachable = Icmp4::from_header(Icmpv4Header {
             icmp_type: Icmpv4Type::DestinationUnreachable(icmpv4::DestUnreachableHeader::Network),
             checksum: 0,
         });
@@ -1210,7 +1220,7 @@ mod test {
         buf[5] = 17;
         assert_eq!(unreachable.payload_length(&buf), 17 * 4);
 
-        let echo = Icmp4(Icmpv4Header {
+        let echo = Icmp4::from_header(Icmpv4Header {
             icmp_type: Icmpv4Type::EchoRequest(etherparse::IcmpEchoHeader { id: 1, seq: 1 }),
             checksum: 0,
         });
@@ -1231,7 +1241,7 @@ mod test {
             }),
             checksum: 0,
         };
-        let icmp = Icmp4(header);
+        let icmp = Icmp4::from_header(header);
         assert!(
             matches!(icmp.icmp_type(), Icmp4Type::Unknown { type_u8: 5, .. }),
             "multicast gateway should cause redirect to be treated as unknown"

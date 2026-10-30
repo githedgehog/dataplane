@@ -18,14 +18,24 @@ pub use vni::{InvalidVni, Vni};
 /// A [VXLAN] header
 ///
 /// [VXLAN]: https://en.wikipedia.org/wiki/Virtual_Extensible_LAN
-#[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
-#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 #[allow(clippy::unsafe_derive_deserialize)] // all uses of unsafe are compile time and trivial
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct Vxlan {
     vni: Vni,
+    /// The flags as they arrived. Only the I flag means anything, and the rest are to be ignored
+    /// on receipt, but a header must leave as it arrived, or the UDP checksum around it stops
+    /// matching it.
+    #[serde(skip, default = "Vxlan::legal_flags")]
+    flags: u8,
+}
+
+#[cfg(any(test, feature = "bolero"))]
+impl bolero::TypeGenerator for Vxlan {
+    fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
+        Some(Vxlan::new(driver.produce()?))
+    }
 }
 
 impl Vxlan {
@@ -51,7 +61,14 @@ impl Vxlan {
     /// Create a new VXLAN header.
     #[must_use]
     pub fn new(vni: Vni) -> Vxlan {
-        Vxlan { vni }
+        Vxlan {
+            vni,
+            flags: Vxlan::LEGAL_FLAGS,
+        }
+    }
+
+    const fn legal_flags() -> u8 {
+        Vxlan::LEGAL_FLAGS
     }
 
     /// Get the [`Vni`] of this header.
@@ -104,7 +121,7 @@ impl Parse for Vxlan {
         }
         if slice[0] != Vxlan::LEGAL_FLAGS {
             trace!(
-                "Received VXLAN header with illegal flags: {flags:#8b}.  Flags will be ignored per the spec, however this is likely an error on the source side.",
+                "Received VXLAN header with illegal flags: {flags:#8b}.  They mean nothing to us, and are kept as they are; this is likely an error on the source side.",
                 flags = slice[0]
             );
         }
@@ -118,7 +135,13 @@ impl Parse for Vxlan {
         let raw_vni = u32::from_be_bytes(bytes);
         let vni = Vni::new_checked(raw_vni)
             .map_err(|e| ParseError::Invalid(VxlanError::InvalidVni(e)))?;
-        Ok((Vxlan { vni }, Vxlan::MIN_LENGTH))
+        Ok((
+            Vxlan {
+                vni,
+                flags: slice[0],
+            },
+            Vxlan::MIN_LENGTH,
+        ))
     }
 }
 
@@ -137,7 +160,7 @@ impl DeParse for Vxlan {
             }));
         }
         let vni_bytes = self.vni.as_u32().to_be_bytes();
-        buf[0] = Vxlan::LEGAL_FLAGS;
+        buf[0] = self.flags;
         buf[1..=3].copy_from_slice(&[0, 0, 0]); // spec requires these bits to be zero
         buf[3..=6].copy_from_slice(&vni_bytes);
         buf[7] = 0;

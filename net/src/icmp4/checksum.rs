@@ -78,7 +78,8 @@ impl Checksum for Icmp4 {
     ///
     /// Always returns `Ok`.
     fn compute_checksum(&self, payload: &[u8]) -> Result<Icmp4Checksum, Self::Error> {
-        Ok(Icmp4Checksum(self.0.icmp_type.calc_checksum(payload)))
+        let checksum = self.0.icmp_type.calc_checksum(payload);
+        Ok(Icmp4Checksum(self.1.adjust(checksum, &self.0.to_bytes())))
     }
 
     /// Set the checksum field of the header

@@ -144,19 +144,7 @@ pub trait Checksum {
         //
         //     HC' = HC - ~m - m'    --    [Eqn. 4]
 
-        // First subtraction: HC - ~m
-        let (mut tmp, borrow) = current_checksum.into().overflowing_sub(!old_value);
-        if borrow {
-            tmp = tmp.wrapping_sub(1);
-        }
-
-        // Second subtraction: tmp - m'
-        let (mut result, borrow) = tmp.overflowing_sub(new_value);
-        if borrow {
-            result = result.wrapping_sub(1);
-        }
-
-        result.into()
+        incremental_update(current_checksum.into(), old_value, new_value).into()
     }
 }
 
@@ -180,4 +168,22 @@ pub enum ChecksumError<T: Checksum + ?Sized> {
     /// The checksum is not present in the header.
     #[error("checksum not present")]
     NotPresent,
+}
+
+/// RFC 1624 Eqn. 4: the checksum `current` becomes once a 16-bit field it covers changes from
+/// `old_value` to `new_value`, computed as `HC - ~m - m'` with end-around borrows.
+#[must_use]
+pub(crate) fn incremental_update(current: u16, old_value: u16, new_value: u16) -> u16 {
+    // First subtraction: HC - ~m
+    let (mut tmp, borrow) = current.overflowing_sub(!old_value);
+    if borrow {
+        tmp = tmp.wrapping_sub(1);
+    }
+
+    // Second subtraction: tmp - m'
+    let (mut result, borrow) = tmp.overflowing_sub(new_value);
+    if borrow {
+        result = result.wrapping_sub(1);
+    }
+    result
 }

@@ -17,12 +17,16 @@ use std::num::NonZero;
 /// An IP authentication header.
 ///
 /// This may appear in IPv4 and IPv6 headers.
+///
+/// The second field holds the reserved octets, which etherparse does not keep. They are to be
+/// ignored on receipt, but a header must leave as it arrived: its integrity check covers them, and
+/// inside an ICMP error, so does a checksum.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IpAuth(Box<IpAuthHeader>);
+pub struct IpAuth(Box<IpAuthHeader>, [u8; 2]);
 
 impl From<Box<IpAuthHeader>> for IpAuth {
     fn from(inner: Box<IpAuthHeader>) -> Self {
-        Self(inner)
+        Self(inner, [0; 2])
     }
 }
 
@@ -58,7 +62,9 @@ impl Parse for IpAuth {
         #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
         let consumed =
             NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
-        Ok((Self(inner), consumed))
+        // etherparse read at least the fixed part of the header, reserved octets included.
+        let reserved = [buf[2], buf[3]];
+        Ok((Self(inner, reserved), consumed))
     }
 }
 
@@ -80,6 +86,7 @@ impl DeParse for IpAuth {
         }
         let bytes = self.0.to_bytes();
         buf[..bytes.len()].copy_from_slice(&bytes);
+        buf[2..4].copy_from_slice(&self.1);
         Ok(self.size())
     }
 }
