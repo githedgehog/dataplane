@@ -26,11 +26,26 @@ let
   # Test archives are loaded back onto the build host and executed
   # there; when the target arch differs, that means qemu-user.
   is-emulated-test = for-tests && (arch != host-arch);
-  # Release test binaries carry line tables only (`debug-info.line-tables`): enough for backtraces,
-  # and much less for rustc and the ThinLTO links to hold. The debug and checked test archives do
-  # not link with ThinLTO, so they keep full debug info for a debugger, as does everything that
-  # ships.
-  line-tables-only = for-tests && profile == "release";
+  # Line tables only (`debug-info.line-tables`) where full debug info costs more than it is worth:
+  #
+  # - Release test binaries: line tables are enough for backtraces, and much less for rustc and the
+  #   ThinLTO links to hold. The debug and checked test archives do not link with ThinLTO, so they
+  #   keep full debug info for a debugger.
+  # - The builds of the sanitizers that find bugs (address, leak, thread), which never ship: line
+  #   tables are enough to symbolize their reports. The hardening sanitizers (cfi, safe-stack,
+  #   shadow-stack) are meant to ship, so their builds keep full debug info.
+  #
+  # Everything that ships keeps full debug info.
+  line-tables-only =
+    (for-tests && profile == "release")
+    || builtins.any (
+      sanitizer:
+      builtins.elem sanitizer [
+        "address"
+        "leak"
+        "thread"
+      ]
+    ) sanitizers;
   common.NIX_CFLAGS_COMPILE = [
     "-g3"
     "-gdwarf-5"
@@ -293,7 +308,9 @@ let
   ]
   ++ (map (flag: "-Clink-arg=${flag}") instrument.coverage.NIX_CFLAGS_LINK);
   # Comes last where `line-tables-only` is set, overriding `common`'s `-Cdebuginfo=full`: rustc
-  # takes the last one it is given.
+  # takes the last one it is given. Overriding rather than replacing also means that taking
+  # `sanitizer-rustflags` (default.nix) back out of a sanitizer build's RUSTFLAGS leaves an
+  # unsanitized build's, `-Cdebuginfo=full` included.
   debug-info.line-tables.RUSTFLAGS = [
     # A release test archive's ThinLTO links peaked about 27% lower this way.
     "-Cdebuginfo=line-tables-only"
