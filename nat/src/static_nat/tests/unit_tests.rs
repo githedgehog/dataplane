@@ -1329,6 +1329,12 @@ fn static_nat_leaves_a_checksum_a_full_recompute_would_agree_with() {
         !pkt_out.meta().checksum_refresh(),
         "static NAT asked for a full payload recompute; the incremental path was not taken"
     );
+    pkt_out
+        .headers()
+        .try_ipv4()
+        .expect("an IPv4 header")
+        .validate_checksum(&())
+        .expect("static NAT left the IPv4 header checksum stale");
     let incremental = checksum_of(&pkt_out);
     pkt_out.update_checksums();
     assert_eq!(

@@ -187,7 +187,7 @@ mod checksum_test {
     use super::*;
     use net::buffer::TestBuffer;
     use net::checksum::Checksum;
-    use net::headers::{TryHeaders, TryTransport};
+    use net::headers::{TryHeaders, TryIpv4, TryTransport};
     use net::ip::NextHeader;
     use net::packet::test_utils::{
         build_test_ipv4_packet_with_transport, build_test_ipv6_packet_with_transport,
@@ -219,6 +219,12 @@ mod checksum_test {
             !packet.meta().checksum_refresh(),
             "port forwarding asked for a full payload recompute; the incremental path was skipped"
         );
+        packet
+            .headers()
+            .try_ipv4()
+            .expect("an IPv4 header")
+            .validate_checksum(&())
+            .expect("translation left the IPv4 header checksum stale");
 
         let incremental = transport_checksum(&packet);
         packet.update_checksums();

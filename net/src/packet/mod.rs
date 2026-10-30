@@ -29,7 +29,7 @@ use crate::eth::mac::{DestinationMac, SourceMac};
 use crate::flows::{FlowInfo, FlowStatus};
 use crate::headers::{
     EmbeddedHeaders, Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut,
-    TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryIpv4Mut, TryVxlan,
+    TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryVxlan,
 };
 use crate::ip::{dscp::Dscp, ecn::Ecn};
 use crate::parse::{DeParse, DeParseError, Parse, ParseError};
@@ -238,10 +238,9 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 if let Some(ecn) = meta.ecn {
                     ipv4.set_ecn(ecn);
                 }
+                // The setters keep the header checksum current.
                 ipv4.set_payload_len(udp_len)
                     .unwrap_or_else(|e| unreachable!("{:?}", e));
-                ipv4.update_checksum(&())
-                    .unwrap_or_else(|()| unreachable!()); // updating IPv4 checksum never fails
             }
         }
     }
@@ -417,14 +416,25 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         Ok(())
     }
 
-    /// Update the network and transport checksums based on the current headers.
+    /// Compute the network and transport checksums from scratch, for a packet built here.
+    ///
+    /// A forwarded packet should not need this: computing a checksum from scratch makes a packet
+    /// that arrived corrupt look intact. See [`Self::refresh_transport_checksum`].
     pub fn update_checksums(&mut self) -> &mut Self {
-        let payload = self.payload.as_ref();
-        let payload = match self.headers.transport_payload_len() {
-            Some(len) if len <= payload.len() => &payload[..len],
-            _ => payload,
-        };
+        let payload = checksummed_payload(&self.headers, self.payload.as_ref());
         self.headers.update_checksums(payload);
+        self.meta_mut().set_checksum_refresh(false);
+        self
+    }
+
+    /// Recompute the transport checksum, for a stage that changed what it covers and could not fold
+    /// the change in, and so set [`checksum_refresh`](super::packet::PacketMeta::checksum_refresh).
+    ///
+    /// Unlike [`Self::update_checksums`], this leaves IPv4 headers alone, quoted ones included: they
+    /// keep their own checksums current (see [`Ipv4`](crate::ipv4::Ipv4)).
+    pub fn refresh_transport_checksum(&mut self) -> &mut Self {
+        let payload = checksummed_payload(&self.headers, self.payload.as_ref());
+        self.headers.refresh_transport_checksum(payload);
         self.meta_mut().set_checksum_refresh(false);
         self
     }
@@ -437,14 +447,11 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// serialize or `SerializeError::DeparseError` if it does, but the de-parsing the `Packet` failed.
     #[inline]
     pub(crate) fn do_serialize(&mut self) -> Result<(), SerializeError<()>> {
-        // As the VXLAN path does: refresh what a stage asked for, or just the IPv4 header
-        // checksum, which a TTL decrement changes. Recomputing the transport checksum reads the
-        // whole payload, and nothing that leaves it unflagged changed what it covers.
+        // IPv4 setters maintain header checksums. Refresh transport checksums only when requested
+        // by a stage or receive driver; unnecessary recomputation scans the payload and can mask
+        // corruption.
         if self.meta().checksum_refresh() {
-            self.update_checksums();
-        } else if let Some(ipv4) = self.headers.try_ipv4_mut() {
-            ipv4.update_checksum(&())
-                .unwrap_or_else(|()| unreachable!()); // IPv4 checksum update never fails
+            self.refresh_transport_checksum();
         }
         let needed = self.headers.size().get();
         let buf = self
@@ -1155,6 +1162,14 @@ mod qos_roundtrip_tests {
     }
 }
 
+/// The part of `payload` a transport checksum covers: not any trailing padding.
+fn checksummed_payload<'a>(headers: &Headers, payload: &'a [u8]) -> &'a [u8] {
+    match headers.transport_payload_len() {
+        Some(len) if len <= payload.len() => &payload[..len],
+        _ => payload,
+    }
+}
+
 #[cfg(test)]
 mod padding_tests {
     use crate::buffer::TestBuffer;
@@ -1435,8 +1450,9 @@ mod padding_tests {
 
 #[cfg(test)]
 mod serialize_checksum_tests {
-    //! What [`Packet::serialize`] does to checksums: it always updates the IPv4 header's, which a
-    //! TTL decrement changes, and touches a transport checksum only when a stage asked it to.
+    //! What [`Packet::serialize`] does to checksums when forwarding: nothing it does not have to. An
+    //! IPv4 header carries the error it arrived with through a TTL decrement, and a transport
+    //! checksum is touched only when a stage asked for it.
 
     use super::padding_tests::{frame, tcp, udp};
     use crate::buffer::TestBuffer;
@@ -1445,13 +1461,51 @@ mod serialize_checksum_tests {
     use crate::packet::Packet;
     use crate::tcp::TcpChecksumPayload;
 
-    /// Where the transport checksum sits in a [`frame`]: past Ethernet and a 20-octet IPv4 header,
-    /// at offset 16 in TCP and 6 in UDP.
+    /// Where things sit in a [`frame`]: the IPv4 header after Ethernet, its checksum 10 octets in,
+    /// and the transport checksum past the 20-octet IPv4 header, 16 octets into TCP or 6 into UDP.
+    const IPV4: std::ops::Range<usize> = 14..34;
+    const IPV4_CHECKSUM: usize = 14 + 10;
     const TCP_CHECKSUM: usize = 14 + 20 + 16;
     const UDP_CHECKSUM: usize = 14 + 20 + 6;
 
+    /// One's-complement sum of `bytes` as 16-bit words, with both zeros read as `0xffff`.
+    fn ones_complement_sum(bytes: &[u8]) -> u16 {
+        let mut sum: u32 = 0;
+        for word in bytes.as_chunks::<2>().0 {
+            sum += u32::from(u16::from_be_bytes(*word));
+        }
+        while sum > 0xffff {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        #[allow(clippy::cast_possible_truncation)] // folded to 16 bits above
+        match sum as u16 {
+            0 => 0xffff,
+            sum => sum,
+        }
+    }
+
+    /// How far the IPv4 header in `frame` is from valid: the sum over the whole header, checksum
+    /// included, which is `0xffff` for a valid header and something else for each wrong checksum.
+    fn ipv4_error(frame: &[u8]) -> u16 {
+        ones_complement_sum(&frame[IPV4])
+    }
+
+    /// A frame carrying `payload` over TCP or UDP, with the given IPv4 and transport checksums, or a
+    /// valid IPv4 checksum if `ipv4_checksum` is `None`.
+    fn input(payload: &[u8], is_udp: bool, ipv4_checksum: Option<u16>, transport: u16) -> Vec<u8> {
+        let (mut bytes, at) = if is_udp {
+            (frame(17, &udp(payload)), UDP_CHECKSUM)
+        } else {
+            (frame(6, &tcp(payload)), TCP_CHECKSUM)
+        };
+        bytes[at..at + 2].copy_from_slice(&transport.to_be_bytes());
+        let ipv4_checksum = ipv4_checksum.unwrap_or_else(|| !ones_complement_sum(&bytes[IPV4]));
+        bytes[IPV4_CHECKSUM..IPV4_CHECKSUM + 2].copy_from_slice(&ipv4_checksum.to_be_bytes());
+        bytes
+    }
+
     /// Forward `bytes` as a router does, decrementing the TTL, and serialize the result, asking for
-    /// the checksums to be refreshed if `refresh`.
+    /// the transport checksum to be refreshed if `refresh`.
     fn forward(bytes: &[u8], refresh: bool) -> Vec<u8> {
         let mut packet =
             Packet::new(TestBuffer::from_raw_data(bytes)).expect("frame does not parse");
@@ -1475,29 +1529,33 @@ mod serialize_checksum_tests {
         Packet::new(TestBuffer::from_raw_data(bytes)).expect("output does not parse")
     }
 
-    /// The router's own change is always reflected: the TTL went down by one and the IPv4 header
-    /// checksum covers it.
-    fn assert_ipv4_header_current(packet: &Packet<TestBuffer>) {
-        let ipv4 = packet.headers().try_ipv4().expect("no ipv4 header");
+    /// The TTL went down by one, and the IPv4 header is exactly as far from valid as it arrived:
+    /// valid if it was, and not repaired if it was not.
+    fn assert_ipv4_error_carried(input: &[u8], output: &[u8]) {
+        let ipv4 = parse(output);
+        let ipv4 = ipv4.headers().try_ipv4().expect("no ipv4 header");
         assert_eq!(ipv4.ttl(), 63, "the ttl was not decremented");
-        ipv4.validate_checksum(&())
-            .expect("the ipv4 header checksum does not cover the decremented ttl");
+        assert_eq!(
+            ipv4_error(output),
+            ipv4_error(input),
+            "the ipv4 header checksum was recomputed rather than adjusted for the ttl"
+        );
+        if ipv4_error(input) == 0xffff {
+            ipv4.validate_checksum(&())
+                .expect("a valid ipv4 header came out invalid");
+        }
     }
 
     #[test]
-    fn an_unrequested_transport_checksum_crosses_unchanged() {
-        // Arbitrary checksums, mostly wrong: refreshing one would read the whole payload, and would
-        // also launder a segment corrupted before it reached us into one that looks intact.
+    fn forwarding_changes_only_the_checksums_it_must() {
+        // Arbitrary checksums, mostly wrong: refreshing one would read the whole payload, and
+        // would make a packet corrupted before it reached us look intact.
         bolero::check!()
-            .with_type::<(Vec<u8>, u16, bool)>()
-            .for_each(|(payload, checksum, is_udp)| {
+            .with_type::<(Vec<u8>, bool, Option<u16>, u16)>()
+            .for_each(|(payload, is_udp, ipv4_checksum, transport)| {
                 let payload = &payload[..payload.len().min(256)];
-                let (mut bytes, at) = if *is_udp {
-                    (frame(17, &udp(payload)), UDP_CHECKSUM)
-                } else {
-                    (frame(6, &tcp(payload)), TCP_CHECKSUM)
-                };
-                bytes[at..at + 2].copy_from_slice(&checksum.to_be_bytes());
+                let bytes = input(payload, *is_udp, *ipv4_checksum, *transport);
+                let at = if *is_udp { UDP_CHECKSUM } else { TCP_CHECKSUM };
 
                 let out = forward(&bytes, false);
                 assert_eq!(
@@ -1505,27 +1563,28 @@ mod serialize_checksum_tests {
                     bytes[at..at + 2],
                     "serialize rewrote a transport checksum no stage asked it to"
                 );
-                assert_ipv4_header_current(&parse(&out));
+                assert_ipv4_error_carried(&bytes, &out);
             });
     }
 
     #[test]
-    fn a_requested_transport_checksum_is_refreshed() {
+    fn a_requested_refresh_recomputes_the_transport_checksum_only() {
         bolero::check!()
-            .with_type::<(Vec<u8>, u16)>()
-            .for_each(|(payload, checksum)| {
+            .with_type::<(Vec<u8>, Option<u16>, u16)>()
+            .for_each(|(payload, ipv4_checksum, transport)| {
                 let payload = &payload[..payload.len().min(256)];
-                let mut bytes = frame(6, &tcp(payload));
-                bytes[TCP_CHECKSUM..TCP_CHECKSUM + 2].copy_from_slice(&checksum.to_be_bytes());
+                let bytes = input(payload, false, *ipv4_checksum, *transport);
 
-                let out = parse(&forward(&bytes, true));
-                let net = out.headers().try_ip().expect("no ip header").clone();
-                out.headers()
+                let out = forward(&bytes, true);
+                let parsed = parse(&out);
+                let net = parsed.headers().try_ip().expect("no ip header").clone();
+                parsed
+                    .headers()
                     .try_tcp()
                     .expect("no tcp header")
                     .validate_checksum(&TcpChecksumPayload::new(&net, payload))
                     .expect("a requested refresh left the tcp checksum stale");
-                assert_ipv4_header_current(&out);
+                assert_ipv4_error_carried(&bytes, &out);
             });
     }
 }

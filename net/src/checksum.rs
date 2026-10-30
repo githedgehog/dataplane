@@ -158,33 +158,6 @@ pub trait Checksum {
 
         result.into()
     }
-
-    /// Perform an incremental update of the checksum in the header, like `increment_update_checksum`
-    /// but for a 32-bit value change.
-    fn increment_update_checksum_32bit(
-        &mut self,
-        current_checksum: Self::Checksum,
-        old_value: u32,
-        new_value: u32,
-    ) -> Self::Checksum {
-        let old_value_first_half = (old_value >> 16) as u16;
-        #[allow(clippy::cast_possible_truncation)] // truncation is intentional
-        let old_value_second_half = old_value as u16;
-        let new_value_first_half = (new_value >> 16) as u16;
-        #[allow(clippy::cast_possible_truncation)] // truncation is intentional
-        let new_value_second_half = new_value as u16;
-
-        let intermediary_checksum = self.increment_update_checksum(
-            current_checksum,
-            old_value_first_half,
-            new_value_first_half,
-        );
-        self.increment_update_checksum(
-            intermediary_checksum,
-            old_value_second_half,
-            new_value_second_half,
-        )
-    }
 }
 
 /// An error resulting from a checksum mismatch.
