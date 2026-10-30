@@ -700,6 +700,7 @@ impl Header {
 impl Parse for Headers {
     type Error = EthError;
 
+    #[allow(clippy::too_many_lines)] // one arm per header
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
         let mut cursor =
             Reader::new(buf).map_err(|IllegalBufferLength(len)| ParseError::BufferTooLong(len))?;
@@ -723,10 +724,15 @@ impl Parse for Headers {
         // TODO: consider returning a parse error instead of silently stopping
         // when MAX_NET_EXTENSIONS is exceeded.  The current `break` exits the
         // entire parse loop, so transport and embedded headers that follow the
-        // overflow point are also not parsed.  This matches the MAX_VLANS
-        // handling but the caller has no way to detect a partial parse.
+        // overflow point are also not parsed: they stay in the payload, with
+        // the header that did not fit.  This matches the MAX_VLANS handling but
+        // the caller has no way to detect a partial parse.
         let mut prior = Header::Eth(eth);
+        // Offset of `prior` from the Ethernet header. When the header stack is full, rewind here
+        // so this header and all following bytes remain in the payload, including any parsed ahead.
+        let mut prior_start = 0;
         loop {
+            let next_start = cursor.position();
             let header = prior.parse_payload(&mut cursor);
             match prior {
                 Header::Eth(eth) => this.eth = Some(eth),
@@ -741,6 +747,7 @@ impl Parse for Headers {
                     if this.vlan.len() < MAX_VLANS {
                         this.vlan.push(vlan);
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -748,6 +755,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::HopByHop(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -755,6 +763,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::DestOpts(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -762,6 +771,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Routing(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -769,6 +779,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Fragment(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -776,6 +787,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Ipv4Auth(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -783,6 +795,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Ipv6Auth(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -795,6 +808,7 @@ impl Parse for Headers {
                 }
                 Some(next) => {
                     prior = next;
+                    prior_start = next_start;
                 }
             }
         }
@@ -3426,6 +3440,110 @@ mod fragment_upper_layer_proto {
             headers.upper_layer_proto(),
             UpperLayerProto::Carried(NextHeader::new(ESP)),
             "ESP parses no transport but its protocol number is still the answer"
+        );
+    }
+}
+
+#[cfg(test)]
+mod no_room_tests {
+    //! A header there is no room for stays in the payload, and so does everything after it, which
+    //! parsing it has already read past. None of it may be read and then dropped, or the packet
+    //! leaves shorter than it arrived.
+
+    use super::{Headers, MAX_NET_EXTENSIONS, MAX_VLANS};
+    use crate::headers::TryEmbeddedTransport;
+    use crate::parse::Parse;
+
+    const ETH: usize = 14;
+    const IPV6: usize = 40;
+    const DESTINATION_OPTIONS: u8 = 60;
+    const UDP: u8 = 17;
+    const ICMP6: u8 = 58;
+
+    /// Ports 12345 and 12346, a length of 8, and no checksum.
+    const UDP_HEADER: [u8; 8] = [0x30, 0x39, 0x30, 0x3a, 0, 8, 0, 0];
+
+    fn eth(ether_type: [u8; 2]) -> Vec<u8> {
+        let mut out = vec![2, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 2];
+        out.extend_from_slice(&ether_type);
+        out
+    }
+
+    /// An IPv6 header and `count` destination options headers, followed by `protocol` in `rest`
+    /// more octets.
+    fn ipv6(count: usize, protocol: u8, rest: usize) -> Vec<u8> {
+        let mut out = vec![0x60, 0, 0, 0];
+        out.extend_from_slice(&u16::try_from(8 * count + rest).unwrap().to_be_bytes());
+        out.push(if count == 0 {
+            protocol
+        } else {
+            DESTINATION_OPTIONS
+        });
+        out.push(64);
+        out.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        out.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        for i in 1..=count {
+            let next = if i == count {
+                protocol
+            } else {
+                DESTINATION_OPTIONS
+            };
+            out.extend_from_slice(&[next, 0, 1, 4, 0, 0, 0, 0]); // a 4-octet PadN option
+        }
+        out
+    }
+
+    #[test]
+    fn extension_headers_past_the_limit_stay_in_the_payload() {
+        let mut frame = eth([0x86, 0xdd]);
+        frame.append(&mut ipv6(MAX_NET_EXTENSIONS + 1, UDP, UDP_HEADER.len()));
+        frame.extend_from_slice(&UDP_HEADER);
+
+        let (headers, consumed) = Headers::parse(&frame).unwrap();
+        assert_eq!(headers.net_ext().len(), MAX_NET_EXTENSIONS);
+        assert!(headers.transport().is_none());
+        assert_eq!(
+            usize::from(consumed.get()),
+            ETH + IPV6 + 8 * MAX_NET_EXTENSIONS
+        );
+    }
+
+    #[test]
+    fn vlan_tags_past_the_limit_stay_in_the_payload() {
+        let mut frame = eth([0x81, 0x00]);
+        for i in 1..=MAX_VLANS + 1 {
+            frame.extend_from_slice(&[0, 2]); // VLAN 2
+            frame.extend_from_slice(if i == MAX_VLANS + 1 {
+                &[0x86, 0xdd]
+            } else {
+                &[0x81, 0x00]
+            });
+        }
+        frame.append(&mut ipv6(0, UDP, UDP_HEADER.len()));
+        frame.extend_from_slice(&UDP_HEADER);
+
+        let (headers, consumed) = Headers::parse(&frame).unwrap();
+        assert_eq!(headers.vlan().len(), MAX_VLANS);
+        assert!(headers.net.is_none());
+        assert_eq!(usize::from(consumed.get()), ETH + 4 * MAX_VLANS);
+    }
+
+    #[test]
+    fn quoted_extension_headers_past_the_limit_stay_in_the_payload() {
+        let mut quoted = ipv6(MAX_NET_EXTENSIONS + 1, UDP, UDP_HEADER.len());
+        quoted.extend_from_slice(&UDP_HEADER);
+        let mut frame = eth([0x86, 0xdd]);
+        frame.append(&mut ipv6(0, ICMP6, 8 + quoted.len()));
+        frame.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]); // destination unreachable: no route
+        frame.append(&mut quoted);
+
+        let (headers, consumed) = Headers::parse(&frame).unwrap();
+        let quoted = headers.embedded_ip().expect("no quoted headers");
+        assert_eq!(quoted.net_ext().len(), MAX_NET_EXTENSIONS);
+        assert!(quoted.try_embedded_transport().is_none());
+        assert_eq!(
+            usize::from(consumed.get()),
+            ETH + IPV6 + 8 + IPV6 + 8 * MAX_NET_EXTENSIONS
         );
     }
 }
