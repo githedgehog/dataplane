@@ -26,7 +26,7 @@
 //! resurrected, this assertion fires.
 //!
 //! Multi-threaded tests (drop affinity, concurrent stress) live in
-//! `tests/quiescent_protocol.rs`; loom-modeled tests live in
+//! `quiescent_protocol.rs`; loom-modeled tests live in
 //! `tests/quiescent_loom.rs`.
 
 // Single-threaded bolero property tests; only meaningful under the
