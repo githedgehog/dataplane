@@ -1,0 +1,33 @@
+--- a/lib/eal/linux/eal_interrupts.c
++++ b/lib/eal/linux/eal_interrupts.c
+@@ -1576,6 +1576,30 @@
+ 	assert(nb_efd != 0);
+ 
+ 	if (rte_intr_type_get(intr_handle) == RTE_INTR_HANDLE_VFIO_MSIX) {
++		struct vfio_irq_info irq = {
++			.argsz = sizeof(irq),
++			.index = VFIO_PCI_MSIX_IRQ_INDEX,
++		};
++
++		/*
++		 * Account for the non-queue vector too. Some PMDs ignore a
++		 * later rte_intr_enable() failure, leaving usable eventfds
++		 * that never receive an interrupt. Refuse the request before
++		 * allocating anything so the port can retry without Rx IRQs.
++		 */
++		if (ioctl(rte_intr_dev_fd_get(intr_handle),
++				VFIO_DEVICE_GET_IRQ_INFO, &irq) < 0) {
++			int err = errno;
++
++			EAL_LOG(ERR, "Cannot query MSI-X vectors: %s", strerror(err));
++			return -err;
++		}
++		if (NB_OTHER_INTR + n > irq.count) {
++			EAL_LOG(ERR, "MSI-X needs %u vectors but device has %u",
++				NB_OTHER_INTR + n, irq.count);
++			return -ENOSPC;
++		}
++
+ 		for (i = 0; i < n; i++) {
+ 			fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+ 			if (fd < 0) {
