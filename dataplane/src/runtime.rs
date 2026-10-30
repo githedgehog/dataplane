@@ -445,6 +445,7 @@ fn bring_up_ports<'eal>(
             num_ports,
             interface.mtu,
             interface.rx_descriptors,
+            config.driver.idle().mode == args::IdleMode::Interrupt,
         )?;
         ports.push(started);
     }

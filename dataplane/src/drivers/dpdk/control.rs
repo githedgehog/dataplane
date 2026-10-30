@@ -121,8 +121,19 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
                 .join(", ")
         );
 
-        // Monitor waits cannot watch injection channels; their timeout bounds injection delay.
+        // Injection doorbells wake interrupt waits; monitor waits rely on their timeout.
         let mut idle = Idle::new(self.id, self.idle, lcore.as_ref());
+        idle.sleep_on_interrupts(
+            self.ports
+                .iter()
+                .filter_map(|p| p.queues.pair.as_ref())
+                .map(|pair| (&pair.rx, pair.rx_interrupts)),
+            self.ports
+                .iter()
+                .filter_map(|p| p.queues.pair.as_ref())
+                .filter_map(|pair| pair.injector.as_ref())
+                .map(|injector| injector.frames.doorbell()),
+        );
         let mut polls: u32 = 0;
         let mut counters = vec![RxCounters::default(); self.ports.len()];
         let mut rx_mbufs = MbufArray::new_empty();
@@ -173,10 +184,10 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
         }
 
         self.report(&mut counters);
-        debug!(
+        let (sleeps, interrupt_sleeps) = idle.sleeps();
+        info!(
             worker = self.id,
-            sleeps = idle.sleeps(),
-            "control worker stopping"
+            sleeps, interrupt_sleeps, "control worker stopping"
         );
     }
 
