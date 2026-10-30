@@ -18,6 +18,7 @@ mod classes;
 mod control;
 mod inject;
 mod placement;
+mod pollstats;
 mod port;
 mod worker;
 
