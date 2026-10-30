@@ -421,8 +421,9 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// A forwarded packet should not need this: computing a checksum from scratch makes a packet
     /// that arrived corrupt look intact. See [`Self::refresh_transport_checksum`].
     pub fn update_checksums(&mut self) -> &mut Self {
-        let payload = checksummed_payload(&self.headers, self.payload.as_ref());
-        self.headers.update_checksums(payload);
+        let covered = self.headers.transport_payload_len();
+        self.headers
+            .update_checksums_covering(self.payload.as_ref(), covered);
         self.meta_mut().set_checksum_refresh(false);
         self
     }
@@ -433,8 +434,9 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Unlike [`Self::update_checksums`], this leaves IPv4 headers alone, quoted ones included: they
     /// keep their own checksums current (see [`Ipv4`](crate::ipv4::Ipv4)).
     pub fn refresh_transport_checksum(&mut self) -> &mut Self {
-        let payload = checksummed_payload(&self.headers, self.payload.as_ref());
-        self.headers.refresh_transport_checksum(payload);
+        let covered = self.headers.transport_payload_len();
+        self.headers
+            .refresh_transport_checksum(self.payload.as_ref(), covered);
         self.meta_mut().set_checksum_refresh(false);
         self
     }
@@ -1162,14 +1164,6 @@ mod qos_roundtrip_tests {
     }
 }
 
-/// The part of `payload` a transport checksum covers: not any trailing padding.
-fn checksummed_payload<'a>(headers: &Headers, payload: &'a [u8]) -> &'a [u8] {
-    match headers.transport_payload_len() {
-        Some(len) if len <= payload.len() => &payload[..len],
-        _ => payload,
-    }
-}
-
 #[cfg(test)]
 mod padding_tests {
     use crate::buffer::TestBuffer;
@@ -1598,7 +1592,8 @@ mod roundtrip_tests {
     //!
     //! [`Datagram`] writes frames from arbitrary bytes, fixed up only where the parser insists:
     //! versions, lengths, protocol numbers, unicast sources and non-zero ports, first fragments so
-    //! the transport parses, and ICMP types that quote the datagram they are about.
+    //! the transport parses, and ICMP types that quote the datagram they are about. Anything may
+    //! follow the datagram in the frame.
 
     use crate::buffer::TestBuffer;
     use crate::headers::{TryHeaders, TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
@@ -1617,6 +1612,8 @@ mod roundtrip_tests {
         ip: Ip,
         transport: Transport,
         payload: Vec<u8>,
+        /// What follows the datagram in the frame: padding, or a trailer.
+        trailer: Vec<u8>,
     }
 
     #[derive(Debug, TypeGenerator)]
@@ -1689,6 +1686,8 @@ mod roundtrip_tests {
     struct Frame {
         bytes: Vec<u8>,
         transport: usize,
+        /// Where the IP datagram ends, and the trailer starts.
+        end: usize,
         protocol: u8,
         ipv6: bool,
         vxlan: bool,
@@ -1889,9 +1888,12 @@ mod roundtrip_tests {
             });
             let transport = bytes.len();
             bytes.append(&mut segment);
+            let end = bytes.len();
+            bytes.extend_from_slice(&self.trailer[..self.trailer.len().min(16)]);
             Frame {
                 bytes,
                 transport,
+                end,
                 protocol,
                 ipv6,
                 vxlan: matches!(self.transport, Transport::Vxlan { .. }),
@@ -1921,7 +1923,7 @@ mod roundtrip_tests {
     /// The sum over the transport checksum's coverage in `frame`, which is `0xffff` if the
     /// transport checksum is valid.
     fn transport_sum(frame: &Frame, bytes: &[u8]) -> u16 {
-        let segment = &bytes[frame.transport..];
+        let segment = &bytes[frame.transport..frame.end];
         let mut covered = Vec::new();
         if frame.ipv6 {
             covered.extend_from_slice(&bytes[ETH + 8..ETH + 40]);
