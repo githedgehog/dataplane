@@ -19,8 +19,29 @@ use std::num::NonZero;
 ///
 /// Wraps an [`Ipv6FragmentHeader`] from etherparse.  At 8 bytes this is
 /// small enough to store inline -- no heap allocation needed.
+///
+/// The second field holds the reserved bits, which etherparse does not keep.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Fragment(Ipv6FragmentHeader);
+pub struct Fragment(Ipv6FragmentHeader, Reserved);
+
+/// The reserved octet and the two reserved bits after the fragment offset. They are to be ignored
+/// on receipt, but a header must leave as it arrived: inside an `ICMPv6` error, it is checksummed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Reserved([u8; 2]);
+
+impl Reserved {
+    /// Where the reserved bits sit in octets 1 and 3 of the header.
+    const MASK: [u8; 2] = [0xff, 0b0000_0110];
+
+    fn from_header(header: [u8; 8]) -> Reserved {
+        Reserved([header[1] & Self::MASK[0], header[3] & Self::MASK[1]])
+    }
+
+    fn restore(self, header: &mut [u8; 8]) {
+        header[1] |= self.0[0];
+        header[3] |= self.0[1];
+    }
+}
 
 impl Fragment {
     /// The fixed header length in bytes.
@@ -94,7 +115,7 @@ impl Fragment {
     /// confirming these bytes are a Fragment header.
     #[allow(unsafe_code, dead_code)] // only called from test/builder cfg
     pub(crate) unsafe fn from_raw_unchecked(inner: Ipv6FragmentHeader) -> Self {
-        Self(inner)
+        Self(inner, Reserved::default())
     }
 }
 
@@ -125,7 +146,10 @@ impl Parse for Fragment {
         );
         #[allow(clippy::cast_possible_truncation)]
         let consumed = NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!());
-        Ok((Self(inner), consumed?))
+        let reserved = buf
+            .first_chunk::<8>()
+            .map_or_else(|| unreachable!(), |header| Reserved::from_header(*header));
+        Ok((Self(inner, reserved), consumed?))
     }
 }
 
@@ -144,7 +168,9 @@ impl DeParse for Fragment {
                 actual: buf.len(),
             }));
         }
-        buf[..size.get() as usize].copy_from_slice(&self.0.to_bytes());
+        let mut bytes = self.0.to_bytes();
+        self.1.restore(&mut bytes);
+        buf[..size.get() as usize].copy_from_slice(&bytes);
         Ok(size)
     }
 }
