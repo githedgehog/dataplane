@@ -2676,6 +2676,113 @@ mod tests {
         assert_checksums_current(&packet);
     }
 
+    // -- build_packet fuzz tests -----------------------------------------------
+
+    /// Payloads stay within a frame the test buffer comfortably holds.
+    const MAX_FUZZ_PAYLOAD: usize = 1500;
+
+    #[test]
+    fn fuzz_built_packets_have_valid_checksums() {
+        bolero::check!().with_type().cloned().for_each(
+            |(eth, ipv4, ipv6, tcp, udp, payload, v6, use_tcp): (
+                Eth,
+                Ipv4,
+                Ipv6,
+                Tcp,
+                Udp,
+                Vec<u8>,
+                bool,
+                bool,
+            )| {
+                // A UDP payload to the VXLAN port would be parsed as VXLAN.
+                if payload.len() > MAX_FUZZ_PAYLOAD
+                    || (!use_tcp && udp.destination() == Vxlan::PORT)
+                {
+                    return;
+                }
+                let stack = HeaderStack::new().eth(inject(eth));
+                let packet = match (v6, use_tcp) {
+                    (false, true) => stack
+                        .ipv4(inject(ipv4))
+                        .tcp(inject(tcp))
+                        .build_packet_with_payload(&payload),
+                    (false, false) => stack
+                        .ipv4(inject(ipv4))
+                        .udp(inject(udp))
+                        .build_packet_with_payload(&payload),
+                    (true, true) => stack
+                        .ipv6(inject(ipv6))
+                        .tcp(inject(tcp))
+                        .build_packet_with_payload(&payload),
+                    (true, false) => stack
+                        .ipv6(inject(ipv6))
+                        .udp(inject(udp))
+                        .build_packet_with_payload(&payload),
+                }
+                .unwrap();
+
+                assert_eq!(packet.payload().as_ref(), &payload[..]);
+                assert_checksums_current(&packet);
+            },
+        );
+    }
+
+    #[test]
+    fn fuzz_built_icmp_errors_quote_valid_checksums() {
+        use crate::headers::TryHeaders;
+
+        bolero::check!().with_type().cloned().for_each(
+            |(outer4, inner4, outer6, inner6, tcp, udp, v6, use_tcp): (
+                Ipv4,
+                Ipv4,
+                Ipv6,
+                Ipv6,
+                Tcp,
+                Udp,
+                bool,
+                bool,
+            )| {
+                let (tcp_src, tcp_dst) = (tcp.source(), tcp.destination());
+                let (udp_src, udp_dst) = (udp.source(), udp.destination());
+                let quote = move |inner: EmbeddedAssembler| {
+                    if use_tcp {
+                        inner.tcp(tcp_src, tcp_dst, inject(tcp))
+                    } else {
+                        inner.udp(udp_src, udp_dst, inject(udp))
+                    }
+                };
+                let packet = if v6 {
+                    HeaderStack::new()
+                        .eth(|_| {})
+                        .ipv6(inject(outer6))
+                        .icmp6(|_| {})
+                        .dest_unreachable6(|_| {})
+                        .embedded(|inner| quote(inner.ipv6(inject(inner6))))
+                        .build_packet()
+                } else {
+                    HeaderStack::new()
+                        .eth(|_| {})
+                        .ipv4(inject(outer4))
+                        .icmp4(|_| {})
+                        .dest_unreachable(|_| {})
+                        .embedded(|inner| quote(inner.ipv4(inject(inner4))))
+                        .build_packet()
+                }
+                .unwrap();
+
+                assert_checksums_current(&packet);
+                assert!(quoted_checksum_is_valid(packet.headers()), "{packet:?}");
+                if let Some(EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp))) = packet
+                    .headers()
+                    .embedded_ip()
+                    .and_then(|e| e.transport.as_ref())
+                {
+                    assert_eq!(udp.length(), Udp::MIN_LENGTH);
+                }
+            },
+        );
+    }
+
     // -- Fuzz ValueGenerator tests -------------------------------------------
 
     #[test]
