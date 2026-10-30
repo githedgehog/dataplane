@@ -4,7 +4,7 @@
 //! Transmit queue configuration and management.
 
 use crate::dev::DevIndex;
-use crate::mem::{MBUF_BURST, MbufArray};
+use crate::mem::MbufArray;
 use crate::socket::SocketId;
 use crate::{dev, socket};
 use core::marker::PhantomData;
@@ -170,13 +170,16 @@ impl<'dev> TxQueue<'dev> {
     /// The PMD owns accepted packets. Stop when the queue makes no progress.
     #[must_use = "retry or drop the unsent packets"]
     #[tracing::instrument(level = "trace", skip(packets))]
-    pub fn transmit(&mut self, packets: MbufArray<'dev>) -> MbufArray<'dev> {
+    pub fn transmit<const N: usize>(
+        &mut self,
+        packets: MbufArray<'dev, N>,
+    ) -> MbufArray<'dev, N> {
         let len = packets.len();
         if len == 0 {
             return MbufArray::new_empty();
         }
         // The batch fits in `raw`; `into_raw` transfers ownership without freeing.
-        let mut raw = [null_mut::<dpdk_sys::rte_mbuf>(); MBUF_BURST];
+        let mut raw = [null_mut::<dpdk_sys::rte_mbuf>(); N];
         for (slot, mbuf) in raw.iter_mut().zip(packets) {
             *slot = mbuf.into_raw();
         }
@@ -206,7 +209,7 @@ impl<'dev> TxQueue<'dev> {
             offset += nb_tx;
         }
         // SAFETY: the PMD owns [0, offset). The tail remains live and exclusively
-        // ours, and its length is at most MBUF_BURST.
+        // ours, and its length is at most N.
         unsafe { MbufArray::from_raw_ptrs(&raw[offset..len]) }
     }
 }

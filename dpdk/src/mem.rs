@@ -1108,7 +1108,8 @@ impl<'eal, const N: usize> MbufArray<'eal, N> {
         self.bufs.drain(..)
     }
 
-    /// Free held mbufs, then let `fill` write new pointers directly into the array's storage.
+    /// Free held mbufs, then let `fill` write up to `max` new pointers directly into the array's
+    /// storage. `max` is clamped to `N`.
     ///
     /// # Safety
     /// `fill` must return `n` no greater than the supplied capacity and initialize the first `n`
@@ -1116,13 +1117,14 @@ impl<'eal, const N: usize> MbufArray<'eal, N> {
     /// beyond that capacity.
     pub(crate) unsafe fn refill_with(
         &mut self,
+        max: usize,
         fill: impl FnOnce(*mut *mut dpdk_sys::rte_mbuf, u16) -> usize,
     ) {
         self.free_all();
         // `Mbuf` is `repr(transparent)` over a `NonNull<rte_mbuf>` plus a zero-sized brand, so
         // the array's storage has the layout of `[*mut rte_mbuf; N]` and can be handed to C.
         let slots = self.bufs.as_mut_ptr().cast::<*mut dpdk_sys::rte_mbuf>();
-        let capacity = u16::try_from(N).unwrap_or(u16::MAX);
+        let capacity = u16::try_from(max.min(N)).unwrap_or(u16::MAX);
         let written = fill(slots, capacity);
         debug_assert!(written <= N, "filler wrote {written} mbufs into {N} slots");
         // SAFETY: the caller's contract is that `written` slots now hold live, singly-owned
@@ -1308,7 +1310,7 @@ mod pool_tests {
         // SAFETY: `raw` holds four live mbufs that nothing else now owns, and four is under the
         // capacity the filler is offered.
         unsafe {
-            burst.refill_with(|slots, capacity| {
+            burst.refill_with(usize::MAX, |slots, capacity| {
                 assert!(raw.len() <= capacity as usize);
                 core::ptr::copy_nonoverlapping(raw.as_mut_ptr(), slots, raw.len());
                 raw.len()

@@ -102,6 +102,34 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
         self.data.clone()
     }
 
+    /// The number of stages.
+    #[must_use]
+    pub fn stages(&self) -> usize {
+        self.nfs.len()
+    }
+
+    /// As [`NetworkFunction::process_burst`], calling `mid` once just before stage `split` runs,
+    /// or after the last stage if there are no more than `split` of them.
+    pub fn process_burst_split(
+        &mut self,
+        burst: &mut Vec<Packet<Buf>>,
+        split: usize,
+        mid: impl FnOnce(),
+    ) {
+        let mut mid = Some(mid);
+        for (stage, nf) in self.nfs.values_mut().enumerate() {
+            if stage == split
+                && let Some(mid) = mid.take()
+            {
+                mid();
+            }
+            nf.process_burst(burst);
+        }
+        if let Some(mid) = mid {
+            mid();
+        }
+    }
+
     /// Add a static network function to the pipeline.
     ///
     /// This method takes a [`NetworkFunction`] and adds it to the pipeline.

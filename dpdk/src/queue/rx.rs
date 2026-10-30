@@ -207,7 +207,12 @@ impl<'dev> RxQueue<'dev> {
 
     /// Receive into a reusable array, freeing any packets it still owns first.
     /// Avoids returning a full pointer array by value on every poll.
-    pub fn receive_into(&mut self, burst: &mut MbufArray<'dev>) {
+    pub fn receive_into<const N: usize>(&mut self, burst: &mut MbufArray<'dev, N>) {
+        self.receive_up_to(burst, N);
+    }
+
+    /// As [`Self::receive_into`], taking at most `max` packets (and never more than `N`).
+    pub fn receive_up_to<const N: usize>(&mut self, burst: &mut MbufArray<'dev, N>, max: usize) {
         trace!(
             "Polling for packets from rx queue {queue} on dev {dev}",
             queue = self.config.queue_index.as_u16(),
@@ -217,7 +222,7 @@ impl<'dev> RxQueue<'dev> {
         // more than the capacity it is given, and every one is a live mbuf whose ownership passes
         // to us. That is precisely `refill_with`'s contract.
         unsafe {
-            burst.refill_with(|slots, capacity| {
+            burst.refill_with(max, |slots, capacity| {
                 dpdk_sys::rte_eth_rx_burst(
                     self.dev.as_u16(),
                     self.config.queue_index.as_u16(),
@@ -232,6 +237,20 @@ impl<'dev> RxQueue<'dev> {
             queue = self.config.queue_index.as_u16(),
             dev = self.dev.as_u16()
         );
+    }
+
+    /// How many received packets wait in the ring right now, as the driver counts them.
+    ///
+    /// # Errors
+    ///
+    /// The driver's error code, for example `-ENOTSUP` from a driver that cannot count.
+    pub fn pending(&self) -> Result<u32, Errno> {
+        // SAFETY: a plain query on a started queue this handle owns; it reads and writes nothing
+        // we hold.
+        let count = unsafe {
+            dpdk_sys::rte_eth_rx_queue_count(self.dev.as_u16(), self.config.queue_index.as_u16())
+        };
+        u32::try_from(count).map_err(|_| Errno(count))
     }
 }
 

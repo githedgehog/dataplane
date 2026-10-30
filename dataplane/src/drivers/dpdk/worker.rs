@@ -29,6 +29,7 @@ use crate::drivers::watchdog::{RxCounters, Watchdog};
 use crate::packet_processor::{PipelineFactory, WorkerPipeline, expiry_budget};
 
 use super::classes::SoftwareClasses;
+use super::pollstats::{self, Knobs, Phase, PollStats, RX_STORAGE};
 use super::control::addressed_to;
 use super::idle::Idle;
 use super::port::PortQueues;
@@ -56,9 +57,11 @@ struct Scratch<'p> {
     /// Control traffic taken off the data path before the pipeline.
     diverted: Vec<Packet<Mbuf<'p>>>,
     /// The receive array, refilled in place rather than returned by value on every poll.
-    rx_mbufs: MbufArray<'p>,
+    rx_mbufs: MbufArray<'p, RX_STORAGE>,
+    /// The next burst, received halfway through this one when [`Knobs::prefetch_ahead`] is on.
+    ahead: MbufArray<'p, RX_STORAGE>,
     /// One transmit batch per port slot, indexed like the worker's ports.
-    tx_batches: Vec<MbufArray<'p>>,
+    tx_batches: Vec<MbufArray<'p, RX_STORAGE>>,
 }
 
 /// A worker and its exclusively owned queue handles.
@@ -142,6 +145,17 @@ impl<'p> Worker<'p> {
                 .filter_map(|p| p.queues.injector.as_ref())
                 .map(|injector| injector.frames.doorbell()),
         );
+        let mut knobs = Knobs::from_env();
+        if knobs.prefetch_ahead && self.ports.len() != 1 {
+            warn!(
+                worker = self.id,
+                "prefetch-ahead keeps one burst in hand, so it needs exactly one port; this worker \
+                 has {} and polls without it",
+                self.ports.len()
+            );
+            knobs.prefetch_ahead = false;
+        }
+        let mut stats = PollStats::new(self.id, knobs);
         let mut polls: u32 = 0;
         // Whether the last expiry pass left work over.
         let mut expiry_behind = false;
@@ -151,9 +165,10 @@ impl<'p> Worker<'p> {
         // Started last, so that setting up does not count as time spent.
         let mut meter = LoadMeter::start();
         let mut scratch = Scratch {
-            burst: Vec::with_capacity(dpdk::mem::MBUF_BURST),
+            burst: Vec::with_capacity(RX_STORAGE),
             diverted: Vec::new(),
             rx_mbufs: MbufArray::new_empty(),
+            ahead: MbufArray::new_empty(),
             tx_batches: (0..self.ports.len())
                 .map(|_| MbufArray::new_empty())
                 .collect(),
@@ -170,6 +185,7 @@ impl<'p> Worker<'p> {
                 }
                 self.report(&mut counters);
                 meter.flush(&self.load, idle.mode());
+                stats.maybe_report();
             }
 
             let mut saw_frames = false;
@@ -179,7 +195,15 @@ impl<'p> Worker<'p> {
             let mut injected = None;
             for (slot, counters) in counters.iter_mut().enumerate() {
                 let had_frames = self.inject(slot, counters);
-                if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut scratch, counters) {
+                if self.poll_one(
+                    slot,
+                    &tx_by_if,
+                    &mut pipeline,
+                    &mut scratch,
+                    counters,
+                    knobs,
+                    &mut stats,
+                ) {
                     saw_frames = true;
                     received = Some(slot);
                 } else if had_frames && injected.is_none() {
@@ -263,7 +287,9 @@ impl<'p> Worker<'p> {
     ///
     /// Transmit outcomes are counted against the receiving port, as the kernel driver does.
     /// Returns whether there was anything to do, which is what paces the idle backoff.
-    #[allow(clippy::too_many_arguments)] // the reused burst storage is threaded through, not owned
+    // The reused burst storage is threaded through, not owned; and the bench measurements and
+    // prefetch-ahead path sit beside the receive they measure.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn poll_one(
         &mut self,
         slot: usize,
@@ -271,36 +297,85 @@ impl<'p> Worker<'p> {
         pipeline: &mut DynPipeline<'p, Mbuf<'p>>,
         scratch: &mut Scratch<'p>,
         counters: &mut RxCounters,
+        knobs: Knobs,
+        stats: &mut PollStats,
     ) -> bool {
         let Scratch {
             burst,
             diverted,
             rx_mbufs,
+            ahead,
             tx_batches,
         } = scratch;
-        self.ports[slot].queues.rx.receive_into(rx_mbufs);
+        let received_at = pollstats::stamp();
+        // A burst received halfway through the previous one was counted and prefetched then.
+        let from_ahead = !ahead.is_empty();
+        if from_ahead {
+            core::mem::swap(rx_mbufs, ahead);
+        } else {
+            let rx = &mut self.ports[slot].queues.rx;
+            rx.receive_up_to(rx_mbufs, knobs.burst);
+            stats.received(received_at, rx_mbufs.len(), false, || rx.pending());
+        }
         if rx_mbufs.is_empty() {
             return false;
         }
         counters.burst(rx_mbufs.len(), dpdk::mem::MBUF_BURST);
-        let rx_if = self.ports[slot].queues.if_index;
-        for mbuf in rx_mbufs.iter() {
-            mbuf.prefetch_head();
+        let processing = pollstats::stamp();
+        if !from_ahead {
+            stats.phase(Phase::Rx, received_at, processing);
+            for mbuf in rx_mbufs.iter() {
+                mbuf.prefetch_head();
+            }
         }
+        let rx_if = self.ports[slot].queues.if_index;
         let fallback = self.ports[slot].queues.fallback.load();
-        process_burst(
-            rx_mbufs.drain_all(),
-            rx_if,
-            pipeline,
-            burst,
-            fallback.as_deref(),
-            diverted,
-            counters,
-        );
+        if knobs.prefetch_ahead {
+            // Halfway through the stages, take the next burst and start its heads on their way
+            // from DRAM, so they arrive while this burst finishes rather than when that one starts.
+            let rx = &mut self.ports[slot].queues.rx;
+            let split = pipeline.stages() / 2;
+            let mut mid_rx = None;
+            process_burst_with(
+                rx_mbufs.drain_all(),
+                rx_if,
+                burst,
+                fallback.as_deref(),
+                diverted,
+                counters,
+                |packets| {
+                    pipeline.process_burst_split(packets, split, || {
+                        let at = pollstats::stamp();
+                        rx.receive_up_to(ahead, knobs.burst);
+                        for mbuf in ahead.iter() {
+                            mbuf.prefetch_head();
+                        }
+                        let done = pollstats::stamp();
+                        mid_rx = Some((at, done));
+                        stats.received(at, ahead.len(), true, || rx.pending());
+                    });
+                },
+            );
+            if let Some((at, done)) = mid_rx {
+                stats.moved(Phase::Process, Phase::Rx, at, done);
+            }
+        } else {
+            process_burst(
+                rx_mbufs.drain_all(),
+                rx_if,
+                pipeline,
+                burst,
+                fallback.as_deref(),
+                diverted,
+                counters,
+            );
+        }
         self.punt_diverted(slot, diverted, counters);
+        let transmitting = pollstats::stamp();
+        stats.phase(Phase::Process, processing, transmitting);
 
         // Freed in one `rte_pktmbuf_free_bulk` when this goes out of scope.
-        let mut dropped: MbufArray<'p> = MbufArray::new_empty();
+        let mut dropped: MbufArray<'p, RX_STORAGE> = MbufArray::new_empty();
         // Borrowed for the packet loop rather than cloned per poll: an `mpsc::Sender` clone is an
         // atomic increment, which is not free at burst rates and buys nothing here.
         let punt = self.ports[slot].queues.punt.as_ref();
@@ -383,6 +458,7 @@ impl<'p> Worker<'p> {
                 );
             }
         }
+        stats.phase(Phase::Tx, transmitting, pollstats::stamp());
 
         true
     }
@@ -485,6 +561,21 @@ fn process_burst<Buf: PacketBufferMut>(
     diverted: &mut Vec<Packet<Buf>>,
     counters: &mut RxCounters,
 ) {
+    process_burst_with(burst, rx_if, packets, early, diverted, counters, |packets| {
+        pipeline.process_burst(packets);
+    });
+}
+
+/// [`process_burst`], with `run` standing in for the pipeline.
+fn process_burst_with<Buf: PacketBufferMut>(
+    burst: impl ExactSizeIterator<Item = Buf>,
+    rx_if: InterfaceIndex,
+    packets: &mut Vec<Packet<Buf>>,
+    early: Option<&SoftwareClasses>,
+    diverted: &mut Vec<Packet<Buf>>,
+    counters: &mut RxCounters,
+    run: impl FnOnce(&mut Vec<Packet<Buf>>),
+) {
     counters.rx += burst.len() as u64;
     packets.clear();
     packets.extend(burst.filter_map(|buffer| match Packet::new(buffer) {
@@ -507,7 +598,7 @@ fn process_burst<Buf: PacketBufferMut>(
     }
 
     let parsed = packets.len();
-    pipeline.process_burst(packets);
+    run(packets);
     // Stages mark packets to drop rather than removing them, so a drop is always counted.
     debug_assert!(
         packets.len() >= parsed,
