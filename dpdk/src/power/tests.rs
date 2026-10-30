@@ -26,6 +26,7 @@ fn on_a_ring(body: impl FnOnce(&LCore, &mut RxQueue<'_>, &mut TxQueue<'_>, Ring)
                 let lcore = LCore::register().unwrap();
                 let ring = RingPort::new();
                 let config = DevConfig {
+                    rx_interrupts: false,
                     num_rx_queues: 1,
                     num_tx_queues: 1,
                     num_hairpin_queues: 0,

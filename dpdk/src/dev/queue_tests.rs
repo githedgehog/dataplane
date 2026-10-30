@@ -14,6 +14,7 @@ static OWNER: concurrency::process_global::LazyLock<Ownership> =
 
 fn configured(ring: &RingPort) -> Dev<'static> {
     let config = DevConfig {
+        rx_interrupts: false,
         num_rx_queues: 1,
         num_tx_queues: 1,
         num_hairpin_queues: 0,
