@@ -55,6 +55,9 @@ pub struct Packet<Buf: PacketBufferMut> {
     payload: Buf,
     /// packet metadata added by stages to drive other stages down the pipeline
     pub(crate) meta: PacketMeta,
+    /// Last recorded transport checksum error; see [`Self::assert_transport_checksum_kept`].
+    #[cfg(any(test, feature = "checksum-audit"))]
+    transport_checksum_error: Option<u16>,
 }
 
 impl<Buf: PacketBufferMut + DeepCopy> Packet<Buf> {
@@ -68,6 +71,8 @@ impl<Buf: PacketBufferMut + DeepCopy> Packet<Buf> {
             headers: self.headers.clone(),
             payload: self.payload.deep_copy()?,
             meta: self.meta.clone(),
+            #[cfg(any(test, feature = "checksum-audit"))]
+            transport_checksum_error: self.transport_checksum_error,
         })
     }
 }
@@ -147,11 +152,67 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         mbuf.trim_from_start(consumed.get())
             .unwrap_or_else(|e| unreachable!("{:?}", e));
 
-        Ok(Packet {
+        #[cfg_attr(not(any(test, feature = "checksum-audit")), allow(unused_mut))]
+        let mut packet = Packet {
             headers,
             payload: mbuf,
             meta: PacketMeta::new(),
-        })
+            #[cfg(any(test, feature = "checksum-audit"))]
+            transport_checksum_error: None,
+        };
+        #[cfg(any(test, feature = "checksum-audit"))]
+        packet.note_transport_checksum();
+        Ok(packet)
+    }
+
+    /// How far the transport checksum is from valid: the one's-complement difference between it
+    /// and what a computation from scratch over the same octets gives. `None` without one to
+    /// compare: no transport header, a disabled UDP checksum, or VXLAN.
+    #[cfg(any(test, feature = "checksum-audit"))]
+    fn transport_checksum_error(&self) -> Option<u16> {
+        if self.headers.try_vxlan().is_some() {
+            return None;
+        }
+        let stored = self.headers.transport.as_ref()?.checksum_for_increment()?;
+        let mut computed = self.headers.clone();
+        let covered = computed.transport_payload_len();
+        computed.compute_transport_checksum(self.payload.as_ref(), covered);
+        let computed = computed.transport.as_ref()?.checksum_for_increment()?;
+        let sum = u32::from(stored) + u32::from(!computed);
+        #[allow(clippy::cast_possible_truncation)] // one fold of two 16-bit words fits 16 bits
+        let difference = ((sum & 0xffff) + (sum >> 16)) as u16;
+        // Both zeros are the same difference.
+        Some(if difference == 0 { 0xffff } else { difference })
+    }
+
+    /// Record the current transport checksum error as the audit baseline.
+    #[cfg(any(test, feature = "checksum-audit"))]
+    fn note_transport_checksum(&mut self) {
+        self.transport_checksum_error = self.transport_checksum_error();
+    }
+
+    /// Compare the transport checksum error with the last recorded baseline, unless a refresh
+    /// is pending. This detects changes made without updating the checksum or requesting a refresh.
+    ///
+    /// # Panics
+    ///
+    /// Panics if both checksum errors are available and differ, with no refresh pending.
+    #[cfg(any(test, feature = "checksum-audit"))]
+    fn assert_transport_checksum_kept(&self) {
+        if self.meta.checksum_refresh() {
+            return;
+        }
+        if let (Some(before), Some(now)) = (
+            self.transport_checksum_error,
+            self.transport_checksum_error(),
+        ) {
+            assert_eq!(
+                before, now,
+                "a stage changed what the transport checksum covers, and neither folded the change \
+                 in nor asked for a refresh: {:?}",
+                self.headers
+            );
+        }
     }
 
     /// Get a reference to the payload of this packet
@@ -301,6 +362,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                             self.meta.dscp = dscp;
                             self.meta.ecn = ecn;
                             self.headers = headers;
+                            #[cfg(any(test, feature = "checksum-audit"))]
+                            self.note_transport_checksum();
 
                             Some(Ok(vxlan))
                         }
@@ -374,6 +437,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         if false && self.meta().checksum_refresh() {
             self.update_checksums();
         }
+        #[cfg(any(test, feature = "checksum-audit"))]
+        self.assert_transport_checksum_kept();
         //compute room required
         let needed = self.headers.size().get();
         let buf = self.payload.prepend(needed)?;
@@ -413,6 +478,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         Self::apply_outer_qos_to_ip_headers(&mut headers, &self.meta, udp_len.get());
 
         self.headers = headers;
+        #[cfg(any(test, feature = "checksum-audit"))]
+        self.note_transport_checksum();
         Ok(())
     }
 
@@ -425,6 +492,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self.headers
             .update_checksums_covering(self.payload.as_ref(), covered);
         self.meta_mut().set_checksum_refresh(false);
+        #[cfg(any(test, feature = "checksum-audit"))]
+        self.note_transport_checksum();
         self
     }
 
@@ -443,6 +512,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         {
             self.meta_mut().set_checksum_refresh(false);
         }
+        #[cfg(any(test, feature = "checksum-audit"))]
+        self.note_transport_checksum();
         self
     }
 
@@ -454,6 +525,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// serialize or `SerializeError::DeparseError` if it does, but the de-parsing the `Packet` failed.
     #[inline]
     pub(crate) fn do_serialize(&mut self) -> Result<(), SerializeError<()>> {
+        #[cfg(any(test, feature = "checksum-audit"))]
+        self.assert_transport_checksum_kept();
         // IPv4 setters maintain header checksums. Refresh transport checksums only when requested
         // by a stage or receive driver; unnecessary recomputation scans the payload and can mask
         // corruption.

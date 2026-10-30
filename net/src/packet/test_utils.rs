@@ -179,6 +179,8 @@ pub fn build_test_udp_ipv4_frame(
     packet
         .set_udp_destination_port(UdpPort::new_checked(dport).expect("Bad dst port"))
         .expect("Could not set dst port");
+    // The setters leave the transport checksum alone; a packet built here computes it.
+    packet.update_checksums();
 
     packet
 }
@@ -231,6 +233,8 @@ pub fn build_test_tcp_ipv4_packet(
     packet
         .set_tcp_destination_port(TcpPort::new_checked(dport).expect("Bad dst port"))
         .expect("Could not set dst port");
+    // The setters leave the transport checksum alone; a packet built here computes it.
+    packet.update_checksums();
 
     packet
 }
