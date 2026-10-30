@@ -60,7 +60,7 @@ pub(crate) struct BridgedPort {
     /// Where a punted frame goes.
     pub(crate) punt: tokio::sync::mpsc::Sender<Frame>,
     /// Frames the kernel wants transmitted. `None` on every worker but the drainer.
-    pub(crate) inject: Option<tokio::sync::mpsc::Receiver<Frame>>,
+    pub(crate) inject: Option<crate::drivers::cpbridge::InjectReceiver>,
 }
 
 struct WorkerInterfaceWriter {
@@ -812,7 +812,7 @@ fn punt_packet(
 async fn inject_frames(
     id: WorkerId,
     if_name: String,
-    mut inject: tokio::sync::mpsc::Receiver<Frame>,
+    mut inject: crate::drivers::cpbridge::InjectReceiver,
     writer: Arc<Mutex<WorkerInterfaceWriter>>,
     cancel: CancellationToken,
 ) {

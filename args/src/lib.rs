@@ -657,6 +657,10 @@ pub enum IdleMode {
     /// The thread remains scheduled while the CPU uses less power.
     /// Workers with receive queues fall back to polling if no usable CPU wait is available.
     Monitor,
+    /// Use monitor waits or polling until idle for [`IdleConfig::interrupt_after_us`], then
+    /// block in the kernel on receive interrupts, injection doorbells, or a periodic timeout.
+    /// Requires interrupt support on every receive queue owned by the worker.
+    Interrupt,
 }
 
 impl std::fmt::Display for IdleMode {
@@ -692,6 +696,9 @@ pub struct IdleConfig {
     /// Maximum duration of a monitor wait, in microseconds.
     /// Limits polling delay for unwatched receive queues and kernel injection queues.
     pub sleep_us: u32,
+    /// In [`IdleMode::Interrupt`], how long a worker has found nothing before it sleeps on
+    /// interrupts, in microseconds.
+    pub interrupt_after_us: u32,
 }
 
 impl Default for IdleConfig {
@@ -700,6 +707,7 @@ impl Default for IdleConfig {
             mode: IdleMode::default(),
             polls: DEFAULT_IDLE_POLLS,
             sleep_us: DEFAULT_IDLE_SLEEP_US,
+            interrupt_after_us: DEFAULT_IDLE_INTERRUPT_AFTER_US,
         }
     }
 }
@@ -709,6 +717,9 @@ pub const DEFAULT_IDLE_POLLS: u32 = 512;
 
 /// The default for `--idle-sleep-us`.
 pub const DEFAULT_IDLE_SLEEP_US: u32 = 50;
+
+/// The default for `--idle-interrupt-after-us`: a millisecond without a packet.
+pub const DEFAULT_IDLE_INTERRUPT_AFTER_US: u32 = 1000;
 
 /// Configuration for the Linux kernel networking driver.
 ///
@@ -1729,7 +1740,9 @@ Separate interfaces with commas and options with slashes."
         default_value_t = IdleMode::Poll,
         help = "What a DPDK worker does while it has nothing to receive: `poll` spins; \
                 `monitor` sleeps in a low-power state after --idle-polls empty polls, until a \
-                packet arrives or --idle-sleep-us passes"
+                packet arrives or --idle-sleep-us passes; `interrupt` does as monitor, then after \
+                --idle-interrupt-after-us without a packet sleeps on the receive queues' \
+                interrupts"
     )]
     idle: IdleMode,
 
@@ -1751,6 +1764,16 @@ Separate interfaces with commas and options with slashes."
                 how late it can notice a packet on a queue it could not watch"
     )]
     idle_sleep_us: u32,
+
+    #[arg(
+        long,
+        value_name = "MICROSECONDS",
+        default_value_t = DEFAULT_IDLE_INTERRUPT_AFTER_US,
+        value_parser = clap::value_parser!(u32).range(1..=1_000_000),
+        help = "With --idle interrupt, how long a DPDK worker finds nothing to receive before it \
+                sleeps on interrupts, in [1..1000000] microseconds"
+    )]
+    idle_interrupt_after_us: u32,
 
     #[arg(
         long,
@@ -2016,13 +2039,15 @@ impl CmdArgs {
         self.num_workers
     }
 
-    /// How DPDK workers idle, from `--idle`, `--idle-polls` and `--idle-sleep-us`.
+    /// How DPDK workers idle, from `--idle`, `--idle-polls`, `--idle-sleep-us` and
+    /// `--idle-interrupt-after-us`.
     #[must_use]
     pub fn idle(&self) -> IdleConfig {
         IdleConfig {
             mode: self.idle,
             polls: self.idle_polls,
             sleep_us: self.idle_sleep_us,
+            interrupt_after_us: self.idle_interrupt_after_us,
         }
     }
 
@@ -2217,22 +2242,24 @@ mod tests {
             LaunchConfiguration::try_from(args),
             Err(InvalidCmdArguments::NoPciAddress(_))
         ));
-        let args = CmdArgs::try_parse_from([
-            "dataplane",
-            "--driver",
-            "kernel",
-            "--interface",
-            "eth0",
-            "--idle",
-            "monitor",
-        ])
-        .unwrap();
-        assert!(matches!(
-            LaunchConfiguration::try_from(args),
-            Err(InvalidCmdArguments::UnsupportedByDriver(
-                UnsupportedByDriver::KernelIdle(_)
-            ))
-        ));
+        for mode in ["monitor", "interrupt"] {
+            let args = CmdArgs::try_parse_from([
+                "dataplane",
+                "--driver",
+                "kernel",
+                "--interface",
+                "eth0",
+                "--idle",
+                mode,
+            ])
+            .unwrap();
+            assert!(matches!(
+                LaunchConfiguration::try_from(args),
+                Err(InvalidCmdArguments::UnsupportedByDriver(
+                    UnsupportedByDriver::KernelIdle(_)
+                ))
+            ));
+        }
     }
 
     #[test]
@@ -2342,7 +2369,7 @@ mod tests {
 
     #[test]
     fn workers_poll_unless_told_to_sleep_and_sleep_at_most_a_millisecond() {
-        use crate::{CmdArgs, IdleConfig, IdleMode, Parser};
+        use crate::{CmdArgs, DEFAULT_IDLE_INTERRUPT_AFTER_US, IdleConfig, IdleMode, Parser};
         let parse = |args: &[&str]| {
             CmdArgs::try_parse_from(std::iter::once("dataplane").chain(args.iter().copied()))
                 .map(|args| args.idle())
@@ -2363,9 +2390,20 @@ mod tests {
                 mode: IdleMode::Monitor,
                 polls: 64,
                 sleep_us: 1000,
+                interrupt_after_us: DEFAULT_IDLE_INTERRUPT_AFTER_US,
+            }
+        );
+        assert_eq!(
+            parse(&["--idle", "interrupt", "--idle-interrupt-after-us", "250"]).unwrap(),
+            IdleConfig {
+                mode: IdleMode::Interrupt,
+                interrupt_after_us: 250,
+                ..IdleConfig::default()
             }
         );
         assert!(parse(&["--idle", "doze"]).is_err());
+        assert!(parse(&["--idle-interrupt-after-us", "0"]).is_err());
+        assert!(parse(&["--idle-interrupt-after-us", "1000001"]).is_err());
         assert!(parse(&["--idle-polls", "0"]).is_err());
         assert!(parse(&["--idle-sleep-us", "0"]).is_err());
         assert!(parse(&["--idle-sleep-us", "1001"]).is_err());

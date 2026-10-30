@@ -19,7 +19,7 @@ use net::headers::{TryEth, TryHeaders};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::{DynPipeline, NetworkFunction};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use traffic_control::Key;
 
 use crate::drivers::status::WorkerId;
@@ -119,6 +119,15 @@ impl<'p> Worker<'p> {
         );
 
         let mut idle = Idle::new(self.id, self.idle, lcore.as_ref());
+        idle.sleep_on_interrupts(
+            self.ports
+                .iter()
+                .map(|p| (&p.queues.rx, p.queues.rx_interrupts)),
+            self.ports
+                .iter()
+                .filter_map(|p| p.queues.injector.as_ref())
+                .map(|injector| injector.frames.doorbell()),
+        );
         let mut polls: u32 = 0;
         // Whether the last expiry pass left work over.
         let mut expiry_behind = false;
@@ -152,11 +161,11 @@ impl<'p> Worker<'p> {
             let mut received = None;
             let mut injected = None;
             for (slot, counters) in counters.iter_mut().enumerate() {
-                let sent = self.inject(slot, counters);
+                let had_frames = self.inject(slot, counters);
                 if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut scratch, counters) {
                     saw_frames = true;
                     received = Some(slot);
-                } else if sent && injected.is_none() {
+                } else if had_frames && injected.is_none() {
                     injected = Some(slot);
                 }
             }
@@ -183,10 +192,10 @@ impl<'p> Worker<'p> {
         }
 
         self.report(&mut counters);
-        debug!(
+        let (sleeps, interrupt_sleeps) = idle.sleeps();
+        info!(
             worker = self.id,
-            sleeps = idle.sleeps(),
-            "DPDK worker stopping"
+            sleeps, interrupt_sleeps, "DPDK worker stopping"
         );
     }
 

@@ -11,10 +11,9 @@
 use dpdk::mem::{MBUF_BURST, MbufArray, Pool};
 use dpdk::queue::tx::TxQueue;
 use net::buffer::Append;
-use tokio::sync::mpsc;
 use tracing::{trace, warn};
 
-use crate::drivers::cpbridge::Frame;
+use crate::drivers::cpbridge::{Frame, InjectReceiver};
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::RxCounters;
 
@@ -28,7 +27,7 @@ pub(crate) struct Injector<'p> {
     /// The port's control pool.
     pub(crate) pool: Pool<'p>,
     /// Frames the kernel wants the port to transmit.
-    pub(crate) frames: mpsc::Receiver<Frame>,
+    pub(crate) frames: InjectReceiver,
 }
 
 impl<'p> Injector<'p> {
@@ -53,7 +52,21 @@ impl<'p> Injector<'p> {
         if frames.is_empty() {
             return false;
         }
+        // Taking frames is work even if none can be sent. Counted as idle, it would let the worker
+        // sleep on interrupts with frames still queued behind these that rang no bell.
+        self.send(id, tx, counters, frames);
+        true
+    }
 
+    /// Copy `frames` into mbufs from the port's pool and transmit them on `tx`, counting the ones
+    /// that are dropped.
+    fn send(
+        &mut self,
+        id: WorkerId,
+        tx: &mut TxQueue<'p>,
+        counters: &mut RxCounters,
+        frames: Vec<Frame>,
+    ) {
         // All-or-nothing, which is what the DPDK bulk allocator gives: a partial allocation would
         // have to be unwound by hand.
         let mbufs = match self.pool.alloc_bulk(frames.len()) {
@@ -67,7 +80,7 @@ impl<'p> Injector<'p> {
                     frames.len(),
                     self.name
                 );
-                return false;
+                return;
             }
         };
 
@@ -108,7 +121,7 @@ impl<'p> Injector<'p> {
 
         let attempted = batch.len() as u64;
         if attempted == 0 {
-            return false;
+            return;
         }
         let unsent = tx.transmit(batch);
         let refused = unsent.len() as u64;
@@ -120,6 +133,5 @@ impl<'p> Injector<'p> {
                 "tx queue on {} refused {refused} of {attempted} injected frame(s)", self.name
             );
         }
-        true
     }
 }
