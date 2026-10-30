@@ -184,6 +184,12 @@ impl PacketMeta {
         }
     }
 
+    /// Tell if the packet has been marked as done (see [`Self::done`]).
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.done.is_some()
+    }
+
     #[must_use]
     pub fn is_src_natted(&self) -> bool {
         self.flags.contains(MetaFlags::NATTED_SRC)

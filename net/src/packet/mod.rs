@@ -816,7 +816,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 
     /// Tell if a packet has been marked as done.
     pub fn is_done(&self) -> bool {
-        self.meta.done.is_some()
+        self.meta.is_done()
     }
 
     /// Get the reason why a packet has been marked as done.
