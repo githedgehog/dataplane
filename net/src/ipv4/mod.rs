@@ -58,6 +58,9 @@ pub struct Ipv4 {
     protocol: IpNumber,
     dont_fragment: bool,
     more_fragments: bool,
+    /// The first flag bit, which RFC 791 reserves and says must be zero. Kept, not cleared: a header
+    /// must leave as it arrived, or its checksum stops matching it.
+    reserved_flag: bool,
 }
 
 /// Matches [`etherparse::Ipv4Header::default`], including the DF bit used by VXLAN, except that the
@@ -78,6 +81,7 @@ impl Default for Ipv4 {
             protocol: IpNumber(255),
             dont_fragment: true,
             more_fragments: false,
+            reserved_flag: false,
         };
         header.header_checksum = header.compute_header_checksum();
         header
@@ -149,6 +153,7 @@ impl Ipv4 {
             protocol: slice.protocol(),
             dont_fragment: slice.dont_fragment(),
             more_fragments: slice.more_fragments(),
+            reserved_flag: slice.slice()[6] & 0b1000_0000 != 0,
         })
     }
 
@@ -163,10 +168,13 @@ impl Ipv4 {
         (self.options_len() / 4) as u8 + 5
     }
 
-    /// Pack the flags and fragment offset, with the reserved bit cleared.
+    /// Pack the flags and fragment offset.
     fn flags_and_fragment_offset(&self) -> [u8; 2] {
         let frag = self.fragment_offset.value().to_be_bytes();
         let mut flags = 0u8;
+        if self.reserved_flag {
+            flags |= 0b1000_0000;
+        }
         if self.dont_fragment {
             flags |= 0b0100_0000;
         }
@@ -795,6 +803,12 @@ mod contract {
                     Bound::Included(&Ipv4::MAX_LEN.get()),
                 )?)
                 .ok();
+            // The reserved flag, which a header must carry through as it arrived.
+            if u.produce()? {
+                header.changing(Ipv4::flags_and_fragment_offset_word, |h| {
+                    h.reserved_flag = true;
+                });
+            }
             Some(header)
         }
     }
@@ -870,13 +884,10 @@ mod test {
                         assert!(consumed.into_non_zero_usize().get() <= slice.len());
                         let mut buf = vec![0; consumed.into_non_zero_usize().get()];
                         header.deparse(&mut buf).unwrap();
-                        assert_eq!(&slice[..=5], &buf.as_slice()[..=5]);
-                        // reserved bit in ipv4 flags should serialize to zero
-                        assert_eq!(slice[6] & 0b0111_1111, buf[6]);
-                        assert_eq!(&slice[7..MIN_LEN_USIZE], &buf.as_slice()[7..MIN_LEN_USIZE]);
+                        // The header leaves as it arrived, the reserved flag included.
                         assert_eq!(
-                            &slice[MIN_LEN_USIZE..consumed.into_non_zero_usize().get()],
-                            &buf.as_slice()[MIN_LEN_USIZE..consumed.into_non_zero_usize().get()]
+                            &slice[..consumed.into_non_zero_usize().get()],
+                            buf.as_slice()
                         );
                     }
                     Err(e) => match e {

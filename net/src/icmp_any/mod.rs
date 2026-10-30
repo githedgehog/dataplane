@@ -8,9 +8,11 @@ use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
 
 mod checksum;
+mod dropped;
 mod truncated;
 
 pub use checksum::*;
+pub(crate) use dropped::DroppedBits;
 pub use truncated::*;
 
 /// Error type for [`IcmpAny`] and [`IcmpAnyMut`]
