@@ -82,22 +82,26 @@ impl<Buf: PacketBufferMut + DeepCopy> Packet<Buf> {
 impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Convert a packet into one that uses the target buffer `buf`, possibly
     /// of distinct type. This method consumes the original packet and is meant
-    /// to allow changing the underlying buffer type of a `Packet`.
+    /// to allow changing the underlying buffer type of a `Packet`. Specifically
+    /// this method allows converting a `Packet<TestBuffer>` into one using a
+    /// DPDK `Mbuf` provided by a calling worker in the DPDK driver.
     ///
-    /// The headers and metadata of the original packet are transferred to the
-    /// new `Packet` and its payload is copied into the new one. This method can
-    /// be useful to convert a `Packet<TestBuffer>` into one using a DPDK `Mbuf`
-    /// provided by the calling DPDK worker.
+    /// Note:
+    ///    * The headers and metadata of the original packet are transferred to the
+    ///      new packet and its payload is copied into the target buffer `buf`.
+    ///    * On success, the prior buffer of the provided packet is released.
+    ///    * On failure, the target `buf` is released (e.g. returned to its pool).
     ///
     /// # Errors
     ///
     /// The original packet is returned if the target `buf` lacks the room to
-    /// store the payload of the original packet.
+    /// store the headers and payload of the original packet. If the headroom
+    /// of the target `buf` is too small for the headers, it is enlarged at the
+    /// expense of its tailroom.
     ///
     /// # Panics
     ///
-    /// This method panics if the provided buffer is chained or already contains
-    /// data.
+    /// This method panics if the provided buffer is chained or contains data.
     #[allow(clippy::result_large_err)]
     pub fn rebuffer<Target: PacketBufferMut + Append>(
         self,
@@ -107,9 +111,19 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         assert!(!buf.is_chained(), "buf does not come from pool");
         assert_eq!(buf.packet_len(), 0, "buf is dirty");
 
+        // if headers would not fit, enlarge headroom by `need_headroom`, at the
+        // expense of reducing the available tailroom.
+        let need_headroom = self.header_len().get().saturating_sub(buf.headroom());
+        if need_headroom != 0 {
+            if buf.append(need_headroom).is_err() {
+                return Err(self);
+            }
+            buf.trim_from_start(need_headroom)
+                .unwrap_or_else(|_| unreachable!("trimming what was just appended"));
+        }
+
         let len = self.payload_len();
         let Ok(segment) = buf.append(len) else {
-            // target buf is released here
             return Err(self);
         };
         let start = segment.len() - usize::from(len);
@@ -125,7 +139,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Like [`Packet::rebuffer`], it consumes the packet, but it cannot fail:
     /// the new buffer is built to fit the payload.
     /// This method is meant to allow converting packets with DPDK `Mbuf`s into
-    /// vanilla `Packets` so that the original `Mbuf`s can be early returned to
+    /// `Packet<TestBuffer>`s so that the original `Mbuf`s can be early returned to
     /// their pools, when packets need to be handed off outside from the worker
     /// owning them. The new buffer keeps the original's headroom, so that the
     /// headers can still grow (e.g. by an encap), but only the default
@@ -1539,6 +1553,26 @@ mod rebuffer_tests {
                     .unwrap()
                     .rebuffer(TestBuffer::from_raw_data_with_room(&[], 1024, 1024))
                     .unwrap();
+                assert_eq!(rebuffered.headers(), original.headers());
+                assert_eq!(rebuffered.payload().as_ref(), original.payload().as_ref());
+                assert_eq!(serialized(rebuffered), serialized(original));
+            });
+    }
+
+    #[test]
+    fn rebuffer_enlarges_a_short_headroom() {
+        bolero::check!()
+            .with_type::<(Headers, Vec<u8>)>()
+            .for_each(|(headers, payload)| {
+                let Some(original) = packet(headers, &payload[..payload.len().min(512)]) else {
+                    return;
+                };
+                let rebuffered = original
+                    .deep_copy()
+                    .unwrap()
+                    .rebuffer(TestBuffer::from_raw_data_with_room(&[], 0, 2048))
+                    .unwrap();
+                assert!(rebuffered.payload().headroom() >= rebuffered.header_len().get());
                 assert_eq!(rebuffered.headers(), original.headers());
                 assert_eq!(rebuffered.payload().as_ref(), original.payload().as_ref());
                 assert_eq!(serialized(rebuffered), serialized(original));
