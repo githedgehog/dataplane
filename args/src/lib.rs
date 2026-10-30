@@ -624,7 +624,91 @@ pub struct DpdkDriverConfigSection {
     /// Hugepage memory to require on each NIC NUMA node, in GiB, overriding what init computes
     /// from the ports and workers (`--hugepages-gib`).
     pub hugepages_gib: Option<u32>,
+    /// What a worker does once it has found nothing to receive for a while.
+    pub idle: IdleConfig,
 }
+
+/// What a DPDK worker does while it has nothing to receive.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum IdleMode {
+    /// Keep polling at full speed, yielding the CPU now and then.
+    #[default]
+    Poll,
+    /// After [`IdleConfig::polls`] empty polls, use low-power CPU waits with a timeout of
+    /// [`IdleConfig::sleep_us`] microseconds, polling again after each wait. Writes to watched
+    /// queues can end a wait early; other queues and injected frames are checked on the next poll.
+    ///
+    /// The thread remains scheduled while the CPU uses less power.
+    /// Workers with receive queues fall back to polling if no usable CPU wait is available.
+    Monitor,
+}
+
+impl std::fmt::Display for IdleMode {
+    /// The mode as `--idle` spells it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use clap::ValueEnum;
+        match self.to_possible_value() {
+            Some(value) => f.write_str(value.get_name()),
+            None => write!(f, "{self:?}"),
+        }
+    }
+}
+
+/// How a DPDK worker idles.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
+pub struct IdleConfig {
+    /// What to do while there is nothing to receive.
+    pub mode: IdleMode,
+    /// Consecutive polls without a packet on any of the worker's queues before it sleeps.
+    pub polls: u32,
+    /// Maximum duration of a monitor wait, in microseconds.
+    /// Limits polling delay for unwatched receive queues and kernel injection queues.
+    pub sleep_us: u32,
+}
+
+impl Default for IdleConfig {
+    fn default() -> Self {
+        Self {
+            mode: IdleMode::default(),
+            polls: DEFAULT_IDLE_POLLS,
+            sleep_us: DEFAULT_IDLE_SLEEP_US,
+        }
+    }
+}
+
+/// Default consecutive empty polls before a monitor wait.
+pub const DEFAULT_IDLE_POLLS: u32 = 512;
+
+/// The default for `--idle-sleep-us`.
+pub const DEFAULT_IDLE_SLEEP_US: u32 = 50;
 
 /// Configuration for the Linux kernel networking driver.
 ///
@@ -923,6 +1007,16 @@ impl DriverConfigSection {
         match self {
             DriverConfigSection::Dpdk(dpdk) => dpdk.num_workers,
             DriverConfigSection::Kernel(kernel) => kernel.num_workers,
+        }
+    }
+
+    /// How workers idle. The kernel driver's workers block on their sockets, so for them this is
+    /// the default and unused.
+    #[must_use]
+    pub fn idle(&self) -> IdleConfig {
+        match self {
+            DriverConfigSection::Dpdk(dpdk) => dpdk.idle,
+            DriverConfigSection::Kernel(_) => IdleConfig::default(),
         }
     }
 }
@@ -1481,6 +1575,11 @@ pub enum UnsupportedByDriver {
         "DPDK driver does not support interfaces specified by their kernel driver name; {0} given"
     )]
     Dpdk(InterfaceName),
+    /// Kernel driver workers block on their sockets; only DPDK workers have an idle mode.
+    #[error(
+        "--idle {0} applies only to --driver dpdk; the kernel driver's workers block when idle"
+    )]
+    KernelIdle(IdleMode),
 }
 
 impl TryFrom<CmdArgs> for LaunchConfiguration {
@@ -1515,7 +1614,11 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     hugepages: None,
                     hugepages_gib: value.hugepages_gib,
                     num_workers: value.num_workers,
+                    idle: value.idle(),
                 })
+            }
+            Some("kernel") if value.idle != IdleMode::Poll => {
+                return Err(UnsupportedByDriver::KernelIdle(value.idle).into());
             }
             Some("kernel") => DriverConfigSection::Kernel(KernelDriverConfigSection {
                 interfaces: value.interfaces().collect(),
@@ -1618,6 +1721,36 @@ Separate interfaces with commas and options with slashes."
         help = "Number of packet-processing worker threads in [1..64]"
     )]
     num_workers: NonZero<u16>,
+
+    /// What a DPDK worker does while it has nothing to receive.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = IdleMode::Poll,
+        help = "What a DPDK worker does while it has nothing to receive: `poll` spins; \
+                `monitor` sleeps in a low-power state after --idle-polls empty polls, until a \
+                packet arrives or --idle-sleep-us passes"
+    )]
+    idle: IdleMode,
+
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = DEFAULT_IDLE_POLLS,
+        value_parser = clap::value_parser!(u32).range(1..=1_000_000),
+        help = "Empty polls in a row before an idle DPDK worker sleeps, in [1..1000000]"
+    )]
+    idle_polls: u32,
+
+    #[arg(
+        long,
+        value_name = "MICROSECONDS",
+        default_value_t = DEFAULT_IDLE_SLEEP_US,
+        value_parser = clap::value_parser!(u32).range(1..=1000),
+        help = "The longest one idle sleep of a DPDK worker lasts, in [1..1000] microseconds: \
+                how late it can notice a packet on a queue it could not watch"
+    )]
+    idle_sleep_us: u32,
 
     #[arg(
         long,
@@ -1883,6 +2016,16 @@ impl CmdArgs {
         self.num_workers
     }
 
+    /// How DPDK workers idle, from `--idle`, `--idle-polls` and `--idle-sleep-us`.
+    #[must_use]
+    pub fn idle(&self) -> IdleConfig {
+        IdleConfig {
+            mode: self.idle,
+            polls: self.idle_polls,
+            sleep_us: self.idle_sleep_us,
+        }
+    }
+
     /// Get the list of kernel network interfaces to use.
     ///
     /// Returns the interfaces specified via `--interface` arguments.
@@ -2074,6 +2217,22 @@ mod tests {
             LaunchConfiguration::try_from(args),
             Err(InvalidCmdArguments::NoPciAddress(_))
         ));
+        let args = CmdArgs::try_parse_from([
+            "dataplane",
+            "--driver",
+            "kernel",
+            "--interface",
+            "eth0",
+            "--idle",
+            "monitor",
+        ])
+        .unwrap();
+        assert!(matches!(
+            LaunchConfiguration::try_from(args),
+            Err(InvalidCmdArguments::UnsupportedByDriver(
+                UnsupportedByDriver::KernelIdle(_)
+            ))
+        ));
     }
 
     #[test]
@@ -2179,6 +2338,37 @@ mod tests {
         assert_eq!(parse("64").unwrap().num_workers().get(), 64);
         assert!(parse("0").is_err());
         assert!(parse("65").is_err());
+    }
+
+    #[test]
+    fn workers_poll_unless_told_to_sleep_and_sleep_at_most_a_millisecond() {
+        use crate::{CmdArgs, IdleConfig, IdleMode, Parser};
+        let parse = |args: &[&str]| {
+            CmdArgs::try_parse_from(std::iter::once("dataplane").chain(args.iter().copied()))
+                .map(|args| args.idle())
+        };
+        assert_eq!(parse(&[]).unwrap(), IdleConfig::default());
+        assert_eq!(IdleConfig::default().mode, IdleMode::Poll);
+        assert_eq!(
+            parse(&[
+                "--idle",
+                "monitor",
+                "--idle-polls",
+                "64",
+                "--idle-sleep-us",
+                "1000"
+            ])
+            .unwrap(),
+            IdleConfig {
+                mode: IdleMode::Monitor,
+                polls: 64,
+                sleep_us: 1000,
+            }
+        );
+        assert!(parse(&["--idle", "doze"]).is_err());
+        assert!(parse(&["--idle-polls", "0"]).is_err());
+        assert!(parse(&["--idle-sleep-us", "0"]).is_err());
+        assert!(parse(&["--idle-sleep-us", "1001"]).is_err());
     }
 }
 

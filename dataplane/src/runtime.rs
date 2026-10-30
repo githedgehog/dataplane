@@ -624,6 +624,7 @@ fn run_dpdk_driver(
             workers,
             &ports,
             config.driver.num_workers(),
+            config.driver.idle(),
             &ingredients.factory(),
             status_writer,
             bridge.as_mut(),
