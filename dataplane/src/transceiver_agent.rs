@@ -490,7 +490,6 @@ mod tests {
     use crate::drivers::cpbridge::PortIdentity;
     use net::eth::mac::{Mac, SourceMac};
     use net::interface::{InterfaceIndex, InterfaceName};
-    use tokio::sync::mpsc;
     use transceiver::DecodeError;
     use transceiver::sff8024::Identifier;
 
@@ -615,7 +614,7 @@ mod tests {
             datapath_index: Some(InterfaceIndex::try_new(ifindex).unwrap()),
             pci_address: None,
         }));
-        let (inject, _) = mpsc::channel(1);
+        let (inject, _) = crate::drivers::cpbridge::inject_channel(1).unwrap();
         let port = BridgePort {
             name: InterfaceName::try_from("under-test").unwrap(),
             inject,

@@ -19,7 +19,10 @@
 
 use hardware::pci::address::PciAddress;
 use std::collections::HashMap;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::time::Duration;
+
+use nix::sys::eventfd::{EfdFlags, EventFd};
 
 use concurrency::sync::Arc;
 use interface_manager::interface::{TapDevice, TapRegistry};
@@ -30,8 +33,141 @@ use net::interface::{InterfaceIndex, InterfaceName};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
+mod wakeup;
+use wakeup::Wakeup;
+
 /// One control-plane frame, copied out of (or destined for) a driver's own buffer.
 pub(crate) type Frame = Vec<u8>;
+
+/// The sending end of a port's injection queue: frames the kernel (or the LLDP agent) wants
+/// transmitted.
+///
+/// Enqueuing a frame rings the worker's [`Doorbell`] only while it is armed for interrupt sleep,
+/// avoiding eventfd writes during normal polling.
+#[derive(Clone)]
+pub(crate) struct InjectSender {
+    frames: mpsc::Sender<Frame>,
+    bell: Doorbell,
+}
+
+/// The receiving end of a port's injection queue, with the doorbell its frames ring.
+pub(crate) struct InjectReceiver {
+    frames: mpsc::Receiver<Frame>,
+    bell: Doorbell,
+}
+
+/// An eventfd that wakes an [armed](Self::arm) worker for injected frames.
+///
+/// The worker sets the armed flag, fences, then checks the queue.
+/// The sender enqueues, fences, then reads the flag.
+/// The full fences ensure the worker sees the frame or the sender rings the bell.
+#[derive(Clone)]
+pub(crate) struct Doorbell {
+    bell: Arc<EventFd>,
+    wakeup: Arc<Wakeup>,
+}
+
+impl Doorbell {
+    /// The eventfd, for a worker's epoll set. Readable once rung, until [cleared](Self::clear).
+    pub(crate) fn fd(&self) -> BorrowedFd<'_> {
+        self.bell.as_fd()
+    }
+
+    /// Enable wakeups, then check the queue again before sleeping to catch pre-arm frames.
+    pub(crate) fn arm(&self) {
+        self.wakeup.arm();
+    }
+
+    /// The worker is awake: stop ringing. It drains the queue next.
+    pub(crate) fn disarm(&self) {
+        self.wakeup.disarm();
+    }
+
+    /// Drain the eventfd after a wait reports a doorbell notification.
+    /// Edge-triggered registration avoids repeated reports without another write, so timeout
+    /// and queue-interrupt wakes do not need to drain the doorbells.
+    pub(crate) fn clear(&self) {
+        // Nonblocking: a bell that did not ring reads as an error, which is fine.
+        let _ = self.bell.read();
+    }
+
+    fn ring(&self) {
+        if self.wakeup.should_notify() {
+            // Nonblocking: it fails only if the counter is about to overflow, and then the worker
+            // has been woken already.
+            let _ = self.bell.write(1);
+        }
+    }
+}
+
+/// A port's injection queue, holding up to `depth` frames.
+///
+/// # Errors
+///
+/// The kernel's error if it will not create the doorbell.
+pub(crate) fn inject_channel(depth: usize) -> nix::Result<(InjectSender, InjectReceiver)> {
+    let bell = Doorbell {
+        bell: Arc::new(EventFd::from_flags(
+            EfdFlags::EFD_CLOEXEC | EfdFlags::EFD_NONBLOCK,
+        )?),
+        wakeup: Arc::new(Wakeup::default()),
+    };
+    let (tx, rx) = mpsc::channel(depth);
+    Ok((
+        InjectSender {
+            frames: tx,
+            bell: bell.clone(),
+        },
+        InjectReceiver { frames: rx, bell },
+    ))
+}
+
+impl InjectSender {
+    /// Queue `frame` without waiting and ring the doorbell if the worker is armed.
+    ///
+    /// # Errors
+    ///
+    /// Gives the frame back if the queue is full or its receiver is gone.
+    pub(crate) fn try_send(&self, frame: Frame) -> Result<(), mpsc::error::TrySendError<Frame>> {
+        self.frames.try_send(frame)?;
+        self.bell.ring();
+        Ok(())
+    }
+}
+
+/// The channel's own sink, plus the doorbell.
+impl lldp::FrameSink for InjectSender {
+    fn send(&mut self, frame: Vec<u8>) -> Result<(), lldp::Refused> {
+        lldp::FrameSink::send(&mut self.frames, frame)?;
+        self.bell.ring();
+        Ok(())
+    }
+
+    fn is_drained(&self) -> bool {
+        lldp::FrameSink::is_drained(&self.frames)
+    }
+}
+
+impl InjectReceiver {
+    /// The next frame, if one is queued.
+    ///
+    /// # Errors
+    ///
+    /// If the queue is empty, or every sender is gone.
+    pub(crate) fn try_recv(&mut self) -> Result<Frame, mpsc::error::TryRecvError> {
+        self.frames.try_recv()
+    }
+
+    /// Wait for the next frame; `None` once every sender is gone.
+    pub(crate) async fn recv(&mut self) -> Option<Frame> {
+        self.frames.recv().await
+    }
+
+    /// The doorbell its frames ring, for the worker that transmits them.
+    pub(crate) fn doorbell(&self) -> Doorbell {
+        self.bell.clone()
+    }
+}
 
 /// How many frames one direction of one port's bridge will hold before it starts dropping.
 ///
@@ -104,7 +240,7 @@ pub(crate) struct PortCpQueues {
     /// Only one worker may drain a given queue, and that is not merely an ownership convenience:
     /// draining from two workers would interleave a peering session's frames across two transmit
     /// queues and reorder them. `None` on every worker but the drainer.
-    pub(crate) inject: Option<mpsc::Receiver<Frame>>,
+    pub(crate) inject: Option<InjectReceiver>,
 }
 
 /// Everything the datapath thread needs from the bridge.
@@ -177,6 +313,10 @@ pub(crate) enum BridgeError {
         #[source]
         source: std::io::Error,
     },
+    /// The kernel would not create the eventfd that wakes a sleeping worker for the kernel's
+    /// frames.
+    #[error("could not create an injection doorbell: {0}")]
+    Doorbell(#[source] nix::Error),
 }
 
 /// The control plane's end of the bridge: the taps, and the tasks which pump them.
@@ -197,7 +337,7 @@ pub(crate) struct BridgePort {
     /// The configured interface name.
     pub(crate) name: InterfaceName,
     /// Frames to transmit out of the port, sharing the tap's injection queue.
-    pub(crate) inject: mpsc::Sender<Frame>,
+    pub(crate) inject: InjectSender,
     /// The port's link state, as the driver last saw it.
     pub(crate) link: watch::Receiver<Link>,
     /// What the port turned out to be, once the driver has reported it.
@@ -255,7 +395,8 @@ impl CpBridge {
 
             let (punt_tx, punt_rx) = mpsc::channel(QUEUE_DEPTH);
             let (control_tx, control_rx) = mpsc::channel(QUEUE_DEPTH);
-            let (inject_tx, inject_rx) = mpsc::channel(QUEUE_DEPTH);
+            let (inject_tx, inject_rx) =
+                inject_channel(QUEUE_DEPTH).map_err(BridgeError::Doorbell)?;
             // Down until the driver says otherwise: nothing should be sent on a port nobody has
             // seen come up.
             let (link_tx, link_rx) = watch::channel(Link::Down);
@@ -391,7 +532,7 @@ struct PumpDrops {
 async fn pump(
     tap: Arc<TapDevice>,
     mut punted: Punted,
-    inject: mpsc::Sender<Frame>,
+    inject: InjectSender,
     heard: mpsc::Sender<HeardFrame>,
     cancel: CancellationToken,
     mgmt: Subsystem,
@@ -975,12 +1116,12 @@ mod test {
         use net::headers::Headers;
         use net::lldp::{ChassisId, IdOctets, Lldpdu, OptionalTlv, PortId, Text};
         use net::parse::Parse;
-        use tokio::sync::{mpsc, watch};
+        use tokio::sync::watch;
 
         const PORT_NAME: &str = "dp0";
 
         /// The next LLDP frame on `inject`, skipping whatever the kernel sends through the tap.
-        async fn next_lldpdu(inject: &mut mpsc::Receiver<Vec<u8>>) -> Lldpdu {
+        async fn next_lldpdu(inject: &mut crate::drivers::cpbridge::InjectReceiver) -> Lldpdu {
             let next = async {
                 loop {
                     let frame = inject.recv().await.expect("the injection queue closed");
@@ -1174,5 +1315,36 @@ mod test {
                 .unwrap();
             drop(bridge);
         });
+    }
+}
+
+#[cfg(test)]
+mod inject_test {
+    // The injection queue as LLDP's sink, without a kernel.
+
+    use super::inject_channel;
+    use lldp::{FrameSink, Refused};
+
+    #[test]
+    fn an_lldp_frame_is_queued_and_rings_an_armed_doorbell() {
+        let (mut sender, mut receiver) = inject_channel(1).unwrap();
+        let bell = receiver.doorbell();
+        assert!(sender.is_drained());
+        bell.arm();
+        FrameSink::send(&mut sender, vec![1]).unwrap();
+        assert!(!sender.is_drained());
+        assert!(
+            nix::unistd::read(bell.fd(), &mut [0; 8]).is_ok(),
+            "an armed doorbell did not ring"
+        );
+        assert_eq!(FrameSink::send(&mut sender, vec![2]), Err(Refused::Full));
+        assert!(
+            nix::unistd::read(bell.fd(), &mut [0; 8]).is_err(),
+            "a refused frame rang the doorbell"
+        );
+        assert_eq!(receiver.try_recv().unwrap(), vec![1]);
+        assert!(sender.is_drained());
+        drop(receiver);
+        assert_eq!(FrameSink::send(&mut sender, vec![3]), Err(Refused::Closed));
     }
 }

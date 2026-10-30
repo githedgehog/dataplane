@@ -1584,7 +1584,8 @@ fn dpdk_rx_interrupt_max_vectors_igb_qemu() {
     run_rx_interrupt_test("QEMU / igb / all ten MSI-X vectors", &IGB_QEMU, 9);
 }
 
-/// Exceeding QEMU igb's ten MSI-X vectors must fail at start.
+/// Exceeding QEMU igb's ten MSI-X vectors must fail at start, and again when the start is retried
+/// as configured, as the dataplane does before it gives up on interrupts.
 /// Reconfiguring the same queues without interrupts must restore forwarding and allow teardown.
 #[n_vm::test(config = IGB_QEMU)]
 fn dpdk_rx_interrupt_capacity_igb_qemu() {
@@ -1621,6 +1622,10 @@ fn dpdk_rx_interrupt_capacity_igb_qemu() {
         .start()
         .expect_err("16 receive queues need more MSI-X vectors than this NIC exposes");
     eprintln!("[intr] start refused the interrupt configuration: {error}");
+    let dpdk::dev::DevStartFailure { dev, error } = dev
+        .start()
+        .expect_err("a second start as configured should fail the same way");
+    eprintln!("[intr] and refused it again: {error}");
 
     let without = DevConfig {
         rx_interrupts: false,
