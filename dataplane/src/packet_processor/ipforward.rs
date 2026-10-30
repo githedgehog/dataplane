@@ -7,7 +7,7 @@
 
 use net::eth::mac::DestinationMac;
 use net::headers::{Headers, Net};
-use net::headers::{TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
+use net::headers::{TryIpv4Mut, TryIpv6Mut};
 use net::interface::InterfaceIndex;
 use net::ip::NextHeader;
 use net::ip::UnicastIpAddr;
@@ -18,7 +18,7 @@ use net::packet::{VpcDiscriminant, VxLanPeekedData};
 use net::udp::UdpEncap;
 use net::vxlan::Vni;
 use net::vxlan::{Vxlan, VxlanEncap};
-use net::{buffer::PacketBufferMut, checksum::Checksum};
+use net::buffer::PacketBufferMut;
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
 use std::rc::Rc;
@@ -333,14 +333,8 @@ impl IpForwarder {
             return;
         }
 
-        // Refresh requested checksums, or just the IPv4 checksum after decrementing TTL.
-        // IPv6 has no header checksum.
-        if packet.meta().checksum_refresh() {
-            packet.update_checksums();
-        } else if let Some(ipv4) = packet.headers_mut().try_ipv4_mut() {
-            ipv4.update_checksum(&())
-                .unwrap_or_else(|()| unreachable!()); // IPv4 checksum update never fails
-        }
+        // No checksum work here: encapsulation writes the inner headers back over their log, which
+        // adjusts every checksum for exactly what changed.
 
         // build vxlan headers for encapsulation
         match Self::build_vxlan_headers(vxlan, vtep) {

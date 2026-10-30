@@ -39,6 +39,8 @@ mod accessor_macros;
 pub mod stack;
 pub use stack::Stack;
 
+mod delta;
+pub(crate) use delta::{Layout, adjust_checksums};
 mod embedded;
 pub use embedded::*;
 
