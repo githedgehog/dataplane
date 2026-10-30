@@ -8,7 +8,6 @@ use crate::checksum::{Checksum, ChecksumError};
 use crate::headers::{AbstractEmbeddedHeaders, Net};
 use crate::icmp4::Icmp4Checksum;
 use crate::icmp6::{Icmp6Checksum, Icmp6ChecksumPayload};
-use crate::parse::DeParse;
 use core::fmt::{Display, Formatter};
 use std::fmt::Debug;
 
@@ -230,32 +229,17 @@ pub(crate) fn get_payload_for_checksum(
     let Some(embedded_headers) = embedded_headers else {
         return payload.to_vec();
     };
-    let Some(embedded_ip_header) = embedded_headers.try_inner_ip() else {
+    if embedded_headers.try_inner_ip().is_none() {
         return payload.to_vec();
-    };
-    let embedded_transport_header = embedded_headers.try_embedded_transport();
-
-    let inner_ip_header_length = embedded_ip_header.size().get() as usize;
-    let inner_transport_header_length =
-        embedded_transport_header.map_or(0, |header| header.size().get() as usize);
-
-    let mut offset = 0;
-    let mut icmp_payload =
-        vec![0; payload.len() + inner_ip_header_length + inner_transport_header_length];
-    // Write inner IP header
-    offset += embedded_ip_header
-        .deparse(&mut icmp_payload[offset..])
-        .unwrap_or_else(|_| unreachable!())
-        .get() as usize;
-    // Write inner transport header
-    if let Some(transport) = embedded_transport_header {
-        offset += transport
-            .deparse(&mut icmp_payload[offset..])
-            .unwrap_or_else(|_| unreachable!())
-            .get() as usize;
     }
-    // Write payload (including ICMP padding/extensions, if any)
-    icmp_payload[offset..].copy_from_slice(payload);
+    // The quoted headers, extension headers included, then the rest of the quote (including ICMP
+    // padding/extensions, if any)
+    let headers_length = embedded_headers.size().get() as usize;
+    let mut icmp_payload = vec![0; headers_length + payload.len()];
+    embedded_headers
+        .deparse(&mut icmp_payload)
+        .unwrap_or_else(|_| unreachable!());
+    icmp_payload[headers_length..].copy_from_slice(payload);
 
     icmp_payload
 }
@@ -302,5 +286,77 @@ impl From<ChecksumError<IcmpAny<'_>>> for ChecksumError<IcmpAnyChecksumErrorPlac
             }
             ChecksumError::NotPresent => ChecksumError::NotPresent,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::headers::Headers;
+    use crate::parse::{DeParse, Parse};
+
+    const ETH: usize = 14;
+    const IPV6: usize = 40;
+
+    /// An IPv6 header from `fe80::1` to `fe80::2`, `next` header next, `rest` octets of payload.
+    fn ipv6(next: u8, rest: usize) -> Vec<u8> {
+        let mut out = vec![0x60, 0, 0, 0];
+        out.extend_from_slice(&u16::try_from(rest).unwrap().to_be_bytes());
+        out.extend_from_slice(&[next, 64]);
+        out.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        out.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        out
+    }
+
+    /// One's-complement sum of `bytes` as 16-bit words, with both zeros read as `0xffff`.
+    fn ones_complement_sum(bytes: &[u8]) -> u16 {
+        let mut sum: u32 = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|word| u32::from(u16::from_be_bytes(*word)))
+            .sum();
+        while sum > 0xffff {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        match u16::try_from(sum).unwrap() {
+            0 => 0xffff,
+            sum => sum,
+        }
+    }
+
+    /// The quoted datagram's extension headers sit between its IP and transport headers, and are as
+    /// much a part of the ICMP message as either.
+    #[test]
+    fn a_refreshed_checksum_covers_quoted_extension_headers() {
+        // UDP from port 12345 to 12346, then four octets of payload, after a destination options
+        // header holding a 4-octet PadN option.
+        let mut quoted = ipv6(60, 8 + 12);
+        quoted.extend_from_slice(&[17, 0, 1, 4, 0, 0, 0, 0]);
+        quoted.extend_from_slice(&[0x30, 0x39, 0x30, 0x3a, 0, 12, 0, 0, 1, 2, 3, 4]);
+        let mut frame = vec![2, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 2, 0x86, 0xdd];
+        frame.append(&mut ipv6(58, 8 + quoted.len()));
+        frame.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]); // destination unreachable: no route
+        frame.append(&mut quoted);
+
+        let (mut headers, consumed) = Headers::parse(&frame).unwrap();
+        let consumed = usize::from(consumed.get());
+        assert_eq!(
+            headers.embedded_ip().map(|quoted| quoted.net_ext().len()),
+            Some(1)
+        );
+        headers.refresh_transport_checksum(&frame[consumed..]);
+        let mut out = frame.clone();
+        headers.deparse(&mut out[..consumed]).unwrap();
+
+        let message = &out[ETH + IPV6..];
+        let mut covered = out[ETH + 8..ETH + IPV6].to_vec(); // source and destination
+        covered.extend_from_slice(&u32::try_from(message.len()).unwrap().to_be_bytes());
+        covered.extend_from_slice(&[0, 0, 0, 58]);
+        covered.extend_from_slice(message);
+        assert_eq!(
+            ones_complement_sum(&covered),
+            0xffff,
+            "the checksum does not cover the message as written: {out:02x?}"
+        );
     }
 }
