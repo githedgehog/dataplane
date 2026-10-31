@@ -19,6 +19,7 @@ use crate::vpc_stats::VpcStatsStore;
 use crate::{MetricSpec, Register, RegisteredVpcMetrics, Specification, VpcMetricsSpec};
 use metrics::Unit;
 use net::buffer::PacketBufferMut;
+use net::headers::{TryHeaders, TryVxlan};
 use net::packet::DoneReason;
 use rand::Rng;
 use serde::Serialize;
@@ -899,7 +900,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             };
 
             let is_drop = done_reason != DoneReason::Delivered;
-            let bytes: u64 = packet.total_len().into();
+            let bytes = vpc_frame_len(packet);
 
             fn bump(
                 map: &mut SmallMap<{ SMALL_MAP_CAPACITY }, VpcDiscriminant, PacketAndByte<u64>>,
@@ -951,6 +952,20 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             // Leave every packet for the driver to transmit, punt, or drop.
             // Enforcing verdicts here would discard control-plane traffic such as ARP.
         }
+    }
+}
+
+/// The length of the frame a VPC sent: the inner frame of a VXLAN packet, the whole packet
+/// otherwise.
+///
+/// This stage runs last, after delivered packets got their underlay headers, but most drops happen
+/// before encapsulation. Counting the whole packet would put the underlay's 50 octets (70 over
+/// IPv6) on delivered traffic only, so per-VPC bytes and drop bytes would not add up.
+fn vpc_frame_len<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> u64 {
+    if packet.headers().try_vxlan().is_some() {
+        packet.payload_len().into()
+    } else {
+        packet.total_len().into()
     }
 }
 
@@ -1291,6 +1306,75 @@ mod drop_stats_tests {
         assert_eq!(s.dst.get(&b).map(|c| c.bytes), Some(packet_len()));
         assert_eq!(s.drops.packets, 0);
         assert!(s.pair_drops.get(&b).is_none());
+    }
+
+    /// Headers to put a delivered packet in VXLAN, as the router does on its way to a VTEP.
+    fn vxlan_encap_params(v6: bool) -> net::vxlan::VxlanEncap {
+        use net::headers::{Headers, Net};
+        use net::ip::NextHeader;
+        use net::udp::UdpEncap;
+        use net::vxlan::Vxlan;
+
+        let net = if v6 {
+            let mut ip = net::ipv6::Ipv6::default();
+            ip.set_source(
+                net::ipv6::addr::UnicastIpv6Addr::new("fd00::1".parse().expect("address"))
+                    .expect("unicast"),
+            )
+            .set_destination("fd00::2".parse().expect("address"))
+            .set_hop_limit(64)
+            .set_next_header(NextHeader::UDP);
+            Net::Ipv6(ip)
+        } else {
+            let mut ip = net::ipv4::Ipv4::default();
+            ip.set_source(
+                net::ipv4::addr::UnicastIpv4Addr::new("10.0.0.1".parse().expect("address"))
+                    .expect("unicast"),
+            )
+            .set_destination("10.0.0.2".parse().expect("address"))
+            .set_ttl(64);
+            ip.set_next_header(NextHeader::UDP);
+            Net::Ipv4(ip)
+        };
+        let mut headers = Headers::default();
+        headers.set_net(Some(net));
+        headers.set_udp_encap(Some(UdpEncap::Vxlan(Vxlan::new(
+            Vni::new_checked(42).expect("valid vni"),
+        ))));
+        net::vxlan::VxlanEncap::new(headers).expect("vxlan headers")
+    }
+
+    /// A VPC's delivered bytes and its drop bytes count the same frame: what the VPC sent, not the
+    /// underlay headers a delivered packet leaves with.
+    #[test]
+    fn delivered_and_dropped_bytes_count_the_frame_the_vpc_sent() {
+        for v6 in [false, true] {
+            let (a, b) = (vpcd(100), vpcd(200));
+            let mut stats = new_stats();
+            let mut delivered = mk_packet(Some(a), Some(b), Some(DoneReason::Delivered));
+            delivered
+                .vxlan_encap(&vxlan_encap_params(v6))
+                .expect("vxlan encap");
+            assert!(
+                u64::from(delivered.total_len()) > packet_len(),
+                "the delivered packet was not encapsulated; the test exercises nothing"
+            );
+            run(
+                &mut stats,
+                vec![
+                    delivered,
+                    mk_packet(Some(a), Some(b), Some(DoneReason::Filtered)),
+                ],
+            );
+
+            let s = stats.update.vpc.get(&a).expect("src summary present");
+            assert_eq!(
+                s.dst.get(&b).map(|c| c.bytes),
+                Some(packet_len()),
+                "delivered bytes counted the underlay headers (ipv6 underlay: {v6})"
+            );
+            assert_eq!(s.drops.bytes, packet_len());
+        }
     }
 
     #[test]
