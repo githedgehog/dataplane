@@ -72,7 +72,7 @@ impl<'p> Injector<'p> {
         let mbufs = match self.pool.alloc_bulk(frames.len()) {
             Ok(mbufs) => mbufs,
             Err(e) => {
-                counters.tx_drops += frames.len() as u64;
+                counters.inject_drops += frames.len() as u64;
                 warn!(
                     worker = id,
                     "could not allocate {} mbuf(s) to inject on {}: {e}. The control plane's \
@@ -90,7 +90,7 @@ impl<'p> Injector<'p> {
         let mut batch = MbufArray::new_empty();
         for (mut mbuf, frame) in mbufs.into_iter().zip(frames) {
             let Ok(len) = u16::try_from(frame.len()) else {
-                counters.tx_drops += 1;
+                counters.inject_drops += 1;
                 warn!(
                     worker = id,
                     "the kernel offered a {} byte frame on {}, which is not a frame; dropping it",
@@ -102,7 +102,7 @@ impl<'p> Injector<'p> {
             match mbuf.append(len) {
                 Ok(room) => room.copy_from_slice(&frame),
                 Err(e) => {
-                    counters.tx_drops += 1;
+                    counters.inject_drops += 1;
                     warn!(
                         worker = id,
                         "the kernel offered a {len} byte frame on {}, which does not fit an mbuf \
@@ -125,9 +125,9 @@ impl<'p> Injector<'p> {
         }
         let unsent = tx.transmit(batch);
         let refused = unsent.len() as u64;
-        counters.tx += attempted - refused;
+        counters.injected += attempted - refused;
         if refused > 0 {
-            counters.tx_drops += refused;
+            counters.inject_drops += refused;
             trace!(
                 worker = id,
                 "tx queue on {} refused {refused} of {attempted} injected frame(s)", self.name

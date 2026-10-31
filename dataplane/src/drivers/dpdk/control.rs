@@ -230,7 +230,7 @@ fn receive<'p>(
         // Copied, as every punt is: the far end is a task on the management runtime, which an
         // mbuf cannot reach. The mbuf goes back to the control pool when this iteration drops it.
         if punt.try_send(frame.to_vec()).is_err() {
-            counters.tx_drops += 1;
+            counters.punt_drops += 1;
             trace!(
                 worker = id,
                 "punt queue for {name} is full; dropping a control frame for the kernel"
