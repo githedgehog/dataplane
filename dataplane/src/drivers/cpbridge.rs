@@ -25,6 +25,7 @@ use std::time::Duration;
 use nix::sys::eventfd::{EfdFlags, EventFd};
 
 use concurrency::sync::Arc;
+use concurrency::sync::atomic::{AtomicU64, Ordering};
 use interface_manager::interface::{TapDevice, TapRegistry};
 use lifecycle::{CancellationToken, Subsystem};
 use lldp::Link;
@@ -342,6 +343,8 @@ pub(crate) struct BridgePort {
     pub(crate) link: watch::Receiver<Link>,
     /// What the port turned out to be, once the driver has reported it.
     pub(crate) identity: watch::Receiver<Option<PortIdentity>>,
+    /// What the port's tap carried, and failed to.
+    pub(crate) counters: TapCounters,
 }
 
 impl CpBridge {
@@ -403,11 +406,13 @@ impl CpBridge {
             let (identity_tx, identity_rx) = watch::channel(None);
             links.insert(name.clone(), link_tx);
             identities.insert(name.clone(), identity_tx);
+            let counters = TapCounters::default();
             bridge_ports.push(BridgePort {
                 name: name.clone(),
                 inject: inject_tx.clone(),
                 link: link_rx,
                 identity: identity_rx,
+                counters: counters.clone(),
             });
 
             handle.spawn(pump(
@@ -418,6 +423,7 @@ impl CpBridge {
                 },
                 inject_tx,
                 heard_tx.clone(),
+                counters.clone(),
                 cancel.clone(),
                 mgmt.clone(),
             ));
@@ -512,12 +518,59 @@ async fn next(channel: &mut Option<mpsc::Receiver<Frame>>) -> Option<Frame> {
     }
 }
 
-/// What a tap's pump has failed to deliver, logged at powers of two.
-#[derive(Default)]
-struct PumpDrops {
-    punt_write_errors: u64,
-    inject_drops: u64,
-    heard_drops: u64,
+/// What one tap's pump carried and failed to carry, since it started.
+#[derive(Debug, Default)]
+struct TapCountersInner {
+    punted: AtomicU64,
+    injected: AtomicU64,
+    punt_write_errors: AtomicU64,
+    inject_drops: AtomicU64,
+    heard_drops: AtomicU64,
+    read_errors: AtomicU64,
+}
+
+/// A tap's counters, shared by its pump, which counts, and whoever reads them.
+///
+/// The pump runs on the management runtime, a frame at a time, so a shared atomic per event costs
+/// nothing that matters; the failures are also logged, at powers of two.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TapCounters(Arc<TapCountersInner>);
+
+/// What a tap's pump carried and failed to carry, as of one reading.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TapTotals {
+    /// Frames handed to the kernel through the tap.
+    pub(crate) punted: u64,
+    /// Frames the kernel sent through the tap and the pump queued for the port.
+    pub(crate) injected: u64,
+    /// Frames for the kernel that the tap would not take.
+    pub(crate) punt_write_errors: u64,
+    /// Frames from the kernel dropped because the datapath was not draining its queue.
+    pub(crate) inject_drops: u64,
+    /// LLDP frames dropped because the LLDP agent was not keeping up.
+    pub(crate) heard_drops: u64,
+    /// Reads of the tap that failed.
+    pub(crate) read_errors: u64,
+}
+
+impl TapCounters {
+    /// Count one more on `counter`, returning the new total.
+    fn bump(counter: &AtomicU64) -> u64 {
+        counter.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// The totals as they stand.
+    pub(crate) fn load(&self) -> TapTotals {
+        let c = &self.0;
+        TapTotals {
+            punted: c.punted.load(Ordering::Relaxed),
+            injected: c.injected.load(Ordering::Relaxed),
+            punt_write_errors: c.punt_write_errors.load(Ordering::Relaxed),
+            inject_drops: c.inject_drops.load(Ordering::Relaxed),
+            heard_drops: c.heard_drops.load(Ordering::Relaxed),
+            read_errors: c.read_errors.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// Carry frames between one tap and its port, in both directions, until cancelled.
@@ -534,12 +587,12 @@ async fn pump(
     mut punted: Punted,
     inject: InjectSender,
     heard: mpsc::Sender<HeardFrame>,
+    counters: TapCounters,
     cancel: CancellationToken,
     mgmt: Subsystem,
 ) {
     let name = tap.name().clone();
     let mut buf = TapDevice::frame_buffer();
-    let mut drops = PumpDrops::default();
     let mut read_errors: u32 = 0;
 
     loop {
@@ -561,19 +614,21 @@ async fn pump(
                     // `try_send` rather than `send`: a full injection queue means the datapath is
                     // not draining, and blocking here would stop the punt direction as well --
                     // turning a slow datapath into a dead control plane.
-                    if inject.try_send(buf[..len.get()].to_vec()).is_err() {
-                        drops.inject_drops += 1;
-                        if drops.inject_drops.is_power_of_two() {
+                    if inject.try_send(buf[..len.get()].to_vec()).is_ok() {
+                        TapCounters::bump(&counters.0.injected);
+                    } else {
+                        let dropped = TapCounters::bump(&counters.0.inject_drops);
+                        if dropped.is_power_of_two() {
                             warn!(
-                                "dropped {} frame(s) the kernel sent on {name}: the datapath is not \
-                                 draining its injection queue",
-                                drops.inject_drops
+                                "dropped {dropped} frame(s) the kernel sent on {name}: the datapath \
+                                 is not draining its injection queue"
                             );
                         }
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => {
+                    TapCounters::bump(&counters.0.read_errors);
                     read_errors += 1;
                     if read_errors >= READ_ERRORS_BEFORE_FATAL {
                         mgmt.report_fatal(&format!(
@@ -591,13 +646,13 @@ async fn pump(
 
             // The control queue has a frame for the kernel.
             frame = next(&mut punted.control) => match frame {
-                Some(frame) => deliver(&name, &tap, &heard, frame, &mut drops).await,
+                Some(frame) => deliver(&name, &tap, &heard, frame, &counters).await,
                 None => punted.control = None,
             },
 
             // The data path has a frame for the kernel.
             frame = next(&mut punted.data) => match frame {
-                Some(frame) => deliver(&name, &tap, &heard, frame, &mut drops).await,
+                Some(frame) => deliver(&name, &tap, &heard, frame, &counters).await,
                 None => punted.data = None,
             },
         }
@@ -612,7 +667,7 @@ async fn deliver(
     tap: &TapDevice,
     heard: &mpsc::Sender<HeardFrame>,
     frame: Frame,
-    drops: &mut PumpDrops,
+    counters: &TapCounters,
 ) {
     // LLDP is the dataplane's own business; the kernel gets a copy as well, which costs nothing and
     // keeps a capture on the tap honest.
@@ -622,22 +677,24 @@ async fn deliver(
             frame: frame.clone(),
         };
         if heard.try_send(copy).is_err() {
-            drops.heard_drops += 1;
-            if drops.heard_drops.is_power_of_two() {
+            let dropped = TapCounters::bump(&counters.0.heard_drops);
+            if dropped.is_power_of_two() {
                 warn!(
-                    "dropped {} LLDP frame(s) received on {name}: the LLDP agent is not keeping up",
-                    drops.heard_drops
+                    "dropped {dropped} LLDP frame(s) received on {name}: the LLDP agent is not \
+                     keeping up"
                 );
             }
         }
     }
-    if let Err(e) = tap.write(&frame).await {
-        drops.punt_write_errors += 1;
-        if drops.punt_write_errors.is_power_of_two() {
-            warn!(
-                "could not hand a frame to the kernel on {name} ({} so far): {e}",
-                drops.punt_write_errors
-            );
+    match tap.write(&frame).await {
+        Ok(()) => {
+            TapCounters::bump(&counters.0.punted);
+        }
+        Err(e) => {
+            let failed = TapCounters::bump(&counters.0.punt_write_errors);
+            if failed.is_power_of_two() {
+                warn!("could not hand a frame to the kernel on {name} ({failed} so far): {e}");
+            }
         }
     }
 }

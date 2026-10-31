@@ -17,9 +17,11 @@ use nat::masquerade::NatAllocatorReader;
 use net::packet::{PacketStats, VpcDiscriminant};
 use stats::{
     FlowTableMetrics, MasqueradeMetrics, MasqueradeRegion, PipelineMetrics, RxTaskHealth,
-    WorkerCounters, WorkerLoadCounters, WorkerLoadMetrics, WorkerMetrics, WorkerStateMetrics,
+    TapMetrics, WorkerCounters, WorkerLoadCounters, WorkerLoadMetrics, WorkerMetrics,
+    WorkerStateMetrics,
 };
 
+use crate::drivers::cpbridge::TapCounters;
 use crate::drivers::load::Spent;
 use crate::drivers::status::{DriverStatusReader, RxQueue, WorkerLoadStatus, WorkerState};
 use crate::drivers::watchdog::Activity;
@@ -35,6 +37,8 @@ pub(crate) struct TelemetrySources {
     pub(crate) driver: DriverStatusReader,
     /// Masquerade's allocator, as the current configuration has it.
     pub(crate) masquerade: NatAllocatorReader,
+    /// Each port's tap, by the port's configured name.
+    pub(crate) taps: Vec<(String, TapCounters)>,
 }
 
 /// Publishes [`TelemetrySources`] to the installed metrics recorder.
@@ -43,6 +47,8 @@ pub(crate) struct Telemetry {
     pipeline: PipelineMetrics,
     flows: FlowTableMetrics,
     masquerade: MasqueradeMetrics,
+    /// One per tap, in the order of [`TelemetrySources::taps`].
+    taps: Vec<TapMetrics>,
     /// Registered as each worker's port queue first appears in the driver's status.
     workers: HashMap<(usize, Arc<str>, RxQueue), WorkerMetrics>,
     /// Registered as each worker first appears in the driver's status.
@@ -54,7 +60,13 @@ pub(crate) struct Telemetry {
 impl Telemetry {
     /// Register the metrics with the installed recorder; install it first.
     pub(crate) fn new(sources: TelemetrySources) -> Telemetry {
+        let taps = sources
+            .taps
+            .iter()
+            .map(|(port, _)| TapMetrics::new(port))
+            .collect();
         Telemetry {
+            taps,
             sources,
             pipeline: PipelineMetrics::new(),
             flows: FlowTableMetrics::new(),
@@ -72,6 +84,17 @@ impl Telemetry {
         self.flows
             .publish(self.sources.flows.live_len(), self.sources.flows.capacity());
         self.publish_masquerade();
+        for ((_, counters), metrics) in self.sources.taps.iter().zip(&self.taps) {
+            let totals = counters.load();
+            metrics.publish(&stats::TapCounters {
+                punted: totals.punted,
+                injected: totals.injected,
+                punt_write_errors: totals.punt_write_errors,
+                inject_drops: totals.inject_drops,
+                lldp_drops: totals.heard_drops,
+                read_errors: totals.read_errors,
+            });
+        }
         let status = self.sources.driver.load();
         for worker in &status.workers {
             self.states
@@ -242,6 +265,7 @@ mod tests {
                 flows: Arc::new(FlowTable::default()),
                 driver,
                 masquerade: nat::masquerade::NatAllocatorWriter::new().get_reader(),
+                taps: vec![("eth0".to_string(), TapCounters::default())],
             });
             telemetry.publish();
             // Counts advance; publishing again carries them, rather than adding them up.
@@ -265,6 +289,7 @@ mod tests {
         assert_eq!(get(r#"pipeline_packets{reason="Delivered"}"#), Some(6.0));
         assert_eq!(get(r#"pipeline_packets{reason="Unroutable"}"#), Some(0.0));
         assert_eq!(get("flow_table_entries"), Some(0.0));
+        assert_eq!(get(r#"port_tap_punted{port="eth0"}"#), Some(0.0));
         let data = |name: &str| get(&format!(r#"{name}{{port="eth0",queue="data",worker="1"}}"#));
         let control = |name: &str| {
             get(&format!(

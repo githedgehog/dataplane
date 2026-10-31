@@ -506,6 +506,7 @@ mod tests {
             inject,
             link,
             identity,
+            counters: crate::drivers::cpbridge::TapCounters::default(),
         };
         let cancel = CancellationToken::new();
         let (publish, read) = watch::channel(PhySnapshot::default());
