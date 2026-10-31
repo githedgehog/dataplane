@@ -100,12 +100,9 @@ impl DriverDpdk {
 
         // Taken before the queues are dealt, which consumes the bridge's ends.
         let mut bridge = bridge;
-        let links: Vec<(&Port<'_>, watch::Sender<Link>)> = ports
+        let links: Vec<Option<watch::Sender<Link>>> = ports
             .iter()
-            .filter_map(|port| {
-                let link = bridge.as_deref_mut()?.take_link(&port.name)?;
-                Some((port, link))
-            })
+            .map(|port| bridge.as_deref_mut()?.take_link(&port.name))
             .collect();
         let dealt = port::deal_queues(ports, num_workers.get(), bridge)?;
 
@@ -172,8 +169,11 @@ impl DriverDpdk {
             .map(|port| (port, PortMetrics::new(port.name.as_ref())))
             .collect();
         let mut counters_unavailable = vec![false; port_metrics.len()];
-        let mut port_states: Vec<PortTelemetry<'_, '_>> =
-            ports.iter().map(PortTelemetry::new).collect();
+        let mut port_states: Vec<PortTelemetry<'_, '_>> = ports
+            .iter()
+            .zip(links)
+            .map(|(port, link)| PortTelemetry::new(port, link))
+            .collect();
         spawn_supervisor(
             scope,
             "dpdk",
@@ -183,9 +183,7 @@ impl DriverDpdk {
             status_writer,
             move || {
                 let counters = publish_port_counters(&port_metrics, &mut counters_unavailable);
-                let reports = publish_port_states(&mut port_states, counters);
-                publish_links(&links);
-                reports
+                publish_port_states(&mut port_states, counters)
             },
         )?;
         info!("DPDK driver started successfully");
@@ -241,38 +239,11 @@ where
     Ok(WorkerMonitor::new(id, handle, rx_tasks).with_load(load_reader))
 }
 
-/// Publish each port's link state where the control plane can see it.
-///
-/// Polled, because nothing in the driver asks DPDK for link-state interrupts. A second's latency is
-/// well inside what anything watching the link (LLDP's fast start, for one) cares about.
-fn publish_links(links: &[(&Port<'_>, watch::Sender<Link>)]) {
-    for (port, link) in links {
-        let now = match port.dev.link() {
-            Ok(status) if status.up => Link::Up,
-            Ok(_) => Link::Down,
-            // A link that cannot be read is treated as down: nothing should be sent on a port whose
-            // state is unknown. The change is logged below, once.
-            Err(e) => {
-                if *link.borrow() == Link::Up {
-                    warn!("port {} would not report its link state: {e:?}", port.name);
-                }
-                Link::Down
-            }
-        };
-        link.send_if_modified(|was| {
-            if *was == now {
-                return false;
-            }
-            info!("port {} link is now {now:?}", port.name);
-            *was = now;
-            true
-        });
-    }
-}
-
 /// What the driver publishes about a port beyond its counters, and what it keeps to do so.
 struct PortTelemetry<'p, 'eal> {
     port: &'p Port<'eal>,
+    /// Where the port's link is published for the control plane, if it has a tap.
+    tap_link: Option<watch::Sender<Link>>,
     state: PortStateMetrics,
     /// Whether the link was up at the last reading; `None` before the first.
     up: Option<bool>,
@@ -289,7 +260,7 @@ struct PortTelemetry<'p, 'eal> {
 
 impl<'p, 'eal> PortTelemetry<'p, 'eal> {
     /// Register a port's state and the extended statistics worth publishing, as its PMD names them.
-    fn new(port: &'p Port<'eal>) -> Self {
+    fn new(port: &'p Port<'eal>, tap_link: Option<watch::Sender<Link>>) -> Self {
         let wanted = match port.dev.xstat_names() {
             Ok(names) => xstats::wanted(names),
             Err(e) => {
@@ -314,6 +285,7 @@ impl<'p, 'eal> PortTelemetry<'p, 'eal> {
         let xstats = XstatMetrics::new(port.name.as_ref(), &names);
         PortTelemetry {
             port,
+            tap_link,
             state: PortStateMetrics::new(port.name.as_ref()),
             up: None,
             changes: 0,
@@ -326,11 +298,14 @@ impl<'p, 'eal> PortTelemetry<'p, 'eal> {
     }
 }
 
-/// Publish each port's link and the occupancy of its pools.
+/// Publish each port's link and the occupancy of its pools, and the link of a port with a tap
+/// where the control plane can see it.
 ///
-/// The link is read here as well as in [`publish_links`], which only covers ports with a tap; a
-/// read is a register access, once a second. A link that cannot be read counts as down, as it does
-/// there. Changes are counted between readings, so a flap shorter than the polling period is missed.
+/// Polled, because nothing in the driver asks DPDK for link-state interrupts. A second's latency is
+/// well inside what anything watching the link (LLDP's fast start, for one) cares about. A link
+/// that cannot be read is treated as down: nothing should be sent on a port whose state is
+/// unknown. Changes are counted between readings, so a flap shorter than the polling period is
+/// missed.
 ///
 /// Returns a report on each port, with the `counters` read from it, for the driver's status.
 fn publish_port_states(
@@ -340,12 +315,31 @@ fn publish_port_states(
     let mut reports = Vec::with_capacity(ports.len());
     for (telemetry, counters) in ports.iter_mut().zip(counters) {
         let port = telemetry.port;
-        let link = port.dev.link().ok();
+        let link = match port.dev.link() {
+            Ok(link) => Some(link),
+            Err(e) => {
+                if telemetry.up == Some(true) {
+                    warn!("port {} would not report its link state: {e:?}", port.name);
+                }
+                None
+            }
+        };
         let up = link.is_some_and(|link| link.up);
         if telemetry.up.is_some_and(|was| was != up) {
             telemetry.changes += 1;
         }
         telemetry.up = Some(up);
+        if let Some(tap_link) = &telemetry.tap_link {
+            let now = if up { Link::Up } else { Link::Down };
+            tap_link.send_if_modified(|was| {
+                if *was == now {
+                    return false;
+                }
+                info!("port {} link is now {now:?}", port.name);
+                *was = now;
+                true
+            });
+        }
         let pool = |pool: &dpdk::mem::Pool<'_>| (pool.in_use(), pool.capacity());
         let state = PortState {
             link_up: up,
