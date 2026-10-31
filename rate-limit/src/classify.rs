@@ -10,9 +10,10 @@ use lpm::prefix::Prefix;
 use lpm::prefix::with_ports::{KeyPort, PORT_RANGE_WILDCARD};
 use match_action::{Erased, ExactSpec, MatchKey, PrefixSpec};
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, Transport, TryHeaders, UpperLayerProto};
+use net::headers::{Net, Transport, TryHeaders, TryIp, UpperLayerProto};
 use net::ip::{IpAddress, NextHeader};
 use net::packet::{Packet, VpcDiscriminant};
+use net::parse::DeParse;
 use net::tcp::TcpFlags;
 use net::vxlan::Vni;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -188,4 +189,28 @@ pub(crate) fn ip_bytes(net: &Net) -> u32 {
         Net::Ipv4(ip) => u32::from(ip.total_len()),
         Net::Ipv6(ip) => u32::from(net::ipv6::Ipv6::MIN_LEN.get()) + u32::from(ip.payload_length()),
     }
+}
+
+/// The shortest Ethernet frame, without its FCS. A shorter one leaves padded to this length.
+const MIN_FRAME: u32 = 60;
+
+/// The bytes a packet is charged: the length its IP header states or, if more, what the frame
+/// carries from the IP header on. Whatever trails the datagram in the frame is forwarded with it,
+/// so a short datagram in a long frame must not be charged as a short packet. Padding up to the
+/// shortest Ethernet frame is not charged: the frame would leave that long anyway. `None` for
+/// packets that are not IP.
+pub(crate) fn billed_bytes<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<u32> {
+    let headers = packet.headers();
+    let stated = ip_bytes(headers.try_ip()?);
+    let frame = u32::from(packet.total_len());
+    if frame <= MIN_FRAME {
+        return Some(stated);
+    }
+    let l2 = headers.eth().map_or(0, |eth| u32::from(eth.size().get()))
+        + headers
+            .vlan()
+            .iter()
+            .map(|vlan| u32::from(vlan.size().get()))
+            .sum::<u32>();
+    Some(stated.max(frame.saturating_sub(l2)))
 }

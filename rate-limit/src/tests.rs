@@ -15,7 +15,7 @@ use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
 use net::checksum::Checksum;
 use net::headers::builder::HeaderStack;
-use net::headers::{Net, TryIp, TryIpv4};
+use net::headers::{Headers, Net, TryIp, TryIpMut, TryIpv4};
 use net::ip::dscp::Dscp;
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
@@ -62,12 +62,26 @@ fn packet(dst: &str, port: u16) -> Packet<TestBuffer> {
             .build_headers(),
     }
     .unwrap();
-    let mut buffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
-    let mut p = Packet::new(buffer).unwrap();
+    let mut p = Packet::new(frame(&headers, &[])).unwrap();
     p.meta_mut().set_overlay(true);
     p.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(VNI1 + u32::from(dst.is_ipv6()))));
     p.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(VNI2 + u32::from(dst.is_ipv6()))));
+    p
+}
+
+/// A frame holding `headers` and then `trailer`, and nothing else.
+fn frame(headers: &Headers, trailer: &[u8]) -> TestBuffer {
+    let mut bytes = vec![0; usize::from(headers.size().get())];
+    headers.deparse(&mut bytes).unwrap();
+    bytes.extend_from_slice(trailer);
+    TestBuffer::from_raw_data(&bytes)
+}
+/// [`packet`], with `trailer` after the datagram in its frame.
+fn trailed(dst: &str, trailer: &[u8]) -> Packet<TestBuffer> {
+    let mut bytes = packet(dst, 80).serialize().unwrap().as_ref().to_vec();
+    bytes.extend_from_slice(trailer);
+    let mut p = Packet::new(TestBuffer::from_raw_data(&bytes)).unwrap();
+    *p.meta_mut() = packet(dst, 80).meta().clone();
     p
 }
 
@@ -100,9 +114,7 @@ fn tcp_packet(dst: Ipv4Addr, flags: TcpFlags) -> Packet<TestBuffer> {
         })
         .build_headers()
         .unwrap();
-    let mut buffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
-    let mut p = Packet::new(buffer).unwrap();
+    let mut p = Packet::new(frame(&headers, &[])).unwrap();
     p.meta_mut().set_overlay(true);
     p.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(VNI1)));
     p.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(VNI2)));
@@ -581,4 +593,67 @@ fn prometheus_counters_survive_profile_changes_and_meter_recreation() {
         .find(|l| l.starts_with("rate_limit_packets_total{") && l.contains("result=\"conforming\""))
         .unwrap();
     assert!(line.ends_with(" 3"), "{line}");
+}
+
+#[test]
+fn a_datagram_is_charged_its_ip_length() {
+    // 20 octets of IPv4 and 8 of UDP, in a frame short enough to leave padded.
+    assert_eq!(
+        crate::classify::billed_bytes(&packet("10.1.1.1", 80)),
+        Some(28)
+    );
+    assert_eq!(
+        crate::classify::billed_bytes(&packet("fd01::1", 80)),
+        Some(48)
+    );
+}
+
+#[test]
+fn padding_up_to_the_shortest_frame_is_not_charged() {
+    // 14 + 28 + 18 = 60 octets, the shortest Ethernet frame.
+    let padded = trailed("10.1.1.1", &[0; 18]);
+    assert_eq!(padded.total_len(), 60);
+    assert_eq!(crate::classify::billed_bytes(&padded), Some(28));
+}
+
+#[test]
+fn a_trailer_past_the_shortest_frame_is_charged() {
+    let long = trailed("10.1.1.1", &[0xa5; 1400]);
+    assert_eq!(crate::classify::billed_bytes(&long), Some(1428));
+    let barely = trailed("10.1.1.1", &[0; 19]);
+    assert_eq!(crate::classify::billed_bytes(&barely), Some(47));
+}
+
+#[test]
+fn a_datagram_longer_than_its_frame_is_charged_its_ip_length() {
+    let mut p = packet("10.1.1.1", 80);
+    let Some(Net::Ipv4(ip)) = p.try_ip_mut() else {
+        unreachable!()
+    };
+    ip.set_payload_len(1000).unwrap();
+    assert_eq!(crate::classify::billed_bytes(&p), Some(1020));
+}
+
+/// A short datagram in a long frame must not slip under a byte limit set for what it forwards.
+#[test]
+fn a_long_trailer_spends_the_byte_budget() {
+    let config = configuration(
+        vec![(
+            "bytes",
+            Meter {
+                bytes: Some(component(1500, 0)),
+                packets: None,
+            },
+        )],
+        vec![rule("10.1.0.0/16", "bytes")],
+    );
+    let w = writer(&config, 1);
+    let out = burst(
+        &mut RateLimiter::new(w.reader()),
+        (0..2).map(|_| trailed("10.1.1.1", &[0xa5; 1400])).collect(),
+    );
+    assert_eq!(
+        out.iter().map(Packet::get_done).collect::<Vec<_>>(),
+        [None, Some(DoneReason::RateLimited)]
+    );
 }
