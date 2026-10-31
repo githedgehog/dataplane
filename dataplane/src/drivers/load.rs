@@ -227,7 +227,6 @@ impl LoadMeter {
         let now = clock::now();
         let took = now.saturating_duration_since(self.lap);
         self.lap = now;
-        // A pass longer than 584 years is not one to account for exactly.
         let took = u64::try_from(took.as_nanos()).unwrap_or(u64::MAX);
         self.time[spent as usize] = self.time[spent as usize].saturating_add(took);
         match spent {
