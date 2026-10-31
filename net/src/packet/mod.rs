@@ -1631,6 +1631,7 @@ mod padding_tests {
                 let surplus = &surplus[..surplus.len().min(64)];
                 // The IP datagram goes on past the UDP datagram its UDP length states.
                 let mut l4 = udp(payload);
+                l4[6..8].copy_from_slice(&[0x12, 0x34]); // a checksum to refresh, not a disabled one
                 l4.extend_from_slice(surplus);
                 let bytes = frame(17, &l4);
                 let mut packet = parse(&bytes);
@@ -1783,6 +1784,24 @@ mod serialize_checksum_tests {
                     out[at..at + 2],
                     bytes[at..at + 2],
                     "serialize rewrote a transport checksum no stage asked it to"
+                );
+                assert_ipv4_error_carried(&bytes, &out);
+            });
+    }
+
+    #[test]
+    fn a_requested_refresh_leaves_a_disabled_udp_checksum_disabled() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, Option<u16>)>()
+            .for_each(|(payload, ipv4_checksum)| {
+                let payload = &payload[..payload.len().min(256)];
+                let bytes = input(payload, true, *ipv4_checksum, 0);
+
+                let out = forward(&bytes, true);
+                assert_eq!(
+                    out[UDP_CHECKSUM..UDP_CHECKSUM + 2],
+                    [0, 0],
+                    "a refresh computed a udp checksum its sender chose not to"
                 );
                 assert_ipv4_error_carried(&bytes, &out);
             });
