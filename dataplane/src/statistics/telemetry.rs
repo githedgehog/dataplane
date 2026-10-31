@@ -13,9 +13,13 @@ use std::collections::HashMap;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::FlowTable;
 use net::packet::PacketStats;
-use stats::{FlowTableMetrics, PipelineMetrics, WorkerCounters, WorkerMetrics};
+use stats::{
+    FlowTableMetrics, PipelineMetrics, RxTaskHealth, WorkerCounters, WorkerMetrics,
+    WorkerStateMetrics,
+};
 
-use crate::drivers::status::{DriverStatusReader, RxQueue};
+use crate::drivers::status::{DriverStatusReader, RxQueue, WorkerState};
+use crate::drivers::watchdog::Activity;
 use crate::drivers::watchdog::RxCounters;
 
 /// Where the published counts come from.
@@ -35,6 +39,8 @@ pub(crate) struct Telemetry {
     flows: FlowTableMetrics,
     /// Registered as each worker's port queue first appears in the driver's status.
     workers: HashMap<(usize, Arc<str>, RxQueue), WorkerMetrics>,
+    /// Registered as each worker first appears in the driver's status.
+    states: HashMap<usize, WorkerStateMetrics>,
 }
 
 impl Telemetry {
@@ -45,6 +51,7 @@ impl Telemetry {
             pipeline: PipelineMetrics::new(),
             flows: FlowTableMetrics::new(),
             workers: HashMap::new(),
+            states: HashMap::new(),
         }
     }
 
@@ -55,13 +62,22 @@ impl Telemetry {
         self.flows.publish(self.sources.flows.live_len());
         let status = self.sources.driver.load();
         for worker in &status.workers {
+            self.states
+                .entry(worker.worker)
+                .or_insert_with(|| WorkerStateMetrics::new(worker.worker))
+                .publish(matches!(worker.state, WorkerState::Running));
             for task in &worker.rx_tasks {
-                self.workers
+                let metrics = self
+                    .workers
                     .entry((worker.worker, task.port.clone(), task.queue))
                     .or_insert_with(|| {
                         WorkerMetrics::new(worker.worker, &task.port, task.queue.name())
-                    })
-                    .publish(&counters(&task.totals.load()));
+                    });
+                metrics.publish(&counters(&task.totals.load()));
+                metrics.publish_health(&RxTaskHealth {
+                    stuck: task.activity == Activity::Stuck,
+                    watchdog_misses: task.misses,
+                });
             }
         }
     }
@@ -125,6 +141,8 @@ mod tests {
             RxTaskStatus::new("eth0".into(), RxQueue::Data, data.reader()),
             RxTaskStatus::new("eth0".into(), RxQueue::Control, control.reader()),
         ];
+        worker.rx_tasks[1].activity = Activity::Stuck;
+        worker.rx_tasks[1].misses = 2;
         writer.publish(DriverStatus {
             max_rx_batch: 32,
             workers: vec![worker],
@@ -171,5 +189,10 @@ mod tests {
         assert_eq!(data("worker_pipeline_drops"), Some(1.0));
         assert_eq!(control("worker_rx_packets"), Some(4.0));
         assert_eq!(control("worker_injected_packets"), Some(6.0));
+
+        assert_eq!(get(r#"worker_running{worker="1"}"#), Some(1.0));
+        assert_eq!(data("worker_stuck"), Some(0.0));
+        assert_eq!(control("worker_stuck"), Some(1.0));
+        assert_eq!(control("worker_watchdog_misses"), Some(2.0));
     }
 }
