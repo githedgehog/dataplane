@@ -24,7 +24,8 @@
   pcre2,
   readline,
   rtrlib,
-  libatomic,
+  # null where FRR does not link libatomic at all (see `drop-libatomic` in nix/overlays/frr.nix)
+  libatomic ? null,
 
   # other general options besides snmp support
   numMultipath ? 8,
@@ -127,13 +128,14 @@ stdenv.mkDerivation (finalAttrs: {
     python3Minimal
     readline
   ]
-  # libatomic.so.1 is a DT_NEEDED of libfrr.so and of every daemon.  On glibc
-  # it comes from `fancy.libatomic`, a re-export of the single file FRR needs
-  # out of libgccjit (see the note on that attribute in nix/overlays/frr.nix).
-  # On musl FRR pulls libatomic from the cross-musl gcc-libs output via
-  # `stdenv.cc.cc.lib` in the overlay instead, so naming it here would only
-  # bloat the build closure without contributing any symbol.
-  ++ lib.optionals stdenv.hostPlatform.isGnu [ libatomic ]
+  # Where FRR links libatomic, libatomic.so.1 is a DT_NEEDED of libfrr.so and of
+  # every daemon.  On glibc it comes from `fancy.libatomic`, a re-export of the
+  # single file FRR needs out of libgccjit (see the note on that attribute in
+  # nix/overlays/frr.nix).  On musl FRR pulls libatomic from the cross-musl
+  # gcc-libs output via `stdenv.cc.cc.lib` in the overlay instead, so naming it
+  # here would only bloat the build closure without contributing any symbol.
+  # On x86_64 glibc it is not linked at all, and naming it would still build gcc.
+  ++ lib.optionals (stdenv.hostPlatform.isGnu && libatomic != null) [ libatomic ]
   ++ lib.optionals bgpRpki [ rtrlib ];
 
   # cross-compiling: clippy is compiled with the build host toolchain, split it out to ease
