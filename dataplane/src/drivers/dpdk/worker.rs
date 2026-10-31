@@ -198,6 +198,7 @@ impl<'p> Worker<'p> {
             {
                 let sweep = flows.expire(clock::now(), EXPIRY_BUDGET);
                 expiry_behind = sweep.behind();
+                meter.expired(sweep.removed, expiry_behind);
                 if sweep.removed > 0 {
                     // Removing flows is work even when no packets came and none are left over:
                     // end the pass here, so the idling that follows is timed apart from it.
