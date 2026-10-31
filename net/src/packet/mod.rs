@@ -29,10 +29,10 @@ use crate::eth::mac::{DestinationMac, SourceMac};
 use crate::flows::{FlowInfo, FlowStatus};
 use crate::headers::{
     EmbeddedHeaders, Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut,
-    TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryVxlan,
+    TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryUdp, TryVxlan,
 };
 use crate::ip::{dscp::Dscp, ecn::Ecn};
-use crate::parse::{DeParse, DeParseError, Parse, ParseError};
+use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError};
 use crate::udp::{Udp, UdpChecksum};
 use crate::vxlan::Vni;
 
@@ -353,9 +353,21 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 // inner. This enables decap -> re-encap paths to keep spine/underlay QoS consistent.
                 let (dscp, ecn) = Self::underlay_qos_from_outer_headers(&self.headers);
 
-                match Headers::parse(self.payload.as_ref()) {
+                let inner_len = match self.vxlan_inner_len() {
+                    Ok(len) => len,
+                    Err(error) => return Some(Err(error)),
+                };
+                let excess = self.payload.packet_len() - inner_len;
+                match Headers::parse(&self.payload.as_ref()[..inner_len]) {
                     Ok((headers, consumed)) => match self.payload.trim_from_start(consumed.get()) {
                         Ok(_) => {
+                            // What trails the outer datagram is not part of the inner frame.
+                            #[allow(clippy::cast_possible_truncation)] // within a u16 buffer
+                            if excess != 0 {
+                                self.payload
+                                    .trim_from_end(excess as u16)
+                                    .unwrap_or_else(|e| unreachable!("{e:?}"));
+                            }
                             let vxlan = *vxlan;
 
                             // only if parse succeeds to mutate self
@@ -379,6 +391,30 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         }
     }
 
+    /// How long the inner frame of a VXLAN packet is: what the outer UDP datagram carries after
+    /// the VXLAN header, and no more than the outer IP datagram holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::Length`] if the outer lengths claim more than the frame carries: the
+    /// frame was cut short, and the inner frame with it.
+    fn vxlan_inner_len(&self) -> Result<usize, ParseError<EthError>> {
+        let vxlan = usize::from(Vxlan::MIN_LENGTH.get());
+        let ip = self.headers.transport_payload_len().unwrap_or(0);
+        let udp = self.headers.try_udp().map_or(0, |udp| {
+            usize::from(udp.length().get()).saturating_sub(usize::from(Udp::MIN_LENGTH.get()))
+        });
+        let inner = ip.min(udp).saturating_sub(vxlan);
+        let available = self.payload.packet_len();
+        match NonZero::new(inner) {
+            Some(expected) if inner > available => Err(ParseError::Length(LengthError {
+                expected,
+                actual: available,
+            })),
+            _ => Ok(inner),
+        }
+    }
+
     /// Peek some data if the packet has a VXLAN encapsulation without mutating the packet
     /// nor performing any actual decapsulation.
     ///
@@ -397,7 +433,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         let Some(net) = self.headers.try_ip() else {
             return Ok(None);
         };
-        let (inner, _) = Eth::parse(self.payload.as_ref())?;
+        let inner_len = self.vxlan_inner_len()?;
+        let (inner, _) = Eth::parse(&self.payload.as_ref()[..inner_len])?;
         Ok(Some(VxLanPeekedData {
             vni: vxlan.vni(),
             outer_src_ip: net.src_addr(),
@@ -1251,6 +1288,7 @@ mod padding_tests {
     use crate::headers::{Headers, Net, TryHeaders, TryIcmp4, TryIp, TryTcp, TryUdp};
     use crate::packet::Packet;
     use crate::packet::test_utils::make_default_for_eth;
+    use crate::parse::ParseError;
     use crate::tcp::TcpChecksumPayload;
     use crate::udp::UdpChecksumPayload;
     use crate::udp::UdpEncap;
@@ -1486,6 +1524,101 @@ mod padding_tests {
                     .expect("no udp header")
                     .validate_checksum(&UdpChecksumPayload::new(&net, payload))
                     .expect("trailing octets leaked into the udp checksum");
+            });
+    }
+
+    /// Offsets of the outer length fields in a frame from [`vxlan_wrap`]: Ethernet, IPv4 without
+    /// options, UDP, VXLAN.
+    const OUTER_IPV4_TOTAL_LEN: usize = 14 + 2;
+    const OUTER_UDP_LEN: usize = 14 + 20 + 4;
+    const OUTER_HEADERS: usize = 14 + 20 + 8 + 8;
+
+    /// Shorten (`by > 0`) or lengthen (`by < 0`) the outer IPv4 and UDP lengths of a frame from
+    /// [`vxlan_wrap`], leaving the frame as long as it was.
+    fn restate_outer_lengths(frame: &mut [u8], by: i32) {
+        for at in [OUTER_IPV4_TOTAL_LEN, OUTER_UDP_LEN] {
+            let len = i32::from(u16::from_be_bytes([frame[at], frame[at + 1]])) - by;
+            let len = u16::try_from(len).expect("a length field");
+            frame[at..at + 2].copy_from_slice(&len.to_be_bytes());
+        }
+    }
+
+    #[test]
+    fn decapsulation_leaves_what_trails_the_outer_datagram_behind() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, Vec<u8>)>()
+            .for_each(|(payload, trailer)| {
+                let payload = &payload[..payload.len().min(128)];
+                let trailer = &trailer[..trailer.len().min(64)];
+                let inner = frame(6, &tcp(payload));
+                let mut outer = vxlan_wrap(&inner);
+                outer.extend_from_slice(trailer);
+
+                let mut packet = parse(&outer);
+                assert!(packet.vxlan_peek().is_ok_and(|peeked| peeked.is_some()));
+                packet
+                    .vxlan_decap()
+                    .expect("not a vxlan packet")
+                    .expect("inner frame does not parse");
+                let decapsulated = packet.serialize().expect("inner frame does not serialize");
+                assert_eq!(
+                    decapsulated.as_ref(),
+                    &inner[..],
+                    "the inner frame took on what trails the outer datagram"
+                );
+            });
+    }
+
+    #[test]
+    fn decapsulation_ends_the_inner_frame_where_the_outer_datagram_does() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, u8)>()
+            .for_each(|(payload, cut)| {
+                let payload = &payload[..payload.len().min(128)];
+                let inner = frame(6, &tcp(payload));
+                let cut = usize::from(*cut) % inner.len();
+                let mut outer = vxlan_wrap(&inner);
+                // The outer datagram ends `cut` octets into the inner frame's tail: the inner
+                // datagram claims octets the outer one does not carry.
+                restate_outer_lengths(&mut outer, i32::try_from(cut).expect("small"));
+
+                let mut packet = parse(&outer);
+                match packet.vxlan_decap().expect("not a vxlan packet") {
+                    Ok(_) => {
+                        let decapsulated =
+                            packet.serialize().expect("inner frame does not serialize");
+                        assert_eq!(
+                            decapsulated.as_ref(),
+                            &inner[..inner.len() - cut],
+                            "the inner frame ran past the outer datagram"
+                        );
+                    }
+                    // Too little left for an inner Ethernet header.
+                    Err(_) => assert!(inner.len() - cut < 14, "cut {cut} of {}", inner.len()),
+                }
+            });
+    }
+
+    #[test]
+    fn an_outer_datagram_longer_than_its_frame_does_not_decapsulate() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, u8)>()
+            .for_each(|(payload, over)| {
+                let payload = &payload[..payload.len().min(128)];
+                let inner = frame(6, &tcp(payload));
+                let mut outer = vxlan_wrap(&inner);
+                restate_outer_lengths(&mut outer, -i32::from((*over).max(1)));
+                assert_eq!(outer.len(), OUTER_HEADERS + inner.len());
+
+                let mut packet = parse(&outer);
+                assert!(
+                    packet.vxlan_peek().is_err(),
+                    "a peek read past the end of the frame"
+                );
+                assert!(
+                    matches!(packet.vxlan_decap(), Some(Err(ParseError::Length(_)))),
+                    "decapsulated an inner frame the outer datagram says was cut short"
+                );
             });
     }
 

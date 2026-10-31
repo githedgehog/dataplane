@@ -34,6 +34,7 @@ use etherparse::icmpv4::DestUnreachableHeader;
 use etherparse::{IcmpEchoHeader, Icmpv4Header, Icmpv4Type, Icmpv6Header, Icmpv6Type};
 use std::default::Default;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::num::NonZero;
 use std::str::FromStr;
 
 use crate::ip::dscp::Dscp;
@@ -596,6 +597,11 @@ pub fn build_test_vxlan_ipv4_packet_carrying_vni(
     let net = Net::Ipv4(ipv4);
 
     let mut udp = Udp::new(123.try_into().unwrap(), Vxlan::PORT);
+    // SAFETY: the UDP header is part of its own length, so this is at least `Udp::MIN_LENGTH`.
+    #[allow(unsafe_code)]
+    unsafe {
+        udp.set_length(NonZero::new(udp_len_u16).unwrap_or_else(|| unreachable!()));
+    }
     // VXLAN spec says that the checksum SHOULD be zero.
     udp.set_checksum(UdpChecksum::ZERO)
         .unwrap_or_else(|()| unreachable!());
@@ -654,6 +660,11 @@ pub fn build_test_vxlan_ipv6_packet_with_outer_qos(
     let net = Net::Ipv6(ipv6);
 
     let mut udp = Udp::new(123.try_into().unwrap(), Vxlan::PORT);
+    // SAFETY: the UDP header is part of its own length, so this is at least `Udp::MIN_LENGTH`.
+    #[allow(unsafe_code)]
+    unsafe {
+        udp.set_length(NonZero::new(udp_len_u16).unwrap_or_else(|| unreachable!()));
+    }
     udp.set_checksum(UdpChecksum::ZERO)
         .unwrap_or_else(|()| unreachable!());
 
