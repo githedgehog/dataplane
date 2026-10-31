@@ -3,13 +3,12 @@
 
 //! How much of masquerade's public space is in use.
 //!
-//! Masquerade runs out of ports long before anything else shows it: the first sign was the
-//! `NatOutOfResources` drops. [`MasqueradeMetrics`] publishes, per region of public addresses, per
-//! destination VPC and per protocol, the addresses and how many of the 256-port blocks the addresses
-//! in use have handed out and have left, as `nat_masquerade_*` gauges labelled `protocol`,
-//! `dst_vpc` and `region`. Pools toward different VPCs may share public addresses, each with an
-//! allocator of its own, so the region alone does not name one. A region a new configuration no
-//! longer has is set to zero rather than left at its last values.
+//! [`MasqueradeMetrics`] publishes, per region of public addresses, per destination VPC and per
+//! protocol, the addresses and how many of the 256-port blocks the addresses in use have handed
+//! out and have left, as `nat_masquerade_*` gauges labelled `protocol`, `dst_vpc` and `region`.
+//! Pools toward different VPCs may share public addresses, each with an allocator of its own, so
+//! the region alone does not name one. A region a new configuration no longer has is set to zero
+//! rather than left at its last values.
 
 use std::collections::BTreeMap;
 
