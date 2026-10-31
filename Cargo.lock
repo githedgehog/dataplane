@@ -2266,10 +2266,12 @@ dependencies = [
 name = "dataplane-tracectl"
 version = "0.33.0"
 dependencies = [
+ "backtrace",
  "color-eyre",
  "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
+ "findshlibs",
  "linkme",
  "ordermap",
  "serial_test",

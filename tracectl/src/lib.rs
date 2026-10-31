@@ -12,6 +12,7 @@ pub mod evidence;
 pub mod control;
 pub mod display;
 mod stamp;
+mod symbolize;
 pub mod targets;
 mod throttle;
 
