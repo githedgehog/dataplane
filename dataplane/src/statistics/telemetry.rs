@@ -82,6 +82,8 @@ fn counters(totals: &RxCounters) -> WorkerCounters {
         kernel_drops: totals.kernel_drops,
         injected_packets: totals.injected,
         inject_drops: totals.inject_drops,
+        bursts: totals.bursts,
+        full_bursts: totals.full_bursts,
     }
 }
 

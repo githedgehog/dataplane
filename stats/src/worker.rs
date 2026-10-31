@@ -51,19 +51,23 @@ pub struct WorkerCounters {
     pub injected_packets: u64,
     /// Frames the kernel sent out of the port that could not be transmitted (DPDK driver).
     pub inject_drops: u64,
+    /// Receive calls that returned packets; `rx_packets` over this is the mean batch.
+    pub bursts: u64,
+    /// Receive calls that returned as many packets as they could: the queue had more waiting.
+    pub full_bursts: u64,
 }
 
 /// Metric handles for one worker's port queue, registered once and reused for each poll.
 #[derive(Debug)]
 pub struct WorkerMetrics {
-    series: [Registered<metrics::Counter>; 12],
+    series: [Registered<metrics::Counter>; 14],
 }
 
 /// A series' suffix, its description, and the field it carries.
 type Series = (&'static str, &'static str, fn(&WorkerCounters) -> u64);
 
 /// Every series.
-const SERIES: [Series; 12] = [
+const SERIES: [Series; 14] = [
     (
         "rx_packets",
         "packets the worker received on the port",
@@ -120,6 +124,17 @@ const SERIES: [Series; 12] = [
         "frames the kernel sent out of the port that could not be transmitted",
         |c| c.inject_drops,
     ),
+    (
+        "bursts",
+        "receive calls on the port that returned packets; rx_packets over this is the mean batch",
+        |c| c.bursts,
+    ),
+    (
+        "full_bursts",
+        "receive calls on the port that returned as many packets as they could: the worker is \
+         falling behind that queue",
+        |c| c.full_bursts,
+    ),
 ];
 
 impl WorkerMetrics {
@@ -170,6 +185,8 @@ mod exported {
             kernel_drops: 99,
             injected_packets: 111,
             inject_drops: 122,
+            bursts: 144,
+            full_bursts: 155,
         }
     }
 
@@ -236,6 +253,8 @@ mod exported {
                     kernel_drops: later(first.kernel_drops),
                     injected_packets: later(first.injected_packets),
                     inject_drops: later(first.inject_drops),
+                    bursts: later(first.bursts),
+                    full_bursts: later(first.full_bursts),
                 };
                 let scrape = Scrape::default();
                 metrics::with_local_recorder(&scrape, || {
