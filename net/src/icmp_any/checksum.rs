@@ -291,6 +291,7 @@ impl From<ChecksumError<IcmpAny<'_>>> for ChecksumError<IcmpAnyChecksumErrorPlac
 
 #[cfg(test)]
 mod tests {
+    use crate::checksum::ones_complement_sum;
     use crate::headers::Headers;
     use crate::parse::{DeParse, Parse};
 
@@ -305,23 +306,6 @@ mod tests {
         out.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
         out.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
         out
-    }
-
-    /// One's-complement sum of `bytes` as 16-bit words, with both zeros read as `0xffff`.
-    fn ones_complement_sum(bytes: &[u8]) -> u16 {
-        let mut sum: u32 = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|word| u32::from(u16::from_be_bytes(*word)))
-            .sum();
-        while sum > 0xffff {
-            sum = (sum & 0xffff) + (sum >> 16);
-        }
-        match u16::try_from(sum).unwrap() {
-            0 => 0xffff,
-            sum => sum,
-        }
     }
 
     /// The quoted datagram's extension headers sit between its IP and transport headers, and are as

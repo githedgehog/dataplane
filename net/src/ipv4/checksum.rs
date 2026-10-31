@@ -96,11 +96,11 @@ impl Checksum for Ipv4 {
 
 #[cfg(test)]
 mod tests {
-    use crate::checksum::Checksum;
+    use crate::checksum::{Checksum, ones_complement_sum};
     use crate::ip::NextHeader;
     use crate::ip::dscp::Dscp;
     use crate::ip::ecn::Ecn;
-    use crate::ipv4::{BuiltWithNextHeader, Ipv4, Ipv4Checksum, ones_complement_sum};
+    use crate::ipv4::{BuiltWithNextHeader, Ipv4, Ipv4Checksum};
     use crate::parse::DeParse;
     use bolero::{Driver, ValueGenerator};
     use std::net::Ipv4Addr;
@@ -110,10 +110,7 @@ mod tests {
     fn error(ipv4: &Ipv4) -> u16 {
         let mut buf = [0u8; Ipv4::MAX_LEN.get() as usize];
         let written = ipv4.deparse(&mut buf).expect("header does not deparse");
-        match ones_complement_sum(&buf[..written.get() as usize]) {
-            0 => 0xffff,
-            sum => sum,
-        }
+        ones_complement_sum(&buf[..written.get() as usize])
     }
 
     /// A header built here, carrying any next header.
