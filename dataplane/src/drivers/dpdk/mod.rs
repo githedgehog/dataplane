@@ -34,7 +34,7 @@ use concurrency::thread::BuilderExt;
 use dpdk::mem::{MBUF_BURST, Mbuf};
 use lifecycle::Subsystem;
 use lldp::Link;
-use stats::PortMetrics;
+use stats::{PortMetrics, PortState, PortStateMetrics};
 use tokio::sync::watch;
 use tracectl::trace_target;
 use tracing::{info, warn};
@@ -171,6 +171,16 @@ impl DriverDpdk {
             .map(|port| (port, PortMetrics::new(port.name.as_ref())))
             .collect();
         let mut counters_unavailable = vec![false; port_metrics.len()];
+        let mut port_states: Vec<(&Port<'_>, PortStateMetrics, LinkWatch)> = ports
+            .iter()
+            .map(|port| {
+                (
+                    port,
+                    PortStateMetrics::new(port.name.as_ref()),
+                    LinkWatch::default(),
+                )
+            })
+            .collect();
         spawn_supervisor(
             scope,
             "dpdk",
@@ -180,6 +190,7 @@ impl DriverDpdk {
             status_writer,
             move || {
                 publish_port_counters(&port_metrics, &mut counters_unavailable);
+                publish_port_states(&mut port_states);
                 publish_links(&links);
             },
         )?;
@@ -261,6 +272,40 @@ fn publish_links(links: &[(&Port<'_>, watch::Sender<Link>)]) {
             info!("port {} link is now {now:?}", port.name);
             *was = now;
             true
+        });
+    }
+}
+
+/// What the driver last read of a port's link, to count its changes.
+#[derive(Default)]
+struct LinkWatch {
+    /// Whether the link was up at the last reading; `None` before the first.
+    up: Option<bool>,
+    changes: u64,
+}
+
+/// Publish each port's link and the occupancy of its pools.
+///
+/// The link is read here as well as in [`publish_links`], which only covers ports with a tap; a
+/// read is a register access, once a second. A link that cannot be read counts as down, as it does
+/// there. Changes are counted between readings, so a flap shorter than the polling period is missed.
+fn publish_port_states(ports: &mut [(&Port<'_>, PortStateMetrics, LinkWatch)]) {
+    for (port, metrics, watch) in ports {
+        let link = port.dev.link().ok();
+        let up = link.is_some_and(|link| link.up);
+        if watch.up.is_some_and(|was| was != up) {
+            watch.changes += 1;
+        }
+        watch.up = Some(up);
+        let pool = |pool: &dpdk::mem::Pool<'_>| (pool.in_use(), pool.capacity());
+        metrics.publish(&PortState {
+            link_up: up,
+            speed_mbps: link
+                .map(|link| link.speed_mbps)
+                .filter(|&speed| speed != u32::MAX),
+            link_changes: watch.changes,
+            rx_pool: pool(&port.rx_pool),
+            control_pool: pool(&port.control_pool),
         });
     }
 }
