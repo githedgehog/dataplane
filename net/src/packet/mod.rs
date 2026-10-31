@@ -1528,7 +1528,7 @@ mod serialize_checksum_tests {
 
     use super::padding_tests::{frame, tcp, udp};
     use crate::buffer::TestBuffer;
-    use crate::checksum::Checksum;
+    use crate::checksum::{Checksum, ones_complement_sum};
     use crate::headers::{TryHeaders, TryHeadersMut, TryIp, TryIpv4, TryIpv4Mut, TryTcp};
     use crate::packet::Packet;
     use crate::tcp::TcpChecksumPayload;
@@ -1539,22 +1539,6 @@ mod serialize_checksum_tests {
     const IPV4_CHECKSUM: usize = 14 + 10;
     const TCP_CHECKSUM: usize = 14 + 20 + 16;
     const UDP_CHECKSUM: usize = 14 + 20 + 6;
-
-    /// One's-complement sum of `bytes` as 16-bit words, with both zeros read as `0xffff`.
-    fn ones_complement_sum(bytes: &[u8]) -> u16 {
-        let mut sum: u32 = 0;
-        for word in bytes.as_chunks::<2>().0 {
-            sum += u32::from(u16::from_be_bytes(*word));
-        }
-        while sum > 0xffff {
-            sum = (sum & 0xffff) + (sum >> 16);
-        }
-        #[allow(clippy::cast_possible_truncation)] // folded to 16 bits above
-        match sum as u16 {
-            0 => 0xffff,
-            sum => sum,
-        }
-    }
 
     /// How far the IPv4 header in `frame` is from valid: the sum over the whole header, checksum
     /// included, which is `0xffff` for a valid header and something else for each wrong checksum.
@@ -1674,6 +1658,7 @@ mod roundtrip_tests {
     //! follow the datagram in the frame.
 
     use crate::buffer::TestBuffer;
+    use crate::checksum::ones_complement_sum;
     use crate::headers::{TryHeaders, TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
     use crate::packet::Packet;
     use bolero::TypeGenerator;
@@ -1986,25 +1971,6 @@ mod roundtrip_tests {
                 vxlan: matches!(self.transport, Transport::Vxlan { .. }),
                 fragment,
             }
-        }
-    }
-
-    /// One's-complement sum of `bytes` as 16-bit words, an odd octet padded with zero, with both
-    /// zeros read as `0xffff`.
-    fn ones_complement_sum(bytes: &[u8]) -> u16 {
-        let mut sum: u64 = 0;
-        for word in bytes.chunks(2) {
-            sum += u64::from(u16::from_be_bytes([
-                word[0],
-                word.get(1).copied().unwrap_or(0),
-            ]));
-        }
-        while sum > 0xffff {
-            sum = (sum & 0xffff) + (sum >> 16);
-        }
-        match u16::try_from(sum).expect("folded to 16 bits") {
-            0 => 0xffff,
-            sum => sum,
         }
     }
 

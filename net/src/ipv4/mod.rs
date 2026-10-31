@@ -3,7 +3,7 @@
 
 //! Ipv4 Address type and manipulation
 
-use crate::checksum::Checksum;
+use crate::checksum::{Checksum, ones_complement_sum};
 use crate::headers::{EmbeddedHeader, Header};
 use crate::icmp4::{Icmp4, TruncatedIcmp4};
 use crate::impl_from_for_enum;
@@ -85,21 +85,6 @@ impl Default for Ipv4 {
         };
         header.header_checksum = header.compute_header_checksum();
         header
-    }
-}
-
-/// One's-complement sum of `bytes` as big-endian 16-bit words (`bytes` has even length).
-fn ones_complement_sum(bytes: &[u8]) -> u16 {
-    let mut sum: u32 = 0;
-    for word in bytes.as_chunks::<2>().0 {
-        sum += u32::from(u16::from_be_bytes(*word));
-    }
-    while sum > 0xffff {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    #[allow(clippy::cast_possible_truncation)] // folded to 16 bits above
-    {
-        sum as u16
     }
 }
 
