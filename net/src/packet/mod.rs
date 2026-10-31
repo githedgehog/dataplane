@@ -503,7 +503,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// IPv4 header checksums, including quoted ones, remain unchanged: [`Ipv4`](crate::ipv4::Ipv4)
     /// setters maintain them. Fragmented datagrams retain their transport checksum and pending
     /// [`checksum_refresh`](PacketMeta::checksum_refresh) request. Otherwise the request is cleared,
-    /// including when VXLAN or missing headers prevent an update.
+    /// including when VXLAN, missing headers, or a datagram that ends inside its transport header
+    /// prevent an update.
     pub fn refresh_transport_checksum(&mut self) -> &mut Self {
         let covered = self.headers.transport_payload_len();
         if self
@@ -2119,6 +2120,18 @@ mod roundtrip_tests {
                     );
                     return;
                 }
+                if parse(&frame.bytes)
+                    .headers()
+                    .transport_payload_len()
+                    .is_none()
+                {
+                    // The datagram ends inside a header the parser completed from the trailer.
+                    assert_eq!(
+                        refreshed, forwarded,
+                        "a refresh covered octets past the end of the datagram"
+                    );
+                    return;
+                }
                 if frame.fragment {
                     // Its transport checksum covers octets this fragment does not hold.
                     assert_eq!(
@@ -2153,5 +2166,34 @@ mod roundtrip_tests {
                     "a refresh changed octets {changed:?} besides the checksum at {checksum:?}"
                 );
             });
+    }
+
+    /// An ICMP timestamp is 20 octets; this datagram holds 18 of them, and the frame's two
+    /// octets of padding complete it. Found by CI.
+    #[test]
+    fn a_refresh_leaves_a_transport_header_cut_short_by_its_datagram() {
+        let datagram = Datagram {
+            ip: Ip::V4 {
+                header: [0; 20],
+                options: Vec::new(),
+            },
+            transport: Transport::Icmp {
+                header: [6, 0x80, 0x12, 0x34, 0, 1, 0, 2], // a timestamp request
+                quoted: None,
+            },
+            payload: vec![0xe9; 10],
+            trailer: vec![0xfa, 0x1e],
+        };
+        let mut frame = datagram.frame();
+        frame.bytes[ETH + 8] = 64; // a TTL to decrement
+        assert_eq!(frame.end - frame.transport, 18);
+        let packet = parse(&frame.bytes);
+        assert!(packet.headers().transport().is_some());
+        assert_eq!(packet.headers().transport_payload_len(), None);
+        assert_eq!(
+            forward(&frame.bytes, true),
+            forward(&frame.bytes, false),
+            "a refresh covered octets past the end of the datagram"
+        );
     }
 }

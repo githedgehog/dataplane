@@ -1257,6 +1257,9 @@ impl Headers {
     /// Returns `false` for fragmented datagrams. Otherwise attempts computation and returns
     /// `true`, even if the update is skipped.
     ///
+    /// Skips datagrams that end before their transport header does. The parser completes such a
+    /// header from whatever trails the datagram in the frame, which no checksum covers.
+    ///
     /// [`Packet::refresh_transport_checksum`]: crate::packet::Packet::refresh_transport_checksum
     pub(crate) fn refresh_transport_checksum(
         &mut self,
@@ -1268,6 +1271,10 @@ impl Headers {
         if self.is_fragment() {
             debug!("a fragment: can't recompute its transport checksum");
             return false;
+        }
+        if self.transport.is_some() && self.transport_payload_len().is_none() {
+            debug!("the datagram ends inside its transport header: can't recompute its checksum");
+            return true;
         }
         self.compute_transport_checksum(payload, covered);
         true
