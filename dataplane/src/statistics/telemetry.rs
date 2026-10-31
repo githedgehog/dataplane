@@ -16,8 +16,8 @@ use flow_entry::flow_table::FlowTable;
 use nat::masquerade::NatAllocatorReader;
 use net::packet::PacketStats;
 use stats::{
-    FlowTableMetrics, MasqueradeMetrics, MasqueradeRegion, PipelineMetrics, RxTaskHealth,
-    TapMetrics, WorkerCounters, WorkerLoadCounters, WorkerLoadMetrics, WorkerMetrics,
+    BuildInfoMetrics, FlowTableMetrics, MasqueradeMetrics, MasqueradeRegion, PipelineMetrics,
+    RxTaskHealth, TapMetrics, WorkerCounters, WorkerLoadCounters, WorkerLoadMetrics, WorkerMetrics,
     WorkerStateMetrics,
 };
 
@@ -47,6 +47,7 @@ pub(crate) struct Telemetry {
     pipeline: PipelineMetrics,
     flows: FlowTableMetrics,
     masquerade: MasqueradeMetrics,
+    build: BuildInfoMetrics,
     /// One per tap, in the order of [`TelemetrySources::taps`].
     taps: Vec<TapMetrics>,
     /// Registered as each worker's port queue first appears in the driver's status.
@@ -67,6 +68,8 @@ impl Telemetry {
             .collect();
         Telemetry {
             taps,
+            // As the startup banner reports it: "dev" for a build that does not ship.
+            build: BuildInfoMetrics::new(option_env!("VERSION").unwrap_or("dev")),
             sources,
             pipeline: PipelineMetrics::new(),
             flows: FlowTableMetrics::new(),
@@ -83,6 +86,7 @@ impl Telemetry {
         // Kept by the table as it changes: reading it locks nothing.
         self.flows
             .publish(self.sources.flows.live_len(), self.sources.flows.capacity());
+        self.build.publish();
         self.publish_masquerade();
         for ((_, counters), metrics) in self.sources.taps.iter().zip(&self.taps) {
             let totals = counters.load();
@@ -282,6 +286,11 @@ mod tests {
         assert_eq!(get(r#"pipeline_packets{reason="Delivered"}"#), Some(6.0));
         assert_eq!(get(r#"pipeline_packets{reason="Unroutable"}"#), Some(0.0));
         assert_eq!(get("flow_table_entries"), Some(0.0));
+        assert!(
+            rendered
+                .keys()
+                .any(|series| series.starts_with("dataplane_build_info{"))
+        );
         assert_eq!(get(r#"port_tap_punted{port="eth0"}"#), Some(0.0));
         let data = |name: &str| get(&format!(r#"{name}{{port="eth0",queue="data",worker="1"}}"#));
         let control = |name: &str| {
