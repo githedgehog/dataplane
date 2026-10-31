@@ -18,7 +18,8 @@ mod tests;
 
 // re exports
 pub use allocator_writer::MasqueradeConfig;
-pub use allocator_writer::{NatAllocatorReaderFactory, NatAllocatorWriter};
+pub use allocator_writer::{NatAllocatorReader, NatAllocatorReaderFactory, NatAllocatorWriter};
+pub use apalloc::MasqueradeUsage;
 pub use nf::Masquerade;
 pub(crate) use state::MasqueradeState;
 #[cfg(test)]

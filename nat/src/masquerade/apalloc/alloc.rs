@@ -34,6 +34,29 @@ pub(crate) struct IpAllocator<I: NatIpWithBitmap> {
 }
 
 impl<I: NatIpWithBitmap> IpAllocator<I> {
+    /// The pool this allocator draws from, to tell allocators apart: regions share one.
+    pub(crate) fn id(&self) -> *const () {
+        Arc::as_ptr(&self.pool).cast()
+    }
+
+    /// How many addresses are in use, and how many port blocks they have handed out and have
+    /// free, as of now.
+    pub(crate) fn usage(&self) -> (u64, u64, u64) {
+        // Upgraded under the read guard and dropped after it: an address's drop path takes this
+        // pool's write lock.
+        let live: Vec<Arc<AllocatedIp<I>>> = self
+            .pool
+            .read()
+            .ips_in_use()
+            .filter_map(Weak::upgrade)
+            .collect();
+        let (used, free) = live.iter().fold((0u64, 0u64), |(used, free), ip| {
+            let (u, f) = ip.port_allocator().block_usage();
+            (used + u64::from(u), free + u64::from(f))
+        });
+        (live.len() as u64, used, free)
+    }
+
     pub(crate) fn new(pool: NatPool<I>, randomize: bool) -> Self {
         Self {
             pool: Arc::new(RwLock::new(pool)),

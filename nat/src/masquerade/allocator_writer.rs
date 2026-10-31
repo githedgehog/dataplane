@@ -179,6 +179,7 @@ impl Default for NatAllocatorWriter {
 pub struct NatAllocatorReader(Arc<SlotOption<NatAllocator>>);
 
 impl NatAllocatorReader {
+    #[must_use]
     pub fn get(&self) -> Option<Arc<NatAllocator>> {
         self.0.load_full()
     }
@@ -190,6 +191,7 @@ impl NatAllocatorReader {
     pub fn factory(&self) -> NatAllocatorReaderFactory {
         NatAllocatorReaderFactory(self.clone())
     }
+    #[must_use]
     pub fn inner(&self) -> Arc<SlotOption<NatAllocator>> {
         self.0.clone()
     }
