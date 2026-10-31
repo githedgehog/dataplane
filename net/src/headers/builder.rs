@@ -1049,7 +1049,7 @@ impl_embedded!(Icmp6ParamProblem);
 ///
 /// Checksums are NOT touched -- the caller decides whether to run
 /// [`Headers::update_checksums`] separately.
-fn fixup_lengths(headers: &mut Headers, payload: &[u8]) -> Result<(), BuildError> {
+pub(crate) fn fixup_lengths(headers: &mut Headers, payload: &[u8]) -> Result<(), BuildError> {
     let transport_size: u16 = headers.transport.as_ref().map_or(0, |t| t.size().get());
     let embedded_size: u16 = headers.embedded_ip.as_deref().map_or(0, |e| e.size().get());
     let encap_size: u16 = match &headers.udp_encap {

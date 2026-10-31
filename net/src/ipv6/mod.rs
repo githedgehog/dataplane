@@ -248,6 +248,9 @@ impl Ipv6 {
     /// * `Some(Ipv6Next)` variant if the payload was successfully parsed as a next header.
     /// * `None` if the next header is not supported.
     pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<Ipv6Next> {
+        // Nothing past the datagram belongs to the headers it carries, extension headers
+        // included.
+        cursor.end_after(usize::from(self.0.payload_length));
         match self.0.next_header {
             IpNumber::TCP => cursor.parse_header::<Tcp, Ipv6Next>(),
             IpNumber::UDP => cursor.parse_header::<Udp, Ipv6Next>(),
