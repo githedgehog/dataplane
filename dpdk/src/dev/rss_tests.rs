@@ -21,6 +21,7 @@ fn info(key_size: u8, supports_rss: bool) -> DevInfo<'static> {
 
 fn config(key: Option<Box<[u8]>>) -> DevConfig {
     DevConfig {
+        rx_interrupts: false,
         num_rx_queues: 1,
         num_tx_queues: 1,
         num_hairpin_queues: 0,

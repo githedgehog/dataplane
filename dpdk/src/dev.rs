@@ -268,6 +268,10 @@ pub struct DevConfig {
     pub mtu: Option<u16>,
     /// RSS parameters. `None` requests no hash types (`rss_hf = 0`).
     pub rss: Option<RssConf>,
+    /// Request receive queue interrupts for idle waits (see [`interrupt`](crate::interrupt)).
+    /// Unsupported requests may fail during configuration, start, or interrupt registration.
+    /// Callers must handle these failures and fall back to polling or monitor waits.
+    pub rx_interrupts: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -427,6 +431,7 @@ impl DevConfig {
         };
 
         eth_conf.rx_adv_conf.rss_conf = rss_conf;
+        eth_conf.intr_conf.set_rxq(u32::from(self.rx_interrupts));
 
         let nb_rx_queues = self.num_rx_queues + self.num_hairpin_queues;
         let nb_tx_queues = self.num_tx_queues + self.num_hairpin_queues;
@@ -1060,6 +1065,8 @@ impl DevInfo<'_> {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Stage {
+    /// Reconfiguration failed; configuration must succeed before queues or start.
+    Unconfigured,
     /// Configured and never started. Queues may be set up.
     Configured,
     /// Running. Packets flow; the queue set is fixed.
@@ -1070,7 +1077,7 @@ pub enum Stage {
     Closed,
 }
 
-/// Sealed device states: [`Configured`], [`Started`], [`Stopped`], and [`Closed`].
+/// Sealed device states: [`Unconfigured`], [`Configured`], [`Started`], [`Stopped`], and [`Closed`].
 pub trait DevState: dev_state::Sealed + Debug {
     /// The runtime state used to select the required teardown operations.
     const STAGE: Stage;
@@ -1079,17 +1086,44 @@ pub trait DevState: dev_state::Sealed + Debug {
 /// States with an open port: [`Configured`], [`Started`], and [`Stopped`].
 pub trait Open: DevState {}
 
-/// States that can be closed: [`Configured`] and [`Stopped`].
-pub trait Inactive: Open {}
+/// States that can be closed: [`Unconfigured`], [`Configured`], and [`Stopped`].
+pub trait Inactive: DevState {}
 
 mod dev_state {
     /// Restricts [`super::DevState`] to this module's states.
     pub trait Sealed {}
+    impl Sealed for super::Unconfigured {}
     impl Sealed for super::Configured {}
     impl Sealed for super::Started {}
     impl Sealed for super::Stopped {}
     impl Sealed for super::Closed {}
 }
+
+/// A device whose reconfiguration failed. It can be reconfigured or closed, but queue setup and
+/// start require another successful configuration, even if only Rust's validation failed.
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::dev::DevReconfigFailure;
+/// fn restart(failure: DevReconfigFailure<'_>) { let _ = failure.dev.start(); }
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::dev::DevReconfigFailure;
+/// # use dataplane_dpdk::queue::rx::RxQueueConfig;
+/// fn add_queue<'eal>(mut failure: DevReconfigFailure<'eal>, config: RxQueueConfig<'eal>) {
+///     let _ = failure.dev.new_rx_queue(config);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use dataplane_dpdk::dev::DevReconfigFailure;
+/// # use dataplane_dpdk::queue::tx::TxQueueConfig;
+/// fn add_queue(mut failure: DevReconfigFailure<'_>, config: TxQueueConfig) {
+///     let _ = failure.dev.new_tx_queue(config);
+/// }
+/// ```
+#[derive(Debug)]
+pub struct Unconfigured;
 
 /// A configured device whose queues can be set up before start.
 #[derive(Debug)]
@@ -1133,6 +1167,9 @@ pub struct Stopped;
 #[derive(Debug)]
 pub struct Closed;
 
+impl DevState for Unconfigured {
+    const STAGE: Stage = Stage::Unconfigured;
+}
 impl DevState for Configured {
     const STAGE: Stage = Stage::Configured;
 }
@@ -1150,6 +1187,7 @@ impl Open for Configured {}
 impl Open for Started {}
 impl Open for Stopped {}
 
+impl Inactive for Unconfigured {}
 impl Inactive for Configured {}
 impl Inactive for Stopped {}
 
@@ -1311,7 +1349,9 @@ impl<'eal, S: DevState> Dev<'eal, S> {
         &self.info
     }
 
-    /// The applied configuration. Its RSS key stays owned by this device.
+    /// The last successfully applied configuration. Its RSS key stays owned by this device.
+    /// For an [`Unconfigured`] device, this describes the last success, not the current native
+    /// state: a failed reconfiguration may have released the queues and cleared configuration.
     #[must_use]
     pub fn config(&self) -> &DevConfig {
         &self.lifecycle.config
@@ -1662,6 +1702,49 @@ impl<'eal> Dev<'eal, Configured> {
         info!("Device {port} started", port = self.info.index());
         Ok(self.transition())
     }
+
+    /// Reconfigure an inactive device, for example to retry a failed start.
+    /// Recreate every queue before starting; reconfiguration can release native queues.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DevReconfigFailure`] with an [`Unconfigured`] device. Retry configuration or
+    /// close it; its previous configuration is retained only to keep the RSS key alive.
+    #[allow(clippy::result_large_err)] // Preserve device ownership on failure.
+    pub fn reconfigure(self, config: &DevConfig) -> Result<Self, DevReconfigFailure<'eal>> {
+        self.transition::<Unconfigured>().reconfigure(config)
+    }
+}
+
+impl<'eal> Dev<'eal, Unconfigured> {
+    /// Retry configuration after a failure. On success, set up every queue again before start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DevReconfigFailure`] with this device, still [`Unconfigured`].
+    #[allow(clippy::result_large_err)] // Preserve device ownership on failure.
+    pub fn reconfigure(
+        mut self,
+        config: &DevConfig,
+    ) -> Result<Dev<'eal, Configured>, DevReconfigFailure<'eal>> {
+        match config.configure(&self.info) {
+            Ok(applied) => {
+                *self.queues.lock() = Some(QueueStore::new(
+                    applied.num_rx_queues + applied.num_hairpin_queues,
+                    applied.num_tx_queues + applied.num_hairpin_queues,
+                ));
+                self.lifecycle.config = applied;
+                Ok(self.transition())
+            }
+            Err(error) => {
+                // DPDK restores dev_conf (including the old RSS key pointer), but may release
+                // queues and clear dev_configured. Retain the key, discard the queue handles,
+                // and require a successful configuration before queue setup or start.
+                *self.queues.lock() = None;
+                Err(DevReconfigFailure { error, dev: self })
+            }
+        }
+    }
 }
 
 impl<'eal, S: Inactive> Dev<'eal, S> {
@@ -1741,6 +1824,18 @@ pub struct DevStartFailure<'eal> {
     pub error: ErrorCode,
     /// The device, still in its [`Configured`] state.
     pub dev: Dev<'eal, Configured>,
+}
+
+/// A reconfiguration error and a device that must be configured again or closed.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to reconfigure device {}: {error}", self.dev.info.index())]
+pub struct DevReconfigFailure<'eal> {
+    /// The error that caused the reconfiguration to fail.
+    #[source]
+    pub error: DevConfigError,
+    /// The device, in its [`Unconfigured`] state. Its last successful configuration is retained
+    /// for the RSS key's lifetime, but does not describe the current native state.
+    pub dev: Dev<'eal, Unconfigured>,
 }
 
 /// A stop error and the still-running device.

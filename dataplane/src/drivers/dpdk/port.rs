@@ -20,8 +20,8 @@
 
 use concurrency::thread;
 use dpdk::dev::{
-    Configured, Dev, DevConfig, DevConfigError, DevIndex, DevInfo, PortClaim, RssConf, RxOffload,
-    Started, TxOffloadConfig,
+    Configured, Dev, DevConfig, DevConfigError, DevConfigFailure, DevIndex, DevInfo, PortClaim,
+    RssConf, RxOffload, Started, TxOffloadConfig,
 };
 use dpdk::eal::Eal;
 use dpdk::mem::{Pool, PoolConfig, PoolParams};
@@ -41,7 +41,7 @@ use concurrency::sync::Arc;
 use super::classes::Fallback;
 use super::inject::Injector;
 use crate::drivers::DriverError;
-use crate::drivers::cpbridge::{DatapathEnds, Frame};
+use crate::drivers::cpbridge::{DatapathEnds, Frame, InjectReceiver};
 
 use args::dpdk_memory::{
     MBUF_BURST, MBUF_DATA_SIZE, MBUF_FOOTPRINT, MBUF_PRIVATE_SIZE, POOL_CACHE, RX_DESCRIPTORS,
@@ -369,6 +369,31 @@ fn new_tx_queue(
     })
 }
 
+/// The queues a port is brought up with: one receive and one transmit queue per worker, and one of
+/// each for the control worker if the port has control queues.
+struct Queues<'a, 'eal> {
+    workers: u16,
+    control: bool,
+    rx_descriptors: u16,
+    rx_pool: &'a Pool<'eal>,
+    control_pool: &'a Pool<'eal>,
+}
+
+impl<'eal> Queues<'_, 'eal> {
+    /// Set them all up on `dev`.
+    fn set_up(&self, dev: &mut Dev<'eal, Configured>) -> Result<(), DriverError> {
+        for queue in 0..self.workers {
+            new_rx_queue(dev, queue, self.rx_descriptors, self.rx_pool)?;
+            new_tx_queue(dev, queue, TX_DESCRIPTORS)?;
+        }
+        if self.control {
+            new_rx_queue(dev, self.workers, CONTROL_RX_DESCRIPTORS, self.control_pool)?;
+            new_tx_queue(dev, self.workers, CONTROL_TX_DESCRIPTORS)?;
+        }
+        Ok(())
+    }
+}
+
 /// Spread RSS over the `data_queues` data queues only, keeping it off the control queue after them.
 ///
 /// A port that cannot have that would deliver data to the control worker, which has no pipeline to
@@ -417,6 +442,9 @@ pub(crate) struct Port<'eal> {
     /// Whether the port has control queues; see [`has_control_queues`]. Without them its control
     /// traffic is taken off the data path in software and data worker 0 transmits for the kernel.
     pub(crate) control: bool,
+    /// Whether the port's receive queues raise interrupts, for workers that sleep on them: asked
+    /// for with `--idle interrupt`, and granted if the driver has them.
+    pub(crate) rx_interrupts: bool,
 }
 
 impl<'eal> Port<'eal> {
@@ -427,6 +455,7 @@ impl<'eal> Port<'eal> {
     ///
     /// Returns [`DriverError`] if the device cannot be configured, queued or started.
     #[allow(clippy::too_many_lines)] // one device's bring-up, step by step in the order it requires
+    #[allow(clippy::too_many_arguments)] // the port's own settings, each passed straight through
     pub(crate) fn bring_up(
         eal: &'eal Eal,
         port: PortClaim<'eal>,
@@ -435,9 +464,24 @@ impl<'eal> Port<'eal> {
         num_ports: u32,
         mtu: Option<u16>,
         rx_descriptors: Option<u16>,
+        rx_interrupts: bool,
     ) -> Result<Self, DriverError> {
         let info = port.info();
         let index = info.index();
+
+        // A driver that arms another queue's interrupt would leave workers asleep while packets
+        // wait, and its queues cannot be watched anyway: do not ask it for interrupts at all.
+        let rx_interrupts = rx_interrupts && {
+            let arms_each_queue = dpdk::interrupt::arms_each_queue(info);
+            if !arms_each_queue {
+                warn!(
+                    "port {index} ({name}): the {} driver arms other receive queues' interrupts \
+                     than the ones asked for, so its workers will not sleep on interrupts",
+                    info.driver_name()
+                );
+            }
+            arms_each_queue
+        };
 
         let rx_descriptors = rx_descriptor_count(info, index, name.as_ref(), rx_descriptors);
 
@@ -459,7 +503,8 @@ impl<'eal> Port<'eal> {
         }
 
         let (rx, tx) = queue_counts(num_workers, control);
-        let config = DevConfig {
+        let mut config = DevConfig {
+            rx_interrupts,
             num_rx_queues: rx,
             num_tx_queues: tx,
             num_hairpin_queues: 0,
@@ -474,7 +519,36 @@ impl<'eal> Port<'eal> {
         };
 
         let (max_rx, max_tx) = (info.max_rx_queues(), info.max_tx_queues());
-        let mut dev = config.apply(port).map_err(|e| match e.error {
+        // Retry driver configuration errors with receive interrupts disabled.
+        // If that also fails, preserve the original error; otherwise workers use monitor or poll.
+        let applied = match config.apply(port) {
+            Err(first)
+                if config.rx_interrupts
+                    && matches!(first.error, DevConfigError::DriverSpecificError { .. }) =>
+            {
+                let without = DevConfig {
+                    rx_interrupts: false,
+                    ..config.clone()
+                };
+                match without.apply(first.claim) {
+                    Ok(dev) => {
+                        warn!(
+                            "port {index} ({name}) refused receive interrupts ({}); its workers \
+                             will stay awake while it is idle",
+                            first.error
+                        );
+                        config = without;
+                        Ok(dev)
+                    }
+                    Err(second) => Err(DevConfigFailure {
+                        error: first.error,
+                        claim: second.claim,
+                    }),
+                }
+            }
+            applied => applied,
+        };
+        let mut dev = applied.map_err(|e| match e.error {
             DevConfigError::TooManyQueues { .. } => DriverError::PortSetup(
                 QueueShortfall::new(
                     format!("port {index} ({name})"),
@@ -510,18 +584,63 @@ impl<'eal> Port<'eal> {
             },
         )?;
 
-        for queue in 0..num_workers {
-            new_rx_queue(&mut dev, queue, rx_descriptors, &rx_pool)?;
-            new_tx_queue(&mut dev, queue, TX_DESCRIPTORS)?;
-        }
-        if control {
-            new_rx_queue(&mut dev, num_workers, CONTROL_RX_DESCRIPTORS, &control_pool)?;
-            new_tx_queue(&mut dev, num_workers, CONTROL_TX_DESCRIPTORS)?;
-        }
+        let queues = Queues {
+            workers: num_workers,
+            control,
+            rx_descriptors,
+            rx_pool: &rx_pool,
+            control_pool: &control_pool,
+        };
+        queues.set_up(&mut dev)?;
 
-        let mut dev = dev
-            .start()
-            .map_err(|e| DriverError::PortSetup(format!("failed to start port {index}: {e}")))?;
+        let mut dev = match dev.start() {
+            Ok(dev) => dev,
+            // Interrupt setup can fail at start, for example when igb lacks MSI-X vectors, but so
+            // can much else. Start once more as configured, so a passing failure does not cost the
+            // port its interrupts. If that fails too, retry without them so the port can forward.
+            Err(first) if config.rx_interrupts => match first.dev.start() {
+                Ok(dev) => {
+                    warn!(
+                        "port {index} ({name}) started at the second attempt; the first failed: {}",
+                        first.error
+                    );
+                    dev
+                }
+                Err(second) => {
+                    let without = DevConfig {
+                        rx_interrupts: false,
+                        ..config.clone()
+                    };
+                    let mut dev = second.dev.reconfigure(&without).map_err(|e| {
+                        DriverError::PortSetup(format!(
+                            "port {index} ({name}) would not start with receive interrupts ({}, \
+                             then {}), and could not be configured again without them: {}",
+                            first.error, second.error, e.error
+                        ))
+                    })?;
+                    queues.set_up(&mut dev)?;
+                    let dev = dev.start().map_err(|e| {
+                        DriverError::PortSetup(format!(
+                            "failed to start port {index}, with receive interrupts ({}, then {}) \
+                             or without them: {}",
+                            first.error, second.error, e.error
+                        ))
+                    })?;
+                    warn!(
+                        "port {index} ({name}) would not start with receive interrupts ({}, then \
+                         {}), but did without them; its workers will stay awake while it is idle",
+                        first.error, second.error
+                    );
+                    config = without;
+                    dev
+                }
+            },
+            Err(e) => {
+                return Err(DriverError::PortSetup(format!(
+                    "failed to start port {index}: {e}"
+                )));
+            }
+        };
 
         // LLDP is sent to a link-local group the device was never told about, and a device that
         // filters on its address list (virtio-net under QEMU, for one) drops it when not promiscuous.
@@ -571,6 +690,7 @@ impl<'eal> Port<'eal> {
             control_pool,
             data_queues: num_workers,
             control,
+            rx_interrupts: config.rx_interrupts,
         })
     }
 
@@ -654,6 +774,8 @@ pub(crate) struct PortQueues<'p> {
     /// The kernel's frames for this port, to transmit on `tx`: worker 0's, on a port without
     /// control queues, and `None` everywhere else.
     pub(crate) injector: Option<Injector<'p>>,
+    /// Whether `rx` raises interrupts a sleeping worker can wait on.
+    pub(crate) rx_interrupts: bool,
 }
 
 /// One port as the control worker sees it.
@@ -682,6 +804,8 @@ pub(crate) struct ControlPair<'p> {
     pub(crate) punt: Option<mpsc::Sender<Frame>>,
     /// The kernel's frames for this port, to transmit on `tx`.
     pub(crate) injector: Option<Injector<'p>>,
+    /// Whether `rx` raises interrupts a sleeping worker can wait on.
+    pub(crate) rx_interrupts: bool,
 }
 
 /// A port's interface index as the control plane knows it, then its punt channel, its control
@@ -690,7 +814,7 @@ type CpChannels = (
     InterfaceIndex,
     Option<mpsc::Sender<Frame>>,
     Option<mpsc::Sender<Frame>>,
-    Option<mpsc::Receiver<Frame>>,
+    Option<InjectReceiver>,
 );
 
 /// The interface index the rest of the dataplane knows `port` by, and the channels to and from its
@@ -806,6 +930,7 @@ pub(crate) fn deal_queues<'p, 'eal>(
                 } else {
                     None
                 },
+                rx_interrupts: port.rx_interrupts,
             });
         }
 
@@ -830,6 +955,7 @@ pub(crate) fn deal_queues<'p, 'eal>(
                 tx,
                 punt: control_punt,
                 injector: control_injector,
+                rx_interrupts: port.rx_interrupts,
             })
         } else {
             None
@@ -863,6 +989,7 @@ mod tests {
     ) -> QueueShortfall {
         let (rx, tx) = queue_counts(num_workers, control);
         let config = DevConfig {
+            rx_interrupts: false,
             num_rx_queues: rx,
             num_tx_queues: tx,
             num_hairpin_queues: hairpins,

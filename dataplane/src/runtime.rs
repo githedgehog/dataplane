@@ -445,6 +445,7 @@ fn bring_up_ports<'eal>(
             num_ports,
             interface.mtu,
             interface.rx_descriptors,
+            config.driver.idle().mode == args::IdleMode::Interrupt,
         )?;
         ports.push(started);
     }
@@ -624,6 +625,7 @@ fn run_dpdk_driver(
             workers,
             &ports,
             config.driver.num_workers(),
+            config.driver.idle(),
             &ingredients.factory(),
             status_writer,
             bridge.as_mut(),

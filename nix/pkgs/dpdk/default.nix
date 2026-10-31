@@ -46,6 +46,11 @@ stdenv.mkDerivation {
     # This replaces building the e1000 driver with -mno-avx, which kept the VEX load out but not the
     # SSE store.
     ./patches/x86-mmio-mov.patch
+    # Convert absolute TSC deadlines to the relative 32-bit timeout required by MWAITX.
+    ./patches/amd-mwaitx-relative-timeout.patch
+    # Check MSI-X capacity before allocating eventfds: some PMDs ignore later enable failures,
+    # preventing callers from detecting unusable interrupts and falling back to polling.
+    ./patches/vfio-msix-vector-capacity.patch
   ];
 
   postPatch = ''

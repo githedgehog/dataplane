@@ -67,8 +67,25 @@ fn bind(path: &Path) {
         .expect("Couldn't write bindings!");
 }
 
+/// Expose the DPDK build's WFET support as a Rust cfg.
+fn build_config(sysroot: &str) {
+    println!("cargo:rustc-check-cfg=cfg(rte_arm_feature_wfxt)");
+    let path = format!("{sysroot}/include/rte_build_config.h");
+    let config =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+    // Meson writes a feature it enables as `#define NAME 1`, and one it does not as `#undef NAME`.
+    let wfxt = config.lines().any(|line| {
+        let mut words = line.split_whitespace();
+        words.next() == Some("#define") && words.next() == Some("RTE_ARM_FEATURE_WFXT")
+    });
+    if wfxt {
+        println!("cargo:rustc-cfg=rte_arm_feature_wfxt");
+    }
+}
+
 fn main() {
     dpdk_sysroot_helper::use_sysroot();
+    build_config(&dpdk_sysroot_helper::get_sysroot());
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let depends = [

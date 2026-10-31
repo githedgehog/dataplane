@@ -457,6 +457,7 @@ mod tests {
         let ring = RingPort::new();
         let owner = Ownership::new().unwrap();
         let config = DevConfig {
+            rx_interrupts: false,
             num_rx_queues: 0,
             num_tx_queues: 0,
             num_hairpin_queues: 0,
@@ -506,6 +507,7 @@ mod tests {
         let owner = Ownership::new().unwrap();
         // The ring PMD supports no RSS, so this configuration is rejected before DPDK sees it.
         let config = DevConfig {
+            rx_interrupts: false,
             num_rx_queues: 1,
             num_tx_queues: 1,
             num_hairpin_queues: 0,
@@ -535,6 +537,7 @@ mod tests {
         let ring = RingPort::new();
         let owner = Ownership::new().unwrap();
         let config = DevConfig {
+            rx_interrupts: false,
             num_rx_queues: 1,
             num_tx_queues: 1,
             num_hairpin_queues: 0,
@@ -590,6 +593,7 @@ mod tests {
         let ring = RingPort::new();
         let owner = Ownership::new().unwrap();
         let config = DevConfig {
+            rx_interrupts: false,
             num_rx_queues: 0,
             num_tx_queues: 0,
             num_hairpin_queues: 0,
@@ -614,6 +618,7 @@ mod tests {
         let ring = RingPort::new();
         let owner = Ownership::new().unwrap();
         let config = DevConfig {
+            rx_interrupts: false,
             num_rx_queues: 0,
             num_tx_queues: 0,
             num_hairpin_queues: 0,

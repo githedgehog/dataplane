@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 
+use args::IdleConfig;
+
 use dpdk::lcore::LCore;
 use dpdk::mem::{Mbuf, MbufArray};
 use lifecycle::Subsystem;
@@ -17,7 +19,7 @@ use net::headers::{TryEth, TryHeaders};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::{DynPipeline, NetworkFunction};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use traffic_control::Key;
 
 use crate::drivers::status::WorkerId;
@@ -26,14 +28,13 @@ use crate::packet_processor::{EXPIRY_BUDGET, PipelineFactory, WorkerPipeline};
 
 use super::classes::SoftwareClasses;
 use super::control::addressed_to;
+use super::idle::Idle;
 use super::port::PortQueues;
 use crate::drivers::disposition::Disposition;
 
 #[cfg(all(test, not(feature = "shuttle")))]
 mod tests;
 
-/// Yield after this many consecutive polls without traffic on any port.
-const IDLE_POLLS_BEFORE_YIELD: u32 = 128;
 /// Idle polls between two flow-expiry passes.
 const EXPIRY_IDLE_POLLS: u32 = 64;
 
@@ -62,11 +63,12 @@ struct Scratch<'p> {
 pub(crate) struct Worker<'p> {
     id: WorkerId,
     ports: Vec<WorkerPort<'p>>,
+    idle: IdleConfig,
 }
 
 impl<'p> Worker<'p> {
-    pub(crate) fn new(id: WorkerId, ports: Vec<WorkerPort<'p>>) -> Self {
-        Self { id, ports }
+    pub(crate) fn new(id: WorkerId, ports: Vec<WorkerPort<'p>>, idle: IdleConfig) -> Self {
+        Self { id, ports, idle }
     }
 
     /// Run until cancelled, constructing the non-Send pipeline on this thread.
@@ -79,7 +81,7 @@ impl<'p> Worker<'p> {
         // sweeps (see `expire` below).
         // Registration enables per-lcore mempool caches and releases the id on return or unwind.
         // If registration fails, allocation remains correct through the shared mempool ring.
-        let _lcore = match LCore::register() {
+        let lcore = match LCore::register() {
             Ok(lcore) => Some(lcore),
             Err(e) => {
                 error!(
@@ -116,8 +118,19 @@ impl<'p> Worker<'p> {
                 .join(", ")
         );
 
-        let mut idle_polls: u32 = 0;
+        let mut idle = Idle::new(self.id, self.idle, lcore.as_ref());
+        idle.sleep_on_interrupts(
+            self.ports
+                .iter()
+                .map(|p| (&p.queues.rx, p.queues.rx_interrupts)),
+            self.ports
+                .iter()
+                .filter_map(|p| p.queues.injector.as_ref())
+                .map(|injector| injector.frames.doorbell()),
+        );
         let mut polls: u32 = 0;
+        // Whether the last expiry pass left work over.
+        let mut expiry_behind = false;
         // Counters per port, flushed to that port's watchdog.
         let mut counters = vec![RxCounters::default(); self.ports.len()];
 
@@ -132,7 +145,10 @@ impl<'p> Worker<'p> {
 
         loop {
             polls = polls.wrapping_add(1);
-            if polls.is_multiple_of(CANCEL_CHECK_INTERVAL) {
+            // After a long sleep, the periodic work is due, flow expiry included.
+            let woke_late = idle.checks_due();
+            if polls.is_multiple_of(CANCEL_CHECK_INTERVAL) || woke_late {
+                idle.checked();
                 if subsystem.is_cancelled() {
                     break;
                 }
@@ -140,35 +156,47 @@ impl<'p> Worker<'p> {
             }
 
             let mut saw_frames = false;
-            let mut injected = false;
+            // The queue to watch first if the worker sleeps: one that received, else one whose
+            // port only had frames from the kernel to send.
+            let mut received = None;
+            let mut injected = None;
             for (slot, counters) in counters.iter_mut().enumerate() {
-                if self.inject(slot, counters) {
-                    injected = true;
-                }
+                let had_frames = self.inject(slot, counters);
                 if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut scratch, counters) {
                     saw_frames = true;
+                    received = Some(slot);
+                } else if had_frames && injected.is_none() {
+                    injected = Some(slot);
                 }
             }
+            let busy = received.or(injected);
 
-            // Expire flows after every burst, and now and then while idle: reading the clock on
-            // every idle poll would dominate the idle loop.
-            if saw_frames || idle_polls.is_multiple_of(EXPIRY_IDLE_POLLS) {
-                flows.expire(clock::now(), EXPIRY_BUDGET);
+            // Expire flows after bursts, after long sleeps, and periodically while idle.
+            // Drain expiry backlogs a budget per poll before sleeping again, so expired flows
+            // do not retain table capacity across repeated sleeps.
+            if saw_frames
+                || woke_late
+                || expiry_behind
+                || idle.empty_polls().is_multiple_of(EXPIRY_IDLE_POLLS)
+            {
+                expiry_behind = flows.expire(clock::now(), EXPIRY_BUDGET).behind();
             }
 
-            if saw_frames || injected {
-                idle_polls = 0;
+            if let Some(slot) = busy {
+                idle.busy(slot);
+            } else if expiry_behind {
+                idle.working();
             } else {
-                idle_polls += 1;
-                if idle_polls >= IDLE_POLLS_BEFORE_YIELD {
-                    idle_polls = 0;
-                    std::thread::yield_now();
-                }
+                idle.empty(lcore.as_ref(), self.ports.iter().map(|p| &p.queues.rx));
             }
         }
 
         self.report(&mut counters);
-        debug!(worker = self.id, "DPDK worker stopping");
+        let (sleeps, interrupt_sleeps) = idle.sleeps();
+        info!(
+            worker = self.id,
+            sleeps, interrupt_sleeps, "DPDK worker stopping"
+        );
     }
 
     /// Pat every port's watchdog and flush its counters to it.

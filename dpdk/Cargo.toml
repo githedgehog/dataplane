@@ -21,7 +21,7 @@ errno = { workspace = true }
 hardware = { workspace = true }
 id = { workspace = true, optional = true }
 net = { workspace = true }
-nix = { workspace = true, features = ["sched"] }
+nix = { workspace = true, features = ["event", "sched"] }
 
 serde = { workspace = true, optional = true, features = ["std"] }
 thiserror = { workspace = true }
@@ -32,5 +32,7 @@ dpdk-sysroot-helper = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, default-features = false, features = ["std"] }
+clock = { workspace = true }
 dataplane-dpdk = { path = ".", features = ["test"] }
+nix = { workspace = true, features = ["pthread", "signal"] }
 net = { workspace = true, features = ["test_buffer", "builder", "test_meta"] }
