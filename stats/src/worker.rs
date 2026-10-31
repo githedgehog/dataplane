@@ -40,6 +40,9 @@ pub struct WorkerCounters {
     pub parse_errors: u64,
     /// Frames larger than the receive buffer.
     pub truncated: u64,
+    /// Frames whose checksum state the kernel did not report, treated as needing a refresh
+    /// (kernel driver).
+    pub csum_unknown: u64,
     /// Empty reads (kernel driver).
     pub zero_len: u64,
     /// Frames the kernel dropped before the worker read them (kernel driver).
@@ -53,14 +56,14 @@ pub struct WorkerCounters {
 /// Metric handles for one worker's port queue, registered once and reused for each poll.
 #[derive(Debug)]
 pub struct WorkerMetrics {
-    series: [Registered<metrics::Counter>; 11],
+    series: [Registered<metrics::Counter>; 12],
 }
 
 /// A series' suffix, its description, and the field it carries.
 type Series = (&'static str, &'static str, fn(&WorkerCounters) -> u64);
 
 /// Every series.
-const SERIES: [Series; 11] = [
+const SERIES: [Series; 12] = [
     (
         "rx_packets",
         "packets the worker received on the port",
@@ -95,6 +98,11 @@ const SERIES: [Series; 11] = [
         "truncated",
         "frames received on the port larger than the receive buffer",
         |c| c.truncated,
+    ),
+    (
+        "csum_unknown",
+        "frames received on the port whose checksum state the kernel did not report",
+        |c| c.csum_unknown,
     ),
     ("zero_len", "empty reads on the port", |c| c.zero_len),
     (
@@ -157,6 +165,7 @@ mod exported {
             punt_drops: 55,
             parse_errors: 66,
             truncated: 77,
+            csum_unknown: 133,
             zero_len: 88,
             kernel_drops: 99,
             injected_packets: 111,
@@ -222,6 +231,7 @@ mod exported {
                     punt_drops: later(first.punt_drops),
                     parse_errors: later(first.parse_errors),
                     truncated: later(first.truncated),
+                    csum_unknown: later(first.csum_unknown),
                     zero_len: later(first.zero_len),
                     kernel_drops: later(first.kernel_drops),
                     injected_packets: later(first.injected_packets),
