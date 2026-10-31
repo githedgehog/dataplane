@@ -3,13 +3,13 @@
 
 //! The pipeline stage.
 
-use crate::classify::{Classify, ip_bytes};
+use crate::classify::{Classify, billed_bytes};
 use crate::counts::Counts;
 use crate::rules::{Enforcement, RateLimitReader, RateLimits};
 use concurrency::sync::Arc;
 use config::external::overlay::ratelimit::ColorAction;
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, TryIp, TryIpMut};
+use net::headers::{Net, TryIpMut};
 use net::ip::dscp::Dscp;
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
@@ -124,7 +124,7 @@ impl<Buf: PacketBufferMut, C: Classify> NetworkFunction<Buf> for RateLimiter<C> 
             .iter_mut()
             .filter(|packet| !packet.is_done() && packet.meta().is_overlay())
         {
-            let Some(bytes) = packet.try_ip().map(ip_bytes) else {
+            let Some(bytes) = billed_bytes(packet) else {
                 continue;
             };
             let Some(index) = limits.classifier.classify(packet) else {

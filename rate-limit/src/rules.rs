@@ -19,7 +19,7 @@ use std::time::Instant;
 /// The tokens consumed by a meter component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
-    /// One token per byte of IP packet.
+    /// One token per byte of IP packet, and of anything the frame carries after it.
     Bytes,
     /// One token per packet.
     Packets,
@@ -185,7 +185,7 @@ impl<C> RateLimits<C> {
         metrics::describe_counter!(
             "rate_limit_bytes_total",
             metrics::Unit::Bytes,
-            "IP bytes metered across all rules and workers"
+            "IP bytes, with any trailer forwarded after them, metered across all rules and workers"
         );
         for meter in &self.meters {
             for unit in Unit::ALL {
