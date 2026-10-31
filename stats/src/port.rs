@@ -100,6 +100,108 @@ impl PortMetrics {
     }
 }
 
+/// What a port's state and buffers look like, as of one reading.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub struct PortState {
+    /// Carrier is present.
+    pub link_up: bool,
+    /// Negotiated speed in Mbit/s, if the port knows it.
+    pub speed_mbps: Option<u32>,
+    /// Times the link went up or down since the dataplane started, as often as it was read.
+    pub link_changes: u64,
+    /// Mbufs checked out of the pool the data queues receive into, and its size.
+    pub rx_pool: (u32, u32),
+    /// Mbufs checked out of the pool the control queues receive into and injected frames are
+    /// allocated from, and its size.
+    pub control_pool: (u32, u32),
+}
+
+/// Metric handles for one port's state, registered once and reused for each reading.
+///
+/// `port_mbufs_in_use{pool}` against `port_mbufs{pool}` shows a pool filling before receive
+/// allocation fails and `port_rx_no_mbuf` counts the drops: a leak climbs, a burst comes back down.
+#[derive(Debug)]
+pub struct PortStateMetrics {
+    link_up: Registered<metrics::Gauge>,
+    speed: Registered<metrics::Gauge>,
+    link_changes: Registered<metrics::Counter>,
+    /// In use, then size, for the rx pool and the control pool.
+    pools: [(Registered<metrics::Gauge>, Registered<metrics::Gauge>); 2],
+}
+
+impl PortStateMetrics {
+    /// Register the state of port `port`, the configured interface name.
+    #[must_use]
+    pub fn new(port: &str) -> PortStateMetrics {
+        let spec = |suffix: &str, unit: Unit, description: &str, pool: Option<&str>| {
+            let mut labels = vec![("port".to_string(), port.to_string())];
+            if let Some(pool) = pool {
+                labels.push(("pool".to_string(), pool.to_string()));
+            }
+            let mut spec = MetricSpec::new(format!("{PORT_METRIC_BASE}_{suffix}"), unit, labels);
+            spec.description = description.to_string();
+            spec
+        };
+        let pool = |pool: &str| {
+            (
+                spec(
+                    "mbufs_in_use",
+                    Unit::Count,
+                    "mbufs checked out of the port's pool, in queues, in flight or cached by a core",
+                    Some(pool),
+                )
+                .register(),
+                spec(
+                    "mbufs",
+                    Unit::Count,
+                    "mbufs the port's pool holds",
+                    Some(pool),
+                )
+                .register(),
+            )
+        };
+        PortStateMetrics {
+            link_up: spec(
+                "link_up",
+                Unit::Count,
+                "1 if the port has carrier, else 0",
+                None,
+            )
+            .register(),
+            speed: spec(
+                "link_speed_mbps",
+                Unit::Count,
+                "negotiated link speed in Mbit/s, 0 if down or unknown",
+                None,
+            )
+            .register(),
+            link_changes: spec(
+                "link_changes",
+                Unit::Count,
+                "times the link went up or down, as seen by a once-a-second reading",
+                None,
+            )
+            .register(),
+            pools: [pool("rx"), pool("control")],
+        }
+    }
+
+    /// Publish a reading.
+    pub fn publish(&self, state: &PortState) {
+        self.link_up.metric.set(f64::from(u8::from(state.link_up)));
+        self.speed.metric.set(f64::from(
+            state.speed_mbps.filter(|_| state.link_up).unwrap_or(0),
+        ));
+        self.link_changes.metric.absolute(state.link_changes);
+        for ((in_use, size), (used, of)) in
+            self.pools.iter().zip([state.rx_pool, state.control_pool])
+        {
+            in_use.metric.set(f64::from(used));
+            size.metric.set(f64::from(of));
+        }
+    }
+}
+
 #[cfg(test)]
 mod exported {
     use super::*;
@@ -225,6 +327,42 @@ mod exported {
                 "publishing re-registered the metric family"
             );
         });
+    }
+
+    /// Each part of a port's state reaches its own series, and a link that is down has no speed.
+    #[test]
+    fn state_reaches_its_series() {
+        let scrape = Scrape::default();
+        metrics::with_local_recorder(&scrape, || {
+            let metrics = PortStateMetrics::new("eth0");
+            metrics.publish(&PortState {
+                link_up: true,
+                speed_mbps: Some(100_000),
+                link_changes: 3,
+                rx_pool: (10, 100),
+                control_pool: (2, 20),
+            });
+            assert_eq!(
+                scrape.get("port_link_speed_mbps", &[("port", "eth0")]),
+                Some(100_000.0)
+            );
+            metrics.publish(&PortState {
+                link_up: false,
+                speed_mbps: Some(100_000),
+                link_changes: 4,
+                rx_pool: (11, 100),
+                control_pool: (2, 20),
+            });
+        });
+        let port = [("port", "eth0")];
+        assert_eq!(scrape.get("port_link_up", &port), Some(0.0));
+        assert_eq!(scrape.get("port_link_speed_mbps", &port), Some(0.0));
+        assert_eq!(scrape.counter("port_link_changes", &port), Some(4));
+        let pool = |name, pool| scrape.get(name, &[("port", "eth0"), ("pool", pool)]);
+        assert_eq!(pool("port_mbufs_in_use", "rx"), Some(11.0));
+        assert_eq!(pool("port_mbufs", "rx"), Some(100.0));
+        assert_eq!(pool("port_mbufs_in_use", "control"), Some(2.0));
+        assert_eq!(pool("port_mbufs", "control"), Some(20.0));
     }
 
     #[test]

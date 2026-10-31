@@ -435,6 +435,8 @@ pub(crate) struct Port<'eal> {
     pub(crate) mtu: u16,
     /// The device's bus address and driver, if DPDK would say.
     pub(crate) hardware: Option<String>,
+    /// Where frames received on the data queues live.
+    pub(crate) rx_pool: Pool<'eal>,
     /// Where frames received on the control queue live, and injected frames are allocated from.
     pub(crate) control_pool: Pool<'eal>,
     /// The number of data queues, which is also the index of the control queues.
@@ -687,6 +689,7 @@ impl<'eal> Port<'eal> {
             mac,
             mtu,
             hardware,
+            rx_pool,
             control_pool,
             data_queues: num_workers,
             control,
