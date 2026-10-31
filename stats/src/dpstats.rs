@@ -343,17 +343,13 @@ impl StatsCollector {
                             trace!("received stats update: {delta:#?}");
                             self.update(Some(delta)).await;
                         },
-                        Err(err) => {
-                            match err {
-                                ReceiveError::Closed => {
-                                    error!("stats receiver closed!");
-                                    panic!("stats receiver closed");
-                                }
-                                ReceiveError::SendClosed => {
-                                    info!("all stats senders are closed");
-                                    return;
-                                }
-                            }
+                        // kanal reports the last sender dropping as `SendClosed` if the
+                        // receive starts after it, but as `Closed` if the receive was
+                        // already waiting.  Either way the workers are gone (normal on
+                        // shutdown, including a failed start), so stop collecting.
+                        Err(ReceiveError::Closed | ReceiveError::SendClosed) => {
+                            info!("all stats senders are closed");
+                            return;
                         }
                     }
                 }
@@ -2491,5 +2487,39 @@ mod exported {
                 scrape.nonzero().join("\n")
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod shutdown {
+    use super::{StatsCollector, VpcMapName};
+    use std::time::Duration;
+    use vpcmap::map::VpcMapWriter;
+
+    /// The datapath drops its writer when it stops, including when it fails to start.  The
+    /// collector is usually already waiting on the channel by then, which kanal reports as
+    /// `Closed` rather than `SendClosed`; it used to panic on that and abort the dataplane.
+    #[tokio::test]
+    async fn the_collector_stops_when_its_waiting_receive_loses_the_writer() {
+        let map = VpcMapWriter::<VpcMapName>::new();
+        let (collector, writer) = StatsCollector::new(map.get_reader());
+        let running = tokio::spawn(collector.run());
+        // Let the collector park on the receive before the writer goes away.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(writer);
+        let stopped = tokio::time::timeout(Duration::from_secs(5), running).await;
+        assert!(
+            matches!(stopped, Ok(Ok(()))),
+            "collector did not stop cleanly: {stopped:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_collector_stops_when_the_writer_is_already_gone() {
+        let map = VpcMapWriter::<VpcMapName>::new();
+        let (collector, writer) = StatsCollector::new(map.get_reader());
+        drop(writer);
+        let stopped = tokio::time::timeout(Duration::from_secs(5), collector.run()).await;
+        assert!(stopped.is_ok(), "collector kept running without a writer");
     }
 }
