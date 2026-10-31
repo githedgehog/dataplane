@@ -21,6 +21,7 @@ mod inject;
 mod placement;
 mod port;
 mod worker;
+mod xstats;
 
 use crate::packet_processor::PipelineFactory;
 use std::convert::Infallible;
@@ -34,7 +35,7 @@ use concurrency::thread::BuilderExt;
 use dpdk::mem::{MBUF_BURST, Mbuf};
 use lifecycle::Subsystem;
 use lldp::Link;
-use stats::{PortMetrics, PortState, PortStateMetrics};
+use stats::{PortMetrics, PortState, PortStateMetrics, XstatMetrics};
 use tokio::sync::watch;
 use tracectl::trace_target;
 use tracing::{info, warn};
@@ -171,16 +172,8 @@ impl DriverDpdk {
             .map(|port| (port, PortMetrics::new(port.name.as_ref())))
             .collect();
         let mut counters_unavailable = vec![false; port_metrics.len()];
-        let mut port_states: Vec<(&Port<'_>, PortStateMetrics, LinkWatch)> = ports
-            .iter()
-            .map(|port| {
-                (
-                    port,
-                    PortStateMetrics::new(port.name.as_ref()),
-                    LinkWatch::default(),
-                )
-            })
-            .collect();
+        let mut port_states: Vec<PortTelemetry<'_, '_>> =
+            ports.iter().map(PortTelemetry::new).collect();
         spawn_supervisor(
             scope,
             "dpdk",
@@ -276,12 +269,58 @@ fn publish_links(links: &[(&Port<'_>, watch::Sender<Link>)]) {
     }
 }
 
-/// What the driver last read of a port's link, to count its changes.
-#[derive(Default)]
-struct LinkWatch {
+/// What the driver publishes about a port beyond its counters, and what it keeps to do so.
+struct PortTelemetry<'p, 'eal> {
+    port: &'p Port<'eal>,
+    state: PortStateMetrics,
     /// Whether the link was up at the last reading; `None` before the first.
     up: Option<bool>,
+    /// Times the link went up or down between readings.
     changes: u64,
+    /// The ids of the extended statistics published, and where they are read into.
+    xstat_ids: Vec<u64>,
+    xstat_values: Vec<u64>,
+    xstats: XstatMetrics,
+    /// Whether the last read of the extended statistics failed, to log a failure once.
+    xstats_failed: bool,
+}
+
+impl<'p, 'eal> PortTelemetry<'p, 'eal> {
+    /// Register a port's state and the extended statistics worth publishing, as its PMD names them.
+    fn new(port: &'p Port<'eal>) -> Self {
+        let wanted = match port.dev.xstat_names() {
+            Ok(names) => xstats::wanted(names),
+            Err(e) => {
+                info!(
+                    "port {} has no extended statistics to publish: {e:?}",
+                    port.name
+                );
+                Vec::new()
+            }
+        };
+        info!(
+            "port {} publishes {} extended statistic(s): {}",
+            port.name,
+            wanted.len(),
+            wanted
+                .iter()
+                .map(|x| x.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let names: Vec<&str> = wanted.iter().map(|x| x.name.as_str()).collect();
+        let xstats = XstatMetrics::new(port.name.as_ref(), &names);
+        PortTelemetry {
+            port,
+            state: PortStateMetrics::new(port.name.as_ref()),
+            up: None,
+            changes: 0,
+            xstat_ids: wanted.iter().map(|x| x.id).collect(),
+            xstat_values: vec![0; wanted.len()],
+            xstats,
+            xstats_failed: false,
+        }
+    }
 }
 
 /// Publish each port's link and the occupancy of its pools.
@@ -289,24 +328,44 @@ struct LinkWatch {
 /// The link is read here as well as in [`publish_links`], which only covers ports with a tap; a
 /// read is a register access, once a second. A link that cannot be read counts as down, as it does
 /// there. Changes are counted between readings, so a flap shorter than the polling period is missed.
-fn publish_port_states(ports: &mut [(&Port<'_>, PortStateMetrics, LinkWatch)]) {
-    for (port, metrics, watch) in ports {
+fn publish_port_states(ports: &mut [PortTelemetry<'_, '_>]) {
+    for telemetry in ports {
+        let port = telemetry.port;
         let link = port.dev.link().ok();
         let up = link.is_some_and(|link| link.up);
-        if watch.up.is_some_and(|was| was != up) {
-            watch.changes += 1;
+        if telemetry.up.is_some_and(|was| was != up) {
+            telemetry.changes += 1;
         }
-        watch.up = Some(up);
+        telemetry.up = Some(up);
         let pool = |pool: &dpdk::mem::Pool<'_>| (pool.in_use(), pool.capacity());
-        metrics.publish(&PortState {
+        telemetry.state.publish(&PortState {
             link_up: up,
             speed_mbps: link
                 .map(|link| link.speed_mbps)
                 .filter(|&speed| speed != u32::MAX),
-            link_changes: watch.changes,
+            link_changes: telemetry.changes,
             rx_pool: pool(&port.rx_pool),
             control_pool: pool(&port.control_pool),
         });
+
+        match port
+            .dev
+            .xstats(&telemetry.xstat_ids, &mut telemetry.xstat_values)
+        {
+            Ok(()) => {
+                telemetry.xstats.publish(&telemetry.xstat_values);
+                telemetry.xstats_failed = false;
+            }
+            Err(e) => {
+                if !telemetry.xstats_failed {
+                    warn!(
+                        "port {} would not report its extended statistics: {e:?}",
+                        port.name
+                    );
+                }
+                telemetry.xstats_failed = true;
+            }
+        }
     }
 }
 
