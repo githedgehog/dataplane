@@ -1295,8 +1295,27 @@ impl Headers {
             debug!("the datagram ends inside its transport header: can't recompute its checksum");
             return true;
         }
+        if self.has_disabled_ipv4_udp_checksum() {
+            trace!("the sender computed no UDP checksum: leave it zero");
+            return true;
+        }
         self.compute_transport_checksum(payload, covered);
         true
+    }
+
+    /// Whether this is an IPv4 UDP datagram whose sender computed no checksum, which a zero says
+    /// ([RFC 768]). A refresh leaves it so: a checksum nobody computed from the original octets
+    /// would only make the datagram look verified. A partial checksum, which the kernel leaves for
+    /// a refresh to finish, is never zero: it is a folded sum over a pseudo-header with nonzero
+    /// words.
+    ///
+    /// [RFC 768]: https://datatracker.ietf.org/doc/html/rfc768
+    fn has_disabled_ipv4_udp_checksum(&self) -> bool {
+        matches!(
+            (&self.net, &self.transport),
+            (Some(Net::Ipv4(_)), Some(Transport::Udp(udp)))
+                if udp.checksum().map(u16::from) == Some(0)
+        )
     }
 
     /// Compute the transport checksum from scratch, leaving IPv4 checksums unchanged.
