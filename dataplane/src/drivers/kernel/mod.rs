@@ -208,7 +208,11 @@ impl DriverKernel {
             workers_subsystem,
             worker_monitors,
             status_writer,
-            move || publish_links(&links),
+            move || {
+                publish_links(&links);
+                // The kernel's ports are the kernel's to report on.
+                Vec::new()
+            },
         )?;
         info!("Kernel driver started successfully");
         Ok(())

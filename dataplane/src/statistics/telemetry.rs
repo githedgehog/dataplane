@@ -252,6 +252,7 @@ mod tests {
         writer.publish(DriverStatus {
             max_rx_batch: 32,
             workers: vec![worker],
+            ports: Vec::new(),
         });
 
         let recorder = PrometheusBuilder::new().build_recorder();

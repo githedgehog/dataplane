@@ -131,6 +131,133 @@ pub struct DriverStatus {
     /// The most frames one receive call can return, which differs between drivers.
     pub max_rx_batch: usize,
     pub workers: Vec<WorkerStatus>,
+    /// The driver's ports, as of the supervisor's last poll; none for a driver whose ports are the
+    /// kernel's to report on.
+    pub ports: Vec<PortReport>,
+}
+
+/// One of the driver's ports, as of one reading.
+#[derive(Clone, Debug, Default)]
+pub struct PortReport {
+    /// The configured interface name.
+    pub name: String,
+    /// Its bus address and driver, if it would say.
+    pub hardware: Option<String>,
+    /// Its MAC address.
+    pub mac: String,
+    /// Its MTU.
+    pub mtu: u16,
+    /// Whether it has carrier.
+    pub link_up: bool,
+    /// Its negotiated speed in Mbit/s, if known.
+    pub speed_mbps: Option<u32>,
+    /// Times the link went up or down, as seen once a second.
+    pub link_changes: u64,
+    /// Its counters, if it would report them.
+    pub counters: Option<stats::PortCounters>,
+    /// Mbufs in use, and the size, of its rx and control pools.
+    pub rx_pool: (u32, u32),
+    pub control_pool: (u32, u32),
+    /// The extended statistics it publishes, by its PMD's names.
+    pub xstats: Vec<(String, u64)>,
+}
+
+/// `show dpdk port`: what each port is, and its link and pools.
+pub struct DpdkPortsCli(pub DriverStatusReader);
+
+/// `show dpdk port stats`: each port's counters and extended statistics.
+pub struct DpdkPortStatsCli(pub DriverStatusReader);
+
+/// The status's ports, or why there are none.
+fn ports_or(f: &mut String, status: &DriverStatus) -> bool {
+    use std::fmt::Write;
+    if status.ports.is_empty() {
+        let _ = writeln!(f, " (no DPDK ports: the driver in use does not report any)");
+        false
+    } else {
+        true
+    }
+}
+
+impl CliDataProvider for DpdkPortsCli {
+    fn provide(&self) -> String {
+        use std::fmt::Write;
+        let status = self.0.load();
+        let mut f = Heading("DPDK ports").to_string();
+        if !ports_or(&mut f, &status) {
+            return f;
+        }
+        let _ = writeln!(
+            f,
+            "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:>7}  {:>17}  {:>17}  {:<8}",
+            "port", "mac", "mtu", "link", "speed", "changes", "rx-pool", "control-pool", "hardware"
+        );
+        let pool = |(used, size): (u32, u32)| format!("{used}/{size}");
+        for port in &status.ports {
+            let _ = writeln!(
+                f,
+                "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:>7}  {:>17}  {:>17}  {:<8}",
+                port.name,
+                port.mac,
+                port.mtu,
+                if port.link_up { "up" } else { "down" },
+                port.speed_mbps
+                    .filter(|_| port.link_up)
+                    .map_or_else(|| "-".to_string(), |speed| format!("{}G", speed / 1000)),
+                port.link_changes,
+                pool(port.rx_pool),
+                pool(port.control_pool),
+                port.hardware.as_deref().unwrap_or("-")
+            );
+        }
+        f
+    }
+}
+
+impl CliDataProvider for DpdkPortStatsCli {
+    fn provide(&self) -> String {
+        use std::fmt::Write;
+        let status = self.0.load();
+        let mut f = Heading("DPDK port counters").to_string();
+        if !ports_or(&mut f, &status) {
+            return f;
+        }
+        let _ = writeln!(
+            f,
+            "   {:<16}  {:>16}  {:>16}  {:>12}  {:>10}  {:>10}  {:>10}",
+            "port", "rx-packets", "tx-packets", "rx-missed", "rx-errors", "tx-errors", "rx-nombuf"
+        );
+        for port in &status.ports {
+            match &port.counters {
+                Some(c) => {
+                    let _ = writeln!(
+                        f,
+                        "   {:<16}  {:>16}  {:>16}  {:>12}  {:>10}  {:>10}  {:>10}",
+                        port.name,
+                        c.rx_packets,
+                        c.tx_packets,
+                        c.rx_missed,
+                        c.rx_errors,
+                        c.tx_errors,
+                        c.rx_no_mbuf
+                    );
+                }
+                None => {
+                    let _ = writeln!(f, "   {:<16}  (counters unavailable)", port.name);
+                }
+            }
+        }
+        for port in &status.ports {
+            let _ = writeln!(f, "\n {} extended statistics", port.name);
+            if port.xstats.is_empty() {
+                let _ = writeln!(f, "   (none published)");
+            }
+            for (name, value) in &port.xstats {
+                let _ = writeln!(f, "   {name:<40}  {value:>16}");
+            }
+        }
+        f
+    }
 }
 
 // ====== Types for sharing DriverStatus ===== //
@@ -378,4 +505,58 @@ fn fmt_load(
             totals.expiry_behind
         )
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status_with(ports: Vec<PortReport>) -> DriverStatusReader {
+        let (writer, reader) = driver_status_access();
+        writer.publish(DriverStatus {
+            ports,
+            ..DriverStatus::default()
+        });
+        reader
+    }
+
+    /// A driver with no ports of its own says so, rather than showing an empty table.
+    #[test]
+    fn no_ports_is_said() {
+        let reader = status_with(Vec::new());
+        assert!(
+            DpdkPortsCli(reader.clone())
+                .provide()
+                .contains("no DPDK ports")
+        );
+        assert!(DpdkPortStatsCli(reader).provide().contains("no DPDK ports"));
+    }
+
+    /// Each port shows its link and pools, and its counters and extended statistics.
+    #[test]
+    fn ports_show_what_was_read() {
+        let reader = status_with(vec![PortReport {
+            name: "eth7".to_string(),
+            mac: "02:00:00:00:00:07".to_string(),
+            mtu: 9000,
+            link_up: true,
+            speed_mbps: Some(100_000),
+            link_changes: 2,
+            counters: Some(stats::PortCounters {
+                rx_missed: 4321,
+                ..stats::PortCounters::default()
+            }),
+            rx_pool: (12, 4095),
+            xstats: vec![("rx_discards_phy".to_string(), 77)],
+            ..PortReport::default()
+        }]);
+        let ports = DpdkPortsCli(reader.clone()).provide();
+        for shown in ["eth7", "9000", "up", "100G", "12/4095"] {
+            assert!(ports.contains(shown), "{shown} missing from:\n{ports}");
+        }
+        let stats = DpdkPortStatsCli(reader).provide();
+        for shown in ["4321", "rx_discards_phy", "77"] {
+            assert!(stats.contains(shown), "{shown} missing from:\n{stats}");
+        }
+    }
 }

@@ -34,7 +34,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use super::load::{LoadReader, LoadTotals};
 use super::status::{
-    DriverStatus, DriverStatusWriter, RxQueue, RxTaskStatus, WorkerEndResult, WorkerId,
+    DriverStatus, DriverStatusWriter, PortReport, RxQueue, RxTaskStatus, WorkerEndResult, WorkerId,
     WorkerLoadStatus, WorkerState, WorkerStatus,
 };
 use super::watchdog::{Activity, RxCounters, Watchdog};
@@ -148,7 +148,7 @@ impl<'scope, E> WorkerMonitor<'scope, E> {
 /// `driver` names the driver in the supervisor's thread name and logs. The supervisor
 /// just joins-and-logs on worker termination; worker fatal reporting is left to the driver.
 /// `publish_counters` runs before the first poll, on each poll, and once after all workers have
-/// stopped.
+/// stopped, and returns what the driver has to say about its ports, for the status.
 ///
 /// # Errors
 ///
@@ -160,7 +160,7 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
     subsystem: &Subsystem,
     mut monitors: Vec<WorkerMonitor<'scope, E>>,
     status_writer: DriverStatusWriter,
-    mut publish_counters: impl FnMut() + Send + 'scope,
+    mut publish_counters: impl FnMut() -> Vec<PortReport> + Send + 'scope,
 ) -> std::io::Result<()> {
     // the two time intervals that matter for liveness detection
     let check_period = Duration::from_secs(u64::from(TASK_CHECK_PERIOD));
@@ -192,10 +192,11 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
             let mut next_watchdog_check = last_poll.add(check_period);
 
             // Before the first poll, so that the workers can be seen from the start.
-            publish_counters();
+            let ports = publish_counters();
             status_writer.publish(DriverStatus {
                 max_rx_batch,
                 workers: workers_status.clone(),
+                ports,
             });
 
             loop {
@@ -270,22 +271,24 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                     break;
                 }
 
-                publish_counters();
+                let ports = publish_counters();
 
                 // publish the status of the driver
                 status_writer.publish(DriverStatus {
                     max_rx_batch,
                     workers: workers_status.clone(),
+                    ports,
                 });
             }
 
-            publish_counters();
+            let ports = publish_counters();
 
             // update status on termination. This is in case we
             // want to log the last state
             let last = DriverStatus {
                 max_rx_batch,
                 workers: workers_status.clone(),
+                ports,
             };
             status_writer.publish(last);
 
