@@ -236,6 +236,11 @@ pub struct WorkerLoadCounters<'a> {
     pub interrupt_sleeps: u64,
     /// The idle mode the worker idles in now, one of those it was registered with.
     pub effective_mode: &'a str,
+    /// Flows the worker's timer wheel expired.
+    pub expired_flows: u64,
+    /// Expiry passes that ended with work left over: a worker that is behind on every pass is
+    /// holding expired flows in the table.
+    pub expiry_behind: u64,
 }
 
 /// Metric handles for one polling worker's load, registered once and reused for each poll.
@@ -252,6 +257,8 @@ pub struct WorkerLoadMetrics {
     monitor_sleeps: Registered<metrics::Counter>,
     interrupt_sleeps: Registered<metrics::Counter>,
     modes: Vec<(String, Registered<metrics::Gauge>)>,
+    expired_flows: Registered<metrics::Counter>,
+    expiry_behind: Registered<metrics::Counter>,
 }
 
 impl WorkerLoadMetrics {
@@ -297,6 +304,20 @@ impl WorkerLoadMetrics {
                 .collect(),
             monitor_sleeps: sleeps("monitor"),
             interrupt_sleeps: sleeps("interrupt"),
+            expired_flows: spec(
+                "expired_flows",
+                Unit::Count,
+                "flows the worker's timer wheel expired and removed from the flow table",
+                None,
+            )
+            .register(),
+            expiry_behind: spec(
+                "expiry_behind",
+                Unit::Count,
+                "expiry passes that ended with expired flows left for the next pass",
+                None,
+            )
+            .register(),
             modes: modes
                 .iter()
                 .map(|mode| {
@@ -324,6 +345,8 @@ impl WorkerLoadMetrics {
         }
         self.monitor_sleeps.metric.absolute(load.monitor_sleeps);
         self.interrupt_sleeps.metric.absolute(load.interrupt_sleeps);
+        self.expired_flows.metric.absolute(load.expired_flows);
+        self.expiry_behind.metric.absolute(load.expiry_behind);
         for (mode, registered) in &self.modes {
             registered
                 .metric
@@ -443,6 +466,8 @@ mod exported {
                 monitor_sleeps: 4,
                 interrupt_sleeps: 5,
                 effective_mode: "monitor",
+                expired_flows: 6,
+                expiry_behind: 7,
             });
         });
         let time = |state| {
@@ -456,6 +481,9 @@ mod exported {
         let sleeps =
             |kind| scrape.counter("worker_idle_sleeps", &[("worker", "3"), ("kind", kind)]);
         assert_eq!((sleeps("monitor"), sleeps("interrupt")), (Some(4), Some(5)));
+        let worker = [("worker", "3")];
+        assert_eq!(scrape.counter("worker_expired_flows", &worker), Some(6));
+        assert_eq!(scrape.counter("worker_expiry_behind", &worker), Some(7));
         let mode = |mode| {
             scrape.get(
                 "worker_idle_mode",
