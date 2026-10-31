@@ -51,6 +51,8 @@
 //!   fields only.  Use when checksums are irrelevant (e.g., ACL matching
 //!   tests).
 //!
+//! Headers attached with `.embedded()` are checksummed either way, when they are attached.
+//!
 //! # IPv6 Extension Headers
 //!
 //! Extension headers are supported as individual typed layers:
@@ -68,6 +70,7 @@ use std::num::NonZero;
 
 use etherparse::IpNumber;
 
+use crate::buffer::TestBuffer;
 use crate::checksum::Checksum;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
@@ -76,23 +79,27 @@ use crate::headers::{EmbeddedHeadersBuilder, EmbeddedTransport, Headers};
 use crate::icmp4::Icmp4;
 use crate::icmp4::TruncatedIcmp4;
 use crate::icmp6::Icmp6;
+use crate::icmp6::Icmp6ChecksumPayload;
 use crate::icmp6::TruncatedIcmp6;
 use crate::ip::NextHeader;
 use crate::ip_auth::{Ipv4Auth, Ipv6Auth};
 use crate::ipv4::Ipv4;
 use crate::ipv4::Ipv4LengthError;
 use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Routing};
-use crate::parse::DeParse;
+use crate::packet::{InvalidPacket, Packet};
+use crate::parse::{DeParse, DeParseError};
 use crate::tcp::port::TcpPort;
-use crate::tcp::{Tcp, TruncatedTcp};
+use crate::tcp::{Tcp, TcpChecksumPayload, TruncatedTcp};
 #[cfg(test)]
 use crate::udp::UdpChecksum;
 use crate::udp::port::UdpPort;
-use crate::udp::{Udp, UdpEncap};
+use crate::udp::{TruncatedUdp, Udp, UdpChecksumPayload, UdpEncap};
 use crate::vlan::{Pcp, Vid, Vlan};
 use crate::vxlan::{Vni, Vxlan};
 
 use super::{Net, NetExt, Transport};
+
+pub mod quick;
 
 /// Errors that can occur when finalizing a header stack.
 ///
@@ -120,6 +127,22 @@ pub enum BuildError {
     /// header.
     #[error("IPv4 total length overflow (header + payload exceeds u16): {0}")]
     Ipv4PayloadOverflow(Ipv4LengthError),
+}
+
+/// Errors that can occur when finalizing a header stack into a [`Packet`].
+#[derive(Debug, thiserror::Error)]
+pub enum BuildPacketError {
+    /// Length computation failed (see [`BuildError`]).
+    #[error(transparent)]
+    Build(#[from] BuildError),
+
+    /// The assembled headers could not be written out.
+    #[error("failed to deparse headers: {0:?}")]
+    Deparse(DeParseError<()>),
+
+    /// The written bytes did not parse back as a packet.
+    #[error("built packet does not parse")]
+    Parse(#[source] InvalidPacket<TestBuffer>),
 }
 
 /// Sub-builder for the headers embedded inside an ICMP error message.
@@ -172,9 +195,7 @@ impl EmbeddedAssembler {
     pub fn udp(mut self, src: UdpPort, dst: UdpPort, f: impl FnOnce(&mut Udp)) -> Self {
         let mut udp = Udp::new(src, dst);
         f(&mut udp);
-        self.transport = Some(EmbeddedTransport::Udp(
-            crate::udp::TruncatedUdp::FullHeader(udp),
-        ));
+        self.transport = Some(EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp)));
         self
     }
 
@@ -225,11 +246,12 @@ fn set_net_next_header(net: &mut Option<Net>, nh: NextHeader) {
 /// 1. `NextHeader` on the IP layer to match the transport variant
 /// 2. IP payload length to the transport header size
 /// 3. IPv4 header checksum (if applicable)
+/// 4. transport checksum (see [`checksum_embedded_transport`])
 ///
 /// Used by [`EmbeddedAssembler::finish`].
 fn fixup_embedded(
     mut net: Option<Net>,
-    transport: Option<EmbeddedTransport>,
+    mut transport: Option<EmbeddedTransport>,
 ) -> super::EmbeddedHeaders {
     // Set NextHeader based on transport type.
     let nh = match &transport {
@@ -257,10 +279,52 @@ fn fixup_embedded(
         None => {}
     }
 
+    if let (Some(net), Some(transport)) = (&net, &mut transport) {
+        checksum_embedded_transport(net, transport);
+    }
+
     let mut b = EmbeddedHeadersBuilder::default();
     b.net(net).transport(transport);
 
     b.build().unwrap_or_else(|_| unreachable!())
+}
+
+/// Checksum a full embedded transport header over an empty payload, as its sender would have.
+///
+/// Nothing else sets it: checksum updates skip embedded transports, which may be truncated.
+fn checksum_embedded_transport(net: &Net, transport: &mut EmbeddedTransport) {
+    // Computing or setting the checksum of a full header cannot fail (each `Error` is `()`, and
+    // only the truncated variants return it), so the `Err` arms below are unreachable.
+    match transport {
+        EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp)) => {
+            tcp.update_checksum(&TcpChecksumPayload::new(net, &[]))
+                .unwrap_or_else(|()| unreachable!("full TCP header checksum"));
+        }
+        EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp)) => {
+            udp.update_checksum(&UdpChecksumPayload::new(net, &[]))
+                .unwrap_or_else(|()| unreachable!("full UDP header checksum"));
+        }
+        EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp)) => {
+            icmp.update_checksum(&[])
+                .unwrap_or_else(|()| unreachable!("full ICMPv4 header checksum"));
+        }
+        EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(icmp)) => {
+            // The ICMPv6 checksum needs an IPv6 pseudo-header, so ICMPv6 quoted in IPv4 has none.
+            if let Net::Ipv6(ip) = net {
+                icmp.update_checksum(&Icmp6ChecksumPayload::new(
+                    ip.source().inner(),
+                    ip.destination(),
+                    &[],
+                ))
+                .unwrap_or_else(|()| unreachable!("full ICMPv6 header checksum"));
+            }
+        }
+        // Truncated quotes cannot be checksummed.
+        EmbeddedTransport::Tcp(TruncatedTcp::PartialHeader(_))
+        | EmbeddedTransport::Udp(TruncatedUdp::PartialHeader(_))
+        | EmbeddedTransport::Icmp4(TruncatedIcmp4::PartialHeader(_))
+        | EmbeddedTransport::Icmp6(TruncatedIcmp6::PartialHeader(_)) => {}
+    }
 }
 
 pub use super::Within;
@@ -376,10 +440,9 @@ where
 
     /// Install the final layer and compute length fields only.
     ///
-    /// Checksums are left as-is.  Useful when the caller does not have a
-    /// real payload or does not care about checksum correctness (e.g.,
-    /// testing header layout or ACL matching where only field values
-    /// matter).
+    /// The outer checksums are left as-is; embedded headers were already checksummed by
+    /// `.embedded()`.  Useful when the caller does not care about checksum correctness
+    /// (e.g., testing header layout or ACL matching where only field values matter).
     ///
     /// # Errors
     ///
@@ -390,6 +453,38 @@ where
         self.headers.install(self.working);
         fixup_lengths(&mut self.headers, &[])?;
         Ok(self.headers)
+    }
+
+    /// Install the final layer and build a [`Packet`] with lengths and checksums set.
+    ///
+    /// # Errors
+    ///
+    /// See [`BuildPacketError`].
+    pub fn build_packet(self) -> Result<Packet<TestBuffer>, BuildPacketError> {
+        self.build_packet_with_payload([])
+    }
+
+    /// Like [`build_packet`](Self::build_packet), with `payload` after the headers
+    /// (for VXLAN, the inner frame).
+    ///
+    /// # Errors
+    ///
+    /// See [`BuildPacketError`].
+    pub fn build_packet_with_payload(
+        self,
+        payload: impl AsRef<[u8]>,
+    ) -> Result<Packet<TestBuffer>, BuildPacketError> {
+        let payload = payload.as_ref();
+        let headers = self.build_headers_with_payload(payload)?;
+
+        let hdr_len = usize::from(headers.size().get());
+        let mut data = vec![0u8; hdr_len + payload.len()];
+        headers
+            .deparse(&mut data[..hdr_len])
+            .map_err(BuildPacketError::Deparse)?;
+        data[hdr_len..].copy_from_slice(payload);
+
+        Packet::new(TestBuffer::from_raw_data(&data)).map_err(BuildPacketError::Parse)
     }
 
     layer_method!(
@@ -2328,6 +2423,310 @@ mod tests {
                     Vxlan::PORT,
                     "VXLAN conform must override UDP dst port to 4789",
                 );
+            },
+        );
+    }
+
+    /// Whether the transport quoted in `headers` carries a valid checksum over an empty payload.
+    fn quoted_checksum_is_valid(headers: &Headers) -> bool {
+        let embedded = headers.embedded_ip().unwrap();
+        let net = embedded.net.as_ref().unwrap();
+        match embedded.transport.as_ref().unwrap() {
+            EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp)) => tcp
+                .validate_checksum(&TcpChecksumPayload::new(net, &[]))
+                .is_ok(),
+            EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp)) => udp
+                .validate_checksum(&UdpChecksumPayload::new(net, &[]))
+                .is_ok(),
+            EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp)) => {
+                icmp.validate_checksum(&[]).is_ok()
+            }
+            EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(icmp)) => {
+                let Net::Ipv6(ip) = net else {
+                    panic!("ICMPv6 quoted in IPv4");
+                };
+                icmp.validate_checksum(&Icmp6ChecksumPayload::new(
+                    ip.source().inner(),
+                    ip.destination(),
+                    &[],
+                ))
+                .is_ok()
+            }
+            other => panic!("expected a full quoted header, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn embedded_ipv4_transports_get_a_valid_checksum() {
+        let quotes: [fn(EmbeddedAssembler) -> EmbeddedAssembler; 3] = [
+            |inner| {
+                inner.tcp(
+                    TcpPort::new_checked(40000).unwrap(),
+                    TcpPort::new_checked(80).unwrap(),
+                    |_| {},
+                )
+            },
+            |inner| {
+                inner.udp(
+                    UdpPort::new_checked(5000).unwrap(),
+                    UdpPort::new_checked(53).unwrap(),
+                    |_| {},
+                )
+            },
+            |inner| {
+                inner.icmp4(Icmp4::with_type(crate::icmp4::Icmp4Type::EchoRequest(
+                    Icmp4EchoRequest { id: 7, seq: 1 },
+                )))
+            },
+        ];
+        for quote in quotes {
+            let headers = HeaderStack::new()
+                .eth(|_| {})
+                .ipv4(|_| {})
+                .icmp4(|_| {})
+                .dest_unreachable(|_| {})
+                .embedded(|inner| {
+                    quote(inner.ipv4(|ip| {
+                        ip.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(10, 0, 0, 1)).unwrap());
+                        ip.set_destination(Ipv4Addr::new(10, 0, 0, 2));
+                    }))
+                })
+                .build_headers()
+                .unwrap();
+            assert!(quoted_checksum_is_valid(&headers), "{headers:?}");
+        }
+    }
+
+    #[test]
+    fn embedded_ipv6_transports_get_a_valid_checksum() {
+        use crate::ipv6::UnicastIpv6Addr;
+        use std::net::Ipv6Addr;
+
+        // ICMPv6 is checksummed over a pseudo-header, so the quoted addresses must count.
+        let quotes: [fn(EmbeddedAssembler) -> EmbeddedAssembler; 3] = [
+            |inner| {
+                inner.tcp(
+                    TcpPort::new_checked(40000).unwrap(),
+                    TcpPort::new_checked(80).unwrap(),
+                    |_| {},
+                )
+            },
+            |inner| {
+                inner.udp(
+                    UdpPort::new_checked(5000).unwrap(),
+                    UdpPort::new_checked(53).unwrap(),
+                    |_| {},
+                )
+            },
+            |inner| {
+                inner.icmp6(Icmp6::with_type(crate::icmp6::Icmp6Type::EchoRequest(
+                    Icmp6EchoRequest { id: 7, seq: 1 },
+                )))
+            },
+        ];
+        for quote in quotes {
+            let headers = HeaderStack::new()
+                .eth(|_| {})
+                .ipv6(|_| {})
+                .icmp6(|_| {})
+                .dest_unreachable6(|_| {})
+                .embedded(|inner| {
+                    quote(inner.ipv6(|ip| {
+                        ip.set_source(
+                            UnicastIpv6Addr::new("2001:db8::1".parse::<Ipv6Addr>().unwrap())
+                                .unwrap(),
+                        );
+                        ip.set_destination("2001:db8:1::2".parse::<Ipv6Addr>().unwrap());
+                    }))
+                })
+                .build_headers()
+                .unwrap();
+            assert!(quoted_checksum_is_valid(&headers), "{headers:?}");
+        }
+    }
+
+    // -- build_packet tests ---------------------------------------------------
+
+    /// Recomputing checksums on a copy must not change the headers.
+    fn assert_checksums_current(packet: &Packet<TestBuffer>) {
+        use crate::headers::TryHeaders;
+        let mut recomputed = packet.deep_copy().unwrap();
+        recomputed.update_checksums();
+        assert_eq!(packet.headers(), recomputed.headers(), "stale checksum");
+    }
+
+    #[test]
+    fn build_packet_ipv4_tcp() {
+        let packet = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(10, 0, 0, 1)).unwrap());
+                ip.set_destination(Ipv4Addr::new(10, 0, 0, 2));
+            })
+            .tcp(|tcp| {
+                tcp.set_source(TcpPort::new_checked(12345).unwrap());
+                tcp.set_destination(TcpPort::new_checked(80).unwrap());
+            })
+            .build_packet()
+            .unwrap();
+
+        assert_eq!(packet.payload().as_ref(), &[] as &[u8]);
+        assert_checksums_current(&packet);
+    }
+
+    #[test]
+    fn build_packet_ipv4_udp_with_payload() {
+        let payload = [0xde, 0xad, 0xbe, 0xef];
+        let packet = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .udp(|_| {})
+            .build_packet_with_payload(payload)
+            .unwrap();
+
+        assert_eq!(packet.payload().as_ref(), payload);
+        assert_checksums_current(&packet);
+    }
+
+    #[test]
+    fn build_packet_vxlan_carries_inner_frame() {
+        let inner = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .build_packet()
+            .unwrap()
+            .serialize()
+            .unwrap();
+
+        let packet = HeaderStack::new()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .udp(|_| {})
+            .vxlan(|_| {})
+            .build_packet_with_payload(inner.as_ref())
+            .unwrap();
+
+        assert_eq!(packet.payload().as_ref(), inner.as_ref());
+    }
+
+    #[test]
+    fn build_packet_icmp4_error_with_embedded() {
+        use crate::headers::TryHeaders;
+        let packet = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .icmp4(|_| {})
+            .dest_unreachable(|_| {})
+            .embedded(|inner| {
+                inner.ipv4(|_| {}).udp(
+                    UdpPort::new_checked(5000).unwrap(),
+                    UdpPort::new_checked(53).unwrap(),
+                    |_| {},
+                )
+            })
+            .build_packet()
+            .unwrap();
+
+        assert!(packet.headers().embedded_ip().is_some());
+        assert_checksums_current(&packet);
+    }
+
+    // -- build_packet fuzz tests -----------------------------------------------
+
+    /// Payloads stay within a frame the test buffer comfortably holds.
+    const MAX_FUZZ_PAYLOAD: usize = 1500;
+
+    #[test]
+    fn fuzz_built_packets_have_valid_checksums() {
+        bolero::check!().with_type().cloned().for_each(
+            |(eth, ipv4, ipv6, tcp, udp, payload, v6, use_tcp): (
+                Eth,
+                Ipv4,
+                Ipv6,
+                Tcp,
+                Udp,
+                Vec<u8>,
+                bool,
+                bool,
+            )| {
+                // A UDP payload to the VXLAN port would be parsed as VXLAN.
+                if payload.len() > MAX_FUZZ_PAYLOAD
+                    || (!use_tcp && udp.destination() == Vxlan::PORT)
+                {
+                    return;
+                }
+                let stack = HeaderStack::new().eth(inject(eth));
+                let packet = match (v6, use_tcp) {
+                    (false, true) => stack
+                        .ipv4(inject(ipv4))
+                        .tcp(inject(tcp))
+                        .build_packet_with_payload(&payload),
+                    (false, false) => stack
+                        .ipv4(inject(ipv4))
+                        .udp(inject(udp))
+                        .build_packet_with_payload(&payload),
+                    (true, true) => stack
+                        .ipv6(inject(ipv6))
+                        .tcp(inject(tcp))
+                        .build_packet_with_payload(&payload),
+                    (true, false) => stack
+                        .ipv6(inject(ipv6))
+                        .udp(inject(udp))
+                        .build_packet_with_payload(&payload),
+                }
+                .unwrap();
+
+                assert_eq!(packet.payload().as_ref(), &payload[..]);
+                assert_checksums_current(&packet);
+            },
+        );
+    }
+
+    #[test]
+    fn fuzz_built_icmp_errors_quote_valid_checksums() {
+        use crate::headers::TryHeaders;
+
+        bolero::check!().with_type().cloned().for_each(
+            |(outer4, inner4, outer6, inner6, tcp, udp, v6, use_tcp): (
+                Ipv4,
+                Ipv4,
+                Ipv6,
+                Ipv6,
+                Tcp,
+                Udp,
+                bool,
+                bool,
+            )| {
+                let (tcp_src, tcp_dst) = (tcp.source(), tcp.destination());
+                let (udp_src, udp_dst) = (udp.source(), udp.destination());
+                let quote = move |inner: EmbeddedAssembler| {
+                    if use_tcp {
+                        inner.tcp(tcp_src, tcp_dst, inject(tcp))
+                    } else {
+                        inner.udp(udp_src, udp_dst, inject(udp))
+                    }
+                };
+                let packet = if v6 {
+                    HeaderStack::new()
+                        .eth(|_| {})
+                        .ipv6(inject(outer6))
+                        .icmp6(|_| {})
+                        .dest_unreachable6(|_| {})
+                        .embedded(|inner| quote(inner.ipv6(inject(inner6))))
+                        .build_packet()
+                } else {
+                    HeaderStack::new()
+                        .eth(|_| {})
+                        .ipv4(inject(outer4))
+                        .icmp4(|_| {})
+                        .dest_unreachable(|_| {})
+                        .embedded(|inner| quote(inner.ipv4(inject(inner4))))
+                        .build_packet()
+                }
+                .unwrap();
+
+                assert_checksums_current(&packet);
+                assert!(quoted_checksum_is_valid(packet.headers()), "{packet:?}");
             },
         );
     }

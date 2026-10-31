@@ -921,17 +921,20 @@ pub(crate) type Poll = Vec<Pick>;
 
 #[cfg(test)]
 pub(crate) fn settled(body: impl FnOnce()) {
-    static RUNTIME: concurrency::sync::LazyLock<tokio::runtime::Runtime> =
-        concurrency::sync::LazyLock::new(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build tokio runtime")
-        });
+    // One runtime per test thread: `drain` counts all of the runtime's tasks, so a
+    // shared runtime would see other tests' flows.
+    thread_local! {
+        static RUNTIME: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+    }
 
-    RUNTIME.block_on(async {
-        body();
-        drain().await;
+    RUNTIME.with(|runtime| {
+        runtime.block_on(async {
+            body();
+            drain().await;
+        });
     });
 }
 
