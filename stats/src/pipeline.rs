@@ -113,6 +113,34 @@ impl Default for FlowTableMetrics {
     }
 }
 
+/// Which build is running: `dataplane_build_info{version}`, always 1, so that a dashboard can
+/// tell builds apart and join on the label.
+#[derive(Debug)]
+pub struct BuildInfoMetrics {
+    info: Registered<metrics::Gauge>,
+}
+
+impl BuildInfoMetrics {
+    /// Register the build's `version`.
+    #[must_use]
+    pub fn new(version: &str) -> BuildInfoMetrics {
+        let mut spec = MetricSpec::new(
+            "dataplane_build_info",
+            Unit::Count,
+            vec![("version".to_string(), version.to_string())],
+        );
+        spec.description = "1, labelled with the version of the running build".to_string();
+        let info: Registered<metrics::Gauge> = spec.register();
+        info.metric.set(1.0);
+        BuildInfoMetrics { info }
+    }
+
+    /// Publish it again, should the exporter have let it go idle.
+    pub fn publish(&self) {
+        self.info.metric.set(1.0);
+    }
+}
+
 #[cfg(test)]
 mod exported {
     use super::*;
@@ -169,6 +197,16 @@ mod exported {
                     );
                 }
             });
+    }
+
+    #[test]
+    fn the_build_is_labelled_with_its_version() {
+        let scrape = Scrape::default();
+        metrics::with_local_recorder(&scrape, || BuildInfoMetrics::new("v1.2.3").publish());
+        assert_eq!(
+            scrape.get("dataplane_build_info", &[("version", "v1.2.3")]),
+            Some(1.0)
+        );
     }
 
     #[test]
