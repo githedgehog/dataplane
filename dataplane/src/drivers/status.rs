@@ -14,64 +14,32 @@ use concurrency::sync::Arc;
 use std::fmt::Display;
 
 use crate::drivers::supervisor;
-use crate::drivers::watchdog::{Activity, RxCounters};
+use crate::drivers::watchdog::{Activity, Totals};
 
 // The unique Id of a worker
 pub(crate) type WorkerId = usize;
 
 /// Liveness/activity of one rx task (a worker's reader for one interface),
-/// as of the supervisor's last check.
+/// as of the supervisor's last check, and its totals as they stand.
 #[derive(Clone)]
 pub struct RxTaskStatus {
     pub ifname: Arc<str>,
     pub activity: Activity,
     pub misses: u64,
-    pub total_rx: u64,
-    pub total_tx: u64,
-    pub total_ppline_drops: u64,
-    pub total_tx_drops: u64,
-    pub total_punt_drops: u64,
-    pub total_parse_errors: u64,
-    pub total_truncated: u64,
-    pub total_csum_unknown: u64,
-    pub total_zero_len: u64,
-    pub total_kernel_drops: u64,
     pub pps: f64,
+    /// What the task counted since it started, read when wanted rather than when polled.
+    pub totals: Totals,
 }
 impl RxTaskStatus {
     #[must_use]
-    pub fn new(ifname: Arc<str>) -> Self {
+    pub fn new(ifname: Arc<str>, totals: Totals) -> Self {
         Self {
             ifname,
             activity: Activity::Idle,
             misses: 0,
-            total_rx: 0,
-            total_tx: 0,
-            total_ppline_drops: 0,
-            total_tx_drops: 0,
-            total_punt_drops: 0,
-            total_parse_errors: 0,
-            total_truncated: 0,
-            total_csum_unknown: 0,
-            total_zero_len: 0,
-            total_kernel_drops: 0,
             pps: 0.,
+            totals,
         }
-    }
-
-    /// Add the counters read from a rx task watchdog to the totals. Reading a watchdog
-    /// clears it, so this must be called for every read, whatever the activity reported.
-    pub fn accumulate(&mut self, counters: &RxCounters) {
-        self.total_rx += counters.rx;
-        self.total_tx += counters.tx;
-        self.total_ppline_drops += counters.ppline_drops;
-        self.total_tx_drops += counters.tx_drops;
-        self.total_punt_drops += counters.punt_drops;
-        self.total_parse_errors += counters.parse_errors;
-        self.total_truncated += counters.truncated;
-        self.total_csum_unknown += counters.csum_unknown;
-        self.total_zero_len += counters.zero_len;
-        self.total_kernel_drops += counters.kernel_drops;
     }
 }
 
@@ -192,12 +160,13 @@ fn fmt_rx_task_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 
 fn fmt_rx_task(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::Result {
     let pps = format!("{:.1}", rx.pps);
+    let totals = rx.totals.load();
     writeln!(
         f,
         "{}",
         format_args!(
             RX_TASK_TBL_FMT!(),
-            rx.ifname, rx.activity, pps, rx.total_rx, rx.total_tx, rx.misses
+            rx.ifname, rx.activity, pps, totals.rx, totals.tx, rx.misses
         )
     )
 }
@@ -222,20 +191,21 @@ fn fmt_rx_drop_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 }
 
 fn fmt_rx_drop(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::Result {
+    let totals = rx.totals.load();
     writeln!(
         f,
         "{}",
         format_args!(
             RX_DROP_TBL_FMT!(),
             rx.ifname,
-            rx.total_ppline_drops,
-            rx.total_tx_drops,
-            rx.total_punt_drops,
-            rx.total_parse_errors,
-            rx.total_truncated,
-            rx.total_csum_unknown,
-            rx.total_zero_len,
-            rx.total_kernel_drops
+            totals.ppline_drops,
+            totals.tx_drops,
+            totals.punt_drops,
+            totals.parse_errors,
+            totals.truncated,
+            totals.csum_unknown,
+            totals.zero_len,
+            totals.kernel_drops
         )
     )
 }
@@ -272,42 +242,5 @@ impl Display for DriverStatus {
             }
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::{Arc, RxCounters, RxTaskStatus};
-
-    /// Every counter read from a watchdog must make it to the totals.
-    #[test]
-    fn accumulate_keeps_every_counter() {
-        let mut status = RxTaskStatus::new(Arc::from("eth0"));
-        let counters = RxCounters {
-            rx: 1,
-            tx: 2,
-            ppline_drops: 3,
-            tx_drops: 4,
-            punt_drops: 9,
-            parse_errors: 5,
-            truncated: 6,
-            csum_unknown: 10,
-            zero_len: 7,
-            kernel_drops: 8,
-        };
-
-        status.accumulate(&counters);
-        status.accumulate(&counters);
-
-        assert_eq!(status.total_rx, 2);
-        assert_eq!(status.total_tx, 4);
-        assert_eq!(status.total_ppline_drops, 6);
-        assert_eq!(status.total_tx_drops, 8);
-        assert_eq!(status.total_punt_drops, 18);
-        assert_eq!(status.total_parse_errors, 10);
-        assert_eq!(status.total_truncated, 12);
-        assert_eq!(status.total_csum_unknown, 20);
-        assert_eq!(status.total_zero_len, 14);
-        assert_eq!(status.total_kernel_drops, 16);
     }
 }
