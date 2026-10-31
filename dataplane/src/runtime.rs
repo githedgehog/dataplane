@@ -846,6 +846,7 @@ pub fn main() {
             packets: setup.pkt_stats.clone(),
             flows: setup.flow_table.clone(),
             driver: driver_status_reader,
+            masquerade: setup.natallocatorw.get_reader(),
         },
     );
 
