@@ -20,7 +20,7 @@ policer = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-bolero = { workspace = true }
+bolero = { workspace = true, features = ["std"] }
 metrics-exporter-prometheus = { workspace = true }
 # The reference (linear-scan) backend, so the tests run without the EAL.
 acl = { workspace = true, features = ["reference"] }
