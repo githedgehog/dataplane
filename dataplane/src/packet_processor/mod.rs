@@ -8,7 +8,7 @@ mod fuzz;
 mod ingress;
 mod ipforward;
 
-use super::drivers::status::DriverStatusReader;
+use super::drivers::status::{DpdkPortStatsCli, DpdkPortsCli, DriverStatusReader};
 #[allow(unused)]
 use super::packet_processor::egress::Egress;
 use super::packet_processor::ingress::Ingress;
@@ -18,7 +18,7 @@ use capture::{CaptureController, CaptureDirectory, CaptureStage, Direction};
 use concurrency::sync::Arc;
 
 use acl_filter::{AclFilter, AclFilterContextReaderFactory, AclFilterContextWriter};
-use flow_entry::flow_table::{FlowLookup, FlowTable};
+use flow_entry::flow_table::{FlowLookup, FlowTable, FlowTableSummary};
 use flow_filter::{FlowFilter, FlowFilterContextReaderFactory, FlowFilterContextWriter};
 use rate_limit::{PeeringRules, RateLimitReader, RateLimitWriter, RateLimiter, RateLimits};
 use std::num::NonZeroUsize;
@@ -237,7 +237,10 @@ pub(crate) fn start_router(
         nat_tables: Some(Box::new(nattabler_factory.handle().inner())),
         masquerade_state: Some(Box::new(natallocator_factory.handle().inner())),
         pkt_stats: Some(Box::new(pkt_stats.clone())),
-        driver_status: Some(Box::new(driver_status)),
+        driver_status: Some(Box::new(driver_status.clone())),
+        dpdk_ports: Some(Box::new(DpdkPortsCli(driver_status.clone()))),
+        dpdk_port_stats: Some(Box::new(DpdkPortStatsCli(driver_status))),
+        flow_table_summary: Some(Box::new(FlowTableSummary(flow_table.clone()))),
         capture: Some(CaptureDirectory::new(
             capture.clone(),
             capture_dir.map(std::path::PathBuf::from),

@@ -599,6 +599,11 @@ fn do_handle_cli_request(
         CliAction::ShowTransceivers => show_provider(request, sources.transceivers.as_deref()),
         CliAction::ShowLink => show_provider(request, sources.link.as_deref()),
         CliAction::ShowRateLimits => show_provider(request, sources.rate_limits.as_deref()),
+        CliAction::ShowDpdkPort => show_provider(request, sources.dpdk_ports.as_deref()),
+        CliAction::ShowDpdkPortStats => show_provider(request, sources.dpdk_port_stats.as_deref()),
+        CliAction::ShowFlowTableSummary => {
+            show_provider(request, sources.flow_table_summary.as_deref())
+        }
 
         /* prefetching */
         CliAction::Prefetch => prefetch(request, gwconfig, db),
