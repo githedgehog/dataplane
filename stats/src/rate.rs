@@ -862,6 +862,10 @@ mod test {
             )
         }};
     }
+    // The 5-point stencil is exact for polynomials up to degree 4; beyond that its error grows with
+    // the fifth derivative (h^4 f^(5) / 30), so the properties stop at five coefficients. Six and
+    // more used to be here, asserting an exactness the stencil cannot have; random sampling never
+    // drew the pure high-degree terms that show it, but libFuzzer did.
     #[test]
     fn derivative_of_arbitrary_1() {
         arbitrary_polynomial!(1);
@@ -881,36 +885,6 @@ mod test {
     #[test]
     fn derivative_of_arbitrary_5() {
         arbitrary_polynomial!(5);
-    }
-    #[test]
-    fn derivative_of_arbitrary_6() {
-        arbitrary_polynomial!(6);
-    }
-    #[test]
-    fn derivative_of_arbitrary_7() {
-        arbitrary_polynomial!(7);
-    }
-    #[test]
-    fn derivative_of_arbitrary_8() {
-        arbitrary_polynomial!(8);
-    }
-    #[test]
-    fn derivative_of_arbitrary_9() {
-        arbitrary_polynomial!(9);
-    }
-    #[test]
-    fn derivative_of_arbitrary_10() {
-        arbitrary_polynomial!(10);
-    }
-
-    #[test]
-    fn derivative_of_arbitrary_11() {
-        arbitrary_polynomial!(11);
-    }
-
-    #[test]
-    fn derivative_of_arbitrary_12() {
-        arbitrary_polynomial!(12);
     }
 
     // Whether a run reached enough cases for its coverage assertion to mean anything.
