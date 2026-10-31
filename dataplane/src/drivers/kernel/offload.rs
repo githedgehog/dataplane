@@ -112,9 +112,7 @@ pub(super) fn pause(if_name: &str) -> nix::Result<PauseParam> {
 
 /// Turn flow control off in the calling thread's network namespace: no pause frames sent, none
 /// honoured, and no autonegotiation of either. A device without flow control fails with
-/// `EOPNOTSUPP`.
-///
-/// Pause stops the whole link, so one slow receive queue would stall every flow on the port.
+/// `EOPNOTSUPP`. [`dpdk::dev::Dev::disable_flow_control`] says why.
 pub(super) fn disable_pause(if_name: &str) -> nix::Result<()> {
     let current = pause(if_name)?;
     if current.autoneg == 0 && current.rx_pause == 0 && current.tx_pause == 0 {

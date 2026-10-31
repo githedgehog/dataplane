@@ -653,8 +653,6 @@ impl<'eal> Port<'eal> {
                  discovery may not reach the control plane"
             );
         }
-        // Pause stops the whole link: one slow queue would stall every flow on the port, BGP and
-        // BFD included. Dropping instead is what a router does.
         match dev.disable_flow_control() {
             Ok(()) => {}
             Err(FlowControlError::NotSupported) => {
