@@ -382,3 +382,114 @@ mod exported {
         }
     }
 }
+
+/// What a port's tap carried between the kernel and the port, and failed to, since it started.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub struct TapCounters {
+    /// Frames handed to the kernel through the tap.
+    pub punted: u64,
+    /// Frames the kernel sent through the tap that were queued for the port.
+    pub injected: u64,
+    /// Frames for the kernel that the tap would not take.
+    pub punt_write_errors: u64,
+    /// Frames from the kernel dropped because the datapath was not draining its queue.
+    pub inject_drops: u64,
+    /// LLDP frames dropped because the LLDP agent was not keeping up.
+    pub lldp_drops: u64,
+    /// Reads of the tap that failed.
+    pub read_errors: u64,
+}
+
+/// A series' suffix, its description, and the field it carries.
+type TapSeries = (&'static str, &'static str, fn(&TapCounters) -> u64);
+
+/// Every tap series.
+const TAP_SERIES: [TapSeries; 6] = [
+    (
+        "punted",
+        "frames handed to the kernel through the port's tap",
+        |c| c.punted,
+    ),
+    (
+        "injected",
+        "frames the kernel sent through the port's tap that were queued for the port",
+        |c| c.injected,
+    ),
+    (
+        "punt_write_errors",
+        "frames for the kernel that the port's tap would not take",
+        |c| c.punt_write_errors,
+    ),
+    (
+        "inject_drops",
+        "frames from the kernel dropped because the datapath was not draining them",
+        |c| c.inject_drops,
+    ),
+    (
+        "lldp_drops",
+        "LLDP frames received on the port dropped because the LLDP agent was not keeping up",
+        |c| c.lldp_drops,
+    ),
+    ("read_errors", "reads of the port's tap that failed", |c| {
+        c.read_errors
+    }),
+];
+
+/// Metric handles for one port's tap, registered once and reused for each reading, as
+/// `port_tap_<counter>` labelled `port`.
+#[derive(Debug)]
+pub struct TapMetrics {
+    series: [Registered<metrics::Counter>; 6],
+}
+
+impl TapMetrics {
+    /// Register the tap counters of port `port`, the configured interface name.
+    #[must_use]
+    pub fn new(port: &str) -> TapMetrics {
+        TapMetrics {
+            series: TAP_SERIES.map(|(suffix, description, _)| {
+                let mut spec = MetricSpec::new(
+                    format!("{PORT_METRIC_BASE}_tap_{suffix}"),
+                    Unit::Count,
+                    vec![("port".to_string(), port.to_string())],
+                );
+                spec.description = description.to_string();
+                spec.register()
+            }),
+        }
+    }
+
+    /// Publish a snapshot of the totals.
+    pub fn publish(&self, counters: &TapCounters) {
+        for (registered, (_, _, field)) in self.series.iter().zip(TAP_SERIES) {
+            registered.metric.absolute(field(counters));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tap_exported {
+    use super::*;
+    use crate::scrape::Scrape;
+
+    #[test]
+    fn every_tap_counter_reaches_its_own_series() {
+        let counters = TapCounters {
+            punted: 1,
+            injected: 2,
+            punt_write_errors: 3,
+            inject_drops: 4,
+            lldp_drops: 5,
+            read_errors: 6,
+        };
+        let scrape = Scrape::default();
+        metrics::with_local_recorder(&scrape, || TapMetrics::new("eth0").publish(&counters));
+        for (suffix, _, field) in TAP_SERIES {
+            assert_eq!(
+                scrape.counter(&format!("port_tap_{suffix}"), &[("port", "eth0")]),
+                Some(field(&counters)),
+                "port_tap_{suffix} did not export its own count"
+            );
+        }
+    }
+}
