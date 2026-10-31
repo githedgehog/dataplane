@@ -147,6 +147,20 @@ impl Reader<'_> {
         })
     }
 
+    /// Where the next read starts, from the start of the buffer.
+    pub(crate) fn position(&self) -> usize {
+        self.inner.len() - self.remaining as usize
+    }
+
+    /// Go back to `position`, a place this reader has already been, to read from there again.
+    pub(crate) fn rewind_to(&mut self, position: usize) {
+        debug_assert!(position <= self.position(), "rewinding forwards");
+        #[allow(clippy::cast_possible_truncation)] // within the buffer, whose length fits a u16
+        {
+            self.remaining = (self.inner.len() - position) as u16;
+        }
+    }
+
     pub(crate) fn consume(&mut self, n: NonZero<u16>) -> Result<(), LengthError> {
         if n.get() > self.remaining {
             return Err(LengthError {

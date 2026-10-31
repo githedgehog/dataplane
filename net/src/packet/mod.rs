@@ -55,6 +55,9 @@ pub struct Packet<Buf: PacketBufferMut> {
     payload: Buf,
     /// packet metadata added by stages to drive other stages down the pipeline
     pub(crate) meta: PacketMeta,
+    /// Last recorded transport checksum error; see [`Self::assert_transport_checksum_kept`].
+    #[cfg(any(test, feature = "checksum-audit"))]
+    transport_checksum_error: Option<u16>,
 }
 
 impl<Buf: PacketBufferMut + DeepCopy> Packet<Buf> {
@@ -68,6 +71,8 @@ impl<Buf: PacketBufferMut + DeepCopy> Packet<Buf> {
             headers: self.headers.clone(),
             payload: self.payload.deep_copy()?,
             meta: self.meta.clone(),
+            #[cfg(any(test, feature = "checksum-audit"))]
+            transport_checksum_error: self.transport_checksum_error,
         })
     }
 }
@@ -147,11 +152,67 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         mbuf.trim_from_start(consumed.get())
             .unwrap_or_else(|e| unreachable!("{:?}", e));
 
-        Ok(Packet {
+        #[cfg_attr(not(any(test, feature = "checksum-audit")), allow(unused_mut))]
+        let mut packet = Packet {
             headers,
             payload: mbuf,
             meta: PacketMeta::new(),
-        })
+            #[cfg(any(test, feature = "checksum-audit"))]
+            transport_checksum_error: None,
+        };
+        #[cfg(any(test, feature = "checksum-audit"))]
+        packet.note_transport_checksum();
+        Ok(packet)
+    }
+
+    /// How far the transport checksum is from valid: the one's-complement difference between it
+    /// and what a computation from scratch over the same octets gives. `None` without one to
+    /// compare: no transport header, a disabled UDP checksum, or VXLAN.
+    #[cfg(any(test, feature = "checksum-audit"))]
+    fn transport_checksum_error(&self) -> Option<u16> {
+        if self.headers.try_vxlan().is_some() {
+            return None;
+        }
+        let stored = self.headers.transport.as_ref()?.checksum_for_increment()?;
+        let mut computed = self.headers.clone();
+        let covered = computed.transport_payload_len();
+        computed.compute_transport_checksum(self.payload.as_ref(), covered);
+        let computed = computed.transport.as_ref()?.checksum_for_increment()?;
+        let sum = u32::from(stored) + u32::from(!computed);
+        #[allow(clippy::cast_possible_truncation)] // one fold of two 16-bit words fits 16 bits
+        let difference = ((sum & 0xffff) + (sum >> 16)) as u16;
+        // Both zeros are the same difference.
+        Some(if difference == 0 { 0xffff } else { difference })
+    }
+
+    /// Record the current transport checksum error as the audit baseline.
+    #[cfg(any(test, feature = "checksum-audit"))]
+    fn note_transport_checksum(&mut self) {
+        self.transport_checksum_error = self.transport_checksum_error();
+    }
+
+    /// Compare the transport checksum error with the last recorded baseline, unless a refresh
+    /// is pending. This detects changes made without updating the checksum or requesting a refresh.
+    ///
+    /// # Panics
+    ///
+    /// Panics if both checksum errors are available and differ, with no refresh pending.
+    #[cfg(any(test, feature = "checksum-audit"))]
+    fn assert_transport_checksum_kept(&self) {
+        if self.meta.checksum_refresh() {
+            return;
+        }
+        if let (Some(before), Some(now)) = (
+            self.transport_checksum_error,
+            self.transport_checksum_error(),
+        ) {
+            assert_eq!(
+                before, now,
+                "a stage changed what the transport checksum covers, and neither folded the change \
+                 in nor asked for a refresh: {:?}",
+                self.headers
+            );
+        }
     }
 
     /// Get a reference to the payload of this packet
@@ -238,10 +299,9 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 if let Some(ecn) = meta.ecn {
                     ipv4.set_ecn(ecn);
                 }
+                // The setters keep the header checksum current.
                 ipv4.set_payload_len(udp_len)
                     .unwrap_or_else(|e| unreachable!("{:?}", e));
-                ipv4.update_checksum(&())
-                    .unwrap_or_else(|()| unreachable!()); // updating IPv4 checksum never fails
             }
         }
     }
@@ -302,6 +362,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                             self.meta.dscp = dscp;
                             self.meta.ecn = ecn;
                             self.headers = headers;
+                            #[cfg(any(test, feature = "checksum-audit"))]
+                            self.note_transport_checksum();
 
                             Some(Ok(vxlan))
                         }
@@ -375,6 +437,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         if false && self.meta().checksum_refresh() {
             self.update_checksums();
         }
+        #[cfg(any(test, feature = "checksum-audit"))]
+        self.assert_transport_checksum_kept();
         //compute room required
         let needed = self.headers.size().get();
         let buf = self.payload.prepend(needed)?;
@@ -414,18 +478,42 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         Self::apply_outer_qos_to_ip_headers(&mut headers, &self.meta, udp_len.get());
 
         self.headers = headers;
+        #[cfg(any(test, feature = "checksum-audit"))]
+        self.note_transport_checksum();
         Ok(())
     }
 
-    /// Update the network and transport checksums based on the current headers.
+    /// Compute the network and transport checksums from scratch, for a packet built here.
+    ///
+    /// A forwarded packet should not need this: computing a checksum from scratch makes a packet
+    /// that arrived corrupt look intact. See [`Self::refresh_transport_checksum`].
     pub fn update_checksums(&mut self) -> &mut Self {
-        let payload = self.payload.as_ref();
-        let payload = match self.headers.transport_payload_len() {
-            Some(len) if len <= payload.len() => &payload[..len],
-            _ => payload,
-        };
-        self.headers.update_checksums(payload);
+        let covered = self.headers.transport_payload_len();
+        self.headers
+            .update_checksums_covering(self.payload.as_ref(), covered);
         self.meta_mut().set_checksum_refresh(false);
+        #[cfg(any(test, feature = "checksum-audit"))]
+        self.note_transport_checksum();
+        self
+    }
+
+    /// Attempt to recompute the transport checksum. Stages request this when incremental updates
+    /// are insufficient; receive drivers request it for partial or unknown checksum status.
+    ///
+    /// IPv4 header checksums, including quoted ones, remain unchanged: [`Ipv4`](crate::ipv4::Ipv4)
+    /// setters maintain them. Fragmented datagrams retain their transport checksum and pending
+    /// [`checksum_refresh`](PacketMeta::checksum_refresh) request. Otherwise the request is cleared,
+    /// including when VXLAN or missing headers prevent an update.
+    pub fn refresh_transport_checksum(&mut self) -> &mut Self {
+        let covered = self.headers.transport_payload_len();
+        if self
+            .headers
+            .refresh_transport_checksum(self.payload.as_ref(), covered)
+        {
+            self.meta_mut().set_checksum_refresh(false);
+        }
+        #[cfg(any(test, feature = "checksum-audit"))]
+        self.note_transport_checksum();
         self
     }
 
@@ -437,7 +525,14 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// serialize or `SerializeError::DeparseError` if it does, but the de-parsing the `Packet` failed.
     #[inline]
     pub(crate) fn do_serialize(&mut self) -> Result<(), SerializeError<()>> {
-        self.update_checksums();
+        #[cfg(any(test, feature = "checksum-audit"))]
+        self.assert_transport_checksum_kept();
+        // IPv4 setters maintain header checksums. Refresh transport checksums only when requested
+        // by a stage or receive driver; unnecessary recomputation scans the payload and can mask
+        // corruption.
+        if self.meta().checksum_refresh() {
+            self.refresh_transport_checksum();
+        }
         let needed = self.headers.size().get();
         let buf = self
             .payload
@@ -1162,7 +1257,7 @@ mod padding_tests {
 
     const MIN_ETHERNET_FRAME: usize = 60;
 
-    fn frame(protocol: u8, l4: &[u8]) -> Vec<u8> {
+    pub(super) fn frame(protocol: u8, l4: &[u8]) -> Vec<u8> {
         let mut frame = Vec::new();
         frame.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]); // destination mac
         frame.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]); // source mac
@@ -1190,7 +1285,7 @@ mod padding_tests {
         tcp
     }
 
-    fn udp(payload: &[u8]) -> Vec<u8> {
+    pub(super) fn udp(payload: &[u8]) -> Vec<u8> {
         let mut udp = Vec::new();
         udp.extend_from_slice(&1000_u16.to_be_bytes()); // source port
         udp.extend_from_slice(&2000_u16.to_be_bytes()); // destination port
@@ -1277,7 +1372,7 @@ mod padding_tests {
         packet.update_checksums();
     }
 
-    fn tcp(payload: &[u8]) -> Vec<u8> {
+    pub(super) fn tcp(payload: &[u8]) -> Vec<u8> {
         let mut tcp = tcp_ack();
         tcp.extend_from_slice(payload);
         tcp
@@ -1421,6 +1516,642 @@ mod padding_tests {
                     .expect("no inner tcp header")
                     .validate_checksum(&TcpChecksumPayload::new(&net, payload))
                     .expect("inner trailing octets leaked into the tcp checksum");
+            });
+    }
+}
+
+#[cfg(test)]
+mod serialize_checksum_tests {
+    //! What [`Packet::serialize`] does to checksums when forwarding: nothing it does not have to. An
+    //! IPv4 header carries the error it arrived with through a TTL decrement, and a transport
+    //! checksum is touched only when a stage asked for it.
+
+    use super::padding_tests::{frame, tcp, udp};
+    use crate::buffer::TestBuffer;
+    use crate::checksum::{Checksum, ones_complement_sum};
+    use crate::headers::{TryHeaders, TryHeadersMut, TryIp, TryIpv4, TryIpv4Mut, TryTcp};
+    use crate::packet::Packet;
+    use crate::tcp::TcpChecksumPayload;
+
+    /// Where things sit in a [`frame`]: the IPv4 header after Ethernet, its checksum 10 octets in,
+    /// and the transport checksum past the 20-octet IPv4 header, 16 octets into TCP or 6 into UDP.
+    const IPV4: std::ops::Range<usize> = 14..34;
+    const IPV4_CHECKSUM: usize = 14 + 10;
+    const TCP_CHECKSUM: usize = 14 + 20 + 16;
+    const UDP_CHECKSUM: usize = 14 + 20 + 6;
+
+    /// How far the IPv4 header in `frame` is from valid: the sum over the whole header, checksum
+    /// included, which is `0xffff` for a valid header and something else for each wrong checksum.
+    fn ipv4_error(frame: &[u8]) -> u16 {
+        ones_complement_sum(&frame[IPV4])
+    }
+
+    /// A frame carrying `payload` over TCP or UDP, with the given IPv4 and transport checksums, or a
+    /// valid IPv4 checksum if `ipv4_checksum` is `None`.
+    fn input(payload: &[u8], is_udp: bool, ipv4_checksum: Option<u16>, transport: u16) -> Vec<u8> {
+        let (mut bytes, at) = if is_udp {
+            (frame(17, &udp(payload)), UDP_CHECKSUM)
+        } else {
+            (frame(6, &tcp(payload)), TCP_CHECKSUM)
+        };
+        bytes[at..at + 2].copy_from_slice(&transport.to_be_bytes());
+        let ipv4_checksum = ipv4_checksum.unwrap_or_else(|| !ones_complement_sum(&bytes[IPV4]));
+        bytes[IPV4_CHECKSUM..IPV4_CHECKSUM + 2].copy_from_slice(&ipv4_checksum.to_be_bytes());
+        bytes
+    }
+
+    /// Forward `bytes` as a router does, decrementing the TTL, and serialize the result, asking for
+    /// the transport checksum to be refreshed if `refresh`.
+    fn forward(bytes: &[u8], refresh: bool) -> Vec<u8> {
+        let mut packet =
+            Packet::new(TestBuffer::from_raw_data(bytes)).expect("frame does not parse");
+        packet
+            .headers_mut()
+            .try_ipv4_mut()
+            .expect("no ipv4 header")
+            .decrement_ttl()
+            .expect("ttl already zero");
+        if refresh {
+            packet.meta_mut().set_checksum_refresh(true);
+        }
+        packet
+            .serialize()
+            .expect("does not serialize")
+            .as_ref()
+            .to_vec()
+    }
+
+    fn parse(bytes: &[u8]) -> Packet<TestBuffer> {
+        Packet::new(TestBuffer::from_raw_data(bytes)).expect("output does not parse")
+    }
+
+    /// The TTL went down by one, and the IPv4 header is exactly as far from valid as it arrived:
+    /// valid if it was, and not repaired if it was not.
+    fn assert_ipv4_error_carried(input: &[u8], output: &[u8]) {
+        let ipv4 = parse(output);
+        let ipv4 = ipv4.headers().try_ipv4().expect("no ipv4 header");
+        assert_eq!(ipv4.ttl(), 63, "the ttl was not decremented");
+        assert_eq!(
+            ipv4_error(output),
+            ipv4_error(input),
+            "the ipv4 header checksum was recomputed rather than adjusted for the ttl"
+        );
+        if ipv4_error(input) == 0xffff {
+            ipv4.validate_checksum(&())
+                .expect("a valid ipv4 header came out invalid");
+        }
+    }
+
+    #[test]
+    fn forwarding_changes_only_the_checksums_it_must() {
+        // Arbitrary checksums, mostly wrong: refreshing one would read the whole payload, and
+        // would make a packet corrupted before it reached us look intact.
+        bolero::check!()
+            .with_type::<(Vec<u8>, bool, Option<u16>, u16)>()
+            .for_each(|(payload, is_udp, ipv4_checksum, transport)| {
+                let payload = &payload[..payload.len().min(256)];
+                let bytes = input(payload, *is_udp, *ipv4_checksum, *transport);
+                let at = if *is_udp { UDP_CHECKSUM } else { TCP_CHECKSUM };
+
+                let out = forward(&bytes, false);
+                assert_eq!(
+                    out[at..at + 2],
+                    bytes[at..at + 2],
+                    "serialize rewrote a transport checksum no stage asked it to"
+                );
+                assert_ipv4_error_carried(&bytes, &out);
+            });
+    }
+
+    #[test]
+    fn a_requested_refresh_recomputes_the_transport_checksum_only() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, Option<u16>, u16)>()
+            .for_each(|(payload, ipv4_checksum, transport)| {
+                let payload = &payload[..payload.len().min(256)];
+                let bytes = input(payload, false, *ipv4_checksum, *transport);
+
+                let out = forward(&bytes, true);
+                let parsed = parse(&out);
+                let net = parsed.headers().try_ip().expect("no ip header").clone();
+                parsed
+                    .headers()
+                    .try_tcp()
+                    .expect("no tcp header")
+                    .validate_checksum(&TcpChecksumPayload::new(&net, payload))
+                    .expect("a requested refresh left the tcp checksum stale");
+                assert_ipv4_error_carried(&bytes, &out);
+            });
+    }
+}
+
+#[cfg(test)]
+mod roundtrip_tests {
+    //! A packet leaves as it arrived, except for what a stage changed. Stages keep checksums
+    //! current by folding in the words they change, so a header that came back different from how
+    //! it arrived, even in bits the parsed headers have no field for, would leave with a checksum
+    //! that no longer matches it.
+    //!
+    //! [`Datagram`] writes frames from arbitrary bytes, fixed up only where the parser insists:
+    //! versions, lengths, protocol numbers, unicast sources and non-zero ports, first fragments so
+    //! the transport parses, and ICMP types that quote the datagram they are about. Anything may
+    //! follow the datagram in the frame.
+
+    use crate::buffer::TestBuffer;
+    use crate::checksum::ones_complement_sum;
+    use crate::headers::{TryHeaders, TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
+    use crate::packet::Packet;
+    use bolero::TypeGenerator;
+
+    const ETH: usize = 14;
+    const TCP: u8 = 6;
+    const UDP: u8 = 17;
+    const ICMP4: u8 = 1;
+    const ICMP6: u8 = 58;
+    const VXLAN_PORT: u16 = 4789;
+
+    #[derive(Debug, TypeGenerator)]
+    struct Datagram {
+        ip: Ip,
+        transport: Transport,
+        payload: Vec<u8>,
+        /// What follows the datagram in the frame: padding, or a trailer.
+        trailer: Vec<u8>,
+    }
+
+    #[derive(Debug, TypeGenerator)]
+    enum Ip {
+        V4 {
+            header: [u8; 20],
+            options: Vec<u8>,
+        },
+        V6 {
+            header: [u8; 40],
+            extensions: Vec<Extension>,
+        },
+    }
+
+    #[derive(Debug, TypeGenerator)]
+    enum Extension {
+        /// Hop-by-hop options, routing, or destination options: 8 or 16 octets of anything.
+        Raw {
+            kind: u8,
+            body: [u8; 14],
+            long: bool,
+        },
+        Fragment([u8; 8]),
+        /// An authentication header with up to three words of integrity check value.
+        Auth {
+            header: [u8; 24],
+            words: u8,
+        },
+    }
+
+    #[derive(Debug, TypeGenerator)]
+    enum Transport {
+        Tcp {
+            header: [u8; 20],
+            options: Vec<u8>,
+        },
+        Udp([u8; 8]),
+        Vxlan {
+            udp: [u8; 8],
+            vxlan: [u8; 8],
+        },
+        /// An ICMP message for the IP version around it: an error quoting a datagram if `quoted`.
+        Icmp {
+            header: [u8; 8],
+            quoted: Option<Quoted>,
+        },
+    }
+
+    /// The start of the datagram an ICMP error is about.
+    #[derive(Debug, TypeGenerator)]
+    struct Quoted {
+        ipv4: ([u8; 20], Vec<u8>),
+        ipv6: ([u8; 40], Vec<Extension>),
+        transport: QuotedTransport,
+        /// Where the quote stops, if it stops inside the transport header.
+        cut: Option<u8>,
+        payload: Vec<u8>,
+        /// How much longer the datagram was than the quote.
+        missing: u8,
+    }
+
+    #[derive(Debug, TypeGenerator)]
+    enum QuotedTransport {
+        Tcp { header: [u8; 20], options: Vec<u8> },
+        Udp([u8; 8]),
+        Icmp([u8; 8]),
+    }
+
+    /// A frame, and where its transport header starts.
+    struct Frame {
+        bytes: Vec<u8>,
+        transport: usize,
+        /// Where the IP datagram ends, and the trailer starts.
+        end: usize,
+        protocol: u8,
+        ipv6: bool,
+        vxlan: bool,
+        /// Whether the datagram is a fragment of a larger one.
+        fragment: bool,
+    }
+
+    fn len16(len: usize) -> [u8; 2] {
+        u16::try_from(len)
+            .expect("test frames are small")
+            .to_be_bytes()
+    }
+
+    fn nonzero_port(port: &mut [u8]) {
+        if port == [0, 0] {
+            port[1] = 1;
+        }
+    }
+
+    fn ipv4_header(header: &[u8; 20], options: &[u8], protocol: u8, rest: usize) -> Vec<u8> {
+        let options = &options[..options.len().min(40) / 4 * 4];
+        let mut out = header.to_vec();
+        out[0] = 0x45 + u8::try_from(options.len() / 4).expect("at most 10 words");
+        out[2..4].copy_from_slice(&len16(20 + options.len() + rest));
+        // Any flags, the reserved one included, but no fragment offset, so the transport parses.
+        out[6] &= 0xe0;
+        out[7] = 0;
+        out[9] = protocol;
+        out[12] = 10; // a unicast source
+        out.extend_from_slice(options);
+        out
+    }
+
+    fn ipv6_header(
+        header: &[u8; 40],
+        extensions: &[Extension],
+        protocol: u8,
+        rest: usize,
+    ) -> Vec<u8> {
+        let mut chain = Vec::new();
+        let mut next = protocol;
+        // Up to one more than there is room for, as often as none.
+        for extension in extensions.iter().take(extensions.len() % 5).rev() {
+            let (kind, mut bytes) = extension.write(next);
+            bytes.append(&mut chain);
+            chain = bytes;
+            next = kind;
+        }
+        let mut out = header.to_vec();
+        out[0] = 0x60 | (out[0] & 0x0f);
+        out[4..6].copy_from_slice(&len16(chain.len() + rest));
+        out[6] = next;
+        if out[8] == 0xff {
+            out[8] = 0xfe; // a unicast source
+        }
+        out.append(&mut chain);
+        out
+    }
+
+    impl Extension {
+        /// This header's protocol number, and its bytes with `next` as the next header.
+        fn write(&self, next: u8) -> (u8, Vec<u8>) {
+            match self {
+                Extension::Raw { kind, body, long } => {
+                    let kind = [0, 43, 60][usize::from(*kind) % 3];
+                    let mut bytes = vec![next, u8::from(*long)];
+                    bytes.extend_from_slice(&body[..if *long { 14 } else { 6 }]);
+                    if kind == 43 {
+                        // No segments left, so the destination is the final one.
+                        bytes[3] = 0;
+                    }
+                    (kind, bytes)
+                }
+                Extension::Fragment(header) => {
+                    let mut bytes = header.to_vec();
+                    bytes[0] = next;
+                    bytes[2] = 0;
+                    bytes[3] &= 0x07; // the first fragment, so the transport parses
+                    (44, bytes)
+                }
+                Extension::Auth { header, words } => {
+                    let words = words % 4;
+                    let mut bytes = header[..12 + 4 * usize::from(words)].to_vec();
+                    bytes[0] = next;
+                    bytes[1] = words + 1;
+                    (51, bytes)
+                }
+            }
+        }
+    }
+
+    fn tcp(header: &[u8; 20], options: &[u8]) -> Vec<u8> {
+        let options = &options[..options.len().min(40) / 4 * 4];
+        let mut out = header.to_vec();
+        nonzero_port(&mut out[0..2]);
+        nonzero_port(&mut out[2..4]);
+        let words = u8::try_from(5 + options.len() / 4).expect("at most 15 words");
+        out[12] = (words << 4) | (out[12] & 0x0f);
+        out.extend_from_slice(options);
+        out
+    }
+
+    fn udp(header: [u8; 8], rest: usize) -> Vec<u8> {
+        let mut out = header.to_vec();
+        nonzero_port(&mut out[0..2]);
+        nonzero_port(&mut out[2..4]);
+        if out[2..4] == VXLAN_PORT.to_be_bytes() {
+            out[3] += 1;
+        }
+        out[4..6].copy_from_slice(&len16(8 + rest));
+        out
+    }
+
+    /// An ICMP header, its type and code steered towards the ones that mean something.
+    fn icmp(header: [u8; 8], ipv6: bool, error: bool) -> Vec<u8> {
+        let mut out = header.to_vec();
+        let types: &[u8] = match (ipv6, error) {
+            (false, true) => &[3, 5, 11, 12],
+            (true, true) => &[1, 2, 3, 4],
+            (false, false) => &[0, 3, 5, 8, 11, 12, 13, 14],
+            (true, false) => &[1, 2, 3, 4, 128, 129, 133, 134, 135, 136, 137],
+        };
+        if error || out[1] & 0x80 != 0 {
+            out[0] = types[usize::from(out[0]) % types.len()];
+            out[1] &= 0x0f;
+        }
+        out
+    }
+
+    impl QuotedTransport {
+        fn write(&self, ipv6: bool) -> (u8, Vec<u8>) {
+            match self {
+                QuotedTransport::Tcp { header, options } => (TCP, tcp(header, options)),
+                QuotedTransport::Udp(header) => (UDP, header.to_vec()),
+                QuotedTransport::Icmp(header) => {
+                    (if ipv6 { ICMP6 } else { ICMP4 }, icmp(*header, ipv6, false))
+                }
+            }
+        }
+    }
+
+    impl Quoted {
+        fn write(&self, ipv6: bool) -> Vec<u8> {
+            let (protocol, mut transport) = self.transport.write(ipv6);
+            let payload = match self.cut {
+                Some(cut) if usize::from(cut) < transport.len() => {
+                    transport.truncate(usize::from(cut));
+                    &[][..]
+                }
+                _ => &self.payload[..self.payload.len().min(64)],
+            };
+            let rest = transport.len() + payload.len() + usize::from(self.missing);
+            let mut out = if ipv6 {
+                ipv6_header(&self.ipv6.0, &self.ipv6.1, protocol, rest)
+            } else {
+                ipv4_header(&self.ipv4.0, &self.ipv4.1, protocol, rest)
+            };
+            out.append(&mut transport);
+            out.extend_from_slice(payload);
+            out
+        }
+    }
+
+    impl Datagram {
+        fn frame(&self) -> Frame {
+            let ipv6 = matches!(self.ip, Ip::V6 { .. });
+            let payload = &self.payload[..self.payload.len().min(256)];
+            let (protocol, mut segment) = match &self.transport {
+                Transport::Tcp { header, options } => (TCP, tcp(header, options)),
+                Transport::Udp(header) => (UDP, udp(*header, payload.len())),
+                Transport::Vxlan { udp: header, vxlan } => {
+                    let mut segment = udp(*header, 8 + payload.len());
+                    segment[2..4].copy_from_slice(&VXLAN_PORT.to_be_bytes());
+                    let mut vxlan = *vxlan;
+                    vxlan[0] |= 0x08; // a VNI is present
+                    vxlan[1..4].fill(0);
+                    vxlan[7] = 0;
+                    if vxlan[4..7] == [0, 0, 0] {
+                        vxlan[6] = 1;
+                    }
+                    segment.extend_from_slice(&vxlan);
+                    (UDP, segment)
+                }
+                Transport::Icmp { header, quoted } => {
+                    let mut segment = icmp(*header, ipv6, quoted.is_some());
+                    if let Some(quoted) = quoted {
+                        segment.append(&mut quoted.write(ipv6));
+                    }
+                    (if ipv6 { ICMP6 } else { ICMP4 }, segment)
+                }
+            };
+            segment.extend_from_slice(payload);
+            let mut bytes = vec![2, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 2];
+            bytes.extend_from_slice(if ipv6 { &[0x86, 0xdd] } else { &[0x08, 0x00] });
+            bytes.append(&mut match &self.ip {
+                Ip::V4 { header, options } => ipv4_header(header, options, protocol, segment.len()),
+                Ip::V6 { header, extensions } => {
+                    ipv6_header(header, extensions, protocol, segment.len())
+                }
+            });
+            let transport = bytes.len();
+            bytes.append(&mut segment);
+            let end = bytes.len();
+            bytes.extend_from_slice(&self.trailer[..self.trailer.len().min(16)]);
+            let fragment = match &self.ip {
+                Ip::V4 { .. } => bytes[ETH + 6] & 0x20 != 0,
+                Ip::V6 { extensions, .. } => extensions
+                    .iter()
+                    .take(extensions.len() % 5)
+                    .any(|extension| matches!(extension, Extension::Fragment(header) if header[3] & 1 != 0)),
+            };
+            Frame {
+                bytes,
+                transport,
+                end,
+                protocol,
+                ipv6,
+                vxlan: matches!(self.transport, Transport::Vxlan { .. }),
+                fragment,
+            }
+        }
+    }
+
+    /// The sum over the transport checksum's coverage in `frame`, which is `0xffff` if the
+    /// transport checksum is valid.
+    fn transport_sum(frame: &Frame, bytes: &[u8]) -> u16 {
+        let segment = &bytes[frame.transport..frame.end];
+        let mut covered = Vec::new();
+        if frame.ipv6 {
+            covered.extend_from_slice(&bytes[ETH + 8..ETH + 40]);
+            covered.extend_from_slice(&u32::try_from(segment.len()).expect("small").to_be_bytes());
+            covered.extend_from_slice(&[0, 0, 0, frame.protocol]);
+        } else if frame.protocol != ICMP4 {
+            covered.extend_from_slice(&bytes[ETH + 12..ETH + 20]);
+            covered.extend_from_slice(&[0, frame.protocol]);
+            covered.extend_from_slice(&len16(segment.len()));
+        }
+        covered.extend_from_slice(segment);
+        ones_complement_sum(&covered)
+    }
+
+    /// Where the transport checksum sits in `frame`.
+    fn transport_checksum(frame: &Frame) -> std::ops::Range<usize> {
+        let at = frame.transport
+            + match frame.protocol {
+                TCP => 16,
+                UDP => 6,
+                _ => 2,
+            };
+        at..at + 2
+    }
+
+    fn parse(bytes: &[u8]) -> Packet<TestBuffer> {
+        Packet::new(TestBuffer::from_raw_data(bytes)).expect("frame does not parse")
+    }
+
+    fn serialize(packet: Packet<TestBuffer>) -> Vec<u8> {
+        packet
+            .serialize()
+            .expect("does not serialize")
+            .as_ref()
+            .to_vec()
+    }
+
+    /// Decrement the TTL or hop limit, as a router does, and serialize, asking for the transport
+    /// checksum to be refreshed if `refresh`. `None` if the TTL or hop limit is already zero.
+    fn forward(bytes: &[u8], refresh: bool) -> Option<Vec<u8>> {
+        let mut packet = parse(bytes);
+        let headers = packet.headers_mut();
+        let decremented = match headers.try_ipv4_mut() {
+            Some(ipv4) => ipv4.decrement_ttl().is_ok(),
+            None => headers
+                .try_ipv6_mut()
+                .expect("no ip header")
+                .decrement_hop_limit()
+                .is_ok(),
+        };
+        if !decremented {
+            return None;
+        }
+        if refresh {
+            packet.meta_mut().set_checksum_refresh(true);
+        }
+        Some(serialize(packet))
+    }
+
+    /// The offsets at which `a` and `b` differ, and any difference in length.
+    fn differences(a: &[u8], b: &[u8]) -> Vec<usize> {
+        let mut at: Vec<usize> = (0..a.len().min(b.len()))
+            .filter(|&i| a[i] != b[i])
+            .collect();
+        at.extend(a.len().min(b.len())..a.len().max(b.len()));
+        at
+    }
+
+    #[test]
+    fn a_packet_no_stage_changed_leaves_as_it_arrived() {
+        bolero::check!()
+            .with_type::<Datagram>()
+            .for_each(|datagram| {
+                let frame = datagram.frame();
+                let out = serialize(parse(&frame.bytes));
+                assert!(
+                    out == frame.bytes,
+                    "octets {:?} changed: {:02x?} became {:02x?}",
+                    differences(&frame.bytes, &out),
+                    frame.bytes,
+                    out
+                );
+            });
+    }
+
+    #[test]
+    fn forwarding_changes_only_the_hop_count_and_the_ipv4_checksum() {
+        bolero::check!()
+            .with_type::<Datagram>()
+            .for_each(|datagram| {
+                let frame = datagram.frame();
+                let Some(out) = forward(&frame.bytes, false) else {
+                    return;
+                };
+                let allowed: &[usize] = if frame.ipv6 {
+                    &[ETH + 7]
+                } else {
+                    &[ETH + 8, ETH + 10, ETH + 11]
+                };
+                let changed = differences(&frame.bytes, &out);
+                assert!(
+                    changed.iter().all(|at| allowed.contains(at)),
+                    "octets {changed:?} changed: {:02x?} became {:02x?}",
+                    frame.bytes,
+                    out
+                );
+                if !frame.ipv6 {
+                    let header = ETH..ETH + usize::from(frame.bytes[ETH] & 0x0f) * 4;
+                    assert_eq!(
+                        ones_complement_sum(&out[header.clone()]),
+                        ones_complement_sum(&frame.bytes[header]),
+                        "the ipv4 header is not exactly as far from valid as it arrived"
+                    );
+                }
+            });
+    }
+
+    #[test]
+    fn a_refreshed_checksum_covers_the_octets_as_written() {
+        bolero::check!()
+            .with_type::<Datagram>()
+            .for_each(|datagram| {
+                let frame = datagram.frame();
+                // VXLAN's UDP checksum is left alone.
+                if frame.vxlan {
+                    return;
+                }
+                let (Some(forwarded), Some(refreshed)) =
+                    (forward(&frame.bytes, false), forward(&frame.bytes, true))
+                else {
+                    return;
+                };
+                if parse(&frame.bytes).headers().transport().is_none() {
+                    // Left in the payload: a header etherparse rejects (a timestamp of the
+                    // wrong length), or one past extension headers there was no room for.
+                    assert_eq!(
+                        refreshed, forwarded,
+                        "a refresh changed an unparsed transport"
+                    );
+                    return;
+                }
+                if frame.fragment {
+                    // Its transport checksum covers octets this fragment does not hold.
+                    assert_eq!(
+                        refreshed, forwarded,
+                        "a refresh recomputed a fragment's transport checksum"
+                    );
+                    // A skipped fragment refresh must leave the request pending.
+                    let mut packet = parse(&frame.bytes);
+                    packet.meta_mut().set_checksum_refresh(true);
+                    packet.refresh_transport_checksum();
+                    assert!(
+                        packet.meta().checksum_refresh(),
+                        "a refresh that did nothing cleared the request"
+                    );
+                    return;
+                }
+                assert_eq!(
+                    refreshed.len(),
+                    frame.bytes.len(),
+                    "a refresh changed the length: {:02x?} became {refreshed:02x?}",
+                    frame.bytes
+                );
+                assert_eq!(
+                    transport_sum(&frame, &refreshed),
+                    0xffff,
+                    "the refreshed checksum does not match the octets written: {refreshed:02x?}"
+                );
+                let changed = differences(&forwarded, &refreshed);
+                let checksum = transport_checksum(&frame);
+                assert!(
+                    changed.iter().all(|at| checksum.contains(at)),
+                    "a refresh changed octets {changed:?} besides the checksum at {checksum:?}"
+                );
             });
     }
 }

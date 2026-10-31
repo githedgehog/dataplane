@@ -1064,6 +1064,8 @@ mod tests {
                 IcmpProtoKey::ErrorMsgData(None) | IcmpProtoKey::Unsupported => {}
             },
         }
+        // The setters leave the transport checksum alone; a packet built here computes it.
+        packet.update_checksums();
     }
 
     struct FlowKeyAndPacket;

@@ -115,12 +115,12 @@ impl Checksum for Icmp6 {
         &self,
         payload: &Icmp6ChecksumPayload,
     ) -> Result<Icmp6Checksum, Self::Error> {
-        Ok(Icmp6Checksum(
-            self.0
-                .icmp_type
-                .calc_checksum(payload.src.octets(), payload.dst.octets(), payload.contents)
-                .unwrap_or_else(|e| unreachable!("{:?}", e)),
-        ))
+        let checksum = self
+            .0
+            .icmp_type
+            .calc_checksum(payload.src.octets(), payload.dst.octets(), payload.contents)
+            .unwrap_or_else(|e| unreachable!("{:?}", e));
+        Ok(Icmp6Checksum(self.1.adjust(checksum, &self.0.to_bytes())))
     }
 
     /// Set the checksum field of the header.

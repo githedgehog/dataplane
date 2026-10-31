@@ -3,6 +3,7 @@
 
 //! Ipv4 Address type and manipulation
 
+use crate::checksum::{Checksum, ones_complement_sum};
 use crate::headers::{EmbeddedHeader, Header};
 use crate::icmp4::{Icmp4, TruncatedIcmp4};
 use crate::impl_from_for_enum;
@@ -35,6 +36,13 @@ pub use contract::*;
 /// An IPv4 header with inline fixed fields and boxed options.
 ///
 /// Empty options are stored as `None` so equality matches the wire representation.
+///
+/// # The header checksum
+///
+/// Every setter folds its change into the header checksum (RFC 1624), and [`Ipv4::default`] starts
+/// with a valid one. So a header built here is valid, and a parsed header keeps whatever validity it
+/// arrived with: a router forwarding it must not repair a checksum it never checked, and a full
+/// recompute would do exactly that.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ipv4 {
     source: [u8; 4],
@@ -50,12 +58,16 @@ pub struct Ipv4 {
     protocol: IpNumber,
     dont_fragment: bool,
     more_fragments: bool,
+    /// The first flag bit, which RFC 791 reserves and says must be zero. Kept, not cleared: a header
+    /// must leave as it arrived, or its checksum stops matching it.
+    reserved_flag: bool,
 }
 
-/// Matches [`etherparse::Ipv4Header::default`], including the DF bit used by VXLAN.
+/// Matches [`etherparse::Ipv4Header::default`], including the DF bit used by VXLAN, except that the
+/// checksum is valid: the setters only ever adjust it.
 impl Default for Ipv4 {
     fn default() -> Self {
-        Self {
+        let mut header = Self {
             source: [0; 4],
             destination: [0; 4],
             options: None,
@@ -69,7 +81,10 @@ impl Default for Ipv4 {
             protocol: IpNumber(255),
             dont_fragment: true,
             more_fragments: false,
-        }
+            reserved_flag: false,
+        };
+        header.header_checksum = header.compute_header_checksum();
+        header
     }
 }
 
@@ -123,6 +138,7 @@ impl Ipv4 {
             protocol: slice.protocol(),
             dont_fragment: slice.dont_fragment(),
             more_fragments: slice.more_fragments(),
+            reserved_flag: slice.slice()[6] & 0b1000_0000 != 0,
         })
     }
 
@@ -137,10 +153,13 @@ impl Ipv4 {
         (self.options_len() / 4) as u8 + 5
     }
 
-    /// Pack the flags and fragment offset, with the reserved bit cleared.
+    /// Pack the flags and fragment offset.
     fn flags_and_fragment_offset(&self) -> [u8; 2] {
         let frag = self.fragment_offset.value().to_be_bytes();
         let mut flags = 0u8;
+        if self.reserved_flag {
+            flags |= 0b1000_0000;
+        }
         if self.dont_fragment {
             flags |= 0b0100_0000;
         }
@@ -176,6 +195,61 @@ impl Ipv4 {
         buf[12..16].copy_from_slice(&self.source);
         buf[16..20].copy_from_slice(&self.destination);
         buf[20..].copy_from_slice(self.options());
+    }
+
+    /// Apply `change` and fold the difference it makes to the header words that `words` sums into
+    /// the header checksum (RFC 1624). Every setter goes through here.
+    fn changing(&mut self, words: fn(&Self) -> u16, change: impl FnOnce(&mut Self)) {
+        let old = words(self);
+        change(self);
+        let new = words(self);
+        if old != new {
+            let current = Ipv4Checksum::from(self.header_checksum);
+            self.header_checksum = self.increment_update_checksum(current, old, new).into();
+        }
+    }
+
+    /// The first header word: version, header length, DSCP and ECN.
+    fn version_ihl_dscp_ecn_word(&self) -> u16 {
+        u16::from_be_bytes([
+            (4 << 4) | self.ihl(),
+            (self.dscp.value() << 2) | self.ecn.value(),
+        ])
+    }
+
+    fn total_len_word(&self) -> u16 {
+        self.total_len
+    }
+
+    fn identification_word(&self) -> u16 {
+        self.identification
+    }
+
+    fn flags_and_fragment_offset_word(&self) -> u16 {
+        u16::from_be_bytes(self.flags_and_fragment_offset())
+    }
+
+    fn ttl_and_protocol_word(&self) -> u16 {
+        u16::from_be_bytes([self.time_to_live, self.protocol.0])
+    }
+
+    fn source_words(&self) -> u16 {
+        ones_complement_sum(&self.source)
+    }
+
+    fn destination_words(&self) -> u16 {
+        ones_complement_sum(&self.destination)
+    }
+
+    /// The first word, which holds the header length, and the options themselves.
+    fn length_and_options_words(&self) -> u16 {
+        ones_complement_sum(
+            &[
+                &self.version_ihl_dscp_ecn_word().to_be_bytes()[..],
+                self.options(),
+            ]
+            .concat(),
+        )
     }
 
     /// Compute the IPv4 header checksum using etherparse's accumulator.
@@ -241,13 +315,14 @@ impl Ipv4 {
     pub fn set_options(&mut self, data: &[u8]) -> Result<&mut Self, Ipv4OptionsLenError> {
         // Preserve payload length when the options change the header length.
         let payload_len = self.payload_len().unwrap_or(0);
-        if data.is_empty() {
-            self.options = None;
+        let options = if data.is_empty() {
+            None
         } else {
-            let options =
-                Ipv4Options::try_from(data).map_err(|_| Ipv4OptionsLenError { len: data.len() })?;
-            self.options = Some(Box::new(options));
-        }
+            Some(Box::new(
+                Ipv4Options::try_from(data).map_err(|_| Ipv4OptionsLenError { len: data.len() })?,
+            ))
+        };
+        self.changing(Self::length_and_options_words, |h| h.options = options);
         if self.set_payload_len(payload_len).is_err() {
             // Clamp the payload if the larger header exceeds the total-length limit.
             let headroom = u16::try_from(self.header_len()).unwrap_or(u16::MAX);
@@ -348,7 +423,7 @@ impl Ipv4 {
 
     /// Set the source ip of the header.
     pub fn set_source(&mut self, source: UnicastIpv4Addr) -> &mut Self {
-        self.source = source.inner().octets();
+        self.changing(Self::source_words, |h| h.source = source.inner().octets());
         self
     }
 
@@ -362,20 +437,21 @@ impl Ipv4 {
     /// Note(manish) Why do we even have this function?
     #[allow(unsafe_code)]
     pub unsafe fn set_source_unchecked(&mut self, source: impl Into<Ipv4Addr>) -> &mut Self {
-        self.source = source.into().octets();
+        let source = source.into().octets();
+        self.changing(Self::source_words, |h| h.source = source);
         self
     }
 
     /// Set the destination ip address for this header.
     pub fn set_destination(&mut self, dest: Ipv4Addr) -> &mut Self {
-        self.destination = dest.octets();
+        self.changing(Self::destination_words, |h| h.destination = dest.octets());
         self
     }
 
     /// Set the header's time to live
     /// (i.e., the maximum number of routing hops it can traverse without being dropped).
     pub fn set_ttl(&mut self, ttl: u8) -> &mut Self {
-        self.time_to_live = ttl;
+        self.changing(Self::ttl_and_protocol_word, |h| h.time_to_live = ttl);
         self
     }
 
@@ -389,7 +465,7 @@ impl Ipv4 {
         if self.time_to_live == 0 {
             return Err(TtlAlreadyZero);
         }
-        self.time_to_live -= 1;
+        self.changing(Self::ttl_and_protocol_word, |h| h.time_to_live -= 1);
         Ok(())
     }
 
@@ -397,7 +473,7 @@ impl Ipv4 {
     ///
     /// [explicit congestion notification]: https://en.wikipedia.org/wiki/Explicit_Congestion_Notification
     pub fn set_ecn(&mut self, ecn: Ecn) -> &mut Self {
-        self.ecn = ecn.0;
+        self.changing(Self::version_ihl_dscp_ecn_word, |h| h.ecn = ecn.0);
         self
     }
 
@@ -405,7 +481,7 @@ impl Ipv4 {
     ///
     /// [differentiated services code point]: https://en.wikipedia.org/wiki/Differentiated_services
     pub fn set_dscp(&mut self, dscp: Dscp) -> &mut Self {
-        self.dscp = dscp.0;
+        self.changing(Self::version_ihl_dscp_ecn_word, |h| h.dscp = dscp.0);
         self
     }
 
@@ -413,13 +489,15 @@ impl Ipv4 {
     /// of this packet i.e., the number used to identify packets that contain an originally
     /// fragmented packet.
     pub fn set_identification(&mut self, id: u16) -> &mut Self {
-        self.identification = id;
+        self.changing(Self::identification_word, |h| h.identification = id);
         self
     }
 
     /// Set the "don't fragment" bit of the header
     pub fn set_dont_fragment(&mut self, dont_fragment: bool) -> &mut Self {
-        self.dont_fragment = dont_fragment;
+        self.changing(Self::flags_and_fragment_offset_word, |h| {
+            h.dont_fragment = dont_fragment;
+        });
         self
     }
 
@@ -430,7 +508,9 @@ impl Ipv4 {
     /// This function does not (and can-not)
     /// check if there are actually more fragments to the packet.
     pub fn set_more_fragments(&mut self, more_fragments: bool) -> &mut Self {
-        self.more_fragments = more_fragments;
+        self.changing(Self::flags_and_fragment_offset_word, |h| {
+            h.more_fragments = more_fragments;
+        });
         self
     }
 
@@ -441,7 +521,9 @@ impl Ipv4 {
     /// This function does not (and can-not) check if the assigned fragment offset is valid or even
     /// reasonable.
     pub fn set_fragment_offset(&mut self, fragment_offset: FragOffset) -> &mut Self {
-        self.fragment_offset = fragment_offset.0;
+        self.changing(Self::flags_and_fragment_offset_word, |h| {
+            h.fragment_offset = fragment_offset.0;
+        });
         self
     }
 
@@ -452,7 +534,7 @@ impl Ipv4 {
     /// This function does not (and can-not)
     /// check if the assigned [`IpNumber`] is valid for this packet.
     pub fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
-        self.protocol = next_header.0;
+        self.changing(Self::ttl_and_protocol_word, |h| h.protocol = next_header.0);
         self
     }
 
@@ -461,7 +543,6 @@ impl Ipv4 {
     /// This method will adjust the total length of the header to account for options and the length
     /// of this header.
     ///
-    /// This method _will not_ update the checksum of the header.
     /// # Errors
     ///    This method returns [`Ipv4LengthError`] if the value is too big
     pub fn set_payload_len(&mut self, payload_len: u16) -> Result<(), Ipv4LengthError> {
@@ -472,9 +553,7 @@ impl Ipv4 {
             return Err(Ipv4LengthError { requested, max });
         }
         #[allow(clippy::cast_possible_truncation)] // bounded by the check above
-        {
-            self.total_len = requested as u16;
-        }
+        self.changing(Self::total_len_word, |h| h.total_len = requested as u16);
         Ok(())
     }
 
@@ -659,9 +738,26 @@ mod contract {
     }
 
     /// [`ValueGenerator`] for an (otherwise) arbitrary [`Ipv4`] with a specified [`NextHeader`].
+    /// Generates either a valid checksum or an arbitrary checksum.
     pub struct GenWithNextHeader(pub NextHeader);
 
+    /// [`ValueGenerator`] for an [`Ipv4`] built here, through [`Default`] and the setters, with a
+    /// specified [`NextHeader`].
+    pub struct BuiltWithNextHeader(pub NextHeader);
+
     impl ValueGenerator for GenWithNextHeader {
+        type Output = Ipv4;
+
+        fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
+            let mut header = BuiltWithNextHeader(self.0).generate(u)?;
+            if u.produce()? {
+                header.header_checksum = u.produce()?;
+            }
+            Some(header)
+        }
+    }
+
+    impl ValueGenerator for BuiltWithNextHeader {
         type Output = Ipv4;
 
         /// Generates an arbitrary [`Ipv4`] header with the [`NextHeader`] specified in `self`.
@@ -692,6 +788,12 @@ mod contract {
                     Bound::Included(&Ipv4::MAX_LEN.get()),
                 )?)
                 .ok();
+            // The reserved flag, which a header must carry through as it arrived.
+            if u.produce()? {
+                header.changing(Ipv4::flags_and_fragment_offset_word, |h| {
+                    h.reserved_flag = true;
+                });
+            }
             Some(header)
         }
     }
@@ -728,10 +830,10 @@ mod test {
             .deparse(&mut ours)
             .unwrap_or_else(|e| unreachable!("{e:?}"));
         assert_eq!(written.get() as usize, MIN_LEN_USIZE);
-        assert_eq!(
-            ours.as_slice(),
-            etherparse::Ipv4Header::default().to_bytes().as_slice()
-        );
+        // etherparse leaves the checksum zero; ours starts valid, because setters only adjust it.
+        let mut theirs = etherparse::Ipv4Header::default();
+        theirs.header_checksum = theirs.calc_header_checksum();
+        assert_eq!(ours.as_slice(), theirs.to_bytes().as_slice());
         assert!(Ipv4::default().dont_fragment());
     }
 
@@ -767,13 +869,10 @@ mod test {
                         assert!(consumed.into_non_zero_usize().get() <= slice.len());
                         let mut buf = vec![0; consumed.into_non_zero_usize().get()];
                         header.deparse(&mut buf).unwrap();
-                        assert_eq!(&slice[..=5], &buf.as_slice()[..=5]);
-                        // reserved bit in ipv4 flags should serialize to zero
-                        assert_eq!(slice[6] & 0b0111_1111, buf[6]);
-                        assert_eq!(&slice[7..MIN_LEN_USIZE], &buf.as_slice()[7..MIN_LEN_USIZE]);
+                        // The header leaves as it arrived, the reserved flag included.
                         assert_eq!(
-                            &slice[MIN_LEN_USIZE..consumed.into_non_zero_usize().get()],
-                            &buf.as_slice()[MIN_LEN_USIZE..consumed.into_non_zero_usize().get()]
+                            &slice[..consumed.into_non_zero_usize().get()],
+                            buf.as_slice()
                         );
                     }
                     Err(e) => match e {

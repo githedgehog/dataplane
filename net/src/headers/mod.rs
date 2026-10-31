@@ -4,10 +4,12 @@
 //! Definition of [`Headers`] and related methods and types.
 #![allow(missing_docs)] // temporary
 
+use std::borrow::Cow;
+
 use crate::checksum::Checksum;
 use crate::eth::ethtype::EthType;
 use crate::eth::{Eth, EthError};
-use crate::icmp_any::{IcmpAny, IcmpAnyMut};
+use crate::icmp_any::{IcmpAny, IcmpAnyMut, get_payload_for_checksum};
 use crate::icmp4::{Icmp4, Icmp4Checksum};
 use crate::icmp6::{Icmp6, Icmp6Checksum, Icmp6ChecksumPayload};
 use crate::impl_from_for_enum;
@@ -364,7 +366,7 @@ impl Transport {
     /// only a full recompute can fix it; callers detect that case with
     /// [`Headers::has_zero_ipv6_udp_checksum`].
     #[must_use]
-    fn checksum_for_increment(&self) -> Option<u16> {
+    pub(crate) fn checksum_for_increment(&self) -> Option<u16> {
         match self {
             Transport::Tcp(tcp) => tcp.checksum().map(u16::from),
             Transport::Udp(udp) => match udp.checksum().map(u16::from) {
@@ -467,12 +469,9 @@ impl Transport {
         self.set_checksum_from_increment(updated);
     }
 
-    pub(crate) fn update_checksum(
-        &mut self,
-        net: &Net,
-        embedded_headers: Option<&EmbeddedHeaders>,
-        payload: impl AsRef<[u8]>,
-    ) {
+    /// Compute the checksum from scratch over `payload`: everything the checksum covers after the
+    /// header, an ICMP error's quoted headers included.
+    pub(crate) fn update_checksum(&mut self, net: &Net, payload: impl AsRef<[u8]>) {
         match (net, self) {
             (net, Transport::Tcp(tcp)) => {
                 tcp.update_checksum(&TcpChecksumPayload::new(net, payload.as_ref()))
@@ -483,38 +482,18 @@ impl Transport {
                     .unwrap_or_else(|()| unreachable!()); // Updating UDP checksum never fails
             }
             (Net::Ipv4(_), Transport::Icmp4(icmp4)) => {
-                if icmp4.is_error_message() && embedded_headers.is_some() {
-                    let checksum_payload =
-                        icmp4.get_payload_for_checksum(embedded_headers, payload.as_ref());
-                    icmp4
-                        .update_checksum(checksum_payload.as_ref())
-                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv4 checksum never fails
-                } else {
-                    icmp4
-                        .update_checksum(payload.as_ref())
-                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv4 checksum never fails
-                }
+                icmp4
+                    .update_checksum(payload.as_ref())
+                    .unwrap_or_else(|()| unreachable!()); // Updating ICMPv4 checksum never fails
             }
             (Net::Ipv6(ip), Transport::Icmp6(icmp6)) => {
-                if icmp6.is_error_message() && embedded_headers.is_some() {
-                    let checksum_payload =
-                        icmp6.get_payload_for_checksum(embedded_headers, payload.as_ref());
-                    icmp6
-                        .update_checksum(&Icmp6ChecksumPayload::new(
-                            ip.source().inner(),
-                            ip.destination(),
-                            checksum_payload.as_ref(),
-                        ))
-                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv6 checksum never fails
-                } else {
-                    icmp6
-                        .update_checksum(&Icmp6ChecksumPayload::new(
-                            ip.source().inner(),
-                            ip.destination(),
-                            payload.as_ref(),
-                        ))
-                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv6 checksum never fails
-                }
+                icmp6
+                    .update_checksum(&Icmp6ChecksumPayload::new(
+                        ip.source().inner(),
+                        ip.destination(),
+                        payload.as_ref(),
+                    ))
+                    .unwrap_or_else(|()| unreachable!()); // Updating ICMPv6 checksum never fails
             }
             // TODO: statically ensure that this is unreachable
             (Net::Ipv6(_), Transport::Icmp4(_)) => debug!("illegal: icmpv4 in ipv6"),
@@ -700,6 +679,7 @@ impl Header {
 impl Parse for Headers {
     type Error = EthError;
 
+    #[allow(clippy::too_many_lines)] // one arm per header
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
         let mut cursor =
             Reader::new(buf).map_err(|IllegalBufferLength(len)| ParseError::BufferTooLong(len))?;
@@ -723,10 +703,15 @@ impl Parse for Headers {
         // TODO: consider returning a parse error instead of silently stopping
         // when MAX_NET_EXTENSIONS is exceeded.  The current `break` exits the
         // entire parse loop, so transport and embedded headers that follow the
-        // overflow point are also not parsed.  This matches the MAX_VLANS
-        // handling but the caller has no way to detect a partial parse.
+        // overflow point are also not parsed: they stay in the payload, with
+        // the header that did not fit.  This matches the MAX_VLANS handling but
+        // the caller has no way to detect a partial parse.
         let mut prior = Header::Eth(eth);
+        // Offset of `prior` from the Ethernet header. When the header stack is full, rewind here
+        // so this header and all following bytes remain in the payload, including any parsed ahead.
+        let mut prior_start = 0;
         loop {
+            let next_start = cursor.position();
             let header = prior.parse_payload(&mut cursor);
             match prior {
                 Header::Eth(eth) => this.eth = Some(eth),
@@ -741,6 +726,7 @@ impl Parse for Headers {
                     if this.vlan.len() < MAX_VLANS {
                         this.vlan.push(vlan);
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -748,6 +734,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::HopByHop(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -755,6 +742,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::DestOpts(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -762,6 +750,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Routing(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -769,6 +758,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Fragment(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -776,6 +766,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Ipv4Auth(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -783,6 +774,7 @@ impl Parse for Headers {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::Ipv6Auth(h));
                     } else {
+                        cursor.rewind_to(prior_start);
                         break;
                     }
                 }
@@ -795,6 +787,7 @@ impl Parse for Headers {
                 }
                 Some(next) => {
                     prior = next;
+                    prior_start = next_start;
                 }
             }
         }
@@ -1224,6 +1217,11 @@ impl Headers {
         }
     }
 
+    /// How much of the IP datagram follows the transport header: what its checksum covers after
+    /// the header, without whatever trails the datagram in the frame.
+    ///
+    /// `None` without a network or transport header, or if the datagram's length cannot hold
+    /// the headers.
     pub(crate) fn transport_payload_len(&self) -> Option<usize> {
         let ip_payload_len = match self.net.as_ref()? {
             Net::Ipv4(ip) => usize::from(ip.payload_len()?),
@@ -1238,20 +1236,105 @@ impl Headers {
         ip_payload_len.checked_sub(after_net)
     }
 
-    /// update the checksums of the headers
-    pub(crate) fn update_checksums(&mut self, payload: impl AsRef<[u8]>) {
-        let is_vxlan = self.try_vxlan().is_some();
+    /// Whether the datagram is a fragment of a larger one, as opposed to whole or an atomic
+    /// fragment ([RFC 6946]).
+    ///
+    /// [RFC 6946]: https://datatracker.ietf.org/doc/html/rfc6946
+    fn is_fragment(&self) -> bool {
+        let ipv4 = matches!(
+            &self.net,
+            Some(Net::Ipv4(ip)) if ip.more_fragments() || ip.fragment_offset().value() != 0
+        );
+        ipv4 || self.net_ext.iter().any(
+            |ext| matches!(ext, NetExt::Fragment(fragment) if fragment.is_fragmenting_payload()),
+        )
+    }
 
+    /// Attempt to refresh the transport checksum; see [`Packet::refresh_transport_checksum`].
+    ///
+    /// `payload` and `covered` have the same meaning as in [`Self::compute_transport_checksum`].
+    ///
+    /// Returns `false` for fragmented datagrams. Otherwise attempts computation and returns
+    /// `true`, even if the update is skipped.
+    ///
+    /// [`Packet::refresh_transport_checksum`]: crate::packet::Packet::refresh_transport_checksum
+    pub(crate) fn refresh_transport_checksum(
+        &mut self,
+        payload: impl AsRef<[u8]>,
+        covered: Option<usize>,
+    ) -> bool {
+        // A transport checksum covers the reassembled datagram. With only a fragment available,
+        // preserve the checksum, including any incremental updates already applied by stages.
+        if self.is_fragment() {
+            debug!("a fragment: can't recompute its transport checksum");
+            return false;
+        }
+        self.compute_transport_checksum(payload, covered);
+        true
+    }
+
+    /// Compute the transport checksum from scratch, leaving IPv4 checksums unchanged.
+    ///
+    /// `payload` follows the parsed headers. Prepend any quoted headers for ICMP errors, then
+    /// limit the combined bytes to `covered` if supplied. This excludes trailing frame bytes,
+    /// even when they were parsed as part of a quoted header.
+    ///
+    /// Skip VXLAN packets and packets without a network or transport header.
+    pub(crate) fn compute_transport_checksum(
+        &mut self,
+        payload: impl AsRef<[u8]>,
+        covered: Option<usize>,
+    ) {
+        // Locally generated VXLAN uses a zero UDP checksum. Preserve received VXLAN checksums,
+        // including nonzero values.
+        if self.try_vxlan().is_some() {
+            return;
+        }
+        let is_error = match &self.transport {
+            Some(Transport::Icmp4(icmp)) => icmp.is_error_message(),
+            Some(Transport::Icmp6(icmp)) => icmp.is_error_message(),
+            _ => false,
+        };
+        let after_header = match self.embedded_ip.as_deref() {
+            Some(quoted) if is_error => {
+                Cow::Owned(get_payload_for_checksum(Some(quoted), payload.as_ref()))
+            }
+            _ => Cow::Borrowed(payload.as_ref()),
+        };
+        let covered = match covered {
+            Some(len) if len <= after_header.len() => &after_header[..len],
+            _ => &after_header[..],
+        };
+        let Some(net) = self.net.as_ref() else {
+            trace!("no network header: can't update checksum");
+            return;
+        };
+        let Some(transport) = self.transport.as_mut() else {
+            trace!("no transport header: can't update checksum");
+            return;
+        };
+        transport.update_checksum(net, covered);
+    }
+
+    /// update the checksums of the headers
+    #[cfg(any(test, feature = "builder"))]
+    pub(crate) fn update_checksums(&mut self, payload: impl AsRef<[u8]>) {
+        self.update_checksums_covering(payload, None);
+    }
+
+    /// Recompute checksums for a locally built packet, using the transport coverage described by
+    /// [`Self::compute_transport_checksum`]. The caller must provide the complete datagram;
+    /// fragment flags do not suppress recomputation.
+    pub(crate) fn update_checksums_covering(
+        &mut self,
+        payload: impl AsRef<[u8]>,
+        covered: Option<usize>,
+    ) {
         let Some(net) = self.net.as_mut() else {
             trace!("no network header: can't update checksum");
             return;
         };
         net.update_checksum();
-
-        if is_vxlan {
-            // Only recompute checksum if it is not VXLAN
-            return;
-        }
 
         // Update inner IP header checksum, if any, before updating transport checksum.
         // This is because the inner headers are part of transport header's payload, so updating
@@ -1269,11 +1352,7 @@ impl Headers {
             // changed them (for example: NAT). Leave this to (for example) the NAT code.
         }
 
-        let Some(transport) = self.transport.as_mut() else {
-            trace!("no transport header: can't update checksum");
-            return;
-        };
-        transport.update_checksum(net, self.embedded_ip.as_deref(), payload.as_ref());
+        self.compute_transport_checksum(payload, covered);
     }
 }
 
@@ -2795,16 +2874,10 @@ mod test {
                 let net = headers.net.clone().unwrap();
                 match net {
                     Net::Ipv4(mut ipv4) => {
-                        let old_value = ipv4.source().inner().into();
-                        let new_value = 0x10_20_30_40; // 16.32.48.64
-                        let new_ip = UnicastIpv4Addr::try_from(Ipv4Addr::from(new_value)).unwrap();
+                        // The setter folds the address change into the header checksum itself.
+                        let new_ip =
+                            UnicastIpv4Addr::try_from(Ipv4Addr::from(0x10_20_30_40)).unwrap();
                         ipv4.set_source(new_ip);
-                        let new_checksum = ipv4.increment_update_checksum_32bit(
-                            ipv4.checksum().unwrap(),
-                            old_value,
-                            new_value,
-                        );
-                        ipv4.set_checksum(new_checksum).unwrap();
                         ipv4.validate_checksum(&())
                             .expect("expected valid checksum");
                     }
@@ -3413,6 +3486,110 @@ mod fragment_upper_layer_proto {
             headers.upper_layer_proto(),
             UpperLayerProto::Carried(NextHeader::new(ESP)),
             "ESP parses no transport but its protocol number is still the answer"
+        );
+    }
+}
+
+#[cfg(test)]
+mod no_room_tests {
+    //! A header there is no room for stays in the payload, and so does everything after it, which
+    //! parsing it has already read past. None of it may be read and then dropped, or the packet
+    //! leaves shorter than it arrived.
+
+    use super::{Headers, MAX_NET_EXTENSIONS, MAX_VLANS};
+    use crate::headers::TryEmbeddedTransport;
+    use crate::parse::Parse;
+
+    const ETH: usize = 14;
+    const IPV6: usize = 40;
+    const DESTINATION_OPTIONS: u8 = 60;
+    const UDP: u8 = 17;
+    const ICMP6: u8 = 58;
+
+    /// Ports 12345 and 12346, a length of 8, and no checksum.
+    const UDP_HEADER: [u8; 8] = [0x30, 0x39, 0x30, 0x3a, 0, 8, 0, 0];
+
+    fn eth(ether_type: [u8; 2]) -> Vec<u8> {
+        let mut out = vec![2, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 2];
+        out.extend_from_slice(&ether_type);
+        out
+    }
+
+    /// An IPv6 header and `count` destination options headers, followed by `protocol` in `rest`
+    /// more octets.
+    fn ipv6(count: usize, protocol: u8, rest: usize) -> Vec<u8> {
+        let mut out = vec![0x60, 0, 0, 0];
+        out.extend_from_slice(&u16::try_from(8 * count + rest).unwrap().to_be_bytes());
+        out.push(if count == 0 {
+            protocol
+        } else {
+            DESTINATION_OPTIONS
+        });
+        out.push(64);
+        out.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        out.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        for i in 1..=count {
+            let next = if i == count {
+                protocol
+            } else {
+                DESTINATION_OPTIONS
+            };
+            out.extend_from_slice(&[next, 0, 1, 4, 0, 0, 0, 0]); // a 4-octet PadN option
+        }
+        out
+    }
+
+    #[test]
+    fn extension_headers_past_the_limit_stay_in_the_payload() {
+        let mut frame = eth([0x86, 0xdd]);
+        frame.append(&mut ipv6(MAX_NET_EXTENSIONS + 1, UDP, UDP_HEADER.len()));
+        frame.extend_from_slice(&UDP_HEADER);
+
+        let (headers, consumed) = Headers::parse(&frame).unwrap();
+        assert_eq!(headers.net_ext().len(), MAX_NET_EXTENSIONS);
+        assert!(headers.transport().is_none());
+        assert_eq!(
+            usize::from(consumed.get()),
+            ETH + IPV6 + 8 * MAX_NET_EXTENSIONS
+        );
+    }
+
+    #[test]
+    fn vlan_tags_past_the_limit_stay_in_the_payload() {
+        let mut frame = eth([0x81, 0x00]);
+        for i in 1..=MAX_VLANS + 1 {
+            frame.extend_from_slice(&[0, 2]); // VLAN 2
+            frame.extend_from_slice(if i == MAX_VLANS + 1 {
+                &[0x86, 0xdd]
+            } else {
+                &[0x81, 0x00]
+            });
+        }
+        frame.append(&mut ipv6(0, UDP, UDP_HEADER.len()));
+        frame.extend_from_slice(&UDP_HEADER);
+
+        let (headers, consumed) = Headers::parse(&frame).unwrap();
+        assert_eq!(headers.vlan().len(), MAX_VLANS);
+        assert!(headers.net.is_none());
+        assert_eq!(usize::from(consumed.get()), ETH + 4 * MAX_VLANS);
+    }
+
+    #[test]
+    fn quoted_extension_headers_past_the_limit_stay_in_the_payload() {
+        let mut quoted = ipv6(MAX_NET_EXTENSIONS + 1, UDP, UDP_HEADER.len());
+        quoted.extend_from_slice(&UDP_HEADER);
+        let mut frame = eth([0x86, 0xdd]);
+        frame.append(&mut ipv6(0, ICMP6, 8 + quoted.len()));
+        frame.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]); // destination unreachable: no route
+        frame.append(&mut quoted);
+
+        let (headers, consumed) = Headers::parse(&frame).unwrap();
+        let quoted = headers.embedded_ip().expect("no quoted headers");
+        assert_eq!(quoted.net_ext().len(), MAX_NET_EXTENSIONS);
+        assert!(quoted.try_embedded_transport().is_none());
+        assert_eq!(
+            usize::from(consumed.get()),
+            ETH + IPV6 + 8 + IPV6 + 8 * MAX_NET_EXTENSIONS
         );
     }
 }

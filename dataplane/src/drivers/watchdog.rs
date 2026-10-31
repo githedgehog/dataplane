@@ -34,6 +34,7 @@ struct WatchdogInner {
     punt_drops: AtomicU64,   // number of frames for the kernel that could not be punted
     parse_errors: AtomicU64, // number of frames we failed to parse
     truncated: AtomicU64,    // number of frames larger than the rx buffer
+    csum_unknown: AtomicU64, // number of frames whose checksum status did not fit the control buffer
     zero_len: AtomicU64,     // number of zero-length reads
     kernel_drops: AtomicU64, // number of frames the kernel dropped on the socket
 }
@@ -63,6 +64,7 @@ impl Watchdog {
         accumulate(&self.0.punt_drops, counters.punt_drops);
         accumulate(&self.0.parse_errors, counters.parse_errors);
         accumulate(&self.0.truncated, counters.truncated);
+        accumulate(&self.0.csum_unknown, counters.csum_unknown);
         accumulate(&self.0.zero_len, counters.zero_len);
         accumulate(&self.0.kernel_drops, counters.kernel_drops);
     }
@@ -82,6 +84,7 @@ impl Watchdog {
             punt_drops: self.0.punt_drops.swap(0, Ordering::Relaxed),
             parse_errors: self.0.parse_errors.swap(0, Ordering::Relaxed),
             truncated: self.0.truncated.swap(0, Ordering::Relaxed),
+            csum_unknown: self.0.csum_unknown.swap(0, Ordering::Relaxed),
             zero_len: self.0.zero_len.swap(0, Ordering::Relaxed),
             kernel_drops: self.0.kernel_drops.swap(0, Ordering::Relaxed),
         };
@@ -143,6 +146,8 @@ pub struct RxCounters {
     pub parse_errors: u64,
     /// Frames received but larger than the rx buffer
     pub truncated: u64,
+    /// Frames with truncated control messages, treated as needing a transport checksum refresh
+    pub csum_unknown: u64,
     /// Zero-length reads on the socket
     pub zero_len: u64,
     /// Frames the kernel dropped on the socket before we could read them

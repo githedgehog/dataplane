@@ -144,46 +144,7 @@ pub trait Checksum {
         //
         //     HC' = HC - ~m - m'    --    [Eqn. 4]
 
-        // First subtraction: HC - ~m
-        let (mut tmp, borrow) = current_checksum.into().overflowing_sub(!old_value);
-        if borrow {
-            tmp = tmp.wrapping_sub(1);
-        }
-
-        // Second subtraction: tmp - m'
-        let (mut result, borrow) = tmp.overflowing_sub(new_value);
-        if borrow {
-            result = result.wrapping_sub(1);
-        }
-
-        result.into()
-    }
-
-    /// Perform an incremental update of the checksum in the header, like `increment_update_checksum`
-    /// but for a 32-bit value change.
-    fn increment_update_checksum_32bit(
-        &mut self,
-        current_checksum: Self::Checksum,
-        old_value: u32,
-        new_value: u32,
-    ) -> Self::Checksum {
-        let old_value_first_half = (old_value >> 16) as u16;
-        #[allow(clippy::cast_possible_truncation)] // truncation is intentional
-        let old_value_second_half = old_value as u16;
-        let new_value_first_half = (new_value >> 16) as u16;
-        #[allow(clippy::cast_possible_truncation)] // truncation is intentional
-        let new_value_second_half = new_value as u16;
-
-        let intermediary_checksum = self.increment_update_checksum(
-            current_checksum,
-            old_value_first_half,
-            new_value_first_half,
-        );
-        self.increment_update_checksum(
-            intermediary_checksum,
-            old_value_second_half,
-            new_value_second_half,
-        )
+        incremental_update(current_checksum.into(), old_value, new_value).into()
     }
 }
 
@@ -207,4 +168,34 @@ pub enum ChecksumError<T: Checksum + ?Sized> {
     /// The checksum is not present in the header.
     #[error("checksum not present")]
     NotPresent,
+}
+
+/// One's-complement sum of `bytes` as big-endian 16-bit words, an odd octet padded with zero. It is
+/// `0` only for all-zero `bytes`. Over everything a checksum covers, the checksum included, it is
+/// `0xffff` when the checksum is valid.
+#[must_use]
+pub fn ones_complement_sum(bytes: &[u8]) -> u16 {
+    // Convert etherparse's native-endian sum to network byte order.
+    !etherparse::checksum::Sum16BitWords::new()
+        .add_slice(bytes)
+        .ones_complement()
+        .to_be()
+}
+
+/// RFC 1624 Eqn. 4: the checksum `current` becomes once a 16-bit field it covers changes from
+/// `old_value` to `new_value`, computed as `HC - ~m - m'` with end-around borrows.
+#[must_use]
+pub(crate) fn incremental_update(current: u16, old_value: u16, new_value: u16) -> u16 {
+    // First subtraction: HC - ~m
+    let (mut tmp, borrow) = current.overflowing_sub(!old_value);
+    if borrow {
+        tmp = tmp.wrapping_sub(1);
+    }
+
+    // Second subtraction: tmp - m'
+    let (mut result, borrow) = tmp.overflowing_sub(new_value);
+    if borrow {
+        result = result.wrapping_sub(1);
+    }
+    result
 }

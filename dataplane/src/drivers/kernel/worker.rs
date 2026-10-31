@@ -6,9 +6,13 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::io::IoSliceMut;
 use std::os::fd::AsRawFd;
 
 use afpacket::tokio::RawPacketStream;
+use nix::libc;
+use nix::sys::socket::MsgFlags;
+use nix::{setsockopt_impl, sockopt_impl};
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncWriteExt, Interest};
 use tokio::sync::Mutex;
@@ -124,6 +128,9 @@ fn create_worker_interface(
             error!("Failed to set SO_SNDBUF for interface {if_name}: {e}");
         },
     )?;
+    nix::sys::socket::setsockopt(&bfd, PacketAuxdata, &true).inspect_err(|e| {
+        error!("Failed to set PACKET_AUXDATA for interface {if_name}: {e}");
+    })?;
 
     let read_fd_owned = nix::unistd::dup(bfd).map_err(io::Error::from)?;
     // SAFETY: The AsyncFd takes ownership of the duplicated OwnedFd, so the fd stays open for its
@@ -504,14 +511,68 @@ fn build_interface_table(
     Ok((readers, Arc::new(if_table)))
 }
 
-/// Build a [`Packet`] out of a frame just read from a socket. `bytes` is the length the
-/// kernel reported for the frame, which may be more than what we read into `raw`.
+sockopt_impl!(
+    /// Request per-frame metadata, including checksum status, from the packet socket.
+    ///
+    /// TCP and UDP frames from a local stack over veth, or a guest using virtio checksum offload,
+    /// may arrive with `CHECKSUM_PARTIAL`. Their checksum field contains the pseudo-header sum;
+    /// the remaining checksum computation must be completed before transmission.
+    PacketAuxdata,
+    SetOnly,
+    libc::SOL_PACKET,
+    libc::PACKET_AUXDATA,
+    bool
+);
+
+/// Space for one `tpacket_auxdata` message, including its control-message header and padding.
+const CONTROL_LEN: usize = 64;
+
+/// Read `TP_STATUS_CSUMNOTREADY` from a control buffer zeroed before `recvmsg`.
+/// Returns `None` if control messages were truncated (`MSG_CTRUNC`), or `Some(false)` if no
+/// message reports an unfinished checksum.
+fn checksum_unfinished(control: &[u8], flags: MsgFlags) -> Option<bool> {
+    const HEADER: usize = size_of::<libc::cmsghdr>();
+    // `CMSG_ALIGN`, in glibc and musl alike.
+    let align = |len: usize| len.next_multiple_of(size_of::<usize>());
+    if flags.contains(MsgFlags::MSG_CTRUNC) {
+        return None;
+    }
+    let mut at = 0;
+    while let Some(bytes) = control.get(at..at + HEADER) {
+        #[allow(unsafe_code)]
+        // SAFETY: `bytes` holds a whole `cmsghdr`, which is plain integers: any octets are one.
+        let header: libc::cmsghdr = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast()) };
+        #[allow(clippy::unnecessary_cast, clippy::useless_conversion)] // usize or u32, by libc
+        let len = usize::try_from(header.cmsg_len).unwrap_or(0);
+        if len < HEADER {
+            break; // the zeroes after the last message
+        }
+        if header.cmsg_level == libc::SOL_PACKET && header.cmsg_type == libc::PACKET_AUXDATA {
+            // `tp_status` leads `struct tpacket_auxdata`.
+            let data = at + align(HEADER);
+            return Some(
+                control
+                    .get(data..)
+                    .and_then(<[u8]>::first_chunk::<4>)
+                    .is_some_and(|status| {
+                        u32::from_ne_bytes(*status) & libc::TP_STATUS_CSUMNOTREADY != 0
+                    }),
+            );
+        }
+        at += align(len);
+    }
+    Some(false)
+}
+
+/// Build a [`Packet`] from a received frame. `bytes` is the reported frame length, which may
+/// exceed `raw`. `checksum_unfinished` requests a refresh for partial or unknown checksum status.
 /// Returns `None` if the frame could not be used, and counts why.
 fn build_packet(
     id: WorkerId,
     if_name: &str,
     raw: &[u8],
     bytes: usize,
+    checksum_unfinished: bool,
     if_index: InterfaceIndex,
     counters: &mut RxCounters,
 ) -> Option<Box<Packet<TestBuffer>>> {
@@ -528,6 +589,10 @@ fn build_packet(
     match Packet::new(buf) {
         Ok(mut incoming) => {
             incoming.meta_mut().iif = Some(if_index);
+            if checksum_unfinished {
+                // Request a transport checksum refresh for partial or unknown checksum status.
+                incoming.meta_mut().set_checksum_refresh(true);
+            }
             Some(Box::new(incoming))
         }
         Err(e) => {
@@ -561,19 +626,40 @@ fn packet_recv(
     let mut ret = Ok(());
     pkts.clear();
     while pkts.len() < max_to_read {
-        match nix::sys::socket::recv(
+        let mut control = [0u8; CONTROL_LEN];
+        let received = nix::sys::socket::recvmsg::<()>(
             if_fd,
-            &mut raw,
-            nix::sys::socket::MsgFlags::MSG_DONTWAIT | nix::sys::socket::MsgFlags::MSG_TRUNC,
-        ) {
-            Ok(0) => {
+            &mut [IoSliceMut::new(&mut raw)],
+            Some(&mut control),
+            MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_TRUNC,
+        )
+        .map(|message| (message.bytes, message.flags));
+        let received = received.map(|(bytes, flags)| {
+            // Refresh unknown status too, to avoid forwarding a partial checksum. This can
+            // overwrite an already computed checksum and mask corruption.
+            let unfinished = checksum_unfinished(&control, flags).unwrap_or_else(|| {
+                counters.csum_unknown += 1;
+                true
+            });
+            (bytes, unfinished)
+        });
+        match received {
+            Ok((0, _)) => {
                 // Treated as "no more to read".
                 counters.zero_len += 1;
                 break;
             }
-            Ok(bytes) => {
+            Ok((bytes, checksum_unfinished)) => {
                 trace!("Received packet with {} bytes on {}", bytes, if_name);
-                if let Some(pkt) = build_packet(id, if_name, &raw, bytes, if_index, counters) {
+                if let Some(pkt) = build_packet(
+                    id,
+                    if_name,
+                    &raw,
+                    bytes,
+                    checksum_unfinished,
+                    if_index,
+                    counters,
+                ) {
                     pkts.push(pkt);
                 }
             }
@@ -847,11 +933,13 @@ async fn tx_packet(
 
 #[cfg(test)]
 mod test {
-    use super::{Disposition, RxCounters, build_packet};
+    use super::{CONTROL_LEN, Disposition, RxCounters, build_packet, checksum_unfinished};
     use net::buffer::test_buffer::TestBuffer;
     use net::interface::InterfaceIndex;
     use net::packet::test_utils::{build_test_ipv4_packet, build_test_ipv6_packet};
     use net::packet::{DoneReason, Packet};
+    use nix::libc;
+    use nix::sys::socket::MsgFlags;
     use pipeline::{NetworkFunction, sample_nfs::DecrementTtl};
 
     const IF_INDEX: u32 = 1;
@@ -919,7 +1007,7 @@ mod test {
         let raw = buf.as_ref();
 
         let mut counters = RxCounters::default();
-        let built = build_packet(0, IF_NAME, raw, raw.len(), if_index(), &mut counters)
+        let built = build_packet(0, IF_NAME, raw, raw.len(), false, if_index(), &mut counters)
             .expect("valid frame should be built");
 
         assert_eq!(built.meta().iif, Some(if_index()));
@@ -933,7 +1021,15 @@ mod test {
         let raw = [0xffu8; 4];
 
         let mut counters = RxCounters::default();
-        let built = build_packet(0, IF_NAME, &raw, raw.len(), if_index(), &mut counters);
+        let built = build_packet(
+            0,
+            IF_NAME,
+            &raw,
+            raw.len(),
+            false,
+            if_index(),
+            &mut counters,
+        );
 
         assert!(built.is_none());
         assert_eq!(counters.parse_errors, 1);
@@ -949,10 +1045,263 @@ mod test {
 
         let mut counters = RxCounters::default();
         // the kernel tells us the frame was longer than what it copied for us
-        let built = build_packet(0, IF_NAME, raw, raw.len() + 1, if_index(), &mut counters);
+        let built = build_packet(
+            0,
+            IF_NAME,
+            raw,
+            raw.len() + 1,
+            false,
+            if_index(),
+            &mut counters,
+        );
 
         assert!(built.is_some());
         assert_eq!(counters.truncated, 1);
         assert_eq!(counters.parse_errors, 0);
+    }
+
+    /// A `PACKET_AUXDATA` control message with `status`, at the start of a zeroed buffer, as
+    /// `recvmsg` leaves it.
+    fn auxdata(status: u32) -> [u8; CONTROL_LEN] {
+        let header = size_of::<libc::cmsghdr>();
+        let data = header.next_multiple_of(size_of::<usize>());
+        let len = data + size_of::<libc::tpacket_auxdata>();
+        let mut control = [0u8; CONTROL_LEN];
+        // `cmsg_len` is the leading field, a size_t in glibc and a socklen_t in musl, either way
+        // native-endian; the rest of it is zero.
+        control[..size_of::<u32>()].copy_from_slice(&u32::try_from(len).unwrap().to_ne_bytes());
+        let level = std::mem::offset_of!(libc::cmsghdr, cmsg_level);
+        control[level..level + 4].copy_from_slice(&libc::SOL_PACKET.to_ne_bytes());
+        let kind = std::mem::offset_of!(libc::cmsghdr, cmsg_type);
+        control[kind..kind + 4].copy_from_slice(&libc::PACKET_AUXDATA.to_ne_bytes());
+        control[data..data + 4].copy_from_slice(&status.to_ne_bytes());
+        control
+    }
+
+    #[test]
+    fn the_checksum_status_is_read_from_the_control_messages() {
+        let partial = auxdata(libc::TP_STATUS_CSUMNOTREADY | libc::TP_STATUS_USER);
+        let finished = auxdata(libc::TP_STATUS_USER);
+        assert_eq!(checksum_unfinished(&partial, MsgFlags::empty()), Some(true));
+        assert_eq!(
+            checksum_unfinished(&finished, MsgFlags::empty()),
+            Some(false)
+        );
+        assert_eq!(
+            checksum_unfinished(&[0; CONTROL_LEN], MsgFlags::empty()),
+            Some(false),
+            "no control message, no partial checksum"
+        );
+        assert_eq!(
+            checksum_unfinished(&finished, MsgFlags::MSG_CTRUNC),
+            None,
+            "truncated control messages leave the status unknown"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod vm_tests {
+    use super::{PacketAuxdata, packet_recv};
+    use crate::drivers::watchdog::RxCounters;
+    use caps::Capability;
+    use fixin::wrap;
+    use hardware::netns::NetworkNamespace;
+    use net::buffer::test_buffer::TestBuffer;
+    use net::checksum::{Checksum, ones_complement_sum as sum};
+    use net::headers::{TryHeaders, TryIp, TryUdp};
+    use net::interface::InterfaceIndex;
+    use net::packet::Packet;
+    use net::udp::UdpChecksumPayload;
+    use nix::libc;
+    use nix::sys::socket::setsockopt;
+    use nix::{setsockopt_impl, sockopt_impl};
+    use rtnetlink::{LinkUnspec, LinkVeth};
+    use std::io::Write;
+    use std::os::fd::{AsRawFd, BorrowedFd};
+    use test_utils::with_caps;
+
+    const SOURCE_PORT: u16 = 4000;
+    /// The UDP checksum's offset in [`frame`]: Ethernet, IPv4, then 6 octets into UDP.
+    const UDP_CHECKSUM: usize = 14 + 20 + 6;
+
+    sockopt_impl!(
+        /// `PACKET_VNET_HDR`: a `virtio_net_hdr` leads every frame sent on the socket.
+        PacketVnetHdr,
+        SetOnly,
+        libc::SOL_PACKET,
+        libc::PACKET_VNET_HDR,
+        bool
+    );
+
+    /// `stream`'s socket, borrowed for as long as `stream` lives.
+    fn fd(stream: &afpacket::sync::RawPacketStream) -> BorrowedFd<'_> {
+        #[allow(unsafe_code)]
+        // SAFETY: `stream` owns the socket and keeps it open for the borrow's lifetime.
+        unsafe {
+            BorrowedFd::borrow_raw(stream.as_raw_fd())
+        }
+    }
+
+    /// A broadcast UDP datagram from 10.0.0.1 to 10.0.0.2, carrying `checksum`.
+    fn frame(destination_port: u16, checksum: u16) -> Vec<u8> {
+        let payload = [0x5a_u8; 32];
+        let udp_len = u16::try_from(8 + payload.len()).unwrap();
+        let mut ipv4 = vec![
+            0x45, 0, 0, 0, 0, 1, 0, 0, 64, 17, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2,
+        ];
+        ipv4[2..4].copy_from_slice(&(20 + udp_len).to_be_bytes());
+        let ipv4_checksum = !sum(&ipv4);
+        ipv4[10..12].copy_from_slice(&ipv4_checksum.to_be_bytes());
+        let mut out = vec![0xff; 6];
+        out.extend_from_slice(&[2, 0, 0, 0, 0, 1, 0x08, 0x00]);
+        out.extend_from_slice(&ipv4);
+        out.extend_from_slice(&SOURCE_PORT.to_be_bytes());
+        out.extend_from_slice(&destination_port.to_be_bytes());
+        out.extend_from_slice(&udp_len.to_be_bytes());
+        out.extend_from_slice(&checksum.to_be_bytes());
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    /// The sum of [`frame`]'s pseudo-header, which is what a stack leaves in the checksum field
+    /// for the device to finish.
+    fn pseudo_header_sum(frame: &[u8]) -> u16 {
+        let udp_len = u16::try_from(frame.len() - 34).unwrap();
+        let mut pseudo = frame[26..34].to_vec(); // source and destination
+        pseudo.extend_from_slice(&[0, 17]);
+        pseudo.extend_from_slice(&udp_len.to_be_bytes());
+        sum(&pseudo)
+    }
+
+    /// A `virtio_net_hdr`: with `needs_checksum`, the kernel takes the frame as `CHECKSUM_PARTIAL`,
+    /// the UDP checksum left for the device to finish, as a guest's virtio driver hands it over.
+    fn virtio_net_hdr(needs_checksum: bool) -> [u8; 10] {
+        const VIRTIO_NET_HDR_F_NEEDS_CSUM: u8 = 1;
+        let mut header = [0u8; 10];
+        if needs_checksum {
+            header[0] = VIRTIO_NET_HDR_F_NEEDS_CSUM;
+            header[6..8].copy_from_slice(&34_u16.to_ne_bytes()); // csum_start: the UDP header
+            header[8..10].copy_from_slice(&6_u16.to_ne_bytes()); // csum_offset: its checksum
+        }
+        header
+    }
+
+    /// A frame the kernel delivers with its transport checksum unfinished is marked for serialize
+    /// to finish, and leaves with a valid checksum. A finished one is left alone.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN, Capability::CAP_NET_RAW]))]
+    fn a_checksum_the_kernel_left_unfinished_is_finished_on_the_way_out() {
+        std::thread::spawn(|| {
+            let netns = NetworkNamespace::create().unwrap();
+            netns.enter_with_sysfs().unwrap();
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let (connection, handle, _) = rtnetlink::new_connection().unwrap();
+                    let connection = tokio::spawn(connection);
+                    handle
+                        .link()
+                        .add(LinkVeth::new("ck0", "ck1").build())
+                        .execute()
+                        .await
+                        .unwrap();
+                    for name in ["ck0", "ck1"] {
+                        let index = nix::net::if_::if_nametoindex(name).unwrap();
+                        handle
+                            .link()
+                            .set(LinkUnspec::new_with_index(index).up().build())
+                            .execute()
+                            .await
+                            .unwrap();
+                    }
+                    connection.abort();
+                });
+
+            let mut receiver = afpacket::sync::RawPacketStream::new().unwrap();
+            receiver.bind("ck0").unwrap();
+            setsockopt(&fd(&receiver), PacketAuxdata, &true).unwrap();
+
+            let mut sender = afpacket::sync::RawPacketStream::new().unwrap();
+            sender.bind("ck1").unwrap();
+            setsockopt(&fd(&sender), PacketVnetHdr, &true).unwrap();
+
+            let mut unfinished = frame(4001, 0);
+            let seed = pseudo_header_sum(&unfinished);
+            unfinished[UDP_CHECKSUM..UDP_CHECKSUM + 2].copy_from_slice(&seed.to_be_bytes());
+            let mut finished = frame(4002, 0);
+            let checksum = match !sum(&[
+                &finished[26..34],
+                &[0, 17],
+                &finished[38..40],
+                &finished[34..],
+            ]
+            .concat())
+            {
+                0 => 0xffff,
+                checksum => checksum,
+            };
+            finished[UDP_CHECKSUM..UDP_CHECKSUM + 2].copy_from_slice(&checksum.to_be_bytes());
+            for (needs_checksum, frame) in [(true, &unfinished), (false, &finished)] {
+                sender
+                    .write_all(&[&virtio_net_hdr(needs_checksum)[..], frame].concat())
+                    .unwrap();
+            }
+
+            // Both frames, keyed by destination port, as the driver's worker would build them.
+            let mut received = std::collections::HashMap::new();
+            let mut counters = RxCounters::default();
+            for _ in 0..100 {
+                let mut packets = Vec::new();
+                let _ = packet_recv(
+                    0,
+                    "ck0",
+                    receiver.as_raw_fd(),
+                    InterfaceIndex::try_new(1).unwrap(),
+                    16,
+                    &mut packets,
+                    &mut counters,
+                );
+                for packet in packets {
+                    if let Some(udp) = packet.headers().try_udp()
+                        && udp.source().as_u16() == SOURCE_PORT
+                    {
+                        received.insert(udp.destination().as_u16(), packet);
+                    }
+                }
+                if received.len() == 2 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let unfinished = received
+                .remove(&4001)
+                .expect("the unfinished frame never arrived");
+            let finished = received
+                .remove(&4002)
+                .expect("the finished frame never arrived");
+            assert!(
+                unfinished.meta().checksum_refresh(),
+                "a frame whose checksum the kernel left unfinished was not marked to finish it"
+            );
+            assert!(
+                !finished.meta().checksum_refresh(),
+                "a frame with a finished checksum was marked for a recompute"
+            );
+
+            let out = unfinished.serialize().unwrap().as_ref().to_vec();
+            let out = Packet::new(TestBuffer::from_raw_data(&out)).unwrap();
+            let net = out.headers().try_ip().unwrap().clone();
+            out.headers()
+                .try_udp()
+                .unwrap()
+                .validate_checksum(&UdpChecksumPayload::new(&net, &[0x5a_u8; 32]))
+                .expect("the unfinished checksum left unfinished");
+        })
+        .join()
+        .unwrap();
     }
 }

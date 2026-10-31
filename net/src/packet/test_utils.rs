@@ -119,7 +119,7 @@ pub fn build_test_ipv4_packet_with_transport(
     let net = Net::Ipv4(ipv4);
 
     if let Some(transport) = transport.as_mut() {
-        transport.update_checksum(&net, None, []);
+        transport.update_checksum(&net, []);
     }
 
     headers.net(Some(net));
@@ -179,6 +179,8 @@ pub fn build_test_udp_ipv4_frame(
     packet
         .set_udp_destination_port(UdpPort::new_checked(dport).expect("Bad dst port"))
         .expect("Could not set dst port");
+    // The setters leave the transport checksum alone; a packet built here computes it.
+    packet.update_checksums();
 
     packet
 }
@@ -231,6 +233,8 @@ pub fn build_test_tcp_ipv4_packet(
     packet
         .set_tcp_destination_port(TcpPort::new_checked(dport).expect("Bad dst port"))
         .expect("Could not set dst port");
+    // The setters leave the transport checksum alone; a packet built here computes it.
+    packet.update_checksums();
 
     packet
 }
@@ -290,7 +294,7 @@ pub fn build_test_ipv6_packet_with_transport(
         ipv6.set_payload_length(transport.size().get());
         ipv6.set_next_header(next_header);
         let net = Net::Ipv6(ipv6);
-        transport.update_checksum(&net, None, []);
+        transport.update_checksum(&net, []);
         headers.net(Some(net));
         headers.transport(Some(transport));
     } else {
@@ -390,10 +394,11 @@ pub fn build_test_icmp4_destination_unreachable_packet_with_code(
             inner_transport = EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp));
         }
         NextHeader::ICMP => {
-            let icmp = Icmp4(Icmpv4Header::new(Icmpv4Type::EchoRequest(IcmpEchoHeader {
-                id: inner_param_1,
-                seq: inner_param_2,
-            })));
+            let icmp =
+                Icmp4::from_header(Icmpv4Header::new(Icmpv4Type::EchoRequest(IcmpEchoHeader {
+                    id: inner_param_1,
+                    seq: inner_param_2,
+                })));
             inner_transport = EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp));
         }
         _ => panic!("Unsupported next header: {next_header:?}"),
@@ -411,7 +416,7 @@ pub fn build_test_icmp4_destination_unreachable_packet_with_code(
     inner_ipv4.update_checksum(&()).unwrap();
 
     // ICMP
-    let icmp = Icmp4(Icmpv4Header::new(Icmpv4Type::DestinationUnreachable(
+    let icmp = Icmp4::from_header(Icmpv4Header::new(Icmpv4Type::DestinationUnreachable(
         DestUnreachableHeader::from(unreachable),
     )));
 
@@ -452,7 +457,10 @@ pub fn build_test_icmp4_destination_unreachable_packet_with_code(
 
     // More adjustments
     let mut icmp_transport = Transport::Icmp4(icmp);
-    icmp_transport.update_checksum(&outer_net, Some(&embedded_headers), []);
+    icmp_transport.update_checksum(
+        &outer_net,
+        crate::icmp_any::get_payload_for_checksum(Some(&embedded_headers), &[]),
+    );
 
     // Headers
     headers.net(Some(outer_net));
@@ -502,7 +510,7 @@ pub fn build_test_icmp4_echo(
         IcmpEchoDirection::Request => Icmpv4Type::EchoRequest(echo_header),
         IcmpEchoDirection::Reply => Icmpv4Type::EchoReply(echo_header),
     };
-    let icmp = Icmp4(Icmpv4Header::new(icmp_type));
+    let icmp = Icmp4::from_header(Icmpv4Header::new(icmp_type));
 
     // IPv4
     let mut ipv4 = Ipv4::default();
@@ -516,7 +524,7 @@ pub fn build_test_icmp4_echo(
 
     // Update ICMP checksum
     let mut icmp_transport = Transport::Icmp4(icmp);
-    icmp_transport.update_checksum(&net, None, []);
+    icmp_transport.update_checksum(&net, []);
 
     // Build headers
     headers.net(Some(net));
@@ -693,12 +701,12 @@ pub fn build_test_icmp6_error_packet(
             inner_param_1.try_into().unwrap(),
             inner_param_2.try_into().unwrap(),
         ))),
-        NextHeader::ICMP6 => EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(Icmp6(
-            Icmpv6Header::new(Icmpv6Type::EchoRequest(IcmpEchoHeader {
+        NextHeader::ICMP6 => EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(
+            Icmp6::from_header(Icmpv6Header::new(Icmpv6Type::EchoRequest(IcmpEchoHeader {
                 id: inner_param_1,
                 seq: inner_param_2,
-            })),
-        ))),
+            }))),
+        )),
         _ => panic!("Unsupported next header: {next_header:?}"),
     };
 
@@ -711,7 +719,7 @@ pub fn build_test_icmp6_error_packet(
     let inner_net = Net::Ipv6(inner_ipv6);
 
     let described = format!("{icmp_type:?}");
-    let icmp = Icmp6(Icmpv6Header::new(icmp_type.into()));
+    let icmp = Icmp6::from_header(Icmpv6Header::new(icmp_type.into()));
     assert!(
         icmp.is_error_message(),
         "not an ICMPv6 error message: {described}"
@@ -745,7 +753,10 @@ pub fn build_test_icmp6_error_packet(
     let embedded_headers = embedded_headers.build().unwrap();
 
     let mut icmp_transport = Transport::Icmp6(icmp);
-    icmp_transport.update_checksum(&outer_net, Some(&embedded_headers), []);
+    icmp_transport.update_checksum(
+        &outer_net,
+        crate::icmp_any::get_payload_for_checksum(Some(&embedded_headers), &[]),
+    );
 
     headers.net(Some(outer_net));
     headers.transport(Some(icmp_transport));
@@ -772,7 +783,7 @@ pub fn build_test_icmp6_echo(
         id: identifier,
         seq: 0,
     };
-    let icmp = Icmp6(Icmpv6Header::new(match direction {
+    let icmp = Icmp6::from_header(Icmpv6Header::new(match direction {
         IcmpEchoDirection::Request => Icmpv6Type::EchoRequest(echo_header),
         IcmpEchoDirection::Reply => Icmpv6Type::EchoReply(echo_header),
     }));
@@ -786,7 +797,7 @@ pub fn build_test_icmp6_echo(
     let net = Net::Ipv6(ipv6);
 
     let mut icmp_transport = Transport::Icmp6(icmp);
-    icmp_transport.update_checksum(&net, None, []);
+    icmp_transport.update_checksum(&net, []);
 
     headers.net(Some(net));
     headers.transport(Some(icmp_transport));
@@ -809,7 +820,7 @@ pub fn build_icmp4_error_quoting(
     outer_dst: Ipv4Addr,
     quote: &[u8],
 ) -> Option<Packet<TestBuffer>> {
-    let icmp = Icmp4(Icmpv4Header::new(Icmpv4Type::DestinationUnreachable(
+    let icmp = Icmp4::from_header(Icmpv4Header::new(Icmpv4Type::DestinationUnreachable(
         DestUnreachableHeader::from(unreachable),
     )));
 
@@ -843,7 +854,7 @@ pub fn build_icmp6_error_quoting(
     outer_dst: Ipv6Addr,
     quote: &[u8],
 ) -> Option<Packet<TestBuffer>> {
-    let icmp = Icmp6(Icmpv6Header::new(icmp_type.into()));
+    let icmp = Icmp6::from_header(Icmpv6Header::new(icmp_type.into()));
 
     let mut outer = Ipv6::default();
     outer.set_source(UnicastIpv6Addr::new(outer_src).ok()?);
