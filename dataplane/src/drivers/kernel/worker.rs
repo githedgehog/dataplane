@@ -574,6 +574,9 @@ fn checksum_unfinished(control: &[u8], flags: MsgFlags) -> Option<bool> {
 /// Build a [`Packet`] from a received frame. `bytes` is the reported frame length, which may
 /// exceed `raw`. `checksum_unfinished` requests a refresh for partial or unknown checksum status.
 /// Returns `None` if the frame could not be used, and counts why.
+///
+/// A frame longer than `raw` is dropped: what is left of it still states the lengths of the
+/// whole, so no receiver would take it, and a checksum refresh would cover only what is left.
 fn build_packet(
     id: WorkerId,
     if_name: &str,
@@ -588,11 +591,12 @@ fn build_packet(
         log_sparsely!(error!(
             worker = id,
             rx_intf_name = if_name,
-            "Received packet with {bytes} bytes on {if_name} but raw buffer is only {} bytes, truncating",
+            "Received packet with {bytes} bytes on {if_name} but raw buffer is only {} bytes, dropping",
             raw.len()
         ));
+        return None;
     }
-    let buf = TestBuffer::from_raw_data(&raw[..std::cmp::min(raw.len(), bytes)]);
+    let buf = TestBuffer::from_raw_data(&raw[..bytes]);
     match Packet::new(buf) {
         Ok(mut incoming) => {
             incoming.meta_mut().iif = Some(if_index);
@@ -1043,9 +1047,9 @@ mod test {
         assert_eq!(counters.truncated, 0);
     }
 
-    /// A frame longer than what we read is counted, whether or not we can parse it.
+    /// A frame longer than what we read is counted and dropped, even though what we read parses.
     #[test]
-    fn oversize_frame_is_counted() {
+    fn oversize_frame_is_counted_and_dropped() {
         let packet = build_test_frame();
         let buf = packet.serialize().expect("failed to serialize test packet");
         let raw = buf.as_ref();
@@ -1062,7 +1066,7 @@ mod test {
             &mut counters,
         );
 
-        assert!(built.is_some());
+        assert!(built.is_none(), "a frame cut short was forwarded");
         assert_eq!(counters.truncated, 1);
         assert_eq!(counters.parse_errors, 0);
     }
