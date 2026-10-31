@@ -38,7 +38,7 @@ use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
 use crate::drivers::kernel::multicast::receive_all_multicast;
 use crate::drivers::kernel::sockstats;
-use crate::drivers::status::WorkerId;
+use crate::drivers::status::{RxQueue, WorkerId};
 use crate::drivers::supervisor::{RxTaskMonitor, TASK_PAT_PERIOD, WorkerMonitor};
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 use crate::packet_processor::{EXPIRY_BUDGET, PipelineFactory, WorkerPipeline};
@@ -374,7 +374,7 @@ impl Worker {
         // collect them. However build_interface_table() needs to be called from the worker's tokio runtime
         let ifmonitors: Vec<_> = interfaces
             .iter()
-            .map(|kif| RxTaskMonitor::new(&kif.name))
+            .map(|kif| RxTaskMonitor::new(&kif.name, RxQueue::Data))
             .collect();
 
         let worker_ifmonitors = ifmonitors.clone();
@@ -489,7 +489,7 @@ fn build_interface_table(
         // find the watchdog for this interface
         let watchdog = ifmonitors
             .iter()
-            .find(|ifm| ifm.ifname.as_ref() == kif.name.as_str())
+            .find(|ifm| ifm.port.as_ref() == kif.name.as_str())
             .map(|ifm| ifm.watchdog.clone())
             .ok_or(io::Error::other("Failed to find interface watchdog"))?;
 

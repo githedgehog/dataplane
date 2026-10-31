@@ -33,8 +33,8 @@ use tracectl::trace_target;
 use tracing::{debug, error, info, trace, warn};
 
 use super::status::{
-    DriverStatus, DriverStatusWriter, RxTaskStatus, WorkerEndResult, WorkerId, WorkerState,
-    WorkerStatus,
+    DriverStatus, DriverStatusWriter, RxQueue, RxTaskStatus, WorkerEndResult, WorkerId,
+    WorkerState, WorkerStatus,
 };
 use super::watchdog::{Activity, RxCounters, Watchdog};
 
@@ -52,20 +52,23 @@ pub(crate) const TASK_CHECK_PERIOD: u16 = TASK_PAT_PERIOD + TASK_GRACE_PERIOD;
 /// Interval, in seconds, at which the supervisor checks rx task activity, ignoring watchdogs
 pub(crate) const TASK_POLL_PERIOD: u16 = 1;
 
-/// The supervisor's view of one rx task: the interface it serves, the watchdog it reports on,
-/// and the totals the supervisor last saw there.
+/// The supervisor's view of one rx task: the port and queue it serves, the watchdog it reports
+/// on, and the totals the supervisor last saw there.
 #[derive(Clone)]
 pub(crate) struct RxTaskMonitor {
-    pub(crate) ifname: Arc<str>,
+    /// The port, by its configured interface name.
+    pub(crate) port: Arc<str>,
+    pub(crate) queue: RxQueue,
     pub(crate) watchdog: Watchdog,
     seen: RxCounters,
 }
 
 impl RxTaskMonitor {
     #[must_use]
-    pub(crate) fn new(ifname: &str) -> Self {
+    pub(crate) fn new(port: &str, queue: RxQueue) -> Self {
         Self {
-            ifname: Arc::from(ifname),
+            port: Arc::from(port),
+            queue,
             watchdog: Watchdog::new(),
             seen: RxCounters::default(),
         }
@@ -141,7 +144,7 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                     ws.rx_tasks = monitor
                         .rx_tasks
                         .iter()
-                        .map(|t| RxTaskStatus::new(t.ifname.clone(), t.watchdog.reader()))
+                        .map(|t| RxTaskStatus::new(t.port.clone(), t.queue, t.watchdog.reader()))
                         .collect();
                     ws
                 })
@@ -319,7 +322,10 @@ fn check_worker_rx_tasks(
     elapsed: Duration,
 ) {
     for (task, rx_task_status) in rx_tasks.iter_mut().zip(&mut wk_status.rx_tasks) {
-        debug_assert_eq!(rx_task_status.ifname, task.ifname);
+        debug_assert_eq!(
+            (&rx_task_status.port, rx_task_status.queue),
+            (&task.port, task.queue)
+        );
 
         let counted = task.counted();
         // Only a check can find a watchdog unpatted: unchecked, it is taken to have been.
@@ -332,8 +338,10 @@ fn check_worker_rx_tasks(
                 rx_task_status.misses += 1;
                 rx_task_status.pps = 0.0;
                 error!(
-                    "RX task for interface {} in {driver} worker {worker} did not pat the watchdog",
-                    task.ifname
+                    "RX task for the {} queue of {} in {driver} worker {worker} did not pat the \
+                     watchdog",
+                    task.queue.name(),
+                    task.port
                 );
             }
             Activity::Active => {
@@ -343,9 +351,10 @@ fn check_worker_rx_tasks(
                     counted.rx as f64 / elapsed.as_secs_f64()
                 };
                 debug!(
-                    "{driver} worker {worker} on {}: rx {} ({:.0} pps), tx {}, pipeline drops {}, \
-                     tx drops {}, punt drops {}, parse errors {}",
-                    task.ifname,
+                    "{driver} worker {worker} on {} ({}): rx {} ({:.0} pps), tx {}, pipeline \
+                     drops {}, tx drops {}, punt drops {}, parse errors {}",
+                    task.port,
+                    task.queue.name(),
                     counted.rx,
                     rx_task_status.pps,
                     counted.tx,
@@ -373,10 +382,11 @@ mod tests {
             .with_type::<(u32, u32, u16)>()
             .for_each(|(before, since, ms)| {
                 let elapsed = Duration::from_millis(u64::from(*ms) + 1);
-                let mut tasks = vec![RxTaskMonitor::new("eth0")];
+                let mut tasks = vec![RxTaskMonitor::new("eth0", RxQueue::Data)];
                 let mut status = WorkerStatus::new(0);
                 status.rx_tasks = vec![RxTaskStatus::new(
-                    tasks[0].ifname.clone(),
+                    tasks[0].port.clone(),
+                    tasks[0].queue,
                     tasks[0].watchdog.reader(),
                 )];
                 let receive = |rx: u32| RxCounters {
