@@ -64,6 +64,10 @@ pub struct LoadTotals {
     pub monitor_sleeps: u64,
     /// Sleeps on interrupts the worker went into.
     pub interrupt_sleeps: u64,
+    /// Flows the worker's timer wheel expired and removed from the table.
+    pub expired_flows: u64,
+    /// Expiry passes that ended with work left over for the next one.
+    pub expiry_behind: u64,
 }
 
 impl LoadTotals {
@@ -82,6 +86,8 @@ impl LoadTotals {
             interrupt_sleeps: self
                 .interrupt_sleeps
                 .saturating_sub(earlier.interrupt_sleeps),
+            expired_flows: self.expired_flows.saturating_sub(earlier.expired_flows),
+            expiry_behind: self.expiry_behind.saturating_sub(earlier.expiry_behind),
         }
     }
 
@@ -103,6 +109,8 @@ struct LoadInner {
     time: [AtomicU64; 4],
     monitor_sleeps: AtomicU64,
     interrupt_sleeps: AtomicU64,
+    expired_flows: AtomicU64,
+    expiry_behind: AtomicU64,
     /// The idle mode the worker was configured with, as `IdleMode`'s discriminant.
     configured: AtomicU8,
     /// The idle mode the worker idles in now, which is weaker than the configured one if a queue
@@ -141,6 +149,12 @@ impl Load {
         self.0
             .interrupt_sleeps
             .fetch_add(meter.interrupt_sleeps, Ordering::Relaxed);
+        self.0
+            .expired_flows
+            .fetch_add(meter.expired_flows, Ordering::Relaxed);
+        self.0
+            .expiry_behind
+            .fetch_add(meter.expiry_behind, Ordering::Relaxed);
         self.0.effective.store(effective as u8, Ordering::Relaxed);
     }
 }
@@ -157,6 +171,8 @@ impl LoadReader {
             time: std::array::from_fn(|i| self.0.time[i].load(Ordering::Relaxed)),
             monitor_sleeps: self.0.monitor_sleeps.load(Ordering::Relaxed),
             interrupt_sleeps: self.0.interrupt_sleeps.load(Ordering::Relaxed),
+            expired_flows: self.0.expired_flows.load(Ordering::Relaxed),
+            expiry_behind: self.0.expiry_behind.load(Ordering::Relaxed),
         }
     }
 
@@ -188,6 +204,8 @@ pub(crate) struct LoadMeter {
     time: [u64; 4],
     monitor_sleeps: u64,
     interrupt_sleeps: u64,
+    expired_flows: u64,
+    expiry_behind: u64,
 }
 
 impl LoadMeter {
@@ -198,7 +216,15 @@ impl LoadMeter {
             time: [0; 4],
             monitor_sleeps: 0,
             interrupt_sleeps: 0,
+            expired_flows: 0,
+            expiry_behind: 0,
         }
+    }
+
+    /// An expiry pass removed `removed` flows, and was or was not left `behind`.
+    pub(crate) fn expired(&mut self, removed: usize, behind: bool) {
+        self.expired_flows = self.expired_flows.saturating_add(removed as u64);
+        self.expiry_behind += u64::from(behind);
     }
 
     /// The pass that began at the last lap ended now, and was spent `spent`.
@@ -222,6 +248,8 @@ impl LoadMeter {
         self.time = [0; 4];
         self.monitor_sleeps = 0;
         self.interrupt_sleeps = 0;
+        self.expired_flows = 0;
+        self.expiry_behind = 0;
     }
 }
 
@@ -245,9 +273,12 @@ mod tests {
         ] {
             meter.lap(spent);
         }
+        meter.expired(5, false);
+        meter.expired(7, true);
         meter.flush(&load, IdleMode::Monitor);
         let first = reader.load();
         assert_eq!((first.monitor_sleeps, first.interrupt_sleeps), (1, 2));
+        assert_eq!((first.expired_flows, first.expiry_behind), (12, 1));
 
         meter.lap(Spent::Monitor);
         meter.flush(&load, IdleMode::Monitor);

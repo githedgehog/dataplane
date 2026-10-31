@@ -125,6 +125,12 @@ impl FlowTable {
         self.capacity.store(capacity, Ordering::Relaxed);
     }
 
+    /// The hard capacity limit; see [`FlowTable::set_capacity`].
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.capacity.load(Ordering::Relaxed)
+    }
+
     /// Reshard the flow table into the given number of shards.
     ///
     /// # Errors

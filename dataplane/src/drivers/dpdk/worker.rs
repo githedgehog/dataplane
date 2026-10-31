@@ -196,7 +196,9 @@ impl<'p> Worker<'p> {
                 || expiry_behind
                 || idle.empty_polls().is_multiple_of(EXPIRY_IDLE_POLLS)
             {
-                expiry_behind = flows.expire(clock::now(), EXPIRY_BUDGET).behind();
+                let sweep = flows.expire(clock::now(), EXPIRY_BUDGET);
+                expiry_behind = sweep.behind();
+                meter.expired(sweep.removed, expiry_behind);
             }
 
             meter.lap(self.rest(&mut idle, lcore.as_ref(), busy, expiry_behind));

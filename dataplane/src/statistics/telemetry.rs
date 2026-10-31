@@ -64,7 +64,8 @@ impl Telemetry {
     pub(crate) fn publish(&mut self) {
         self.pipeline.publish(&self.sources.packets);
         // Kept by the table as it changes: reading it locks nothing.
-        self.flows.publish(self.sources.flows.live_len());
+        self.flows
+            .publish(self.sources.flows.live_len(), self.sources.flows.capacity());
         let status = self.sources.driver.load();
         for worker in &status.workers {
             self.states
@@ -118,6 +119,8 @@ fn publish_load(
         monitor_sleeps: totals.monitor_sleeps,
         interrupt_sleeps: totals.interrupt_sleeps,
         effective_mode: &load.reader.effective().to_string(),
+        expired_flows: totals.expired_flows,
+        expiry_behind: totals.expiry_behind,
     });
 }
 
