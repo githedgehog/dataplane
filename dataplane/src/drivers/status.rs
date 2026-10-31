@@ -19,11 +19,33 @@ use crate::drivers::watchdog::{Activity, Totals};
 // The unique Id of a worker
 pub(crate) type WorkerId = usize;
 
-/// Liveness/activity of one rx task (a worker's reader for one interface),
+/// Which of a port's receive queues an rx task serves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RxQueue {
+    /// A queue the data path's traffic arrives on.
+    Data,
+    /// The queue the control plane's traffic is steered to (DPDK driver).
+    Control,
+}
+
+impl RxQueue {
+    /// Its name, as telemetry labels it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            RxQueue::Data => "data",
+            RxQueue::Control => "control",
+        }
+    }
+}
+
+/// Liveness/activity of one rx task (a worker's reader for one of a port's queues),
 /// as of the supervisor's last check, and its totals as they stand.
 #[derive(Clone)]
 pub struct RxTaskStatus {
-    pub ifname: Arc<str>,
+    /// The port, by its configured interface name.
+    pub port: Arc<str>,
+    pub queue: RxQueue,
     pub activity: Activity,
     pub misses: u64,
     pub pps: f64,
@@ -32,13 +54,22 @@ pub struct RxTaskStatus {
 }
 impl RxTaskStatus {
     #[must_use]
-    pub fn new(ifname: Arc<str>, totals: Totals) -> Self {
+    pub fn new(port: Arc<str>, queue: RxQueue, totals: Totals) -> Self {
         Self {
-            ifname,
+            port,
+            queue,
             activity: Activity::Idle,
             misses: 0,
             pps: 0.,
             totals,
+        }
+    }
+
+    /// The task as the CLI names it: its port, and its queue unless that is a data queue.
+    fn name(&self) -> String {
+        match self.queue {
+            RxQueue::Data => self.port.to_string(),
+            RxQueue::Control => format!("{} (control)", self.port),
         }
     }
 }
@@ -166,7 +197,12 @@ fn fmt_rx_task(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::
         "{}",
         format_args!(
             RX_TASK_TBL_FMT!(),
-            rx.ifname, rx.activity, pps, totals.rx, totals.tx, rx.misses
+            rx.name(),
+            rx.activity,
+            pps,
+            totals.rx,
+            totals.tx,
+            rx.misses
         )
     )
 }
@@ -197,7 +233,7 @@ fn fmt_rx_drop(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::
         "{}",
         format_args!(
             RX_DROP_TBL_FMT!(),
-            rx.ifname,
+            rx.name(),
             totals.ppline_drops,
             totals.tx_drops,
             totals.punt_drops,
