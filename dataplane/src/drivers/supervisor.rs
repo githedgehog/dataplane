@@ -6,6 +6,8 @@
 //! A driver spawns its workers, hands the supervisor one [`WorkerMonitor`] per worker, and
 //! the supervisor thread then samples each rx task's [`Watchdog`], publishes a
 //! [`DriverStatus`], and joins the workers when they end or the subsystem is cancelled.
+//! The status carries each rx task's totals as they stand, not as of the last sample: only
+//! activity and rates are the supervisor's to work out.
 
 #![deny(
     unsafe_code,
@@ -34,7 +36,7 @@ use super::status::{
     DriverStatus, DriverStatusWriter, RxTaskStatus, WorkerEndResult, WorkerId, WorkerState,
     WorkerStatus,
 };
-use super::watchdog::{Activity, Watchdog};
+use super::watchdog::{Activity, RxCounters, Watchdog};
 
 trace_target!("driver-supervisor", LevelFilter::INFO, &["driver"]);
 
@@ -50,11 +52,13 @@ pub(crate) const TASK_CHECK_PERIOD: u16 = TASK_PAT_PERIOD + TASK_GRACE_PERIOD;
 /// Interval, in seconds, at which the supervisor checks rx task activity, ignoring watchdogs
 pub(crate) const TASK_POLL_PERIOD: u16 = 1;
 
-/// The supervisor's view of one rx task: the interface it serves and the watchdog it reports on.
+/// The supervisor's view of one rx task: the interface it serves, the watchdog it reports on,
+/// and the totals the supervisor last saw there.
 #[derive(Clone)]
 pub(crate) struct RxTaskMonitor {
     pub(crate) ifname: Arc<str>,
     pub(crate) watchdog: Watchdog,
+    seen: RxCounters,
 }
 
 impl RxTaskMonitor {
@@ -63,7 +67,16 @@ impl RxTaskMonitor {
         Self {
             ifname: Arc::from(ifname),
             watchdog: Watchdog::new(),
+            seen: RxCounters::default(),
         }
+    }
+
+    /// What the task counted since the supervisor last asked.
+    fn counted(&mut self) -> RxCounters {
+        let totals = self.watchdog.totals();
+        let counted = totals.since(&self.seen);
+        self.seen = totals;
+        counted
     }
 }
 
@@ -93,7 +106,8 @@ impl<'scope, E> WorkerMonitor<'scope, E> {
 ///
 /// `driver` names the driver in the supervisor's thread name and logs. The supervisor
 /// just joins-and-logs on worker termination; worker fatal reporting is left to the driver.
-/// `publish_counters` runs on each status poll and once after all workers have stopped.
+/// `publish_counters` runs before the first poll, on each poll, and once after all workers have
+/// stopped.
 ///
 /// # Errors
 ///
@@ -127,16 +141,33 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                     ws.rx_tasks = monitor
                         .rx_tasks
                         .iter()
-                        .map(|t| RxTaskStatus::new(t.ifname.clone()))
+                        .map(|t| RxTaskStatus::new(t.ifname.clone(), t.watchdog.reader()))
                         .collect();
                     ws
                 })
                 .collect();
 
+            // The workers may have counted already. That is in their totals, but not in a rate:
+            // the first is over the first poll period alone.
+            for task in monitors.iter_mut().flat_map(|m| &mut m.rx_tasks) {
+                task.counted();
+            }
+            let mut last_poll = clock::now();
+
             // the next instant when the rx tasks watchdogs should be checked.
-            let mut next_watchdog_check = clock::now().add(check_period);
+            let mut next_watchdog_check = last_poll.add(check_period);
+
+            // Before the first poll, so that the workers can be seen from the start.
+            publish_counters();
+            status_writer.publish(DriverStatus {
+                max_rx_batch,
+                workers: workers_status.clone(),
+            });
 
             loop {
+                // sleep for the poll period
+                thread::sleep(poll_period);
+
                 // check if we must run. Otherwise (got cancelled) join all workers
                 if !must_run(driver, &subsystem, &mut monitors, &mut workers_status) {
                     break;
@@ -145,6 +176,9 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                 // check the current time and decide if we should check whether the rx tasks patted the watchdogs.
                 // If so, compute the next time we should check them again in the future.
                 let now = clock::now();
+                // Rates are over the time that actually passed, which a busy machine stretches.
+                let elapsed = now.saturating_duration_since(last_poll);
+                last_poll = now;
                 let check_watchdog = now >= next_watchdog_check;
                 if check_watchdog {
                     while next_watchdog_check <= now {
@@ -174,7 +208,14 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                             any_running = true;
 
                             // check the worker's rx tasks and update the corresponding status
-                            check_worker_rx_tasks(driver, monitor, wk_status, check_watchdog);
+                            check_worker_rx_tasks(
+                                driver,
+                                monitor.id,
+                                &mut monitor.rx_tasks,
+                                wk_status,
+                                check_watchdog,
+                                elapsed,
+                            );
                         }
                     } else {
                         // A worker monitor without a handle means that the worker was joined already
@@ -194,9 +235,6 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                     max_rx_batch,
                     workers: workers_status.clone(),
                 });
-
-                // sleep for the poll period
-                thread::sleep(poll_period);
             }
 
             publish_counters();
@@ -268,54 +306,103 @@ fn must_run<E: Display>(
     false
 }
 
-/// Check the activity of the rx tasks for a worker (watchdog, if `check_watchdog` is true)
-/// from its `WorkerMonitor` and update the corresponding `WorkerStatus`
+/// Check the activity of a worker's rx tasks (and their watchdogs, if `check_watchdog` is true)
+/// and update the corresponding `WorkerStatus`, with rates over `elapsed`, the time since the
+/// last check.
 #[allow(clippy::cast_precision_loss)]
-fn check_worker_rx_tasks<E>(
+fn check_worker_rx_tasks(
     driver: &str,
-    monitor: &WorkerMonitor<'_, E>,
+    worker: WorkerId,
+    rx_tasks: &mut [RxTaskMonitor],
     wk_status: &mut WorkerStatus,
     check_watchdog: bool,
+    elapsed: Duration,
 ) {
-    for (idx, task) in monitor.rx_tasks.iter().enumerate() {
-        let rx_task_status = &mut wk_status.rx_tasks[idx];
+    for (task, rx_task_status) in rx_tasks.iter_mut().zip(&mut wk_status.rx_tasks) {
         debug_assert_eq!(rx_task_status.ifname, task.ifname);
 
-        // check the rx task activity, and watchdog, if we've been told to do so
-        let (counters, activity) = task.watchdog.check_and_clear(check_watchdog);
-
-        // The counters have been cleared by the read above, so accumulate them whatever
-        // the activity: dropping them here would lose them for good.
-        rx_task_status.accumulate(&counters);
+        let counted = task.counted();
+        // Only a check can find a watchdog unpatted: unchecked, it is taken to have been.
+        let patted = !check_watchdog || task.watchdog.check_and_rearm();
 
         // update the rx task status
-        rx_task_status.activity = activity;
+        rx_task_status.activity = Activity::of(&counted, patted);
         match rx_task_status.activity {
             Activity::Stuck => {
                 rx_task_status.misses += 1;
                 rx_task_status.pps = 0.0;
                 error!(
-                    "RX task for interface {} in {driver} worker {} did not pat the watchdog",
-                    task.ifname, monitor.id
+                    "RX task for interface {} in {driver} worker {worker} did not pat the watchdog",
+                    task.ifname
                 );
             }
             Activity::Active => {
-                rx_task_status.pps = counters.rx as f64 / f64::from(TASK_POLL_PERIOD);
+                rx_task_status.pps = if elapsed.is_zero() {
+                    0.0
+                } else {
+                    counted.rx as f64 / elapsed.as_secs_f64()
+                };
                 debug!(
-                    "{driver} worker {} on {}: rx {} ({:.0} pps), tx {}, pipeline drops {}, \
+                    "{driver} worker {worker} on {}: rx {} ({:.0} pps), tx {}, pipeline drops {}, \
                      tx drops {}, punt drops {}, parse errors {}",
-                    monitor.id,
                     task.ifname,
-                    counters.rx,
+                    counted.rx,
                     rx_task_status.pps,
-                    counters.tx,
-                    counters.ppline_drops,
-                    counters.tx_drops,
-                    counters.punt_drops,
-                    counters.parse_errors,
+                    counted.tx,
+                    counted.ppline_drops,
+                    counted.tx_drops,
+                    counted.punt_drops,
+                    counted.parse_errors,
                 );
             }
             Activity::Idle => rx_task_status.pps = 0.0,
         }
+    }
+}
+
+#[cfg(all(test, not(feature = "shuttle")))]
+mod tests {
+    use super::*;
+
+    /// A rate is what the task received since the last check, over the time elapsed since then.
+    /// What it counted before -- before the supervisor started, say -- is in its totals but not in
+    /// the rate.
+    #[test]
+    fn a_rate_is_over_what_was_received_since_the_last_check() {
+        bolero::check!()
+            .with_type::<(u32, u32, u16)>()
+            .for_each(|(before, since, ms)| {
+                let elapsed = Duration::from_millis(u64::from(*ms) + 1);
+                let mut tasks = vec![RxTaskMonitor::new("eth0")];
+                let mut status = WorkerStatus::new(0);
+                status.rx_tasks = vec![RxTaskStatus::new(
+                    tasks[0].ifname.clone(),
+                    tasks[0].watchdog.reader(),
+                )];
+                let receive = |rx: u32| RxCounters {
+                    rx: rx.into(),
+                    ..RxCounters::default()
+                };
+
+                tasks[0].watchdog.record(&receive(*before));
+                // As the supervisor does before its first poll.
+                tasks[0].counted();
+                tasks[0].watchdog.record(&receive(*since));
+                check_worker_rx_tasks("test", 0, &mut tasks, &mut status, false, elapsed);
+
+                let task = &status.rx_tasks[0];
+                let expected = f64::from(*since) / elapsed.as_secs_f64();
+                assert!(
+                    (task.pps - expected).abs() <= expected * 1e-12,
+                    "{} pps, expected {expected}",
+                    task.pps
+                );
+                let busy = *since > 0;
+                assert_eq!(task.activity == Activity::Active, busy);
+                assert_eq!(
+                    task.totals.load().rx,
+                    u64::from(*before) + u64::from(*since)
+                );
+            });
     }
 }

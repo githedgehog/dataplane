@@ -5,8 +5,10 @@
 //!
 //! Each rx task holds a [`Watchdog`] clone and reports on it: [`Watchdog::pat`]
 //! as evidence that its loop was scheduled, [`Watchdog::record`] for the packets
-//! it moved. The driver's supervisor consumes both with
-//! [`Watchdog::check_and_clear`].
+//! it moved. The driver's supervisor checks the first with
+//! [`Watchdog::check_and_rearm`]. The second are running totals, which nothing
+//! but the task changes: anyone may read them, at any time, through a
+//! [`Totals`].
 
 #![deny(
     unsafe_code,
@@ -21,9 +23,8 @@ use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// The actual state of a `Watchdog`, shared by supervisor and a rx task.
-/// The supervisor arms the `Watchdog`. The rx task pats it and updates the
-/// stats. The stats/armed flag are flushed when read by the supervisor.
-/// So, all of the state in a `Watchdog` is somewhat ephemeral.
+/// The supervisor arms the `Watchdog` and the rx task pats it. The rx task
+/// adds to the counters, which are totals since it started.
 #[derive(Default)]
 struct WatchdogInner {
     armed: AtomicBool,       // false => watchdog was patted
@@ -69,39 +70,51 @@ impl Watchdog {
         accumulate(&self.0.kernel_drops, counters.kernel_drops);
     }
 
-    /// Supervisor: read the counters of a watchdog (and zero them), along with the
-    /// activity they denote. If `check_and_rearm` is true, check if the watchdog was
-    /// patted and re-arm it. If it is false, the watchdog check (and re-arm) is
-    /// omitted, meaning that this method will never return `Activity::Stuck` in that
-    /// case.
+    /// Supervisor: tell whether the task patted the watchdog since the last check, and re-arm it.
     #[must_use]
-    pub fn check_and_clear(&self, check_and_rearm: bool) -> (RxCounters, Activity) {
-        let counters = RxCounters {
-            rx: self.0.rx.swap(0, Ordering::Relaxed),
-            tx: self.0.tx.swap(0, Ordering::Relaxed),
-            ppline_drops: self.0.ppline_drops.swap(0, Ordering::Relaxed),
-            tx_drops: self.0.tx_drops.swap(0, Ordering::Relaxed),
-            punt_drops: self.0.punt_drops.swap(0, Ordering::Relaxed),
-            parse_errors: self.0.parse_errors.swap(0, Ordering::Relaxed),
-            truncated: self.0.truncated.swap(0, Ordering::Relaxed),
-            csum_unknown: self.0.csum_unknown.swap(0, Ordering::Relaxed),
-            zero_len: self.0.zero_len.swap(0, Ordering::Relaxed),
-            kernel_drops: self.0.kernel_drops.swap(0, Ordering::Relaxed),
-        };
-        let patted = if check_and_rearm {
-            !self.0.armed.swap(true, Ordering::Relaxed)
-        } else {
-            true // assume it was patted since we don't check/care
-        };
-        let activity = if counters.saw_frames() {
-            Activity::Active
-        } else if patted {
-            Activity::Idle
-        } else {
-            debug_assert!(check_and_rearm);
-            Activity::Stuck
-        };
-        (counters, activity)
+    pub fn check_and_rearm(&self) -> bool {
+        !self.0.armed.swap(true, Ordering::Relaxed)
+    }
+
+    /// What the task counted since it started.
+    #[must_use]
+    pub fn totals(&self) -> RxCounters {
+        self.0.totals()
+    }
+
+    /// A handle that reads the totals, and can do nothing else.
+    #[must_use]
+    pub fn reader(&self) -> Totals {
+        Totals(self.0.clone())
+    }
+}
+
+impl WatchdogInner {
+    fn totals(&self) -> RxCounters {
+        RxCounters {
+            rx: self.rx.load(Ordering::Relaxed),
+            tx: self.tx.load(Ordering::Relaxed),
+            ppline_drops: self.ppline_drops.load(Ordering::Relaxed),
+            tx_drops: self.tx_drops.load(Ordering::Relaxed),
+            punt_drops: self.punt_drops.load(Ordering::Relaxed),
+            parse_errors: self.parse_errors.load(Ordering::Relaxed),
+            truncated: self.truncated.load(Ordering::Relaxed),
+            csum_unknown: self.csum_unknown.load(Ordering::Relaxed),
+            zero_len: self.zero_len.load(Ordering::Relaxed),
+            kernel_drops: self.kernel_drops.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// What an rx task counted since it started, read from its [`Watchdog`] as it stands.
+#[derive(Clone, Default)]
+pub struct Totals(Arc<WatchdogInner>);
+
+impl Totals {
+    /// The totals as they stand.
+    #[must_use]
+    pub fn load(&self) -> RxCounters {
+        self.0.totals()
     }
 }
 
@@ -117,8 +130,8 @@ fn accumulate(counter: &AtomicU64, val: u64) {
     }
 }
 
-/// The state of a [`Watchdog`] as observed by a supervisor when it checks it [`Watchdog::check_and_clear`].
-#[derive(Clone, Copy)]
+/// What an rx task was doing between two of the supervisor's checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {
     /// Watchdog was not patted
     Stuck,
@@ -130,7 +143,7 @@ pub enum Activity {
 
 /// The counters a worker's rx task reports on its [`Watchdog`], and that the
 /// supervisor reads back from it.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RxCounters {
     /// Pkts received
     pub rx: u64,
@@ -161,6 +174,38 @@ impl RxCounters {
     pub fn saw_frames(&self) -> bool {
         self.rx > 0 || self.parse_errors > 0 || self.truncated > 0 || self.zero_len > 0
     }
+
+    /// What was counted between `earlier` totals and these.
+    #[must_use]
+    pub fn since(&self, earlier: &RxCounters) -> RxCounters {
+        RxCounters {
+            rx: self.rx.saturating_sub(earlier.rx),
+            tx: self.tx.saturating_sub(earlier.tx),
+            ppline_drops: self.ppline_drops.saturating_sub(earlier.ppline_drops),
+            tx_drops: self.tx_drops.saturating_sub(earlier.tx_drops),
+            punt_drops: self.punt_drops.saturating_sub(earlier.punt_drops),
+            parse_errors: self.parse_errors.saturating_sub(earlier.parse_errors),
+            truncated: self.truncated.saturating_sub(earlier.truncated),
+            csum_unknown: self.csum_unknown.saturating_sub(earlier.csum_unknown),
+            zero_len: self.zero_len.saturating_sub(earlier.zero_len),
+            kernel_drops: self.kernel_drops.saturating_sub(earlier.kernel_drops),
+        }
+    }
+}
+
+impl Activity {
+    /// What a task that counted `counted` over an interval was doing, given whether it patted its
+    /// watchdog. A task that saw frames was busy, patted or not.
+    #[must_use]
+    pub fn of(counted: &RxCounters, patted: bool) -> Activity {
+        if counted.saw_frames() {
+            Activity::Active
+        } else if patted {
+            Activity::Idle
+        } else {
+            Activity::Stuck
+        }
+    }
 }
 
 impl std::fmt::Display for Activity {
@@ -177,67 +222,90 @@ impl std::fmt::Display for Activity {
 mod test {
     use super::{Activity, RxCounters, Watchdog};
 
-    /// A watchdog reports the counters it holds, whatever the activity it denotes.
-    /// Anything it does not report is lost, since reading clears them.
+    /// Reading the totals leaves them be: whoever reads next, and however often, sees them all.
     #[test]
-    fn counters_are_reported_when_not_active() {
-        // tx drops, but nothing received: this is not activity for the task
+    fn totals_are_kept_when_read() {
         let watchdog = Watchdog::new();
-        watchdog.pat();
-        watchdog.record(&RxCounters {
-            tx_drops: 7,
-            punt_drops: 2,
-            kernel_drops: 3,
-            ..RxCounters::default()
-        });
-
-        let (counters, activity) = watchdog.check_and_clear(true);
-        assert!(matches!(activity, Activity::Idle));
-        assert_eq!(counters.tx_drops, 7);
-        assert_eq!(counters.punt_drops, 2);
-        assert_eq!(counters.kernel_drops, 3);
-
-        // same, for a task that failed to pat the watchdog
-        watchdog.record(&RxCounters {
-            ppline_drops: 5,
-            ..RxCounters::default()
-        });
-        let (counters, activity) = watchdog.check_and_clear(true);
-        assert!(matches!(activity, Activity::Stuck));
-        assert_eq!(counters.ppline_drops, 5);
-    }
-
-    /// Reading the counters clears them.
-    #[test]
-    fn counters_are_cleared_when_read() {
-        let watchdog = Watchdog::new();
+        let reader = watchdog.reader();
         watchdog.record(&RxCounters {
             rx: 4,
             parse_errors: 2,
             ..RxCounters::default()
         });
+        assert_eq!(watchdog.totals().rx, 4);
+        assert_eq!(reader.load().rx, 4);
 
-        let (counters, _) = watchdog.check_and_clear(false);
-        assert_eq!(counters.rx, 4);
-        assert_eq!(counters.parse_errors, 2);
-
-        let (counters, _) = watchdog.check_and_clear(false);
-        assert_eq!(counters.rx, 0);
-        assert_eq!(counters.parse_errors, 0);
-    }
-
-    /// Frames we could not parse mean the task is busy, not idle.
-    #[test]
-    fn parse_errors_count_as_activity() {
-        let watchdog = Watchdog::new();
-        watchdog.pat();
         watchdog.record(&RxCounters {
-            parse_errors: 9,
+            rx: 1,
+            kernel_drops: 3,
             ..RxCounters::default()
         });
+        let totals = reader.load();
+        assert_eq!(
+            (totals.rx, totals.parse_errors, totals.kernel_drops),
+            (5, 2, 3)
+        );
+    }
 
-        let (counters, activity) = watchdog.check_and_clear(true);
-        assert!(matches!(activity, Activity::Active));
-        assert_eq!(counters.parse_errors, 9);
+    /// What was counted between two readings is what was recorded between them, whatever it was.
+    #[test]
+    fn since_is_what_was_recorded_in_between() {
+        bolero::check!()
+            .with_type::<(Vec<[u32; 10]>, Vec<[u32; 10]>)>()
+            .for_each(|(before, between)| {
+                let counters = |c: &[u32; 10]| RxCounters {
+                    rx: c[0].into(),
+                    tx: c[1].into(),
+                    ppline_drops: c[2].into(),
+                    tx_drops: c[3].into(),
+                    punt_drops: c[4].into(),
+                    parse_errors: c[5].into(),
+                    truncated: c[6].into(),
+                    csum_unknown: c[7].into(),
+                    zero_len: c[8].into(),
+                    kernel_drops: c[9].into(),
+                };
+                let watchdog = Watchdog::new();
+                let expected = Watchdog::new();
+                for batch in before {
+                    watchdog.record(&counters(batch));
+                }
+                let earlier = watchdog.totals();
+                for batch in between {
+                    watchdog.record(&counters(batch));
+                    expected.record(&counters(batch));
+                }
+                assert_eq!(watchdog.totals().since(&earlier), expected.totals());
+            });
+    }
+
+    /// A pat is seen once: the check re-arms the watchdog for the next one.
+    #[test]
+    fn a_pat_is_seen_by_one_check() {
+        let watchdog = Watchdog::new();
+        watchdog.pat();
+        assert!(watchdog.check_and_rearm());
+        assert!(!watchdog.check_and_rearm());
+    }
+
+    /// Frames seen, those we could not parse included, mean the task is busy, whether it patted or
+    /// not. Counts that are not frames seen -- drops on transmit, punt and in the kernel -- do not.
+    #[test]
+    fn activity_is_frames_seen_then_pats() {
+        let busy = RxCounters {
+            parse_errors: 9,
+            ..RxCounters::default()
+        };
+        assert_eq!(Activity::of(&busy, true), Activity::Active);
+        assert_eq!(Activity::of(&busy, false), Activity::Active);
+
+        let not_busy = RxCounters {
+            tx_drops: 7,
+            punt_drops: 2,
+            kernel_drops: 3,
+            ..RxCounters::default()
+        };
+        assert_eq!(Activity::of(&not_busy, true), Activity::Idle);
+        assert_eq!(Activity::of(&not_busy, false), Activity::Stuck);
     }
 }
