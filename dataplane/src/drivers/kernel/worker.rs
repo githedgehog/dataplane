@@ -1109,7 +1109,7 @@ mod vm_tests {
     use fixin::wrap;
     use hardware::netns::NetworkNamespace;
     use net::buffer::test_buffer::TestBuffer;
-    use net::checksum::Checksum;
+    use net::checksum::{Checksum, ones_complement_sum as sum};
     use net::headers::{TryHeaders, TryIp, TryUdp};
     use net::interface::InterfaceIndex;
     use net::packet::Packet;
@@ -1125,20 +1125,6 @@ mod vm_tests {
     const SOURCE_PORT: u16 = 4000;
     /// The UDP checksum's offset in [`frame`]: Ethernet, IPv4, then 6 octets into UDP.
     const UDP_CHECKSUM: usize = 14 + 20 + 6;
-
-    /// One's-complement sum of `bytes` as 16-bit words (`bytes` has even length).
-    fn sum(bytes: &[u8]) -> u16 {
-        let mut sum: u32 = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|word| u32::from(u16::from_be_bytes(*word)))
-            .sum();
-        while sum > 0xffff {
-            sum = (sum & 0xffff) + (sum >> 16);
-        }
-        u16::try_from(sum).unwrap()
-    }
 
     sockopt_impl!(
         /// `PACKET_VNET_HDR`: a `virtio_net_hdr` leads every frame sent on the socket.

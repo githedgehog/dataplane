@@ -170,6 +170,18 @@ pub enum ChecksumError<T: Checksum + ?Sized> {
     NotPresent,
 }
 
+/// One's-complement sum of `bytes` as big-endian 16-bit words, an odd octet padded with zero. It is
+/// `0` only for all-zero `bytes`. Over everything a checksum covers, the checksum included, it is
+/// `0xffff` when the checksum is valid.
+#[must_use]
+pub fn ones_complement_sum(bytes: &[u8]) -> u16 {
+    // Convert etherparse's native-endian sum to network byte order.
+    !etherparse::checksum::Sum16BitWords::new()
+        .add_slice(bytes)
+        .ones_complement()
+        .to_be()
+}
+
 /// RFC 1624 Eqn. 4: the checksum `current` becomes once a 16-bit field it covers changes from
 /// `old_value` to `new_value`, computed as `HC - ~m - m'` with end-around borrows.
 #[must_use]
