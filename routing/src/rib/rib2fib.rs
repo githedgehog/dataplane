@@ -237,16 +237,22 @@ mod tests_nhop_pkt_instructions {
     }
 
     // generate nhop keys and test the given property
-    fn check(property: fn(&NhopKey, &[PktInstruction])) {
-        bolero::check!()
-            .with_generator(Keys)
-            .cloned()
-            .for_each(|key: NhopKey| property(&key, &key.as_pkt_instructions()));
+    //
+    // A macro, not a function: `bolero::check!()` names its fuzz target after the enclosing
+    // function, so it has to expand inside each test for the fuzzer to find them apart.
+    macro_rules! check {
+        ($property:expr) => {{
+            let property: fn(&NhopKey, &[PktInstruction]) = $property;
+            bolero::check!()
+                .with_generator(Keys)
+                .cloned()
+                .for_each(|key: NhopKey| property(&key, &key.as_pkt_instructions()));
+        }};
     }
 
     #[test]
     fn a_local_key_delivers_locally_or_drops() {
-        check(|key, instructions| {
+        check!(|key, instructions| {
             let local = instructions
                 .iter()
                 .any(|i| matches!(i, PktInstruction::Local(_)));
@@ -268,7 +274,7 @@ mod tests_nhop_pkt_instructions {
 
     #[test]
     fn a_drop_is_the_only_instruction() {
-        check(|key, instructions| {
+        check!(|key, instructions| {
             let drops = instructions.contains(&PktInstruction::Drop);
             // a drop wins over the origin
             let should_drop = !key.is_valid() || key.fwaction == FwAction::Drop;
@@ -281,7 +287,7 @@ mod tests_nhop_pkt_instructions {
 
     #[test]
     fn an_encapsulation_comes_first_and_is_the_keys() {
-        check(|key, instructions| {
+        check!(|key, instructions| {
             let encaps: Vec<_> = instructions
                 .iter()
                 .filter_map(|i| match i {
@@ -302,7 +308,7 @@ mod tests_nhop_pkt_instructions {
 
     #[test]
     fn egress_is_last_and_has_the_key_ifindex_and_address() {
-        check(|key, instructions| {
+        check!(|key, instructions| {
             let egresses: Vec<_> = instructions
                 .iter()
                 .filter(|i| matches!(i, PktInstruction::Egress(_)))
@@ -318,7 +324,7 @@ mod tests_nhop_pkt_instructions {
 
     #[test]
     fn invalid_nhop_keys_have_drop_instruction() {
-        check(|key, instructions| {
+        check!(|key, instructions| {
             if key.is_valid() {
                 // a valid next-hop always produces some instruction
                 assert_ne!(instructions, []);
