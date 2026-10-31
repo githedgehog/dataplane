@@ -20,8 +20,8 @@
 
 use concurrency::thread;
 use dpdk::dev::{
-    Configured, Dev, DevConfig, DevConfigError, DevConfigFailure, DevIndex, DevInfo, PortClaim,
-    RssConf, RxOffload, Started, TxOffloadConfig,
+    Configured, Dev, DevConfig, DevConfigError, DevConfigFailure, DevIndex, DevInfo,
+    FlowControlError, PortClaim, RssConf, RxOffload, Started, TxOffloadConfig,
 };
 use dpdk::eal::Eal;
 use dpdk::mem::{Pool, PoolConfig, PoolParams};
@@ -435,6 +435,8 @@ pub(crate) struct Port<'eal> {
     pub(crate) mtu: u16,
     /// The device's bus address and driver, if DPDK would say.
     pub(crate) hardware: Option<String>,
+    /// Where frames received on the data queues live.
+    pub(crate) rx_pool: Pool<'eal>,
     /// Where frames received on the control queue live, and injected frames are allocated from.
     pub(crate) control_pool: Pool<'eal>,
     /// The number of data queues, which is also the index of the control queues.
@@ -651,6 +653,18 @@ impl<'eal> Port<'eal> {
                  discovery may not reach the control plane"
             );
         }
+        // Pause stops the whole link: one slow queue would stall every flow on the port, BGP and
+        // BFD included. Dropping instead is what a router does.
+        match dev.disable_flow_control() {
+            Ok(()) => {}
+            Err(FlowControlError::NotSupported) => {
+                debug!("port {index} ({name}) has no flow control to turn off");
+            }
+            Err(e) => warn!(
+                "port {index} ({name}) would not turn flow control off ({e}); a congested queue \
+                 may pause the whole link"
+            ),
+        }
         if control {
             keep_rss_off_control(&mut dev, name.as_ref(), num_workers)?;
         }
@@ -687,6 +701,7 @@ impl<'eal> Port<'eal> {
             mac,
             mtu,
             hardware,
+            rx_pool,
             control_pool,
             data_queues: num_workers,
             control,

@@ -22,6 +22,8 @@ use pipeline::{DynPipeline, NetworkFunction};
 use tracing::{debug, error, info, trace, warn};
 use traffic_control::Key;
 
+use crate::drivers::load::{Load, LoadMeter, Spent};
+use crate::drivers::sparse_log::log_sparsely;
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 use crate::packet_processor::{EXPIRY_BUDGET, PipelineFactory, WorkerPipeline};
@@ -64,11 +66,23 @@ pub(crate) struct Worker<'p> {
     id: WorkerId,
     ports: Vec<WorkerPort<'p>>,
     idle: IdleConfig,
+    /// Where the worker reports what it spends its time on.
+    load: Load,
 }
 
 impl<'p> Worker<'p> {
-    pub(crate) fn new(id: WorkerId, ports: Vec<WorkerPort<'p>>, idle: IdleConfig) -> Self {
-        Self { id, ports, idle }
+    pub(crate) fn new(
+        id: WorkerId,
+        ports: Vec<WorkerPort<'p>>,
+        idle: IdleConfig,
+        load: Load,
+    ) -> Self {
+        Self {
+            id,
+            ports,
+            idle,
+            load,
+        }
     }
 
     /// Run until cancelled, constructing the non-Send pipeline on this thread.
@@ -134,6 +148,8 @@ impl<'p> Worker<'p> {
         // Counters per port, flushed to that port's watchdog.
         let mut counters = vec![RxCounters::default(); self.ports.len()];
 
+        // Started last, so that setting up does not count as time spent.
+        let mut meter = LoadMeter::start();
         let mut scratch = Scratch {
             burst: Vec::with_capacity(dpdk::mem::MBUF_BURST),
             diverted: Vec::new(),
@@ -153,6 +169,7 @@ impl<'p> Worker<'p> {
                     break;
                 }
                 self.report(&mut counters);
+                meter.flush(&self.load, idle.mode());
             }
 
             let mut saw_frames = false;
@@ -179,24 +196,41 @@ impl<'p> Worker<'p> {
                 || expiry_behind
                 || idle.empty_polls().is_multiple_of(EXPIRY_IDLE_POLLS)
             {
-                expiry_behind = flows.expire(clock::now(), EXPIRY_BUDGET).behind();
+                let sweep = flows.expire(clock::now(), EXPIRY_BUDGET);
+                expiry_behind = sweep.behind();
+                meter.expired(sweep.removed, expiry_behind);
             }
 
-            if let Some(slot) = busy {
-                idle.busy(slot);
-            } else if expiry_behind {
-                idle.working();
-            } else {
-                idle.empty(lcore.as_ref(), self.ports.iter().map(|p| &p.queues.rx));
-            }
+            meter.lap(self.rest(&mut idle, lcore.as_ref(), busy, expiry_behind));
         }
 
         self.report(&mut counters);
+        meter.flush(&self.load, idle.mode());
         let (sleeps, interrupt_sleeps) = idle.sleeps();
         info!(
             worker = self.id,
             sleeps, interrupt_sleeps, "DPDK worker stopping"
         );
+    }
+
+    /// Tell `idle` how the pass went -- traffic on queue `busy`, an expiry backlog, or nothing --
+    /// and return what the pass was spent on.
+    fn rest(
+        &self,
+        idle: &mut Idle<'p>,
+        lcore: Option<&LCore>,
+        busy: Option<usize>,
+        expiry_behind: bool,
+    ) -> Spent {
+        if let Some(slot) = busy {
+            idle.busy(slot);
+            Spent::Busy
+        } else if expiry_behind {
+            idle.working();
+            Spent::Busy
+        } else {
+            idle.empty(lcore, self.ports.iter().map(|p| &p.queues.rx))
+        }
     }
 
     /// Pat every port's watchdog and flush its counters to it.
@@ -242,6 +276,7 @@ impl<'p> Worker<'p> {
         if rx_mbufs.is_empty() {
             return false;
         }
+        counters.burst(rx_mbufs.len(), dpdk::mem::MBUF_BURST);
         let rx_if = self.ports[slot].queues.if_index;
         for mbuf in rx_mbufs.iter() {
             mbuf.prefetch_head();
@@ -286,20 +321,20 @@ impl<'p> Worker<'p> {
             }
 
             let Some(oif) = packet.meta().oif else {
-                warn!(
+                log_sparsely!(warn!(
                     worker = self.id,
                     "pipeline delivered a packet with no oif; dropping (pipeline bug)"
-                );
+                ));
                 counters.tx_drops += 1;
                 continue;
             };
 
             let Some(&out_slot) = tx_by_if.get(&oif) else {
-                warn!(
+                log_sparsely!(warn!(
                     worker = self.id,
                     "pipeline delivered a packet for interface {oif}, which this driver does not \
                      own; dropping"
-                );
+                ));
                 counters.tx_drops += 1;
                 continue;
             };
@@ -309,10 +344,10 @@ impl<'p> Worker<'p> {
                 Ok(mbuf) => {
                     if tx_batches[out_slot].try_push(mbuf).is_err() {
                         // A pipeline that duplicates packets can exceed one transmit burst.
-                        error!(
+                        log_sparsely!(error!(
                             worker = self.id,
                             "transmit batch for interface {oif} overflowed one burst; dropping"
-                        );
+                        ));
                         counters.tx_drops += 1;
                     }
                 }

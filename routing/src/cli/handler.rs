@@ -432,10 +432,15 @@ fn show_tech(
     rio: &mut Rio,
     sources: &CliSources,
 ) -> CliResponse {
+    // Actions, not views: running them would change what they are meant to report on. A capture
+    // started here would record everything and leave a file behind, and a stop would end the one
+    // the operator was running.
     let excluded = [
         CliAction::ShowTech,
         CliAction::CpiRequestRefresh,
         CliAction::FrrmiApplyLastConfig,
+        CliAction::CaptureStart,
+        CliAction::CaptureStop,
     ];
     let time = Local::now();
     let mut data = format!("time: {}\n", time.format("%Y-%m-%d %H:%M:%S"));
@@ -599,6 +604,11 @@ fn do_handle_cli_request(
         CliAction::ShowTransceivers => show_provider(request, sources.transceivers.as_deref()),
         CliAction::ShowLink => show_provider(request, sources.link.as_deref()),
         CliAction::ShowRateLimits => show_provider(request, sources.rate_limits.as_deref()),
+        CliAction::ShowDpdkPort => show_provider(request, sources.dpdk_ports.as_deref()),
+        CliAction::ShowDpdkPortStats => show_provider(request, sources.dpdk_port_stats.as_deref()),
+        CliAction::ShowFlowTableSummary => {
+            show_provider(request, sources.flow_table_summary.as_deref())
+        }
 
         /* prefetching */
         CliAction::Prefetch => prefetch(request, gwconfig, db),

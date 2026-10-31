@@ -11,6 +11,7 @@ use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags};
 use rtnetlink::{Handle, LinkUnspec};
 
 use lldp::Link;
+use nix::errno::Errno;
 use nix::sched::{CpuSet, sched_getaffinity};
 use nix::unistd::Pid;
 use std::path::PathBuf;
@@ -68,7 +69,7 @@ impl Kif {
         Some(driver.file_name()?.to_string_lossy().into_owned())
     }
 
-    /// Disable GRO; enable RPS on e1000 ports. Failures are nonfatal.
+    /// Disable GRO and flow control; enable RPS on e1000 ports. Failures are nonfatal.
     ///
     /// Requires the interface's network namespace and a matching sysfs mount.
     fn tune(&self) {
@@ -77,6 +78,15 @@ impl Kif {
             Err(e) => warn!(
                 "could not turn GRO off on {} ({e}); frames merged beyond its MTU will be \
                  dropped",
+                self.name
+            ),
+        }
+        match offload::disable_pause(&self.name) {
+            Ok(()) => debug!("flow control (pause) is off on {}", self.name),
+            Err(Errno::EOPNOTSUPP) => debug!("{} has no flow control to turn off", self.name),
+            Err(e) => warn!(
+                "could not turn flow control off on {} ({e}); a congested queue may pause the \
+                 whole link",
                 self.name
             ),
         }
@@ -456,6 +466,13 @@ mod tests {
             .unwrap();
 
         assert!(!offload::gro(&name).unwrap(), "GRO is off after setup");
+        // e1000 has flow control, and setup turns all of it off.
+        let pause = offload::pause(&name).unwrap();
+        assert_eq!(
+            (pause.autoneg, pause.rx_pause, pause.tx_pause),
+            (0, 0, 0),
+            "flow control is off after setup"
+        );
         let allowed = sched_getaffinity(Pid::from_raw(0)).unwrap();
         let allowed: Vec<usize> = (0..CpuSet::count())
             .filter(|&cpu| allowed.is_set(cpu).unwrap())

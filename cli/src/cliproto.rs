@@ -528,7 +528,7 @@ pub enum CliAction {
 
     ShowTech,
 
-    /* == Not supported yet == */
+    /* == Not supported: not in the command tree == */
     // pipelines
     ShowPipeline,
     ShowPipelineStages,
@@ -537,6 +537,7 @@ pub enum CliAction {
     // kernel
     ShowKernelInterfaces,
 
+    /* == Supported again == */
     // DPDK
     ShowDpdkPort,
     ShowDpdkPortStats,
@@ -560,6 +561,9 @@ pub enum CliAction {
 
     // Rate limits
     ShowRateLimits,
+
+    // NF: flow table, how full it is
+    ShowFlowTableSummary,
 }
 impl CliAction {
     #[must_use]

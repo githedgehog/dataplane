@@ -7,6 +7,8 @@ pub(crate) mod cpbridge;
 pub(crate) mod disposition;
 pub mod dpdk;
 pub mod kernel;
+pub mod load;
+pub(crate) mod sparse_log;
 pub mod status;
 pub(crate) mod supervisor;
 pub mod watchdog;

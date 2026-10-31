@@ -32,9 +32,10 @@ use tracectl::trace_target;
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
+use super::load::{LoadReader, LoadTotals};
 use super::status::{
-    DriverStatus, DriverStatusWriter, RxQueue, RxTaskStatus, WorkerEndResult, WorkerId,
-    WorkerState, WorkerStatus,
+    DriverStatus, DriverStatusWriter, PortReport, RxQueue, RxTaskStatus, WorkerEndResult, WorkerId,
+    WorkerLoadStatus, WorkerState, WorkerStatus,
 };
 use super::watchdog::{Activity, RxCounters, Watchdog};
 
@@ -88,6 +89,8 @@ pub(crate) struct WorkerMonitor<'scope, E> {
     id: WorkerId,
     handle: Option<ScopedJoinHandle<'scope, Result<(), E>>>,
     rx_tasks: Vec<RxTaskMonitor>,
+    /// The worker's load, if it polls, and the totals the supervisor last saw there.
+    load: Option<(LoadReader, LoadTotals)>,
 }
 
 impl<'scope, E> WorkerMonitor<'scope, E> {
@@ -101,7 +104,42 @@ impl<'scope, E> WorkerMonitor<'scope, E> {
             id,
             handle: Some(handle),
             rx_tasks,
+            load: None,
         }
+    }
+
+    /// A worker that reports what it spends its time on, to `load`.
+    #[must_use]
+    pub(crate) fn with_load(mut self, load: LoadReader) -> Self {
+        self.load = Some((load, LoadTotals::default()));
+        self
+    }
+
+    /// The worker's status before the supervisor has polled it.
+    fn status(&self) -> WorkerStatus {
+        let mut status = WorkerStatus::new(self.id);
+        status.rx_tasks = self
+            .rx_tasks
+            .iter()
+            .map(|t| RxTaskStatus::new(t.port.clone(), t.queue, t.watchdog.reader()))
+            .collect();
+        status.load = self.load.as_ref().map(|(reader, _)| WorkerLoadStatus {
+            reader: reader.clone(),
+            recent: LoadTotals::default(),
+        });
+        status
+    }
+
+    /// What the worker spent since the supervisor last asked.
+    fn load_since(&mut self) -> Option<WorkerLoadStatus> {
+        let (reader, seen) = self.load.as_mut()?;
+        let totals = reader.load();
+        let recent = totals.since(seen);
+        *seen = totals;
+        Some(WorkerLoadStatus {
+            reader: reader.clone(),
+            recent,
+        })
     }
 }
 
@@ -110,7 +148,7 @@ impl<'scope, E> WorkerMonitor<'scope, E> {
 /// `driver` names the driver in the supervisor's thread name and logs. The supervisor
 /// just joins-and-logs on worker termination; worker fatal reporting is left to the driver.
 /// `publish_counters` runs before the first poll, on each poll, and once after all workers have
-/// stopped.
+/// stopped, and returns what the driver has to say about its ports, for the status.
 ///
 /// # Errors
 ///
@@ -122,7 +160,7 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
     subsystem: &Subsystem,
     mut monitors: Vec<WorkerMonitor<'scope, E>>,
     status_writer: DriverStatusWriter,
-    mut publish_counters: impl FnMut() + Send + 'scope,
+    mut publish_counters: impl FnMut() -> Vec<PortReport> + Send + 'scope,
 ) -> std::io::Result<()> {
     // the two time intervals that matter for liveness detection
     let check_period = Duration::from_secs(u64::from(TASK_CHECK_PERIOD));
@@ -137,23 +175,16 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
 
             // build a vector of worker status from their monitors to expose their state outside of this thread
             // each WorkerStatus contains a list of RxTaskStatus
-            let mut workers_status: Vec<WorkerStatus> = monitors
-                .iter()
-                .map(|monitor| {
-                    let mut ws = WorkerStatus::new(monitor.id);
-                    ws.rx_tasks = monitor
-                        .rx_tasks
-                        .iter()
-                        .map(|t| RxTaskStatus::new(t.port.clone(), t.queue, t.watchdog.reader()))
-                        .collect();
-                    ws
-                })
-                .collect();
+            let mut workers_status: Vec<WorkerStatus> =
+                monitors.iter().map(WorkerMonitor::status).collect();
 
             // The workers may have counted already. That is in their totals, but not in a rate:
             // the first is over the first poll period alone.
             for task in monitors.iter_mut().flat_map(|m| &mut m.rx_tasks) {
                 task.counted();
+            }
+            for monitor in &mut monitors {
+                monitor.load_since();
             }
             let mut last_poll = clock::now();
 
@@ -161,10 +192,11 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
             let mut next_watchdog_check = last_poll.add(check_period);
 
             // Before the first poll, so that the workers can be seen from the start.
-            publish_counters();
+            let ports = publish_counters();
             status_writer.publish(DriverStatus {
                 max_rx_batch,
                 workers: workers_status.clone(),
+                ports,
             });
 
             loop {
@@ -203,12 +235,20 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                             wk_status.rx_tasks.iter_mut().for_each(|r| {
                                 r.activity = Activity::Idle;
                                 r.pps = 0.0;
+                                r.batch = 0.0;
+                                r.full = 0.0;
                             });
+                            if let Some(load) = &mut wk_status.load {
+                                load.recent = LoadTotals::default();
+                            }
                         } else {
                             // worker is running, update its `WorkerStatus` and restore its handle
                             wk_status.state = WorkerState::Running;
                             monitor.handle = Some(handle);
                             any_running = true;
+                            if let Some(load) = monitor.load_since() {
+                                wk_status.load = Some(load);
+                            }
 
                             // check the worker's rx tasks and update the corresponding status
                             check_worker_rx_tasks(
@@ -231,22 +271,24 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                     break;
                 }
 
-                publish_counters();
+                let ports = publish_counters();
 
                 // publish the status of the driver
                 status_writer.publish(DriverStatus {
                     max_rx_batch,
                     workers: workers_status.clone(),
+                    ports,
                 });
             }
 
-            publish_counters();
+            let ports = publish_counters();
 
             // update status on termination. This is in case we
             // want to log the last state
             let last = DriverStatus {
                 max_rx_batch,
                 workers: workers_status.clone(),
+                ports,
             };
             status_writer.publish(last);
 
@@ -333,6 +375,14 @@ fn check_worker_rx_tasks(
 
         // update the rx task status
         rx_task_status.activity = Activity::of(&counted, patted);
+        (rx_task_status.batch, rx_task_status.full) = if counted.bursts == 0 {
+            (0.0, 0.0)
+        } else {
+            (
+                counted.rx as f64 / counted.bursts as f64,
+                counted.full_bursts as f64 / counted.bursts as f64,
+            )
+        };
         match rx_task_status.activity {
             Activity::Stuck => {
                 rx_task_status.misses += 1;
@@ -414,5 +464,38 @@ mod tests {
                     u64::from(*before) + u64::from(*since)
                 );
             });
+    }
+    /// The batch and the full share are over the bursts since the last check, not since the start:
+    /// a worker that fell behind long ago and has caught up shows that it has.
+    #[test]
+    fn batch_is_over_the_bursts_since_the_last_check() {
+        let mut tasks = vec![RxTaskMonitor::new("eth0", RxQueue::Data)];
+        let mut status = WorkerStatus::new(0);
+        status.rx_tasks = vec![RxTaskStatus::new(
+            tasks[0].port.clone(),
+            tasks[0].queue,
+            tasks[0].watchdog.reader(),
+        )];
+        let check = |tasks: &mut Vec<RxTaskMonitor>, status: &mut WorkerStatus| {
+            check_worker_rx_tasks("test", 0, tasks, status, false, Duration::from_secs(1));
+            (status.rx_tasks[0].batch, status.rx_tasks[0].full)
+        };
+        let bursts = |sizes: &[usize]| {
+            let mut counters = RxCounters::default();
+            for &size in sizes {
+                counters.rx += size as u64;
+                counters.burst(size, 32);
+            }
+            counters
+        };
+
+        tasks[0].watchdog.record(&bursts(&[32, 32, 32, 32]));
+        assert_eq!(check(&mut tasks, &mut status), (32.0, 1.0));
+
+        tasks[0].watchdog.record(&bursts(&[1, 3, 0, 32]));
+        assert_eq!(check(&mut tasks, &mut status), (12.0, 1.0 / 3.0));
+
+        // Nothing received: no batch to speak of, rather than a stale one.
+        assert_eq!(check(&mut tasks, &mut status), (0.0, 0.0));
     }
 }

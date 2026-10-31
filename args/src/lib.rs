@@ -648,7 +648,6 @@ pub struct DpdkDriverConfigSection {
 #[repr(u8)]
 pub enum IdleMode {
     /// Keep polling at full speed, yielding the CPU now and then.
-    #[default]
     Poll,
     /// After [`IdleConfig::polls`] empty polls, use low-power CPU waits with a timeout of
     /// [`IdleConfig::sleep_us`] microseconds, polling again after each wait. Writes to watched
@@ -660,6 +659,11 @@ pub enum IdleMode {
     /// Use monitor waits or polling until idle for [`IdleConfig::interrupt_after_us`], then
     /// block in the kernel on receive interrupts, injection doorbells, or a periodic timeout.
     /// Requires interrupt support on every receive queue owned by the worker.
+    ///
+    /// The default: it is the one mode that idles everywhere. A VM has no CPU monitor wait, so
+    /// monitor mode would poll there, but its virtual NICs have receive interrupts. A worker whose
+    /// queues lack interrupts falls back to monitor waits, or to polling.
+    #[default]
     Interrupt,
 }
 
@@ -713,7 +717,11 @@ impl Default for IdleConfig {
 }
 
 /// Default consecutive empty polls before a monitor wait.
-pub const DEFAULT_IDLE_POLLS: u32 = 512;
+///
+/// Short: a monitor wait ends when the NIC writes the queue being watched, so sleeping early costs
+/// little latency, and a worker that waits for hundreds of empty polls spins through most of the
+/// gaps of moderate traffic.
+pub const DEFAULT_IDLE_POLLS: u32 = 16;
 
 /// The default for `--idle-sleep-us`.
 pub const DEFAULT_IDLE_SLEEP_US: u32 = 50;
@@ -1628,8 +1636,8 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     idle: value.idle(),
                 })
             }
-            Some("kernel") if value.idle != IdleMode::Poll => {
-                return Err(UnsupportedByDriver::KernelIdle(value.idle).into());
+            Some("kernel") if value.idle.is_some_and(|mode| mode != IdleMode::Poll) => {
+                return Err(UnsupportedByDriver::KernelIdle(value.idle.unwrap_or_default()).into());
             }
             Some("kernel") => DriverConfigSection::Kernel(KernelDriverConfigSection {
                 interfaces: value.interfaces().collect(),
@@ -1734,17 +1742,19 @@ Separate interfaces with commas and options with slashes."
     num_workers: NonZero<u16>,
 
     /// What a DPDK worker does while it has nothing to receive.
+    ///
+    /// Unset means `interrupt`, and the kernel driver, which does not idle this way, accepts it
+    /// unset; it rejects any mode but `poll` asked for explicitly.
     #[arg(
         long,
         value_enum,
-        default_value_t = IdleMode::Poll,
         help = "What a DPDK worker does while it has nothing to receive: `poll` spins; \
                 `monitor` sleeps in a low-power state after --idle-polls empty polls, until a \
-                packet arrives or --idle-sleep-us passes; `interrupt` does as monitor, then after \
-                --idle-interrupt-after-us without a packet sleeps on the receive queues' \
-                interrupts"
+                packet arrives or --idle-sleep-us passes; `interrupt` (the default) does as \
+                monitor, then after --idle-interrupt-after-us without a packet sleeps on the \
+                receive queues' interrupts"
     )]
-    idle: IdleMode,
+    idle: Option<IdleMode>,
 
     #[arg(
         long,
@@ -2044,7 +2054,7 @@ impl CmdArgs {
     #[must_use]
     pub fn idle(&self) -> IdleConfig {
         IdleConfig {
-            mode: self.idle,
+            mode: self.idle.unwrap_or_default(),
             polls: self.idle_polls,
             sleep_us: self.idle_sleep_us,
             interrupt_after_us: self.idle_interrupt_after_us,
@@ -2259,6 +2269,16 @@ mod tests {
                     UnsupportedByDriver::KernelIdle(_)
                 ))
             ));
+        } // Polling is how the kernel driver idles anyway, so asking for it is fine; and unset, the
+        // default of interrupt applies to DPDK ports alone.
+        for idle in [&["--idle", "poll"][..], &[]] {
+            let args = CmdArgs::try_parse_from(
+                ["dataplane", "--driver", "kernel", "--interface", "eth0"]
+                    .into_iter()
+                    .chain(idle.iter().copied()),
+            )
+            .unwrap();
+            assert!(LaunchConfiguration::try_from(args).is_ok(), "{idle:?}");
         }
     }
 
@@ -2368,14 +2388,14 @@ mod tests {
     }
 
     #[test]
-    fn workers_poll_unless_told_to_sleep_and_sleep_at_most_a_millisecond() {
+    fn workers_sleep_on_interrupts_unless_told_otherwise_and_at_most_a_millisecond() {
         use crate::{CmdArgs, DEFAULT_IDLE_INTERRUPT_AFTER_US, IdleConfig, IdleMode, Parser};
         let parse = |args: &[&str]| {
             CmdArgs::try_parse_from(std::iter::once("dataplane").chain(args.iter().copied()))
                 .map(|args| args.idle())
         };
         assert_eq!(parse(&[]).unwrap(), IdleConfig::default());
-        assert_eq!(IdleConfig::default().mode, IdleMode::Poll);
+        assert_eq!(IdleConfig::default().mode, IdleMode::Interrupt);
         assert_eq!(
             parse(&[
                 "--idle",

@@ -13,6 +13,7 @@ use concurrency::sync::Arc;
 
 use std::fmt::Display;
 
+use crate::drivers::load::{LoadReader, LoadTotals, Spent};
 use crate::drivers::supervisor;
 use crate::drivers::watchdog::{Activity, Totals};
 
@@ -49,6 +50,10 @@ pub struct RxTaskStatus {
     pub activity: Activity,
     pub misses: u64,
     pub pps: f64,
+    /// Mean frames per burst over the supervisor's last poll; zero if it received none.
+    pub batch: f64,
+    /// Fraction of the last poll's bursts that were full.
+    pub full: f64,
     /// What the task counted since it started, read when wanted rather than when polled.
     pub totals: Totals,
 }
@@ -61,6 +66,8 @@ impl RxTaskStatus {
             activity: Activity::Idle,
             misses: 0,
             pps: 0.,
+            batch: 0.,
+            full: 0.,
             totals,
         }
     }
@@ -89,12 +96,23 @@ pub enum WorkerEndResult {
     Panicked(String),
 }
 
+/// What a polling worker spent its time on, as it stands and over the supervisor's last poll.
+#[derive(Clone)]
+pub struct WorkerLoadStatus {
+    /// The worker's load, read when wanted.
+    pub reader: LoadReader,
+    /// What it spent over the supervisor's last poll.
+    pub recent: LoadTotals,
+}
+
 /// Per-worker status: its thread state plus its rx tasks' activity.
 #[derive(Clone)]
 pub struct WorkerStatus {
     pub worker: WorkerId,
     pub state: WorkerState,
     pub rx_tasks: Vec<RxTaskStatus>,
+    /// What the worker spends its time on, if it polls (DPDK driver).
+    pub load: Option<WorkerLoadStatus>,
 }
 impl WorkerStatus {
     #[must_use]
@@ -103,6 +121,7 @@ impl WorkerStatus {
             worker,
             state: WorkerState::Running,
             rx_tasks: vec![],
+            load: None,
         }
     }
 }
@@ -112,6 +131,133 @@ pub struct DriverStatus {
     /// The most frames one receive call can return, which differs between drivers.
     pub max_rx_batch: usize,
     pub workers: Vec<WorkerStatus>,
+    /// The driver's ports, as of the supervisor's last poll; none for a driver whose ports are the
+    /// kernel's to report on.
+    pub ports: Vec<PortReport>,
+}
+
+/// One of the driver's ports, as of one reading.
+#[derive(Clone, Debug, Default)]
+pub struct PortReport {
+    /// The configured interface name.
+    pub name: String,
+    /// Its bus address and driver, if it would say.
+    pub hardware: Option<String>,
+    /// Its MAC address.
+    pub mac: String,
+    /// Its MTU.
+    pub mtu: u16,
+    /// Whether it has carrier.
+    pub link_up: bool,
+    /// Its negotiated speed in Mbit/s, if known.
+    pub speed_mbps: Option<u32>,
+    /// Times the link went up or down, as seen once a second.
+    pub link_changes: u64,
+    /// Its counters, if it would report them.
+    pub counters: Option<stats::PortCounters>,
+    /// Mbufs in use, and the size, of its rx and control pools.
+    pub rx_pool: (u32, u32),
+    pub control_pool: (u32, u32),
+    /// The extended statistics it publishes, by its PMD's names.
+    pub xstats: Vec<(String, u64)>,
+}
+
+/// `show dpdk port`: what each port is, and its link and pools.
+pub struct DpdkPortsCli(pub DriverStatusReader);
+
+/// `show dpdk port stats`: each port's counters and extended statistics.
+pub struct DpdkPortStatsCli(pub DriverStatusReader);
+
+/// The status's ports, or why there are none.
+fn ports_or(f: &mut String, status: &DriverStatus) -> bool {
+    use std::fmt::Write;
+    if status.ports.is_empty() {
+        let _ = writeln!(f, " (no DPDK ports: the driver in use does not report any)");
+        false
+    } else {
+        true
+    }
+}
+
+impl CliDataProvider for DpdkPortsCli {
+    fn provide(&self) -> String {
+        use std::fmt::Write;
+        let status = self.0.load();
+        let mut f = Heading("DPDK ports").to_string();
+        if !ports_or(&mut f, &status) {
+            return f;
+        }
+        let _ = writeln!(
+            f,
+            "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:>7}  {:>17}  {:>17}  {:<8}",
+            "port", "mac", "mtu", "link", "speed", "changes", "rx-pool", "control-pool", "hardware"
+        );
+        let pool = |(used, size): (u32, u32)| format!("{used}/{size}");
+        for port in &status.ports {
+            let _ = writeln!(
+                f,
+                "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:>7}  {:>17}  {:>17}  {:<8}",
+                port.name,
+                port.mac,
+                port.mtu,
+                if port.link_up { "up" } else { "down" },
+                port.speed_mbps
+                    .filter(|_| port.link_up)
+                    .map_or_else(|| "-".to_string(), |speed| format!("{}G", speed / 1000)),
+                port.link_changes,
+                pool(port.rx_pool),
+                pool(port.control_pool),
+                port.hardware.as_deref().unwrap_or("-")
+            );
+        }
+        f
+    }
+}
+
+impl CliDataProvider for DpdkPortStatsCli {
+    fn provide(&self) -> String {
+        use std::fmt::Write;
+        let status = self.0.load();
+        let mut f = Heading("DPDK port counters").to_string();
+        if !ports_or(&mut f, &status) {
+            return f;
+        }
+        let _ = writeln!(
+            f,
+            "   {:<16}  {:>16}  {:>16}  {:>12}  {:>10}  {:>10}  {:>10}",
+            "port", "rx-packets", "tx-packets", "rx-missed", "rx-errors", "tx-errors", "rx-nombuf"
+        );
+        for port in &status.ports {
+            match &port.counters {
+                Some(c) => {
+                    let _ = writeln!(
+                        f,
+                        "   {:<16}  {:>16}  {:>16}  {:>12}  {:>10}  {:>10}  {:>10}",
+                        port.name,
+                        c.rx_packets,
+                        c.tx_packets,
+                        c.rx_missed,
+                        c.rx_errors,
+                        c.tx_errors,
+                        c.rx_no_mbuf
+                    );
+                }
+                None => {
+                    let _ = writeln!(f, "   {:<16}  (counters unavailable)", port.name);
+                }
+            }
+        }
+        for port in &status.ports {
+            let _ = writeln!(f, "\n {} extended statistics", port.name);
+            if port.xstats.is_empty() {
+                let _ = writeln!(f, "   (none published)");
+            }
+            for (name, value) in &port.xstats {
+                let _ = writeln!(f, "   {name:<40}  {value:>16}");
+            }
+        }
+        f
+    }
 }
 
 // ====== Types for sharing DriverStatus ===== //
@@ -168,13 +314,13 @@ impl Display for WorkerState {
 
 macro_rules! RX_TASK_TBL_FMT {
     () => {
-        "   {:<16}  {:<6}  {:>14}  {:>20}  {:>20}  {:>12}  {:>9}"
+        "   {:<25}  {:<6}  {:>14}  {:>6}  {:>6}  {:>20}  {:>20}  {:>12}  {:>9}"
     };
 }
 
 macro_rules! RX_DROP_TBL_FMT {
     () => {
-        "   {:<16}  {:>12}  {:>10}  {:>10}  {:>10}  {:>10}  {:>12}  {:>10}  {:>12}  {:>12}"
+        "   {:<25}  {:>12}  {:>10}  {:>10}  {:>10}  {:>10}  {:>12}  {:>10}  {:>12}  {:>12}"
     };
 }
 
@@ -184,13 +330,15 @@ fn fmt_rx_task_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         "{}",
         format_args!(
             RX_TASK_TBL_FMT!(),
-            "iface", "status", "pps", "pkt-rx", "pkt-tx", "injected", "wd-misses"
+            "iface", "status", "pps", "batch", "full%", "pkt-rx", "pkt-tx", "injected", "wd-misses"
         )
     )
 }
 
 fn fmt_rx_task(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::Result {
     let pps = format!("{:.1}", rx.pps);
+    let batch = format!("{:.1}", rx.batch);
+    let full = format!("{:.0}", rx.full * 100.);
     let totals = rx.totals.load();
     writeln!(
         f,
@@ -200,6 +348,8 @@ fn fmt_rx_task(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::
             rx.name(),
             rx.activity,
             pps,
+            batch,
+            full,
             totals.rx,
             totals.tx,
             totals.injected,
@@ -280,6 +430,133 @@ impl Display for DriverStatus {
                 fmt_rx_drop(f, rx)?;
             }
         }
+
+        if self.workers.iter().any(|w| w.load.is_some()) {
+            writeln!(f)?;
+            writeln!(
+                f,
+                " worker load (over the last activity poll; sleeps and expiry-behind since start)"
+            )?;
+            fmt_load_heading(f)?;
+            for worker in &self.workers {
+                if let Some(load) = &worker.load {
+                    fmt_load(f, worker.worker, load)?;
+                }
+            }
+        }
         Ok(())
+    }
+}
+
+macro_rules! LOAD_TBL_FMT {
+    () => {
+        "   {:<6}  {:<22}  {:>6}  {:>8}  {:>8}  {:>10}  {:>14}  {:>16}  {:>10}  {:>14}"
+    };
+}
+
+fn fmt_load_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            LOAD_TBL_FMT!(),
+            "worker",
+            "idle mode",
+            "busy%",
+            "polling%",
+            "monitor%",
+            "interrupt%",
+            "monitor-sleeps",
+            "interrupt-sleeps",
+            "expired/s",
+            "expiry-behind"
+        )
+    )
+}
+
+fn fmt_load(
+    f: &mut std::fmt::Formatter<'_>,
+    worker: WorkerId,
+    load: &WorkerLoadStatus,
+) -> std::fmt::Result {
+    let (configured, effective) = (load.reader.configured(), load.reader.effective());
+    // The mode it idles in, and the one it was asked for if it fell back from that.
+    let mode = if configured == effective {
+        effective.to_string()
+    } else {
+        format!("{effective} (asked {configured})")
+    };
+    let pct = |spent| format!("{:.1}", load.recent.share(spent) * 100.);
+    let totals = load.reader.load();
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            LOAD_TBL_FMT!(),
+            worker,
+            mode,
+            pct(Spent::Busy),
+            pct(Spent::Polling),
+            pct(Spent::Monitor),
+            pct(Spent::Interrupt),
+            totals.monitor_sleeps,
+            totals.interrupt_sleeps,
+            load.recent.expired_flows,
+            totals.expiry_behind
+        )
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status_with(ports: Vec<PortReport>) -> DriverStatusReader {
+        let (writer, reader) = driver_status_access();
+        writer.publish(DriverStatus {
+            ports,
+            ..DriverStatus::default()
+        });
+        reader
+    }
+
+    /// A driver with no ports of its own says so, rather than showing an empty table.
+    #[test]
+    fn no_ports_is_said() {
+        let reader = status_with(Vec::new());
+        assert!(
+            DpdkPortsCli(reader.clone())
+                .provide()
+                .contains("no DPDK ports")
+        );
+        assert!(DpdkPortStatsCli(reader).provide().contains("no DPDK ports"));
+    }
+
+    /// Each port shows its link and pools, and its counters and extended statistics.
+    #[test]
+    fn ports_show_what_was_read() {
+        let reader = status_with(vec![PortReport {
+            name: "eth7".to_string(),
+            mac: "02:00:00:00:00:07".to_string(),
+            mtu: 9000,
+            link_up: true,
+            speed_mbps: Some(100_000),
+            link_changes: 2,
+            counters: Some(stats::PortCounters {
+                rx_missed: 4321,
+                ..stats::PortCounters::default()
+            }),
+            rx_pool: (12, 4095),
+            xstats: vec![("rx_discards_phy".to_string(), 77)],
+            ..PortReport::default()
+        }]);
+        let ports = DpdkPortsCli(reader.clone()).provide();
+        for shown in ["eth7", "9000", "up", "100G", "12/4095"] {
+            assert!(ports.contains(shown), "{shown} missing from:\n{ports}");
+        }
+        let stats = DpdkPortStatsCli(reader).provide();
+        for shown in ["4321", "rx_discards_phy", "77"] {
+            assert!(stats.contains(shown), "{shown} missing from:\n{stats}");
+        }
     }
 }

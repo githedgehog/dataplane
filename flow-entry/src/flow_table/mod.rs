@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 mod display;
+pub use display::{FlowTableSummary, MAX_LISTED};
 mod expiry;
 pub mod nf_lookup;
 pub mod table;

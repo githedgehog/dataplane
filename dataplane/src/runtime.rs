@@ -846,6 +846,12 @@ pub fn main() {
             packets: setup.pkt_stats.clone(),
             flows: setup.flow_table.clone(),
             driver: driver_status_reader,
+            masquerade: setup.natallocatorw.get_reader(),
+            taps: cp_bridge
+                .ports()
+                .iter()
+                .map(|port| (port.name.to_string(), port.counters.clone()))
+                .collect(),
         },
     );
 

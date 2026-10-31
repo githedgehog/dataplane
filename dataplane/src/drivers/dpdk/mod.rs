@@ -21,6 +21,7 @@ mod inject;
 mod placement;
 mod port;
 mod worker;
+mod xstats;
 
 use crate::packet_processor::PipelineFactory;
 use std::convert::Infallible;
@@ -34,14 +35,15 @@ use concurrency::thread::BuilderExt;
 use dpdk::mem::{MBUF_BURST, Mbuf};
 use lifecycle::Subsystem;
 use lldp::Link;
-use stats::PortMetrics;
+use stats::{PortCounters, PortMetrics, PortState, PortStateMetrics, XstatMetrics};
 use tokio::sync::watch;
 use tracectl::trace_target;
 use tracing::{info, warn};
 use traffic_control::ControlPlane;
 
 use super::DriverError;
-use super::status::{DriverStatusWriter, RxQueue};
+use super::load::Load;
+use super::status::{DriverStatusWriter, PortReport, RxQueue};
 use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 
 pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
@@ -127,7 +129,9 @@ impl DriverDpdk {
                     watchdog: task.watchdog.clone(),
                 })
                 .collect();
-            let worker = Worker::new(id, worker_ports, idle);
+            let load = Load::new(idle.mode);
+            let load_reader = load.reader();
+            let worker = Worker::new(id, worker_ports, idle, load);
 
             let subsystem = workers_subsystem.clone();
             let setup_pipeline = setup_pipeline.clone();
@@ -148,7 +152,7 @@ impl DriverDpdk {
                     DriverError::PortSetup(format!("failed to spawn DPDK worker {id}: {e}"))
                 })?;
 
-            monitors.push(WorkerMonitor::new(id, handle, rx_tasks));
+            monitors.push(WorkerMonitor::new(id, handle, rx_tasks).with_load(load_reader));
         }
 
         // The control worker is numbered after the data workers.
@@ -168,6 +172,8 @@ impl DriverDpdk {
             .map(|port| (port, PortMetrics::new(port.name.as_ref())))
             .collect();
         let mut counters_unavailable = vec![false; port_metrics.len()];
+        let mut port_states: Vec<PortTelemetry<'_, '_>> =
+            ports.iter().map(PortTelemetry::new).collect();
         spawn_supervisor(
             scope,
             "dpdk",
@@ -176,8 +182,10 @@ impl DriverDpdk {
             monitors,
             status_writer,
             move || {
-                publish_port_counters(&port_metrics, &mut counters_unavailable);
+                let counters = publish_port_counters(&port_metrics, &mut counters_unavailable);
+                let reports = publish_port_states(&mut port_states, counters);
                 publish_links(&links);
+                reports
             },
         )?;
         info!("DPDK driver started successfully");
@@ -211,7 +219,9 @@ where
             watchdog: task.watchdog.clone(),
         })
         .collect();
-    let worker = ControlWorker::new(id, ports, control_plane, idle);
+    let load = Load::new(idle.mode);
+    let load_reader = load.reader();
+    let worker = ControlWorker::new(id, ports, control_plane, idle, load);
     let subsystem = subsystem.clone();
     let handle = thread::Builder::new()
         .name("dpdk-control".to_string())
@@ -228,7 +238,7 @@ where
         .map_err(|e| {
             DriverError::PortSetup(format!("failed to spawn the DPDK control worker: {e}"))
         })?;
-    Ok(WorkerMonitor::new(id, handle, rx_tasks))
+    Ok(WorkerMonitor::new(id, handle, rx_tasks).with_load(load_reader))
 }
 
 /// Publish each port's link state where the control plane can see it.
@@ -260,14 +270,153 @@ fn publish_links(links: &[(&Port<'_>, watch::Sender<Link>)]) {
     }
 }
 
-/// Publish device counters, logging once per port until a failed read recovers.
-fn publish_port_counters(port_metrics: &[(&Port<'_>, PortMetrics)], unavailable: &mut [bool]) {
-    for (slot, (port, metrics)) in port_metrics.iter().enumerate() {
-        match port.counters() {
+/// What the driver publishes about a port beyond its counters, and what it keeps to do so.
+struct PortTelemetry<'p, 'eal> {
+    port: &'p Port<'eal>,
+    state: PortStateMetrics,
+    /// Whether the link was up at the last reading; `None` before the first.
+    up: Option<bool>,
+    /// Times the link went up or down between readings.
+    changes: u64,
+    /// The ids and names of the extended statistics published, and where they are read into.
+    xstat_ids: Vec<u64>,
+    xstat_names: Vec<String>,
+    xstat_values: Vec<u64>,
+    xstats: XstatMetrics,
+    /// Whether the last read of the extended statistics failed, to log a failure once.
+    xstats_failed: bool,
+}
+
+impl<'p, 'eal> PortTelemetry<'p, 'eal> {
+    /// Register a port's state and the extended statistics worth publishing, as its PMD names them.
+    fn new(port: &'p Port<'eal>) -> Self {
+        let wanted = match port.dev.xstat_names() {
+            Ok(names) => xstats::wanted(names),
+            Err(e) => {
+                info!(
+                    "port {} has no extended statistics to publish: {e:?}",
+                    port.name
+                );
+                Vec::new()
+            }
+        };
+        info!(
+            "port {} publishes {} extended statistic(s): {}",
+            port.name,
+            wanted.len(),
+            wanted
+                .iter()
+                .map(|x| x.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let names: Vec<&str> = wanted.iter().map(|x| x.name.as_str()).collect();
+        let xstats = XstatMetrics::new(port.name.as_ref(), &names);
+        PortTelemetry {
+            port,
+            state: PortStateMetrics::new(port.name.as_ref()),
+            up: None,
+            changes: 0,
+            xstat_ids: wanted.iter().map(|x| x.id).collect(),
+            xstat_names: wanted.iter().map(|x| x.name.clone()).collect(),
+            xstat_values: vec![0; wanted.len()],
+            xstats,
+            xstats_failed: false,
+        }
+    }
+}
+
+/// Publish each port's link and the occupancy of its pools.
+///
+/// The link is read here as well as in [`publish_links`], which only covers ports with a tap; a
+/// read is a register access, once a second. A link that cannot be read counts as down, as it does
+/// there. Changes are counted between readings, so a flap shorter than the polling period is missed.
+///
+/// Returns a report on each port, with the `counters` read from it, for the driver's status.
+fn publish_port_states(
+    ports: &mut [PortTelemetry<'_, '_>],
+    counters: Vec<Option<PortCounters>>,
+) -> Vec<PortReport> {
+    let mut reports = Vec::with_capacity(ports.len());
+    for (telemetry, counters) in ports.iter_mut().zip(counters) {
+        let port = telemetry.port;
+        let link = port.dev.link().ok();
+        let up = link.is_some_and(|link| link.up);
+        if telemetry.up.is_some_and(|was| was != up) {
+            telemetry.changes += 1;
+        }
+        telemetry.up = Some(up);
+        let pool = |pool: &dpdk::mem::Pool<'_>| (pool.in_use(), pool.capacity());
+        let state = PortState {
+            link_up: up,
+            speed_mbps: link
+                .map(|link| link.speed_mbps)
+                .filter(|&speed| speed != u32::MAX),
+            link_changes: telemetry.changes,
+            rx_pool: pool(&port.rx_pool),
+            control_pool: pool(&port.control_pool),
+        };
+        telemetry.state.publish(&state);
+
+        match port
+            .dev
+            .xstats(&telemetry.xstat_ids, &mut telemetry.xstat_values)
+        {
+            Ok(()) => {
+                telemetry.xstats.publish(&telemetry.xstat_values);
+                telemetry.xstats_failed = false;
+            }
+            Err(e) => {
+                if !telemetry.xstats_failed {
+                    warn!(
+                        "port {} would not report its extended statistics: {e:?}",
+                        port.name
+                    );
+                }
+                telemetry.xstats_failed = true;
+            }
+        }
+
+        reports.push(PortReport {
+            name: port.name.to_string(),
+            hardware: port.hardware.clone(),
+            mac: port.mac.to_string(),
+            mtu: port.mtu,
+            link_up: state.link_up,
+            speed_mbps: state.speed_mbps,
+            link_changes: state.link_changes,
+            counters,
+            rx_pool: state.rx_pool,
+            control_pool: state.control_pool,
+            xstats: if telemetry.xstats_failed {
+                Vec::new()
+            } else {
+                telemetry
+                    .xstat_names
+                    .iter()
+                    .cloned()
+                    .zip(telemetry.xstat_values.iter().copied())
+                    .collect()
+            },
+        });
+    }
+    reports
+}
+
+/// Publish device counters, logging once per port until a failed read recovers, and return them.
+fn publish_port_counters(
+    port_metrics: &[(&Port<'_>, PortMetrics)],
+    unavailable: &mut [bool],
+) -> Vec<Option<PortCounters>> {
+    port_metrics
+        .iter()
+        .enumerate()
+        .map(|(slot, (port, metrics))| match port.counters() {
             Ok(counters) => {
                 metrics.publish(&counters);
                 // Report a later failure after recovery.
                 unavailable[slot] = false;
+                Some(counters)
             }
             Err(e) => {
                 if !unavailable[slot] {
@@ -278,7 +427,8 @@ fn publish_port_counters(port_metrics: &[(&Port<'_>, PortMetrics)], unavailable:
                         port.name
                     );
                 }
+                None
             }
-        }
-    }
+        })
+        .collect()
 }

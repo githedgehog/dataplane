@@ -100,6 +100,108 @@ impl PortMetrics {
     }
 }
 
+/// What a port's state and buffers look like, as of one reading.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub struct PortState {
+    /// Carrier is present.
+    pub link_up: bool,
+    /// Negotiated speed in Mbit/s, if the port knows it.
+    pub speed_mbps: Option<u32>,
+    /// Times the link went up or down since the dataplane started, as often as it was read.
+    pub link_changes: u64,
+    /// Mbufs checked out of the pool the data queues receive into, and its size.
+    pub rx_pool: (u32, u32),
+    /// Mbufs checked out of the pool the control queues receive into and injected frames are
+    /// allocated from, and its size.
+    pub control_pool: (u32, u32),
+}
+
+/// Metric handles for one port's state, registered once and reused for each reading.
+///
+/// `port_mbufs_in_use{pool}` against `port_mbufs{pool}` shows a pool filling before receive
+/// allocation fails and `port_rx_no_mbuf` counts the drops: a leak climbs, a burst comes back down.
+#[derive(Debug)]
+pub struct PortStateMetrics {
+    link_up: Registered<metrics::Gauge>,
+    speed: Registered<metrics::Gauge>,
+    link_changes: Registered<metrics::Counter>,
+    /// In use, then size, for the rx pool and the control pool.
+    pools: [(Registered<metrics::Gauge>, Registered<metrics::Gauge>); 2],
+}
+
+impl PortStateMetrics {
+    /// Register the state of port `port`, the configured interface name.
+    #[must_use]
+    pub fn new(port: &str) -> PortStateMetrics {
+        let spec = |suffix: &str, unit: Unit, description: &str, pool: Option<&str>| {
+            let mut labels = vec![("port".to_string(), port.to_string())];
+            if let Some(pool) = pool {
+                labels.push(("pool".to_string(), pool.to_string()));
+            }
+            let mut spec = MetricSpec::new(format!("{PORT_METRIC_BASE}_{suffix}"), unit, labels);
+            spec.description = description.to_string();
+            spec
+        };
+        let pool = |pool: &str| {
+            (
+                spec(
+                    "mbufs_in_use",
+                    Unit::Count,
+                    "mbufs checked out of the port's pool, in queues, in flight or cached by a core",
+                    Some(pool),
+                )
+                .register(),
+                spec(
+                    "mbufs",
+                    Unit::Count,
+                    "mbufs the port's pool holds",
+                    Some(pool),
+                )
+                .register(),
+            )
+        };
+        PortStateMetrics {
+            link_up: spec(
+                "link_up",
+                Unit::Count,
+                "1 if the port has carrier, else 0",
+                None,
+            )
+            .register(),
+            speed: spec(
+                "link_speed_mbps",
+                Unit::Count,
+                "negotiated link speed in Mbit/s, 0 if down or unknown",
+                None,
+            )
+            .register(),
+            link_changes: spec(
+                "link_changes",
+                Unit::Count,
+                "times the link went up or down, as seen by a once-a-second reading",
+                None,
+            )
+            .register(),
+            pools: [pool("rx"), pool("control")],
+        }
+    }
+
+    /// Publish a reading.
+    pub fn publish(&self, state: &PortState) {
+        self.link_up.metric.set(f64::from(u8::from(state.link_up)));
+        self.speed.metric.set(f64::from(
+            state.speed_mbps.filter(|_| state.link_up).unwrap_or(0),
+        ));
+        self.link_changes.metric.absolute(state.link_changes);
+        for ((in_use, size), (used, of)) in
+            self.pools.iter().zip([state.rx_pool, state.control_pool])
+        {
+            in_use.metric.set(f64::from(used));
+            size.metric.set(f64::from(of));
+        }
+    }
+}
+
 #[cfg(test)]
 mod exported {
     use super::*;
@@ -227,6 +329,42 @@ mod exported {
         });
     }
 
+    /// Each part of a port's state reaches its own series, and a link that is down has no speed.
+    #[test]
+    fn state_reaches_its_series() {
+        let scrape = Scrape::default();
+        metrics::with_local_recorder(&scrape, || {
+            let metrics = PortStateMetrics::new("eth0");
+            metrics.publish(&PortState {
+                link_up: true,
+                speed_mbps: Some(100_000),
+                link_changes: 3,
+                rx_pool: (10, 100),
+                control_pool: (2, 20),
+            });
+            assert_eq!(
+                scrape.get("port_link_speed_mbps", &[("port", "eth0")]),
+                Some(100_000.0)
+            );
+            metrics.publish(&PortState {
+                link_up: false,
+                speed_mbps: Some(100_000),
+                link_changes: 4,
+                rx_pool: (11, 100),
+                control_pool: (2, 20),
+            });
+        });
+        let port = [("port", "eth0")];
+        assert_eq!(scrape.get("port_link_up", &port), Some(0.0));
+        assert_eq!(scrape.get("port_link_speed_mbps", &port), Some(0.0));
+        assert_eq!(scrape.counter("port_link_changes", &port), Some(4));
+        let pool = |name, pool| scrape.get(name, &[("port", "eth0"), ("pool", pool)]);
+        assert_eq!(pool("port_mbufs_in_use", "rx"), Some(11.0));
+        assert_eq!(pool("port_mbufs", "rx"), Some(100.0));
+        assert_eq!(pool("port_mbufs_in_use", "control"), Some(2.0));
+        assert_eq!(pool("port_mbufs", "control"), Some(20.0));
+    }
+
     #[test]
     fn every_series_has_exactly_the_port_label() {
         let scrape = Scrape::default();
@@ -242,5 +380,174 @@ mod exported {
                 "port_{suffix} has the wrong label shape"
             );
         }
+    }
+}
+
+/// What a port's tap carried between the kernel and the port, and failed to, since it started.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub struct TapCounters {
+    /// Frames handed to the kernel through the tap.
+    pub punted: u64,
+    /// Frames the kernel sent through the tap that were queued for the port.
+    pub injected: u64,
+    /// Frames for the kernel that the tap would not take.
+    pub punt_write_errors: u64,
+    /// Frames from the kernel dropped because the datapath was not draining its queue.
+    pub inject_drops: u64,
+    /// LLDP frames dropped because the LLDP agent was not keeping up.
+    pub lldp_drops: u64,
+    /// Reads of the tap that failed.
+    pub read_errors: u64,
+}
+
+/// A series' suffix, its description, and the field it carries.
+type TapSeries = (&'static str, &'static str, fn(&TapCounters) -> u64);
+
+/// Every tap series.
+const TAP_SERIES: [TapSeries; 6] = [
+    (
+        "punted",
+        "frames handed to the kernel through the port's tap",
+        |c| c.punted,
+    ),
+    (
+        "injected",
+        "frames the kernel sent through the port's tap that were queued for the port",
+        |c| c.injected,
+    ),
+    (
+        "punt_write_errors",
+        "frames for the kernel that the port's tap would not take",
+        |c| c.punt_write_errors,
+    ),
+    (
+        "inject_drops",
+        "frames from the kernel dropped because the datapath was not draining them",
+        |c| c.inject_drops,
+    ),
+    (
+        "lldp_drops",
+        "LLDP frames received on the port dropped because the LLDP agent was not keeping up",
+        |c| c.lldp_drops,
+    ),
+    ("read_errors", "reads of the port's tap that failed", |c| {
+        c.read_errors
+    }),
+];
+
+/// Metric handles for one port's tap, registered once and reused for each reading, as
+/// `port_tap_<counter>` labelled `port`.
+#[derive(Debug)]
+pub struct TapMetrics {
+    series: [Registered<metrics::Counter>; 6],
+}
+
+impl TapMetrics {
+    /// Register the tap counters of port `port`, the configured interface name.
+    #[must_use]
+    pub fn new(port: &str) -> TapMetrics {
+        TapMetrics {
+            series: TAP_SERIES.map(|(suffix, description, _)| {
+                let mut spec = MetricSpec::new(
+                    format!("{PORT_METRIC_BASE}_tap_{suffix}"),
+                    Unit::Count,
+                    vec![("port".to_string(), port.to_string())],
+                );
+                spec.description = description.to_string();
+                spec.register()
+            }),
+        }
+    }
+
+    /// Publish a snapshot of the totals.
+    pub fn publish(&self, counters: &TapCounters) {
+        for (registered, (_, _, field)) in self.series.iter().zip(TAP_SERIES) {
+            registered.metric.absolute(field(counters));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tap_exported {
+    use super::*;
+    use crate::scrape::Scrape;
+
+    #[test]
+    fn every_tap_counter_reaches_its_own_series() {
+        let counters = TapCounters {
+            punted: 1,
+            injected: 2,
+            punt_write_errors: 3,
+            inject_drops: 4,
+            lldp_drops: 5,
+            read_errors: 6,
+        };
+        let scrape = Scrape::default();
+        metrics::with_local_recorder(&scrape, || TapMetrics::new("eth0").publish(&counters));
+        for (suffix, _, field) in TAP_SERIES {
+            assert_eq!(
+                scrape.counter(&format!("port_tap_{suffix}"), &[("port", "eth0")]),
+                Some(field(&counters)),
+                "port_tap_{suffix} did not export its own count"
+            );
+        }
+    }
+}
+
+/// A port's extended statistics, as its PMD names them: `port_xstat{port, name}`, one counter per
+/// statistic the driver chose to publish. Names differ from one PMD to the next.
+#[derive(Debug)]
+pub struct XstatMetrics {
+    series: Vec<Registered<metrics::Counter>>,
+}
+
+impl XstatMetrics {
+    /// Register the statistics `names` of port `port`, the configured interface name.
+    #[must_use]
+    pub fn new(port: &str, names: &[&str]) -> XstatMetrics {
+        XstatMetrics {
+            series: names
+                .iter()
+                .map(|name| {
+                    let mut spec = MetricSpec::new(
+                        format!("{PORT_METRIC_BASE}_xstat"),
+                        Unit::Count,
+                        vec![
+                            ("port".to_string(), port.to_string()),
+                            ("name".to_string(), (*name).to_string()),
+                        ],
+                    );
+                    spec.description =
+                        "an extended statistic of the port, as its driver names it".to_string();
+                    spec.register()
+                })
+                .collect(),
+        }
+    }
+
+    /// Publish `values`, one per name, in the order the names were registered in.
+    pub fn publish(&self, values: &[u64]) {
+        for (registered, value) in self.series.iter().zip(values) {
+            registered.metric.absolute(*value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod xstat_exported {
+    use super::*;
+    use crate::scrape::Scrape;
+
+    #[test]
+    fn each_statistic_reaches_its_named_series() {
+        let scrape = Scrape::default();
+        metrics::with_local_recorder(&scrape, || {
+            XstatMetrics::new("eth0", &["rx_discards_phy", "rx_out_of_buffer"]).publish(&[3, 4]);
+        });
+        let get = |name| scrape.counter("port_xstat", &[("port", "eth0"), ("name", name)]);
+        assert_eq!(
+            (get("rx_discards_phy"), get("rx_out_of_buffer")),
+            (Some(3), Some(4))
+        );
     }
 }

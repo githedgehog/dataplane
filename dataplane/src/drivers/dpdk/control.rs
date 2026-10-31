@@ -23,6 +23,7 @@ use tokio::sync::watch;
 use tracing::{debug, error, info, trace};
 use traffic_control::{Class, ClassTable, ControlPlane};
 
+use crate::drivers::load::{Load, LoadMeter, Spent};
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
@@ -48,6 +49,8 @@ pub(crate) struct ControlWorker<'p, 'eal> {
     control_plane: watch::Receiver<ControlPlane>,
     /// What to do while there is nothing to receive or inject.
     idle: IdleConfig,
+    /// Where the worker reports what it spends its time on.
+    load: Load,
 }
 
 impl<'p, 'eal> ControlWorker<'p, 'eal> {
@@ -56,12 +59,14 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
         ports: Vec<ControlPort<'p, 'eal>>,
         control_plane: watch::Receiver<ControlPlane>,
         idle: IdleConfig,
+        load: Load,
     ) -> Self {
         Self {
             id,
             ports,
             control_plane,
             idle,
+            load,
         }
     }
 
@@ -142,6 +147,8 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
             self.ports.iter().map(|_| Installed::none()).collect();
         self.control_plane.mark_changed();
         self.steer(&mut installed);
+        // Started last, so that setting up does not count as time spent.
+        let mut meter = LoadMeter::start();
 
         loop {
             polls = polls.wrapping_add(1);
@@ -151,6 +158,7 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
                     break;
                 }
                 self.report(&mut counters);
+                meter.flush(&self.load, idle.mode());
                 self.steer(&mut installed);
             }
 
@@ -172,18 +180,23 @@ impl<'p, 'eal> ControlWorker<'p, 'eal> {
                 slot += 1;
             }
 
-            match busy {
-                Some(slot) => idle.busy(slot),
+            let spent = match busy {
+                Some(slot) => {
+                    idle.busy(slot);
+                    Spent::Busy
+                }
                 None => idle.empty(
                     lcore.as_ref(),
                     self.ports
                         .iter()
                         .filter_map(|p| p.queues.pair.as_ref().map(|pair| &pair.rx)),
                 ),
-            }
+            };
+            meter.lap(spent);
         }
 
         self.report(&mut counters);
+        meter.flush(&self.load, idle.mode());
         let (sleeps, interrupt_sleeps) = idle.sleeps();
         info!(
             worker = self.id,
@@ -216,6 +229,7 @@ fn receive<'p>(
     if rx_mbufs.is_empty() {
         return false;
     }
+    counters.burst(rx_mbufs.len(), dpdk::mem::MBUF_BURST);
     for mbuf in rx_mbufs.drain_all() {
         counters.rx += 1;
         let frame = mbuf.raw_data();
