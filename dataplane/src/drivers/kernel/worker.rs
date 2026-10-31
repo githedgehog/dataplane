@@ -289,6 +289,7 @@ impl Worker {
                 let mut tx_drops: u64 = 0; // number of packets dropped on tx
                 let rx_pkts = packets_vec.len() as u64; // number of packets received
                 counters.rx = rx_pkts;
+                counters.burst(packets_vec.len(), DriverKernel::MAX_RX_PKT_BATCH);
 
                 let packets = packets_vec.into_iter();
                 let out_pkts = pipeline
