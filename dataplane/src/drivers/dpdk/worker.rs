@@ -242,6 +242,7 @@ impl<'p> Worker<'p> {
         if rx_mbufs.is_empty() {
             return false;
         }
+        counters.burst(rx_mbufs.len(), dpdk::mem::MBUF_BURST);
         let rx_if = self.ports[slot].queues.if_index;
         for mbuf in rx_mbufs.iter() {
             mbuf.prefetch_head();

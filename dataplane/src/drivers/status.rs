@@ -49,6 +49,10 @@ pub struct RxTaskStatus {
     pub activity: Activity,
     pub misses: u64,
     pub pps: f64,
+    /// Mean frames per burst over the supervisor's last poll; zero if it received none.
+    pub batch: f64,
+    /// Fraction of the last poll's bursts that were full.
+    pub full: f64,
     /// What the task counted since it started, read when wanted rather than when polled.
     pub totals: Totals,
 }
@@ -61,6 +65,8 @@ impl RxTaskStatus {
             activity: Activity::Idle,
             misses: 0,
             pps: 0.,
+            batch: 0.,
+            full: 0.,
             totals,
         }
     }
@@ -168,7 +174,7 @@ impl Display for WorkerState {
 
 macro_rules! RX_TASK_TBL_FMT {
     () => {
-        "   {:<16}  {:<6}  {:>14}  {:>20}  {:>20}  {:>12}  {:>9}"
+        "   {:<16}  {:<6}  {:>14}  {:>6}  {:>6}  {:>20}  {:>20}  {:>12}  {:>9}"
     };
 }
 
@@ -184,13 +190,15 @@ fn fmt_rx_task_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         "{}",
         format_args!(
             RX_TASK_TBL_FMT!(),
-            "iface", "status", "pps", "pkt-rx", "pkt-tx", "injected", "wd-misses"
+            "iface", "status", "pps", "batch", "full%", "pkt-rx", "pkt-tx", "injected", "wd-misses"
         )
     )
 }
 
 fn fmt_rx_task(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::Result {
     let pps = format!("{:.1}", rx.pps);
+    let batch = format!("{:.1}", rx.batch);
+    let full = format!("{:.0}", rx.full * 100.);
     let totals = rx.totals.load();
     writeln!(
         f,
@@ -200,6 +208,8 @@ fn fmt_rx_task(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::
             rx.name(),
             rx.activity,
             pps,
+            batch,
+            full,
             totals.rx,
             totals.tx,
             totals.injected,

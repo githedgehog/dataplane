@@ -203,6 +203,8 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                             wk_status.rx_tasks.iter_mut().for_each(|r| {
                                 r.activity = Activity::Idle;
                                 r.pps = 0.0;
+                                r.batch = 0.0;
+                                r.full = 0.0;
                             });
                         } else {
                             // worker is running, update its `WorkerStatus` and restore its handle
@@ -333,6 +335,14 @@ fn check_worker_rx_tasks(
 
         // update the rx task status
         rx_task_status.activity = Activity::of(&counted, patted);
+        (rx_task_status.batch, rx_task_status.full) = if counted.bursts == 0 {
+            (0.0, 0.0)
+        } else {
+            (
+                counted.rx as f64 / counted.bursts as f64,
+                counted.full_bursts as f64 / counted.bursts as f64,
+            )
+        };
         match rx_task_status.activity {
             Activity::Stuck => {
                 rx_task_status.misses += 1;
@@ -414,5 +424,38 @@ mod tests {
                     u64::from(*before) + u64::from(*since)
                 );
             });
+    }
+    /// The batch and the full share are over the bursts since the last check, not since the start:
+    /// a worker that fell behind long ago and has caught up shows that it has.
+    #[test]
+    fn batch_is_over_the_bursts_since_the_last_check() {
+        let mut tasks = vec![RxTaskMonitor::new("eth0", RxQueue::Data)];
+        let mut status = WorkerStatus::new(0);
+        status.rx_tasks = vec![RxTaskStatus::new(
+            tasks[0].port.clone(),
+            tasks[0].queue,
+            tasks[0].watchdog.reader(),
+        )];
+        let check = |tasks: &mut Vec<RxTaskMonitor>, status: &mut WorkerStatus| {
+            check_worker_rx_tasks("test", 0, tasks, status, false, Duration::from_secs(1));
+            (status.rx_tasks[0].batch, status.rx_tasks[0].full)
+        };
+        let bursts = |sizes: &[usize]| {
+            let mut counters = RxCounters::default();
+            for &size in sizes {
+                counters.rx += size as u64;
+                counters.burst(size, 32);
+            }
+            counters
+        };
+
+        tasks[0].watchdog.record(&bursts(&[32, 32, 32, 32]));
+        assert_eq!(check(&mut tasks, &mut status), (32.0, 1.0));
+
+        tasks[0].watchdog.record(&bursts(&[1, 3, 0, 32]));
+        assert_eq!(check(&mut tasks, &mut status), (12.0, 1.0 / 3.0));
+
+        // Nothing received: no batch to speak of, rather than a stale one.
+        assert_eq!(check(&mut tasks, &mut status), (0.0, 0.0));
     }
 }
