@@ -423,11 +423,14 @@ impl Transport {
     }
 
     /// Store the updated checksum, or return `false` if full recomputation is needed.
-    fn finish_increment(&mut self, updated: u16) -> bool {
-        // An incremental ICMPv4 result of 0x0000 is ambiguous: all-zero data needs 0xFFFF.
-        // Distinguishing these cases requires the payload.
-        // Other transports have a nonzero protocol number in their pseudo-header.
-        if updated == 0 && matches!(self, Transport::Icmp4(_)) {
+    ///
+    /// `new_value` is the changed field's new value, which the checksum covers.
+    fn finish_increment(&mut self, updated: u16, new_value: u16) -> bool {
+        // An incremental ICMPv4 result of 0x0000 is ambiguous only for all-zero data, which needs
+        // 0xFFFF. A nonzero new value rules that out: then 0x0000 is the checksum, as a full
+        // recompute would find. Other transports have a nonzero protocol number in their
+        // pseudo-header.
+        if updated == 0 && new_value == 0 && matches!(self, Transport::Icmp4(_)) {
             return false;
         }
         self.set_checksum_from_increment(updated);
@@ -437,8 +440,10 @@ impl Transport {
     /// Update the checksum for a changed 16-bit field, such as a port or ICMP identifier (RFC 1624).
     ///
     /// Returns `true` if updated or no update is needed, including absent or disabled checksums.
-    /// Returns `false` if an `ICMPv4` update computes to `0x0000`: full recomputation is needed to
-    /// distinguish this from the all-zero case, which requires `0xFFFF`.
+    /// Returns `false` if an `ICMPv4` field changes to zero and the update computes to `0x0000`:
+    /// full recomputation is needed to distinguish this from the all-zero case, which requires
+    /// `0xFFFF`. A stage can't always recompute (a fragment's checksum covers the rest of the
+    /// datagram), so the helper refuses only where it must.
     #[must_use]
     pub fn increment_checksum_for_u16(&mut self, old_value: u16, new_value: u16) -> bool {
         if old_value == new_value {
@@ -448,7 +453,7 @@ impl Transport {
             return true;
         };
         let updated = self.increment_step(current, old_value, new_value);
-        self.finish_increment(updated)
+        self.finish_increment(updated, new_value)
     }
 
     /// Update the TCP, UDP, or `ICMPv6` checksum for an IP address change.
@@ -2292,8 +2297,8 @@ mod test {
             .increment_checksum_for_u16(old_identifier, *identifier);
         recomputed.update_checksums(payload);
         if !updated {
-            // An ICMPv4 result of zero requires full recomputation.
-            assert!(matches!(transport, Transport::Icmp4(_)));
+            // An ICMPv4 result of zero for a field cleared to zero requires full recomputation.
+            assert!(matches!(transport, Transport::Icmp4(_)) && *identifier == 0);
             return;
         }
         assert_eq!(
@@ -2467,6 +2472,49 @@ mod test {
             Some(u16::MAX),
             "an incremental update that computes to 0 must be stored as 0xFFFF, or the datagram \
              reads as having no checksum at all"
+        );
+    }
+
+    /// An `ICMPv4` update that computes to `0x0000` while setting a nonzero identifier covers
+    /// nonzero data, so `0x0000` is its checksum and the helper stores it. Recomputation is not
+    /// always available: a first fragment's checksum covers fragments this stage never sees.
+    #[test]
+    fn an_icmp4_update_to_zero_with_a_nonzero_field_is_stored() {
+        use crate::checksum::Checksum;
+        use crate::icmp4::{Icmp4, Icmp4EchoRequest, Icmp4Type};
+
+        let payload: &[u8] = &[0xab; 5];
+        let mut icmp = Icmp4::with_type(Icmp4Type::EchoRequest(Icmp4EchoRequest {
+            id: 0x1234,
+            seq: 7,
+        }));
+        icmp.update_checksum(payload).unwrap();
+        let start = icmp.checksum().map(u16::from).unwrap();
+        let zeroing = (1..=u16::MAX)
+            .find(|id| {
+                u16::from(icmp.increment_update_checksum(
+                    crate::icmp4::Icmp4Checksum::new(start),
+                    0x1234,
+                    *id,
+                )) == 0
+            })
+            .expect("some identifier drives the update to zero");
+
+        let mut transport = Transport::Icmp4(icmp);
+        transport.try_set_identifier(zeroing).unwrap();
+        assert!(
+            transport.increment_checksum_for_u16(0x1234, zeroing),
+            "an update to a nonzero identifier asked for a recompute"
+        );
+        let Transport::Icmp4(mut icmp) = transport else {
+            unreachable!()
+        };
+        assert_eq!(icmp.checksum().map(u16::from), Some(0));
+        icmp.update_checksum(payload).unwrap();
+        assert_eq!(
+            icmp.checksum().map(u16::from),
+            Some(0),
+            "a full recompute disagreed with the stored 0x0000"
         );
     }
 
