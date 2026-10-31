@@ -23,6 +23,7 @@ use tracing::{debug, error, info, trace, warn};
 use traffic_control::Key;
 
 use crate::drivers::load::{Load, LoadMeter, Spent};
+use crate::drivers::sparse_log::log_sparsely;
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 use crate::packet_processor::{EXPIRY_BUDGET, PipelineFactory, WorkerPipeline};
@@ -324,20 +325,20 @@ impl<'p> Worker<'p> {
             }
 
             let Some(oif) = packet.meta().oif else {
-                warn!(
+                log_sparsely!(warn!(
                     worker = self.id,
                     "pipeline delivered a packet with no oif; dropping (pipeline bug)"
-                );
+                ));
                 counters.tx_drops += 1;
                 continue;
             };
 
             let Some(&out_slot) = tx_by_if.get(&oif) else {
-                warn!(
+                log_sparsely!(warn!(
                     worker = self.id,
                     "pipeline delivered a packet for interface {oif}, which this driver does not \
                      own; dropping"
-                );
+                ));
                 counters.tx_drops += 1;
                 continue;
             };
@@ -347,10 +348,10 @@ impl<'p> Worker<'p> {
                 Ok(mbuf) => {
                     if tx_batches[out_slot].try_push(mbuf).is_err() {
                         // A pipeline that duplicates packets can exceed one transmit burst.
-                        error!(
+                        log_sparsely!(error!(
                             worker = self.id,
                             "transmit batch for interface {oif} overflowed one burst; dropping"
-                        );
+                        ));
                         counters.tx_drops += 1;
                     }
                 }
