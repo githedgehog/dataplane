@@ -33,10 +33,10 @@ use crate::headers::{
 };
 use crate::ip::{dscp::Dscp, ecn::Ecn};
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError};
-use crate::udp::{Udp, UdpChecksum};
+use crate::udp::{Udp, UdpChecksum, UdpChecksumPayload, UdpEncap};
 use crate::vxlan::Vni;
 
-use crate::checksum::Checksum;
+use crate::checksum::{Checksum, incremental_update};
 use crate::vxlan::{Vxlan, VxlanEncap};
 use concurrency::sync::Arc;
 #[allow(unused_imports)] // re-export
@@ -513,11 +513,49 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         headers.transport = Some(Transport::Udp(udp));
 
         Self::apply_outer_qos_to_ip_headers(&mut headers, &self.meta, udp_len.get());
+        if matches!(headers.net, Some(Net::Ipv6(_))) {
+            Self::checksum_ipv6_vxlan(&mut headers, self.payload.as_ref());
+        }
 
         self.headers = headers;
         #[cfg(any(test, feature = "checksum-audit"))]
         self.note_transport_checksum();
         Ok(())
+    }
+
+    /// Give the outer UDP header of an IPv6 VXLAN packet its checksum, over the VXLAN header and
+    /// the `inner` frame.
+    ///
+    /// VXLAN asks for a zero UDP checksum, but IPv6 forbids one outside tunnels whose receivers
+    /// opt in ([RFC 6935], [RFC 6936]); a receiver that has not, Linux's default among them, drops
+    /// the packet.
+    ///
+    /// [RFC 6935]: https://datatracker.ietf.org/doc/html/rfc6935
+    /// [RFC 6936]: https://datatracker.ietf.org/doc/html/rfc6936
+    fn checksum_ipv6_vxlan(headers: &mut Headers, inner: &[u8]) {
+        let (Some(net), Some(Transport::Udp(udp)), Some(UdpEncap::Vxlan(vxlan))) =
+            (&headers.net, &mut headers.transport, &headers.udp_encap)
+        else {
+            unreachable!("VXLAN headers without IP, UDP or VXLAN");
+        };
+        let mut vxlan_bytes = [0u8; Vxlan::MIN_LENGTH.get() as usize];
+        vxlan
+            .deparse(&mut vxlan_bytes)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        let inner_only = udp
+            .compute_checksum(&UdpChecksumPayload::new(net, inner))
+            .unwrap_or_else(|()| unreachable!()); // computing a UDP checksum never fails
+        // The VXLAN header starts the UDP payload, an even number of octets in: each of its words
+        // adds to the sum as a field changing from zero would.
+        let checksum = vxlan_bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .fold(u16::from(inner_only), |checksum, word| {
+                incremental_update(checksum, 0, u16::from_be_bytes(*word))
+            });
+        udp.set_checksum(UdpChecksum::from_computed(checksum))
+            .unwrap_or_else(|()| unreachable!()); // setting UDP checksum never fails
     }
 
     /// Compute the network and transport checksums from scratch, for a packet built here.
@@ -1652,6 +1690,78 @@ mod padding_tests {
                     .validate_checksum(&UdpChecksumPayload::new(&net, payload))
                     .expect("the udp checksum covered octets past the udp datagram");
             });
+    }
+
+    fn vxlan_encap_params_ipv6() -> VxlanEncap {
+        let mut ip = crate::ipv6::Ipv6::default();
+        ip.set_source(
+            crate::ipv6::addr::UnicastIpv6Addr::new(crate::ipv6_doc!("::1").parse().unwrap())
+                .unwrap(),
+        );
+        ip.set_destination(crate::ipv6_doc!("::2").parse().unwrap());
+        ip.set_hop_limit(64);
+        ip.set_next_header(crate::ip::NextHeader::UDP);
+        let headers = Headers {
+            eth: Some(make_default_for_eth(EthType::IPV6)),
+            vlan: crate::headers::Stack::default(),
+            net: Some(Net::Ipv6(ip)),
+            net_ext: crate::headers::Stack::default(),
+            transport: None,
+            udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(42).unwrap()))),
+            embedded_ip: None,
+            lldp: None,
+        };
+        VxlanEncap::new(headers).unwrap_or_else(|e| unreachable!("{e:?}"))
+    }
+
+    /// IPv6 receivers drop a zero UDP checksum unless configured for tunnels (RFC 6936).
+    #[test]
+    fn ipv6_vxlan_carries_a_udp_checksum_over_the_whole_datagram() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, Vec<u8>)>()
+            .for_each(|(payload, trailer)| {
+                let payload = &payload[..payload.len().min(256)];
+                let trailer = &trailer[..trailer.len().min(64)];
+                let mut inner = frame(6, &tcp(payload));
+                inner.extend_from_slice(trailer);
+                let mut packet = parse(&inner);
+                packet
+                    .vxlan_encap(&vxlan_encap_params_ipv6())
+                    .expect("vxlan encap failed");
+                let out = packet.serialize().expect("vxlan frame does not serialize");
+                let out = out.as_ref();
+
+                let outer = parse(out);
+                let net = outer.headers().try_ip().expect("no outer ip").clone();
+                let udp = outer.headers().try_udp().expect("no outer udp");
+                assert_ne!(
+                    udp.checksum().map(u16::from),
+                    Some(0),
+                    "an ipv6 vxlan datagram left without a udp checksum"
+                );
+                // Everything after the UDP header: the VXLAN header and the inner frame.
+                let udp_payload = &out[14 + 40 + 8..];
+                udp.validate_checksum(&UdpChecksumPayload::new(&net, udp_payload))
+                    .expect("the outer udp checksum does not cover the datagram");
+            });
+    }
+
+    #[test]
+    fn ipv4_vxlan_leaves_the_udp_checksum_zero() {
+        let mut packet = parse(&frame(6, &tcp(b"payload")));
+        packet
+            .vxlan_encap(&vxlan_encap_params())
+            .expect("vxlan encap failed");
+        let out = packet.serialize().expect("vxlan frame does not serialize");
+        let outer = parse(out.as_ref());
+        assert_eq!(
+            outer
+                .headers()
+                .try_udp()
+                .and_then(Checksum::checksum)
+                .map(u16::from),
+            Some(0)
+        );
     }
 
     #[test]
