@@ -152,6 +152,22 @@ impl Reader<'_> {
         self.inner.len() - self.remaining as usize
     }
 
+    /// Stop reading `len` octets past the current position, if the buffer goes on that long.
+    ///
+    /// Headers that follow an IP header end where its datagram does. What trails the datagram
+    /// in the frame (padding, or a trailer) is not part of any header after it.
+    pub(crate) fn end_after(&mut self, len: usize) {
+        let end = self.position().saturating_add(len);
+        if end < self.inner.len() {
+            let position = self.position();
+            self.inner = &self.inner[..end];
+            #[allow(clippy::cast_possible_truncation)] // within the buffer, whose length fits a u16
+            {
+                self.remaining = (end - position) as u16;
+            }
+        }
+    }
+
     /// Go back to `position`, a place this reader has already been, to read from there again.
     pub(crate) fn rewind_to(&mut self, position: usize) {
         debug_assert!(position <= self.position(), "rewinding forwards");
