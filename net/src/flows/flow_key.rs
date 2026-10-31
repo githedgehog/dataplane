@@ -695,6 +695,11 @@ impl Hash for FlowKey {
 impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for FlowKey {
     type Error = FlowKeyError;
     fn try_from(packet: &Packet<Buf>) -> Result<Self, Self::Error> {
+        // A non-first fragment carries no transport header. The parser may still read one from
+        // the fragment's payload, and ports taken from there would match some unrelated flow.
+        if packet.headers().is_non_first_fragment() {
+            return Err(FlowKeyError::NoFlowKeyData);
+        }
         let addrs = FlowAddrs::from_net(
             packet
                 .headers()
@@ -981,6 +986,75 @@ mod tests {
         assert_ne!(hash.finish(), reverse_hash.finish());
     }
 
+    /// An Ethernet frame holding one fragment, at `offset` (in 8-octet units), of a datagram
+    /// whose fragment body starts with what looks like a TCP header.
+    fn fragment_frame(offset: u16, more: bool, v6: bool) -> Vec<u8> {
+        use etherparse::{
+            IpFragOffset, IpNumber, Ipv4Header, Ipv6FragmentHeader, Ipv6Header, TcpHeader,
+        };
+        let offset = IpFragOffset::try_new(offset).unwrap_or_else(|_| unreachable!());
+        let tcp = TcpHeader::new(1234, 8001, 0, 0);
+        let mut body = Vec::new();
+        tcp.write(&mut body).unwrap_or_else(|_| unreachable!());
+        let mut frame = vec![2, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 2];
+        if v6 {
+            frame.extend_from_slice(&[0x86, 0xdd]);
+            let fragment = Ipv6FragmentHeader::new(IpNumber::TCP, offset, more, 1);
+            let ip = Ipv6Header {
+                #[allow(clippy::cast_possible_truncation)] // small test datagram
+                payload_length: (fragment.header_len() + body.len()) as u16,
+                next_header: IpNumber::IPV6_FRAGMENTATION_HEADER,
+                hop_limit: 64,
+                source: [0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                destination: [0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+                ..Ipv6Header::default()
+            };
+            ip.write(&mut frame).unwrap_or_else(|_| unreachable!());
+            frame.extend_from_slice(&fragment.to_bytes());
+        } else {
+            frame.extend_from_slice(&[0x08, 0x00]);
+            #[allow(clippy::cast_possible_truncation)] // small test datagram
+            let mut ip = Ipv4Header::new(
+                body.len() as u16,
+                64,
+                IpNumber::TCP,
+                [10, 0, 0, 1],
+                [10, 0, 0, 2],
+            )
+            .unwrap_or_else(|_| unreachable!());
+            ip.dont_fragment = false;
+            ip.more_fragments = more;
+            ip.fragment_offset = offset;
+            ip.header_checksum = ip.calc_header_checksum();
+            ip.write(&mut frame).unwrap_or_else(|_| unreachable!());
+        }
+        frame.extend_from_slice(&body);
+        frame
+    }
+
+    #[test]
+    fn a_non_first_fragment_has_no_flow_key() {
+        bolero::check!()
+            .with_type::<(u16, bool, bool)>()
+            .for_each(|&(raw_offset, more, v6)| {
+                // Compare a first (or atomic) fragment with a non-first one.
+                for offset in [0, 1 + raw_offset % etherparse::IpFragOffset::MAX_U16] {
+                    let frame = fragment_frame(offset, more, v6);
+                    let packet = Packet::new(TestBuffer::from_raw_data(&frame))
+                        .unwrap_or_else(|e| unreachable!("{e:?}"));
+                    let key = FlowKey::try_from(&packet);
+                    if offset == 0 {
+                        assert!(key.is_ok(), "the first fragment carries its ports: {key:?}");
+                    } else {
+                        assert!(
+                            matches!(key, Err(FlowKeyError::NoFlowKeyData)),
+                            "offset {offset} keyed on its payload: {key:?}"
+                        );
+                    }
+                }
+            });
+    }
+
     fn addrs_for<D: Driver>(v6: bool, driver: &mut D) -> Option<FlowAddrs> {
         if v6 {
             Some(FlowAddrs::V6 {
@@ -1129,6 +1203,11 @@ mod tests {
             let addrs = addrs_for(v6, driver)?;
 
             let src_vpcd = packet.meta().src_vpcd;
+
+            // What a non-first fragment's transport header holds is payload: no key.
+            if packet.headers().is_non_first_fragment() {
+                return Some((None, packet));
+            }
 
             let transport = packet.headers().try_transport()?;
             let proto = match transport {
