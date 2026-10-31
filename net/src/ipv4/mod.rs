@@ -564,6 +564,9 @@ impl Ipv4 {
     /// * `Some(Ipv4Next)` if the payload is a supported protocol
     /// * `None` if the payload is not a supported protocol
     pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<Ipv4Next> {
+        // Nothing past the datagram belongs to the headers it carries, and a datagram shorter than
+        // its own header carries nothing.
+        cursor.end_after(self.payload_len().map_or(0, usize::from));
         match self.protocol {
             IpNumber::TCP => cursor.parse_header::<Tcp, Ipv4Next>(),
             IpNumber::UDP => cursor.parse_header::<Udp, Ipv4Next>(),

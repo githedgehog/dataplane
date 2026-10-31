@@ -2093,7 +2093,14 @@ mod test {
     use crate::tcp::{TcpChecksum, TcpChecksumPayload, TcpPort};
     use crate::udp::{UdpChecksum, UdpChecksumPayload, UdpPort};
 
+    /// Deparse `headers` as a datagram exactly as long as they are, and parse them back.
     pub(crate) fn parse_back_test(headers: &Headers) {
+        // The parser reads no header past the end of the datagram its IP header states.
+        let mut headers = headers.clone();
+        if super::builder::fixup_lengths(&mut headers, &[]).is_err() {
+            return;
+        }
+        let headers = &headers;
         let mut buffer = [0_u8; 1024];
         let bytes_written =
             match headers.deparse(&mut buffer[..headers.size().into_non_zero_usize().get()]) {
@@ -3598,5 +3605,106 @@ mod no_room_tests {
             usize::from(consumed.get()),
             ETH + IPV6 + 8 + IPV6 + 8 * MAX_NET_EXTENSIONS
         );
+    }
+}
+
+#[cfg(test)]
+mod datagram_end_tests {
+    //! The headers an IP header carries end where its datagram does. What trails the datagram in
+    //! the frame, padding or a trailer, stays in the payload even where it would complete a header.
+
+    use super::Headers;
+    use crate::parse::Parse;
+
+    const ETH: usize = 14;
+    const IPV4: usize = 20;
+    const IPV6: usize = 40;
+    const UDP: u8 = 17;
+    const DESTINATION_OPTIONS: u8 = 60;
+
+    /// Ports 12345 and 12346, a length of 8, and no checksum.
+    const UDP_HEADER: [u8; 8] = [0x30, 0x39, 0x30, 0x3a, 0, 8, 0, 0];
+
+    fn eth(ether_type: [u8; 2]) -> Vec<u8> {
+        let mut out = vec![2, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 2];
+        out.extend_from_slice(&ether_type);
+        out
+    }
+
+    /// An IPv4 header stating `rest` octets of `protocol` after it.
+    fn ipv4(protocol: u8, rest: usize) -> Vec<u8> {
+        let mut out = vec![0x45, 0];
+        out.extend_from_slice(&u16::try_from(IPV4 + rest).unwrap().to_be_bytes());
+        out.extend_from_slice(&[0, 0, 0x40, 0, 64, protocol, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2]);
+        out
+    }
+
+    /// An IPv6 header stating `rest` octets of `next` after it.
+    fn ipv6(next: u8, rest: usize) -> Vec<u8> {
+        let mut out = vec![0x60, 0, 0, 0];
+        out.extend_from_slice(&u16::try_from(rest).unwrap().to_be_bytes());
+        out.extend_from_slice(&[next, 64]);
+        out.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        out.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        out
+    }
+
+    #[test]
+    fn padding_after_a_whole_datagram_stays_in_the_payload() {
+        let mut frame = eth([0x08, 0x00]);
+        frame.append(&mut ipv4(UDP, UDP_HEADER.len()));
+        frame.extend_from_slice(&UDP_HEADER);
+        frame.extend_from_slice(&[0; 18]);
+
+        let (headers, consumed) = Headers::parse(&frame).unwrap();
+        assert!(headers.transport().is_some());
+        assert_eq!(usize::from(consumed.get()), ETH + IPV4 + UDP_HEADER.len());
+    }
+
+    #[test]
+    fn a_transport_header_past_the_end_of_an_ipv4_datagram_stays_in_the_payload() {
+        let mut frame = eth([0x08, 0x00]);
+        frame.append(&mut ipv4(UDP, 4));
+        frame.extend_from_slice(&UDP_HEADER);
+
+        let (headers, consumed) = Headers::parse(&frame).unwrap();
+        assert!(headers.transport().is_none());
+        assert_eq!(usize::from(consumed.get()), ETH + IPV4);
+    }
+
+    #[test]
+    fn an_ipv4_datagram_shorter_than_its_header_carries_nothing() {
+        let mut frame = eth([0x08, 0x00]);
+        frame.append(&mut ipv4(UDP, 0));
+        frame[ETH + 2..ETH + 4].copy_from_slice(&u16::try_from(IPV4 - 1).unwrap().to_be_bytes());
+        frame.extend_from_slice(&UDP_HEADER);
+
+        let (headers, consumed) = Headers::parse(&frame).unwrap();
+        assert!(headers.transport().is_none());
+        assert_eq!(usize::from(consumed.get()), ETH + IPV4);
+    }
+
+    #[test]
+    fn a_transport_header_past_the_end_of_an_ipv6_datagram_stays_in_the_payload() {
+        let mut frame = eth([0x86, 0xdd]);
+        frame.append(&mut ipv6(UDP, 4));
+        frame.extend_from_slice(&UDP_HEADER);
+
+        let (headers, consumed) = Headers::parse(&frame).unwrap();
+        assert!(headers.transport().is_none());
+        assert_eq!(usize::from(consumed.get()), ETH + IPV6);
+    }
+
+    #[test]
+    fn an_extension_header_past_the_end_of_the_datagram_stays_in_the_payload() {
+        let mut frame = eth([0x86, 0xdd]);
+        frame.append(&mut ipv6(DESTINATION_OPTIONS, 4));
+        frame.extend_from_slice(&[UDP, 0, 1, 4, 0, 0, 0, 0]); // a 4-octet PadN option
+        frame.extend_from_slice(&UDP_HEADER);
+
+        let (headers, consumed) = Headers::parse(&frame).unwrap();
+        assert_eq!(headers.net_ext(), []);
+        assert!(headers.transport().is_none());
+        assert_eq!(usize::from(consumed.get()), ETH + IPV6);
     }
 }

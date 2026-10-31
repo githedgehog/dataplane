@@ -110,6 +110,7 @@ mod tests {
     use super::*;
     use crate::buffer::TestBuffer;
     use crate::eth::ethtype::EthType;
+    use crate::headers::builder::fixup_lengths;
     use crate::headers::{EmbeddedHeadersBuilder, Headers, HeadersBuilder, Net, Transport};
     use crate::icmp4::{Icmp4, Icmp4DestUnreachable, Icmp4EchoRequest, Icmp4Type};
     use crate::ip::NextHeader;
@@ -120,12 +121,19 @@ mod tests {
     use crate::tcp::{Tcp, TcpPort};
     use std::net::Ipv4Addr;
 
+    /// Build `headers` with the lengths of the datagram they make up, which the parser reads.
+    fn build(headers: &HeadersBuilder) -> Headers {
+        let mut headers = headers.build().unwrap();
+        fixup_lengths(&mut headers, &[]).unwrap();
+        headers
+    }
+
     #[test]
     fn test_icmp_error_packet_no_network_layer() {
         // Build a packet without IP header
         let mut headers = HeadersBuilder::default();
         headers.eth(Some(make_default_for_eth(EthType::IPV4)));
-        let headers = headers.build().unwrap();
+        let headers = build(&headers);
         let mut buffer = TestBuffer::new();
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();
@@ -144,7 +152,7 @@ mod tests {
         headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
 
-        let headers = headers.build().unwrap();
+        let headers = build(&headers);
         let mut buffer = TestBuffer::new();
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();
@@ -171,7 +179,7 @@ mod tests {
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Tcp(tcp)));
 
-        let headers = headers.build().unwrap();
+        let headers = build(&headers);
         let mut buffer = TestBuffer::new();
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();
@@ -194,7 +202,7 @@ mod tests {
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Icmp4(icmp)));
 
-        let headers = headers.build().unwrap();
+        let headers = build(&headers);
         let mut buffer = TestBuffer::new();
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();
@@ -217,7 +225,7 @@ mod tests {
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Icmp4(icmp)));
 
-        let headers = headers.build().unwrap();
+        let headers = build(&headers);
         let mut buffer = TestBuffer::new();
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();
@@ -250,7 +258,7 @@ mod tests {
         headers.transport(Some(Transport::Icmp4(icmp)));
         headers.embedded_ip(Some(Box::new(embedded_headers)));
 
-        let headers = headers.build().unwrap();
+        let headers = build(&headers);
         let mut buffer = TestBuffer::new();
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();
@@ -309,7 +317,7 @@ mod tests {
         headers.transport(Some(Transport::Icmp4(icmp)));
         headers.embedded_ip(Some(Box::new(embedded_headers)));
 
-        let headers = headers.build().unwrap();
+        let headers = build(&headers);
         let mut buffer = get_buffer_for_checksum_test(&headers);
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();

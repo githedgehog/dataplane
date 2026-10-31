@@ -2168,10 +2168,10 @@ mod roundtrip_tests {
             });
     }
 
-    /// An ICMP timestamp is 20 octets; this datagram holds 18 of them, and the frame's two
-    /// octets of padding complete it. Found by CI.
+    /// An ICMP timestamp is 20 octets; this datagram holds 18 of them. The frame's two octets of
+    /// padding would complete it, but they are not part of the datagram. Found by CI.
     #[test]
-    fn a_refresh_leaves_a_transport_header_cut_short_by_its_datagram() {
+    fn a_transport_header_cut_short_by_its_datagram_stays_in_the_payload() {
         let datagram = Datagram {
             ip: Ip::V4 {
                 header: [0; 20],
@@ -2188,8 +2188,11 @@ mod roundtrip_tests {
         frame.bytes[ETH + 8] = 64; // a TTL to decrement
         assert_eq!(frame.end - frame.transport, 18);
         let packet = parse(&frame.bytes);
-        assert!(packet.headers().transport().is_some());
-        assert_eq!(packet.headers().transport_payload_len(), None);
+        assert!(
+            packet.headers().transport().is_none(),
+            "the parser completed a header from what trails the datagram"
+        );
+        assert_eq!(serialize(packet), frame.bytes);
         assert_eq!(
             forward(&frame.bytes, true),
             forward(&frame.bytes, false),
