@@ -67,6 +67,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, default-features = true }
 vpcmap = { workspace = true }
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
 [dev-dependencies]
 clock = { workspace = true, features = ["virtual"] }
 # internal
