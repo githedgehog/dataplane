@@ -232,6 +232,12 @@ impl<'eal> Pool<'eal> {
         unsafe { dpdk_sys::rte_mempool_in_use_count(self.pool.as_ptr()) }
     }
 
+    /// The number of mbufs the pool was created with.
+    #[must_use]
+    pub fn capacity(&self) -> u32 {
+        self.config.params.size
+    }
+
     /// Allocate `num` mbufs as an owning batch.
     ///
     /// # Errors
