@@ -330,8 +330,15 @@ fn check_worker_rx_tasks(
         );
 
         let counted = task.counted();
-        // Only a check can find a watchdog unpatted: unchecked, it is taken to have been.
-        let patted = !check_watchdog || task.watchdog.check_and_rearm();
+        // Only a check can find a watchdog unpatted: unchecked, it is taken to have been, unless
+        // the last check found the task stuck. A stuck task stays so until it pats or sees frames,
+        // rather than looking idle until the next check.
+        let was_stuck = rx_task_status.activity == Activity::Stuck;
+        let patted = if check_watchdog {
+            task.watchdog.check_and_rearm()
+        } else {
+            !was_stuck || task.watchdog.patted()
+        };
 
         // update the rx task status
         rx_task_status.activity = Activity::of(&counted, patted);
@@ -344,6 +351,8 @@ fn check_worker_rx_tasks(
             )
         };
         match rx_task_status.activity {
+            // Still stuck since the last check: that miss is counted and logged already.
+            Activity::Stuck if !check_watchdog => rx_task_status.pps = 0.0,
             Activity::Stuck => {
                 rx_task_status.misses += 1;
                 rx_task_status.pps = 0.0;
@@ -457,5 +466,43 @@ mod tests {
 
         // Nothing received: no batch to speak of, rather than a stale one.
         assert_eq!(check(&mut tasks, &mut status), (0.0, 0.0));
+    }
+
+    /// A task a check found stuck stays stuck on the polls between checks, until it pats or sees
+    /// frames, and only a check counts a miss.
+    #[test]
+    fn stuck_holds_between_checks_until_the_task_recovers() {
+        let mut tasks = vec![RxTaskMonitor::new("eth0", RxQueue::Data)];
+        let mut status = WorkerStatus::new(0);
+        status.rx_tasks = vec![RxTaskStatus::new(
+            tasks[0].port.clone(),
+            tasks[0].queue,
+            tasks[0].watchdog.reader(),
+        )];
+        let mut poll = |tasks: &mut Vec<RxTaskMonitor>, check: bool| {
+            check_worker_rx_tasks("test", 0, tasks, &mut status, check, Duration::from_secs(1));
+            (status.rx_tasks[0].activity, status.rx_tasks[0].misses)
+        };
+
+        // A new watchdog counts as patted; the first check arms it.
+        assert_eq!(poll(&mut tasks, true), (Activity::Idle, 0));
+        assert_eq!(poll(&mut tasks, true), (Activity::Stuck, 1));
+        for _ in 0..5 {
+            assert_eq!(poll(&mut tasks, false), (Activity::Stuck, 1));
+        }
+        assert_eq!(poll(&mut tasks, true), (Activity::Stuck, 2));
+
+        // A pat between checks ends it at once.
+        tasks[0].watchdog.pat();
+        assert_eq!(poll(&mut tasks, false), (Activity::Idle, 2));
+        assert_eq!(poll(&mut tasks, true), (Activity::Idle, 2));
+
+        // And so do frames.
+        assert_eq!(poll(&mut tasks, true), (Activity::Stuck, 3));
+        tasks[0].watchdog.record(&RxCounters {
+            rx: 1,
+            ..RxCounters::default()
+        });
+        assert_eq!(poll(&mut tasks, false), (Activity::Active, 3));
     }
 }

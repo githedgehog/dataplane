@@ -84,6 +84,13 @@ impl Watchdog {
         !self.0.armed.swap(true, Ordering::Relaxed)
     }
 
+    /// Supervisor: tell whether the task patted the watchdog since the last check, leaving it as
+    /// it is for the next one.
+    #[must_use]
+    pub fn patted(&self) -> bool {
+        !self.0.armed.load(Ordering::Relaxed)
+    }
+
     /// What the task counted since it started.
     #[must_use]
     pub fn totals(&self) -> RxCounters {
@@ -337,6 +344,19 @@ mod test {
         watchdog.pat();
         assert!(watchdog.check_and_rearm());
         assert!(!watchdog.check_and_rearm());
+    }
+
+    /// Asking whether the task patted, without a check, neither uses the pat up nor makes one.
+    #[test]
+    fn a_pat_can_be_looked_at_without_a_check() {
+        let watchdog = Watchdog::new();
+        assert!(watchdog.check_and_rearm());
+        assert!(!watchdog.patted());
+        watchdog.pat();
+        assert!(watchdog.patted());
+        assert!(watchdog.patted());
+        assert!(watchdog.check_and_rearm());
+        assert!(!watchdog.patted());
     }
 
     /// Frames seen, those we could not parse included, mean the task is busy, whether it patted or
