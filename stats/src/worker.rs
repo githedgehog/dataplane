@@ -57,10 +57,21 @@ pub struct WorkerCounters {
     pub full_bursts: u64,
 }
 
+/// How a worker's rx task fares, as the driver's supervisor last found it.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub struct RxTaskHealth {
+    /// The task did not pat its watchdog, and saw no frames, over the supervisor's last check.
+    pub stuck: bool,
+    /// The supervisor's checks that found the task stuck, since it started.
+    pub watchdog_misses: u64,
+}
+
 /// Metric handles for one worker's port queue, registered once and reused for each poll.
 #[derive(Debug)]
 pub struct WorkerMetrics {
     series: [Registered<metrics::Counter>; 14],
+    stuck: Registered<metrics::Gauge>,
+    watchdog_misses: Registered<metrics::Counter>,
 }
 
 /// A series' suffix, its description, and the field it carries.
@@ -142,7 +153,7 @@ impl WorkerMetrics {
     /// name.
     #[must_use]
     pub fn new(worker: usize, port: &str, queue: &str) -> WorkerMetrics {
-        let series = SERIES.map(|(suffix, description, _)| {
+        let spec = |suffix: &str, description: &str| {
             let mut spec = MetricSpec::new(
                 format!("{WORKER_METRIC_BASE}_{suffix}"),
                 Unit::Count,
@@ -153,9 +164,28 @@ impl WorkerMetrics {
                 ],
             );
             spec.description = description.to_string();
-            spec.register()
-        });
-        WorkerMetrics { series }
+            spec
+        };
+        WorkerMetrics {
+            series: SERIES.map(|(suffix, description, _)| spec(suffix, description).register()),
+            stuck: spec(
+                "stuck",
+                "1 if the worker neither patted its watchdog nor saw a frame on the queue over the \
+                 supervisor's last check, else 0",
+            )
+            .register(),
+            watchdog_misses: spec(
+                "watchdog_misses",
+                "supervisor checks that found the worker stuck on the queue",
+            )
+            .register(),
+        }
+    }
+
+    /// Publish how the rx task fares.
+    pub fn publish_health(&self, health: &RxTaskHealth) {
+        self.stuck.metric.set(f64::from(u8::from(health.stuck)));
+        self.watchdog_misses.metric.absolute(health.watchdog_misses);
     }
 
     /// Publish a snapshot of the totals.
@@ -163,6 +193,35 @@ impl WorkerMetrics {
         for (registered, (_, _, field)) in self.series.iter().zip(SERIES) {
             registered.metric.absolute(field(counters));
         }
+    }
+}
+
+/// Whether a worker thread is still running, registered once per worker.
+#[derive(Debug)]
+pub struct WorkerStateMetrics {
+    running: Registered<metrics::Gauge>,
+}
+
+impl WorkerStateMetrics {
+    /// Register the state of worker `worker`.
+    #[must_use]
+    pub fn new(worker: usize) -> WorkerStateMetrics {
+        let mut spec = MetricSpec::new(
+            format!("{WORKER_METRIC_BASE}_running"),
+            Unit::Count,
+            vec![("worker".to_string(), worker.to_string())],
+        );
+        spec.description = "1 while the worker thread runs, 0 once it has ended, for whatever \
+                            reason"
+            .to_string();
+        WorkerStateMetrics {
+            running: spec.register(),
+        }
+    }
+
+    /// Publish whether the worker runs.
+    pub fn publish(&self, running: bool) {
+        self.running.metric.set(f64::from(u8::from(running)));
     }
 }
 
@@ -230,6 +289,34 @@ mod exported {
                 .collect(),
             );
         }
+    }
+
+    /// A stuck task and its misses reach their own series, as does whether its worker runs; a
+    /// task that recovers is no longer stuck, and keeps its misses.
+    #[test]
+    fn health_reaches_its_series() {
+        let scrape = Scrape::default();
+        let labels = [("worker", "2"), ("port", "eth1"), ("queue", "data")];
+        metrics::with_local_recorder(&scrape, || {
+            let metrics = WorkerMetrics::new(2, "eth1", "data");
+            let state = WorkerStateMetrics::new(2);
+            metrics.publish_health(&RxTaskHealth {
+                stuck: true,
+                watchdog_misses: 3,
+            });
+            state.publish(true);
+            assert_eq!(scrape.get("worker_stuck", &labels), Some(1.0));
+            assert_eq!(scrape.get("worker_running", &[("worker", "2")]), Some(1.0));
+
+            metrics.publish_health(&RxTaskHealth {
+                stuck: false,
+                watchdog_misses: 3,
+            });
+            state.publish(false);
+        });
+        assert_eq!(scrape.get("worker_stuck", &labels), Some(0.0));
+        assert_eq!(scrape.counter("worker_watchdog_misses", &labels), Some(3));
+        assert_eq!(scrape.get("worker_running", &[("worker", "2")]), Some(0.0));
     }
 
     /// Whatever the totals, a series carries the latest given, rather than adding them up.
