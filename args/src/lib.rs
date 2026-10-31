@@ -713,7 +713,11 @@ impl Default for IdleConfig {
 }
 
 /// Default consecutive empty polls before a monitor wait.
-pub const DEFAULT_IDLE_POLLS: u32 = 512;
+///
+/// Short: a monitor wait ends when the NIC writes the queue being watched, so sleeping early costs
+/// little latency, and a worker that waits for hundreds of empty polls spins through most of the
+/// gaps of moderate traffic.
+pub const DEFAULT_IDLE_POLLS: u32 = 16;
 
 /// The default for `--idle-sleep-us`.
 pub const DEFAULT_IDLE_SLEEP_US: u32 = 50;
