@@ -671,6 +671,39 @@ mod std_tests {
         );
     }
 
+    /// An allocation shows in the usage of its protocol's region: one address in use, with one
+    /// block handed out and the rest free, and nothing in the other protocols' regions.
+    #[test]
+    fn usage_counts_an_allocation() {
+        let timers = TestTimers::default();
+        let allocator = build_allocator();
+        let before = allocator.usage();
+        assert!(before.iter().any(|u| u.protocol == NextHeader::TCP));
+        assert!(
+            before
+                .iter()
+                .all(|u| u.addresses > 0 && u.addresses_in_use == 0)
+        );
+
+        let mapping = allocator
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+                &timers,
+            )
+            .unwrap();
+        let after = allocator.usage();
+        let in_use: Vec<_> = after.iter().filter(|u| u.addresses_in_use > 0).collect();
+        assert_eq!(in_use.len(), 1, "{after:?}");
+        let region = in_use[0];
+        assert_eq!(region.protocol, NextHeader::TCP);
+        assert_eq!((region.addresses_in_use, region.port_blocks_in_use), (1, 1));
+        assert!(region.port_blocks_free > 0);
+        drop(mapping);
+    }
+
     #[test]
     fn test_build_allocator() {
         let allocator = build_allocator();

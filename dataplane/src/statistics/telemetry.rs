@@ -13,10 +13,11 @@ use std::collections::HashMap;
 use args::IdleMode;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::FlowTable;
+use nat::masquerade::NatAllocatorReader;
 use net::packet::PacketStats;
 use stats::{
-    FlowTableMetrics, PipelineMetrics, RxTaskHealth, WorkerCounters, WorkerLoadCounters,
-    WorkerLoadMetrics, WorkerMetrics, WorkerStateMetrics,
+    FlowTableMetrics, MasqueradeMetrics, MasqueradeRegion, PipelineMetrics, RxTaskHealth,
+    WorkerCounters, WorkerLoadCounters, WorkerLoadMetrics, WorkerMetrics, WorkerStateMetrics,
 };
 
 use crate::drivers::load::Spent;
@@ -32,6 +33,8 @@ pub(crate) struct TelemetrySources {
     pub(crate) flows: Arc<FlowTable>,
     /// The driver's workers, and their totals.
     pub(crate) driver: DriverStatusReader,
+    /// Masquerade's allocator, as the current configuration has it.
+    pub(crate) masquerade: NatAllocatorReader,
 }
 
 /// Publishes [`TelemetrySources`] to the installed metrics recorder.
@@ -39,6 +42,7 @@ pub(crate) struct Telemetry {
     sources: TelemetrySources,
     pipeline: PipelineMetrics,
     flows: FlowTableMetrics,
+    masquerade: MasqueradeMetrics,
     /// Registered as each worker's port queue first appears in the driver's status.
     workers: HashMap<(usize, Arc<str>, RxQueue), WorkerMetrics>,
     /// Registered as each worker first appears in the driver's status.
@@ -54,6 +58,7 @@ impl Telemetry {
             sources,
             pipeline: PipelineMetrics::new(),
             flows: FlowTableMetrics::new(),
+            masquerade: MasqueradeMetrics::new(),
             workers: HashMap::new(),
             states: HashMap::new(),
             loads: HashMap::new(),
@@ -66,6 +71,7 @@ impl Telemetry {
         // Kept by the table as it changes: reading it locks nothing.
         self.flows
             .publish(self.sources.flows.live_len(), self.sources.flows.capacity());
+        self.publish_masquerade();
         let status = self.sources.driver.load();
         for worker in &status.workers {
             self.states
@@ -89,6 +95,32 @@ impl Telemetry {
                 });
             }
         }
+    }
+}
+
+impl Telemetry {
+    /// Publish how much of masquerade's public space is in use; none of it without an allocator.
+    fn publish_masquerade(&mut self) {
+        let usage = self
+            .sources
+            .masquerade
+            .get()
+            .map(|allocator| allocator.usage())
+            .unwrap_or_default();
+        let protocols: Vec<String> = usage.iter().map(|u| u.protocol.to_string()).collect();
+        let regions: Vec<MasqueradeRegion<'_>> = usage
+            .iter()
+            .zip(&protocols)
+            .map(|(u, protocol)| MasqueradeRegion {
+                protocol,
+                region: &u.region,
+                addresses: u.addresses,
+                addresses_in_use: u.addresses_in_use,
+                port_blocks_in_use: u.port_blocks_in_use,
+                port_blocks_free: u.port_blocks_free,
+            })
+            .collect();
+        self.masquerade.publish(&regions);
     }
 }
 
@@ -202,6 +234,7 @@ mod tests {
                 packets: packets.clone(),
                 flows: Arc::new(FlowTable::default()),
                 driver,
+                masquerade: nat::masquerade::NatAllocatorWriter::new().get_reader(),
             });
             telemetry.publish();
             // Counts advance; publishing again carries them, rather than adding them up.

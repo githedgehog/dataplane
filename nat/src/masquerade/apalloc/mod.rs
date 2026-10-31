@@ -88,7 +88,7 @@ use flow_entry::flow_table::Schedule;
 use mapping::{MappingKey, MappingScope, PrivateTuple};
 use net::ip::{IpAddress, NextHeader, Unicast};
 use net::packet::VpcDiscriminant;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::{debug, error, warn};
@@ -157,6 +157,32 @@ pub(crate) struct PoolTable<I: NatIpWithBitmap, J: NatIpWithBitmap>(
 impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
     fn new() -> Self {
         Self(BTreeMap::new())
+    }
+
+    /// Add the usage of each region's allocator to `usage`, once per allocator: pool sets that
+    /// share a region share its allocator.
+    fn usage(&self, seen: &mut BTreeSet<*const ()>, usage: &mut Vec<MasqueradeUsage>) {
+        for (key, pool_set) in &self.0 {
+            for region in pool_set.regions() {
+                let allocator = region.allocator();
+                if !seen.insert(allocator.id()) {
+                    continue;
+                }
+                let range = region.range();
+                let bound = |bits| {
+                    J::try_from_bits(bits).map_or_else(|_| bits.to_string(), |ip| ip.to_string())
+                };
+                let (addresses_in_use, port_blocks_in_use, port_blocks_free) = allocator.usage();
+                usage.push(MasqueradeUsage {
+                    protocol: key.protocol,
+                    region: format!("{}-{}", bound(range.start), bound(range.end)),
+                    addresses: u64::try_from(range.len()).unwrap_or(u64::MAX),
+                    addresses_in_use,
+                    port_blocks_in_use,
+                    port_blocks_free,
+                });
+            }
+        }
     }
 
     /// Find the longest matching private prefix within one protocol and VPC pair.
@@ -333,6 +359,27 @@ impl AnyReservation {
     }
 }
 
+/// How much of one region of masquerade's public space is in use, for one protocol.
+///
+/// Ports are handed out in blocks of 256 from each address, a block to a worker at a time, so
+/// usage is counted in blocks: a block handed out counts whole however few of its ports are taken.
+/// An address not yet in use has every block free, which is the headroom beyond `port_blocks_free`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MasqueradeUsage {
+    /// The protocol whose ports these are; each has an allocator of its own.
+    pub protocol: NextHeader,
+    /// The region's addresses, first to last.
+    pub region: String,
+    /// Addresses in the region.
+    pub addresses: u64,
+    /// Addresses ports are allocated from.
+    pub addresses_in_use: u64,
+    /// Port blocks handed out from the addresses in use.
+    pub port_blocks_in_use: u64,
+    /// Port blocks the addresses in use have left.
+    pub port_blocks_free: u64,
+}
+
 /// [`NatAllocator`] is the IP addresses and ports allocator for masquerade.
 ///
 /// Internally, it contains various bitmap-based IP pools, and each IP address allocated from these
@@ -362,6 +409,18 @@ impl NatAllocator {
 
     pub(crate) fn config(&self) -> &MasqueradeConfig {
         &self.config
+    }
+
+    /// How much of each region of public space is in use, per protocol, as of now.
+    ///
+    /// Takes each region's read lock in turn, briefly; for telemetry, not the packet path.
+    #[must_use]
+    pub fn usage(&self) -> Vec<MasqueradeUsage> {
+        let mut seen = BTreeSet::new();
+        let mut usage = Vec::new();
+        self.pools_src44.usage(&mut seen, &mut usage);
+        self.pools_src66.usage(&mut seen, &mut usage);
+        usage
     }
 
     /// The configuration generation this allocator currently serves.
