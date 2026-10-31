@@ -16,7 +16,6 @@ use communities::PriorityCommunityTable;
 use derive_builder::Builder;
 use gwgroup::GwGroupTable;
 use overlay::{Overlay, ValidatedOverlay};
-use std::collections::HashSet;
 use std::num::NonZero;
 use tracing::debug;
 use underlay::Underlay;
@@ -70,25 +69,6 @@ impl ExternalConfig {
                     .get_community(rank)
                     .ok_or(ConfigError::NoCommunityAvailable(rank))?;
             }
-        }
-        Ok(())
-    }
-
-    fn check_peering_gwgroups_exist<'a>(
-        &self,
-        peerings: impl Iterator<Item = &'a ValidatedPeering>,
-    ) -> ConfigResult {
-        // collect all distinct group names across all peerings
-        let groups: HashSet<_> = peerings
-            .into_iter()
-            .map(ValidatedPeering::gwgroup)
-            .collect();
-
-        // check that they are present in the group table
-        for group_name in groups {
-            self.gwgroups
-                .get_group(group_name)
-                .ok_or_else(|| ConfigError::NoSuchGroup(group_name.to_owned()))?;
         }
         Ok(())
     }
@@ -147,8 +127,6 @@ impl ExternalConfig {
         self.validate_gw_groups()?;
         let underlay = self.underlay.validate()?;
         let overlay = self.overlay.validate()?;
-        let peerings = overlay.vpc_table().peerings();
-        self.check_peering_gwgroups_exist(peerings)?;
         Self::check_rendered_peerings_are_ipv4(
             &self.gwname,
             &overlay,

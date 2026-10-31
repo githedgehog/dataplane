@@ -36,8 +36,6 @@ pub enum ConfigError {
     DuplicateMemberAddress(IpAddr),
     #[error("A VPC peering object refers to non-existent VPC '{0}'")]
     NoSuchVpc(String),
-    #[error("A VPC peering object refers to non-existent group '{0}'")]
-    NoSuchGroup(String),
     #[error("'{0}' is not a valid VNI")]
     InvalidVpcVni(u32),
     #[error("Config with id {0} not found")]
