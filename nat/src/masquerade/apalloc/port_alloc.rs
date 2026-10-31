@@ -84,6 +84,8 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
     blocks: [AllocatorPortBlock; 256],
     // TODO: Candidates for CachePadded? Not sure, given that both atomics should be updated at the same time?
     usable_blocks: AtomicU16,
+    /// The blocks that could ever be handed out: all of them, less those excluded at creation.
+    total_blocks: u16,
     current_alloc_index: AtomicUsize,
     thread_blocks: ThreadPortMap,
     allocated_blocks: AllocatedPortBlockMap<I>,
@@ -140,6 +142,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         Self {
             blocks,
             usable_blocks: AtomicU16::new(usable_blocks),
+            total_blocks: usable_blocks,
             current_alloc_index: AtomicUsize::new(0),
             thread_blocks: ThreadPortMap::new(),
             allocated_blocks: AllocatedPortBlockMap::new(),
@@ -192,6 +195,15 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             .cycle()
             .skip(offset)
             .take(self.blocks.len())
+    }
+
+    /// The address's port blocks handed out and still free, as of now. A block handed out counts
+    /// whole, however few of its ports are in use.
+    pub(crate) fn block_usage(&self) -> (u16, u16) {
+        let free = self
+            .usable_blocks
+            .load(concurrency::sync::atomic::Ordering::Relaxed);
+        (self.total_blocks.saturating_sub(free), free)
     }
 
     pub(crate) fn has_free_ports(&self) -> bool {

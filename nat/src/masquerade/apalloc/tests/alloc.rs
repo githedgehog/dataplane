@@ -362,6 +362,48 @@ pub(crate) mod context {
         NatAllocator::new(config, 1)
     }
 
+    // One VPC masquerades onto the same public range toward two peers, which gives each peer a
+    // pool, and an allocator, of its own.
+    #[allow(dead_code)]
+    pub fn build_allocator_one_range_two_destinations() -> NatAllocator {
+        let local = VpcManifest::with_exposes(
+            "VPC-1",
+            vec![
+                VpcExpose::empty()
+                    .make_masquerade(None)
+                    .unwrap()
+                    .ip("1.1.0.0/16".into())
+                    .as_range("10.1.0.0/30".into())
+                    .unwrap(),
+            ],
+        );
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
+        let vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
+        let vpc3 = Vpc::new("VPC-3", "11111", vni3().as_u32()).unwrap();
+        for (remote, prefix) in [(&vpc2, "2.0.0.0/24"), (&vpc3, "3.0.0.0/24")] {
+            vpc1.peerings.push(Peering {
+                name: format!("to_{}", remote.name),
+                local: local.clone(),
+                remote: VpcManifest::with_exposes(
+                    &remote.name,
+                    vec![VpcExpose::empty().ip(prefix.into())],
+                ),
+                remote_id: remote.id.clone(),
+                remote_vni: remote.vni,
+                gwgroup: "default".into(),
+                acl: None,
+                no_multipath: false,
+            });
+        }
+
+        let mut vpctable = VpcTable::new();
+        vpctable.add(vpc1).unwrap();
+        vpctable.add(vpc2).unwrap();
+        vpctable.add(vpc3).unwrap();
+        let config = MasqueradeConfig::new(&vpctable.validate().unwrap());
+        NatAllocator::new(config, 1)
+    }
+
     // Two VPCs using the *same* private prefix, each peering with the same destination VPC and
     // masquerading onto a public range of its own. Tenants reusing private address space is
     // ordinary, and is much of what NAT is for, so both are entitled to their own pool.
@@ -669,6 +711,71 @@ mod std_tests {
             weak.upgrade().is_none(),
             "the test scope must release its reapers"
         );
+    }
+
+    /// An allocation shows in the usage of its protocol's region: one address in use, with one
+    /// block handed out and the rest free, and nothing in the other protocols' regions.
+    #[test]
+    fn usage_counts_an_allocation() {
+        let timers = TestTimers::default();
+        let allocator = build_allocator();
+        let before = allocator.usage();
+        assert!(before.iter().any(|u| u.protocol == NextHeader::TCP));
+        assert!(
+            before
+                .iter()
+                .all(|u| u.addresses > 0 && u.addresses_in_use == 0)
+        );
+
+        let mapping = allocator
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+                &timers,
+            )
+            .unwrap();
+        let after = allocator.usage();
+        let in_use: Vec<_> = after.iter().filter(|u| u.addresses_in_use > 0).collect();
+        assert_eq!(in_use.len(), 1, "{after:?}");
+        let region = in_use[0];
+        assert_eq!(region.protocol, NextHeader::TCP);
+        assert_eq!((region.addresses_in_use, region.port_blocks_in_use), (1, 1));
+        assert!(region.port_blocks_free > 0);
+        drop(mapping);
+    }
+
+    /// One public range toward two destinations is two allocators, and two rows of usage that
+    /// say which destination each is for: an allocation toward one shows in its row only.
+    #[test]
+    fn usage_tells_destinations_apart() {
+        let timers = TestTimers::default();
+        let allocator = build_allocator_one_range_two_destinations();
+        let mapping = allocator
+            .allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(1), dst_v4(), None),
+                NextHeader::TCP,
+                &timers,
+            )
+            .unwrap();
+        let usage = allocator.usage();
+        let tcp: Vec<_> = usage
+            .iter()
+            .filter(|u| u.protocol == NextHeader::TCP)
+            .map(|u| (u.dst_vpcd, u.region.as_str(), u.addresses_in_use))
+            .collect();
+        assert_eq!(
+            tcp,
+            [
+                (vpcd2(), "10.1.0.0-10.1.0.3", 1),
+                (vpcd3(), "10.1.0.0-10.1.0.3", 0)
+            ],
+            "{usage:?}"
+        );
+        drop(mapping);
     }
 
     #[test]

@@ -5,6 +5,7 @@
 
 mod dpstats;
 mod dpstats_fuzz;
+mod masquerade;
 mod phy;
 mod pipeline;
 mod pluggable;
@@ -21,6 +22,7 @@ mod vpc_stats_fuzz;
 mod worker;
 
 pub use dpstats::*;
+pub use masquerade::*;
 pub use phy::*;
 pub use pipeline::*;
 pub use pluggable::*;
