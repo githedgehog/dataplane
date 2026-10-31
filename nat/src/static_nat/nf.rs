@@ -267,19 +267,23 @@ impl StaticNat {
 
         // Source NAT
         if let Some((new_src_addr, new_src_port_opt)) = mapping {
+            let carries_transport = !packet.headers().is_non_first_fragment();
             if new_src_addr.inner() != src_addr {
                 let (net, transport) = packet
                     .headers_mut()
                     .net_and_transport_mut()
                     .ok_or(StaticNatError::NoIpHeader)?;
+                let transport = transport.filter(|_| carries_transport);
                 self.translate_src(net, transport, new_src_addr)?;
                 modified = true;
             }
             // Save the port delta until the `TcpUdpMut` borrow ends.
             let mut port_change = None;
-            if let (Some(mut transport), Some(new_src_port)) =
-                (packet.try_tcp_udp_mut(), new_src_port_opt)
-                && new_src_port.get() != transport.src_port().get()
+            if let (Some(mut transport), Some(new_src_port), true) = (
+                packet.try_tcp_udp_mut(),
+                new_src_port_opt,
+                carries_transport,
+            ) && new_src_port.get() != transport.src_port().get()
             {
                 port_change = Some((transport.src_port(), new_src_port));
                 self.translate_src_port(&mut transport, new_src_port);
@@ -318,18 +322,22 @@ impl StaticNat {
 
         // Destination NAT
         if let Some((new_dst_addr, new_dst_port_opt)) = mapping {
+            let carries_transport = !packet.headers().is_non_first_fragment();
             if new_dst_addr != dst_addr {
                 let (net, transport) = packet
                     .headers_mut()
                     .net_and_transport_mut()
                     .ok_or(StaticNatError::NoIpHeader)?;
+                let transport = transport.filter(|_| carries_transport);
                 self.translate_dst(net, transport, new_dst_addr)?;
                 modified = true;
             }
             let mut port_change = None;
-            if let (Some(mut transport), Some(new_dst_port)) =
-                (packet.try_tcp_udp_mut(), new_dst_port_opt)
-                && new_dst_port.get() != transport.dst_port().get()
+            if let (Some(mut transport), Some(new_dst_port), true) = (
+                packet.try_tcp_udp_mut(),
+                new_dst_port_opt,
+                carries_transport,
+            ) && new_dst_port.get() != transport.dst_port().get()
             {
                 port_change = Some((transport.dst_port(), new_dst_port));
                 self.translate_dst_port(&mut transport, new_dst_port);
@@ -376,7 +384,11 @@ impl StaticNat {
             return Err(StaticNatError::MissingTable(src_vni));
         };
 
-        let icmp_err = packet.is_icmp_error_with_embedded_packet();
+        // A non-first fragment carries no transport header. The parser may still read one from
+        // the fragment's payload: its ports, its checksum and any ICMP error it seems to quote are
+        // payload, which translation must leave alone.
+        let carries_transport = !packet.headers().is_non_first_fragment();
+        let icmp_err = carries_transport && packet.is_icmp_error_with_embedded_packet();
 
         // Before NAT-ing ICMP Error packets, we should validate the following checksums:
         //
@@ -395,10 +407,12 @@ impl StaticNat {
             error!("{nfi}: Failed to get IP addresses");
             return Err(StaticNatError::NoIpHeader);
         };
+        let port =
+            |port: Option<NonZero<u16>>| port.filter(|_| carries_transport).map(NonZero::get);
         let plan = StaticNatPlan::new(
             table,
-            (src_addr, packet.transport_src_port().map(NonZero::get)),
-            (dst_addr, packet.transport_dst_port().map(NonZero::get)),
+            (src_addr, port(packet.transport_src_port())),
+            (dst_addr, port(packet.transport_dst_port())),
             dst_vni,
             (nat_src, nat_dst),
         );
