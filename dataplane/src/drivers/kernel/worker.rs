@@ -38,6 +38,7 @@ use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
 use crate::drivers::kernel::multicast::receive_all_multicast;
 use crate::drivers::kernel::sockstats;
+use crate::drivers::sparse_log::log_sparsely;
 use crate::drivers::status::{RxQueue, WorkerId};
 use crate::drivers::supervisor::{RxTaskMonitor, TASK_PAT_PERIOD, WorkerMonitor};
 use crate::drivers::watchdog::{RxCounters, Watchdog};
@@ -255,11 +256,11 @@ impl Worker {
                     result = read_packets_from_interface(id, &intf, &mut counters) => match result {
                         Ok(packets) => packets,
                         Err(e) => {
-                            error!(
+                            log_sparsely!(error!(
                                 worker = id,
                                 rx_intf_name = intf.if_name,
                                 "Error reading packets from interface: {e}"
-                            );
+                            ));
                             Vec::new()
                         }
                     },
@@ -579,12 +580,12 @@ fn build_packet(
 ) -> Option<Box<Packet<TestBuffer>>> {
     if raw.len() < bytes {
         counters.truncated += 1;
-        error!(
+        log_sparsely!(error!(
             worker = id,
             rx_intf_name = if_name,
             "Received packet with {bytes} bytes on {if_name} but raw buffer is only {} bytes, truncating",
             raw.len()
-        );
+        ));
     }
     let buf = TestBuffer::from_raw_data(&raw[..std::cmp::min(raw.len(), bytes)]);
     match Packet::new(buf) {
@@ -600,12 +601,12 @@ fn build_packet(
             // Parsing errors happen; avoid logspam for loopback
             counters.parse_errors += 1;
             if if_name != "lo" {
-                error!(
+                log_sparsely!(error!(
                     worker = id,
                     rx_intf_name = if_name,
                     "Failed to parse packet on '{}': {e}",
                     if_name
-                );
+                ));
             }
             None
         }
@@ -720,13 +721,13 @@ async fn read_packets_from_interface(
         Ok(result) => match result {
             Ok(()) => (),
             Err(e) => {
-                error!(
+                log_sparsely!(error!(
                     worker = id,
                     rx_intf_name = intf.if_name,
                     "Unable to receive packet on interface {}, index: {}: {e}",
                     intf.if_name,
                     intf.if_index
-                );
+                ));
             }
         },
         Err(_wouldblock) => (),
@@ -836,16 +837,16 @@ async fn inject_frames(
                     "injected {written} bytes from the control plane on {if_name}"
                 );
             }
-            Ok(written) => warn!(
+            Ok(written) => log_sparsely!(warn!(
                 worker = id,
                 "short write injecting on {if_name}: {written} of {} bytes; one write is one \
                  frame on a packet socket, so this frame is lost",
                 frame.len()
-            ),
-            Err(e) => warn!(
+            )),
+            Err(e) => log_sparsely!(warn!(
                 worker = id,
                 "failed to inject a control-plane frame on {if_name}: {e}"
-            ),
+            )),
         }
     }
     debug!(worker = id, "injection for {if_name} stopped");
@@ -860,22 +861,22 @@ async fn tx_packet(
     debug_assert_eq!(pkt.get_done(), Some(DoneReason::Delivered));
     // get outgoing interface marking. Should always have one. Otherwise the egress stage is buggy
     let Some(oif) = pkt.meta().oif else {
-        error!(
+        log_sparsely!(error!(
             worker = id,
             rx_intf_name = rx_if_name,
             "Missing oif in packet metadata. Will drop packet (pipeline bug)"
-        );
+        ));
         return false;
     };
 
     // lookup interface
     let Some(outgoing_unlocked) = if_table.get(&oif) else {
-        warn!(
+        log_sparsely!(warn!(
             worker = id,
             rx_intf_name = rx_if_name,
             "TX drop: unknown oif {} (driver bug)",
             oif
-        );
+        ));
         return false;
     };
 
@@ -895,21 +896,21 @@ async fn tx_packet(
                 Ok(written) => {
                     // One write is one frame on a packet socket, so we can't complete a partial
                     // write with a second one: the remainder would go out as its own frame.
-                    warn!(
+                    log_sparsely!(warn!(
                         worker = id,
                         rx_intf_name = rx_if_name,
                         "TX wrote {written} of {len} octets on interface '{}'. Dropping packet",
                         &outgoing.if_name
-                    );
+                    ));
                     return false;
                 }
                 Err(e) => {
-                    warn!(
+                    log_sparsely!(warn!(
                         worker = id,
                         rx_intf_name = rx_if_name,
                         "TX failed for pkt ({len} octets) on interface '{}': {e}",
                         &outgoing.if_name
-                    );
+                    ));
                     return false;
                 }
             }
