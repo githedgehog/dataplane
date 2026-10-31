@@ -1220,8 +1220,14 @@ impl Headers {
     /// How much of the IP datagram follows the transport header: what its checksum covers after
     /// the header, without whatever trails the datagram in the frame.
     ///
+    /// A UDP datagram ends where its own length says, if that is sooner: its checksum covers
+    /// that much, and its pseudo-header states it ([RFC 768]). What the IP datagram carries past
+    /// it, such as a UDP options area, is not UDP payload.
+    ///
     /// `None` without a network or transport header, or if the datagram's length cannot hold
     /// the headers.
+    ///
+    /// [RFC 768]: https://datatracker.ietf.org/doc/html/rfc768
     pub(crate) fn transport_payload_len(&self) -> Option<usize> {
         let ip_payload_len = match self.net.as_ref()? {
             Net::Ipv4(ip) => usize::from(ip.payload_len()?),
@@ -1233,7 +1239,15 @@ impl Headers {
             .map(|ext| usize::from(ext.size().get()))
             .sum::<usize>()
             + usize::from(self.transport.as_ref()?.size().get());
-        ip_payload_len.checked_sub(after_net)
+        let len = ip_payload_len.checked_sub(after_net)?;
+        Some(match self.transport.as_ref()? {
+            Transport::Udp(udp) => {
+                let udp_payload_len = usize::from(udp.length().get())
+                    .saturating_sub(usize::from(Udp::MIN_LENGTH.get()));
+                len.min(udp_payload_len)
+            }
+            _ => len,
+        })
     }
 
     /// Whether the datagram is a fragment of a larger one, as opposed to whole or an atomic

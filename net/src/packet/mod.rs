@@ -1623,6 +1623,37 @@ mod padding_tests {
     }
 
     #[test]
+    fn a_udp_checksum_ends_where_the_udp_datagram_does() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, Vec<u8>)>()
+            .for_each(|(payload, surplus)| {
+                let payload = &payload[..payload.len().min(256)];
+                let surplus = &surplus[..surplus.len().min(64)];
+                // The IP datagram goes on past the UDP datagram its UDP length states.
+                let mut l4 = udp(payload);
+                l4.extend_from_slice(surplus);
+                let bytes = frame(17, &l4);
+                let mut packet = parse(&bytes);
+                packet.meta_mut().set_checksum_refresh(true);
+                let out = packet.serialize().expect("frame does not serialize");
+                assert_eq!(
+                    &out.as_ref()[bytes.len() - surplus.len()..],
+                    surplus,
+                    "the octets past the UDP datagram changed"
+                );
+
+                let packet = parse(out.as_ref());
+                let net = packet.headers().try_ip().expect("no ip header").clone();
+                packet
+                    .headers()
+                    .try_udp()
+                    .expect("no udp header")
+                    .validate_checksum(&UdpChecksumPayload::new(&net, payload))
+                    .expect("the udp checksum covered octets past the udp datagram");
+            });
+    }
+
+    #[test]
     fn trailing_octets_never_enter_a_vxlan_inner_tcp_checksum() {
         bolero::check!()
             .with_type::<(Vec<u8>, Vec<u8>)>()
