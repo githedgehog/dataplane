@@ -660,6 +660,9 @@ mod sample_tests {
     use super::Sample;
     use std::panic::catch_unwind;
 
+    // Under a fuzzer the expected panic is a crash, and the coverage it asserts is not the
+    // fuzzer's to give, so this only runs as a unit test.
+    #[cfg(not(fuzzing))]
     #[test]
     #[should_panic(expected = "incomplete sample")]
     fn rejected_generation_does_not_waive_uncapped_coverage() {
