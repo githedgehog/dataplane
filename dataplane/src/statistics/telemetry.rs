@@ -77,6 +77,7 @@ fn counters(totals: &RxCounters) -> WorkerCounters {
         punt_drops: totals.punt_drops,
         parse_errors: totals.parse_errors,
         truncated: totals.truncated,
+        csum_unknown: totals.csum_unknown,
         zero_len: totals.zero_len,
         kernel_drops: totals.kernel_drops,
         injected_packets: totals.injected,
