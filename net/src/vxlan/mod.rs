@@ -211,7 +211,7 @@ mod test {
                         return;
                     }
                     Err(ParseError::Invalid(VxlanError::ReservedBitsSet)) => {
-                        assert_ne!(&slice[1..=3], &[0, 0, 0, 0]);
+                        assert!(slice[1..=3] != [0, 0, 0] || slice[7] != 0);
                         return;
                     }
                     Err(ParseError::Invalid(VxlanError::RequiredBitUnset)) => {
@@ -232,7 +232,8 @@ mod test {
                     .deparse(&mut write_back_buffer)
                     .unwrap_or_else(|_| unreachable!());
                 assert_eq!(bytes_written, Vxlan::MIN_LENGTH);
-                assert_eq!(write_back_buffer[0], Vxlan::LEGAL_FLAGS);
+                // The flags leave as they arrived.
+                assert_eq!(write_back_buffer[0], slice[0]);
                 assert_eq!(slice[0] & Vxlan::LEGAL_FLAGS, Vxlan::LEGAL_FLAGS);
                 assert_eq!(&write_back_buffer[1..=3], &[0, 0, 0]); // reserved should always be zero
                 assert_eq!(
@@ -240,6 +241,15 @@ mod test {
                     &slice[4..bytes_written.into_non_zero_usize().get()]
                 );
             });
+    }
+
+    #[test]
+    fn reserved_flags_survive_a_round_trip() {
+        let header = [0xFF, 0, 0, 0, 0, 0, 1, 0];
+        let (parsed, _) = Vxlan::parse(&header).unwrap();
+        let mut written = [0u8; MIN_LENGTH_USIZE];
+        parsed.deparse(&mut written).unwrap();
+        assert_eq!(written, header);
     }
 
     #[test]
