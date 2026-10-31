@@ -20,8 +20,8 @@
 
 use concurrency::thread;
 use dpdk::dev::{
-    Configured, Dev, DevConfig, DevConfigError, DevConfigFailure, DevIndex, DevInfo, PortClaim,
-    RssConf, RxOffload, Started, TxOffloadConfig,
+    Configured, Dev, DevConfig, DevConfigError, DevConfigFailure, DevIndex, DevInfo,
+    FlowControlError, PortClaim, RssConf, RxOffload, Started, TxOffloadConfig,
 };
 use dpdk::eal::Eal;
 use dpdk::mem::{Pool, PoolConfig, PoolParams};
@@ -652,6 +652,18 @@ impl<'eal> Port<'eal> {
                 "port {index} ({name}) would not accept all multicast ({e:?}); LLDP and IPv6 neighbor \
                  discovery may not reach the control plane"
             );
+        }
+        // Pause stops the whole link: one slow queue would stall every flow on the port, BGP and
+        // BFD included. Dropping instead is what a router does.
+        match dev.disable_flow_control() {
+            Ok(()) => {}
+            Err(FlowControlError::NotSupported) => {
+                debug!("port {index} ({name}) has no flow control to turn off");
+            }
+            Err(e) => warn!(
+                "port {index} ({name}) would not turn flow control off ({e}); a congested queue \
+                 may pause the whole link"
+            ),
         }
         if control {
             keep_rss_off_control(&mut dev, name.as_ref(), num_workers)?;
