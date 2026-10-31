@@ -20,7 +20,7 @@ dpdk-test-macros = { workspace = true, optional = true }
 errno = { workspace = true }
 hardware = { workspace = true }
 id = { workspace = true, optional = true }
-net = { workspace = true }
+net = { workspace = true, features = ["test_buffer"] }
 nix = { workspace = true, features = ["sched"] }
 
 serde = { workspace = true, optional = true, features = ["std"] }
