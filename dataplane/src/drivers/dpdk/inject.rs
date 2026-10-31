@@ -14,6 +14,7 @@ use net::buffer::Append;
 use tracing::{trace, warn};
 
 use crate::drivers::cpbridge::{Frame, InjectReceiver};
+use crate::drivers::sparse_log::log_sparsely;
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::RxCounters;
 
@@ -73,13 +74,13 @@ impl<'p> Injector<'p> {
             Ok(mbufs) => mbufs,
             Err(e) => {
                 counters.inject_drops += frames.len() as u64;
-                warn!(
+                log_sparsely!(warn!(
                     worker = id,
                     "could not allocate {} mbuf(s) to inject on {}: {e}. The control plane's \
                      traffic is being dropped because the port's control pool is exhausted.",
                     frames.len(),
                     self.name
-                );
+                ));
                 return;
             }
         };
@@ -91,24 +92,24 @@ impl<'p> Injector<'p> {
         for (mut mbuf, frame) in mbufs.into_iter().zip(frames) {
             let Ok(len) = u16::try_from(frame.len()) else {
                 counters.inject_drops += 1;
-                warn!(
+                log_sparsely!(warn!(
                     worker = id,
                     "the kernel offered a {} byte frame on {}, which is not a frame; dropping it",
                     frame.len(),
                     self.name
-                );
+                ));
                 continue;
             };
             match mbuf.append(len) {
                 Ok(room) => room.copy_from_slice(&frame),
                 Err(e) => {
                     counters.inject_drops += 1;
-                    warn!(
+                    log_sparsely!(warn!(
                         worker = id,
                         "the kernel offered a {len} byte frame on {}, which does not fit an mbuf \
                          from its pool ({e}); dropping it. The tap's MTU and the port's disagree.",
                         self.name
-                    );
+                    ));
                     continue;
                 }
             }
