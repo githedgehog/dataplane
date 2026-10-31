@@ -42,7 +42,7 @@ use crate::drivers::sparse_log::log_sparsely;
 use crate::drivers::status::{RxQueue, WorkerId};
 use crate::drivers::supervisor::{RxTaskMonitor, TASK_PAT_PERIOD, WorkerMonitor};
 use crate::drivers::watchdog::{RxCounters, Watchdog};
-use crate::packet_processor::{EXPIRY_BUDGET, PipelineFactory, WorkerPipeline};
+use crate::packet_processor::{PipelineFactory, WorkerPipeline, expiry_budget};
 
 use tracing::{debug, error, info, trace, warn};
 
@@ -239,6 +239,11 @@ impl Worker {
             // every burst, and on this tick while the interface is quiet.
             let mut expiry = interval(EXPIRY_PERIOD);
             expiry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut expiry_behind = false;
+            let sweep = |behind: &mut bool| {
+                let budget = expiry_budget(DriverKernel::MAX_RX_PKT_BATCH, 1, *behind);
+                *behind = flows.expire(clock::now(), budget).behind();
+            };
             loop {
                 debug!(worker = id, "awaiting packets");
 
@@ -272,7 +277,7 @@ impl Worker {
                         Vec::new()
                     }
                     _ = expiry.tick() => {
-                        flows.expire(clock::now(), EXPIRY_BUDGET);
+                        sweep(&mut expiry_behind);
                         continue;
                     }
                 };
@@ -297,7 +302,7 @@ impl Worker {
                     .process(packets.map(|pkt| *pkt))
                     .collect::<Vec<_>>();
                 if rx_pkts > 0 {
-                    flows.expire(clock::now(), EXPIRY_BUDGET);
+                    sweep(&mut expiry_behind);
                 }
 
                 // What becomes of each packet is [`Disposition::of`]'s decision, the same one the

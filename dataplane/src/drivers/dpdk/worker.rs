@@ -26,7 +26,7 @@ use crate::drivers::load::{Load, LoadMeter, Spent};
 use crate::drivers::sparse_log::log_sparsely;
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
-use crate::packet_processor::{EXPIRY_BUDGET, PipelineFactory, WorkerPipeline};
+use crate::packet_processor::{PipelineFactory, WorkerPipeline, expiry_budget};
 
 use super::classes::SoftwareClasses;
 use super::control::addressed_to;
@@ -196,7 +196,8 @@ impl<'p> Worker<'p> {
                 || expiry_behind
                 || idle.empty_polls().is_multiple_of(EXPIRY_IDLE_POLLS)
             {
-                let sweep = flows.expire(clock::now(), EXPIRY_BUDGET);
+                let budget = expiry_budget(dpdk::mem::MBUF_BURST, self.ports.len(), expiry_behind);
+                let sweep = flows.expire(clock::now(), budget);
                 expiry_behind = sweep.behind();
                 meter.expired(sweep.removed, expiry_behind);
                 if sweep.removed > 0 {
