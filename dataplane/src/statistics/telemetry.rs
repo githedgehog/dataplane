@@ -10,15 +10,17 @@
 
 use std::collections::HashMap;
 
+use args::IdleMode;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::FlowTable;
 use net::packet::PacketStats;
 use stats::{
-    FlowTableMetrics, PipelineMetrics, RxTaskHealth, WorkerCounters, WorkerMetrics,
-    WorkerStateMetrics,
+    FlowTableMetrics, PipelineMetrics, RxTaskHealth, WorkerCounters, WorkerLoadCounters,
+    WorkerLoadMetrics, WorkerMetrics, WorkerStateMetrics,
 };
 
-use crate::drivers::status::{DriverStatusReader, RxQueue, WorkerState};
+use crate::drivers::load::Spent;
+use crate::drivers::status::{DriverStatusReader, RxQueue, WorkerLoadStatus, WorkerState};
 use crate::drivers::watchdog::Activity;
 use crate::drivers::watchdog::RxCounters;
 
@@ -41,6 +43,8 @@ pub(crate) struct Telemetry {
     workers: HashMap<(usize, Arc<str>, RxQueue), WorkerMetrics>,
     /// Registered as each worker first appears in the driver's status.
     states: HashMap<usize, WorkerStateMetrics>,
+    /// Registered as each polling worker first appears in the driver's status.
+    loads: HashMap<usize, WorkerLoadMetrics>,
 }
 
 impl Telemetry {
@@ -52,6 +56,7 @@ impl Telemetry {
             flows: FlowTableMetrics::new(),
             workers: HashMap::new(),
             states: HashMap::new(),
+            loads: HashMap::new(),
         }
     }
 
@@ -66,6 +71,9 @@ impl Telemetry {
                 .entry(worker.worker)
                 .or_insert_with(|| WorkerStateMetrics::new(worker.worker))
                 .publish(matches!(worker.state, WorkerState::Running));
+            if let Some(load) = &worker.load {
+                publish_load(&mut self.loads, worker.worker, load);
+            }
             for task in &worker.rx_tasks {
                 let metrics = self
                     .workers
@@ -81,6 +89,36 @@ impl Telemetry {
             }
         }
     }
+}
+
+/// Every idle mode, as `--idle` spells it.
+const MODES: [IdleMode; 3] = [IdleMode::Poll, IdleMode::Monitor, IdleMode::Interrupt];
+
+/// Publish a polling worker's load, registering it the first time.
+fn publish_load(
+    loads: &mut HashMap<usize, WorkerLoadMetrics>,
+    worker: usize,
+    load: &WorkerLoadStatus,
+) {
+    let metrics = loads.entry(worker).or_insert_with(|| {
+        let states = Spent::ALL.map(Spent::name);
+        let modes = MODES.map(|mode| mode.to_string());
+        let modes: Vec<&str> = modes.iter().map(String::as_str).collect();
+        WorkerLoadMetrics::new(
+            worker,
+            &states,
+            &modes,
+            &load.reader.configured().to_string(),
+        )
+    });
+    let totals = load.reader.load();
+    let time_ns = Spent::ALL.map(|spent| (spent.name(), totals.nanos(spent)));
+    metrics.publish(&WorkerLoadCounters {
+        time_ns: &time_ns,
+        monitor_sleeps: totals.monitor_sleeps,
+        interrupt_sleeps: totals.interrupt_sleeps,
+        effective_mode: &load.reader.effective().to_string(),
+    });
 }
 
 /// A worker's totals for one port queue, as its rx task counts them.
@@ -111,6 +149,7 @@ mod tests {
     use net::packet::DoneReason;
 
     use super::*;
+    use crate::drivers::load::{Load, LoadTotals};
     use crate::drivers::status::{DriverStatus, RxTaskStatus, WorkerStatus, driver_status_access};
     use crate::drivers::watchdog::Watchdog;
 
@@ -143,6 +182,11 @@ mod tests {
         ];
         worker.rx_tasks[1].activity = Activity::Stuck;
         worker.rx_tasks[1].misses = 2;
+        let load = Load::new(IdleMode::Interrupt);
+        worker.load = Some(WorkerLoadStatus {
+            reader: load.reader(),
+            recent: LoadTotals::default(),
+        });
         writer.publish(DriverStatus {
             max_rx_batch: 32,
             workers: vec![worker],
@@ -194,5 +238,24 @@ mod tests {
         assert_eq!(data("worker_stuck"), Some(0.0));
         assert_eq!(control("worker_stuck"), Some(1.0));
         assert_eq!(control("worker_watchdog_misses"), Some(2.0));
+
+        // A polling worker's load: nothing spent yet, idling as configured.
+        assert_eq!(
+            get(r#"worker_time_nanoseconds{state="busy",worker="1"}"#),
+            Some(0.0)
+        );
+        assert_eq!(
+            get(r#"worker_idle_sleeps{kind="interrupt",worker="1"}"#),
+            Some(0.0)
+        );
+        let mode = |mode: &str| {
+            get(&format!(
+                r#"worker_idle_mode{{configured="interrupt",mode="{mode}",worker="1"}}"#
+            ))
+        };
+        assert_eq!(
+            (mode("poll"), mode("monitor"), mode("interrupt")),
+            (Some(0.0), Some(0.0), Some(1.0))
+        );
     }
 }

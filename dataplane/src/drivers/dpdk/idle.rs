@@ -28,6 +28,7 @@ use dpdk::queue::rx::RxQueue;
 use tracing::{info, warn};
 
 use crate::drivers::cpbridge::Doorbell;
+use crate::drivers::load::Spent;
 use crate::drivers::status::WorkerId;
 
 /// Yield after this many consecutive polls without traffic, while spinning.
@@ -302,11 +303,12 @@ impl<'dev> Idle<'dev> {
     }
 
     /// A poll found nothing on any of `queues`, the worker's receive queues in slot order.
+    /// Returns what the worker did about it: polled on, or slept, and how.
     pub(crate) fn empty<'q, 'd: 'q>(
         &mut self,
         lcore: Option<&LCore>,
         queues: impl Iterator<Item = &'q RxQueue<'d>> + Clone,
-    ) {
+    ) -> Spent {
         // Armed, and the poll after arming found nothing: sleep until something happens.
         if self
             .interrupts
@@ -314,21 +316,38 @@ impl<'dev> Idle<'dev> {
             .is_some_and(|interrupts| interrupts.waiter.armed())
         {
             self.streak.empty();
-            self.wait_for_interrupt();
-            return;
+            return if self.wait_for_interrupt() {
+                Spent::Interrupt
+            } else {
+                Spent::Polling
+            };
         }
-        let slept = match self.streak.empty() {
-            Next::Spin => false,
+        let (tried, slept) = match self.streak.empty() {
+            Next::Spin => (false, false),
             Next::Yield => {
                 std::thread::yield_now();
-                false
+                (false, false)
             }
-            Next::Sleep => {
-                self.sleep(lcore, queues);
-                true
-            }
+            Next::Sleep => (true, self.sleep(lcore, queues)),
         };
-        self.maybe_arm(slept);
+        self.maybe_arm(tried);
+        if slept {
+            Spent::Monitor
+        } else {
+            Spent::Polling
+        }
+    }
+
+    /// The mode the worker idles in now: the configured one, or a weaker one if it lacks what that
+    /// needs or a sleep failed.
+    pub(crate) fn mode(&self) -> IdleMode {
+        if self.interrupts.is_some() {
+            IdleMode::Interrupt
+        } else if self.streak.sleep_after.is_some() {
+            IdleMode::Monitor
+        } else {
+            IdleMode::Poll
+        }
     }
 
     /// Empty polls in a row so far, wrapping; zero after a busy one.
@@ -376,15 +395,16 @@ impl<'dev> Idle<'dev> {
 
     /// Wait on armed interrupts and doorbells with a timeout bounded by the next periodic check.
     /// Disarm after waiting, or run checks first if less than 1 ms remains.
-    fn wait_for_interrupt(&mut self) {
+    /// Returns whether the worker slept.
+    fn wait_for_interrupt(&mut self) -> bool {
         let Some(interrupts) = &mut self.interrupts else {
-            return;
+            return false;
         };
         let Some(longest) = interrupt_wait(clock::elapsed(self.checked)) else {
             // Too close to the checks to wait at all: do them, then arm again.
             interrupts.disarm();
             self.due = true;
-            return;
+            return false;
         };
         let woke = interrupts.waiter.wait(longest);
         interrupts.disarm();
@@ -395,6 +415,7 @@ impl<'dev> Idle<'dev> {
                 }
                 interrupts.sleeps += 1;
                 self.due = interrupt_wait(clock::elapsed(self.checked)).is_none();
+                true
             }
             Err(e) => {
                 warn!(
@@ -402,6 +423,7 @@ impl<'dev> Idle<'dev> {
                     "a sleep on interrupts failed ({e}); this worker will no longer sleep on them"
                 );
                 self.interrupts = None;
+                false
             }
         }
     }
@@ -410,23 +432,26 @@ impl<'dev> Idle<'dev> {
         &mut self,
         lcore: Option<&LCore>,
         queues: impl Iterator<Item = &'q RxQueue<'d>> + Clone,
-    ) {
+    ) -> bool {
         // With no receive queues, a timed kernel sleep needs no CPU monitor instruction.
         if queues.clone().next().is_none() {
             std::thread::sleep(self.longest);
             self.slept();
-            return;
+            return true;
         }
         let (Some(sleeper), Some(lcore)) = (&self.sleeper, lcore) else {
             // No power-optimized wait: spin and yield.
             self.streak.stop_sleeping();
-            return;
+            return false;
         };
         // The queue that last had traffic first: it is the one watched if only one can be.
         let first = self.last_busy;
         let ordered = queues.clone().skip(first).chain(queues.take(first));
         match sleeper.sleep(lcore, ordered, self.longest) {
-            Ok(Slept::Watched(_) | Slept::Paused) => self.slept(),
+            Ok(Slept::Watched(_) | Slept::Paused) => {
+                self.slept();
+                true
+            }
             // No usable monitor condition or pause instruction; disable further monitor attempts.
             Ok(Slept::Not) => {
                 info!(
@@ -435,6 +460,7 @@ impl<'dev> Idle<'dev> {
                 );
                 self.sleeper = None;
                 self.streak.stop_sleeping();
+                false
             }
             Err(e) => {
                 warn!(
@@ -443,6 +469,7 @@ impl<'dev> Idle<'dev> {
                 );
                 self.sleeper = None;
                 self.streak.stop_sleeping();
+                false
             }
         }
     }
@@ -471,7 +498,7 @@ mod tests {
     use dpdk::queue::rx::RxQueue;
 
     use super::{
-        CHECK_WHILE_ASLEEP, Idle, Next, POLLS_BEFORE_YIELD, SHORTEST_INTERRUPT_WAIT, Streak,
+        CHECK_WHILE_ASLEEP, Idle, Next, POLLS_BEFORE_YIELD, SHORTEST_INTERRUPT_WAIT, Spent, Streak,
         interrupt_wait,
     };
     use crate::drivers::cpbridge::{Doorbell, inject_channel};
@@ -563,6 +590,51 @@ mod tests {
     #[test]
     fn a_polling_worker_without_queues_does_not_sleep() {
         assert_eq!(idle_without_queues(IdleMode::Poll, 8).0, 0);
+    }
+
+    /// Each empty poll says what it became, which is what the worker's load is made of: polls until
+    /// the streak calls for sleep, then sleeps.
+    #[test]
+    fn an_empty_poll_says_whether_it_slept() {
+        let config = IdleConfig {
+            mode: IdleMode::Monitor,
+            polls: 3,
+            sleep_us: 100,
+            ..IdleConfig::default()
+        };
+        let mut idle = Idle::new(0, config, None);
+        let spent: Vec<Spent> = (0..4)
+            .map(|_| idle.empty(None, std::iter::empty::<&RxQueue<'_>>()))
+            .collect();
+        assert_eq!(
+            spent,
+            [
+                Spent::Polling,
+                Spent::Polling,
+                Spent::Monitor,
+                Spent::Monitor
+            ]
+        );
+    }
+
+    /// A worker reports the mode it idles in, not the one it was asked for: interrupts need queues
+    /// to sleep on, and one that was never given them idles in monitor mode instead.
+    #[test]
+    fn the_mode_is_the_one_the_worker_can_idle_in() {
+        let idle = |mode| {
+            Idle::new(
+                0,
+                IdleConfig {
+                    mode,
+                    ..IdleConfig::default()
+                },
+                None,
+            )
+            .mode()
+        };
+        assert_eq!(idle(IdleMode::Poll), IdleMode::Poll);
+        assert_eq!(idle(IdleMode::Monitor), IdleMode::Monitor);
+        assert_eq!(idle(IdleMode::Interrupt), IdleMode::Monitor);
     }
 
     #[test]

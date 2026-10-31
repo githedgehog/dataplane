@@ -226,7 +226,13 @@ fn flows_expire_on_the_worker_while_it_polls() {
     thread::scope(|scope| {
         let _stop_on_failure = shutdown.workers.cancel_token().drop_guard();
         let worker = scope.spawn(|| {
-            Worker::new(0, Vec::new(), args::IdleConfig::default()).run(&shutdown.workers, &setup);
+            Worker::new(
+                0,
+                Vec::new(),
+                args::IdleConfig::default(),
+                crate::drivers::load::Load::default(),
+            )
+            .run(&shutdown.workers, &setup);
         });
         let [(forward, reverse), (cancelled, _)] =
             created_rx.recv_timeout(Duration::from_secs(5)).unwrap();
