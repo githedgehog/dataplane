@@ -711,6 +711,14 @@ impl Parse for Headers {
         // overflow point are also not parsed: they stay in the payload, with
         // the header that did not fit.  This matches the MAX_VLANS handling but
         // the caller has no way to detect a partial parse.
+        //
+        // TODO: stop at a non-first fragment.  Its payload is body octets, but
+        // the parser reads a transport header (and, for IPv6, extension headers)
+        // out of it all the same.  Every consumer has to know to check
+        // `is_non_first_fragment` or `upper_layer_proto` before trusting
+        // `transport()`; static NAT and `FlowKey` did not, until they were fixed.
+        // Stopping here would change what tests such as
+        // `fragment_offsets_are_checked_before_following_extensions` expect.
         let mut prior = Header::Eth(eth);
         // Offset of `prior` from the Ethernet header. When the header stack is full, rewind here
         // so this header and all following bytes remain in the payload, including any parsed ahead.
