@@ -1425,6 +1425,17 @@ pub struct PortStats {
     pub rx_nombuf: u64,
 }
 
+/// Why a port's flow control could not be turned off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FlowControlError {
+    /// The PMD has no flow control to turn off.
+    #[error("flow control is not supported by this device")]
+    NotSupported,
+    /// The PMD failed.
+    #[error("the driver failed: {0}")]
+    Driver(ErrorCode),
+}
+
 /// One of a port's extended statistics, by the id the PMD reads it with and the name it gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XstatName {
@@ -1619,6 +1630,43 @@ impl<'eal, S: Open> Dev<'eal, S> {
         } else {
             Err(ErrorCode::parse_i32(ret))
         }
+    }
+
+    /// Turn off Ethernet flow control (802.3x pause): the port neither sends pause frames when its
+    /// receive buffer fills nor stops transmitting when its peer sends one.
+    ///
+    /// Pause stops the whole link, so one slow receive queue would stall every flow on the port,
+    /// control traffic included, and a congested peer would stall everything the port sends. A
+    /// port without it drops what it cannot take instead, which the counters show and TCP and the
+    /// control plane recover from. The other flow control settings are read back and kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlowControlError::NotSupported`] for a PMD without flow control (VFs, virtual
+    /// devices), and the driver's error otherwise.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn disable_flow_control(&mut self) -> Result<(), FlowControlError> {
+        let port = self.info.index().as_u16();
+        let classify = |ret: i32| match ret {
+            errno::NEG_ENOTSUP | errno::NEG_EOPNOTSUPP => FlowControlError::NotSupported,
+            ret => FlowControlError::Driver(ErrorCode::parse_i32(ret)),
+        };
+        // SAFETY: all zeroes is a valid `rte_eth_fc_conf`; the PMD fills it in.
+        let mut conf: dpdk_sys::rte_eth_fc_conf = unsafe { core::mem::zeroed() };
+        // SAFETY: `conf` is live for the call and the port index belongs to an open device.
+        let ret = unsafe { dpdk_sys::rte_eth_dev_flow_ctrl_get(port, &raw mut conf) };
+        if ret != 0 {
+            return Err(classify(ret));
+        }
+        conf.mode = dpdk_sys::rte_eth_fc_mode::RTE_ETH_FC_NONE;
+        conf.autoneg = 0;
+        // SAFETY: as above; the PMD only reads `conf`.
+        let ret = unsafe { dpdk_sys::rte_eth_dev_flow_ctrl_set(port, &raw mut conf) };
+        if ret != 0 {
+            return Err(classify(ret));
+        }
+        debug!("flow control (pause) disabled on port {port}");
+        Ok(())
     }
 
     /// Accept, or stop accepting, every multicast frame regardless of the device's address filters.
