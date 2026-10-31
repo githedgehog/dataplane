@@ -89,15 +89,7 @@ impl Telemetry {
         self.build.publish();
         self.publish_masquerade();
         for ((_, counters), metrics) in self.sources.taps.iter().zip(&self.taps) {
-            let totals = counters.load();
-            metrics.publish(&stats::TapCounters {
-                punted: totals.punted,
-                injected: totals.injected,
-                punt_write_errors: totals.punt_write_errors,
-                inject_drops: totals.inject_drops,
-                lldp_drops: totals.heard_drops,
-                read_errors: totals.read_errors,
-            });
+            metrics.publish(&counters.load());
         }
         let status = self.sources.driver.load();
         for worker in &status.workers {

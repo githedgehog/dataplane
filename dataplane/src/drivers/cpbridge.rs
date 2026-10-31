@@ -536,23 +536,6 @@ struct TapCountersInner {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TapCounters(Arc<TapCountersInner>);
 
-/// What a tap's pump carried and failed to carry, as of one reading.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct TapTotals {
-    /// Frames handed to the kernel through the tap.
-    pub(crate) punted: u64,
-    /// Frames the kernel sent through the tap and the pump queued for the port.
-    pub(crate) injected: u64,
-    /// Frames for the kernel that the tap would not take.
-    pub(crate) punt_write_errors: u64,
-    /// Frames from the kernel dropped because the datapath was not draining its queue.
-    pub(crate) inject_drops: u64,
-    /// LLDP frames dropped because the LLDP agent was not keeping up.
-    pub(crate) heard_drops: u64,
-    /// Reads of the tap that failed.
-    pub(crate) read_errors: u64,
-}
-
 impl TapCounters {
     /// Count one more on `counter`, returning the new total.
     fn bump(counter: &AtomicU64) -> u64 {
@@ -560,14 +543,14 @@ impl TapCounters {
     }
 
     /// The totals as they stand.
-    pub(crate) fn load(&self) -> TapTotals {
+    pub(crate) fn load(&self) -> stats::TapCounters {
         let c = &self.0;
-        TapTotals {
+        stats::TapCounters {
             punted: c.punted.load(Ordering::Relaxed),
             injected: c.injected.load(Ordering::Relaxed),
             punt_write_errors: c.punt_write_errors.load(Ordering::Relaxed),
             inject_drops: c.inject_drops.load(Ordering::Relaxed),
-            heard_drops: c.heard_drops.load(Ordering::Relaxed),
+            lldp_drops: c.heard_drops.load(Ordering::Relaxed),
             read_errors: c.read_errors.load(Ordering::Relaxed),
         }
     }
