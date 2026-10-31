@@ -1588,3 +1588,498 @@ mod serialize_checksum_tests {
             });
     }
 }
+
+#[cfg(test)]
+mod roundtrip_tests {
+    //! A packet leaves as it arrived, except for what a stage changed. Stages keep checksums
+    //! current by folding in the words they change, so a header that came back different from how
+    //! it arrived, even in bits the parsed headers have no field for, would leave with a checksum
+    //! that no longer matches it.
+    //!
+    //! [`Datagram`] writes frames from arbitrary bytes, fixed up only where the parser insists:
+    //! versions, lengths, protocol numbers, unicast sources and non-zero ports, first fragments so
+    //! the transport parses, and ICMP types that quote the datagram they are about.
+
+    use crate::buffer::TestBuffer;
+    use crate::headers::{TryHeaders, TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
+    use crate::packet::Packet;
+    use bolero::TypeGenerator;
+
+    const ETH: usize = 14;
+    const TCP: u8 = 6;
+    const UDP: u8 = 17;
+    const ICMP4: u8 = 1;
+    const ICMP6: u8 = 58;
+    const VXLAN_PORT: u16 = 4789;
+
+    #[derive(Debug, TypeGenerator)]
+    struct Datagram {
+        ip: Ip,
+        transport: Transport,
+        payload: Vec<u8>,
+    }
+
+    #[derive(Debug, TypeGenerator)]
+    enum Ip {
+        V4 {
+            header: [u8; 20],
+            options: Vec<u8>,
+        },
+        V6 {
+            header: [u8; 40],
+            extensions: Vec<Extension>,
+        },
+    }
+
+    #[derive(Debug, TypeGenerator)]
+    enum Extension {
+        /// Hop-by-hop options, routing, or destination options: 8 or 16 octets of anything.
+        Raw {
+            kind: u8,
+            body: [u8; 14],
+            long: bool,
+        },
+        Fragment([u8; 8]),
+        /// An authentication header with up to three words of integrity check value.
+        Auth {
+            header: [u8; 24],
+            words: u8,
+        },
+    }
+
+    #[derive(Debug, TypeGenerator)]
+    enum Transport {
+        Tcp {
+            header: [u8; 20],
+            options: Vec<u8>,
+        },
+        Udp([u8; 8]),
+        Vxlan {
+            udp: [u8; 8],
+            vxlan: [u8; 8],
+        },
+        /// An ICMP message for the IP version around it: an error quoting a datagram if `quoted`.
+        Icmp {
+            header: [u8; 8],
+            quoted: Option<Quoted>,
+        },
+    }
+
+    /// The start of the datagram an ICMP error is about.
+    #[derive(Debug, TypeGenerator)]
+    struct Quoted {
+        ipv4: ([u8; 20], Vec<u8>),
+        ipv6: ([u8; 40], Vec<Extension>),
+        transport: QuotedTransport,
+        /// Where the quote stops, if it stops inside the transport header.
+        cut: Option<u8>,
+        payload: Vec<u8>,
+        /// How much longer the datagram was than the quote.
+        missing: u8,
+    }
+
+    #[derive(Debug, TypeGenerator)]
+    enum QuotedTransport {
+        Tcp { header: [u8; 20], options: Vec<u8> },
+        Udp([u8; 8]),
+        Icmp([u8; 8]),
+    }
+
+    /// A frame, and where its transport header starts.
+    struct Frame {
+        bytes: Vec<u8>,
+        transport: usize,
+        protocol: u8,
+        ipv6: bool,
+        vxlan: bool,
+    }
+
+    fn len16(len: usize) -> [u8; 2] {
+        u16::try_from(len)
+            .expect("test frames are small")
+            .to_be_bytes()
+    }
+
+    fn nonzero_port(port: &mut [u8]) {
+        if port == [0, 0] {
+            port[1] = 1;
+        }
+    }
+
+    fn ipv4_header(header: &[u8; 20], options: &[u8], protocol: u8, rest: usize) -> Vec<u8> {
+        let options = &options[..options.len().min(40) / 4 * 4];
+        let mut out = header.to_vec();
+        out[0] = 0x45 + u8::try_from(options.len() / 4).expect("at most 10 words");
+        out[2..4].copy_from_slice(&len16(20 + options.len() + rest));
+        // Any flags, the reserved one included, but no fragment offset, so the transport parses.
+        out[6] &= 0xe0;
+        out[7] = 0;
+        out[9] = protocol;
+        out[12] = 10; // a unicast source
+        out.extend_from_slice(options);
+        out
+    }
+
+    fn ipv6_header(
+        header: &[u8; 40],
+        extensions: &[Extension],
+        protocol: u8,
+        rest: usize,
+    ) -> Vec<u8> {
+        let mut chain = Vec::new();
+        let mut next = protocol;
+        // Up to one more than there is room for, as often as none.
+        for extension in extensions.iter().take(extensions.len() % 5).rev() {
+            let (kind, mut bytes) = extension.write(next);
+            bytes.append(&mut chain);
+            chain = bytes;
+            next = kind;
+        }
+        let mut out = header.to_vec();
+        out[0] = 0x60 | (out[0] & 0x0f);
+        out[4..6].copy_from_slice(&len16(chain.len() + rest));
+        out[6] = next;
+        if out[8] == 0xff {
+            out[8] = 0xfe; // a unicast source
+        }
+        out.append(&mut chain);
+        out
+    }
+
+    impl Extension {
+        /// This header's protocol number, and its bytes with `next` as the next header.
+        fn write(&self, next: u8) -> (u8, Vec<u8>) {
+            match self {
+                Extension::Raw { kind, body, long } => {
+                    let kind = [0, 43, 60][usize::from(*kind) % 3];
+                    let mut bytes = vec![next, u8::from(*long)];
+                    bytes.extend_from_slice(&body[..if *long { 14 } else { 6 }]);
+                    if kind == 43 {
+                        // No segments left, so the destination is the final one.
+                        bytes[3] = 0;
+                    }
+                    (kind, bytes)
+                }
+                Extension::Fragment(header) => {
+                    let mut bytes = header.to_vec();
+                    bytes[0] = next;
+                    bytes[2] = 0;
+                    bytes[3] &= 0x07; // the first fragment, so the transport parses
+                    (44, bytes)
+                }
+                Extension::Auth { header, words } => {
+                    let words = words % 4;
+                    let mut bytes = header[..12 + 4 * usize::from(words)].to_vec();
+                    bytes[0] = next;
+                    bytes[1] = words + 1;
+                    (51, bytes)
+                }
+            }
+        }
+    }
+
+    fn tcp(header: &[u8; 20], options: &[u8]) -> Vec<u8> {
+        let options = &options[..options.len().min(40) / 4 * 4];
+        let mut out = header.to_vec();
+        nonzero_port(&mut out[0..2]);
+        nonzero_port(&mut out[2..4]);
+        let words = u8::try_from(5 + options.len() / 4).expect("at most 15 words");
+        out[12] = (words << 4) | (out[12] & 0x0f);
+        out.extend_from_slice(options);
+        out
+    }
+
+    fn udp(header: [u8; 8], rest: usize) -> Vec<u8> {
+        let mut out = header.to_vec();
+        nonzero_port(&mut out[0..2]);
+        nonzero_port(&mut out[2..4]);
+        if out[2..4] == VXLAN_PORT.to_be_bytes() {
+            out[3] += 1;
+        }
+        out[4..6].copy_from_slice(&len16(8 + rest));
+        out
+    }
+
+    /// An ICMP header, its type and code steered towards the ones that mean something.
+    fn icmp(header: [u8; 8], ipv6: bool, error: bool) -> Vec<u8> {
+        let mut out = header.to_vec();
+        let types: &[u8] = match (ipv6, error) {
+            (false, true) => &[3, 5, 11, 12],
+            (true, true) => &[1, 2, 3, 4],
+            (false, false) => &[0, 3, 5, 8, 11, 12, 13, 14],
+            (true, false) => &[1, 2, 3, 4, 128, 129, 133, 134, 135, 136, 137],
+        };
+        if error || out[1] & 0x80 != 0 {
+            out[0] = types[usize::from(out[0]) % types.len()];
+            out[1] &= 0x0f;
+        }
+        out
+    }
+
+    impl QuotedTransport {
+        fn write(&self, ipv6: bool) -> (u8, Vec<u8>) {
+            match self {
+                QuotedTransport::Tcp { header, options } => (TCP, tcp(header, options)),
+                QuotedTransport::Udp(header) => (UDP, header.to_vec()),
+                QuotedTransport::Icmp(header) => {
+                    (if ipv6 { ICMP6 } else { ICMP4 }, icmp(*header, ipv6, false))
+                }
+            }
+        }
+    }
+
+    impl Quoted {
+        fn write(&self, ipv6: bool) -> Vec<u8> {
+            let (protocol, mut transport) = self.transport.write(ipv6);
+            let payload = match self.cut {
+                Some(cut) if usize::from(cut) < transport.len() => {
+                    transport.truncate(usize::from(cut));
+                    &[][..]
+                }
+                _ => &self.payload[..self.payload.len().min(64)],
+            };
+            let rest = transport.len() + payload.len() + usize::from(self.missing);
+            let mut out = if ipv6 {
+                ipv6_header(&self.ipv6.0, &self.ipv6.1, protocol, rest)
+            } else {
+                ipv4_header(&self.ipv4.0, &self.ipv4.1, protocol, rest)
+            };
+            out.append(&mut transport);
+            out.extend_from_slice(payload);
+            out
+        }
+    }
+
+    impl Datagram {
+        fn frame(&self) -> Frame {
+            let ipv6 = matches!(self.ip, Ip::V6 { .. });
+            let payload = &self.payload[..self.payload.len().min(256)];
+            let (protocol, mut segment) = match &self.transport {
+                Transport::Tcp { header, options } => (TCP, tcp(header, options)),
+                Transport::Udp(header) => (UDP, udp(*header, payload.len())),
+                Transport::Vxlan { udp: header, vxlan } => {
+                    let mut segment = udp(*header, 8 + payload.len());
+                    segment[2..4].copy_from_slice(&VXLAN_PORT.to_be_bytes());
+                    let mut vxlan = *vxlan;
+                    vxlan[0] |= 0x08; // a VNI is present
+                    vxlan[1..4].fill(0);
+                    vxlan[7] = 0;
+                    if vxlan[4..7] == [0, 0, 0] {
+                        vxlan[6] = 1;
+                    }
+                    segment.extend_from_slice(&vxlan);
+                    (UDP, segment)
+                }
+                Transport::Icmp { header, quoted } => {
+                    let mut segment = icmp(*header, ipv6, quoted.is_some());
+                    if let Some(quoted) = quoted {
+                        segment.append(&mut quoted.write(ipv6));
+                    }
+                    (if ipv6 { ICMP6 } else { ICMP4 }, segment)
+                }
+            };
+            segment.extend_from_slice(payload);
+            let mut bytes = vec![2, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 2];
+            bytes.extend_from_slice(if ipv6 { &[0x86, 0xdd] } else { &[0x08, 0x00] });
+            bytes.append(&mut match &self.ip {
+                Ip::V4 { header, options } => ipv4_header(header, options, protocol, segment.len()),
+                Ip::V6 { header, extensions } => {
+                    ipv6_header(header, extensions, protocol, segment.len())
+                }
+            });
+            let transport = bytes.len();
+            bytes.append(&mut segment);
+            Frame {
+                bytes,
+                transport,
+                protocol,
+                ipv6,
+                vxlan: matches!(self.transport, Transport::Vxlan { .. }),
+            }
+        }
+    }
+
+    /// One's-complement sum of `bytes` as 16-bit words, an odd octet padded with zero, with both
+    /// zeros read as `0xffff`.
+    fn ones_complement_sum(bytes: &[u8]) -> u16 {
+        let mut sum: u64 = 0;
+        for word in bytes.chunks(2) {
+            sum += u64::from(u16::from_be_bytes([
+                word[0],
+                word.get(1).copied().unwrap_or(0),
+            ]));
+        }
+        while sum > 0xffff {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        match u16::try_from(sum).expect("folded to 16 bits") {
+            0 => 0xffff,
+            sum => sum,
+        }
+    }
+
+    /// The sum over the transport checksum's coverage in `frame`, which is `0xffff` if the
+    /// transport checksum is valid.
+    fn transport_sum(frame: &Frame, bytes: &[u8]) -> u16 {
+        let segment = &bytes[frame.transport..];
+        let mut covered = Vec::new();
+        if frame.ipv6 {
+            covered.extend_from_slice(&bytes[ETH + 8..ETH + 40]);
+            covered.extend_from_slice(&u32::try_from(segment.len()).expect("small").to_be_bytes());
+            covered.extend_from_slice(&[0, 0, 0, frame.protocol]);
+        } else if frame.protocol != ICMP4 {
+            covered.extend_from_slice(&bytes[ETH + 12..ETH + 20]);
+            covered.extend_from_slice(&[0, frame.protocol]);
+            covered.extend_from_slice(&len16(segment.len()));
+        }
+        covered.extend_from_slice(segment);
+        ones_complement_sum(&covered)
+    }
+
+    /// Where the transport checksum sits in `frame`.
+    fn transport_checksum(frame: &Frame) -> std::ops::Range<usize> {
+        let at = frame.transport
+            + match frame.protocol {
+                TCP => 16,
+                UDP => 6,
+                _ => 2,
+            };
+        at..at + 2
+    }
+
+    fn parse(bytes: &[u8]) -> Packet<TestBuffer> {
+        Packet::new(TestBuffer::from_raw_data(bytes)).expect("frame does not parse")
+    }
+
+    fn serialize(packet: Packet<TestBuffer>) -> Vec<u8> {
+        packet
+            .serialize()
+            .expect("does not serialize")
+            .as_ref()
+            .to_vec()
+    }
+
+    /// Decrement the TTL or hop limit, as a router does, and serialize, asking for the transport
+    /// checksum to be refreshed if `refresh`. `None` if the TTL or hop limit is already zero.
+    fn forward(bytes: &[u8], refresh: bool) -> Option<Vec<u8>> {
+        let mut packet = parse(bytes);
+        let headers = packet.headers_mut();
+        let decremented = match headers.try_ipv4_mut() {
+            Some(ipv4) => ipv4.decrement_ttl().is_ok(),
+            None => headers
+                .try_ipv6_mut()
+                .expect("no ip header")
+                .decrement_hop_limit()
+                .is_ok(),
+        };
+        if !decremented {
+            return None;
+        }
+        if refresh {
+            packet.meta_mut().set_checksum_refresh(true);
+        }
+        Some(serialize(packet))
+    }
+
+    /// The offsets at which `a` and `b` differ, and any difference in length.
+    fn differences(a: &[u8], b: &[u8]) -> Vec<usize> {
+        let mut at: Vec<usize> = (0..a.len().min(b.len()))
+            .filter(|&i| a[i] != b[i])
+            .collect();
+        at.extend(a.len().min(b.len())..a.len().max(b.len()));
+        at
+    }
+
+    #[test]
+    fn a_packet_no_stage_changed_leaves_as_it_arrived() {
+        bolero::check!()
+            .with_type::<Datagram>()
+            .for_each(|datagram| {
+                let frame = datagram.frame();
+                let out = serialize(parse(&frame.bytes));
+                assert!(
+                    out == frame.bytes,
+                    "octets {:?} changed: {:02x?} became {:02x?}",
+                    differences(&frame.bytes, &out),
+                    frame.bytes,
+                    out
+                );
+            });
+    }
+
+    #[test]
+    fn forwarding_changes_only_the_hop_count_and_the_ipv4_checksum() {
+        bolero::check!()
+            .with_type::<Datagram>()
+            .for_each(|datagram| {
+                let frame = datagram.frame();
+                let Some(out) = forward(&frame.bytes, false) else {
+                    return;
+                };
+                let allowed: &[usize] = if frame.ipv6 {
+                    &[ETH + 7]
+                } else {
+                    &[ETH + 8, ETH + 10, ETH + 11]
+                };
+                let changed = differences(&frame.bytes, &out);
+                assert!(
+                    changed.iter().all(|at| allowed.contains(at)),
+                    "octets {changed:?} changed: {:02x?} became {:02x?}",
+                    frame.bytes,
+                    out
+                );
+                if !frame.ipv6 {
+                    let header = ETH..ETH + usize::from(frame.bytes[ETH] & 0x0f) * 4;
+                    assert_eq!(
+                        ones_complement_sum(&out[header.clone()]),
+                        ones_complement_sum(&frame.bytes[header]),
+                        "the ipv4 header is not exactly as far from valid as it arrived"
+                    );
+                }
+            });
+    }
+
+    #[test]
+    fn a_refreshed_checksum_covers_the_octets_as_written() {
+        bolero::check!()
+            .with_type::<Datagram>()
+            .for_each(|datagram| {
+                let frame = datagram.frame();
+                // VXLAN's UDP checksum is left alone.
+                if frame.vxlan {
+                    return;
+                }
+                let (Some(forwarded), Some(refreshed)) =
+                    (forward(&frame.bytes, false), forward(&frame.bytes, true))
+                else {
+                    return;
+                };
+                if parse(&frame.bytes).headers().transport().is_none() {
+                    // Left in the payload: a header etherparse rejects (a timestamp of the
+                    // wrong length), or one past extension headers there was no room for.
+                    assert_eq!(
+                        refreshed, forwarded,
+                        "a refresh changed an unparsed transport"
+                    );
+                    return;
+                }
+                assert_eq!(
+                    refreshed.len(),
+                    frame.bytes.len(),
+                    "a refresh changed the length: {:02x?} became {refreshed:02x?}",
+                    frame.bytes
+                );
+                assert_eq!(
+                    transport_sum(&frame, &refreshed),
+                    0xffff,
+                    "the refreshed checksum does not match the octets written: {refreshed:02x?}"
+                );
+                let changed = differences(&forwarded, &refreshed);
+                let checksum = transport_checksum(&frame);
+                assert!(
+                    changed.iter().all(|at| checksum.contains(at)),
+                    "a refresh changed octets {changed:?} besides the checksum at {checksum:?}"
+                );
+            });
+    }
+}
