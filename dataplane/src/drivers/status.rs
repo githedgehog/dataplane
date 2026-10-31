@@ -308,7 +308,7 @@ impl Display for DriverStatus {
             writeln!(f)?;
             writeln!(
                 f,
-                " worker load (over the last activity poll; sleeps since start)"
+                " worker load (over the last activity poll; sleeps and expiry-behind since start)"
             )?;
             fmt_load_heading(f)?;
             for worker in &self.workers {
@@ -323,7 +323,7 @@ impl Display for DriverStatus {
 
 macro_rules! LOAD_TBL_FMT {
     () => {
-        "   {:<6}  {:<22}  {:>6}  {:>8}  {:>8}  {:>10}  {:>14}  {:>16}"
+        "   {:<6}  {:<22}  {:>6}  {:>8}  {:>8}  {:>10}  {:>14}  {:>16}  {:>10}  {:>14}"
     };
 }
 
@@ -340,7 +340,9 @@ fn fmt_load_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             "monitor%",
             "interrupt%",
             "monitor-sleeps",
-            "interrupt-sleeps"
+            "interrupt-sleeps",
+            "expired/s",
+            "expiry-behind"
         )
     )
 }
@@ -371,7 +373,9 @@ fn fmt_load(
             pct(Spent::Monitor),
             pct(Spent::Interrupt),
             totals.monitor_sleeps,
-            totals.interrupt_sleeps
+            totals.interrupt_sleeps,
+            load.recent.expired_flows,
+            totals.expiry_behind
         )
     )
 }

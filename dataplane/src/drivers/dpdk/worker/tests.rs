@@ -252,6 +252,7 @@ fn flows_expire_on_the_worker_while_it_polls() {
     // No packets came, so removing the flows is the only work the worker did; it must not pass
     // for idling.
     let load = reader.load();
+    assert_eq!(load.expired_flows, 4);
     assert!(
         load.nanos(Spent::Busy) > 0,
         "expiring flows must count as busy time: {load:?}"

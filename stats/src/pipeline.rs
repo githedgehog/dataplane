@@ -21,6 +21,9 @@ pub(crate) const PIPELINE_PACKETS: &str = "pipeline_packets";
 /// Id of the flow table size gauge.
 pub(crate) const FLOW_TABLE_ENTRIES: &str = "flow_table_entries";
 
+/// Id of the flow table capacity gauge.
+pub(crate) const FLOW_TABLE_CAPACITY: &str = "flow_table_capacity";
+
 /// The `reason` label a [`DoneReason`] is exported under: its variant name, which is fixed by
 /// the variant rather than by how it happens to print.
 #[must_use]
@@ -71,23 +74,36 @@ impl Default for PipelineMetrics {
 #[derive(Debug)]
 pub struct FlowTableMetrics {
     entries: Registered<metrics::Gauge>,
+    capacity: Registered<metrics::Gauge>,
 }
 
 impl FlowTableMetrics {
     /// Register the gauge.
     #[must_use]
     pub fn new() -> FlowTableMetrics {
-        let mut spec = MetricSpec::new(FLOW_TABLE_ENTRIES, Unit::Count, vec![]);
-        spec.description = "entries in the flow table, expired ones included".to_string();
+        let gauge = |id: &str, description: &str| {
+            let mut spec = MetricSpec::new(id, Unit::Count, vec![]);
+            spec.description = description.to_string();
+            spec.register()
+        };
         FlowTableMetrics {
-            entries: spec.register(),
+            entries: gauge(
+                FLOW_TABLE_ENTRIES,
+                "entries in the flow table, expired ones included",
+            ),
+            capacity: gauge(
+                FLOW_TABLE_CAPACITY,
+                "entries the flow table admits before new flows are dropped as \
+                 FlowCapacityExceeded",
+            ),
         }
     }
 
-    /// Publish the table's size.
+    /// Publish the table's size and its capacity.
     #[allow(clippy::cast_precision_loss)] // exact up to 2^53 entries
-    pub fn publish(&self, entries: usize) {
+    pub fn publish(&self, entries: usize, capacity: usize) {
         self.entries.metric.set(entries as f64);
+        self.capacity.metric.set(capacity as f64);
     }
 }
 
@@ -160,9 +176,10 @@ mod exported {
         let scrape = Scrape::default();
         metrics::with_local_recorder(&scrape, || {
             let metrics = FlowTableMetrics::new();
-            metrics.publish(10);
-            metrics.publish(3);
+            metrics.publish(10, 100);
+            metrics.publish(3, 50);
         });
         assert_eq!(scrape.get(FLOW_TABLE_ENTRIES, &[]), Some(3.0));
+        assert_eq!(scrape.get(FLOW_TABLE_CAPACITY, &[]), Some(50.0));
     }
 }
