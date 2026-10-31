@@ -1344,6 +1344,77 @@ fn static_nat_leaves_a_checksum_a_full_recompute_would_agree_with() {
     );
 }
 
+/// A non-first fragment carries payload where the parser may read a transport header. Static NAT
+/// translates its addresses and leaves those octets alone: they are no ports and no checksum.
+#[test]
+fn static_nat_leaves_the_payload_of_a_non_first_fragment_alone() {
+    use net::headers::{TryHeaders, TryTransport};
+    use net::ipv4::frag_offset::FragOffset;
+
+    // Address-only translation, which applies to a fragment, and one with ports, which can't.
+    let address_only = VpcExpose::empty()
+        .make_static_nat()
+        .unwrap()
+        .ip("1.1.0.0/16".into())
+        .as_range("10.1.0.0/16".into())
+        .unwrap();
+    let with_ports = VpcExpose::empty()
+        .make_static_nat()
+        .unwrap()
+        .ip(PrefixWithOptionalPorts::new(
+            "1.3.0.0/16".into(),
+            Some(PortRange::new(4001, 5000).unwrap()),
+        ))
+        .as_range(PrefixWithOptionalPorts::new(
+            "10.3.0.0/16".into(),
+            Some(PortRange::new(8001, 9000).unwrap()),
+        ))
+        .unwrap();
+    let remote = VpcExpose::empty().ip("10.2.0.0/16".into());
+    let gw_config = build_gwconfig_from_exposes(vec![address_only, with_ports], vec![remote]);
+    let nat_tables = build_nat_configuration(gw_config.external().overlay().vpc_table()).unwrap();
+    let (mut nat, mut tablesw) = StaticNat::new("static-nat");
+    tablesw.update_nat_tables(nat_tables);
+
+    for (src, proto) in [
+        (Ipv4Addr::new(1, 1, 0, 1), NextHeader::TCP),
+        (Ipv4Addr::new(1, 1, 0, 1), NextHeader::UDP),
+        (Ipv4Addr::new(1, 3, 0, 1), NextHeader::TCP),
+        (Ipv4Addr::new(1, 3, 0, 1), NextHeader::UDP),
+    ] {
+        let mut packet = build_test_ipv4_packet_with_transport(u8::MAX, Some(proto)).unwrap();
+        packet.meta_mut().set_overlay(true);
+        packet.meta_mut().set_static_nat_src(true);
+        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
+        packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+        set_addresses_v4(&mut packet, src, Ipv4Addr::new(10, 2, 0, 1));
+        set_ports(&mut packet, 4001, 1);
+        packet.update_checksums();
+        packet
+            .try_ipv4_mut()
+            .unwrap()
+            .set_fragment_offset(FragOffset::new(185).unwrap());
+        let body = packet.headers().try_transport().cloned();
+
+        let mut out = nat.process([packet]);
+        let pkt_out = out.next().expect("one packet out");
+        assert_matches!(out.next(), None, "expected only one packet");
+
+        assert_eq!(
+            pkt_out.headers().try_transport().cloned(),
+            body,
+            "static NAT rewrote the payload of a non-first fragment from {src} ({proto:?})"
+        );
+        if src.octets()[1] == 1 {
+            assert_eq!(
+                get_src_ip_v4(&pkt_out),
+                Ipv4Addr::new(10, 1, 0, 1),
+                "an address-only translation applies to a fragment too"
+            );
+        }
+    }
+}
+
 /// An IPv6 UDP checksum of zero cannot take a delta, so static NAT must request a recompute.
 #[test]
 fn a_zero_ipv6_udp_checksum_asks_for_a_recompute() {
