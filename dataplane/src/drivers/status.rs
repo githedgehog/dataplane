@@ -13,6 +13,7 @@ use concurrency::sync::Arc;
 
 use std::fmt::Display;
 
+use crate::drivers::load::{LoadReader, LoadTotals, Spent};
 use crate::drivers::supervisor;
 use crate::drivers::watchdog::{Activity, Totals};
 
@@ -95,12 +96,23 @@ pub enum WorkerEndResult {
     Panicked(String),
 }
 
+/// What a polling worker spent its time on, as it stands and over the supervisor's last poll.
+#[derive(Clone)]
+pub struct WorkerLoadStatus {
+    /// The worker's load, read when wanted.
+    pub reader: LoadReader,
+    /// What it spent over the supervisor's last poll.
+    pub recent: LoadTotals,
+}
+
 /// Per-worker status: its thread state plus its rx tasks' activity.
 #[derive(Clone)]
 pub struct WorkerStatus {
     pub worker: WorkerId,
     pub state: WorkerState,
     pub rx_tasks: Vec<RxTaskStatus>,
+    /// What the worker spends its time on, if it polls (DPDK driver).
+    pub load: Option<WorkerLoadStatus>,
 }
 impl WorkerStatus {
     #[must_use]
@@ -109,6 +121,7 @@ impl WorkerStatus {
             worker,
             state: WorkerState::Running,
             rx_tasks: vec![],
+            load: None,
         }
     }
 }
@@ -290,6 +303,75 @@ impl Display for DriverStatus {
                 fmt_rx_drop(f, rx)?;
             }
         }
+
+        if self.workers.iter().any(|w| w.load.is_some()) {
+            writeln!(f)?;
+            writeln!(
+                f,
+                " worker load (over the last activity poll; sleeps since start)"
+            )?;
+            fmt_load_heading(f)?;
+            for worker in &self.workers {
+                if let Some(load) = &worker.load {
+                    fmt_load(f, worker.worker, load)?;
+                }
+            }
+        }
         Ok(())
     }
+}
+
+macro_rules! LOAD_TBL_FMT {
+    () => {
+        "   {:<6}  {:<22}  {:>6}  {:>8}  {:>8}  {:>10}  {:>14}  {:>16}"
+    };
+}
+
+fn fmt_load_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            LOAD_TBL_FMT!(),
+            "worker",
+            "idle mode",
+            "busy%",
+            "polling%",
+            "monitor%",
+            "interrupt%",
+            "monitor-sleeps",
+            "interrupt-sleeps"
+        )
+    )
+}
+
+fn fmt_load(
+    f: &mut std::fmt::Formatter<'_>,
+    worker: WorkerId,
+    load: &WorkerLoadStatus,
+) -> std::fmt::Result {
+    let (configured, effective) = (load.reader.configured(), load.reader.effective());
+    // The mode it idles in, and the one it was asked for if it fell back from that.
+    let mode = if configured == effective {
+        effective.to_string()
+    } else {
+        format!("{effective} (asked {configured})")
+    };
+    let pct = |spent| format!("{:.1}", load.recent.share(spent) * 100.);
+    let totals = load.reader.load();
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            LOAD_TBL_FMT!(),
+            worker,
+            mode,
+            pct(Spent::Busy),
+            pct(Spent::Polling),
+            pct(Spent::Monitor),
+            pct(Spent::Interrupt),
+            totals.monitor_sleeps,
+            totals.interrupt_sleeps
+        )
+    )
 }

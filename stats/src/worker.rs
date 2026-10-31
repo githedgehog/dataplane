@@ -225,6 +225,113 @@ impl WorkerStateMetrics {
     }
 }
 
+/// What a polling worker spent its time on, and how it idles, since it started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerLoadCounters<'a> {
+    /// Nanoseconds spent in each state the worker was registered with, by its name.
+    pub time_ns: &'a [(&'a str, u64)],
+    /// Low-power monitor waits (or timed sleeps) the worker went into.
+    pub monitor_sleeps: u64,
+    /// Sleeps on interrupts the worker went into.
+    pub interrupt_sleeps: u64,
+    /// The idle mode the worker idles in now, one of those it was registered with.
+    pub effective_mode: &'a str,
+}
+
+/// Metric handles for one polling worker's load, registered once and reused for each poll.
+///
+/// `worker_time_nanoseconds{state}` is a counter per state the worker's time goes to, so that
+/// `rate()` of one over the sum of all is the share of its time spent there: `state="busy"` is how
+/// loaded it is, whatever the operating system's CPU accounting says of a thread that polls or
+/// sleeps in a monitor wait. `worker_idle_sleeps{kind}` counts the sleeps, and `worker_idle_mode`
+/// is 1 for the mode the worker idles in now and 0 for the others, labelled with the mode it was
+/// configured with: one that `mode` and `configured` disagree on has fallen back.
+#[derive(Debug)]
+pub struct WorkerLoadMetrics {
+    time: Vec<(String, Registered<metrics::Counter>)>,
+    monitor_sleeps: Registered<metrics::Counter>,
+    interrupt_sleeps: Registered<metrics::Counter>,
+    modes: Vec<(String, Registered<metrics::Gauge>)>,
+}
+
+impl WorkerLoadMetrics {
+    /// Register the load of worker `worker`, which divides its time among `states` and idles in one
+    /// of `modes`, having been configured with `configured`.
+    #[must_use]
+    pub fn new(worker: usize, states: &[&str], modes: &[&str], configured: &str) -> Self {
+        let spec = |suffix: &str, unit: Unit, description: &str, label: Option<(&str, &str)>| {
+            let mut labels = vec![("worker".to_string(), worker.to_string())];
+            if let Some((key, value)) = label {
+                labels.push((key.to_string(), value.to_string()));
+            }
+            if suffix == "idle_mode" {
+                labels.push(("configured".to_string(), configured.to_string()));
+            }
+            let mut spec = MetricSpec::new(format!("{WORKER_METRIC_BASE}_{suffix}"), unit, labels);
+            spec.description = description.to_string();
+            spec
+        };
+        let sleeps = |kind: &str| {
+            spec(
+                "idle_sleeps",
+                Unit::Count,
+                "sleeps the worker went into for want of anything to do, by kind",
+                Some(("kind", kind)),
+            )
+            .register()
+        };
+        WorkerLoadMetrics {
+            time: states
+                .iter()
+                .map(|state| {
+                    let registered = spec(
+                        "time_nanoseconds",
+                        Unit::Nanoseconds,
+                        "time the worker spent in each state; rate over the sum of all states is \
+                         the share",
+                        Some(("state", state)),
+                    )
+                    .register();
+                    ((*state).to_string(), registered)
+                })
+                .collect(),
+            monitor_sleeps: sleeps("monitor"),
+            interrupt_sleeps: sleeps("interrupt"),
+            modes: modes
+                .iter()
+                .map(|mode| {
+                    let registered = spec(
+                        "idle_mode",
+                        Unit::Count,
+                        "1 for the idle mode the worker idles in now, 0 for the others; it can be \
+                         weaker than the configured one",
+                        Some(("mode", mode)),
+                    )
+                    .register();
+                    ((*mode).to_string(), registered)
+                })
+                .collect(),
+        }
+    }
+
+    /// Publish a snapshot of the load. States and modes the worker was not registered with are
+    /// ignored.
+    pub fn publish(&self, load: &WorkerLoadCounters<'_>) {
+        for (state, nanos) in load.time_ns {
+            if let Some((_, registered)) = self.time.iter().find(|(name, _)| name == state) {
+                registered.metric.absolute(*nanos);
+            }
+        }
+        self.monitor_sleeps.metric.absolute(load.monitor_sleeps);
+        self.interrupt_sleeps.metric.absolute(load.interrupt_sleeps);
+        for (mode, registered) in &self.modes {
+            registered
+                .metric
+                .set(f64::from(u8::from(mode == load.effective_mode)));
+        }
+    }
+}
+
 #[cfg(test)]
 mod exported {
     use super::*;
@@ -317,6 +424,48 @@ mod exported {
         assert_eq!(scrape.get("worker_stuck", &labels), Some(0.0));
         assert_eq!(scrape.counter("worker_watchdog_misses", &labels), Some(3));
         assert_eq!(scrape.get("worker_running", &[("worker", "2")]), Some(0.0));
+    }
+
+    /// Each state's time and each kind of sleep reaches its own series, and exactly one mode is
+    /// marked, labelled with the configured one.
+    #[test]
+    fn load_reaches_its_series() {
+        let scrape = Scrape::default();
+        metrics::with_local_recorder(&scrape, || {
+            let metrics = WorkerLoadMetrics::new(
+                3,
+                &["busy", "polling"],
+                &["poll", "monitor", "interrupt"],
+                "interrupt",
+            );
+            metrics.publish(&WorkerLoadCounters {
+                time_ns: &[("busy", 10), ("polling", 30), ("elsewhere", 99)],
+                monitor_sleeps: 4,
+                interrupt_sleeps: 5,
+                effective_mode: "monitor",
+            });
+        });
+        let time = |state| {
+            scrape.counter(
+                "worker_time_nanoseconds",
+                &[("worker", "3"), ("state", state)],
+            )
+        };
+        assert_eq!((time("busy"), time("polling")), (Some(10), Some(30)));
+        assert_eq!(time("elsewhere"), None);
+        let sleeps =
+            |kind| scrape.counter("worker_idle_sleeps", &[("worker", "3"), ("kind", kind)]);
+        assert_eq!((sleeps("monitor"), sleeps("interrupt")), (Some(4), Some(5)));
+        let mode = |mode| {
+            scrape.get(
+                "worker_idle_mode",
+                &[("worker", "3"), ("mode", mode), ("configured", "interrupt")],
+            )
+        };
+        assert_eq!(
+            (mode("poll"), mode("monitor"), mode("interrupt")),
+            (Some(0.0), Some(1.0), Some(0.0))
+        );
     }
 
     /// Whatever the totals, a series carries the latest given, rather than adding them up.

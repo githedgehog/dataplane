@@ -32,9 +32,10 @@ use tracectl::trace_target;
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
+use super::load::{LoadReader, LoadTotals};
 use super::status::{
     DriverStatus, DriverStatusWriter, RxQueue, RxTaskStatus, WorkerEndResult, WorkerId,
-    WorkerState, WorkerStatus,
+    WorkerLoadStatus, WorkerState, WorkerStatus,
 };
 use super::watchdog::{Activity, RxCounters, Watchdog};
 
@@ -88,6 +89,8 @@ pub(crate) struct WorkerMonitor<'scope, E> {
     id: WorkerId,
     handle: Option<ScopedJoinHandle<'scope, Result<(), E>>>,
     rx_tasks: Vec<RxTaskMonitor>,
+    /// The worker's load, if it polls, and the totals the supervisor last saw there.
+    load: Option<(LoadReader, LoadTotals)>,
 }
 
 impl<'scope, E> WorkerMonitor<'scope, E> {
@@ -101,7 +104,42 @@ impl<'scope, E> WorkerMonitor<'scope, E> {
             id,
             handle: Some(handle),
             rx_tasks,
+            load: None,
         }
+    }
+
+    /// A worker that reports what it spends its time on, to `load`.
+    #[must_use]
+    pub(crate) fn with_load(mut self, load: LoadReader) -> Self {
+        self.load = Some((load, LoadTotals::default()));
+        self
+    }
+
+    /// The worker's status before the supervisor has polled it.
+    fn status(&self) -> WorkerStatus {
+        let mut status = WorkerStatus::new(self.id);
+        status.rx_tasks = self
+            .rx_tasks
+            .iter()
+            .map(|t| RxTaskStatus::new(t.port.clone(), t.queue, t.watchdog.reader()))
+            .collect();
+        status.load = self.load.as_ref().map(|(reader, _)| WorkerLoadStatus {
+            reader: reader.clone(),
+            recent: LoadTotals::default(),
+        });
+        status
+    }
+
+    /// What the worker spent since the supervisor last asked.
+    fn load_since(&mut self) -> Option<WorkerLoadStatus> {
+        let (reader, seen) = self.load.as_mut()?;
+        let totals = reader.load();
+        let recent = totals.since(seen);
+        *seen = totals;
+        Some(WorkerLoadStatus {
+            reader: reader.clone(),
+            recent,
+        })
     }
 }
 
@@ -137,23 +175,16 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
 
             // build a vector of worker status from their monitors to expose their state outside of this thread
             // each WorkerStatus contains a list of RxTaskStatus
-            let mut workers_status: Vec<WorkerStatus> = monitors
-                .iter()
-                .map(|monitor| {
-                    let mut ws = WorkerStatus::new(monitor.id);
-                    ws.rx_tasks = monitor
-                        .rx_tasks
-                        .iter()
-                        .map(|t| RxTaskStatus::new(t.port.clone(), t.queue, t.watchdog.reader()))
-                        .collect();
-                    ws
-                })
-                .collect();
+            let mut workers_status: Vec<WorkerStatus> =
+                monitors.iter().map(WorkerMonitor::status).collect();
 
             // The workers may have counted already. That is in their totals, but not in a rate:
             // the first is over the first poll period alone.
             for task in monitors.iter_mut().flat_map(|m| &mut m.rx_tasks) {
                 task.counted();
+            }
+            for monitor in &mut monitors {
+                monitor.load_since();
             }
             let mut last_poll = clock::now();
 
@@ -206,11 +237,17 @@ pub(crate) fn spawn_supervisor<'scope, E: Display + Send + Sync + 'scope>(
                                 r.batch = 0.0;
                                 r.full = 0.0;
                             });
+                            if let Some(load) = &mut wk_status.load {
+                                load.recent = LoadTotals::default();
+                            }
                         } else {
                             // worker is running, update its `WorkerStatus` and restore its handle
                             wk_status.state = WorkerState::Running;
                             monitor.handle = Some(handle);
                             any_running = true;
+                            if let Some(load) = monitor.load_since() {
+                                wk_status.load = Some(load);
+                            }
 
                             // check the worker's rx tasks and update the corresponding status
                             check_worker_rx_tasks(
