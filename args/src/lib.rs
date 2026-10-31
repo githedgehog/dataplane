@@ -2269,7 +2269,8 @@ mod tests {
                     UnsupportedByDriver::KernelIdle(_)
                 ))
             ));
-        } // Polling is how the kernel driver idles anyway, so asking for it is fine; and unset, the
+        }
+        // Polling is how the kernel driver idles anyway, so asking for it is fine; and unset, the
         // default of interrupt applies to DPDK ports alone.
         for idle in [&["--idle", "poll"][..], &[]] {
             let args = CmdArgs::try_parse_from(
