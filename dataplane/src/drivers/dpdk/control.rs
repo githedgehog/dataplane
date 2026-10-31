@@ -216,6 +216,7 @@ fn receive<'p>(
     if rx_mbufs.is_empty() {
         return false;
     }
+    counters.burst(rx_mbufs.len(), dpdk::mem::MBUF_BURST);
     for mbuf in rx_mbufs.drain_all() {
         counters.rx += 1;
         let frame = mbuf.raw_data();

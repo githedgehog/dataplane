@@ -40,6 +40,8 @@ struct WatchdogInner {
     kernel_drops: AtomicU64, // number of frames the kernel dropped on the socket
     injected: AtomicU64,     // number of frames from the kernel sent out of the port
     inject_drops: AtomicU64, // number of frames from the kernel that could not be sent
+    bursts: AtomicU64,       // number of receive calls that returned frames
+    full_bursts: AtomicU64,  // number of receive calls that returned as many frames as they could
 }
 
 /// A lock-free liveness + activity watchdog.
@@ -72,6 +74,8 @@ impl Watchdog {
         accumulate(&self.0.kernel_drops, counters.kernel_drops);
         accumulate(&self.0.injected, counters.injected);
         accumulate(&self.0.inject_drops, counters.inject_drops);
+        accumulate(&self.0.bursts, counters.bursts);
+        accumulate(&self.0.full_bursts, counters.full_bursts);
     }
 
     /// Supervisor: tell whether the task patted the watchdog since the last check, and re-arm it.
@@ -108,6 +112,8 @@ impl WatchdogInner {
             kernel_drops: self.kernel_drops.load(Ordering::Relaxed),
             injected: self.injected.load(Ordering::Relaxed),
             inject_drops: self.inject_drops.load(Ordering::Relaxed),
+            bursts: self.bursts.load(Ordering::Relaxed),
+            full_bursts: self.full_bursts.load(Ordering::Relaxed),
         }
     }
 }
@@ -175,9 +181,24 @@ pub struct RxCounters {
     pub injected: u64,
     /// Frames the kernel sent out of the port that could not be transmitted (DPDK driver)
     pub inject_drops: u64,
+    /// Receive calls that returned frames. `rx` over this is the mean batch.
+    pub bursts: u64,
+    /// Receive calls that returned as many frames as they could: the queue had more waiting.
+    pub full_bursts: u64,
 }
 
 impl RxCounters {
+    /// Count a receive call that returned `len` frames out of at most `max`. An empty one is not
+    /// a burst: an idle queue would otherwise drag the mean batch to nothing.
+    pub fn burst(&mut self, len: usize, max: usize) {
+        if len > 0 {
+            self.bursts += 1;
+            if len >= max {
+                self.full_bursts += 1;
+            }
+        }
+    }
+
     /// Tell if the task saw any frame, including ones it could not make use of.
     /// Frames dropped by the kernel don't count: the task never saw them.
     #[must_use]
@@ -201,6 +222,8 @@ impl RxCounters {
             kernel_drops: self.kernel_drops.saturating_sub(earlier.kernel_drops),
             injected: self.injected.saturating_sub(earlier.injected),
             inject_drops: self.inject_drops.saturating_sub(earlier.inject_drops),
+            bursts: self.bursts.saturating_sub(earlier.bursts),
+            full_bursts: self.full_bursts.saturating_sub(earlier.full_bursts),
         }
     }
 }
@@ -263,9 +286,9 @@ mod test {
     #[test]
     fn since_is_what_was_recorded_in_between() {
         bolero::check!()
-            .with_type::<(Vec<[u32; 12]>, Vec<[u32; 12]>)>()
+            .with_type::<(Vec<[u32; 14]>, Vec<[u32; 14]>)>()
             .for_each(|(before, between)| {
-                let counters = |c: &[u32; 12]| RxCounters {
+                let counters = |c: &[u32; 14]| RxCounters {
                     rx: c[0].into(),
                     tx: c[1].into(),
                     ppline_drops: c[2].into(),
@@ -278,6 +301,8 @@ mod test {
                     kernel_drops: c[9].into(),
                     injected: c[10].into(),
                     inject_drops: c[11].into(),
+                    bursts: c[12].into(),
+                    full_bursts: c[13].into(),
                 };
                 let watchdog = Watchdog::new();
                 let expected = Watchdog::new();
@@ -291,6 +316,18 @@ mod test {
                 }
                 assert_eq!(watchdog.totals().since(&earlier), expected.totals());
             });
+    }
+
+    /// Only a receive call that returned frames is a burst, and only one that returned all it
+    /// could is a full one.
+    #[test]
+    fn a_burst_is_a_receive_that_returned_frames() {
+        let mut counters = RxCounters::default();
+        counters.burst(0, 32);
+        counters.burst(1, 32);
+        counters.burst(31, 32);
+        counters.burst(32, 32);
+        assert_eq!((counters.bursts, counters.full_bursts), (3, 1));
     }
 
     /// A pat is seen once: the check re-arms the watchdog for the next one.
