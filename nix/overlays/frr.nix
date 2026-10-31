@@ -110,6 +110,23 @@ let
                 echo "FRR still needs libatomic, which is not in its closure" >&2
                 exit 1
               fi
+              # Without -latomic an atomic the compiler cannot inline links anyway and is left as an
+              # undefined `__atomic_*` symbol; nothing would notice until the object was loaded.
+              atomics=0
+              elves=0
+              while IFS= read -r -d "" f; do
+                [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' ')" = 7f454c46 ] || continue
+                elves=$((elves + 1))
+                undefined=$($NM -D --undefined-only "$f")
+                if grep -F __atomic_ <<<"$undefined"; then
+                  echo "$f needs libatomic, which is not in its closure" >&2
+                  atomics=1
+                fi
+              done < <(find "$out" -type f -print0)
+              echo "checked $elves ELF objects for __atomic_ symbols"
+              if [ "$elves" -eq 0 ] || [ "$atomics" -ne 0 ]; then
+                exit 1
+              fi
             '';
           # `buildPackages.nukeReferences` rather than `prev.nukeReferences`:
           # the `nuke-refs` script substitutes a perl path at build time, and

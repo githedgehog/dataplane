@@ -232,6 +232,7 @@ stdenv.mkDerivation (finalAttrs: {
   '';
 
   installPhase = ''
+    runHook preInstall
     make DESTDIR=$out install;
     mkdir -p $build/src/
     cp -r . $build/src/frr
@@ -254,6 +255,7 @@ stdenv.mkDerivation (finalAttrs: {
     # so nothing downstream misses these; `dplane-plugin`, the only thing in
     # this tree that links FRR, builds without them.
     rm -f $out/lib/*.la
+    runHook postInstall
   '';
 
   doCheck = false;
