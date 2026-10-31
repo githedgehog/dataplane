@@ -168,13 +168,13 @@ impl Display for WorkerState {
 
 macro_rules! RX_TASK_TBL_FMT {
     () => {
-        "   {:<16}  {:<6}  {:>14}  {:>20}  {:>20}  {:>9}"
+        "   {:<16}  {:<6}  {:>14}  {:>20}  {:>20}  {:>12}  {:>9}"
     };
 }
 
 macro_rules! RX_DROP_TBL_FMT {
     () => {
-        "   {:<16}  {:>12}  {:>10}  {:>10}  {:>10}  {:>10}  {:>12}  {:>10}  {:>12}"
+        "   {:<16}  {:>12}  {:>10}  {:>10}  {:>10}  {:>10}  {:>12}  {:>10}  {:>12}  {:>12}"
     };
 }
 
@@ -184,7 +184,7 @@ fn fmt_rx_task_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         "{}",
         format_args!(
             RX_TASK_TBL_FMT!(),
-            "iface", "status", "pps", "pkt-rx", "pkt-tx", "wd-misses"
+            "iface", "status", "pps", "pkt-rx", "pkt-tx", "injected", "wd-misses"
         )
     )
 }
@@ -202,6 +202,7 @@ fn fmt_rx_task(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::
             pps,
             totals.rx,
             totals.tx,
+            totals.injected,
             rx.misses
         )
     )
@@ -221,7 +222,8 @@ fn fmt_rx_drop_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             "truncated",
             "csum-unknown",
             "zero-len",
-            "kernel-drops"
+            "kernel-drops",
+            "inject-drops"
         )
     )
 }
@@ -241,7 +243,8 @@ fn fmt_rx_drop(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::
             totals.truncated,
             totals.csum_unknown,
             totals.zero_len,
-            totals.kernel_drops
+            totals.kernel_drops,
+            totals.inject_drops
         )
     )
 }
