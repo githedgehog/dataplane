@@ -38,6 +38,8 @@ struct WatchdogInner {
     csum_unknown: AtomicU64, // number of frames whose checksum status did not fit the control buffer
     zero_len: AtomicU64,     // number of zero-length reads
     kernel_drops: AtomicU64, // number of frames the kernel dropped on the socket
+    injected: AtomicU64,     // number of frames from the kernel sent out of the port
+    inject_drops: AtomicU64, // number of frames from the kernel that could not be sent
 }
 
 /// A lock-free liveness + activity watchdog.
@@ -68,6 +70,8 @@ impl Watchdog {
         accumulate(&self.0.csum_unknown, counters.csum_unknown);
         accumulate(&self.0.zero_len, counters.zero_len);
         accumulate(&self.0.kernel_drops, counters.kernel_drops);
+        accumulate(&self.0.injected, counters.injected);
+        accumulate(&self.0.inject_drops, counters.inject_drops);
     }
 
     /// Supervisor: tell whether the task patted the watchdog since the last check, and re-arm it.
@@ -102,6 +106,8 @@ impl WatchdogInner {
             csum_unknown: self.csum_unknown.load(Ordering::Relaxed),
             zero_len: self.zero_len.load(Ordering::Relaxed),
             kernel_drops: self.kernel_drops.load(Ordering::Relaxed),
+            injected: self.injected.load(Ordering::Relaxed),
+            inject_drops: self.inject_drops.load(Ordering::Relaxed),
         }
     }
 }
@@ -147,7 +153,7 @@ pub enum Activity {
 pub struct RxCounters {
     /// Pkts received
     pub rx: u64,
-    /// Pkts successfully tx'ed
+    /// Pkts received that were tx'ed, on whichever port they left by
     pub tx: u64,
     /// Pkts received that the pipeline dropped
     pub ppline_drops: u64,
@@ -165,6 +171,10 @@ pub struct RxCounters {
     pub zero_len: u64,
     /// Frames the kernel dropped on the socket before we could read them
     pub kernel_drops: u64,
+    /// Frames the kernel sent out of the port, which the task transmitted (DPDK driver)
+    pub injected: u64,
+    /// Frames the kernel sent out of the port that could not be transmitted (DPDK driver)
+    pub inject_drops: u64,
 }
 
 impl RxCounters {
@@ -189,6 +199,8 @@ impl RxCounters {
             csum_unknown: self.csum_unknown.saturating_sub(earlier.csum_unknown),
             zero_len: self.zero_len.saturating_sub(earlier.zero_len),
             kernel_drops: self.kernel_drops.saturating_sub(earlier.kernel_drops),
+            injected: self.injected.saturating_sub(earlier.injected),
+            inject_drops: self.inject_drops.saturating_sub(earlier.inject_drops),
         }
     }
 }
@@ -251,9 +263,9 @@ mod test {
     #[test]
     fn since_is_what_was_recorded_in_between() {
         bolero::check!()
-            .with_type::<(Vec<[u32; 10]>, Vec<[u32; 10]>)>()
+            .with_type::<(Vec<[u32; 12]>, Vec<[u32; 12]>)>()
             .for_each(|(before, between)| {
-                let counters = |c: &[u32; 10]| RxCounters {
+                let counters = |c: &[u32; 12]| RxCounters {
                     rx: c[0].into(),
                     tx: c[1].into(),
                     ppline_drops: c[2].into(),
@@ -264,6 +276,8 @@ mod test {
                     csum_unknown: c[7].into(),
                     zero_len: c[8].into(),
                     kernel_drops: c[9].into(),
+                    injected: c[10].into(),
+                    inject_drops: c[11].into(),
                 };
                 let watchdog = Watchdog::new();
                 let expected = Watchdog::new();
