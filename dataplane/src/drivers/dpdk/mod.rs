@@ -41,7 +41,7 @@ use tracing::{info, warn};
 use traffic_control::ControlPlane;
 
 use super::DriverError;
-use super::status::DriverStatusWriter;
+use super::status::{DriverStatusWriter, RxQueue};
 use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 
 pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
@@ -115,8 +115,10 @@ impl DriverDpdk {
         let placement = Placement::of_this_process();
         let mut monitors = Vec::with_capacity(dealt.workers.len() + 1);
         for (id, queues) in dealt.workers.into_iter().enumerate() {
-            let rx_tasks: Vec<RxTaskMonitor> =
-                queues.iter().map(|q| RxTaskMonitor::new(&q.name)).collect();
+            let rx_tasks: Vec<RxTaskMonitor> = queues
+                .iter()
+                .map(|q| RxTaskMonitor::new(&q.name, RxQueue::Data))
+                .collect();
             let worker_ports = queues
                 .into_iter()
                 .zip(&rx_tasks)
@@ -199,7 +201,7 @@ where
 {
     let rx_tasks: Vec<RxTaskMonitor> = control
         .iter()
-        .map(|q| RxTaskMonitor::new(&format!("{} (control)", q.name)))
+        .map(|q| RxTaskMonitor::new(&q.name, RxQueue::Control))
         .collect();
     let ports = control
         .into_iter()
