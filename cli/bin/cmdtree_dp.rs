@@ -54,21 +54,6 @@ fn cmd_show_gateway() -> Node {
 
     root
 }
-fn cmd_show_pipelines() -> Node {
-    let mut root = Node::new("pipeline")
-        .desc("Show packet-processing pipelines")
-        .action(CliAction::ShowPipeline);
-
-    root += Node::new("stages")
-        .desc("Show packet-processing stages")
-        .action(CliAction::ShowPipelineStages);
-
-    root += Node::new("stats")
-        .desc("Show packet-processing pipeline statistics")
-        .action(CliAction::ShowPipelineStats);
-
-    root
-}
 fn cmd_show_vpc() -> Node {
     let mut root = Node::new("vpc");
     root += Node::new("summary")
@@ -245,14 +230,13 @@ fn cmd_show_routing() -> Node {
 }
 fn cmd_show_dpdk() -> Node {
     let mut root = Node::new("dpdk");
-    let mut ports = Node::new("port").desc("DPDK port information");
-    ports += Node::new("stats").desc("DPDK port stats");
+    let mut ports = Node::new("port")
+        .desc("Show each DPDK port: what it is, its link and its buffer pools")
+        .action(CliAction::ShowDpdkPort);
+    ports += Node::new("stats")
+        .desc("Show each DPDK port's counters and its driver's drop and error statistics")
+        .action(CliAction::ShowDpdkPortStats);
     root += ports;
-    root
-}
-fn cmd_show_kernel() -> Node {
-    let mut root = Node::new("kernel");
-    root += Node::new("interfaces").desc("Kernel interface status");
     root
 }
 fn cmd_show_tracing() -> Node {
@@ -268,8 +252,11 @@ fn cmd_show_tracing() -> Node {
 fn cmd_show_flow_table() -> Node {
     let mut root = Node::new("flow-table");
     root += Node::new("entries")
-        .desc("Show entries in the flow table")
+        .desc("Show entries in the flow table, up to a limit")
         .action(CliAction::ShowFlowTable);
+    root += Node::new("summary")
+        .desc("Show how many entries the flow table holds, and how many it admits")
+        .action(CliAction::ShowFlowTableSummary);
 
     root
 }
@@ -378,11 +365,9 @@ fn cmd_show() -> Node {
     let mut root: Node = Node::new("show");
     root += cmd_show_router();
     root += cmd_show_vpc();
-    root += cmd_show_pipelines();
     root += cmd_show_nat();
     root += cmd_show_routing();
     root += cmd_show_dpdk();
-    root += cmd_show_kernel();
     root += cmd_show_tracing();
     root += cmd_show_flow_table();
     root += cmd_show_flow_filter();
