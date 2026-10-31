@@ -173,16 +173,26 @@ impl PipelineIngredients {
 /// A pipeline built on, and for, one worker thread, with that worker's handle on the flow table.
 ///
 /// The worker owns the expiry of every flow its pipeline creates, and drives it by calling
-/// [`WorkerFlowTable::expire`] on `flows` from its loop, with up to [`EXPIRY_BUDGET`] timers each
+/// [`WorkerFlowTable::expire`] on `flows` from its loop, with up to [`expiry_budget`] timers each
 /// time.
 pub(crate) struct WorkerPipeline<'nf, Buf: PacketBufferMut> {
     pub(crate) pipeline: DynPipeline<'nf, Buf>,
     pub(crate) flows: WorkerFlowTable,
 }
 
-/// Flow timers a worker looks at per expiry pass: twice an rx burst, so a burst of expiring flows
-/// turns into a short backlog rather than a stall of the rx loop.
-pub(crate) const EXPIRY_BUDGET: usize = 64;
+/// How many times its usual budget a worker that is behind on expiry spends per pass.
+const EXPIRY_CATCH_UP: usize = 4;
+
+/// Flow timers a worker looks at per expiry pass, when one pass receives up to `bursts` bursts of
+/// up to `burst` packets each and the last pass was or was not left `behind`.
+///
+/// Every packet can open a flow pair, which is two timers, so twice what a pass can receive keeps
+/// pace with a flood of new flows. A worker that is behind spends [`EXPIRY_CATCH_UP`] times that,
+/// so that a backlog drains rather than holding steady.
+pub(crate) fn expiry_budget(burst: usize, bursts: usize, behind: bool) -> usize {
+    let pace = 2 * burst * bursts.max(1);
+    if behind { pace * EXPIRY_CATCH_UP } else { pace }
+}
 
 /// Builds a worker's pipeline, on the worker's thread.
 pub(crate) type PipelineFactory<'nf, Buf> =
@@ -295,4 +305,78 @@ pub(crate) fn start_router(
         phy,
         pkt_stats,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expiry_budget;
+    use concurrency::sync::Arc;
+    use flow_entry::flow_table::{FlowTable, WorkerFlowTable};
+    use net::flows::{FlowInfo, FlowInfoFlags};
+    use net::{FlowKey, IpProtoKey, TcpProtoKey};
+    use std::time::Duration;
+
+    fn key(port: u16) -> FlowKey {
+        FlowKey::new(
+            None,
+            net::flows::flow_key::FlowAddrs::V4 {
+                src: "10.0.0.1".parse().unwrap(),
+                dst: "10.0.0.2".parse().unwrap(),
+            },
+            IpProtoKey::Tcp(TcpProtoKey {
+                src_port: port.try_into().unwrap(),
+                dst_port: 80.try_into().unwrap(),
+            }),
+        )
+    }
+
+    /// A worker whose every packet opens a flow that has already expired keeps up: the table
+    /// holds what the wheel has not reached yet, and no more, rather than growing with every pass.
+    #[test]
+    fn expiry_keeps_up_with_a_flood_of_new_flows() {
+        const BURST: usize = 64;
+        const PASSES: usize = 200;
+        // One pass a millisecond, against the standard wheel's 10 ms tick: a flow is not due
+        // until the tick after its deadline, so up to two ticks' passes are held waiting for it.
+        const PASS: Duration = Duration::from_millis(1);
+        const HELD_PASSES: usize = 2 * 10;
+        let table = Arc::new(FlowTable::new(2));
+        let flows = WorkerFlowTable::new(table.clone());
+        let start = clock::now();
+        let expired = start + PASS;
+        let mut now = start + Duration::from_secs(1);
+        let mut behind = false;
+        let mut port = 1u16;
+        let mut most = 0;
+        for _ in 0..PASSES {
+            for _ in 0..BURST {
+                let (forward, reverse) = FlowInfo::related_pair(
+                    expired,
+                    key(port),
+                    FlowInfoFlags::INITIATOR,
+                    key(port + 1),
+                    FlowInfoFlags::default(),
+                )
+                .unwrap();
+                flows.insert_pair_if_absent(&forward, &reverse).unwrap();
+                port += 2;
+            }
+            behind = flows.expire(now, expiry_budget(BURST, 1, behind)).behind();
+            most = most.max(table.live_len());
+            now += PASS;
+        }
+        assert!(
+            most <= HELD_PASSES * 2 * BURST,
+            "{most} flows held over {PASSES} passes of {BURST} new pairs each"
+        );
+    }
+
+    /// The budget is twice what a pass can receive, and a multiple of that while behind.
+    #[test]
+    fn the_budget_scales_with_bursts_and_backlog() {
+        assert_eq!(expiry_budget(64, 1, false), 128);
+        assert_eq!(expiry_budget(64, 3, false), 384);
+        assert_eq!(expiry_budget(64, 0, false), 128);
+        assert!(expiry_budget(64, 1, true) > expiry_budget(64, 1, false));
+    }
 }
