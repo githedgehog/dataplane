@@ -3,15 +3,10 @@
 
 //! What a polling worker spends its time on, and how it idles.
 //!
-//! A worker that polls shows as 100 % busy to the operating system whatever it does, and one that
-//! sleeps on monitor waits or interrupts shows as anything at all. Neither says how much headroom
-//! it has. The worker itself knows: each pass of its loop either found work or did not, and if it
-//! did not, it spun, slept on a monitor wait, or slept on interrupts. [`LoadMeter`] times each
-//! pass with one clock read and adds the time to that pass's [`Spent`]; the worker flushes it to
-//! the [`Load`] it shares with the supervisor when it reports its counters, and the supervisor and
-//! telemetry read it from there.
-//!
-//! Only the DPDK driver's workers poll, so only they have a [`Load`].
+//! [`LoadMeter`] times each pass of a worker's loop and adds the time to what the pass was
+//! [`Spent`] on. The worker flushes it to the [`Load`] it shares with the supervisor and
+//! telemetry; [`stats::WorkerLoadMetrics`] says how to read it. Only the DPDK driver's workers
+//! poll, so only they have a [`Load`].
 
 use std::time::Instant;
 
