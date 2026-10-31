@@ -586,7 +586,7 @@ fn flat_memory_needs_only_page_zero() {
 }
 
 #[test]
-fn arbitrary_memory_never_panics() {
+fn cmis_arbitrary_memory_never_panics() {
     bolero::check!()
         .with_type::<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>()
         .for_each(|(lower, page00, page01, page02, page11)| {

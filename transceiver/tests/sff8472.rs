@@ -590,7 +590,7 @@ fn unit_slope_and_zero_offset_change_nothing() {
 }
 
 #[test]
-fn arbitrary_memory_never_panics() {
+fn sff8472_arbitrary_memory_never_panics() {
     bolero::check!()
         .with_type::<(Vec<u8>, Vec<u8>, u8)>()
         .for_each(|(a0, a2, poison)| {
