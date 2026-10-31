@@ -432,10 +432,15 @@ fn show_tech(
     rio: &mut Rio,
     sources: &CliSources,
 ) -> CliResponse {
+    // Actions, not views: running them would change what they are meant to report on. A capture
+    // started here would record everything and leave a file behind, and a stop would end the one
+    // the operator was running.
     let excluded = [
         CliAction::ShowTech,
         CliAction::CpiRequestRefresh,
         CliAction::FrrmiApplyLastConfig,
+        CliAction::CaptureStart,
+        CliAction::CaptureStop,
     ];
     let time = Local::now();
     let mut data = format!("time: {}\n", time.format("%Y-%m-%d %H:%M:%S"));
