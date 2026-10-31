@@ -495,7 +495,7 @@ fn lane_readings_land_on_their_lane() {
 }
 
 #[test]
-fn arbitrary_memory_never_panics() {
+fn sff8636_arbitrary_memory_never_panics() {
     bolero::check!()
         .with_type::<(Vec<u8>, Vec<u8>, Vec<u8>)>()
         .for_each(|(lower, page00, page03)| {
