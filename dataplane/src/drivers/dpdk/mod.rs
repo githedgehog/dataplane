@@ -41,6 +41,7 @@ use tracing::{info, warn};
 use traffic_control::ControlPlane;
 
 use super::DriverError;
+use super::load::Load;
 use super::status::{DriverStatusWriter, RxQueue};
 use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 
@@ -127,7 +128,9 @@ impl DriverDpdk {
                     watchdog: task.watchdog.clone(),
                 })
                 .collect();
-            let worker = Worker::new(id, worker_ports, idle);
+            let load = Load::new(idle.mode);
+            let load_reader = load.reader();
+            let worker = Worker::new(id, worker_ports, idle, load);
 
             let subsystem = workers_subsystem.clone();
             let setup_pipeline = setup_pipeline.clone();
@@ -148,7 +151,7 @@ impl DriverDpdk {
                     DriverError::PortSetup(format!("failed to spawn DPDK worker {id}: {e}"))
                 })?;
 
-            monitors.push(WorkerMonitor::new(id, handle, rx_tasks));
+            monitors.push(WorkerMonitor::new(id, handle, rx_tasks).with_load(load_reader));
         }
 
         // The control worker is numbered after the data workers.
@@ -211,7 +214,9 @@ where
             watchdog: task.watchdog.clone(),
         })
         .collect();
-    let worker = ControlWorker::new(id, ports, control_plane, idle);
+    let load = Load::new(idle.mode);
+    let load_reader = load.reader();
+    let worker = ControlWorker::new(id, ports, control_plane, idle, load);
     let subsystem = subsystem.clone();
     let handle = thread::Builder::new()
         .name("dpdk-control".to_string())
@@ -228,7 +233,7 @@ where
         .map_err(|e| {
             DriverError::PortSetup(format!("failed to spawn the DPDK control worker: {e}"))
         })?;
-    Ok(WorkerMonitor::new(id, handle, rx_tasks))
+    Ok(WorkerMonitor::new(id, handle, rx_tasks).with_load(load_reader))
 }
 
 /// Publish each port's link state where the control plane can see it.

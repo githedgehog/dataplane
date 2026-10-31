@@ -223,10 +223,13 @@ fn flows_expire_on_the_worker_while_it_polls() {
         })
     };
 
+    let load = crate::drivers::load::Load::default();
+    let reader = load.reader();
     thread::scope(|scope| {
         let _stop_on_failure = shutdown.workers.cancel_token().drop_guard();
         let worker = scope.spawn(|| {
-            Worker::new(0, Vec::new(), args::IdleConfig::default()).run(&shutdown.workers, &setup);
+            Worker::new(0, Vec::new(), args::IdleConfig::default(), load)
+                .run(&shutdown.workers, &setup);
         });
         let [(forward, reverse), (cancelled, _)] =
             created_rx.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -246,6 +249,13 @@ fn flows_expire_on_the_worker_while_it_polls() {
         shutdown.workers.cancel_token().cancel();
         worker.join().unwrap();
     });
+    // No packets came, so removing the flows is the only work the worker did; it must not pass
+    // for idling.
+    let load = reader.load();
+    assert!(
+        load.nanos(Spent::Busy) > 0,
+        "expiring flows must count as busy time: {load:?}"
+    );
 }
 
 /// Counts what the pipeline is given.
