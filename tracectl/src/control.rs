@@ -549,7 +549,7 @@ impl TracingControl {
 
         Self::init_subscriber(filter, throttle);
 
-        if let Err(e) = color_eyre::install() {
+        if let Err(e) = crate::symbolize::install() {
             eprintln!("Failed to initialize color_eyre:\n{e}");
         }
         Self {
