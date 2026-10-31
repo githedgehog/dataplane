@@ -493,3 +493,61 @@ mod tap_exported {
         }
     }
 }
+
+/// A port's extended statistics, as its PMD names them: `port_xstat{port, name}`, one counter per
+/// statistic the driver chose to publish. Names differ from one PMD to the next.
+#[derive(Debug)]
+pub struct XstatMetrics {
+    series: Vec<Registered<metrics::Counter>>,
+}
+
+impl XstatMetrics {
+    /// Register the statistics `names` of port `port`, the configured interface name.
+    #[must_use]
+    pub fn new(port: &str, names: &[&str]) -> XstatMetrics {
+        XstatMetrics {
+            series: names
+                .iter()
+                .map(|name| {
+                    let mut spec = MetricSpec::new(
+                        format!("{PORT_METRIC_BASE}_xstat"),
+                        Unit::Count,
+                        vec![
+                            ("port".to_string(), port.to_string()),
+                            ("name".to_string(), (*name).to_string()),
+                        ],
+                    );
+                    spec.description =
+                        "an extended statistic of the port, as its driver names it".to_string();
+                    spec.register()
+                })
+                .collect(),
+        }
+    }
+
+    /// Publish `values`, one per name, in the order the names were registered in.
+    pub fn publish(&self, values: &[u64]) {
+        for (registered, value) in self.series.iter().zip(values) {
+            registered.metric.absolute(*value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod xstat_exported {
+    use super::*;
+    use crate::scrape::Scrape;
+
+    #[test]
+    fn each_statistic_reaches_its_named_series() {
+        let scrape = Scrape::default();
+        metrics::with_local_recorder(&scrape, || {
+            XstatMetrics::new("eth0", &["rx_discards_phy", "rx_out_of_buffer"]).publish(&[3, 4]);
+        });
+        let get = |name| scrape.counter("port_xstat", &[("port", "eth0"), ("name", name)]);
+        assert_eq!(
+            (get("rx_discards_phy"), get("rx_out_of_buffer")),
+            (Some(3), Some(4))
+        );
+    }
+}

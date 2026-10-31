@@ -1425,7 +1425,97 @@ pub struct PortStats {
     pub rx_nombuf: u64,
 }
 
+/// One of a port's extended statistics, by the id the PMD reads it with and the name it gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XstatName {
+    /// The id to read it by, with [`Dev::xstats`].
+    pub id: u64,
+    /// The PMD's name for it, such as `rx_discards_phy`.
+    pub name: String,
+}
+
 impl<'eal, S: Open> Dev<'eal, S> {
+    /// The names of every extended statistic the port's PMD keeps, with the ids to read them by.
+    ///
+    /// They differ from one PMD to the next, and some PMDs keep hundreds, so read them once and
+    /// pick the ones wanted.
+    ///
+    /// # Errors
+    /// Returns the driver's [`ErrorCode`]; a PMD without extended statistics reports `ENOTSUP`.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn xstat_names(&self) -> Result<Vec<XstatName>, ErrorCode> {
+        let port = self.info.index().as_u16();
+        // SAFETY: null arrays with a zero size ask only for the count.
+        let count = unsafe {
+            dpdk_sys::rte_eth_xstats_get_names_by_id(
+                port,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        let count = usize::try_from(count).map_err(|_| ErrorCode::parse_i32(count))?;
+        let mut names: Vec<dpdk_sys::rte_eth_xstat_name> =
+            vec![unsafe { core::mem::zeroed() }; count];
+        let size = u32::try_from(count).map_err(|_| ErrorCode::parse_i32(errno::NEG_EINVAL))?;
+        // SAFETY: `names` holds `size` entries; null ids ask for every statistic, in id order.
+        let filled = unsafe {
+            dpdk_sys::rte_eth_xstats_get_names_by_id(
+                port,
+                names.as_mut_ptr(),
+                size,
+                core::ptr::null_mut(),
+            )
+        };
+        let filled = usize::try_from(filled).map_err(|_| ErrorCode::parse_i32(filled))?;
+        // More than asked for means the set grew between the calls; take what was filled.
+        Ok(names
+            .iter()
+            .take(filled.min(count))
+            .enumerate()
+            .map(|(id, raw)| {
+                // SAFETY: the PMD writes a NUL-terminated name into the fixed array; the array is
+                // zeroed first, so it is terminated even if the PMD wrote nothing.
+                let name = unsafe { core::ffi::CStr::from_ptr(raw.name.as_ptr()) };
+                XstatName {
+                    id: id as u64,
+                    name: name.to_string_lossy().into_owned(),
+                }
+            })
+            .collect())
+    }
+
+    /// Read the extended statistics `ids` into `values`, which must be as long.
+    ///
+    /// # Errors
+    /// Returns the driver's [`ErrorCode`], or `EINVAL` if the lengths differ or the PMD filled
+    /// fewer than asked.
+    #[tracing::instrument(level = "trace", skip(self, ids, values))]
+    pub fn xstats(&self, ids: &[u64], values: &mut [u64]) -> Result<(), ErrorCode> {
+        let invalid = || ErrorCode::parse_i32(errno::NEG_EINVAL);
+        if ids.len() != values.len() {
+            return Err(invalid());
+        }
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let size = u32::try_from(ids.len()).map_err(|_| invalid())?;
+        // SAFETY: both arrays hold `size` entries and live for the call.
+        let ret = unsafe {
+            dpdk_sys::rte_eth_xstats_get_by_id(
+                self.info.index().as_u16(),
+                ids.as_ptr(),
+                values.as_mut_ptr(),
+                size,
+            )
+        };
+        match u32::try_from(ret) {
+            Ok(filled) if filled == size => Ok(()),
+            Ok(_) => Err(invalid()),
+            Err(_) => Err(ErrorCode::parse_i32(ret)),
+        }
+    }
+
     /// The device's primary source MAC address.
     ///
     /// Returns an error if the driver fails or reports a zero or multicast address.
