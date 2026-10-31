@@ -143,11 +143,8 @@ pub struct PortReport {
     pub name: String,
     /// Its bus address and driver, if it would say.
     pub hardware: Option<String>,
-    /// Its MAC address.
     pub mac: String,
-    /// Its MTU.
     pub mtu: u16,
-    /// Whether it has carrier.
     pub link_up: bool,
     /// Its negotiated speed in Mbit/s, if known.
     pub speed_mbps: Option<u32>,
