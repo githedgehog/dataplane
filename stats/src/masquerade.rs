@@ -20,22 +20,17 @@ use crate::spec::MetricSpec;
 /// Base id of the masquerade family. Every series is `{BASE}_{suffix}`.
 pub(crate) const MASQUERADE_METRIC_BASE: &str = "nat_masquerade";
 
-/// One region's usage, for one protocol.
+/// One region's usage, for one protocol, as the `nat` crate's `MasqueradeUsage` reports it,
+/// which documents the counts; the labels are its protocol, destination VPC (by VNI) and region
+/// as text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MasqueradeRegion<'a> {
-    /// The protocol whose ports these are.
     pub protocol: &'a str,
-    /// The VPC the region's traffic goes to, by its VNI.
     pub dst_vpc: &'a str,
-    /// The region's addresses, first to last.
     pub region: &'a str,
-    /// Addresses in the region.
     pub addresses: u64,
-    /// Addresses ports are allocated from.
     pub addresses_in_use: u64,
-    /// Port blocks handed out from the addresses in use.
     pub port_blocks_in_use: u64,
-    /// Port blocks the addresses in use have left.
     pub port_blocks_free: u64,
 }
 
