@@ -5,7 +5,7 @@
 
 use super::PacketSummary;
 use acl::table::build_table;
-pub(super) use acl::table::{Backend, Table};
+pub(super) use acl::table::{Backend, RuleRow, Table};
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, ValidatedAclRule};
@@ -158,8 +158,11 @@ impl From<&ValidatedOverlay> for PeeringAclRuleSet {
 /// protocols, so non-TCP/UDP rules always carry a wildcard port range and a portless packet looks
 /// up with port `0`. Likewise, only TCP rules can match on TCP flags, and packets with no TCP
 /// header look up with no flag set.
+/// What an ACL rule matches: the directed peering, addresses, protocol, ports and TCP flags.
+///
+/// Its derived `AclKeyRule` is the typed rule each table keeps, which offloads lower.
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-pub(super) struct AclKey<I> {
+pub struct AclKey<I> {
     #[mask]
     proto: NextHeader,
     #[exact]
@@ -305,11 +308,26 @@ fn lower_rules<T: IpVersion>(rules: &[PeeringAclRule]) -> Result<Vec<LoweredRule
 /// never compiled into production builds.
 pub(super) const PRODUCTION_BACKEND: Backend = Backend::Dpdk;
 
+/// What a matching rule decides.
 #[derive(Debug, Clone)]
-pub(super) struct LookupResult {
+pub struct LookupResult {
     pub(super) action: AclAction,
     pub(super) log: bool,
     pub(super) scope: AclScope,
+}
+
+impl LookupResult {
+    /// Allow or deny.
+    #[must_use]
+    pub fn action(&self) -> AclAction {
+        self.action
+    }
+
+    /// Whether an allow also lets the flow's replies through.
+    #[must_use]
+    pub fn scope(&self) -> AclScope {
+        self.scope
+    }
 }
 
 #[derive(Debug)]
@@ -370,6 +388,16 @@ impl AclTables {
                 None
             }
         }
+    }
+
+    /// The IPv4 rules, in first-match order.
+    pub(super) fn v4(&self) -> &[RuleRow<AclKey<Ipv4Addr>, LookupResult>] {
+        self.v4.rules()
+    }
+
+    /// The IPv6 rules, in first-match order.
+    pub(super) fn v6(&self) -> &[RuleRow<AclKey<Ipv6Addr>, LookupResult>] {
+        self.v6.rules()
     }
 
     #[must_use]
