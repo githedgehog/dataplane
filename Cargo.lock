@@ -2097,6 +2097,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-nic-offload"
+version = "0.36.0"
+dependencies = [
+ "dataplane-acl",
+ "dataplane-concurrency",
+ "dataplane-config",
+ "dataplane-dpdk",
+ "dataplane-hardware",
+ "dataplane-lpm",
+ "dataplane-match-action",
+ "dataplane-net",
+ "dataplane-policer",
+ "dataplane-rate-limit",
+ "metrics",
+ "nix",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-pipeline"
 version = "0.36.0"
 dependencies = [

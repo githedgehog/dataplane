@@ -1,0 +1,25 @@
+[package]
+name = "dataplane-nic-offload"
+description = "Lower match-action policy into NIC hardware, per port and per NIC species, with software as the fallback"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+concurrency = { workspace = true }
+config = { workspace = true }
+dpdk = { workspace = true }
+hardware = { workspace = true }
+lpm = { workspace = true }
+match-action = { workspace = true }
+metrics = { workspace = true }
+net = { workspace = true }
+nix = { workspace = true, features = ["sched"] }
+policer = { workspace = true }
+rate-limit = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+acl = { workspace = true, features = ["reference"] }
