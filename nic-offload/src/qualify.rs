@@ -467,8 +467,10 @@ fn qualify_case(
         }
         let expected = dropped - unmetered;
         eprintln!(
-            "qualify: {} rule(s) ({} refused), {} meter(s), meter {red:?} dropping: {} of {} frames arrived, dropping rules counted {drop_counted}",
+            "qualify: {} rate limit(s), {} deny(s), {} matching TCP flags ({} refused), {} meter(s), meter {red:?} dropping: {} of {} frames arrived, dropping rules counted {drop_counted}",
             program.rules.len(),
+            program.denies.len(),
+            flag_rules(&program),
             refused.len(),
             plan.profiles.len(),
             wires.len() - dropped,
@@ -488,6 +490,17 @@ fn qualify_case(
         }
     }
     took(started);
+}
+
+/// How many rules of `program` match TCP flags.
+fn flag_rules(program: &Program) -> usize {
+    program
+        .rules
+        .iter()
+        .map(|r| &r.matches)
+        .chain(program.denies.iter().map(|d| &d.matches))
+        .filter(|m| m.tcp_flags.is_some())
+        .count()
 }
 
 /// Report a disagreement and fail; bolero hides panic messages while it shrinks a case.
