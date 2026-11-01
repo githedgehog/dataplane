@@ -60,6 +60,9 @@ pub enum Error {
     /// A meter profile was refused.
     #[error(transparent)]
     Meter(#[from] MeterError),
+    /// A pattern template was refused.
+    #[error("pattern template refused: {0}")]
+    Pattern(String),
     /// More meters than [`RESOURCES`] reserved.
     #[error("{0} meters exceed the {max} reserved", max = RESOURCES.meters)]
     TooManyMeters(usize),
@@ -456,31 +459,84 @@ fn color_table(meter: usize, pattern: usize, actions: [usize; 2]) -> PlannedTabl
     }
 }
 
-/// Install `plan` on `flows`' port, then hold it until `changed`; everything is removed on
-/// return.
+/// The rules of a plan while it is installed.
+#[derive(Debug)]
+pub struct Installed<'a> {
+    rules: &'a [Vec<(Role, TemplateRule<'a>)>],
+    refused: &'a [(Role, String)],
+}
+
+impl Installed<'_> {
+    /// The rules of the program the NIC refused, and why: they stay in software alone.
+    #[must_use]
+    pub fn refused(&self) -> &[(Role, String)] {
+        self.refused
+    }
+
+    /// How many rules of the program were installed.
+    #[must_use]
+    pub fn police_rules(&self) -> usize {
+        self.rules
+            .iter()
+            .flatten()
+            .filter(|(role, _)| matches!(role, Role::Police(_)))
+            .count()
+    }
+
+    /// What each counting rule has counted so far, by role. Hardware counters lag (by about half
+    /// a second on a BlueField-3).
+    #[must_use]
+    pub fn counts(&self) -> Vec<(Role, Counts)> {
+        self.rules
+            .iter()
+            .flatten()
+            .filter(|(role, _)| matches!(role, Role::Color(..)))
+            .map(|(role, rule)| (*role, rule.counts().unwrap_or_default()))
+            .collect()
+    }
+}
+
+/// Whether every rule of `table` is a rule of the program: then the NIC may refuse the table, or
+/// any of its rules, and they stay in software alone. That is always safe: rules of the program
+/// that charge different meters never overlap, so no remaining rule takes their traffic.
+fn optional(table: &PlannedTable) -> bool {
+    table
+        .rules
+        .iter()
+        .all(|rule| matches!(rule.role, Role::Police(_)))
+}
+
+/// Install `plan` on `flows`' port, call `f` while it is installed, and remove it again.
+///
+/// Rules of the program the NIC refuses (their template, their table, or the rule itself) are
+/// left out and listed in [`Installed::refused`]; the rest of the plan is installed.
 ///
 /// # Errors
 ///
-/// Returns the first template, table, meter or rule the NIC refused; whatever was installed is
-/// removed again.
-pub fn install(
+/// Returns the first template, table, meter or rule the NIC refused that the plan cannot do
+/// without; whatever was installed is removed again.
+pub fn with_installed<R>(
     flows: &TemplateFlows<'_>,
-    port: &str,
-    program: &Program,
     plan: &Plan,
-    changed: &dyn Fn() -> bool,
-) -> Result<(), Error> {
+    f: impl FnOnce(&Installed<'_>) -> R,
+) -> Result<R, Error> {
     if plan.tables.is_empty() {
-        while !changed() {
-            std::thread::sleep(POLL);
-        }
-        return Ok(());
+        return Ok(f(&Installed {
+            rules: &[],
+            refused: &[],
+        }));
     }
-    let patterns = plan
+    let mut refused: Vec<(Role, String)> = Vec::new();
+    let mut refuse = |table: &PlannedTable, why: &dyn std::fmt::Display| {
+        for rule in &table.rules {
+            refused.push((rule.role, why.to_string()));
+        }
+    };
+    let patterns: Vec<Result<PatternTemplate<'_, Ingress>, FlowError>> = plan
         .patterns
         .iter()
         .map(|p| flows.pattern_template::<Ingress, _>(p))
-        .collect::<Result<Vec<PatternTemplate<'_, Ingress>>, _>>()?;
+        .collect();
     let actions = plan
         .actions
         .iter()
@@ -494,14 +550,24 @@ pub fn install(
             flows.meter_profile(MeterProfileId(u32::try_from(id).unwrap_or(u32::MAX)), p)
         })
         .collect::<Result<Vec<MeterProfileHandle<'_>>, _>>()?;
-    let tables = plan
-        .tables
-        .iter()
-        .map(|t| {
-            let templates: Vec<_> = t.actions.iter().map(|&a| &actions[a]).collect();
-            flows.table(t.config, &[&patterns[t.pattern]], &templates)
-        })
-        .collect::<Result<Vec<TemplateTable<'_, Ingress>>, _>>()?;
+    let mut tables: Vec<Option<TemplateTable<'_, Ingress>>> = Vec::with_capacity(plan.tables.len());
+    for planned in &plan.tables {
+        let templates: Vec<_> = planned.actions.iter().map(|&a| &actions[a]).collect();
+        let table = match &patterns[planned.pattern] {
+            Ok(pattern) => flows
+                .table(planned.config, &[pattern], &templates)
+                .map_err(Error::from),
+            Err(e) => Err(Error::Pattern(e.to_string())),
+        };
+        tables.push(match table {
+            Ok(table) => Some(table),
+            Err(e) if optional(planned) => {
+                refuse(planned, &e);
+                None
+            }
+            Err(e) => return Err(e),
+        });
+    }
     let meters = profiles
         .iter()
         .map(|p| flows.meter::<Ingress>(p))
@@ -511,6 +577,7 @@ pub fn install(
     let mut rules: Vec<Vec<(Role, TemplateRule<'_>)>> =
         plan.tables.iter().map(|_| Vec::new()).collect();
     for (at, (planned, table)) in plan.tables.iter().zip(&tables).enumerate().rev() {
+        let Some(table) = table else { continue };
         for rule in &planned.rules {
             let args: Vec<RuleArg<'_, Ingress>> = rule
                 .args
@@ -520,44 +587,73 @@ pub fn install(
                     Arg::Jump(group) => RuleArg::Jump(group),
                 })
                 .collect();
-            rules[at].push((
-                rule.role,
-                table.insert(0, &rule.pattern, rule.actions, &args)?,
-            ));
+            match table.insert(0, &rule.pattern, rule.actions, &args) {
+                Ok(installed) => rules[at].push((rule.role, installed)),
+                Err(e) if optional(planned) => refused.push((rule.role, e.to_string())),
+                Err(e) => return Err(e.into()),
+            }
         }
     }
-    let installed =
-        |role: fn(Role) -> bool| rules.iter().flatten().filter(|(r, _)| role(*r)).count();
-    info!(
-        "port {port}: NIC rate limiting {} rule(s) with {} meter(s) in {} table(s)",
-        installed(|r| matches!(r, Role::Police(_))),
-        meters.len(),
-        plan.tables.len()
-    );
-
-    let mut reported = Instant::now();
-    while !changed() {
-        std::thread::sleep(POLL);
-        if reported.elapsed() >= REPORT {
-            report(port, program, &rules);
-            reported = Instant::now();
-        }
-    }
-    report(port, program, &rules);
+    let result = f(&Installed {
+        rules: &rules,
+        refused: &refused,
+    });
     // The root rule goes first, so no packet enters a group being removed.
     rules[0].clear();
-    Ok(())
+    Ok(result)
+}
+
+/// Install `plan` on `flows`' port, then hold it until `changed`, reporting its counts; everything
+/// is removed on return.
+///
+/// # Errors
+///
+/// Returns the first template, table, meter or rule the NIC refused; whatever was installed is
+/// removed again.
+pub fn install(
+    flows: &TemplateFlows<'_>,
+    port: &str,
+    program: &Program,
+    plan: &Plan,
+    changed: &dyn Fn() -> bool,
+) -> Result<(), Error> {
+    with_installed(flows, plan, |installed| {
+        for (role, why) in installed.refused() {
+            if let Role::Police(rule) = role {
+                warn!(
+                    "port {port}: the NIC refused rate-limit rule {}, which stays in software: {why}",
+                    program.rules[*rule].rule
+                );
+            }
+        }
+        if !plan.tables.is_empty() {
+            info!(
+                "port {port}: NIC rate limiting {} rule(s) with {} meter(s) in {} table(s)",
+                installed.police_rules(),
+                plan.profiles.len(),
+                plan.tables.len()
+            );
+        }
+        let mut reported = Instant::now();
+        while !changed() {
+            std::thread::sleep(POLL);
+            if reported.elapsed() >= REPORT {
+                report(port, program, installed);
+                reported = Instant::now();
+            }
+        }
+        report(port, program, installed);
+    })
 }
 
 /// Log and export what each meter passed and dropped in hardware.
-fn report(port: &str, program: &Program, rules: &[Vec<(Role, TemplateRule<'_>)>]) {
+fn report(port: &str, program: &Program, installed: &Installed<'_>) {
     let mut passed = vec![Counts::default(); program.meters.len()];
     let mut dropped = vec![Counts::default(); program.meters.len()];
-    for (role, rule) in rules.iter().flatten() {
-        let Role::Color(meter, color) = *role else {
+    for (role, counts) in installed.counts() {
+        let Role::Color(meter, color) = role else {
             continue;
         };
-        let counts = rule.counts().unwrap_or_default();
         let sum = if color == Color::Red {
             &mut dropped[meter]
         } else {

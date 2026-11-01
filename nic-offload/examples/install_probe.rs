@@ -58,6 +58,15 @@ fn rule(v6: bool, proto: Option<u8>, dst_port: Option<u16>) -> PoliceRule {
     }
 }
 
+/// `rule` with prefixes of these lengths (IPv6 only) and these ports.
+fn v6(src: u8, dst: u8, proto: Option<u8>, ports: (Option<u16>, Option<u16>)) -> PoliceRule {
+    let mut rule = rule(true, proto, ports.1);
+    rule.source = Prefix::V6(Ipv6Addr::new(0xfd00, 0, 0, 1, 0, 0, 0, 0), src);
+    rule.destination = Prefix::V6(Ipv6Addr::new(0xfd00, 0, 0, 2, 0, 0, 0, 0), dst);
+    rule.src_port = ports.0;
+    rule
+}
+
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 fn main() {
     tracing_subscriber::fmt()
@@ -145,6 +154,63 @@ fn main() {
         (
             "IPv6, TCP port, no fragment header",
             vec![rule(true, Some(6), Some(443))],
+        ),
+        ("IPv4, ICMP", vec![rule(false, Some(1), None)]),
+        (
+            "IPv6 /128 /128, any protocol",
+            vec![v6(128, 128, None, (None, None))],
+        ),
+        (
+            "IPv6 /128 /128, TCP",
+            vec![v6(128, 128, Some(6), (None, None))],
+        ),
+        (
+            "IPv6 /64 /64, TCP both ports",
+            vec![v6(64, 64, Some(6), (Some(1), Some(2)))],
+        ),
+        (
+            "IPv6 /65 /65, TCP both ports",
+            vec![v6(65, 65, Some(6), (Some(1), Some(2)))],
+        ),
+        (
+            "IPv6 /96 /96, TCP both ports",
+            vec![v6(96, 96, Some(6), (Some(1), Some(2)))],
+        ),
+        (
+            "IPv6 /105 /125, TCP both ports",
+            vec![v6(105, 125, Some(6), (Some(1), Some(2)))],
+        ),
+        (
+            "IPv6 /128 /128, TCP both ports",
+            vec![v6(128, 128, Some(6), (Some(1), Some(2)))],
+        ),
+        (
+            "IPv6 /128 /128, TCP one port",
+            vec![v6(128, 128, Some(6), (None, Some(2)))],
+        ),
+        (
+            "IPv6 /97 /96, TCP both ports",
+            vec![v6(97, 96, Some(6), (Some(1), Some(2)))],
+        ),
+        (
+            "IPv6 /96 /97, TCP both ports",
+            vec![v6(96, 97, Some(6), (Some(1), Some(2)))],
+        ),
+        (
+            "IPv6 /97 /97, TCP both ports",
+            vec![v6(97, 97, Some(6), (Some(1), Some(2)))],
+        ),
+        (
+            "IPv6 /128 /64, TCP both ports",
+            vec![v6(128, 64, Some(6), (Some(1), Some(2)))],
+        ),
+        (
+            "IPv6 /128 /96, TCP both ports",
+            vec![v6(128, 96, Some(6), (Some(1), Some(2)))],
+        ),
+        (
+            "IPv6 /128 /128, any protocol, VNI",
+            vec![v6(128, 128, None, (None, None))],
         ),
         (
             "all of the above",
