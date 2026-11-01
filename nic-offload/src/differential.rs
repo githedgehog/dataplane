@@ -189,6 +189,11 @@ pub(crate) struct RawRule {
 }
 
 impl RawRule {
+    /// The index of the rule's peering.
+    pub(crate) fn peering_index(&self) -> usize {
+        self.direction().0
+    }
+
     /// The VNIs of the rule's source and destination VPCs.
     pub(crate) fn vnis(&self) -> (u32, u32) {
         let (_, from, to) = self.direction();
@@ -275,7 +280,7 @@ pub(crate) struct RawAclRule {
 /// `Some(true)`, else allow).
 #[derive(Debug, Clone, Default, bolero::TypeGenerator)]
 pub(crate) struct RawAcls {
-    defaults: [Option<bool>; 4],
+    pub(crate) defaults: [Option<bool>; 4],
     pub(crate) rules: Vec<RawAclRule>,
 }
 
