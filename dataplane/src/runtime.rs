@@ -619,7 +619,7 @@ fn run_dpdk_driver(
         }
     }
 
-    let rate_limits = ingredients.rate_limits().clone();
+    let offload = ingredients.offload_policy();
     // Queue handles borrow the ports, so workers must join before port shutdown.
     concurrency::thread::scope(|scope| {
         info!("Using driver DPDK...");
@@ -633,7 +633,7 @@ fn run_dpdk_driver(
             status_writer,
             bridge.as_mut(),
             control_plane,
-            &rate_limits,
+            &offload,
         ) {
             Ok(()) => {
                 // Inside the scope: it waits for every worker, so after it this would only run at

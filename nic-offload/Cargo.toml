@@ -7,6 +7,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+acl-filter = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
 dpdk = { workspace = true }
@@ -23,6 +24,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 acl = { workspace = true, features = ["reference"] }
+acl-filter = { workspace = true, features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }
 clock = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
