@@ -17,7 +17,8 @@ use lpm::prefix::{Prefix as LpmPrefix, PrefixWithOptionalPorts};
 use policer::{Profile, Rate};
 use rate_limit::{PeeringRules, RateLimitWriter, RateLimits, Unit};
 
-use crate::program::{Prefix, Program, Refusal};
+use crate::program::{Origin, Prefix, Program, Refusal};
+use acl_filter::AclFilterContext;
 
 const VNI1: u32 = 3000;
 const VNI2: u32 = 4000;
@@ -80,7 +81,10 @@ fn compile(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>) -> Program {
     let writer: RateLimitWriter<PeeringRules> =
         RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
     writer.apply(&overlay, Backend::Reference).unwrap();
-    Program::compile(&writer.load())
+    Program::compile(
+        &AclFilterContext::reference(&overlay).unwrap(),
+        &writer.load(),
+    )
 }
 
 #[test]
@@ -96,12 +100,15 @@ fn disjoint_rules_are_offloaded_with_their_matches() {
     assert_eq!(program.rules.len(), 2);
     assert_eq!(program.meters.len(), 2);
     let first = &program.rules[0];
-    assert_eq!(first.src_vni.as_u32(), VNI1);
+    assert_eq!(first.matches.src_vni.as_u32(), VNI1);
     assert_eq!(
-        first.destination,
+        first.matches.destination,
         Prefix::V4("10.1.1.0".parse().unwrap(), 24)
     );
-    assert_eq!(first.source, Prefix::V4("10.0.0.0".parse().unwrap(), 24));
+    assert_eq!(
+        first.matches.source,
+        Prefix::V4("10.0.0.0".parse().unwrap(), 24)
+    );
     assert_eq!(program.meters[first.meter].unit, Unit::Bytes);
 }
 
@@ -118,7 +125,10 @@ fn a_rule_overlapping_an_earlier_one_with_another_meter_stays_in_software() {
     );
     assert_eq!(program.rules.len(), 1);
     assert_eq!(program.meters[program.rules[0].meter].name, "wide");
-    assert_eq!(program.refused, vec![(1, Refusal::Overlap)]);
+    assert_eq!(
+        program.refused,
+        vec![(Origin::RateLimit(1), Refusal::Overlap)]
+    );
 }
 
 #[test]
@@ -139,7 +149,10 @@ fn a_meter_that_drops_nothing_is_not_offloaded() {
         vec![rule("10.1.0.0/16", "pass")],
     );
     assert!(program.rules.is_empty() && program.meters.is_empty());
-    assert_eq!(program.refused, vec![(0, Refusal::NothingToDrop)]);
+    assert_eq!(
+        program.refused,
+        vec![(Origin::RateLimit(0), Refusal::NothingToDrop)]
+    );
 }
 
 /// Software resolves extension headers to the protocol after them, so a rule for an extension
@@ -151,7 +164,10 @@ fn a_rule_for_an_extension_header_protocol_is_not_offloaded() {
     let mut esp = rule("10.1.0.0/16", "a");
     esp.pattern.proto = AclProtoMatch::Other(50);
     let program = compile(vec![("a", bytes(ColorAction::Drop))], vec![hop_by_hop, esp]);
-    assert_eq!(program.refused, vec![(0, Refusal::ExtensionHeader)]);
+    assert_eq!(
+        program.refused,
+        vec![(Origin::RateLimit(0), Refusal::ExtensionHeader)]
+    );
     assert_eq!(program.rules.len(), 1);
-    assert_eq!(program.rules[0].proto, Some(50));
+    assert_eq!(program.rules[0].matches.proto, Some(50));
 }
