@@ -15,6 +15,8 @@ use net::eth::mac::Mac;
 use net::vlan::{Pcp, Vid};
 use net::vxlan::Vni;
 
+use crate::flow::item::MatchItem;
+
 /// `rte_be32_t` (network byte order) for an IPv4 address.
 fn be32(addr: Ipv4Addr) -> u32 {
     u32::from(addr).to_be()
@@ -401,6 +403,117 @@ impl TcpMatch {
             mask.hdr.dst_port = u16::MAX;
         }
         (spec, mask)
+    }
+}
+
+/// The masks an item lowers to, ignoring the values matched.
+///
+/// A template table matches every rule with its pattern template's masks, so a rule whose masks
+/// differ would silently match something other than what it says; templates compare shapes to
+/// refuse such rules. Shapes are read back from the lowered masks, so they agree with what the PMD
+/// sees: an unconstrained field and a zero-length prefix have the same shape. Only the fields
+/// lowering sets are read.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ItemShape {
+    /// An Ethernet header.
+    Eth {
+        /// Destination MAC mask.
+        dst: [u8; 6],
+        /// Source MAC mask.
+        src: [u8; 6],
+        /// EtherType mask.
+        ether_type: u16,
+    },
+    /// A VLAN tag.
+    Vlan {
+        /// Tag control information (PCP, DEI, VID) mask.
+        tci: u16,
+    },
+    /// An IPv4 header.
+    Ipv4 {
+        /// Source address mask.
+        src: Ipv4Addr,
+        /// Destination address mask.
+        dst: Ipv4Addr,
+        /// Protocol mask.
+        proto: u8,
+    },
+    /// An IPv6 header.
+    Ipv6 {
+        /// Source address mask.
+        src: Ipv6Addr,
+        /// Destination address mask.
+        dst: Ipv6Addr,
+        /// Next header mask.
+        proto: u8,
+    },
+    /// A UDP header.
+    Udp {
+        /// Source port mask.
+        src: u16,
+        /// Destination port mask.
+        dst: u16,
+    },
+    /// A TCP header.
+    Tcp {
+        /// Source port mask.
+        src: u16,
+        /// Destination port mask.
+        dst: u16,
+    },
+    /// A VXLAN header.
+    Vxlan {
+        /// VNI mask.
+        vni: [u8; 3],
+    },
+    /// A meter color.
+    MeterColor {
+        /// Color mask.
+        color: u32,
+    },
+}
+
+impl MatchItem {
+    /// The masks this item lowered to.
+    pub(crate) fn shape(&self) -> ItemShape {
+        match self {
+            MatchItem::Eth(_, mask) => {
+                // SAFETY: lowering writes the `hdr` view of the anonymous union.
+                let hdr = unsafe { &mask.annon1.hdr };
+                ItemShape::Eth {
+                    dst: hdr.dst_addr.addr_bytes,
+                    src: hdr.src_addr.addr_bytes,
+                    ether_type: u16::from_be(hdr.ether_type),
+                }
+            }
+            MatchItem::Vlan(_, mask) => ItemShape::Vlan {
+                // SAFETY: lowering writes the `hdr` view of the anonymous union.
+                tci: u16::from_be(unsafe { mask.annon1.hdr.vlan_tci }),
+            },
+            MatchItem::Ipv4(_, mask) => ItemShape::Ipv4 {
+                src: Ipv4Addr::from(u32::from_be(mask.hdr.src_addr)),
+                dst: Ipv4Addr::from(u32::from_be(mask.hdr.dst_addr)),
+                proto: mask.hdr.next_proto_id,
+            },
+            MatchItem::Ipv6(_, mask) => ItemShape::Ipv6 {
+                src: Ipv6Addr::from(mask.hdr.src_addr.a),
+                dst: Ipv6Addr::from(mask.hdr.dst_addr.a),
+                proto: mask.hdr.proto,
+            },
+            MatchItem::Udp(_, mask) => ItemShape::Udp {
+                src: u16::from_be(mask.hdr.src_port),
+                dst: u16::from_be(mask.hdr.dst_port),
+            },
+            MatchItem::Tcp(_, mask) => ItemShape::Tcp {
+                src: u16::from_be(mask.hdr.src_port),
+                dst: u16::from_be(mask.hdr.dst_port),
+            },
+            MatchItem::Vxlan(_, mask) => ItemShape::Vxlan {
+                // SAFETY: lowering writes the `vni` view of the anonymous unions.
+                vni: unsafe { mask.annon1.annon1.vni },
+            },
+            MatchItem::MeterColor(_, mask) => ItemShape::MeterColor { color: mask.color },
+        }
     }
 }
 
