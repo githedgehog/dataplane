@@ -65,7 +65,7 @@ impl Color {
     /// Every color, in order.
     pub const ALL: [Color; 3] = [Color::Green, Color::Yellow, Color::Red];
 
-    fn raw(self) -> rte_color::Type {
+    pub(crate) fn raw(self) -> rte_color::Type {
         match self {
             Color::Green => rte_color::RTE_COLOR_GREEN,
             Color::Yellow => rte_color::RTE_COLOR_YELLOW,
