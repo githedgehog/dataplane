@@ -10,7 +10,7 @@ use core::ptr::{from_ref, null};
 
 use dpdk_sys::{
     rte_eth_hash_function, rte_flow_action, rte_flow_action_handle, rte_flow_action_jump,
-    rte_flow_action_queue, rte_flow_action_rss, rte_flow_action_type as at,
+    rte_flow_action_mark, rte_flow_action_queue, rte_flow_action_rss, rte_flow_action_type as at,
 };
 
 use crate::flow::{Domain, FlowGroup};
@@ -32,6 +32,8 @@ pub enum TemplateAction {
     Queue(RxQueueIndex),
     /// Spread over receive queues of this port by hash, with the device's default key.
     Rss(RssTarget),
+    /// Mark the packet with a value, which arrives with it ([`Mbuf::rx_mark`](crate::mem::Mbuf::rx_mark)).
+    Mark(u32),
     /// Count the rule's packets and bytes; see [`TemplateRule::counts`](super::TemplateRule::counts).
     Count,
     /// Drop.
@@ -74,6 +76,7 @@ enum Conf {
     Jump(rte_flow_action_jump),
     Queue(rte_flow_action_queue),
     Handle(*mut rte_flow_action_handle),
+    Mark(rte_flow_action_mark),
     /// `rss.queue` points into `queues`, whose heap allocation does not move with the action.
     Rss {
         rss: rte_flow_action_rss,
@@ -99,6 +102,7 @@ impl OwnedAction {
             Conf::Jump(jump) => from_ref(jump).cast(),
             Conf::Queue(queue) => from_ref(queue).cast(),
             Conf::Handle(handle) => handle.cast_const().cast(),
+            Conf::Mark(mark) => from_ref(mark).cast(),
             Conf::Rss { rss, .. } => from_ref(rss).cast(),
         };
         rte_flow_action {
@@ -154,6 +158,10 @@ fn fixed(action: &TemplateAction) -> OwnedAction {
         TemplateAction::SendToKernel => {
             OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_SEND_TO_KERNEL, Conf::None)
         }
+        TemplateAction::Mark(id) => OwnedAction::new(
+            at::RTE_FLOW_ACTION_TYPE_MARK,
+            Conf::Mark(rte_flow_action_mark { id }),
+        ),
         // The rule names the meter or group: no configuration in the template.
         TemplateAction::Meter => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_INDIRECT, Conf::None),
         TemplateAction::JumpPerRule => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_JUMP, Conf::None),
@@ -183,6 +191,10 @@ pub(crate) fn template(actions: &[TemplateAction]) -> (Vec<OwnedAction>, Vec<Own
             TemplateAction::Meter => {
                 OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_METER_MARK, Conf::None)
             }
+            TemplateAction::Mark(_) => OwnedAction::new(
+                at::RTE_FLOW_ACTION_TYPE_MARK,
+                Conf::Mark(rte_flow_action_mark { id: u32::MAX }),
+            ),
             ref other => fixed(other),
         })
         .collect();
