@@ -8,10 +8,10 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 use dpdk_sys::{
-    rte_flow, rte_flow_action, rte_flow_action_type as at, rte_flow_async_create,
-    rte_flow_async_destroy, rte_flow_error, rte_flow_op_attr, rte_flow_query, rte_flow_query_count,
-    rte_flow_table_insertion_type, rte_flow_template_table, rte_flow_template_table_attr,
-    rte_flow_template_table_create, rte_flow_template_table_destroy,
+    rte_flow, rte_flow_action, rte_flow_action_type as at, rte_flow_async_actions_update,
+    rte_flow_async_create, rte_flow_async_destroy, rte_flow_error, rte_flow_op_attr,
+    rte_flow_query, rte_flow_query_count, rte_flow_table_insertion_type, rte_flow_template_table,
+    rte_flow_template_table_attr, rte_flow_template_table_create, rte_flow_template_table_destroy,
 };
 use tracing::warn;
 
@@ -168,6 +168,54 @@ impl<D: Domain> TemplateTable<'_, D> {
         };
         flows.complete("rule creation")?;
         Ok(rule)
+    }
+
+    /// Replace the actions of `rule`, a rule of this table, with those of actions template
+    /// `actions_template` given `args`, in place, and wait for it.
+    ///
+    /// The PMD swaps the actions of the installed rule: a packet sees the old actions or the new
+    /// ones, not a rule that is missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the template index is out of range, if `args` do not fit it, or if the
+    /// PMD fails; the rule then keeps its old actions.
+    pub fn update(
+        &self,
+        rule: &mut TemplateRule<'_>,
+        actions_template: usize,
+        args: &[RuleArg<'_, D>],
+    ) -> Result<(), TemplateError> {
+        let template_actions =
+            self.actions
+                .get(actions_template)
+                .ok_or(TemplateError::NoSuchTemplate {
+                    kind: "actions",
+                    index: actions_template,
+                    count: self.actions.len(),
+                })?;
+        let owned = actions::rule(template_actions, args)?;
+        let actions = actions::lower(&owned);
+        let flows = self.flows;
+        // SAFETY: zero is valid for this C struct; a cleared `postpone` pushes at once.
+        let op_attr: rte_flow_op_attr = unsafe { core::mem::zeroed() };
+        // SAFETY: the rule is live and of this table; the actions outlive the call, which copies
+        // them; the index is in range (checked above, and below 256 by construction).
+        check(|error| unsafe {
+            rte_flow_async_actions_update(
+                flows.port.as_u16(),
+                QUEUE,
+                &raw const op_attr,
+                rule.flow.as_ptr(),
+                actions.as_ptr(),
+                actions_template as u8,
+                core::ptr::null_mut(),
+                error,
+            )
+        })?;
+        flows.complete("rule update")?;
+        rule.counted = template_actions.contains(&TemplateAction::Count);
+        Ok(())
     }
 }
 
