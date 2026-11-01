@@ -14,6 +14,7 @@ test = ["dep:id", "dep:dpdk-test-macros"]
 
 arrayvec = { workspace = true }
 bitflags = { workspace = true }
+clock = { workspace = true }
 concurrency = { workspace = true }
 dpdk-sys = { workspace = true }
 dpdk-test-macros = { workspace = true, optional = true }

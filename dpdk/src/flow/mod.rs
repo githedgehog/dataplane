@@ -7,18 +7,20 @@
 //! [`FlowBuilder::create`]. [`FlowRule`] borrows the device and destroys the rule on drop.
 //! Device support is checked by the PMD during validation or creation.
 //! Pattern order follows [`Within`](net::headers::Within).
-//! This synchronous rule lifecycle is thread-bound; async rules need queue-managed destruction.
+//! This synchronous rule lifecycle is thread-bound; [`template`] has the asynchronous template API.
 
 mod builder;
 mod error;
+mod item;
 mod pattern;
 mod rule;
+pub mod template;
 
 pub use builder::{FlowBuilder, VxlanEncap};
 pub use error::FlowError;
 pub use pattern::{
-    EthMatch, Ipv4Match, Ipv4Prefix, Ipv6Match, Ipv6Prefix, TcpMatch, UdpMatch, VlanMatch,
-    VxlanMatch,
+    EthMatch, Ipv4Match, Ipv4Prefix, Ipv6Match, Ipv6Prefix, ItemShape, TcpMatch, UdpMatch,
+    VlanMatch, VxlanMatch,
 };
 pub(crate) use rule::flush;
 pub use rule::{FlowDestroyFailure, FlowRule};

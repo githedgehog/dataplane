@@ -17,8 +17,8 @@ use dpdk_sys::{
     rte_flow_action_queue, rte_flow_action_set_ipv4, rte_flow_action_set_tp,
     rte_flow_action_type as at, rte_flow_action_vxlan_encap, rte_flow_attr, rte_flow_create,
     rte_flow_error, rte_flow_field_id, rte_flow_item, rte_flow_item_eth, rte_flow_item_ipv4,
-    rte_flow_item_ipv6, rte_flow_item_tcp, rte_flow_item_type as it, rte_flow_item_udp,
-    rte_flow_item_vlan, rte_flow_item_vxlan, rte_flow_modify_op, rte_flow_validate,
+    rte_flow_item_type as it, rte_flow_item_udp, rte_flow_item_vxlan, rte_flow_modify_op,
+    rte_flow_validate,
 };
 
 use net::eth::Eth;
@@ -34,6 +34,7 @@ use net::vxlan::{Vni, Vxlan};
 
 use crate::dev::{Dev, DevIndex, Started};
 use crate::flow::error::FlowError;
+use crate::flow::item::{self, MatchItem};
 use crate::flow::pattern::{
     EthMatch, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch, VlanMatch, VxlanMatch,
 };
@@ -41,57 +42,6 @@ use crate::flow::rule::FlowRule;
 use crate::flow::{Direction, Domain, FlowGroup, Mark, Priority};
 use crate::queue::rx::RxQueueIndex;
 use concurrency::sync::atomic::AtomicUsize;
-
-/// Owned match criteria, kept in place while the PMD reads their pointers.
-enum MatchItem {
-    Eth(rte_flow_item_eth, rte_flow_item_eth),
-    Vlan(rte_flow_item_vlan, rte_flow_item_vlan),
-    Ipv4(rte_flow_item_ipv4, rte_flow_item_ipv4),
-    Ipv6(rte_flow_item_ipv6, rte_flow_item_ipv6),
-    Udp(rte_flow_item_udp, rte_flow_item_udp),
-    Tcp(rte_flow_item_tcp, rte_flow_item_tcp),
-    Vxlan(rte_flow_item_vxlan, rte_flow_item_vxlan),
-}
-
-impl MatchItem {
-    fn type_(&self) -> it::Type {
-        match self {
-            MatchItem::Eth(..) => it::RTE_FLOW_ITEM_TYPE_ETH,
-            MatchItem::Vlan(..) => it::RTE_FLOW_ITEM_TYPE_VLAN,
-            MatchItem::Ipv4(..) => it::RTE_FLOW_ITEM_TYPE_IPV4,
-            MatchItem::Ipv6(..) => it::RTE_FLOW_ITEM_TYPE_IPV6,
-            MatchItem::Udp(..) => it::RTE_FLOW_ITEM_TYPE_UDP,
-            MatchItem::Tcp(..) => it::RTE_FLOW_ITEM_TYPE_TCP,
-            MatchItem::Vxlan(..) => it::RTE_FLOW_ITEM_TYPE_VXLAN,
-        }
-    }
-
-    /// Pointer to the spec struct (null for a presence-only item). Valid while `self` is alive.
-    fn spec(&self) -> *const c_void {
-        match self {
-            MatchItem::Eth(spec, _) => from_ref(spec).cast(),
-            MatchItem::Vlan(spec, _) => from_ref(spec).cast(),
-            MatchItem::Ipv4(spec, _) => from_ref(spec).cast(),
-            MatchItem::Ipv6(spec, _) => from_ref(spec).cast(),
-            MatchItem::Udp(spec, _) => from_ref(spec).cast(),
-            MatchItem::Tcp(spec, _) => from_ref(spec).cast(),
-            MatchItem::Vxlan(spec, _) => from_ref(spec).cast(),
-        }
-    }
-
-    /// Pointer to the mask struct (null for a presence-only item). Valid while `self` is alive.
-    fn mask(&self) -> *const c_void {
-        match self {
-            MatchItem::Eth(_, mask) => from_ref(mask).cast(),
-            MatchItem::Vlan(_, mask) => from_ref(mask).cast(),
-            MatchItem::Ipv4(_, mask) => from_ref(mask).cast(),
-            MatchItem::Ipv6(_, mask) => from_ref(mask).cast(),
-            MatchItem::Udp(_, mask) => from_ref(mask).cast(),
-            MatchItem::Tcp(_, mask) => from_ref(mask).cast(),
-            MatchItem::Vxlan(_, mask) => from_ref(mask).cast(),
-        }
-    }
-}
 
 /// An action plus the owned configuration struct the PMD reads through a pointer.
 enum Action {
@@ -650,21 +600,7 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
             Direction::Transfer => attr.set_transfer(1),
         }
 
-        let mut items: Vec<rte_flow_item> = Vec::with_capacity(self.items.len() + 1);
-        for item in &self.items {
-            items.push(rte_flow_item {
-                type_: item.type_(),
-                spec: item.spec(),
-                last: null(),
-                mask: item.mask(),
-            });
-        }
-        items.push(rte_flow_item {
-            type_: it::RTE_FLOW_ITEM_TYPE_END,
-            spec: null(),
-            last: null(),
-            mask: null(),
-        });
+        let items = item::lower(&self.items);
 
         // Preserve insertion order within each action rank.
         let mut ordered: Vec<&Action> = self.actions.iter().collect();

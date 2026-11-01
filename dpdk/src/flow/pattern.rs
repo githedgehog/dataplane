@@ -404,6 +404,135 @@ impl TcpMatch {
     }
 }
 
+/// Which fields an item constrains, and with what mask, ignoring the values matched.
+///
+/// A template table matches every rule with its pattern template's masks, so a rule whose masks
+/// differ would silently match something other than what it says; templates compare shapes to
+/// refuse such rules.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ItemShape {
+    /// An Ethernet header: whether the destination, source and EtherType are constrained.
+    Eth {
+        /// Destination MAC constrained.
+        dst: bool,
+        /// Source MAC constrained.
+        src: bool,
+        /// EtherType constrained.
+        ether_type: bool,
+    },
+    /// A VLAN tag: whether the VID and PCP are constrained.
+    Vlan {
+        /// VID constrained.
+        vid: bool,
+        /// PCP constrained.
+        pcp: bool,
+    },
+    /// An IPv4 header: the address masks, and whether the protocol is constrained.
+    Ipv4 {
+        /// Source address mask.
+        src: Option<Ipv4Addr>,
+        /// Destination address mask.
+        dst: Option<Ipv4Addr>,
+        /// Protocol constrained.
+        proto: bool,
+    },
+    /// An IPv6 header: the address masks, and whether the next header is constrained.
+    Ipv6 {
+        /// Source address mask.
+        src: Option<Ipv6Addr>,
+        /// Destination address mask.
+        dst: Option<Ipv6Addr>,
+        /// Next header constrained.
+        proto: bool,
+    },
+    /// A UDP header: whether the ports are constrained.
+    Udp {
+        /// Source port constrained.
+        src: bool,
+        /// Destination port constrained.
+        dst: bool,
+    },
+    /// A TCP header: whether the ports are constrained.
+    Tcp {
+        /// Source port constrained.
+        src: bool,
+        /// Destination port constrained.
+        dst: bool,
+    },
+    /// A VXLAN header: whether the VNI is constrained.
+    Vxlan {
+        /// VNI constrained.
+        vni: bool,
+    },
+    /// A meter color; always fully masked.
+    MeterColor,
+}
+
+impl EthMatch {
+    pub(crate) fn shape(&self) -> ItemShape {
+        ItemShape::Eth {
+            dst: self.dst.is_some(),
+            src: self.src.is_some(),
+            ether_type: self.ether_type.is_some(),
+        }
+    }
+}
+
+impl VlanMatch {
+    pub(crate) fn shape(&self) -> ItemShape {
+        ItemShape::Vlan {
+            vid: self.vid.is_some(),
+            pcp: self.pcp.is_some(),
+        }
+    }
+}
+
+impl Ipv4Match {
+    pub(crate) fn shape(&self) -> ItemShape {
+        ItemShape::Ipv4 {
+            src: self.src.map(|p| p.mask),
+            dst: self.dst.map(|p| p.mask),
+            proto: self.proto.is_some(),
+        }
+    }
+}
+
+impl Ipv6Match {
+    pub(crate) fn shape(&self) -> ItemShape {
+        ItemShape::Ipv6 {
+            src: self.src.map(|p| p.mask),
+            dst: self.dst.map(|p| p.mask),
+            proto: self.proto.is_some(),
+        }
+    }
+}
+
+impl UdpMatch {
+    pub(crate) fn shape(&self) -> ItemShape {
+        ItemShape::Udp {
+            src: self.src.is_some(),
+            dst: self.dst.is_some(),
+        }
+    }
+}
+
+impl TcpMatch {
+    pub(crate) fn shape(&self) -> ItemShape {
+        ItemShape::Tcp {
+            src: self.src.is_some(),
+            dst: self.dst.is_some(),
+        }
+    }
+}
+
+impl VxlanMatch {
+    pub(crate) fn shape(&self) -> ItemShape {
+        ItemShape::Vxlan {
+            vni: self.vni.is_some(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
