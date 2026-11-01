@@ -27,6 +27,8 @@ mod tests;
 pub use access::{
     AclFilterContext, AclFilterContextReader, AclFilterContextReaderFactory, AclFilterContextWriter,
 };
+pub use acl::table::RuleRow;
+pub use context::{AclKey, AclKeyRule, LookupResult};
 
 pub struct AclFilter {
     name: String,
