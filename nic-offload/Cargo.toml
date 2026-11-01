@@ -24,5 +24,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 acl = { workspace = true, features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }
+clock = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
