@@ -79,6 +79,10 @@ pub enum Refusal {
     TcpFlags,
     /// Only an exact protocol, or any, is lowered.
     PartialProtocolMask,
+    /// The protocol is an extension header's (hop-by-hop, routing, fragment, authentication,
+    /// destination options): software resolves extension headers to the protocol after them, so
+    /// the rule never matches there, and mlx5 refuses such a match outright.
+    ExtensionHeader,
     /// Only an exact port, or any, is lowered.
     PortRange,
     /// Ports without TCP or UDP.
@@ -114,6 +118,7 @@ fn component(limits: &RateLimits<PeeringRules>, meter: usize) -> Option<(Unit, P
 fn proto(spec: MaskSpec<NextHeader>) -> Result<Option<u8>, Refusal> {
     match spec.mask.as_u8() {
         0 => Ok(None),
+        u8::MAX if spec.value.is_ipv6_extension() => Err(Refusal::ExtensionHeader),
         u8::MAX => Ok(Some(spec.value.as_u8())),
         _ => Err(Refusal::PartialProtocolMask),
     }
