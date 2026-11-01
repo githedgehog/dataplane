@@ -2114,6 +2114,7 @@ dependencies = [
  "dataplane-net",
  "dataplane-policer",
  "dataplane-rate-limit",
+ "dataplane-rekon",
  "metrics",
  "nix",
  "thiserror 2.0.21",
