@@ -2162,7 +2162,22 @@ mod test {
                 Err(ParseError::Invalid(e)) => unreachable!("{e:?}", e = e),
                 Err(ParseError::BufferTooLong(_)) => unreachable!(),
             };
-        assert_eq!(headers, &parsed);
+        // Whether an ICMP error quotes its datagram in full depends on the quote's payload, and
+        // only headers are written here. With no payload written, a quote can be whole only if it
+        // has no payload to quote.
+        let mut expected = headers.clone();
+        if let (Some(quoted), Some(reparsed)) = (
+            expected.embedded_ip.as_deref_mut(),
+            parsed.embedded_ip.as_deref(),
+        ) {
+            assert!(
+                matches!(reparsed.payload_length(), None | Some(0)),
+                "a quote with no payload written parsed back as whole with {:?} octets of payload",
+                reparsed.payload_length()
+            );
+            quoted.set_payload_length(reparsed.payload_length());
+        }
+        assert_eq!(&expected, &parsed);
         assert_eq!(bytes_parsed, headers.size());
     }
 
