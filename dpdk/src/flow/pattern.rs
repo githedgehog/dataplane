@@ -26,6 +26,7 @@ pub struct EthMatch {
     dst: Option<Mac>,
     src: Option<Mac>,
     ether_type: Option<EthType>,
+    tagged: Option<bool>,
 }
 
 impl EthMatch {
@@ -53,6 +54,16 @@ impl EthMatch {
         self
     }
 
+    /// Constrain whether at least one VLAN tag follows the header (`has_vlan`).
+    ///
+    /// Without it, whether a pattern of an Ethernet header and an IP header matches a tagged frame
+    /// is the PMD's choice.
+    #[must_use]
+    pub fn tagged(mut self, tagged: bool) -> EthMatch {
+        self.tagged = Some(tagged);
+        self
+    }
+
     /// Lower to the `(spec, mask)` pair the PMD reads. Unconstrained fields stay zero in `mask`,
     /// which `rte_flow` reads as "don't care".
     pub(crate) fn lower(&self) -> (rte_flow_item_eth, rte_flow_item_eth) {
@@ -70,6 +81,10 @@ impl EthMatch {
         if let Some(ether_type) = self.ether_type {
             spec.annon1.hdr.ether_type = ether_type.as_u16().to_be();
             mask.annon1.hdr.ether_type = u16::MAX;
+        }
+        if let Some(tagged) = self.tagged {
+            spec.set_has_vlan(u32::from(tagged));
+            mask.set_has_vlan(1);
         }
         (spec, mask)
     }
@@ -119,6 +134,7 @@ pub struct Ipv4Match {
     src: Option<Ipv4Prefix>,
     dst: Option<Ipv4Prefix>,
     proto: Option<u8>,
+    unfragmented: bool,
 }
 
 impl Ipv4Match {
@@ -143,6 +159,16 @@ impl Ipv4Match {
         self
     }
 
+    /// Match only packets that are not fragments.
+    ///
+    /// Constrains the whole fragment field but the don't-fragment bit (more fragments and offset)
+    /// to zero, which mlx5 serves as its own "fragmented" bit.
+    #[must_use]
+    pub fn unfragmented(mut self) -> Ipv4Match {
+        self.unfragmented = true;
+        self
+    }
+
     /// Lower to the `(spec, mask)` pair the PMD reads. Unconstrained fields stay zero in `mask`,
     /// which `rte_flow` reads as "don't care".
     pub(crate) fn lower(&self) -> (rte_flow_item_ipv4, rte_flow_item_ipv4) {
@@ -160,6 +186,10 @@ impl Ipv4Match {
         if let Some(proto) = self.proto {
             spec.hdr.next_proto_id = proto;
             mask.hdr.next_proto_id = u8::MAX;
+        }
+        if self.unfragmented {
+            // More fragments and the offset; not don't-fragment.
+            mask.hdr.fragment_offset = 0x3fffu16.to_be();
         }
         (spec, mask)
     }
@@ -209,6 +239,7 @@ pub struct Ipv6Match {
     src: Option<Ipv6Prefix>,
     dst: Option<Ipv6Prefix>,
     proto: Option<u8>,
+    unfragmented: bool,
 }
 
 impl Ipv6Match {
@@ -233,6 +264,13 @@ impl Ipv6Match {
         self
     }
 
+    /// Match only packets without a fragment extension header (`has_frag_ext`).
+    #[must_use]
+    pub fn unfragmented(mut self) -> Ipv6Match {
+        self.unfragmented = true;
+        self
+    }
+
     /// Lower to the `(spec, mask)` pair the PMD reads. IPv6 addresses are stored network-order
     /// (`Ipv6Addr::octets`); unconstrained fields stay zero in `mask` ("don't care").
     pub(crate) fn lower(&self) -> (rte_flow_item_ipv6, rte_flow_item_ipv6) {
@@ -250,6 +288,9 @@ impl Ipv6Match {
         if let Some(proto) = self.proto {
             spec.hdr.proto = proto;
             mask.hdr.proto = u8::MAX;
+        }
+        if self.unfragmented {
+            mask.set_has_frag_ext(1);
         }
         (spec, mask)
     }
@@ -419,6 +460,8 @@ pub enum ItemShape {
         src: bool,
         /// EtherType constrained.
         ether_type: bool,
+        /// VLAN presence constrained.
+        tagged: bool,
     },
     /// A VLAN tag: whether the VID and PCP are constrained.
     Vlan {
@@ -435,6 +478,8 @@ pub enum ItemShape {
         dst: Option<Ipv4Addr>,
         /// Protocol constrained.
         proto: bool,
+        /// Fragments excluded.
+        unfragmented: bool,
     },
     /// An IPv6 header: the address masks, and whether the next header is constrained.
     Ipv6 {
@@ -444,6 +489,8 @@ pub enum ItemShape {
         dst: Option<Ipv6Addr>,
         /// Next header constrained.
         proto: bool,
+        /// Fragments excluded.
+        unfragmented: bool,
     },
     /// A UDP header: whether the ports are constrained.
     Udp {
@@ -474,6 +521,7 @@ impl EthMatch {
             dst: self.dst.is_some(),
             src: self.src.is_some(),
             ether_type: self.ether_type.is_some(),
+            tagged: self.tagged.is_some(),
         }
     }
 }
@@ -493,6 +541,7 @@ impl Ipv4Match {
             src: self.src.map(|p| p.mask),
             dst: self.dst.map(|p| p.mask),
             proto: self.proto.is_some(),
+            unfragmented: self.unfragmented,
         }
     }
 }
@@ -503,6 +552,7 @@ impl Ipv6Match {
             src: self.src.map(|p| p.mask),
             dst: self.dst.map(|p| p.mask),
             proto: self.proto.is_some(),
+            unfragmented: self.unfragmented,
         }
     }
 }
