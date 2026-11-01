@@ -37,7 +37,6 @@ use dpdk::mem::{MBUF_BURST, Mbuf};
 use dpdk::queue::rx::RxQueueIndex;
 use lifecycle::Subsystem;
 use lldp::Link;
-use rate_limit::{PeeringRules, RateLimitReader};
 use stats::{PortCounters, PortMetrics, PortState, PortStateMetrics, XstatMetrics};
 use tokio::sync::watch;
 use tracectl::trace_target;
@@ -86,7 +85,7 @@ impl DriverDpdk {
         status_writer: DriverStatusWriter,
         bridge: Option<&mut DatapathEnds>,
         control_plane: watch::Receiver<ControlPlane>,
-        rate_limits: &RateLimitReader<PeeringRules>,
+        offload: &nic_offload::Policy,
     ) -> Result<(), DriverError>
     where
         'p: 'scope,
@@ -168,7 +167,7 @@ impl DriverDpdk {
         )?);
 
         for port in ports.iter().filter(|port| port.offload) {
-            spawn_offload(scope, workers_subsystem, port, rate_limits.clone())?;
+            spawn_offload(scope, workers_subsystem, port, offload.clone())?;
         }
 
         // Register metrics once; the scoped callback keeps the borrowed ports alive while polling.
@@ -247,14 +246,15 @@ where
     Ok(WorkerMonitor::new(id, handle, rx_tasks).with_load(load_reader))
 }
 
-/// Program `port`'s NIC with the rate limits it can enforce, following them until shutdown.
+/// Program `port`'s NIC with the ACL denies and rate limits it can enforce, following them until
+/// shutdown.
 ///
 /// The NIC sends what it lets through to the data queues, spread as the port's own RSS spreads.
 fn spawn_offload<'p, 'scope>(
     scope: &'scope thread::Scope<'scope, '_>,
     subsystem: &Subsystem,
     port: &'p Port<'_>,
-    rate_limits: RateLimitReader<PeeringRules>,
+    policy: nic_offload::Policy,
 ) -> Result<(), DriverError>
 where
     'p: 'scope,
@@ -271,7 +271,7 @@ where
     thread::Builder::new()
         .name(format!("nic-offload-{name}"))
         .spawn_scoped(scope, move || {
-            nic_offload::mlx5::run(&port.dev, &name, &rate_limits, &fate, &|| {
+            nic_offload::mlx5::run(&port.dev, &name, &policy, &fate, &|| {
                 subsystem.is_cancelled()
             });
             Ok::<(), Infallible>(())

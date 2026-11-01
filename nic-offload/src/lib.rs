@@ -33,9 +33,11 @@ mod qualify;
 #[cfg(test)]
 mod tests;
 
+use acl_filter::AclFilterContextReader;
 use dpdk::dev::DevInfo;
 use dpdk::flow::template::TemplateConfig;
 use hardware::pci::address::PciAddress;
+use rate_limit::{PeeringRules, RateLimitReader};
 
 /// The PCI vendor id of NVIDIA/Mellanox.
 const MELLANOX: &str = "0x15b3";
@@ -76,4 +78,13 @@ fn first_allowed_cpu() -> Option<usize> {
 #[must_use]
 pub fn port_resources(info: &DevInfo<'_>) -> Option<TemplateConfig> {
     (enabled() && info.driver_name().starts_with("mlx5")).then_some(mlx5::RESOURCES)
+}
+
+/// The published policy offload follows, as the pipeline's stages do.
+#[derive(Debug, Clone)]
+pub struct Policy {
+    /// The ACL filter's rules.
+    pub acls: AclFilterContextReader,
+    /// The rate limiter's rules, and which peerings asked for offload.
+    pub rate_limits: RateLimitReader<PeeringRules>,
 }

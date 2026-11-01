@@ -49,10 +49,11 @@ use dpdk::socket;
 use net::buffer::Append;
 use rate_limit::{PeeringRules, RateLimitWriter, RateLimits};
 
-use crate::differential::{RawFragment, RawFrame, RawMeter, RawRule, overlay};
+use crate::differential::{RawAcls, RawFragment, RawFrame, RawMeter, RawRule, overlay, targets};
 use crate::mlx5::{Plan, RESOURCES, Role, with_installed};
 use crate::model::{Outcome, Verdict};
 use crate::program::Program;
+use acl_filter::AclFilterContext;
 
 /// How long frames may take to arrive after they are sent.
 const SETTLE: Duration = Duration::from_millis(30);
@@ -279,24 +280,36 @@ fn arrives(outcome: &Outcome) -> bool {
 struct Case {
     program: Program,
     plan: Plan,
+    /// What frames are aimed at: the rate-limit rules, then the ACL rules.
+    targets: Vec<RawRule>,
+    /// The targets the NIC was given some of: rate limits it took, and ACL denies.
+    offloaded: Vec<usize>,
 }
 
 impl Case {
-    /// The configured rules the NIC was given some of.
-    fn offloaded(&self) -> Vec<usize> {
-        let mut rules: Vec<usize> = self.program.rules.iter().map(|r| r.rule).collect();
-        rules.dedup();
-        rules
-    }
-
-    fn new(meters: &[RawMeter; 4], rules: &[RawRule]) -> Case {
-        let overlay = overlay(meters, rules).expect("generated configurations are valid");
+    fn new(meters: &[RawMeter; 4], rules: &[RawRule], acls: &RawAcls) -> Case {
+        let overlay = overlay(meters, rules, acls).expect("generated configurations are valid");
         let writer: RateLimitWriter<PeeringRules> =
             RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
         writer.apply(&overlay, Backend::Reference).unwrap();
-        let program = Program::compile(&writer.load());
+        let filter = AclFilterContext::reference(&overlay).unwrap();
+        let program = Program::compile(&filter, &writer.load());
         let plan = Plan::new(&program, &TemplateAction::Queue(RxQueueIndex(0))).unwrap();
-        Case { program, plan }
+        let mut offloaded: Vec<usize> = program.rules.iter().map(|r| r.rule).collect();
+        offloaded.dedup();
+        if !program.denies.is_empty() {
+            let denies = (0..)
+                .zip(&acls.rules)
+                .filter(|(_, r)| r.deny)
+                .map(|(i, _)| i);
+            offloaded.extend(denies.map(|i: usize| rules.len() + i));
+        }
+        Case {
+            program,
+            plan,
+            targets: targets(rules, acls),
+            offloaded,
+        }
     }
 }
 
@@ -323,13 +336,24 @@ fn aimed(frames: &[RawFrame], offloaded: &[usize]) -> Vec<RawFrame> {
         .collect()
 }
 
-fn qualify_case(rig: &mut Rig, meters: &[RawMeter; 4], rules: &[RawRule], frames: &[RawFrame]) {
-    let case = Case::new(meters, rules);
-    let frames = &aimed(frames, &case.offloaded())[..];
-    let Case { program, mut plan } = case;
+fn qualify_case(
+    rig: &mut Rig,
+    meters: &[RawMeter; 4],
+    rules: &[RawRule],
+    acls: &RawAcls,
+    frames: &[RawFrame],
+) {
+    let case = Case::new(meters, rules, acls);
+    let frames = &aimed(frames, &case.offloaded)[..];
+    let Case {
+        program,
+        mut plan,
+        targets,
+        ..
+    } = case;
     let wires: Vec<Vec<u8>> = (0u16..)
         .zip(frames)
-        .map(|(id, raw)| raw.frame(rules).wire_to(rig.link.mac, id))
+        .map(|(id, raw)| raw.frame(&targets).wire_to(rig.link.mac, id))
         .collect();
     for profile in &mut plan.profiles {
         *profile = passes_everything();
@@ -497,18 +521,18 @@ fn qualify() {
     bolero::check!()
         .with_iterations(cases)
         .with_shrink_time(Duration::from_secs(120))
-        .with_type::<([RawMeter; 4], Vec<RawRule>, Vec<RawFrame>)>()
-        .for_each(|(meters, rules, frames)| {
+        .with_type::<([RawMeter; 4], Vec<RawRule>, RawAcls, Vec<RawFrame>)>()
+        .for_each(|(meters, rules, acls, frames)| {
             let rules = &rules[..rules.len().min(6)];
             RIG.with_borrow_mut(|rig| {
                 let rig = rig.get_or_insert_with(Rig::new);
-                qualify_case(rig, meters, rules, frames);
+                qualify_case(rig, meters, rules, acls, frames);
             });
         });
 }
 
-/// How many generated frames the model says a meter charges, and why the others are not: the
-/// runner learns about the NIC only from frames a rule charges.
+/// How many generated frames the model says a meter charges or a deny drops, and why the others
+/// are not: the runner learns about the NIC only from frames a rule acts on.
 #[test]
 fn coverage() {
     let stats = std::panic::AssertUnwindSafe(RefCell::new(
@@ -516,26 +540,26 @@ fn coverage() {
     ));
     bolero::check!()
         .with_iterations(300)
-        .with_type::<([RawMeter; 4], Vec<RawRule>, Vec<RawFrame>)>()
-        .for_each(|(meters, rules, frames)| {
+        .with_type::<([RawMeter; 4], Vec<RawRule>, RawAcls, Vec<RawFrame>)>()
+        .for_each(|(meters, rules, acls, frames)| {
             let rules = &rules[..rules.len().min(6)];
-            let case = Case::new(meters, rules);
+            let case = Case::new(meters, rules, acls);
             let mut stats = stats.borrow_mut();
-            for raw in aimed(frames, &case.offloaded()) {
-                let wire = raw.frame(rules).wire_to([2, 0, 0, 0, 0, 1], 0);
-                let charged = case
-                    .plan
-                    .outcomes(&wire)
-                    .unwrap()
+            for raw in aimed(frames, &case.offloaded) {
+                let wire = raw.frame(&case.targets).wire_to([2, 0, 0, 0, 0, 1], 0);
+                let outcomes = case.plan.outcomes(&wire).unwrap();
+                let why = if outcomes
                     .iter()
-                    .any(|o| !o.meters.is_empty());
-                let why = if charged {
+                    .any(|o| o.path.iter().any(|r| matches!(r, Role::Deny(_))))
+                {
+                    "denied"
+                } else if outcomes.iter().any(|o| !o.meters.is_empty()) {
                     "charged"
-                } else if raw.aim.is_none() || rules.is_empty() {
+                } else if raw.aim.is_none() || case.targets.is_empty() {
                     "not aimed"
                 } else {
-                    let index = usize::from(raw.aim.unwrap_or(0)) % rules.len();
-                    if !case.program.rules.iter().any(|r| r.rule == index) {
+                    let index = usize::from(raw.aim.unwrap_or(0)) % case.targets.len();
+                    if !case.offloaded.contains(&index) {
                         "aimed rule not offloaded"
                     } else if raw.vlan.is_some() {
                         "inner VLAN"
@@ -553,9 +577,10 @@ fn coverage() {
     for (why, n) in &stats {
         eprintln!("coverage: {why:>26}: {n:6} ({} %)", n * 100 / total.max(1));
     }
-    let charged = stats.get("charged").copied().unwrap_or(0);
+    let acted =
+        stats.get("charged").copied().unwrap_or(0) + stats.get("denied").copied().unwrap_or(0);
     assert!(
-        charged * 2 >= total,
-        "only {charged} of {total} generated frames are charged by a meter"
+        acted * 2 >= total,
+        "only {acted} of {total} generated frames are charged by a meter or denied"
     );
 }

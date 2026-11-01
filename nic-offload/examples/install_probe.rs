@@ -3,15 +3,18 @@
 
 //! Whether an mlx5 port takes each rule shape the lowering produces.
 //!
-//! `install_probe <pci>` lowers one program per shape onto the port (`dv_flow_en=2`), installs
-//! it, removes it again, and reports what the NIC refused. Needs the privileges DPDK needs for
-//! the device (root, or `CAP_NET_RAW` and friends).
+//! `install_probe <pci>` lowers one program per shape onto the port (`dv_flow_en=2`), as rate
+//! limits and then as ACL denies in front of them, installs it, removes it again, and reports
+//! what the NIC refused (whole plans, or rules it left to software). Needs the privileges DPDK
+//! needs for the device (root, or `CAP_NET_RAW` and friends).
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::num::NonZeroU64;
 
-use dataplane_nic_offload::mlx5::{Plan, RESOURCES, install};
-use dataplane_nic_offload::program::{PoliceMeter, PoliceRule, Prefix, Program};
+use dataplane_nic_offload::mlx5::{Plan, RESOURCES, with_installed};
+use dataplane_nic_offload::program::{
+    DenyRule, Match, Origin, PoliceMeter, PoliceRule, Prefix, Program,
+};
 use dpdk::dev::{DevConfig, RxOffload, TxOffloadConfig};
 use dpdk::flow::template::{TemplateAction, TemplateFlows};
 use dpdk::mem::{PoolConfig, PoolParams};
@@ -30,7 +33,24 @@ fn program(rules: Vec<PoliceRule>) -> Program {
             profile: Profile::new(rate, 100_000, None, 0).unwrap_or_else(|_| unreachable!()),
         }],
         rules,
+        denies: Vec::new(),
         refused: Vec::new(),
+    }
+}
+
+/// `program` with every rule an ACL deny as well.
+fn with_denies(rules: Vec<PoliceRule>) -> Program {
+    let denies = rules
+        .iter()
+        .enumerate()
+        .map(|(row, rule)| DenyRule {
+            origin: Origin::Acl { v6: false, row },
+            matches: rule.matches.clone(),
+        })
+        .collect();
+    Program {
+        denies,
+        ..program(rules)
     }
 }
 
@@ -48,12 +68,14 @@ fn rule(v6: bool, proto: Option<u8>, dst_port: Option<u16>) -> PoliceRule {
     };
     PoliceRule {
         rule: 0,
-        src_vni: net::vxlan::Vni::new_checked(100).unwrap_or_else(|_| unreachable!()),
-        source,
-        destination,
-        proto,
-        src_port: None,
-        dst_port,
+        matches: Match {
+            src_vni: net::vxlan::Vni::new_checked(100).unwrap_or_else(|_| unreachable!()),
+            source,
+            destination,
+            proto,
+            src_port: None,
+            dst_port,
+        },
         meter: 0,
     }
 }
@@ -61,9 +83,9 @@ fn rule(v6: bool, proto: Option<u8>, dst_port: Option<u16>) -> PoliceRule {
 /// `rule` with prefixes of these lengths (IPv6 only) and these ports.
 fn v6(src: u8, dst: u8, proto: Option<u8>, ports: (Option<u16>, Option<u16>)) -> PoliceRule {
     let mut rule = rule(true, proto, ports.1);
-    rule.source = Prefix::V6(Ipv6Addr::new(0xfd00, 0, 0, 1, 0, 0, 0, 0), src);
-    rule.destination = Prefix::V6(Ipv6Addr::new(0xfd00, 0, 0, 2, 0, 0, 0, 0), dst);
-    rule.src_port = ports.0;
+    rule.matches.source = Prefix::V6(Ipv6Addr::new(0xfd00, 0, 0, 1, 0, 0, 0, 0), src);
+    rule.matches.destination = Prefix::V6(Ipv6Addr::new(0xfd00, 0, 0, 2, 0, 0, 0, 0), dst);
+    rule.matches.src_port = ports.0;
     rule
 }
 
@@ -226,13 +248,28 @@ fn main() {
                 .collect(),
         ),
     ] {
-        let program = program(rules);
-        let plan = Plan::new(&program, &fate).unwrap();
-        match install(&flows, "probe", &program, &plan, &|| true) {
-            Ok(()) => println!("ok       {name}"),
-            Err(e) => {
-                refused += 1;
-                println!("REFUSED  {name}: {e}");
+        // Each shape as a rate limit, then as an ACL deny in front of the same rate limit.
+        for (denies, program) in [(false, program(rules.clone())), (true, with_denies(rules))] {
+            let name = if denies {
+                format!("{name}, as denies too")
+            } else {
+                name.to_string()
+            };
+            let plan = Plan::new(&program, &fate).unwrap();
+            match with_installed(&flows, &plan, |installed| installed.refused().to_vec()) {
+                Ok(left_out) if left_out.is_empty() => println!("ok       {name}"),
+                Ok(left_out) => {
+                    refused += 1;
+                    let (role, why) = &left_out[0];
+                    println!(
+                        "REFUSED  {name}: {} rule(s) left in software, {role:?}: {why}",
+                        left_out.len()
+                    );
+                }
+                Err(e) => {
+                    refused += 1;
+                    println!("REFUSED  {name}: {e}");
+                }
             }
         }
     }

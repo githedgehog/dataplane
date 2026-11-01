@@ -18,7 +18,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::num::{NonZeroU64, NonZeroUsize};
 
 use acl::table::Backend;
-use config::external::overlay::acl::{AclPattern, AclProtoMatch};
+use acl_filter::AclFilterContext;
+use config::external::overlay::acl::{
+    Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
+};
 use config::external::overlay::ratelimit::{
     ColorAction, ColorActions, Meter, MeterProfile, RateLimitRule, RateLimitTables,
 };
@@ -30,13 +33,12 @@ use dpdk::queue::rx::RxQueueIndex;
 use lpm::prefix::with_ports::{PortRange, PrefixPortsSet};
 use lpm::prefix::{Prefix as LpmPrefix, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
-use net::headers::UpperLayerProto;
 use net::packet::{Packet, VpcDiscriminant};
 use net::vxlan::Vni;
 use policer::{Profile, Rate};
 use rate_limit::{Classify, PeeringRules, RateLimitWriter, RateLimits, Unit};
 
-use crate::mlx5::Plan;
+use crate::mlx5::{Plan, Role};
 use crate::model::{Outcome, Verdict};
 use crate::program::Program;
 
@@ -120,7 +122,7 @@ fn within(vpc: usize, bits: u128, extra: u8) -> (IpAddr, u8) {
     }
 }
 
-#[derive(Debug, bolero::TypeGenerator)]
+#[derive(Debug, Clone, bolero::TypeGenerator)]
 enum RawPorts {
     Exact(u8),
     Range(u8, u8),
@@ -137,7 +139,7 @@ impl RawPorts {
     }
 }
 
-#[derive(Debug, bolero::TypeGenerator)]
+#[derive(Debug, Clone, bolero::TypeGenerator)]
 struct RawSubnet {
     bits: u64,
     extra: u8,
@@ -161,7 +163,7 @@ enum RawProto {
     Other(u8),
 }
 
-#[derive(Debug, bolero::TypeGenerator)]
+#[derive(Debug, Clone, bolero::TypeGenerator)]
 pub(crate) struct RawRule {
     /// A peering, and which way.
     peering: u8,
@@ -186,6 +188,18 @@ impl RawRule {
 
     fn rule(&self) -> RateLimitRule {
         let (peering, from, to) = self.direction();
+        RateLimitRule {
+            peering: peering_name(peering),
+            from: VPCS[from].name.into(),
+            to: VPCS[to].name.into(),
+            meter: METERS[usize::from(self.meter) % METERS.len()].into(),
+            pattern: self.pattern(),
+        }
+    }
+
+    /// What the rule matches, as an ACL rule would.
+    fn pattern(&self) -> AclPattern {
+        let (_, from, to) = self.direction();
         // Only TCP and UDP rules may name ports.
         let ports = matches!(self.proto, RawProto::Udp | RawProto::Tcp);
         let set = |subnets: &[RawSubnet], vpc| -> PrefixPortsSet {
@@ -202,25 +216,93 @@ impl RawRule {
                 })
                 .collect()
         };
-        RateLimitRule {
-            peering: peering_name(peering),
-            from: VPCS[from].name.into(),
-            to: VPCS[to].name.into(),
-            meter: METERS[usize::from(self.meter) % METERS.len()].into(),
-            pattern: AclPattern {
-                src: set(&self.src, from),
-                dst: set(&self.dst, to),
-                proto: match self.proto {
-                    RawProto::Any => AclProtoMatch::Any,
-                    RawProto::Udp => AclProtoMatch::Udp,
-                    RawProto::Tcp => AclProtoMatch::tcp(),
-                    RawProto::Icmp => AclProtoMatch::Other(1),
-                    RawProto::Other(p) => AclProtoMatch::Other(p),
-                },
-                ..AclPattern::default()
+        AclPattern {
+            src: set(&self.src, from),
+            dst: set(&self.dst, to),
+            proto: match self.proto {
+                RawProto::Any => AclProtoMatch::Any,
+                RawProto::Udp => AclProtoMatch::Udp,
+                RawProto::Tcp => AclProtoMatch::tcp(),
+                RawProto::Icmp => AclProtoMatch::Other(1),
+                RawProto::Other(p) => AclProtoMatch::Other(p),
             },
+            ..AclPattern::default()
         }
     }
+}
+
+/// An ACL rule: what it matches (the rate-limit rule's fields, but for the meter), its verdict and
+/// its scope.
+#[derive(Debug, Clone, bolero::TypeGenerator)]
+pub(crate) struct RawAclRule {
+    pub(crate) rule: RawRule,
+    pub(crate) deny: bool,
+    flow: bool,
+}
+
+/// The peerings' ACLs: each peering with rules has an ACL, with the default action given (deny if
+/// `Some(true)`, else allow).
+#[derive(Debug, Clone, Default, bolero::TypeGenerator)]
+pub(crate) struct RawAcls {
+    defaults: [Option<bool>; 4],
+    pub(crate) rules: Vec<RawAclRule>,
+}
+
+impl RawAcls {
+    /// The rules, in first-match order, at most six.
+    fn rules(&self) -> &[RawAclRule] {
+        &self.rules[..self.rules.len().min(6)]
+    }
+
+    /// The ACL of `peering`, if it has one.
+    fn acl(&self, peering: usize) -> Option<Acl> {
+        let rules: Vec<AclRule> = self
+            .rules()
+            .iter()
+            .filter(|r| r.rule.direction().0 == peering)
+            .enumerate()
+            .map(|(i, r)| {
+                let (_, from, to) = r.rule.direction();
+                AclRule {
+                    name: format!("rule {i}"),
+                    from: VPCS[from].name.into(),
+                    to: VPCS[to].name.into(),
+                    action: if r.deny {
+                        AclAction::Deny
+                    } else {
+                        AclAction::Allow
+                    },
+                    pattern: r.rule.pattern(),
+                    scope: if r.flow {
+                        AclScope::Flow
+                    } else {
+                        AclScope::Packet
+                    },
+                    log: false,
+                }
+            })
+            .collect();
+        // An ACL needs a rule.
+        if rules.is_empty() {
+            return None;
+        }
+        let default = self.defaults[peering];
+        let default = if default == Some(true) {
+            AclAction::Deny
+        } else {
+            AclAction::Allow
+        };
+        Some(Acl::new(default, rules))
+    }
+}
+
+/// What frames are aimed at: the rate-limit rules, then the ACL rules.
+pub(crate) fn targets(rules: &[RawRule], acls: &RawAcls) -> Vec<RawRule> {
+    rules
+        .iter()
+        .cloned()
+        .chain(acls.rules().iter().map(|r| r.rule.clone()))
+        .collect()
 }
 
 #[derive(Debug, bolero::TypeGenerator)]
@@ -276,7 +358,11 @@ fn meter(index: usize, raw: &RawMeter) -> Option<Meter> {
     })
 }
 
-pub(crate) fn overlay(meters: &[RawMeter; 4], rules: &[RawRule]) -> Option<ValidatedOverlay> {
+pub(crate) fn overlay(
+    meters: &[RawMeter; 4],
+    rules: &[RawRule],
+    acls: &RawAcls,
+) -> Option<ValidatedOverlay> {
     let mut vpcs = VpcTable::new();
     for spec in &VPCS {
         vpcs.add(Vpc::new(spec.name, spec.id, spec.vni).ok()?)
@@ -291,14 +377,14 @@ pub(crate) fn overlay(meters: &[RawMeter; 4], rules: &[RawRule]) -> Option<Valid
             manifest.add_expose(VpcExpose::empty().ip(prefix.into()));
             Some(manifest)
         };
-        peerings
-            .add(VpcPeering::new(
-                &peering_name(peering),
-                manifest(l)?,
-                manifest(r)?,
-                "default".into(),
-            ))
-            .ok()?;
+        let mut vpc_peering = VpcPeering::new(
+            &peering_name(peering),
+            manifest(l)?,
+            manifest(r)?,
+            "default".into(),
+        );
+        vpc_peering.acl = acls.acl(peering);
+        peerings.add(vpc_peering).ok()?;
     }
     let meters = METERS
         .iter()
@@ -582,19 +668,30 @@ impl Frame {
         f
     }
 
-    /// What the software does with the decapsulated packet.
-    fn software(&self, limits: &RateLimits<PeeringRules>) -> Software {
+    /// What the software does with the decapsulated packet: the ACL filter, then the rate
+    /// limiter.
+    fn software(&self, acls: &AclFilterContext, limits: &RateLimits<PeeringRules>) -> Software {
         let Ok(mut packet) = Packet::new(TestBuffer::from_raw_data(&self.inner)) else {
-            return Software::Charges(None);
+            return Software::Unclassifiable;
         };
-        if packet.upper_layer_proto() == UpperLayerProto::Indeterminate {
-            return Software::Indeterminate;
-        }
         let vni =
             |v: u32| VpcDiscriminant::VNI(Vni::new_checked(v).unwrap_or_else(|_| unreachable!()));
         packet.meta_mut().set_overlay(true);
         packet.meta_mut().src_vpcd = Some(vni(self.src_vni));
         packet.meta_mut().dst_vpcd = self.dst_vni.map(vni);
+        match acls.direct_match(&packet) {
+            Err(_) => return Software::Unclassifiable,
+            Ok(Some(AclAction::Deny)) => return Software::Denied,
+            Ok(Some(AclAction::Allow)) => {}
+            Ok(None) => {
+                let (src, dst) = (vni(self.src_vni), self.dst_vni.map(vni));
+                if let (VpcDiscriminant::VNI(src), Some(VpcDiscriminant::VNI(dst))) = (src, dst)
+                    && acls.default_action(src, dst) == Some(AclAction::Deny)
+                {
+                    return Software::DefaultDenied;
+                }
+            }
+        }
         Software::Charges(limits.classifier().classify(&packet).map(|rule| {
             let meter = limits.rules()[rule].meter();
             limits.meters()[meter].name().to_string()
@@ -602,35 +699,89 @@ impl Frame {
     }
 }
 
-/// What the software does with a packet.
-#[derive(Debug)]
+/// What the software does with a packet with no flow state.
+#[derive(Debug, PartialEq, Eq)]
 enum Software {
-    /// It charges the named meter, or none.
+    /// The ACL filter passes it, and the rate limiter charges the named meter, or none.
     Charges(Option<String>),
-    /// It cannot tell the packet's upper-layer protocol (a truncated transport header, an IPv4
-    /// protocol number of an IPv6 extension header, a broken extension chain), and charges no
-    /// meter. A rule matching any protocol charges it in the NIC: a known deviation, tolerated
-    /// here until it is decided which side should change (see
-    /// [`indeterminate_packets_are_charged_by_the_nic_only`]).
-    Indeterminate,
+    /// An ACL rule matching it directly denies it: whatever the flow state, it is dropped.
+    Denied,
+    /// No ACL rule matches it and its peering denies by default: dropped, unless it is the reply
+    /// of a flow a flow-scoped rule allowed.
+    DefaultDenied,
+    /// The ACL filter cannot classify it (a truncated transport header, an IPv4 protocol number
+    /// of an IPv6 extension header, a broken extension chain, ...) and drops it.
+    Unclassifiable,
+}
+
+impl Software {
+    /// Whether the software drops the packet, flow state or not.
+    fn drops(&self) -> bool {
+        matches!(self, Software::Denied | Software::Unclassifiable)
+    }
+}
+
+/// How the NIC's outcomes for checked frames compared with the software.
+#[derive(Debug, Default)]
+struct Tally {
+    /// Outcomes charging a meter.
+    charged: usize,
+    /// Outcomes charging a meter for a packet the software drops (or drops unless it is a reply):
+    /// the tolerated deviation.
+    charged_dropped: usize,
+    /// Of those, by why the software drops it: an ACL rule denies it (one the NIC was not given),
+    /// the peering denies by default, or the ACL filter cannot classify it.
+    by_cause: [usize; 3],
 }
 
 /// The ways `outcome` breaks the cascade contract for a frame `software` treats so.
-fn violation(program: &Program, outcome: &Outcome, software: &Software) -> Option<String> {
-    if let Software::Charges(software) = software {
-        for &m in &outcome.meters {
-            let nic = program.meters[m].name.as_str();
-            if Some(nic) != software.as_deref() {
+///
+/// One deviation is tolerated, explicitly: the NIC may charge a meter for a packet the software
+/// drops before its rate limiter (an ACL denies it, or cannot classify it), which the software
+/// never charges. Such traffic uses up the NIC's budget but not the software's. Offloading the
+/// denies shrinks it; it is counted in [`Tally::charged_dropped`].
+fn violation(
+    program: &Program,
+    outcome: &Outcome,
+    software: &Software,
+    tally: &mut Tally,
+) -> Option<String> {
+    let denied = outcome
+        .path
+        .iter()
+        .any(|role| matches!(role, Role::Deny(_)));
+    if denied && !software.drops() {
+        return Some(format!(
+            "the NIC denies what the software does not: {software:?}"
+        ));
+    }
+    if !outcome.meters.is_empty() {
+        tally.charged += 1;
+    }
+    for &m in &outcome.meters {
+        let nic = program.meters[m].name.as_str();
+        match software {
+            Software::Charges(meter) if meter.as_deref() == Some(nic) => {}
+            Software::Charges(meter) => {
                 return Some(format!(
-                    "the NIC charges meter {nic}, the software {software:?}"
+                    "the NIC charges meter {nic}, the software {meter:?}"
                 ));
+            }
+            Software::Denied | Software::DefaultDenied | Software::Unclassifiable => {
+                tally.charged_dropped += 1;
+                tally.by_cause[match software {
+                    Software::Denied => 0,
+                    Software::DefaultDenied => 1,
+                    _ => 2,
+                }] += 1;
             }
         }
     }
     match outcome.verdict {
         Verdict::Delivered | Verdict::Untouched => None,
+        Verdict::Dropped if denied => None,
         Verdict::Dropped if outcome.color == Some(Color::Red) && !outcome.meters.is_empty() => None,
-        Verdict::Dropped => Some("the NIC drops without a red meter".to_string()),
+        Verdict::Dropped => Some("the NIC drops without a deny or a red meter".to_string()),
         Verdict::Missed(group) => Some(format!("the NIC misses in group {}", group.0)),
     }
 }
@@ -686,28 +837,28 @@ pub(crate) fn fate() -> TemplateAction {
     })
 }
 
-/// Compile and lower `overlay`'s rate limits, and hold every frame to the cascade contract,
-/// panicking at the first violation. Returns how many outcomes charged a meter.
-fn check_overlay(overlay: &ValidatedOverlay, rules: &[RawRule], frames: &[RawFrame]) -> usize {
+/// Compile and lower `overlay`'s ACLs and rate limits, and hold every frame to the cascade
+/// contract, panicking at the first violation. Frames are aimed at `targets`.
+fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawFrame]) -> Tally {
     let writer: RateLimitWriter<PeeringRules> =
         RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
     writer.apply(overlay, Backend::Reference).unwrap();
     let limits = writer.load();
-    let program = Program::compile(&limits);
+    let acls = AclFilterContext::reference(overlay).unwrap();
+    let program = Program::compile(&acls, &limits);
     let plan = Plan::new(&program, &fate()).unwrap();
     check_profiles(&limits, &program, &plan);
-    let mut charged = 0;
+    let mut tally = Tally::default();
     for raw in frames {
-        let frame = raw.frame(rules);
-        let software = frame.software(&limits);
+        let frame = raw.frame(targets);
+        let software = frame.software(&acls, &limits);
         let outcomes = plan.outcomes(&frame.wire()).unwrap();
         // Software drops what it cannot route; the NIC may too.
         if frame.dst_vni.is_none() {
             continue;
         }
         for outcome in &outcomes {
-            charged += usize::from(!outcome.meters.is_empty());
-            if let Some(why) = violation(&program, outcome, &software) {
+            if let Some(why) = violation(&program, outcome, &software, &mut tally) {
                 panic!(
                     "{why}\nframe: {raw:?}\ninner: {:02x?}\nsoftware: {software:?}\noutcome: {outcome:?}\nprogram: {program:#?}",
                     frame.inner
@@ -715,18 +866,37 @@ fn check_overlay(overlay: &ValidatedOverlay, rules: &[RawRule], frames: &[RawFra
             }
         }
     }
-    charged
+    tally
 }
 
 #[test]
 fn the_nic_only_ever_does_what_the_software_would() {
+    let total = std::panic::AssertUnwindSafe(std::cell::RefCell::new(Tally::default()));
     bolero::check!()
-        .with_type::<([RawMeter; 4], Vec<RawRule>, Vec<RawFrame>)>()
-        .for_each(|(meters, rules, frames)| {
+        .with_type::<([RawMeter; 4], Vec<RawRule>, RawAcls, Vec<RawFrame>)>()
+        .for_each(|(meters, rules, acls, frames)| {
             let rules = &rules[..rules.len().min(6)];
-            let overlay = overlay(meters, rules).expect("generated configurations are valid");
-            check_overlay(&overlay, rules, &frames[..frames.len().min(16)]);
+            let overlay = overlay(meters, rules, acls).expect("generated configurations are valid");
+            let tally = check_overlay(
+                &overlay,
+                &targets(rules, acls),
+                &frames[..frames.len().min(16)],
+            );
+            let mut total = total.borrow_mut();
+            total.charged += tally.charged;
+            total.charged_dropped += tally.charged_dropped;
+            for (sum, n) in total.by_cause.iter_mut().zip(tally.by_cause) {
+                *sum += n;
+            }
         });
+    let total = total.0.into_inner();
+    let [denied, default_denied, unclassifiable] = total.by_cause;
+    eprintln!(
+        "differential: {} outcome(s) charged a meter, {} of them for packets the software drops: \
+         {denied} denied by a rule the NIC lacks, {default_denied} denied by default, \
+         {unclassifiable} unclassifiable",
+        total.charged, total.charged_dropped
+    );
 }
 
 fn meters() -> [RawMeter; 4] {
@@ -739,8 +909,9 @@ fn meters() -> [RawMeter; 4] {
 }
 
 fn check(rules: &[RawRule], frames: &[RawFrame]) -> usize {
-    let overlay = overlay(&meters(), rules).expect("a valid configuration");
-    check_overlay(&overlay, rules, frames)
+    let acls = RawAcls::default();
+    let overlay = overlay(&meters(), rules, &acls).expect("a valid configuration");
+    check_overlay(&overlay, &targets(rules, &acls), frames).charged
 }
 
 fn aimed(aim: u8, l4: RawL4, fragment: RawFragment) -> RawFrame {
@@ -783,21 +954,67 @@ fn fragments_are_left_to_software_by_rules_naming_a_protocol() {
     }
 }
 
-/// The known deviation: software charges no meter for a packet whose upper-layer protocol it
-/// cannot tell, while a rule for any protocol charges it in the NIC. Here, IPv4 carrying protocol
-/// 60 (an IPv6 extension header number). Malformed traffic in a limited peering then uses up the
-/// NIC's budget, but bypasses the software's.
+/// The tolerated deviation: the ACL filter drops a packet whose upper-layer protocol it cannot
+/// tell, before the rate limiter, while a rule for any protocol charges it in the NIC. Here, IPv4
+/// carrying protocol 60 (an IPv6 extension header number).
 #[test]
-fn indeterminate_packets_are_charged_by_the_nic_only() {
+fn unclassifiable_packets_are_charged_by_the_nic_only() {
     let rules = [peering_rule(false, RawProto::Any)];
+    let acls = RawAcls::default();
     let frame = aimed(0, RawL4::Other(60), RawFragment::Whole).frame(&rules);
-    let overlay = overlay(&meters(), &rules).unwrap();
+    let overlay = overlay(&meters(), &rules, &acls).unwrap();
     let writer: RateLimitWriter<PeeringRules> =
         RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
     writer.apply(&overlay, Backend::Reference).unwrap();
     let limits = writer.load();
-    assert!(matches!(frame.software(&limits), Software::Indeterminate));
-    let plan = Plan::new(&Program::compile(&limits), &fate()).unwrap();
+    let filter = AclFilterContext::reference(&overlay).unwrap();
+    assert_eq!(frame.software(&filter, &limits), Software::Unclassifiable);
+    let plan = Plan::new(&Program::compile(&filter, &limits), &fate()).unwrap();
     let outcomes = plan.outcomes(&frame.wire()).unwrap();
     assert!(outcomes.iter().all(|o| o.meters == [0]), "{outcomes:?}");
+}
+
+/// A deny the NIC enforces drops in the NIC what the ACL filter drops, before any meter charges
+/// it; an allow before it keeps it out of the NIC, and the frame is charged, as in software.
+#[test]
+fn denies_drop_in_the_nic_unless_an_earlier_allow_overlaps() {
+    let deny = |deny: bool| RawAclRule {
+        rule: peering_rule(false, RawProto::Udp),
+        deny,
+        flow: false,
+    };
+    let rules = [peering_rule(false, RawProto::Any)];
+    for (acl, denied) in [
+        (vec![deny(true)], true),
+        (vec![deny(false), deny(true)], false),
+    ] {
+        let acls = RawAcls {
+            defaults: [Some(false), None, None, None],
+            rules: acl,
+        };
+        let overlay = overlay(&meters(), &rules, &acls).unwrap();
+        let writer: RateLimitWriter<PeeringRules> =
+            RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
+        writer.apply(&overlay, Backend::Reference).unwrap();
+        let filter = AclFilterContext::reference(&overlay).unwrap();
+        let program = Program::compile(&filter, &writer.load());
+        assert_eq!(program.denies.len(), usize::from(denied), "{program:#?}");
+        let tally = check_overlay(
+            &overlay,
+            &rules,
+            &[aimed(0, RawL4::Udp, RawFragment::Whole)],
+        );
+        // Denied in the NIC, nothing is charged; allowed first, the software charges it too.
+        assert_eq!(tally.charged_dropped, 0);
+        let frame = aimed(0, RawL4::Udp, RawFragment::Whole).frame(&rules);
+        let plan = Plan::new(&program, &fate()).unwrap();
+        let outcomes = plan.outcomes(&frame.wire()).unwrap();
+        assert_eq!(
+            outcomes
+                .iter()
+                .all(|o| o.verdict == Verdict::Dropped && o.meters.is_empty()),
+            denied,
+            "{outcomes:?}"
+        );
+    }
 }
