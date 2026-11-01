@@ -5,7 +5,7 @@
 
 use super::PacketSummary;
 use acl::table::build_table;
-pub(super) use acl::table::{Backend, Table};
+pub(super) use acl::table::{Backend, RuleRow, Table};
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, ValidatedAclRule};
@@ -146,7 +146,8 @@ impl From<&ValidatedOverlay> for PeeringAclRuleSet {
 // selected backend (see `Backend`) then consumes those: `Dpdk` converts them to rte_acl fields at
 // build time; `Reference` (test only) matches them directly.
 
-/// A single ACL match key: protocol, VPC pair, address pair, port pair, and TCP flags.
+/// A single ACL match key: what a rule matches, the directed peering (VPC pair), addresses,
+/// protocol, ports and TCP flags.
 ///
 /// `proto` is a `#[mask]` byte on purpose. rte_acl requires the first field to be a single byte,
 /// and a bitmask byte both satisfies that and lets one field express either an exact protocol
@@ -158,8 +159,10 @@ impl From<&ValidatedOverlay> for PeeringAclRuleSet {
 /// protocols, so non-TCP/UDP rules always carry a wildcard port range and a portless packet looks
 /// up with port `0`. Likewise, only TCP rules can match on TCP flags, and packets with no TCP
 /// header look up with no flag set.
+///
+/// Its derived `AclKeyRule` is the typed rule each table keeps, which offloads lower.
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-pub(super) struct AclKey<I> {
+pub struct AclKey<I> {
     #[mask]
     proto: NextHeader,
     #[exact]
@@ -305,11 +308,32 @@ fn lower_rules<T: IpVersion>(rules: &[PeeringAclRule]) -> Result<Vec<LoweredRule
 /// never compiled into production builds.
 pub(super) const PRODUCTION_BACKEND: Backend = Backend::Dpdk;
 
+/// What a matching rule decides.
 #[derive(Debug, Clone)]
-pub(super) struct LookupResult {
+pub struct LookupResult {
     pub(super) action: AclAction,
     pub(super) log: bool,
     pub(super) scope: AclScope,
+}
+
+impl LookupResult {
+    /// Allow or deny.
+    #[must_use]
+    pub fn action(&self) -> AclAction {
+        self.action
+    }
+
+    /// Whether a match must be logged by the ACL filter.
+    #[must_use]
+    pub fn logs(&self) -> bool {
+        self.log
+    }
+
+    /// Whether an allow also lets the flow's replies through.
+    #[must_use]
+    pub fn scope(&self) -> AclScope {
+        self.scope
+    }
 }
 
 #[derive(Debug)]
@@ -370,6 +394,16 @@ impl AclTables {
                 None
             }
         }
+    }
+
+    /// The IPv4 rules, in first-match order.
+    pub(super) fn v4(&self) -> &[RuleRow<AclKey<Ipv4Addr>, LookupResult>] {
+        self.v4.rules()
+    }
+
+    /// The IPv6 rules, in first-match order.
+    pub(super) fn v6(&self) -> &[RuleRow<AclKey<Ipv6Addr>, LookupResult>] {
+        self.v6.rules()
     }
 
     #[must_use]
