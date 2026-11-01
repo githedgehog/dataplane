@@ -2103,6 +2103,7 @@ version = "0.36.0"
 dependencies = [
  "bolero",
  "dataplane-acl",
+ "dataplane-acl-filter",
  "dataplane-clock",
  "dataplane-concurrency",
  "dataplane-config",

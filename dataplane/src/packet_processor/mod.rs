@@ -93,9 +93,12 @@ impl PipelineIngredients {
         self.pdata.clone()
     }
 
-    /// The published rate limits, which NIC offload follows like the workers do.
-    pub(crate) fn rate_limits(&self) -> &RateLimitReader<PeeringRules> {
-        &self.rate_limits
+    /// The published ACLs and rate limits, which NIC offload follows like the workers do.
+    pub(crate) fn offload_policy(&self) -> nic_offload::Policy {
+        nic_offload::Policy {
+            acls: self.aclfiltertablesr_factory.handle(),
+            rate_limits: self.rate_limits.clone(),
+        }
     }
 
     /// Create a shared factory for the driver's buffer type and lifetime.
