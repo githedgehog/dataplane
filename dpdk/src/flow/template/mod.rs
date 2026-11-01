@@ -18,6 +18,7 @@
 mod actions;
 mod meter;
 mod pattern;
+mod shared;
 mod table;
 
 pub use actions::{ArgumentError, RssTarget, RuleArg, TemplateAction};
@@ -25,6 +26,10 @@ pub use meter::{
     Meter, MeterAlgorithm, MeterError, MeterProfile, MeterProfileHandle, MeterProfileId, MeterUnit,
 };
 pub use pattern::{Color, Colored, Complete, InnerEth, Pattern};
+pub use shared::{
+    SharedActionsTemplate, SharedArg, SharedMeter, SharedMeterProfile, SharedPatternTemplate,
+    SharedRule, SharedTable,
+};
 pub use table::{Counts, TableConfig, TemplateRule, TemplateTable};
 
 use alloc::vec::Vec;
