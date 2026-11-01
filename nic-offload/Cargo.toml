@@ -19,6 +19,7 @@ net = { workspace = true }
 nix = { workspace = true, features = ["sched"] }
 policer = { workspace = true }
 rate-limit = { workspace = true }
+rekon = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

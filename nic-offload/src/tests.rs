@@ -190,3 +190,24 @@ fn nothing_is_offloaded_when_offload_is_turned_off() {
     );
     assert!(program.rules.is_empty() && program.meters.is_empty() && program.refused.is_empty());
 }
+
+/// A rule identical to an earlier one is not offloaded twice: mlx5 takes identical rules into one
+/// table, but fails to remove the second.
+#[test]
+fn identical_rules_are_offloaded_once() {
+    let program = compile(
+        vec![("a", bytes(ColorAction::Drop))],
+        vec![rule("10.1.0.0/16", "a"), rule("10.1.0.0/16", "a")],
+    );
+    assert_eq!(program.refused, vec![]);
+    assert_eq!(program.rules.len(), 1);
+}
+
+/// Prefixes are compared as the addresses they match.
+#[test]
+fn prefixes_are_canonical() {
+    let host_bits = Prefix::V4("10.1.2.3".parse().unwrap(), 16).canonical();
+    assert_eq!(host_bits, Prefix::V4("10.1.0.0".parse().unwrap(), 16));
+    let zero = Prefix::V6("fd00::1".parse().unwrap(), 0).canonical();
+    assert_eq!(zero, Prefix::V6(std::net::Ipv6Addr::UNSPECIFIED, 0));
+}

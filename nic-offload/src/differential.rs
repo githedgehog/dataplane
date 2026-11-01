@@ -817,13 +817,17 @@ fn violation(
         Verdict::Dropped if denied => None,
         Verdict::Dropped if outcome.color == Some(Color::Red) && !outcome.meters.is_empty() => None,
         Verdict::Dropped => Some("the NIC drops without a deny or a red meter".to_string()),
-        Verdict::Missed(group) => Some(format!("the NIC misses in group {}", group.0)),
+        Verdict::Missed(group) => Some(format!("the NIC misses in group {group:?}")),
     }
 }
 
 /// The NIC meter must be at least as permissive as the software component it stands for.
 fn check_profiles(limits: &RateLimits<PeeringRules>, program: &Program, plan: &Plan) {
-    for (nic, lowered) in program.meters.iter().zip(&plan.profiles) {
+    for (nic, lowered) in program
+        .meters
+        .iter()
+        .zip(plan.meters.iter().map(|m| &m.key.profile))
+    {
         let meter = limits
             .meters()
             .iter()

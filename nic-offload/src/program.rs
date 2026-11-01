@@ -36,6 +36,26 @@ pub enum Prefix {
 }
 
 impl Prefix {
+    /// The prefix with the address bits past its length cleared: prefixes that match the same
+    /// addresses are equal.
+    #[must_use]
+    pub fn canonical(self) -> Prefix {
+        match self {
+            Prefix::V4(addr, len) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(len.min(32)))
+                    .unwrap_or(0);
+                Prefix::V4(Ipv4Addr::from(u32::from(addr) & mask), len)
+            }
+            Prefix::V6(addr, len) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(len.min(128)))
+                    .unwrap_or(0);
+                Prefix::V6(Ipv6Addr::from(u128::from(addr) & mask), len)
+            }
+        }
+    }
+
     /// The prefix length, in bits.
     #[must_use]
     pub fn bits(self) -> u8 {
@@ -281,13 +301,13 @@ fn lower<I: FixedSize>(
     if (src_port.is_some() || dst_port.is_some()) && !matches!(proto, Some(6 | 17)) {
         return Err(Refusal::PortsWithoutTransport);
     }
-    let destination = prefix(rule.destination);
+    let destination = prefix(rule.destination).canonical();
     if destination.bits() == 0 {
         return Err(Refusal::AnyDestination);
     }
     Ok(Match {
         src_vni: rule.src_vni.value,
-        source: prefix(rule.source),
+        source: prefix(rule.source).canonical(),
         destination,
         proto,
         src_port,
@@ -345,12 +365,18 @@ impl Program {
             .map(|(peering, ..)| *peering)
             .chain(excluded.iter().copied())
             .collect();
+        // A rule identical to an earlier one (of its source VPC: the VNI is part of the match)
+        // adds nothing: an earlier identical rate limit charges the same meter, or the later one
+        // overlaps another meter's and is refused. And mlx5 takes identical rules into one table
+        // but fails to remove the second.
+        let mut denies: Vec<DenyRule> = Vec::new();
+        for deny in c.denies {
+            if !left.contains(&deny.peering) && !denies.iter().any(|d| d.matches == deny.matches) {
+                denies.push(deny);
+            }
+        }
         let mut program = Program {
-            denies: c
-                .denies
-                .into_iter()
-                .filter(|d| !left.contains(&d.peering))
-                .collect(),
+            denies,
             refused: c.refused,
             ..Program::default()
         };
@@ -362,7 +388,9 @@ impl Program {
             component: (unit, profile),
         } in c.rules
         {
-            if left.contains(&rule.peering) {
+            if left.contains(&rule.peering)
+                || program.rules.iter().any(|r| r.matches == rule.matches)
+            {
                 continue;
             }
             rule.meter = *meters[meter].get_or_insert_with(|| {
