@@ -21,11 +21,12 @@
 //! Prototype limits: IPv4 underlay only; every rule set is rebuilt from scratch on a change, so
 //! traffic is briefly unlimited in hardware (never blocked) while it is.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use crate::Policy;
 use dpdk::dev::{Dev, Started};
+use dpdk::flow::model::{Ipv6Extensions, Parser};
 use dpdk::flow::template::{
     Color, Complete, Counts, Meter, MeterAlgorithm, MeterError, MeterProfile, MeterProfileHandle,
     MeterProfileId, MeterUnit, Pattern, PatternTemplate, RuleArg, TableConfig, TemplateAction,
@@ -39,7 +40,7 @@ use net::vxlan::Vni;
 use rate_limit::Unit;
 use tracing::{error, info, warn};
 
-use crate::program::{Match, Origin, Prefix, Program};
+use crate::program::{Match, Origin, Peering, Prefix, Program};
 
 /// What a port reserves for this backend when it is configured; fixed until the port restarts.
 pub const RESOURCES: TemplateConfig = TemplateConfig {
@@ -49,6 +50,14 @@ pub const RESOURCES: TemplateConfig = TemplateConfig {
 };
 
 const VXLAN_PORT: u16 = 4789;
+/// What mlx5's parser is known to do, as the hardware qualification settled it on a BlueField-3:
+/// it walks IPv6 extension headers and matches a pattern's IPv6 `proto` on the protocol after
+/// them (hop-by-hop: 239 of 239 frames). Software does the same, so a rule naming a protocol sees
+/// such packets alike in both.
+pub const PARSER: Parser = Parser {
+    ipv6_extensions: Ipv6Extensions::WalkedToLast,
+};
+
 /// ACL denies.
 const DENY: FlowGroup = FlowGroup(1);
 /// Rate limits.
@@ -171,12 +180,15 @@ impl Shape {
                 Some(Prefix::V6(a, l)) => Ipv6Prefix::prefix(a, l),
                 _ => Ipv6Prefix::prefix(std::net::Ipv6Addr::UNSPECIFIED, len),
             };
+            // Fragments are left to software: it sees a later fragment's protocol as the fragment,
+            // with no ports, and a first fragment as its protocol, which no NIC rule can tell
+            // apart alike for every rule of a peering. So no NIC rule matches any fragment.
             let mut ip = Ipv6Match::default()
                 .src(addr(rule.map(|r| r.source), self.source))
-                .dst(addr(rule.map(|r| r.destination), self.destination));
+                .dst(addr(rule.map(|r| r.destination), self.destination))
+                .unfragmented();
             if self.l4 != L4::Any {
-                // Software sees a fragment's protocol as the fragment, with no ports.
-                ip = ip.proto(proto).unfragmented();
+                ip = ip.proto(proto);
             }
             finish!(tunnel.ipv6(ip))
         } else {
@@ -184,12 +196,15 @@ impl Shape {
                 Some(Prefix::V4(a, l)) => Ipv4Prefix::prefix(a, l),
                 _ => Ipv4Prefix::prefix(std::net::Ipv4Addr::UNSPECIFIED, len),
             };
+            // Fragments are left to software: it sees a later fragment's protocol as the fragment,
+            // with no ports, and a first fragment as its protocol, which no NIC rule can tell
+            // apart alike for every rule of a peering. So no NIC rule matches any fragment.
             let mut ip = Ipv4Match::default()
                 .src(addr(rule.map(|r| r.source), self.source))
-                .dst(addr(rule.map(|r| r.destination), self.destination));
+                .dst(addr(rule.map(|r| r.destination), self.destination))
+                .unfragmented();
             if self.l4 != L4::Any {
-                // Software sees a fragment's protocol as the fragment, with no ports.
-                ip = ip.proto(proto).unfragmented();
+                ip = ip.proto(proto);
             }
             finish!(tunnel.ipv4(ip))
         }
@@ -253,23 +268,37 @@ pub fn run(
     };
     while !stop() {
         let (filter, limits) = (acls.load(), reader.load());
-        let program = Program::compile(&filter, &limits);
-        for (origin, refusal) in &program.refused {
-            info!("port {port}: {origin} stays in software: {refusal:?}");
-        }
         let changed = || {
             stop()
                 || !concurrency::sync::Arc::ptr_eq(&acls.load(), &filter)
                 || !concurrency::sync::Arc::ptr_eq(&reader.load(), &limits)
         };
-        match Plan::new(&program, fate)
-            .and_then(|plan| install(&flows, port, &program, &plan, &changed))
-        {
-            Ok(()) => {}
-            Err(e) => {
-                error!("port {port}: NIC offload failed, software only until the next change: {e}");
-                while !changed() {
-                    std::thread::sleep(POLL);
+        if !limits.attempt_offloads() {
+            info!("port {port}: NIC offload is turned off; software alone enforces the policy");
+        }
+        // Peerings whose rules the NIC refused: they stay in software, whole.
+        let mut excluded = BTreeSet::new();
+        loop {
+            let program = Program::compile(&filter, &limits, &excluded);
+            let mut reported = BTreeSet::new();
+            for (peering, origin, refusal) in &program.refused {
+                if reported.insert(*peering) {
+                    info!("port {port}: the {peering} stays in software: {origin}: {refusal:?}");
+                }
+            }
+            let outcome = Plan::new(&program, fate)
+                .and_then(|plan| install(&flows, port, &program, &plan, &changed));
+            match outcome {
+                Ok(Held) => break,
+                Ok(Refused(peerings)) => excluded.extend(peerings),
+                Err(e) => {
+                    error!(
+                        "port {port}: NIC offload failed, software only until the next change: {e}"
+                    );
+                    while !changed() {
+                        std::thread::sleep(POLL);
+                    }
+                    break;
                 }
             }
         }
@@ -675,28 +704,50 @@ pub fn with_installed<R>(
     Ok(result)
 }
 
+/// How an installed plan ended.
+#[derive(Debug)]
+enum Installation {
+    /// It was held until the policy changed.
+    Held,
+    /// The NIC refused some rules of these peerings, so the plan was removed again: a peering is
+    /// offloaded whole or not at all.
+    Refused(BTreeSet<Peering>),
+}
+use Installation::{Held, Refused};
+
 /// Install `plan` on `flows`' port, then hold it until `changed`, reporting its counts; everything
-/// is removed on return.
+/// is removed on return. If the NIC refuses any rule of the program, the plan is removed at once
+/// and the peerings of the refused rules returned.
 ///
 /// # Errors
 ///
-/// Returns the first template, table, meter or rule the NIC refused; whatever was installed is
-/// removed again.
-pub fn install(
+/// Returns the first template, table, meter or rule the NIC refused that the plan cannot do
+/// without; whatever was installed is removed again.
+fn install(
     flows: &TemplateFlows<'_>,
     port: &str,
     program: &Program,
     plan: &Plan,
     changed: &dyn Fn() -> bool,
-) -> Result<(), Error> {
+) -> Result<Installation, Error> {
     with_installed(flows, plan, |installed| {
+        let mut refused = BTreeSet::new();
         for (role, why) in installed.refused() {
-            let origin = match *role {
-                Role::Police(rule) => Origin::RateLimit(program.rules[rule].rule),
-                Role::Deny(deny) => program.denies[deny].origin,
+            let (origin, peering) = match *role {
+                Role::Police(rule) => {
+                    let rule = &program.rules[rule];
+                    (Origin::RateLimit(rule.rule), rule.peering)
+                }
+                Role::Deny(deny) => (program.denies[deny].origin, program.denies[deny].peering),
                 _ => continue,
             };
-            warn!("port {port}: the NIC refused {origin}, which stays in software: {why}");
+            warn!(
+                "port {port}: the NIC refused {origin}, so the {peering} stays in software: {why}"
+            );
+            refused.insert(peering);
+        }
+        if !refused.is_empty() {
+            return Refused(refused);
         }
         if !plan.tables.is_empty() {
             info!(
@@ -716,6 +767,7 @@ pub fn install(
             }
         }
         report(port, program, installed);
+        Held
     })
 }
 
