@@ -25,3 +25,4 @@ tracing = { workspace = true }
 acl = { workspace = true, features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }
 net = { workspace = true, features = ["test_buffer"] }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
