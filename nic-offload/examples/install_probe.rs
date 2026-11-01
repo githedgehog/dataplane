@@ -78,9 +78,17 @@ fn rule(v6: bool, proto: Option<u8>, dst_port: Option<u16>) -> PoliceRule {
             proto,
             src_port: None,
             dst_port,
+            tcp_flags: None,
         },
         meter: 0,
     }
+}
+
+/// `rule`, TCP, matching SYN set and ACK clear: the opening of a connection.
+fn syn(v6: bool, dst_port: Option<u16>) -> PoliceRule {
+    let mut rule = rule(v6, Some(6), dst_port);
+    rule.matches.tcp_flags = Some((0x02, 0x12));
+    rule
 }
 
 /// `rule` with prefixes of these lengths (IPv6 only) and these ports.
@@ -181,6 +189,16 @@ fn main() {
             vec![rule(true, Some(6), Some(443))],
         ),
         ("IPv4, ICMP", vec![rule(false, Some(1), None)]),
+        ("IPv4, TCP SYN without ACK", vec![syn(false, None)]),
+        (
+            "IPv4, TCP SYN without ACK, port",
+            vec![syn(false, Some(443))],
+        ),
+        ("IPv6, TCP SYN without ACK", vec![syn(true, None)]),
+        (
+            "IPv6, TCP SYN without ACK, port",
+            vec![syn(true, Some(443))],
+        ),
         (
             "IPv6 /128 /128, any protocol",
             vec![v6(128, 128, None, (None, None))],

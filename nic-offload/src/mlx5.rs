@@ -92,8 +92,16 @@ pub enum Error {
 enum L4 {
     Any,
     Proto,
-    Udp { src: bool, dst: bool },
-    Tcp { src: bool, dst: bool },
+    Udp {
+        src: bool,
+        dst: bool,
+    },
+    /// TCP, with ports constrained or not, and the mask of flags constrained.
+    Tcp {
+        src: bool,
+        dst: bool,
+        flags: u8,
+    },
 }
 
 /// What one table's pattern template fixes: everything but the values.
@@ -113,10 +121,13 @@ impl Shape {
                 src: src.is_some(),
                 dst: dst.is_some(),
             },
-            (Some(6), src, dst) if src.is_some() || dst.is_some() => L4::Tcp {
-                src: src.is_some(),
-                dst: dst.is_some(),
-            },
+            (Some(6), src, dst) if src.is_some() || dst.is_some() || rule.tcp_flags.is_some() => {
+                L4::Tcp {
+                    src: src.is_some(),
+                    dst: dst.is_some(),
+                    flags: rule.tcp_flags.map_or(0, |(_, mask)| mask),
+                }
+            }
             (Some(_), ..) => L4::Proto,
         };
         Shape {
@@ -162,13 +173,17 @@ impl Shape {
                         }
                         $ip.udp(udp).complete()
                     }
-                    L4::Tcp { src, dst } => {
+                    L4::Tcp { src, dst, flags } => {
                         let mut tcp = TcpMatch::default();
                         if src {
                             tcp = tcp.src(ports(src_port));
                         }
                         if dst {
                             tcp = tcp.dst(ports(dst_port));
+                        }
+                        if flags != 0 {
+                            let value = rule.and_then(|r| r.tcp_flags).map_or(0, |(v, _)| v);
+                            tcp = tcp.flags(value, flags);
                         }
                         $ip.tcp(tcp).complete()
                     }

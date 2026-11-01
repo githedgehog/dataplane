@@ -60,6 +60,8 @@ pub struct Match {
     pub src_port: Option<u16>,
     /// Exact destination port, or any.
     pub dst_port: Option<u16>,
+    /// TCP flag values and the mask of flags constrained, or any (TCP only).
+    pub tcp_flags: Option<(u8, u8)>,
 }
 
 /// The meter component a NIC enforces for a named meter.
@@ -159,7 +161,7 @@ pub enum Refusal {
     /// The ACL denies by default: whether a packet no rule matches passes depends on flow state
     /// (the replies of flows an allow opened).
     DefaultDeny,
-    /// TCP flag matches are not lowered yet.
+    /// TCP flags matched on a protocol other than TCP.
     TcpFlags,
     /// Only an exact protocol, or any, is lowered.
     PartialProtocolMask,
@@ -269,10 +271,12 @@ fn lower<I: FixedSize>(
     rule: &Fields<I>,
     prefix: impl Fn(PrefixSpec<I>) -> Prefix,
 ) -> Result<Match, Refusal> {
-    if rule.tcp_flags.mask != TcpFlags::empty() {
+    let proto = proto(rule.proto)?;
+    let tcp_flags = (rule.tcp_flags.mask != TcpFlags::empty())
+        .then(|| (rule.tcp_flags.value.bits(), rule.tcp_flags.mask.bits()));
+    if tcp_flags.is_some() && proto != Some(6) {
         return Err(Refusal::TcpFlags);
     }
-    let proto = proto(rule.proto)?;
     let (src_port, dst_port) = (port(rule.src_port)?, port(rule.dst_port)?);
     if (src_port.is_some() || dst_port.is_some()) && !matches!(proto, Some(6 | 17)) {
         return Err(Refusal::PortsWithoutTransport);
@@ -288,6 +292,7 @@ fn lower<I: FixedSize>(
         proto,
         src_port,
         dst_port,
+        tcp_flags,
     })
 }
 

@@ -21,7 +21,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use acl::table::Backend;
 use acl_filter::AclFilterContext;
 use config::external::overlay::acl::{
-    Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
+    Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope, AclTcpFlagsMatch,
 };
 use config::external::overlay::ratelimit::{
     ColorAction, ColorActions, Meter, MeterProfile, RateLimitRule, RateLimitTables,
@@ -35,6 +35,7 @@ use lpm::prefix::with_ports::{PortRange, PrefixPortsSet};
 use lpm::prefix::{Prefix as LpmPrefix, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
 use net::packet::{Packet, VpcDiscriminant};
+use net::tcp::TcpFlags;
 use net::vxlan::Vni;
 use policer::{Profile, Rate};
 use rate_limit::{Classify, PeeringRules, RateLimitWriter, RateLimits, Unit};
@@ -160,8 +161,20 @@ enum RawProto {
     Any,
     Udp,
     Tcp,
+    /// TCP, with the flags in the mask (the second) required to take their values in the first.
+    TcpFlags(u8, u8),
     Icmp,
     Other(u8),
+}
+
+impl RawProto {
+    /// The flags a TCP rule requires: values and mask.
+    fn tcp_flags(self) -> Option<(u8, u8)> {
+        match self {
+            RawProto::TcpFlags(value, mask) if mask != 0 => Some((value & mask, mask)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, bolero::TypeGenerator)]
@@ -208,7 +221,10 @@ impl RawRule {
     fn pattern(&self) -> AclPattern {
         let (_, from, to) = self.direction();
         // Only TCP and UDP rules may name ports.
-        let ports = matches!(self.proto, RawProto::Udp | RawProto::Tcp);
+        let ports = matches!(
+            self.proto,
+            RawProto::Udp | RawProto::Tcp | RawProto::TcpFlags(..)
+        );
         let set = |subnets: &[RawSubnet], vpc| -> PrefixPortsSet {
             subnets
                 .iter()
@@ -230,6 +246,14 @@ impl RawRule {
                 RawProto::Any => AclProtoMatch::Any,
                 RawProto::Udp => AclProtoMatch::Udp,
                 RawProto::Tcp => AclProtoMatch::tcp(),
+                RawProto::TcpFlags(value, mask) => {
+                    let mut flags = AclTcpFlagsMatch::ANY;
+                    for bit in (0..8).map(|i| 1u8 << i).filter(|bit| mask & bit != 0) {
+                        let flag = TcpFlags::from_bits_truncate(bit);
+                        flags = flags.require(flag, value & bit != 0);
+                    }
+                    AclProtoMatch::Tcp(flags)
+                }
                 RawProto::Icmp => AclProtoMatch::Other(1),
                 RawProto::Other(p) => AclProtoMatch::Other(p),
             },
@@ -280,7 +304,8 @@ impl RawAcls {
                         AclAction::Allow
                     },
                     pattern: r.rule.pattern(),
-                    scope: if r.flow {
+                    // The ACL filter allows TCP flag matches in packet scope only.
+                    scope: if r.flow && r.rule.proto.tcp_flags().is_none() {
                         AclScope::Flow
                     } else {
                         AclScope::Packet
@@ -440,6 +465,8 @@ pub(crate) struct RawFrame {
     /// IPv6 only: a hop-by-hop options header first.
     pub(crate) hop_by_hop: bool,
     pub(crate) vlan: Option<u16>,
+    /// The flags of a TCP frame.
+    tcp_flags: u8,
 }
 
 fn ones_complement(header: &[u8]) -> u16 {
@@ -539,7 +566,7 @@ impl RawFrame {
         );
         let l4 = match aimed.map(|rule| rule.proto) {
             Some(RawProto::Udp) => RawL4::Udp,
-            Some(RawProto::Tcp) => RawL4::Tcp,
+            Some(RawProto::Tcp | RawProto::TcpFlags(..)) => RawL4::Tcp,
             Some(RawProto::Icmp) => RawL4::Icmp,
             Some(RawProto::Other(p)) => RawL4::Other(p),
             Some(RawProto::Any) | None => self.l4,
@@ -554,7 +581,12 @@ impl RawFrame {
             RawL4::Tcp => {
                 let mut h = Vec::from(src_port.to_be_bytes());
                 h.extend(dst_port.to_be_bytes());
-                h.extend([0, 0, 0, 1, 0, 0, 0, 0, 0x50, 0x10, 0xff, 0xff, 0, 0, 0, 0]);
+                // Aimed at a rule naming flags, the frame carries them, whatever its other flags.
+                let flags = match aimed.and_then(|r| r.proto.tcp_flags()) {
+                    Some((value, mask)) => (self.tcp_flags & !mask) | value,
+                    None => self.tcp_flags,
+                };
+                h.extend([0, 0, 0, 1, 0, 0, 0, 0, 0x50, flags, 0xff, 0xff, 0, 0, 0, 0]);
                 (6, h)
             }
             RawL4::Icmp => (if v6 { 58 } else { 1 }, vec![8, 0, 0, 0, 0, 1, 0, 1]),
@@ -924,6 +956,7 @@ fn aimed(aim: u8, l4: RawL4, fragment: RawFragment) -> RawFrame {
         fragment,
         hop_by_hop: false,
         vlan: None,
+        tcp_flags: 0x10,
     }
 }
 
@@ -1061,5 +1094,47 @@ fn a_default_deny_keeps_its_peering_and_only_it_in_software() {
             .refused
             .iter()
             .all(|(_, _, refusal)| *refusal == crate::program::Refusal::DefaultDeny)
+    );
+}
+
+/// A deny of connection openings (SYN without ACK), the crude SYN-flood defense TCP flag matches
+/// are for, is enforced in the NIC: it drops a SYN, and lets a SYN-ACK through.
+#[test]
+fn a_syn_deny_drops_syns_in_the_nic() {
+    let rules = [peering_rule(false, RawProto::Any)];
+    let acls = RawAcls {
+        defaults: [Some(false), None, None, None],
+        rules: vec![RawAclRule {
+            rule: peering_rule(false, RawProto::TcpFlags(0x02, 0x12)),
+            deny: true,
+            flow: false,
+        }],
+    };
+    let overlay = overlay(&meters(), &rules, &acls).unwrap();
+    let writer: RateLimitWriter<PeeringRules> =
+        RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
+    writer.apply(&overlay, Backend::Reference).unwrap();
+    let filter = AclFilterContext::reference(&overlay).unwrap();
+    let program = Program::compile(&filter, &writer.load(), &BTreeSet::new());
+    assert_eq!(program.denies.len(), 1, "{program:#?}");
+    assert_eq!(program.denies[0].matches.tcp_flags, Some((0x02, 0x12)));
+    let plan = Plan::new(&program, &fate()).unwrap();
+    let targets = targets(&rules, &acls);
+    for (flags, dropped) in [(0x02, true), (0x12, false), (0x10, false)] {
+        let mut raw = aimed(0, RawL4::Tcp, RawFragment::Whole);
+        raw.tcp_flags = flags;
+        let frame = raw.frame(&targets);
+        let outcomes = plan.outcomes(&frame.wire()).unwrap();
+        assert!(
+            outcomes
+                .iter()
+                .all(|o| (o.verdict == Verdict::Dropped && o.meters.is_empty()) == dropped),
+            "flags {flags:#04x}: {outcomes:?}"
+        );
+    }
+    check_overlay(
+        &overlay,
+        &targets,
+        &[aimed(1, RawL4::Tcp, RawFragment::Whole)],
     );
 }
