@@ -274,9 +274,10 @@ fn transport(
                 return vec![Vec::new()];
             };
             let tails = match take::<8>(&bytes[8..]) {
-                Some(vxlan) if outer && be16(&header, 2) == VXLAN_PORT => {
-                    then(Header::Vxlan(vxlan), eth(&bytes[16..], elide_vlan, false, parser))
-                }
+                Some(vxlan) if outer && be16(&header, 2) == VXLAN_PORT => then(
+                    Header::Vxlan(vxlan),
+                    eth(&bytes[16..], elide_vlan, false, parser),
+                ),
                 _ => vec![Vec::new()],
             };
             then(Header::Udp(header), tails)
