@@ -77,6 +77,24 @@ impl Plan {
     ///
     /// Returns [`ModelError`] if the plan uses something the model does not interpret.
     pub fn outcomes(&self, frame: &[u8]) -> Result<Vec<Outcome>, ModelError> {
+        self.outcomes_without(frame, &[])
+    }
+
+    /// Every outcome the NIC may produce for `frame` with the plan installed but for the rules
+    /// in `refused` (see [`Installed::refused`](crate::mlx5::Installed::refused)).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError`] if the plan uses something the model does not interpret.
+    pub fn outcomes_without(
+        &self,
+        frame: &[u8],
+        refused: &[Role],
+    ) -> Result<Vec<Outcome>, ModelError> {
+        let model = Walk {
+            plan: self,
+            refused,
+        };
         let mut outcomes = Vec::new();
         for view in views(frame) {
             let start = State {
@@ -84,7 +102,7 @@ impl Plan {
                 color: None,
                 path: Vec::new(),
             };
-            for outcome in self.group(&view, FlowGroup(0), start, 0)? {
+            for outcome in model.group(&view, FlowGroup(0), start, 0)? {
                 if !outcomes.contains(&outcome) {
                     outcomes.push(outcome);
                 }
@@ -92,7 +110,15 @@ impl Plan {
         }
         Ok(outcomes)
     }
+}
 
+/// A plan, walked as installed.
+struct Walk<'a> {
+    plan: &'a Plan,
+    refused: &'a [Role],
+}
+
+impl Walk<'_> {
     fn group(
         &self,
         frame: &Frame,
@@ -104,6 +130,7 @@ impl Plan {
             return Err(ModelError::Loop);
         }
         let mut tables: Vec<&PlannedTable> = self
+            .plan
             .tables
             .iter()
             .filter(|t| t.config.group == group)
@@ -120,6 +147,9 @@ impl Plan {
             let mut outcomes = Vec::new();
             for table in level {
                 for rule in &table.rules {
+                    if self.refused.contains(&rule.role) {
+                        continue;
+                    }
                     if rule.pattern.matches(frame, state.color)? {
                         outcomes.extend(self.actions(frame, table, rule, state.clone(), depth)?);
                     }
@@ -148,7 +178,7 @@ impl Plan {
         let actions = table
             .actions
             .get(rule.actions)
-            .and_then(|&a| self.actions.get(a))
+            .and_then(|&a| self.plan.actions.get(a))
             .ok_or(ModelError::Arguments)?;
         state.path.push(rule.role);
         let mut args = rule.args.iter();
