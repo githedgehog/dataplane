@@ -91,10 +91,13 @@ pub trait Domain: sealed::Sealed {
 }
 
 /// The NIC-domain ingress typestate. See [`Domain`].
+#[derive(Debug)]
 pub struct Ingress;
 /// The NIC-domain egress typestate. See [`Domain`].
+#[derive(Debug)]
 pub struct Egress;
 /// The embedded-switch (FDB / `transfer`) typestate. See [`Domain`].
+#[derive(Debug)]
 pub struct Transfer;
 
 impl sealed::Sealed for Ingress {}

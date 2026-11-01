@@ -135,6 +135,13 @@ impl<Pos> Pattern<Pos> {
         }
     }
 
+    /// What each item constrains, and with what mask: what a template of this pattern fixes, and
+    /// what its rules must agree with.
+    #[must_use]
+    pub fn shapes(&self) -> &[ItemShape] {
+        &self.shapes
+    }
+
     /// End the pattern, forgetting its position.
     #[must_use]
     pub fn complete(self) -> Pattern<Complete> {

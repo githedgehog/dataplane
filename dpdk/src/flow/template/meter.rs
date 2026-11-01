@@ -228,9 +228,11 @@ pub struct Meter<'p, D: Domain> {
 }
 
 impl<'p, D: Domain> Meter<'p, D> {
+    /// Create a meter with `profile`. The caller keeps `profile` alive as long as the meter:
+    /// [`TemplateFlows::meter`] by borrowing it, [`SharedMeter`](super::SharedMeter) by owning it.
     pub(crate) fn new(
         flows: &'p TemplateFlows<'p>,
-        profile: &'p MeterProfileHandle<'_>,
+        profile: &MeterProfileHandle<'_>,
     ) -> Result<Meter<'p, D>, TemplateError> {
         // SAFETY: zero is valid for these C structs.
         let mut conf: rte_flow_indir_action_conf = unsafe { core::mem::zeroed() };
