@@ -82,10 +82,12 @@ fn a_watched_descriptor_wakes_the_waiter_once_per_write() {
 /// `rte_epoll_wait` does, lets a stream of signals hold the waiter asleep for as long as it lasts.
 #[test]
 fn a_handled_signal_ends_the_wait() {
-    const LONGEST: Duration = Duration::from_millis(50);
+    /// Long enough that a waiter slow to start (under emulation, on a loaded runner) is still
+    /// waiting when the signals come, rather than having them all land before it waits.
+    const LONGEST: Duration = Duration::from_secs(1);
     const EVERY: Duration = Duration::from_millis(2);
     /// Signals for twice `LONGEST`, so a restarting wait outlasts it.
-    const SIGNALS: u32 = 50;
+    const SIGNALS: u32 = 1000;
 
     extern "C" fn handled(_: nix::libc::c_int) {}
     // SAFETY: the handler does nothing, so it is async-signal-safe, and nothing else in this test
