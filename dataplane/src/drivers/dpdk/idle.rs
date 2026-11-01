@@ -795,6 +795,9 @@ mod tests {
         let mut idle = armed_on(receiver.doorbell());
         // Rung while armed, before the wait: edge-triggered, so the wait still sees it.
         sender.try_send(vec![0; 64]).unwrap();
+        // A full check interval ahead, so a slow start (under emulation, say) does not make the
+        // worker do its checks instead of waiting.
+        idle.checked();
         idle.empty(None, std::iter::empty::<&RxQueue<'_>>());
         assert_eq!(idle.sleeps().1, 1);
         // A wait that timed out instead would not have cleared it.
