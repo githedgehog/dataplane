@@ -3,7 +3,7 @@
 
 //! Ordered peering matches selecting a named meter.
 
-use acl::table::{Backend, Table, build_table};
+use acl::table::{Backend, RuleRow, Table, build_table};
 use config::ConfigError;
 use config::external::overlay::ratelimit::ValidatedRateLimitRule;
 use lpm::prefix::Prefix;
@@ -27,8 +27,11 @@ pub trait Classify: Send + Sync {
     fn classify<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<RuleIndex>;
 }
 
+/// What a rate-limit rule matches: the directed peering, addresses, protocol, ports and TCP flags.
+///
+/// Its derived `PeeringKeyRule` is the typed rule each table keeps, which offloads lower.
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-struct PeeringKey<I> {
+pub struct PeeringKey<I> {
     #[mask]
     proto: NextHeader,
     #[exact]
@@ -74,6 +77,19 @@ impl PeeringRules {
             v4: table::<Ipv4Addr>(rules, backend)?,
             v6: table::<Ipv6Addr>(rules, backend)?,
         })
+    }
+
+    /// The IPv4 rules, in first-match order, each with the index of the configured rule it came
+    /// from.
+    #[must_use]
+    pub fn v4(&self) -> &[RuleRow<PeeringKey<Ipv4Addr>, RuleIndex>] {
+        self.v4.rules()
+    }
+
+    /// The IPv6 rules, in first-match order.
+    #[must_use]
+    pub fn v6(&self) -> &[RuleRow<PeeringKey<Ipv6Addr>, RuleIndex>] {
+        self.v6.rules()
     }
 }
 
