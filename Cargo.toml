@@ -55,6 +55,7 @@ members = [
     "traffic-control",
     "transceiver",
     "validator",
+    "vni-limit",
     "vpcmap",
 ]
 

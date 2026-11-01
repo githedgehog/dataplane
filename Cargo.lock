@@ -2313,6 +2313,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-vni-limit"
+version = "0.33.0"
+dependencies = [
+ "bolero",
+ "chrono",
+ "clap",
+ "dataplane-clock",
+ "dataplane-concurrency",
+ "dataplane-dpdk",
+ "dataplane-net",
+ "ipnet",
+ "nix",
+ "serde",
+ "serde_yaml_ng",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dataplane-vpcmap"
 version = "0.33.0"
 dependencies = [

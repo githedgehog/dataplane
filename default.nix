@@ -579,7 +579,7 @@ let
       '';
 
   # A workspace binary linked statically, for programs that run where
-  # /nix/store is not, such as the pre-init (below).
+  # /nix/store is not: the pre-init (below), and tools shipped on their own.
   #
   # Two things are needed and neither is the default.  `+crt-static` asks
   # for a static link; glibc's static archives then have to be found, and
@@ -631,6 +631,9 @@ let
   # dynamically linked: its ELF interpreter would name a path that does not
   # exist yet, and the kernel would fail to exec it.
   n-preinit-static = static-libc workspace."n-preinit";
+
+  # `vni-limit`, linked statically, to copy onto a gateway host and run there.
+  vni-limit-static = static-libc workspace."vni-limit";
 
   # Flatcar's repackaged kernel, adapted to the shape `mk-initramfs` and the
   # kernel-image installer expect of a kernel derivation.
@@ -2301,6 +2304,7 @@ in
     testroot
     tests
     vmroot
+    vni-limit-static
     workspace
     ;
   profile = profile';
