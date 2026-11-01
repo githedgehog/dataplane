@@ -14,6 +14,12 @@ pub enum ProbeError {
     /// The EAL was initialized with PCI disabled.
     #[error("cannot probe PCI device {address}: PCI is disabled")]
     PciDisabled { address: PciAddress },
+    /// A driver argument is empty or contains a NUL or a comma, so it cannot be passed on.
+    #[error("cannot probe PCI device {address}: invalid driver argument {argument:?}")]
+    InvalidDevargs {
+        address: PciAddress,
+        argument: String,
+    },
     /// The device could not be found or attached by a driver.
     #[error("failed to probe PCI device {address}: {source}")]
     Driver {
@@ -44,12 +50,40 @@ impl Eal {
     /// }
     /// ```
     pub fn probe_pci(&mut self, address: PciAddress) -> Result<(), ProbeError> {
+        self.probe_pci_with(address, &[])
+    }
+
+    /// Probe like [`probe_pci`](Self::probe_pci), passing driver arguments (`key=value`, e.g.
+    /// `dv_flow_en=2`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProbeError`] if PCI is disabled, an argument is empty or contains a NUL or a
+    /// comma, or the device cannot be attached.
+    pub fn probe_pci_with(
+        &mut self,
+        address: PciAddress,
+        devargs: &[&str],
+    ) -> Result<(), ProbeError> {
         if !self.has_pci() {
             return Err(ProbeError::PciDisabled { address });
         }
+        if let Some(argument) = devargs
+            .iter()
+            .find(|arg| arg.is_empty() || arg.contains(['\0', ',']))
+        {
+            return Err(ProbeError::InvalidDevargs {
+                address,
+                argument: (*argument).to_string(),
+            });
+        }
 
         // PciAddress formats numeric components only, so this has exactly one trailing NUL.
-        let args = format!("pci:{address}\0");
+        let args = core::iter::once(format!("pci:{address}"))
+            .chain(devargs.iter().map(|arg| (*arg).to_string()))
+            .collect::<Vec<_>>()
+            .join(",")
+            + "\0";
         // SAFETY: EAL is live and exclusively borrowed; args is a valid C string for this call.
         let ret = unsafe { dpdk_sys::rte_dev_probe(args.as_ptr().cast()) };
         if ret == 0 {

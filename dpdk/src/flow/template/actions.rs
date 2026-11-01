@@ -3,13 +3,14 @@
 
 //! Actions templates and the per-rule arguments they take.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr::{from_ref, null};
 
 use dpdk_sys::{
-    rte_flow_action, rte_flow_action_handle, rte_flow_action_jump, rte_flow_action_queue,
-    rte_flow_action_type as at,
+    rte_eth_hash_function, rte_flow_action, rte_flow_action_handle, rte_flow_action_jump,
+    rte_flow_action_queue, rte_flow_action_rss, rte_flow_action_type as at,
 };
 
 use crate::flow::{Domain, FlowGroup};
@@ -21,7 +22,7 @@ use super::meter::Meter;
 ///
 /// [`Meter`](TemplateAction::Meter) and [`JumpPerRule`](TemplateAction::JumpPerRule) are chosen
 /// per rule, with a [`RuleArg`]; the template fixes every other action.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TemplateAction {
     /// Continue in another group.
     Jump(FlowGroup),
@@ -29,6 +30,8 @@ pub enum TemplateAction {
     JumpPerRule,
     /// Deliver to a receive queue of this port.
     Queue(RxQueueIndex),
+    /// Spread over receive queues of this port by hash, with the device's default key.
+    Rss(RssTarget),
     /// Count the rule's packets and bytes; see [`TemplateRule::counts`](super::TemplateRule::counts).
     Count,
     /// Drop.
@@ -39,9 +42,18 @@ pub enum TemplateAction {
     Meter,
 }
 
+/// The queues and hash types of a [`TemplateAction::Rss`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RssTarget {
+    /// The queues to spread over.
+    pub queues: Vec<RxQueueIndex>,
+    /// The `RTE_ETH_RSS_*` hash types.
+    pub types: u64,
+}
+
 impl TemplateAction {
     /// Whether a rule supplies this action's configuration.
-    pub(crate) fn per_rule(self) -> bool {
+    pub(crate) fn per_rule(&self) -> bool {
         matches!(self, TemplateAction::Meter | TemplateAction::JumpPerRule)
     }
 }
@@ -56,16 +68,21 @@ pub enum RuleArg<'a, D: Domain> {
 }
 
 /// The configuration an action points at.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 enum Conf {
     None,
     Jump(rte_flow_action_jump),
     Queue(rte_flow_action_queue),
     Handle(*mut rte_flow_action_handle),
+    /// `rss.queue` points into `queues`, whose heap allocation does not move with the action.
+    Rss {
+        rss: rte_flow_action_rss,
+        _queues: Box<[u16]>,
+    },
 }
 
 /// An action and the configuration it points at, kept in place while the PMD reads them.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub(crate) struct OwnedAction {
     type_: at::Type,
     conf: Conf,
@@ -82,6 +99,7 @@ impl OwnedAction {
             Conf::Jump(jump) => from_ref(jump).cast(),
             Conf::Queue(queue) => from_ref(queue).cast(),
             Conf::Handle(handle) => handle.cast_const().cast(),
+            Conf::Rss { rss, .. } => from_ref(rss).cast(),
         };
         rte_flow_action {
             type_: self.type_,
@@ -102,8 +120,8 @@ pub(crate) fn lower(actions: &[OwnedAction]) -> Vec<rte_flow_action> {
 }
 
 /// The fixed part of `action`: what the template and every rule pass for it.
-fn fixed(action: TemplateAction) -> OwnedAction {
-    match action {
+fn fixed(action: &TemplateAction) -> OwnedAction {
+    match *action {
         TemplateAction::Jump(group) => OwnedAction::new(
             at::RTE_FLOW_ACTION_TYPE_JUMP,
             Conf::Jump(rte_flow_action_jump { group: group.0 }),
@@ -114,6 +132,23 @@ fn fixed(action: TemplateAction) -> OwnedAction {
                 index: queue.as_u16(),
             }),
         ),
+        TemplateAction::Rss(ref target) => {
+            let queues: Box<[u16]> = target.queues.iter().map(RxQueueIndex::as_u16).collect();
+            // SAFETY: zero is valid for every field of this C struct.
+            let mut rss: rte_flow_action_rss = unsafe { core::mem::zeroed() };
+            rss.func = rte_eth_hash_function::RTE_ETH_HASH_FUNCTION_DEFAULT;
+            rss.types = target.types;
+            // Bounded by the device's queue count, far below u32::MAX.
+            rss.queue_num = u32::try_from(queues.len()).unwrap_or(u32::MAX);
+            rss.queue = queues.as_ptr();
+            OwnedAction::new(
+                at::RTE_FLOW_ACTION_TYPE_RSS,
+                Conf::Rss {
+                    rss,
+                    _queues: queues,
+                },
+            )
+        }
         TemplateAction::Count => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_COUNT, Conf::None),
         TemplateAction::Drop => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_DROP, Conf::None),
         TemplateAction::SendToKernel => {
@@ -133,10 +168,10 @@ fn fixed(action: TemplateAction) -> OwnedAction {
 /// `__flow_hw_actions_translate`). So a per-rule meter is an `INDIRECT` action with no
 /// configuration, typed by a `METER_MARK` mask with none either.
 pub(crate) fn template(actions: &[TemplateAction]) -> (Vec<OwnedAction>, Vec<OwnedAction>) {
-    let values = actions.iter().copied().map(fixed).collect();
+    let values = actions.iter().map(fixed).collect();
     let masks = actions
         .iter()
-        .map(|&action| match action {
+        .map(|action| match *action {
             TemplateAction::Jump(_) => OwnedAction::new(
                 at::RTE_FLOW_ACTION_TYPE_JUMP,
                 Conf::Jump(rte_flow_action_jump { group: u32::MAX }),
@@ -148,14 +183,14 @@ pub(crate) fn template(actions: &[TemplateAction]) -> (Vec<OwnedAction>, Vec<Own
             TemplateAction::Meter => {
                 OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_METER_MARK, Conf::None)
             }
-            other => fixed(other),
+            ref other => fixed(other),
         })
         .collect();
     (values, masks)
 }
 
 /// The per-rule arguments do not fit the template.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ArgumentError {
     /// The rule gave more or fewer arguments than the template has per-rule actions.
     #[error(
@@ -192,7 +227,7 @@ pub(crate) fn rule<D: Domain>(
     let mut args = args.iter().enumerate();
     actions
         .iter()
-        .map(|&action| {
+        .map(|action| {
             if !action.per_rule() {
                 return Ok(fixed(action));
             }
@@ -209,7 +244,10 @@ pub(crate) fn rule<D: Domain>(
                     at::RTE_FLOW_ACTION_TYPE_JUMP,
                     Conf::Jump(rte_flow_action_jump { group: group.0 }),
                 )),
-                _ => Err(ArgumentError::Kind { index, action }),
+                _ => Err(ArgumentError::Kind {
+                    index,
+                    action: action.clone(),
+                }),
             }
         })
         .collect()
