@@ -12,14 +12,19 @@
 //! Each such choice is an assumption a hardware qualification run can settle:
 //!
 //! - VLAN tags: a pattern without a VLAN item may or may not match a tagged frame, and its
-//!   Ethernet item may see the EtherType before or after the tags; `has_vlan` is exact.
+//!   Ethernet item may see the EtherType before or after the tags, at each Ethernet header (outer
+//!   and inner) independently. `has_vlan` is exact, and is about the first tag, as mlx5 hardware
+//!   steering classifies it: none, 802.1Q (customer) or 802.1ad (service). `has_vlan` set matches
+//!   a customer tag only, unset no tag only, so a frame whose first tag is a service tag matches
+//!   neither. A service tag matches no VLAN item.
 //! - IPv4 fragments after the first: the NIC may or may not parse their payload as a transport
 //!   header.
 //! - IPv6 extension headers (hop-by-hop, routing, destination options, fragment): the NIC may or
 //!   may not walk them to the transport header, and may match the IPv6 item's `proto` on the fixed
 //!   header's next header or on the protocol at the end of the chain. `has_frag_ext` is exact.
 //!
-//! Only UDP to port 4789 is parsed as VXLAN.
+//! Only UDP to port 4789 is parsed as VXLAN. A [`Parser`] narrows the choices a qualification
+//! settled for a NIC ([`views_by`]).
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -47,7 +52,8 @@ const _: () = {
 const VXLAN_PORT: u16 = 4789;
 const ETH_P_IPV4: u16 = 0x0800;
 const ETH_P_IPV6: u16 = 0x86dd;
-const ETH_P_VLAN: [u16; 2] = [0x8100, 0x88a8];
+const ETH_P_CVLAN: u16 = 0x8100;
+const ETH_P_SVLAN: u16 = 0x88a8;
 const UDP: u8 = 17;
 const TCP: u8 = 6;
 const HOP_BY_HOP: u8 = 0;
@@ -58,9 +64,12 @@ const DESTINATION_OPTIONS: u8 = 60;
 /// One header as a NIC parsed it: its kind and its bytes on the wire (options excluded).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Header {
-    /// An Ethernet header, and whether VLAN tags follow it.
-    Eth([u8; 14], bool),
+    /// An Ethernet header, and the kind of tag that follows it first.
+    Eth([u8; 14], FirstTag),
+    /// An 802.1Q (customer) tag.
     Vlan([u8; 4]),
+    /// An 802.1ad (service) tag, which no item matches.
+    ServiceTag([u8; 4]),
     Ipv4([u8; 20]),
     /// An IPv6 header, and whether a fragment extension header follows it.
     Ipv6([u8; 40], bool),
@@ -80,16 +89,44 @@ pub struct Frame {
 #[error("the model does not interpret this pattern item's {0}")]
 pub struct Unmodelled(pub &'static str);
 
+/// What a NIC's parser is known to do, where NICs may differ: each choice settled narrows the
+/// model to that NIC.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Parser {
+    /// How the NIC treats IPv6 extension headers.
+    pub ipv6_extensions: Ipv6Extensions,
+}
+
+impl Parser {
+    /// Nothing settled: every choice the module documentation lists stays open.
+    pub const ANY: Parser = Parser {
+        ipv6_extensions: Ipv6Extensions::Any,
+    };
+}
+
+/// How a NIC treats IPv6 extension headers.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Ipv6Extensions {
+    /// It may walk them or not, and match `proto` on the fixed header's next header or the last.
+    Any,
+    /// It walks them to the transport header, and matches `proto` on the last next header.
+    WalkedToLast,
+}
+
 /// Every way a NIC might parse `bytes`; see the [module documentation](self).
 #[must_use]
 pub fn views(bytes: &[u8]) -> Vec<Frame> {
-    let mut frames = Vec::new();
-    for elide_vlan in [false, true] {
-        for headers in eth(bytes, elide_vlan, true) {
-            let frame = Frame { headers };
-            if !frames.contains(&frame) {
-                frames.push(frame);
-            }
+    views_by(bytes, Parser::ANY)
+}
+
+/// Every way a NIC with `parser` might parse `bytes`.
+#[must_use]
+pub fn views_by(bytes: &[u8], parser: Parser) -> Vec<Frame> {
+    let mut frames: Vec<Frame> = Vec::new();
+    for headers in eth(bytes, true, parser) {
+        let frame = Frame { headers };
+        if !frames.contains(&frame) {
+            frames.push(frame);
         }
     }
     frames
@@ -113,42 +150,63 @@ fn then(header: Header, rest: Vec<Vec<Header>>) -> Vec<Vec<Header>> {
         .collect()
 }
 
+/// The first tag after an Ethernet header, as mlx5 hardware steering classifies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FirstTag {
+    None,
+    /// 802.1Q.
+    Customer,
+    /// 802.1ad.
+    Service,
+}
+
 /// An Ethernet header and what follows; `outer` is whether a VXLAN header may follow.
-fn eth(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
+fn eth(bytes: &[u8], outer: bool, parser: Parser) -> Vec<Vec<Header>> {
     let Some(header) = take::<14>(bytes) else {
         return vec![Vec::new()];
     };
     let mut at = 14;
     let mut ether_type = be16(&header, 12);
     let mut tags = Vec::new();
-    while ETH_P_VLAN.contains(&ether_type) {
+    while matches!(ether_type, ETH_P_CVLAN | ETH_P_SVLAN) {
         let Some(tag) = take::<4>(&bytes[at..]) else {
             break;
         };
+        tags.push(if ether_type == ETH_P_CVLAN {
+            Header::Vlan(tag)
+        } else {
+            Header::ServiceTag(tag)
+        });
         ether_type = be16(&tag, 2);
-        tags.push(Header::Vlan(tag));
         at += 4;
     }
     let rest = &bytes[at..];
-    let mut tails = match ether_type {
-        ETH_P_IPV4 => ipv4(rest, elide_vlan, outer),
-        ETH_P_IPV6 => ipv6(rest, elide_vlan, outer),
+    let tails = match ether_type {
+        ETH_P_IPV4 => ipv4(rest, outer, parser),
+        ETH_P_IPV6 => ipv6(rest, outer, parser),
         _ => vec![Vec::new()],
     };
-    let tagged = !tags.is_empty();
-    let mut header = header;
-    if elide_vlan {
-        // Seen past its tags, a frame's EtherType is the one after them.
-        header[12..14].copy_from_slice(&ether_type.to_be_bytes());
-    } else {
-        for tag in tags.into_iter().rev() {
-            tails = then(tag, tails);
-        }
+    let tagged = match tags.first() {
+        None => FirstTag::None,
+        Some(Header::Vlan(_)) => FirstTag::Customer,
+        Some(_) => FirstTag::Service,
+    };
+    // Seen with its tags.
+    let mut with_tags = tails.clone();
+    for tag in tags.iter().rev() {
+        with_tags = then(tag.clone(), with_tags);
     }
-    then(Header::Eth(header, tagged), tails)
+    let mut views = then(Header::Eth(header, tagged), with_tags);
+    if !tags.is_empty() {
+        // Seen past its tags, a frame's EtherType is the one after them.
+        let mut past = header;
+        past[12..14].copy_from_slice(&ether_type.to_be_bytes());
+        views.extend(then(Header::Eth(past, tagged), tails));
+    }
+    views
 }
 
-fn ipv4(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
+fn ipv4(bytes: &[u8], outer: bool, parser: Parser) -> Vec<Vec<Header>> {
     let Some(header) = take::<20>(bytes) else {
         return vec![Vec::new()];
     };
@@ -157,7 +215,7 @@ fn ipv4(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
         return vec![vec![Header::Ipv4(header)]];
     }
     let later_fragment = be16(&header, 6) & 0x1fff != 0;
-    let tails = transport(&bytes[ihl..], header[9], elide_vlan, outer);
+    let tails = transport(&bytes[ihl..], header[9], outer, parser);
     let tails = if later_fragment {
         // A NIC may or may not parse a later fragment's payload as a transport header.
         let mut both = vec![Vec::new()];
@@ -169,7 +227,7 @@ fn ipv4(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
     then(Header::Ipv4(header), tails)
 }
 
-fn ipv6(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
+fn ipv6(bytes: &[u8], outer: bool, parser: Parser) -> Vec<Vec<Header>> {
     let Some(header) = take::<40>(bytes) else {
         return vec![Vec::new()];
     };
@@ -192,25 +250,39 @@ fn ipv6(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
             at += 8 + usize::from(ext[1]) * 8;
         }
         next = ext[0];
+        // A later fragment's payload is data, not more headers.
+        if later_fragment {
+            break;
+        }
     }
     walked &= at <= bytes.len();
     // A NIC that does not walk the extension headers sees the transport header only right after
     // the fixed header.
-    let mut views = then(
-        Header::Ipv6(header, fragment),
-        transport(&bytes[40..], header[6], elide_vlan, outer),
-    );
+    let unwalked = || {
+        then(
+            Header::Ipv6(header, fragment),
+            transport(&bytes[40..], header[6], outer, parser),
+        )
+    };
     if !walked || at == 40 {
-        return views;
+        return unwalked();
     }
+    let mut views = match parser.ipv6_extensions {
+        Ipv6Extensions::Any => unwalked(),
+        Ipv6Extensions::WalkedToLast => Vec::new(),
+    };
     // One that walks them may also match `proto` on the last next header.
-    let mut tails = transport(&bytes[at..], next, elide_vlan, outer);
+    let mut tails = transport(&bytes[at..], next, outer, parser);
     if later_fragment {
         tails.push(Vec::new());
     }
     let mut last = header;
     last[6] = next;
-    for header in [header, last] {
+    let protos: &[[u8; 40]] = match parser.ipv6_extensions {
+        Ipv6Extensions::Any => &[header, last],
+        Ipv6Extensions::WalkedToLast => &[last],
+    };
+    for &header in protos {
         for view in then(Header::Ipv6(header, fragment), tails.clone()) {
             if !views.contains(&view) {
                 views.push(view);
@@ -220,7 +292,7 @@ fn ipv6(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
     views
 }
 
-fn transport(bytes: &[u8], proto: u8, elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
+fn transport(bytes: &[u8], proto: u8, outer: bool, parser: Parser) -> Vec<Vec<Header>> {
     match proto {
         UDP => {
             let Some(header) = take::<8>(bytes) else {
@@ -228,7 +300,7 @@ fn transport(bytes: &[u8], proto: u8, elide_vlan: bool, outer: bool) -> Vec<Vec<
             };
             let tails = match take::<8>(&bytes[8..]) {
                 Some(vxlan) if outer && be16(&header, 2) == VXLAN_PORT => {
-                    then(Header::Vxlan(vxlan), eth(&bytes[16..], elide_vlan, false))
+                    then(Header::Vxlan(vxlan), eth(&bytes[16..], false, parser))
                 }
                 _ => vec![Vec::new()],
             };
@@ -287,7 +359,12 @@ impl MatchItem {
                 if mask.reserved() != 0 {
                     return Err(Unmodelled("reserved bits"));
                 }
-                (mask.has_vlan() == 0 || spec.has_vlan() == u32::from(*tagged))
+                let has_vlan = match tagged {
+                    FirstTag::None => Some(0),
+                    FirstTag::Customer => Some(1),
+                    FirstTag::Service => None,
+                };
+                (mask.has_vlan() == 0 || has_vlan == Some(spec.has_vlan()))
                     && masked_eq(raw(eth_hdr(spec)), raw(eth_hdr(mask)), value)
             }
             (MatchItem::Vlan(spec, mask), Header::Vlan(value)) => {
@@ -521,5 +598,141 @@ mod tests {
                 assert!(Pattern::new().matches(frame, None).unwrap());
             }
         });
+    }
+
+    /// An 802.1ad tag is no VLAN to a NIC, nor is it no tag: `has_vlan` set or unset never matches
+    /// a frame whose first tag is one, and no VLAN item matches it.
+    #[test]
+    fn a_service_tag_is_not_a_vlan() {
+        let mut stagged = inner([10, 1, 2, 3], 17, 80, 0);
+        stagged.splice(12..12, [0x88, 0xa8, 0x00, 0x05]);
+        let frame = vxlan(100, &stagged);
+        let tunnel = || {
+            Pattern::new()
+                .eth(EthMatch::default())
+                .ipv4(Ipv4Match::default())
+                .udp(UdpMatch::default().dst(VXLAN_PORT))
+                .vxlan(VxlanMatch::default())
+        };
+        let untagged = tunnel()
+            .inner_eth(EthMatch::default().tagged(false))
+            .ipv4(Ipv4Match::default())
+            .complete();
+        let tagged = tunnel()
+            .inner_eth(EthMatch::default().tagged(true))
+            .complete();
+        assert!(!untagged.may_match(&frame, None).unwrap());
+        assert!(!tagged.may_match(&frame, None).unwrap());
+    }
+
+    /// On legal frames, one of the model's views has the headers the `net` parser finds, at the
+    /// same offsets: the model parses where software does. (It does not walk the authentication
+    /// header, so frames with one are left out.)
+    #[test]
+    fn a_view_agrees_with_the_net_parser() {
+        use net::headers::{Net, NetExt, ShapedHeaders, Transport};
+        use net::parse::{DeParse, Parse};
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|headers| {
+                let size = usize::from(headers.size().get());
+                let mut bytes = vec![0u8; size + 64];
+                if headers.deparse(&mut bytes).is_err() {
+                    return;
+                }
+                // What `net` finds in the bytes, rather than what was generated.
+                let Ok((parsed, _)) = net::headers::Headers::parse(&bytes) else {
+                    return;
+                };
+                if parsed
+                    .net_ext()
+                    .iter()
+                    .any(|e| matches!(e, NetExt::Ipv4Auth(_) | NetExt::Ipv6Auth(_)))
+                {
+                    return;
+                }
+                let mut expected = Vec::new();
+                let mut at = 0;
+                let Some(eth) = parsed.eth() else { return };
+                let first_tag = be16(&bytes, 12);
+                expected.push(Header::Eth(
+                    take::<14>(&bytes).unwrap_or_else(|| unreachable!()),
+                    match (parsed.vlan().is_empty(), first_tag) {
+                        (true, _) => FirstTag::None,
+                        (false, ETH_P_CVLAN) => FirstTag::Customer,
+                        (false, _) => FirstTag::Service,
+                    },
+                ));
+                at += usize::from(eth.size().get());
+                let mut tpid = first_tag;
+                for vlan in parsed.vlan() {
+                    let tag = take::<4>(&bytes[at..]).unwrap_or_else(|| unreachable!());
+                    expected.push(if tpid == ETH_P_CVLAN {
+                        Header::Vlan(tag)
+                    } else {
+                        Header::ServiceTag(tag)
+                    });
+                    tpid = be16(&tag, 2);
+                    at += usize::from(vlan.size().get());
+                }
+                let fragment = parsed
+                    .net_ext()
+                    .iter()
+                    .any(|e| matches!(e, NetExt::Fragment(_)));
+                // Whether the chain reached a later fragment, past which a NIC does not parse
+                // (where `net` may still take the payload for a transport header).
+                let mut later = false;
+                match parsed.net() {
+                    Some(Net::Ipv4(ip)) => {
+                        expected.push(Header::Ipv4(
+                            take::<20>(&bytes[at..]).unwrap_or_else(|| unreachable!()),
+                        ));
+                        at += usize::from(ip.size().get());
+                    }
+                    Some(Net::Ipv6(ip)) => {
+                        let mut header = take::<40>(&bytes[at..]).unwrap_or_else(|| unreachable!());
+                        at += usize::from(ip.size().get());
+                        let mut next = header[6];
+                        for ext in parsed.net_ext() {
+                            next = bytes[at];
+                            // A NIC stops at a later fragment: what follows is the fragment's data.
+                            if matches!(ext, NetExt::Fragment(_))
+                                && be16(&bytes, at + 2) & 0xfff8 != 0
+                            {
+                                later = true;
+                                break;
+                            }
+                            at += usize::from(ext.size().get());
+                        }
+                        // Where `net` stops walking with another extension header next (it bounds the
+                        // chain), the model walks on: no common ground.
+                        if !later
+                            && matches!(next, HOP_BY_HOP | ROUTING | DESTINATION_OPTIONS | FRAGMENT)
+                        {
+                            return;
+                        }
+                        // A NIC that walks the chain may match `proto` on the last next header.
+                        if !parsed.net_ext().is_empty() {
+                            header[6] = next;
+                        }
+                        expected.push(Header::Ipv6(header, fragment));
+                    }
+                    None => {}
+                }
+                match parsed.transport().filter(|_| !later) {
+                    Some(Transport::Udp(_)) => expected.push(Header::Udp(
+                        take::<8>(&bytes[at..]).unwrap_or_else(|| unreachable!()),
+                    )),
+                    Some(Transport::Tcp(_)) => expected.push(Header::Tcp(
+                        take::<20>(&bytes[at..]).unwrap_or_else(|| unreachable!()),
+                    )),
+                    _ => {}
+                }
+                let views = views(&bytes);
+                assert!(
+                    views.iter().any(|view| view.headers.starts_with(&expected)),
+                    "no view starts with {expected:02x?}\nviews: {views:02x?}\nbytes: {bytes:02x?}"
+                );
+            });
     }
 }

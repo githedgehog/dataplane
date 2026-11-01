@@ -35,4 +35,4 @@ bolero = { workspace = true, default-features = false, features = ["std"] }
 clock = { workspace = true }
 dataplane-dpdk = { path = ".", features = ["test"] }
 nix = { workspace = true, features = ["pthread", "signal"] }
-net = { workspace = true, features = ["test_buffer", "builder", "test_meta"] }
+net = { workspace = true, features = ["test_buffer", "builder", "test_meta", "bolero"] }
