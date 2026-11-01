@@ -19,7 +19,8 @@
 //!   may not walk them to the transport header, and may match the IPv6 item's `proto` on the fixed
 //!   header's next header or on the protocol at the end of the chain. `has_frag_ext` is exact.
 //!
-//! Only UDP to port 4789 is parsed as VXLAN.
+//! Only UDP to port 4789 is parsed as VXLAN. A [`Parser`] narrows the choices a qualification
+//! settled for a NIC ([`views_by`]).
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -80,12 +81,42 @@ pub struct Frame {
 #[error("the model does not interpret this pattern item's {0}")]
 pub struct Unmodelled(pub &'static str);
 
+/// What a NIC's parser is known to do, where NICs may differ: each choice settled narrows the
+/// model to that NIC.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Parser {
+    /// How the NIC treats IPv6 extension headers.
+    pub ipv6_extensions: Ipv6Extensions,
+}
+
+impl Parser {
+    /// Nothing settled: every choice the module documentation lists stays open.
+    pub const ANY: Parser = Parser {
+        ipv6_extensions: Ipv6Extensions::Any,
+    };
+}
+
+/// How a NIC treats IPv6 extension headers.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Ipv6Extensions {
+    /// It may walk them or not, and match `proto` on the fixed header's next header or the last.
+    Any,
+    /// It walks them to the transport header, and matches `proto` on the last next header.
+    WalkedToLast,
+}
+
 /// Every way a NIC might parse `bytes`; see the [module documentation](self).
 #[must_use]
 pub fn views(bytes: &[u8]) -> Vec<Frame> {
+    views_by(bytes, Parser::ANY)
+}
+
+/// Every way a NIC with `parser` might parse `bytes`.
+#[must_use]
+pub fn views_by(bytes: &[u8], parser: Parser) -> Vec<Frame> {
     let mut frames = Vec::new();
     for elide_vlan in [false, true] {
-        for headers in eth(bytes, elide_vlan, true) {
+        for headers in eth(bytes, elide_vlan, true, parser) {
             let frame = Frame { headers };
             if !frames.contains(&frame) {
                 frames.push(frame);
@@ -114,7 +145,7 @@ fn then(header: Header, rest: Vec<Vec<Header>>) -> Vec<Vec<Header>> {
 }
 
 /// An Ethernet header and what follows; `outer` is whether a VXLAN header may follow.
-fn eth(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
+fn eth(bytes: &[u8], elide_vlan: bool, outer: bool, parser: Parser) -> Vec<Vec<Header>> {
     let Some(header) = take::<14>(bytes) else {
         return vec![Vec::new()];
     };
@@ -131,8 +162,8 @@ fn eth(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
     }
     let rest = &bytes[at..];
     let mut tails = match ether_type {
-        ETH_P_IPV4 => ipv4(rest, elide_vlan, outer),
-        ETH_P_IPV6 => ipv6(rest, elide_vlan, outer),
+        ETH_P_IPV4 => ipv4(rest, elide_vlan, outer, parser),
+        ETH_P_IPV6 => ipv6(rest, elide_vlan, outer, parser),
         _ => vec![Vec::new()],
     };
     let tagged = !tags.is_empty();
@@ -148,7 +179,7 @@ fn eth(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
     then(Header::Eth(header, tagged), tails)
 }
 
-fn ipv4(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
+fn ipv4(bytes: &[u8], elide_vlan: bool, outer: bool, parser: Parser) -> Vec<Vec<Header>> {
     let Some(header) = take::<20>(bytes) else {
         return vec![Vec::new()];
     };
@@ -157,7 +188,7 @@ fn ipv4(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
         return vec![vec![Header::Ipv4(header)]];
     }
     let later_fragment = be16(&header, 6) & 0x1fff != 0;
-    let tails = transport(&bytes[ihl..], header[9], elide_vlan, outer);
+    let tails = transport(&bytes[ihl..], header[9], elide_vlan, outer, parser);
     let tails = if later_fragment {
         // A NIC may or may not parse a later fragment's payload as a transport header.
         let mut both = vec![Vec::new()];
@@ -169,7 +200,7 @@ fn ipv4(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
     then(Header::Ipv4(header), tails)
 }
 
-fn ipv6(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
+fn ipv6(bytes: &[u8], elide_vlan: bool, outer: bool, parser: Parser) -> Vec<Vec<Header>> {
     let Some(header) = take::<40>(bytes) else {
         return vec![Vec::new()];
     };
@@ -196,21 +227,31 @@ fn ipv6(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
     walked &= at <= bytes.len();
     // A NIC that does not walk the extension headers sees the transport header only right after
     // the fixed header.
-    let mut views = then(
-        Header::Ipv6(header, fragment),
-        transport(&bytes[40..], header[6], elide_vlan, outer),
-    );
+    let unwalked = || {
+        then(
+            Header::Ipv6(header, fragment),
+            transport(&bytes[40..], header[6], elide_vlan, outer, parser),
+        )
+    };
     if !walked || at == 40 {
-        return views;
+        return unwalked();
     }
+    let mut views = match parser.ipv6_extensions {
+        Ipv6Extensions::Any => unwalked(),
+        Ipv6Extensions::WalkedToLast => Vec::new(),
+    };
     // One that walks them may also match `proto` on the last next header.
-    let mut tails = transport(&bytes[at..], next, elide_vlan, outer);
+    let mut tails = transport(&bytes[at..], next, elide_vlan, outer, parser);
     if later_fragment {
         tails.push(Vec::new());
     }
     let mut last = header;
     last[6] = next;
-    for header in [header, last] {
+    let protos: &[[u8; 40]] = match parser.ipv6_extensions {
+        Ipv6Extensions::Any => &[header, last],
+        Ipv6Extensions::WalkedToLast => &[last],
+    };
+    for &header in protos {
         for view in then(Header::Ipv6(header, fragment), tails.clone()) {
             if !views.contains(&view) {
                 views.push(view);
@@ -220,7 +261,13 @@ fn ipv6(bytes: &[u8], elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
     views
 }
 
-fn transport(bytes: &[u8], proto: u8, elide_vlan: bool, outer: bool) -> Vec<Vec<Header>> {
+fn transport(
+    bytes: &[u8],
+    proto: u8,
+    elide_vlan: bool,
+    outer: bool,
+    parser: Parser,
+) -> Vec<Vec<Header>> {
     match proto {
         UDP => {
             let Some(header) = take::<8>(bytes) else {
@@ -228,7 +275,7 @@ fn transport(bytes: &[u8], proto: u8, elide_vlan: bool, outer: bool) -> Vec<Vec<
             };
             let tails = match take::<8>(&bytes[8..]) {
                 Some(vxlan) if outer && be16(&header, 2) == VXLAN_PORT => {
-                    then(Header::Vxlan(vxlan), eth(&bytes[16..], elide_vlan, false))
+                    then(Header::Vxlan(vxlan), eth(&bytes[16..], elide_vlan, false, parser))
                 }
                 _ => vec![Vec::new()],
             };
