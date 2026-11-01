@@ -171,6 +171,7 @@ fn configuration(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>) -> Valid
                 .map(|(name, meter)| (name.into(), meter))
                 .collect(),
             rules,
+            disable_offloads: false,
         })
         .validate()
         .unwrap()

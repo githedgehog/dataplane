@@ -232,6 +232,7 @@ pub mod test {
                 pattern: config::external::overlay::acl::AclPattern::default(),
                 meter: "vpc-1-to-vpc-2".into(),
             }],
+            disable_offloads: false,
         }
     }
 

@@ -12,6 +12,7 @@
 //! The ACL filter and the rate limiter decide independently, each by its own first match; the
 //! program keeps them apart, so the NIC does too (see [`mlx5`](crate::mlx5)).
 
+use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use acl_filter::{AclFilterContext, AclKey, AclKeyRule, LookupResult};
@@ -72,11 +73,37 @@ pub struct PoliceMeter {
     pub profile: Profile,
 }
 
+/// A peering, by the VNIs of its two VPCs, in either direction: what is offloaded whole or not at
+/// all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Peering(Vni, Vni);
+
+impl Peering {
+    /// The peering between the VPCs of `a` and `b`.
+    #[must_use]
+    pub fn new(a: Vni, b: Vni) -> Peering {
+        Peering(a.min(b), a.max(b))
+    }
+}
+
+impl std::fmt::Display for Peering {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "peering of VNIs {} and {}",
+            self.0.as_u32(),
+            self.1.as_u32()
+        )
+    }
+}
+
 /// A rate limit a NIC may enforce: the traffic it matches, and the meter it charges.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoliceRule {
     /// The configured rule this came from.
     pub rule: RuleIndex,
+    /// Its peering.
+    pub peering: Peering,
     /// What it matches.
     pub matches: Match,
     /// Index into [`Program::meters`].
@@ -88,6 +115,8 @@ pub struct PoliceRule {
 pub struct DenyRule {
     /// Where it came from.
     pub origin: Origin,
+    /// Its peering.
+    pub peering: Peering,
     /// What it matches.
     pub matches: Match,
 }
@@ -97,6 +126,8 @@ pub struct DenyRule {
 pub enum Origin {
     /// A rate-limit rule, by its index in the configuration.
     RateLimit(RuleIndex),
+    /// A peering's ACL default action.
+    AclDefault(Peering),
     /// An ACL rule, by its position in the ACL filter's table of its family.
     Acl {
         /// Whether the IPv6 table.
@@ -110,6 +141,7 @@ impl std::fmt::Display for Origin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Origin::RateLimit(rule) => write!(f, "rate-limit rule {rule}"),
+            Origin::AclDefault(peering) => write!(f, "the ACL default of the {peering}"),
             Origin::Acl { v6, row } => {
                 write!(
                     f,
@@ -121,11 +153,12 @@ impl std::fmt::Display for Origin {
     }
 }
 
-/// Why a rule stays in software only.
+/// Why a peering's policy stays in software only: something of it no NIC may enforce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
-    /// The meter drops nothing, so there is nothing to shed early.
-    NothingToDrop,
+    /// The ACL denies by default: whether a packet no rule matches passes depends on flow state
+    /// (the replies of flows an allow opened).
+    DefaultDeny,
     /// TCP flag matches are not lowered yet.
     TcpFlags,
     /// Only an exact protocol, or any, is lowered.
@@ -140,12 +173,19 @@ pub enum Refusal {
     PortsWithoutTransport,
     /// A destination of every address: the destination VPC would be unconstrained.
     AnyDestination,
+    /// The NIC refused one of the peering's rules when it was installed.
+    NotInstalled,
     /// An earlier rule with another meter, or another verdict, matches some of the same traffic:
     /// in hardware the two could not keep their order.
     Overlap,
 }
 
 /// The policy a NIC may enforce, and what it may not.
+///
+/// A peering is enforced in the NIC whole, or not at all: all of its ACL denies and rate limits,
+/// or none. Then the NIC never charges a meter for a packet software denies (the NIC denied it
+/// first), and a peering's policy is in one place or the other, never split. Rules that drop
+/// nothing (ACL allows, meters that drop nothing) need nothing in the NIC.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Program {
     /// ACL denies, IPv4 then IPv6, each in first-match order.
@@ -154,8 +194,8 @@ pub struct Program {
     pub meters: Vec<PoliceMeter>,
     /// The rate limits, IPv4 then IPv6, each in first-match order.
     pub rules: Vec<PoliceRule>,
-    /// Lowered rules refused, with the software rule they came from.
-    pub refused: Vec<(Origin, Refusal)>,
+    /// The peerings left in software, with what of each no NIC may enforce.
+    pub refused: Vec<(Peering, Origin, Refusal)>,
 }
 
 /// The component of `meter` a NIC enforces: the one that drops red, bytes first. Enforcing one
@@ -251,27 +291,91 @@ fn lower<I: FixedSize>(
     })
 }
 
+/// A rate limit that may be offloaded, before its peering is known to be.
+struct Candidate {
+    rule: PoliceRule,
+    /// The software meter, and the component a NIC enforces of it.
+    meter: usize,
+    component: (Unit, Profile),
+}
+
+/// The rules of a policy that may be offloaded, and the peerings that may not.
+#[derive(Default)]
+struct Compilation {
+    denies: Vec<DenyRule>,
+    rules: Vec<Candidate>,
+    refused: Vec<(Peering, Origin, Refusal)>,
+}
+
 impl Program {
-    /// Compile what a NIC may enforce of `acls` and `limits`, for the peerings that asked for
-    /// offload (see [`RateLimits::offload`]).
+    /// Compile what a NIC may enforce of `acls` and `limits`: every peering whose whole policy it
+    /// may enforce, but those in `excluded` (refused by the NIC before). Nothing, if offload is
+    /// turned off ([`RateLimits::attempt_offloads`]).
     #[must_use]
-    pub fn compile(acls: &AclFilterContext, limits: &RateLimits<PeeringRules>) -> Program {
-        let mut program = Program::default();
-        program.denies(acls.v4(), false, |p| Prefix::V4(p.value, p.len));
-        program.denies(acls.v6(), true, |p| Prefix::V6(p.value, p.len));
-        // Software meter index -> program meter index.
-        let mut meters: Vec<Option<usize>> = vec![None; limits.meters().len()];
+    pub fn compile(
+        acls: &AclFilterContext,
+        limits: &RateLimits<PeeringRules>,
+        excluded: &BTreeSet<Peering>,
+    ) -> Program {
+        if !limits.attempt_offloads() {
+            return Program::default();
+        }
+        let mut c = Compilation::default();
+        for (src, dst, action) in acls.default_actions() {
+            if action == AclAction::Deny {
+                let peering = Peering::new(src, dst);
+                c.refused
+                    .push((peering, Origin::AclDefault(peering), Refusal::DefaultDeny));
+            }
+        }
+        c.denies(acls.v4(), false, |p| Prefix::V4(p.value, p.len));
+        c.denies(acls.v6(), true, |p| Prefix::V6(p.value, p.len));
         let classifier = limits.classifier();
-        program.family(limits, classifier.v4(), &mut meters, |p| {
-            Prefix::V4(p.value, p.len)
-        });
-        program.family(limits, classifier.v6(), &mut meters, |p| {
-            Prefix::V6(p.value, p.len)
-        });
+        c.limits(limits, classifier.v4(), |p| Prefix::V4(p.value, p.len));
+        c.limits(limits, classifier.v6(), |p| Prefix::V6(p.value, p.len));
+
+        let left: BTreeSet<Peering> = c
+            .refused
+            .iter()
+            .map(|(peering, ..)| *peering)
+            .chain(excluded.iter().copied())
+            .collect();
+        let mut program = Program {
+            denies: c
+                .denies
+                .into_iter()
+                .filter(|d| !left.contains(&d.peering))
+                .collect(),
+            refused: c.refused,
+            ..Program::default()
+        };
+        // Software meter index -> program meter index, for the meters kept rules charge.
+        let mut meters: Vec<Option<usize>> = vec![None; limits.meters().len()];
+        for Candidate {
+            mut rule,
+            meter,
+            component: (unit, profile),
+        } in c.rules
+        {
+            if left.contains(&rule.peering) {
+                continue;
+            }
+            rule.meter = *meters[meter].get_or_insert_with(|| {
+                program.meters.push(PoliceMeter {
+                    name: limits.meters()[meter].name().to_string(),
+                    unit,
+                    profile,
+                });
+                program.meters.len() - 1
+            });
+            program.rules.push(rule);
+        }
         program
     }
+}
 
-    /// The denies of one family's ACL table a NIC may enforce.
+impl Compilation {
+    /// The denies of one family's ACL table.
     fn denies<I: FixedSize>(
         &mut self,
         rows: &[RuleRow<AclKey<I>, LookupResult>],
@@ -282,27 +386,32 @@ impl Program {
             if row.action.action() != AclAction::Deny {
                 continue;
             }
+            let peering = Peering::new(row.rule.src_vni.value, row.rule.dst_vni.value);
             let origin = Origin::Acl { v6, row: at };
             // A direct match is final in the ACL filter, whatever the flow state, so a deny is
             // safe if nothing before it could allow some of its traffic.
             if rows[..at].iter().any(|earlier| {
                 earlier.action.action() != AclAction::Deny && earlier.rule.overlaps(&row.rule)
             }) {
-                self.refused.push((origin, Refusal::Overlap));
+                self.refused.push((peering, origin, Refusal::Overlap));
                 continue;
             }
             match lower(&Fields::from(&row.rule), prefix) {
-                Ok(matches) => self.denies.push(DenyRule { origin, matches }),
-                Err(refusal) => self.refused.push((origin, refusal)),
+                Ok(matches) => self.denies.push(DenyRule {
+                    origin,
+                    peering,
+                    matches,
+                }),
+                Err(refusal) => self.refused.push((peering, origin, refusal)),
             }
         }
     }
 
-    fn family<I: FixedSize>(
+    /// The rate limits of one family's table.
+    fn limits<I: FixedSize>(
         &mut self,
         limits: &RateLimits<PeeringRules>,
         rows: &[RuleRow<PeeringKey<I>, RuleIndex>],
-        meters: &mut [Option<usize>],
         prefix: impl Fn(PrefixSpec<I>) -> Prefix + Copy,
     ) {
         let meter_of = |row: &RuleRow<PeeringKey<I>, RuleIndex>| {
@@ -312,40 +421,34 @@ impl Program {
             let Some(meter) = meter_of(row) else {
                 continue;
             };
-            // Hardware tables keep no order between rules: a rule is safe only if nothing before
-            // it, offloaded or not, could claim some of its traffic for another meter.
+            let peering = Peering::new(row.rule.src_vni.value, row.rule.dst_vni.value);
             let origin = Origin::RateLimit(row.action);
+            // Hardware tables keep no order between rules: a rule is safe only if nothing before
+            // it could claim some of its traffic for another meter.
             if rows[..at]
                 .iter()
                 .any(|earlier| meter_of(earlier) != Some(meter) && earlier.rule.overlaps(&row.rule))
             {
-                self.refused.push((origin, Refusal::Overlap));
+                self.refused.push((peering, origin, Refusal::Overlap));
                 continue;
             }
-            let Some((unit, profile)) = component(limits, meter) else {
-                self.refused.push((origin, Refusal::NothingToDrop));
+            // A meter that drops nothing needs nothing in the NIC.
+            let Some(component) = component(limits, meter) else {
                 continue;
             };
-            let matches = match lower(&Fields::from(&row.rule), prefix) {
-                Ok(matches) => matches,
-                Err(refusal) => {
-                    self.refused.push((origin, refusal));
-                    continue;
-                }
-            };
-            let meter = *meters[meter].get_or_insert_with(|| {
-                self.meters.push(PoliceMeter {
-                    name: limits.meters()[meter].name().to_string(),
-                    unit,
-                    profile,
-                });
-                self.meters.len() - 1
-            });
-            self.rules.push(PoliceRule {
-                rule: row.action,
-                matches,
-                meter,
-            });
+            match lower(&Fields::from(&row.rule), prefix) {
+                Ok(matches) => self.rules.push(Candidate {
+                    rule: PoliceRule {
+                        rule: row.action,
+                        peering,
+                        matches,
+                        meter: 0,
+                    },
+                    meter,
+                    component,
+                }),
+                Err(refusal) => self.refused.push((peering, origin, refusal)),
+            }
         }
     }
 }
