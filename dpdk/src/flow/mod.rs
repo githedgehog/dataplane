@@ -7,18 +7,20 @@
 //! [`FlowBuilder::create`]. [`FlowRule`] borrows the device and destroys the rule on drop.
 //! Device support is checked by the PMD during validation or creation.
 //! Pattern order follows [`Within`](net::headers::Within).
-//! This synchronous rule lifecycle is thread-bound; async rules need queue-managed destruction.
+//! This synchronous rule lifecycle is thread-bound; [`template`] has the asynchronous template API.
 
 mod builder;
 mod error;
+mod item;
 mod pattern;
 mod rule;
+pub mod template;
 
 pub use builder::{FlowBuilder, VxlanEncap};
 pub use error::FlowError;
 pub use pattern::{
-    EthMatch, Ipv4Match, Ipv4Prefix, Ipv6Match, Ipv6Prefix, TcpMatch, UdpMatch, VlanMatch,
-    VxlanMatch,
+    EthMatch, Ipv4Match, Ipv4Prefix, Ipv6Match, Ipv6Prefix, ItemShape, TcpMatch, UdpMatch,
+    VlanMatch, VxlanMatch,
 };
 pub(crate) use rule::flush;
 pub use rule::{FlowDestroyFailure, FlowRule};
@@ -49,6 +51,33 @@ pub enum Direction {
     /// The embedded-switch (FDB) domain, spanning the physical port, PF, and VF representors.
     Transfer,
 }
+
+/// `rte_flow` attribute structures that carry the ingress, egress and transfer bits.
+pub(crate) trait SetDirection {
+    /// Set the bit for `direction`.
+    fn set_direction(&mut self, direction: Direction);
+}
+
+macro_rules! set_direction {
+    ($($ty:ty),* $(,)?) => {$(
+        impl SetDirection for $ty {
+            fn set_direction(&mut self, direction: Direction) {
+                match direction {
+                    Direction::Ingress => self.set_ingress(1),
+                    Direction::Egress => self.set_egress(1),
+                    Direction::Transfer => self.set_transfer(1),
+                }
+            }
+        }
+    )*};
+}
+
+set_direction!(
+    dpdk_sys::rte_flow_attr,
+    dpdk_sys::rte_flow_pattern_template_attr,
+    dpdk_sys::rte_flow_actions_template_attr,
+    dpdk_sys::rte_flow_indir_action_conf,
+);
 
 mod sealed {
     pub trait Sealed {}
