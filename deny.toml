@@ -25,6 +25,34 @@ ignore = [
     "RUSTSEC-2024-0436",
     # proc-macro-error2 is unmaintained but is needed by multi_index_map_derive, and our own fixin; ignore until both dependencies have migrated away from it.
     "RUSTSEC-2026-0173",
+    # unsafe-libyaml is unmaintained but is needed by serde_yaml_ng, used to
+    # parse CRDs in k8s-intf and validator. Remove once we have migrated to a
+    # maintained YAML crate.
+    "RUSTSEC-2024-0449",
+    # The advisories below were published after v0.28.0 was cut. The v0.28 release
+    # branch takes targeted fixes only, so they are ignored here rather than fixed by
+    # bumping dependencies; main is unaffected.
+    #
+    # rustls / rustls-webpki / webpki-root-certs are reached only through kube-client,
+    # talking to the in-cluster API server (trusted peer, cluster CA).
+    # rustls: TLS 1.3 handshake messages accepted across encryption levels.
+    "RUSTSEC-2026-0285",
+    # rustls: Debug impls of client session values expose secrets; we do not format them.
+    "RUSTSEC-2026-0346",
+    # rustls: brotli certificate decompression bomb; the `brotli` feature is not enabled.
+    "RUSTSEC-2026-0348",
+    # rustls: unauthenticated ServerHello can pin a classical key exchange group.
+    "RUSTSEC-2026-0349",
+    # rustls-webpki: distrusted emSign intermediates may be accepted.
+    "RUSTSEC-2026-0382",
+    # webpki-root-certs: bundled emSign root allows distrusted intermediates.
+    "RUSTSEC-2026-0383",
+    # ruzstd: decompression bomb; reached only via pyroscope -> object, decoding our
+    # own binary's debug sections, not untrusted input.
+    "RUSTSEC-2026-0344",
+    # tokio: AsyncFd safe constructors accept non-owned fds (unsound API, not a
+    # vulnerability); our uses keep the fd alive for the AsyncFd's lifetime.
+    "RUSTSEC-2026-0386",
 ]
 
 [licenses]
