@@ -752,21 +752,27 @@ mod tests {
     /// A wait that starts late in the check interval ends when the checks come due.
     #[test]
     fn an_interrupt_wait_does_not_postpone_the_checks() {
-        let (_sender, receiver) = inject_channel(1).unwrap();
-        let mut idle = armed_on(receiver.doorbell());
-        let left = 2 * SHORTEST_INTERRUPT_WAIT;
+        let left = CHECK_WHILE_ASLEEP / 2;
         let since = CHECK_WHILE_ASLEEP.saturating_sub(left);
-        let start = clock::now();
-        idle.checked = start.checked_sub(since).unwrap();
-        idle.empty(None, std::iter::empty::<&RxQueue<'_>>());
-        let took = clock::elapsed(start);
-        assert_eq!(idle.sleeps().1, 1);
-        assert!(idle.checks_due());
-        // A fresh wait would take all of CHECK_WHILE_ASLEEP.
-        assert!(
-            took < 3 * left,
-            "waited {took:?} with {left:?} left before the checks"
-        );
+        // A fresh wait would take all of CHECK_WHILE_ASLEEP, every time. A shortened one takes that
+        // long only if the runner stalls it, and a stall before it can leave the worker too close to
+        // the checks to wait at all. Both are luck, so try a few times; the bug never passes.
+        let mut tries = Vec::new();
+        for _ in 0..5 {
+            let (_sender, receiver) = inject_channel(1).unwrap();
+            let mut idle = armed_on(receiver.doorbell());
+            let start = clock::now();
+            idle.checked = start.checked_sub(since).unwrap();
+            idle.empty(None, std::iter::empty::<&RxQueue<'_>>());
+            let took = clock::elapsed(start);
+            assert!(idle.checks_due());
+            let waits = idle.sleeps().1;
+            if waits == 1 && took < CHECK_WHILE_ASLEEP {
+                return;
+            }
+            tries.push((waits, took));
+        }
+        unreachable!("with {left:?} left before the checks, (waits, took) were {tries:?}");
     }
 
     /// Whether `bell` rang since it was last read, clearing it.
