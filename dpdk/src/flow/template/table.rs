@@ -58,6 +58,17 @@ impl<'t> TemplateFlows<'t> {
         patterns: &[&'t PatternTemplate<'_, D>],
         actions: &[&'t ActionsTemplate<'_, D>],
     ) -> Result<TemplateTable<'t, D>, TemplateError> {
+        self.table_unbound(config, patterns, actions)
+    }
+
+    /// [`table`](Self::table), but the caller keeps the templates alive as long as the table:
+    /// [`SharedTable`](super::SharedTable) by owning them.
+    pub(crate) fn table_unbound<D: Domain>(
+        &'t self,
+        config: TableConfig,
+        patterns: &[&PatternTemplate<'_, D>],
+        actions: &[&ActionsTemplate<'_, D>],
+    ) -> Result<TemplateTable<'t, D>, TemplateError> {
         let count = |n: usize| u8::try_from(n).map_err(|_| TemplateError::TooManyTemplates(n));
         let (n_patterns, n_actions) = (count(patterns.len())?, count(actions.len())?);
         // SAFETY: zero is valid for this C struct.
@@ -94,7 +105,7 @@ impl<'t> TemplateFlows<'t> {
     }
 }
 
-impl<D: Domain> TemplateTable<'_, D> {
+impl<'t, D: Domain> TemplateTable<'t, D> {
     /// Insert a rule matching `pattern` with pattern template `pattern_template`, acting with
     /// actions template `actions_template`, given its per-rule `args`.
     ///
@@ -111,6 +122,19 @@ impl<D: Domain> TemplateTable<'_, D> {
         actions_template: usize,
         args: &[RuleArg<'r, D>],
     ) -> Result<TemplateRule<'r>, TemplateError> {
+        self.insert_unbound(pattern_template, pattern, actions_template, args)
+    }
+
+    /// [`insert`](Self::insert), but the rule is not bound to a borrow of the table, nor of its
+    /// meters: the caller keeps them alive as long as the rule ([`SharedRule`](super::SharedRule)
+    /// by owning them).
+    pub(crate) fn insert_unbound<Pos>(
+        &self,
+        pattern_template: usize,
+        pattern: &Pattern<Pos>,
+        actions_template: usize,
+        args: &[RuleArg<'_, D>],
+    ) -> Result<TemplateRule<'t>, TemplateError> {
         let shapes = self
             .patterns
             .get(pattern_template)
