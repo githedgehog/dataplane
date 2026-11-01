@@ -6,7 +6,7 @@
 use std::num::{NonZeroU64, NonZeroUsize};
 
 use acl::table::Backend;
-use config::external::overlay::acl::AclPattern;
+use config::external::overlay::acl::{AclPattern, AclProtoMatch};
 use config::external::overlay::ratelimit::{
     ColorAction, ColorActions, Meter, MeterProfile, RateLimitRule, RateLimitTables,
 };
@@ -46,7 +46,10 @@ fn rule(destination: &str, meter: &str) -> RateLimitRule {
         to: "vpc-2".into(),
         meter: meter.into(),
         pattern: AclPattern {
-            dst: [PrefixWithOptionalPorts::from(destination.parse::<LpmPrefix>().unwrap())].into(),
+            dst: [PrefixWithOptionalPorts::from(
+                destination.parse::<LpmPrefix>().unwrap(),
+            )]
+            .into(),
             ..AclPattern::default()
         },
     }
@@ -83,7 +86,10 @@ fn compile(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>) -> Program {
 #[test]
 fn disjoint_rules_are_offloaded_with_their_matches() {
     let program = compile(
-        vec![("a", bytes(ColorAction::Drop)), ("b", bytes(ColorAction::Drop))],
+        vec![
+            ("a", bytes(ColorAction::Drop)),
+            ("b", bytes(ColorAction::Drop)),
+        ],
         vec![rule("10.1.1.0/24", "a"), rule("10.1.2.0/24", "b")],
     );
     assert!(program.refused.is_empty(), "{:?}", program.refused);
@@ -91,7 +97,10 @@ fn disjoint_rules_are_offloaded_with_their_matches() {
     assert_eq!(program.meters.len(), 2);
     let first = &program.rules[0];
     assert_eq!(first.src_vni.as_u32(), VNI1);
-    assert_eq!(first.destination, Prefix::V4("10.1.1.0".parse().unwrap(), 24));
+    assert_eq!(
+        first.destination,
+        Prefix::V4("10.1.1.0".parse().unwrap(), 24)
+    );
     assert_eq!(first.source, Prefix::V4("10.0.0.0".parse().unwrap(), 24));
     assert_eq!(program.meters[first.meter].unit, Unit::Bytes);
 }
@@ -101,7 +110,10 @@ fn disjoint_rules_are_offloaded_with_their_matches() {
 #[test]
 fn a_rule_overlapping_an_earlier_one_with_another_meter_stays_in_software() {
     let program = compile(
-        vec![("wide", bytes(ColorAction::Drop)), ("narrow", bytes(ColorAction::Drop))],
+        vec![
+            ("wide", bytes(ColorAction::Drop)),
+            ("narrow", bytes(ColorAction::Drop)),
+        ],
         vec![rule("10.1.0.0/16", "wide"), rule("10.1.1.0/24", "narrow")],
     );
     assert_eq!(program.rules.len(), 1);
@@ -128,4 +140,18 @@ fn a_meter_that_drops_nothing_is_not_offloaded() {
     );
     assert!(program.rules.is_empty() && program.meters.is_empty());
     assert_eq!(program.refused, vec![(0, Refusal::NothingToDrop)]);
+}
+
+/// Software resolves extension headers to the protocol after them, so a rule for an extension
+/// header's protocol number never matches there.
+#[test]
+fn a_rule_for_an_extension_header_protocol_is_not_offloaded() {
+    let mut hop_by_hop = rule("10.1.0.0/16", "a");
+    hop_by_hop.pattern.proto = AclProtoMatch::Other(0);
+    let mut esp = rule("10.1.0.0/16", "a");
+    esp.pattern.proto = AclProtoMatch::Other(50);
+    let program = compile(vec![("a", bytes(ColorAction::Drop))], vec![hop_by_hop, esp]);
+    assert_eq!(program.refused, vec![(0, Refusal::ExtensionHeader)]);
+    assert_eq!(program.rules.len(), 1);
+    assert_eq!(program.rules[0].proto, Some(50));
 }
