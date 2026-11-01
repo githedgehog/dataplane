@@ -44,12 +44,37 @@ impl Eal {
     /// }
     /// ```
     pub fn probe_pci(&mut self, address: PciAddress) -> Result<(), ProbeError> {
+        self.probe_pci_with(address, &[])
+    }
+
+    /// Probe like [`probe_pci`](Self::probe_pci), passing driver arguments (`key=value`, e.g.
+    /// `dv_flow_en=2`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProbeError`] if PCI is disabled, an argument contains a NUL or a comma, or the
+    /// device cannot be attached.
+    pub fn probe_pci_with(
+        &mut self,
+        address: PciAddress,
+        devargs: &[&str],
+    ) -> Result<(), ProbeError> {
         if !self.has_pci() {
             return Err(ProbeError::PciDisabled { address });
         }
+        if devargs.iter().any(|arg| arg.contains(['\0', ','])) {
+            return Err(ProbeError::Driver {
+                address,
+                source: ErrorCode::parse_i32(errno::NEG_EINVAL),
+            });
+        }
 
         // PciAddress formats numeric components only, so this has exactly one trailing NUL.
-        let args = format!("pci:{address}\0");
+        let args = core::iter::once(format!("pci:{address}"))
+            .chain(devargs.iter().map(|arg| (*arg).to_string()))
+            .collect::<Vec<_>>()
+            .join(",")
+            + "\0";
         // SAFETY: EAL is live and exclusively borrowed; args is a valid C string for this call.
         let ret = unsafe { dpdk_sys::rte_dev_probe(args.as_ptr().cast()) };
         if ret == 0 {

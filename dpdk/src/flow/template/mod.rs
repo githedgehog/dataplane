@@ -20,7 +20,7 @@ mod meter;
 mod pattern;
 mod table;
 
-pub use actions::{ArgumentError, RuleArg, TemplateAction};
+pub use actions::{ArgumentError, RssTarget, RuleArg, TemplateAction};
 pub use meter::{
     Meter, MeterAlgorithm, MeterError, MeterProfile, MeterProfileHandle, MeterProfileId, MeterUnit,
 };
