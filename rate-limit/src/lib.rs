@@ -29,7 +29,8 @@ mod stage;
 mod tests;
 
 pub use acl::table::Backend;
-pub use classify::{Classify, PeeringRules, RuleIndex};
+pub use acl::table::RuleRow;
+pub use classify::{Classify, PeeringKey, PeeringKeyRule, PeeringRules, RuleIndex};
 pub use counts::Counts;
 pub use rules::{Component, Meter, RateLimitReader, RateLimitWriter, RateLimits, Rule, Unit};
 pub use stage::RateLimiter;
