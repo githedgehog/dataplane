@@ -162,7 +162,7 @@ enum RawProto {
 }
 
 #[derive(Debug, bolero::TypeGenerator)]
-struct RawRule {
+pub(crate) struct RawRule {
     /// A peering, and which way.
     peering: u8,
     reverse: bool,
@@ -224,7 +224,7 @@ impl RawRule {
 }
 
 #[derive(Debug, bolero::TypeGenerator)]
-struct RawMeter {
+pub(crate) struct RawMeter {
     rate: u32,
     committed_burst: u32,
     excess_burst: u32,
@@ -276,7 +276,7 @@ fn meter(index: usize, raw: &RawMeter) -> Option<Meter> {
     })
 }
 
-fn overlay(meters: &[RawMeter; 4], rules: &[RawRule]) -> Option<ValidatedOverlay> {
+pub(crate) fn overlay(meters: &[RawMeter; 4], rules: &[RawRule]) -> Option<ValidatedOverlay> {
     let mut vpcs = VpcTable::new();
     for spec in &VPCS {
         vpcs.add(Vpc::new(spec.name, spec.id, spec.vni).ok()?)
@@ -330,10 +330,10 @@ enum RawFragment {
     Later(u16),
 }
 
-#[derive(Debug, bolero::TypeGenerator)]
-struct RawFrame {
+#[derive(Debug, Clone, bolero::TypeGenerator)]
+pub(crate) struct RawFrame {
     /// A rule the frame is aimed at: its peering, and an address in its first destination.
-    aim: Option<u8>,
+    pub(crate) aim: Option<u8>,
     src_vpc: u8,
     src_bits: u64,
     /// The VPC whose prefix holds the destination, or a random destination.
@@ -375,7 +375,7 @@ fn inside((base, len): (IpAddr, u8), bits: u64) -> IpAddr {
 }
 
 /// A frame and what the software knows of it.
-struct Frame {
+pub(crate) struct Frame {
     src_vni: u32,
     /// The VPC routing would deliver the inner packet to, if any.
     dst_vni: Option<u32>,
@@ -459,7 +459,7 @@ impl RawFrame {
         (proto, payload)
     }
 
-    fn frame(&self, rules: &[RawRule]) -> Frame {
+    pub(crate) fn frame(&self, rules: &[RawRule]) -> Frame {
         let aimed = self
             .aim
             .filter(|_| !rules.is_empty())
@@ -545,12 +545,20 @@ impl RawFrame {
 impl Frame {
     /// The frame on the underlay wire: IPv4, UDP to the VXLAN port, VXLAN with the source VNI.
     fn wire(&self) -> Vec<u8> {
-        let mut f = vec![0x02, 0, 0, 0, 0, 4, 0x02, 0, 0, 0, 0, 3, 0x08, 0x00];
+        self.wire_to([0x02, 0, 0, 0, 0, 4], 0)
+    }
+
+    /// The frame on the underlay wire to `dst`, with outer IP identification `id`, which no
+    /// pattern matches: it tells frames apart on a real port.
+    pub(crate) fn wire_to(&self, dst: [u8; 6], id: u16) -> Vec<u8> {
+        let mut f = Vec::from(dst);
+        f.extend([0x02, 0, 0, 0, 0, 3, 0x08, 0x00]);
         let udp_len = u16::try_from(16 + self.inner.len()).unwrap_or(u16::MAX);
         let total = udp_len.saturating_add(20);
         let mut ip = vec![0x45, 0];
         ip.extend(total.to_be_bytes());
-        ip.extend([0, 0, 0x40, 0, 64, 17, 0, 0, 192, 0, 2, 1, 192, 0, 2, 2]);
+        ip.extend(id.to_be_bytes());
+        ip.extend([0x40, 0, 64, 17, 0, 0, 192, 0, 2, 1, 192, 0, 2, 2]);
         let sum = ones_complement(&ip);
         ip[10..12].copy_from_slice(&sum.to_be_bytes());
         f.extend(ip);
@@ -660,7 +668,7 @@ fn check_profiles(limits: &RateLimits<PeeringRules>, program: &Program, plan: &P
     }
 }
 
-fn fate() -> TemplateAction {
+pub(crate) fn fate() -> TemplateAction {
     TemplateAction::Rss(dpdk::flow::template::RssTarget {
         queues: vec![RxQueueIndex(0), RxQueueIndex(1)],
         types: 0,
