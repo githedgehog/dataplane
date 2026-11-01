@@ -162,8 +162,15 @@ pub struct RateLimits<C> {
     pub(crate) classifier: C,
     pub(crate) rules: Box<[Rule]>,
     pub(crate) meters: Box<[Meter]>,
+    pub(crate) attempt_offloads: bool,
 }
 impl<C> RateLimits<C> {
+    /// Whether a capable NIC should enforce what it can of the gateway's policy in front of
+    /// software: unless an annotation turned offload off.
+    #[must_use]
+    pub fn attempt_offloads(&self) -> bool {
+        self.attempt_offloads
+    }
     /// Named meters, including those not currently referenced by a rule.
     #[must_use]
     pub fn meters(&self) -> &[Meter] {
@@ -224,6 +231,7 @@ impl RateLimits<PeeringRules> {
             classifier: PeeringRules::empty(),
             rules: Box::new([]),
             meters: Box::new([]),
+            attempt_offloads: true,
         }
     }
 
@@ -291,6 +299,7 @@ impl RateLimits<PeeringRules> {
             classifier: PeeringRules::new(&config.rules, backend)?,
             rules,
             meters,
+            attempt_offloads: !config.disable_offloads,
         })
     }
 }

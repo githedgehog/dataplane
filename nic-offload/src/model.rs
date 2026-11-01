@@ -10,11 +10,12 @@
 //! - rules of one table (or of tables of equal priority) keep no order among themselves, so every
 //!   matching rule is a possible outcome;
 //! - a meter may give any color (the model keeps no token state);
-//! - the frame may be parsed in more than one way (see [`dpdk::flow::model`]).
+//! - the frame may be parsed in more than one way (see [`dpdk::flow::model`]), but for what the
+//!   qualification settled for mlx5 ([`mlx5::PARSER`](crate::mlx5::PARSER)).
 //!
 //! A test then holds every possible outcome to the cascade contract against the software.
 
-use dpdk::flow::model::{Frame, Unmodelled, views};
+use dpdk::flow::model::{Frame, Unmodelled, views_by};
 use dpdk::flow::template::{Color, TemplateAction};
 use dpdk::flow::{FlowGroup, Priority};
 
@@ -96,7 +97,7 @@ impl Plan {
             refused,
         };
         let mut outcomes = Vec::new();
-        for view in views(frame) {
+        for view in views_by(frame, crate::mlx5::PARSER) {
             let start = State {
                 meters: Vec::new(),
                 color: None,

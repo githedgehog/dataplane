@@ -33,6 +33,7 @@
 //! `NIC_OFFLOAD_QUALIFY_CASES` sets how many cases run (default 20).
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
@@ -52,7 +53,7 @@ use rate_limit::{PeeringRules, RateLimitWriter, RateLimits};
 use crate::differential::{RawAcls, RawFragment, RawFrame, RawMeter, RawRule, overlay, targets};
 use crate::mlx5::{Plan, RESOURCES, Role, with_installed};
 use crate::model::{Outcome, Verdict};
-use crate::program::Program;
+use crate::program::{Peering, Program};
 use acl_filter::AclFilterContext;
 
 /// How long frames may take to arrive after they are sent.
@@ -288,21 +289,38 @@ struct Case {
 
 impl Case {
     fn new(meters: &[RawMeter; 4], rules: &[RawRule], acls: &RawAcls) -> Case {
+        Case::excluding(meters, rules, acls, &BTreeSet::new())
+    }
+
+    /// The case with the peerings in `excluded` left in software, as after the NIC refused them.
+    fn excluding(
+        meters: &[RawMeter; 4],
+        rules: &[RawRule],
+        acls: &RawAcls,
+        excluded: &BTreeSet<Peering>,
+    ) -> Case {
         let overlay = overlay(meters, rules, acls).expect("generated configurations are valid");
         let writer: RateLimitWriter<PeeringRules> =
             RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
         writer.apply(&overlay, Backend::Reference).unwrap();
         let filter = AclFilterContext::reference(&overlay).unwrap();
-        let program = Program::compile(&filter, &writer.load());
+        let program = Program::compile(&filter, &writer.load(), excluded);
         let plan = Plan::new(&program, &TemplateAction::Queue(RxQueueIndex(0))).unwrap();
+        // Aim at the rate limits the NIC took, and the denies of the peerings it took.
+        let offloaded_peerings: BTreeSet<Peering> = program
+            .rules
+            .iter()
+            .map(|r| r.peering)
+            .chain(program.denies.iter().map(|d| d.peering))
+            .collect();
+        let vni = |n| net::vxlan::Vni::new_checked(n).unwrap();
         let mut offloaded: Vec<usize> = program.rules.iter().map(|r| r.rule).collect();
         offloaded.dedup();
-        if !program.denies.is_empty() {
-            let denies = (0..)
-                .zip(&acls.rules)
-                .filter(|(_, r)| r.deny)
-                .map(|(i, _)| i);
-            offloaded.extend(denies.map(|i: usize| rules.len() + i));
+        for (i, rule) in acls.rules.iter().enumerate().take(6) {
+            let (src, dst) = rule.rule.vnis();
+            if rule.deny && offloaded_peerings.contains(&Peering::new(vni(src), vni(dst))) {
+                offloaded.push(rules.len() + i);
+            }
         }
         Case {
             program,
@@ -336,6 +354,32 @@ fn aimed(frames: &[RawFrame], offloaded: &[usize]) -> Vec<RawFrame> {
         .collect()
 }
 
+/// The case as production installs it: peerings with a rule the NIC refuses stay in software,
+/// whole.
+fn installable(rig: &Rig, meters: &[RawMeter; 4], rules: &[RawRule], acls: &RawAcls) -> Case {
+    let mut excluded = BTreeSet::new();
+    loop {
+        let case = Case::excluding(meters, rules, acls, &excluded);
+        let refused: BTreeSet<Peering> = with_installed(&rig.flows, &case.plan, |installed| {
+            installed
+                .refused()
+                .iter()
+                .filter_map(|(role, _)| match *role {
+                    Role::Police(rule) => Some(case.program.rules[rule].peering),
+                    Role::Deny(deny) => Some(case.program.denies[deny].peering),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_else(|e| fail(&format!("the NIC refused the plan: {e}")));
+        if refused.is_empty() {
+            break case;
+        }
+        eprintln!("qualify: the NIC refused rules of {refused:?}: they stay in software");
+        excluded.extend(refused);
+    }
+}
+
 fn qualify_case(
     rig: &mut Rig,
     meters: &[RawMeter; 4],
@@ -343,7 +387,7 @@ fn qualify_case(
     acls: &RawAcls,
     frames: &[RawFrame],
 ) {
-    let case = Case::new(meters, rules, acls);
+    let case = installable(rig, meters, rules, acls);
     let frames = &aimed(frames, &case.offloaded)[..];
     let Case {
         program,
