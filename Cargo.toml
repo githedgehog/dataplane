@@ -42,6 +42,7 @@ members = [
     "n-vm-protocol",
     "nat",
     "net",
+    "nic-offload",
     "pipeline",
     "policer",
     "rate-limit",
@@ -121,6 +122,7 @@ n-vm-macros = { path = "./n-vm-macros", package = "dataplane-n-vm-macros", featu
 n-vm-protocol = { path = "./n-vm-protocol", package = "dataplane-n-vm-protocol", features = [] }
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
+nic-offload = { path = "./nic-offload", package = "dataplane-nic-offload", features = [] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
 policer = { path = "./policer", package = "dataplane-policer", features = [] }
 rate-limit = { path = "./rate-limit", package = "dataplane-rate-limit", features = [] }
