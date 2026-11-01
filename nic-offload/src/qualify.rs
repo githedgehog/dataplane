@@ -257,7 +257,7 @@ fn passes_everything() -> MeterProfile {
 /// Make meter `dropping`'s color group drop every color, and every other one keep its own
 /// actions: what that meter charged is then exactly what does not arrive.
 fn rewire(plan: &mut Plan, dropping: Option<usize>) {
-    for table in &mut plan.tables {
+    for table in plan.tables_mut() {
         for rule in &mut table.rules {
             if let Role::Color(meter, color) = rule.role {
                 rule.actions = usize::from(Some(meter) == dropping || color == Color::Red);
@@ -399,14 +399,14 @@ fn qualify_case(
         .zip(frames)
         .map(|(id, raw)| raw.frame(&targets).wire_to(rig.link.mac, id))
         .collect();
-    for profile in &mut plan.profiles {
-        *profile = passes_everything();
+    for meter in &mut plan.meters {
+        meter.key.profile = passes_everything();
     }
     let started = clock::now();
 
     // Frames that do not arrive even when every meter passes: not the meters' doing.
     let mut unmetered = 0;
-    for red in std::iter::once(None).chain((0..plan.profiles.len()).map(Some)) {
+    for red in std::iter::once(None).chain((0..plan.meters.len()).map(Some)) {
         rewire(&mut plan, red);
         let (arrived, counts, refused) = with_installed(&rig.flows, &plan, |installed| {
             let arrived = rig.link.exchange(&wires);
@@ -472,7 +472,7 @@ fn qualify_case(
             program.denies.len(),
             flag_rules(&program),
             refused.len(),
-            plan.profiles.len(),
+            plan.meters.len(),
             wires.len() - dropped,
             wires.len(),
         );
