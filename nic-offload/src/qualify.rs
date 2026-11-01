@@ -18,6 +18,9 @@
 //!   rewired plan.
 //! - The hardware counters must agree with what was observed: the rules that drop count what did
 //!   not arrive because of a meter.
+//! - Where the model allows a frame either to arrive or not (how a NIC parses fragments, IPv6
+//!   extension headers and inner VLAN tags), what the NIC did is tallied by the frame's features
+//!   and reported at the end: it settles the model's assumptions for this NIC.
 //!
 //! Needs two ports wired to each other and the privileges DPDK needs for them:
 //!
@@ -46,7 +49,7 @@ use dpdk::socket;
 use net::buffer::Append;
 use rate_limit::{PeeringRules, RateLimitWriter, RateLimits};
 
-use crate::differential::{RawFrame, RawMeter, RawRule, overlay};
+use crate::differential::{RawFragment, RawFrame, RawMeter, RawRule, overlay};
 use crate::mlx5::{Plan, RESOURCES, Role, with_installed};
 use crate::model::{Outcome, Verdict};
 use crate::program::Program;
@@ -272,13 +275,58 @@ fn arrives(outcome: &Outcome) -> bool {
 }
 
 /// Run one generated case on the rig, panicking with the first disagreement.
+/// A generated case, compiled and lowered.
+struct Case {
+    program: Program,
+    plan: Plan,
+}
+
+impl Case {
+    /// The configured rules the NIC was given some of.
+    fn offloaded(&self) -> Vec<usize> {
+        let mut rules: Vec<usize> = self.program.rules.iter().map(|r| r.rule).collect();
+        rules.dedup();
+        rules
+    }
+
+    fn new(meters: &[RawMeter; 4], rules: &[RawRule]) -> Case {
+        let overlay = overlay(meters, rules).expect("generated configurations are valid");
+        let writer: RateLimitWriter<PeeringRules> =
+            RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
+        writer.apply(&overlay, Backend::Reference).unwrap();
+        let program = Program::compile(&writer.load());
+        let plan = Plan::new(&program, &TemplateAction::Queue(RxQueueIndex(0))).unwrap();
+        Case { program, plan }
+    }
+}
+
+/// The frames of a case: a frame no rule charges says little about the NIC, so most are aimed
+/// at a rule the NIC was given, whole and untagged. One in eight is left as generated (perhaps not
+/// aimed), and one in eight of the aimed ones keeps its fragment and inner VLAN tag: those check
+/// what the NIC must leave alone.
+fn aimed(frames: &[RawFrame], offloaded: &[usize]) -> Vec<RawFrame> {
+    (0u8..)
+        .zip(&frames[..frames.len().min(32)])
+        .map(|(i, frame)| {
+            let mut frame = frame.clone();
+            if i % 8 == 0 || offloaded.is_empty() {
+                return frame;
+            }
+            let pick = usize::from(frame.aim.unwrap_or(i)) % offloaded.len();
+            frame.aim = Some(u8::try_from(offloaded[pick]).unwrap_or(0));
+            if i % 8 != 1 {
+                frame.vlan = None;
+                frame.fragment = RawFragment::Whole;
+            }
+            frame
+        })
+        .collect()
+}
+
 fn qualify_case(rig: &mut Rig, meters: &[RawMeter; 4], rules: &[RawRule], frames: &[RawFrame]) {
-    let overlay = overlay(meters, rules).expect("generated configurations are valid");
-    let writer: RateLimitWriter<PeeringRules> =
-        RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
-    writer.apply(&overlay, Backend::Reference).unwrap();
-    let program = Program::compile(&writer.load());
-    let mut plan = Plan::new(&program, &TemplateAction::Queue(RxQueueIndex(0))).unwrap();
+    let case = Case::new(meters, rules);
+    let frames = &aimed(frames, &case.offloaded())[..];
+    let Case { program, mut plan } = case;
     let wires: Vec<Vec<u8>> = (0u16..)
         .zip(frames)
         .map(|(id, raw)| raw.frame(rules).wire_to(rig.link.mac, id))
@@ -326,6 +374,9 @@ fn qualify_case(rig: &mut Rig, meters: &[RawMeter; 4], rules: &[RawRule], frames
                 }
                 Some(_) => {}
                 None => dropped += 1,
+            }
+            if allowed.iter().any(|o| arrives(o)) && allowed.iter().any(|o| !arrives(o)) {
+                settle(&frames[i], wire, arrived.is_some());
             }
             if !allowed.iter().any(|o| arrives(o) == arrived.is_some()) {
                 disagreements.push(format!(
@@ -385,8 +436,53 @@ fn took(started: Instant) {
     );
 }
 
+/// What the model leaves open, by the frame's features, and what the NIC did: arrived, or not.
+type Ledger = std::collections::BTreeMap<String, (usize, usize)>;
+
+/// Record how the NIC settled a frame the model allowed either to arrive or not.
+fn settle(raw: &RawFrame, wire: &[u8], arrived: bool) {
+    // The inner EtherType, after outer Ethernet, IPv4, UDP and VXLAN, and an inner VLAN tag.
+    let at = 50 + if raw.vlan.is_some() { 16 } else { 12 };
+    let v6 = wire.get(at..at + 2) == Some(&[0x86, 0xdd][..]);
+    let mut features = vec![if v6 { "IPv6" } else { "IPv4" }];
+    if raw.vlan.is_some() {
+        features.push("inner VLAN");
+    }
+    if v6 && raw.hop_by_hop {
+        features.push("hop-by-hop");
+    }
+    match raw.fragment {
+        RawFragment::Whole => {}
+        RawFragment::First => features.push("first fragment"),
+        RawFragment::Later(_) => features.push("later fragment"),
+    }
+    LEDGER.with_borrow_mut(|ledger| {
+        let entry = ledger.entry(features.join(" + ")).or_default();
+        if arrived {
+            entry.0 += 1;
+        } else {
+            entry.1 += 1;
+        }
+    });
+}
+
 thread_local! {
+    static LEDGER: RefCell<Ledger> = const { RefCell::new(Ledger::new()) };
     static RIG: RefCell<Option<Rig>> = const { RefCell::new(None) };
+}
+
+/// Print the ledger however the run ends.
+struct Report;
+impl Drop for Report {
+    fn drop(&mut self) {
+        LEDGER.with_borrow(|ledger| {
+            for (features, (arrived, not)) in ledger {
+                eprintln!(
+                    "qualify: model left open, {features}: arrived {arrived}, did not arrive {not}"
+                );
+            }
+        });
+    }
 }
 
 #[test]
@@ -397,27 +493,69 @@ fn qualify() {
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(20);
+    let _report = Report;
     bolero::check!()
         .with_iterations(cases)
         .with_shrink_time(Duration::from_secs(120))
         .with_type::<([RawMeter; 4], Vec<RawRule>, Vec<RawFrame>)>()
         .for_each(|(meters, rules, frames)| {
             let rules = &rules[..rules.len().min(6)];
-            // Aim most frames at a rule: a frame no rule charges says little about the NIC.
-            let frames: Vec<RawFrame> = (0u8..)
-                .zip(&frames[..frames.len().min(32)])
-                .map(|(i, frame)| {
-                    let mut frame = frame.clone();
-                    if i % 4 != 0 {
-                        frame.aim = Some(frame.aim.unwrap_or(i));
-                    }
-                    frame
-                })
-                .collect();
-            let frames = &frames[..];
             RIG.with_borrow_mut(|rig| {
                 let rig = rig.get_or_insert_with(Rig::new);
                 qualify_case(rig, meters, rules, frames);
             });
         });
+}
+
+/// How many generated frames the model says a meter charges, and why the others are not: the
+/// runner learns about the NIC only from frames a rule charges.
+#[test]
+fn coverage() {
+    let stats = std::panic::AssertUnwindSafe(RefCell::new(
+        std::collections::BTreeMap::<&str, usize>::new(),
+    ));
+    bolero::check!()
+        .with_iterations(300)
+        .with_type::<([RawMeter; 4], Vec<RawRule>, Vec<RawFrame>)>()
+        .for_each(|(meters, rules, frames)| {
+            let rules = &rules[..rules.len().min(6)];
+            let case = Case::new(meters, rules);
+            let mut stats = stats.borrow_mut();
+            for raw in aimed(frames, &case.offloaded()) {
+                let wire = raw.frame(rules).wire_to([2, 0, 0, 0, 0, 1], 0);
+                let charged = case
+                    .plan
+                    .outcomes(&wire)
+                    .unwrap()
+                    .iter()
+                    .any(|o| !o.meters.is_empty());
+                let why = if charged {
+                    "charged"
+                } else if raw.aim.is_none() || rules.is_empty() {
+                    "not aimed"
+                } else {
+                    let index = usize::from(raw.aim.unwrap_or(0)) % rules.len();
+                    if !case.program.rules.iter().any(|r| r.rule == index) {
+                        "aimed rule not offloaded"
+                    } else if raw.vlan.is_some() {
+                        "inner VLAN"
+                    } else if !matches!(raw.fragment, RawFragment::Whole) {
+                        "fragment"
+                    } else {
+                        "other"
+                    }
+                };
+                *stats.entry(why).or_default() += 1;
+            }
+        });
+    let stats = stats.0.into_inner();
+    let total: usize = stats.values().sum();
+    for (why, n) in &stats {
+        eprintln!("coverage: {why:>26}: {n:6} ({} %)", n * 100 / total.max(1));
+    }
+    let charged = stats.get("charged").copied().unwrap_or(0);
+    assert!(
+        charged * 2 >= total,
+        "only {charged} of {total} generated frames are charged by a meter"
+    );
 }
