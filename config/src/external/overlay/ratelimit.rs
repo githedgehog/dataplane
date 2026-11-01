@@ -73,6 +73,9 @@ pub struct RateLimitRule {
 pub struct RateLimitTables {
     pub meters: BTreeMap<String, Meter>,
     pub rules: Vec<RateLimitRule>,
+    /// Keep the gateway's policy out of its NICs: enforce everything in software alone. Off, a
+    /// capable NIC enforces what it can of the policy in front of software.
+    pub disable_offloads: bool,
 }
 
 impl RateLimitTables {
@@ -141,6 +144,7 @@ impl RateLimitTables {
         Ok(ValidatedRateLimitTables {
             meters: self.meters.clone(),
             rules,
+            disable_offloads: self.disable_offloads,
         })
     }
 
@@ -170,4 +174,6 @@ pub struct ValidatedRateLimitRule {
 pub struct ValidatedRateLimitTables {
     pub meters: BTreeMap<String, Meter>,
     pub rules: Vec<ValidatedRateLimitRule>,
+    /// Keep the gateway's policy out of its NICs.
+    pub disable_offloads: bool,
 }

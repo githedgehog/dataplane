@@ -20,7 +20,8 @@
 //!   ([`probe_args`]), what a port reserves before start ([`port_resources`]), and, per started
 //!   port, to follow the policy ([`mlx5::run`]).
 //!
-//! Prototype: enabled by `DATAPLANE_NIC_OFFLOAD=1`; mlx5 only.
+//! The driver asks only when the dataplane runs with `--nic-offload`; then each peering opts in
+//! (`offload` in its rate-limits annotation). mlx5 only, for now.
 
 pub mod mlx5;
 pub mod model;
@@ -42,18 +43,9 @@ use rate_limit::{PeeringRules, RateLimitReader};
 /// The PCI vendor id of NVIDIA/Mellanox.
 const MELLANOX: &str = "0x15b3";
 
-/// Whether NIC offload is requested.
-#[must_use]
-pub fn enabled() -> bool {
-    std::env::var("DATAPLANE_NIC_OFFLOAD").is_ok_and(|v| v == "1")
-}
-
 /// Driver arguments a device needs at probe for this crate to program it later.
 #[must_use]
 pub fn probe_args(address: PciAddress) -> Vec<String> {
-    if !enabled() {
-        return Vec::new();
-    }
     let vendor = std::fs::read_to_string(format!("/sys/bus/pci/devices/{address}/vendor"));
     if !vendor.is_ok_and(|v| v.trim() == MELLANOX) {
         return Vec::new();
@@ -77,7 +69,9 @@ fn first_allowed_cpu() -> Option<usize> {
 /// What a configured port must reserve before start for this crate to program it, if anything.
 #[must_use]
 pub fn port_resources(info: &DevInfo<'_>) -> Option<TemplateConfig> {
-    (enabled() && info.driver_name().starts_with("mlx5")).then_some(mlx5::RESOURCES)
+    info.driver_name()
+        .starts_with("mlx5")
+        .then_some(mlx5::RESOURCES)
 }
 
 /// The published policy offload follows, as the pipeline's stages do.
