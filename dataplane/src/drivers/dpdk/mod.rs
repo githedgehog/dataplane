@@ -32,9 +32,12 @@ use args::IdleConfig;
 use concurrency::thread;
 #[allow(unused_imports)] // used under loom/shuttle backends
 use concurrency::thread::BuilderExt;
+use dpdk::flow::template::{RssTarget, TemplateAction};
 use dpdk::mem::{MBUF_BURST, Mbuf};
+use dpdk::queue::rx::RxQueueIndex;
 use lifecycle::Subsystem;
 use lldp::Link;
+use rate_limit::{PeeringRules, RateLimitReader};
 use stats::{PortCounters, PortMetrics, PortState, PortStateMetrics, XstatMetrics};
 use tokio::sync::watch;
 use tracectl::trace_target;
@@ -83,6 +86,7 @@ impl DriverDpdk {
         status_writer: DriverStatusWriter,
         bridge: Option<&mut DatapathEnds>,
         control_plane: watch::Receiver<ControlPlane>,
+        rate_limits: &RateLimitReader<PeeringRules>,
     ) -> Result<(), DriverError>
     where
         'p: 'scope,
@@ -163,6 +167,10 @@ impl DriverDpdk {
             idle,
         )?);
 
+        for port in ports.iter().filter(|port| port.offload) {
+            spawn_offload(scope, workers_subsystem, port, rate_limits.clone())?;
+        }
+
         // Register metrics once; the scoped callback keeps the borrowed ports alive while polling.
         let port_metrics: Vec<(&Port<'_>, PortMetrics)> = ports
             .iter()
@@ -237,6 +245,44 @@ where
             DriverError::PortSetup(format!("failed to spawn the DPDK control worker: {e}"))
         })?;
     Ok(WorkerMonitor::new(id, handle, rx_tasks).with_load(load_reader))
+}
+
+/// Program `port`'s NIC with the rate limits it can enforce, following them until shutdown.
+///
+/// The NIC sends what it lets through to the data queues, spread as the port's own RSS spreads.
+fn spawn_offload<'p, 'scope>(
+    scope: &'scope thread::Scope<'scope, '_>,
+    subsystem: &Subsystem,
+    port: &'p Port<'_>,
+    rate_limits: RateLimitReader<PeeringRules>,
+) -> Result<(), DriverError>
+where
+    'p: 'scope,
+{
+    let fate = match &port.dev.config().rss {
+        Some(rss) => TemplateAction::Rss(RssTarget {
+            queues: (0..port.data_queues).map(RxQueueIndex).collect(),
+            types: rss.hf,
+        }),
+        None => TemplateAction::Queue(RxQueueIndex(0)),
+    };
+    let subsystem = subsystem.clone();
+    let name = port.name.to_string();
+    thread::Builder::new()
+        .name(format!("nic-offload-{name}"))
+        .spawn_scoped(scope, move || {
+            nic_offload::mlx5::run(&port.dev, &name, &rate_limits, &fate, &|| {
+                subsystem.is_cancelled()
+            });
+            Ok::<(), Infallible>(())
+        })
+        .map_err(|e| {
+            DriverError::PortSetup(format!(
+                "failed to spawn NIC offload for {}: {e}",
+                port.name
+            ))
+        })?;
+    Ok(())
 }
 
 /// What the driver publishes about a port beyond its counters, and what it keeps to do so.

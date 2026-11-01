@@ -47,6 +47,7 @@ mgmt = { workspace = true }
 mstlink = { workspace = true, features = ["tokio"] }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
+nic-offload = { workspace = true }
 nix = { workspace = true, features = ["event", "socket", "hostname", "net", "sched"] }
 netdev = { workspace = true }
 once_cell = { workspace = true }

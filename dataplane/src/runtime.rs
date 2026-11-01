@@ -392,7 +392,9 @@ fn bring_up_ports<'eal>(
     // Every port's pool backs its packets in every port's transmit rings.
     let num_ports = u32::try_from(selected.len()).unwrap_or(u32::MAX);
     for (interface, address) in &selected {
-        eal.probe_pci(*address).map_err(|e| {
+        let devargs = nic_offload::probe_args(*address);
+        let devargs: Vec<&str> = devargs.iter().map(String::as_str).collect();
+        eal.probe_pci_with(*address, &devargs).map_err(|e| {
             DriverError::PortSetup(format!("interface '{}': {e}", interface.interface))
         })?;
     }
@@ -617,6 +619,7 @@ fn run_dpdk_driver(
         }
     }
 
+    let rate_limits = ingredients.rate_limits().clone();
     // Queue handles borrow the ports, so workers must join before port shutdown.
     concurrency::thread::scope(|scope| {
         info!("Using driver DPDK...");
@@ -630,6 +633,7 @@ fn run_dpdk_driver(
             status_writer,
             bridge.as_mut(),
             control_plane,
+            &rate_limits,
         ) {
             Ok(()) => {
                 // Inside the scope: it waits for every worker, so after it this would only run at

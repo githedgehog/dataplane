@@ -93,6 +93,11 @@ impl PipelineIngredients {
         self.pdata.clone()
     }
 
+    /// The published rate limits, which NIC offload follows like the workers do.
+    pub(crate) fn rate_limits(&self) -> &RateLimitReader<PeeringRules> {
+        &self.rate_limits
+    }
+
     /// Create a shared factory for the driver's buffer type and lifetime.
     /// The returned pipelines are constructed and used on their worker threads.
     pub(crate) fn factory<'nf, Buf: PacketBufferMut + 'nf>(self) -> PipelineFactory<'nf, Buf> {

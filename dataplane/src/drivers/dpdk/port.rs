@@ -447,6 +447,8 @@ pub(crate) struct Port<'eal> {
     /// Whether the port's receive queues raise interrupts, for workers that sleep on them: asked
     /// for with `--idle interrupt`, and granted if the driver has them.
     pub(crate) rx_interrupts: bool,
+    /// Whether the port reserved resources for [`nic_offload`], and so can be programmed by it.
+    pub(crate) offload: bool,
 }
 
 impl<'eal> Port<'eal> {
@@ -563,6 +565,18 @@ impl<'eal> Port<'eal> {
             ),
             error => DriverError::PortSetup(error.to_string()),
         })?;
+
+        // NIC offload reserves its resources between configuration and start, or not at all.
+        let offload = match nic_offload::port_resources(dev.info()) {
+            Some(resources) => match dev.configure_templates(&resources) {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!("port {index} ({name}) offloads nothing to its NIC: {e}");
+                    false
+                }
+            },
+            None => false,
+        };
 
         // Ports without a kernel netdev report ifindex 0.
         let if_index = InterfaceIndex::try_new(dev.info().if_index()).ok();
@@ -704,6 +718,7 @@ impl<'eal> Port<'eal> {
             data_queues: num_workers,
             control,
             rx_interrupts: config.rx_interrupts,
+            offload,
         })
     }
 
