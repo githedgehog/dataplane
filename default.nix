@@ -578,11 +578,8 @@ let
         cp "$root/modules.load" $out/modules.load
       '';
 
-  # The pre-init, linked statically.
-  #
-  # It runs as PID 1 before /nix/store is mounted, so it cannot be
-  # dynamically linked: its ELF interpreter would name a path that does not
-  # exist yet, and the kernel would fail to exec it.
+  # A workspace binary linked statically, for programs that run where
+  # /nix/store is not, such as the pre-init (below).
   #
   # Two things are needed and neither is the default.  `+crt-static` asks
   # for a static link; glibc's static archives then have to be found, and
@@ -593,38 +590,47 @@ let
   # `args` is merged with `//`, which would replace the whole `env` attrset
   # rather than adding to it, discarding the sysroot and toolchain settings
   # every other crate depends on.
-  n-preinit-static = workspace."n-preinit".overrideAttrs (orig: {
-    env = orig.env // {
-      # The search path goes through `-Clink-arg=-L`, not `LIBRARY_PATH`.
-      #
-      # `LIBRARY_PATH` is honoured by the *native* cc-wrapper, so it worked
-      # for an x86_64 build and silently did nothing for a cross one: the
-      # target-prefixed wrapper ignores it, and the link failed on `-lc`
-      # with the archives sitting right there in the store.  `-Clink-arg`
-      # reaches the linker either way, which is why the sysroot is already
-      # passed that way in nix/profiles.nix.
-      #
-      # The sanitizer comes back out.  rustc refuses the combination outright
-      # -- "sanitizer is incompatible with statically linked libc" -- so a
-      # sanitized build otherwise cannot get as far as producing a guest
-      # image, and `just sanitize=address test` dies in `setup-roots` rather
-      # than in anything it was trying to measure.  Dropping it here rather
-      # than dropping in-VM testing from sanitized builds is the right trade:
-      # the pre-init is the scaffolding that execs the code under test, not
-      # the code under test.  It costs a rebuild of two small crates, its
-      # only dependencies being `n-vm-protocol` and a feature-trimmed `nix`.
-      RUSTFLAGS = lib.concatStringsSep " " (
-        (lib.subtractLists sanitizer-rustflags (
-          lib.filter (flag: flag != "") (lib.splitString " " orig.env.RUSTFLAGS)
-        ))
-        ++ [ "-Ctarget-feature=+crt-static" ]
-        # Only glibc keeps its archives in a separate output; musl's are in
-        # `out`, already in the sysroot.  Naming `glibc` unconditionally asks
-        # nixpkgs to build glibc with the musl cross compiler, which fails.
-        ++ lib.optional (libc == "gnu") "-Clink-arg=-L${pkgs.pkgsHostHost.glibc.static}/lib"
-      );
-    };
-  });
+  static-libc =
+    package:
+    package.overrideAttrs (orig: {
+      env = orig.env // {
+        # The search path goes through `-Clink-arg=-L`, not `LIBRARY_PATH`.
+        #
+        # `LIBRARY_PATH` is honoured by the *native* cc-wrapper, so it worked
+        # for an x86_64 build and silently did nothing for a cross one: the
+        # target-prefixed wrapper ignores it, and the link failed on `-lc`
+        # with the archives sitting right there in the store.  `-Clink-arg`
+        # reaches the linker either way, which is why the sysroot is already
+        # passed that way in nix/profiles.nix.
+        #
+        # The sanitizer comes back out.  rustc refuses the combination outright
+        # -- "sanitizer is incompatible with statically linked libc" -- so a
+        # sanitized build otherwise cannot get as far as producing a guest
+        # image, and `just sanitize=address test` dies in `setup-roots` rather
+        # than in anything it was trying to measure.  Dropping it here rather
+        # than dropping in-VM testing from sanitized builds is the right trade:
+        # the pre-init is the scaffolding that execs the code under test, not
+        # the code under test.  It costs a rebuild of two small crates, its
+        # only dependencies being `n-vm-protocol` and a feature-trimmed `nix`.
+        RUSTFLAGS = lib.concatStringsSep " " (
+          (lib.subtractLists sanitizer-rustflags (
+            lib.filter (flag: flag != "") (lib.splitString " " orig.env.RUSTFLAGS)
+          ))
+          ++ [ "-Ctarget-feature=+crt-static" ]
+          # Only glibc keeps its archives in a separate output; musl's are in
+          # `out`, already in the sysroot.  Naming `glibc` unconditionally asks
+          # nixpkgs to build glibc with the musl cross compiler, which fails.
+          ++ lib.optional (libc == "gnu") "-Clink-arg=-L${pkgs.pkgsHostHost.glibc.static}/lib"
+        );
+      };
+    });
+
+  # The pre-init, linked statically.
+  #
+  # It runs as PID 1 before /nix/store is mounted, so it cannot be
+  # dynamically linked: its ELF interpreter would name a path that does not
+  # exist yet, and the kernel would fail to exec it.
+  n-preinit-static = static-libc workspace."n-preinit";
 
   # Flatcar's repackaged kernel, adapted to the shape `mk-initramfs` and the
   # kernel-image installer expect of a kernel derivation.
