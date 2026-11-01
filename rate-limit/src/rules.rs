@@ -169,6 +169,11 @@ impl<C> RateLimits<C> {
     pub fn meters(&self) -> &[Meter] {
         &self.meters
     }
+    /// The classifier selecting rules, which keeps the typed rules it was built from.
+    #[must_use]
+    pub fn classifier(&self) -> &C {
+        &self.classifier
+    }
     /// Rules in match order.
     #[must_use]
     pub fn rules(&self) -> &[Rule] {
