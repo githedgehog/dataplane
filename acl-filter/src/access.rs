@@ -3,11 +3,17 @@
 
 //! Read and write handles for the ACL filter context.
 
-use crate::context::{AclTables, PRODUCTION_BACKEND};
+use crate::PacketSummary;
+use crate::context::{AclKey, AclTables, LookupResult, PRODUCTION_BACKEND, RuleRow};
 use concurrency::slot::Slot;
 use concurrency::sync::Arc;
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
+use config::external::overlay::acl::AclAction;
+use net::buffer::PacketBufferMut;
+use net::packet::{DoneReason, Packet};
+use net::vxlan::Vni;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Default)]
 pub struct AclFilterContext {
@@ -20,6 +26,59 @@ impl TryFrom<&ValidatedOverlay> for AclFilterContext {
     fn try_from(overlay: &ValidatedOverlay) -> Result<Self, Self::Error> {
         let acls = AclTables::build(overlay, PRODUCTION_BACKEND)?;
         Ok(Self { acls })
+    }
+}
+
+impl AclFilterContext {
+    /// The IPv4 rules of every peering, in first-match order.
+    #[must_use]
+    pub fn v4(&self) -> &[RuleRow<AclKey<Ipv4Addr>, LookupResult>] {
+        self.acls.v4()
+    }
+
+    /// The IPv6 rules of every peering, in first-match order.
+    #[must_use]
+    pub fn v6(&self) -> &[RuleRow<AclKey<Ipv6Addr>, LookupResult>] {
+        self.acls.v6()
+    }
+
+    /// The default action of the directed peering from `src` to `dst`, if it has an ACL.
+    #[must_use]
+    pub fn default_action(&self, src: Vni, dst: Vni) -> Option<AclAction> {
+        self.acls.find_default_action(src, dst)
+    }
+
+    /// What the first rule matching `packet` directly decides, with no flow state: `None` if no
+    /// rule matches. A packet the filter cannot classify is an error, with the reason the filter
+    /// drops it for.
+    ///
+    /// A direct match is final in the filter: flow state only decides packets no rule matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason the filter drops a packet it cannot classify.
+    pub fn direct_match<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+    ) -> Result<Option<AclAction>, DoneReason> {
+        let summary = PacketSummary::try_from(packet)?;
+        Ok(self.acls.lookup(&summary).map(|result| result.action))
+    }
+}
+
+#[cfg(any(test, feature = "reference"))]
+impl AclFilterContext {
+    /// Build an EAL-free context with the reference (linear-scan) classifier, for tests here and
+    /// in crates that check against the ACL filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the validated overlay cannot be lowered.
+    pub fn reference(overlay: &ValidatedOverlay) -> Result<Self, ConfigError> {
+        use crate::context::Backend;
+        Ok(Self {
+            acls: AclTables::build(overlay, Backend::Reference)?,
+        })
     }
 }
 
