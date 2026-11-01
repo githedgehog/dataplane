@@ -2101,6 +2101,7 @@ dependencies = [
 name = "dataplane-nic-offload"
 version = "0.36.0"
 dependencies = [
+ "bolero",
  "dataplane-acl",
  "dataplane-concurrency",
  "dataplane-config",

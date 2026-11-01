@@ -23,3 +23,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 acl = { workspace = true, features = ["reference"] }
+bolero = { workspace = true, features = ["std"] }
+net = { workspace = true, features = ["test_buffer"] }
