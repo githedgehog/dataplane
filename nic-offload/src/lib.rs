@@ -14,6 +14,8 @@
 //! - [`program`] compiles published policy (today: rate limits) into what a NIC may do, from the
 //!   typed match-action rules software uses, and refuses what it may not. It knows no NIC.
 //! - One module per NIC species lowers a program onto that NIC: [`mlx5`].
+//! - [`model`] says what a lowered plan may do with a frame, without the NIC, so tests can hold
+//!   the lowering to the software it stands in front of.
 //! - The driver asks this crate three questions and nothing else: what a device needs at probe
 //!   ([`probe_args`]), what a port reserves before start ([`port_resources`]), and, per started
 //!   port, to follow the policy ([`mlx5::run`]).
@@ -21,8 +23,11 @@
 //! Prototype: enabled by `DATAPLANE_NIC_OFFLOAD=1`; mlx5 only.
 
 pub mod mlx5;
+pub mod model;
 pub mod program;
 
+#[cfg(test)]
+mod differential;
 #[cfg(test)]
 mod tests;
 
