@@ -324,7 +324,7 @@ enum RawL4 {
 }
 
 #[derive(Debug, Copy, Clone, bolero::TypeGenerator)]
-enum RawFragment {
+pub(crate) enum RawFragment {
     Whole,
     First,
     Later(u16),
@@ -342,10 +342,10 @@ pub(crate) struct RawFrame {
     l4: RawL4,
     src_port: u8,
     dst_port: u8,
-    fragment: RawFragment,
+    pub(crate) fragment: RawFragment,
     /// IPv6 only: a hop-by-hop options header first.
-    hop_by_hop: bool,
-    vlan: Option<u16>,
+    pub(crate) hop_by_hop: bool,
+    pub(crate) vlan: Option<u16>,
 }
 
 fn ones_complement(header: &[u8]) -> u16 {
@@ -432,6 +432,17 @@ impl RawFrame {
     /// The inner protocol number and the bytes after the IP header.
     fn payload(&self, aimed: Option<&RawRule>, v6: bool) -> (u8, Vec<u8>) {
         let port = |i: u8| PORTS[usize::from(i) % PORTS.len()];
+        // An aimed frame takes the ports of the subnets it was aimed into, if they name any.
+        let aimed_port = |subnets: Option<&Vec<RawSubnet>>, own: u8| {
+            subnets
+                .and_then(|s| s.first())
+                .and_then(|s| s.ports.as_ref())
+                .map_or_else(|| port(own), |p| p.range().start())
+        };
+        let (src_port, dst_port) = (
+            aimed_port(aimed.map(|r| &r.src), self.src_port),
+            aimed_port(aimed.map(|r| &r.dst), self.dst_port),
+        );
         let l4 = match aimed.map(|rule| rule.proto) {
             Some(RawProto::Udp) => RawL4::Udp,
             Some(RawProto::Tcp) => RawL4::Tcp,
@@ -441,14 +452,14 @@ impl RawFrame {
         };
         let (proto, mut payload): (u8, Vec<u8>) = match l4 {
             RawL4::Udp => {
-                let mut h = Vec::from(port(self.src_port).to_be_bytes());
-                h.extend(port(self.dst_port).to_be_bytes());
+                let mut h = Vec::from(src_port.to_be_bytes());
+                h.extend(dst_port.to_be_bytes());
                 h.extend([0, 16, 0, 0]);
                 (17, h)
             }
             RawL4::Tcp => {
-                let mut h = Vec::from(port(self.src_port).to_be_bytes());
-                h.extend(port(self.dst_port).to_be_bytes());
+                let mut h = Vec::from(src_port.to_be_bytes());
+                h.extend(dst_port.to_be_bytes());
                 h.extend([0, 0, 0, 1, 0, 0, 0, 0, 0x50, 0x10, 0xff, 0xff, 0, 0, 0, 0]);
                 (6, h)
             }
