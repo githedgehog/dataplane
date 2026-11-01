@@ -22,7 +22,7 @@ pub mod generator;
 
 pub use display::{Field, RuleFields, write_grid};
 pub use field::{FixedSize, MaskBits};
-pub use predicate::{Erased, FieldBytes, FieldPredicate, MAX_FIELD_BYTES};
+pub use predicate::{Erased, FieldBytes, FieldPredicate, MAX_FIELD_BYTES, Overlaps};
 pub use rule::{
     Accepts, Backend, ExactSpec, IntoBackendField, IsUniversal, MaskSpec, PrefixSpec, RangeSpec,
     RuleField,
