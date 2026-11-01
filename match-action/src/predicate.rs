@@ -219,6 +219,55 @@ impl<T: FixedSize> Accepts<T> for RangeSpec<T> {
         Range::new(be_bytes(&self.min), be_bytes(&self.max)).matches(&be_bytes(value))
     }
 }
+/// Whether two predicates of the same field kind accept a common value.
+///
+/// Two rules can disagree only where every field overlaps, so this is what decides whether the
+/// order of two rules matters: rules that do not overlap can be laid out in any order.
+pub trait Overlaps {
+    fn overlaps(&self, other: &Self) -> bool;
+}
+
+impl<T: FixedSize> Overlaps for ExactSpec<T> {
+    fn overlaps(&self, other: &Self) -> bool {
+        be_bytes(&self.value) == be_bytes(&other.value)
+    }
+}
+
+impl<T: FixedSize> Overlaps for PrefixSpec<T> {
+    /// Prefixes overlap when the shorter contains the longer: they agree on the shorter's bits.
+    fn overlaps(&self, other: &Self) -> bool {
+        let (a, b) = (be_bytes(&self.value), be_bytes(&other.value));
+        let bits = usize::from(self.len.min(other.len));
+        let (whole, rest) = (bits / 8, bits % 8);
+        if a[..whole] != b[..whole] {
+            return false;
+        }
+        if rest == 0 {
+            return true;
+        }
+        let mask = u8::MAX << (8 - rest);
+        (a[whole] ^ b[whole]) & mask == 0
+    }
+}
+
+impl<T: FixedSize> Overlaps for MaskSpec<T> {
+    /// Masked values overlap when they agree on every bit both care about.
+    fn overlaps(&self, other: &Self) -> bool {
+        let (av, am) = (be_bytes(&self.value), be_bytes(&self.mask));
+        let (bv, bm) = (be_bytes(&other.value), be_bytes(&other.mask));
+        (0..T::SIZE).all(|i| (av[i] ^ bv[i]) & am[i] & bm[i] == 0)
+    }
+}
+
+impl<T: FixedSize> Overlaps for RangeSpec<T> {
+    /// Ranges overlap when neither ends before the other starts; an empty range overlaps nothing.
+    fn overlaps(&self, other: &Self) -> bool {
+        let (amin, amax) = (be_bytes(&self.min), be_bytes(&self.max));
+        let (bmin, bmax) = (be_bytes(&other.min), be_bytes(&other.max));
+        amin <= amax && bmin <= bmax && amin <= bmax && bmin <= amax
+    }
+}
+
 impl<T: FixedSize> IsUniversal for MaskSpec<T> {
     fn is_universal(&self) -> bool {
         be_bytes(&self.mask).iter().all(|b| *b == 0)
@@ -350,5 +399,63 @@ mod tests {
     fn range_field_width_mismatch_panics() {
         let r = FieldPredicate::Range(Range::new(bytes(&[0, 0]), bytes(&[255, 255])));
         let _ = r.matches(&[0, 0, 0]);
+    }
+
+    mod overlaps {
+        use super::super::*;
+        use crate::{Accepts, ExactSpec, MaskSpec, PrefixSpec, RangeSpec};
+
+        fn prefix(value: u32, len: u8) -> PrefixSpec<u32> {
+            PrefixSpec::new(value, len % 33)
+        }
+
+        /// Sound: a value both accept means they overlap.
+        #[test]
+        fn a_common_value_implies_overlap() {
+            bolero::check!()
+                .with_type::<(u32, u8, u32, u8, u32, u32, u32, u32, u32)>()
+                .for_each(|&(pa, la, pb, lb, ma, mb, va, vb, x)| {
+                    let (a, b) = (prefix(pa, la), prefix(pb, lb));
+                    if a.accepts(&x) && b.accepts(&x) {
+                        assert!(a.overlaps(&b));
+                    }
+                    let (a, b) = (MaskSpec::new(va, ma), MaskSpec::new(vb, mb));
+                    if a.accepts(&x) && b.accepts(&x) {
+                        assert!(a.overlaps(&b));
+                    }
+                    let (a, b) = (RangeSpec::new(pa, pb), RangeSpec::new(va, vb));
+                    if a.accepts(&x) && b.accepts(&x) {
+                        assert!(a.overlaps(&b));
+                    }
+                    let (a, b) = (ExactSpec::new(pa), ExactSpec::new(pb));
+                    if a.accepts(&x) && b.accepts(&x) {
+                        assert!(a.overlaps(&b));
+                    }
+                });
+        }
+
+        /// Complete: overlapping predicates share a witness, which both accept.
+        #[test]
+        fn overlap_has_a_witness() {
+            bolero::check!()
+                .with_type::<(u32, u8, u32, u8, u32, u32, u32, u32)>()
+                .for_each(|&(pa, la, pb, lb, ma, mb, va, vb)| {
+                    let (a, b) = (prefix(pa, la), prefix(pb, lb));
+                    if a.overlaps(&b) {
+                        let longer = if a.len >= b.len { a.value } else { b.value };
+                        assert!(a.accepts(&longer) && b.accepts(&longer));
+                    }
+                    let (a, b) = (MaskSpec::new(va, ma), MaskSpec::new(vb, mb));
+                    if a.overlaps(&b) {
+                        let x = (va & ma) | (vb & mb);
+                        assert!(a.accepts(&x) && b.accepts(&x));
+                    }
+                    let (a, b) = (RangeSpec::new(pa, pb), RangeSpec::new(va, vb));
+                    if a.overlaps(&b) {
+                        let x = pa.max(va);
+                        assert!(a.accepts(&x) && b.accepts(&x));
+                    }
+                });
+        }
     }
 }

@@ -210,6 +210,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut rule_field_converts: Vec<TokenStream2> = Vec::with_capacity(n);
     let mut rule_field_accepts: Vec<TokenStream2> = Vec::with_capacity(n);
     let mut rule_field_universal: Vec<TokenStream2> = Vec::with_capacity(n);
+    let mut rule_field_overlaps: Vec<TokenStream2> = Vec::with_capacity(n);
     let mut rule_field_accept_bounds: Vec<TokenStream2> = Vec::with_capacity(n);
     let mut rule_field_universal_bounds: Vec<TokenStream2> = Vec::with_capacity(n);
     let mut rule_field_displays: Vec<TokenStream2> = Vec::with_capacity(n);
@@ -234,6 +235,9 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         });
         rule_field_accepts.push(quote! {
             <#crate_path::#spec<#ty> as #crate_path::Accepts<#ty>>::accepts(&self.#name, &key.#name)
+        });
+        rule_field_overlaps.push(quote! {
+            <#crate_path::#spec<#ty> as #crate_path::Overlaps>::overlaps(&self.#name, &other.#name)
         });
         rule_field_universal.push(quote! {
             <#crate_path::#spec<#ty> as #crate_path::IsUniversal>::is_universal(&self.#name)
@@ -297,6 +301,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         quote! {}
     } else {
         quote! {
+            #[allow(missing_docs)] // generated: documented by the key it derives from
             impl #key_impl_generics #key_ident #key_ty_generics #key_where_clause {
                 #[must_use]
                 pub fn as_key(&self) -> [u8; <Self as #crate_path::MatchKey>::KEY_SIZE] {
@@ -328,6 +333,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let expanded = quote! {
         const _: () = {
+            #[allow(missing_docs)] // generated: documented by the key it derives from
             impl #impl_generics #key_ident #ty_generics #where_clause {
                 pub const FIELD_SPECS: &'static [#crate_path::FieldSpec] = &[
                     #(#spec_entries),*
@@ -355,11 +361,13 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
             #as_key_impl
         };
+        #[allow(missing_docs)] // generated: documented by the key it derives from
         #[derive(::core::marker::Copy, ::core::clone::Clone, ::core::fmt::Debug)]
         #key_vis struct #rule_ident #generics #where_clause {
             #(#rule_fields,)*
             #(#rule_phantom_fields,)*
         }
+        #[allow(missing_docs)] // generated: documented by the key it derives from
         impl #impl_generics #rule_ident #ty_generics #where_clause {
             pub fn into_backend_fields<__MaB>(self) -> ::std::vec::Vec<<__MaB as #crate_path::Backend>::Field>
             where
@@ -371,6 +379,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 ]
             }
         }
+        #[allow(missing_docs)] // generated: documented by the key it derives from
         impl #impl_generics #rule_ident #ty_generics
         #merged_where_accepts
         {
@@ -379,6 +388,16 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 #(#rule_field_accepts) && *
             }
         }
+        #[allow(missing_docs)] // generated: documented by the key it derives from
+        impl #impl_generics #rule_ident #ty_generics #where_clause {
+            /// Whether some key matches both rules: every field overlaps. Rules that do not
+            /// overlap never compete, so their relative order does not matter.
+            #[must_use]
+            pub fn overlaps(&self, other: &Self) -> bool {
+                #(#rule_field_overlaps) && *
+            }
+        }
+        #[allow(missing_docs)] // generated: documented by the key it derives from
         impl #impl_generics #rule_ident #ty_generics
         #merged_where_universal
         {
