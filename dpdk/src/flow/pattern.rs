@@ -412,6 +412,8 @@ impl UdpMatch {
 pub struct TcpMatch {
     src: Option<u16>,
     dst: Option<u16>,
+    /// Flag values and the mask of flags constrained.
+    flags: Option<(u8, u8)>,
 }
 
 impl TcpMatch {
@@ -429,6 +431,14 @@ impl TcpMatch {
         self
     }
 
+    /// Constrain the flags in `mask` (the TCP header's flags byte, FIN = `0x01` to CWR = `0x80`)
+    /// to their values in `value`.
+    #[must_use]
+    pub fn flags(mut self, value: u8, mask: u8) -> TcpMatch {
+        self.flags = Some((value & mask, mask));
+        self
+    }
+
     pub(crate) fn lower(&self) -> (rte_flow_item_tcp, rte_flow_item_tcp) {
         // SAFETY: zeroed fields are valid; a zero mask leaves fields unconstrained.
         let mut spec: rte_flow_item_tcp = unsafe { core::mem::zeroed() };
@@ -440,6 +450,10 @@ impl TcpMatch {
         if let Some(dst) = self.dst {
             spec.hdr.dst_port = dst.to_be();
             mask.hdr.dst_port = u16::MAX;
+        }
+        if let Some((value, flags)) = self.flags {
+            spec.hdr.tcp_flags = value;
+            mask.hdr.tcp_flags = flags;
         }
         (spec, mask)
     }
@@ -505,6 +519,8 @@ pub enum ItemShape {
         src: bool,
         /// Destination port constrained.
         dst: bool,
+        /// The mask of flags constrained.
+        flags: u8,
     },
     /// A VXLAN header: whether the VNI is constrained.
     Vxlan {
@@ -571,6 +587,7 @@ impl TcpMatch {
         ItemShape::Tcp {
             src: self.src.is_some(),
             dst: self.dst.is_some(),
+            flags: self.flags.map_or(0, |(_, mask)| mask),
         }
     }
 }
