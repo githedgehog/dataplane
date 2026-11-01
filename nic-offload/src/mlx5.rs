@@ -116,11 +116,13 @@ impl Shape {
             .ipv4(Ipv4Match::default())
             .udp(UdpMatch::default().dst(VXLAN_PORT))
             .vxlan(VxlanMatch::default().vni(vni))
-            .inner_eth(EthMatch::default());
+            // Software does not parse a tagged inner frame, so must not be charged for one.
+            .inner_eth(EthMatch::default().tagged(false));
+        // A template's values are placeholders, but mlx5 still validates them: an IPv6 next
+        // header of 0 is the hop-by-hop extension header, which it refuses.
         let proto = rule.and_then(|r| r.proto).unwrap_or(match self.l4 {
-            L4::Udp { .. } => 17,
             L4::Tcp { .. } => 6,
-            _ => 0,
+            _ => 17,
         });
         let ports = |p: Option<u16>| p.unwrap_or(1);
         let (src_port, dst_port) = (rule.and_then(|r| r.src_port), rule.and_then(|r| r.dst_port));
@@ -160,7 +162,8 @@ impl Shape {
                 .src(addr(rule.map(|r| r.source), self.source))
                 .dst(addr(rule.map(|r| r.destination), self.destination));
             if self.l4 != L4::Any {
-                ip = ip.proto(proto);
+                // Software sees a fragment's protocol as the fragment, with no ports.
+                ip = ip.proto(proto).unfragmented();
             }
             finish!(tunnel.ipv6(ip))
         } else {
@@ -172,21 +175,23 @@ impl Shape {
                 .src(addr(rule.map(|r| r.source), self.source))
                 .dst(addr(rule.map(|r| r.destination), self.destination));
             if self.l4 != L4::Any {
-                ip = ip.proto(proto);
+                // Software sees a fragment's protocol as the fragment, with no ports.
+                ip = ip.proto(proto).unfragmented();
             }
             finish!(tunnel.ipv4(ip))
         }
     }
 }
 
-/// A burst size mlx5 can encode: the largest at most `bytes` (and at least 255/256 of it).
+/// A burst size mlx5 can encode: the smallest at least `bytes` (and at most 256/255 of it).
 /// mlx5 encodes sizes strictly between 255·2^k and 256·2^k as zero
-/// (`mlx5_flow_meter_xbs_man_exp_calc`).
+/// (`mlx5_flow_meter_xbs_man_exp_calc`). Rounding up keeps the NIC at least as permissive as the
+/// software it stands in front of.
 fn encodable(bytes: u64) -> u64 {
     (0..56)
         .map(|k| (255u64 << k, 256u64 << k))
         .find(|&(low, high)| low < bytes && bytes < high)
-        .map_or(bytes, |(low, _)| low)
+        .map_or(bytes, |(_, high)| high)
 }
 
 fn profile(meter: &crate::program::PoliceMeter) -> MeterProfile {
@@ -238,7 +243,9 @@ pub fn run(
             info!("port {port}: rate-limit rule {rule} stays in software: {refusal:?}");
         }
         let changed = || stop() || !concurrency::sync::Arc::ptr_eq(&reader.load(), &limits);
-        match install(&flows, port, &program, fate, &changed) {
+        match Plan::new(&program, fate)
+            .and_then(|plan| install(&flows, port, &program, &plan, &changed))
+        {
             Ok(()) => {}
             Err(e) => {
                 error!(
@@ -252,184 +259,319 @@ pub fn run(
     }
 }
 
-/// Install `program`, then hold it until `changed`; everything is removed on return.
-// One layer per stage: templates, tables, rules, each borrowing the last; splitting it would only
-// pass the borrows around.
-#[allow(clippy::too_many_lines)]
-fn install(
+/// What a rule is for, to report its counts.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Role {
+    /// The root rule, which takes VXLAN into the program.
+    Root,
+    /// A rule of the program, by index into [`Program::rules`].
+    Police(usize),
+    /// The rule for what no rule of the program matches.
+    CatchAll,
+    /// What a meter, by index into [`Program::meters`], colored.
+    Color(usize, Color),
+}
+
+/// A per-rule argument, by reference into the plan.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Arg {
+    /// The meter of [`Plan::profiles`] at this index.
+    Meter(usize),
+    /// Jump to this group.
+    Jump(FlowGroup),
+}
+
+/// A rule of a [`PlannedTable`].
+#[derive(Debug)]
+pub struct PlannedRule {
+    /// What it matches, with its table's masks.
+    pub pattern: Pattern<Complete>,
+    /// Its actions template, by index into its table's [`actions`](PlannedTable::actions).
+    pub actions: usize,
+    /// Its per-rule arguments, in the order of the template's per-rule actions.
+    pub args: Vec<Arg>,
+    /// What it is for.
+    pub role: Role,
+}
+
+/// A template table and its rules.
+#[derive(Debug)]
+pub struct PlannedTable {
+    /// Where the table sits and its capacity.
+    pub config: TableConfig,
+    /// Its pattern template, by index into [`Plan::patterns`].
+    pub pattern: usize,
+    /// Its actions templates, by index into [`Plan::actions`].
+    pub actions: Vec<usize>,
+    /// Its rules.
+    pub rules: Vec<PlannedRule>,
+}
+
+/// A [`Program`] lowered onto one mlx5 port, as data: every template, meter, table and rule the
+/// port gets, so that it can be checked without the NIC (see [`crate::model`]).
+///
+/// Tables are listed from the root down, and installed in reverse, so traffic only ever enters
+/// complete groups.
+#[derive(Debug)]
+pub struct Plan {
+    /// Pattern templates.
+    pub patterns: Vec<Pattern<Complete>>,
+    /// Actions templates.
+    pub actions: Vec<Vec<TemplateAction>>,
+    /// One meter per program meter, by the same index.
+    pub profiles: Vec<MeterProfile>,
+    /// The tables, root first.
+    pub tables: Vec<PlannedTable>,
+}
+
+fn root_pattern() -> Pattern<Complete> {
+    Pattern::new()
+        .eth(EthMatch::default())
+        .ipv4(Ipv4Match::default())
+        .udp(UdpMatch::default().dst(VXLAN_PORT))
+        .complete()
+}
+
+fn any_pattern() -> Pattern<Complete> {
+    Pattern::new().eth(EthMatch::default()).complete()
+}
+
+impl Plan {
+    /// Lower `program`, sending what the NIC lets through to `fate`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::TooManyMeters`] if the program needs more meters than [`RESOURCES`].
+    pub fn new(program: &Program, fate: &TemplateAction) -> Result<Plan, Error> {
+        if program.meters.len() > RESOURCES.meters as usize {
+            return Err(Error::TooManyMeters(program.meters.len()));
+        }
+        let mut plan = Plan {
+            patterns: vec![
+                root_pattern(),
+                any_pattern(),
+                Pattern::meter_color(Color::Green).complete(),
+            ],
+            actions: vec![
+                vec![TemplateAction::Jump(CLASSIFY)],
+                vec![TemplateAction::Meter, TemplateAction::JumpPerRule],
+                vec![fate.clone()],
+                vec![TemplateAction::Count, fate.clone()],
+                vec![TemplateAction::Count, TemplateAction::Drop],
+            ],
+            profiles: program.meters.iter().map(profile).collect(),
+            tables: Vec::new(),
+        };
+        let (root, any, color) = (0, 1, 2);
+        let (jump, police, deliver, pass, discard) = (0, 1, 2, 3, 4);
+        if program.rules.is_empty() {
+            return Ok(plan);
+        }
+        plan.tables.push(PlannedTable {
+            config: TableConfig {
+                group: FlowGroup(0),
+                priority: Priority(0),
+                capacity: 1,
+            },
+            pattern: root,
+            actions: vec![jump],
+            rules: vec![PlannedRule {
+                pattern: root_pattern(),
+                actions: 0,
+                args: Vec::new(),
+                role: Role::Root,
+            }],
+        });
+        let mut shapes: BTreeMap<Shape, Vec<usize>> = BTreeMap::new();
+        for (index, rule) in program.rules.iter().enumerate() {
+            shapes.entry(Shape::of(rule)).or_default().push(index);
+        }
+        let catch_all = u32::try_from(shapes.len()).unwrap_or(u32::MAX);
+        for (priority, (shape, rules)) in (0u32..).zip(shapes) {
+            plan.patterns.push(shape.pattern(None));
+            plan.tables.push(PlannedTable {
+                config: TableConfig {
+                    group: CLASSIFY,
+                    priority: Priority(priority),
+                    capacity: u32::try_from(rules.len()).unwrap_or(u32::MAX),
+                },
+                pattern: plan.patterns.len() - 1,
+                actions: vec![police],
+                rules: rules
+                    .into_iter()
+                    .map(|index| {
+                        let rule = &program.rules[index];
+                        PlannedRule {
+                            pattern: shape.pattern(Some(rule)),
+                            actions: 0,
+                            args: vec![Arg::Meter(rule.meter), Arg::Jump(color_group(rule.meter))],
+                            role: Role::Police(index),
+                        }
+                    })
+                    .collect(),
+            });
+        }
+        plan.tables.push(PlannedTable {
+            config: TableConfig {
+                group: CLASSIFY,
+                priority: Priority(catch_all),
+                capacity: 1,
+            },
+            pattern: any,
+            actions: vec![deliver],
+            rules: vec![PlannedRule {
+                pattern: any_pattern(),
+                actions: 0,
+                args: Vec::new(),
+                role: Role::CatchAll,
+            }],
+        });
+        plan.tables.extend(
+            (0..program.meters.len()).map(|meter| color_table(meter, color, [pass, discard])),
+        );
+        Ok(plan)
+    }
+}
+
+/// Meter `meter`'s color group: green and yellow are counted and passed with `actions[0]`, red
+/// counted and dropped with `actions[1]`.
+fn color_table(meter: usize, pattern: usize, actions: [usize; 2]) -> PlannedTable {
+    PlannedTable {
+        config: TableConfig {
+            group: color_group(meter),
+            priority: Priority(0),
+            capacity: 3,
+        },
+        pattern,
+        actions: actions.to_vec(),
+        rules: Color::ALL
+            .into_iter()
+            .map(|c| PlannedRule {
+                pattern: Pattern::meter_color(c).complete(),
+                actions: usize::from(c == Color::Red),
+                args: Vec::new(),
+                role: Role::Color(meter, c),
+            })
+            .collect(),
+    }
+}
+
+/// Install `plan` on `flows`' port, then hold it until `changed`; everything is removed on
+/// return.
+///
+/// # Errors
+///
+/// Returns the first template, table, meter or rule the NIC refused; whatever was installed is
+/// removed again.
+pub fn install(
     flows: &TemplateFlows<'_>,
     port: &str,
     program: &Program,
-    fate: &TemplateAction,
+    plan: &Plan,
     changed: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
-    if program.meters.len() > RESOURCES.meters as usize {
-        return Err(Error::TooManyMeters(program.meters.len()));
-    }
-    if program.rules.is_empty() {
+    if plan.tables.is_empty() {
         while !changed() {
             std::thread::sleep(POLL);
         }
         return Ok(());
     }
-    // Templates.
-    let root = flows.pattern_template::<Ingress, _>(
-        &Pattern::new()
-            .eth(EthMatch::default())
-            .ipv4(Ipv4Match::default())
-            .udp(UdpMatch::default().dst(VXLAN_PORT)),
-    )?;
-    let any = flows.pattern_template::<Ingress, _>(&Pattern::new().eth(EthMatch::default()))?;
-    let color = flows.pattern_template::<Ingress, _>(&Pattern::meter_color(Color::Green))?;
-    let mut shapes: BTreeMap<Shape, (PatternTemplate<'_, Ingress>, usize)> = BTreeMap::new();
-    for rule in &program.rules {
-        let shape = Shape::of(rule);
-        if let Some((_, count)) = shapes.get_mut(&shape) {
-            *count += 1;
-        } else {
-            shapes.insert(shape, (flows.pattern_template(&shape.pattern(None))?, 1));
-        }
-    }
-    let jump = flows.actions_template::<Ingress>(&[TemplateAction::Jump(CLASSIFY)])?;
-    let police =
-        flows.actions_template::<Ingress>(&[TemplateAction::Meter, TemplateAction::JumpPerRule])?;
-    let deliver = flows.actions_template::<Ingress>(std::slice::from_ref(fate))?;
-    let pass = flows.actions_template::<Ingress>(&[TemplateAction::Count, fate.clone()])?;
-    let discard =
-        flows.actions_template::<Ingress>(&[TemplateAction::Count, TemplateAction::Drop])?;
-    let profiles = program
-        .meters
+    let patterns = plan
+        .patterns
+        .iter()
+        .map(|p| flows.pattern_template::<Ingress, _>(p))
+        .collect::<Result<Vec<PatternTemplate<'_, Ingress>>, _>>()?;
+    let actions = plan
+        .actions
+        .iter()
+        .map(|a| flows.actions_template::<Ingress>(a))
+        .collect::<Result<Vec<_>, _>>()?;
+    let profiles = plan
+        .profiles
         .iter()
         .enumerate()
-        .map(|(id, meter)| {
-            flows.meter_profile(
-                MeterProfileId(u32::try_from(id).unwrap_or(u32::MAX)),
-                &profile(meter),
-            )
+        .map(|(id, p)| {
+            flows.meter_profile(MeterProfileId(u32::try_from(id).unwrap_or(u32::MAX)), p)
         })
         .collect::<Result<Vec<MeterProfileHandle<'_>>, _>>()?;
-
-    // Tables and meters.
-    let root_table = flows.table(
-        TableConfig {
-            group: FlowGroup(0),
-            priority: Priority(0),
-            capacity: 1,
-        },
-        &[&root],
-        &[&jump],
-    )?;
-    let mut shape_tables: BTreeMap<Shape, TemplateTable<'_, Ingress>> = BTreeMap::new();
-    for (priority, (shape, (template, count))) in (0u32..).zip(&shapes) {
-        shape_tables.insert(
-            *shape,
-            flows.table(
-                TableConfig {
-                    group: CLASSIFY,
-                    priority: Priority(priority),
-                    capacity: u32::try_from(*count).unwrap_or(u32::MAX),
-                },
-                &[template],
-                &[&police],
-            )?,
-        );
-    }
-    let catch_all = flows.table(
-        TableConfig {
-            group: CLASSIFY,
-            priority: Priority(u32::try_from(shapes.len()).unwrap_or(u32::MAX)),
-            capacity: 1,
-        },
-        &[&any],
-        &[&deliver],
-    )?;
-    let color_tables = (0..program.meters.len())
-        .map(|m| {
-            flows.table(
-                TableConfig {
-                    group: color_group(m),
-                    priority: Priority(0),
-                    capacity: 3,
-                },
-                &[&color],
-                &[&pass, &discard],
-            )
+    let tables = plan
+        .tables
+        .iter()
+        .map(|t| {
+            let templates: Vec<_> = t.actions.iter().map(|&a| &actions[a]).collect();
+            flows.table(t.config, &[&patterns[t.pattern]], &templates)
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<TemplateTable<'_, Ingress>>, _>>()?;
     let meters = profiles
         .iter()
         .map(|p| flows.meter::<Ingress>(p))
         .collect::<Result<Vec<Meter<'_, Ingress>>, _>>()?;
 
-    // Rules, deepest first, so traffic only ever enters complete groups.
-    let mut colors: Vec<[TemplateRule<'_>; 3]> = Vec::with_capacity(color_tables.len());
-    for table in &color_tables {
-        let rule = |c, at| table.insert(0, &Pattern::meter_color(c), at, &[]);
-        colors.push([
-            rule(Color::Green, 0)?,
-            rule(Color::Yellow, 0)?,
-            rule(Color::Red, 1)?,
-        ]);
+    // Rules, deepest table first, so traffic only ever enters complete groups.
+    let mut rules: Vec<Vec<(Role, TemplateRule<'_>)>> =
+        plan.tables.iter().map(|_| Vec::new()).collect();
+    for (at, (planned, table)) in plan.tables.iter().zip(&tables).enumerate().rev() {
+        for rule in &planned.rules {
+            let args: Vec<RuleArg<'_, Ingress>> = rule
+                .args
+                .iter()
+                .map(|&arg| match arg {
+                    Arg::Meter(m) => RuleArg::Meter(&meters[m]),
+                    Arg::Jump(group) => RuleArg::Jump(group),
+                })
+                .collect();
+            rules[at].push((
+                rule.role,
+                table.insert(0, &rule.pattern, rule.actions, &args)?,
+            ));
+        }
     }
-    let mut classes = Vec::with_capacity(program.rules.len());
-    for rule in &program.rules {
-        let shape = Shape::of(rule);
-        let table = &shape_tables[&shape];
-        classes.push(table.insert(
-            0,
-            &shape.pattern(Some(rule)),
-            0,
-            &[
-                RuleArg::Meter(&meters[rule.meter]),
-                RuleArg::Jump(color_group(rule.meter)),
-            ],
-        )?);
-    }
-    let _catch_all = catch_all.insert(0, &Pattern::new().eth(EthMatch::default()), 0, &[])?;
-    let root_rule = root_table.insert(
-        0,
-        &Pattern::new()
-            .eth(EthMatch::default())
-            .ipv4(Ipv4Match::default())
-            .udp(UdpMatch::default().dst(VXLAN_PORT)),
-        0,
-        &[],
-    )?;
+    let installed =
+        |role: fn(Role) -> bool| rules.iter().flatten().filter(|(r, _)| role(*r)).count();
     info!(
         "port {port}: NIC rate limiting {} rule(s) with {} meter(s) in {} table(s)",
-        classes.len(),
+        installed(|r| matches!(r, Role::Police(_))),
         meters.len(),
-        shape_tables.len()
+        plan.tables.len()
     );
 
     let mut reported = Instant::now();
     while !changed() {
         std::thread::sleep(POLL);
         if reported.elapsed() >= REPORT {
-            report(port, program, &colors);
+            report(port, program, &rules);
             reported = Instant::now();
         }
     }
-    report(port, program, &colors);
+    report(port, program, &rules);
     // The root rule goes first, so no packet enters a group being removed.
-    drop(root_rule);
+    rules[0].clear();
     Ok(())
 }
 
 /// Log and export what each meter passed and dropped in hardware.
-fn report(port: &str, program: &Program, colors: &[[TemplateRule<'_>; 3]]) {
-    for (meter, rules) in program.meters.iter().zip(colors) {
-        let count = |r: &TemplateRule<'_>| r.counts().unwrap_or_default();
-        let (green, yellow, red) = (count(&rules[0]), count(&rules[1]), count(&rules[2]));
-        let passed = Counts {
-            packets: green.packets + yellow.packets,
-            bytes: green.bytes + yellow.bytes,
+fn report(port: &str, program: &Program, rules: &[Vec<(Role, TemplateRule<'_>)>]) {
+    let mut passed = vec![Counts::default(); program.meters.len()];
+    let mut dropped = vec![Counts::default(); program.meters.len()];
+    for (role, rule) in rules.iter().flatten() {
+        let Role::Color(meter, color) = *role else {
+            continue;
         };
+        let counts = rule.counts().unwrap_or_default();
+        let sum = if color == Color::Red {
+            &mut dropped[meter]
+        } else {
+            &mut passed[meter]
+        };
+        sum.packets += counts.packets;
+        sum.bytes += counts.bytes;
+    }
+    for ((meter, passed), dropped) in program.meters.iter().zip(passed).zip(dropped) {
         info!(
             "port {port}: meter {} in the NIC: passed {} packets, dropped {} packets",
-            meter.name, passed.packets, red.packets
+            meter.name, passed.packets, dropped.packets
         );
-        for (result, counts) in [("conforming", passed), ("over_limit", red)] {
+        for (result, counts) in [("conforming", passed), ("over_limit", dropped)] {
             metrics::counter!(
                 "rate_limit_nic_packets_total",
                 "port" => port.to_string(),

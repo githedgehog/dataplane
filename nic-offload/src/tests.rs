@@ -6,7 +6,7 @@
 use std::num::{NonZeroU64, NonZeroUsize};
 
 use acl::table::Backend;
-use config::external::overlay::acl::AclPattern;
+use config::external::overlay::acl::{AclPattern, AclProtoMatch};
 use config::external::overlay::ratelimit::{
     ColorAction, ColorActions, Meter, MeterProfile, RateLimitRule, RateLimitTables,
 };
@@ -140,4 +140,18 @@ fn a_meter_that_drops_nothing_is_not_offloaded() {
     );
     assert!(program.rules.is_empty() && program.meters.is_empty());
     assert_eq!(program.refused, vec![(0, Refusal::NothingToDrop)]);
+}
+
+/// Software resolves extension headers to the protocol after them, so a rule for an extension
+/// header's protocol number never matches there.
+#[test]
+fn a_rule_for_an_extension_header_protocol_is_not_offloaded() {
+    let mut hop_by_hop = rule("10.1.0.0/16", "a");
+    hop_by_hop.pattern.proto = AclProtoMatch::Other(0);
+    let mut esp = rule("10.1.0.0/16", "a");
+    esp.pattern.proto = AclProtoMatch::Other(50);
+    let program = compile(vec![("a", bytes(ColorAction::Drop))], vec![hop_by_hop, esp]);
+    assert_eq!(program.refused, vec![(0, Refusal::ExtensionHeader)]);
+    assert_eq!(program.rules.len(), 1);
+    assert_eq!(program.rules[0].proto, Some(50));
 }
