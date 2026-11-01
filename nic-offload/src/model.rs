@@ -15,9 +15,11 @@
 //!
 //! A test then holds every possible outcome to the cascade contract against the software.
 
+use dpdk::flow::Priority;
 use dpdk::flow::model::{Frame, Unmodelled, views_by};
 use dpdk::flow::template::{Color, TemplateAction};
-use dpdk::flow::{FlowGroup, Priority};
+
+use crate::mlx5::Group;
 
 use crate::mlx5::{Arg, Plan, PlannedRule, PlannedTable, Role};
 
@@ -34,13 +36,13 @@ pub enum Verdict {
     /// Nothing in the root group matched: the port's default handling, as if there were no plan.
     Untouched,
     /// Nothing matched in a group a jump led to: what the NIC does then is not ours to choose.
-    Missed(FlowGroup),
+    Missed(Group),
 }
 
 /// One thing the NIC may do with a frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
-    /// The meters charged, by index into [`Plan::profiles`], in order.
+    /// The meters charged, by index into [`Plan::meters`], in order.
     pub meters: Vec<usize>,
     /// The color the last meter gave, if any.
     pub color: Option<Color>,
@@ -103,7 +105,7 @@ impl Plan {
                 color: None,
                 path: Vec::new(),
             };
-            for outcome in model.group(&view, FlowGroup(0), start, 0)? {
+            for outcome in model.group(&view, Group::Root, start, 0)? {
                 if !outcomes.contains(&outcome) {
                     outcomes.push(outcome);
                 }
@@ -123,25 +125,21 @@ impl Walk<'_> {
     fn group(
         &self,
         frame: &Frame,
-        group: FlowGroup,
+        group: Group,
         state: State,
         depth: usize,
     ) -> Result<Vec<Outcome>, ModelError> {
         if depth > MAX_DEPTH {
             return Err(ModelError::Loop);
         }
-        let mut tables: Vec<&PlannedTable> = self
-            .plan
-            .tables
-            .iter()
-            .filter(|t| t.config.group == group)
-            .collect();
-        tables.sort_by_key(|t| t.config.priority);
+        let mut tables: Vec<&PlannedTable> =
+            self.plan.tables().filter(|t| t.group == group).collect();
+        tables.sort_by_key(|t| t.priority);
         let mut levels: Vec<(Priority, Vec<&PlannedTable>)> = Vec::new();
         for table in tables {
             match levels.last_mut() {
-                Some((priority, level)) if *priority == table.config.priority => level.push(table),
-                _ => levels.push((table.config.priority, vec![table])),
+                Some((priority, level)) if *priority == table.priority => level.push(table),
+                _ => levels.push((table.priority, vec![table])),
             }
         }
         for (_, level) in levels {
@@ -160,7 +158,7 @@ impl Walk<'_> {
                 return Ok(outcomes);
             }
         }
-        let verdict = if group == FlowGroup(0) {
+        let verdict = if group == Group::Root {
             Verdict::Untouched
         } else {
             Verdict::Missed(group)
@@ -205,7 +203,11 @@ impl Walk<'_> {
                         })
                         .collect();
                 }
-                TemplateAction::Jump(group) => return self.jump(frame, *group, states, depth),
+                // The one fixed jump of a plan: the root's, to the switch.
+                TemplateAction::Jump(group) if *group == crate::mlx5::SWITCH => {
+                    return self.jump(frame, Group::Switch, states, depth);
+                }
+                TemplateAction::Jump(_) => return Err(ModelError::Arguments),
                 TemplateAction::JumpPerRule => {
                     let Some(&Arg::Jump(group)) = args.next() else {
                         return Err(ModelError::Arguments);
@@ -231,14 +233,14 @@ impl Walk<'_> {
         // No fate: the NIC's default for the group, which a plan never relies on.
         Ok(states
             .into_iter()
-            .map(|s| s.end(Verdict::Missed(table.config.group)))
+            .map(|s| s.end(Verdict::Missed(table.group)))
             .collect())
     }
 
     fn jump(
         &self,
         frame: &Frame,
-        group: FlowGroup,
+        group: Group,
         states: Vec<State>,
         depth: usize,
     ) -> Result<Vec<Outcome>, ModelError> {
