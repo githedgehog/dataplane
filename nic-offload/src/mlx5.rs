@@ -4,13 +4,19 @@
 //! The mlx5 backend: a [`Program`] lowered onto hardware steering (`dv_flow_en=2`, template API).
 //!
 //! ```text
-//! group 0     eth / ipv4 / udp dst 4789                                  -> jump 1
-//! group 1     one table per rule shape:
-//!             ... / vxlan vni / eth / ip src, dst [proto] [/ udp|tcp ports] -> meter m / jump 2 + m
+//! group 0     eth / ipv4 / udp dst 4789                                  -> jump 1 (or 2)
+//! group 1     ACL denies, one table per rule shape:
+//!             ... / vxlan vni / eth / ip src, dst [proto] [/ udp|tcp ports] -> drop
+//!             last: eth                                                  -> jump 2 (or the fate)
+//! group 2     rate limits, one table per rule shape:
+//!             ... / vxlan vni / eth / ip src, dst [proto] [/ udp|tcp ports] -> meter m / jump 3 + m
 //!             last: eth                                                  -> the driver's fate
-//! group 2+m   meter color green, yellow                                  -> count / the driver's fate
+//! group 3+m   meter color green, yellow                                  -> count / the driver's fate
 //!             meter color red                                            -> count / drop
 //! ```
+//!
+//! A frame goes through the denies, then the rate limits, as a packet goes through the ACL filter,
+//! then the rate limiter: each decides by its own first match. Groups with no rules are left out.
 //!
 //! Prototype limits: IPv4 underlay only; every rule set is rebuilt from scratch on a change, so
 //! traffic is briefly unlimited in hardware (never blocked) while it is.
@@ -18,6 +24,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use crate::Policy;
 use dpdk::dev::{Dev, Started};
 use dpdk::flow::template::{
     Color, Complete, Counts, Meter, MeterAlgorithm, MeterError, MeterProfile, MeterProfileHandle,
@@ -29,10 +36,10 @@ use dpdk::flow::{
     Priority, TcpMatch, UdpMatch, VxlanMatch,
 };
 use net::vxlan::Vni;
-use rate_limit::{PeeringRules, RateLimitReader, Unit};
+use rate_limit::Unit;
 use tracing::{error, info, warn};
 
-use crate::program::{PoliceRule, Prefix, Program};
+use crate::program::{Match, Origin, Prefix, Program};
 
 /// What a port reserves for this backend when it is configured; fixed until the port restarts.
 pub const RESOURCES: TemplateConfig = TemplateConfig {
@@ -42,7 +49,10 @@ pub const RESOURCES: TemplateConfig = TemplateConfig {
 };
 
 const VXLAN_PORT: u16 = 4789;
-const CLASSIFY: FlowGroup = FlowGroup(1);
+/// ACL denies.
+const DENY: FlowGroup = FlowGroup(1);
+/// Rate limits.
+const POLICE: FlowGroup = FlowGroup(2);
 /// How often the rules are checked against the published limits.
 const POLL: Duration = Duration::from_millis(200);
 /// How often hardware counters are reported.
@@ -87,7 +97,7 @@ struct Shape {
 }
 
 impl Shape {
-    fn of(rule: &PoliceRule) -> Shape {
+    fn of(rule: &Match) -> Shape {
         let l4 = match (rule.proto, rule.src_port, rule.dst_port) {
             (None, ..) => L4::Any,
             (Some(17), src, dst) if src.is_some() || dst.is_some() => L4::Udp {
@@ -109,7 +119,7 @@ impl Shape {
     }
 
     /// The pattern of this shape, with `rule`'s values or placeholders for the template.
-    fn pattern(self, rule: Option<&PoliceRule>) -> Pattern<Complete> {
+    fn pattern(self, rule: Option<&Match>) -> Pattern<Complete> {
         let vni = rule.map_or_else(
             || Vni::new_checked(Vni::MIN).unwrap_or_else(|_| unreachable!()),
             |r| r.src_vni,
@@ -219,19 +229,21 @@ fn profile(meter: &crate::program::PoliceMeter) -> MeterProfile {
 }
 
 fn color_group(meter: usize) -> FlowGroup {
-    FlowGroup(2 + u32::try_from(meter).unwrap_or(u32::MAX - 2))
+    FlowGroup(3 + u32::try_from(meter).unwrap_or(u32::MAX - 3))
 }
 
-/// Program `dev` with what the published rate limits allow, and follow them until `stop` says so.
+/// Program `dev` with what the published ACLs and rate limits allow, and follow them until `stop`
+/// says so.
 ///
 /// `fate` is where traffic the NIC lets through goes: the driver's data queues.
 pub fn run(
     dev: &Dev<'_, Started>,
     port: &str,
-    reader: &RateLimitReader<PeeringRules>,
+    policy: &Policy,
     fate: &TemplateAction,
     stop: &dyn Fn() -> bool,
 ) {
+    let (acls, reader) = (&policy.acls, &policy.rate_limits);
     let flows = match TemplateFlows::new(dev) {
         Ok(flows) => flows,
         Err(e) => {
@@ -240,20 +252,22 @@ pub fn run(
         }
     };
     while !stop() {
-        let limits = reader.load();
-        let program = Program::compile(&limits);
-        for (rule, refusal) in &program.refused {
-            info!("port {port}: rate-limit rule {rule} stays in software: {refusal:?}");
+        let (filter, limits) = (acls.load(), reader.load());
+        let program = Program::compile(&filter, &limits);
+        for (origin, refusal) in &program.refused {
+            info!("port {port}: {origin} stays in software: {refusal:?}");
         }
-        let changed = || stop() || !concurrency::sync::Arc::ptr_eq(&reader.load(), &limits);
+        let changed = || {
+            stop()
+                || !concurrency::sync::Arc::ptr_eq(&acls.load(), &filter)
+                || !concurrency::sync::Arc::ptr_eq(&reader.load(), &limits)
+        };
         match Plan::new(&program, fate)
             .and_then(|plan| install(&flows, port, &program, &plan, &changed))
         {
             Ok(()) => {}
             Err(e) => {
-                error!(
-                    "port {port}: NIC rate limiting failed, software only until the next change: {e}"
-                );
+                error!("port {port}: NIC offload failed, software only until the next change: {e}");
                 while !changed() {
                     std::thread::sleep(POLL);
                 }
@@ -267,10 +281,12 @@ pub fn run(
 pub enum Role {
     /// The root rule, which takes VXLAN into the program.
     Root,
-    /// A rule of the program, by index into [`Program::rules`].
+    /// An ACL deny of the program, by index into [`Program::denies`].
+    Deny(usize),
+    /// A rate limit of the program, by index into [`Program::rules`].
     Police(usize),
-    /// The rule for what no rule of the program matches.
-    CatchAll,
+    /// The rule for what no rule of the program in this group matches.
+    CatchAll(FlowGroup),
     /// What a meter, by index into [`Program::meters`], colored.
     Color(usize, Color),
 }
@@ -327,6 +343,11 @@ pub struct Plan {
     pub tables: Vec<PlannedTable>,
 }
 
+/// Pattern templates every plan has, by index.
+const ROOT: usize = 0;
+const ANY: usize = 1;
+const COLOR: usize = 2;
+
 fn root_pattern() -> Pattern<Complete> {
     Pattern::new()
         .eth(EthMatch::default())
@@ -339,13 +360,83 @@ fn any_pattern() -> Pattern<Complete> {
     Pattern::new().eth(EthMatch::default()).complete()
 }
 
+/// A rule of the program to lay out in a classifying group.
+struct Classified<'a> {
+    matches: &'a Match,
+    role: Role,
+    args: Vec<Arg>,
+}
+
 impl Plan {
+    /// Lay out a group of program rules, one table per shape, all with actions template
+    /// `actions`, and a last table sending what none matches to actions template `otherwise`.
+    fn classify(
+        &mut self,
+        group: FlowGroup,
+        rules: Vec<Classified<'_>>,
+        actions: usize,
+        otherwise: usize,
+    ) {
+        let mut shapes: BTreeMap<Shape, Vec<Classified<'_>>> = BTreeMap::new();
+        for rule in rules {
+            shapes
+                .entry(Shape::of(rule.matches))
+                .or_default()
+                .push(rule);
+        }
+        let catch_all = u32::try_from(shapes.len()).unwrap_or(u32::MAX);
+        for (priority, (shape, rules)) in (0u32..).zip(shapes) {
+            self.patterns.push(shape.pattern(None));
+            self.tables.push(PlannedTable {
+                config: TableConfig {
+                    group,
+                    priority: Priority(priority),
+                    capacity: u32::try_from(rules.len()).unwrap_or(u32::MAX),
+                },
+                pattern: self.patterns.len() - 1,
+                actions: vec![actions],
+                rules: rules
+                    .into_iter()
+                    .map(|rule| PlannedRule {
+                        pattern: shape.pattern(Some(rule.matches)),
+                        actions: 0,
+                        args: rule.args,
+                        role: rule.role,
+                    })
+                    .collect(),
+            });
+        }
+        self.tables.push(PlannedTable {
+            config: TableConfig {
+                group,
+                priority: Priority(catch_all),
+                capacity: 1,
+            },
+            pattern: ANY,
+            actions: vec![otherwise],
+            rules: vec![PlannedRule {
+                pattern: any_pattern(),
+                actions: 0,
+                args: Vec::new(),
+                role: Role::CatchAll(group),
+            }],
+        });
+    }
+
     /// Lower `program`, sending what the NIC lets through to `fate`.
     ///
     /// # Errors
     ///
     /// Returns [`Error::TooManyMeters`] if the program needs more meters than [`RESOURCES`].
     pub fn new(program: &Program, fate: &TemplateAction) -> Result<Plan, Error> {
+        // Actions templates, by index.
+        const TO_DENY: usize = 0;
+        const TO_POLICE: usize = 1;
+        const POLICE_RULE: usize = 2;
+        const DELIVER: usize = 3;
+        const PASS: usize = 4;
+        const DISCARD: usize = 5;
+        const DROP: usize = 6;
         if program.meters.len() > RESOURCES.meters as usize {
             return Err(Error::TooManyMeters(program.meters.len()));
         }
@@ -356,18 +447,19 @@ impl Plan {
                 Pattern::meter_color(Color::Green).complete(),
             ],
             actions: vec![
-                vec![TemplateAction::Jump(CLASSIFY)],
+                vec![TemplateAction::Jump(DENY)],
+                vec![TemplateAction::Jump(POLICE)],
                 vec![TemplateAction::Meter, TemplateAction::JumpPerRule],
                 vec![fate.clone()],
                 vec![TemplateAction::Count, fate.clone()],
                 vec![TemplateAction::Count, TemplateAction::Drop],
+                vec![TemplateAction::Drop],
             ],
             profiles: program.meters.iter().map(profile).collect(),
             tables: Vec::new(),
         };
-        let (root, any, color) = (0, 1, 2);
-        let (jump, police, deliver, pass, discard) = (0, 1, 2, 3, 4);
-        if program.rules.is_empty() {
+        let (denies, police) = (!program.denies.is_empty(), !program.rules.is_empty());
+        if !denies && !police {
             return Ok(plan);
         }
         plan.tables.push(PlannedTable {
@@ -376,8 +468,8 @@ impl Plan {
                 priority: Priority(0),
                 capacity: 1,
             },
-            pattern: root,
-            actions: vec![jump],
+            pattern: ROOT,
+            actions: vec![if denies { TO_DENY } else { TO_POLICE }],
             rules: vec![PlannedRule {
                 pattern: root_pattern(),
                 actions: 0,
@@ -385,53 +477,31 @@ impl Plan {
                 role: Role::Root,
             }],
         });
-        let mut shapes: BTreeMap<Shape, Vec<usize>> = BTreeMap::new();
-        for (index, rule) in program.rules.iter().enumerate() {
-            shapes.entry(Shape::of(rule)).or_default().push(index);
+        if denies {
+            let rules = (0..)
+                .zip(&program.denies)
+                .map(|(index, deny)| Classified {
+                    matches: &deny.matches,
+                    role: Role::Deny(index),
+                    args: Vec::new(),
+                })
+                .collect();
+            plan.classify(DENY, rules, DROP, if police { TO_POLICE } else { DELIVER });
         }
-        let catch_all = u32::try_from(shapes.len()).unwrap_or(u32::MAX);
-        for (priority, (shape, rules)) in (0u32..).zip(shapes) {
-            plan.patterns.push(shape.pattern(None));
-            plan.tables.push(PlannedTable {
-                config: TableConfig {
-                    group: CLASSIFY,
-                    priority: Priority(priority),
-                    capacity: u32::try_from(rules.len()).unwrap_or(u32::MAX),
-                },
-                pattern: plan.patterns.len() - 1,
-                actions: vec![police],
-                rules: rules
-                    .into_iter()
-                    .map(|index| {
-                        let rule = &program.rules[index];
-                        PlannedRule {
-                            pattern: shape.pattern(Some(rule)),
-                            actions: 0,
-                            args: vec![Arg::Meter(rule.meter), Arg::Jump(color_group(rule.meter))],
-                            role: Role::Police(index),
-                        }
-                    })
-                    .collect(),
-            });
+        if police {
+            let rules = (0..)
+                .zip(&program.rules)
+                .map(|(index, rule)| Classified {
+                    matches: &rule.matches,
+                    role: Role::Police(index),
+                    args: vec![Arg::Meter(rule.meter), Arg::Jump(color_group(rule.meter))],
+                })
+                .collect();
+            plan.classify(POLICE, rules, POLICE_RULE, DELIVER);
+            plan.tables.extend(
+                (0..program.meters.len()).map(|meter| color_table(meter, COLOR, [PASS, DISCARD])),
+            );
         }
-        plan.tables.push(PlannedTable {
-            config: TableConfig {
-                group: CLASSIFY,
-                priority: Priority(catch_all),
-                capacity: 1,
-            },
-            pattern: any,
-            actions: vec![deliver],
-            rules: vec![PlannedRule {
-                pattern: any_pattern(),
-                actions: 0,
-                args: Vec::new(),
-                role: Role::CatchAll,
-            }],
-        });
-        plan.tables.extend(
-            (0..program.meters.len()).map(|meter| color_table(meter, color, [pass, discard])),
-        );
         Ok(plan)
     }
 }
@@ -473,13 +543,13 @@ impl Installed<'_> {
         self.refused
     }
 
-    /// How many rules of the program were installed.
+    /// How many installed rules have a role `which` accepts.
     #[must_use]
-    pub fn police_rules(&self) -> usize {
+    pub fn installed(&self, which: impl Fn(Role) -> bool) -> usize {
         self.rules
             .iter()
             .flatten()
-            .filter(|(role, _)| matches!(role, Role::Police(_)))
+            .filter(|(role, _)| which(*role))
             .count()
     }
 
@@ -497,13 +567,15 @@ impl Installed<'_> {
 }
 
 /// Whether every rule of `table` is a rule of the program: then the NIC may refuse the table, or
-/// any of its rules, and they stay in software alone. That is always safe: rules of the program
-/// that charge different meters never overlap, so no remaining rule takes their traffic.
+/// any of its rules, and they stay in software alone. That is safe: rate limits charging
+/// different meters never overlap, so no remaining rule takes their traffic; and a deny left out
+/// only lets through what software then drops (a rate limit may still charge it: the tolerated
+/// deviation, see the differential test).
 fn optional(table: &PlannedTable) -> bool {
     table
         .rules
         .iter()
-        .all(|rule| matches!(rule.role, Role::Police(_)))
+        .all(|rule| matches!(rule.role, Role::Police(_) | Role::Deny(_)))
 }
 
 /// Install `plan` on `flows`' port, call `f` while it is installed, and remove it again.
@@ -619,17 +691,18 @@ pub fn install(
 ) -> Result<(), Error> {
     with_installed(flows, plan, |installed| {
         for (role, why) in installed.refused() {
-            if let Role::Police(rule) = role {
-                warn!(
-                    "port {port}: the NIC refused rate-limit rule {}, which stays in software: {why}",
-                    program.rules[*rule].rule
-                );
-            }
+            let origin = match *role {
+                Role::Police(rule) => Origin::RateLimit(program.rules[rule].rule),
+                Role::Deny(deny) => program.denies[deny].origin,
+                _ => continue,
+            };
+            warn!("port {port}: the NIC refused {origin}, which stays in software: {why}");
         }
         if !plan.tables.is_empty() {
             info!(
-                "port {port}: NIC rate limiting {} rule(s) with {} meter(s) in {} table(s)",
-                installed.police_rules(),
+                "port {port}: NIC enforcing {} ACL deny(s) and {} rate limit(s) with {} meter(s) in {} table(s)",
+                installed.installed(|role| matches!(role, Role::Deny(_))),
+                installed.installed(|role| matches!(role, Role::Police(_))),
                 plan.profiles.len(),
                 plan.tables.len()
             );
