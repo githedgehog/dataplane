@@ -42,6 +42,14 @@ impl AclFilterContext {
         self.acls.v6()
     }
 
+    /// The default action of every directed peering with an ACL, by source and destination VNI.
+    pub fn default_actions(&self) -> impl Iterator<Item = (Vni, Vni, AclAction)> + '_ {
+        self.acls
+            .default_actions
+            .iter()
+            .map(|(&(src, dst), &action)| (src, dst, action))
+    }
+
     /// The default action of the directed peering from `src` to `dst`, if it has an ACL.
     #[must_use]
     pub fn default_action(&self, src: Vni, dst: Vni) -> Option<AclAction> {

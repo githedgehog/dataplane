@@ -17,7 +17,7 @@ use lpm::prefix::{Prefix as LpmPrefix, PrefixWithOptionalPorts};
 use policer::{Profile, Rate};
 use rate_limit::{PeeringRules, RateLimitWriter, RateLimits, Unit};
 
-use crate::program::{Origin, Prefix, Program, Refusal};
+use crate::program::{Origin, Peering, Prefix, Program, Refusal};
 use acl_filter::AclFilterContext;
 
 const VNI1: u32 = 3000;
@@ -57,6 +57,10 @@ fn rule(destination: &str, meter: &str) -> RateLimitRule {
 }
 
 fn compile(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>) -> Program {
+    compile_with(meters, rules, true)
+}
+
+fn compile_with(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>, offload: bool) -> Program {
     let mut vpcs = VpcTable::new();
     vpcs.add(Vpc::new("vpc-1", "AAAAA", VNI1).unwrap()).unwrap();
     vpcs.add(Vpc::new("vpc-2", "BBBBB", VNI2).unwrap()).unwrap();
@@ -75,6 +79,7 @@ fn compile(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>) -> Program {
                 .map(|(name, meter)| (name.into(), meter))
                 .collect(),
             rules,
+            disable_offloads: !offload,
         })
         .validate()
         .unwrap();
@@ -84,7 +89,13 @@ fn compile(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>) -> Program {
     Program::compile(
         &AclFilterContext::reference(&overlay).unwrap(),
         &writer.load(),
+        &std::collections::BTreeSet::new(),
     )
+}
+
+fn peering() -> Peering {
+    let vni = |n| net::vxlan::Vni::new_checked(n).unwrap();
+    Peering::new(vni(VNI1), vni(VNI2))
 }
 
 #[test]
@@ -113,9 +124,10 @@ fn disjoint_rules_are_offloaded_with_their_matches() {
 }
 
 /// The software takes the first match; hardware tables keep no order, so a later rule another
-/// meter could have claimed traffic from stays in software.
+/// meter could have claimed traffic from cannot be offloaded, and so neither can the rest of its
+/// peering's policy.
 #[test]
-fn a_rule_overlapping_an_earlier_one_with_another_meter_stays_in_software() {
+fn a_rule_overlapping_an_earlier_one_with_another_meter_keeps_its_peering_in_software() {
     let program = compile(
         vec![
             ("wide", bytes(ColorAction::Drop)),
@@ -123,11 +135,10 @@ fn a_rule_overlapping_an_earlier_one_with_another_meter_stays_in_software() {
         ],
         vec![rule("10.1.0.0/16", "wide"), rule("10.1.1.0/24", "narrow")],
     );
-    assert_eq!(program.rules.len(), 1);
-    assert_eq!(program.meters[program.rules[0].meter].name, "wide");
+    assert!(program.rules.is_empty() && program.meters.is_empty());
     assert_eq!(
         program.refused,
-        vec![(Origin::RateLimit(1), Refusal::Overlap)]
+        vec![(peering(), Origin::RateLimit(1), Refusal::Overlap)]
     );
 }
 
@@ -148,11 +159,9 @@ fn a_meter_that_drops_nothing_is_not_offloaded() {
         vec![("pass", bytes(ColorAction::Pass))],
         vec![rule("10.1.0.0/16", "pass")],
     );
+    // Nothing to do in the NIC, and nothing that keeps the peering out of it.
     assert!(program.rules.is_empty() && program.meters.is_empty());
-    assert_eq!(
-        program.refused,
-        vec![(Origin::RateLimit(0), Refusal::NothingToDrop)]
-    );
+    assert_eq!(program.refused, vec![]);
 }
 
 /// Software resolves extension headers to the protocol after them, so a rule for an extension
@@ -166,8 +175,18 @@ fn a_rule_for_an_extension_header_protocol_is_not_offloaded() {
     let program = compile(vec![("a", bytes(ColorAction::Drop))], vec![hop_by_hop, esp]);
     assert_eq!(
         program.refused,
-        vec![(Origin::RateLimit(0), Refusal::ExtensionHeader)]
+        vec![(peering(), Origin::RateLimit(0), Refusal::ExtensionHeader)]
     );
-    assert_eq!(program.rules.len(), 1);
-    assert_eq!(program.rules[0].matches.proto, Some(50));
+    assert_eq!(program.rules, vec![]);
+}
+
+/// `attempt-offloads: "false"` keeps everything in software.
+#[test]
+fn nothing_is_offloaded_when_offload_is_turned_off() {
+    let program = compile_with(
+        vec![("a", bytes(ColorAction::Drop))],
+        vec![rule("10.1.0.0/16", "a")],
+        false,
+    );
+    assert!(program.rules.is_empty() && program.meters.is_empty() && program.refused.is_empty());
 }

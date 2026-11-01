@@ -13,7 +13,7 @@ use std::num::NonZeroU64;
 
 use dataplane_nic_offload::mlx5::{Plan, RESOURCES, with_installed};
 use dataplane_nic_offload::program::{
-    DenyRule, Match, Origin, PoliceMeter, PoliceRule, Prefix, Program,
+    DenyRule, Match, Origin, Peering, PoliceMeter, PoliceRule, Prefix, Program,
 };
 use dpdk::dev::{DevConfig, RxOffload, TxOffloadConfig};
 use dpdk::flow::template::{TemplateAction, TemplateFlows};
@@ -45,6 +45,7 @@ fn with_denies(rules: Vec<PoliceRule>) -> Program {
         .enumerate()
         .map(|(row, rule)| DenyRule {
             origin: Origin::Acl { v6: false, row },
+            peering: rule.peering,
             matches: rule.matches.clone(),
         })
         .collect();
@@ -66,10 +67,12 @@ fn rule(v6: bool, proto: Option<u8>, dst_port: Option<u16>) -> PoliceRule {
             Prefix::V4(Ipv4Addr::new(10, 1, 0, 0), 16),
         )
     };
+    let vni = |n| net::vxlan::Vni::new_checked(n).unwrap_or_else(|_| unreachable!());
     PoliceRule {
         rule: 0,
+        peering: Peering::new(vni(100), vni(200)),
         matches: Match {
-            src_vni: net::vxlan::Vni::new_checked(100).unwrap_or_else(|_| unreachable!()),
+            src_vni: vni(100),
             source,
             destination,
             proto,
