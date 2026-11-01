@@ -12,6 +12,7 @@
 mod builder;
 mod error;
 mod item;
+pub mod model;
 mod pattern;
 mod rule;
 pub mod template;
