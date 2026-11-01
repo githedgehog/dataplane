@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+mod sync;
+
+pub use sync::{SyncCreate, SyncObserve, SyncOp, SyncReconcile, SyncRemove, SyncUpdate};
+
 /// `Observe` is a trait that can be implemented for whatever struct is intended to collect or
 /// measure data present in an external system.
 ///
