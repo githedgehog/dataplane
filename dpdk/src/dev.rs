@@ -13,6 +13,7 @@ use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use tracing::{debug, error, info, warn};
 
 use crate::eal::Eal;
+use crate::flow::template::PortTemplates;
 use crate::queue;
 use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue, HairpinQueueId};
 use crate::queue::rx::{RxQueue, RxQueueConfig};
@@ -371,6 +372,7 @@ impl DevConfig {
                 config,
                 owner,
                 live_rules: AtomicUsize::new(0),
+                templates: PortTemplates::default(),
             },
             info: dev,
             queues: Mutex::new(Some(QueueStore::new(
@@ -1203,6 +1205,8 @@ struct PortLifecycle<'eal> {
     /// Undestroyed rules, including forgotten handles and failed destroys.
     /// Live handles borrow the device and prevent it from stopping.
     live_rules: AtomicUsize,
+    /// Template rule configuration and the ownership of their flow queue.
+    templates: PortTemplates,
 }
 
 impl PortLifecycle<'_> {
@@ -1232,8 +1236,19 @@ impl PortLifecycle<'_> {
 
     /// Flush before stopping, reporting rules left by forgotten handles or failed destroys.
     /// Skips ports with no recorded rules; the count is cleared only after a successful flush.
+    /// Template rules are counted apart and reported. Under mlx5 hardware steering a flush removes
+    /// them too (`mlx5_flow_list_flush`), but only leaked synchronous rules make this flush;
+    /// otherwise they stay installed until the port closes. Their count is not cleared by a flush,
+    /// so after one it can over-count.
     fn flush_flows(&self) {
         let port = self.port;
+        let templated = self.templates.live_rules();
+        if templated != 0 {
+            warn!(
+                "{templated} template rule(s) on port {port} outlived their handles; \
+                 they stay installed until a flush or the port closes"
+            );
+        }
         let leaked = self.live_rules.load(Ordering::Acquire);
         if leaked == 0 {
             return;
@@ -1341,6 +1356,15 @@ impl<'eal, S: DevState> Dev<'eal, S> {
     /// The live flow-rule count each [`FlowRule`](crate::flow::FlowRule) on this device maintains.
     pub(crate) fn live_rules(&self) -> &AtomicUsize {
         &self.lifecycle.live_rules
+    }
+
+    /// The port's template rule state; see [`crate::flow::template`].
+    pub(crate) fn templates(&self) -> &PortTemplates {
+        &self.lifecycle.templates
+    }
+
+    pub(crate) fn templates_mut(&mut self) -> &mut PortTemplates {
+        &mut self.lifecycle.templates
     }
 
     /// Information about the underlying port.
