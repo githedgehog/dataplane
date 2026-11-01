@@ -29,6 +29,8 @@ pub mod program;
 #[cfg(test)]
 mod differential;
 #[cfg(test)]
+mod qualify;
+#[cfg(test)]
 mod tests;
 
 use dpdk::dev::DevInfo;
