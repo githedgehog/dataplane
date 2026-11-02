@@ -11,9 +11,6 @@
 //! Omitting both endpoints applies the rule in both directions. First match wins.
 //!
 //! See the [API example](https://github.com/githedgehog/dataplane/pull/1949).
-//!
-//! [`ATTEMPT_OFFLOADS`] (`"true"` or `"false"`) on any peering turns NIC offload of the gateway's
-//! policy off; it is attempted unless one says `"false"`.
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
@@ -44,13 +41,6 @@ mod units;
 pub const ALPHA_PREFIX: &str = "gateway.alpha.githedgehog.com/";
 /// The annotation carrying a peering's rate-limit policy.
 pub const RATE_LIMITS: &str = "gateway.alpha.githedgehog.com/rate-limits";
-/// The annotation that, set to `"false"` on any peering, keeps the gateway's policy out of its
-/// NICs: everything is enforced in software alone. Unset or `"true"`, a capable NIC enforces what
-/// it can in front of software.
-///
-/// It is on peerings because peerings are what carries annotations to the gateway; it applies to
-/// the whole gateway, and `"false"` anywhere wins.
-pub const ATTEMPT_OFFLOADS: &str = "gateway.alpha.githedgehog.com/attempt-offloads";
 
 /// Convert each peering's rate-limit annotation.
 ///
@@ -70,17 +60,10 @@ pub fn rate_limits(spec: &GatewayAgentSpec) -> Result<RateLimitTables, FromK8sCo
             if !key.starts_with(ALPHA_PREFIX) {
                 continue;
             }
-            if key == ATTEMPT_OFFLOADS {
-                match value.trim() {
-                    "true" => {}
-                    "false" => tables.disable_offloads = true,
-                    other => {
-                        return Err(FromK8sConversionError::InvalidData(format!(
-                            "{ATTEMPT_OFFLOADS} on peering {peering}: expected \"true\" or \"false\", got {other:?}"
-                        )));
-                    }
-                }
-                continue;
+            if key == super::offload::ATTEMPT_OFFLOADS {
+                return Err(FromK8sConversionError::NotAllowed(format!(
+                    "{key} goes on the gateway, not on peering {peering}"
+                )));
             }
             if key != RATE_LIMITS {
                 return Err(FromK8sConversionError::NotAllowed(format!(

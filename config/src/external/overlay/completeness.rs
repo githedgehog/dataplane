@@ -39,6 +39,13 @@ const REACH: &[(&str, Reach)] = &[
              the VPC table alone, and `ratelimit.rs` tests that dependence directly.",
         ),
     ),
+    (
+        "Overlay.disable_offloads",
+        Reach::Fixed(
+            "false: a gateway-wide switch from the gateway's annotations, independent of every \
+             other field; `converters::k8s::config::offload` tests it.",
+        ),
+    ),
     ("Vpc.name", Reach::Determined("`VpcHandle::name`")),
     ("Vpc.id", Reach::Determined("`VpcHandle::id`")),
     ("Vpc.vni", Reach::Determined("`VpcHandle::vni`")),
@@ -217,10 +224,12 @@ fn survey(overlay: &Overlay, seen: &mut Observed) {
         vpc_table,
         peering_table,
         rate_limits,
+        disable_offloads,
     } = overlay;
     seen.count("Overlay.vpc_table", vpc_table.len());
     seen.count("Overlay.peering_table", peering_table.len());
     seen.count("Overlay.rate_limits", rate_limits.len());
+    seen.note("Overlay.disable_offloads", disable_offloads.to_string());
 
     for vpc in vpc_table.values() {
         let Vpc {

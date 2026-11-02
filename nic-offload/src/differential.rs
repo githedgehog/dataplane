@@ -505,7 +505,6 @@ fn with_exposes(
         .with_rate_limits(RateLimitTables {
             meters,
             rules: rules.iter().take(6).map(RawRule::rule).collect(),
-            disable_offloads: false,
         })
         .validate()
         .ok()

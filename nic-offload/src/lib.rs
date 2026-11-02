@@ -21,8 +21,8 @@
 //!   ([`probe_args`]), what a port reserves before start ([`port_resources`]), and, per started
 //!   port, to follow the policy ([`mlx5::run`]).
 //!
-//! Offload is on by default; the `gateway.alpha.githedgehog.com/attempt-offloads: "false"`
-//! annotation turns it off, and a port whose offload probe fails runs without it. mlx5 only, for
+//! Offload is on by default; the gateway's `gateway.alpha.githedgehog.com/attempt-offloads:
+//! "false"` annotation turns it off, and a port whose offload probe fails runs without it. mlx5 only, for
 //! now.
 
 pub mod mlx5;
