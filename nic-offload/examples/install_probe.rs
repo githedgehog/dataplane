@@ -277,7 +277,15 @@ fn main() {
             } else {
                 name.to_string()
             };
-            let plan = Plan::new(&program, &fate).unwrap();
+            // Any VTEP: nothing is sent.
+            let vteps = program
+                .denies
+                .iter()
+                .map(|d| d.matches.src_vni)
+                .chain(program.rules.iter().map(|r| r.matches.src_vni))
+                .map(|vni| (vni, Ipv4Addr::new(192, 0, 2, 2)))
+                .collect();
+            let plan = Plan::new(&program, &vteps, &fate).unwrap();
             let refusals = |installed: &dataplane_nic_offload::mlx5::Installed<'_, '_>| {
                 installed
                     .refused()
