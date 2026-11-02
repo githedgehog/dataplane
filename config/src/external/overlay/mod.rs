@@ -26,6 +26,9 @@ pub struct Overlay {
     pub vpc_table: VpcTable,
     pub peering_table: VpcPeeringTable,
     pub rate_limits: RateLimitTables,
+    /// Keep the gateway's policy out of its NICs: enforce everything in software alone. Off, a
+    /// capable NIC enforces what it can of the policy in front of software.
+    pub disable_offloads: bool,
 }
 
 impl Overlay {
@@ -35,6 +38,7 @@ impl Overlay {
             vpc_table,
             peering_table,
             rate_limits: RateLimitTables::default(),
+            disable_offloads: false,
         }
     }
 
@@ -43,6 +47,15 @@ impl Overlay {
     pub fn with_rate_limits(self, rate_limits: RateLimitTables) -> Self {
         Self {
             rate_limits,
+            ..self
+        }
+    }
+
+    /// The same overlay, with NIC offload turned off if `disabled`.
+    #[must_use]
+    pub fn with_offloads_disabled(self, disabled: bool) -> Self {
+        Self {
+            disable_offloads: disabled,
             ..self
         }
     }
@@ -88,6 +101,7 @@ impl Overlay {
         let validated_overlay = ValidatedOverlay {
             vpc_table,
             rate_limits,
+            disable_offloads: self.disable_offloads,
         };
 
         let peering_table = &self.peering_table;
@@ -100,6 +114,7 @@ impl Overlay {
 pub struct ValidatedOverlay {
     vpc_table: ValidatedVpcTable,
     rate_limits: ValidatedRateLimitTables,
+    disable_offloads: bool,
 }
 
 impl ValidatedOverlay {
@@ -111,5 +126,11 @@ impl ValidatedOverlay {
     #[must_use]
     pub fn rate_limits(&self) -> &ValidatedRateLimitTables {
         &self.rate_limits
+    }
+
+    /// Whether the gateway's policy stays out of its NICs.
+    #[must_use]
+    pub fn offloads_disabled(&self) -> bool {
+        self.disable_offloads
     }
 }

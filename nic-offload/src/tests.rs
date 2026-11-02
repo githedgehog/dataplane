@@ -79,8 +79,8 @@ fn compile_with(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>, offload: 
                 .map(|(name, meter)| (name.into(), meter))
                 .collect(),
             rules,
-            disable_offloads: !offload,
         })
+        .with_offloads_disabled(!offload)
         .validate()
         .unwrap();
     let writer: RateLimitWriter<PeeringRules> =
