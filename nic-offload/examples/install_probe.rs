@@ -277,7 +277,14 @@ fn main() {
                 name.to_string()
             };
             let plan = Plan::new(&program, &fate).unwrap();
-            match with_installed(&flows, &plan, |installed| installed.refused().to_vec()) {
+            let refusals = |installed: &dataplane_nic_offload::mlx5::Installed<'_, '_>| {
+                installed
+                    .refused()
+                    .iter()
+                    .map(|(role, why)| (*role, why.to_string()))
+                    .collect::<Vec<_>>()
+            };
+            match with_installed(&flows, &plan, refusals) {
                 Ok(left_out) if left_out.is_empty() => println!("ok       {name}"),
                 Ok(left_out) => {
                     refused += 1;

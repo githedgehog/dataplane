@@ -84,10 +84,43 @@ pub enum Error {
     /// Every group number is in use.
     #[error("no flow group left")]
     NoGroup,
-    /// Removing a rule failed: what the NIC holds is no longer known, so the port's offload is off
+    /// A rule charges a meter that could not be made.
+    #[error("its meter was not made")]
+    MeterNotMade,
+    /// A rule's table was refused (the reason is with its first rule).
+    #[error("its table was refused")]
+    TableRefused,
+    /// A generation's switch rule was refused (the reason is with the switch rule).
+    #[error("its switch rule was refused")]
+    SwitchRefused,
+    /// There is no switch to attach to.
+    #[error("the switch is not installed")]
+    NoSwitch,
+    /// An operation on the NIC failed in a way that leaves what it holds unknown (a removal that
+    /// failed, or an operation that timed out or failed on completion): the port's offload is off
     /// until it restarts.
-    #[error("the NIC's rules are no longer known: {0}")]
-    Poisoned(String),
+    #[error("{what}: the NIC's rules are no longer known: {source}")]
+    Lost {
+        /// What was being done.
+        what: &'static str,
+        /// How it failed.
+        #[source]
+        source: TemplateError,
+    },
+    /// The port's offload was turned off for good by an earlier [`Error::Lost`].
+    #[error("NIC offload is off on this port until it restarts")]
+    Poisoned,
+}
+
+/// Whether a failed operation leaves the NIC's state unknown, rather than refused cleanly.
+fn unknown_state(error: &TemplateError) -> bool {
+    matches!(
+        error,
+        TemplateError::Timeout(_)
+            | TemplateError::OperationFailed(_)
+            | TemplateError::Completion { .. }
+            | TemplateError::Pending
+    )
 }
 
 /// The protocol layout of an inner match.
