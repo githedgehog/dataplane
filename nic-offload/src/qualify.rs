@@ -30,7 +30,10 @@
 //! ```
 //!
 //! The first address is the port under test, the second the one that sends.
-//! `NIC_OFFLOAD_QUALIFY_CASES` sets how many cases run (default 20).
+//! `NIC_OFFLOAD_QUALIFY_CASES` sets how many cases run (default 20). Unset
+//! `BOLERO_RANDOM_TEST_TIME_MS` if the environment sets it: it cuts the cases short.
+//! `NIC_OFFLOAD_PROBE` (frame indices, comma-separated) makes `integrity_protocols` report which
+//! validation rule counts each of those frames.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1531,6 +1534,92 @@ fn integrity_cases(mac: [u8; 6]) -> Vec<(&'static str, Vec<u8>)> {
     cases.push(("v6 hop-by-hop UDP good", inner6(v6hbh)));
     cases.push(("v6 fragment header (first) UDP", inner6(v6frag)));
     cases.push(("inner VLAN-tagged v4 UDP good", tagged));
+    // A small frame padded to Ethernet's minimum inside the tunnel.
+    let mut padded = inner4(checksummed(ipv4(a4, b4, 6, 0x4000, &tcp(&[])), 16));
+    padded.extend([0; 6]);
+    cases.push(("inner v4 TCP padded to 60 good", padded));
+    // Bytes after the UDP datagram, inside the IP packet: Linux trims them and accepts it.
+    let trailing = {
+        let mut ip = checksummed(ipv4(a4, b4, 17, 0x4000, &udp(&payload)), 6);
+        ip.extend([0; 4]);
+        let total = u16::try_from(ip.len()).unwrap();
+        ip[2..4].copy_from_slice(&total.to_be_bytes());
+        rechecked(ip, 0)
+    };
+    cases.push(("inner v4 UDP shorter than its IP payload", inner4(trailing)));
+    // IPv6 extension chains before a correct UDP datagram: (type, header length in 8-byte
+    // units beyond the first 8) each.
+    let chained = |exts: &[(u8, u8)]| {
+        let mut ip = checksummed(ipv6(a6, b6, 17, &udp(&payload)), 6);
+        let datagram = ip.split_off(40);
+        for (i, &(_, len)) in exts.iter().enumerate() {
+            let next = exts.get(i + 1).map_or(17, |e| e.0);
+            let size = 8 * (usize::from(len) + 1);
+            // Options: one PadN filling the header; a routing header: type 0, no segments left.
+            let mut h = vec![next, len, 1, u8::try_from(size - 4).unwrap()];
+            h.resize(size, 0);
+            ip.extend(h);
+        }
+        ip[6] = exts[0].0;
+        ip.extend(datagram);
+        let len = u16::try_from(ip.len() - 40).unwrap();
+        ip[4..6].copy_from_slice(&len.to_be_bytes());
+        inner6(ip)
+    };
+    cases.push(("v6 routing header UDP good", chained(&[(43, 0)])));
+    cases.push(("v6 destination options UDP good", chained(&[(60, 1)])));
+    cases.push((
+        "v6 hop-by-hop not first (after destination options) UDP",
+        chained(&[(60, 0), (0, 0)]),
+    ));
+    cases.push(("v6 two hop-by-hop UDP", chained(&[(0, 0), (0, 0)])));
+    // The hop-by-hop header claims 88 bytes, more than the packet holds.
+    let mut overflow = chained(&[(0, 0)]);
+    overflow[14 + 40 + 1] = 10;
+    cases.push(("v6 hop-by-hop overflowing the packet bad", overflow));
+    // The routing header claims 16 bytes and so swallows the UDP header: a chain within the
+    // packet, ending in garbage.
+    let mut swallowed = chained(&[(43, 0)]);
+    swallowed[14 + 40 + 1] = 1;
+    cases.push(("v6 routing header swallowing the UDP header", swallowed));
+    // A binding refresh request: a mobility header, payload protocol 59 (none), length 0.
+    let mobility = inner6(ipv6(a6, b6, 135, &[59, 0, 0, 0, 0, 0, 0, 0]));
+    cases.push(("v6 mobility header good", mobility));
+    let shorter6 = |mut f: Vec<u8>, by: u16| {
+        let len = u16::from_be_bytes([f[14 + 4], f[14 + 5]]) - by;
+        f[14 + 4..14 + 6].copy_from_slice(&len.to_be_bytes());
+        f
+    };
+    let short6 = |f| shorter6(f, 4);
+    cases.push(("inner v6 payload length short UDP", short6(inner6(v6udp()))));
+    cases.push(("inner v6 payload length short TCP", short6(inner6(v6tcp()))));
+    cases.push((
+        "inner v6 payload length short hop-by-hop UDP",
+        short6(chained(&[(0, 0)])),
+    ));
+    cases.push((
+        "inner v6 payload length 8 short hop-by-hop UDP",
+        shorter6(chained(&[(0, 0)]), 8),
+    ));
+    cases.push((
+        "inner v6 payload length 12 short hop-by-hop UDP",
+        shorter6(chained(&[(0, 0)]), 12),
+    ));
+    let hbh_tcp = {
+        let mut ip = checksummed(ipv6(a6, b6, 6, &tcp(&payload)), 16);
+        let segment = ip.split_off(40);
+        ip[6] = 0;
+        ip.extend([6, 0, 1, 4, 0, 0, 0, 0]);
+        ip.extend(segment);
+        let len = u16::try_from(ip.len() - 40).unwrap();
+        ip[4..6].copy_from_slice(&len.to_be_bytes());
+        inner6(ip)
+    };
+    cases.push(("v6 hop-by-hop TCP good", hbh_tcp.clone()));
+    cases.push((
+        "inner v6 payload length short hop-by-hop TCP",
+        short6(hbh_tcp),
+    ));
     let mut frames: Vec<(&'static str, Vec<u8>)> = Vec::new();
     for (id, (name, inner)) in (0u16..).zip(cases.drain(..)) {
         frames.push((name, vxlan(mac, id, &inner)));
@@ -1552,6 +1641,97 @@ fn integrity_cases(mac: [u8; 6]) -> Vec<(&'static str, Vec<u8>)> {
         outer(n + 3, 34 + 6, 0x01),
     ));
     frames
+}
+
+/// The integrity truth table measured on a BlueField-3 by `integrity_truth_table`, one row per
+/// case of `integrity_cases`; columns as there.
+const MEASURED_INTEGRITY: [&str; 45] = [
+    "YYYYYYYYYY", // v4 UDP good
+    "YYYYYYYYYY", // v4 TCP good
+    "YYYYY.YYY.", // v6 UDP good
+    "YYYYY.YYY.", // v6 TCP good
+    "YYYYYY....", // v4 ICMP good
+    "YYYY......", // ARP
+    "YYYYY.YYY.", // inner v4 header checksum bad
+    "YYYYYY.Y..", // inner v4 total length short
+    "YYYY..YYY.", // inner v4 total length long
+    "YYYY......", // inner v4 IHL 4
+    "YYYYYY....", // inner v4 IHL 6
+    "YYYYYY....", // inner v4 UDP checksum bad
+    "YYYYYYYYYY", // inner v4 UDP checksum zero
+    "YYYYYY....", // inner v4 UDP length bad
+    "YYYYYY....", // inner v4 TCP checksum bad
+    "YYYYY.....", // inner v6 UDP checksum bad
+    "YYYYY.YYY.", // inner v6 UDP checksum zero
+    "YYYYY.....", // inner v6 TCP checksum bad
+    "YYYY..YYY.", // inner v6 payload length bad
+    "YYYYYY.Y..", // inner v4 first fragment
+    "YYYYYY....", // inner v4 later fragment
+    "YYYYYYYYYY", // v4 UDP with IP options good
+    "YYYYY.YYY.", // v6 hop-by-hop UDP good
+    "YYYYY..Y..", // v6 fragment header (first) UDP
+    "YYYYYYYYYY", // inner VLAN-tagged v4 UDP good
+    "YYYYYYYYYY", // inner v4 TCP padded to 60 good
+    "YYYYYYYYYY", // inner v4 UDP shorter than its IP payload
+    "YYYYY.YYY.", // v6 routing header UDP good
+    "YYYYY.YYY.", // v6 destination options UDP good
+    "YYYYY.YYY.", // v6 hop-by-hop not first (after destination options) UDP
+    "YYYYY.YYY.", // v6 two hop-by-hop UDP
+    "YYYY......", // v6 hop-by-hop overflowing the packet bad
+    "YYYYY.....", // v6 routing header swallowing the UDP header
+    "YYYYY.....", // v6 mobility header good
+    "YYYYY..Y..", // inner v6 payload length short UDP
+    "YYYYY.....", // inner v6 payload length short TCP
+    "YYYYY.YYY.", // inner v6 payload length short hop-by-hop UDP
+    "YYYYY.YYY.", // inner v6 payload length 8 short hop-by-hop UDP
+    "YYYYY..Y..", // inner v6 payload length 12 short hop-by-hop UDP
+    "YYYYY.YYY.", // v6 hop-by-hop TCP good
+    "YYYYY.....", // inner v6 payload length short hop-by-hop TCP
+    "Y.YYYYYYY.", // outer v4 header checksum bad
+    "YY.Y...Y..", // outer v4 total length short
+    "Y.YY...Y..", // outer v4 total length long
+    "YY..YYYYYY", // outer UDP checksum bad
+];
+
+/// The model's integrity verdicts agree with what the hardware measured, case by case.
+#[test]
+fn integrity_model_matches_hardware() {
+    use dpdk::flow::IntegrityMatch as I;
+    let columns: [[u64; 2]; 10] = [
+        [0, 0],
+        [I::L3_OK | I::IPV4_CSUM_OK, 0],
+        [I::L4_OK, 0],
+        [I::L4_CSUM_OK, 0],
+        [0, I::L3_OK],
+        [0, I::L3_OK | I::IPV4_CSUM_OK],
+        [0, I::L4_OK],
+        [0, I::L4_CSUM_OK],
+        [0, I::L4_OK | I::L4_CSUM_OK],
+        [
+            I::L3_OK | I::IPV4_CSUM_OK,
+            I::L3_OK | I::IPV4_CSUM_OK | I::L4_OK | I::L4_CSUM_OK,
+        ],
+    ];
+    let cases = integrity_cases([0x02, 0, 0, 0, 0, 9]);
+    assert_eq!(cases.len(), MEASURED_INTEGRITY.len());
+    let mut wrong = Vec::new();
+    for ((name, frame), measured) in cases.iter().zip(MEASURED_INTEGRITY) {
+        let [outer, inner] = dpdk::flow::model::verdicts(frame);
+        let modelled: String = columns
+            .iter()
+            .map(|[o, i]| {
+                if outer & o == *o && inner & i == *i {
+                    'Y'
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        if modelled != measured {
+            wrong.push(format!("{name}: measured {measured}, modelled {modelled}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 /// Which crafted frames mlx5 finds intact, per integrity verdict: a table for the design of the
@@ -1697,11 +1877,28 @@ fn integrity_truth_table() {
 /// Whether a crafted frame is corrupt: what an integrity rule set must drop (`Some(true)`), must
 /// pass (`Some(false)`), or may do either with (`None`).
 fn corrupt(name: &str) -> Option<bool> {
+    if name.contains("short hop-by-hop UDP") {
+        // Corrupt, but mlx5 does not subtract the extension headers before holding the UDP
+        // length to the IPv6 payload length: it may pass.
+        return None;
+    }
+    if name.contains("hop-by-hop not first") || name.contains("two hop-by-hop") {
+        // Malformed by RFC 8200, but not what a checksum or a length catches: either is fine.
+        return None;
+    }
     if name.contains("v6 UDP checksum zero") {
         // Invalid by RFC 8200, but endpoints of tunnels accept it (RFC 6935).
         return None;
     }
-    let corrupt = ["bad", "long", "IHL 4", "IHL 6", "total length short"];
+    let corrupt = [
+        "bad",
+        "long",
+        "IHL 4",
+        "IHL 6",
+        "total length short",
+        "payload length short",
+        "swallowing",
+    ];
     Some(
         corrupt.iter().any(|c| name.contains(c)) && !name.contains("zero is the norm")
             || name.contains("outer UDP checksum bad"),
@@ -1879,5 +2076,159 @@ fn integrity_rule_set() {
             wrong, 0,
             "the rule set dropped or passed what it should not"
         );
+    });
+}
+
+/// The validation group as planned and installed: the crafted frames arrive as the model says,
+/// corrupt ones are dropped and counted, valid ones pass.
+#[test]
+#[ignore = "needs two wired NIC ports: see the module documentation"]
+fn integrity_plan() {
+    let program = Program {
+        validate: true,
+        ..Program::default()
+    };
+    let plan = Plan::new(
+        &program,
+        &vteps(&program),
+        &TemplateAction::Queue(RxQueueIndex(0)),
+    )
+    .unwrap();
+    RIG.with_borrow_mut(|rig| {
+        let rig = rig.get_or_insert_with(Rig::new);
+        let cases = integrity_cases(rig.link.mac);
+        let wires: Vec<Vec<u8>> = cases.iter().map(|(_, f)| f.clone()).collect();
+        let (arrived, counts) = with_installed(&rig.flows, &plan, |installed| {
+            assert!(installed.refused().is_empty(), "{:?}", installed.refused());
+            let arrived = rig.link.exchange(&wires);
+            std::thread::sleep(COUNTER_LAG);
+            (arrived, installed.counts())
+        })
+        .unwrap();
+        let mut wrong = Vec::new();
+        for (((name, wire), arrived), id) in cases.iter().zip(&arrived).zip(0..) {
+            let outcomes = plan.outcomes(wire).unwrap();
+            let modelled = outcomes.iter().any(arrives);
+            let expected = corrupt(name);
+            let ok = outcomes.iter().all(|o| arrives(o) == arrived.is_some())
+                && expected.is_none_or(|corrupt| corrupt != arrived.is_some());
+            eprintln!(
+                "integrity plan: {} {:>11}  {name}",
+                if ok { "ok   " } else { "WRONG" },
+                if arrived.is_some() {
+                    "arrived"
+                } else {
+                    "dropped"
+                },
+            );
+            if !ok {
+                wrong.push(format!(
+                    "{id} {name}: arrived {}, model {modelled}, corrupt {expected:?}",
+                    arrived.is_some()
+                ));
+            }
+        }
+        let dropped = arrived.iter().filter(|a| a.is_none()).count();
+        let counted: u64 = counts
+            .iter()
+            .filter(|(role, _)| matches!(role, Role::Corrupt(_)))
+            .map(|(_, c)| c.packets)
+            .sum();
+        eprintln!("integrity plan: {dropped} dropped, validation counted {counted}");
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        assert_eq!(counted, u64::try_from(dropped).unwrap());
+    });
+}
+
+/// Every IP protocol number, IPv4 and IPv6, with and without a hop-by-hop header, through the
+/// validation group: the NIC must do what the model says.
+#[test]
+#[ignore = "needs two wired NIC ports: see the module documentation"]
+fn integrity_protocols() {
+    let program = Program {
+        validate: true,
+        ..Program::default()
+    };
+    let mut plan = Plan::new(
+        &program,
+        &vteps(&program),
+        &TemplateAction::Queue(RxQueueIndex(0)),
+    )
+    .unwrap();
+    // Count what passes validation too, for NIC_OFFLOAD_PROBE.
+    plan.actions.push(vec![
+        TemplateAction::Count,
+        TemplateAction::Jump(crate::mlx5::SWITCH),
+    ]);
+    let counted = plan.actions.len() - 1;
+    for table in &mut plan.validation {
+        if table
+            .rules
+            .iter()
+            .all(|r| matches!(r.role, Role::Intact(_)))
+        {
+            table.actions = vec![counted];
+        }
+    }
+    let mut frames = Vec::new();
+    for (v6, hop_by_hop) in [(false, false), (true, false), (true, true)] {
+        for proto in 0..=u8::MAX {
+            frames.push((
+                (v6, hop_by_hop, proto),
+                crate::differential::protocol_frame(v6, proto, hop_by_hop),
+            ));
+        }
+    }
+    RIG.with_borrow_mut(|rig| {
+        let rig = rig.get_or_insert_with(Rig::new);
+        // Identified by outer IP identification within each chunk of 128.
+        let wires: Vec<Vec<u8>> = (0u16..)
+            .zip(&frames)
+            .map(|(id, (_, f))| f.wire_to(rig.link.mac, id % 128))
+            .collect();
+        let probe: Vec<usize> = std::env::var("NIC_OFFLOAD_PROBE")
+            .ok()
+            .map(|v| v.split(',').filter_map(|i| i.parse().ok()).collect())
+            .unwrap_or_default();
+        let arrived = with_installed(&rig.flows, &plan, |installed| {
+            // Which rule takes each probed frame, by the counters it moves.
+            for &i in &probe {
+                let before = installed.counts();
+                rig.link
+                    .exchange(&[frames[i].1.wire_to(rig.link.mac, 0)]);
+                std::thread::sleep(COUNTER_LAG);
+                let moved: Vec<Role> = installed
+                    .counts()
+                    .iter()
+                    .zip(&before)
+                    .filter(|((_, a), (_, b))| a.packets != b.packets)
+                    .map(|((role, _), _)| *role)
+                    .collect();
+                eprintln!("integrity protocols: probe {:?}: counted by {moved:?}", frames[i].0);
+            }
+            // In chunks the receive ring holds.
+            wires
+                .chunks(128)
+                .flat_map(|chunk| rig.link.exchange(chunk))
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+        let mut wrong = Vec::new();
+        for (((what, _), wire), arrived) in frames.iter().zip(&wires).zip(&arrived) {
+            let outcomes = plan.outcomes(wire).unwrap();
+            if !outcomes.iter().all(|o| arrives(o) == arrived.is_some()) {
+                let path: Vec<_> = outcomes.iter().map(|o| o.path.clone()).collect();
+                let verdicts = dpdk::flow::model::verdicts(wire);
+                wrong.push(format!(
+                    "(v6, hop-by-hop, proto) {what:?}: arrived {}, model {path:?}, verdicts {verdicts:x?}",
+                    arrived.is_some()
+                ));
+            }
+        }
+        eprintln!("integrity protocols: {} of {} disagree", wrong.len(), frames.len());
+        for w in &wrong {
+            eprintln!("integrity protocols: {w}");
+        }
+        assert!(wrong.is_empty(), "the NIC and the model disagree");
     });
 }

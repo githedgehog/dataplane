@@ -1335,6 +1335,27 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
     tally
 }
 
+/// An unaimed frame of `v6` or IPv4 carrying protocol `proto` (8 zero bytes then 8 of payload),
+/// after a hop-by-hop header if `hop_by_hop`.
+pub(crate) fn protocol_frame(v6: bool, proto: u8, hop_by_hop: bool) -> Frame {
+    RawFrame {
+        aim: None,
+        src_vpc: if v6 { 3 } else { 0 },
+        src_bits: 1,
+        dst_vpc: Some(0),
+        dst_bits: 5,
+        l4: RawL4::Other(proto),
+        src_port: 0,
+        dst_port: 1,
+        fragment: RawFragment::Whole,
+        hop_by_hop,
+        vlan: None,
+        tcp_flags: 0,
+        damage: (u8::MAX, RawDefect::InnerIpChecksum),
+    }
+    .frame(&[])
+}
+
 #[test]
 fn the_nic_only_ever_does_what_the_software_would() {
     let total = std::panic::AssertUnwindSafe(std::cell::RefCell::new(Tally::default()));
