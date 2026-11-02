@@ -6,6 +6,7 @@ use crate::test_support::{available, packet_pool};
 use net::buffer::{
     Append, DeepCopy, PacketLength, Tailroom, TestBuffer, TrimFromEnd, TrimFromStart,
 };
+use net::packet::Packet;
 
 fn chain<'eal>(pool: &Pool<'eal>, segments: &[&[u8]]) -> Mbuf<'eal> {
     assert!(!segments.is_empty());
@@ -424,4 +425,64 @@ fn vxlan_lengths_include_the_whole_payload() {
         vxlan_lengths(chain(&pool, &[&bytes]), bytes.len(), ipv6);
     }
     assert_eq!(available(&pool), 7);
+}
+
+fn packet_burst(len: usize) -> Vec<Packet<TestBuffer>> {
+    let bytes = frame();
+    (0..len)
+        .map(|_| Packet::new(TestBuffer::from_raw_data(&bytes)).unwrap())
+        .collect()
+}
+
+#[test]
+/// Test that a packet that does not fit in an mbuf is handed back, and the mbuf returned
+fn test_rebuffer_rejects_a_packet_that_does_not_fit() {
+    use net::headers::TryHeaders;
+    use net::packet::Rebuffer;
+    // a data room smaller than the frame
+    let pool = crate::test_support::packet_pool_with_data_size(1, 16);
+    let packet = packet_burst(1).pop().unwrap();
+    let headers = packet.headers().clone();
+    let mbuf = pool.alloc_bulk(1).unwrap().into_iter().next().unwrap();
+
+    let mut rejected = Mbuf::from_test_buffer(packet, mbuf).unwrap_err();
+    assert_eq!(
+        rejected.headers(),
+        &headers,
+        "the packet is handed back intact"
+    );
+    assert_eq!(available(&pool), 1, "the mbuf goes back to the pool");
+    rejected.done(net::packet::DoneReason::InternalDrop);
+}
+
+#[test]
+/// Test that packets survive a round trip through `Rebuffer`, and that their mbufs go back to
+/// the pool when converted into test buffers
+fn test_rebuffer_round_trip() {
+    use net::headers::TryHeaders;
+    use net::packet::Rebuffer;
+    let len = 5;
+    let pool = packet_pool(u32::try_from(len).unwrap());
+    let burst = packet_burst(len);
+    let headers: Vec<_> = burst.iter().map(|p| p.headers().clone()).collect();
+
+    let mbufs: Vec<_> = pool
+        .alloc_bulk(len)
+        .unwrap()
+        .into_iter()
+        .zip(burst)
+        .map(|(mbuf, packet)| Mbuf::from_test_buffer(packet, mbuf).unwrap())
+        .collect();
+    assert_eq!(mbufs.len(), len);
+    assert_eq!(available(&pool), 0);
+
+    let back: Vec<_> = mbufs.into_iter().map(Mbuf::into_test_buffer).collect();
+    assert_eq!(available(&pool), len, "mbufs go back to the pool");
+    assert_eq!(
+        back.iter().map(|p| p.headers().clone()).collect::<Vec<_>>(),
+        headers
+    );
+    for packet in back {
+        assert_eq!(packet.serialize().unwrap().as_ref(), frame().as_slice());
+    }
 }
