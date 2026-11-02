@@ -5,19 +5,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dpdk::dev::{Dev, Started};
 use dpdk::flow::template::{
     Color, Counts, MeterProfileId, SharedActionsTemplate, SharedArg, SharedMeter,
-    SharedPatternTemplate, SharedRule, SharedTable, TableConfig, TemplateAction, TemplateFlows,
+    SharedPatternTemplate, SharedRule, SharedTable, TableConfig, TemplateAction, TemplateError,
+    TemplateFlows,
 };
 use dpdk::flow::{FlowGroup, Ingress, ItemShape};
 use net::vxlan::Vni;
 use rekon::{SyncCreate, SyncObserve, SyncReconcile, SyncRemove};
 use tracing::{error, info, warn};
 
-use super::{Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, Role, SWITCH, VpcSpec};
+use super::{
+    Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, RESOURCES, Role, SWITCH, VpcSpec,
+    unknown_state,
+};
 use crate::Policy;
 use crate::program::{Origin, Peering, Program};
 
@@ -78,7 +82,9 @@ struct Generation<'t> {
 #[derive(Debug)]
 struct InstalledMeter<'t> {
     key: MeterKey,
+    // Fields drop in order: the rules before their table.
     rules: Vec<(Color, Rule<'t>)>,
+    table: Table<'t>,
     group: FlowGroup,
     meter: SharedMeter<'t, Ingress>,
 }
@@ -90,8 +96,8 @@ pub struct Observed {
     pub vpcs: BTreeMap<Vni, VpcSpec>,
     /// The meters.
     pub meters: Vec<MeterKey>,
-    /// Why the port's offload is off for good, if it is.
-    pub poisoned: Option<String>,
+    /// Whether the port's offload is off for good ([`Error::Lost`]).
+    pub poisoned: bool,
 }
 
 /// What a reconciliation did not do: rules of the program the NIC refused, with why. Their
@@ -99,13 +105,12 @@ pub struct Observed {
 #[derive(Debug, Default)]
 pub struct Reconciled {
     /// The refused rules, by role, with the NIC's reason.
-    pub refused: Vec<(Role, String)>,
+    pub refused: Vec<(Role, Error)>,
 }
 
 /// One port's rules, reconciled with plans one source VPC at a time.
 ///
-/// What the port holds is known from the handles of what was created, each made only once its
-/// creation completed: nothing is assumed of an operation before it is done. The NIC changes
+/// What the port holds is known from the handles of what was created. The NIC changes
 /// through two kinds of step, each atomic for a packet:
 ///
 /// - a source VPC is *detached* by removing its switch rule: its traffic then goes to software
@@ -119,8 +124,9 @@ pub struct Reconciled {
 /// software already enforces the new one.) VPCs whose policy did not change are left alone, and
 /// so are their meters' token states. A generation the NIC refuses part of is never attached.
 ///
-/// If removing a rule fails, what the NIC holds is no longer known: the root rule is removed, so
-/// that software alone handles everything, and the port's offload stays off until it restarts.
+/// If removing a rule or table fails, or an operation times out or fails on completion, what the
+/// NIC holds is no longer known: the root rule is removed, so that software alone handles
+/// everything, and the port's offload stays off until it restarts. A group is handed out again only once its tables are known to be gone.
 #[derive(Debug)]
 pub struct Port<'t> {
     // Fields drop in order: the root first, so no packet enters what goes next.
@@ -135,21 +141,7 @@ pub struct Port<'t> {
     next_profile: u32,
     /// For the plan being reconciled: its meters' indices into `meters`.
     plan_meters: Vec<Option<usize>>,
-    poisoned: Option<String>,
-}
-
-/// Destroy `rules`, reporting the first failure with `what` they are.
-fn destroy<'t, W: std::fmt::Debug>(
-    what: &str,
-    rules: impl IntoIterator<Item = (W, Rule<'t>)>,
-) -> Result<(), String> {
-    let mut failed = Ok(());
-    for (which, rule) in rules {
-        if let Err(e) = rule.destroy() {
-            failed = failed.and(Err(format!("destroying {what} rule {which:?}: {e}")));
-        }
-    }
-    failed
+    poisoned: bool,
 }
 
 impl<'t> Port<'t> {
@@ -170,7 +162,87 @@ impl<'t> Port<'t> {
             },
             next_profile: 0,
             plan_meters: Vec::new(),
-            poisoned: None,
+            poisoned: false,
+        }
+    }
+
+    /// Whether the port's offload is off for good.
+    #[must_use]
+    pub fn poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Turn offload off for good on this port, as `what` failed with `source`: remove the root
+    /// rule, so software alone handles everything.
+    fn lose(&mut self, what: &'static str, source: TemplateError) -> Error {
+        error!(
+            "{what}: the NIC's rules are no longer known ({source}): offload is off on this port until it restarts"
+        );
+        self.poisoned = true;
+        if let Some(root) = self.root.take()
+            && let Err(e) = root.destroy()
+        {
+            error!(
+                "the root rule could not be removed either ({e}): the NIC may enforce a stale policy until the port restarts"
+            );
+        }
+        Error::Lost { what, source }
+    }
+
+    /// Destroy `rules`; a failure loses the port.
+    fn destroy_rules<W>(
+        &mut self,
+        what: &'static str,
+        rules: impl IntoIterator<Item = (W, Rule<'t>)>,
+    ) -> Result<(), Error> {
+        let mut failed = None;
+        for (_, rule) in rules {
+            if let Err(e) = rule.destroy() {
+                failed.get_or_insert(e);
+            }
+        }
+        match failed {
+            None => Ok(()),
+            Some(e) => Err(self.lose(what, e)),
+        }
+    }
+
+    /// Destroy `tables`, whose rules are gone, and then hand `groups` out again; a failure loses
+    /// the port, and the groups are not handed out again.
+    fn destroy_tables(
+        &mut self,
+        what: &'static str,
+        tables: impl IntoIterator<Item = Table<'t>>,
+        groups: impl IntoIterator<Item = FlowGroup>,
+    ) -> Result<(), Error> {
+        let mut failed = None;
+        for table in tables {
+            if let Err(e) = table.destroy() {
+                failed.get_or_insert(e);
+            }
+        }
+        if let Some(e) = failed {
+            return Err(self.lose(what, e));
+        }
+        for group in groups {
+            self.groups.give(group);
+        }
+        Ok(())
+    }
+
+    /// Insert a rule; an operation that leaves the NIC's state unknown loses the port, a refusal is
+    /// returned as `Ok(Err(..))`.
+    fn insert(
+        &mut self,
+        what: &'static str,
+        table: &Table<'t>,
+        rule: &super::PlannedRule,
+        args: &[SharedArg<'t, Ingress>],
+    ) -> Result<Result<Rule<'t>, Error>, Error> {
+        match table.insert(0, &rule.pattern, rule.actions, args) {
+            Ok(installed) => Ok(Ok(installed)),
+            Err(e) if unknown_state(&e) => Err(self.lose(what, e)),
+            Err(e) => Ok(Err(e.into())),
         }
     }
 
@@ -260,21 +332,6 @@ impl<'t> Port<'t> {
         }
     }
 
-    /// Turn offload off for good on this port: remove the root rule, so software alone handles
-    /// everything, and keep the rest as it is (unreachable).
-    fn poison(&mut self, why: String) -> Error {
-        error!(
-            "the NIC's rules are no longer known ({why}): offload is off on this port until it restarts"
-        );
-        if let Some(root) = self.root.take()
-            && let Err(e) = root.destroy()
-        {
-            error!("the root rule could not be removed either: {e}");
-        }
-        self.poisoned = Some(why.clone());
-        Error::Poisoned(why)
-    }
-
     /// Make sure of the switch table, its catch-all and the root, in that order.
     fn fixed(&mut self, plan: &Plan) -> Result<(), Error> {
         let [root, switch, catch_all] = plan.fixed.as_slice() else {
@@ -283,8 +340,12 @@ impl<'t> Port<'t> {
         if self.switch.is_none() {
             let table = self.table(plan, switch, SWITCH)?;
             let catch_all_table = self.table(plan, catch_all, SWITCH)?;
-            let rule = &catch_all.rules[0];
-            let catch_all = catch_all_table.insert(0, &rule.pattern, rule.actions, &[])?;
+            let catch_all = self.insert(
+                "inserting the switch's catch-all",
+                &catch_all_table,
+                &catch_all.rules[0],
+                &[],
+            )??;
             self.switch = Some(Switch {
                 rules: BTreeMap::new(),
                 catch_all,
@@ -293,15 +354,19 @@ impl<'t> Port<'t> {
         }
         if self.root.is_none() {
             let table = self.table(plan, root, FlowGroup(0))?;
-            let rule = &root.rules[0];
-            self.root = Some(table.insert(0, &rule.pattern, rule.actions, &[])?);
+            self.root =
+                Some(self.insert("inserting the root rule", &table, &root.rules[0], &[])??);
         }
         Ok(())
     }
 
     /// Make sure of `plan`'s meters, reusing installed ones by key; a meter that cannot be made
     /// is left out, and so are the rules that charge it.
-    fn meters(&mut self, plan: &Plan) -> Vec<(usize, String)> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Lost`] if the port was lost; refusals are returned by meter.
+    fn meters(&mut self, plan: &Plan) -> Result<Vec<(usize, Error)>, Error> {
         let mut failed = Vec::new();
         self.plan_meters = Vec::with_capacity(plan.meters.len());
         for (index, planned) in plan.meters.iter().enumerate() {
@@ -309,54 +374,90 @@ impl<'t> Port<'t> {
                 self.plan_meters.push(Some(found));
                 continue;
             }
-            match self.meter(plan, index) {
+            match self.meter(plan, index)? {
                 Ok(meter) => {
                     self.meters.push(meter);
                     self.plan_meters.push(Some(self.meters.len() - 1));
                 }
                 Err(e) => {
-                    failed.push((index, e.to_string()));
+                    failed.push((index, e));
                     self.plan_meters.push(None);
                 }
             }
         }
-        failed
+        Ok(failed)
     }
 
-    fn meter(&mut self, plan: &Plan, index: usize) -> Result<InstalledMeter<'t>, Error> {
+    /// Make the meter `index` of `plan` and its color group: `Ok(Err(..))` if refused (what was
+    /// made of it is removed again), `Err` if the port was lost.
+    fn meter(
+        &mut self,
+        plan: &Plan,
+        index: usize,
+    ) -> Result<Result<InstalledMeter<'t>, Error>, Error> {
         let planned = &plan.meters[index];
         self.next_profile += 1;
-        let profile = Rc::new(
-            self.flows
-                .meter_profile(MeterProfileId(self.next_profile), &planned.key.profile)?,
-        );
-        let meter = SharedMeter::new(self.flows, &profile)?;
-        let group = self.groups.take()?;
-        let made = self.table(plan, &planned.colors, group).and_then(|table| {
-            planned
-                .colors
-                .rules
-                .iter()
-                .map(|rule| {
-                    let Role::Color(_, color) = rule.role else {
-                        unreachable!("a color table holds color rules")
-                    };
-                    Ok((color, table.insert(0, &rule.pattern, rule.actions, &[])?))
-                })
-                .collect::<Result<Vec<_>, Error>>()
-        });
-        match made {
-            Ok(rules) => Ok(InstalledMeter {
-                key: planned.key.clone(),
-                rules,
-                group,
-                meter,
-            }),
+        let profile = match self
+            .flows
+            .meter_profile(MeterProfileId(self.next_profile), &planned.key.profile)
+        {
+            Ok(profile) => Rc::new(profile),
+            Err(e) => return Ok(Err(e.into())),
+        };
+        let meter = match SharedMeter::new(self.flows, &profile) {
+            Ok(meter) => meter,
+            Err(e) if unknown_state(&e) => return Err(self.lose("making a meter", e)),
+            Err(e) => return Ok(Err(e.into())),
+        };
+        let group = match self.groups.take() {
+            Ok(group) => group,
+            Err(e) => return Ok(Err(e)),
+        };
+        let table = match self.table(plan, &planned.colors, group) {
+            Ok(table) => table,
             Err(e) => {
                 self.groups.give(group);
-                Err(e)
+                return Ok(Err(e));
+            }
+        };
+        let mut rules = Vec::new();
+        for rule in &planned.colors.rules {
+            let Role::Color(_, color) = rule.role else {
+                unreachable!("a color table holds color rules")
+            };
+            match self.insert("inserting a color rule", &table, rule, &[])? {
+                Ok(installed) => rules.push((color, installed)),
+                Err(e) => {
+                    self.destroy_rules("removing a refused meter's color rules", rules)?;
+                    self.destroy_tables(
+                        "removing a refused meter's color table",
+                        [table],
+                        [group],
+                    )?;
+                    return Ok(Err(e));
+                }
             }
         }
+        Ok(Ok(InstalledMeter {
+            key: planned.key.clone(),
+            rules,
+            table,
+            group,
+            meter,
+        }))
+    }
+
+    /// Remove an installed meter: its color rules, then its table, then (with its handle) the
+    /// meter; its group is handed out again.
+    fn unmake(&mut self, meter: InstalledMeter<'t>) -> Result<(), Error> {
+        let InstalledMeter {
+            rules,
+            table,
+            group,
+            ..
+        } = meter;
+        self.destroy_rules("removing a meter's color rules", rules)?;
+        self.destroy_tables("removing a meter's color table", [table], [group])
     }
 
     /// Build `planned`'s generation, unreachable; on a refusal, what was built is removed again
@@ -365,7 +466,7 @@ impl<'t> Port<'t> {
         &mut self,
         plan: &Plan,
         planned: &PlannedVpc,
-    ) -> Result<Result<Generation<'t>, Vec<(Role, String)>>, Error> {
+    ) -> Result<Result<Generation<'t>, Vec<(Role, Error)>>, Error> {
         let mut own = BTreeMap::new();
         let mut generation = Generation {
             spec: planned.spec.clone(),
@@ -388,19 +489,29 @@ impl<'t> Port<'t> {
             let table = match self.table(plan, planned_table, number) {
                 Ok(table) => table,
                 Err(e) => {
-                    refused.extend(planned_table.rules.iter().map(|r| (r.role, e.to_string())));
+                    let mut rules = planned_table.rules.iter();
+                    if let Some(first) = rules.next() {
+                        refused.push((first.role, e));
+                        refused.extend(rules.map(|r| (r.role, Error::TableRefused)));
+                    }
                     continue;
                 }
             };
             for rule in &planned_table.rules {
                 let group = |g| self.number(g, &own);
                 let Some(args) = self.args(&rule.args, &group) else {
-                    refused.push((rule.role, "its meter was not made".to_string()));
+                    refused.push((rule.role, Error::MeterNotMade));
                     continue;
                 };
-                match table.insert(0, &rule.pattern, rule.actions, &args) {
-                    Ok(installed) => generation.rules.push((rule.role, installed)),
-                    Err(e) => refused.push((rule.role, e.to_string())),
+                match self.insert("inserting a generation's rule", &table, rule, &args) {
+                    Ok(Ok(installed)) => generation.rules.push((rule.role, installed)),
+                    Ok(Err(e)) => refused.push((rule.role, e)),
+                    Err(lost) => {
+                        // What is already built stays, unreachable, with the port lost.
+                        generation.tables.push(table);
+                        Self::forget(generation);
+                        return Err(lost);
+                    }
                 }
             }
             generation.tables.push(table);
@@ -412,7 +523,7 @@ impl<'t> Port<'t> {
         Ok(Err(refused))
     }
 
-    /// Remove a detached generation's rules, and take its groups back.
+    /// Remove a detached generation's rules, then its tables, and take its groups back.
     fn teardown(&mut self, generation: Generation<'t>) -> Result<(), Error> {
         let Generation {
             rules,
@@ -420,14 +531,14 @@ impl<'t> Port<'t> {
             groups,
             ..
         } = generation;
-        if let Err(why) = destroy("generation", rules) {
-            return Err(self.poison(why));
-        }
-        drop(tables);
-        for group in groups {
-            self.groups.give(group);
-        }
-        Ok(())
+        self.destroy_rules("removing a generation's rules", rules)?;
+        self.destroy_tables("removing a generation's tables", tables, groups)
+    }
+
+    /// Keep what a generation holds in the NIC, unreachable, once the port is lost: its handles go
+    /// without removing it (the port's stop does).
+    fn forget(generation: Generation<'t>) {
+        std::mem::forget(generation);
     }
 
     /// Remove everything: the root first, then the rest.
@@ -435,7 +546,7 @@ impl<'t> Port<'t> {
         if let Some(root) = self.root.take()
             && let Err(e) = root.destroy()
         {
-            return Err(self.poison(format!("destroying the root rule: {e}")));
+            return Err(self.lose("removing the root rule", e));
         }
         let vnis: Vec<Vni> = self.vpcs.keys().copied().collect();
         for vni in vnis {
@@ -443,17 +554,20 @@ impl<'t> Port<'t> {
         }
         if let Some(switch) = self.switch.take() {
             let Switch {
-                rules, catch_all, ..
+                rules,
+                catch_all,
+                table,
             } = switch;
             let rules = rules
                 .into_iter()
                 .map(|(vni, rule)| (Some(vni), rule))
                 .chain([(None, catch_all)]);
-            if let Err(why) = destroy("switch", rules) {
-                return Err(self.poison(why));
-            }
+            self.destroy_rules("removing the switch rules", rules)?;
+            drop(table);
         }
-        self.meters.clear();
+        for meter in std::mem::take(&mut self.meters) {
+            self.unmake(meter)?;
+        }
         self.plan_meters.clear();
         Ok(())
     }
@@ -508,7 +622,7 @@ impl SyncObserve for Port<'_> {
                 .map(|(&vni, g)| (vni, g.spec.clone()))
                 .collect(),
             meters: self.meters.iter().map(|m| m.key.clone()).collect(),
-            poisoned: self.poisoned.clone(),
+            poisoned: self.poisoned,
         }
     }
 }
@@ -521,7 +635,7 @@ impl SyncCreate for Port<'_> {
         Self: 'a;
     /// The refused rules, if the generation was not attached; an error if the port failed.
     type Outcome<'a>
-        = Result<Vec<(Role, String)>, Error>
+        = Result<Vec<(Role, Error)>, Error>
     where
         Self: 'a;
 
@@ -546,25 +660,40 @@ impl SyncCreate for Port<'_> {
             return Ok(Vec::new());
         };
         let entry = generation.entry;
-        let switch = self.switch.as_mut().ok_or(Error::NoGroup)?;
-        match switch
-            .table
-            .insert(0, &rule.pattern, rule.actions, &[SharedArg::Jump(entry)])
-        {
-            Ok(installed) => {
+        let Some(switch) = self.switch.take() else {
+            self.teardown(generation)?;
+            return Err(Error::NoSwitch);
+        };
+        let inserted = self.insert(
+            "inserting a switch rule",
+            &switch.table,
+            rule,
+            &[SharedArg::Jump(entry)],
+        );
+        let mut switch = switch;
+        match inserted {
+            Ok(Ok(installed)) => {
                 switch.rules.insert(vni, installed);
+                self.switch = Some(switch);
                 self.vpcs.insert(vni, generation);
                 Ok(Vec::new())
             }
-            Err(e) => {
-                let why = e.to_string();
-                let refused = generation
-                    .rules
-                    .iter()
-                    .map(|(role, _)| (*role, why.clone()))
-                    .collect();
+            Ok(Err(e)) => {
+                self.switch = Some(switch);
+                let mut refused = vec![(Role::Switch(vni), e)];
+                refused.extend(
+                    generation
+                        .rules
+                        .iter()
+                        .map(|(role, _)| (*role, Error::SwitchRefused)),
+                );
                 self.teardown(generation)?;
                 Ok(refused)
+            }
+            Err(lost) => {
+                self.switch = Some(switch);
+                Self::forget(generation);
+                Err(lost)
             }
         }
     }
@@ -589,7 +718,7 @@ impl SyncRemove for Port<'_> {
         if let Some(rule) = self.switch.as_mut().and_then(|s| s.rules.remove(&vni))
             && let Err(e) = rule.destroy()
         {
-            return Err(self.poison(format!("destroying the switch rule of VNI {vni}: {e}")));
+            return Err(self.lose("removing a switch rule", e));
         }
         match self.vpcs.remove(&vni) {
             Some(generation) => self.teardown(generation),
@@ -618,8 +747,8 @@ impl SyncReconcile for Port<'_> {
     where
         Self: 'a,
     {
-        if let Some(why) = observed.poisoned {
-            return Err(Error::Poisoned(why));
+        if observed.poisoned {
+            return Err(Error::Poisoned);
         }
         for (vni, spec) in &observed.vpcs {
             if plan
@@ -637,14 +766,18 @@ impl SyncReconcile for Port<'_> {
         }
         self.fixed(plan)?;
         let mut reconciled = Reconciled::default();
-        for (meter, why) in self.meters(plan) {
-            reconciled.refused.extend(
-                plan.vpcs
-                    .values()
-                    .flat_map(|vpc| vpc.tables.iter().flat_map(|t| &t.rules))
-                    .filter(|r| r.args.contains(&Arg::Meter(meter)))
-                    .map(|r| (r.role, why.clone())),
-            );
+        for (meter, why) in self.meters(plan)? {
+            let mut charging = plan
+                .vpcs
+                .values()
+                .flat_map(|vpc| vpc.tables.iter().flat_map(|t| &t.rules))
+                .filter(|r| r.args.contains(&Arg::Meter(meter)));
+            if let Some(first) = charging.next() {
+                reconciled.refused.push((first.role, why));
+                reconciled
+                    .refused
+                    .extend(charging.map(|r| (r.role, Error::MeterNotMade)));
+            }
         }
         let attach: Vec<Vni> = plan
             .vpcs
@@ -662,11 +795,7 @@ impl SyncReconcile for Port<'_> {
             if wanted.contains(&&meter.key) {
                 kept.push(meter);
             } else {
-                let InstalledMeter { rules, group, .. } = meter;
-                if let Err(why) = destroy("color", rules) {
-                    return Err(self.poison(why));
-                }
-                self.groups.give(group);
+                self.unmake(meter)?;
             }
         }
         self.meters = kept;
@@ -692,13 +821,13 @@ impl Drop for Port<'_> {
 #[derive(Debug)]
 pub struct Installed<'a, 't> {
     port: &'a Port<'t>,
-    refused: &'a [(Role, String)],
+    refused: &'a [(Role, Error)],
 }
 
 impl Installed<'_, '_> {
     /// The rules of the program the NIC refused, and why: their VPCs were not attached.
     #[must_use]
-    pub fn refused(&self) -> &[(Role, String)] {
+    pub fn refused(&self) -> &[(Role, Error)] {
         self.refused
     }
 
@@ -741,7 +870,7 @@ pub fn with_installed<'t, R>(
 }
 
 /// The peerings of the rules in `refused`, which `program` has.
-fn peerings(program: &Program, refused: &[(Role, String)]) -> BTreeSet<Peering> {
+fn peerings(program: &Program, refused: &[(Role, Error)]) -> BTreeSet<Peering> {
     refused
         .iter()
         .filter_map(|(role, _)| match *role {
@@ -784,51 +913,8 @@ pub fn run(
                 "port {port_name}: NIC offload is turned off; software alone enforces the policy"
             );
         }
-        // Peerings whose rules the NIC refused: they stay in software, whole.
-        let mut excluded = BTreeSet::new();
-        let program = loop {
-            let program = Program::compile(&filter, &limits, &excluded);
-            let mut reported = BTreeSet::new();
-            for (peering, origin, refusal) in &program.refused {
-                if reported.insert(*peering) {
-                    info!(
-                        "port {port_name}: the {peering} stays in software: {origin}: {refusal:?}"
-                    );
-                }
-            }
-            let outcome = super::Plan::new(&program, fate).and_then(|plan| {
-                let observed = port.observe();
-                port.reconcile(&plan, observed)
-            });
-            match outcome {
-                Ok(reconciled) if reconciled.refused.is_empty() => break Some(program),
-                Ok(reconciled) => {
-                    let refused = peerings(&program, &reconciled.refused);
-                    for (role, why) in &reconciled.refused {
-                        let origin = match *role {
-                            Role::Police(rule) => {
-                                program.rules.get(rule).map(|r| Origin::RateLimit(r.rule))
-                            }
-                            Role::Deny(deny) => program.denies.get(deny).map(|d| d.origin),
-                            _ => None,
-                        };
-                        if let Some(origin) = origin {
-                            warn!("port {port_name}: the NIC refused {origin}: {why}");
-                        }
-                    }
-                    if refused.is_subset(&excluded) {
-                        break Some(program);
-                    }
-                    excluded.extend(refused);
-                }
-                Err(e) => {
-                    error!(
-                        "port {port_name}: NIC offload failed, software only until the next change: {e}"
-                    );
-                    break None;
-                }
-            }
-        };
+        let (program, excluded) =
+            install_policy(&mut port, port_name, &filter, &limits, fate, &changed);
         if let Some(program) = &program
             && (!program.denies.is_empty() || !program.rules.is_empty())
         {
@@ -839,16 +925,128 @@ pub fn run(
                 port.vpcs.len(),
             );
         }
-        let mut reported = Instant::now();
+        let in_software = program.as_ref().map_or(0, |p| {
+            p.refused
+                .iter()
+                .map(|(peering, ..)| *peering)
+                .chain(excluded.iter().copied())
+                .collect::<BTreeSet<_>>()
+                .len()
+        });
+        state(port_name, &port, in_software);
+        let mut next_report = clock::deadline(REPORT);
         while !changed() {
             std::thread::sleep(POLL);
-            if reported.elapsed() >= REPORT {
+            if clock::now() >= next_report {
                 report(port_name, &port);
-                reported = Instant::now();
+                next_report = clock::deadline(REPORT);
             }
         }
         report(port_name, &port);
     }
+}
+
+/// Compile the policy into a program, and reconcile `port` with it: the program installed (or
+/// `None` if offload failed, or the policy changed meanwhile), and the peerings left in software
+/// because the NIC refused them or ran out of meters.
+fn install_policy(
+    port: &mut Port<'_>,
+    port_name: &str,
+    filter: &acl_filter::AclFilterContext,
+    limits: &rate_limit::RateLimits<rate_limit::PeeringRules>,
+    fate: &TemplateAction,
+    changed: &dyn Fn() -> bool,
+) -> (Option<Program>, BTreeSet<Peering>) {
+    // Peerings left in software: refused by the NIC, or over its meters.
+    let mut excluded = BTreeSet::new();
+    let program = loop {
+        let program = Program::compile(filter, limits, &excluded);
+        if program.meters.len() > RESOURCES.meters as usize {
+            // The peerings of the last meters stay in software until the rest fit.
+            let last = program.meters.len() - 1;
+            excluded.extend(
+                program
+                    .rules
+                    .iter()
+                    .filter(|r| r.meter == last)
+                    .map(|r| r.peering),
+            );
+            continue;
+        }
+        // The ACLs and the rate limits are published apart: compile only from a pair seen
+        // together.
+        if changed() {
+            break None;
+        }
+        let mut reported = BTreeSet::new();
+        for (peering, origin, refusal) in &program.refused {
+            if reported.insert(*peering) {
+                info!("port {port_name}: the {peering} stays in software: {origin}: {refusal:?}");
+            }
+        }
+        let outcome = super::Plan::new(&program, fate).and_then(|plan| {
+            let observed = port.observe();
+            port.reconcile(&plan, observed)
+        });
+        match outcome {
+            Ok(reconciled) if reconciled.refused.is_empty() => break Some(program),
+            Ok(reconciled) => {
+                let refused = peerings(&program, &reconciled.refused);
+                for (role, why) in &reconciled.refused {
+                    let origin = match *role {
+                        Role::Police(rule) => {
+                            program.rules.get(rule).map(|r| Origin::RateLimit(r.rule))
+                        }
+                        Role::Deny(deny) => program.denies.get(deny).map(|d| d.origin),
+                        _ => None,
+                    };
+                    if let Some(origin) = origin {
+                        warn!("port {port_name}: the NIC refused {origin}: {why}");
+                    }
+                }
+                if refused.is_subset(&excluded) {
+                    break Some(program);
+                }
+                excluded.extend(refused);
+            }
+            Err(e @ (Error::Lost { .. } | Error::Poisoned)) => {
+                error!("port {port_name}: {e}");
+                break None;
+            }
+            Err(e) => {
+                // Nothing of an old policy may stay in the NIC while software enforces a new
+                // one.
+                match port.clear() {
+                    Ok(()) => error!(
+                        "port {port_name}: NIC offload failed, software only until the next change: {e}"
+                    ),
+                    Err(lost) => {
+                        error!("port {port_name}: NIC offload failed ({e}), and {lost}");
+                    }
+                }
+                break None;
+            }
+        }
+    };
+    (program, excluded)
+}
+
+/// Export the port's offload state: the source VPCs attached, whether the port is lost, and how
+/// many peerings stay in software.
+fn state(port_name: &str, port: &Port<'_>, in_software: usize) {
+    let port_label = port_name.to_string();
+    #[allow(clippy::cast_precision_loss)] // counts far below 2^52
+    {
+        metrics::gauge!("nic_offload_vpcs", "port" => port_label.clone())
+            .set(port.vpcs.len() as f64);
+        metrics::gauge!("nic_offload_peerings_in_software", "port" => port_label.clone())
+            .set(in_software as f64);
+    }
+    metrics::gauge!("nic_offload_poisoned", "port" => port_label).set(if port.poisoned() {
+        1.0
+    } else {
+        0.0
+    });
 }
 
 /// Log and export what each meter passed and dropped in hardware.
