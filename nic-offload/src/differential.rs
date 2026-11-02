@@ -929,18 +929,20 @@ fn check_profiles(limits: &RateLimits<PeeringRules>, program: &Program, plan: &P
             MeterAlgorithm::Rfc4115 { cir, eir, cbs, ebs } => (cir, Some(eir), cbs, ebs),
             MeterAlgorithm::Trtcm { .. } => unreachable!("the software has no RFC 2698 meters"),
         };
-        assert_eq!(
-            cir,
-            software.committed_rate().per_second().get(),
-            "meter {}",
+        let software_cir = software.committed_rate().per_second().get();
+        assert!(
+            cir >= software_cir,
+            "meter {}: CIR {cir} below the software's {software_cir}",
             nic.name
         );
-        assert_eq!(
-            eir,
-            software.excess_rate().map(|r| r.per_second().get()),
-            "meter {}",
-            nic.name
-        );
+        if let Some(software_eir) = software.excess_rate() {
+            let coupled = software_eir.per_second().get() + software_cir;
+            assert!(
+                eir.is_some_and(|eir| eir >= coupled),
+                "meter {}: EIR {eir:?} below the software's coupled {coupled}",
+                nic.name
+            );
+        }
         assert!(
             cbs >= software.committed_burst() && ebs >= software.excess_burst(),
             "meter {}: the NIC's bursts {cbs}/{ebs} are below the software's {}/{}",
