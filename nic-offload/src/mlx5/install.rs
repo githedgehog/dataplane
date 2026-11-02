@@ -23,8 +23,8 @@ use super::{
     Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, RESOURCES, Role, SWITCH, VpcSpec,
     unknown_state,
 };
+use crate::Policy;
 use crate::program::{Origin, Peering, Program};
-use crate::{Policy, Vteps};
 
 #[cfg(test)]
 mod tests;
@@ -1083,13 +1083,18 @@ pub fn run(
     while !stop() {
         let (filter, limits, routes) = (acls.load(), reader.load(), routing.load());
         let destinations = routes.destinations();
-        let vteps = vteps_of(&*policy.vteps, &destinations);
+        // The VPCs flow-filter names; their VTEPs are polled for changes.
+        let vnis: BTreeSet<Vni> = destinations
+            .iter()
+            .flat_map(|d| [d.src_vni, d.dst_vni])
+            .collect();
+        let vteps = policy.vteps.vteps(&vnis);
         let changed = || {
             stop()
                 || !concurrency::sync::Arc::ptr_eq(&acls.load(), &filter)
                 || !concurrency::sync::Arc::ptr_eq(&reader.load(), &limits)
                 || !concurrency::sync::Arc::ptr_eq(&routing.load(), &routes)
-                || vteps_of(&*policy.vteps, &destinations) != vteps
+                || policy.vteps.vteps(&vnis) != vteps
         };
         if !limits.attempt_offloads() {
             info!(
@@ -1140,18 +1145,6 @@ pub fn run(
         }
         report(port_name, &port);
     }
-}
-
-/// The IPv4 VTEPs of the VPCs `destinations` names.
-fn vteps_of(
-    vteps: &dyn Vteps,
-    destinations: &[flow_filter::Destination],
-) -> BTreeMap<Vni, Ipv4Addr> {
-    destinations
-        .iter()
-        .flat_map(|d| [d.src_vni, d.dst_vni])
-        .filter_map(|vni| Some((vni, vteps.vtep(vni)?)))
-        .collect()
 }
 
 /// The policy as seen together: the ACLs, the rate limits, where flow-filter routes, and the VTEPs.
