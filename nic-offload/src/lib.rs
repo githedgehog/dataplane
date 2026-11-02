@@ -30,6 +30,8 @@ pub mod program;
 #[cfg(test)]
 mod differential;
 #[cfg(test)]
+mod meters;
+#[cfg(test)]
 mod qualify;
 #[cfg(test)]
 mod tests;

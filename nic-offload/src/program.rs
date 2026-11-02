@@ -316,14 +316,20 @@ impl Routing<'_> {
     }
 }
 
-/// The component of `meter` a NIC enforces: the one that drops red, bytes first. Enforcing one
-/// component of a chain is conservative: the chain only ever makes a color worse.
+/// The component of `meter` a NIC enforces, if it drops red: the bytes one if there is one, else
+/// the packets one. Enforcing one component of a chain is conservative: the chain only ever makes a
+/// color worse.
 fn component(limits: &RateLimits<PeeringRules>, meter: usize) -> Option<(Unit, Profile)> {
     let meter = limits.meters().get(meter)?;
-    [Unit::Bytes, Unit::Packets].into_iter().find_map(|unit| {
-        let component = meter.component(unit)?;
-        (component.action(Color::Red) == ColorAction::Drop).then(|| (unit, component.profile()))
-    })
+    // With both, software meters packets with the colors the bytes component left them, which a
+    // NIC meter cannot: only the bytes component is enforced.
+    let unit = if meter.component(Unit::Bytes).is_some() {
+        Unit::Bytes
+    } else {
+        Unit::Packets
+    };
+    let component = meter.component(unit)?;
+    (component.action(Color::Red) == ColorAction::Drop).then(|| (unit, component.profile()))
 }
 
 fn proto(spec: MaskSpec<NextHeader>) -> Result<Option<u8>, Refusal> {
