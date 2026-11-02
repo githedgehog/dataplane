@@ -35,7 +35,7 @@ use pipeline::sample_nfs::{PacketDumper, PacketStatsNF};
 use pipeline::{DynPipeline, PipelineData};
 
 use routing::{
-    AtableReaderFactory, CliSources, FibTableReaderFactory, IfTableReaderFactory, Router,
+    AtableReaderFactory, CliSources, FibKey, FibTableReaderFactory, IfTableReaderFactory, Router,
     RouterError, RouterParams,
 };
 
@@ -87,6 +87,21 @@ pub(crate) struct PipelineIngredients {
     capture: CaptureController,
 }
 
+/// The VTEPs software decapsulates VXLAN for: each VNI's FIB's.
+#[derive(Debug)]
+struct FibVteps(FibTableReaderFactory);
+
+impl nic_offload::Vteps for FibVteps {
+    fn vtep(&self, vni: net::vxlan::Vni) -> Option<std::net::Ipv4Addr> {
+        let fib = self.0.handle().get_fib_reader(FibKey::from_vni(vni)).ok()?;
+        let ip = fib.enter()?.get_vtep()?.ip();
+        match ip.inner() {
+            std::net::IpAddr::V4(ip) => Some(ip),
+            std::net::IpAddr::V6(_) => None,
+        }
+    }
+}
+
 impl PipelineIngredients {
     /// The generation counter shared with the management plane.
     pub(crate) fn data(&self) -> Arc<PipelineData> {
@@ -99,6 +114,7 @@ impl PipelineIngredients {
             acls: self.aclfiltertablesr_factory.handle(),
             routing: self.flow_filter_reader_factory.handle(),
             rate_limits: self.rate_limits.clone(),
+            vteps: Arc::new(FibVteps(self.fibtr_factory.handle().factory())),
         }
     }
 
