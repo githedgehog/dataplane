@@ -394,7 +394,23 @@ fn bring_up_ports<'eal>(
     for (interface, address) in &selected {
         let devargs = nic_offload::probe_args(*address);
         let devargs: Vec<&str> = devargs.iter().map(String::as_str).collect();
-        eal.probe_pci_with(*address, &devargs).map_err(|e| {
+        let mut probed = eal.probe_pci_with(*address, &devargs);
+        // NIC offload must never cost more than the offload: a port its driver arguments fail to
+        // probe (a NIC's hardware steering may need more memory than the gateway reserves) is
+        // probed as it would be without offload, and the NIC then enforces nothing.
+        if let Err(e) = &probed
+            && !devargs.is_empty()
+        {
+            warn!(
+                "interface '{}': probing {address} for NIC offload ({}) failed: {e}; probing it \
+                 without, so its NIC offloads nothing",
+                interface.interface,
+                devargs.join(",")
+            );
+            metrics::gauge!("nic_offload_probe_fallback", "pci" => address.to_string()).set(1.0);
+            probed = eal.probe_pci_with(*address, &[]);
+        }
+        probed.map_err(|e| {
             DriverError::PortSetup(format!("interface '{}': {e}", interface.interface))
         })?;
     }
