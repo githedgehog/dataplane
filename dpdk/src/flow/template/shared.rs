@@ -210,8 +210,9 @@ impl<'t, D: Domain> SharedTable<'t, D> {
     /// # Errors
     ///
     /// As [`TemplateTable::update`] (including [`TemplateError::ForeignRule`] for a rule of another
-    /// table); the rule then keeps its old actions and meters. If the update timed out or failed on
-    /// completion, the NIC may still apply it: the rule then keeps the new meters too.
+    /// table). Rejection before enqueue preserves the old actions and meters. If the update timed
+    /// out or failed on completion (including push/pull errors), the NIC may still apply it:
+    /// the rule keeps the new meters too. A missing completion prevents further operations on it.
     pub fn update(
         &self,
         rule: &mut SharedRule<'t, D>,
@@ -226,7 +227,7 @@ impl<'t, D: Domain> SharedTable<'t, D> {
         {
             // The old meters may go now: the rule no longer uses them.
             Ok(()) => rule._meters = meters,
-            Err(e @ (TemplateError::Timeout(_) | TemplateError::OperationFailed(_))) => {
+            Err(e) if e.may_have_updated() => {
                 rule._meters.append(&mut meters);
                 return Err(e);
             }
@@ -261,7 +262,8 @@ impl<D: Domain> SharedRule<'_, D> {
     ///
     /// # Errors
     ///
-    /// As [`TemplateRule::destroy`]: the rule is then left in place, counted as leaked.
+    /// As [`TemplateRule::destroy`]: the rule and its native dependencies are retained until port
+    /// teardown if removal cannot be confirmed. Rust allocations are still released.
     pub fn destroy(self) -> Result<(), TemplateError> {
         self.rule.destroy()
     }

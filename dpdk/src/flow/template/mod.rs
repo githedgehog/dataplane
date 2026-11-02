@@ -11,15 +11,25 @@
 //! Each handle borrows what it depends on: a table cannot outlive its templates, a rule its table
 //! or its meter, or anything the device.
 //!
+//! Failed cleanup retains native dependencies until port teardown, including when their Rust
+//! handles are dropped. An operation without a collected completion cannot be followed by another
+//! operation on the same handle. Close the port to reclaim abandoned native objects.
+//!
 //! The template API is asynchronous: operations are queued, pushed, and completed later.
 //! A context owns flow queue 0 of its port and waits for each operation to complete, so it is a
 //! synchronous facade; it is bound to its thread, and a port has at most one at a time.
 
 mod actions;
+mod lifetime;
 mod meter;
 mod pattern;
 mod shared;
 mod table;
+
+#[cfg(any(test, feature = "template-test"))]
+pub mod testing;
+#[cfg(any(test, feature = "template-test"))]
+use testing::ffi as dpdk_sys;
 
 pub use actions::{ArgumentError, RssTarget, RuleArg, TemplateAction};
 pub use meter::{
@@ -32,6 +42,7 @@ pub use shared::{
 };
 pub use table::{Counts, TableConfig, TemplateRule, TemplateTable};
 
+use self::lifetime::Resource;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -119,6 +130,17 @@ pub enum TemplateError {
     /// No completion arrived.
     #[error("a queued {0} operation did not complete within {COMPLETION_TIMEOUT:?}")]
     Timeout(&'static str),
+    /// An operation was enqueued, but pushing or collecting its completion failed.
+    #[error("could not complete queued {what}: {source}")]
+    Completion {
+        /// The operation whose outcome is unknown.
+        what: &'static str,
+        /// The queue error after enqueue succeeded.
+        source: FlowError,
+    },
+    /// An earlier operation on this handle has no collected completion.
+    #[error("an operation on this handle is still pending; resources retained until port teardown")]
+    Pending,
     /// A table names more templates than `rte_flow` can index.
     #[error("a template table takes at most 255 templates of each kind, not {0}")]
     TooManyTemplates(usize),
@@ -146,7 +168,7 @@ pub enum TemplateError {
     /// [`TemplateRule::counts`] on a rule without [`TemplateAction::Count`].
     #[error("the rule does not count")]
     NotCounted,
-    /// A shared table was destroyed while rules still used it.
+    /// A table still has native dependents, including abandoned or forgotten rules.
     #[error("the table still has rules")]
     InUse,
     /// A rule was updated through a table it is not in.
@@ -162,6 +184,18 @@ pub enum TemplateError {
         /// The port it belongs to.
         got: DevIndex,
     },
+}
+
+impl TemplateError {
+    /// Whether the enqueued operation still has no collected completion.
+    fn is_pending(&self) -> bool {
+        matches!(self, Self::Timeout(_) | Self::Completion { .. })
+    }
+
+    /// Whether an update reached the queue and its new dependencies might be in use.
+    fn may_have_updated(&self) -> bool {
+        self.is_pending() || matches!(self, Self::OperationFailed(_))
+    }
 }
 
 /// Fail with [`TemplateError::OtherPort`] unless `got` is `expected`.
@@ -329,6 +363,7 @@ impl<'dev> TemplateFlows<'dev> {
                 port: self.port,
                 raw,
                 shapes: pattern.shapes.clone(),
+                resource: Resource::default(),
                 _dev: PhantomData,
                 _domain: PhantomData,
             }),
@@ -367,6 +402,7 @@ impl<'dev> TemplateFlows<'dev> {
                 port: self.port,
                 raw,
                 actions: actions.to_vec(),
+                resource: Resource::default(),
                 _dev: PhantomData,
                 _domain: PhantomData,
             }),
@@ -413,7 +449,8 @@ impl<'dev> TemplateFlows<'dev> {
 
     /// Push queued operations and wait for the one tagged `tag` to complete.
     ///
-    /// The completion of an operation that timed out may arrive later: it is discarded.
+    /// A missing completion leaves the handle pending: callers must not enqueue another
+    /// operation on it. Later completions from abandoned handles can safely be discarded.
     ///
     /// The wait is counted in sleeps, not read from a clock: this runs in `Drop`, and the clock
     /// facade's virtual time only advances while its runtime is idle, so a test under a paused
@@ -425,7 +462,8 @@ impl<'dev> TemplateFlows<'dev> {
     ) -> Result<(), TemplateError> {
         let port = self.port.as_u16();
         // SAFETY: plain FFI call on a queue this context owns.
-        check(|error| unsafe { rte_flow_push(port, QUEUE, error) })?;
+        check(|error| unsafe { rte_flow_push(port, QUEUE, error) })
+            .map_err(|source| TemplateError::Completion { what, source })?;
         let (mut spins, mut slept) = (0, Duration::ZERO);
         loop {
             let mut result = rte_flow_op_result {
@@ -449,7 +487,12 @@ impl<'dev> TemplateFlows<'dev> {
                     slept += POLL_INTERVAL;
                 }
                 0 => return Err(TemplateError::Timeout(what)),
-                _ => return Err(FlowError::from_raw(&error).into()),
+                _ => {
+                    return Err(TemplateError::Completion {
+                        what,
+                        source: FlowError::from_raw(&error),
+                    });
+                }
             }
         }
     }
@@ -467,13 +510,21 @@ pub struct PatternTemplate<'dev, D: Domain> {
     port: DevIndex,
     raw: NonNull<rte_flow_pattern_template>,
     shapes: Vec<ItemShape>,
+    resource: Resource,
     _dev: PhantomData<&'dev ()>,
     _domain: PhantomData<D>,
 }
 
 impl<D: Domain> Drop for PatternTemplate<'_, D> {
     fn drop(&mut self) {
-        // SAFETY: the template is live and owned; tables using it borrow it, so none remain.
+        if self.resource.in_use() {
+            warn!(
+                "keeping a pattern template on port {} until it closes: native tables still use it",
+                self.port
+            );
+            return;
+        }
+        // SAFETY: the template is live and owned, with no native dependents remaining.
         if let Err(e) = check(|error| unsafe {
             rte_flow_pattern_template_destroy(self.port.as_u16(), self.raw.as_ptr(), error)
         }) {
@@ -491,13 +542,21 @@ pub struct ActionsTemplate<'dev, D: Domain> {
     port: DevIndex,
     raw: NonNull<rte_flow_actions_template>,
     actions: Vec<TemplateAction>,
+    resource: Resource,
     _dev: PhantomData<&'dev ()>,
     _domain: PhantomData<D>,
 }
 
 impl<D: Domain> Drop for ActionsTemplate<'_, D> {
     fn drop(&mut self) {
-        // SAFETY: the template is live and owned; tables using it borrow it, so none remain.
+        if self.resource.in_use() {
+            warn!(
+                "keeping an actions template on port {} until it closes: native tables still use it",
+                self.port
+            );
+            return;
+        }
+        // SAFETY: the template is live and owned, with no native dependents remaining.
         if let Err(e) = check(|error| unsafe {
             rte_flow_actions_template_destroy(self.port.as_u16(), self.raw.as_ptr(), error)
         }) {
