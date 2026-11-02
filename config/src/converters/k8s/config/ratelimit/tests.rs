@@ -496,23 +496,12 @@ fn internal_configuration_validates_meter_and_peering_references() {
     }
 }
 
-/// Offload is attempted unless a peering says otherwise; "false" anywhere turns it off.
+/// The offload switch is the gateway's: on a peering it is refused.
 #[test]
-fn attempt_offloads_false_anywhere_turns_offload_off() {
-    let disabled = |value: &str| {
-        rate_limits(&spec(&json!({ super::ATTEMPT_OFFLOADS: value })))
-            .unwrap()
-            .disable_offloads
-    };
-    assert!(!rate_limits(&spec(&json!({}))).unwrap().disable_offloads);
-    assert!(!disabled("true"));
-    assert!(disabled("false"));
-    assert!(rate_limits(&spec(&json!({ super::ATTEMPT_OFFLOADS: "no" }))).is_err());
-    let both = spec(&json!({
-        super::ATTEMPT_OFFLOADS: "false",
-        RATE_LIMITS: policy(json!({"bits": {"rate": "80M"}})).to_string(),
-    }));
-    let tables = rate_limits(&both).unwrap();
-    assert!(tables.disable_offloads);
-    assert_eq!(tables.rules.len(), 1);
+fn attempt_offloads_on_a_peering_is_refused() {
+    let key = crate::converters::k8s::config::offload::ATTEMPT_OFFLOADS;
+    assert!(matches!(
+        rate_limits(&spec(&json!({ key: "false" }))),
+        Err(FromK8sConversionError::NotAllowed(_))
+    ));
 }

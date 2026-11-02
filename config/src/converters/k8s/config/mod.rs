@@ -13,6 +13,7 @@ pub mod expose;
 pub mod gateway_config;
 pub mod gwgroups;
 pub mod interface;
+pub mod offload;
 pub mod overlay;
 pub mod peering;
 pub mod ratelimit;

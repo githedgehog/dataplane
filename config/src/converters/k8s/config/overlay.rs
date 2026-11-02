@@ -85,7 +85,9 @@ impl TryFrom<&GatewayAgentSpec> for Overlay {
                 Ok(overlay)
             }
         }?;
-        Ok(overlay.with_rate_limits(rate_limits))
+        Ok(overlay
+            .with_rate_limits(rate_limits)
+            .with_offloads_disabled(super::offload::offloads_disabled(spec)?))
     }
 }
 

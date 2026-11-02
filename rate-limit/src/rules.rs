@@ -166,7 +166,8 @@ pub struct RateLimits<C> {
 }
 impl<C> RateLimits<C> {
     /// Whether a capable NIC should enforce what it can of the gateway's policy in front of
-    /// software: unless an annotation turned offload off.
+    /// software: unless the gateway turned offload off. Published with the rate limits, so NIC
+    /// offload sees it together with the rules it applies to.
     #[must_use]
     pub fn attempt_offloads(&self) -> bool {
         self.attempt_offloads
@@ -299,7 +300,7 @@ impl RateLimits<PeeringRules> {
             classifier: PeeringRules::new(&config.rules, backend)?,
             rules,
             meters,
-            attempt_offloads: !config.disable_offloads,
+            attempt_offloads: !overlay.offloads_disabled(),
         })
     }
 }
