@@ -287,10 +287,90 @@ const MIN_BILLED: u64 = 20;
 /// The largest frame a NIC meter may let into debt, in bytes: a jumbo frame and its overhead.
 const MAX_FRAME: u64 = 9216 + BYTE_OVERHEAD;
 
-/// What software's per-worker leases may add to a bucket: at most a quarter of it
-/// (`policer::shared`).
-fn lease_slack(burst: u64) -> u64 {
-    burst.div_ceil(4)
+/// mlx5 scales packet-mode rates and bursts up by `1 << PPS_SHIFT` before encoding them
+/// (`MLX5_MTRS_PPS_MAP_BPS_SHIFT`).
+const PPS_SHIFT: u32 = 7;
+
+/// The rate mlx5 programs for `rate`: the nearest it can encode, `1e9 * m >> e` for an 8-bit
+/// mantissa and a 5-bit exponent, the last of equally near ones in its search
+/// (`mlx5_flow_meter_xir_man_exp_calc`).
+#[cfg(test)]
+pub(crate) fn encoded_rate(rate: u64) -> u64 {
+    let (mut best, mut delta) = (0, u64::MAX);
+    for m in 0..=255u64 {
+        for e in 0..=31 {
+            let candidate = (1_000_000_000 * m) >> e;
+            if rate.abs_diff(candidate) <= delta {
+                (best, delta) = (candidate, rate.abs_diff(candidate));
+            }
+        }
+    }
+    best
+}
+
+/// The greatest rate mlx5 encodes.
+const MAX_RATE: u64 = 255 * 1_000_000_000;
+
+/// The peerings of `program`'s meters whose rates mlx5 cannot encode as high as software's: they
+/// stay in software.
+#[must_use]
+pub fn unfit(program: &Program) -> BTreeSet<crate::program::Peering> {
+    let fits = |meter: &crate::program::PoliceMeter| {
+        let pmd = match meter.unit {
+            Unit::Bytes => 0,
+            Unit::Packets => PPS_SHIFT,
+        };
+        let scale = match meter.unit {
+            Unit::Bytes => MIN_BILLED + BYTE_OVERHEAD,
+            Unit::Packets => MIN_BILLED,
+        };
+        let p = meter.profile;
+        let cir = p.committed_rate().per_second().get();
+        let fastest = p
+            .excess_rate()
+            .map_or(cir, |eir| eir.per_second().get().saturating_add(cir));
+        ((u128::from(fastest) * u128::from(scale)).div_ceil(u128::from(MIN_BILLED)) << pmd)
+            <= u128::from(MAX_RATE)
+    };
+    program
+        .rules
+        .iter()
+        .filter(|rule| !fits(&program.meters[rule.meter]))
+        .map(|rule| rule.peering)
+        .collect()
+}
+
+/// The least rate mlx5 encodes exactly at or above `rate` (the greatest it encodes, if none is).
+fn encodable_rate(rate: u64) -> u64 {
+    (0..=255u64)
+        .flat_map(|m| (0..=31).map(move |e| (1_000_000_000 * m) >> e))
+        .filter(|&candidate| candidate >= rate)
+        .min()
+        .unwrap_or(MAX_RATE)
+}
+
+/// The burst mlx5 programs for `burst`: rounded up to an 8-bit mantissa times a power of two, but
+/// a mantissa that rounds up to 256 wraps to 0 (`mlx5_flow_meter_xbs_man_exp_calc`).
+#[cfg(test)]
+pub(crate) fn encoded_burst(burst: u64) -> u64 {
+    if burst == 0 {
+        return 0;
+    }
+    let bits = burst.bit_width();
+    if bits < 8 {
+        return 1 << bits;
+    }
+    let shift = bits - 8;
+    (burst.div_ceil(1 << shift) & 0xff) << shift
+}
+
+/// How far mlx5 scales up a rate or burst in `unit` before encoding it.
+#[cfg(test)]
+pub(crate) fn pmd_scale(unit: MeterUnit) -> u32 {
+    match unit {
+        MeterUnit::Packets => PPS_SHIFT,
+        MeterUnit::Bytes => 0,
+    }
 }
 
 /// The NIC's meter profile for `meter`, at least as permissive as the software's component,
@@ -301,33 +381,44 @@ fn lease_slack(burst: u64) -> u64 {
 ///   `(MIN_BILLED + BYTE_OVERHEAD) / MIN_BILLED`;
 /// - a NIC meter passes a packet while any token is left, and goes into debt: bursts gain one
 ///   largest frame;
-/// - software's per-worker leases let a burst exceed its bucket by up to a quarter: bursts gain
-///   that too;
-/// - the NIC encodes rates to the nearest it can: rates gain 1/64, more than its rounding;
+/// - software's per-worker leases let a burst exceed its bucket by one lease per worker: bursts
+///   gain that too ([`PoliceMeter::lease_slack`](crate::program::PoliceMeter::lease_slack));
+/// - the NIC encodes rates to the nearest it can, and bursts up: rates are rounded up to one it
+///   encodes exactly, bursts to one that does not wrap;
 /// - software couples the excess bucket to the committed one (MEF 10), the NIC does not
 ///   (RFC 4115): its excess rate is the sum of both, the most the coupled bucket fills at.
 ///
-/// Small packets thus get through the NIC at a few times the rate software allows them, and large
-/// ones at a fraction more: the NIC stops floods, software enforces the rate.
+/// The scaling is for the smallest packets: those get through the NIC at about the rate software
+/// allows them, and full-size ones at up to `(MIN_BILLED + BYTE_OVERHEAD) / MIN_BILLED` times it
+/// less their overhead (about 4.4 times, for 1500 bytes). The NIC stops floods, software enforces
+/// the rate.
 pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> MeterProfile {
     let p = meter.profile;
     let (scale, frame) = match meter.unit {
         Unit::Bytes => (MIN_BILLED + BYTE_OVERHEAD, MAX_FRAME),
         Unit::Packets => (MIN_BILLED, 1),
     };
-    let scaled = |tokens: u64| tokens.saturating_mul(scale).div_ceil(MIN_BILLED);
-    let rate = |tokens: u64| {
-        let scaled = scaled(tokens);
-        scaled.saturating_add(scaled.div_ceil(64))
+    let pmd = match meter.unit {
+        Unit::Bytes => 0,
+        Unit::Packets => PPS_SHIFT,
     };
-    let burst = |tokens: u64| {
+    let scaled = |tokens: u64| tokens.saturating_mul(scale).div_ceil(MIN_BILLED);
+    // What mlx5 encodes exactly, in its (scaled) units, given back in ours, rounded up: mlx5 then
+    // encodes at least that.
+    let rate = |tokens: u64| encodable_rate(scaled(tokens) << pmd).div_ceil(1 << pmd);
+    let burst = |tokens: u64, slack: u64| {
         if tokens == 0 {
             return 0;
         }
-        encodable(scaled(tokens.saturating_add(lease_slack(tokens))).saturating_add(frame))
+        let wanted = scaled(tokens.saturating_add(slack)).saturating_add(frame);
+        encodable(wanted << pmd).div_ceil(1 << pmd)
     };
     let cir = p.committed_rate().per_second().get();
-    let (cbs, ebs) = (burst(p.committed_burst()), burst(p.excess_burst()));
+    let [committed_slack, excess_slack] = meter.lease_slack;
+    let (cbs, ebs) = (
+        burst(p.committed_burst(), committed_slack),
+        burst(p.excess_burst(), excess_slack),
+    );
     MeterProfile {
         algorithm: match p.excess_rate() {
             None => MeterAlgorithm::Srtcm {
