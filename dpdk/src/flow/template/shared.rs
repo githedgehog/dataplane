@@ -196,19 +196,29 @@ impl<'t, D: Domain> SharedTable<'t, D> {
     ///
     /// # Errors
     ///
-    /// As [`TemplateTable::update`]; the rule then keeps its old actions and meters.
+    /// As [`TemplateTable::update`] (including [`TemplateError::ForeignRule`] for a rule of another
+    /// table); the rule then keeps its old actions and meters. If the update timed out or failed on
+    /// completion, the NIC may still apply it: the rule then keeps the new meters too.
     pub fn update(
         &self,
         rule: &mut SharedRule<'t, D>,
         actions_template: usize,
         args: &[SharedArg<'t, D>],
     ) -> Result<(), TemplateError> {
-        let (borrowed, meters) = borrowed(args);
-        self.inner
+        let (borrowed, mut meters) = borrowed(args);
+        match self
+            .inner
             .table
-            .update(&mut rule.rule, actions_template, &borrowed)?;
-        // The old meters may go now: the rule no longer uses them.
-        rule._meters = meters;
+            .update_unbound(&mut rule.rule, actions_template, &borrowed)
+        {
+            // The old meters may go now: the rule no longer uses them.
+            Ok(()) => rule._meters = meters,
+            Err(e @ (TemplateError::Timeout(_) | TemplateError::OperationFailed(_))) => {
+                rule._meters.append(&mut meters);
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        }
         Ok(())
     }
 }

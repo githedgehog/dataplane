@@ -234,6 +234,7 @@ impl<'p, D: Domain> Meter<'p, D> {
         flows: &'p TemplateFlows<'p>,
         profile: &MeterProfileHandle<'_>,
     ) -> Result<Meter<'p, D>, TemplateError> {
+        super::same_port("a meter profile", flows.port(), profile.port)?;
         // SAFETY: zero is valid for these C structs.
         let mut conf: rte_flow_indir_action_conf = unsafe { core::mem::zeroed() };
         conf.set_direction(D::DIRECTION);
@@ -253,6 +254,7 @@ impl<'p, D: Domain> Meter<'p, D> {
         let op_attr: rte_flow_op_attr = unsafe { core::mem::zeroed() };
         // SAFETY: an all-zero `rte_flow_error` is a valid out-parameter.
         let mut error: rte_flow_error = unsafe { core::mem::zeroed() };
+        let tag = flows.tag();
         // SAFETY: the attributes, `action` and `mark` outlive the call; the PMD copies them. The
         // queue is the context's own.
         let handle = unsafe {
@@ -262,7 +264,7 @@ impl<'p, D: Domain> Meter<'p, D> {
                 &raw const op_attr,
                 &raw const conf,
                 &raw const action,
-                core::ptr::null_mut(),
+                tag,
                 &raw mut error,
             )
         };
@@ -273,8 +275,14 @@ impl<'p, D: Domain> Meter<'p, D> {
             _domain: PhantomData,
         };
         // On failure, dropping `meter` destroys the handle again.
-        flows.complete("meter creation")?;
+        flows.complete("meter creation", tag)?;
         Ok(meter)
+    }
+
+    /// The port the meter is on.
+    #[must_use]
+    pub fn port(&self) -> DevIndex {
+        self.flows.port()
     }
 
     pub(crate) fn raw(&self) -> *mut rte_flow_action_handle {
@@ -289,6 +297,7 @@ impl<D: Domain> Drop for Meter<'_, D> {
         let op_attr: rte_flow_op_attr = unsafe { core::mem::zeroed() };
         // SAFETY: an all-zero `rte_flow_error` is a valid out-parameter.
         let mut error: rte_flow_error = unsafe { core::mem::zeroed() };
+        let tag = self.flows.tag();
         // SAFETY: the handle is live and owned by `self`; rules using it borrow `self`.
         let ret = unsafe {
             rte_flow_async_action_handle_destroy(
@@ -296,12 +305,12 @@ impl<D: Domain> Drop for Meter<'_, D> {
                 QUEUE,
                 &raw const op_attr,
                 self.handle.as_ptr(),
-                core::ptr::null_mut(),
+                tag,
                 &raw mut error,
             )
         };
         let result = if ret == 0 {
-            self.flows.complete("meter destruction")
+            self.flows.complete("meter destruction", tag)
         } else {
             Err(FlowError::from_raw(&error).into())
         };
