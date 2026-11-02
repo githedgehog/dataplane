@@ -14,6 +14,7 @@ dpdk = { workspace = true }
 hardware = { workspace = true }
 lpm = { workspace = true }
 match-action = { workspace = true }
+clock = { workspace = true }
 metrics = { workspace = true }
 net = { workspace = true }
 nix = { workspace = true, features = ["sched"] }
@@ -27,6 +28,5 @@ tracing = { workspace = true }
 acl = { workspace = true, features = ["reference"] }
 acl-filter = { workspace = true, features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }
-clock = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
