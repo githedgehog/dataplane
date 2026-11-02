@@ -54,7 +54,9 @@ use crate::program::{Match, Prefix, Program};
 pub const RESOURCES: TemplateConfig = TemplateConfig {
     queue_size: 64,
     counters: 1 << 14,
-    meters: 1 << 10,
+    // mlx5 takes up to 2^25 a port; each reserved one costs host memory (a `mlx5_aso_mtr`) and
+    // NIC memory from the start.
+    meters: 1 << 16,
 };
 
 const VXLAN_PORT: u16 = 4789;

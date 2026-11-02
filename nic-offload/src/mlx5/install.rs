@@ -3,7 +3,7 @@
 
 //! A [`Plan`] installed on a port, and kept in step with the policy: [`Port`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::Ipv4Addr;
 use std::rc::Rc;
 use std::time::Duration;
@@ -475,9 +475,15 @@ impl<'t> Port<'t> {
     /// Returns [`Error::Lost`] if the port was lost; refusals are returned by meter.
     fn meters(&mut self, plan: &Plan) -> Result<Vec<(usize, Error)>, Error> {
         let mut failed = Vec::new();
+        let installed = MeterIndex::new(self.meters.iter().map(|m| &m.key));
+        let found: Vec<Option<usize>> = plan
+            .meters
+            .iter()
+            .map(|planned| installed.find(&planned.key))
+            .collect();
         self.plan_meters = Vec::with_capacity(plan.meters.len());
-        for (index, planned) in plan.meters.iter().enumerate() {
-            if let Some(found) = self.meters.iter().position(|m| m.key == planned.key) {
+        for (index, found) in found.into_iter().enumerate() {
+            if let Some(found) = found {
                 self.plan_meters.push(Some(found));
                 continue;
             }
@@ -950,19 +956,46 @@ impl SyncReconcile for Port<'_> {
             self.prune();
             return Ok(Reconciled::default());
         }
+        // Meters the plan does not want go before new ones are made, which may need their room:
+        // no attached generation charges them, as an attached one's spec (its meters with it) is
+        // the plan's.
+        let wanted = MeterIndex::new(plan.meters.iter().map(|m| &m.key));
+        let mut kept = Vec::new();
+        for meter in std::mem::take(&mut self.meters) {
+            if wanted.find(&meter.key).is_some() {
+                kept.push(meter);
+            } else {
+                self.unmake(meter)?;
+            }
+        }
+        self.meters = kept;
+        // A removed meter's counts are kept while the policy still has a meter of its name, so
+        // its totals never go back; a name the policy dropped goes with them.
+        self.retired_meters.retain(|name, _| wanted.has_name(name));
         self.fixed(plan)?;
         let mut reconciled = Reconciled::default();
-        for (meter, why) in self.meters(plan)? {
-            let mut charging = plan
+        let failed = self.meters(plan)?;
+        if !failed.is_empty() {
+            let mut charging: HashMap<usize, Vec<Role>> = HashMap::new();
+            for rule in plan
                 .vpcs
                 .values()
                 .flat_map(|vpc| vpc.tables.iter().flat_map(|t| &t.rules))
-                .filter(|r| r.args.contains(&Arg::Meter(meter)));
-            if let Some(first) = charging.next() {
-                reconciled.refused.push((first.role, why));
-                reconciled
-                    .refused
-                    .extend(charging.map(|r| (r.role, Error::MeterNotMade)));
+            {
+                for arg in &rule.args {
+                    if let Arg::Meter(meter) = *arg {
+                        charging.entry(meter).or_default().push(rule.role);
+                    }
+                }
+            }
+            for (meter, why) in failed {
+                let mut roles = charging.remove(&meter).unwrap_or_default().into_iter();
+                if let Some(first) = roles.next() {
+                    reconciled.refused.push((first, why));
+                    reconciled
+                        .refused
+                        .extend(roles.map(|role| (role, Error::MeterNotMade)));
+                }
             }
         }
         let attach: Vec<Vni> = plan
@@ -974,26 +1007,6 @@ impl SyncReconcile for Port<'_> {
         for vni in attach {
             reconciled.refused.extend(self.create((plan, vni))?);
         }
-        // Meters no generation charges any more go, after the generations that charged them.
-        let wanted: Vec<&MeterKey> = plan.meters.iter().map(|m| &m.key).collect();
-        let mut kept = Vec::new();
-        for meter in std::mem::take(&mut self.meters) {
-            if wanted.contains(&&meter.key) {
-                kept.push(meter);
-            } else {
-                self.unmake(meter)?;
-            }
-        }
-        self.meters = kept;
-        // A removed meter's counts are kept while the policy still has a meter of its name, so
-        // its totals never go back; a name the policy dropped goes with them.
-        self.retired_meters
-            .retain(|name, _| plan.meters.iter().any(|m| m.key.name == *name));
-        self.plan_meters = plan
-            .meters
-            .iter()
-            .map(|p| self.meters.iter().position(|m| m.key == p.key))
-            .collect();
         self.prune();
         Ok(reconciled)
     }
@@ -1004,6 +1017,38 @@ impl Drop for Port<'_> {
         if let Err(e) = self.clear() {
             warn!("the NIC's rules could not all be removed: {e}");
         }
+    }
+}
+
+/// Meter keys, indexed by name: a port may hold tens of thousands of meters, and matching
+/// plans against them one by one would be quadratic.
+struct MeterIndex<'k> {
+    keys: Vec<&'k MeterKey>,
+    by_name: HashMap<&'k str, Vec<usize>>,
+}
+
+impl<'k> MeterIndex<'k> {
+    fn new(keys: impl IntoIterator<Item = &'k MeterKey>) -> MeterIndex<'k> {
+        let keys: Vec<&MeterKey> = keys.into_iter().collect();
+        let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (index, key) in keys.iter().enumerate() {
+            by_name.entry(key.name.as_str()).or_default().push(index);
+        }
+        MeterIndex { keys, by_name }
+    }
+
+    /// The index of `key`, if it is here.
+    fn find(&self, key: &MeterKey) -> Option<usize> {
+        self.by_name
+            .get(key.name.as_str())?
+            .iter()
+            .copied()
+            .find(|&index| self.keys[index] == key)
+    }
+
+    /// Whether a key named `name` is here.
+    fn has_name(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
     }
 }
 
