@@ -21,6 +21,7 @@ use acl_filter::{AclFilter, AclFilterContextReaderFactory, AclFilterContextWrite
 use flow_entry::flow_table::{FlowLookup, FlowTable, FlowTableSummary};
 use flow_filter::{FlowFilter, FlowFilterContextReaderFactory, FlowFilterContextWriter};
 use rate_limit::{PeeringRules, RateLimitReader, RateLimitWriter, RateLimiter, RateLimits};
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
 use nat::masquerade::{NatAllocatorReaderFactory, NatAllocatorWriter};
@@ -92,13 +93,23 @@ pub(crate) struct PipelineIngredients {
 struct FibVteps(FibTableReaderFactory);
 
 impl nic_offload::Vteps for FibVteps {
-    fn vtep(&self, vni: net::vxlan::Vni) -> Option<std::net::Ipv4Addr> {
-        let fib = self.0.handle().get_fib_reader(FibKey::from_vni(vni)).ok()?;
-        let ip = fib.enter()?.get_vtep()?.ip();
-        match ip.inner() {
-            std::net::IpAddr::V4(ip) => Some(ip),
-            std::net::IpAddr::V6(_) => None,
-        }
+    fn vteps(
+        &self,
+        vnis: &BTreeSet<net::vxlan::Vni>,
+    ) -> BTreeMap<net::vxlan::Vni, std::net::Ipv4Addr> {
+        // One table handle for them all; the FIBs' handles are cached per thread.
+        let table = self.0.handle();
+        let vtep = |vni| {
+            let fib = table.get_fib_reader(FibKey::from_vni(vni)).ok()?;
+            let ip = fib.enter()?.get_vtep()?.ip();
+            match ip.inner() {
+                std::net::IpAddr::V4(ip) => Some(ip),
+                std::net::IpAddr::V6(_) => None,
+            }
+        };
+        vnis.iter()
+            .filter_map(|&vni| Some((vni, vtep(vni)?)))
+            .collect()
     }
 }
 
