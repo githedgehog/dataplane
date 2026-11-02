@@ -55,8 +55,8 @@ const DEVLINK_RETURN_TIMEOUT: Duration = Duration::from_secs(10);
 struct ResolvedDevice {
     address: PciAddress,
     supported: SupportedDevice,
-    /// Receive descriptors per queue: the interface's `/rxd`, or the default.
-    rx_descriptors: u16,
+    /// Receive descriptors per queue: the interface's `/rxd`, if it names them.
+    rx_descriptors: Option<u16>,
 }
 
 fn init_tracing() {
@@ -130,9 +130,7 @@ fn resolve_devices(
             ));
             continue;
         };
-        let rx_descriptors = interface
-            .rx_descriptors
-            .unwrap_or(args::dpdk_memory::RX_DESCRIPTORS);
+        let rx_descriptors = interface.rx_descriptors;
         let address = match PciAddress::try_from(ebdf.to_string().as_str()) {
             Ok(address) => address,
             Err(e) => {
@@ -1004,6 +1002,7 @@ fn main() {
 
     // Record the plan after the driver borrow ends and before sealing the configuration.
     let mut hugepage_plan = None;
+    let mut chosen_rx_descriptors = std::collections::BTreeMap::new();
     let (netns, host_netns) = match &config.driver {
         DriverConfigSection::Dpdk(dpdk) => {
             mount_hugepages();
@@ -1027,18 +1026,18 @@ fn main() {
                 );
             }
             // Check hugepage capacity on the NICs' nodes before changing device bindings.
-            hugepage_plan = Some(
-                hugepages::reserve_for(
-                    &devices
-                        .iter()
-                        .map(|d| (d.address, d.rx_descriptors))
-                        .collect::<Vec<_>>(),
-                    scan.as_ref(),
-                    dpdk.num_workers.get(),
-                    dpdk.hugepages_gib,
-                )
-                .unwrap_or_else(|e| fail("hugepage configuration is unusable", &e)),
-            );
+            let reservation = hugepages::reserve_for(
+                &devices
+                    .iter()
+                    .map(|d| (d.address, d.rx_descriptors))
+                    .collect::<Vec<_>>(),
+                scan.as_ref(),
+                dpdk.num_workers.get(),
+                dpdk.hugepages_gib,
+            )
+            .unwrap_or_else(|e| fail("hugepage configuration is unusable", &e));
+            hugepage_plan = Some(reservation.plan);
+            chosen_rx_descriptors = reservation.rx_descriptors;
             if let Err(e) = prepare_devices(&devices) {
                 fail("failed to prepare a network device for DPDK", &e);
             }
@@ -1101,9 +1100,26 @@ fn main() {
     // Pass the checked per-node requirement to EAL before sealing the configuration.
     if let DriverConfigSection::Dpdk(dpdk) = &mut config.driver {
         dpdk.hugepages = hugepage_plan;
+        name_rx_descriptors(&mut dpdk.interfaces, &chosen_rx_descriptors);
     }
 
     std::process::exit(supervise_gateway(config, netns, host_netns, supervise_frr));
+}
+
+/// Give the interfaces that named no receive descriptors the ones init chose, by PCI address.
+fn name_rx_descriptors(
+    interfaces: &mut [args::InterfaceArg],
+    chosen: &std::collections::BTreeMap<PciAddress, u16>,
+) {
+    for interface in interfaces {
+        if interface.rx_descriptors.is_none()
+            && let Some(PortArg::PCI(ebdf)) = &interface.port
+            && let Ok(address) = PciAddress::try_from(ebdf.to_string().as_str())
+            && let Some(&rxd) = chosen.get(&address)
+        {
+            interface.rx_descriptors = Some(rxd);
+        }
+    }
 }
 
 #[cfg(test)]
