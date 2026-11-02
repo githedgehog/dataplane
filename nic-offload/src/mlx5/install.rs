@@ -90,6 +90,27 @@ struct InstalledMeter<'t> {
     meter: SharedMeter<'t, Ingress>,
 }
 
+impl InstalledMeter<'_> {
+    /// What it passed (green and yellow) and dropped (red) so far.
+    fn counts(&self) -> (Counts, Counts) {
+        let (mut passed, mut dropped) = (Counts::default(), Counts::default());
+        for (color, rule) in &self.rules {
+            let sum = if *color == Color::Red {
+                &mut dropped
+            } else {
+                &mut passed
+            };
+            add(sum, rule.counts().unwrap_or_default());
+        }
+        (passed, dropped)
+    }
+}
+
+fn add(sum: &mut Counts, counts: Counts) {
+    sum.packets += counts.packets;
+    sum.bytes += counts.bytes;
+}
+
 /// What a port holds, as its reconciler knows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observed {
@@ -126,8 +147,11 @@ pub struct Reconciled {
 /// so are their meters' token states. A generation the NIC refuses part of is never attached.
 ///
 /// If removing a rule or table fails, or an operation times out or fails on completion, what the
-/// NIC holds is no longer known: the root rule is removed, so that software alone handles
-/// everything, and the port's offload stays off until it restarts. A group is handed out again only once its tables are known to be gone.
+/// NIC holds is no longer known: the root rule is removed (or, failing that, every VPC's switch
+/// rule, so the root leads only to the switch's catch-all), so that software alone handles
+/// everything, and the port's offload stays off until it restarts. The port's other rules (the
+/// control plane's steering) are never touched: should even that fail, the port says so
+/// ([`Port::stale`]). A group is handed out again only once its tables are known to be gone.
 #[derive(Debug)]
 pub struct Port<'t> {
     // Fields drop in order: the root first, so no packet enters what goes next.
@@ -143,6 +167,14 @@ pub struct Port<'t> {
     /// For the plan being reconciled: its meters' indices into `meters`.
     plan_meters: Vec<Option<usize>>,
     poisoned: bool,
+    /// A root rule whose removal failed may still be in the NIC.
+    root_lingers: bool,
+    /// The NIC may still enforce an old policy: the port was lost and could not be detached.
+    stale: bool,
+    /// What the ACL denies of torn-down generations dropped, so the total never goes back.
+    retired_denied: u64,
+    /// What removed meters passed and dropped, by name.
+    retired_meters: BTreeMap<String, (Counts, Counts)>,
 }
 
 impl<'t> Port<'t> {
@@ -164,6 +196,10 @@ impl<'t> Port<'t> {
             next_profile: 0,
             plan_meters: Vec::new(),
             poisoned: false,
+            root_lingers: false,
+            stale: false,
+            retired_denied: 0,
+            retired_meters: BTreeMap::new(),
         }
     }
 
@@ -173,21 +209,53 @@ impl<'t> Port<'t> {
         self.poisoned
     }
 
-    /// Turn offload off for good on this port, as `what` failed with `source`: remove the root
-    /// rule, so software alone handles everything.
+    /// Whether the NIC may still enforce an old policy: the port was lost, and neither its root
+    /// rule nor its VPCs' switch rules could be removed.
+    #[must_use]
+    pub fn stale(&self) -> bool {
+        self.stale
+    }
+
+    /// Turn offload off for good on this port, as `what` failed with `source`, and make what the
+    /// NIC holds unreachable ([`Port::detach_all`]).
     fn lose(&mut self, what: &'static str, source: TemplateError) -> Error {
         error!(
             "{what}: the NIC's rules are no longer known ({source}): offload is off on this port until it restarts"
         );
         self.poisoned = true;
-        if let Some(root) = self.root.take()
-            && let Err(e) = root.destroy()
-        {
-            error!(
-                "the root rule could not be removed either ({e}): the NIC may enforce a stale policy until the port restarts"
-            );
-        }
+        self.detach_all();
         Error::Lost { what, source }
+    }
+
+    /// Make the port's offload unreachable without touching its other rules: remove the root
+    /// rule, or failing that every VPC's switch rule, so that the root leads only to the switch's
+    /// catch-all, which sends everything to software.
+    fn detach_all(&mut self) {
+        if let Some(root) = self.root.take() {
+            match root.destroy() {
+                Ok(()) => return,
+                Err(e) => {
+                    error!("the root rule could not be removed ({e}): detaching every VPC instead");
+                    self.root_lingers = true;
+                }
+            }
+        }
+        if !self.root_lingers {
+            return;
+        }
+        let rules = self
+            .switch
+            .as_mut()
+            .map(|s| std::mem::take(&mut s.rules))
+            .unwrap_or_default();
+        for (vni, rule) in rules {
+            if let Err(e) = rule.destroy() {
+                error!(
+                    "VPC {vni}'s switch rule could not be removed either ({e}): the NIC may enforce a stale policy until the port restarts"
+                );
+                self.stale = true;
+            }
+        }
     }
 
     /// Destroy `rules`; a failure loses the port.
@@ -451,6 +519,13 @@ impl<'t> Port<'t> {
     /// Remove an installed meter: its color rules, then its table, then (with its handle) the
     /// meter; its group is handed out again.
     fn unmake(&mut self, meter: InstalledMeter<'t>) -> Result<(), Error> {
+        let (passed, dropped) = meter.counts();
+        let retired = self
+            .retired_meters
+            .entry(meter.key.name.clone())
+            .or_default();
+        add(&mut retired.0, passed);
+        add(&mut retired.1, dropped);
         let InstalledMeter {
             rules,
             table,
@@ -479,7 +554,16 @@ impl<'t> Port<'t> {
         let mut refused = Vec::new();
         for table in &planned.tables {
             if let std::collections::btree_map::Entry::Vacant(entry) = own.entry(table.group) {
-                let group = self.groups.take()?;
+                let group = match self.groups.take() {
+                    Ok(group) => group,
+                    Err(e) => {
+                        // Nothing was built in them yet.
+                        for group in generation.groups.drain(..) {
+                            self.groups.give(group);
+                        }
+                        return Err(e);
+                    }
+                };
                 entry.insert(group);
                 generation.groups.push(group);
             }
@@ -532,6 +616,11 @@ impl<'t> Port<'t> {
             groups,
             ..
         } = generation;
+        self.retired_denied += rules
+            .iter()
+            .filter(|(role, _)| matches!(role, Role::Deny(_)))
+            .map(|(_, rule)| rule.counts().unwrap_or_default().packets)
+            .sum::<u64>();
         self.destroy_rules("removing a generation's rules", rules)?;
         self.destroy_tables("removing a generation's tables", tables, groups)
     }
@@ -547,6 +636,7 @@ impl<'t> Port<'t> {
         if let Some(root) = self.root.take()
             && let Err(e) = root.destroy()
         {
+            self.root_lingers = true;
             return Err(self.lose("removing the root rule", e));
         }
         let vnis: Vec<Vni> = self.vpcs.keys().copied().collect();
@@ -602,6 +692,54 @@ impl<'t> Port<'t> {
             }
         }
         counts
+    }
+
+    /// What the NIC's ACL denies dropped on this port, ever (up to the counters' lag).
+    #[must_use]
+    pub fn denied_total(&self) -> u64 {
+        self.retired_denied
+            + self
+                .counts()
+                .iter()
+                .filter(|(role, _)| matches!(role, Role::Deny(_)))
+                .map(|(_, c)| c.packets)
+                .sum::<u64>()
+    }
+
+    /// What each named meter passed and dropped in the NIC on this port, ever (up to the
+    /// counters' lag).
+    #[must_use]
+    pub fn meter_totals(&self) -> BTreeMap<String, (Counts, Counts)> {
+        let mut totals = self.retired_meters.clone();
+        for meter in &self.meters {
+            let (passed, dropped) = meter.counts();
+            let total = totals.entry(meter.key.name.clone()).or_default();
+            add(&mut total.0, passed);
+            add(&mut total.1, dropped);
+        }
+        totals
+    }
+
+    /// Detach the VPCs whose generation `plan` changes or leaves out; the rest stay attached.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Lost`] if the port was lost.
+    pub fn detach_changed(&mut self, plan: &Plan) -> Result<(), Error> {
+        let changed: Vec<Vni> = self
+            .vpcs
+            .iter()
+            .filter(|(vni, generation)| {
+                plan.vpcs
+                    .get(*vni)
+                    .is_none_or(|planned| planned.spec != generation.spec)
+            })
+            .map(|(vni, _)| *vni)
+            .collect();
+        for vni in changed {
+            self.remove(vni)?;
+        }
+        Ok(())
     }
 
     /// How many installed rules have a role `which` accepts.
@@ -941,14 +1079,22 @@ pub fn run(
                 port.vpcs.len(),
             );
         }
-        let in_software = program.as_ref().map_or(0, |p| {
-            p.refused
+        // Every peering the flow filter routes, but those with rules in the NIC: all of them while
+        // offload is off or failed.
+        let in_nic: BTreeSet<Peering> = program.as_ref().map_or_else(BTreeSet::new, |p| {
+            p.denies
                 .iter()
-                .map(|(peering, ..)| *peering)
-                .chain(excluded.iter().copied())
-                .collect::<BTreeSet<_>>()
-                .len()
+                .map(|d| d.peering)
+                .chain(p.rules.iter().map(|r| r.peering))
+                .filter(|peering| !excluded.contains(peering))
+                .collect()
         });
+        let in_software = destinations
+            .iter()
+            .map(|d| Peering::new(d.src_vni, d.dst_vni))
+            .filter(|peering| !in_nic.contains(peering))
+            .collect::<BTreeSet<_>>()
+            .len();
         state(port_name, &port, in_software);
         let mut next_report = clock::deadline(REPORT);
         while !changed() {
@@ -1032,6 +1178,16 @@ fn install_policy(
         // The ACLs, the rate limits and the routing are published apart: compile only from what
         // was seen together.
         if changed() {
+            // Software may already enforce a policy newer than the NIC's: detach the VPCs this
+            // program changes before compiling again, so that a policy republished faster than
+            // it compiles never leaves the NIC enforcing an old one.
+            let detached = match super::Plan::new(&program, vteps, fate) {
+                Ok(plan) => port.detach_changed(&plan),
+                Err(_) => port.clear(),
+            };
+            if let Err(e) = detached {
+                error!("port {port_name}: {e}");
+            }
             break None;
         }
         let mut reported = BTreeSet::new();
@@ -1087,8 +1243,8 @@ fn install_policy(
     (program, excluded)
 }
 
-/// Export the port's offload state: the source VPCs attached, whether the port is lost, and how
-/// many peerings stay in software.
+/// Export the port's offload state: the source VPCs attached, whether the port is lost (and may
+/// still enforce an old policy), and how many peerings have no rule in the NIC.
 fn state(port_name: &str, port: &Port<'_>, in_software: usize) {
     let port_label = port_name.to_string();
     #[allow(clippy::cast_precision_loss)] // counts far below 2^52
@@ -1098,45 +1254,28 @@ fn state(port_name: &str, port: &Port<'_>, in_software: usize) {
         metrics::gauge!("nic_offload_peerings_in_software", "port" => port_label.clone())
             .set(in_software as f64);
     }
-    metrics::gauge!("nic_offload_poisoned", "port" => port_label).set(if port.poisoned() {
-        1.0
-    } else {
-        0.0
-    });
+    let flag = |on: bool| if on { 1.0 } else { 0.0 };
+    metrics::gauge!("nic_offload_poisoned", "port" => port_label.clone())
+        .set(flag(port.poisoned()));
+    // The alarm: the NIC may still enforce a policy software has moved on from.
+    metrics::gauge!("nic_offload_stale_policy", "port" => port_label).set(flag(port.stale()));
 }
 
-/// Log and export what each meter passed and dropped in hardware, and what ACL denies dropped.
+/// Log and export what each meter passed and dropped in hardware, and what ACL denies dropped,
+/// since the port started: counters of removed rules are kept, so the totals never go back.
 fn report(port_name: &str, port: &Port<'_>) {
-    let denied: u64 = port
-        .counts()
-        .iter()
-        .filter(|(role, _)| matches!(role, Role::Deny(_)))
-        .map(|(_, c)| c.packets)
-        .sum();
     metrics::counter!("acl_nic_dropped_packets_total", "port" => port_name.to_string())
-        .absolute(denied);
-    for meter in &port.meters {
-        let mut passed = Counts::default();
-        let mut dropped = Counts::default();
-        for (color, rule) in &meter.rules {
-            let counts = rule.counts().unwrap_or_default();
-            let sum = if *color == Color::Red {
-                &mut dropped
-            } else {
-                &mut passed
-            };
-            sum.packets += counts.packets;
-            sum.bytes += counts.bytes;
-        }
+        .absolute(port.denied_total());
+    for (name, (passed, dropped)) in port.meter_totals() {
         info!(
-            "port {port_name}: meter {} in the NIC: passed {} packets, dropped {} packets",
-            meter.key.name, passed.packets, dropped.packets
+            "port {port_name}: meter {name} in the NIC: passed {} packets, dropped {} packets",
+            passed.packets, dropped.packets
         );
         for (result, counts) in [("conforming", passed), ("over_limit", dropped)] {
             metrics::counter!(
                 "rate_limit_nic_packets_total",
                 "port" => port_name.to_string(),
-                "meter" => meter.key.name.clone(),
+                "meter" => name.clone(),
                 "result" => result
             )
             .absolute(counts.packets);
