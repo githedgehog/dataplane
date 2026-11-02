@@ -22,8 +22,8 @@
 //! then the rate limiter: each decides by its own first match. Groups with no rules are left out.
 //!
 //! Each source VPC's rules are a generation of their own, reached only through its switch rule:
-//! a change of a VPC's policy builds its next generation aside and switches to it, and leaves
-//! other VPCs alone ([`Port`]). The root is fixed: mlx5 steers the root group with firmware,
+//! a change of a VPC's policy detaches it (software alone enforces it meanwhile), builds its next
+//! generation aside and attaches it, and leaves other VPCs alone ([`Port`]). The root is fixed: mlx5 steers the root group with firmware,
 //! slow to change and unable to update a rule in place.
 //!
 //! A switch rule matches the VNI's VTEP address as the outer destination, as software decapsulates
@@ -232,14 +232,14 @@ impl Shape {
                 }
             };
         }
+        // Fragments are left to software: it sees a later fragment's protocol as the fragment,
+        // with no ports, and a first fragment as its protocol, which no NIC rule can tell apart
+        // alike for every rule of a peering. So no NIC rule matches any fragment.
         if self.v6 {
             let addr = |p: Option<Prefix>, len| match p {
                 Some(Prefix::V6(a, l)) => Ipv6Prefix::prefix(a, l),
                 _ => Ipv6Prefix::prefix(std::net::Ipv6Addr::UNSPECIFIED, len),
             };
-            // Fragments are left to software: it sees a later fragment's protocol as the fragment,
-            // with no ports, and a first fragment as its protocol, which no NIC rule can tell
-            // apart alike for every rule of a peering. So no NIC rule matches any fragment.
             let mut ip = Ipv6Match::default()
                 .src(addr(rule.map(|r| r.source), self.source))
                 .dst(addr(rule.map(|r| r.destination), self.destination))
@@ -253,9 +253,6 @@ impl Shape {
                 Some(Prefix::V4(a, l)) => Ipv4Prefix::prefix(a, l),
                 _ => Ipv4Prefix::prefix(Ipv4Addr::UNSPECIFIED, len),
             };
-            // Fragments are left to software: it sees a later fragment's protocol as the fragment,
-            // with no ports, and a first fragment as its protocol, which no NIC rule can tell
-            // apart alike for every rule of a peering. So no NIC rule matches any fragment.
             let mut ip = Ipv4Match::default()
                 .src(addr(rule.map(|r| r.source), self.source))
                 .dst(addr(rule.map(|r| r.destination), self.destination))
@@ -750,8 +747,8 @@ impl Plan {
         vni_denies: &[usize],
         vni_limits: &[usize],
     ) -> PlannedVpc {
-        // mlx5 takes two identical rules into one table, but fails to remove the second: a rule
-        // identical to an earlier one (which it would add nothing to) is left out.
+        // Identical rules are left out, as `Program::compile` does: mlx5 fails to remove the
+        // second.
         let mut seen: Vec<&Match> = Vec::new();
         let vni_denies: Vec<usize> = vni_denies
             .iter()
