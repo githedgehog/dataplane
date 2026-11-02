@@ -588,6 +588,21 @@ pub(crate) enum RawFragment {
     Later(u16),
 }
 
+/// A defect that makes a frame corrupt, which the NIC may drop where software would not.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, bolero::TypeGenerator)]
+pub(crate) enum RawDefect {
+    InnerIpChecksum,
+    InnerLengthLong,
+    InnerLengthShort,
+    InnerIhl,
+    TransportChecksum,
+    UdpLength,
+    OuterIpChecksum,
+    OuterLengthLong,
+    OuterLengthShort,
+    OuterUdpChecksum,
+}
+
 #[derive(Debug, Clone, bolero::TypeGenerator)]
 pub(crate) struct RawFrame {
     /// A rule the frame is aimed at: its peering, and an address in its first destination.
@@ -606,6 +621,8 @@ pub(crate) struct RawFrame {
     pub(crate) vlan: Option<u16>,
     /// The flags of a TCP frame.
     tcp_flags: u8,
+    /// What makes the frame corrupt, if the odds (out of 256) say so: see [`RawFrame::defect`].
+    pub(crate) damage: (u8, RawDefect),
 }
 
 fn ones_complement(header: &[u8]) -> u16 {
@@ -617,6 +634,13 @@ fn ones_complement(header: &[u8]) -> u16 {
         sum = (sum & 0xffff) + (sum >> 16);
     }
     !u16::try_from(sum).unwrap_or(0)
+}
+
+/// `ip`, an IPv4 header, with its checksum computed again.
+fn rechecked(ip: &mut [u8]) {
+    ip[10..12].copy_from_slice(&[0, 0]);
+    let sum = ones_complement(&ip[..20]);
+    ip[10..12].copy_from_slice(&sum.to_be_bytes());
 }
 
 /// The address `bits` picks inside `prefix`.
@@ -642,6 +666,10 @@ pub(crate) struct Frame {
     /// The VPC routing would deliver the inner packet to, if any.
     dst_vni: Option<u32>,
     inner: Vec<u8>,
+    /// A defect of the outer headers, to apply on the wire.
+    outer: Option<RawDefect>,
+    /// Whether a defect made the frame corrupt.
+    pub(crate) corrupt: bool,
 }
 
 impl RawFrame {
@@ -691,6 +719,105 @@ impl RawFrame {
         (src_vpc, src, dst)
     }
 
+    /// `payload` with its TCP or UDP checksum, for addresses `src` and `dst`.
+    fn checksummed(
+        &self,
+        aimed: Option<&RawRule>,
+        proto: u8,
+        mut payload: Vec<u8>,
+        src: &[u8],
+        dst: &[u8],
+    ) -> Vec<u8> {
+        let at = match self.l4_of(aimed) {
+            RawL4::Tcp if payload.len() >= 20 => 16,
+            RawL4::Udp => 6,
+            _ => return payload,
+        };
+        let mut covered = Vec::from(src);
+        covered.extend(dst);
+        covered.extend([0, proto]);
+        covered.extend(u32::try_from(payload.len()).unwrap_or(0).to_be_bytes());
+        covered.extend(&payload);
+        let sum = match ones_complement(&covered) {
+            0 if proto == 17 => 0xffff,
+            sum => sum,
+        };
+        payload[at..at + 2].copy_from_slice(&sum.to_be_bytes());
+        payload
+    }
+
+    /// What makes the frame corrupt, if anything: one frame in eight, so most frames exercise
+    /// the policy rather than validation.
+    pub(crate) fn defect(&self) -> Option<RawDefect> {
+        let (odds, defect) = self.damage;
+        (odds < 32).then_some(defect)
+    }
+
+    /// Apply the frame's inner defect, if any, to `inner`, its IP header at `ip_at` and its
+    /// transport header at `l4_at`: whether it applied.
+    fn damage(
+        &self,
+        inner: &mut [u8],
+        ip_at: usize,
+        l4_at: usize,
+        aimed: Option<&RawRule>,
+        v4: bool,
+    ) -> bool {
+        let Some(defect) = self.defect() else {
+            return false;
+        };
+        let l4 = self.l4_of(aimed);
+        let whole = matches!(self.fragment, RawFragment::Whole);
+        let applies = match defect {
+            RawDefect::InnerIpChecksum | RawDefect::InnerIhl => v4,
+            RawDefect::InnerLengthLong | RawDefect::InnerLengthShort => true,
+            RawDefect::TransportChecksum => whole && matches!(l4, RawL4::Tcp | RawL4::Udp),
+            RawDefect::UdpLength => whole && matches!(l4, RawL4::Udp),
+            _ => false,
+        };
+        if !applies {
+            return false;
+        }
+        let ip = &mut inner[ip_at..];
+        match defect {
+            RawDefect::InnerIpChecksum => ip[10] ^= 0x01,
+            RawDefect::InnerIhl => {
+                ip[0] = 0x44;
+                rechecked(ip);
+            }
+            RawDefect::InnerLengthLong if v4 => {
+                ip[2] ^= 0x01;
+                rechecked(ip);
+            }
+            RawDefect::InnerLengthLong => ip[4] ^= 0x01,
+            RawDefect::InnerLengthShort => {
+                let at = if v4 { 2 } else { 4 };
+                let length = u16::from_be_bytes([ip[at], ip[at + 1]]).saturating_sub(4);
+                ip[at..at + 2].copy_from_slice(&length.to_be_bytes());
+                if v4 {
+                    rechecked(ip);
+                }
+            }
+            RawDefect::TransportChecksum => {
+                inner[l4_at + if matches!(l4, RawL4::Tcp) { 16 } else { 6 }] ^= 0x01;
+            }
+            RawDefect::UdpLength => inner[l4_at + 5] ^= 0x02,
+            _ => {}
+        }
+        true
+    }
+
+    /// The transport of the frame: the aimed rule's protocol, if it names one.
+    fn l4_of(&self, aimed: Option<&RawRule>) -> RawL4 {
+        match aimed.map(|rule| rule.proto) {
+            Some(RawProto::Udp) => RawL4::Udp,
+            Some(RawProto::Tcp | RawProto::TcpFlags(..)) => RawL4::Tcp,
+            Some(RawProto::Icmp) => RawL4::Icmp,
+            Some(RawProto::Other(p)) => RawL4::Other(p),
+            Some(RawProto::Any) | None => self.l4,
+        }
+    }
+
     /// The inner protocol number and the bytes after the IP header.
     fn payload(&self, aimed: Option<&RawRule>, v6: bool) -> (u8, Vec<u8>) {
         let port = |i: u8| PORTS[usize::from(i) % PORTS.len()];
@@ -705,14 +832,7 @@ impl RawFrame {
             aimed_port(aimed.map(|r| &r.src), self.src_port),
             aimed_port(aimed.map(|r| &r.dst), self.dst_port),
         );
-        let l4 = match aimed.map(|rule| rule.proto) {
-            Some(RawProto::Udp) => RawL4::Udp,
-            Some(RawProto::Tcp | RawProto::TcpFlags(..)) => RawL4::Tcp,
-            Some(RawProto::Icmp) => RawL4::Icmp,
-            Some(RawProto::Other(p)) => RawL4::Other(p),
-            Some(RawProto::Any) | None => self.l4,
-        };
-        let (proto, mut payload): (u8, Vec<u8>) = match l4 {
+        let (proto, mut payload): (u8, Vec<u8>) = match self.l4_of(aimed) {
             RawL4::Udp => {
                 let mut h = Vec::from(src_port.to_be_bytes());
                 h.extend(dst_port.to_be_bytes());
@@ -757,7 +877,7 @@ impl RawFrame {
             })
             .map(|peer| VPCS[peer].vni);
 
-        let (proto, payload) = self.payload(aimed, src.is_ipv6());
+        let (proto, mut payload) = self.payload(aimed, src.is_ipv6());
         let (offset, more) = match self.fragment {
             RawFragment::Whole => (0, false),
             RawFragment::First => (0, true),
@@ -769,8 +889,10 @@ impl RawFrame {
             inner.extend([0x81, 0x00]);
             inner.extend((vid & 0x0fff).to_be_bytes());
         }
+        let ip_at = inner.len() + 2;
         match (src, dst) {
             (IpAddr::V4(s), IpAddr::V4(d)) => {
+                payload = self.checksummed(aimed, proto, payload, &s.octets(), &d.octets());
                 inner.extend([0x08, 0x00]);
                 let total = u16::try_from(20 + payload.len()).unwrap_or(u16::MAX);
                 let frag = offset | if more { 0x2000 } else { 0 };
@@ -786,6 +908,7 @@ impl RawFrame {
                 inner.extend(h);
             }
             (IpAddr::V6(s), IpAddr::V6(d)) => {
+                payload = self.checksummed(aimed, proto, payload, &s.octets(), &d.octets());
                 inner.extend([0x86, 0xdd]);
                 let mut ext = Vec::new();
                 let mut next = proto;
@@ -811,11 +934,29 @@ impl RawFrame {
             }
             _ => unreachable!("one family"),
         }
+        let l4_at = inner.len();
         inner.extend(payload);
+        // A UDP or TCP header of zeros (another protocol's payload) is corrupt as it is; so is
+        // an IPv6 mobility header whose payload protocol is 0 rather than 59 (RFC 6275), which
+        // mlx5 follows to a hop-by-hop header running past the packet.
+        let mut corrupt = matches!(self.l4_of(aimed), RawL4::Other(6 | 17))
+            || src.is_ipv6() && matches!(self.l4_of(aimed), RawL4::Other(135));
+        let outer = self.defect().filter(|d| {
+            matches!(
+                d,
+                RawDefect::OuterIpChecksum
+                    | RawDefect::OuterLengthLong
+                    | RawDefect::OuterLengthShort
+                    | RawDefect::OuterUdpChecksum
+            )
+        });
+        corrupt |= outer.is_some() || self.damage(&mut inner, ip_at, l4_at, aimed, src.is_ipv4());
         Frame {
             src_vni: VPCS[src_vpc].vni,
             dst_vni,
             inner,
+            outer,
+            corrupt,
         }
     }
 }
@@ -876,6 +1017,21 @@ impl Frame {
         let v = self.src_vni.to_be_bytes();
         f.extend([0x08, 0, 0, 0, v[1], v[2], v[3], 0]);
         f.extend(&self.inner);
+        let ip = &mut f[14..];
+        match self.outer {
+            Some(RawDefect::OuterIpChecksum) => ip[10] ^= 0x01,
+            Some(RawDefect::OuterLengthLong) => {
+                ip[2] ^= 0x01;
+                rechecked(ip);
+            }
+            Some(RawDefect::OuterLengthShort) => {
+                let total = total.saturating_sub(4);
+                ip[2..4].copy_from_slice(&total.to_be_bytes());
+                rechecked(ip);
+            }
+            Some(RawDefect::OuterUdpChecksum) => ip[20 + 6] ^= 0x01,
+            _ => {}
+        }
         f
     }
 
@@ -944,6 +1100,8 @@ struct Tally {
     exposed: usize,
     /// Cases checked.
     cases: usize,
+    /// Outcomes dropping a corrupt packet.
+    corrupt: usize,
 }
 
 /// The ways `outcome` breaks the cascade contract for a frame `software` treats so.
@@ -956,8 +1114,24 @@ fn violation(
     program: &Program,
     outcome: &Outcome,
     software: &Software,
+    corrupt: bool,
     tally: &mut Tally,
 ) -> Option<String> {
+    // Validation: the NIC may drop a corrupt packet, which software (and the endpoint) would
+    // not; it must not drop any other packet software does not drop.
+    if outcome
+        .path
+        .iter()
+        .any(|role| matches!(role, Role::Corrupt(_)))
+    {
+        if !corrupt && !software.drops() {
+            return Some(format!(
+                "the NIC finds corrupt what is not, and software does not drop: {software:?}"
+            ));
+        }
+        tally.corrupt += 1;
+        return None;
+    }
     let denied = outcome
         .path
         .iter()
@@ -1134,9 +1308,14 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
         let outcomes = plan.outcomes(&frame.wire()).unwrap();
         // Transit VXLAN is the underlay's: the NIC neither drops it nor charges a meter for it.
         for outcome in plan.outcomes(&frame.transit()).unwrap() {
+            // A corrupt or unparsable frame may be dropped as corrupt: the endpoint would drop it
+            // anyway.
+            let corrupt = (frame.corrupt || software == Software::Unclassifiable)
+                && outcome.path.iter().any(|r| matches!(r, Role::Corrupt(_)));
             assert!(
-                outcome.meters.is_empty()
-                    && matches!(outcome.verdict, Verdict::Delivered | Verdict::Untouched),
+                corrupt
+                    || outcome.meters.is_empty()
+                        && matches!(outcome.verdict, Verdict::Delivered | Verdict::Untouched),
                 "transit VXLAN touched\nframe: {raw:?}\noutcome: {outcome:?}"
             );
         }
@@ -1145,7 +1324,7 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
             continue;
         }
         for outcome in &outcomes {
-            if let Some(why) = violation(&program, outcome, &software, &mut tally) {
+            if let Some(why) = violation(&program, outcome, &software, frame.corrupt, &mut tally) {
                 panic!(
                     "{why}\nframe: {raw:?}\ninner: {:02x?}\nsoftware: {software:?}\noutcome: {outcome:?}\nprogram: {program:#?}",
                     frame.inner
@@ -1176,13 +1355,14 @@ fn the_nic_only_ever_does_what_the_software_would() {
             let mut total = total.borrow_mut();
             total.charged += tally.charged;
             total.charged_dropped += tally.charged_dropped;
+            total.corrupt += tally.corrupt;
             total.cases += 1;
             total.exposed += usize::from(exposed);
         });
     let total = total.0.into_inner();
     eprintln!(
-        "differential: {} outcome(s) charged a meter, {} of them for unclassifiable packets; {} of {} cases with other exposes than the VPCs' own prefixes",
-        total.charged, total.charged_dropped, total.exposed, total.cases
+        "differential: {} outcome(s) charged a meter, {} of them for unclassifiable packets; {} dropped a corrupt packet; {} of {} cases with other exposes than the VPCs' own prefixes",
+        total.charged, total.charged_dropped, total.corrupt, total.exposed, total.cases
     );
 }
 
@@ -1215,6 +1395,7 @@ fn aimed(aim: u8, l4: RawL4, fragment: RawFragment) -> RawFrame {
         hop_by_hop: false,
         vlan: None,
         tcp_flags: 0x10,
+        damage: (u8::MAX, RawDefect::InnerIpChecksum),
     }
 }
 
@@ -1611,6 +1792,72 @@ fn acl_logging_keeps_denies_and_meters_in_software() {
                         }));
                     }
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn corrupt_frames_are_dropped_in_the_nic_and_only_they() {
+    use RawDefect::{
+        InnerIhl, InnerIpChecksum, InnerLengthLong, InnerLengthShort, OuterIpChecksum,
+        OuterLengthLong, OuterLengthShort, OuterUdpChecksum, TransportChecksum, UdpLength,
+    };
+    let defects = [
+        InnerIpChecksum,
+        InnerLengthLong,
+        InnerLengthShort,
+        InnerIhl,
+        TransportChecksum,
+        UdpLength,
+        OuterIpChecksum,
+        OuterLengthLong,
+        OuterLengthShort,
+        OuterUdpChecksum,
+    ];
+    let acls = RawAcls::default();
+    for v6 in [false, true] {
+        for (proto, l4) in [(RawProto::Udp, RawL4::Udp), (RawProto::Tcp, RawL4::Tcp)] {
+            let rules = [peering_rule(v6, proto)];
+            let overlay = overlay(&meters(), &rules, &acls).unwrap();
+            let writer: RateLimitWriter<PeeringRules> =
+                RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
+            writer.apply(&overlay, Backend::Reference).unwrap();
+            let filter = AclFilterContext::reference(&overlay).unwrap();
+            let program = Program::compile(
+                &filter,
+                &writer.load(),
+                &destinations(&overlay),
+                &BTreeSet::new(),
+            );
+            let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
+            let corrupt = |o: &Outcome| o.path.iter().any(|r| matches!(r, Role::Corrupt(_)));
+            let intact = aimed(0, l4, RawFragment::Whole).frame(&rules);
+            let outcomes = plan.outcomes(&intact.wire()).unwrap();
+            assert!(
+                !outcomes.iter().any(corrupt),
+                "v6 {v6}, {l4:?}, intact: {outcomes:?}"
+            );
+            for defect in defects {
+                let raw = RawFrame {
+                    damage: (0, defect),
+                    ..aimed(0, l4, RawFragment::Whole)
+                };
+                let frame = raw.frame(&rules);
+                let outcomes = plan.outcomes(&frame.wire()).unwrap();
+                let not_applicable = v6 && matches!(defect, InnerIpChecksum | InnerIhl)
+                    || matches!((defect, l4), (UdpLength, RawL4::Tcp));
+                assert_eq!(
+                    frame.corrupt, !not_applicable,
+                    "v6 {v6}, {l4:?}, {defect:?}"
+                );
+                assert!(
+                    !frame.corrupt
+                        || outcomes
+                            .iter()
+                            .all(|o| corrupt(o) && o.verdict == Verdict::Dropped),
+                    "v6 {v6}, {l4:?}, {defect:?}: {outcomes:?}"
+                );
             }
         }
     }

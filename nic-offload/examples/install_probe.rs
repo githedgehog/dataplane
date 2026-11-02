@@ -37,6 +37,7 @@ fn program(rules: Vec<PoliceRule>) -> Program {
         denies: Vec::new(),
         refused: Vec::new(),
         passes: std::collections::BTreeMap::new(),
+        validate: false,
     }
 }
 

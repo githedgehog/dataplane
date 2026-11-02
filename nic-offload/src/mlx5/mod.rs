@@ -4,7 +4,14 @@
 //! The mlx5 backend: a [`Program`] lowered onto hardware steering (`dv_flow_en=2`, template API).
 //!
 //! ```text
-//! root        eth / ipv4 / udp dst 4789                       -> jump switch
+//! root        eth / ipv4 / udp dst 4789                       -> jump validate
+//! validate    integrity checks, by category (no negative matching):
+//!             0: inner unfragmented TCP/UDP, every verdict    -> jump switch
+//!             1: inner unfragmented TCP/UDP                   -> count / drop
+//!             2: inner IP, its layer 3 verdicts               -> jump switch
+//!             3: inner IP                                     -> count / drop
+//!             4: VXLAN, the outer verdicts                    -> jump switch
+//!             5: VXLAN                                        -> count / drop
 //! switch      one rule per source VPC: eth / ipv4 dst vtep / udp / vxlan vni
 //!                                                             -> jump to its generation
 //!             last: eth                                       -> the driver's fate (software)
@@ -18,6 +25,10 @@
 //!             meter color red                                 -> count / drop
 //! ```
 //!
+//! Validation drops corrupt packets, which no other rule then sees: the one thing the NIC drops
+//! that software would not (the endpoints would). Every check passes the outer headers' verdicts
+//! too. Should the NIC refuse the checks, the root jumps to the switch instead.
+//!
 //! A frame goes through the denies, then the rate limits, as a packet goes through the ACL filter,
 //! then the rate limiter: each decides by its own first match. Groups with no rules are left out.
 //!
@@ -28,7 +39,7 @@
 //!
 //! A switch rule matches the VNI's VTEP address as the outer destination, as software decapsulates
 //! only VXLAN addressed to it: other VXLAN through the gateway is transit, routed in the underlay
-//! untouched, and the NIC leaves it to software too.
+//! untouched, and the NIC leaves it to software too (but for dropping it if corrupt).
 //!
 //! [`Plan`] is the layout as data, with groups named for what they are for ([`Group`]); they are
 //! numbered when installed. Limits: IPv4 underlay only.
@@ -42,8 +53,8 @@ use dpdk::flow::template::{
     TemplateConfig, TemplateError,
 };
 use dpdk::flow::{
-    EthMatch, FlowError, FlowGroup, Ipv4Match, Ipv4Prefix, Ipv6Match, Ipv6Prefix, Priority,
-    TcpMatch, UdpMatch, VxlanMatch,
+    EthMatch, FlowError, FlowGroup, IntegrityMatch as I, Ipv4Match, Ipv4Prefix, Ipv6Match,
+    Ipv6Prefix, Priority, TcpMatch, UdpMatch, VxlanMatch,
 };
 use net::vxlan::Vni;
 use rate_limit::Unit;
@@ -70,6 +81,8 @@ pub const PARSER: Parser = Parser {
 
 /// The switch group's number; the root is group 0.
 pub(crate) const SWITCH: FlowGroup = FlowGroup(1);
+/// The validation group's number.
+pub(crate) const VALIDATE: FlowGroup = FlowGroup(2);
 
 /// Failures programming the NIC; the port then falls back to software alone.
 #[derive(Debug, thiserror::Error)]
@@ -452,6 +465,8 @@ pub use install::{Installed, Port, Reconciled, run, with_installed};
 pub enum Group {
     /// The root: VXLAN, to the switch.
     Root,
+    /// Integrity checks, to the switch.
+    Validate,
     /// One rule per source VPC, to its generation.
     Switch,
     /// A source VPC's ACL denies.
@@ -462,11 +477,44 @@ pub enum Group {
     Color(usize),
 }
 
+/// What an integrity check is about.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Check {
+    /// An inner unfragmented IPv4 TCP or UDP packet.
+    Ipv4Transport,
+    /// An inner unfragmented IPv6 TCP or UDP packet.
+    Ipv6Transport,
+    /// Any other inner IPv4 packet: its layer 3.
+    Ipv4,
+    /// Any other inner IPv6 packet: its layer 3.
+    Ipv6,
+    /// Any other VXLAN packet: the outer headers.
+    Tunnel,
+}
+
+impl Check {
+    /// How it is reported.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Check::Ipv4Transport => "ipv4_transport",
+            Check::Ipv6Transport => "ipv6_transport",
+            Check::Ipv4 => "ipv4",
+            Check::Ipv6 => "ipv6",
+            Check::Tunnel => "tunnel",
+        }
+    }
+}
+
 /// What a rule is for, to report its counts and refusals.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Role {
-    /// The root rule, which takes VXLAN to the switch.
+    /// The root rule, which takes VXLAN to validation (or the switch).
     Root,
+    /// A check passed: on to the switch.
+    Intact(Check),
+    /// A check failed: counted and dropped.
+    Corrupt(Check),
     /// The switch rule of a source VPC.
     Switch(Vni),
     /// An ACL deny of the program, by index into [`Program::denies`].
@@ -578,9 +626,11 @@ pub struct Plan {
     pub actions: Vec<Vec<TemplateAction>>,
     /// The meters, and their color groups.
     pub meters: Vec<PlannedMeter>,
-    /// The root, switch and catch-all tables, if any VPC is offloaded; the switch table's rules
+    /// The root, switch and catch-all tables, if anything is offloaded; the switch table's rules
     /// are the VPCs' switch rules.
     pub fixed: Vec<PlannedTable>,
+    /// The validation tables, if corrupt packets are dropped.
+    pub validation: Vec<PlannedTable>,
     /// The source VPCs' generations.
     pub vpcs: BTreeMap<Vni, PlannedVpc>,
 }
@@ -598,6 +648,7 @@ const POLICE_RULE: usize = 2;
 const DELIVER: usize = 3;
 const PASS: usize = 4;
 const DISCARD: usize = 5;
+const TO_VALIDATE: usize = 6;
 
 fn root_pattern() -> Pattern<Complete> {
     Pattern::new()
@@ -646,6 +697,90 @@ fn pass_matches(vni: Vni, passes: &[Prefix]) -> Vec<Match> {
             }
         })
         .collect()
+}
+
+const TCP: u8 = 6;
+const UDP: u8 = 17;
+
+/// The pattern of an integrity check: VXLAN with `verdicts`, around `inner`: any frame (`None`),
+/// or an untagged IPv6 (`true`) or IPv4 packet, unfragmented of protocol `proto` if given.
+fn checked(verdicts: &[I], inner: Option<(bool, Option<u8>)>) -> Pattern<Complete> {
+    let mut pattern = Pattern::new();
+    for verdict in verdicts {
+        pattern = pattern.integrity(*verdict);
+    }
+    let tunnel = pattern
+        .eth(EthMatch::default())
+        .ipv4(Ipv4Match::default())
+        .udp(UdpMatch::default().dst(VXLAN_PORT))
+        .vxlan(VxlanMatch::default());
+    let Some((v6, proto)) = inner else {
+        return tunnel.complete();
+    };
+    // Software does not parse a tagged inner frame: only the tunnel's check takes one.
+    let inner = tunnel.inner_eth(EthMatch::default().tagged(false));
+    match (v6, proto) {
+        (false, None) => inner.ipv4(Ipv4Match::default()).complete(),
+        (false, Some(p)) => inner
+            .ipv4(Ipv4Match::default().unfragmented().proto(p))
+            .complete(),
+        (true, None) => inner.ipv6(Ipv6Match::default()).complete(),
+        (true, Some(p)) => inner
+            .ipv6(Ipv6Match::default().unfragmented().proto(p))
+            .complete(),
+    }
+}
+
+/// The validation group's checks: by priority, what is checked, whether the rules pass it, and
+/// their patterns. A NIC cannot match a verdict failing, so each category's passing rules come
+/// first and a rule matching the category alone drops the rest; the layout was qualified on a
+/// BlueField-3 (`integrity_rule_set`, `integrity_plan`).
+fn validation_layout() -> Vec<(u32, Check, bool, Vec<Pattern<Complete>>)> {
+    use Check::{Ipv4, Ipv4Transport, Ipv6, Ipv6Transport, Tunnel};
+    let outer = I::outer(I::L3_OK | I::IPV4_CSUM_OK | I::L4_OK | I::L4_CSUM_OK);
+    let transport = I::L3_OK | I::L4_OK | I::L4_CSUM_OK;
+    let both = |verdicts: &[I], v6| -> Vec<Pattern<Complete>> {
+        [TCP, UDP]
+            .into_iter()
+            .map(|proto| checked(verdicts, Some((v6, Some(proto)))))
+            .collect()
+    };
+    // (priority, what is checked, whether the rules pass it, their patterns)
+    vec![
+        (
+            0,
+            Ipv4Transport,
+            true,
+            both(&[outer, I::inner(transport | I::IPV4_CSUM_OK)], false),
+        ),
+        (
+            0,
+            Ipv6Transport,
+            true,
+            both(&[outer, I::inner(transport)], true),
+        ),
+        (1, Ipv4Transport, false, both(&[], false)),
+        (1, Ipv6Transport, false, both(&[], true)),
+        (
+            2,
+            Ipv4,
+            true,
+            vec![checked(
+                &[outer, I::inner(I::L3_OK | I::IPV4_CSUM_OK)],
+                Some((false, None)),
+            )],
+        ),
+        (
+            2,
+            Ipv6,
+            true,
+            vec![checked(&[outer, I::inner(I::L3_OK)], Some((true, None)))],
+        ),
+        (3, Ipv4, false, vec![checked(&[], Some((false, None)))]),
+        (3, Ipv6, false, vec![checked(&[], Some((true, None)))]),
+        (4, Tunnel, true, vec![checked(&[outer], None)]),
+        (5, Tunnel, false, vec![checked(&[], None)]),
+    ]
 }
 
 /// A rule of the program to lay out in a classifying group.
@@ -795,9 +930,11 @@ impl Plan {
                 vec![fate.clone()],
                 vec![TemplateAction::Count, fate.clone()],
                 vec![TemplateAction::Count, TemplateAction::Drop],
+                vec![TemplateAction::Jump(VALIDATE)],
             ],
             meters: Vec::new(),
             fixed: Vec::new(),
+            validation: Vec::new(),
             vpcs: BTreeMap::new(),
         };
         for (index, meter) in program.meters.iter().enumerate() {
@@ -830,7 +967,10 @@ impl Plan {
             );
             plan.vpcs.insert(vni, vpc);
         }
-        if !plan.vpcs.is_empty() {
+        if program.validate {
+            plan.validation = plan.validation_tables();
+        }
+        if !plan.vpcs.is_empty() || program.validate {
             plan.fixed = plan.fixed_tables();
         }
         Ok(plan)
@@ -955,8 +1095,14 @@ impl Plan {
                 role: Role::Switch(vni),
             })
             .collect();
-        vec![
-            single(
+        // The root's second actions template is for a port whose NIC refused validation.
+        let root = PlannedTable {
+            actions: if self.validation.is_empty() {
+                vec![TO_SWITCH]
+            } else {
+                vec![TO_VALIDATE, TO_SWITCH]
+            },
+            ..single(
                 Group::Root,
                 0,
                 ROOT,
@@ -964,7 +1110,10 @@ impl Plan {
                 root_pattern(),
                 Vec::new(),
                 Role::Root,
-            ),
+            )
+        };
+        vec![
+            root,
             PlannedTable {
                 group: Group::Switch,
                 priority: Priority(0),
@@ -985,10 +1134,44 @@ impl Plan {
         ]
     }
 
+    /// The validation group: integrity checks by category, in priority order, each passing the
+    /// outer headers' verdicts too ([`validation_layout`]).
+    fn validation_tables(&mut self) -> Vec<PlannedTable> {
+        // Patterns are not cloned: the layout is made once for the templates, once for the rules.
+        validation_layout()
+            .into_iter()
+            .zip(validation_layout())
+            .map(|((priority, check, intact, templates), (.., patterns))| {
+                self.patterns.extend(templates.into_iter().take(1));
+                PlannedTable {
+                    group: Group::Validate,
+                    priority: Priority(priority),
+                    capacity: u32::try_from(patterns.len()).unwrap_or(u32::MAX),
+                    pattern: self.patterns.len() - 1,
+                    actions: vec![if intact { TO_SWITCH } else { DISCARD }],
+                    rules: patterns
+                        .into_iter()
+                        .map(|pattern| PlannedRule {
+                            pattern,
+                            actions: 0,
+                            args: Vec::new(),
+                            role: if intact {
+                                Role::Intact(check)
+                            } else {
+                                Role::Corrupt(check)
+                            },
+                        })
+                        .collect(),
+                }
+            })
+            .collect()
+    }
+
     /// Every table of the plan.
     pub fn tables(&self) -> impl Iterator<Item = &PlannedTable> {
         self.fixed
             .iter()
+            .chain(&self.validation)
             .chain(self.vpcs.values().flat_map(|vpc| &vpc.tables))
             .chain(self.meters.iter().map(|meter| &meter.colors))
     }
@@ -997,6 +1180,7 @@ impl Plan {
     pub fn tables_mut(&mut self) -> impl Iterator<Item = &mut PlannedTable> {
         self.fixed
             .iter_mut()
+            .chain(&mut self.validation)
             .chain(self.vpcs.values_mut().flat_map(|vpc| &mut vpc.tables))
             .chain(self.meters.iter_mut().map(|meter| &mut meter.colors))
     }

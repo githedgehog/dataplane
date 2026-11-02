@@ -20,8 +20,8 @@ use rekon::{SyncCreate, SyncObserve, SyncReconcile, SyncRemove};
 use tracing::{error, info, warn};
 
 use super::{
-    Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, RESOURCES, Role, SWITCH, VpcSpec,
-    unknown_state,
+    Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, RESOURCES, Role, SWITCH, VALIDATE,
+    VpcSpec, unknown_state,
 };
 use crate::Policy;
 use crate::program::{Origin, Peering, Program};
@@ -48,7 +48,8 @@ type Table<'t> = SharedTable<'t, Ingress>;
 static FORGOTTEN: concurrency::process_global::Mutex<Vec<usize>> =
     concurrency::process_global::Mutex::new(Vec::new());
 
-/// Flow group numbers: 0 is the root, 1 the switch, the rest are handed out and taken back.
+/// Flow group numbers: 0 is the root, 1 the switch, 2 validation, the rest are handed out and
+/// taken back.
 #[derive(Debug)]
 struct Groups {
     next: u32,
@@ -79,6 +80,14 @@ struct Switch<'t> {
     rules: BTreeMap<Vni, Rule<'t>>,
     catch_all: Rule<'t>,
     table: Table<'t>,
+}
+
+/// The validation group's rules.
+#[derive(Debug)]
+struct Validation<'t> {
+    // Fields drop in order: the rules before their tables.
+    rules: Vec<(Role, Rule<'t>)>,
+    tables: Vec<Table<'t>>,
 }
 
 /// A source VPC's generation of rules.
@@ -168,6 +177,7 @@ pub struct Reconciled {
 pub struct Port<'t> {
     // Fields drop in order: the root first, so no packet enters what goes next.
     root: Option<Rule<'t>>,
+    validation: Option<Validation<'t>>,
     switch: Option<Switch<'t>>,
     vpcs: BTreeMap<Vni, Generation<'t>>,
     meters: Vec<InstalledMeter<'t>>,
@@ -178,6 +188,8 @@ pub struct Port<'t> {
     next_profile: u32,
     /// For the plan being reconciled: its meters' indices into `meters`.
     plan_meters: Vec<Option<usize>>,
+    /// Why the NIC refused validation, if it did: the root then jumps to the switch, for good.
+    validation_refused: Option<Error>,
     poisoned: bool,
     /// A root rule whose insertion or removal was not confirmed may still be in the NIC.
     root_lingers: bool,
@@ -195,6 +207,7 @@ impl<'t> Port<'t> {
     pub fn new(flows: &'t TemplateFlows<'t>) -> Port<'t> {
         Port {
             root: None,
+            validation: None,
             switch: None,
             vpcs: BTreeMap::new(),
             meters: Vec::new(),
@@ -202,11 +215,12 @@ impl<'t> Port<'t> {
             patterns: Vec::new(),
             actions: Vec::new(),
             groups: Groups {
-                next: 2,
+                next: 3,
                 free: Vec::new(),
             },
             next_profile: 0,
             plan_meters: Vec::new(),
+            validation_refused: None,
             poisoned: false,
             root_lingers: false,
             switch_lingers: false,
@@ -434,6 +448,7 @@ impl<'t> Port<'t> {
         match group {
             Group::Root => Ok(FlowGroup(0)),
             Group::Switch => Ok(SWITCH),
+            Group::Validate => Ok(VALIDATE),
             Group::Color(m) => Ok(self.installed_meter(m)?.group),
             Group::Deny(_) | Group::Police(_) => {
                 own.get(&group).copied().ok_or(Error::NoSuchGroup(group))
@@ -441,7 +456,48 @@ impl<'t> Port<'t> {
         }
     }
 
-    /// Make sure of the switch table, its catch-all and the root, in that order.
+    /// Install `plan`'s validation group. What the NIC refuses of it is removed again.
+    fn validation(&mut self, plan: &Plan) -> Result<Validation<'t>, Error> {
+        let mut validation = Validation {
+            rules: Vec::new(),
+            tables: Vec::new(),
+        };
+        let mut refused = None;
+        'tables: for planned in &plan.validation {
+            let table = match self.table(plan, planned, VALIDATE) {
+                Ok(table) => table,
+                Err(e) => {
+                    refused = Some(e);
+                    break;
+                }
+            };
+            for rule in &planned.rules {
+                match self.insert("inserting a validation rule", &table, rule, &[])? {
+                    Ok(installed) => validation.rules.push((rule.role, installed)),
+                    Err(e) => {
+                        refused = Some(e);
+                        validation.tables.push(table);
+                        break 'tables;
+                    }
+                }
+            }
+            validation.tables.push(table);
+        }
+        let Some(refused) = refused else {
+            return Ok(validation);
+        };
+        let Validation { rules, tables } = validation;
+        self.destroy_rules("removing validation rules", rules)?;
+        self.destroy_tables("removing validation tables", tables, [])?;
+        Err(refused)
+    }
+
+    /// Whether the root should jump to validation for `plan`.
+    fn validates(&self, plan: &Plan) -> bool {
+        !plan.validation.is_empty() && self.validation_refused.is_none()
+    }
+
+    /// Make sure of the switch table, its catch-all, validation and the root, in that order.
     fn fixed(&mut self, plan: &Plan) -> Result<(), Error> {
         let [root, switch, catch_all] = plan.fixed.as_slice() else {
             return Ok(());
@@ -461,10 +517,27 @@ impl<'t> Port<'t> {
                 table,
             });
         }
+        if self.validates(plan) && self.validation.is_none() {
+            match self.validation(plan) {
+                Ok(validation) => self.validation = Some(validation),
+                Err(e @ (Error::Lost { .. } | Error::Poisoned)) => return Err(e),
+                // What was installed of it was removed again (and unreachable meanwhile).
+                Err(e) => {
+                    warn!("the NIC refused validation, so it does not drop corrupt packets: {e}");
+                    self.validation_refused = Some(e);
+                }
+            }
+        }
         if self.root.is_none() {
             let table = self.table(plan, root, FlowGroup(0))?;
             let rule = &root.rules[0];
-            match table.insert(0, &rule.pattern, rule.actions, &[]) {
+            // The root's second actions template, if any, jumps past validation.
+            let actions = if self.validation.is_some() {
+                rule.actions
+            } else {
+                root.actions.len() - 1
+            };
+            match table.insert(0, &rule.pattern, actions, &[]) {
                 Ok(installed) => self.root = Some(installed),
                 Err(e) if unknown_state(&e) => {
                     self.root_lingers = true;
@@ -703,6 +776,11 @@ impl<'t> Port<'t> {
             self.root_lingers = true;
             return Err(self.lose("removing the root rule", e));
         }
+        if let Some(validation) = self.validation.take() {
+            let Validation { rules, tables } = validation;
+            self.destroy_rules("removing validation rules", rules)?;
+            self.destroy_tables("removing validation tables", tables, [])?;
+        }
         let vnis: Vec<Vni> = self.vpcs.keys().copied().collect();
         for vni in vnis {
             self.remove(vni)?;
@@ -742,6 +820,7 @@ impl<'t> Port<'t> {
             .values()
             .flat_map(|g| &g.rules)
             .filter(|(role, _)| matches!(role, Role::Deny(_)))
+            .chain(self.validation.iter().flat_map(|v| &v.rules))
             .map(|(role, rule)| (*role, rule.counts().unwrap_or_default()))
             .collect();
         for (index, installed) in self.plan_meters.iter().enumerate() {
@@ -976,10 +1055,13 @@ impl SyncReconcile for Port<'_> {
                 self.remove(*vni)?;
             }
         }
-        if plan.vpcs.is_empty() {
+        // Validation joins or leaves only with the root, which is slow to change: start over.
+        if plan.fixed.is_empty() || self.validation.is_some() != self.validates(plan) {
             self.clear()?;
-            self.retired_meters.clear();
             self.prune();
+        }
+        if plan.fixed.is_empty() {
+            self.retired_meters.clear();
             return Ok(Reconciled::default());
         }
         // Meters the plan does not want go before new ones are made, which may need their room:
@@ -1175,7 +1257,10 @@ fn peerings(program: &Program, refused: &[(Role, Error)]) -> Result<BTreeSet<Pee
                 .filter(|r| r.meter == meter)
                 .map(|r| r.peering)
                 .collect(),
-            Role::Root | Role::CatchAll(Group::Root | Group::Switch | Group::Color(_)) => {
+            Role::Root
+            | Role::Intact(_)
+            | Role::Corrupt(_)
+            | Role::CatchAll(Group::Root | Group::Switch | Group::Validate | Group::Color(_)) => {
                 Vec::new()
             }
         };
@@ -1235,6 +1320,12 @@ pub fn run(
             vteps: &vteps,
         };
         let program = install_policy(&mut port, port_name, &seen, fate, &changed);
+        if program.as_ref().is_some_and(|p| p.validate) {
+            match &port.validation_refused {
+                None => info!("port {port_name}: the NIC drops corrupt VXLAN packets"),
+                Some(why) => info!("port {port_name}: the NIC does not validate packets: {why}"),
+            }
+        }
         if let Some(program) = &program
             && (!program.denies.is_empty() || !program.rules.is_empty())
         {
@@ -1428,6 +1519,23 @@ fn state(port_name: &str, port: &Port<'_>, in_software: usize) {
 fn report(port_name: &str, port: &Port<'_>) {
     metrics::counter!("acl_nic_dropped_packets_total", "port" => port_name.to_string())
         .absolute(port.denied_total());
+    if let Some(validation) = &port.validation {
+        let mut total = 0;
+        for (role, rule) in &validation.rules {
+            let Role::Corrupt(check) = role else {
+                continue;
+            };
+            let packets = rule.counts().unwrap_or_default().packets;
+            total += packets;
+            metrics::counter!(
+                "integrity_nic_dropped_packets_total",
+                "port" => port_name.to_string(),
+                "check" => check.name()
+            )
+            .absolute(packets);
+        }
+        info!("port {port_name}: the NIC dropped {total} corrupt packets");
+    }
     for (name, (passed, dropped)) in port.meter_totals() {
         info!(
             "port {port_name}: meter {name} in the NIC: passed {} packets, dropped {} packets",
