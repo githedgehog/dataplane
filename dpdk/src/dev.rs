@@ -1367,6 +1367,28 @@ impl<'eal, S: DevState> Dev<'eal, S> {
         &mut self.lifecycle.templates
     }
 
+    /// The DPDK heaps the device's pools, rings and driver allocations draw on, by NUMA node: its
+    /// own node's, or every node's EAL has a heap on if the device's node is unknown.
+    #[must_use]
+    pub fn heaps(&self) -> Vec<(crate::socket::SocketId, crate::socket::Heap)> {
+        let own = self
+            .info()
+            .index()
+            .socket_id()
+            .ok()
+            .filter(|socket| *socket != crate::socket::SocketId::ANY);
+        match own {
+            Some(socket) => socket
+                .heap()
+                .map(|heap| (socket, heap))
+                .into_iter()
+                .collect(),
+            None => crate::socket::SocketId::iter()
+                .filter_map(|socket| Some((socket, socket.heap()?)))
+                .collect(),
+        }
+    }
+
     /// Information about the underlying port.
     #[must_use]
     pub fn info(&self) -> &DevInfo<'eal> {
