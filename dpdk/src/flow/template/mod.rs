@@ -146,6 +146,9 @@ pub enum TemplateError {
     /// [`TemplateRule::counts`] on a rule without [`TemplateAction::Count`].
     #[error("the rule does not count")]
     NotCounted,
+    /// A shared table was destroyed while rules still used it.
+    #[error("the table still has rules")]
+    InUse,
     /// A rule was updated through a table it is not in.
     #[error("the rule is not in this table")]
     ForeignRule,
