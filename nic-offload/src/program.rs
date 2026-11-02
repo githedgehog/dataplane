@@ -233,6 +233,8 @@ impl std::fmt::Display for Origin {
 /// Why a peering's policy stays in software only: something of it no NIC may enforce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
+    /// ACL logging needs packets to reach software, including packets a NIC meter could drop.
+    Logging,
     /// The ACL denies by default: whether a packet no rule matches passes depends on flow state
     /// (the replies of flows an allow opened).
     DefaultDeny,
@@ -576,11 +578,17 @@ impl Compilation {
         prefix: impl Fn(PrefixSpec<I>) -> Prefix + Copy,
     ) {
         for (at, row) in rows.iter().enumerate() {
+            let peering = Peering::new(row.rule.src_vni.value, row.rule.dst_vni.value);
+            let origin = Origin::Acl { v6, row: at };
+            // Logged allows also need software: a NIC meter could otherwise drop them before
+            // the ACL filter records its verdict. Keep both directions of the peering there.
+            if row.action.logs() {
+                self.refused.push((peering, origin, Refusal::Logging));
+                continue;
+            }
             if row.action.action() != AclAction::Deny {
                 continue;
             }
-            let peering = Peering::new(row.rule.src_vni.value, row.rule.dst_vni.value);
-            let origin = Origin::Acl { v6, row: at };
             // A direct match is final in the ACL filter, whatever the flow state, so a deny is
             // safe if nothing before it could allow some of its traffic.
             if rows[..at].iter().any(|earlier| {
