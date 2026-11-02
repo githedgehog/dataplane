@@ -459,8 +459,27 @@ pub enum DriverConfigSection {
 /// Shared by init, which reserves the memory, and the dataplane, which allocates it, so that the
 /// two cannot drift apart.
 pub mod dpdk_memory {
-    /// Receive descriptors per queue, unless an interface's `/rxd=N` says otherwise.
+    /// Receive descriptors per queue, unless an interface's `/rxd=N` says otherwise, or init finds
+    /// room for a deeper ring (see [`RX_DESCRIPTOR_CHOICES`]).
     pub const RX_DESCRIPTORS: u16 = 1024;
+
+    /// The receive descriptors per queue init picks from for an interface without `/rxd=N`,
+    /// deepest first: the deepest whose pools fit the hugepages with [`RESERVE_MIB`] to spare.
+    /// Deeper rings absorb longer stalls; past 4096 they only cost memory.
+    pub const RX_DESCRIPTOR_CHOICES: [u16; 3] = [4096, 2048, RX_DESCRIPTORS];
+
+    /// Hugepage memory init keeps free beyond the pools and [`OVERHEAD_MIB`] before it picks a
+    /// deeper ring than [`RX_DESCRIPTORS`]: for the ACL classifiers (built again beside the old
+    /// ones on every policy change), NIC offload's hardware steering, and what else the drivers
+    /// allocate.
+    ///
+    /// Measured on a BF-3 with two ports and NIC offload (2026-11-02): beyond the pools, the heap
+    /// held about 95 MiB plus 3.6 MiB per worker (about 210 MiB at 32 workers; NIC offload's
+    /// reservation of 65,536 meters a port is 15 MiB of that), and a policy of 16,384 ACL denies
+    /// and 2,048 rate limits, all offloaded, at most 99 MiB more, through a change of every rule.
+    /// The worst case, about 310 MiB, is within [`OVERHEAD_MIB`] and this, with room for larger
+    /// policies.
+    pub const RESERVE_MIB: u64 = 512;
 
     /// Transmit descriptors per queue.
     pub const TX_DESCRIPTORS: u16 = 1024;

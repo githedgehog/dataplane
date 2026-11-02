@@ -22,7 +22,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use args::HugepagePlan;
-use args::dpdk_memory::required_mib;
+use args::dpdk_memory::{RESERVE_MIB, RX_DESCRIPTOR_CHOICES, RX_DESCRIPTORS, required_mib};
 use hardware::pci::address::PciAddress;
 use tracing::{debug, info, warn};
 
@@ -108,27 +108,23 @@ fn topology_nodes(scan: Option<&hardware::Node>) -> Option<Vec<u32>> {
     nodes.filter(|nodes| !nodes.is_empty())
 }
 
-/// Decide where the memory goes, and how much, before changing any pool.
-///
-/// `required(devices)` is the memory one node needs for those devices' ports. Placement that cannot be
-/// established degrades to [`Placement::Anywhere`] with a warning: the NICs still work, only
-/// without locality.
-fn place(
+/// Which NUMA node each device's memory belongs on, grouped by node, or `None` if that cannot be
+/// established: the memory then goes on no particular node, with a warning (the NICs still work,
+/// only without locality).
+fn locate(
     devices: &[PciAddress],
     topology: Option<&[u32]>,
     mut affinity: impl FnMut(PciAddress) -> Result<i32, String>,
-    required: impl Fn(&[PciAddress]) -> u64,
-) -> Result<Placement, String> {
+) -> Result<Option<BTreeMap<u32, Vec<PciAddress>>>, String> {
     if devices.is_empty() {
         return Err("no devices were supplied for hugepage reservation".into());
     }
-    let anywhere = || Placement::Anywhere(required(devices));
     let Some(topology) = topology else {
         warn!(
             "the NUMA topology is unknown; reserving hugepages on no particular node, so the NICs \
              run without memory locality"
         );
-        return Ok(anywhere());
+        return Ok(None);
     };
     let mut on_node: BTreeMap<u32, Vec<PciAddress>> = BTreeMap::new();
     for &address in devices {
@@ -143,7 +139,7 @@ fn place(
                      reserving hugepages on no particular node, so the NICs run without memory \
                      locality"
                 );
-                return Ok(anywhere());
+                return Ok(None);
             }
             (reported, _) => u32::try_from(reported).map_err(|_| {
                 format!("PCI device {address} reports invalid NUMA node {reported}")
@@ -154,16 +150,46 @@ fn place(
                 "PCI device {address} reports NUMA node {node}, which the hardware scan does not \
                  have; reserving hugepages on no particular node"
             );
-            return Ok(anywhere());
+            return Ok(None);
         }
         on_node.entry(node).or_default().push(address);
     }
-    Ok(Placement::Nodes(
-        on_node
-            .into_iter()
-            .map(|(node, devices)| (node, required(&devices)))
-            .collect(),
+    Ok(Some(on_node))
+}
+
+/// Decide where the memory goes, and how much, before changing any pool.
+///
+/// `required(devices)` is the memory one node needs for those devices' ports; see [`locate`].
+#[cfg(test)]
+fn place(
+    devices: &[PciAddress],
+    topology: Option<&[u32]>,
+    affinity: impl FnMut(PciAddress) -> Result<i32, String>,
+    required: impl Fn(&[PciAddress]) -> u64,
+) -> Result<Placement, String> {
+    Ok(placement(
+        devices,
+        locate(devices, topology, affinity)?.as_ref(),
+        required,
     ))
+}
+
+/// The memory `required` for each group of `located` devices, or for all `devices` on no
+/// particular node.
+fn placement(
+    devices: &[PciAddress],
+    located: Option<&BTreeMap<u32, Vec<PciAddress>>>,
+    required: impl Fn(&[PciAddress]) -> u64,
+) -> Placement {
+    match located {
+        None => Placement::Anywhere(required(devices)),
+        Some(nodes) => Placement::Nodes(
+            nodes
+                .iter()
+                .map(|(node, devices)| (*node, required(devices)))
+                .collect(),
+        ),
+    }
 }
 
 fn read_count(path: &Path) -> Result<u64, String> {
@@ -265,12 +291,22 @@ impl Pools for SysfsPools {
 /// what the TLB wants.
 fn plan_for(
     placement: &Placement,
+    allowance: impl FnMut(u64) -> Result<Option<u64>, String>,
+    pools: &mut impl Pools,
+) -> Result<HugepagePlan, String> {
+    plan_with(&[ONE_GIB_KB, TWO_MIB_KB], placement, allowance, pools)
+}
+
+/// [`plan_for`], trying only the page sizes in `sizes_kb`, in order.
+fn plan_with(
+    sizes_kb: &[u64],
+    placement: &Placement,
     mut allowance: impl FnMut(u64) -> Result<Option<u64>, String>,
     pools: &mut impl Pools,
 ) -> Result<HugepagePlan, String> {
     let total_mib = placement.total_mib()?;
     let mut failures = Vec::new();
-    for size_kb in [ONE_GIB_KB, TWO_MIB_KB] {
+    for &size_kb in sizes_kb {
         let mut grown: Vec<(Pool, u64)> = Vec::new();
         let attempt = (|| -> Result<HugepagePlan, String> {
             // hugetlb limits are per cgroup, not per node, so the whole placement counts.
@@ -321,7 +357,7 @@ fn plan_for(
                         warn!("{e}; that memory stays pinned until the pool is shrunk by hand");
                     }
                 }
-                info!("cannot use {size_kb} kB hugepages: {error}");
+                debug!("cannot use {size_kb} kB hugepages: {error}");
                 failures.push(format!("{size_kb} kB: {error}"));
             }
         }
@@ -332,50 +368,210 @@ fn plan_for(
     ))
 }
 
-/// Prepare the full hugepage requirement, respecting the administrator's cgroup limits.
+/// The hugepages reserved for EAL, and the receive descriptors chosen for the ports that named
+/// none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reservation {
+    pub plan: HugepagePlan,
+    /// By port, for those without `/rxd=N`.
+    pub rx_descriptors: BTreeMap<PciAddress, u16>,
+}
+
+/// The deepest of [`RX_DESCRIPTOR_CHOICES`] whose memory, `need(rxd)` in MiB with [`RESERVE_MIB`]
+/// to spare, fits `budget_mib`.
+fn deepest_fitting(need: impl Fn(u16) -> u64, budget_mib: u64) -> Option<u16> {
+    RX_DESCRIPTOR_CHOICES
+        .into_iter()
+        .find(|&rxd| need(rxd).saturating_add(RESERVE_MIB) <= budget_mib)
+}
+
+/// What one node's ports need with the given hugepage budget per node: the receive descriptors
+/// for the ports that named none.
 ///
-/// `ports` are the NICs with each one's receive descriptors per queue. `scan` is `None` when hwloc
-/// could not describe the machine; the memory is then reserved on no particular node. `workers`
-/// and `gib_per_node` size the requirement (see the module docs).
+/// # Errors
+///
+/// If the ports do not fit the budget even at [`RX_DESCRIPTORS`].
+fn within_budget(need: impl Fn(u16) -> u64, budget_mib: u64, node: &str) -> Result<u16, String> {
+    if let Some(rxd) = deepest_fitting(&need, budget_mib) {
+        info!(
+            "{node}: {rxd} receive descriptors per queue, whose pools take {} MiB of the {budget_mib} \
+             MiB of hugepages, with {RESERVE_MIB} MiB to spare",
+            need(rxd)
+        );
+        return Ok(rxd);
+    }
+    let least = need(RX_DESCRIPTORS);
+    if least <= budget_mib {
+        warn!(
+            "{node}: {RX_DESCRIPTORS} receive descriptors per queue, whose pools take {least} MiB of \
+             the {budget_mib} MiB of hugepages, leaving less than the {RESERVE_MIB} MiB wanted for \
+             ACL tables and NIC offload"
+        );
+        return Ok(RX_DESCRIPTORS);
+    }
+    Err(format!(
+        "{node}: the hugepage allotment of {budget_mib} MiB is too small for the configured ports \
+         and workers: they need {least} MiB at {RX_DESCRIPTORS} receive descriptors per queue"
+    ))
+}
+
+/// Prepare the hugepages, respecting the administrator's cgroup limits, and choose the receive
+/// descriptors of the ports that named none.
+///
+/// `ports` are the NICs with each one's `/rxd=N`, if any. `scan` is `None` when hwloc could not
+/// describe the machine; the memory is then reserved on no particular node. `workers` sizes the
+/// pools.
+///
+/// With `gib_per_node`, that many 1 GiB pages per NIC node are the budget: they must be available
+/// (there is no falling back to 2 MiB pages), the ports and workers must fit in them, and the
+/// ports without `/rxd=N` get the deepest ring of [`RX_DESCRIPTOR_CHOICES`] that leaves
+/// [`RESERVE_MIB`] free. Without it, those ports get a deeper ring only if 1 GiB pages already free
+/// hold it with the reserve to spare, and [`RX_DESCRIPTORS`] otherwise, with the requirement
+/// computed (and the pools grown) as before.
 ///
 /// # Errors
 ///
 /// Returns an error if a NIC's NUMA affinity cannot be read, cgroup controls cannot be read,
-/// or neither hugepage size satisfies the requirement.
+/// the ports do not fit the allotment, or no hugepage size satisfies the requirement.
 pub fn reserve_for(
-    ports: &[(PciAddress, u16)],
+    ports: &[(PciAddress, Option<u16>)],
     scan: Option<&hardware::Node>,
     workers: u16,
     gib_per_node: Option<u32>,
-) -> Result<HugepagePlan, String> {
+) -> Result<Reservation, String> {
     let devices: Vec<PciAddress> = ports.iter().map(|(address, _)| *address).collect();
     let total_ports = u32::try_from(ports.len()).unwrap_or(u32::MAX);
-    let required = |devices: &[PciAddress]| match gib_per_node {
-        Some(gib) => u64::from(gib) * 1024,
-        None => required_mib(
+    // The memory `devices` need, the ports without `/rxd=N` at `rxd`.
+    let need = |devices: &[PciAddress], rxd: u16| {
+        required_mib(
             ports
                 .iter()
                 .filter(|(address, _)| devices.contains(address))
-                .map(|(_, rxd)| *rxd),
+                .map(|(_, named)| named.unwrap_or(rxd)),
             total_ports,
             workers,
-        ),
+        )
     };
-    let placement = place(
-        &devices,
-        topology_nodes(scan).as_deref(),
-        numa_node_of,
-        required,
-    )?;
+    let unnamed: Vec<PciAddress> = ports
+        .iter()
+        .filter(|(_, named)| named.is_none())
+        .map(|(address, _)| *address)
+        .collect();
+    let located = locate(&devices, topology_nodes(scan).as_deref(), numa_node_of)?;
     let cgroup = HugetlbCgroup::discover()?;
     let grow = !std::env::var(DISABLE_ENV).is_ok_and(|setting| setting.eq_ignore_ascii_case("off"));
-    let plan = plan_for(
-        &placement,
-        |size| cgroup.remaining_bytes(size),
-        &mut SysfsPools { grow },
-    )?;
+    let allowance = |size| cgroup.remaining_bytes(size);
+    let deeper = || {
+        if unnamed.is_empty() {
+            None
+        } else {
+            deeper_in_free_pages(
+                &devices,
+                located.as_ref(),
+                &need,
+                allowance,
+                &mut SysfsPools { grow: false },
+            )
+        }
+    };
+    let (plan, rxd_of) = if let Some(gib) = gib_per_node {
+        within_allotment(
+            &devices,
+            located.as_ref(),
+            &need,
+            gib,
+            allowance,
+            &mut SysfsPools { grow },
+        )?
+    } else if let Some(found) = deeper() {
+        found
+    } else {
+        let placement = placement(&devices, located.as_ref(), |devices| {
+            need(devices, RX_DESCRIPTORS)
+        });
+        let plan = plan_for(&placement, allowance, &mut SysfsPools { grow })?;
+        (plan, BTreeMap::new())
+    };
     info!("hugepages available for EAL: {plan}");
-    Ok(plan)
+    let rx_descriptors = unnamed
+        .iter()
+        .map(|&address| {
+            (
+                address,
+                rxd_of.get(&address).copied().unwrap_or(RX_DESCRIPTORS),
+            )
+        })
+        .collect();
+    Ok(Reservation {
+        plan,
+        rx_descriptors,
+    })
+}
+
+/// The allotment of `gib` 1 GiB pages per NIC node, and the deepest ring of each node's ports
+/// within it.
+fn within_allotment(
+    devices: &[PciAddress],
+    located: Option<&BTreeMap<u32, Vec<PciAddress>>>,
+    need: &dyn Fn(&[PciAddress], u16) -> u64,
+    gib: u32,
+    allowance: impl FnMut(u64) -> Result<Option<u64>, String>,
+    pools: &mut impl Pools,
+) -> Result<(HugepagePlan, BTreeMap<PciAddress, u16>), String> {
+    let budget = u64::from(gib) * 1024;
+    let mut rxd_of = BTreeMap::new();
+    if let Some(nodes) = located {
+        for (node, on_node) in nodes {
+            let rxd = within_budget(
+                |rxd| need(on_node, rxd),
+                budget,
+                &format!("NUMA node {node}"),
+            )?;
+            rxd_of.extend(on_node.iter().map(|&address| (address, rxd)));
+        }
+    } else {
+        let rxd = within_budget(|rxd| need(devices, rxd), budget, "the NICs")?;
+        rxd_of.extend(devices.iter().map(|&address| (address, rxd)));
+    }
+    let placement = placement(devices, located, |_| budget);
+    let plan = plan_with(&[ONE_GIB_KB], &placement, allowance, pools).map_err(|e| {
+        format!("the hugepage allotment of {gib} GiB per NIC node is unavailable: {e}")
+    })?;
+    Ok((plan, rxd_of))
+}
+
+/// The deepest ring deeper than [`RX_DESCRIPTORS`] whose memory, with [`RESERVE_MIB`] to spare,
+/// 1 GiB pages already free hold: deeper rings are not worth growing the pools for, so `pools`
+/// must not grow.
+fn deeper_in_free_pages(
+    devices: &[PciAddress],
+    located: Option<&BTreeMap<u32, Vec<PciAddress>>>,
+    need: &dyn Fn(&[PciAddress], u16) -> u64,
+    mut allowance: impl FnMut(u64) -> Result<Option<u64>, String>,
+    pools: &mut impl Pools,
+) -> Option<(HugepagePlan, BTreeMap<PciAddress, u16>)> {
+    for rxd in RX_DESCRIPTOR_CHOICES
+        .into_iter()
+        .filter(|&rxd| rxd > RX_DESCRIPTORS)
+    {
+        let placement = placement(devices, located, |devices| {
+            need(devices, rxd).saturating_add(RESERVE_MIB)
+        });
+        match plan_with(&[ONE_GIB_KB], &placement, &mut allowance, pools) {
+            Ok(plan) => {
+                info!(
+                    "{rxd} receive descriptors per queue fit the free 1 GiB hugepages with \
+                     {RESERVE_MIB} MiB to spare"
+                );
+                return Some((
+                    plan,
+                    devices.iter().map(|&address| (address, rxd)).collect(),
+                ));
+            }
+            Err(e) => debug!("no room for {rxd} receive descriptors per queue: {e}"),
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -452,6 +648,108 @@ mod tests {
         FakePools {
             grow: true,
             ..FakePools::default()
+        }
+    }
+
+    /// Two ports on node 0, the ports naming no receive descriptors (32 workers, so that each
+    /// step of ring depth costs more than a 1 GiB page).
+    fn two_ports() -> (Vec<PciAddress>, BTreeMap<u32, Vec<PciAddress>>) {
+        let devices = vec![device(), PciAddress::try_from("0000:02:02.0").unwrap()];
+        let located = BTreeMap::from([(0, devices.clone())]);
+        (devices, located)
+    }
+
+    fn two_port_need(devices: &[PciAddress], rxd: u16) -> u64 {
+        required_mib(devices.iter().map(|_| rxd), 2, 32)
+    }
+
+    /// With room to spare, the deepest of the choices; with little, the shallowest.
+    #[test]
+    fn an_allotment_gets_the_deepest_ring_it_holds_with_the_reserve() {
+        let (devices, located) = two_ports();
+        let fits = |rxd| two_port_need(&devices, rxd) + RESERVE_MIB;
+        for (gib, rxd) in [
+            (64, 4096),
+            (u32::try_from(fits(2048).div_ceil(1024)).unwrap(), 2048),
+            (
+                u32::try_from(two_port_need(&devices, 1024).div_ceil(1024)).unwrap(),
+                1024,
+            ),
+        ] {
+            let mut pools = growing();
+            let (plan, chosen) = within_allotment(
+                &devices,
+                Some(&located),
+                &two_port_need,
+                gib,
+                |_| Ok(None),
+                &mut pools,
+            )
+            .unwrap();
+            assert_eq!(plan.page_size_kb, ONE_GIB_KB);
+            assert_eq!(plan.per_node_mb, vec![(0, u64::from(gib) * 1024)]);
+            assert!(
+                chosen.values().all(|&r| r == rxd) && chosen.len() == 2,
+                "{gib} GiB: {chosen:?}"
+            );
+        }
+    }
+
+    /// An allotment the ports do not fit at the shallowest ring is refused, and so is one not
+    /// available in 1 GiB pages, whatever 2 MiB pages there are.
+    #[test]
+    fn an_allotment_too_small_or_unavailable_is_fatal() {
+        let (devices, located) = two_ports();
+        let error = within_allotment(
+            &devices,
+            Some(&located),
+            &|devices, rxd| two_port_need(devices, rxd) * 100,
+            1,
+            |_| Ok(None),
+            &mut growing(),
+        )
+        .unwrap_err();
+        assert!(error.contains("too small"), "{error}");
+        let mut pools = FakePools::default();
+        pools.nr.insert((Pool::Node(0), TWO_MIB_KB), 1 << 20);
+        let error = within_allotment(
+            &devices,
+            Some(&located),
+            &two_port_need,
+            8,
+            |_| Ok(None),
+            &mut pools,
+        )
+        .unwrap_err();
+        assert!(error.contains("unavailable"), "{error}");
+        assert_eq!(pools.nr.get(&(Pool::Node(0), ONE_GIB_KB)), None);
+    }
+
+    /// Without an allotment, a deeper ring only in 1 GiB pages already free.
+    #[test]
+    fn free_pages_alone_decide_a_deeper_ring() {
+        let (devices, located) = two_ports();
+        let pages = |rxd: u16| (two_port_need(&devices, rxd) + RESERVE_MIB).div_ceil(1024);
+        for (free, rxd) in [
+            (pages(4096), Some(4096)),
+            (pages(2048), Some(2048)),
+            (1, None),
+        ] {
+            let mut pools = FakePools::default();
+            pools.nr.insert((Pool::Node(0), ONE_GIB_KB), free);
+            let found = deeper_in_free_pages(
+                &devices,
+                Some(&located),
+                &two_port_need,
+                |_| Ok(None),
+                &mut pools,
+            );
+            assert_eq!(
+                found.map(|(_, chosen)| chosen[&devices[0]]),
+                rxd,
+                "{free} free pages"
+            );
+            assert_eq!(pools.nr.get(&(Pool::Node(0), ONE_GIB_KB)), Some(&free));
         }
     }
 
