@@ -44,6 +44,7 @@ members = [
     "net",
     "nic-offload",
     "pipeline",
+    "pkt-io",
     "policer",
     "rate-limit",
     "rekon",
@@ -124,6 +125,7 @@ nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
 nic-offload = { path = "./nic-offload", package = "dataplane-nic-offload", features = [] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
+pkt-io = { path = "./pkt-io", package = "dataplane-pkt-io", features = [] }
 policer = { path = "./policer", package = "dataplane-policer", features = [] }
 rate-limit = { path = "./rate-limit", package = "dataplane-rate-limit", features = [] }
 rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
@@ -519,6 +521,11 @@ wasm = false # hopeless + pointless
 package = "dataplane-pipeline"
 miri = true
 wasm = false # miss
+
+[workspace.metadata.package.pkt-io]
+package = "dataplane-pkt-io"
+miri = false # no unsafe; tests sleep and busy-wait across threads
+wasm = false # needs pipeline
 
 [workspace.metadata.package.policer]
 package = "dataplane-policer"
