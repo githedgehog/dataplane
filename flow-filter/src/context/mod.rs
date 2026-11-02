@@ -13,8 +13,8 @@ mod tables;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub use tables::FlowFilterContext;
 use tables::PRODUCTION_BACKEND;
+pub use tables::{Destination, FlowFilterContext};
 pub(crate) use tables::{LookupInput, LookupResult, SourceGate};
 
 impl TryFrom<&ValidatedOverlay> for FlowFilterContext {
@@ -30,8 +30,16 @@ impl FlowFilterContext {
     /// (production goes through `TryFrom`, which uses the rte_acl backend).
     #[cfg(test)]
     pub(crate) fn for_test(overlay: &ValidatedOverlay) -> Self {
+        FlowFilterContext::reference(overlay)
+    }
+
+    /// Build a context with the reference (linear-scan) classifier, for crates that check against
+    /// the flow filter in tests: no EAL needed.
+    #[cfg(any(test, feature = "reference"))]
+    #[must_use]
+    pub fn reference(overlay: &ValidatedOverlay) -> Self {
         FlowFilterContext::build(overlay, tables::Backend::Reference)
-            .expect("reference backend build is infallible")
+            .unwrap_or_else(|_| unreachable!("the reference backend's build is infallible"))
     }
 }
 

@@ -5,6 +5,10 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# The reference (linear-scan) classifier, for crates that check against the flow filter in tests.
+reference = ["acl/reference"]
+
 [dependencies]
 # internal
 acl = { workspace = true }

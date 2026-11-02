@@ -36,12 +36,12 @@ use acl::dpdk::dyn_table::predicate_to_chunks;
 use acl::dpdk::install::install_table;
 use acl::dpdk::lookup::{DpdkAclLookup, MAX_BATCH};
 use acl::dpdk::rule::{AclFieldChunks, RuleSpec};
-#[cfg(test)]
+#[cfg(any(test, feature = "reference"))]
 use acl::reference::table::{RefRule, ReferenceTable};
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::acl::{AclAction, AclScope, ValidatedAcl};
 use dpdk::acl::{CategoryMask, Priority};
-#[cfg(test)]
+#[cfg(any(test, feature = "reference"))]
 use lookup::Lookup;
 use lpm::prefix::Prefix;
 use lpm::prefix::with_ports::{KeyPort, L4Protocol, PORT_RANGE_WILDCARD};
@@ -244,7 +244,7 @@ pub(super) const PRODUCTION_BACKEND: Backend = Backend::Dpdk;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Backend {
     Dpdk,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "reference"))]
     Reference,
 }
 
@@ -286,7 +286,7 @@ enum Classifier<K: MatchKey, A> {
     /// asking rte_acl to build an empty context).
     Empty,
     Dpdk(DpdkAclLookup<K, A>),
-    #[cfg(test)]
+    #[cfg(any(test, feature = "reference"))]
     Reference(ReferenceTable<K, A>),
 }
 
@@ -317,7 +317,7 @@ impl<K: MatchKey, A> AnyTable<K, A> {
             Classifier::Dpdk(table) => table
                 .lookup_batch(keys, out)
                 .expect("caller chunks to MAX_BATCH with a matching output length"),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "reference"))]
             Classifier::Reference(table) => {
                 for (key, slot) in keys.iter().zip(out.iter_mut()) {
                     *slot = table.lookup(key);
@@ -341,7 +341,7 @@ impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
         let kind = match self.classifier {
             Classifier::Empty => "empty",
             Classifier::Dpdk(_) => "dpdk",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "reference"))]
             Classifier::Reference(_) => "reference",
         };
         write!(f, "AnyTable::{kind}({} rules)", self.len())
@@ -422,7 +422,7 @@ where
                 .map(Classifier::Dpdk)
                 .map_err(|e| e.to_string())?
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "reference"))]
         Backend::Reference => {
             let rules = rules
                 .into_iter()
@@ -705,7 +705,64 @@ impl fmt::Debug for FlowFilterContext {
     }
 }
 
+/// A destination of the first stage, which picks the destination VPC: from `src_vni`, an
+/// address in `prefix` belongs to `dst_vni`, unless an earlier destination in
+/// [`FlowFilterContext::destinations`] takes it first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Destination {
+    /// The source VPC.
+    pub src_vni: Vni,
+    /// The destination VPC.
+    pub dst_vni: Vni,
+    /// The destination prefix (the peer's public addresses).
+    pub prefix: Prefix,
+    /// Whether only a lookup gated on `dst_vni` reaches it (replies on a masquerade flow): an
+    /// ordinary lookup does not.
+    pub gated: bool,
+    /// Whether it also constrains the protocol or ports (port forwarding): it takes only some of
+    /// `prefix`'s traffic.
+    pub partial: bool,
+}
+
+/// The prefix of a table rule, whose length is valid by construction.
+fn whole(addr: IpAddr, len: u8) -> Prefix {
+    Prefix::try_from((addr, len)).unwrap_or_else(|_| unreachable!("a rule's prefix is valid"))
+}
+
 impl FlowFilterContext {
+    /// The first stage's destinations, IPv4 then IPv6, each in match order: the first that matches
+    /// a lookup (its source VPC, destination, and protocol and ports if
+    /// [`Destination::partial`]) is where it goes. A [`Destination::gated`] one matches only a
+    /// lookup gated on its `dst_vni`, and an ungated one only an ordinary lookup: an ordinary
+    /// packet passes over every gated destination, whatever its place in the list.
+    #[must_use]
+    pub fn destinations(&self) -> Vec<Destination> {
+        fn route<I: FixedSize>(
+            row: &RuleRow<RemoteKey<I>, Verdict>,
+            prefix: impl Fn(&PrefixSpec<I>) -> Prefix,
+        ) -> Destination {
+            Destination {
+                src_vni: row.rule.src_vni.value,
+                dst_vni: key_vni(row.action.dst_vpcd),
+                prefix: prefix(&row.rule.dst_ip),
+                gated: row.rule.dst_vni.value.0.is_some(),
+                partial: row.rule.proto != proto_mask(L4Protocol::Any)
+                    || row.rule.dst_port != PORT_RANGE_WILDCARD,
+            }
+        }
+        self.remote_v4
+            .rules()
+            .iter()
+            .map(|row| route(row, |p| whole(IpAddr::V4(p.value), p.len)))
+            .chain(
+                self.remote_v6
+                    .rules()
+                    .iter()
+                    .map(|row| route(row, |p| whole(IpAddr::V6(p.value), p.len))),
+            )
+            .collect()
+    }
+
     /// Build the four tables from a validated overlay using `backend`.
     ///
     /// # Errors
