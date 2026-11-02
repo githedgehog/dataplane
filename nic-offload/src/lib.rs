@@ -38,6 +38,7 @@ mod qualify;
 #[cfg(test)]
 mod tests;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 
 use acl_filter::AclFilterContextReader;
@@ -98,6 +99,7 @@ pub struct Policy {
 /// Where software takes in each VPC's VXLAN: it decapsulates only VXLAN addressed to the VTEP of
 /// the VNI's FIB, and routes the rest in the underlay untouched.
 pub trait Vteps: std::fmt::Debug + Send + Sync {
-    /// The IPv4 address of `vni`'s VTEP, if it has one.
-    fn vtep(&self, vni: Vni) -> Option<Ipv4Addr>;
+    /// The IPv4 addresses of the VTEPs of `vnis`, for those that have one. Offload polls this:
+    /// one call reads them all.
+    fn vteps(&self, vnis: &BTreeSet<Vni>) -> BTreeMap<Vni, Ipv4Addr>;
 }
