@@ -2137,6 +2137,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-pkt-io"
+version = "0.1.0"
+dependencies = [
+ "dataplane-concurrency",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-tracectl",
+ "linkme",
+ "tokio",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
 name = "dataplane-policer"
 version = "0.38.2"
 dependencies = [
