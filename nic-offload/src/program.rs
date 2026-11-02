@@ -286,13 +286,18 @@ impl Routing<'_> {
     /// `dst_vni`'s destinations it overlaps (none: it matches nothing software sends there). The
     /// other peers' destinations that take some of a narrowed match's traffic (at least as specific
     /// as the destination it was narrowed with) are recorded to pass untouched.
+    ///
+    /// A gated destination (masquerade) takes only replies, and a partial one (port forwarding)
+    /// only some protocols and ports: the rest of their prefix goes to other peers, even less
+    /// specific ones. A rule is not narrowed to them, so what software sends there it enforces
+    /// alone.
     fn narrow(&mut self, dst_vni: Vni, matches: &Match) -> Vec<Match> {
         let src_vni = matches.src_vni;
         let mut narrowed = Vec::new();
         for own in self
             .destinations
             .iter()
-            .filter(|d| d.src_vni == src_vni && d.dst_vni == dst_vni)
+            .filter(|d| d.src_vni == src_vni && d.dst_vni == dst_vni && !d.gated && !d.partial)
         {
             let own_prefix = Prefix::from(&own.prefix);
             let Some(destination) = own_prefix.intersection(matches.destination) else {
