@@ -89,6 +89,9 @@ pub enum Error {
     /// More meters than [`RESOURCES`] reserved.
     #[error("{0} meters exceed the {max} reserved", max = RESOURCES.meters)]
     TooManyMeters(usize),
+    /// A meter is beyond what mlx5 encodes as permissive as software ([`unfit`]).
+    #[error("meter {0} is beyond what the NIC encodes")]
+    Unfit(String),
     /// Every group number is in use.
     #[error("no flow group left")]
     NoGroup,
@@ -270,16 +273,20 @@ impl Shape {
     }
 }
 
-/// A burst size mlx5 can encode: the smallest at least `bytes` (and at most 256/255 of it).
-/// mlx5 encodes sizes strictly between 255·2^k and 256·2^k as zero
+/// A burst size mlx5 can encode: the smallest at least `bytes` (and at most 256/255 of it), for
+/// `bytes` at most [`MAX_BURST`]. mlx5 encodes sizes strictly between 255·2^k and 256·2^k as zero
 /// (`mlx5_flow_meter_xbs_man_exp_calc`). Rounding up keeps the NIC at least as permissive as the
 /// software it stands in front of.
 fn encodable(bytes: u64) -> u64 {
-    (0..56)
+    (0..31)
         .map(|k| (255u64 << k, 256u64 << k))
         .find(|&(low, high)| low < bytes && bytes < high)
         .map_or(bytes, |(_, high)| high)
 }
+
+/// The greatest burst mlx5 takes, in its (scaled) units: an 8-bit mantissa and a 5-bit exponent
+/// (`MLX5_SRTCM_XBS_MAX`; it refuses a profile with a larger one).
+const MAX_BURST: u64 = 255 << 31;
 
 /// What the NIC's byte meters count beyond what software bills a packet (its IP bytes): the
 /// outer Ethernet, IPv4, UDP and VXLAN headers (50), an outer VLAN tag (4), the inner Ethernet
@@ -316,31 +323,14 @@ pub(crate) fn encoded_rate(rate: u64) -> u64 {
 /// The greatest rate mlx5 encodes.
 const MAX_RATE: u64 = 255 * 1_000_000_000;
 
-/// The peerings of `program`'s meters whose rates mlx5 cannot encode as high as software's: they
-/// stay in software.
+/// The peerings of `program`'s meters mlx5 cannot encode as permissive as software's (see
+/// `profile`): they stay in software.
 #[must_use]
 pub fn unfit(program: &Program) -> BTreeSet<crate::program::Peering> {
-    let fits = |meter: &crate::program::PoliceMeter| {
-        let pmd = match meter.unit {
-            Unit::Bytes => 0,
-            Unit::Packets => PPS_SHIFT,
-        };
-        let scale = match meter.unit {
-            Unit::Bytes => MIN_BILLED + BYTE_OVERHEAD,
-            Unit::Packets => MIN_BILLED,
-        };
-        let p = meter.profile;
-        let cir = p.committed_rate().per_second().get();
-        let fastest = p
-            .excess_rate()
-            .map_or(cir, |eir| eir.per_second().get().saturating_add(cir));
-        ((u128::from(fastest) * u128::from(scale)).div_ceil(u128::from(MIN_BILLED)) << pmd)
-            <= u128::from(MAX_RATE)
-    };
     program
         .rules
         .iter()
-        .filter(|rule| !fits(&program.meters[rule.meter]))
+        .filter(|rule| profile(&program.meters[rule.meter]).is_none())
         .map(|rule| rule.peering)
         .collect()
 }
@@ -397,7 +387,10 @@ pub(crate) fn pmd_scale(unit: MeterUnit) -> u32 {
 /// allows them, and full-size ones at up to `(MIN_BILLED + BYTE_OVERHEAD) / MIN_BILLED` times it
 /// less their overhead (about 4.4 times, for 1500 bytes). The NIC stops floods, software enforces
 /// the rate.
-pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> MeterProfile {
+///
+/// `None` if a rate or burst, so scaled, is more than mlx5 encodes ([`MAX_RATE`], [`MAX_BURST`]):
+/// it can only be enforced more strictly, which a NIC may not.
+pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> Option<MeterProfile> {
     let p = meter.profile;
     let (scale, frame) = match meter.unit {
         Unit::Bytes => (MIN_BILLED + BYTE_OVERHEAD, MAX_FRAME),
@@ -407,33 +400,38 @@ pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> MeterProfile {
         Unit::Bytes => 0,
         Unit::Packets => PPS_SHIFT,
     };
-    let scaled = |tokens: u64| tokens.saturating_mul(scale).div_ceil(MIN_BILLED);
+    // In mlx5's units, if it takes that many: scaled, plus `extra`, shifted as mlx5 shifts them.
+    let scaled = |tokens: u64, extra: u64, max: u64| {
+        let wanted = (u128::from(tokens) * u128::from(scale)).div_ceil(u128::from(MIN_BILLED))
+            + u128::from(extra);
+        u64::try_from(wanted << pmd).ok().filter(|&w| w <= max)
+    };
     // What mlx5 encodes exactly, in its (scaled) units, given back in ours, rounded up: mlx5 then
     // encodes at least that.
-    let rate = |tokens: u64| encodable_rate(scaled(tokens) << pmd).div_ceil(1 << pmd);
+    let rate = |tokens: u64| Some(encodable_rate(scaled(tokens, 0, MAX_RATE)?).div_ceil(1 << pmd));
     let burst = |tokens: u64, slack: u64| {
         if tokens == 0 {
-            return 0;
+            return Some(0);
         }
-        let wanted = scaled(tokens.saturating_add(slack)).saturating_add(frame);
-        encodable(wanted << pmd).div_ceil(1 << pmd)
+        let wanted = scaled(tokens.checked_add(slack)?, frame, MAX_BURST)?;
+        Some(encodable(wanted).div_ceil(1 << pmd))
     };
     let cir = p.committed_rate().per_second().get();
     let [committed_slack, excess_slack] = meter.lease_slack;
     let (cbs, ebs) = (
-        burst(p.committed_burst(), committed_slack),
-        burst(p.excess_burst(), excess_slack),
+        burst(p.committed_burst(), committed_slack)?,
+        burst(p.excess_burst(), excess_slack)?,
     );
-    MeterProfile {
+    Some(MeterProfile {
         algorithm: match p.excess_rate() {
             None => MeterAlgorithm::Srtcm {
-                cir: rate(cir),
+                cir: rate(cir)?,
                 cbs,
                 ebs,
             },
             Some(eir) => MeterAlgorithm::Rfc4115 {
-                cir: rate(cir),
-                eir: rate(eir.per_second().get().saturating_add(cir)),
+                cir: rate(cir)?,
+                eir: rate(eir.per_second().get().checked_add(cir)?)?,
                 cbs,
                 ebs,
             },
@@ -442,7 +440,7 @@ pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> MeterProfile {
             Unit::Bytes => MeterUnit::Bytes,
             Unit::Packets => MeterUnit::Packets,
         },
-    }
+    })
 }
 
 mod install;
@@ -770,8 +768,9 @@ impl Plan {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::TooManyMeters`] if the program needs more meters than [`RESOURCES`], and
-    /// [`Error::NoVtep`] if a source VPC with rules has no VTEP in `vteps`.
+    /// Returns [`Error::TooManyMeters`] if the program needs more meters than [`RESOURCES`],
+    /// [`Error::Unfit`] if mlx5 cannot encode one of them ([`unfit`]), and [`Error::NoVtep`] if a
+    /// source VPC with rules has no VTEP in `vteps`.
     pub fn new(
         program: &Program,
         vteps: &BTreeMap<Vni, Ipv4Addr>,
@@ -803,7 +802,7 @@ impl Plan {
             plan.meters.push(PlannedMeter {
                 key: MeterKey {
                     name: meter.name.clone(),
-                    profile: profile(meter),
+                    profile: profile(meter).ok_or_else(|| Error::Unfit(meter.name.clone()))?,
                 },
                 colors: color_table(index),
             });
