@@ -279,6 +279,7 @@ pub(crate) struct RawAclRule {
     pub(crate) rule: RawRule,
     pub(crate) deny: bool,
     flow: bool,
+    pub(crate) log: bool,
 }
 
 /// The peerings' ACLs: each peering with rules has an ACL, with the default action given (deny if
@@ -340,7 +341,7 @@ impl RawAcls {
                     } else {
                         AclScope::Packet
                     },
-                    log: false,
+                    log: r.log,
                 }
             })
             .collect();
@@ -1109,6 +1110,20 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
     // As installing does: peerings of meters faster than the NIC meters stay in software.
     let program = Program::compile(&acls, &limits, &routes, &BTreeSet::new());
     let program = Program::compile(&acls, &limits, &routes, &crate::mlx5::unfit(&program));
+    let logged =
+        acls.v4()
+            .iter()
+            .filter(|r| r.action.logs())
+            .map(|r| crate::program::Peering::new(r.rule.src_vni.value, r.rule.dst_vni.value))
+            .chain(
+                acls.v6().iter().filter(|r| r.action.logs()).map(|r| {
+                    crate::program::Peering::new(r.rule.src_vni.value, r.rule.dst_vni.value)
+                }),
+            );
+    for peering in logged {
+        assert!(program.denies.iter().all(|d| d.peering != peering));
+        assert!(program.rules.iter().all(|r| r.peering != peering));
+    }
     let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
     check_profiles(&limits, &program, &plan);
     let mut tally = Tally::default();
@@ -1256,6 +1271,7 @@ fn denies_drop_in_the_nic_unless_an_earlier_allow_overlaps() {
         rule: peering_rule(false, RawProto::Udp),
         deny,
         flow: false,
+        log: false,
     };
     let rules = [peering_rule(false, RawProto::Any)];
     for (acl, denied) in [
@@ -1320,6 +1336,7 @@ fn a_default_deny_keeps_its_peering_and_only_it_in_software() {
             rule: peering_rule(false, RawProto::Udp),
             deny: false,
             flow: true,
+            log: false,
         }],
     };
     let overlay = overlay(&meters(), &rules, &acls).unwrap();
@@ -1361,6 +1378,7 @@ fn a_syn_deny_drops_syns_in_the_nic() {
             rule: peering_rule(false, RawProto::TcpFlags(0x02, 0x12)),
             deny: true,
             flow: false,
+            log: false,
         }],
     };
     let overlay = overlay(&meters(), &rules, &acls).unwrap();
@@ -1425,6 +1443,7 @@ fn traffic_a_peer_takes_only_part_of_is_left_alone() {
                 rule: rule.clone(),
                 deny: true,
                 flow: false,
+                log: false,
             }],
         };
         let overlay = with_exposes(&meters(), std::slice::from_ref(&rule), &acls, &exposes)
@@ -1454,5 +1473,66 @@ fn traffic_a_peer_takes_only_part_of_is_left_alone() {
             _ => vec![a, c],
         };
         assert_eq!(routed, expected, "{partly:?}");
+    }
+}
+
+/// Logged denies need the ACL logger; logged allows must reach it before policing can drop them.
+/// Refuse the entire peering, in both directions, while leaving other peerings eligible.
+#[test]
+fn acl_logging_keeps_denies_and_meters_in_software() {
+    for v6 in [false, true] {
+        for deny in [false, true] {
+            for log in [false, true] {
+                let forward = peering_rule(v6, RawProto::Any);
+                let reverse = RawRule {
+                    reverse: true,
+                    ..forward.clone()
+                };
+                let unrelated = peering_rule(!v6, RawProto::Any);
+                let rules = [forward, reverse, unrelated];
+                let acls = RawAcls {
+                    rules: vec![RawAclRule {
+                        rule: peering_rule(v6, RawProto::Udp),
+                        deny,
+                        flow: false,
+                        log,
+                    }],
+                    ..RawAcls::default()
+                };
+                let overlay = overlay(&meters(), &rules, &acls).unwrap();
+                let writer: RateLimitWriter<PeeringRules> =
+                    RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
+                writer.apply(&overlay, Backend::Reference).unwrap();
+                let filter = AclFilterContext::reference(&overlay).unwrap();
+                let program = Program::compile(
+                    &filter,
+                    &writer.load(),
+                    &destinations(&overlay),
+                    &BTreeSet::new(),
+                );
+                assert_eq!(program.denies.len(), usize::from(deny && !log));
+                assert_eq!(program.rules.len(), if log { 1 } else { 3 });
+                assert_eq!(
+                    program
+                        .refused
+                        .iter()
+                        .any(|(_, _, r)| *r == crate::program::Refusal::Logging),
+                    log
+                );
+                if log {
+                    let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
+                    for aim in [0, 1] {
+                        let frame = aimed(aim, RawL4::Udp, RawFragment::Whole).frame(&rules);
+                        assert!(plan.outcomes(&frame.wire()).unwrap().iter().all(|outcome| {
+                            outcome.meters.is_empty()
+                                && matches!(
+                                    outcome.verdict,
+                                    Verdict::Delivered | Verdict::Untouched
+                                )
+                        }));
+                    }
+                }
+            }
+        }
     }
 }

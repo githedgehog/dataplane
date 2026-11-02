@@ -611,11 +611,23 @@ fn qualify() {
         .with_type::<([RawMeter; 4], Vec<RawRule>, RawAcls, Vec<RawFrame>)>()
         .for_each(|(meters, rules, acls, frames)| {
             let rules = &rules[..rules.len().min(6)];
+            let acls = hardware_acls(acls);
             RIG.with_borrow_mut(|rig| {
                 let rig = rig.get_or_insert_with(Rig::new);
-                qualify_case(rig, meters, rules, acls, frames);
+                qualify_case(rig, meters, rules, &acls, frames);
             });
         });
+}
+
+/// These campaigns need installed denies and meters to exercise the NIC. Logged policies stay
+/// in the differential and transition suites, where falling back to software is the behavior
+/// under test.
+fn hardware_acls(acls: &RawAcls) -> RawAcls {
+    let mut acls = acls.clone();
+    for rule in &mut acls.rules {
+        rule.log = false;
+    }
+    acls
 }
 
 /// How many generated frames the model says a meter charges or a deny drops, and why the others
@@ -630,7 +642,7 @@ fn coverage() {
         .with_type::<([RawMeter; 4], Vec<RawRule>, RawAcls, Vec<RawFrame>)>()
         .for_each(|(meters, rules, acls, frames)| {
             let rules = &rules[..rules.len().min(6)];
-            let case = Case::new(meters, rules, acls);
+            let case = Case::new(meters, rules, &hardware_acls(acls));
             let mut stats = stats.borrow_mut();
             for raw in aimed(frames, &case.offloaded) {
                 let wire = raw.frame(&case.targets).wire_to([2, 0, 0, 0, 0, 1], 0);
