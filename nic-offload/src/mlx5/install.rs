@@ -26,6 +26,9 @@ use super::{
 use crate::program::{Origin, Peering, Program};
 use crate::{Policy, Vteps};
 
+#[cfg(test)]
+mod tests;
+
 /// How often the rules are checked against the published policy.
 const POLL: Duration = Duration::from_millis(200);
 /// How often hardware counters are reported.
@@ -176,10 +179,10 @@ pub struct Port<'t> {
     /// For the plan being reconciled: its meters' indices into `meters`.
     plan_meters: Vec<Option<usize>>,
     poisoned: bool,
-    /// A root rule whose removal failed may still be in the NIC.
+    /// A root rule whose insertion or removal was not confirmed may still be in the NIC.
     root_lingers: bool,
-    /// The NIC may still enforce an old policy: the port was lost and could not be detached.
-    stale: bool,
+    /// A switch rule may still exist without a usable handle after failed insertion or removal.
+    switch_lingers: bool,
     /// What the ACL denies of torn-down generations dropped, so the total never goes back.
     retired_denied: u64,
     /// What removed meters passed and dropped, by name.
@@ -206,7 +209,7 @@ impl<'t> Port<'t> {
             plan_meters: Vec::new(),
             poisoned: false,
             root_lingers: false,
-            stale: false,
+            switch_lingers: false,
             retired_denied: 0,
             retired_meters: BTreeMap::new(),
         }
@@ -222,7 +225,7 @@ impl<'t> Port<'t> {
     /// rule nor its VPCs' switch rules could be removed.
     #[must_use]
     pub fn stale(&self) -> bool {
-        self.stale
+        self.root_lingers && self.switch_lingers
     }
 
     /// Turn offload off for good on this port, as `what` failed with `source`, and make what the
@@ -242,7 +245,10 @@ impl<'t> Port<'t> {
     fn detach_all(&mut self) {
         if let Some(root) = self.root.take() {
             match root.destroy() {
-                Ok(()) => return,
+                Ok(()) => {
+                    self.root_lingers = false;
+                    return;
+                }
                 Err(e) => {
                     error!("the root rule could not be removed ({e}): detaching every VPC instead");
                     self.root_lingers = true;
@@ -262,8 +268,13 @@ impl<'t> Port<'t> {
                 error!(
                     "VPC {vni}'s switch rule could not be removed either ({e}): the NIC may enforce a stale policy until the port restarts"
                 );
-                self.stale = true;
+                self.switch_lingers = true;
             }
+        }
+        if self.stale() {
+            error!(
+                "the root and an unconfirmed switch rule may still reach a policy: the NIC may enforce it until the port restarts"
+            );
         }
     }
 
@@ -432,8 +443,15 @@ impl<'t> Port<'t> {
         }
         if self.root.is_none() {
             let table = self.table(plan, root, FlowGroup(0))?;
-            self.root =
-                Some(self.insert("inserting the root rule", &table, &root.rules[0], &[])??);
+            let rule = &root.rules[0];
+            match table.insert(0, &rule.pattern, rule.actions, &[]) {
+                Ok(installed) => self.root = Some(installed),
+                Err(e) if unknown_state(&e) => {
+                    self.root_lingers = true;
+                    return Err(self.lose("inserting the root rule", e));
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         Ok(())
     }
@@ -822,27 +840,30 @@ impl SyncCreate for Port<'_> {
             return Ok(Vec::new());
         };
         let entry = generation.entry;
-        let Some(switch) = self.switch.take() else {
+        let Some(switch) = self.switch.as_mut() else {
             self.teardown(generation)?;
             return Err(Error::NoSwitch);
         };
-        let inserted = self.insert(
-            "inserting a switch rule",
-            &switch.table,
-            rule,
-            &[SharedArg::Jump(entry)],
-        );
-        let mut switch = switch;
+        // Leave every existing switch rule reachable by lose()/detach_all() if insertion fails.
+        let inserted =
+            switch
+                .table
+                .insert(0, &rule.pattern, rule.actions, &[SharedArg::Jump(entry)]);
         match inserted {
-            Ok(Ok(installed)) => {
+            Ok(installed) => {
                 switch.rules.insert(vni, installed);
-                self.switch = Some(switch);
                 self.vpcs.insert(vni, generation);
                 Ok(Vec::new())
             }
-            Ok(Err(e)) => {
-                self.switch = Some(switch);
-                let mut refused = vec![(Role::Switch(vni), e)];
+            Err(e) if unknown_state(&e) => {
+                // The new switch may already reach this generation, but no handle was returned.
+                // Removing the known switch rules alone cannot prove that the port is detached.
+                self.switch_lingers = true;
+                Self::forget(generation);
+                Err(self.lose("inserting a switch rule", e))
+            }
+            Err(e) => {
+                let mut refused = vec![(Role::Switch(vni), e.into())];
                 refused.extend(
                     generation
                         .rules
@@ -851,11 +872,6 @@ impl SyncCreate for Port<'_> {
                 );
                 self.teardown(generation)?;
                 Ok(refused)
-            }
-            Err(lost) => {
-                self.switch = Some(switch);
-                Self::forget(generation);
-                Err(lost)
             }
         }
     }
@@ -880,6 +896,7 @@ impl SyncRemove for Port<'_> {
         if let Some(rule) = self.switch.as_mut().and_then(|s| s.rules.remove(&vni))
             && let Err(e) = rule.destroy()
         {
+            self.switch_lingers = true;
             return Err(self.lose("removing a switch rule", e));
         }
         match self.vpcs.remove(&vni) {
