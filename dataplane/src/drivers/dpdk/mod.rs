@@ -189,10 +189,19 @@ impl DriverDpdk {
             monitors,
             status_writer,
             move || {
+                publish_heaps(ports);
                 let counters = publish_port_counters(&port_metrics, &mut counters_unavailable);
                 publish_port_states(&mut port_states, counters)
             },
         )?;
+        for (node, heap) in heaps(ports) {
+            info!(
+                "NUMA node {node}: {} MiB of the DPDK heap allocated, {} MiB free, of {} MiB",
+                heap.allocated >> 20,
+                heap.free >> 20,
+                heap.total >> 20
+            );
+        }
         info!("DPDK driver started successfully");
         Ok(())
     }
@@ -283,6 +292,34 @@ where
             ))
         })?;
     Ok(())
+}
+
+/// The DPDK heaps of the ports' NUMA nodes, by node.
+fn heaps(ports: &[Port<'_>]) -> std::collections::BTreeMap<u32, dpdk::socket::Heap> {
+    ports
+        .iter()
+        .flat_map(|port| port.dev.heaps())
+        .map(|(node, heap)| (node.as_c_uint(), heap))
+        .collect()
+}
+
+/// Publish how much of each NIC node's hugepage memory the DPDK heap holds, and how much of it
+/// pools, rings, ACL tables and drivers have allocated.
+fn publish_heaps(ports: &[Port<'_>]) {
+    #[allow(clippy::cast_precision_loss)] // far below 2^52 bytes
+    for (node, heap) in heaps(ports) {
+        let node = node.to_string();
+        for (state, bytes) in [
+            ("total", heap.total),
+            ("free", heap.free),
+            ("allocated", heap.allocated),
+        ] {
+            metrics::gauge!("dpdk_heap_bytes", "node" => node.clone(), "state" => state)
+                .set(bytes as f64);
+        }
+        metrics::gauge!("dpdk_heap_largest_free_bytes", "node" => node)
+            .set(heap.greatest_free as f64);
+    }
 }
 
 /// What the driver publishes about a port beyond its counters, and what it keeps to do so.
