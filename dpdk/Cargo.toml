@@ -9,6 +9,8 @@ version.workspace = true
 default = ["serde"]
 serde = ["dep:serde"]
 test = ["dep:id", "dep:dpdk-test-macros"]
+# Thread-local template PMD fault injection for downstream reconciler tests.
+template-test = []
 
 [dependencies]
 

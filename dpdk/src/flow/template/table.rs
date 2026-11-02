@@ -7,6 +7,9 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
+#[cfg(any(test, feature = "template-test"))]
+use super::testing::ffi as dpdk_sys;
+
 use dpdk_sys::{
     rte_flow, rte_flow_action, rte_flow_action_type as at, rte_flow_async_actions_update,
     rte_flow_async_create, rte_flow_async_destroy, rte_flow_error, rte_flow_op_attr,
@@ -20,6 +23,7 @@ use crate::flow::{Domain, FlowError, FlowGroup, Priority, SetDirection, item};
 use concurrency::sync::atomic::Ordering;
 
 use super::actions::{self, RuleArg, TemplateAction};
+use super::lifetime::{Dependencies, Resource};
 use super::{
     ActionsTemplate, Pattern, PatternTemplate, QUEUE, TemplateError, TemplateFlows, check,
     same_port,
@@ -43,6 +47,9 @@ pub struct TemplateTable<'t, D: Domain> {
     raw: NonNull<rte_flow_template_table>,
     patterns: Vec<Vec<ItemShape>>,
     actions: Vec<Vec<TemplateAction>>,
+    resource: Resource,
+    templates: Dependencies,
+    destroy_attempted: bool,
     _domain: PhantomData<D>,
 }
 
@@ -107,6 +114,15 @@ impl<'t> TemplateFlows<'t> {
             raw,
             patterns: patterns.iter().map(|p| p.shapes.clone()).collect(),
             actions: actions.iter().map(|a| a.actions.clone()).collect(),
+            resource: Resource::default(),
+            templates: Dependencies(
+                patterns
+                    .iter()
+                    .map(|p| p.resource.clone())
+                    .chain(actions.iter().map(|a| a.resource.clone()))
+                    .collect(),
+            ),
+            destroy_attempted: false,
             _domain: PhantomData,
         })
     }
@@ -201,16 +217,22 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
             )
         };
         let flow = NonNull::new(flow).ok_or_else(|| FlowError::from_raw(&error))?;
-        // The rule exists from here on, whether or not its creation completes: it is destroyed
-        // (through `Drop`) on failure.
+        // A handle exists once enqueued, but it may only be destroyed after creation completes.
+        // Missing completions leave the rule and its native dependencies for port teardown.
         flows.live_rules.fetch_add(1, Ordering::AcqRel);
-        let rule = TemplateRule {
+        let mut rule = TemplateRule {
             flows,
             flow,
             table: self.raw,
             counted: template_actions.contains(&TemplateAction::Count),
+            table_dependency: Dependencies(vec![self.resource.clone()]),
+            meters: Dependencies(meter_dependencies(args)),
+            pending: true,
+            destroy_attempted: false,
         };
-        flows.complete("rule creation", tag)?;
+        let result = flows.complete("rule creation", tag);
+        rule.pending = result.as_ref().is_err_and(TemplateError::is_pending);
+        result?;
         Ok(rule)
     }
 
@@ -246,8 +268,10 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
     /// # Errors
     ///
     /// Returns [`TemplateError::ForeignRule`] if `rule` is not in this table, an error if the
-    /// template index is out of range, if `args` do not fit it, or if the PMD fails; the rule then
-    /// keeps its old actions.
+    /// template index is out of range, if `args` do not fit it, or if the PMD fails. After enqueue,
+    /// an error may leave either action set installed. Missing completions leave the rule pending:
+    /// further updates and queries return [`TemplateError::Pending`], and drop retains native
+    /// resources until port teardown.
     pub fn update<'r>(
         &self,
         rule: &mut TemplateRule<'r>,
@@ -268,6 +292,9 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
     ) -> Result<(), TemplateError> {
         if rule.table != self.raw {
             return Err(TemplateError::ForeignRule);
+        }
+        if rule.pending {
+            return Err(TemplateError::Pending);
         }
         self.args_on_port(args)?;
         let template_actions =
@@ -299,9 +326,24 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
                 error,
             )
         })?;
-        flows.complete("rule update", tag)?;
-        rule.counted = template_actions.contains(&TemplateAction::Count);
-        Ok(())
+        // After enqueue, every completion error must preserve both dependency sets, including
+        // push/pull errors. A later completion must not race another operation on this handle.
+        rule.pending = true;
+        let mut meters = Dependencies(meter_dependencies(args));
+        let result = flows.complete("rule update", tag);
+        rule.pending = result.as_ref().is_err_and(TemplateError::is_pending);
+        if result.is_ok() {
+            rule.meters.release();
+        }
+        rule.meters.0.append(&mut meters.0);
+        // After a failed update either action set may be installed: query only if both count.
+        let counts = template_actions.contains(&TemplateAction::Count);
+        rule.counted = if result.is_ok() {
+            counts
+        } else {
+            rule.counted && counts
+        };
+        result
     }
 }
 
@@ -310,18 +352,27 @@ impl<D: Domain> TemplateTable<'_, D> {
     ///
     /// # Errors
     ///
-    /// Returns the PMD's error; the table is then left in place.
-    pub fn destroy(self) -> Result<(), TemplateError> {
-        let this = core::mem::ManuallyDrop::new(self);
-        this.remove()
+    /// Returns [`TemplateError::InUse`] if abandoned or forgotten rules still use the table,
+    /// or the PMD's error. On failure, the native table and its templates are retained until
+    /// port teardown, and the handle is gone, so the destroy cannot be retried; Rust allocations
+    /// are still released.
+    pub fn destroy(mut self) -> Result<(), TemplateError> {
+        self.remove()
     }
 
-    fn remove(&self) -> Result<(), TemplateError> {
+    fn remove(&mut self) -> Result<(), TemplateError> {
+        if core::mem::replace(&mut self.destroy_attempted, true) {
+            return Ok(());
+        }
+        if self.resource.in_use() {
+            return Err(TemplateError::InUse);
+        }
         let port = self.flows.port;
-        // SAFETY: the table is live and owned; its rules borrow it, so none remain.
+        // SAFETY: the table is live and owned, with no native rules remaining.
         check(|error| unsafe {
             rte_flow_template_table_destroy(port.as_u16(), self.raw.as_ptr(), error)
         })?;
+        self.templates.release();
         Ok(())
     }
 }
@@ -393,8 +444,8 @@ pub struct Counts {
 /// }
 /// ```
 ///
-/// If destroying it fails, the rule stays in the NIC, and so do its table, the table's templates
-/// and the rule's meters: the device flushes them when it stops.
+/// If destroying it fails, the rule may stay in the NIC. Its native table, templates, meters
+/// and meter profiles are retained until the port is closed.
 #[derive(Debug)]
 #[must_use = "dropping a TemplateRule immediately destroys the hardware rule"]
 pub struct TemplateRule<'r> {
@@ -403,6 +454,10 @@ pub struct TemplateRule<'r> {
     /// The table it is in, to refuse updates through another.
     table: NonNull<rte_flow_template_table>,
     counted: bool,
+    table_dependency: Dependencies,
+    meters: Dependencies,
+    pending: bool,
+    destroy_attempted: bool,
 }
 
 impl TemplateRule<'_> {
@@ -410,8 +465,12 @@ impl TemplateRule<'_> {
     ///
     /// # Errors
     ///
-    /// Returns [`TemplateError::NotCounted`] if its actions do not count, or the PMD's error.
+    /// Returns [`TemplateError::Pending`] if an operation has no collected completion,
+    /// [`TemplateError::NotCounted`] if its actions do not count, or the PMD's error.
     pub fn counts(&self) -> Result<Counts, TemplateError> {
+        if self.pending {
+            return Err(TemplateError::Pending);
+        }
         if !self.counted {
             return Err(TemplateError::NotCounted);
         }
@@ -448,14 +507,19 @@ impl TemplateRule<'_> {
     ///
     /// # Errors
     ///
-    /// Returns the PMD's error. The rule is then left in place and counted as leaked; the device
-    /// flushes leaked rules when it stops.
-    pub fn destroy(self) -> Result<(), TemplateError> {
-        let this = core::mem::ManuallyDrop::new(self);
-        this.remove()
+    /// Returns the PMD's error, or [`TemplateError::Pending`] if creation or update has no
+    /// collected completion. The rule and its native dependencies are retained for port teardown.
+    pub fn destroy(mut self) -> Result<(), TemplateError> {
+        self.remove()
     }
 
-    fn remove(&self) -> Result<(), TemplateError> {
+    fn remove(&mut self) -> Result<(), TemplateError> {
+        if core::mem::replace(&mut self.destroy_attempted, true) {
+            return Ok(());
+        }
+        if self.pending {
+            return Err(TemplateError::Pending);
+        }
         let flows = self.flows;
         // SAFETY: zero is valid for this C struct; a cleared `postpone` pushes at once.
         let op_attr: rte_flow_op_attr = unsafe { core::mem::zeroed() };
@@ -473,6 +537,8 @@ impl TemplateRule<'_> {
         })?;
         flows.complete("rule destruction", tag)?;
         flows.live_rules.fetch_sub(1, Ordering::AcqRel);
+        self.table_dependency.release();
+        self.meters.release();
         Ok(())
     }
 }
@@ -487,3 +553,16 @@ impl Drop for TemplateRule<'_> {
         }
     }
 }
+
+/// Native meters a rule will use once its create/update request is enqueued.
+fn meter_dependencies<D: Domain>(args: &[RuleArg<'_, D>]) -> Vec<Resource> {
+    args.iter()
+        .filter_map(|arg| match arg {
+            RuleArg::Meter(meter) => Some(meter.resource.clone()),
+            RuleArg::Jump(_) => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+pub(super) mod tests;
