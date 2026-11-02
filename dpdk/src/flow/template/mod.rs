@@ -83,6 +83,9 @@ pub(crate) struct PortTemplates {
     configured: bool,
     /// A [`TemplateFlows`] owns flow queue 0.
     in_use: AtomicBool,
+    /// The tag of the last operation queued on the port, by any context: a late completion from a
+    /// dropped context never matches a new one's operation.
+    last_op: AtomicUsize,
     /// Template rules whose removal has not been confirmed. Kept apart from the port's
     /// synchronous rules, whose flush (at stop, or when an abandoned port is claimed) also removes
     /// template rules under mlx5 hardware steering (`mlx5_flow_list_flush`) without clearing this
@@ -143,6 +146,32 @@ pub enum TemplateError {
     /// [`TemplateRule::counts`] on a rule without [`TemplateAction::Count`].
     #[error("the rule does not count")]
     NotCounted,
+    /// A rule was updated through a table it is not in.
+    #[error("the rule is not in this table")]
+    ForeignRule,
+    /// A template, profile or meter of one port was used with another port's.
+    #[error("{what} of port {got} used on port {expected}")]
+    OtherPort {
+        /// What was used.
+        what: &'static str,
+        /// The port it was used on.
+        expected: DevIndex,
+        /// The port it belongs to.
+        got: DevIndex,
+    },
+}
+
+/// Fail with [`TemplateError::OtherPort`] unless `got` is `expected`.
+fn same_port(what: &'static str, expected: DevIndex, got: DevIndex) -> Result<(), TemplateError> {
+    if expected == got {
+        Ok(())
+    } else {
+        Err(TemplateError::OtherPort {
+            what,
+            expected,
+            got,
+        })
+    }
 }
 
 /// Call an `rte_flow` function that returns 0 or a negative errno and fills `rte_flow_error`.
@@ -229,6 +258,8 @@ pub struct TemplateFlows<'dev> {
     port: DevIndex,
     live_rules: &'dev AtomicUsize,
     in_use: &'dev AtomicBool,
+    /// The tag of the last operation queued on the port; see [`complete`](Self::complete).
+    last_op: &'dev AtomicUsize,
     /// How long [`complete`](Self::complete) sleeps waiting for a completion.
     timeout: Duration,
     _thread: PhantomData<*const ()>,
@@ -254,6 +285,7 @@ impl<'dev> TemplateFlows<'dev> {
             port,
             live_rules: &templates.live_rules,
             in_use: &templates.in_use,
+            last_op: &templates.last_op,
             timeout: COMPLETION_TIMEOUT,
             _thread: PhantomData,
         })
@@ -365,15 +397,29 @@ impl<'dev> TemplateFlows<'dev> {
         Meter::new(self, profile)
     }
 
-    /// Push queued operations and wait for one to complete.
+    /// A new tag for an operation, to pass as its `user_data` and then to
+    /// [`complete`](Self::complete).
+    pub(crate) fn tag(&self) -> *mut core::ffi::c_void {
+        let mut tag = self.last_op.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        // Zero is no tag: a null `user_data`.
+        if tag == 0 {
+            tag = self.last_op.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        }
+        core::ptr::without_provenance_mut(tag)
+    }
+
+    /// Push queued operations and wait for the one tagged `tag` to complete.
     ///
-    /// Each operation waits for its own completion before the next is queued, so the completion
-    /// pulled is that operation's.
+    /// The completion of an operation that timed out may arrive later: it is discarded.
     ///
     /// The wait is counted in sleeps, not read from a clock: this runs in `Drop`, and the clock
     /// facade's virtual time only advances while its runtime is idle, so a test under a paused
     /// runtime would never reach a deadline. Oversleeping only lengthens the wait.
-    pub(crate) fn complete(&self, what: &'static str) -> Result<(), TemplateError> {
+    pub(crate) fn complete(
+        &self,
+        what: &'static str,
+        tag: *mut core::ffi::c_void,
+    ) -> Result<(), TemplateError> {
         let port = self.port.as_u16();
         // SAFETY: plain FFI call on a queue this context owns.
         check(|error| unsafe { rte_flow_push(port, QUEUE, error) })?;
@@ -388,6 +434,7 @@ impl<'dev> TemplateFlows<'dev> {
             // SAFETY: room for one result; the queue is this context's.
             let pulled = unsafe { rte_flow_pull(port, QUEUE, &raw mut result, 1, &raw mut error) };
             match pulled {
+                1 if result.user_data != tag => {}
                 1 if result.status == rte_flow_op_status::RTE_FLOW_OP_SUCCESS => return Ok(()),
                 1 => return Err(TemplateError::OperationFailed(what)),
                 0 if spins < SPINS => {

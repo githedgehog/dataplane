@@ -22,6 +22,7 @@ use concurrency::sync::atomic::Ordering;
 use super::actions::{self, RuleArg, TemplateAction};
 use super::{
     ActionsTemplate, Pattern, PatternTemplate, QUEUE, TemplateError, TemplateFlows, check,
+    same_port,
 };
 
 /// Where a table sits and how many rules it holds.
@@ -69,6 +70,12 @@ impl<'t> TemplateFlows<'t> {
         patterns: &[&PatternTemplate<'_, D>],
         actions: &[&ActionsTemplate<'_, D>],
     ) -> Result<TemplateTable<'t, D>, TemplateError> {
+        for pattern in patterns {
+            same_port("a pattern template", self.port, pattern.port)?;
+        }
+        for action in actions {
+            same_port("an actions template", self.port, action.port)?;
+        }
         let count = |n: usize| u8::try_from(n).map_err(|_| TemplateError::TooManyTemplates(n));
         let (n_patterns, n_actions) = (count(patterns.len())?, count(actions.len())?);
         // SAFETY: zero is valid for this C struct.
@@ -106,6 +113,16 @@ impl<'t> TemplateFlows<'t> {
 }
 
 impl<'t, D: Domain> TemplateTable<'t, D> {
+    /// Check that `args`' meters are of this table's port.
+    fn args_on_port(&self, args: &[RuleArg<'_, D>]) -> Result<(), TemplateError> {
+        for arg in args {
+            if let RuleArg::Meter(meter) = arg {
+                same_port("a meter", self.flows.port, meter.port())?;
+            }
+        }
+        Ok(())
+    }
+
     /// Insert a rule matching `pattern` with pattern template `pattern_template`, acting with
     /// actions template `actions_template`, given its per-rule `args`.
     ///
@@ -157,6 +174,7 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
                     index: actions_template,
                     count: self.actions.len(),
                 })?;
+        self.args_on_port(args)?;
         let owned = actions::rule(template_actions, args)?;
         let items = item::lower(&pattern.items);
         let actions = actions::lower(&owned);
@@ -165,6 +183,7 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
         let op_attr: rte_flow_op_attr = unsafe { core::mem::zeroed() };
         // SAFETY: an all-zero `rte_flow_error` is a valid out-parameter.
         let mut error: rte_flow_error = unsafe { core::mem::zeroed() };
+        let tag = flows.tag();
         // SAFETY: the arrays (and what they point at) outlive the call, which copies them; the
         // indices are in range (checked above, and fewer than 256 by construction of the table).
         let flow = unsafe {
@@ -177,7 +196,7 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
                 pattern_template as u8,
                 actions.as_ptr(),
                 actions_template as u8,
-                core::ptr::null_mut(),
+                tag,
                 &raw mut error,
             )
         };
@@ -188,9 +207,10 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
         let rule = TemplateRule {
             flows,
             flow,
+            table: self.raw,
             counted: template_actions.contains(&TemplateAction::Count),
         };
-        flows.complete("rule creation")?;
+        flows.complete("rule creation", tag)?;
         Ok(rule)
     }
 
@@ -200,16 +220,56 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
     /// The PMD swaps the actions of the installed rule: a packet sees the old actions or the new
     /// ones, not a rule that is missing.
     ///
+    /// The new meters must outlive the rule, as those it was inserted with:
+    ///
+    /// ```compile_fail,E0597
+    /// # use dataplane_dpdk::flow::Ingress;
+    /// # use dataplane_dpdk::flow::template::{
+    /// #     MeterProfileHandle, Pattern, RuleArg, TemplateFlows, TemplateTable,
+    /// # };
+    /// fn short_lived_meter<'t, P>(
+    ///     flows: &'t TemplateFlows<'t>,
+    ///     profile: &'t MeterProfileHandle<'t>,
+    ///     table: &TemplateTable<'t, Ingress>,
+    ///     pattern: &Pattern<P>,
+    /// ) {
+    ///     let m1 = flows.meter::<Ingress>(profile).unwrap();
+    ///     let mut rule = table.insert(0, pattern, 0, &[RuleArg::Meter(&m1)]).unwrap();
+    ///     {
+    ///         let m2 = flows.meter::<Ingress>(profile).unwrap();
+    ///         table.update(&mut rule, 0, &[RuleArg::Meter(&m2)]).unwrap();
+    ///     }
+    ///     drop(rule);
+    /// }
+    /// ```
+    ///
     /// # Errors
     ///
-    /// Returns an error if the template index is out of range, if `args` do not fit it, or if the
-    /// PMD fails; the rule then keeps its old actions.
-    pub fn update(
+    /// Returns [`TemplateError::ForeignRule`] if `rule` is not in this table, an error if the
+    /// template index is out of range, if `args` do not fit it, or if the PMD fails; the rule then
+    /// keeps its old actions.
+    pub fn update<'r>(
+        &self,
+        rule: &mut TemplateRule<'r>,
+        actions_template: usize,
+        args: &[RuleArg<'r, D>],
+    ) -> Result<(), TemplateError> {
+        self.update_unbound(rule, actions_template, args)
+    }
+
+    /// [`update`](Self::update), but the new meters are not bound to the rule's lifetime: the
+    /// caller keeps them alive as long as the rule ([`SharedRule`](super::SharedRule) by owning
+    /// them).
+    pub(crate) fn update_unbound(
         &self,
         rule: &mut TemplateRule<'_>,
         actions_template: usize,
         args: &[RuleArg<'_, D>],
     ) -> Result<(), TemplateError> {
+        if rule.table != self.raw {
+            return Err(TemplateError::ForeignRule);
+        }
+        self.args_on_port(args)?;
         let template_actions =
             self.actions
                 .get(actions_template)
@@ -223,8 +283,10 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
         let flows = self.flows;
         // SAFETY: zero is valid for this C struct; a cleared `postpone` pushes at once.
         let op_attr: rte_flow_op_attr = unsafe { core::mem::zeroed() };
-        // SAFETY: the rule is live and of this table; the actions outlive the call, which copies
-        // them; the index is in range (checked above, and below 256 by construction).
+        let tag = flows.tag();
+        // SAFETY: the rule is live and of this table (checked above); the actions outlive the
+        // call, which copies them; the index is in range (checked above, and below 256 by
+        // construction).
         check(|error| unsafe {
             rte_flow_async_actions_update(
                 flows.port.as_u16(),
@@ -233,11 +295,11 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
                 rule.flow.as_ptr(),
                 actions.as_ptr(),
                 actions_template as u8,
-                core::ptr::null_mut(),
+                tag,
                 error,
             )
         })?;
-        flows.complete("rule update")?;
+        flows.complete("rule update", tag)?;
         rule.counted = template_actions.contains(&TemplateAction::Count);
         Ok(())
     }
@@ -265,11 +327,61 @@ pub struct Counts {
 }
 
 /// An installed template rule, destroyed on drop.
+///
+/// It cannot outlive its table:
+///
+/// ```compile_fail,E0597
+/// # use dataplane_dpdk::flow::Ingress;
+/// # use dataplane_dpdk::flow::template::{
+/// #     ActionsTemplate, Pattern, PatternTemplate, TableConfig, TemplateFlows,
+/// # };
+/// fn rule_outlives_table<'t, P>(
+///     flows: &'t TemplateFlows<'t>,
+///     config: TableConfig,
+///     pattern_template: &'t PatternTemplate<'t, Ingress>,
+///     actions_template: &'t ActionsTemplate<'t, Ingress>,
+///     pattern: &Pattern<P>,
+/// ) {
+///     let rule;
+///     {
+///         let table = flows.table(config, &[pattern_template], &[actions_template]).unwrap();
+///         rule = table.insert(0, pattern, 0, &[]).unwrap();
+///     }
+///     drop(rule);
+/// }
+/// ```
+///
+/// nor its meters:
+///
+/// ```compile_fail,E0597
+/// # use dataplane_dpdk::flow::Ingress;
+/// # use dataplane_dpdk::flow::template::{
+/// #     MeterProfileHandle, Pattern, RuleArg, TemplateFlows, TemplateTable,
+/// # };
+/// fn rule_outlives_meter<'t, P>(
+///     flows: &'t TemplateFlows<'t>,
+///     profile: &'t MeterProfileHandle<'t>,
+///     table: &TemplateTable<'t, Ingress>,
+///     pattern: &Pattern<P>,
+/// ) {
+///     let rule;
+///     {
+///         let meter = flows.meter::<Ingress>(profile).unwrap();
+///         rule = table.insert(0, pattern, 0, &[RuleArg::Meter(&meter)]).unwrap();
+///     }
+///     drop(rule);
+/// }
+/// ```
+///
+/// If destroying it fails, the rule stays in the NIC, and so do its table, the table's templates
+/// and the rule's meters: the device flushes them when it stops.
 #[derive(Debug)]
 #[must_use = "dropping a TemplateRule immediately destroys the hardware rule"]
 pub struct TemplateRule<'r> {
     flows: &'r TemplateFlows<'r>,
     flow: NonNull<rte_flow>,
+    /// The table it is in, to refuse updates through another.
+    table: NonNull<rte_flow_template_table>,
     counted: bool,
 }
 
@@ -327,6 +439,7 @@ impl TemplateRule<'_> {
         let flows = self.flows;
         // SAFETY: zero is valid for this C struct; a cleared `postpone` pushes at once.
         let op_attr: rte_flow_op_attr = unsafe { core::mem::zeroed() };
+        let tag = flows.tag();
         // SAFETY: the rule is live and owned by `self`, which is not used again.
         check(|error| unsafe {
             rte_flow_async_destroy(
@@ -334,11 +447,11 @@ impl TemplateRule<'_> {
                 QUEUE,
                 &raw const op_attr,
                 self.flow.as_ptr(),
-                core::ptr::null_mut(),
+                tag,
                 error,
             )
         })?;
-        flows.complete("rule destruction")?;
+        flows.complete("rule destruction", tag)?;
         flows.live_rules.fetch_sub(1, Ordering::AcqRel);
         Ok(())
     }
