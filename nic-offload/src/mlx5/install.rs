@@ -4,6 +4,7 @@
 //! A [`Plan`] installed on a port, and kept in step with the policy: [`Port`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::Ipv4Addr;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -22,8 +23,8 @@ use super::{
     Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, RESOURCES, Role, SWITCH, VpcSpec,
     unknown_state,
 };
-use crate::Policy;
 use crate::program::{Origin, Peering, Program};
+use crate::{Policy, Vteps};
 
 /// How often the rules are checked against the published policy.
 const POLL: Duration = Duration::from_millis(200);
@@ -926,27 +927,27 @@ pub fn run(
     let mut port = Port::new(&flows);
     while !stop() {
         let (filter, limits, routes) = (acls.load(), reader.load(), routing.load());
+        let destinations = routes.destinations();
+        let vteps = vteps_of(&*policy.vteps, &destinations);
         let changed = || {
             stop()
                 || !concurrency::sync::Arc::ptr_eq(&acls.load(), &filter)
                 || !concurrency::sync::Arc::ptr_eq(&reader.load(), &limits)
                 || !concurrency::sync::Arc::ptr_eq(&routing.load(), &routes)
+                || vteps_of(&*policy.vteps, &destinations) != vteps
         };
-        let destinations = routes.destinations();
         if !limits.attempt_offloads() {
             info!(
                 "port {port_name}: NIC offload is turned off; software alone enforces the policy"
             );
         }
-        let (program, excluded) = install_policy(
-            &mut port,
-            port_name,
-            &filter,
-            &limits,
-            &destinations,
-            fate,
-            &changed,
-        );
+        let seen = Seen {
+            filter: &filter,
+            limits: &limits,
+            destinations: &destinations,
+            vteps: &vteps,
+        };
+        let (program, excluded) = install_policy(&mut port, port_name, &seen, fate, &changed);
         if let Some(program) = &program
             && (!program.denies.is_empty() || !program.rules.is_empty())
         {
@@ -978,22 +979,61 @@ pub fn run(
     }
 }
 
+/// The IPv4 VTEPs of the VPCs `destinations` names.
+fn vteps_of(
+    vteps: &dyn Vteps,
+    destinations: &[flow_filter::Destination],
+) -> BTreeMap<Vni, Ipv4Addr> {
+    destinations
+        .iter()
+        .flat_map(|d| [d.src_vni, d.dst_vni])
+        .filter_map(|vni| Some((vni, vteps.vtep(vni)?)))
+        .collect()
+}
+
+/// The policy as seen together: the ACLs, the rate limits, where flow-filter routes, and the VTEPs.
+struct Seen<'a> {
+    filter: &'a acl_filter::AclFilterContext,
+    limits: &'a rate_limit::RateLimits<rate_limit::PeeringRules>,
+    destinations: &'a [flow_filter::Destination],
+    vteps: &'a BTreeMap<Vni, Ipv4Addr>,
+}
+
 /// Compile the policy into a program, and reconcile `port` with it: the program installed (or
 /// `None` if offload failed, or the policy changed meanwhile), and the peerings left in software
-/// because the NIC refused them or ran out of meters.
+/// because the NIC refused them, ran out of meters, or a VPC of theirs has no VTEP.
 fn install_policy(
     port: &mut Port<'_>,
     port_name: &str,
-    filter: &acl_filter::AclFilterContext,
-    limits: &rate_limit::RateLimits<rate_limit::PeeringRules>,
-    destinations: &[flow_filter::Destination],
+    seen: &Seen<'_>,
     fate: &TemplateAction,
     changed: &dyn Fn() -> bool,
 ) -> (Option<Program>, BTreeSet<Peering>) {
-    // Peerings left in software: refused by the NIC, or over its meters.
+    let Seen {
+        filter,
+        limits,
+        destinations,
+        vteps,
+    } = *seen;
+    // Peerings left in software: refused by the NIC, over its meters, or of a VPC without a VTEP.
     let mut excluded = BTreeSet::new();
     let program = loop {
         let program = Program::compile(filter, limits, destinations, &excluded);
+        // Without its VTEP, a VPC's VXLAN can't be told from transit.
+        let homeless: BTreeSet<Peering> = program
+            .denies
+            .iter()
+            .map(|d| d.peering)
+            .chain(program.rules.iter().map(|r| r.peering))
+            .filter(|p| p.vnis().iter().any(|vni| !vteps.contains_key(vni)))
+            .collect();
+        if !homeless.is_empty() {
+            for peering in &homeless {
+                info!("port {port_name}: the {peering} stays in software: a VPC has no IPv4 VTEP");
+            }
+            excluded.extend(homeless);
+            continue;
+        }
         if program.meters.len() > RESOURCES.meters as usize {
             // The peerings of the last meters stay in software until the rest fit.
             let last = program.meters.len() - 1;
@@ -1017,7 +1057,7 @@ fn install_policy(
                 info!("port {port_name}: the {peering} stays in software: {origin}: {refusal:?}");
             }
         }
-        let outcome = super::Plan::new(&program, fate).and_then(|plan| {
+        let outcome = super::Plan::new(&program, vteps, fate).and_then(|plan| {
             let observed = port.observe();
             port.reconcile(&plan, observed)
         });

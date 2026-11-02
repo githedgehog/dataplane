@@ -5,7 +5,8 @@
 //!
 //! ```text
 //! root        eth / ipv4 / udp dst 4789                       -> jump switch
-//! switch      one rule per source VPC: ... / vxlan vni        -> jump to its generation
+//! switch      one rule per source VPC: eth / ipv4 dst vtep / udp / vxlan vni
+//!                                                             -> jump to its generation
 //!             last: eth                                       -> the driver's fate (software)
 //! deny(v)     the VPC's ACL denies, one table per rule shape:
 //!             ... / vxlan / eth / ip src, dst [proto] [/ udp|tcp ports, flags] -> drop
@@ -25,10 +26,15 @@
 //! other VPCs alone ([`Port`]). The root is fixed: mlx5 steers the root group with firmware,
 //! slow to change and unable to update a rule in place.
 //!
+//! A switch rule matches the VNI's VTEP address as the outer destination, as software decapsulates
+//! only VXLAN addressed to it: other VXLAN through the gateway is transit, routed in the underlay
+//! untouched, and the NIC leaves it to software too.
+//!
 //! [`Plan`] is the layout as data, with groups named for what they are for ([`Group`]); they are
 //! numbered when installed. Limits: IPv4 underlay only.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::Ipv4Addr;
 
 use dpdk::flow::model::{Ipv6Extensions, Parser};
 use dpdk::flow::template::{
@@ -110,6 +116,9 @@ pub enum Error {
     /// The port's offload was turned off for good by an earlier [`Error::Lost`].
     #[error("NIC offload is off on this port until it restarts")]
     Poisoned,
+    /// A source VPC has rules, but no IPv4 VTEP to tell its VXLAN from transit.
+    #[error("VPC {0} has no IPv4 VTEP")]
+    NoVtep(Vni),
 }
 
 /// Whether a failed operation leaves the NIC's state unknown, rather than refused cleanly.
@@ -242,7 +251,7 @@ impl Shape {
         } else {
             let addr = |p: Option<Prefix>, len| match p {
                 Some(Prefix::V4(a, l)) => Ipv4Prefix::prefix(a, l),
-                _ => Ipv4Prefix::prefix(std::net::Ipv4Addr::UNSPECIFIED, len),
+                _ => Ipv4Prefix::prefix(Ipv4Addr::UNSPECIFIED, len),
             };
             // Fragments are left to software: it sees a later fragment's protocol as the fragment,
             // with no ports, and a first fragment as its protocol, which no NIC rule can tell
@@ -449,6 +458,8 @@ pub struct VpcSpec {
     pub limits: Vec<(Match, MeterKey)>,
     /// The destinations it lets pass to software ahead of its rules.
     pub passes: Vec<Prefix>,
+    /// The VTEP address its VXLAN is addressed to.
+    pub vtep: Ipv4Addr,
 }
 
 /// A source VPC's generation of rules.
@@ -506,12 +517,16 @@ fn any_pattern() -> Pattern<Complete> {
     Pattern::new().eth(EthMatch::default()).complete()
 }
 
-/// The pattern of a switch rule: VXLAN with the VPC's VNI (a placeholder for the template).
-fn switch_pattern(vni: Option<Vni>) -> Pattern<Complete> {
-    let vni = vni.unwrap_or_else(|| Vni::new_checked(Vni::MIN).unwrap_or_else(|_| unreachable!()));
+/// The pattern of a switch rule: VXLAN with the VPC's VNI, to its VTEP (placeholders for the
+/// template).
+fn switch_pattern(vpc: Option<(Vni, Ipv4Addr)>) -> Pattern<Complete> {
+    let (vni, vtep) = vpc.unwrap_or_else(|| {
+        let vni = Vni::new_checked(Vni::MIN).unwrap_or_else(|_| unreachable!());
+        (vni, Ipv4Addr::UNSPECIFIED)
+    });
     Pattern::new()
         .eth(EthMatch::default())
-        .ipv4(Ipv4Match::default())
+        .ipv4(Ipv4Match::default().dst(Ipv4Prefix::host(vtep)))
         .udp(UdpMatch::default().dst(VXLAN_PORT))
         .vxlan(VxlanMatch::default().vni(vni))
         .complete()
@@ -523,7 +538,7 @@ fn pass_matches(vni: Vni, passes: &[Prefix]) -> Vec<(Match, Vni)> {
         .iter()
         .map(|p| {
             let source = match p {
-                Prefix::V4(..) => Prefix::V4(std::net::Ipv4Addr::UNSPECIFIED, 0),
+                Prefix::V4(..) => Prefix::V4(Ipv4Addr::UNSPECIFIED, 0),
                 Prefix::V6(..) => Prefix::V6(std::net::Ipv6Addr::UNSPECIFIED, 0),
             };
             let matches = Match {
@@ -655,12 +670,18 @@ impl Plan {
         tables
     }
 
-    /// Lower `program`, sending what the NIC lets through to `fate`.
+    /// Lower `program`, sending what the NIC lets through to `fate`. A source VPC's rules apply to
+    /// VXLAN addressed to its VTEP in `vteps`.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::TooManyMeters`] if the program needs more meters than [`RESOURCES`].
-    pub fn new(program: &Program, fate: &TemplateAction) -> Result<Plan, Error> {
+    /// Returns [`Error::TooManyMeters`] if the program needs more meters than [`RESOURCES`], and
+    /// [`Error::NoVtep`] if a source VPC with rules has no VTEP in `vteps`.
+    pub fn new(
+        program: &Program,
+        vteps: &BTreeMap<Vni, Ipv4Addr>,
+        fate: &TemplateAction,
+    ) -> Result<Plan, Error> {
         if program.meters.len() > RESOURCES.meters as usize {
             return Err(Error::TooManyMeters(program.meters.len()));
         }
@@ -703,9 +724,11 @@ impl Plan {
         }
         let vnis: BTreeSet<Vni> = denies.keys().chain(limits.keys()).copied().collect();
         for vni in vnis {
+            let vtep = *vteps.get(&vni).ok_or(Error::NoVtep(vni))?;
             let vpc = plan.vpc(
                 program,
                 vni,
+                vtep,
                 &denies.remove(&vni).unwrap_or_default(),
                 &limits.remove(&vni).unwrap_or_default(),
             );
@@ -723,6 +746,7 @@ impl Plan {
         &mut self,
         program: &Program,
         vni: Vni,
+        vtep: Ipv4Addr,
         vni_denies: &[usize],
         vni_limits: &[usize],
     ) -> PlannedVpc {
@@ -767,6 +791,7 @@ impl Plan {
                 .get(&vni)
                 .map(|p| p.iter().copied().collect())
                 .unwrap_or_default(),
+            vtep,
         };
         // What another peer takes of a rule's destination passes, ahead of every rule.
         let passes = pass_matches(vni, &spec.passes);
@@ -828,7 +853,7 @@ impl Plan {
             .vpcs
             .iter()
             .map(|(&vni, vpc)| PlannedRule {
-                pattern: switch_pattern(Some(vni)),
+                pattern: switch_pattern(Some((vni, vpc.spec.vtep))),
                 actions: 0,
                 args: vec![Arg::Jump(vpc.entry)],
                 role: Role::Switch(vni),
