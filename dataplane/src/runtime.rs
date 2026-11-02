@@ -325,6 +325,9 @@ fn eal_arguments(config: &LaunchConfiguration) -> Vec<String> {
         "--lcores".to_string(),
         main_lcore_arg,
     ];
+    // BENCH ONLY (env-5 diagnosis, not for merge): what mlx5 does at probe.
+    eal_args.push("--log-level=pmd.net.mlx5:debug".to_string());
+    eal_args.push("--log-level=pmd.common.mlx5:debug".to_string());
 
     if let DriverConfigSection::Dpdk(dpdk) = &config.driver {
         // Preallocate the per-node memory selected by init.
