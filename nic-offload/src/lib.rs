@@ -36,10 +36,14 @@ mod qualify;
 #[cfg(test)]
 mod tests;
 
+use std::net::Ipv4Addr;
+
 use acl_filter::AclFilterContextReader;
+use concurrency::sync::Arc;
 use dpdk::dev::DevInfo;
 use dpdk::flow::template::TemplateConfig;
 use hardware::pci::address::PciAddress;
+use net::vxlan::Vni;
 use rate_limit::{PeeringRules, RateLimitReader};
 
 /// The PCI vendor id of NVIDIA/Mellanox.
@@ -85,4 +89,13 @@ pub struct Policy {
     pub routing: flow_filter::FlowFilterContextReader,
     /// The rate limiter's rules, and which peerings asked for offload.
     pub rate_limits: RateLimitReader<PeeringRules>,
+    /// The VTEP each VPC's VXLAN is addressed to.
+    pub vteps: Arc<dyn Vteps>,
+}
+
+/// Where software takes in each VPC's VXLAN: it decapsulates only VXLAN addressed to the VTEP of
+/// the VNI's FIB, and routes the rest in the underlay untouched.
+pub trait Vteps: std::fmt::Debug + Send + Sync {
+    /// The IPv4 address of `vni`'s VTEP, if it has one.
+    fn vtep(&self, vni: Vni) -> Option<Ipv4Addr>;
 }

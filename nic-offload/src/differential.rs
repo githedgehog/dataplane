@@ -14,7 +14,7 @@
 //! Frames the software could not route (no peer exposes the destination) are dropped by it
 //! anyway, so the NIC may do anything with them but change them.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::num::{NonZeroU64, NonZeroUsize};
 
@@ -757,6 +757,20 @@ impl RawFrame {
     }
 }
 
+/// The VTEP the generated VPCs' VXLAN is addressed to.
+pub(crate) const VTEP: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
+
+/// [`VTEP`] for every VPC of `program`'s rules.
+pub(crate) fn vteps(program: &Program) -> BTreeMap<Vni, Ipv4Addr> {
+    program
+        .denies
+        .iter()
+        .map(|d| d.matches.src_vni)
+        .chain(program.rules.iter().map(|r| r.matches.src_vni))
+        .map(|vni| (vni, VTEP))
+        .collect()
+}
+
 impl Frame {
     /// The frame on the underlay wire: IPv4, UDP to the VXLAN port, VXLAN with the source VNI.
     fn wire(&self) -> Vec<u8> {
@@ -766,6 +780,21 @@ impl Frame {
     /// The frame on the underlay wire to `dst`, with outer IP identification `id`, which no
     /// pattern matches: it tells frames apart on a real port.
     pub(crate) fn wire_to(&self, dst: [u8; 6], id: u16) -> Vec<u8> {
+        self.encapsulated(dst, VTEP, id)
+    }
+
+    /// The frame passing through the gateway's underlay: VXLAN to another VTEP than the
+    /// gateway's, which software routes without decapsulating it.
+    fn transit(&self) -> Vec<u8> {
+        self.transit_to([0x02, 0, 0, 0, 0, 4], 0)
+    }
+
+    /// [`Frame::transit`] to `dst`, with outer IP identification `id`, as [`Frame::wire_to`].
+    pub(crate) fn transit_to(&self, dst: [u8; 6], id: u16) -> Vec<u8> {
+        self.encapsulated(dst, Ipv4Addr::new(192, 0, 2, 9), id)
+    }
+
+    fn encapsulated(&self, dst: [u8; 6], vtep: Ipv4Addr, id: u16) -> Vec<u8> {
         let mut f = Vec::from(dst);
         f.extend([0x02, 0, 0, 0, 0, 3, 0x08, 0x00]);
         let udp_len = u16::try_from(16 + self.inner.len()).unwrap_or(u16::MAX);
@@ -773,7 +802,8 @@ impl Frame {
         let mut ip = vec![0x45, 0];
         ip.extend(total.to_be_bytes());
         ip.extend(id.to_be_bytes());
-        ip.extend([0x40, 0, 64, 17, 0, 0, 192, 0, 2, 1, 192, 0, 2, 2]);
+        ip.extend([0x40, 0, 64, 17, 0, 0, 192, 0, 2, 1]);
+        ip.extend(vtep.octets());
         let sum = ones_complement(&ip);
         ip[10..12].copy_from_slice(&sum.to_be_bytes());
         f.extend(ip);
@@ -991,7 +1021,7 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
     let acls = AclFilterContext::reference(overlay).unwrap();
     let routes = destinations(overlay);
     let program = Program::compile(&acls, &limits, &routes, &BTreeSet::new());
-    let plan = Plan::new(&program, &fate()).unwrap();
+    let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
     check_profiles(&limits, &program, &plan);
     let mut tally = Tally::default();
     for raw in frames {
@@ -999,6 +1029,14 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
         frame.route(&routes);
         let software = frame.software(&acls, &limits);
         let outcomes = plan.outcomes(&frame.wire()).unwrap();
+        // Transit VXLAN is the underlay's: the NIC neither drops it nor charges a meter for it.
+        for outcome in plan.outcomes(&frame.transit()).unwrap() {
+            assert!(
+                outcome.meters.is_empty()
+                    && matches!(outcome.verdict, Verdict::Delivered | Verdict::Untouched),
+                "transit VXLAN touched\nframe: {raw:?}\noutcome: {outcome:?}"
+            );
+        }
         // Software drops what it cannot route; the NIC may too.
         if frame.dst_vni.is_none() {
             continue;
@@ -1116,11 +1154,8 @@ fn unclassifiable_packets_are_charged_by_the_nic_only() {
     let limits = writer.load();
     let filter = AclFilterContext::reference(&overlay).unwrap();
     assert_eq!(frame.software(&filter, &limits), Software::Unclassifiable);
-    let plan = Plan::new(
-        &Program::compile(&filter, &limits, &destinations(&overlay), &BTreeSet::new()),
-        &fate(),
-    )
-    .unwrap();
+    let program = Program::compile(&filter, &limits, &destinations(&overlay), &BTreeSet::new());
+    let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
     let outcomes = plan.outcomes(&frame.wire()).unwrap();
     assert!(outcomes.iter().all(|o| o.meters == [0]), "{outcomes:?}");
 }
@@ -1165,7 +1200,7 @@ fn denies_drop_in_the_nic_unless_an_earlier_allow_overlaps() {
         assert_eq!(tally.charged_dropped, 0);
         assert_eq!(program.rules.len(), usize::from(denied), "{program:#?}");
         let frame = aimed(0, RawL4::Udp, RawFragment::Whole).frame(&rules);
-        let plan = Plan::new(&program, &fate()).unwrap();
+        let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
         let outcomes = plan.outcomes(&frame.wire()).unwrap();
         assert_eq!(
             outcomes
@@ -1253,7 +1288,7 @@ fn a_syn_deny_drops_syns_in_the_nic() {
     );
     assert_eq!(program.denies.len(), 1, "{program:#?}");
     assert_eq!(program.denies[0].matches.tcp_flags, Some((0x02, 0x12)));
-    let plan = Plan::new(&program, &fate()).unwrap();
+    let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
     let targets = targets(&rules, &acls);
     for (flags, dropped) in [(0x02, true), (0x12, false), (0x10, false)] {
         let mut raw = aimed(0, RawL4::Tcp, RawFragment::Whole);

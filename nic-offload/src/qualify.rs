@@ -52,7 +52,9 @@ use dpdk::socket;
 use net::buffer::Append;
 use rate_limit::{PeeringRules, RateLimitWriter, RateLimits};
 
-use crate::differential::{RawAcls, RawFragment, RawFrame, RawMeter, RawRule, overlay, targets};
+use crate::differential::{
+    RawAcls, RawFragment, RawFrame, RawMeter, RawRule, overlay, targets, vteps,
+};
 use crate::mlx5::{Plan, Port, RESOURCES, Role, with_installed};
 use crate::model::{Outcome, Verdict};
 use crate::program::{Peering, Program};
@@ -315,7 +317,12 @@ impl Case {
             &crate::differential::destinations(&overlay),
             excluded,
         );
-        let plan = Plan::new(&program, &TemplateAction::Queue(RxQueueIndex(0))).unwrap();
+        let plan = Plan::new(
+            &program,
+            &vteps(&program),
+            &TemplateAction::Queue(RxQueueIndex(0)),
+        )
+        .unwrap();
         // Aim at the rate limits the NIC took, and the denies of the peerings it took.
         let offloaded_peerings: BTreeSet<Peering> = program
             .rules
@@ -405,10 +412,8 @@ fn qualify_case(
         targets,
         ..
     } = case;
-    let wires: Vec<Vec<u8>> = (0u16..)
-        .zip(frames)
-        .map(|(id, raw)| raw.frame(&targets).wire_to(rig.link.mac, id))
-        .collect();
+    let wires = wires(frames, &targets, rig.link.mac);
+    let frames: Vec<&RawFrame> = frames.iter().cycle().take(wires.len()).collect();
     for meter in &mut plan.meters {
         meter.key.profile = passes_everything();
     }
@@ -454,7 +459,7 @@ fn qualify_case(
                 None => dropped += 1,
             }
             if allowed.iter().any(|o| arrives(o)) && allowed.iter().any(|o| !arrives(o)) {
-                settle(&frames[i], wire, arrived.is_some());
+                settle(frames[i], wire, arrived.is_some());
             }
             if !allowed.iter().any(|o| arrives(o) == arrived.is_some()) {
                 disagreements.push(format!(
@@ -500,6 +505,21 @@ fn qualify_case(
         }
     }
     took(started);
+}
+
+/// `frames` on the wire to `mac`, each to the gateway's VTEP, then each again as transit VXLAN
+/// (which the NIC leaves alone), told apart by their outer IP identification.
+fn wires(frames: &[RawFrame], targets: &[RawRule], mac: [u8; 6]) -> Vec<Vec<u8>> {
+    let transit = u16::try_from(frames.len()).unwrap_or(u16::MAX);
+    (0u16..)
+        .zip(frames)
+        .map(|(id, raw)| raw.frame(targets).wire_to(mac, id))
+        .chain(
+            (transit..)
+                .zip(frames)
+                .map(|(id, raw)| raw.frame(targets).transit_to(mac, id)),
+        )
+        .collect()
 }
 
 /// How many rules of `program` match TCP flags.
@@ -1155,7 +1175,7 @@ fn reconcile_scenarios() {
                 let mut port = Port::new(&rig.flows);
                 let mut result = "ok".to_string();
                 for (step, program) in programs.iter().enumerate() {
-                    let plan = Plan::new(program, &fate).unwrap();
+                    let plan = Plan::new(program, &vteps(program), &fate).unwrap();
                     let observed = port.observe();
                     if let Err(e) = port.reconcile(&plan, observed) {
                         result = format!("step {step}: {e}");

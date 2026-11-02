@@ -152,6 +152,12 @@ impl Peering {
     pub fn other(self, vni: Vni) -> Vni {
         if self.0 == vni { self.1 } else { self.0 }
     }
+
+    /// The VNIs of its two VPCs.
+    #[must_use]
+    pub fn vnis(self) -> [Vni; 2] {
+        [self.0, self.1]
+    }
 }
 
 impl std::fmt::Display for Peering {
