@@ -1045,6 +1045,7 @@ fn reconcile_scenarios() {
     };
     let meter = |name: &str| PoliceMeter {
         name: name.to_string(),
+        lease_slack: [0, 0],
         unit: rate_limit::Unit::Bytes,
         profile: policer::Profile::new(
             policer::Rate::new(std::num::NonZeroU64::new(1_000_000).unwrap()),

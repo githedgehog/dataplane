@@ -131,6 +131,9 @@ pub struct PoliceMeter {
     pub unit: Unit,
     /// Rates and bursts, in `unit`.
     pub profile: Profile,
+    /// How far software's per-worker leases may let a burst exceed each bucket, committed then
+    /// excess, in `unit`.
+    pub lease_slack: [u64; 2],
 }
 
 /// A peering, by the VNIs of its two VPCs, in either direction: what is offloaded whole or not at
@@ -330,7 +333,7 @@ impl Routing<'_> {
 /// The component of `meter` a NIC enforces, if it drops red: the bytes one if there is one, else
 /// the packets one. Enforcing one component of a chain is conservative: the chain only ever makes a
 /// color worse.
-fn component(limits: &RateLimits<PeeringRules>, meter: usize) -> Option<(Unit, Profile)> {
+fn component(limits: &RateLimits<PeeringRules>, meter: usize) -> Option<Component> {
     let meter = limits.meters().get(meter)?;
     // With both, software meters packets with the colors the bytes component left them, which a
     // NIC meter cannot: only the bytes component is enforced.
@@ -340,7 +343,19 @@ fn component(limits: &RateLimits<PeeringRules>, meter: usize) -> Option<(Unit, P
         Unit::Packets
     };
     let component = meter.component(unit)?;
-    (component.action(Color::Red) == ColorAction::Drop).then(|| (unit, component.profile()))
+    (component.action(Color::Red) == ColorAction::Drop).then(|| Component {
+        unit,
+        profile: component.profile(),
+        lease_slack: component.lease_slack(),
+    })
+}
+
+/// The component of a software meter a NIC enforces.
+#[derive(Debug, Clone, Copy)]
+struct Component {
+    unit: Unit,
+    profile: Profile,
+    lease_slack: [u64; 2],
 }
 
 fn proto(spec: MaskSpec<NextHeader>) -> Result<Option<u8>, Refusal> {
@@ -431,7 +446,7 @@ struct Candidate {
     rule: PoliceRule,
     /// The software meter, and the component a NIC enforces of it.
     meter: usize,
-    component: (Unit, Profile),
+    component: Component,
 }
 
 /// The rules of a policy that may be offloaded, and the peerings that may not.
@@ -511,7 +526,12 @@ impl Program {
         for Candidate {
             mut rule,
             meter,
-            component: (unit, profile),
+            component:
+                Component {
+                    unit,
+                    profile,
+                    lease_slack,
+                },
         } in c.rules
         {
             if left.contains(&rule.peering) {
@@ -531,6 +551,7 @@ impl Program {
                     name: limits.meters()[meter].name().to_string(),
                     unit,
                     profile,
+                    lease_slack,
                 });
                 program.meters.len() - 1
             });
