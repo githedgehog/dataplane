@@ -203,9 +203,12 @@ impl Walk<'_> {
                         })
                         .collect();
                 }
-                // The one fixed jump of a plan: the root's, to the switch.
+                // The fixed jumps of a plan: to validation, and to the switch.
                 TemplateAction::Jump(group) if *group == crate::mlx5::SWITCH => {
                     return self.jump(frame, Group::Switch, states, depth);
+                }
+                TemplateAction::Jump(group) if *group == crate::mlx5::VALIDATE => {
+                    return self.jump(frame, Group::Validate, states, depth);
                 }
                 TemplateAction::Jump(_) => return Err(ModelError::Arguments),
                 TemplateAction::JumpPerRule => {

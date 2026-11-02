@@ -17,7 +17,9 @@ use net::vxlan::Vni;
 use rekon::{SyncCreate, SyncObserve, SyncReconcile, SyncRemove};
 use tracing::{error, info, warn};
 
-use super::{Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, Role, SWITCH, VpcSpec};
+use super::{
+    Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, Role, SWITCH, VALIDATE, VpcSpec,
+};
 use crate::Policy;
 use crate::program::{Origin, Peering, Program};
 
@@ -31,7 +33,8 @@ const MAX_GROUP: u32 = 32_000;
 type Rule<'t> = SharedRule<'t, Ingress>;
 type Table<'t> = SharedTable<'t, Ingress>;
 
-/// Flow group numbers: 0 is the root, 1 the switch, the rest are handed out and taken back.
+/// Flow group numbers: 0 is the root, 1 the switch, 2 validation, the rest are handed out and
+/// taken back.
 #[derive(Debug)]
 struct Groups {
     next: u32,
@@ -62,6 +65,14 @@ struct Switch<'t> {
     rules: BTreeMap<Vni, Rule<'t>>,
     catch_all: Rule<'t>,
     table: Table<'t>,
+}
+
+/// The validation group's rules.
+#[derive(Debug)]
+struct Validation<'t> {
+    // Fields drop in order: the rules before their tables.
+    rules: Vec<(Role, Rule<'t>)>,
+    tables: Vec<Table<'t>>,
 }
 
 /// A source VPC's generation of rules.
@@ -125,6 +136,7 @@ pub struct Reconciled {
 pub struct Port<'t> {
     // Fields drop in order: the root first, so no packet enters what goes next.
     root: Option<Rule<'t>>,
+    validation: Option<Validation<'t>>,
     switch: Option<Switch<'t>>,
     vpcs: BTreeMap<Vni, Generation<'t>>,
     meters: Vec<InstalledMeter<'t>>,
@@ -135,6 +147,8 @@ pub struct Port<'t> {
     next_profile: u32,
     /// For the plan being reconciled: its meters' indices into `meters`.
     plan_meters: Vec<Option<usize>>,
+    /// Why the NIC refused validation, if it did: the root then jumps to the switch, for good.
+    validation_refused: Option<String>,
     poisoned: Option<String>,
 }
 
@@ -158,6 +172,7 @@ impl<'t> Port<'t> {
     pub fn new(flows: &'t TemplateFlows<'t>) -> Port<'t> {
         Port {
             root: None,
+            validation: None,
             switch: None,
             vpcs: BTreeMap::new(),
             meters: Vec::new(),
@@ -165,11 +180,12 @@ impl<'t> Port<'t> {
             patterns: Vec::new(),
             actions: Vec::new(),
             groups: Groups {
-                next: 2,
+                next: 3,
                 free: Vec::new(),
             },
             next_profile: 0,
             plan_meters: Vec::new(),
+            validation_refused: None,
             poisoned: None,
         }
     }
@@ -252,6 +268,7 @@ impl<'t> Port<'t> {
         match group {
             Group::Root => Some(FlowGroup(0)),
             Group::Switch => Some(SWITCH),
+            Group::Validate => Some(VALIDATE),
             Group::Color(m) => {
                 let installed = (*self.plan_meters.get(m)?)?;
                 Some(self.meters.get(installed)?.group)
@@ -275,7 +292,29 @@ impl<'t> Port<'t> {
         Error::Poisoned(why)
     }
 
-    /// Make sure of the switch table, its catch-all and the root, in that order.
+    /// Install `plan`'s validation group.
+    fn validation(&mut self, plan: &Plan) -> Result<Validation<'t>, Error> {
+        let mut validation = Validation {
+            rules: Vec::new(),
+            tables: Vec::new(),
+        };
+        for planned in &plan.validation {
+            let table = self.table(plan, planned, VALIDATE)?;
+            for rule in &planned.rules {
+                let installed = table.insert(0, &rule.pattern, rule.actions, &[])?;
+                validation.rules.push((rule.role, installed));
+            }
+            validation.tables.push(table);
+        }
+        Ok(validation)
+    }
+
+    /// Whether the root should jump to validation for `plan`.
+    fn validates(&self, plan: &Plan) -> bool {
+        !plan.validation.is_empty() && self.validation_refused.is_none()
+    }
+
+    /// Make sure of the switch table, its catch-all, validation and the root, in that order.
     fn fixed(&mut self, plan: &Plan) -> Result<(), Error> {
         let [root, switch, catch_all] = plan.fixed.as_slice() else {
             return Ok(());
@@ -291,10 +330,26 @@ impl<'t> Port<'t> {
                 table,
             });
         }
+        if self.validates(plan) && self.validation.is_none() {
+            match self.validation(plan) {
+                Ok(validation) => self.validation = Some(validation),
+                // What was installed of it is removed again (and unreachable meanwhile).
+                Err(e) => {
+                    warn!("the NIC refused validation, so it does not drop corrupt packets: {e}");
+                    self.validation_refused = Some(e.to_string());
+                }
+            }
+        }
         if self.root.is_none() {
             let table = self.table(plan, root, FlowGroup(0))?;
             let rule = &root.rules[0];
-            self.root = Some(table.insert(0, &rule.pattern, rule.actions, &[])?);
+            // The root's second actions template, if any, jumps past validation.
+            let actions = if self.validation.is_some() {
+                rule.actions
+            } else {
+                root.actions.len() - 1
+            };
+            self.root = Some(table.insert(0, &rule.pattern, actions, &[])?);
         }
         Ok(())
     }
@@ -437,6 +492,11 @@ impl<'t> Port<'t> {
         {
             return Err(self.poison(format!("destroying the root rule: {e}")));
         }
+        if let Some(validation) = self.validation.take()
+            && let Err(why) = destroy("validation", validation.rules)
+        {
+            return Err(self.poison(why));
+        }
         let vnis: Vec<Vni> = self.vpcs.keys().copied().collect();
         for vni in vnis {
             self.remove(vni)?;
@@ -468,7 +528,12 @@ impl<'t> Port<'t> {
     /// Hardware counters lag (by about half a second on a BlueField-3).
     #[must_use]
     pub fn counts(&self) -> Vec<(Role, Counts)> {
-        let mut counts = Vec::new();
+        let mut counts: Vec<(Role, Counts)> = self
+            .validation
+            .iter()
+            .flat_map(|v| &v.rules)
+            .map(|(role, rule)| (*role, rule.counts().unwrap_or_default()))
+            .collect();
         for (index, installed) in self.plan_meters.iter().enumerate() {
             let Some(meter) = installed.and_then(|i| self.meters.get(i)) else {
                 continue;
@@ -630,9 +695,12 @@ impl SyncReconcile for Port<'_> {
                 self.remove(*vni)?;
             }
         }
-        if plan.vpcs.is_empty() {
+        // Validation joins or leaves only with the root, which is slow to change: start over.
+        if plan.fixed.is_empty() || self.validation.is_some() != self.validates(plan) {
             self.clear()?;
             self.prune();
+        }
+        if plan.fixed.is_empty() {
             return Ok(Reconciled::default());
         }
         self.fixed(plan)?;
@@ -829,6 +897,12 @@ pub fn run(
                 }
             }
         };
+        if program.as_ref().is_some_and(|p| p.validate) {
+            match &port.validation_refused {
+                None => info!("port {port_name}: the NIC drops corrupt VXLAN packets"),
+                Some(why) => info!("port {port_name}: the NIC does not validate packets: {why}"),
+            }
+        }
         if let Some(program) = &program
             && (!program.denies.is_empty() || !program.rules.is_empty())
         {
@@ -851,8 +925,25 @@ pub fn run(
     }
 }
 
-/// Log and export what each meter passed and dropped in hardware.
+/// Log and export what each meter passed and dropped in hardware, and what validation dropped.
 fn report(port_name: &str, port: &Port<'_>) {
+    if let Some(validation) = &port.validation {
+        let mut total = 0;
+        for (role, rule) in &validation.rules {
+            let Role::Corrupt(check) = role else {
+                continue;
+            };
+            let packets = rule.counts().unwrap_or_default().packets;
+            total += packets;
+            metrics::counter!(
+                "integrity_nic_dropped_packets_total",
+                "port" => port_name.to_string(),
+                "check" => check.name()
+            )
+            .absolute(packets);
+        }
+        info!("port {port_name}: the NIC dropped {total} corrupt packets");
+    }
     for meter in &port.meters {
         let mut passed = Counts::default();
         let mut dropped = Counts::default();

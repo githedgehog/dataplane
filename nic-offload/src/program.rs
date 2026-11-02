@@ -218,6 +218,9 @@ pub struct Program {
     pub rules: Vec<PoliceRule>,
     /// The peerings left in software, with what of each no NIC may enforce.
     pub refused: Vec<(Peering, Origin, Refusal)>,
+    /// Whether the NIC drops corrupt VXLAN packets (bad checksums, inconsistent lengths): what
+    /// the NIC may drop that software would not, as the endpoints would drop them anyway.
+    pub validate: bool,
 }
 
 /// The component of `meter` a NIC enforces: the one that drops red, bytes first. Enforcing one
@@ -334,8 +337,8 @@ struct Compilation {
 
 impl Program {
     /// Compile what a NIC may enforce of `acls` and `limits`: every peering whose whole policy it
-    /// may enforce, but those in `excluded` (refused by the NIC before). Nothing, if offload is
-    /// turned off ([`RateLimits::attempt_offloads`]).
+    /// may enforce, but those in `excluded` (refused by the NIC before), and the dropping of
+    /// corrupt packets. Nothing, if offload is turned off ([`RateLimits::attempt_offloads`]).
     #[must_use]
     pub fn compile(
         acls: &AclFilterContext,
@@ -378,6 +381,7 @@ impl Program {
         let mut program = Program {
             denies,
             refused: c.refused,
+            validate: true,
             ..Program::default()
         };
         // Software meter index -> program meter index, for the meters kept rules charge.

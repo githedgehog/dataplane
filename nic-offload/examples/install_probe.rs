@@ -35,6 +35,7 @@ fn program(rules: Vec<PoliceRule>) -> Program {
         rules,
         denies: Vec::new(),
         refused: Vec::new(),
+        validate: false,
     }
 }
 

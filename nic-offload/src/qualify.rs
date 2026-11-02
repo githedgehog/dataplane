@@ -645,6 +645,11 @@ fn coverage() {
                     .any(|o| o.path.iter().any(|r| matches!(r, Role::Deny(_))))
                 {
                     "denied"
+                } else if outcomes
+                    .iter()
+                    .any(|o| o.path.iter().any(|r| matches!(r, Role::Corrupt(_))))
+                {
+                    "corrupt"
                 } else if outcomes.iter().any(|o| !o.meters.is_empty()) {
                     "charged"
                 } else if raw.aim.is_none() || case.targets.is_empty() {
@@ -669,11 +674,13 @@ fn coverage() {
     for (why, n) in &stats {
         eprintln!("coverage: {why:>26}: {n:6} ({} %)", n * 100 / total.max(1));
     }
-    let acted =
-        stats.get("charged").copied().unwrap_or(0) + stats.get("denied").copied().unwrap_or(0);
+    let acted = ["charged", "denied", "corrupt"]
+        .iter()
+        .map(|why| stats.get(why).copied().unwrap_or(0))
+        .sum::<usize>();
     assert!(
         acted * 2 >= total,
-        "only {acted} of {total} generated frames are charged by a meter or denied"
+        "only {acted} of {total} generated frames are charged by a meter, denied or corrupt"
     );
 }
 
@@ -1061,6 +1068,7 @@ fn reconcile_scenarios() {
         meters,
         rules,
         refused: Vec::new(),
+        validate: false,
     };
     let deny = |src: u32, dst: u8| crate::program::DenyRule {
         origin: crate::program::Origin::Acl { v6: false, row: 0 },
