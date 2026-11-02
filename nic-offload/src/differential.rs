@@ -1476,6 +1476,85 @@ fn traffic_a_peer_takes_only_part_of_is_left_alone() {
     }
 }
 
+/// A peer's destination inside another's (C exposes a default to A, B its `10.1.0.0/16`):
+/// software sends B's addresses to B. A's rules for C must let them pass, but A's rules for B
+/// must still apply to them in the NIC, in the deny group and the police group alike.
+#[test]
+fn a_pass_leaves_the_rules_of_its_own_destination_in_force() {
+    let to_c = RawRule {
+        peering: 1,
+        ..peering_rule(false, RawProto::Any)
+    };
+    let to_b = peering_rule(false, RawProto::Any);
+    let mut exposes = [[RawExpose::Own; 2]; 4];
+    exposes[1][1] = RawExpose::Default;
+    for b_denies in [true, false] {
+        // A rate limit to C; to B a deny, or a rate limit of its own (with a deny elsewhere,
+        // so that A has both groups).
+        let (limits, acls) = if b_denies {
+            (vec![to_c.clone()], vec![to_b.clone()])
+        } else {
+            (
+                vec![
+                    to_c.clone(),
+                    RawRule {
+                        meter: 1,
+                        ..to_b.clone()
+                    },
+                ],
+                vec![RawRule {
+                    proto: RawProto::Tcp,
+                    ..to_c.clone()
+                }],
+            )
+        };
+        let acls = RawAcls {
+            exposes,
+            defaults: [Some(false), Some(false), None, None],
+            rules: acls
+                .into_iter()
+                .map(|rule| RawAclRule {
+                    rule,
+                    deny: true,
+                    flow: false,
+                    log: false,
+                })
+                .collect(),
+        };
+        let overlay =
+            with_exposes(&meters(), &limits, &acls, &exposes).expect("nested exposes validate");
+        let writer: RateLimitWriter<PeeringRules> =
+            RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
+        writer.apply(&overlay, Backend::Reference).unwrap();
+        let filter = AclFilterContext::reference(&overlay).unwrap();
+        let program = Program::compile(
+            &filter,
+            &writer.load(),
+            &destinations(&overlay),
+            &BTreeSet::new(),
+        );
+        assert!(!program.passes.is_empty(), "{program:#?}");
+        let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
+        let targets = targets(&limits, &acls);
+        // Aimed at B's prefix: by A's deny or B's meter, never C's.
+        let frame = aimed(1, RawL4::Udp, RawFragment::Whole).frame(&targets);
+        for outcome in plan.outcomes(&frame.wire()).unwrap() {
+            if b_denies {
+                assert_eq!(outcome.verdict, Verdict::Dropped, "{outcome:?}\n{plan:#?}");
+            } else {
+                let b = program
+                    .meters
+                    .iter()
+                    .position(|m| m.name == METERS[1])
+                    .unwrap();
+                assert_eq!(outcome.meters, [b], "{outcome:?}\n{plan:#?}");
+            }
+        }
+        let frames = [0, 1].map(|aim| aimed(aim, RawL4::Udp, RawFragment::Whole));
+        check_overlay(&overlay, &targets, &frames);
+    }
+}
+
 /// Logged denies need the ACL logger; logged allows must reach it before policing can drop them.
 /// Refuse the entire peering, in both directions, while leaving other peerings eligible.
 #[test]

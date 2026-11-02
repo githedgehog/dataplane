@@ -33,6 +33,7 @@ fn plan(sources: &[u32]) -> Plan {
                     dst_port: None,
                     tcp_flags: None,
                 },
+                level: 8,
             })
             .collect(),
         ..Program::default()
@@ -76,6 +77,7 @@ fn policed(name: &str, rate: u64) -> Program {
             peering: Peering::new(vni(100), vni(1000)),
             matches: any_to(Prefix::V4(Ipv4Addr::new(10, 0, 0, 0), 8), 100),
             meter: 0,
+            level: 8,
         }],
         ..Program::default()
     }
@@ -126,6 +128,7 @@ fn a_refused_catch_all_leaves_its_vpcs_peerings_out() {
         origin: Origin::Acl { v6: false, row: 0 },
         peering: Peering::new(vni(100), vni(2000)),
         matches: any_to(Prefix::V4(Ipv4Addr::new(10, 1, 0, 0), 16), 100),
+        level: 16,
     });
     let refused = [(Role::CatchAll(Group::Police(vni(100))), Error::TableRefused)];
     assert_eq!(
