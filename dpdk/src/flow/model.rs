@@ -410,6 +410,9 @@ impl<Pos> Pattern<Pos> {
     pub fn matches(&self, frame: &Frame, color: Option<Color>) -> Result<bool, Unmodelled> {
         let mut headers = frame.headers.iter();
         for item in &self.items {
+            if let MatchItem::Integrity(..) = item {
+                return Err(Unmodelled("integrity verdict"));
+            }
             if let MatchItem::MeterColor(spec, mask) = item {
                 let Some(color) = color else {
                     return Ok(false);
