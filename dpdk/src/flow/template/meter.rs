@@ -8,6 +8,9 @@ use core::ffi::CStr;
 use core::marker::PhantomData;
 use core::ptr::{NonNull, from_ref};
 
+#[cfg(any(test, feature = "template-test"))]
+use super::testing::ffi as dpdk_sys;
+
 use dpdk_sys::{
     rte_flow_action, rte_flow_action_handle, rte_flow_action_meter_mark,
     rte_flow_action_type as at, rte_flow_async_action_handle_create,
@@ -22,6 +25,7 @@ use tracing::warn;
 use crate::dev::DevIndex;
 use crate::flow::{Domain, FlowError, SetDirection};
 
+use super::lifetime::{Dependencies, Resource};
 use super::{QUEUE, TemplateError, TemplateFlows};
 
 /// What a profile's rates and sizes count.
@@ -151,6 +155,7 @@ pub struct MeterProfileHandle<'dev> {
     port: DevIndex,
     id: MeterProfileId,
     raw: NonNull<rte_flow_meter_profile>,
+    resource: Resource,
     _dev: PhantomData<&'dev ()>,
 }
 
@@ -183,6 +188,7 @@ impl<'dev> MeterProfileHandle<'dev> {
             port,
             id,
             raw,
+            resource: Resource::default(),
             _dev: PhantomData,
         })
     }
@@ -196,6 +202,13 @@ impl<'dev> MeterProfileHandle<'dev> {
 
 impl Drop for MeterProfileHandle<'_> {
     fn drop(&mut self) {
+        if self.resource.in_use() {
+            warn!(
+                "keeping meter profile {} on port {} until it closes: native meters still use it",
+                self.id.0, self.port
+            );
+            return;
+        }
         // SAFETY: an all-zero `rte_mtr_error` is a valid out-parameter.
         let mut error: rte_mtr_error = unsafe { core::mem::zeroed() };
         // SAFETY: plain FFI call; meters using the profile borrow this handle, so none remain.
@@ -224,6 +237,9 @@ impl Drop for MeterProfileHandle<'_> {
 pub struct Meter<'p, D: Domain> {
     flows: &'p TemplateFlows<'p>,
     handle: NonNull<rte_flow_action_handle>,
+    pub(super) resource: Resource,
+    profile: Dependencies,
+    pending: bool,
     _domain: PhantomData<D>,
 }
 
@@ -269,13 +285,17 @@ impl<'p, D: Domain> Meter<'p, D> {
             )
         };
         let handle = NonNull::new(handle).ok_or_else(|| FlowError::from_raw(&error))?;
-        let meter = Meter {
+        let mut meter = Meter {
             flows,
             handle,
+            resource: Resource::default(),
+            profile: Dependencies(vec![profile.resource.clone()]),
+            pending: true,
             _domain: PhantomData,
         };
-        // On failure, dropping `meter` destroys the handle again.
-        flows.complete("meter creation", tag)?;
+        let result = flows.complete("meter creation", tag);
+        meter.pending = result.as_ref().is_err_and(TemplateError::is_pending);
+        result?;
         Ok(meter)
     }
 
@@ -293,6 +313,15 @@ impl<'p, D: Domain> Meter<'p, D> {
 impl<D: Domain> Drop for Meter<'_, D> {
     fn drop(&mut self) {
         let port = self.flows.port();
+        if self.pending || self.resource.in_use() {
+            let why = if self.pending {
+                "its creation did not complete"
+            } else {
+                "native rules still use it"
+            };
+            warn!("keeping a meter on port {port} until it closes: {why}");
+            return;
+        }
         // SAFETY: zero is valid for this C struct; a cleared `postpone` pushes at once.
         let op_attr: rte_flow_op_attr = unsafe { core::mem::zeroed() };
         // SAFETY: an all-zero `rte_flow_error` is a valid out-parameter.
@@ -314,8 +343,9 @@ impl<D: Domain> Drop for Meter<'_, D> {
         } else {
             Err(FlowError::from_raw(&error).into())
         };
-        if let Err(e) = result {
-            warn!("failed to destroy a meter on port {port}: {e}");
+        match result {
+            Ok(()) => self.profile.release(),
+            Err(e) => warn!("failed to destroy a meter on port {port}: {e}"),
         }
     }
 }
