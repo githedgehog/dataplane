@@ -270,16 +270,68 @@ fn encodable(bytes: u64) -> u64 {
         .map_or(bytes, |(_, high)| high)
 }
 
-fn profile(meter: &crate::program::PoliceMeter) -> MeterProfile {
+/// What the NIC's byte meters count beyond what software bills a packet (its IP bytes): the
+/// outer Ethernet, IPv4, UDP and VXLAN headers (50), an outer VLAN tag (4), the inner Ethernet
+/// header (14) and the FCS (4), whether or not a given NIC counts each.
+pub const BYTE_OVERHEAD: u64 = 72;
+
+/// The fewest bytes software bills a packet a NIC rule matches: an IPv4 header.
+const MIN_BILLED: u64 = 20;
+
+/// The largest frame a NIC meter may let into debt, in bytes: a jumbo frame and its overhead.
+const MAX_FRAME: u64 = 9216 + BYTE_OVERHEAD;
+
+/// What software's per-worker leases may add to a bucket: at most a quarter of it
+/// (`policer::shared`).
+fn lease_slack(burst: u64) -> u64 {
+    burst.div_ceil(4)
+}
+
+/// The NIC's meter profile for `meter`, at least as permissive as the software's component,
+/// so that whatever the NIC colors red, software would too:
+///
+/// - a NIC meters the outer frame where software bills the inner IP bytes: byte rates and bursts
+///   are scaled by the most a packet's NIC count can exceed its bill,
+///   `(MIN_BILLED + BYTE_OVERHEAD) / MIN_BILLED`;
+/// - a NIC meter passes a packet while any token is left, and goes into debt: bursts gain one
+///   largest frame;
+/// - software's per-worker leases let a burst exceed its bucket by up to a quarter: bursts gain
+///   that too;
+/// - the NIC encodes rates to the nearest it can: rates gain 1/64, more than its rounding;
+/// - software couples the excess bucket to the committed one (MEF 10), the NIC does not
+///   (RFC 4115): its excess rate is the sum of both, the most the coupled bucket fills at.
+///
+/// Small packets thus get through the NIC at a few times the rate software allows them, and large
+/// ones at a fraction more: the NIC stops floods, software enforces the rate.
+pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> MeterProfile {
     let p = meter.profile;
+    let (scale, frame) = match meter.unit {
+        Unit::Bytes => (MIN_BILLED + BYTE_OVERHEAD, MAX_FRAME),
+        Unit::Packets => (MIN_BILLED, 1),
+    };
+    let scaled = |tokens: u64| tokens.saturating_mul(scale).div_ceil(MIN_BILLED);
+    let rate = |tokens: u64| {
+        let scaled = scaled(tokens);
+        scaled.saturating_add(scaled.div_ceil(64))
+    };
+    let burst = |tokens: u64| {
+        if tokens == 0 {
+            return 0;
+        }
+        encodable(scaled(tokens.saturating_add(lease_slack(tokens))).saturating_add(frame))
+    };
     let cir = p.committed_rate().per_second().get();
-    let (cbs, ebs) = (encodable(p.committed_burst()), encodable(p.excess_burst()));
+    let (cbs, ebs) = (burst(p.committed_burst()), burst(p.excess_burst()));
     MeterProfile {
         algorithm: match p.excess_rate() {
-            None => MeterAlgorithm::Srtcm { cir, cbs, ebs },
+            None => MeterAlgorithm::Srtcm {
+                cir: rate(cir),
+                cbs,
+                ebs,
+            },
             Some(eir) => MeterAlgorithm::Rfc4115 {
-                cir,
-                eir: eir.per_second().get(),
+                cir: rate(cir),
+                eir: rate(eir.per_second().get().saturating_add(cir)),
                 cbs,
                 ebs,
             },
