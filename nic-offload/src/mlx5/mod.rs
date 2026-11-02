@@ -473,7 +473,8 @@ pub enum Role {
     Deny(usize),
     /// A rate limit of the program, by index into [`Program::rules`].
     Police(usize),
-    /// A destination of another peer a source VPC's rules must let pass: to software.
+    /// A destination of another peer a source VPC's rules of less specific destinations must let
+    /// pass: on to its next group, or to software.
     Pass(Vni),
     /// The rule for what no rule of the program in this group matches.
     CatchAll(Group),
@@ -543,11 +544,11 @@ pub struct PlannedMeter {
 /// wanted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VpcSpec {
-    /// Its denies, in order.
-    pub denies: Vec<Match>,
-    /// Its rate limits, in order, with their meters.
-    pub limits: Vec<(Match, MeterKey)>,
-    /// The destinations it lets pass to software ahead of its rules.
+    /// Its denies, in order, with their levels.
+    pub denies: Vec<(Match, u8)>,
+    /// Its rate limits, in order, with their levels and meters.
+    pub limits: Vec<(Match, u8, MeterKey)>,
+    /// The destinations it lets pass ahead of its rules of less specific ones.
     pub passes: Vec<Prefix>,
     /// The VTEP address its VXLAN is addressed to.
     pub vtep: Ipv4Addr,
@@ -626,7 +627,7 @@ fn switch_pattern(vpc: Option<(Vni, Ipv4Addr)>) -> Pattern<Complete> {
 }
 
 /// The rules letting `passes` through for source VPC `vni`: any source, any protocol.
-fn pass_matches(vni: Vni, passes: &[Prefix]) -> Vec<(Match, Vni)> {
+fn pass_matches(vni: Vni, passes: &[Prefix]) -> Vec<Match> {
     passes
         .iter()
         .map(|p| {
@@ -634,7 +635,7 @@ fn pass_matches(vni: Vni, passes: &[Prefix]) -> Vec<(Match, Vni)> {
                 Prefix::V4(..) => Prefix::V4(Ipv4Addr::UNSPECIFIED, 0),
                 Prefix::V6(..) => Prefix::V6(std::net::Ipv6Addr::UNSPECIFIED, 0),
             };
-            let matches = Match {
+            Match {
                 src_vni: vni,
                 source,
                 destination: *p,
@@ -642,8 +643,7 @@ fn pass_matches(vni: Vni, passes: &[Prefix]) -> Vec<(Match, Vni)> {
                 src_port: None,
                 dst_port: None,
                 tcp_flags: None,
-            };
-            (matches, vni)
+            }
         })
         .collect()
 }
@@ -651,8 +651,21 @@ fn pass_matches(vni: Vni, passes: &[Prefix]) -> Vec<(Match, Vni)> {
 /// A rule of the program to lay out in a classifying group.
 struct Classified<'a> {
     matches: &'a Match,
+    /// See [`DenyRule::level`](crate::program::DenyRule::level).
+    level: u8,
     role: Role,
     args: Vec<Arg>,
+}
+
+/// Where a table goes in its group: rules of more specific destinations first, and of one
+/// prefix length, the rules before the passes of that length; then by shape. A pass then comes
+/// after the rules of its own peer's destination and of more specific ones inside it, and before
+/// the rules of less specific destinations it carves out of.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Slot {
+    level: std::cmp::Reverse<u8>,
+    pass: bool,
+    shape: Shape,
 }
 
 /// A table holding one rule.
@@ -684,65 +697,54 @@ fn single(
 const SWITCH_CAPACITY: u32 = 4096;
 
 impl Plan {
-    /// Lay out a group of program rules, one table per shape, all with actions template
-    /// `actions`, and a last table sending what none matches to actions template `otherwise`
-    /// with `otherwise_args`. Ahead of them all, `passes` send what they match to the fate.
+    /// Lay out a group of program rules with actions template `actions`, and a last table
+    /// sending what none matches to actions template `otherwise` with its arguments. `passes`
+    /// send what they match there too, ahead of the rules of less specific destinations (see
+    /// [`Slot`]). One table per slot.
     fn classify(
         &mut self,
         group: Group,
-        passes: &[(Match, Vni)],
+        passes: &[Match],
         rules: Vec<Classified<'_>>,
         actions: usize,
         otherwise: (usize, Vec<Arg>),
     ) -> Vec<PlannedTable> {
-        let mut pass_shapes: BTreeMap<Shape, Vec<&(Match, Vni)>> = BTreeMap::new();
+        let (otherwise, otherwise_args) = otherwise;
+        let mut slots: BTreeMap<Slot, Vec<Classified<'_>>> = BTreeMap::new();
         for pass in passes {
-            pass_shapes
-                .entry(Shape::of(&pass.0))
-                .or_default()
-                .push(pass);
-        }
-        let mut shapes: BTreeMap<Shape, Vec<Classified<'_>>> = BTreeMap::new();
-        for rule in rules {
-            shapes
-                .entry(Shape::of(rule.matches))
-                .or_default()
-                .push(rule);
-        }
-        let first = u32::try_from(pass_shapes.len()).unwrap_or(u32::MAX);
-        let catch_all = first.saturating_add(u32::try_from(shapes.len()).unwrap_or(u32::MAX));
-        let mut tables = Vec::with_capacity(pass_shapes.len() + shapes.len() + 1);
-        for (priority, (shape, passes)) in (0u32..).zip(pass_shapes) {
-            self.patterns.push(shape.pattern(None));
-            tables.push(PlannedTable {
-                group,
-                priority: Priority(priority),
-                capacity: u32::try_from(passes.len()).unwrap_or(u32::MAX),
-                pattern: self.patterns.len() - 1,
-                actions: vec![DELIVER],
-                rules: passes
-                    .into_iter()
-                    .map(|(matches, vni)| PlannedRule {
-                        pattern: shape.pattern(Some(matches)),
-                        actions: 0,
-                        args: Vec::new(),
-                        role: Role::Pass(*vni),
-                    })
-                    .collect(),
+            let slot = Slot {
+                level: std::cmp::Reverse(pass.destination.bits()),
+                pass: true,
+                shape: Shape::of(pass),
+            };
+            slots.entry(slot).or_default().push(Classified {
+                matches: pass,
+                level: pass.destination.bits(),
+                role: Role::Pass(pass.src_vni),
+                args: otherwise_args.clone(),
             });
         }
-        for (priority, (shape, rules)) in (first..).zip(shapes) {
-            self.patterns.push(shape.pattern(None));
+        for rule in rules {
+            let slot = Slot {
+                level: std::cmp::Reverse(rule.level),
+                pass: false,
+                shape: Shape::of(rule.matches),
+            };
+            slots.entry(slot).or_default().push(rule);
+        }
+        let mut tables = Vec::with_capacity(slots.len() + 1);
+        for (priority, (slot, rules)) in (0u32..).zip(slots) {
+            self.patterns.push(slot.shape.pattern(None));
             tables.push(PlannedTable {
                 group,
                 priority: Priority(priority),
                 capacity: u32::try_from(rules.len()).unwrap_or(u32::MAX),
                 pattern: self.patterns.len() - 1,
-                actions: vec![actions],
+                actions: vec![if slot.pass { otherwise } else { actions }],
                 rules: rules
                     .into_iter()
                     .map(|rule| PlannedRule {
-                        pattern: shape.pattern(Some(rule.matches)),
+                        pattern: slot.shape.pattern(Some(rule.matches)),
                         actions: 0,
                         args: rule.args,
                         role: rule.role,
@@ -750,14 +752,14 @@ impl Plan {
                     .collect(),
             });
         }
-        let (otherwise, args) = otherwise;
+        let catch_all = u32::try_from(tables.len()).unwrap_or(u32::MAX);
         tables.push(single(
             group,
             catch_all,
             ANY,
             otherwise,
             any_pattern(),
-            args,
+            otherwise_args,
             Role::CatchAll(group),
         ));
         tables
@@ -861,13 +863,17 @@ impl Plan {
         let spec = VpcSpec {
             denies: vni_denies
                 .iter()
-                .map(|&i| program.denies[i].matches.clone())
+                .map(|&i| (program.denies[i].matches.clone(), program.denies[i].level))
                 .collect(),
             limits: vni_limits
                 .iter()
                 .map(|&i| {
                     let rule = &program.rules[i];
-                    (rule.matches.clone(), self.meters[rule.meter].key.clone())
+                    (
+                        rule.matches.clone(),
+                        rule.level,
+                        self.meters[rule.meter].key.clone(),
+                    )
                 })
                 .collect(),
             passes: program
@@ -882,7 +888,8 @@ impl Plan {
                 .chain(vni_limits.iter().map(|&i| program.rules[i].peering))
                 .collect(),
         };
-        // What another peer takes of a rule's destination passes, ahead of every rule.
+        // What another peer takes of a rule's destination passes, in both groups: a pass in the
+        // deny group leaves the traffic to the police group, whose own passes deliver it.
         let passes = pass_matches(vni, &spec.passes);
         let mut tables = Vec::new();
         let police = !vni_limits.is_empty();
@@ -891,6 +898,7 @@ impl Plan {
                 .iter()
                 .map(|&i| Classified {
                     matches: &program.denies[i].matches,
+                    level: program.denies[i].level,
                     role: Role::Deny(i),
                     args: Vec::new(),
                 })
@@ -909,16 +917,15 @@ impl Plan {
                     let rule = &program.rules[i];
                     Classified {
                         matches: &rule.matches,
+                        level: rule.level,
                         role: Role::Police(i),
                         args: vec![Arg::Meter(rule.meter), Arg::Jump(Group::Color(rule.meter))],
                     }
                 })
                 .collect();
-            // The entry group lets the passes through first.
-            let entry_passes: &[(Match, Vni)] = if vni_denies.is_empty() { &passes } else { &[] };
             tables.extend(self.classify(
                 Group::Police(vni),
-                entry_passes,
+                &passes,
                 rules,
                 POLICE_RULE,
                 (DELIVER, Vec::new()),
