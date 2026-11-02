@@ -311,12 +311,12 @@ impl Case {
             RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
         writer.apply(&overlay, Backend::Reference).unwrap();
         let filter = AclFilterContext::reference(&overlay).unwrap();
-        let program = Program::compile(
-            &filter,
-            &writer.load(),
-            &crate::differential::destinations(&overlay),
-            excluded,
-        );
+        let destinations = crate::differential::destinations(&overlay);
+        let program = Program::compile(&filter, &writer.load(), &destinations, excluded);
+        // Meters mlx5 cannot encode stay in software with their peerings, as `run` leaves them.
+        let mut excluded = excluded.clone();
+        excluded.extend(crate::mlx5::unfit(&program));
+        let program = Program::compile(&filter, &writer.load(), &destinations, &excluded);
         let plan = Plan::new(
             &program,
             &vteps(&program),
