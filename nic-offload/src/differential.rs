@@ -33,12 +33,15 @@ use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, 
 use config::external::overlay::{Overlay, ValidatedOverlay};
 use dpdk::flow::template::{Color, MeterAlgorithm, MeterUnit, TemplateAction};
 use dpdk::queue::rx::RxQueueIndex;
+use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
+use lpm::prefix::L4Protocol;
 use lpm::prefix::with_ports::{PortRange, PrefixPortsSet};
 use lpm::prefix::{Prefix as LpmPrefix, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
 use net::packet::{Packet, VpcDiscriminant};
 use net::tcp::TcpFlags;
 use net::vxlan::Vni;
+use pipeline::NetworkFunction;
 use policer::{Profile, Rate};
 use rate_limit::{Classify, PeeringRules, RateLimitWriter, RateLimits, Unit};
 
@@ -300,6 +303,10 @@ pub(crate) enum RawExpose {
     Wide,
     /// Its own prefix and, in another expose, another VPC's of its family.
     Plus(u8),
+    /// One address of its own prefix (`.5`), port-forwarded: TCP (else UDP) to one of [`PORTS`].
+    PortForward { tcp: bool, port: u8 },
+    /// Its own prefix, masquerading a private one: only replies reach it.
+    Masquerade,
 }
 
 impl RawAcls {
@@ -468,8 +475,63 @@ fn manifest(vpc: usize, raw: RawExpose) -> Option<VpcManifest> {
                 manifest.add_expose(VpcExpose::empty().ip(prefix.into()));
             }
         }
+        RawExpose::PortForward { tcp, port } => {
+            let host = |addr: IpAddr| {
+                let len = if addr.is_ipv4() { 32 } else { 128 };
+                let port = PORTS[usize::from(port) % PORTS.len()];
+                let port = PortRange::new(port, port).ok()?;
+                Some(PrefixWithOptionalPorts::new(
+                    LpmPrefix::try_from((addr, len)).ok()?,
+                    Some(port),
+                ))
+            };
+            let public = offset(spec.expose, 5);
+            let private = offset(private_base(vpc, v4), 5);
+            let proto = if tcp {
+                L4Protocol::Tcp
+            } else {
+                L4Protocol::Udp
+            };
+            manifest.add_expose(
+                VpcExpose::empty()
+                    .make_port_forwarding(None, Some(proto))
+                    .ok()?
+                    .ip(host(private)?)
+                    .as_range(host(public)?)
+                    .ok()?,
+            );
+        }
+        RawExpose::Masquerade => {
+            let private = LpmPrefix::try_from((private_base(vpc, v4), spec.len)).ok()?;
+            manifest.add_expose(
+                VpcExpose::empty()
+                    .make_masquerade(None)
+                    .ok()?
+                    .ip(private.into())
+                    .as_range(own.into())
+                    .ok()?,
+            );
+        }
     }
     Some(manifest)
+}
+
+/// `addr` plus `n`.
+fn offset(addr: IpAddr, n: u8) -> IpAddr {
+    match addr {
+        IpAddr::V4(a) => IpAddr::V4(Ipv4Addr::from(u32::from(a) + u32::from(n))),
+        IpAddr::V6(a) => IpAddr::V6(Ipv6Addr::from(u128::from(a) + u128::from(n))),
+    }
+}
+
+/// A private prefix of `vpc`'s, outside every VPC's public one.
+fn private_base(vpc: usize, v4: bool) -> IpAddr {
+    let vpc = u8::try_from(vpc).unwrap_or(u8::MAX);
+    if v4 {
+        IpAddr::V4(Ipv4Addr::new(192, 168, vpc, 0))
+    } else {
+        IpAddr::V6(Ipv6Addr::new(0xfd99, 0, 0, u16::from(vpc), 0, 0, 0, 0))
+    }
 }
 
 fn with_exposes(
@@ -558,6 +620,8 @@ fn ones_complement(header: &[u8]) -> u16 {
 
 /// The address `bits` picks inside `prefix`.
 fn inside((base, len): (IpAddr, u8), bits: u64) -> IpAddr {
+    // One in four is the host a port-forwarding expose publishes, if the subnet holds it.
+    let bits = if bits.is_multiple_of(4) { 5 } else { bits };
     match base {
         IpAddr::V4(b) => {
             let host = u32::MAX.checked_shr(u32::from(len)).unwrap_or(0);
@@ -576,8 +640,6 @@ pub(crate) struct Frame {
     src_vni: u32,
     /// The VPC routing would deliver the inner packet to, if any.
     dst_vni: Option<u32>,
-    /// The inner destination address.
-    dst: IpAddr,
     inner: Vec<u8>,
 }
 
@@ -752,7 +814,6 @@ impl RawFrame {
         Frame {
             src_vni: VPCS[src_vpc].vni,
             dst_vni,
-            dst,
             inner,
         }
     }
@@ -992,24 +1053,40 @@ pub(crate) fn fate() -> TemplateAction {
 }
 
 impl Frame {
-    /// Route the frame as the flow filter does: the first of `destinations` of its source VPC
-    /// that an ordinary lookup reaches and that covers its destination.
-    fn route(&mut self, destinations: &[flow_filter::Destination]) {
-        self.dst_vni = destinations
-            .iter()
-            .find(|d| {
-                d.src_vni.as_u32() == self.src_vni
-                    && !d.gated
-                    && !d.partial
-                    && d.prefix.covers_addr(&self.dst)
-            })
-            .map(|d| d.dst_vni.as_u32());
+    /// Where the flow filter sends the decapsulated packet, as it does: no flow state, so an
+    /// ordinary lookup.
+    fn route(&mut self, flow_filter: &mut FlowFilter) {
+        self.dst_vni = None;
+        let Ok(mut packet) = Packet::new(TestBuffer::from_raw_data(&self.inner)) else {
+            return;
+        };
+        packet.meta_mut().set_overlay(true);
+        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(
+            Vni::new_checked(self.src_vni).unwrap_or_else(|_| unreachable!()),
+        ));
+        let Some(packet) = flow_filter.process([packet]).next() else {
+            return;
+        };
+        if packet.is_done() {
+            return;
+        }
+        self.dst_vni = match packet.meta().dst_vpcd {
+            Some(VpcDiscriminant::VNI(vni)) => Some(vni.as_u32()),
+            _ => None,
+        };
     }
 }
 
 /// Where the flow filter sends each source VPC's traffic in `overlay`.
 pub(crate) fn destinations(overlay: &ValidatedOverlay) -> Vec<flow_filter::Destination> {
     flow_filter::FlowFilterContext::reference(overlay).destinations()
+}
+
+/// The flow filter stage of `overlay`, with the reference classifier.
+fn flow_filter(overlay: &ValidatedOverlay) -> FlowFilter {
+    let writer = FlowFilterContextWriter::new();
+    writer.store(FlowFilterContext::reference(overlay));
+    FlowFilter::new("flow-filter", writer.get_reader())
 }
 
 /// Compile and lower `overlay`'s ACLs and rate limits, and hold every frame to the cascade
@@ -1021,13 +1098,14 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
     let limits = writer.load();
     let acls = AclFilterContext::reference(overlay).unwrap();
     let routes = destinations(overlay);
+    let mut routing = flow_filter(overlay);
     let program = Program::compile(&acls, &limits, &routes, &BTreeSet::new());
     let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
     check_profiles(&limits, &program, &plan);
     let mut tally = Tally::default();
     for raw in frames {
         let mut frame = raw.frame(targets);
-        frame.route(&routes);
+        frame.route(&mut routing);
         let software = frame.software(&acls, &limits);
         let outcomes = plan.outcomes(&frame.wire()).unwrap();
         // Transit VXLAN is the underlay's: the NIC neither drops it nor charges a meter for it.
@@ -1308,4 +1386,64 @@ fn a_syn_deny_drops_syns_in_the_nic() {
         &targets,
         &[aimed(1, RawL4::Tcp, RawFragment::Whole)],
     );
+}
+
+/// A masquerading peer's prefix takes only replies, and a port-forwarding peer only its port of
+/// its published address: software sends the rest to another peer, here one with a default
+/// expose. The NIC must leave that traffic alone, even with a rate limit and a deny of the
+/// partly-taking peering covering it.
+#[test]
+fn traffic_a_peer_takes_only_part_of_is_left_alone() {
+    // B -> A, UDP; C exposes a default to B.
+    let rule = RawRule {
+        reverse: true,
+        ..peering_rule(false, RawProto::Udp)
+    };
+    for partly in [
+        RawExpose::Masquerade,
+        RawExpose::PortForward {
+            tcp: false,
+            port: 1,
+        },
+    ] {
+        let mut exposes = [[RawExpose::Own; 2]; 4];
+        exposes[0][0] = partly;
+        exposes[2][1] = RawExpose::Default;
+        let acls = RawAcls {
+            exposes,
+            defaults: [Some(false), None, None, None],
+            rules: vec![RawAclRule {
+                rule: rule.clone(),
+                deny: true,
+                flow: false,
+            }],
+        };
+        let overlay = with_exposes(&meters(), std::slice::from_ref(&rule), &acls, &exposes)
+            .unwrap_or_else(|| panic!("{partly:?} does not validate"));
+        let frames: Vec<RawFrame> = [1u8, 2]
+            .map(|dst_port| RawFrame {
+                dst_port,
+                ..aimed(0, RawL4::Udp, RawFragment::Whole)
+            })
+            .into();
+        check_overlay(&overlay, std::slice::from_ref(&rule), &frames);
+        // The frames go where the case needs them, or it proves nothing (frames software cannot
+        // route are not checked): a masquerading peer takes neither, a port-forwarding one only
+        // its port; the default-exposing peer the rest.
+        let mut routing = flow_filter(&overlay);
+        let routed: Vec<Option<u32>> = frames
+            .iter()
+            .map(|raw| {
+                let mut frame = raw.frame(std::slice::from_ref(&rule));
+                frame.route(&mut routing);
+                frame.dst_vni
+            })
+            .collect();
+        let (a, c) = (Some(VPCS[0].vni), Some(VPCS[2].vni));
+        let expected = match partly {
+            RawExpose::Masquerade => vec![c, c],
+            _ => vec![a, c],
+        };
+        assert_eq!(routed, expected, "{partly:?}");
+    }
 }
