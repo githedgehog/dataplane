@@ -33,7 +33,7 @@
 //! [`Plan`] is the layout as data, with groups named for what they are for ([`Group`]); they are
 //! numbered when installed. Limits: IPv4 underlay only.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::Ipv4Addr;
 
 use dpdk::flow::model::{Ipv6Extensions, Parser};
@@ -840,27 +840,17 @@ impl Plan {
     ) -> PlannedVpc {
         // Identical rules are left out, as `Program::compile` does: mlx5 fails to remove the
         // second.
-        let mut seen: Vec<&Match> = Vec::new();
+        let mut seen: HashSet<&Match> = HashSet::new();
         let vni_denies: Vec<usize> = vni_denies
             .iter()
             .copied()
-            .filter(|&i| {
-                let matches = &program.denies[i].matches;
-                let new = !seen.contains(&matches);
-                seen.push(matches);
-                new
-            })
+            .filter(|&i| seen.insert(&program.denies[i].matches))
             .collect();
-        let mut seen: Vec<&Match> = Vec::new();
+        let mut seen: HashSet<&Match> = HashSet::new();
         let vni_limits: Vec<usize> = vni_limits
             .iter()
             .copied()
-            .filter(|&i| {
-                let matches = &program.rules[i].matches;
-                let new = !seen.contains(&matches);
-                seen.push(matches);
-                new
-            })
+            .filter(|&i| seen.insert(&program.rules[i].matches))
             .collect();
         let spec = VpcSpec {
             denies: vni_denies
