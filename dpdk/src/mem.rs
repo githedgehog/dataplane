@@ -40,8 +40,8 @@ use dpdk_sys::{
     rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
 use net::buffer::{
-    Append, DeepCopy, Headroom, PacketLength, Prepend, Tailroom, TestBuffer, TrimFromEnd,
-    TrimFromStart,
+    Append, BufferPool, DeepCopy, Headroom, PacketLength, Prepend, Tailroom, TestBuffer,
+    TrimFromEnd, TrimFromStart,
 };
 use std::ffi::CString;
 
@@ -959,6 +959,16 @@ impl<'eal> Mbuf<'eal> {
             // SAFETY: the tail is live and borrowed through `&mut self`.
             Some(_) => Ok(unsafe { self.segment_data_mut(tail) }),
         }
+    }
+}
+
+/// Mbufs are allocated in a batch, which is all-or-nothing: a pool that cannot supply all of the
+/// mbufs asked for supplies none (see [`Pool::alloc_bulk`]).
+impl<'eal> BufferPool for Pool<'eal> {
+    type Buf = Mbuf<'eal>;
+    const MAX_ALLOC: usize = MBUF_BURST;
+    fn alloc(&self, num: usize) -> impl Iterator<Item = Self::Buf> {
+        self.alloc_bulk(num).into_iter().flatten()
     }
 }
 

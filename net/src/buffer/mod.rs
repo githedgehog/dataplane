@@ -39,6 +39,19 @@ impl<T> PacketBufferMut for T where
 {
 }
 
+/// A source of buffers, e.g. a pool of DPDK `Mbuf`s
+pub trait BufferPool {
+    /// The type of buffers that the pool provides
+    type Buf;
+
+    /// The maximum number of buffers the pool can provide in one request
+    const MAX_ALLOC: usize;
+
+    /// Get up to `num` buffers. Callers should not ask for more than `Self::MAX_ALLOC`.
+    /// Note: the pool may provide fewer buffers than requested.
+    fn alloc(&self, num: usize) -> impl Iterator<Item = Self::Buf>;
+}
+
 /// An independent buffer copy, which may fail to allocate.
 ///
 /// Packet buffers retain their headroom, tailroom, and segment boundaries.
