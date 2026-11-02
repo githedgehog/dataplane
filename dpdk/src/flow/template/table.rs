@@ -305,14 +305,34 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
     }
 }
 
-impl<D: Domain> Drop for TemplateTable<'_, D> {
-    fn drop(&mut self) {
+impl<D: Domain> TemplateTable<'_, D> {
+    /// Destroy the table. Drop does the same but can only log errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns the PMD's error; the table is then left in place.
+    pub fn destroy(self) -> Result<(), TemplateError> {
+        let this = core::mem::ManuallyDrop::new(self);
+        this.remove()
+    }
+
+    fn remove(&self) -> Result<(), TemplateError> {
         let port = self.flows.port;
         // SAFETY: the table is live and owned; its rules borrow it, so none remain.
-        if let Err(e) = check(|error| unsafe {
+        check(|error| unsafe {
             rte_flow_template_table_destroy(port.as_u16(), self.raw.as_ptr(), error)
-        }) {
-            warn!("failed to destroy a template table on port {port}: {e}");
+        })?;
+        Ok(())
+    }
+}
+
+impl<D: Domain> Drop for TemplateTable<'_, D> {
+    fn drop(&mut self) {
+        if let Err(e) = self.remove() {
+            warn!(
+                "failed to destroy a template table on port {}: {e}",
+                self.flows.port
+            );
         }
     }
 }

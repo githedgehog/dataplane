@@ -163,6 +163,19 @@ impl<'t, D: Domain> SharedTable<'t, D> {
         })
     }
 
+    /// Destroy the table, which no rule may still use; see [`TemplateTable::destroy`]. Dropping
+    /// the last handle does the same but can only log errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError::InUse`] if another handle (a rule's) still holds the table, which
+    /// is then left alone, or the PMD's error.
+    pub fn destroy(self) -> Result<(), TemplateError> {
+        let inner = Rc::try_unwrap(self.inner).map_err(|_| TemplateError::InUse)?;
+        // The table goes before its templates, which `inner`'s other fields keep alive till here.
+        inner.table.destroy()
+    }
+
     /// Insert a rule; see [`TemplateTable::insert`]. The rule keeps the table and its meters
     /// alive.
     ///
