@@ -31,4 +31,5 @@ acl-filter = { workspace = true, features = ["reference"] }
 flow-filter = { workspace = true, features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }
 net = { workspace = true, features = ["test_buffer"] }
+pipeline = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
