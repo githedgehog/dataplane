@@ -9,8 +9,8 @@
 pub use contract::*;
 
 use crate::buffer::{
-    Append, DeepCopy, Headroom, MemoryBufferNotLongEnough, NotEnoughHeadRoom, NotEnoughTailRoom,
-    PacketLength, Prepend, Tailroom, TrimFromEnd, TrimFromStart,
+    Append, BufferPool, DeepCopy, Headroom, MemoryBufferNotLongEnough, NotEnoughHeadRoom,
+    NotEnoughTailRoom, PacketLength, Prepend, Tailroom, TrimFromEnd, TrimFromStart,
 };
 use core::convert::Infallible;
 use tracing::trace;
@@ -205,6 +205,20 @@ impl TrimFromEnd for TestBuffer {
         }
         self.tailroom += len;
         Ok(self.as_mut())
+    }
+}
+
+/// A dummy pool for [`TestBuffer`]s. This pool does not return [`TestBuffer`]s since those
+/// are not currently needed. This type exists to make the code of the kernel driver symmetric
+/// to that of the DPDK driver.
+#[derive(Default, Clone, Copy)]
+pub struct TestBufferPool;
+
+impl BufferPool for TestBufferPool {
+    type Buf = ();
+    const MAX_ALLOC: usize = usize::MAX;
+    fn alloc(&self, num: usize) -> impl Iterator<Item = Self::Buf> {
+        std::iter::repeat_n((), num)
     }
 }
 
