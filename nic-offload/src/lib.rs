@@ -11,8 +11,9 @@
 
 //! Policy lowered into NIC hardware, per port and per NIC species, with software as the fallback.
 //!
-//! - [`program`] compiles published policy (today: rate limits) into what a NIC may do, from the
-//!   typed match-action rules software uses, and refuses what it may not. It knows no NIC.
+//! - [`program`] compiles published policy (ACL denies and rate limits) into what a NIC may do,
+//!   from the typed match-action rules software uses, and refuses what it may not. It knows no
+//!   NIC.
 //! - One module per NIC species lowers a program onto that NIC: [`mlx5`].
 //! - [`model`] says what a lowered plan may do with a frame, without the NIC, so tests can hold
 //!   the lowering to the software it stands in front of.
@@ -20,8 +21,9 @@
 //!   ([`probe_args`]), what a port reserves before start ([`port_resources`]), and, per started
 //!   port, to follow the policy ([`mlx5::run`]).
 //!
-//! The driver asks only when the dataplane runs with `--nic-offload`; then each peering opts in
-//! (`offload` in its rate-limits annotation). mlx5 only, for now.
+//! Offload is on by default; the `gateway.alpha.githedgehog.com/attempt-offloads: "false"`
+//! annotation turns it off, and a port whose offload probe fails runs without it. mlx5 only, for
+//! now.
 
 pub mod mlx5;
 pub mod model;
@@ -87,7 +89,7 @@ pub struct Policy {
     pub acls: AclFilterContextReader,
     /// Where the flow filter sends each source VPC's traffic.
     pub routing: flow_filter::FlowFilterContextReader,
-    /// The rate limiter's rules, and which peerings asked for offload.
+    /// The rate limiter's rules, and whether offload is turned off.
     pub rate_limits: RateLimitReader<PeeringRules>,
     /// The VTEP each VPC's VXLAN is addressed to.
     pub vteps: Arc<dyn Vteps>,

@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! The software rate limiter as the oracle for the NIC: generated rate limits are compiled and
-//! lowered onto mlx5 as they would be on a port, and every way the [model](crate::model) says the
-//! NIC may treat a generated frame is held to the cascade contract against what the software
-//! classifier does with the decapsulated packet:
+//! The software ACL filter and rate limiter as the oracle for the NIC: generated ACLs, exposes and
+//! rate limits are compiled and lowered onto mlx5 as they would be on a port, and every way the
+//! [model](crate::model) says the NIC may treat a generated frame is held to the cascade contract
+//! against what software does with the decapsulated packet:
 //!
+//! - the NIC denies a frame only if software drops it;
 //! - the NIC charges a frame only to the meter the software charges it to;
 //! - the NIC drops a frame only as red from such a meter, and only for a meter that drops red;
 //! - every meter the NIC enforces is at least as permissive as the software component it stands
 //!   for.
 //!
 //! Frames the software could not route (no peer exposes the destination) are dropped by it
-//! anyway, so the NIC may do anything with them but change them.
+//! anyway, so the NIC may do anything with them but change them. Transit VXLAN (to another VTEP)
+//! the NIC neither drops nor charges.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
