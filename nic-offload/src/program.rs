@@ -12,7 +12,7 @@
 //! The ACL filter and the rate limiter decide independently, each by its own first match; the
 //! program keeps them apart, so the NIC does too (see [`mlx5`](crate::mlx5)).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use acl_filter::{AclFilterContext, AclKey, AclKeyRule, LookupResult};
@@ -104,7 +104,7 @@ impl From<&lpm::prefix::Prefix> for Prefix {
 }
 
 /// What a rule matches, as a NIC sees the frame.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Match {
     /// The source VPC.
     pub src_vni: Vni,
@@ -279,14 +279,38 @@ pub struct Program {
     pub passes: BTreeMap<Vni, BTreeSet<Prefix>>,
 }
 
+/// A flow-filter destination, as narrowing reads it.
+struct Route {
+    dst_vni: Vni,
+    prefix: Prefix,
+    /// Gated or partial: it takes only some of its prefix's traffic.
+    some: bool,
+}
+
 /// Where software sends a source VPC's traffic: flow-filter's destinations, from which a rule's
 /// destination prefix is narrowed to what goes to the rule's peer.
-struct Routing<'a> {
-    destinations: &'a [Destination],
+struct Routing {
+    /// The destinations, by source VPC, in flow-filter's order.
+    routes: BTreeMap<Vni, Vec<Route>>,
     passes: BTreeMap<Vni, BTreeSet<Prefix>>,
 }
 
-impl Routing<'_> {
+impl Routing {
+    fn new(destinations: &[Destination]) -> Routing {
+        let mut routes: BTreeMap<Vni, Vec<Route>> = BTreeMap::new();
+        for d in destinations {
+            routes.entry(d.src_vni).or_default().push(Route {
+                dst_vni: d.dst_vni,
+                prefix: Prefix::from(&d.prefix),
+                some: d.gated || d.partial,
+            });
+        }
+        Routing {
+            routes,
+            passes: BTreeMap::new(),
+        }
+    }
+
     /// `matches` of a rule for the traffic `src_vni` sends to `dst_vni`, narrowed to each of
     /// `dst_vni`'s destinations it overlaps (none: it matches nothing software sends there). The
     /// other peers' destinations that take some of a narrowed match's traffic (at least as specific
@@ -298,26 +322,19 @@ impl Routing<'_> {
     /// alone.
     fn narrow(&mut self, dst_vni: Vni, matches: &Match) -> Vec<Match> {
         let src_vni = matches.src_vni;
+        let Some(routes) = self.routes.get(&src_vni) else {
+            return Vec::new();
+        };
         let mut narrowed = Vec::new();
-        for own in self
-            .destinations
-            .iter()
-            .filter(|d| d.src_vni == src_vni && d.dst_vni == dst_vni && !d.gated && !d.partial)
-        {
-            let own_prefix = Prefix::from(&own.prefix);
-            let Some(destination) = own_prefix.intersection(matches.destination) else {
+        for own in routes.iter().filter(|r| r.dst_vni == dst_vni && !r.some) {
+            let Some(destination) = own.prefix.intersection(matches.destination) else {
                 continue;
             };
-            for other in self
-                .destinations
-                .iter()
-                .filter(|d| d.src_vni == src_vni && d.dst_vni != dst_vni)
-            {
-                let other_prefix = Prefix::from(&other.prefix);
-                if other_prefix.bits() >= own_prefix.bits()
-                    && other_prefix.intersection(destination).is_some()
+            for other in routes.iter().filter(|r| r.dst_vni != dst_vni) {
+                if other.prefix.bits() >= own.prefix.bits()
+                    && other.prefix.intersection(destination).is_some()
                 {
-                    self.passes.entry(src_vni).or_default().insert(other_prefix);
+                    self.passes.entry(src_vni).or_default().insert(other.prefix);
                 }
             }
             let m = Match {
@@ -495,22 +512,20 @@ impl Program {
             .collect();
         // A rule's destination prefix stands for its peer only as narrowed to what software
         // sends that peer.
-        let mut routing = Routing {
-            destinations,
-            passes: BTreeMap::new(),
-        };
+        let mut routing = Routing::new(destinations);
         // A rule identical to an earlier one (of its source VPC: the VNI is part of the match)
         // adds nothing: an earlier identical rate limit charges the same meter, or the later one
         // overlaps another meter's and is refused. And mlx5 takes identical rules into one table
         // but fails to remove the second.
         let mut denies: Vec<DenyRule> = Vec::new();
+        let mut seen: HashSet<Match> = HashSet::new();
         for deny in c.denies {
             if left.contains(&deny.peering) {
                 continue;
             }
             let dst_vni = deny.peering.other(deny.matches.src_vni);
             for matches in routing.narrow(dst_vni, &deny.matches) {
-                if !denies.iter().any(|d| d.matches == matches) {
+                if seen.insert(matches.clone()) {
                     denies.push(DenyRule {
                         matches,
                         ..deny.clone()
@@ -525,6 +540,7 @@ impl Program {
         };
         // Software meter index -> program meter index, for the meters kept rules charge.
         let mut meters: Vec<Option<usize>> = vec![None; limits.meters().len()];
+        let mut seen: HashSet<Match> = HashSet::new();
         for Candidate {
             mut rule,
             meter,
@@ -543,7 +559,7 @@ impl Program {
             let narrowed: Vec<Match> = routing
                 .narrow(dst_vni, &rule.matches)
                 .into_iter()
-                .filter(|m| !program.rules.iter().any(|r| r.matches == *m))
+                .filter(|m| seen.insert(m.clone()))
                 .collect();
             if narrowed.is_empty() {
                 continue;
