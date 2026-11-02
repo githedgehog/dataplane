@@ -32,6 +32,7 @@ use core::ptr::NonNull;
 use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
 use errno::Errno;
+use net::packet::{Packet, Rebuffer};
 use tracing::{error, info, warn};
 
 use dpdk_sys::{
@@ -39,7 +40,8 @@ use dpdk_sys::{
     rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
 use net::buffer::{
-    Append, DeepCopy, Headroom, PacketLength, Prepend, Tailroom, TrimFromEnd, TrimFromStart,
+    Append, DeepCopy, Headroom, PacketLength, Prepend, Tailroom, TestBuffer, TrimFromEnd,
+    TrimFromStart,
 };
 use std::ffi::CString;
 
@@ -957,6 +959,19 @@ impl<'eal> Mbuf<'eal> {
             // SAFETY: the tail is live and borrowed through `&mut self`.
             Some(_) => Ok(unsafe { self.segment_data_mut(tail) }),
         }
+    }
+}
+
+impl<'eal> Rebuffer for Mbuf<'eal> {
+    type Buf = Self;
+    fn into_test_buffer(packet: Packet<Self>) -> Packet<TestBuffer> {
+        packet.into_test_buffer()
+    }
+    fn from_test_buffer(
+        packet: Packet<TestBuffer>,
+        buf: Self::Buf,
+    ) -> Result<Packet<Self>, Packet<TestBuffer>> {
+        packet.rebuffer(buf)
     }
 }
 
