@@ -11,9 +11,6 @@ use crate::packet::Packet;
 
 /// A buffer type whose packets can be handed off out of a worker as `Packet<TestBuffer>`,
 pub trait Rebuffer: PacketBufferMut + Sized {
-    /// Buffer consumed when converting a `Packet<TestBuffer>` into a `Packet<Self>`
-    type Buf;
-
     /// Convert `packet` into a `Packet<TestBuffer>`, keeping headers and metadata and
     /// releasing the original buffer.
     fn into_test_buffer(packet: Packet<Self>) -> Packet<TestBuffer>;
@@ -27,18 +24,17 @@ pub trait Rebuffer: PacketBufferMut + Sized {
     #[allow(clippy::result_large_err)] // Preserve packet ownership on failure.
     fn from_test_buffer(
         packet: Packet<TestBuffer>,
-        buf: Self::Buf,
+        buf: Self,
     ) -> Result<Packet<Self>, Packet<TestBuffer>>;
 }
 
 impl Rebuffer for TestBuffer {
-    type Buf = ();
     fn into_test_buffer(packet: Packet<Self>) -> Packet<TestBuffer> {
         packet
     }
     fn from_test_buffer(
         packet: Packet<TestBuffer>,
-        _buf: Self::Buf,
+        _buf: Self,
     ) -> Result<Packet<Self>, Packet<TestBuffer>> {
         Ok(packet)
     }
@@ -74,7 +70,7 @@ mod test {
     fn test_buffer_from_test_buffer_does_not_copy() {
         let packet = build_test_ipv4_packet(64).unwrap();
         let ptr = data_ptr(&packet);
-        let converted = TestBuffer::from_test_buffer(packet, ()).unwrap();
+        let converted = TestBuffer::from_test_buffer(packet, TestBuffer::default()).unwrap();
         assert_eq!(data_ptr(&converted), ptr);
         retire(converted);
     }

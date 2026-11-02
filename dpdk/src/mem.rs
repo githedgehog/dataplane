@@ -1001,13 +1001,12 @@ impl<'eal> BufferPool for Pool<'eal> {
 }
 
 impl<'eal> Rebuffer for Mbuf<'eal> {
-    type Buf = Self;
     fn into_test_buffer(packet: Packet<Self>) -> Packet<TestBuffer> {
         packet.into_test_buffer()
     }
     fn from_test_buffer(
         packet: Packet<TestBuffer>,
-        buf: Self::Buf,
+        buf: Self,
     ) -> Result<Packet<Self>, Packet<TestBuffer>> {
         packet.rebuffer(buf)
     }

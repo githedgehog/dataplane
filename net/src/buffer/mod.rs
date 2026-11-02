@@ -42,7 +42,7 @@ impl<T> PacketBufferMut for T where
 /// A source of buffers, e.g. a pool of DPDK `Mbuf`s
 pub trait BufferPool {
     /// The type of buffers that the pool provides
-    type Buf;
+    type Buf: PacketBufferMut;
 
     /// The maximum number of buffers the pool can provide in one request
     const MAX_ALLOC: usize;

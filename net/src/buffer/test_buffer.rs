@@ -208,17 +208,20 @@ impl TrimFromEnd for TestBuffer {
     }
 }
 
-/// A dummy pool for [`TestBuffer`]s. This pool does not return [`TestBuffer`]s since those
-/// are not currently needed. This type exists to make the code of the kernel driver symmetric
-/// to that of the DPDK driver.
+/// A pool of [`TestBuffer`]s. This pool exists only to implement trait `BufferPool` for the
+/// kernel driver so that some NF code is common to both drivers. A pool is only needed when
+/// rebuffering `Packet<TestBuffer>`  to the drivers' type of buffers. Since the kernel driver
+/// uses `TestBuffer` as the native buffer type, re-buffering is not needed and the pool object
+/// needs not return any buffer. With the following implementation, the [`TestBufferPool`] provides
+/// empty [`TestBuffer`]s that cost no allocation.
 #[derive(Default, Clone, Copy)]
 pub struct TestBufferPool;
 
 impl BufferPool for TestBufferPool {
-    type Buf = ();
+    type Buf = TestBuffer;
     const MAX_ALLOC: usize = usize::MAX;
     fn alloc(&self, num: usize) -> impl Iterator<Item = Self::Buf> {
-        std::iter::repeat_n((), num)
+        (0..num).map(|_| TestBuffer::from_raw_data_with_room(&[], 0, 0))
     }
 }
 
