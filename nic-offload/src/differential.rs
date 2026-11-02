@@ -45,7 +45,7 @@ use pipeline::NetworkFunction;
 use policer::{Profile, Rate};
 use rate_limit::{Classify, PeeringRules, RateLimitWriter, RateLimits, Unit};
 
-use crate::mlx5::{Plan, Role};
+use crate::mlx5::{Plan, Role, encoded_burst, encoded_rate, pmd_scale};
 use crate::model::{Outcome, Verdict};
 use crate::program::Program;
 
@@ -1021,23 +1021,30 @@ fn check_profiles(limits: &RateLimits<PeeringRules>, program: &Program, plan: &P
             MeterAlgorithm::Rfc4115 { cir, eir, cbs, ebs } => (cir, Some(eir), cbs, ebs),
             MeterAlgorithm::Trtcm { .. } => unreachable!("the software has no RFC 2698 meters"),
         };
+        // As mlx5 encodes them, in its scaled units.
+        let shift = pmd_scale(unit);
+        let rate = |r: u64| encoded_rate(r << shift);
+        let burst = |b: u64| encoded_burst(b << shift);
         let software_cir = software.committed_rate().per_second().get();
         assert!(
-            cir >= software_cir,
-            "meter {}: CIR {cir} below the software's {software_cir}",
+            rate(cir) >= software_cir << shift,
+            "meter {}: CIR {cir} encodes below the software's {software_cir}",
             nic.name
         );
         if let Some(software_eir) = software.excess_rate() {
             let coupled = software_eir.per_second().get() + software_cir;
             assert!(
-                eir.is_some_and(|eir| eir >= coupled),
-                "meter {}: EIR {eir:?} below the software's coupled {coupled}",
+                eir.is_some_and(|eir| rate(eir) >= coupled << shift),
+                "meter {}: EIR {eir:?} encodes below the software's coupled {coupled}",
                 nic.name
             );
         }
+        let [committed_slack, excess_slack] = nic.lease_slack;
         assert!(
-            cbs >= software.committed_burst() && ebs >= software.excess_burst(),
-            "meter {}: the NIC's bursts {cbs}/{ebs} are below the software's {}/{}",
+            burst(cbs) >= (software.committed_burst() + committed_slack) << shift
+                && (software.excess_burst() == 0
+                    || burst(ebs) >= (software.excess_burst() + excess_slack) << shift),
+            "meter {}: the NIC's bursts {cbs}/{ebs} encode below the software's {}/{} with leases",
             nic.name,
             software.committed_burst(),
             software.excess_burst()
@@ -1099,7 +1106,9 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
     let acls = AclFilterContext::reference(overlay).unwrap();
     let routes = destinations(overlay);
     let mut routing = flow_filter(overlay);
+    // As installing does: peerings of meters faster than the NIC meters stay in software.
     let program = Program::compile(&acls, &limits, &routes, &BTreeSet::new());
+    let program = Program::compile(&acls, &limits, &routes, &crate::mlx5::unfit(&program));
     let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
     check_profiles(&limits, &program, &plan);
     let mut tally = Tally::default();

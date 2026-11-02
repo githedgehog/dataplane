@@ -1163,6 +1163,12 @@ fn install_policy(
             excluded.extend(homeless);
             continue;
         }
+        // Meters faster than the NIC can meter stay in software, with their peerings.
+        let unfit = super::unfit(&program);
+        if !unfit.is_subset(&excluded) {
+            excluded.extend(unfit);
+            continue;
+        }
         if program.meters.len() > RESOURCES.meters as usize {
             // The peerings of the last meters stay in software until the rest fit.
             let last = program.meters.len() - 1;

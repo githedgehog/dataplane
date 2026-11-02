@@ -21,6 +21,8 @@ struct Pool {
     buckets: Mutex<Buckets>,
     /// How many tokens a worker takes from each bucket at once, when it takes any.
     lease: [u64; 2],
+    /// How many workers may each hold a lease.
+    workers: u64,
 }
 
 //= https://www.rfc-editor.org/rfc/rfc2697#section-3
@@ -49,8 +51,8 @@ impl SharedMeter {
     /// A meter enforcing `profile` across `workers` workers, with full buckets at `now`.
     #[must_use]
     pub fn new(profile: Profile, workers: NonZeroUsize, now: Instant) -> SharedMeter {
-        SharedMeter::with_leases(profile, now, |rate, burst| {
-            let workers = u64::try_from(workers.get()).unwrap_or(u64::MAX);
+        let workers = u64::try_from(workers.get()).unwrap_or(u64::MAX);
+        SharedMeter::with_leases(profile, now, workers, |rate, burst| {
             (rate / LEASE_FRACTION_OF_SECOND)
                 .min(burst / LEASES_PER_WORKER.saturating_mul(workers))
                 .max(1)
@@ -58,10 +60,11 @@ impl SharedMeter {
     }
 
     /// A meter whose leases, for a bucket filling at up to `rate` tokens a second and holding
-    /// `burst`, are `lease(rate, burst)` tokens.
+    /// `burst`, are `lease(rate, burst)` tokens, for `workers` workers.
     pub(crate) fn with_leases(
         profile: Profile,
         now: Instant,
+        workers: u64,
         lease: impl Fn(u64, u64) -> u64,
     ) -> SharedMeter {
         let sized = |bucket: Bucket| {
@@ -72,8 +75,18 @@ impl SharedMeter {
             pool: Arc::new(Pool {
                 buckets: Mutex::new(Buckets::new(profile, now)),
                 lease: Bucket::ALL.map(sized),
+                workers,
             }),
         }
+    }
+
+    /// The most tokens the workers' leases may hold beyond each bucket, committed then excess: one
+    /// lease per worker, at least a token each. A burst may exceed its bucket by that much.
+    #[must_use]
+    pub fn lease_slack(&self) -> [u64; 2] {
+        self.pool
+            .lease
+            .map(|lease| lease.saturating_mul(self.pool.workers))
     }
 
     /// A worker's view of this meter, holding no tokens yet.
