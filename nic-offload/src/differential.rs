@@ -282,6 +282,22 @@ pub(crate) struct RawAclRule {
 pub(crate) struct RawAcls {
     pub(crate) defaults: [Option<bool>; 4],
     pub(crate) rules: Vec<RawAclRule>,
+    /// What each side of each peering exposes, left then right.
+    pub(crate) exposes: [[RawExpose; 2]; 4],
+}
+
+/// What a VPC exposes to a peer.
+#[derive(Debug, Copy, Clone, Default, bolero::TypeGenerator)]
+pub(crate) enum RawExpose {
+    /// Its own prefix.
+    #[default]
+    Own,
+    /// A default expose: every address no other expose of the source VPC's peers takes.
+    Default,
+    /// A prefix covering every VPC of its family (`10.0.0.0/8`, `fd00::/16`).
+    Wide,
+    /// Its own prefix and, in another expose, another VPC's of its family.
+    Plus(u8),
 }
 
 impl RawAcls {
@@ -400,6 +416,66 @@ pub(crate) fn overlay(
     rules: &[RawRule],
     acls: &RawAcls,
 ) -> Option<ValidatedOverlay> {
+    with_exposes(meters, rules, acls, &exposes(meters, rules, acls))
+}
+
+/// The generated exposes, side by side, as far as the overlay still validates with them; the
+/// other sides expose their VPC's own prefix.
+pub(crate) fn exposes(
+    meters: &[RawMeter; 4],
+    rules: &[RawRule],
+    acls: &RawAcls,
+) -> [[RawExpose; 2]; 4] {
+    let mut exposes = [[RawExpose::Own; 2]; 4];
+    for peering in 0..exposes.len() {
+        for side in 0..2 {
+            let mut tried = exposes;
+            tried[peering][side] = acls.exposes[peering][side];
+            if with_exposes(meters, rules, acls, &tried).is_some() {
+                exposes = tried;
+            }
+        }
+    }
+    exposes
+}
+
+fn manifest(vpc: usize, raw: RawExpose) -> Option<VpcManifest> {
+    let spec = &VPCS[vpc];
+    let mut manifest = VpcManifest::new(spec.name);
+    let own = LpmPrefix::try_from((spec.expose, spec.len)).ok()?;
+    let v4 = spec.expose.is_ipv4();
+    match raw {
+        RawExpose::Own => manifest.add_expose(VpcExpose::empty().ip(own.into())),
+        RawExpose::Default => manifest.add_expose(VpcExpose::empty().set_default()),
+        RawExpose::Wide => {
+            let wide = if v4 {
+                LpmPrefix::try_from((IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8))
+            } else {
+                LpmPrefix::try_from((IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0)), 16))
+            };
+            manifest.add_expose(VpcExpose::empty().ip(wide.ok()?.into()));
+        }
+        RawExpose::Plus(i) => {
+            manifest.add_expose(VpcExpose::empty().ip(own.into()));
+            let others: Vec<usize> = (0..VPCS.len())
+                .filter(|&o| o != vpc && VPCS[o].expose.is_ipv4() == v4)
+                .collect();
+            if let Some(&other) = others.get(usize::from(i) % others.len().max(1)) {
+                let spec = &VPCS[other];
+                let prefix = LpmPrefix::try_from((spec.expose, spec.len)).ok()?;
+                manifest.add_expose(VpcExpose::empty().ip(prefix.into()));
+            }
+        }
+    }
+    Some(manifest)
+}
+
+fn with_exposes(
+    meters: &[RawMeter; 4],
+    rules: &[RawRule],
+    acls: &RawAcls,
+    exposes: &[[RawExpose; 2]; 4],
+) -> Option<ValidatedOverlay> {
     let mut vpcs = VpcTable::new();
     for spec in &VPCS {
         vpcs.add(Vpc::new(spec.name, spec.id, spec.vni).ok()?)
@@ -407,17 +483,11 @@ pub(crate) fn overlay(
     }
     let mut peerings = VpcPeeringTable::new();
     for (peering, &(l, r)) in PEERINGS.iter().enumerate() {
-        let manifest = |vpc: usize| {
-            let spec = &VPCS[vpc];
-            let mut manifest = VpcManifest::new(spec.name);
-            let prefix = LpmPrefix::try_from((spec.expose, spec.len)).ok()?;
-            manifest.add_expose(VpcExpose::empty().ip(prefix.into()));
-            Some(manifest)
-        };
+        let [left, right] = exposes[peering];
         let mut vpc_peering = VpcPeering::new(
             &peering_name(peering),
-            manifest(l)?,
-            manifest(r)?,
+            manifest(l, left)?,
+            manifest(r, right)?,
             "default".into(),
         );
         vpc_peering.acl = acls.acl(peering);
@@ -505,6 +575,8 @@ pub(crate) struct Frame {
     src_vni: u32,
     /// The VPC routing would deliver the inner packet to, if any.
     dst_vni: Option<u32>,
+    /// The inner destination address.
+    dst: IpAddr,
     inner: Vec<u8>,
 }
 
@@ -679,6 +751,7 @@ impl RawFrame {
         Frame {
             src_vni: VPCS[src_vpc].vni,
             dst_vni,
+            dst,
             inner,
         }
     }
@@ -774,6 +847,10 @@ struct Tally {
     /// Outcomes charging a meter for a packet the ACL filter cannot classify: the tolerated
     /// deviation.
     charged_dropped: usize,
+    /// Cases with some exposes other than their VPC's own prefix.
+    exposed: usize,
+    /// Cases checked.
+    cases: usize,
 }
 
 /// The ways `outcome` breaks the cascade contract for a frame `software` treats so.
@@ -881,6 +958,27 @@ pub(crate) fn fate() -> TemplateAction {
     })
 }
 
+impl Frame {
+    /// Route the frame as the flow filter does: the first of `destinations` of its source VPC
+    /// that an ordinary lookup reaches and that covers its destination.
+    fn route(&mut self, destinations: &[flow_filter::Destination]) {
+        self.dst_vni = destinations
+            .iter()
+            .find(|d| {
+                d.src_vni.as_u32() == self.src_vni
+                    && !d.gated
+                    && !d.partial
+                    && d.prefix.covers_addr(&self.dst)
+            })
+            .map(|d| d.dst_vni.as_u32());
+    }
+}
+
+/// Where the flow filter sends each source VPC's traffic in `overlay`.
+pub(crate) fn destinations(overlay: &ValidatedOverlay) -> Vec<flow_filter::Destination> {
+    flow_filter::FlowFilterContext::reference(overlay).destinations()
+}
+
 /// Compile and lower `overlay`'s ACLs and rate limits, and hold every frame to the cascade
 /// contract, panicking at the first violation. Frames are aimed at `targets`.
 fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawFrame]) -> Tally {
@@ -889,12 +987,14 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
     writer.apply(overlay, Backend::Reference).unwrap();
     let limits = writer.load();
     let acls = AclFilterContext::reference(overlay).unwrap();
-    let program = Program::compile(&acls, &limits, &BTreeSet::new());
+    let routes = destinations(overlay);
+    let program = Program::compile(&acls, &limits, &routes, &BTreeSet::new());
     let plan = Plan::new(&program, &fate()).unwrap();
     check_profiles(&limits, &program, &plan);
     let mut tally = Tally::default();
     for raw in frames {
-        let frame = raw.frame(targets);
+        let mut frame = raw.frame(targets);
+        frame.route(&routes);
         let software = frame.software(&acls, &limits);
         let outcomes = plan.outcomes(&frame.wire()).unwrap();
         // Software drops what it cannot route; the NIC may too.
@@ -926,14 +1026,20 @@ fn the_nic_only_ever_does_what_the_software_would() {
                 &targets(rules, acls),
                 &frames[..frames.len().min(16)],
             );
+            let exposed = exposes(meters, rules, acls)
+                .iter()
+                .flatten()
+                .any(|e| !matches!(e, RawExpose::Own));
             let mut total = total.borrow_mut();
             total.charged += tally.charged;
             total.charged_dropped += tally.charged_dropped;
+            total.cases += 1;
+            total.exposed += usize::from(exposed);
         });
     let total = total.0.into_inner();
     eprintln!(
-        "differential: {} outcome(s) charged a meter, {} of them for unclassifiable packets",
-        total.charged, total.charged_dropped
+        "differential: {} outcome(s) charged a meter, {} of them for unclassifiable packets; {} of {} cases with other exposes than the VPCs' own prefixes",
+        total.charged, total.charged_dropped, total.exposed, total.cases
     );
 }
 
@@ -1009,7 +1115,7 @@ fn unclassifiable_packets_are_charged_by_the_nic_only() {
     let filter = AclFilterContext::reference(&overlay).unwrap();
     assert_eq!(frame.software(&filter, &limits), Software::Unclassifiable);
     let plan = Plan::new(
-        &Program::compile(&filter, &limits, &BTreeSet::new()),
+        &Program::compile(&filter, &limits, &destinations(&overlay), &BTreeSet::new()),
         &fate(),
     )
     .unwrap();
@@ -1032,6 +1138,7 @@ fn denies_drop_in_the_nic_unless_an_earlier_allow_overlaps() {
         (vec![deny(false), deny(true)], false),
     ] {
         let acls = RawAcls {
+            exposes: Default::default(),
             defaults: [Some(false), None, None, None],
             rules: acl,
         };
@@ -1040,7 +1147,12 @@ fn denies_drop_in_the_nic_unless_an_earlier_allow_overlaps() {
             RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
         writer.apply(&overlay, Backend::Reference).unwrap();
         let filter = AclFilterContext::reference(&overlay).unwrap();
-        let program = Program::compile(&filter, &writer.load(), &BTreeSet::new());
+        let program = Program::compile(
+            &filter,
+            &writer.load(),
+            &destinations(&overlay),
+            &BTreeSet::new(),
+        );
         assert_eq!(program.denies.len(), usize::from(denied), "{program:#?}");
         let tally = check_overlay(
             &overlay,
@@ -1077,6 +1189,7 @@ fn a_default_deny_keeps_its_peering_and_only_it_in_software() {
     };
     let rules = [limit(0), limit(1)];
     let acls = RawAcls {
+        exposes: Default::default(),
         defaults: [Some(true), None, None, None],
         rules: vec![RawAclRule {
             rule: peering_rule(false, RawProto::Udp),
@@ -1089,7 +1202,12 @@ fn a_default_deny_keeps_its_peering_and_only_it_in_software() {
         RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
     writer.apply(&overlay, Backend::Reference).unwrap();
     let filter = AclFilterContext::reference(&overlay).unwrap();
-    let program = Program::compile(&filter, &writer.load(), &BTreeSet::new());
+    let program = Program::compile(
+        &filter,
+        &writer.load(),
+        &destinations(&overlay),
+        &BTreeSet::new(),
+    );
     // Only the second peering's rate limit is offloaded.
     assert_eq!(program.rules.len(), 1, "{program:#?}");
     assert_eq!(program.rules[0].matches.src_vni.as_u32(), VPCS[0].vni);
@@ -1112,6 +1230,7 @@ fn a_default_deny_keeps_its_peering_and_only_it_in_software() {
 fn a_syn_deny_drops_syns_in_the_nic() {
     let rules = [peering_rule(false, RawProto::Any)];
     let acls = RawAcls {
+        exposes: Default::default(),
         defaults: [Some(false), None, None, None],
         rules: vec![RawAclRule {
             rule: peering_rule(false, RawProto::TcpFlags(0x02, 0x12)),
@@ -1124,7 +1243,12 @@ fn a_syn_deny_drops_syns_in_the_nic() {
         RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
     writer.apply(&overlay, Backend::Reference).unwrap();
     let filter = AclFilterContext::reference(&overlay).unwrap();
-    let program = Program::compile(&filter, &writer.load(), &BTreeSet::new());
+    let program = Program::compile(
+        &filter,
+        &writer.load(),
+        &destinations(&overlay),
+        &BTreeSet::new(),
+    );
     assert_eq!(program.denies.len(), 1, "{program:#?}");
     assert_eq!(program.denies[0].matches.tcp_flags, Some((0x02, 0x12)));
     let plan = Plan::new(&program, &fate()).unwrap();
