@@ -4,6 +4,7 @@ members = [
     "acl",
     "acl-filter",
     "args",
+    "arp",
     "capture",
     "cli",
     "clock",
@@ -85,6 +86,7 @@ repository = "https://github.com/githedgehog/dataplane/"
 acl = { path = "./acl", package = "dataplane-acl", features = [] }
 acl-filter = { path = "./acl-filter", package = "dataplane-acl-filter", features = [] }
 args = { path = "./args", package = "dataplane-args", features = [] }
+arp = { path = "./arp", package = "dataplane-arp", features = [] }
 capture = { path = "./capture", package = "dataplane-capture", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }
@@ -361,6 +363,11 @@ wasm = false # hopeless + pointless
 package = "dataplane-args"
 miri = true
 wasm = false # miss
+
+[workspace.metadata.package.arp]
+package = "dataplane-arp"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
 
 [workspace.metadata.package.capture]
 package = "dataplane-capture"
