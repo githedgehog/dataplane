@@ -132,12 +132,14 @@ fn conforming_traffic_is_never_red_in_the_nic() {
             .unwrap_or(std::num::NonZeroUsize::MIN);
         let shared = policer::SharedMeter::new(software, workers, start);
         let mut locals: Vec<_> = (0..workers.get()).map(|_| shared.local()).collect();
-        let nic_profile = profile(&PoliceMeter {
+        let Some(nic_profile) = profile(&PoliceMeter {
             name: "m".into(),
             unit,
             profile: software,
             lease_slack: shared.lease_slack(),
-        });
+        }) else {
+            return;
+        };
         let mut nic = NicMeter::new(&nic_profile);
         let mut now = 0u64;
         for &(gap, bytes, overhead, worker) in run.arrivals.iter().take(400) {
@@ -164,4 +166,65 @@ fn conforming_traffic_is_never_red_in_the_nic() {
             );
         }
     });
+}
+
+/// A burst is encoded at least as large as software's, without wrapping, or the meter is refused
+/// (left in software): never encoded smaller, as a burst past what mlx5 takes would be.
+#[test]
+fn bursts_mlx5_cannot_take_are_refused_not_wrapped() {
+    /// The greatest burst mlx5 takes, scaled (`MLX5_SRTCM_XBS_MAX`).
+    const MAX_BURST: u64 = 255 << 31;
+    let check = |packets: bool, burst: u64| {
+        let unit = if packets { Unit::Packets } else { Unit::Bytes };
+        let Ok(software) = Profile::new(Rate::new(std::num::NonZeroU64::MIN), burst, None, 0)
+        else {
+            return;
+        };
+        let meter = PoliceMeter {
+            name: "m".into(),
+            unit,
+            profile: software,
+            lease_slack: [0, 0],
+        };
+        let shift = pmd_scale(profile_unit(unit));
+        match profile(&meter) {
+            Some(MeterProfile {
+                algorithm: MeterAlgorithm::Srtcm { cbs, .. },
+                ..
+            }) => {
+                let scaled = cbs << shift;
+                assert!(cbs >= burst, "{burst} encoded as {cbs}");
+                assert!(scaled <= MAX_BURST, "{burst} encoded past mlx5's maximum");
+                assert!(encoded_burst(scaled) >= scaled, "{burst} wraps");
+            }
+            Some(other) => panic!("{other:?}"),
+            // Software's burst alone is past mlx5's maximum, but for its scaling (up to 4.6
+            // times) and one frame.
+            None => assert!(burst > (MAX_BURST >> shift) / 5, "{burst} refused"),
+        }
+    };
+    for packets in [false, true] {
+        for burst in [
+            1,
+            1500,
+            255 << 20,
+            1 << 32,
+            1 << 36,
+            1 << 40,
+            u64::MAX / 2,
+            u64::MAX,
+        ] {
+            check(packets, burst);
+        }
+    }
+    bolero::check!()
+        .with_type::<(bool, u64)>()
+        .for_each(|&(packets, burst)| check(packets, burst));
+}
+
+fn profile_unit(unit: Unit) -> dpdk::flow::template::MeterUnit {
+    match unit {
+        Unit::Bytes => dpdk::flow::template::MeterUnit::Bytes,
+        Unit::Packets => dpdk::flow::template::MeterUnit::Packets,
+    }
 }
