@@ -89,6 +89,7 @@ fn compile_with(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>, offload: 
     Program::compile(
         &AclFilterContext::reference(&overlay).unwrap(),
         &writer.load(),
+        &flow_filter::FlowFilterContext::reference(&overlay).destinations(),
         &std::collections::BTreeSet::new(),
     )
 }

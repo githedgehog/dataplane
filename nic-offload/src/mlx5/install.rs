@@ -582,7 +582,13 @@ impl<'t> Port<'t> {
     /// Hardware counters lag (by about half a second on a BlueField-3).
     #[must_use]
     pub fn counts(&self) -> Vec<(Role, Counts)> {
-        let mut counts = Vec::new();
+        let mut counts: Vec<(Role, Counts)> = self
+            .vpcs
+            .values()
+            .flat_map(|g| &g.rules)
+            .filter(|(role, _)| matches!(role, Role::Deny(_)))
+            .map(|(role, rule)| (*role, rule.counts().unwrap_or_default()))
+            .collect();
         for (index, installed) in self.plan_meters.iter().enumerate() {
             let Some(meter) = installed.and_then(|i| self.meters.get(i)) else {
                 continue;
@@ -892,7 +898,7 @@ pub fn run(
     fate: &TemplateAction,
     stop: &dyn Fn() -> bool,
 ) {
-    let (acls, reader) = (&policy.acls, &policy.rate_limits);
+    let (acls, reader, routing) = (&policy.acls, &policy.rate_limits, &policy.routing);
     let flows = match TemplateFlows::new(dev) {
         Ok(flows) => flows,
         Err(e) => {
@@ -902,19 +908,28 @@ pub fn run(
     };
     let mut port = Port::new(&flows);
     while !stop() {
-        let (filter, limits) = (acls.load(), reader.load());
+        let (filter, limits, routes) = (acls.load(), reader.load(), routing.load());
         let changed = || {
             stop()
                 || !concurrency::sync::Arc::ptr_eq(&acls.load(), &filter)
                 || !concurrency::sync::Arc::ptr_eq(&reader.load(), &limits)
+                || !concurrency::sync::Arc::ptr_eq(&routing.load(), &routes)
         };
+        let destinations = routes.destinations();
         if !limits.attempt_offloads() {
             info!(
                 "port {port_name}: NIC offload is turned off; software alone enforces the policy"
             );
         }
-        let (program, excluded) =
-            install_policy(&mut port, port_name, &filter, &limits, fate, &changed);
+        let (program, excluded) = install_policy(
+            &mut port,
+            port_name,
+            &filter,
+            &limits,
+            &destinations,
+            fate,
+            &changed,
+        );
         if let Some(program) = &program
             && (!program.denies.is_empty() || !program.rules.is_empty())
         {
@@ -954,13 +969,14 @@ fn install_policy(
     port_name: &str,
     filter: &acl_filter::AclFilterContext,
     limits: &rate_limit::RateLimits<rate_limit::PeeringRules>,
+    destinations: &[flow_filter::Destination],
     fate: &TemplateAction,
     changed: &dyn Fn() -> bool,
 ) -> (Option<Program>, BTreeSet<Peering>) {
     // Peerings left in software: refused by the NIC, or over its meters.
     let mut excluded = BTreeSet::new();
     let program = loop {
-        let program = Program::compile(filter, limits, &excluded);
+        let program = Program::compile(filter, limits, destinations, &excluded);
         if program.meters.len() > RESOURCES.meters as usize {
             // The peerings of the last meters stay in software until the rest fit.
             let last = program.meters.len() - 1;
@@ -973,8 +989,8 @@ fn install_policy(
             );
             continue;
         }
-        // The ACLs and the rate limits are published apart: compile only from a pair seen
-        // together.
+        // The ACLs, the rate limits and the routing are published apart: compile only from what
+        // was seen together.
         if changed() {
             break None;
         }
@@ -1049,8 +1065,16 @@ fn state(port_name: &str, port: &Port<'_>, in_software: usize) {
     });
 }
 
-/// Log and export what each meter passed and dropped in hardware.
+/// Log and export what each meter passed and dropped in hardware, and what ACL denies dropped.
 fn report(port_name: &str, port: &Port<'_>) {
+    let denied: u64 = port
+        .counts()
+        .iter()
+        .filter(|(role, _)| matches!(role, Role::Deny(_)))
+        .map(|(_, c)| c.packets)
+        .sum();
+    metrics::counter!("acl_nic_dropped_packets_total", "port" => port_name.to_string())
+        .absolute(denied);
     for meter in &port.meters {
         let mut passed = Counts::default();
         let mut dropped = Counts::default();

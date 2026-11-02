@@ -97,6 +97,7 @@ impl PipelineIngredients {
     pub(crate) fn offload_policy(&self) -> nic_offload::Policy {
         nic_offload::Policy {
             acls: self.aclfiltertablesr_factory.handle(),
+            routing: self.flow_filter_reader_factory.handle(),
             rate_limits: self.rate_limits.clone(),
         }
     }

@@ -8,13 +8,14 @@ version.workspace = true
 
 [dependencies]
 acl-filter = { workspace = true }
+clock = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
 dpdk = { workspace = true }
+flow-filter = { workspace = true }
 hardware = { workspace = true }
 lpm = { workspace = true }
 match-action = { workspace = true }
-clock = { workspace = true }
 metrics = { workspace = true }
 net = { workspace = true }
 nix = { workspace = true, features = ["sched"] }
@@ -27,6 +28,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 acl = { workspace = true, features = ["reference"] }
 acl-filter = { workspace = true, features = ["reference"] }
+flow-filter = { workspace = true, features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }
 net = { workspace = true, features = ["test_buffer"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }

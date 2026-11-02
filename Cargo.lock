@@ -2108,6 +2108,7 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-config",
  "dataplane-dpdk",
+ "dataplane-flow-filter",
  "dataplane-hardware",
  "dataplane-lpm",
  "dataplane-match-action",
