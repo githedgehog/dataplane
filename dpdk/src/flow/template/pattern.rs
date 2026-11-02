@@ -18,7 +18,8 @@ use net::vxlan::Vxlan;
 
 use crate::flow::item::MatchItem;
 use crate::flow::pattern::{
-    EthMatch, Ipv4Match, Ipv6Match, ItemShape, TcpMatch, UdpMatch, VlanMatch, VxlanMatch,
+    EthMatch, IntegrityMatch, Ipv4Match, Ipv6Match, ItemShape, TcpMatch, UdpMatch, VlanMatch,
+    VxlanMatch,
 };
 
 /// The Ethernet header inside a VXLAN tunnel, as a pattern position.
@@ -121,6 +122,16 @@ impl Pattern<()> {
         // Every color bit: a partial mask makes rules for different colors overlap.
         mask.color = 0x3;
         Pattern::new().push(MatchItem::MeterColor(spec, mask))
+    }
+}
+
+impl Pattern<()> {
+    /// Require the NIC's integrity verdicts on a tunnel level; only at the start of a pattern,
+    /// before the headers.
+    #[must_use]
+    pub fn integrity(self, criteria: IntegrityMatch) -> Pattern<()> {
+        let (spec, mask) = criteria.lower();
+        self.push(MatchItem::Integrity(spec, mask))
     }
 }
 
