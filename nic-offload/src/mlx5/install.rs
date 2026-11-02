@@ -383,32 +383,52 @@ impl<'t> Port<'t> {
     }
 
     /// The arguments of a rule: groups numbered by `group`, meters from the installed ones.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MeterNotMade`] if an argument names a meter of the plan that is not
+    /// installed, and `group`'s error for a group it cannot number.
     fn args(
         &self,
         args: &[Arg],
-        group: &dyn Fn(Group) -> Option<FlowGroup>,
-    ) -> Option<Vec<SharedArg<'t, Ingress>>> {
+        group: &dyn Fn(Group) -> Result<FlowGroup, Error>,
+    ) -> Result<Vec<SharedArg<'t, Ingress>>, Error> {
         args.iter()
             .map(|&arg| match arg {
                 Arg::Jump(g) => group(g).map(SharedArg::Jump),
-                Arg::Meter(m) => {
-                    let installed = (*self.plan_meters.get(m)?)?;
-                    Some(SharedArg::Meter(self.meters.get(installed)?.meter.clone()))
-                }
+                Arg::Meter(m) => Ok(SharedArg::Meter(self.installed_meter(m)?.meter.clone())),
             })
             .collect()
     }
 
+    /// The installed meter of the plan's meter `index`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MeterNotMade`] if it is not installed.
+    fn installed_meter(&self, index: usize) -> Result<&InstalledMeter<'t>, Error> {
+        self.plan_meters
+            .get(index)
+            .copied()
+            .flatten()
+            .and_then(|installed| self.meters.get(installed))
+            .ok_or(Error::MeterNotMade)
+    }
+
     /// The group number of `group`, in a generation whose own groups are `own`.
-    fn number(&self, group: Group, own: &BTreeMap<Group, FlowGroup>) -> Option<FlowGroup> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MeterNotMade`] for the color group of a meter that is not installed, and
+    /// [`Error::NoSuchGroup`] for a generation's group not in `own`.
+    fn number(&self, group: Group, own: &BTreeMap<Group, FlowGroup>) -> Result<FlowGroup, Error> {
         match group {
-            Group::Root => Some(FlowGroup(0)),
-            Group::Switch => Some(SWITCH),
-            Group::Color(m) => {
-                let installed = (*self.plan_meters.get(m)?)?;
-                Some(self.meters.get(installed)?.group)
+            Group::Root => Ok(FlowGroup(0)),
+            Group::Switch => Ok(SWITCH),
+            Group::Color(m) => Ok(self.installed_meter(m)?.group),
+            Group::Deny(_) | Group::Police(_) => {
+                own.get(&group).copied().ok_or(Error::NoSuchGroup(group))
             }
-            Group::Deny(_) | Group::Police(_) => own.get(&group).copied(),
         }
     }
 
@@ -602,9 +622,12 @@ impl<'t> Port<'t> {
             };
             for rule in &planned_table.rules {
                 let group = |g| self.number(g, &own);
-                let Some(args) = self.args(&rule.args, &group) else {
-                    refused.push((rule.role, Error::MeterNotMade));
-                    continue;
+                let args = match self.args(&rule.args, &group) {
+                    Ok(args) => args,
+                    Err(e) => {
+                        refused.push((rule.role, e));
+                        continue;
+                    }
                 };
                 match self.insert("inserting a generation's rule", &table, rule, &args) {
                     Ok(Ok(installed)) => generation.rules.push((rule.role, installed)),
