@@ -26,6 +26,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+dpdk = { workspace = true, features = ["template-test"] }
 acl = { workspace = true, features = ["reference"] }
 acl-filter = { workspace = true, features = ["reference"] }
 flow-filter = { workspace = true, features = ["reference"] }
