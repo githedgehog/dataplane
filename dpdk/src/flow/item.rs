@@ -8,9 +8,9 @@ use core::ffi::c_void;
 use core::ptr::{from_ref, null};
 
 use dpdk_sys::{
-    rte_flow_item, rte_flow_item_eth, rte_flow_item_ipv4, rte_flow_item_ipv6,
-    rte_flow_item_meter_color, rte_flow_item_tcp, rte_flow_item_type as it, rte_flow_item_udp,
-    rte_flow_item_vlan, rte_flow_item_vxlan,
+    rte_flow_item, rte_flow_item_eth, rte_flow_item_integrity, rte_flow_item_ipv4,
+    rte_flow_item_ipv6, rte_flow_item_meter_color, rte_flow_item_tcp, rte_flow_item_type as it,
+    rte_flow_item_udp, rte_flow_item_vlan, rte_flow_item_vxlan,
 };
 
 /// Owned match criteria, kept in place while the PMD reads their pointers.
@@ -23,6 +23,7 @@ pub(crate) enum MatchItem {
     Tcp(rte_flow_item_tcp, rte_flow_item_tcp),
     Vxlan(rte_flow_item_vxlan, rte_flow_item_vxlan),
     MeterColor(rte_flow_item_meter_color, rte_flow_item_meter_color),
+    Integrity(rte_flow_item_integrity, rte_flow_item_integrity),
 }
 
 impl MatchItem {
@@ -36,6 +37,7 @@ impl MatchItem {
             MatchItem::Tcp(..) => it::RTE_FLOW_ITEM_TYPE_TCP,
             MatchItem::Vxlan(..) => it::RTE_FLOW_ITEM_TYPE_VXLAN,
             MatchItem::MeterColor(..) => it::RTE_FLOW_ITEM_TYPE_METER_COLOR,
+            MatchItem::Integrity(..) => it::RTE_FLOW_ITEM_TYPE_INTEGRITY,
         }
     }
 
@@ -50,6 +52,7 @@ impl MatchItem {
             MatchItem::Tcp(spec, _) => from_ref(spec).cast(),
             MatchItem::Vxlan(spec, _) => from_ref(spec).cast(),
             MatchItem::MeterColor(spec, _) => from_ref(spec).cast(),
+            MatchItem::Integrity(spec, _) => from_ref(spec).cast(),
         }
     }
 
@@ -64,6 +67,7 @@ impl MatchItem {
             MatchItem::Tcp(_, mask) => from_ref(mask).cast(),
             MatchItem::Vxlan(_, mask) => from_ref(mask).cast(),
             MatchItem::MeterColor(_, mask) => from_ref(mask).cast(),
+            MatchItem::Integrity(_, mask) => from_ref(mask).cast(),
         }
     }
 }

@@ -20,8 +20,8 @@ pub mod template;
 pub use builder::{FlowBuilder, VxlanEncap};
 pub use error::FlowError;
 pub use pattern::{
-    EthMatch, Ipv4Match, Ipv4Prefix, Ipv6Match, Ipv6Prefix, ItemShape, TcpMatch, UdpMatch,
-    VlanMatch, VxlanMatch,
+    EthMatch, IntegrityMatch, Ipv4Match, Ipv4Prefix, Ipv6Match, Ipv6Prefix, ItemShape, TcpMatch,
+    UdpMatch, VlanMatch, VxlanMatch,
 };
 pub(crate) use rule::flush;
 pub use rule::{FlowDestroyFailure, FlowRule};
