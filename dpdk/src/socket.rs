@@ -75,6 +75,46 @@ impl Manager {
     pub fn id_for_lcore(&self, lcore: u32) -> Option<SocketId> {
         SocketId::get_by_lcore_id(LCoreId(lcore))
     }
+
+    /// What `socket`'s DPDK heap holds (`rte_malloc_get_socket_stats`): the hugepage memory EAL
+    /// mapped there, and how much of it pools, rings, tables and drivers have allocated.
+    ///
+    /// Returns `None` if the socket has no heap.
+    #[must_use]
+    pub fn heap(&self, socket: SocketId) -> Option<Heap> {
+        socket.heap()
+    }
+}
+
+impl SocketId {
+    /// See [`Manager::heap`]; EAL must be initialized.
+    pub(crate) fn heap(self) -> Option<Heap> {
+        let mut stats = dpdk_sys::rte_malloc_socket_stats::default();
+        let socket = core::ffi::c_int::try_from(self.as_c_uint()).ok()?;
+        // SAFETY: EAL is initialized (this manager exists), and `stats` is a valid out pointer.
+        if unsafe { dpdk_sys::rte_malloc_get_socket_stats(socket, &raw mut stats) } != 0 {
+            return None;
+        }
+        Some(Heap {
+            total: stats.heap_totalsz_bytes as u64,
+            free: stats.heap_freesz_bytes as u64,
+            allocated: stats.heap_allocsz_bytes as u64,
+            greatest_free: stats.greatest_free_size as u64,
+        })
+    }
+}
+
+/// A socket's DPDK heap, in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Heap {
+    /// The hugepage memory mapped into the heap.
+    pub total: u64,
+    /// What of it is free.
+    pub free: u64,
+    /// What of it is allocated.
+    pub allocated: u64,
+    /// The largest free block: the largest allocation that can still succeed.
+    pub greatest_free: u64,
 }
 
 /// A CPU socket index.
@@ -269,6 +309,21 @@ mod tests {
     use super::*;
     use crate::lcore::RegisteredThread;
     use crate::with_eal;
+
+    #[test]
+    #[with_eal]
+    fn a_heap_accounts_for_an_allocation() {
+        let manager = Manager::init();
+        let socket = manager.iter().next().expect("EAL has a socket");
+        let before = manager.heap(socket).expect("the socket has a heap");
+        assert!(before.allocated + before.free <= before.total);
+        let pool = crate::test_support::packet_pool(1024);
+        let after = manager.heap(socket).expect("the socket has a heap");
+        assert!(
+            after.allocated > before.allocated,
+            "{before:?} -> {after:?} for {pool:?}"
+        );
+    }
 
     #[test]
     #[with_eal]
