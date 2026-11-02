@@ -79,6 +79,8 @@ pub fn port_resources(info: &DevInfo<'_>) -> Option<TemplateConfig> {
 pub struct Policy {
     /// The ACL filter's rules.
     pub acls: AclFilterContextReader,
+    /// Where the flow filter sends each source VPC's traffic.
+    pub routing: flow_filter::FlowFilterContextReader,
     /// The rate limiter's rules, and which peerings asked for offload.
     pub rate_limits: RateLimitReader<PeeringRules>,
 }
