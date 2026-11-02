@@ -29,6 +29,7 @@ fn program(rules: Vec<PoliceRule>) -> Program {
     Program {
         meters: vec![PoliceMeter {
             name: "probe".to_string(),
+            lease_slack: [0, 0],
             unit: Unit::Bytes,
             profile: Profile::new(rate, 100_000, None, 0).unwrap_or_else(|_| unreachable!()),
         }],

@@ -102,6 +102,11 @@ impl Component {
     pub fn profile(&self) -> Profile {
         self.enforcement.profile
     }
+    /// How far the workers' leases may let a burst exceed each bucket, committed then excess.
+    #[must_use]
+    pub fn lease_slack(&self) -> [u64; 2] {
+        self.enforcement.meter.lease_slack()
+    }
     /// Action for a policing result.
     #[must_use]
     pub fn action(&self, color: Color) -> ColorAction {

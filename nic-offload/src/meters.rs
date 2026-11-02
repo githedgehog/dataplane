@@ -8,6 +8,9 @@
 //! meter spent: from then on the two may drop different packets of the same traffic, and no margin
 //! keeps every NIC red a software red. What the margins guarantee is that traffic within the
 //! software's rates and bursts is never dropped in the NIC.
+//!
+//! Software is the meter the workers share, its leases spread over workers as packets arrive; the
+//! NIC meter has its rates and bursts as mlx5 encodes them.
 
 use std::time::Duration;
 
@@ -15,14 +18,16 @@ use dpdk::flow::template::{MeterAlgorithm, MeterProfile};
 use policer::{Color, Profile, Rate};
 use rate_limit::Unit;
 
-use crate::mlx5::{BYTE_OVERHEAD, profile};
+use crate::mlx5::{BYTE_OVERHEAD, encoded_burst, encoded_rate, pmd_scale, profile};
 use crate::program::PoliceMeter;
 
 /// A NIC meter as mlx5 runs one: a packet passes a bucket while the bucket holds any token, and
 /// is charged its whole cost (into debt). Buckets fill at their rates up to their sizes; under
 /// srTCM what overflows the committed bucket fills the excess one, under RFC 4115 each fills on
-/// its own.
+/// its own. Rates, bursts and costs are in mlx5's units (packets scaled up), as encoded.
 struct NicMeter {
+    /// How far mlx5 scales costs up.
+    shift: u32,
     cir: u64,
     eir: Option<u64>,
     cbs: i128,
@@ -42,8 +47,17 @@ impl NicMeter {
             MeterAlgorithm::Rfc4115 { cir, eir, cbs, ebs } => (cir, Some(eir), cbs, ebs),
             MeterAlgorithm::Trtcm { .. } => unreachable!("not lowered"),
         };
-        let (cbs, ebs) = (i128::from(cbs) * NANOS, i128::from(ebs) * NANOS);
+        let shift = pmd_scale(profile.unit);
+        let (cir, eir) = (
+            encoded_rate(cir << shift),
+            eir.map(|eir| encoded_rate(eir << shift)),
+        );
+        let (cbs, ebs) = (
+            i128::from(encoded_burst(cbs << shift)) * NANOS,
+            i128::from(encoded_burst(ebs << shift)) * NANOS,
+        );
         NicMeter {
+            shift,
             cir,
             eir,
             cbs,
@@ -65,7 +79,7 @@ impl NicMeter {
             None => overflow,
         };
         self.te = (self.te + excess).min(self.ebs);
-        let cost = i128::from(cost) * NANOS;
+        let cost = i128::from(cost << self.shift) * NANOS;
         if self.tc > 0 {
             self.tc -= cost;
             Color::Green
@@ -85,7 +99,10 @@ struct Run {
     rate: u32,
     committed_burst: u32,
     excess: Option<(u32, u32)>,
-    arrivals: Vec<(u32, u16, u8)>,
+    /// How many workers share the software meter.
+    workers: u8,
+    /// Each packet's gap, IP bytes, NIC overhead, and the worker it arrives at.
+    arrivals: Vec<(u32, u16, u8, u8)>,
 }
 
 #[test]
@@ -110,16 +127,20 @@ fn conforming_traffic_is_never_red_in_the_nic() {
         ) else {
             return;
         };
+        let start = clock::now();
+        let workers = std::num::NonZeroUsize::new(usize::from(run.workers % 16) + 1)
+            .unwrap_or(std::num::NonZeroUsize::MIN);
+        let shared = policer::SharedMeter::new(software, workers, start);
+        let mut locals: Vec<_> = (0..workers.get()).map(|_| shared.local()).collect();
         let nic_profile = profile(&PoliceMeter {
             name: "m".into(),
             unit,
             profile: software,
+            lease_slack: shared.lease_slack(),
         });
-        let start = clock::now();
-        let mut exact = policer::Meter::new(software, start);
         let mut nic = NicMeter::new(&nic_profile);
         let mut now = 0u64;
-        for &(gap, bytes, overhead) in run.arrivals.iter().take(400) {
+        for &(gap, bytes, overhead, worker) in run.arrivals.iter().take(400) {
             now += u64::from(gap % 1_000_000);
             // Packets of a jumbo frame at most, as the debt margin assumes.
             let billed = (u64::from(bytes) % 9217).max(20);
@@ -127,8 +148,12 @@ fn conforming_traffic_is_never_red_in_the_nic() {
                 Unit::Bytes => (billed, billed + u64::from(overhead) % (BYTE_OVERHEAD + 1)),
                 Unit::Packets => (1, 1),
             };
-            let software_color =
-                exact.color(start + Duration::from_nanos(now), cost, Color::Green);
+            let at = usize::from(worker) % locals.len();
+            let software_color = locals[at].color(
+                start + Duration::from_nanos(now),
+                cost,
+                Color::Green,
+            );
             let nic_color = nic.color(now, nic_cost);
             if software_color == Color::Red {
                 break;

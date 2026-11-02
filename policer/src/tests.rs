@@ -414,7 +414,7 @@ mod leasing {
             let (profile, packets) = scenario(input);
             let start = clock::now();
             let mut literal = Literal::new(profile);
-            let mut local = SharedMeter::with_leases(profile, start, |_, _| 1).local();
+            let mut local = SharedMeter::with_leases(profile, start, 1, |_, _| 1).local();
             for (elapsed, size, color) in packets {
                 assert_eq!(
                     local.color(start + elapsed, u64::from(size), color),
@@ -436,7 +436,7 @@ mod leasing {
                 let (profile, packets) = scenario(input);
                 let lease = u64::from(*lease);
                 let start = clock::now();
-                let shared = SharedMeter::with_leases(profile, start, |_, _| lease);
+                let shared = SharedMeter::with_leases(profile, start, 4, |_, _| lease);
                 let mut locals: Vec<_> = (0..4).map(|_| shared.local()).collect();
                 let (mut green, mut passed) = (0, 0);
                 let mut end = Duration::ZERO;
@@ -504,6 +504,7 @@ fn workers_spend_each_token_once() {
     let shared = Arc::new(SharedMeter::with_leases(
         single(1, BURST, 0),
         start,
+        2,
         |_, _| 300,
     ));
     let workers: Vec<_> = (0..2)
