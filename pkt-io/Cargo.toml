@@ -1,0 +1,26 @@
+[package]
+name = "dataplane-pkt-io"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+# internal
+concurrency = { workspace = true }
+net = { workspace = true, features = ["test_buffer"] }
+pipeline = { workspace = true }
+tracectl = { workspace = true }
+
+# external
+linkme = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# internal
+net = { workspace = true, features = ["builder"] }
+
+# external
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tracing-test = { workspace = true }
