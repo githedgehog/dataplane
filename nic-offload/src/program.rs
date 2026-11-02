@@ -185,6 +185,8 @@ pub struct PoliceRule {
     pub matches: Match,
     /// Index into [`Program::meters`].
     pub meter: usize,
+    /// See [`DenyRule::level`].
+    pub level: u8,
 }
 
 /// An ACL deny a NIC may enforce.
@@ -196,6 +198,10 @@ pub struct DenyRule {
     pub peering: Peering,
     /// What it matches.
     pub matches: Match,
+    /// The prefix length of the most specific destination of its peer it was narrowed to: rules
+    /// of more specific destinations are matched first, and between them the passes of other
+    /// peers' destinations ([`Program::passes`]).
+    pub level: u8,
 }
 
 /// The software rule a program rule or refusal came from.
@@ -275,7 +281,9 @@ pub struct Program {
     pub refused: Vec<(Peering, Origin, Refusal)>,
     /// By source VPC, the destinations of its other peers its rules must let pass untouched: a
     /// rule's destination prefix covers them, but software sends their traffic to another peer
-    /// than the rule's.
+    /// than the rule's. A pass applies to the rules of less specific destinations
+    /// ([`DenyRule::level`] below its prefix length) only: those of its own peer, and of more
+    /// specific destinations inside it, are matched before it.
     pub passes: BTreeMap<Vni, BTreeSet<Prefix>>,
 }
 
@@ -312,25 +320,31 @@ impl Routing {
     }
 
     /// `matches` of a rule for the traffic `src_vni` sends to `dst_vni`, narrowed to each of
-    /// `dst_vni`'s destinations it overlaps (none: it matches nothing software sends there). The
-    /// other peers' destinations that take some of a narrowed match's traffic (at least as specific
-    /// as the destination it was narrowed with) are recorded to pass untouched.
+    /// `dst_vni`'s destinations it overlaps (none: it matches nothing software sends there), each
+    /// with its level ([`DenyRule::level`]). The other peers' destinations that take some of a
+    /// narrowed match's traffic (at least as specific as the destination it was narrowed with) are
+    /// recorded to pass untouched.
     ///
     /// A gated destination (masquerade) takes only replies, and a partial one (port forwarding)
     /// only some protocols and ports: the rest of their prefix goes to other peers, even less
     /// specific ones. A rule is not narrowed to them, so what software sends there it enforces
-    /// alone.
-    fn narrow(&mut self, dst_vni: Vni, matches: &Match) -> Vec<Match> {
+    /// alone. Nor to a destination another peer has too: which of the two takes its traffic is
+    /// flow-filter's order, which a pass of the same level cannot follow.
+    fn narrow(&mut self, dst_vni: Vni, matches: &Match) -> Vec<(Match, u8)> {
         let src_vni = matches.src_vni;
         let Some(routes) = self.routes.get(&src_vni) else {
             return Vec::new();
         };
-        let mut narrowed = Vec::new();
+        let mut narrowed: Vec<(Match, u8)> = Vec::new();
         for own in routes.iter().filter(|r| r.dst_vni == dst_vni && !r.some) {
             let Some(destination) = own.prefix.intersection(matches.destination) else {
                 continue;
             };
-            for other in routes.iter().filter(|r| r.dst_vni != dst_vni) {
+            let others = || routes.iter().filter(|r| r.dst_vni != dst_vni);
+            if others().any(|other| other.prefix == own.prefix) {
+                continue;
+            }
+            for other in others() {
                 if other.prefix.bits() >= own.prefix.bits()
                     && other.prefix.intersection(destination).is_some()
                 {
@@ -341,8 +355,12 @@ impl Routing {
                 destination,
                 ..matches.clone()
             };
-            if !narrowed.contains(&m) {
-                narrowed.push(m);
+            // Matched from the most specific destination that holds it: a pass between that and
+            // a less specific one would take traffic software sends to this peer.
+            let level = own.prefix.bits();
+            match narrowed.iter_mut().find(|(n, _)| *n == m) {
+                Some((_, known)) => *known = (*known).max(level),
+                None => narrowed.push((m, level)),
             }
         }
         narrowed
@@ -524,10 +542,11 @@ impl Program {
                 continue;
             }
             let dst_vni = deny.peering.other(deny.matches.src_vni);
-            for matches in routing.narrow(dst_vni, &deny.matches) {
+            for (matches, level) in routing.narrow(dst_vni, &deny.matches) {
                 if seen.insert(matches.clone()) {
                     denies.push(DenyRule {
                         matches,
+                        level,
                         ..deny.clone()
                     });
                 }
@@ -556,10 +575,10 @@ impl Program {
                 continue;
             }
             let dst_vni = rule.peering.other(rule.matches.src_vni);
-            let narrowed: Vec<Match> = routing
+            let narrowed: Vec<(Match, u8)> = routing
                 .narrow(dst_vni, &rule.matches)
                 .into_iter()
-                .filter(|m| seen.insert(m.clone()))
+                .filter(|(m, _)| seen.insert(m.clone()))
                 .collect();
             if narrowed.is_empty() {
                 continue;
@@ -573,9 +592,10 @@ impl Program {
                 });
                 program.meters.len() - 1
             });
-            for matches in narrowed {
+            for (matches, level) in narrowed {
                 program.rules.push(PoliceRule {
                     matches,
+                    level,
                     ..rule.clone()
                 });
             }
@@ -618,6 +638,7 @@ impl Compilation {
                     origin,
                     peering,
                     matches,
+                    level: 0,
                 }),
                 Err(refusal) => self.refused.push((peering, origin, refusal)),
             }
@@ -660,6 +681,7 @@ impl Compilation {
                         peering,
                         matches,
                         meter: 0,
+                        level: 0,
                     },
                     meter,
                     component,
