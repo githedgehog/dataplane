@@ -883,7 +883,12 @@ fn summary(plans: &[Plan]) -> String {
         let meters: Vec<&String> = plan.meters.iter().map(|m| &m.key.name).collect();
         let _ = writeln!(out, "plan {step}: meters {meters:?}");
         for (vni, vpc) in &plan.vpcs {
-            let limits: Vec<_> = vpc.spec.limits.iter().map(|(m, k)| (m, &k.name)).collect();
+            let limits: Vec<_> = vpc
+                .spec
+                .limits
+                .iter()
+                .map(|(m, _, k)| (m, &k.name))
+                .collect();
             let _ = writeln!(
                 out,
                 "  vpc {vni}: denies {:?}\n    limits {limits:?}",
@@ -1054,6 +1059,7 @@ fn reconcile_scenarios() {
             tcp_flags: None,
         },
         meter,
+        level: len,
     };
     let meter = |name: &str| PoliceMeter {
         name: name.to_string(),
@@ -1086,6 +1092,7 @@ fn reconcile_scenarios() {
             dst_port: None,
             tcp_flags: None,
         },
+        level: 24,
     };
     let with_denies = |mut p: Program, denies: Vec<crate::program::DenyRule>| {
         p.denies = denies;

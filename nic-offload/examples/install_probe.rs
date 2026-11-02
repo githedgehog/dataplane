@@ -49,6 +49,7 @@ fn with_denies(rules: Vec<PoliceRule>) -> Program {
             origin: Origin::Acl { v6: false, row },
             peering: rule.peering,
             matches: rule.matches.clone(),
+            level: rule.level,
         })
         .collect();
     Program {
@@ -83,6 +84,7 @@ fn rule(v6: bool, proto: Option<u8>, dst_port: Option<u16>) -> PoliceRule {
             tcp_flags: None,
         },
         meter: 0,
+        level: destination.bits(),
     }
 }
 
