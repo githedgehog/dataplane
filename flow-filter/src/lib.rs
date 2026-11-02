@@ -22,7 +22,7 @@ mod context;
 mod tests;
 
 pub use context::{
-    FlowFilterContext, FlowFilterContextReader, FlowFilterContextReaderFactory,
+    Destination, FlowFilterContext, FlowFilterContextReader, FlowFilterContextReaderFactory,
     FlowFilterContextWriter,
 };
 use context::{LookupInput, LookupResult, SourceGate};
