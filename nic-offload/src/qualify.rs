@@ -205,6 +205,36 @@ impl Rig {
 }
 
 impl Link {
+    /// Send `frames`, and return what arrived (and with which MARK), by frame index.
+    #[allow(clippy::option_option)] // whether a frame arrived, then whether it carried a mark
+    fn exchange_marked(&mut self, frames: &[Vec<u8>]) -> Vec<Option<Option<u32>>> {
+        self.drain();
+        for chunk in frames.chunks(dpdk::mem::MBUF_BURST) {
+            let mut burst = self.pool.alloc_bulk(chunk.len()).unwrap();
+            for (mbuf, frame) in burst.iter_mut().zip(chunk) {
+                mbuf.append(u16::try_from(frame.len()).unwrap()).unwrap();
+                mbuf.raw_data_mut().copy_from_slice(frame);
+            }
+            let mut unsent = self.tx.transmit(burst);
+            while !unsent.is_empty() {
+                unsent = self.tx.transmit(unsent);
+            }
+        }
+        let mut arrived = vec![None; frames.len()];
+        let deadline = clock::now() + SETTLE;
+        while clock::now() < deadline {
+            for mbuf in &self.rx.receive() {
+                let data = mbuf.raw_data();
+                let Some(id) = data.get(18..20) else { continue };
+                let id = usize::from(u16::from_be_bytes([id[0], id[1]]));
+                if let Some(slot) = arrived.get_mut(id) {
+                    *slot = Some(mbuf.rx_mark());
+                }
+            }
+        }
+        arrived
+    }
+
     /// Discard whatever the port under test has received.
     fn drain(&mut self) {
         let deadline = clock::now() + SETTLE;
@@ -1210,5 +1240,636 @@ fn reconcile_scenarios() {
                 assert_eq!(result, "ok", "{name}");
             }
         }
+    });
+}
+
+/// Hand-built frames for the integrity probe, with correct checksums unless a case breaks one.
+mod crafted {
+    fn sum(bytes: &[u8], mut acc: u32) -> u32 {
+        for w in bytes.chunks(2) {
+            acc += u32::from(u16::from_be_bytes([w[0], *w.get(1).unwrap_or(&0)]));
+        }
+        acc
+    }
+
+    fn fold(mut acc: u32) -> u16 {
+        while acc > 0xffff {
+            acc = (acc & 0xffff) + (acc >> 16);
+        }
+        !u16::try_from(acc).unwrap_or(0)
+    }
+
+    /// An IPv4 header carrying `payload` of protocol `proto`, with fragment field `frag`.
+    pub(super) fn ipv4(
+        src: [u8; 4],
+        dst: [u8; 4],
+        proto: u8,
+        frag: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let total = u16::try_from(20 + payload.len()).unwrap();
+        let mut h = vec![0x45, 0];
+        h.extend(total.to_be_bytes());
+        h.extend([0, 1]);
+        h.extend(frag.to_be_bytes());
+        h.extend([64, proto, 0, 0]);
+        h.extend(src);
+        h.extend(dst);
+        let c = fold(sum(&h, 0));
+        h[10..12].copy_from_slice(&c.to_be_bytes());
+        h.extend(payload);
+        h
+    }
+
+    /// An IPv6 header carrying `payload` with next header `next`.
+    pub(super) fn ipv6(src: [u8; 16], dst: [u8; 16], next: u8, payload: &[u8]) -> Vec<u8> {
+        let mut h = vec![0x60, 0, 0, 0];
+        h.extend(u16::try_from(payload.len()).unwrap().to_be_bytes());
+        h.extend([next, 64]);
+        h.extend(src);
+        h.extend(dst);
+        h.extend(payload);
+        h
+    }
+
+    /// The pseudo-header sum of an IP packet `ip` (as `ipv4` or `ipv6` build) for its payload.
+    fn pseudo(ip: &[u8], proto: u8, len: usize) -> u32 {
+        let len = u32::try_from(len).unwrap();
+        if ip[0] >> 4 == 4 {
+            sum(&ip[12..20], u32::from(proto) + len)
+        } else {
+            sum(&ip[8..40], u32::from(proto) + len)
+        }
+    }
+
+    /// `ip` with its transport checksum (at `offset` into the transport header) computed.
+    pub(super) fn checksummed(mut ip: Vec<u8>, offset: usize) -> Vec<u8> {
+        let (header, proto) = if ip[0] >> 4 == 4 {
+            (usize::from(ip[0] & 0xf) * 4, ip[9])
+        } else {
+            (40, ip[6])
+        };
+        let len = ip.len() - header;
+        ip[header + offset..header + offset + 2].copy_from_slice(&[0, 0]);
+        let mut c = fold(sum(&ip[header..], pseudo(&ip, proto, len)));
+        if proto == 17 && c == 0 {
+            c = 0xffff;
+        }
+        ip[header + offset..header + offset + 2].copy_from_slice(&c.to_be_bytes());
+        ip
+    }
+
+    /// `frame` with the IPv4 header at `at` given a correct checksum again.
+    pub(super) fn rechecked(mut frame: Vec<u8>, at: usize) -> Vec<u8> {
+        let ihl = usize::from(frame[at] & 0xf).max(5) * 4;
+        frame[at + 10..at + 12].copy_from_slice(&[0, 0]);
+        let c = fold(sum(&frame[at..at + ihl], 0));
+        frame[at + 10..at + 12].copy_from_slice(&c.to_be_bytes());
+        frame
+    }
+
+    /// A UDP header and payload.
+    pub(super) fn udp(payload: &[u8]) -> Vec<u8> {
+        let mut h = vec![0x30, 0x39, 0x00, 0x35];
+        h.extend(u16::try_from(8 + payload.len()).unwrap().to_be_bytes());
+        h.extend([0, 0]);
+        h.extend(payload);
+        h
+    }
+
+    /// A TCP header (ACK) and payload.
+    pub(super) fn tcp(payload: &[u8]) -> Vec<u8> {
+        let mut h = vec![
+            0x30, 0x39, 0x01, 0xbb, 0, 0, 0, 1, 0, 0, 0, 0, 0x50, 0x10, 0xff, 0xff, 0, 0, 0, 0,
+        ];
+        h.extend(payload);
+        h
+    }
+
+    /// An Ethernet frame of `ethertype` around `body`.
+    pub(super) fn eth(ethertype: u16, body: &[u8]) -> Vec<u8> {
+        let mut f = vec![0x02, 0, 0, 0, 0, 2, 0x02, 0, 0, 0, 0, 1];
+        f.extend(ethertype.to_be_bytes());
+        f.extend(body);
+        f
+    }
+
+    /// A VXLAN frame to `dst` around inner Ethernet frame `inner`, outer IP identification `id`.
+    pub(super) fn vxlan(dst: [u8; 6], id: u16, inner: &[u8]) -> Vec<u8> {
+        let mut vx = vec![0xc0, 0x00, 0x12, 0xb5];
+        vx.extend(u16::try_from(16 + inner.len()).unwrap().to_be_bytes());
+        vx.extend([0, 0, 0x08, 0, 0, 0, 0, 0, 100, 0]);
+        vx.extend(inner);
+        let mut ip = ipv4([192, 0, 2, 1], [192, 0, 2, 2], 17, 0x4000, &vx);
+        ip[4..6].copy_from_slice(&id.to_be_bytes());
+        ip[10..12].copy_from_slice(&[0, 0]);
+        let c = fold(sum(&ip[..20], 0));
+        ip[10..12].copy_from_slice(&c.to_be_bytes());
+        let mut f = Vec::from(dst);
+        f.extend([0x02, 0, 0, 0, 0, 3, 0x08, 0x00]);
+        f.extend(ip);
+        f
+    }
+}
+
+/// The integrity probe's frames: a name, and the frame for outer IP identification `id`.
+#[allow(clippy::too_many_lines)] // a table of cases
+fn integrity_cases(mac: [u8; 6]) -> Vec<(&'static str, Vec<u8>)> {
+    use crafted::{checksummed, eth, ipv4, ipv6, rechecked, tcp, udp, vxlan};
+    let (a4, b4) = ([10, 0, 0, 1], [10, 1, 0, 1]);
+    let (a6, b6) = (
+        [0xfd, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],
+        [0xfd, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1],
+    );
+    let payload = [0xabu8; 16];
+    let v4udp = || checksummed(ipv4(a4, b4, 17, 0x4000, &udp(&payload)), 6);
+    let v4tcp = || checksummed(ipv4(a4, b4, 6, 0x4000, &tcp(&payload)), 16);
+    let v6udp = || checksummed(ipv6(a6, b6, 17, &udp(&payload)), 6);
+    let v6tcp = || checksummed(ipv6(a6, b6, 6, &tcp(&payload)), 16);
+    let inner4 = |ip: Vec<u8>| eth(0x0800, &ip);
+    let inner6 = |ip: Vec<u8>| eth(0x86dd, &ip);
+    let with = |mut f: Vec<u8>, at: usize, b: u8| {
+        f[at] ^= b;
+        f
+    };
+    // Offsets of an IPv4 inner header in an inner frame: 14 (Ethernet); transport at 34.
+    let mut cases: Vec<(&str, Vec<u8>)> = vec![
+        ("v4 UDP good", inner4(v4udp())),
+        ("v4 TCP good", inner4(v4tcp())),
+        ("v6 UDP good", inner6(v6udp())),
+        ("v6 TCP good", inner6(v6tcp())),
+        (
+            "v4 ICMP good",
+            inner4(checksummed(
+                ipv4(a4, b4, 1, 0x4000, &[8, 0, 0, 0, 0, 1, 0, 1]),
+                2,
+            )),
+        ),
+        (
+            "ARP",
+            eth(
+                0x0806,
+                &[
+                    0, 1, 8, 0, 6, 4, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0,
+                ],
+            ),
+        ),
+        (
+            "inner v4 header checksum bad",
+            with(inner4(v4udp()), 14 + 10, 0x01),
+        ),
+        (
+            "inner v4 total length short",
+            rechecked(with(inner4(v4udp()), 14 + 3, 0x04), 14),
+        ),
+        (
+            "inner v4 total length long",
+            rechecked(with(inner4(v4udp()), 14 + 2, 0x01), 14),
+        ),
+        (
+            "inner v4 IHL 4",
+            rechecked(with(inner4(v4udp()), 14, 0x01), 14),
+        ),
+        (
+            "inner v4 IHL 6 (options into the payload)",
+            rechecked(with(inner4(v4udp()), 14, 0x03), 14),
+        ),
+        (
+            "inner v4 UDP checksum bad",
+            with(inner4(v4udp()), 34 + 6, 0x01),
+        ),
+        ("inner v4 UDP checksum zero", {
+            let mut f = inner4(v4udp());
+            f[34 + 6..34 + 8].copy_from_slice(&[0, 0]);
+            f
+        }),
+        (
+            "inner v4 UDP length bad",
+            with(inner4(v4udp()), 34 + 5, 0x02),
+        ),
+        (
+            "inner v4 TCP checksum bad",
+            with(inner4(v4tcp()), 34 + 16, 0x01),
+        ),
+        (
+            "inner v6 UDP checksum bad",
+            with(inner6(v6udp()), 54 + 6, 0x01),
+        ),
+        ("inner v6 UDP checksum zero", {
+            let mut f = inner6(v6udp());
+            f[54 + 6..54 + 8].copy_from_slice(&[0, 0]);
+            f
+        }),
+        (
+            "inner v6 TCP checksum bad",
+            with(inner6(v6tcp()), 54 + 16, 0x01),
+        ),
+        (
+            "inner v6 payload length bad",
+            with(inner6(v6udp()), 14 + 5, 0x04),
+        ),
+        (
+            "inner v4 first fragment",
+            inner4(checksummed(ipv4(a4, b4, 17, 0x2000, &udp(&payload)), 6)),
+        ),
+        (
+            "inner v4 later fragment",
+            inner4(ipv4(a4, b4, 17, 0x0003, &payload)),
+        ),
+    ];
+    // Valid traffic a careless rule could drop.
+    let v4opts = {
+        // IHL 6: one 4-byte option (NOP, NOP, NOP, end), then a correct UDP datagram.
+        let datagram = udp(&payload);
+        let total = u16::try_from(24 + datagram.len()).unwrap();
+        let mut h = vec![0x46, 0];
+        h.extend(total.to_be_bytes());
+        h.extend([0, 1, 0x40, 0, 64, 17, 0, 0]);
+        h.extend(a4);
+        h.extend(b4);
+        h.extend([1, 1, 1, 0]);
+        h.extend(datagram);
+        let h = rechecked(h, 0);
+        checksummed(h, 6)
+    };
+    let v6hbh = {
+        let mut ext = vec![17, 0, 1, 4, 0, 0, 0, 0];
+        let mut ip = checksummed(ipv6(a6, b6, 17, &udp(&payload)), 6);
+        let datagram = ip.split_off(40);
+        ip[6] = 0;
+        ip[4..6].copy_from_slice(&u16::try_from(8 + datagram.len()).unwrap().to_be_bytes());
+        ext.extend(datagram);
+        ip.extend(ext);
+        ip
+    };
+    let v6frag = {
+        let mut ip = checksummed(ipv6(a6, b6, 17, &udp(&payload)), 6);
+        let datagram = ip.split_off(40);
+        ip[6] = 44;
+        ip[4..6].copy_from_slice(&u16::try_from(8 + datagram.len()).unwrap().to_be_bytes());
+        ip.extend([17, 0, 0, 1, 0, 0, 0, 7]);
+        ip.extend(datagram);
+        ip
+    };
+    let tagged = {
+        let mut f = vec![
+            0x02, 0, 0, 0, 0, 2, 0x02, 0, 0, 0, 0, 1, 0x81, 0x00, 0x00, 0x05, 0x08, 0x00,
+        ];
+        f.extend(v4udp());
+        f
+    };
+    cases.push(("v4 UDP with IP options good", inner4(v4opts)));
+    cases.push(("v6 hop-by-hop UDP good", inner6(v6hbh)));
+    cases.push(("v6 fragment header (first) UDP", inner6(v6frag)));
+    cases.push(("inner VLAN-tagged v4 UDP good", tagged));
+    let mut frames: Vec<(&'static str, Vec<u8>)> = Vec::new();
+    for (id, (name, inner)) in (0u16..).zip(cases.drain(..)) {
+        frames.push((name, vxlan(mac, id, &inner)));
+    }
+    // Outer defects, on a good inner frame.
+    let n = u16::try_from(frames.len()).unwrap();
+    let outer = |id, at: usize, b: u8| with(vxlan(mac, id, &inner4(v4udp())), at, b);
+    frames.push(("outer v4 header checksum bad", outer(n, 14 + 10, 0x01)));
+    frames.push((
+        "outer v4 total length short",
+        rechecked(outer(n + 1, 14 + 3, 0x04), 14),
+    ));
+    frames.push((
+        "outer v4 total length long",
+        rechecked(outer(n + 2, 14 + 2, 0x01), 14),
+    ));
+    frames.push((
+        "outer UDP checksum bad (zero is the norm)",
+        outer(n + 3, 34 + 6, 0x01),
+    ));
+    frames
+}
+
+/// Which crafted frames mlx5 finds intact, per integrity verdict: a table for the design of the
+/// integrity offload.
+#[test]
+#[ignore = "needs two wired NIC ports: see the module documentation"]
+#[allow(clippy::too_many_lines)] // a table of conditions, and one of cases
+fn integrity_truth_table() {
+    use dpdk::flow::template::{SharedTable, TableConfig};
+    use dpdk::flow::{
+        EthMatch, FlowGroup, IntegrityMatch as I, Ipv4Match, Priority, UdpMatch, VxlanMatch,
+    };
+    let conditions: Vec<(&str, Vec<I>)> = vec![
+        ("none", vec![]),
+        ("outer L3+csum", vec![I::outer(I::L3_OK | I::IPV4_CSUM_OK)]),
+        ("outer L4", vec![I::outer(I::L4_OK)]),
+        ("outer L4csum", vec![I::outer(I::L4_CSUM_OK)]),
+        ("inner L3", vec![I::inner(I::L3_OK)]),
+        ("inner L3+csum", vec![I::inner(I::L3_OK | I::IPV4_CSUM_OK)]),
+        ("inner L4", vec![I::inner(I::L4_OK)]),
+        ("inner L4csum", vec![I::inner(I::L4_CSUM_OK)]),
+        ("inner L4+csum", vec![I::inner(I::L4_OK | I::L4_CSUM_OK)]),
+        (
+            "all",
+            vec![
+                I::outer(I::L3_OK | I::IPV4_CSUM_OK),
+                I::inner(I::L3_OK | I::IPV4_CSUM_OK | I::L4_OK | I::L4_CSUM_OK),
+            ],
+        ),
+    ];
+    RIG.with_borrow_mut(|rig| {
+        let rig = rig.get_or_insert_with(Rig::new);
+        let cases = integrity_cases(rig.link.mac);
+        let wires: Vec<Vec<u8>> = cases.iter().map(|(_, f)| f.clone()).collect();
+        let flows = &rig.flows;
+        let mut columns: Vec<(String, Vec<char>)> = Vec::new();
+        for (name, items) in &conditions {
+            let mut pattern = dpdk::flow::template::Pattern::new();
+            for item in items {
+                pattern = pattern.integrity(*item);
+            }
+            let ok_pattern = pattern
+                .eth(EthMatch::default())
+                .ipv4(Ipv4Match::default())
+                .udp(UdpMatch::default().dst(4789))
+                .vxlan(VxlanMatch::default())
+                .complete();
+            let any = dpdk::flow::template::Pattern::new()
+                .eth(EthMatch::default())
+                .complete();
+            let root = dpdk::flow::template::Pattern::new()
+                .eth(EthMatch::default())
+                .ipv4(Ipv4Match::default())
+                .udp(UdpMatch::default().dst(4789))
+                .complete();
+            let result = (|| -> Result<Vec<Option<Option<u32>>>, String> {
+                let tpl = |p: &dpdk::flow::template::Pattern<dpdk::flow::template::Complete>| {
+                    flows
+                        .pattern_template::<dpdk::flow::Ingress, _>(p)
+                        .map(std::rc::Rc::new)
+                        .map_err(|e| e.to_string())
+                };
+                let act = |a: &[TemplateAction]| {
+                    flows
+                        .actions_template::<dpdk::flow::Ingress>(a)
+                        .map(std::rc::Rc::new)
+                        .map_err(|e| e.to_string())
+                };
+                let table = |group, priority, p, a| {
+                    SharedTable::new(
+                        flows,
+                        TableConfig {
+                            group: FlowGroup(group),
+                            priority: Priority(priority),
+                            capacity: 1,
+                        },
+                        &[p],
+                        &[a],
+                    )
+                    .map_err(|e| e.to_string())
+                };
+                let ok = table(
+                    1,
+                    0,
+                    tpl(&ok_pattern)?,
+                    act(&[
+                        TemplateAction::Mark(1),
+                        TemplateAction::Queue(RxQueueIndex(0)),
+                    ])?,
+                )?;
+                let rest = table(
+                    1,
+                    1,
+                    tpl(&any)?,
+                    act(&[
+                        TemplateAction::Mark(2),
+                        TemplateAction::Queue(RxQueueIndex(0)),
+                    ])?,
+                )?;
+                let roots = table(
+                    0,
+                    0,
+                    tpl(&root)?,
+                    act(&[TemplateAction::Jump(FlowGroup(1))])?,
+                )?;
+                let _ok = ok
+                    .insert(0, &ok_pattern, 0, &[])
+                    .map_err(|e| e.to_string())?;
+                let _rest = rest.insert(0, &any, 0, &[]).map_err(|e| e.to_string())?;
+                let root_rule = roots.insert(0, &root, 0, &[]).map_err(|e| e.to_string())?;
+                let marks = rig.link.exchange_marked(&wires);
+                drop(root_rule);
+                Ok(marks)
+            })();
+            let column = match result {
+                Ok(marks) => marks
+                    .iter()
+                    .map(|m| match m {
+                        Some(Some(1)) => 'Y',
+                        Some(Some(2)) => '.',
+                        Some(_) => '?',
+                        None => '-',
+                    })
+                    .collect(),
+                Err(e) => {
+                    eprintln!("integrity: {name}: refused: {e}");
+                    vec!['R'; wires.len()]
+                }
+            };
+            columns.push(((*name).to_string(), column));
+        }
+        eprintln!("integrity: Y = intact by the verdict, . = not, - = never arrived, R = refused");
+        for (c, (name, _)) in columns.iter().enumerate() {
+            eprintln!("integrity: column {c}: {name}");
+        }
+        for (row, (name, _)) in cases.iter().enumerate() {
+            let cells: String = columns.iter().map(|(_, col)| col[row]).collect();
+            eprintln!("integrity: {cells}  {name}");
+        }
+    });
+}
+
+/// Whether a crafted frame is corrupt: what an integrity rule set must drop (`Some(true)`), must
+/// pass (`Some(false)`), or may do either with (`None`).
+fn corrupt(name: &str) -> Option<bool> {
+    if name.contains("v6 UDP checksum zero") {
+        // Invalid by RFC 8200, but endpoints of tunnels accept it (RFC 6935).
+        return None;
+    }
+    let corrupt = ["bad", "long", "IHL 4", "IHL 6", "total length short"];
+    Some(
+        corrupt.iter().any(|c| name.contains(c)) && !name.contains("zero is the norm")
+            || name.contains("outer UDP checksum bad"),
+    )
+}
+
+/// A whole integrity rule set, by category and priority (no negative matching): which crafted
+/// frames it passes and which it drops.
+#[test]
+#[ignore = "needs two wired NIC ports: see the module documentation"]
+#[allow(clippy::too_many_lines)] // the rule set, table by table
+fn integrity_rule_set() {
+    use dpdk::flow::template::{Complete, Pattern, SharedTable, TableConfig};
+    use dpdk::flow::{
+        EthMatch, FlowGroup, IntegrityMatch as I, Ipv4Match, Ipv6Match, Priority, UdpMatch,
+        VxlanMatch,
+    };
+    let outer_ok = I::outer(I::L3_OK | I::IPV4_CSUM_OK | I::L4_OK | I::L4_CSUM_OK);
+    let tunnel = |items: &[I]| {
+        let mut p = Pattern::new();
+        for i in items {
+            p = p.integrity(*i);
+        }
+        p.eth(EthMatch::default())
+            .ipv4(Ipv4Match::default())
+            .udp(UdpMatch::default().dst(4789))
+            .vxlan(VxlanMatch::default())
+            .inner_eth(EthMatch::default().tagged(false))
+    };
+    let v4 = |items: &[I], proto: Option<u8>| -> Pattern<Complete> {
+        let ip = match proto {
+            Some(p) => Ipv4Match::default().unfragmented().proto(p),
+            None => Ipv4Match::default(),
+        };
+        tunnel(items).ipv4(ip).complete()
+    };
+    let v6 = |items: &[I], proto: Option<u8>| -> Pattern<Complete> {
+        let ip = match proto {
+            Some(p) => Ipv6Match::default().unfragmented().proto(p),
+            None => Ipv6Match::default(),
+        };
+        tunnel(items).ipv6(ip).complete()
+    };
+    let any_inner = |items: &[I]| -> Pattern<Complete> {
+        let mut p = Pattern::new();
+        for i in items {
+            p = p.integrity(*i);
+        }
+        p.eth(EthMatch::default())
+            .ipv4(Ipv4Match::default())
+            .udp(UdpMatch::default().dst(4789))
+            .vxlan(VxlanMatch::default())
+            .complete()
+    };
+    let l4 = I::L3_OK | I::L4_OK | I::L4_CSUM_OK;
+    // (priority, patterns of the table's rules, pass)
+    let tables: Vec<(u32, Vec<Pattern<Complete>>, bool)> = vec![
+        (
+            0,
+            vec![
+                v4(&[outer_ok, I::inner(l4 | I::IPV4_CSUM_OK)], Some(6)),
+                v4(&[outer_ok, I::inner(l4 | I::IPV4_CSUM_OK)], Some(17)),
+            ],
+            true,
+        ),
+        (
+            0,
+            vec![
+                v6(&[outer_ok, I::inner(l4)], Some(6)),
+                v6(&[outer_ok, I::inner(l4)], Some(17)),
+            ],
+            true,
+        ),
+        (1, vec![v4(&[], Some(6)), v4(&[], Some(17))], false),
+        (1, vec![v6(&[], Some(6)), v6(&[], Some(17))], false),
+        (
+            2,
+            vec![v4(&[outer_ok, I::inner(I::L3_OK | I::IPV4_CSUM_OK)], None)],
+            true,
+        ),
+        (2, vec![v6(&[outer_ok, I::inner(I::L3_OK)], None)], true),
+        (3, vec![v4(&[], None)], false),
+        (3, vec![v6(&[], None)], false),
+        (4, vec![any_inner(&[outer_ok])], true),
+        (5, vec![any_inner(&[])], false),
+    ];
+    RIG.with_borrow_mut(|rig| {
+        let rig = rig.get_or_insert_with(Rig::new);
+        let cases = integrity_cases(rig.link.mac);
+        let wires: Vec<Vec<u8>> = cases.iter().map(|(_, f)| f.clone()).collect();
+        let flows = &rig.flows;
+        let act = |a: &[TemplateAction]| {
+            std::rc::Rc::new(flows.actions_template::<dpdk::flow::Ingress>(a).unwrap())
+        };
+        let pass = act(&[
+            TemplateAction::Mark(1),
+            TemplateAction::Queue(RxQueueIndex(0)),
+        ]);
+        let drop_ = act(&[
+            TemplateAction::Mark(3),
+            TemplateAction::Queue(RxQueueIndex(0)),
+        ]);
+        let mut installed = Vec::new();
+        for (priority, patterns, passes) in &tables {
+            let template = std::rc::Rc::new(
+                flows
+                    .pattern_template::<dpdk::flow::Ingress, _>(&patterns[0])
+                    .unwrap(),
+            );
+            let table = SharedTable::new(
+                flows,
+                TableConfig {
+                    group: FlowGroup(1),
+                    priority: Priority(*priority),
+                    capacity: 4,
+                },
+                &[template],
+                &[if *passes { pass.clone() } else { drop_.clone() }],
+            )
+            .unwrap_or_else(|e| panic!("table at priority {priority}: {e}"));
+            for p in patterns {
+                installed.push(table.insert(0, p, 0, &[]).unwrap());
+            }
+        }
+        let root_pattern = Pattern::new()
+            .eth(EthMatch::default())
+            .ipv4(Ipv4Match::default())
+            .udp(UdpMatch::default().dst(4789))
+            .complete();
+        let root_t = std::rc::Rc::new(
+            flows
+                .pattern_template::<dpdk::flow::Ingress, _>(&root_pattern)
+                .unwrap(),
+        );
+        let root = SharedTable::new(
+            flows,
+            TableConfig {
+                group: FlowGroup(0),
+                priority: Priority(0),
+                capacity: 1,
+            },
+            &[root_t],
+            &[act(&[TemplateAction::Jump(FlowGroup(1))])],
+        )
+        .unwrap();
+        let root_rule = root.insert(0, &root_pattern, 0, &[]).unwrap();
+        let marks = rig.link.exchange_marked(&wires);
+        drop(root_rule);
+        drop(installed);
+        let mut wrong = 0;
+        for ((name, _), mark) in cases.iter().zip(&marks) {
+            let dropped = match mark {
+                Some(Some(1)) => Some(false),
+                Some(Some(3)) => Some(true),
+                _ => None,
+            };
+            let expected = corrupt(name);
+            let ok = match (dropped, expected) {
+                (Some(d), Some(e)) => d == e,
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            wrong += usize::from(!ok);
+            eprintln!(
+                "integrity rule set: {} {:>8}  {name}",
+                if ok { "ok   " } else { "WRONG" },
+                match dropped {
+                    Some(true) => "dropped",
+                    Some(false) => "passed",
+                    None => "missing",
+                }
+            );
+        }
+        assert_eq!(
+            wrong, 0,
+            "the rule set dropped or passed what it should not"
+        );
     });
 }
