@@ -12,12 +12,13 @@
 //! The ACL filter and the rate limiter decide independently, each by its own first match; the
 //! program keeps them apart, so the NIC does too (see [`mlx5`](crate::mlx5)).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use acl_filter::{AclFilterContext, AclKey, AclKeyRule, LookupResult};
 use config::external::overlay::acl::AclAction;
 use config::external::overlay::ratelimit::ColorAction;
+use flow_filter::Destination;
 use lpm::prefix::with_ports::KeyPort;
 use match_action::{ExactSpec, FixedSize, MaskSpec, PrefixSpec, RangeSpec};
 use net::ip::NextHeader;
@@ -27,7 +28,7 @@ use policer::{Color, Profile};
 use rate_limit::{PeeringKey, PeeringKeyRule, PeeringRules, RateLimits, RuleIndex, RuleRow, Unit};
 
 /// An address prefix of either family.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Prefix {
     /// IPv4 address and length.
     V4(Ipv4Addr, u8),
@@ -62,6 +63,43 @@ impl Prefix {
         match self {
             Prefix::V4(_, len) | Prefix::V6(_, len) => len,
         }
+    }
+
+    /// Whether every address of `other` is in this prefix.
+    #[must_use]
+    pub fn contains(self, other: Prefix) -> bool {
+        match (self, other) {
+            (Prefix::V4(_, len), Prefix::V4(addr, other_len)) => {
+                other_len >= len && Prefix::V4(addr, len).canonical() == self.canonical()
+            }
+            (Prefix::V6(_, len), Prefix::V6(addr, other_len)) => {
+                other_len >= len && Prefix::V6(addr, len).canonical() == self.canonical()
+            }
+            _ => false,
+        }
+    }
+
+    /// The addresses `self` and `other` both match, as a prefix, if any: prefixes either nest
+    /// or are disjoint.
+    #[must_use]
+    pub fn intersection(self, other: Prefix) -> Option<Prefix> {
+        if self.contains(other) {
+            Some(other)
+        } else if other.contains(self) {
+            Some(self)
+        } else {
+            None
+        }
+    }
+}
+
+impl From<&lpm::prefix::Prefix> for Prefix {
+    fn from(prefix: &lpm::prefix::Prefix) -> Self {
+        match prefix.as_address() {
+            std::net::IpAddr::V4(addr) => Prefix::V4(addr, prefix.length()),
+            std::net::IpAddr::V6(addr) => Prefix::V6(addr, prefix.length()),
+        }
+        .canonical()
     }
 }
 
@@ -105,6 +143,14 @@ impl Peering {
     #[must_use]
     pub fn new(a: Vni, b: Vni) -> Peering {
         Peering(a.min(b), a.max(b))
+    }
+}
+
+impl Peering {
+    /// The peering's VPC other than `vni`'s.
+    #[must_use]
+    pub fn other(self, vni: Vni) -> Vni {
+        if self.0 == vni { self.1 } else { self.0 }
     }
 }
 
@@ -193,8 +239,6 @@ pub enum Refusal {
     PortRange,
     /// Ports without TCP or UDP.
     PortsWithoutTransport,
-    /// A destination of every address: the destination VPC would be unconstrained.
-    AnyDestination,
     /// The NIC refused one of the peering's rules when it was installed.
     NotInstalled,
     /// An earlier rule with another meter, or another verdict, matches some of the same traffic:
@@ -218,6 +262,58 @@ pub struct Program {
     pub rules: Vec<PoliceRule>,
     /// The peerings left in software, with what of each no NIC may enforce.
     pub refused: Vec<(Peering, Origin, Refusal)>,
+    /// By source VPC, the destinations of its other peers its rules must let pass untouched: a
+    /// rule's destination prefix covers them, but software sends their traffic to another peer
+    /// than the rule's.
+    pub passes: BTreeMap<Vni, BTreeSet<Prefix>>,
+}
+
+/// Where software sends a source VPC's traffic: flow-filter's destinations, from which a rule's
+/// destination prefix is narrowed to what goes to the rule's peer.
+struct Routing<'a> {
+    destinations: &'a [Destination],
+    passes: BTreeMap<Vni, BTreeSet<Prefix>>,
+}
+
+impl Routing<'_> {
+    /// `matches` of a rule for the traffic `src_vni` sends to `dst_vni`, narrowed to each of
+    /// `dst_vni`'s destinations it overlaps (none: it matches nothing software sends there). The
+    /// other peers' destinations that take some of a narrowed match's traffic (at least as specific
+    /// as the destination it was narrowed with) are recorded to pass untouched.
+    fn narrow(&mut self, dst_vni: Vni, matches: &Match) -> Vec<Match> {
+        let src_vni = matches.src_vni;
+        let mut narrowed = Vec::new();
+        for own in self
+            .destinations
+            .iter()
+            .filter(|d| d.src_vni == src_vni && d.dst_vni == dst_vni)
+        {
+            let own_prefix = Prefix::from(&own.prefix);
+            let Some(destination) = own_prefix.intersection(matches.destination) else {
+                continue;
+            };
+            for other in self
+                .destinations
+                .iter()
+                .filter(|d| d.src_vni == src_vni && d.dst_vni != dst_vni)
+            {
+                let other_prefix = Prefix::from(&other.prefix);
+                if other_prefix.bits() >= own_prefix.bits()
+                    && other_prefix.intersection(destination).is_some()
+                {
+                    self.passes.entry(src_vni).or_default().insert(other_prefix);
+                }
+            }
+            let m = Match {
+                destination,
+                ..matches.clone()
+            };
+            if !narrowed.contains(&m) {
+                narrowed.push(m);
+            }
+        }
+        narrowed
+    }
 }
 
 /// The component of `meter` a NIC enforces: the one that drops red, bytes first. Enforcing one
@@ -302,9 +398,6 @@ fn lower<I: FixedSize>(
         return Err(Refusal::PortsWithoutTransport);
     }
     let destination = prefix(rule.destination).canonical();
-    if destination.bits() == 0 {
-        return Err(Refusal::AnyDestination);
-    }
     Ok(Match {
         src_vni: rule.src_vni.value,
         source: prefix(rule.source).canonical(),
@@ -340,6 +433,7 @@ impl Program {
     pub fn compile(
         acls: &AclFilterContext,
         limits: &RateLimits<PeeringRules>,
+        destinations: &[Destination],
         excluded: &BTreeSet<Peering>,
     ) -> Program {
         if !limits.attempt_offloads() {
@@ -365,14 +459,29 @@ impl Program {
             .map(|(peering, ..)| *peering)
             .chain(excluded.iter().copied())
             .collect();
+        // A rule's destination prefix stands for its peer only as narrowed to what software
+        // sends that peer.
+        let mut routing = Routing {
+            destinations,
+            passes: BTreeMap::new(),
+        };
         // A rule identical to an earlier one (of its source VPC: the VNI is part of the match)
         // adds nothing: an earlier identical rate limit charges the same meter, or the later one
         // overlaps another meter's and is refused. And mlx5 takes identical rules into one table
         // but fails to remove the second.
         let mut denies: Vec<DenyRule> = Vec::new();
         for deny in c.denies {
-            if !left.contains(&deny.peering) && !denies.iter().any(|d| d.matches == deny.matches) {
-                denies.push(deny);
+            if left.contains(&deny.peering) {
+                continue;
+            }
+            let dst_vni = deny.peering.other(deny.matches.src_vni);
+            for matches in routing.narrow(dst_vni, &deny.matches) {
+                if !denies.iter().any(|d| d.matches == matches) {
+                    denies.push(DenyRule {
+                        matches,
+                        ..deny.clone()
+                    });
+                }
             }
         }
         let mut program = Program {
@@ -388,9 +497,16 @@ impl Program {
             component: (unit, profile),
         } in c.rules
         {
-            if left.contains(&rule.peering)
-                || program.rules.iter().any(|r| r.matches == rule.matches)
-            {
+            if left.contains(&rule.peering) {
+                continue;
+            }
+            let dst_vni = rule.peering.other(rule.matches.src_vni);
+            let narrowed: Vec<Match> = routing
+                .narrow(dst_vni, &rule.matches)
+                .into_iter()
+                .filter(|m| !program.rules.iter().any(|r| r.matches == *m))
+                .collect();
+            if narrowed.is_empty() {
                 continue;
             }
             rule.meter = *meters[meter].get_or_insert_with(|| {
@@ -401,8 +517,14 @@ impl Program {
                 });
                 program.meters.len() - 1
             });
-            program.rules.push(rule);
+            for matches in narrowed {
+                program.rules.push(PoliceRule {
+                    matches,
+                    ..rule.clone()
+                });
+            }
         }
+        program.passes = routing.passes;
         program
     }
 }

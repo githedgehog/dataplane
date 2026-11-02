@@ -309,7 +309,12 @@ impl Case {
             RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
         writer.apply(&overlay, Backend::Reference).unwrap();
         let filter = AclFilterContext::reference(&overlay).unwrap();
-        let program = Program::compile(&filter, &writer.load(), excluded);
+        let program = Program::compile(
+            &filter,
+            &writer.load(),
+            &crate::differential::destinations(&overlay),
+            excluded,
+        );
         let plan = Plan::new(&program, &TemplateAction::Queue(RxQueueIndex(0))).unwrap();
         // Aim at the rate limits the NIC took, and the denies of the peerings it took.
         let offloaded_peerings: BTreeSet<Peering> = program
@@ -641,8 +646,10 @@ fn coverage() {
     }
     let acted =
         stats.get("charged").copied().unwrap_or(0) + stats.get("denied").copied().unwrap_or(0);
+    // About half are: frames aimed at a rule's destination outside its peer's exposes, and frames
+    // aimed at nothing, are neither.
     assert!(
-        acted * 2 >= total,
+        acted * 5 >= total * 2,
         "only {acted} of {total} generated frames are charged by a meter or denied"
     );
 }
@@ -674,6 +681,7 @@ fn sequence(rules: &[RawRule], acls: &RawAcls, steps: &[RawStep]) -> Vec<(Vec<Ra
             .collect();
         rules.truncate(6);
         let mut acls = RawAcls {
+            exposes: Default::default(),
             defaults: std::array::from_fn(|p| {
                 if kept(p) {
                     prev_acls.defaults[p]
@@ -1031,6 +1039,7 @@ fn reconcile_scenarios() {
         meters,
         rules,
         refused: Vec::new(),
+        passes: std::collections::BTreeMap::new(),
     };
     let deny = |src: u32, dst: u8| crate::program::DenyRule {
         origin: crate::program::Origin::Acl { v6: false, row: 0 },
