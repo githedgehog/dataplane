@@ -185,7 +185,7 @@ pub struct Port<'t> {
     switch_lingers: bool,
     /// What the ACL denies of torn-down generations dropped, so the total never goes back.
     retired_denied: u64,
-    /// What removed meters passed and dropped, by name.
+    /// What removed meters passed and dropped, by name, for the names the policy still has.
     retired_meters: BTreeMap<String, (Counts, Counts)>,
 }
 
@@ -741,8 +741,8 @@ impl<'t> Port<'t> {
                 .sum::<u64>()
     }
 
-    /// What each named meter passed and dropped in the NIC on this port, ever (up to the
-    /// counters' lag).
+    /// What each named meter passed and dropped in the NIC on this port, since the policy last
+    /// gained a meter of that name (up to the counters' lag).
     #[must_use]
     pub fn meter_totals(&self) -> BTreeMap<String, (Counts, Counts)> {
         let mut totals = self.retired_meters.clone();
@@ -940,6 +940,7 @@ impl SyncReconcile for Port<'_> {
         }
         if plan.vpcs.is_empty() {
             self.clear()?;
+            self.retired_meters.clear();
             self.prune();
             return Ok(Reconciled::default());
         }
@@ -978,6 +979,10 @@ impl SyncReconcile for Port<'_> {
             }
         }
         self.meters = kept;
+        // A removed meter's counts are kept while the policy still has a meter of its name, so
+        // its totals never go back; a name the policy dropped goes with them.
+        self.retired_meters
+            .retain(|name, _| plan.meters.iter().any(|m| m.key.name == *name));
         self.plan_meters = plan
             .meters
             .iter()
@@ -1295,7 +1300,9 @@ fn state(port_name: &str, port: &Port<'_>, in_software: usize) {
 }
 
 /// Log and export what each meter passed and dropped in hardware, and what ACL denies dropped,
-/// since the port started: counters of removed rules are kept, so the totals never go back.
+/// since the port started: counters of removed rules are kept, so the totals never go back while
+/// the policy keeps a meter's name (one it drops and gains again starts over, as a counter
+/// reset).
 fn report(port_name: &str, port: &Port<'_>) {
     metrics::counter!("acl_nic_dropped_packets_total", "port" => port_name.to_string())
         .absolute(port.denied_total());
