@@ -117,6 +117,54 @@ fn unwanted_meters_go_before_new_ones_are_made() {
     assert_eq!(fixture.calls("meter_create"), made);
 }
 
+/// A refused rule of no program rule (here a source VPC's catch-all) stands for every peering of
+/// that VPC's rules, whose generation was not attached.
+#[test]
+fn a_refused_catch_all_leaves_its_vpcs_peerings_out() {
+    let mut program = policed("m", 1_000_000);
+    program.denies.push(DenyRule {
+        origin: Origin::Acl { v6: false, row: 0 },
+        peering: Peering::new(vni(100), vni(2000)),
+        matches: any_to(Prefix::V4(Ipv4Addr::new(10, 1, 0, 0), 16), 100),
+    });
+    let refused = [(Role::CatchAll(Group::Police(vni(100))), Error::TableRefused)];
+    assert_eq!(
+        peerings(&program, &refused).unwrap(),
+        [
+            Peering::new(vni(100), vni(1000)),
+            Peering::new(vni(100), vni(2000))
+        ]
+        .into()
+    );
+    let unknown = [(Role::CatchAll(Group::Police(vni(300))), Error::TableRefused)];
+    assert_eq!(
+        peerings(&program, &unknown),
+        Err(Role::CatchAll(Group::Police(vni(300))))
+    );
+}
+
+/// What the NIC enforces is what is attached: the peerings of the attached VPCs' rules.
+#[test]
+fn attached_peerings_follow_the_generations() {
+    let fixture = Fixture::new();
+    let flows = fixture.flows();
+    let mut port = Port::new(&flows);
+    port.reconcile(&plan(&[100, 200]), port.observe()).unwrap();
+    assert_eq!(
+        port.attached_peerings(),
+        [
+            Peering::new(vni(100), vni(1000)),
+            Peering::new(vni(200), vni(1000))
+        ]
+        .into()
+    );
+    port.reconcile(&plan(&[200]), port.observe()).unwrap();
+    assert_eq!(
+        port.attached_peerings(),
+        [Peering::new(vni(200), vni(1000))].into()
+    );
+}
+
 #[test]
 fn completion_errors_require_poisoning_but_clean_refusals_do_not() {
     for error in [

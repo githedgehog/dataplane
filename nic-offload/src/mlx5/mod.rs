@@ -48,7 +48,7 @@ use dpdk::flow::{
 use net::vxlan::Vni;
 use rate_limit::Unit;
 
-use crate::program::{Match, Prefix, Program};
+use crate::program::{Match, Peering, Prefix, Program};
 
 /// What a port reserves for this backend when it is configured; fixed until the port restarts.
 pub const RESOURCES: TemplateConfig = TemplateConfig {
@@ -553,6 +553,8 @@ pub struct VpcSpec {
     pub passes: Vec<Prefix>,
     /// The VTEP address its VXLAN is addressed to.
     pub vtep: Ipv4Addr,
+    /// The peerings its rules are of: those the NIC enforces while it is attached.
+    pub peerings: BTreeSet<Peering>,
 }
 
 /// A source VPC's generation of rules.
@@ -875,6 +877,11 @@ impl Plan {
                 .map(|p| p.iter().copied().collect())
                 .unwrap_or_default(),
             vtep,
+            peerings: vni_denies
+                .iter()
+                .map(|&i| program.denies[i].peering)
+                .chain(vni_limits.iter().map(|&i| program.rules[i].peering))
+                .collect(),
         };
         // What another peer takes of a rule's destination passes, ahead of every rule.
         let passes = pass_matches(vni, &spec.passes);
