@@ -789,6 +789,15 @@ impl<'t> Port<'t> {
         Ok(())
     }
 
+    /// The peerings the NIC enforces: those of the attached VPCs' rules.
+    #[must_use]
+    pub fn attached_peerings(&self) -> BTreeSet<Peering> {
+        self.vpcs
+            .values()
+            .flat_map(|g| g.spec.peerings.iter().copied())
+            .collect()
+    }
+
     /// How many installed rules have a role `which` accepts.
     #[must_use]
     pub fn installed(&self, which: impl Fn(Role) -> bool) -> usize {
@@ -1104,16 +1113,61 @@ pub fn with_installed<'t, R>(
     Ok(result)
 }
 
-/// The peerings of the rules in `refused`, which `program` has.
-fn peerings(program: &Program, refused: &[(Role, Error)]) -> BTreeSet<Peering> {
-    refused
-        .iter()
-        .filter_map(|(role, _)| match *role {
-            Role::Police(rule) => program.rules.get(rule).map(|r| r.peering),
-            Role::Deny(deny) => program.denies.get(deny).map(|d| d.peering),
-            _ => None,
-        })
-        .collect()
+/// The peerings of the rules in `refused`, which `program` has: a rule of a source VPC's
+/// generation (its switch rule, passes and catch-alls too) stands for every peering of that VPC's
+/// rules, as the whole generation was not attached; a color rule for those of the rules charging
+/// its meter.
+///
+/// # Errors
+///
+/// Returns the first refused rule that stands for no peering of `program`.
+fn peerings(program: &Program, refused: &[(Role, Error)]) -> Result<BTreeSet<Peering>, Role> {
+    let mut peerings = BTreeSet::new();
+    for (role, _) in refused {
+        let of_role: Vec<Peering> = match *role {
+            Role::Police(rule) => program
+                .rules
+                .get(rule)
+                .map(|r| r.peering)
+                .into_iter()
+                .collect(),
+            Role::Deny(deny) => program
+                .denies
+                .get(deny)
+                .map(|d| d.peering)
+                .into_iter()
+                .collect(),
+            Role::Switch(vni)
+            | Role::Pass(vni)
+            | Role::CatchAll(Group::Deny(vni) | Group::Police(vni)) => program
+                .denies
+                .iter()
+                .filter(|d| d.matches.src_vni == vni)
+                .map(|d| d.peering)
+                .chain(
+                    program
+                        .rules
+                        .iter()
+                        .filter(|r| r.matches.src_vni == vni)
+                        .map(|r| r.peering),
+                )
+                .collect(),
+            Role::Color(meter, _) => program
+                .rules
+                .iter()
+                .filter(|r| r.meter == meter)
+                .map(|r| r.peering)
+                .collect(),
+            Role::Root | Role::CatchAll(Group::Root | Group::Switch | Group::Color(_)) => {
+                Vec::new()
+            }
+        };
+        if of_role.is_empty() {
+            return Err(*role);
+        }
+        peerings.extend(of_role);
+    }
+    Ok(peerings)
 }
 
 /// Program `dev` with what the published ACLs and rate limits allow, and follow them until `stop`
@@ -1163,7 +1217,7 @@ pub fn run(
             destinations: &destinations,
             vteps: &vteps,
         };
-        let (program, excluded) = install_policy(&mut port, port_name, &seen, fate, &changed);
+        let program = install_policy(&mut port, port_name, &seen, fate, &changed);
         if let Some(program) = &program
             && (!program.denies.is_empty() || !program.rules.is_empty())
         {
@@ -1174,16 +1228,9 @@ pub fn run(
                 port.vpcs.len(),
             );
         }
-        // Every peering the flow filter routes, but those with rules in the NIC: all of them while
-        // offload is off or failed.
-        let in_nic: BTreeSet<Peering> = program.as_ref().map_or_else(BTreeSet::new, |p| {
-            p.denies
-                .iter()
-                .map(|d| d.peering)
-                .chain(p.rules.iter().map(|r| r.peering))
-                .filter(|peering| !excluded.contains(peering))
-                .collect()
-        });
+        // Every peering the flow filter routes, but those an attached VPC's rules are of: what
+        // the NIC holds, whatever this round of installing came to.
+        let in_nic = port.attached_peerings();
         let in_software = destinations
             .iter()
             .map(|d| Peering::new(d.src_vni, d.dst_vni))
@@ -1211,16 +1258,16 @@ struct Seen<'a> {
     vteps: &'a BTreeMap<Vni, Ipv4Addr>,
 }
 
-/// Compile the policy into a program, and reconcile `port` with it: the program installed (or
-/// `None` if offload failed, or the policy changed meanwhile), and the peerings left in software
-/// because the NIC refused them, ran out of meters, or a VPC of theirs has no VTEP.
+/// Compile the policy into a program, and reconcile `port` with it: the program installed, or
+/// `None` if offload failed, or the policy changed meanwhile. Peerings the NIC refused, that ran
+/// out of meters, or with a VPC without a VTEP are left in software.
 fn install_policy(
     port: &mut Port<'_>,
     port_name: &str,
     seen: &Seen<'_>,
     fate: &TemplateAction,
     changed: &dyn Fn() -> bool,
-) -> (Option<Program>, BTreeSet<Peering>) {
+) -> Option<Program> {
     let Seen {
         filter,
         limits,
@@ -1229,7 +1276,7 @@ fn install_policy(
     } = *seen;
     // Peerings left in software: refused by the NIC, over its meters, or of a VPC without a VTEP.
     let mut excluded = BTreeSet::new();
-    let program = loop {
+    loop {
         let program = Program::compile(filter, limits, destinations, &excluded);
         // Without its VTEP, a VPC's VXLAN can't be told from transit.
         let homeless: BTreeSet<Peering> = program
@@ -1292,7 +1339,11 @@ fn install_policy(
         match outcome {
             Ok(reconciled) if reconciled.refused.is_empty() => break Some(program),
             Ok(reconciled) => {
-                let refused = peerings(&program, &reconciled.refused);
+                let Ok(refused) = peerings(&program, &reconciled.refused) else {
+                    // Leaving no peering out would install the same plan again.
+                    give_up(port, port_name, &"the NIC refused a rule of no peering");
+                    break None;
+                };
                 for (role, why) in &reconciled.refused {
                     let origin = match *role {
                         Role::Police(rule) => {
@@ -1303,6 +1354,8 @@ fn install_policy(
                     };
                     if let Some(origin) = origin {
                         warn!("port {port_name}: the NIC refused {origin}: {why}");
+                    } else {
+                        warn!("port {port_name}: the NIC refused {role:?}: {why}");
                     }
                 }
                 if refused.is_subset(&excluded) {
@@ -1315,21 +1368,22 @@ fn install_policy(
                 break None;
             }
             Err(e) => {
-                // Nothing of an old policy may stay in the NIC while software enforces a new
-                // one.
-                match port.clear() {
-                    Ok(()) => error!(
-                        "port {port_name}: NIC offload failed, software only until the next change: {e}"
-                    ),
-                    Err(lost) => {
-                        error!("port {port_name}: NIC offload failed ({e}), and {lost}");
-                    }
-                }
+                give_up(port, port_name, &e);
                 break None;
             }
         }
-    };
-    (program, excluded)
+    }
+}
+
+/// Turn the port's offload off until the policy changes, as installing it failed with `why`:
+/// nothing of an old policy may stay in the NIC while software enforces a new one.
+fn give_up(port: &mut Port<'_>, port_name: &str, why: &dyn std::fmt::Display) {
+    match port.clear() {
+        Ok(()) => error!(
+            "port {port_name}: NIC offload failed, software only until the next change: {why}"
+        ),
+        Err(lost) => error!("port {port_name}: NIC offload failed ({why}), and {lost}"),
+    }
 }
 
 /// Export the port's offload state: the source VPCs attached, whether the port is lost (and may
