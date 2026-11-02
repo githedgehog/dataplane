@@ -682,6 +682,11 @@ fn coverage() {
                     .any(|o| o.path.iter().any(|r| matches!(r, Role::Deny(_))))
                 {
                     "denied"
+                } else if outcomes
+                    .iter()
+                    .any(|o| o.path.iter().any(|r| matches!(r, Role::Corrupt(_))))
+                {
+                    "corrupt"
                 } else if outcomes.iter().any(|o| !o.meters.is_empty()) {
                     "charged"
                 } else if raw.aim.is_none() || case.targets.is_empty() {
@@ -706,16 +711,18 @@ fn coverage() {
     for (why, n) in &stats {
         eprintln!("coverage: {why:>26}: {n:6} ({} %)", n * 100 / total.max(1));
     }
-    let acted =
-        stats.get("charged").copied().unwrap_or(0) + stats.get("denied").copied().unwrap_or(0);
-    // A little under half are (45 % on average over 300 cases, with a standard deviation of 2.4
-    // points): frames aimed at a rule's destination outside its peer's exposes, and frames aimed
-    // at nothing, are neither. The inputs are not seeded, and a loaded runner reaches fewer cases
-    // in the time bolero has, so the share wanders; a bound near it failed about one run in
-    // twelve. This only has to catch a generator that stopped reaching the rules.
+    let acted = ["charged", "denied", "corrupt"]
+        .iter()
+        .map(|why| stats.get(why).copied().unwrap_or(0))
+        .sum::<usize>();
+    // About half are (49 % on average over 30 runs, with a standard deviation of 1.8 points):
+    // frames aimed at a rule's destination outside its peer's exposes, and frames aimed at
+    // nothing, are neither. The inputs are not seeded, and a loaded runner reaches fewer cases in
+    // the time bolero has, so the share wanders; a bound near it failed about one run in twelve.
+    // This only has to catch a generator that stopped reaching the rules.
     assert!(
         acted * 6 >= total,
-        "only {acted} of {total} generated frames are charged by a meter or denied"
+        "only {acted} of {total} generated frames are charged by a meter, denied or corrupt"
     );
 }
 
@@ -1112,6 +1119,7 @@ fn reconcile_scenarios() {
         rules,
         refused: Vec::new(),
         passes: std::collections::BTreeMap::new(),
+        validate: false,
     };
     let deny = |src: u32, dst: u8| crate::program::DenyRule {
         origin: crate::program::Origin::Acl { v6: false, row: 0 },
