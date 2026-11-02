@@ -93,6 +93,9 @@ pub enum Error {
     /// A rule charges a meter that could not be made.
     #[error("its meter was not made")]
     MeterNotMade,
+    /// A rule jumps to a group its plan does not lay out.
+    #[error("it jumps to {0:?}, which its plan does not lay out")]
+    NoSuchGroup(Group),
     /// A rule's table was refused (the reason is with its first rule).
     #[error("its table was refused")]
     TableRefused,
