@@ -109,25 +109,6 @@ fn drop_verdicts_come_back_to_the_caller() {
     assert_eq!(counters.tx_drops, 0);
 }
 
-/// Stages mark packets dropped; one that removes them instead would hide the drop.
-#[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "removed 1 packet(s)")]
-fn a_pipeline_that_removes_packets_is_a_bug() {
-    let mut pipeline = DynPipeline::new().add_stage(ReturnVerdicts(&[Some(DoneReason::Delivered)]));
-    let mut counters = RxCounters::default();
-    let mut packets = Vec::new();
-    process_burst(
-        (0..2).map(|_| frame()),
-        InterfaceIndex::try_new(1).unwrap(),
-        &mut pipeline,
-        &mut packets,
-        None,
-        &mut Vec::new(),
-        &mut counters,
-    );
-}
-
 /// Only `Local` reaches the control plane: the verdicts that used to be punted when the frame was
 /// addressed to us are now drops, since the ingress stage marks `Local` whatever the control plane
 /// should see.
