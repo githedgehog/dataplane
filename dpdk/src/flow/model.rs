@@ -327,6 +327,39 @@ fn masked_eq(spec: &[u8], mask: &[u8], value: &[u8]) -> bool {
         .all(|((s, m), v)| s & m == v & m)
 }
 
+/// Whether `value` matches `spec` and `mask`, and the ranges `last` bounds: each 16-bit field at
+/// one of `fields` (offsets into the header) where `last` is not zero matches if its masked value
+/// is within the masked `spec..=last`; every other bit as [`masked_eq`].
+fn ranged_eq(
+    spec: &[u8],
+    mask: &[u8],
+    last: Option<&[u8]>,
+    fields: &[usize],
+    value: &[u8],
+) -> bool {
+    let Some(last) = last else {
+        return masked_eq(spec, mask, value);
+    };
+    let ranged: Vec<usize> = fields
+        .iter()
+        .copied()
+        .filter(|&at| be16(last, at) != 0)
+        .collect();
+    let mut exact = mask.to_vec();
+    for &at in &ranged {
+        exact[at..at + 2].fill(0);
+    }
+    masked_eq(spec, &exact, value)
+        && ranged.iter().all(|&at| {
+            let m = be16(mask, at);
+            let v = be16(value, at) & m;
+            be16(spec, at) & m <= v && v <= be16(last, at) & m
+        })
+}
+
+/// Where the fields that may be ranges are, in their headers: the ports.
+const PORT_RANGES: &[usize] = &[0, 2];
+
 fn bitfields_unset(bits: &[u8], what: &'static str) -> Result<(), Unmodelled> {
     if bits.iter().all(|&b| b == 0) {
         Ok(())
@@ -381,12 +414,20 @@ impl MatchItem {
                 (mask.has_frag_ext() == 0 || spec.has_frag_ext() == u32::from(*fragment))
                     && masked_eq(raw(&spec.hdr), raw(&mask.hdr), value)
             }
-            (MatchItem::Udp(spec, mask), Header::Udp(value)) => {
-                masked_eq(raw(&spec.hdr), raw(&mask.hdr), value)
-            }
-            (MatchItem::Tcp(spec, mask), Header::Tcp(value)) => {
-                masked_eq(raw(&spec.hdr), raw(&mask.hdr), value)
-            }
+            (MatchItem::Udp(spec, mask, last), Header::Udp(value)) => ranged_eq(
+                raw(&spec.hdr),
+                raw(&mask.hdr),
+                last.as_ref().map(|l| raw(&l.hdr)),
+                PORT_RANGES,
+                value,
+            ),
+            (MatchItem::Tcp(spec, mask, last), Header::Tcp(value)) => ranged_eq(
+                raw(&spec.hdr),
+                raw(&mask.hdr),
+                last.as_ref().map(|l| raw(&l.hdr)),
+                PORT_RANGES,
+                value,
+            ),
             (MatchItem::Vxlan(spec, mask), Header::Vxlan(value)) => {
                 // SAFETY: both members of the union are plain bytes of the same header.
                 let (spec, mask) = unsafe { (&spec.annon1.hdr, &mask.annon1.hdr) };
@@ -446,7 +487,7 @@ impl<Pos> Pattern<Pos> {
 mod tests {
     use super::*;
     use crate::flow::template::Complete;
-    use crate::flow::{EthMatch, Ipv4Match, Ipv4Prefix, UdpMatch, VxlanMatch};
+    use crate::flow::{EthMatch, Ipv4Match, Ipv4Prefix, PortRange, UdpMatch, VxlanMatch};
     use core::net::Ipv4Addr;
     use net::vxlan::Vni;
 
@@ -531,6 +572,57 @@ mod tests {
                 .may_match(&frame, None)
                 .unwrap()
         );
+    }
+
+    /// A port range matches exactly the ports within it, whatever the port; the shape tells a range
+    /// from an exact port, so a template takes rules of its own kind only.
+    #[test]
+    fn port_ranges_match_the_ports_within_them() {
+        bolero::check!()
+            .with_type::<(u16, u16, u16)>()
+            .for_each(|&(a, b, port)| {
+                let (lo, hi) = (a.min(b), a.max(b));
+                let frame = vxlan(100, &inner([10, 1, 2, 3], 17, port, 0));
+                let ranged = tunnel(100)
+                    .ipv4(Ipv4Match::default())
+                    .udp(UdpMatch::default().dst_range(PortRange::between(b, a)))
+                    .complete();
+                assert_eq!(
+                    ranged.may_match(&frame, None).unwrap(),
+                    (lo..=hi).contains(&port),
+                    "{lo}..={hi} vs {port}"
+                );
+                let shape = |m: UdpMatch| {
+                    let (spec, mask, last) = m.lower();
+                    MatchItem::Udp(spec, mask, last).shape()
+                };
+                assert_eq!(
+                    shape(UdpMatch::default().dst_range(PortRange::between(lo, hi)))
+                        == shape(UdpMatch::default().dst(lo)),
+                    lo == hi
+                );
+                // A reversed range is no range: it never stands for every port.
+                assert_eq!(PortRange::new(hi, lo).is_some(), lo == hi);
+            });
+    }
+
+    /// The unfragmented match takes whole packets, and no first, later or last fragment.
+    #[test]
+    fn unfragmented_takes_no_fragment() {
+        // (more fragments, offset): whole, first, later, last.
+        for (more, offset) in [(false, 0u16), (true, 0), (true, 100), (false, 100)] {
+            let field = offset | if more { 0x2000 } else { 0 };
+            let frame = vxlan(100, &inner([10, 1, 2, 3], 17, 80, field));
+            let fragment = more || offset != 0;
+            let pattern = tunnel(100)
+                .ipv4(Ipv4Match::default().unfragmented())
+                .complete();
+            assert_eq!(
+                pattern.may_match(&frame, None).unwrap(),
+                !fragment,
+                "more fragments {more}, offset {offset}"
+            );
+        }
     }
 
     #[test]

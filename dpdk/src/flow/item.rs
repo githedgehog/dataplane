@@ -13,14 +13,23 @@ use dpdk_sys::{
     rte_flow_item_vlan, rte_flow_item_vxlan,
 };
 
-/// Owned match criteria, kept in place while the PMD reads their pointers.
+/// Owned match criteria, kept in place while the PMD reads their pointers: spec and mask, and for
+/// items that may match ranges, the `last` bounding them (fields where it is zero match no range).
 pub(crate) enum MatchItem {
     Eth(rte_flow_item_eth, rte_flow_item_eth),
     Vlan(rte_flow_item_vlan, rte_flow_item_vlan),
     Ipv4(rte_flow_item_ipv4, rte_flow_item_ipv4),
     Ipv6(rte_flow_item_ipv6, rte_flow_item_ipv6),
-    Udp(rte_flow_item_udp, rte_flow_item_udp),
-    Tcp(rte_flow_item_tcp, rte_flow_item_tcp),
+    Udp(
+        rte_flow_item_udp,
+        rte_flow_item_udp,
+        Option<rte_flow_item_udp>,
+    ),
+    Tcp(
+        rte_flow_item_tcp,
+        rte_flow_item_tcp,
+        Option<rte_flow_item_tcp>,
+    ),
     Vxlan(rte_flow_item_vxlan, rte_flow_item_vxlan),
     MeterColor(rte_flow_item_meter_color, rte_flow_item_meter_color),
 }
@@ -46,8 +55,8 @@ impl MatchItem {
             MatchItem::Vlan(spec, _) => from_ref(spec).cast(),
             MatchItem::Ipv4(spec, _) => from_ref(spec).cast(),
             MatchItem::Ipv6(spec, _) => from_ref(spec).cast(),
-            MatchItem::Udp(spec, _) => from_ref(spec).cast(),
-            MatchItem::Tcp(spec, _) => from_ref(spec).cast(),
+            MatchItem::Udp(spec, ..) => from_ref(spec).cast(),
+            MatchItem::Tcp(spec, ..) => from_ref(spec).cast(),
             MatchItem::Vxlan(spec, _) => from_ref(spec).cast(),
             MatchItem::MeterColor(spec, _) => from_ref(spec).cast(),
         }
@@ -60,10 +69,19 @@ impl MatchItem {
             MatchItem::Vlan(_, mask) => from_ref(mask).cast(),
             MatchItem::Ipv4(_, mask) => from_ref(mask).cast(),
             MatchItem::Ipv6(_, mask) => from_ref(mask).cast(),
-            MatchItem::Udp(_, mask) => from_ref(mask).cast(),
-            MatchItem::Tcp(_, mask) => from_ref(mask).cast(),
+            MatchItem::Udp(_, mask, _) => from_ref(mask).cast(),
+            MatchItem::Tcp(_, mask, _) => from_ref(mask).cast(),
             MatchItem::Vxlan(_, mask) => from_ref(mask).cast(),
             MatchItem::MeterColor(_, mask) => from_ref(mask).cast(),
+        }
+    }
+
+    /// Pointer to the `last` struct, or null for no range. Valid while `self` is alive.
+    pub(crate) fn last(&self) -> *const c_void {
+        match self {
+            MatchItem::Udp(_, _, Some(last)) => from_ref(last).cast(),
+            MatchItem::Tcp(_, _, Some(last)) => from_ref(last).cast(),
+            _ => null(),
         }
     }
 }
@@ -76,7 +94,7 @@ pub(crate) fn lower(items: &[MatchItem]) -> Vec<rte_flow_item> {
         lowered.push(rte_flow_item {
             type_: item.type_(),
             spec: item.spec(),
-            last: null(),
+            last: item.last(),
             mask: item.mask(),
         });
     }

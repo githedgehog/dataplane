@@ -198,8 +198,8 @@ impl<Pos> Pattern<Pos> {
     where
         Udp: Within<Pos>,
     {
-        let (spec, mask) = criteria.lower();
-        self.push(MatchItem::Udp(spec, mask))
+        let (spec, mask, last) = criteria.lower();
+        self.push(MatchItem::Udp(spec, mask, last))
     }
 
     /// Match a TCP header.
@@ -208,8 +208,8 @@ impl<Pos> Pattern<Pos> {
     where
         Tcp: Within<Pos>,
     {
-        let (spec, mask) = criteria.lower();
-        self.push(MatchItem::Tcp(spec, mask))
+        let (spec, mask, last) = criteria.lower();
+        self.push(MatchItem::Tcp(spec, mask, last))
     }
 
     /// Match a VXLAN header.
