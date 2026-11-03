@@ -23,6 +23,9 @@
 //!   may not walk them to the transport header, and may match the IPv6 item's `proto` on the fixed
 //!   header's next header or on the protocol at the end of the chain. `has_frag_ext` is exact.
 //!
+//! Integrity verdicts ([`IntegrityMatch`](crate::flow::IntegrityMatch)) are computed as mlx5
+//! computes them on a BlueField-3 (see [`verdicts`]).
+//!
 //! Only UDP to port 4789 is parsed as VXLAN. A [`Parser`] narrows the choices a qualification
 //! settled for a NIC ([`views_by`]).
 
@@ -60,6 +63,8 @@ const HOP_BY_HOP: u8 = 0;
 const ROUTING: u8 = 43;
 const FRAGMENT: u8 = 44;
 const DESTINATION_OPTIONS: u8 = 60;
+/// The mobility header, which mlx5's integrity check walks like an extension header.
+const MOBILITY: u8 = 135;
 
 /// One header as a NIC parsed it: its kind and its bytes on the wire (options excluded).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +87,8 @@ enum Header {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
     headers: Vec<Header>,
+    /// The NIC's integrity verdicts on the outer and the inner headers.
+    verdicts: [u64; 2],
 }
 
 /// A pattern the model cannot judge: it constrains something the model does not parse.
@@ -124,12 +131,211 @@ pub fn views(bytes: &[u8]) -> Vec<Frame> {
 pub fn views_by(bytes: &[u8], parser: Parser) -> Vec<Frame> {
     let mut frames: Vec<Frame> = Vec::new();
     for headers in eth(bytes, true, parser) {
-        let frame = Frame { headers };
+        let frame = Frame {
+            headers,
+            verdicts: verdicts(bytes),
+        };
         if !frames.contains(&frame) {
             frames.push(frame);
         }
     }
     frames
+}
+
+/// Integrity verdict bits; see [`IntegrityMatch`](crate::flow::IntegrityMatch).
+const L3_OK: u64 = 1 << 2;
+const L4_OK: u64 = 1 << 3;
+const IPV4_CSUM_OK: u64 = 1 << 5;
+const L4_CSUM_OK: u64 = 1 << 6;
+
+/// The ones' complement sum of `bytes`, from `acc`.
+fn ones(bytes: &[u8], mut acc: u32) -> u32 {
+    for w in bytes.chunks(2) {
+        acc += u32::from(u16::from_be_bytes([w[0], *w.get(1).unwrap_or(&0)]));
+        acc = (acc & 0xffff) + (acc >> 16);
+    }
+    acc
+}
+
+/// Whether a ones' complement sum (header or pseudo-header and payload) checks out.
+fn sums_to_zero(acc: u32) -> bool {
+    let mut acc = acc;
+    while acc > 0xffff {
+        acc = (acc & 0xffff) + (acc >> 16);
+    }
+    acc == 0xffff
+}
+
+/// The verdicts on one IP packet: `wire` from its header to the end of the frame, of which the
+/// enclosing headers vouch for `limit` bytes; and, for an outer VXLAN packet, the same for its
+/// inner frame.
+fn level(wire: &[u8], limit: usize) -> (u64, Option<(&[u8], usize)>) {
+    let Some(&first) = wire.first() else {
+        return (0, None);
+    };
+    let mut verdict = 0;
+    // How much of `wire` the packet's own header vouches for (what encloses it, if layer 3
+    // fails), the protocol, whether a fragment and a later one, the pseudo-header's sum without
+    // the length, where the transport header is, and what a UDP length is held to.
+    let (bounded, proto, fragment, later, pseudo, header, udp_room) = match first >> 4 {
+        4 => {
+            let ihl = usize::from(first & 0xf) * 4;
+            if ihl < 20 || wire.len() < ihl {
+                return (0, None);
+            }
+            if sums_to_zero(ones(&wire[..ihl], 0)) {
+                verdict |= IPV4_CSUM_OK;
+            }
+            let total = usize::from(be16(wire, 2));
+            let bounded = if total >= ihl && total <= limit {
+                verdict |= L3_OK;
+                total
+            } else {
+                limit
+            };
+            let frag = be16(wire, 6);
+            let pseudo = ones(&wire[12..20], u32::from(wire[9]));
+            let (fragment, later) = (frag & 0x3fff != 0, frag & 0x1fff != 0);
+            (
+                bounded,
+                wire[9],
+                fragment,
+                later,
+                pseudo,
+                ihl,
+                bounded.saturating_sub(ihl),
+            )
+        }
+        6 => {
+            if wire.len() < 40 {
+                return (0, None);
+            }
+            let total = 40 + usize::from(be16(wire, 4));
+            let bounded = if total <= limit {
+                verdict |= L3_OK;
+                total
+            } else {
+                limit
+            };
+            // mlx5 walks the extension headers, in any order and number, up to a fragment
+            // header. One running past the packet fails every verdict.
+            let (mut next, mut at, mut fragment, mut later) = (wire[6], 40, false, false);
+            while !fragment
+                && matches!(
+                    next,
+                    HOP_BY_HOP | ROUTING | DESTINATION_OPTIONS | MOBILITY | FRAGMENT
+                )
+            {
+                let Some(ext) = wire.get(at..at + 8).filter(|_| at + 8 <= bounded) else {
+                    return (0, None);
+                };
+                if next == FRAGMENT {
+                    fragment = true;
+                    later |= be16(ext, 2) & 0xfff8 != 0;
+                    at += 8;
+                } else {
+                    at += 8 + usize::from(ext[1]) * 8;
+                }
+                if at > bounded {
+                    return (0, None);
+                }
+                next = ext[0];
+            }
+            let pseudo = ones(&wire[8..40], u32::from(next));
+            // mlx5 holds a UDP length to the IPv6 payload length as if there were no extension
+            // headers: up to their length too long passes.
+            (bounded, next, fragment, later, pseudo, at, bounded - 40)
+        }
+        _ => return (0, None),
+    };
+    let (Some(l4), Some(vouched)) = (wire.get(header..), bounded.checked_sub(header)) else {
+        return (verdict, None);
+    };
+    // The checksum covers what the transport header says it does, of what is on the wire.
+    let sum_ok = |length: usize| {
+        let length32 = u32::try_from(length).unwrap_or(u32::MAX);
+        sums_to_zero(ones(&l4[..length.min(l4.len())], pseudo + length32))
+    };
+    match proto {
+        _ if later => {}
+        // A first fragment's transport checksum covers the whole datagram: mlx5 says it holds,
+        // and never that the transport header is consistent.
+        _ if fragment => verdict |= L4_CSUM_OK,
+        UDP if l4.len() >= 8 => {
+            let length = usize::from(be16(l4, 4));
+            let csum_ok = be16(l4, 6) == 0 || (length >= 8 && sum_ok(length));
+            if csum_ok {
+                verdict |= L4_CSUM_OK;
+            }
+            // mlx5's "consistent" includes the checksum, and the datagram must be within what
+            // the IP header vouches for (bytes after it are fine, as for Linux).
+            if csum_ok && (8..=udp_room).contains(&length) {
+                verdict |= L4_OK;
+            }
+            if be16(l4, 2) == VXLAN_PORT && l4.len() >= 16 {
+                return (verdict, Some((&l4[16..], vouched.saturating_sub(16))));
+            }
+        }
+        TCP if l4.len() >= 20 => {
+            let offset = usize::from(l4[12] >> 4) * 4;
+            if sum_ok(vouched) {
+                verdict |= L4_CSUM_OK;
+                if (20..=vouched).contains(&offset) {
+                    verdict |= L4_OK;
+                }
+            }
+        }
+        _ => {}
+    }
+    (verdict, None)
+}
+
+/// The integrity verdicts a NIC gives a frame, outer then inner, as measured on a BlueField-3
+/// (`nic-offload`'s `integrity_truth_table`):
+///
+/// - layer 3: a sane IPv4 header length, and a total length (or IPv6 payload length) within
+///   what the enclosing headers vouch for (the frame, at the outer level), a shorter one being
+///   padding; IPv6 extension headers (hop-by-hop, routing, destination options, mobility, in
+///   any order, up to a fragment header) within it too, or no verdict holds; the IPv4 header
+///   checksum is a verdict of its own, and never holds for IPv6;
+/// - layer 4, for TCP and UDP only: the checksum, over the bytes the UDP length says (a zero
+///   UDP checksum holds, IPv4 or IPv6); and "consistent", which also needs the checksum and a
+///   UDP datagram within what the IP header vouches for (for IPv6, its payload length, the
+///   extension headers not subtracted), or a TCP header within that. A first
+///   fragment's checksum is said to hold, and no fragment is consistent;
+/// - the inner level is the frame inside an outer VXLAN packet, vouched for by the outer IP
+///   header; when the outer layer 3 fails, only the inner checksum is judged;
+/// - VLAN tags are skipped at either level.
+#[must_use]
+pub fn verdicts(bytes: &[u8]) -> [u64; 2] {
+    let ip = |frame: &[u8]| -> Option<usize> {
+        let mut at = 12;
+        loop {
+            let ether_type = u16::from_be_bytes([*frame.get(at)?, *frame.get(at + 1)?]);
+            if matches!(ether_type, ETH_P_CVLAN | ETH_P_SVLAN) {
+                at += 4;
+                continue;
+            }
+            return matches!(ether_type, ETH_P_IPV4 | ETH_P_IPV6).then_some(at + 2);
+        }
+    };
+    let Some(at) = ip(bytes) else {
+        return [0, 0];
+    };
+    let wire = &bytes[at..];
+    let (outer, inner) = level(wire, wire.len());
+    let inner = inner
+        .and_then(|(frame, limit)| {
+            let at = ip(frame)?;
+            let (verdict, _) = level(&frame[at..], limit.saturating_sub(at));
+            Some(if outer & L3_OK == 0 {
+                verdict & L4_CSUM_OK
+            } else {
+                verdict
+            })
+        })
+        .unwrap_or(0);
+    [outer, inner]
 }
 
 fn take<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
@@ -410,6 +616,16 @@ impl<Pos> Pattern<Pos> {
     pub fn matches(&self, frame: &Frame, color: Option<Color>) -> Result<bool, Unmodelled> {
         let mut headers = frame.headers.iter();
         for item in &self.items {
+            if let MatchItem::Integrity(spec, mask) = item {
+                // SAFETY: both members of the union are the same 64 bits.
+                let (spec, mask_bits) = unsafe { (spec.annon1.value, mask.annon1.value) };
+                let level = usize::from(mask.level != 0);
+                let required = spec & mask_bits;
+                if frame.verdicts[level] & required != required {
+                    return Ok(false);
+                }
+                continue;
+            }
             if let MatchItem::MeterColor(spec, mask) = item {
                 let Some(color) = color else {
                     return Ok(false);

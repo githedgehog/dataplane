@@ -7,8 +7,8 @@
 use core::net::{Ipv4Addr, Ipv6Addr};
 
 use dpdk_sys::{
-    rte_flow_item_eth, rte_flow_item_ipv4, rte_flow_item_ipv6, rte_flow_item_tcp,
-    rte_flow_item_udp, rte_flow_item_vlan, rte_flow_item_vxlan,
+    rte_flow_item_eth, rte_flow_item_integrity, rte_flow_item_ipv4, rte_flow_item_ipv6,
+    rte_flow_item_tcp, rte_flow_item_udp, rte_flow_item_vlan, rte_flow_item_vxlan,
 };
 use net::eth::ethtype::EthType;
 use net::eth::mac::Mac;
@@ -534,6 +534,13 @@ pub enum ItemShape {
         /// Color mask.
         color: u32,
     },
+    /// The NIC's integrity verdict on a tunnel level: inner or outer, and which verdicts.
+    Integrity {
+        /// Inner headers (else outer).
+        inner: bool,
+        /// The verdict bits required.
+        bits: u64,
+    },
 }
 
 impl MatchItem {
@@ -580,6 +587,12 @@ impl MatchItem {
                 vni: unsafe { mask.annon1.annon1.vni },
             },
             MatchItem::MeterColor(_, mask) => ItemShape::MeterColor { color: mask.color },
+            MatchItem::Integrity(_, mask) => ItemShape::Integrity {
+                // mlx5 takes the level from the mask (see `IntegrityMatch::lower`).
+                inner: mask.level != 0,
+                // SAFETY: lowering writes the `value` view of the anonymous union.
+                bits: unsafe { mask.annon1.value },
+            },
         }
     }
 }
@@ -647,5 +660,60 @@ mod tests {
                     own.2
                 ));
             });
+    }
+}
+
+/// The NIC's own verdict on a packet's headers at one tunnel level
+/// (`RTE_FLOW_ITEM_TYPE_INTEGRITY`): the pattern matches only packets for which every verdict in
+/// [`bits`](Self::bits) holds. A NIC cannot match a verdict failing: match the verdicts holding,
+/// and let what fails fall through to a later rule.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct IntegrityMatch {
+    inner: bool,
+    bits: u64,
+}
+
+impl IntegrityMatch {
+    /// The layer 3 header is consistent (version, header length, total length against the frame).
+    /// On mlx5 hardware steering it does not cover the IPv4 checksum: see
+    /// [`IPV4_CSUM_OK`](Self::IPV4_CSUM_OK).
+    pub const L3_OK: u64 = 1 << 2;
+    /// The layer 4 header is consistent.
+    pub const L4_OK: u64 = 1 << 3;
+    /// The IPv4 header checksum is correct.
+    pub const IPV4_CSUM_OK: u64 = 1 << 5;
+    /// The layer 4 checksum is correct.
+    pub const L4_CSUM_OK: u64 = 1 << 6;
+
+    /// Require `bits` of the outermost headers.
+    #[must_use]
+    pub fn outer(bits: u64) -> IntegrityMatch {
+        IntegrityMatch { inner: false, bits }
+    }
+
+    /// Require `bits` of the headers inside a tunnel.
+    #[must_use]
+    pub fn inner(bits: u64) -> IntegrityMatch {
+        IntegrityMatch { inner: true, bits }
+    }
+
+    /// The verdicts required.
+    #[must_use]
+    pub fn bits(&self) -> u64 {
+        self.bits
+    }
+
+    /// Lower to the `(spec, mask)` pair. mlx5 takes the level from the *mask*
+    /// (`mlx5dr_definer_conv_item_integrity`), so both carry it.
+    pub(crate) fn lower(&self) -> (rte_flow_item_integrity, rte_flow_item_integrity) {
+        // SAFETY: zeroed fields are valid for this C struct.
+        let mut spec: rte_flow_item_integrity = unsafe { core::mem::zeroed() };
+        let mut mask: rte_flow_item_integrity = unsafe { core::mem::zeroed() };
+        let level = u32::from(self.inner);
+        spec.level = level;
+        mask.level = level;
+        spec.annon1.value = self.bits;
+        mask.annon1.value = self.bits;
+        (spec, mask)
     }
 }

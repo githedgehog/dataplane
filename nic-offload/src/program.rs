@@ -285,6 +285,9 @@ pub struct Program {
     /// ([`DenyRule::level`] below its prefix length) only: those of its own peer, and of more
     /// specific destinations inside it, are matched before it.
     pub passes: BTreeMap<Vni, BTreeSet<Prefix>>,
+    /// Whether the NIC drops corrupt VXLAN packets (bad checksums, inconsistent lengths): what
+    /// the NIC may drop that software would not, as the endpoints would drop them anyway.
+    pub validate: bool,
 }
 
 /// A flow-filter destination, as narrowing reads it.
@@ -496,8 +499,8 @@ struct Compilation {
 
 impl Program {
     /// Compile what a NIC may enforce of `acls` and `limits`: every peering whose whole policy it
-    /// may enforce, but those in `excluded` (refused by the NIC before). Nothing, if offload is
-    /// turned off ([`RateLimits::attempt_offloads`]).
+    /// may enforce, but those in `excluded` (refused by the NIC before), and the dropping of
+    /// corrupt packets. Nothing, if offload is turned off ([`RateLimits::attempt_offloads`]).
     #[must_use]
     pub fn compile(
         acls: &AclFilterContext,
@@ -555,6 +558,7 @@ impl Program {
         let mut program = Program {
             denies,
             refused: c.refused,
+            validate: true,
             ..Program::default()
         };
         // Software meter index -> program meter index, for the meters kept rules charge.
