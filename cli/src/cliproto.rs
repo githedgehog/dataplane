@@ -500,7 +500,7 @@ pub enum CliAction {
     ShowRouterEvpnVrfs,
     ShowRouterEvpnRmacStore,
     ShowRouterEvpnVtep,
-    ShowAdjacencies,
+    ShowNeighCache,
     ShowRouterIpv4FibEntries,
     ShowRouterIpv6FibEntries,
     ShowRouterIpv4FibGroups,
@@ -624,7 +624,7 @@ impl CliAction {
             | Self::ShowRouterEvpnVrfs
             | Self::ShowRouterEvpnRmacStore
             | Self::ShowRouterEvpnVtep
-            | Self::ShowAdjacencies
+            | Self::ShowNeighCache
             | Self::ShowRouterIpv4FibEntries
             | Self::ShowRouterIpv6FibEntries
             | Self::ShowRouterIpv4FibGroups
