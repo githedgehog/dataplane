@@ -775,12 +775,21 @@ mod tests_cli_handling {
     }
 
     // Most ctl messages do not produce a reply.
-    // This issues a request that the router replies to.
-    // Getting the reply means that all prior messages were processed.
+    // This issues a request that the router replies to, until the FRR config shows as applied:
+    // the reply means that all prior messages were processed, but the router records the config
+    // as applied only once the (fake) frr agent answers, which may come later.
     async fn ctl_sync(ctl: &RouterCtlSender) {
-        ctl.get_frr_applied_config()
-            .await
-            .expect("router should reply to ctl requests");
+        for _ in 0..200 {
+            let applied = ctl
+                .get_frr_applied_config()
+                .await
+                .expect("router should reply to ctl requests");
+            if applied.is_some() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the fake frr agent did not apply the FRR config within 10 s");
     }
 
     // ctl: send events to router
