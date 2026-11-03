@@ -397,8 +397,8 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
     where
         Udp: Within<Pos>,
     {
-        let (spec, mask) = criteria.lower();
-        self.items.push(MatchItem::Udp(spec, mask));
+        let (spec, mask, last) = criteria.lower();
+        self.items.push(MatchItem::Udp(spec, mask, last));
         self.retype()
     }
 
@@ -409,8 +409,8 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
     where
         Tcp: Within<Pos>,
     {
-        let (spec, mask) = criteria.lower();
-        self.items.push(MatchItem::Tcp(spec, mask));
+        let (spec, mask, last) = criteria.lower();
+        self.items.push(MatchItem::Tcp(spec, mask, last));
         self.retype()
     }
 
