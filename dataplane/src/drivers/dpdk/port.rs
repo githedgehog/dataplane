@@ -65,6 +65,12 @@ const CONTROL_POOL_MBUFS: u32 = (1 << 11) - 1;
 /// Per-core cache of the control pool: only the control worker allocates from it, in small bursts.
 const CONTROL_POOL_CACHE: u32 = 32;
 
+/// The size of an Mbuf pool, per worker, for packet injection
+const INJECT_POOL_MBUFS: u32 = (1 << 9) - 1;
+
+/// Per-core cache of an injection pool: only its worker allocates from it, in bursts.
+const INJECT_POOL_CACHE: u32 = 32;
+
 /// Use the driver's RSS key and supported L3/L4 hash types; warn if no requested type is supported.
 /// Symmetric hashing would not co-locate NAT's translated reverse tuples. Shared flow state
 /// lets any worker process either direction.
@@ -323,6 +329,26 @@ fn new_pool<'eal>(
     eal.mem.new_pkt_pool(config).map_err(|e| {
         DriverError::PortSetup(format!(
             "failed to create {what} pool for port {index}: {e:?}"
+        ))
+    })
+}
+
+/// Create an Mbuf pool for packet injection, for worker `worker`.
+/// Pools for packet injection are not per port but per worker.
+pub(super) fn new_inject_pool(eal: &Eal, worker: usize) -> Result<Pool<'_>, DriverError> {
+    let params = PoolParams {
+        size: INJECT_POOL_MBUFS,
+        cache_size: INJECT_POOL_CACHE,
+        ..Default::default()
+    };
+    let config = PoolConfig::new(format!("inject_{worker}"), params).map_err(|e| {
+        DriverError::PortSetup(format!(
+            "invalid injection pool config for worker {worker}: {e:?}"
+        ))
+    })?;
+    eal.mem.new_pkt_pool(config).map_err(|e| {
+        DriverError::PortSetup(format!(
+            "failed to create the injection pool for worker {worker}: {e:?}"
         ))
     })
 }
