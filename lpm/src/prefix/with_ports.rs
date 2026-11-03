@@ -433,6 +433,15 @@ impl PortRange {
         Ok(Self { start, end })
     }
 
+    /// Creates a new `PortRange` of the one port `port`.
+    #[must_use]
+    pub const fn single(port: u16) -> Self {
+        Self {
+            start: port,
+            end: port,
+        }
+    }
+
     /// Creates a new `PortRange` that covers all ports.
     #[must_use]
     pub const fn new_max_range() -> Self {

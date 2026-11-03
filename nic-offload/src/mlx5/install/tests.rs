@@ -63,6 +63,8 @@ fn policed(name: &str, rate: u64) -> Program {
         meters: vec![PoliceMeter {
             name: name.to_string(),
             unit: rate_limit::Unit::Bytes,
+            billing: rate_limit::Billing::Ip,
+            scope: crate::program::Scope::Peering,
             profile: policer::Profile::new(
                 policer::Rate::new(std::num::NonZeroU64::new(rate).unwrap()),
                 100_000,
@@ -132,7 +134,7 @@ fn a_refused_catch_all_leaves_its_vpcs_peerings_out() {
     });
     let refused = [(Role::CatchAll(Group::Police(vni(100))), Error::TableRefused)];
     assert_eq!(
-        peerings(&program, &refused).unwrap(),
+        peerings(&program, &refused).unwrap().peerings,
         [
             Peering::new(vni(100), vni(1000)),
             Peering::new(vni(100), vni(2000))
@@ -307,4 +309,68 @@ fn uncertain_root_creation_is_recorded_before_poisoning() {
     assert!(port.poisoned() && port.root_lingers);
     assert!(!port.stale(), "the switch has no VPC rules to reach");
     assert!(port.vpcs.is_empty());
+}
+
+/// A refused ingress rule leaves that rule in software alone: not its meter, which every VPC's
+/// rules charge, nor its VPC. A refused color rule of a meter leaves the meter in software.
+#[test]
+fn a_refused_ingress_rule_or_meter_stays_in_software_alone() {
+    use crate::program::{IngressRule, IngressVerdict, Scope};
+    let mut program = policed("ingress/m", 1_000_000);
+    program.meters[0].scope = Scope::Ingress;
+    program.rules.clear();
+    program.ingress = [100, 200]
+        .into_iter()
+        .enumerate()
+        .map(|(row, source)| IngressRule {
+            origin: Origin::Ingress { v6: false, row },
+            matches: any_to(Prefix::V4(Ipv4Addr::new(10, 0, 0, 0), 8), source),
+            verdict: IngressVerdict::Police(0, None),
+            layer: 0,
+            fragments: true,
+        })
+        .collect();
+    let refused =
+        |program: &Program, role| peerings(program, &[(role, Error::MeterNotMade)]).unwrap();
+    assert_eq!(
+        refused(&program, Role::Ingress(1)),
+        Exclusions {
+            ingress_rules: [(false, 1)].into(),
+            ..Exclusions::default()
+        }
+    );
+    assert_eq!(
+        refused(
+            &program,
+            Role::IngressColor(vni(200), 0, dpdk::flow::template::Color::Green)
+        ),
+        Exclusions {
+            ingress_meters: ["ingress/m".to_string()].into(),
+            ..Exclusions::default()
+        }
+    );
+    // A meter that was not made has every rule charging it refused: they all pass.
+    assert_eq!(
+        peerings(
+            &program,
+            &[
+                (Role::Ingress(0), Error::MeterNotMade),
+                (Role::Ingress(1), Error::MeterNotMade)
+            ]
+        )
+        .unwrap(),
+        Exclusions {
+            ingress_rules: [(false, 0), (false, 1)].into(),
+            ..Exclusions::default()
+        }
+    );
+    // A refused pass is its VPC's: nothing less is left to software.
+    program.ingress[1].verdict = IngressVerdict::Pass;
+    assert_eq!(
+        refused(&program, Role::Ingress(1)),
+        Exclusions {
+            vpcs: [vni(200)].into(),
+            ..Exclusions::default()
+        }
+    );
 }
