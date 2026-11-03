@@ -343,7 +343,28 @@ fn eal_arguments(config: &LaunchConfiguration) -> Vec<String> {
     eal_args
 }
 
+/// Publish the hugepages init reserved for EAL, by NUMA node (`any` for unplaced memory).
+#[allow(clippy::cast_precision_loss)] // far below 2^52 bytes
+fn publish_hugepage_plan(plan: &args::HugepagePlan) {
+    const MIB: u64 = 1 << 20;
+    metrics::gauge!("dpdk_hugepage_size_bytes").set((plan.page_size_kb * 1024) as f64);
+    let unplaced = (plan.unplaced_mb > 0).then(|| ("any".to_string(), plan.unplaced_mb));
+    for (node, mb) in plan
+        .per_node_mb
+        .iter()
+        .map(|(node, mb)| (node.to_string(), *mb))
+        .chain(unplaced)
+    {
+        metrics::gauge!("dpdk_hugepages_reserved_bytes", "node" => node).set((mb * MIB) as f64);
+    }
+}
+
 fn init_eal(config: &LaunchConfiguration) -> dpdk::eal::Eal {
+    if let DriverConfigSection::Dpdk(dpdk) = &config.driver
+        && let Some(plan) = &dpdk.hugepages
+    {
+        publish_hugepage_plan(plan);
+    }
     let eal_args = eal_arguments(config);
     info!("Initializing DPDK EAL with: {}", eal_args.join(" "));
     dpdk::eal::init(eal_args)

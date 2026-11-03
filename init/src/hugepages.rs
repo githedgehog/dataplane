@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use args::HugepagePlan;
 use args::dpdk_memory::{RESERVE_MIB, RX_DESCRIPTOR_CHOICES, RX_DESCRIPTORS, required_mib};
 use hardware::pci::address::PciAddress;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use cgroup::HugetlbCgroup;
 
@@ -393,11 +393,6 @@ fn deepest_fitting(need: impl Fn(u16) -> u64, budget_mib: u64) -> Option<u16> {
 /// If the ports do not fit the budget even at [`RX_DESCRIPTORS`].
 fn within_budget(need: impl Fn(u16) -> u64, budget_mib: u64, node: &str) -> Result<u16, String> {
     if let Some(rxd) = deepest_fitting(&need, budget_mib) {
-        info!(
-            "{node}: {rxd} receive descriptors per queue, whose pools take {} MiB of the {budget_mib} \
-             MiB of hugepages, with {RESERVE_MIB} MiB to spare",
-            need(rxd)
-        );
         return Ok(rxd);
     }
     let least = need(RX_DESCRIPTORS);
@@ -488,7 +483,6 @@ pub fn reserve_for(
         let plan = plan_for(&placement, allowance, &mut SysfsPools { grow })?;
         (plan, BTreeMap::new())
     };
-    info!("hugepages available for EAL: {plan}");
     let rx_descriptors = unnamed
         .iter()
         .map(|&address| {
@@ -555,10 +549,6 @@ fn deeper_in_free_pages(
         });
         match plan_with(&[ONE_GIB_KB], &placement, &mut allowance, pools) {
             Ok(plan) => {
-                info!(
-                    "{rxd} receive descriptors per queue fit the free 1 GiB hugepages with \
-                     {RESERVE_MIB} MiB to spare"
-                );
                 return Some((
                     plan,
                     devices.iter().map(|&address| (address, rxd)).collect(),

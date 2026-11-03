@@ -189,8 +189,10 @@ fn new_rx_pool<'eal>(
         private_size: MBUF_PRIVATE_SIZE,
         ..Default::default()
     };
-    let pool_mib = u64::from(pool_mbufs) * MBUF_FOOTPRINT / (1 << 20);
-    eal.mem
+    let pool_bytes = u64::from(pool_mbufs) * MBUF_FOOTPRINT;
+    let pool_mib = pool_bytes / (1 << 20);
+    let pool = eal
+        .mem
         .new_pkt_pool(PoolConfig::new(format!("rx_{index}"), params).map_err(|e| {
             DriverError::PortSetup(format!("invalid rx pool config for port {index}: {e:?}"))
         })?)
@@ -201,7 +203,14 @@ fn new_rx_pool<'eal>(
                  of {num_workers} workers, covering {rx_descriptors} rx descriptors and a \
                  transmit ring on each of {num_ports} ports; lower /rxd or reserve more hugepages"
             ))
-        })
+        })?;
+    #[allow(clippy::cast_precision_loss)] // far below 2^52 bytes
+    {
+        metrics::gauge!("dpdk_rx_descriptors", "port" => name.to_string())
+            .set(f64::from(rx_descriptors));
+        metrics::gauge!("dpdk_rx_pool_bytes", "port" => name.to_string()).set(pool_bytes as f64);
+    }
+    Ok(pool)
 }
 
 /// How often [`report_links`] re-reads link state while waiting for carrier.
