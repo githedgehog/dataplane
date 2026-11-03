@@ -12,6 +12,7 @@ pub mod device;
 pub mod expose;
 pub mod gateway_config;
 pub mod gwgroups;
+pub mod ingress;
 pub mod interface;
 pub mod offload;
 pub mod overlay;
