@@ -653,7 +653,10 @@ impl Compilation {
         prefix: impl Fn(PrefixSpec<I>) -> Prefix + Copy,
     ) {
         let meter_of = |row: &RuleRow<PeeringKey<I>, RuleIndex>| {
-            limits.rules().get(row.action).map(rate_limit::Rule::meter)
+            limits
+                .rules()
+                .get(row.action)
+                .and_then(rate_limit::Rule::meter)
         };
         for (at, row) in rows.iter().enumerate() {
             let Some(meter) = meter_of(row) else {

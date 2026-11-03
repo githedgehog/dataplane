@@ -7,7 +7,7 @@
 
 use net::buffer::PacketBufferMut;
 use net::eth::mac::DestinationMac;
-use net::headers::{Headers, Net};
+use net::headers::{Headers, Net, TryIp};
 use net::headers::{TryIpv4Mut, TryIpv6Mut};
 use net::interface::InterfaceIndex;
 use net::ip::NextHeader;
@@ -202,6 +202,12 @@ impl IpForwarder {
         }
 
         // do the actual decapsulation
+        // What the ingress policy's meters bill, as a NIC meter counts it: the outer IP packet.
+        let outer_ip_len = match packet.try_ip() {
+            Some(Net::Ipv4(ip)) => Some(ip.total_len()),
+            Some(Net::Ipv6(ip)) => Ipv6::MIN_LEN.get().checked_add(ip.payload_length()),
+            None => None,
+        };
         match packet.vxlan_decap() {
             Some(Ok(_)) => {
                 // At this point decapsulation has already happened. `Packet` refers to the inner packet.
@@ -211,6 +217,7 @@ impl IpForwarder {
 
                 // Annotate the incoming vni and the corresponding vrf, so that lookups are made in that vrf
                 packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni));
+                packet.meta_mut().outer_ip_len = outer_ip_len;
                 packet.meta_mut().vrf = Some(next_vrf);
                 packet.meta_mut().set_overlay(true);
             }
