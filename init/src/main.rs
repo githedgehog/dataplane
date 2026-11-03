@@ -10,6 +10,7 @@ mod kernel_interfaces;
 mod netns_names;
 mod socket;
 mod supervisor;
+mod verbs;
 mod vfio;
 
 use std::collections::BTreeMap;
@@ -550,6 +551,52 @@ fn bring_up_datapath_interfaces(netns: &NetworkNamespace) -> Result<usize, Bring
     })
 }
 
+/// Make the verbs command channel nodes the moved bifurcated devices need, once the kernel has
+/// registered their channels in the datapath namespace. See [`verbs`].
+///
+/// Looks from a temporary thread with that namespace's sysfs, which is what lists its RDMA
+/// devices in exclusive mode; the nodes it makes are in the `/dev` the dataplane inherits.
+fn expose_verbs_nodes(netns: &NetworkNamespace, devices: &[ResolvedDevice]) -> Result<(), String> {
+    let bifurcated: Vec<PciAddress> = devices
+        .iter()
+        .filter(|d| DpdkDriverType::from(d.supported) == DpdkDriverType::Bifurcated)
+        .map(|d| d.address)
+        .collect();
+    if bifurcated.is_empty() {
+        return Ok(());
+    }
+    let deadline = clock::deadline(verbs::SETTLE_TIMEOUT);
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                netns.enter_with_sysfs().map_err(|e| {
+                    format!("could not look at the datapath network namespace's sysfs: {e}")
+                })?;
+                verbs::expose(
+                    &hardware::verbs::Roots::current(),
+                    &bifurcated,
+                    deadline,
+                    |channel| {
+                        hardware::devnode::replace(
+                            &channel.node,
+                            channel.number,
+                            verbs::PERMISSIONS,
+                        )
+                    },
+                )
+                .map_err(|errors| {
+                    errors
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n  ")
+                })
+            })
+            .join()
+            .map_err(|_| "the thread making verbs nodes panicked".to_string())?
+    })
+}
+
 /// Create a descriptor-owned namespace and move the datapath devices into it.
 fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, String> {
     let netns = NetworkNamespace::create()
@@ -570,6 +617,7 @@ fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, Strin
              device, and a sign the move did not land for a bifurcated one"
         );
     }
+    expose_verbs_nodes(&netns, devices)?;
     Ok(netns)
 }
 

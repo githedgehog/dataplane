@@ -26,6 +26,8 @@ pub mod nic;
 pub mod os;
 pub mod pci;
 pub mod support;
+#[cfg(unix)]
+pub mod verbs;
 
 #[cfg(any(test, feature = "scan"))]
 pub mod scan;
