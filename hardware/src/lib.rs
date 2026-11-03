@@ -15,6 +15,8 @@ use crate::os::OsDeviceAttributes;
 use crate::pci::PciDeviceAttributes;
 use crate::pci::bridge::BridgeAttributes;
 
+#[cfg(unix)]
+pub mod devnode;
 pub mod group;
 pub mod mem;
 #[cfg(unix)]
