@@ -13,7 +13,7 @@ use args::IdleConfig;
 use dpdk::lcore::LCore;
 use dpdk::mem::{Mbuf, MbufArray};
 use lifecycle::Subsystem;
-use net::buffer::PacketBufferMut;
+use net::buffer::{BufferPool, PacketBufferMut};
 use net::eth::mac::Mac;
 use net::headers::{TryEth, TryHeaders};
 use net::interface::InterfaceIndex;
@@ -26,7 +26,7 @@ use crate::drivers::load::{Load, LoadMeter, Spent};
 use crate::drivers::sparse_log::log_sparsely;
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
-use crate::packet_processor::{PipelineFactory, WorkerPipeline, expiry_budget};
+use crate::packet_processor::{PipelineFactory, WorkerContext, WorkerPipeline, expiry_budget};
 
 use super::classes::SoftwareClasses;
 use super::control::addressed_to;
@@ -85,11 +85,12 @@ impl<'p> Worker<'p> {
         }
     }
 
-    /// Run until cancelled, constructing the non-Send pipeline on this thread.
-    pub(crate) fn run(
+    /// Run until cancelled, constructing the non-Send pipeline on this thread, with `context`.
+    pub(crate) fn run<P: BufferPool<Buf = Mbuf<'p>>>(
         mut self,
         subsystem: &Subsystem,
-        setup_pipeline: &PipelineFactory<'p, Mbuf<'p>>,
+        setup_pipeline: &PipelineFactory<'p, Mbuf<'p>, P>,
+        context: WorkerContext<P>,
     ) {
         // No tokio here: flows and NAT mappings expire on this worker's own wheel, which this loop
         // sweeps (see `expire` below).
@@ -110,7 +111,7 @@ impl<'p> Worker<'p> {
         let WorkerPipeline {
             mut pipeline,
             flows,
-        } = setup_pipeline();
+        } = setup_pipeline(context);
 
         // Map pipeline output ifindices to this worker's transmit queues.
         let tx_by_if: HashMap<InterfaceIndex, usize> = self

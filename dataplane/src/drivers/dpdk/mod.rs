@@ -23,7 +23,7 @@ mod port;
 mod worker;
 mod xstats;
 
-use crate::packet_processor::PipelineFactory;
+use crate::packet_processor::{PipelineFactory, WorkerContext};
 use std::convert::Infallible;
 use std::num::NonZero;
 
@@ -32,8 +32,9 @@ use args::IdleConfig;
 use concurrency::thread;
 #[allow(unused_imports)] // used under loom/shuttle backends
 use concurrency::thread::BuilderExt;
+use dpdk::eal::Eal;
 use dpdk::flow::template::{RssTarget, TemplateAction};
-use dpdk::mem::{MBUF_BURST, Mbuf};
+use dpdk::mem::{MBUF_BURST, Mbuf, Pool};
 use dpdk::queue::rx::RxQueueIndex;
 use lifecycle::Subsystem;
 use lldp::Link;
@@ -81,7 +82,8 @@ impl DriverDpdk {
         ports: &'p [Port<'_>],
         num_workers: NonZero<u16>,
         idle: IdleConfig,
-        setup_pipeline: &PipelineFactory<'p, Mbuf<'p>>,
+        setup_pipeline: &PipelineFactory<'p, Mbuf<'p>, Pool<'p>>,
+        eal: &'p Eal,
         status_writer: DriverStatusWriter,
         bridge: Option<&mut DatapathEnds>,
         control_plane: watch::Receiver<ControlPlane>,
@@ -117,42 +119,16 @@ impl DriverDpdk {
         let placement = Placement::of_this_process();
         let mut monitors = Vec::with_capacity(dealt.workers.len() + 1);
         for (id, queues) in dealt.workers.into_iter().enumerate() {
-            let rx_tasks: Vec<RxTaskMonitor> = queues
-                .iter()
-                .map(|q| RxTaskMonitor::new(&q.name, RxQueue::Data))
-                .collect();
-            let worker_ports = queues
-                .into_iter()
-                .zip(&rx_tasks)
-                .map(|(queues, task)| WorkerPort {
-                    queues,
-                    watchdog: task.watchdog.clone(),
-                })
-                .collect();
-            let load = Load::new(idle.mode);
-            let load_reader = load.reader();
-            let worker = Worker::new(id, worker_ports, idle, load);
-
-            let subsystem = workers_subsystem.clone();
-            let setup_pipeline = setup_pipeline.clone();
-            let cpus = placement.data.clone();
-            let handle = thread::Builder::new()
-                .name(format!("dpdk-worker-{id}"))
-                .spawn_scoped(scope, move || {
-                    // Any exit before shutdown, a panic included, leaves this worker's queues
-                    // unpolled, so it is fatal. The guard sees cancellation and stays quiet then.
-                    let _guard = subsystem.new_exit_guard(format!("worker {id}"), true);
-                    if let Some(cpus) = cpus {
-                        pin(&format!("DPDK worker {id}"), &cpus);
-                    }
-                    worker.run(&subsystem, &setup_pipeline);
-                    Ok::<(), Infallible>(())
-                })
-                .map_err(|e| {
-                    DriverError::PortSetup(format!("failed to spawn DPDK worker {id}: {e}"))
-                })?;
-
-            monitors.push(WorkerMonitor::new(id, handle, rx_tasks).with_load(load_reader));
+            monitors.push(spawn_worker(
+                scope,
+                workers_subsystem,
+                id,
+                placement.data.clone(),
+                queues,
+                idle,
+                setup_pipeline,
+                eal,
+            )?);
         }
 
         // The control worker is numbered after the data workers.
@@ -205,6 +181,64 @@ impl DriverDpdk {
         info!("DPDK driver started successfully");
         Ok(())
     }
+}
+
+/// Spawn data worker `id` over `queues`, its queue pair from every port, on `cpus`. The worker
+/// builds its pipeline from `setup_pipeline` on its own thread, with a pool to inject packets from.
+#[allow(clippy::too_many_arguments)]
+fn spawn_worker<'p, 'scope>(
+    scope: &'scope thread::Scope<'scope, '_>,
+    subsystem: &Subsystem,
+    id: usize,
+    cpus: Option<Vec<usize>>,
+    queues: Vec<port::PortQueues<'p>>,
+    idle: IdleConfig,
+    setup_pipeline: &PipelineFactory<'p, Mbuf<'p>, Pool<'p>>,
+    eal: &'p Eal,
+) -> Result<WorkerMonitor<'scope, Infallible>, DriverError>
+where
+    'p: 'scope,
+{
+    // Create buffer pool for pkt injection in this worker (e.g. ARP/ND)
+    // and wrap it in a worker context object to be given to the worker
+    let inject_pool = port::new_inject_pool(eal, id)?;
+    let context = WorkerContext::new(inject_pool);
+
+    let rx_tasks: Vec<RxTaskMonitor> = queues
+        .iter()
+        .map(|q| RxTaskMonitor::new(&q.name, RxQueue::Data))
+        .collect();
+    let worker_ports = queues
+        .into_iter()
+        .zip(&rx_tasks)
+        .map(|(queues, task)| WorkerPort {
+            queues,
+            watchdog: task.watchdog.clone(),
+        })
+        .collect();
+    let load = Load::new(idle.mode);
+    let load_reader = load.reader();
+    let worker = Worker::new(id, worker_ports, idle, load);
+
+    let subsystem = subsystem.clone();
+    let setup_pipeline = setup_pipeline.clone();
+
+    // spawn thread
+    let handle = thread::Builder::new()
+        .name(format!("dpdk-worker-{id}"))
+        .spawn_scoped(scope, move || {
+            // Any exit before shutdown, a panic included, leaves this worker's queues
+            // unpolled, so it is fatal. The guard sees cancellation and stays quiet then.
+            let _guard = subsystem.new_exit_guard(format!("worker {id}"), true);
+            if let Some(cpus) = cpus {
+                pin(&format!("DPDK worker {id}"), &cpus);
+            }
+            // run the worker
+            worker.run(&subsystem, &setup_pipeline, context);
+            Ok::<(), Infallible>(())
+        })
+        .map_err(|e| DriverError::PortSetup(format!("failed to spawn DPDK worker {id}: {e}")))?;
+    Ok(WorkerMonitor::new(id, handle, rx_tasks).with_load(load_reader))
 }
 
 /// Spawn the control worker over every port's control queues, as worker `id`, on `cpu`.
