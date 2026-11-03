@@ -101,6 +101,10 @@
 //! Both pass the burst by reference between stages.
 //!
 
+use concurrency::sync::atomic::{AtomicU64, Ordering};
+use concurrency::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
+
 mod dyn_nf;
 mod pipeline;
 /// Sample network functions
@@ -116,6 +120,188 @@ pub use dyn_nf::{DynNetworkFunction, nf_dyn};
 pub use pipeline::{DynPipeline, PipelineData, StageId};
 #[allow(unused)]
 pub use static_nf::{NetworkFunction, StaticChain};
+
+/// An object to inform that a pipeline should be run before some specified time
+/// even if no packets arrive. Each pipeline owns an instance of this type and
+/// hands shared clones to its NFs.Since there is a single value shared by all NFs,
+/// the following protocol between the NFs, the pipeline and its owner governs its usage:
+///    * NFs can set the value to some time `t` if they require an action to be
+///      executed by `t`.
+///    * The pipeline owner (e.g. a worker), if idle, must check the value and run the
+///      pipeline if the deadline is reached. On each run, whether there are packets or
+///      not, the value is cleared. Therefore, NFs requiring a deadline must keep on
+///      requesting it on each run.
+///    * Since a value may already be set, a NF request to set the value only changes it
+///      if the requested time is earlier than the one set.
+#[derive(Clone, Debug, Default)]
+pub struct SchedRun(Arc<Deadline>);
+
+#[derive(Debug)]
+/// Deadlines need to be shared. Since we use atomics, we need to encode them.
+/// This type is used to encode the time when a scheduled run should happen.
+/// The deadline represents time since some reference time `epoch` encoded as follows:
+///    * zero value means immediately
+///    * no deadline is encoded as `u64::MAX`
+///    * a given instant is encoded as 1 + nanoseconds since the `epoch`
+///
+/// The `epoch` is the time when the first deadline is set
+struct Deadline {
+    deadline: AtomicU64,
+    epoch: OnceLock<Instant>,
+}
+
+impl Default for Deadline {
+    fn default() -> Self {
+        Self {
+            deadline: AtomicU64::new(SchedRun::NONE),
+            epoch: OnceLock::new(),
+        }
+    }
+}
+
+impl SchedRun {
+    const ASAP: u64 = 0; // immediately
+    const NONE: u64 = u64::MAX; // no deadline - never
+
+    fn encode(&self, at: Instant) -> u64 {
+        // get the epoch or init it
+        let epoch = *self.0.epoch.get_or_init(clock::now);
+
+        // offset of instant since the epoch
+        let nanos = at.saturating_duration_since(epoch).as_nanos();
+
+        // offset by 1 from `ASAP`; a deadline past `u64` (some 584 years) is kept short of `NONE`
+        u64::try_from(nanos)
+            .map_or(Self::NONE - 1, |nanos| nanos.saturating_add(1))
+            .min(Self::NONE - 1)
+    }
+
+    /// Lower the deadline to `at`, unless it is earlier already.
+    pub fn set_deadline(&self, at: Instant) {
+        self.0.deadline.fetch_min(self.encode(at), Ordering::AcqRel);
+    }
+
+    /// Lower the deadline as far as it goes: the pipeline is to run as soon as its owner can.
+    pub fn asap(&self) {
+        self.0.deadline.fetch_min(Self::ASAP, Ordering::AcqRel);
+    }
+
+    /// Whether a deadline is set, reached or not.
+    #[must_use]
+    pub fn is_set(&self) -> bool {
+        self.0.deadline.load(Ordering::Acquire) != Self::NONE
+    }
+
+    /// Tell if the pipeline should be run. This should be called by pipeline owners
+    #[must_use]
+    pub fn must_run(&self) -> bool {
+        match self.0.deadline.load(Ordering::Acquire) {
+            Self::NONE => false,
+            Self::ASAP => true,
+            nanos => self
+                .0
+                .epoch
+                .get()
+                .is_none_or(|epoch| *epoch + Duration::from_nanos(nanos - 1) <= clock::now()),
+        }
+    }
+
+    /// Clear the deadline and tell whether one was set. Each time a pipeline runs it call this method
+    pub(crate) fn take(&self) -> bool {
+        self.0.deadline.load(Ordering::Acquire) != Self::NONE
+            && self.0.deadline.swap(Self::NONE, Ordering::AcqRel) != Self::NONE
+    }
+}
+
+#[cfg(test)]
+mod sched_run_encoding {
+    use crate::SchedRun;
+    use clock::virtual_time::{Paused, advance};
+    use std::time::Duration;
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn no_deadline_is_set_at_first() {
+        let sched = SchedRun::default();
+        assert!(!sched.is_set());
+        assert!(!sched.must_run());
+    }
+
+    #[test]
+    fn a_deadline_is_reached_from_then_on() {
+        Paused::new().block_on(async {
+            let sched = SchedRun::default();
+            sched.set_deadline(clock::now() + ms(1));
+            assert!(sched.is_set());
+            assert!(!sched.must_run());
+            advance(ms(1)).await;
+            assert!(sched.must_run());
+            advance(ms(1)).await;
+            assert!(sched.must_run());
+        });
+    }
+
+    #[test]
+    fn a_deadline_is_reached_exactly() {
+        Paused::new().block_on(async {
+            let sched = SchedRun::default();
+            // fix the epoch, then clear the deadline
+            sched.set_deadline(clock::now());
+            assert!(sched.take());
+            sched.set_deadline(clock::now() + ms(10) + Duration::from_nanos(300));
+            advance(ms(10) + Duration::from_nanos(299)).await;
+            assert!(!sched.must_run(), "a deadline is reached early");
+            advance(Duration::from_nanos(1)).await;
+            assert!(sched.must_run(), "a deadline is reached late");
+        });
+    }
+
+    #[test]
+    fn a_deadline_can_only_be_lowered() {
+        Paused::new().block_on(async {
+            let sched = SchedRun::default();
+            let now = clock::now();
+            let (early, late) = (now + ms(100), now + ms(200));
+            sched.set_deadline(late);
+            sched.set_deadline(early);
+            sched.set_deadline(late);
+            advance(ms(99)).await;
+            assert!(!sched.must_run());
+            advance(ms(1)).await;
+            assert!(sched.must_run());
+            assert!(sched.take());
+            sched.asap();
+            sched.set_deadline(late);
+            assert!(sched.must_run(), "a later deadline raised an immediate run");
+        });
+    }
+
+    #[test]
+    fn a_deadline_before_the_first_is_kept() {
+        Paused::new().block_on(async {
+            let sched = SchedRun::default();
+            let now = clock::now();
+            sched.set_deadline(now + ms(1200));
+            sched.set_deadline(now + ms(100));
+            advance(ms(99)).await;
+            assert!(!sched.must_run());
+            advance(ms(1)).await;
+            assert!(sched.must_run());
+        });
+    }
+
+    #[test]
+    fn taking_clears_the_deadline() {
+        let sched = SchedRun::default();
+        assert!(!sched.take());
+        sched.asap();
+        assert!(sched.take());
+        assert!(!sched.is_set());
+    }
+}
 
 #[cfg(test)]
 mod test {
