@@ -494,7 +494,6 @@ pub fn process_cpi_data(rio: &mut Rio, peer: &SocketAddr, data: &mut Bytes, db: 
 #[cfg(test)]
 mod cpi_properties {
     use super::*;
-    use crate::atable::atablerw::AtableWriter;
     use crate::config::RouterConfig;
     use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftablerw::IfTableWriter;
@@ -536,11 +535,10 @@ mod cpi_properties {
     /// permanently `None`. Nothing in this module reads adjacencies today, so it cost nothing
     /// yet -- but the next test that does would have got an empty table and a passing
     /// assertion rather than a failure.
-    fn fabric() -> (RoutingDb, AtableWriter) {
+    fn fabric() -> RoutingDb {
         let (fibtw, _fibtr) = FibTableWriter::new();
         let (iftw, _iftr) = IfTableWriter::new_with_data(build_test_iftable());
-        let (atw, atabler) = AtableWriter::new();
-        let mut db = RoutingDb::new(fibtw, iftw, atabler);
+        let mut db = RoutingDb::new(fibtw, iftw);
 
         let vrf0 = db
             .vrftable
@@ -558,7 +556,7 @@ mod cpi_properties {
         db.vrftable
             .add_vrf(&config)
             .unwrap_or_else(|e| unreachable!("{e}"));
-        (db, atw)
+        db
     }
 
     fn overlay_route(vrfid: VrfId, prefix: &str, vtep: IpAddr) -> IpRoute {
@@ -600,7 +598,7 @@ mod cpi_properties {
         let prefix = "10.9.0.0/24";
         let vtep = vteps()[0];
 
-        let (mut db, _atw) = fabric();
+        let mut db = fabric();
         assert_eq!(
             overlay_route(missing, prefix, vtep).add(&mut db),
             RpcResultCode::Failure
@@ -622,7 +620,7 @@ mod cpi_properties {
 
     #[test]
     fn deleting_the_last_route_of_a_dying_vrf_removes_it() {
-        let (mut db, _atw) = fabric();
+        let mut db = fabric();
         let prefix = "10.0.0.0/24";
         let vtep = vteps()[0];
         let route = overlay_route(OVERLAY_VRF, prefix, vtep);
@@ -653,7 +651,7 @@ mod cpi_properties {
             (0, 24, RpcResultCode::InvalidRequest),
         ];
         for (ifindex, mask, want) in cases {
-            let (mut db, _atw) = fabric();
+            let mut db = fabric();
             let message = IfAddress {
                 ifname: "eth0".to_string(),
                 address: addr("10.0.0.1"),
