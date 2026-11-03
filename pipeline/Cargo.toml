@@ -6,6 +6,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+clock = { workspace = true }
 concurrency = { workspace = true }
 id = { workspace = true }
 linkme = { workspace = true }
@@ -17,4 +18,5 @@ tracectl = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+clock = { workspace = true, features = ["virtual"] }
 net = { workspace = true, features = ["builder"] }
