@@ -54,10 +54,6 @@ tokio = { workspace = true, features = ["fs", "io-util", "sync", "rt", "net", "m
 tokio-util = { workspace = true, features = ["codec"] }
 tracing = { workspace = true }
 
-# arp resolver
-procfs = { workspace = true }
-netdev = { workspace = true }
-
 [dev-dependencies]
 dataplane-routing = { path = ".", features = ["testing"] }
 lpm = { workspace = true, features = ["testing"] }

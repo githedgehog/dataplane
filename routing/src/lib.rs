@@ -11,7 +11,6 @@
     clippy::missing_errors_doc
 )]
 
-mod atable;
 mod bmp;
 mod cli;
 mod config;
@@ -27,7 +26,6 @@ mod router;
 mod routingdb;
 
 // re-exports
-pub use atable::atablerw::{AtableReader, AtableReaderFactory};
 pub use config::RouterConfig;
 pub use errors::RouterError;
 pub use evpn::Vtep;
