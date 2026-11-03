@@ -33,6 +33,7 @@ use nat::static_nat::natrw::NatTablesReaderFactory;
 use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat};
 use net::packet::PacketStats;
 
+use arp::{ArpNfFactory, ArpSetup};
 use net::buffer::{BufferPool, DeepCopy, PacketBufferMut};
 use net::packet::Rebuffer;
 use pipeline::sample_nfs::{PacketDumper, PacketStatsNF};
@@ -71,6 +72,7 @@ pub(crate) struct InternalSetup {
     pub phy: tokio::sync::watch::Sender<crate::phy_agent::PhySnapshot>,
     /// Packets the pipeline finished with, by reason, for telemetry.
     pub pkt_stats: Arc<PacketStats>,
+    pub arp: ArpSetup,
 }
 
 /// Shared inputs for building a separate pipeline on each worker thread.
@@ -93,6 +95,7 @@ pub(crate) struct PipelineIngredients {
     timers: TimerRegistry,
     capture: CaptureController,
     syn_proxy: SynProxyControl,
+    arpnd_factory: ArpNfFactory,
 }
 
 /// The VTEPs software decapsulates VXLAN for: each VNI's FIB's.
@@ -157,7 +160,7 @@ impl PipelineIngredients {
         Buf: Rebuffer + DeepCopy + 'nf,
         P: BufferPool<Buf = Buf> + 'nf,
     {
-        Arc::new(move |_context: WorkerContext<P>| {
+        Arc::new(move |context: WorkerContext<P>| {
             // This worker's handle on the shared flow table, for the stages that create flows.
             let flows = WorkerFlowTable::registered(self.flow_table.clone(), &self.timers);
 
@@ -205,6 +208,8 @@ impl PipelineIngredients {
             let capture_egress =
                 CaptureStage::new(Direction::Egress, self.capture.sink(Direction::Egress));
 
+            let arpnd_nf = self.arpnd_factory.nf(context.inject_pool);
+
             // Build the pipeline for a router. The composition of the pipeline (in stages) is
             // currently hard-coded. Flows expire on the worker's timer wheel, which the worker
             // drives through `WorkerFlowTable::expire`; no stage is needed for it.
@@ -235,6 +240,7 @@ impl PipelineIngredients {
                 .add_stage(flow_tracker)
                 .add_stage(iprouter2)
                 .add_stage(stage_egress)
+                .add_stage(arpnd_nf)
                 .add_stage(capture_egress)
                 .add_stage(pktdump)
                 .add_stage(pkt_stats_nf)
@@ -314,6 +320,7 @@ pub(crate) fn start_router(
     let (transceivers, transceivers_read) =
         tokio::sync::watch::channel(crate::transceiver_agent::ModuleSnapshot::default());
     let (phy, phy_read) = tokio::sync::watch::channel(crate::phy_agent::PhySnapshot::default());
+    let arp = ArpSetup::new();
 
     // collect readers and the like for cli
     let cli_sources = CliSources {
@@ -338,6 +345,7 @@ pub(crate) fn start_router(
         link: Some(Box::new(crate::phy_agent::PhyCli(phy_read))),
         rate_limits: Some(Box::new(rate_limits.reader())),
         syn_proxy: Some(syn_proxy.clone()),
+        neigh_cache: Some(Box::new(arp.neigh_cache_factory().handle().inner())),
     };
 
     // create router
@@ -364,6 +372,7 @@ pub(crate) fn start_router(
         timers,
         capture,
         syn_proxy,
+        arpnd_factory: arp.nf_factory(),
     };
 
     Ok(InternalSetup {
@@ -384,6 +393,7 @@ pub(crate) fn start_router(
         transceivers,
         phy,
         pkt_stats,
+        arp,
     })
 }
 

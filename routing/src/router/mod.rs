@@ -74,6 +74,7 @@ pub struct CliSources {
     pub dpdk_port_stats: Option<Box<dyn CliDataProvider + Send>>,
     pub flow_table_summary: Option<Box<dyn CliDataProvider + Send>>,
     pub syn_proxy: Option<syn_proxy::SynProxyControl>,
+    pub neigh_cache: Option<Box<dyn CliDataProvider + Send>>,
 }
 
 impl Display for RouterParams {
