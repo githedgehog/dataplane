@@ -40,6 +40,7 @@ const ENOUGH_CASES: usize = if cfg!(instrumented) || cfg!(emulated) || cfg!(sani
 #[allow(dead_code)]
 pub mod test {
     use acl_filter::AclFilterContextWriter;
+    use arp::ArpNdCtl;
     use config::external::communities::PriorityCommunityTable;
     use config::external::gwgroup::GwGroup;
     use config::external::gwgroup::GwGroupMember;
@@ -572,11 +573,15 @@ pub mod test {
         /* flow table */
         let flow_table = Arc::from(FlowTable::new(16));
 
+        /* control of ARP/ND, with no daemon: its receiver is kept so that enabling succeeds */
+        let (arp_ctl, _arp_ctl_rx) = ArpNdCtl::new(10);
+
         /* build configuration of mgmt config processor */
         let (gateway_name, named) = tokio::sync::watch::channel(None);
         let (control_plane, _) = tokio::sync::watch::channel(ControlPlane::default());
         let processor_config = ConfigProcessorParams {
             router_ctl,
+            arp_ctl,
             pipeline_data,
             flow_table,
             vpcmapw,
