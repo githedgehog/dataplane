@@ -275,7 +275,6 @@ mod tests {
     use crate::routingdb::RoutingDb;
     use crate::interfaces::iftablerw::IfTableWriter;
     use crate::fib::fibtable::FibTableWriter;
-    use crate::atable::resolver::AtResolver;
 
 
     pub(super) fn mk_vni(vni: u32) -> Vni {
@@ -351,8 +350,7 @@ mod tests {
     pub(super) fn create_routing_database() -> RoutingDb {
         let (iftw, _iftr) = IfTableWriter::new();
         let (fibtw, _fibtr) = FibTableWriter::new();
-        let (_resolver, atabler) = AtResolver::new(false);
-        RoutingDb::new(fibtw, iftw, atabler)
+        RoutingDb::new(fibtw, iftw)
     }
     fn test_apply_config(config: &RouterConfig, db: &mut RoutingDb) -> Result<(), RouterError> {
         config.apply(db)?;
