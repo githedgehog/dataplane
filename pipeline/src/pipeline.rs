@@ -3,7 +3,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use crate::{DynNetworkFunction, NetworkFunction, nf_dyn};
+use crate::{DynNetworkFunction, NetworkFunction, SchedRun, nf_dyn};
 use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicI64, Ordering};
 use id::Id;
@@ -71,6 +71,7 @@ impl PipelineData {
 pub struct DynPipeline<'nf, Buf: PacketBufferMut> {
     nfs: OrderMap<StageId<'nf, Buf>, Box<dyn DynNetworkFunction<Buf> + 'nf>>,
     data: Arc<PipelineData>,
+    sched: SchedRun,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -86,6 +87,7 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
         Self {
             nfs: OrderMap::new(),
             data: Arc::from(PipelineData::default()),
+            sched: SchedRun::default(),
         }
     }
 
@@ -109,7 +111,14 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
     #[must_use]
     pub fn add_stage<NF: NetworkFunction<Buf> + 'nf>(self, mut nf: NF) -> Self {
         nf.set_data(self.data.clone());
+        nf.set_sched_run(self.sched.clone());
         self.add_stage_dyn(nf_dyn(nf))
+    }
+
+    /// Tell if the deadline set by some stage is reached.
+    #[must_use]
+    pub fn must_run(&self) -> bool {
+        self.sched.must_run()
     }
 
     /// Add a static network function to the pipeline using a specific stage id.
@@ -194,6 +203,8 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<'_, Buf> {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        // clear the deadline: stages set one again if they still need one when run
+        self.sched.take();
         for nf in self.nfs.values_mut() {
             nf.process_burst(burst);
         }

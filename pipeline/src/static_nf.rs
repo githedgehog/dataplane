@@ -6,7 +6,7 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use std::marker::PhantomData;
 
-use crate::PipelineData;
+use crate::{PipelineData, SchedRun};
 
 /// Trait for an object that processes a burst of packets.
 pub trait NetworkFunction<Buf: PacketBufferMut> {
@@ -37,6 +37,10 @@ pub trait NetworkFunction<Buf: PacketBufferMut> {
 
     /// Let NFs access some `PipelineData` if they wish on their creation
     fn set_data(&mut self, _data: Arc<PipelineData>) {}
+
+    /// Let NFs get a clone of the [`SchedRun`] of their pipeline to set a deadline for it to run
+    /// by, even if no packets come.
+    fn set_sched_run(&mut self, _sched: SchedRun) {}
 }
 
 struct StaticChainImpl<Buf: PacketBufferMut, NF1: NetworkFunction<Buf>, NF2: NetworkFunction<Buf>> {
