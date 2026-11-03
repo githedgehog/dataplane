@@ -34,6 +34,7 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [dev-dependencies]
 # internal
+hardware = { workspace = true, features = ["test_fakes"] }
 n-vm = { workspace = true }
 test-utils = { workspace = true }
 

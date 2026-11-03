@@ -14,6 +14,8 @@ bolero = ["dep:bolero"]
 scan = ["dep:hwlocality", "dep:pci-ids"]
 # Adds serialization support for all types using serde.
 serde = ["dep:serde", "id/serde"]
+# Exposes `verbs::fake`, a sysfs and `/dev` for tests of code that looks for verbs channels.
+test_fakes = []
 
 [dependencies]
 # internal
