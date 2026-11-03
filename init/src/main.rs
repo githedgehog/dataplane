@@ -230,10 +230,9 @@ fn expose_vfio_nodes(devices: &[ResolvedDevice]) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     for node in &missing {
         info!(
-            "creating {} ({}:{}), which vfio-pci made after this container's /dev was filled in",
+            "creating {} ({}), which vfio-pci made after this container's /dev was filled in",
             node.path.display(),
-            node.major,
-            node.minor
+            node.number
         );
     }
     vfio::create_nodes(&missing).map_err(|e| e.to_string())

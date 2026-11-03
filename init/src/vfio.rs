@@ -8,8 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use nix::sys::stat::{Mode, SFlag, makedev, mknod};
-
+use hardware::devnode::{self, DeviceNumber, DeviceNumberError, NodeError};
 use hardware::pci::address::PciAddress;
 
 /// Non-VFIO drivers with `driver_managed_dma`.
@@ -150,9 +149,7 @@ pub(crate) struct MissingNode {
     /// Where the node belongs.
     pub(crate) path: PathBuf,
     /// The device number sysfs gives for it.
-    pub(crate) major: u64,
-    /// The device number sysfs gives for it.
-    pub(crate) minor: u64,
+    pub(crate) number: DeviceNumber,
 }
 
 /// A VFIO device node that could not be found or made.
@@ -165,39 +162,16 @@ pub(crate) enum DeviceNodeError {
         address: PciAddress,
     },
     /// sysfs does not say which device number the node has.
-    #[error("cannot read the device number of {node} from {path}: {source}")]
-    Unreadable {
+    #[error("cannot tell what {node} should be: {source}")]
+    Number {
         /// The node.
         node: PathBuf,
-        /// Where sysfs keeps its number.
-        path: PathBuf,
-        /// Why reading failed.
-        source: std::io::Error,
-    },
-    /// sysfs gave something other than `major:minor`.
-    #[error("{path} holds {contents:?}, not a major:minor device number")]
-    Malformed {
-        /// The sysfs file.
-        path: PathBuf,
-        /// What it held.
-        contents: String,
+        /// Why.
+        source: DeviceNumberError,
     },
     /// The node could not be made.
-    #[error("cannot create {path}: {source}")]
-    Create {
-        /// The node.
-        path: PathBuf,
-        /// Why.
-        source: nix::Error,
-    },
-    /// The directory for the node could not be made.
-    #[error("cannot create {path}: {source}")]
-    CreateDir {
-        /// The directory.
-        path: PathBuf,
-        /// Why.
-        source: std::io::Error,
-    },
+    #[error(transparent)]
+    Node(#[from] NodeError),
 }
 
 /// The VFIO nodes that DPDK needs to open `devices`, once they are bound to vfio-pci, and that
@@ -231,22 +205,11 @@ pub(crate) fn missing_nodes(
         if fs::symlink_metadata(&path).is_ok() {
             continue;
         }
-        let contents =
-            fs::read_to_string(&number).map_err(|source| DeviceNodeError::Unreadable {
-                node: path.clone(),
-                path: number.clone(),
-                source,
-            })?;
-        let malformed = || DeviceNodeError::Malformed {
-            path: number.clone(),
-            contents: contents.clone(),
-        };
-        let (major, minor) = contents.trim().split_once(':').ok_or_else(malformed)?;
-        missing.push(MissingNode {
-            path,
-            major: major.parse().map_err(|_| malformed())?,
-            minor: minor.parse().map_err(|_| malformed())?,
-        });
+        let number = DeviceNumber::read(&number).map_err(|source| DeviceNodeError::Number {
+            node: path.clone(),
+            source,
+        })?;
+        missing.push(MissingNode { path, number });
     }
     Ok(missing)
 }
@@ -256,26 +219,7 @@ pub(crate) fn missing_nodes(
 /// A node that has appeared since it was found missing is left as it is.
 pub(crate) fn create_nodes(nodes: &[MissingNode]) -> Result<(), DeviceNodeError> {
     for node in nodes {
-        if let Some(dir) = node.path.parent() {
-            fs::create_dir_all(dir).map_err(|source| DeviceNodeError::CreateDir {
-                path: dir.to_path_buf(),
-                source,
-            })?;
-        }
-        match mknod(
-            &node.path,
-            SFlag::S_IFCHR,
-            Mode::S_IRUSR | Mode::S_IWUSR,
-            makedev(node.major, node.minor),
-        ) {
-            Ok(()) | Err(nix::Error::EEXIST) => {}
-            Err(source) => {
-                return Err(DeviceNodeError::Create {
-                    path: node.path.clone(),
-                    source,
-                });
-            }
-        }
+        devnode::create(&node.path, node.number, 0o600)?;
     }
     Ok(())
 }
@@ -500,7 +444,10 @@ mod tests {
     }
 
     fn node(path: PathBuf, major: u64, minor: u64) -> MissingNode {
-        MissingNode { path, major, minor }
+        MissingNode {
+            path,
+            number: DeviceNumber { major, minor },
+        }
     }
 
     #[test]
@@ -570,7 +517,10 @@ mod tests {
         sys.vfio_container_dev("10:196");
         assert!(matches!(
             missing_nodes(&sys.0, &dev.0, &[pci("0000:05:00.0")]),
-            Err(DeviceNodeError::Malformed { contents, .. }) if contents.trim() == "246"
+            Err(DeviceNodeError::Number {
+                source: DeviceNumberError::Malformed { contents, .. },
+                ..
+            }) if contents.trim() == "246"
         ));
     }
 
