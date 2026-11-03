@@ -21,12 +21,14 @@ trace_target!("stats-server", LevelFilter::INFO, &[]);
 pub struct PrometheusHandler {
     handle: PrometheusHandle,
     rate_limits: rate_limit::RateLimitReader<rate_limit::PeeringRules>,
+    ingress: rate_limit::RateLimitReader<rate_limit::IngressRules>,
     telemetry: Arc<Mutex<telemetry::Telemetry>>,
 }
 
 impl PrometheusHandler {
     pub(crate) fn new(
         rate_limits: rate_limit::RateLimitReader<rate_limit::PeeringRules>,
+        ingress: rate_limit::RateLimitReader<rate_limit::IngressRules>,
         telemetry: TelemetrySources,
     ) -> Self {
         let prometheus_handle = PrometheusBuilder::new()
@@ -43,6 +45,7 @@ impl PrometheusHandler {
         Self {
             handle: prometheus_handle,
             rate_limits,
+            ingress,
             // Registered after the recorder is installed, or the series would go nowhere.
             telemetry: Arc::new(Mutex::new(telemetry::Telemetry::new(telemetry))),
         }
@@ -58,6 +61,7 @@ async fn metrics_handler(
     axum::extract::State(handler): axum::extract::State<PrometheusHandler>,
 ) -> Response<String> {
     handler.rate_limits.load().publish_metrics();
+    handler.ingress.load().publish_metrics();
     handler.telemetry.lock().publish();
     Response::builder()
         .header("Content-Type", "text/plain; version=1.0.0; charset=utf-8")
@@ -75,9 +79,10 @@ pub(crate) fn spawn_metrics(
     addr: std::net::SocketAddr,
     stats: StatsCollector,
     rate_limits: rate_limit::RateLimitReader<rate_limit::PeeringRules>,
+    ingress: rate_limit::RateLimitReader<rate_limit::IngressRules>,
     telemetry: TelemetrySources,
 ) {
-    let handler = PrometheusHandler::new(rate_limits, telemetry);
+    let handler = PrometheusHandler::new(rate_limits, ingress, telemetry);
 
     let upkeep_handle = handler.handle.clone();
     let upkeep_cancel = metrics.cancel_token();

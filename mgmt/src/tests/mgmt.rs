@@ -206,7 +206,28 @@ pub mod test {
         let vpc_table = sample_vpc_table();
         let peering_table = sample_vpc_peering_table();
         /* Overlay config */
-        Overlay::new(vpc_table, peering_table).with_rate_limits(sample_rate_limits())
+        Overlay::new(vpc_table, peering_table)
+            .with_rate_limits(sample_rate_limits())
+            .with_ingress(sample_ingress())
+    }
+
+    /* Drop what any VPC sends to 192.0.2.0/24 */
+    fn sample_ingress() -> config::external::overlay::ingress::IngressPolicy {
+        use config::external::overlay::ingress::{IngressAction, IngressPolicy, IngressRule};
+        IngressPolicy {
+            meters: std::collections::BTreeMap::new(),
+            rules: vec![IngressRule {
+                from: None,
+                pattern: config::external::overlay::acl::AclPattern {
+                    dst: [lpm::prefix::PrefixWithOptionalPorts::from(
+                        lpm::prefix::Prefix::from("192.0.2.0/24"),
+                    )]
+                    .into(),
+                    ..config::external::overlay::acl::AclPattern::default()
+                },
+                action: IngressAction::Drop,
+            }],
+        }
     }
 
     /* A byte limit on what VPC-1 sends VPC-2 */
@@ -528,6 +549,11 @@ pub mod test {
             std::num::NonZeroUsize::MIN,
         );
         let enforced = rate_limits.clone();
+        let ingress = rate_limit::RateLimitWriter::new(
+            rate_limit::RateLimits::empty(),
+            std::num::NonZeroUsize::MIN,
+        );
+        let ingress_enforced = ingress.clone();
 
         /* create port forwarding table */
         let portfw_w = PortFwTableWriter::new();
@@ -554,6 +580,7 @@ pub mod test {
             flow_filter_writer,
             aclfilterw,
             rate_limits,
+            ingress,
             portfw_w,
             vpc_stats_store,
             dp_status_r,
@@ -590,6 +617,15 @@ pub mod test {
                 .collect::<Vec<_>>(),
             ["vpc-1-to-vpc-2"],
             "an applied config hands its rate limits to the workers"
+        );
+        assert!(
+            ingress_enforced
+                .load()
+                .rules()
+                .iter()
+                .all(|r| r.action() == rate_limit::Action::Drop)
+                && !ingress_enforced.load().rules().is_empty(),
+            "an applied config hands its ingress policy to the workers"
         );
 
         /* stop the router */
