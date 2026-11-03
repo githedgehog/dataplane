@@ -116,6 +116,16 @@ pub struct PortState {
     pub control_pool: (u32, u32),
 }
 
+/// How a started port was sized, which holds for as long as it runs.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub struct PortSizing {
+    /// Descriptors on each of the port's data receive queues. Its control receive queue, if it has
+    /// one, has a ring of its own.
+    pub rx_descriptors: u16,
+    /// Bytes of memory the rx pool holds, then the control pool.
+    pub pool_bytes: (u64, u64),
+}
+
 /// Metric handles for one port's state, registered once and reused for each reading.
 ///
 /// `port_mbufs_in_use{pool}` against `port_mbufs{pool}` shows a pool filling before receive
@@ -125,14 +135,25 @@ pub struct PortStateMetrics {
     link_up: Registered<metrics::Gauge>,
     speed: Registered<metrics::Gauge>,
     link_changes: Registered<metrics::Counter>,
-    /// In use, then size, for the rx pool and the control pool.
-    pools: [(Registered<metrics::Gauge>, Registered<metrics::Gauge>); 2],
+    /// In use, size, then bytes, for the rx pool and the control pool.
+    pools: [PoolMetrics; 2],
+    rx_descriptors: Registered<metrics::Gauge>,
+    sizing: PortSizing,
+}
+
+/// One pool's series.
+#[derive(Debug)]
+struct PoolMetrics {
+    in_use: Registered<metrics::Gauge>,
+    size: Registered<metrics::Gauge>,
+    bytes: Registered<metrics::Gauge>,
 }
 
 impl PortStateMetrics {
-    /// Register the state of port `port`, the configured interface name.
+    /// Register the state of port `port`, the configured interface name, which was started with
+    /// `sizing`.
     #[must_use]
-    pub fn new(port: &str) -> PortStateMetrics {
+    pub fn new(port: &str, sizing: PortSizing) -> PortStateMetrics {
         let spec = |suffix: &str, unit: Unit, description: &str, pool: Option<&str>| {
             let mut labels = vec![("port".to_string(), port.to_string())];
             if let Some(pool) = pool {
@@ -142,23 +163,29 @@ impl PortStateMetrics {
             spec.description = description.to_string();
             spec
         };
-        let pool = |pool: &str| {
-            (
-                spec(
-                    "mbufs_in_use",
-                    Unit::Count,
-                    "mbufs checked out of the port's pool, in queues, in flight or cached by a core",
-                    Some(pool),
-                )
-                .register(),
-                spec(
-                    "mbufs",
-                    Unit::Count,
-                    "mbufs the port's pool holds",
-                    Some(pool),
-                )
-                .register(),
+        let pool = |pool: &str| PoolMetrics {
+            in_use: spec(
+                "mbufs_in_use",
+                Unit::Count,
+                "mbufs checked out of the port's pool, in queues, in flight or cached by a core",
+                Some(pool),
             )
+            .register(),
+            size: spec(
+                "mbufs",
+                Unit::Count,
+                "mbufs the port's pool holds",
+                Some(pool),
+            )
+            .register(),
+            bytes: spec(
+                "pool_bytes",
+                Unit::Bytes,
+                "hugepage memory the port's pool holds: its mbufs with their headers and padding, \
+                 and the pool's own header and per-core caches",
+                Some(pool),
+            )
+            .register(),
         };
         PortStateMetrics {
             link_up: spec(
@@ -183,22 +210,38 @@ impl PortStateMetrics {
             )
             .register(),
             pools: [pool("rx"), pool("control")],
+            rx_descriptors: spec(
+                "rx_descriptors",
+                Unit::Count,
+                "receive descriptors on each of the port's data receive queues; its control \
+                 receive queue, if it has one, has a ring of its own",
+                None,
+            )
+            .register(),
+            sizing,
         }
     }
 
-    /// Publish a reading.
+    /// Publish port state and sizing.
+    #[allow(clippy::cast_precision_loss)] // pools are far below 2^52 bytes
     pub fn publish(&self, state: &PortState) {
         self.link_up.metric.set(f64::from(u8::from(state.link_up)));
         self.speed.metric.set(f64::from(
             state.speed_mbps.filter(|_| state.link_up).unwrap_or(0),
         ));
         self.link_changes.metric.absolute(state.link_changes);
-        for ((in_use, size), (used, of)) in
-            self.pools.iter().zip([state.rx_pool, state.control_pool])
-        {
-            in_use.metric.set(f64::from(used));
-            size.metric.set(f64::from(of));
+        let (rx_bytes, control_bytes) = self.sizing.pool_bytes;
+        for (metrics, ((used, of), bytes)) in self.pools.iter().zip([
+            (state.rx_pool, rx_bytes),
+            (state.control_pool, control_bytes),
+        ]) {
+            metrics.in_use.metric.set(f64::from(used));
+            metrics.size.metric.set(f64::from(of));
+            metrics.bytes.metric.set(bytes as f64);
         }
+        self.rx_descriptors
+            .metric
+            .set(f64::from(self.sizing.rx_descriptors));
     }
 }
 
@@ -334,7 +377,13 @@ mod exported {
     fn state_reaches_its_series() {
         let scrape = Scrape::default();
         metrics::with_local_recorder(&scrape, || {
-            let metrics = PortStateMetrics::new("eth0");
+            let metrics = PortStateMetrics::new(
+                "eth0",
+                PortSizing {
+                    rx_descriptors: 4096,
+                    pool_bytes: (300_000, 40_000),
+                },
+            );
             metrics.publish(&PortState {
                 link_up: true,
                 speed_mbps: Some(100_000),
@@ -363,6 +412,9 @@ mod exported {
         assert_eq!(pool("port_mbufs", "rx"), Some(100.0));
         assert_eq!(pool("port_mbufs_in_use", "control"), Some(2.0));
         assert_eq!(pool("port_mbufs", "control"), Some(20.0));
+        assert_eq!(pool("port_pool_bytes", "rx"), Some(300_000.0));
+        assert_eq!(pool("port_pool_bytes", "control"), Some(40_000.0));
+        assert_eq!(scrape.get("port_rx_descriptors", &port), Some(4096.0));
     }
 
     #[test]

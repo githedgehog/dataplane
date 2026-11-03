@@ -35,7 +35,7 @@ use tracectl::{
     TracingControl, TracingRateLimitConfig, custom_target, get_trace_ctl, trace_target,
 };
 
-use tracing::{error, info, level_filters::LevelFilter, warn};
+use tracing::{debug, error, info, level_filters::LevelFilter, warn};
 
 use concurrency::sync::Arc;
 use config::internal::routing::bmp::BmpOptions;
@@ -331,7 +331,7 @@ fn eal_arguments(config: &LaunchConfiguration) -> Vec<String> {
         if let Some(plan) = &dpdk.hugepages
             && let Some(arg) = plan.numa_mem_arg()
         {
-            info!("EAL will preallocate {plan}");
+            debug!("EAL will preallocate {plan}");
             eal_args.push(format!("--numa-mem={arg}"));
         }
     } else {
@@ -904,6 +904,7 @@ pub fn main() {
                 .iter()
                 .map(|port| (port.name.to_string(), port.counters.clone()))
                 .collect(),
+            hugepages: config.driver.hugepages().cloned(),
         },
     );
 

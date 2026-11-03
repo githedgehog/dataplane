@@ -37,7 +37,7 @@ use dpdk::mem::{MBUF_BURST, Mbuf};
 use dpdk::queue::rx::RxQueueIndex;
 use lifecycle::Subsystem;
 use lldp::Link;
-use stats::{PortCounters, PortMetrics, PortState, PortStateMetrics, XstatMetrics};
+use stats::{PortCounters, PortMetrics, PortSizing, PortState, PortStateMetrics, XstatMetrics};
 use tokio::sync::watch;
 use tracectl::trace_target;
 use tracing::{info, warn};
@@ -367,7 +367,16 @@ impl<'p, 'eal> PortTelemetry<'p, 'eal> {
         PortTelemetry {
             port,
             tap_link,
-            state: PortStateMetrics::new(port.name.as_ref()),
+            state: PortStateMetrics::new(
+                port.name.as_ref(),
+                PortSizing {
+                    rx_descriptors: port.rx_descriptors,
+                    pool_bytes: (
+                        port.rx_pool.memory_bytes(),
+                        port.control_pool.memory_bytes(),
+                    ),
+                },
+            ),
             up: None,
             changes: 0,
             xstat_ids: wanted.iter().map(|x| x.id).collect(),

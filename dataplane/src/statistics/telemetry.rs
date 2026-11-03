@@ -10,15 +10,15 @@
 
 use std::collections::HashMap;
 
-use args::IdleMode;
+use args::{HugepagePlan, IdleMode};
 use concurrency::sync::Arc;
 use flow_entry::flow_table::FlowTable;
 use nat::masquerade::NatAllocatorReader;
 use net::packet::{PacketStats, VpcDiscriminant};
 use stats::{
-    BuildInfoMetrics, FlowTableMetrics, MasqueradeMetrics, MasqueradeRegion, PipelineMetrics,
-    RxTaskHealth, TapMetrics, WorkerCounters, WorkerLoadCounters, WorkerLoadMetrics, WorkerMetrics,
-    WorkerStateMetrics,
+    BuildInfoMetrics, FlowTableMetrics, HugepageMetrics, MasqueradeMetrics, MasqueradeRegion,
+    PipelineMetrics, RxTaskHealth, TapMetrics, WorkerCounters, WorkerLoadCounters,
+    WorkerLoadMetrics, WorkerMetrics, WorkerStateMetrics,
 };
 
 use crate::drivers::cpbridge::TapCounters;
@@ -39,6 +39,8 @@ pub(crate) struct TelemetrySources {
     pub(crate) masquerade: NatAllocatorReader,
     /// Each port's tap, by the port's configured name.
     pub(crate) taps: Vec<(String, TapCounters)>,
+    /// The hugepages init set aside for EAL, if it did.
+    pub(crate) hugepages: Option<HugepagePlan>,
 }
 
 /// Publishes [`TelemetrySources`] to the installed metrics recorder.
@@ -48,6 +50,7 @@ pub(crate) struct Telemetry {
     flows: FlowTableMetrics,
     masquerade: MasqueradeMetrics,
     build: BuildInfoMetrics,
+    hugepages: Option<HugepageMetrics>,
     /// One per tap, in the order of [`TelemetrySources::taps`].
     taps: Vec<TapMetrics>,
     /// Registered as each worker's port queue first appears in the driver's status.
@@ -70,6 +73,7 @@ impl Telemetry {
             taps,
             // As the startup banner reports it: "dev" for a build that does not ship.
             build: BuildInfoMetrics::new(option_env!("VERSION").unwrap_or("dev")),
+            hugepages: sources.hugepages.as_ref().map(hugepage_metrics),
             sources,
             pipeline: PipelineMetrics::new(),
             flows: FlowTableMetrics::new(),
@@ -87,6 +91,9 @@ impl Telemetry {
         self.flows
             .publish(self.sources.flows.live_len(), self.sources.flows.capacity());
         self.build.publish();
+        if let Some(hugepages) = &self.hugepages {
+            hugepages.publish();
+        }
         self.publish_masquerade();
         for ((_, counters), metrics) in self.sources.taps.iter().zip(&self.taps) {
             metrics.publish(&counters.load());
@@ -115,6 +122,21 @@ impl Telemetry {
             }
         }
     }
+}
+
+/// Register what `plan` set aside: its page size, and the bytes on each node, with `any` for the
+/// memory on no node in particular.
+fn hugepage_metrics(plan: &HugepagePlan) -> HugepageMetrics {
+    const MIB: u64 = 1 << 20;
+    let unplaced = (plan.unplaced_mb > 0).then(|| ("any".to_string(), plan.unplaced_mb));
+    HugepageMetrics::new(
+        plan.page_size_kb * 1024,
+        plan.per_node_mb
+            .iter()
+            .map(|(node, mb)| (node.to_string(), *mb))
+            .chain(unplaced)
+            .map(|(node, mb)| (node, mb * MIB)),
+    )
 }
 
 impl Telemetry {
@@ -263,6 +285,11 @@ mod tests {
                 driver,
                 masquerade: nat::masquerade::NatAllocatorWriter::new().get_reader(),
                 taps: vec![("eth0".to_string(), TapCounters::default())],
+                hugepages: Some(HugepagePlan {
+                    page_size_kb: 1 << 20,
+                    per_node_mb: vec![(1, 3072)],
+                    unplaced_mb: 512,
+                }),
             });
             telemetry.publish();
             // Counts advance; publishing again carries them, rather than adding them up.
@@ -292,6 +319,10 @@ mod tests {
                 .any(|series| series.starts_with("dataplane_build_info{"))
         );
         assert_eq!(get(r#"port_tap_punted{port="eth0"}"#), Some(0.0));
+        assert_eq!(
+            get(r#"dpdk_hugepages_reserved_bytes{node="any"}"#),
+            Some(536_870_912.0)
+        );
         let data = |name: &str| get(&format!(r#"{name}{{port="eth0",queue="data",worker="1"}}"#));
         let control = |name: &str| {
             get(&format!(
@@ -327,5 +358,58 @@ mod tests {
             (mode("poll"), mode("monitor"), mode("interrupt")),
             (Some(0.0), Some(0.0), Some(1.0))
         );
+    }
+
+    /// Whatever init set aside, the series carry all of it, in bytes, under one label each: every
+    /// node of the plan, and `any` exactly when some is on no node in particular.
+    #[test]
+    #[allow(clippy::cast_precision_loss)] // u16 MiB counts, summed, stay far below 2^52 bytes
+    fn a_hugepage_plan_is_published_whole() {
+        bolero::check!()
+            .with_type::<(bool, BTreeMap<u32, u16>, u16)>()
+            .for_each(|(gib_pages, nodes, unplaced)| {
+                let plan = HugepagePlan {
+                    page_size_kb: if *gib_pages { 1 << 20 } else { 2048 },
+                    per_node_mb: nodes
+                        .iter()
+                        .map(|(node, mb)| (*node, u64::from(*mb)))
+                        .collect(),
+                    unplaced_mb: u64::from(*unplaced),
+                };
+                let recorder = PrometheusBuilder::new().build_recorder();
+                let handle = recorder.handle();
+                metrics::with_local_recorder(&recorder, || {
+                    hugepage_metrics(&plan);
+                });
+                let rendered = series(&handle.render());
+                let reserved: BTreeMap<&str, f64> = rendered
+                    .iter()
+                    .filter_map(|(series, bytes)| {
+                        let node = series
+                            .strip_prefix(r#"dpdk_hugepages_reserved_bytes{node=""#)?
+                            .strip_suffix(r#""}"#)?;
+                        Some((node, *bytes))
+                    })
+                    .collect();
+                assert_eq!(
+                    rendered.get("dpdk_hugepage_size_bytes"),
+                    Some(&((plan.page_size_kb * 1024) as f64))
+                );
+                for (node, mb) in &plan.per_node_mb {
+                    assert_eq!(
+                        reserved.get(node.to_string().as_str()),
+                        Some(&((mb << 20) as f64))
+                    );
+                }
+                assert_eq!(
+                    reserved.get("any"),
+                    (plan.unplaced_mb > 0)
+                        .then_some((plan.unplaced_mb << 20) as f64)
+                        .as_ref()
+                );
+                let total_mb =
+                    plan.per_node_mb.iter().map(|(_, mb)| mb).sum::<u64>() + plan.unplaced_mb;
+                assert_eq!(reserved.values().sum::<f64>(), (total_mb << 20) as f64);
+            });
     }
 }
