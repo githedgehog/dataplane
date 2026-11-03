@@ -1,19 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Give this process (and so the dataplane) the verbs command channel nodes that moving the
-//! bifurcated (mlx5) functions into the datapath namespace creates.
+//! Expose verbs command channels after moving mlx5 functions into the datapath namespace.
 //!
-//! Each devlink reload registers the function's RDMA device and its verbs command channel anew,
-//! some time after the reload returns (on a BlueField-3 in exclusive RDMA mode, up to about 2 s
-//! when the functions had only just come back from a previous dataplane's namespace), and not
-//! necessarily under the number (`uverbsN`) the channel had. A container's `/dev` is a copy of the
-//! host's taken when the container was created, so the node libibverbs opens can be missing, or
-//! name another channel, for as long as the container lives (see [`hardware::devnode`]). mlx5's
-//! probe then fails ("Verbs device not found", "Failed to initialize device context").
-//!
-//! Init reloads a function only after a previous dataplane's namespace has returned it, so once
-//! [`expose`] has seen each channel open, the numbers stay put for the dataplane.
+//! A devlink reload may register channels late (~2 s on BlueField-3) and change their `uverbsN`.
+//! Container `/dev` nodes can then be missing or stale, causing mlx5 probe failures.
+//! See [`hardware::devnode`].
+//! Init waits for the previous namespace to return each function before reloading it.
+//! Once [`expose`] can open every channel, their numbers remain stable for the dataplane.
 
 use std::time::Duration;
 
@@ -65,14 +59,12 @@ pub(crate) enum VerbsNodeError {
     },
 }
 
-/// Wait until libibverbs can open the verbs command channel of each of `addresses` from `roots`,
-/// making (with `make`) any node `/dev` lacks or has on another device, or until `deadline`.
-///
-/// A node is made again whenever the channel it is for no longer has its number.
+/// Wait until all `addresses` have openable verbs channels, or until `deadline`.
+/// Use `make` to repair missing or stale nodes, including channels renumbered during the wait.
 ///
 /// # Errors
 ///
-/// One [`VerbsNodeError`] per function that is not reachable.
+/// Returns one [`VerbsNodeError`] per unreachable function.
 pub(crate) fn expose(
     roots: &Roots,
     addresses: &[PciAddress],

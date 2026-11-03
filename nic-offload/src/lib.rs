@@ -9,21 +9,15 @@
     clippy::panic
 )]
 
-//! Policy lowered into NIC hardware, per port and per NIC species, with software as the fallback.
+//! Offload gateway policy to NIC hardware, with software fallback.
 //!
-//! - [`program`] compiles published policy (the ingress policy, ACL denies and rate limits) into
-//!   what a NIC may do, from the typed match-action rules software uses, and refuses what it may
-//!   not. It knows no NIC.
-//! - One module per NIC species lowers a program onto that NIC: [`mlx5`].
-//! - [`model`] says what a lowered plan may do with a frame, without the NIC, so tests can hold
-//!   the lowering to the software it stands in front of.
-//! - The driver asks this crate three questions and nothing else: what a device needs at probe
-//!   ([`probe_args`]), what a port reserves before start ([`port_resources`]), and, per started
-//!   port, to follow the policy ([`mlx5::run`]).
+//! - [`program`] compiles typed ingress, ACL and rate-limit rules into a backend-neutral program.
+//! - [`mlx5`] lowers and installs the program on supported hardware.
+//! - [`model`] predicts NIC outcomes for comparison with software.
 //!
-//! Offload is on by default; the gateway's `gateway.alpha.githedgehog.com/attempt-offloads:
-//! "false"` annotation turns it off, and a port whose offload probe fails runs without it. mlx5 only, for
-//! now.
+//! Drivers use [`probe_args`], [`port_resources`] and [`mlx5::run`] to configure and follow policy.
+//! Offload defaults on; `gateway.alpha.githedgehog.com/attempt-offloads: "false"` disables it.
+//! Failed offload probes fall back to software. Currently supports mlx5 only.
 
 pub mod mlx5;
 pub mod model;

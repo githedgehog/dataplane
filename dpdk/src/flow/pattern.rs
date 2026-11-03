@@ -56,10 +56,8 @@ impl EthMatch {
         self
     }
 
-    /// Constrain whether at least one VLAN tag follows the header (`has_vlan`).
-    ///
-    /// Without it, whether a pattern of an Ethernet header and an IP header matches a tagged frame
-    /// is the PMD's choice.
+    /// Constrain VLAN presence (`has_vlan`).
+    /// Without this constraint, the PMD decides whether Ethernet/IP patterns match tagged frames.
     #[must_use]
     pub fn tagged(mut self, tagged: bool) -> EthMatch {
         self.tagged = Some(tagged);
@@ -161,10 +159,8 @@ impl Ipv4Match {
         self
     }
 
-    /// Match only packets that are not fragments.
-    ///
-    /// Constrains the whole fragment field but the don't-fragment bit (more fragments and offset)
-    /// to zero, which mlx5 serves as its own "fragmented" bit.
+    /// Match unfragmented packets: more-fragments and offset must be zero.
+    /// The don't-fragment bit is ignored; mlx5 uses its own "fragmented" bit.
     #[must_use]
     pub fn unfragmented(mut self) -> Ipv4Match {
         self.unfragmented = true;
@@ -446,10 +442,8 @@ impl UdpMatch {
         self
     }
 
-    /// Constrain the source port to `range` (one port, if it holds one).
-    ///
-    /// A range is a `last` bound, which a template table matches only if its pattern template
-    /// has a range there too: shapes tell them apart.
+    /// Constrain the source port to `range`.
+    /// A template must also mark this field as a range; shapes enforce this.
     #[must_use]
     pub fn src_range(mut self, range: PortRange) -> UdpMatch {
         self.src = Some(Ports::range(range));
@@ -549,13 +543,10 @@ impl TcpMatch {
     }
 }
 
-/// The masks an item lowers to, ignoring the values matched.
+/// An item's masks and range fields, independent of matched values.
 ///
-/// A template table matches every rule with its pattern template's masks, so a rule whose masks
-/// differ would silently match something other than what it says; templates compare shapes to
-/// refuse such rules. Shapes are read back from the lowered masks, so they agree with what the PMD
-/// sees: an unconstrained field and a zero-length prefix have the same shape. Only the fields
-/// lowering sets are read.
+/// Templates reject rules with different shapes to prevent silently changing their matches.
+/// Shapes are read from lowered fields, so zero-length prefixes and wildcards compare equal.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ItemShape {
     /// An Ethernet header.

@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! The NIC's meters against the software's, over time: traffic the software meter has colored
-//! nothing red so far, the NIC meter colors nothing red either.
+//! Verify that NIC meters pass traffic within software rates and bursts.
 //!
-//! Once software colors a packet red, it keeps that packet's tokens, which the more permissive NIC
-//! meter spent: from then on the two may drop different packets of the same traffic, and no margin
-//! keeps every NIC red a software red. What the margins guarantee is that traffic within the
-//! software's rates and bursts is never dropped in the NIC.
-//!
-//! Software is the meter the workers share, its leases spread over workers as packets arrive; the
-//! NIC meter has its rates and bursts as mlx5 encodes them.
+//! After software first colors a packet red, drop decisions may diverge:
+//! software keeps that packet's tokens, while the more permissive NIC may spend them.
+//! The property compares shared software meters across workers with mlx5-encoded NIC profiles.
 
 use std::time::Duration;
 
@@ -194,11 +189,10 @@ struct Chain {
     arrivals: Vec<(u32, u16, u8)>,
 }
 
-/// Software meters a packet with both components of a meter, the packets component taking the
-/// bytes component's color (color-aware: never better); the NIC chains two color-blind meters, the
-/// second charged with what the first did not color red. Traffic the software colors nothing red
-/// in either component, the NIC colors nothing red in either: both meters see the same packets,
-/// and a color-blind meter is at least as permissive as a color-aware one fed the same packets.
+/// Software chains bytes and packets meters color-aware; the NIC chains them color-blind.
+/// The NIC's packets meter sees only traffic the bytes meter passes.
+/// For traffic software never colors red, both meters see the same packets, and color-blind
+/// metering is at least as permissive as color-aware metering.
 #[test]
 fn a_chained_meter_is_never_red_in_the_nic_where_software_is_not() {
     // Runs whose packets component colored something red or yellow first, so the chain mattered.

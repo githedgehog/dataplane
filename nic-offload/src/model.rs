@@ -1,19 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! A software model of a lowered [`Plan`]: what the NIC may do with a frame, without the NIC.
+//! Model every possible outcome of a lowered [`Plan`].
 //!
-//! Patterns are matched by [`dpdk::flow::model`], on the very structures the PMD reads; this
-//! module adds what the tables do: groups, priorities, jumps, meters and their colors. Where the
-//! hardware may go more than one way, the model returns every way:
-//!
-//! - rules of one table (or of tables of equal priority) keep no order among themselves, so every
-//!   matching rule is a possible outcome;
-//! - a meter may give any color (the model keeps no token state);
-//! - the frame may be parsed in more than one way (see [`dpdk::flow::model`]), but for what the
-//!   qualification settled for mlx5 ([`mlx5::PARSER`](crate::mlx5::PARSER)).
-//!
-//! A test then holds every possible outcome to the cascade contract against the software.
+//! [`dpdk::flow::model`] matches the PMD's pattern structures; this module interprets tables,
+//! priorities, jumps and meters. Outcomes include all matching rules at equal priority,
+//! all meter colors (no token state), and parser choices allowed by [`mlx5::PARSER`](crate::mlx5::PARSER).
+//! Tests compare each outcome with the software cascade contract.
 
 use dpdk::flow::Priority;
 use dpdk::flow::model::{Frame, Unmodelled, views_by};

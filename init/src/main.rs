@@ -551,11 +551,9 @@ fn bring_up_datapath_interfaces(netns: &NetworkNamespace) -> Result<usize, Bring
     })
 }
 
-/// Make the verbs command channel nodes the moved bifurcated devices need, once the kernel has
-/// registered their channels in the datapath namespace. See [`verbs`].
-///
-/// Looks from a temporary thread with that namespace's sysfs, which is what lists its RDMA
-/// devices in exclusive mode; the nodes it makes are in the `/dev` the dataplane inherits.
+/// Create verbs channel nodes after moved devices register in the datapath namespace.
+/// A temporary thread uses that namespace's sysfs view for exclusive RDMA mode.
+/// The nodes are created in the `/dev` inherited by the dataplane; see [`verbs`].
 fn expose_verbs_nodes(netns: &NetworkNamespace, devices: &[ResolvedDevice]) -> Result<(), String> {
     let bifurcated: Vec<PciAddress> = devices
         .iter()

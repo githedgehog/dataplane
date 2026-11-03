@@ -146,21 +146,15 @@ impl From<&ValidatedOverlay> for PeeringAclRuleSet {
 // selected backend (see `Backend`) then consumes those: `Dpdk` converts them to rte_acl fields at
 // build time; `Reference` (test only) matches them directly.
 
-/// A single ACL match key: what a rule matches, the directed peering (VPC pair), addresses,
-/// protocol, ports and TCP flags.
+/// ACL key: directed peering, addresses, protocol, ports and TCP flags.
 ///
-/// `proto` is a `#[mask]` byte on purpose. rte_acl requires the first field to be a single byte,
-/// and a bitmask byte both satisfies that and lets one field express either an exact protocol
-/// (`mask 0xff`) or "any protocol" (`mask 0x00`). Carrying the protocol in the key -- rather than
-/// in the table identity -- collapses what used to be six per-protocol tables into one table per
-/// IP version, and removes the need to duplicate an `Any` rule across protocols.
+/// `proto` uses a mask to satisfy rte_acl's one-byte first-field requirement:
+/// `0xff` matches one protocol; `0x00` matches any protocol.
+/// This allows one ordered table per IP version.
 ///
-/// Ports are only meaningful for TCP/UDP; config validation forbids port matching on other
-/// protocols, so non-TCP/UDP rules always carry a wildcard port range and a portless packet looks
-/// up with port `0`. Likewise, only TCP rules can match on TCP flags, and packets with no TCP
-/// header look up with no flag set.
-///
-/// Its derived `AclKeyRule` is the typed rule each table keeps, which offloads lower.
+/// Only TCP/UDP rules match ports; other rules use wildcard ports, and portless packets use `0`.
+/// Only TCP rules match flags; packets without a TCP header use no flags.
+/// Offload consumes the derived `AclKeyRule` stored in each table.
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
 pub struct AclKey<I> {
     #[mask]

@@ -133,16 +133,13 @@ fn an_idle_ring_queue_is_watched_if_the_cpu_can() {
     });
 }
 
-/// The timeout must bound an idle wait without relying on an external interrupt.
-/// The lower bound allows faster hardware timers, including Zen 4's timer at twice the TSC rate,
-/// while rejecting waits that return immediately.
+/// The timeout must bound an idle wait without an external interrupt.
+/// Allow faster hardware timers, including Zen 4's 2x TSC rate, but reject immediate returns.
 ///
-/// Ignored while AMD's waits are not understood. The EAL hands MWAITX the low 32 bits of the
-/// absolute TSC deadline (DPDK 1213a8895b), where its timer takes the time to wait, so an idle wait
-/// on AMD ends at the next interrupt instead: 2 us to 1 ms for a 20 us wait, and this test fails
-/// now and then. Passing MWAITX the time to wait fixed that on a Threadripper 7000 (family 0x19
-/// model 0x18: every wait 10 us), but on a Ryzen 7000 CI runner (model 0x61) every such wait
-/// returned in about 450 ns. Run it with `--ignored`; a failure reports the CPU and every wait.
+/// Ignored pending AMD timer investigation: DPDK 1213a8895b passes MWAITX an absolute deadline,
+/// but MWAITX expects a duration. A 20 us wait then takes 2 us to 1 ms, ending on an interrupt.
+/// Passing a duration gave 10 us on Threadripper 7000 (family 0x19, model 0x18), but ~450 ns
+/// on Ryzen 7000 CI (model 0x61). Run with `--ignored` to report the CPU and wait durations.
 #[test]
 #[ignore = "AMD idle waits end at the next interrupt; see the doc comment"]
 fn an_idle_wait_sleeps_until_its_deadline() {

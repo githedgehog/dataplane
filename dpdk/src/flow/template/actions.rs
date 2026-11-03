@@ -168,13 +168,11 @@ fn fixed(action: &TemplateAction) -> OwnedAction {
     }
 }
 
-/// The template's actions and masks.
+/// Template actions and masks.
 ///
-/// A mask with a configuration fixes the action for every rule; a null one leaves it to the rule.
-/// That holds for an indirect action too: mlx5 uses the template's handle for every rule of a
-/// template whose mask has a configuration, ignoring the rules' own (`mlx5_flow_hw.c`,
-/// `__flow_hw_actions_translate`). So a per-rule meter is an `INDIRECT` action with no
-/// configuration, typed by a `METER_MARK` mask with none either.
+/// A configured mask fixes the action for all rules; a null configuration permits per-rule values.
+/// mlx5 applies this to indirect handles too (`__flow_hw_actions_translate`).
+/// Per-rule meters therefore use an unconfigured `INDIRECT` action and `METER_MARK` mask.
 pub(crate) fn template(actions: &[TemplateAction]) -> (Vec<OwnedAction>, Vec<OwnedAction>) {
     let values = actions.iter().map(fixed).collect();
     let masks = actions

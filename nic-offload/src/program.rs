@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! What a NIC may do for a gateway's policy: a backend-neutral program compiled from the typed
-//! match-action rules software keeps, today those of the ACL filter (its denies) and of the rate
-//! limiter.
+//! Compile typed ingress, ACL and rate-limit rules into a backend-neutral NIC program.
 //!
-//! The contract is a *cascade*: a NIC may only drop what software would drop too, and never changes
-//! a packet, so the software pipeline stays authoritative and unchanged. Anything that cannot keep
-//! that promise is refused and stays in software alone.
-//!
-//! The ACL filter and the rate limiter decide independently, each by its own first match; the
-//! program keeps them apart, so the NIC does too (see [`mlx5`](crate::mlx5)).
+//! NIC rules must preserve packet contents and software match decisions.
+//! Meters must pass traffic within software limits; unsupported rules stay in software.
+//! Each stage keeps its own first-match order (see [`mlx5`](crate::mlx5)).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -295,11 +290,9 @@ pub struct IngressRule {
     /// it overlaps with another verdict, so whichever rule of the lowest layer a packet matches
     /// does what the first rule it matches in software does.
     pub layer: u32,
-    /// Whether it matches fragments too, as software does: a rule naming no protocol (so no ports
-    /// or flags) matches every fragment of what it matches. Unless an earlier rule with another
-    /// verdict that matches no fragments in the NIC overlaps it: software may match a first
-    /// fragment to that one (it parses the protocol and ports of first fragments), so the NIC must
-    /// not take it to this one. Every other rule matches no fragment in the NIC.
+    /// Whether this rule may match fragments.
+    /// Requires no protocol constraint and no earlier overlapping rule with a different verdict
+    /// that excludes fragments in hardware: software could match a first fragment to that rule.
     pub fragments: bool,
 }
 
@@ -429,12 +422,10 @@ pub enum Refusal {
     Overlap,
 }
 
-/// The policy a NIC may enforce, and what it may not.
+/// Offloadable policy and software exclusions.
 ///
-/// A peering is enforced in the NIC whole, or not at all: all of its ACL denies and rate limits,
-/// or none. Then the NIC never charges a meter for a packet software denies (the NIC denied it
-/// first), and a peering's policy is in one place or the other, never split. Rules that drop
-/// nothing (ACL allows, meters that drop nothing) need nothing in the NIC.
+/// Offload each peering's ACL denies and rate limits together, so denied packets never reach its meters.
+/// Allows and meters that never drop need no NIC rules.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Program {
     /// ACL denies, IPv4 then IPv6, each in first-match order.
@@ -447,11 +438,8 @@ pub struct Program {
     pub ingress: Vec<IngressRule>,
     /// The peerings left in software, with what of each no NIC may enforce.
     pub refused: Vec<(Peering, Origin, Refusal)>,
-    /// By source VPC, the destinations of its other peers its rules must let pass untouched: a
-    /// rule's destination prefix covers them, but software sends their traffic to another peer
-    /// than the rule's. A pass applies to the rules of less specific destinations
-    /// ([`DenyRule::level`] below its prefix length) only: those of its own peer, and of more
-    /// specific destinations inside it, are matched before it.
+    /// Other peers' destinations that must bypass broader rules from this source VPC.
+    /// Rules at the same or a longer prefix length precede these passes; see [`DenyRule::level`].
     pub passes: BTreeMap<Vni, BTreeSet<Prefix>>,
 }
 
@@ -487,17 +475,11 @@ impl Routing {
         }
     }
 
-    /// `matches` of a rule for the traffic `src_vni` sends to `dst_vni`, narrowed to each of
-    /// `dst_vni`'s destinations it overlaps (none: it matches nothing software sends there), each
-    /// with its level ([`DenyRule::level`]). The other peers' destinations that take some of a
-    /// narrowed match's traffic (at least as specific as the destination it was narrowed with) are
-    /// recorded to pass untouched.
+    /// Intersect `matches` with destinations routed from `src_vni` to `dst_vni`, recording each level.
+    /// Record other peers' equally or more specific destinations as passes around those rules.
     ///
-    /// A gated destination (masquerade) takes only replies, and a partial one (port forwarding)
-    /// only some protocols and ports: the rest of their prefix goes to other peers, even less
-    /// specific ones. A rule is not narrowed to them, so what software sends there it enforces
-    /// alone. Nor to a destination another peer has too: which of the two takes its traffic is
-    /// flow-filter's order, which a pass of the same level cannot follow.
+    /// Skip masquerade and port-forwarding destinations: they take only part of their prefix's traffic.
+    /// Also skip prefixes shared by peers, whose flow-filter ordering a same-level pass cannot express.
     fn narrow(&mut self, dst_vni: Vni, matches: &Match) -> Vec<(Match, u8)> {
         let src_vni = matches.src_vni;
         let Some(routes) = self.routes.get(&src_vni) else {
@@ -555,19 +537,12 @@ fn component<C>(limits: &RateLimits<C>, meter: usize) -> Option<Component> {
     })
 }
 
-/// The components of `meter` a NIC enforces, bytes then packets, each dropping red, chained
-/// color-blind. Software chains them color-aware and stops at the first drop
-/// (`rate_limit::stage`), so the NIC enforces a component only where it charges it for nothing
-/// software does not charge it for:
-/// - a packet the bytes component colors red stays red in the packets one, uncharged, and is
-///   dropped if either component drops red: the NIC's bytes meter drops red if either does;
-/// - the NIC charges its packets meter for everything its bytes meter passes (everything, without
-///   one), software for what its bytes component colors green or yellow and does not drop: the NIC
-///   enforces the packets component only if it drops red and the bytes component passes yellow.
-///   Otherwise only the bytes one, which is more permissive still.
+/// Choose NIC meter components, bytes before packets, chained color-blind.
 ///
-/// So enforced, the two are as permissive as software's chain: traffic software colors nothing
-/// red, the NIC colors nothing red (`meters.rs`).
+/// The bytes meter drops red if either software component does.
+/// Include the packets meter only if it drops red and any bytes component passes yellow;
+/// otherwise it could charge packets that software already dropped.
+/// This preserves traffic software never colors red; see the property test in `meters.rs`.
 fn components<C>(limits: &RateLimits<C>, meter: usize) -> [Option<Component>; 2] {
     let Some(meter) = limits.meters().get(meter) else {
         return [None, None];
@@ -782,10 +757,8 @@ impl Program {
         // A rule's destination prefix stands for its peer only as narrowed to what software
         // sends that peer.
         let mut routing = Routing::new(destinations);
-        // A rule identical to an earlier one (of its source VPC: the VNI is part of the match)
-        // adds nothing: an earlier identical rate limit charges the same meter, or the later one
-        // overlaps another meter's and is refused. And mlx5 takes identical rules into one table
-        // but fails to remove the second.
+        // Deduplicate per source VPC: identical rules add nothing, and mlx5 accepts duplicates
+        // but fails to remove the second. Rules sharing a match with another meter are refused.
         let mut denies: Vec<DenyRule> = Vec::new();
         let mut seen: HashSet<Match> = HashSet::new();
         for deny in c.denies {
@@ -983,10 +956,9 @@ fn lowered<I: FixedSize>(
 }
 
 impl Compilation {
-    /// Refuse the rate limits of traffic from a VPC the NIC polices at ingress, with their
-    /// peerings. The NIC's ingress meters are looser than software's: they pass on some of what
-    /// software's ingress stage drops, which a peering meter after them in the NIC would be
-    /// charged for, and run dry ahead of software's.
+    /// Keep peerings with rate limits in software when their source VPC is policed at ingress.
+    /// Looser NIC ingress meters pass some software drops; downstream NIC meters would charge
+    /// those packets and exhaust their budget before software.
     fn policed(&mut self, ingress: &RateLimits<IngressRules>, excluded: &Exclusions) {
         let mut policing = Program::default();
         policing.add_ingress(ingress, excluded);

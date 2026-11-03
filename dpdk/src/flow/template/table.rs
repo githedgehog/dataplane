@@ -139,15 +139,13 @@ impl<'t, D: Domain> TemplateTable<'t, D> {
         Ok(())
     }
 
-    /// Insert a rule matching `pattern` with pattern template `pattern_template`, acting with
-    /// actions template `actions_template`, given its per-rule `args`.
-    ///
-    /// Waits for the rule to be installed.
+    /// Insert a rule using the indexed pattern and actions templates and per-rule `args`.
+    /// Waits for installation to complete.
     ///
     /// # Errors
     ///
-    /// Returns an error if a template index is out of range, if `pattern` does not have the shape
-    /// of its template, if `args` do not fit the actions template, or if the PMD fails.
+    /// Returns an error for invalid template indices, mismatched pattern shapes or arguments,
+    /// or a PMD failure.
     pub fn insert<'r, Pos>(
         &'r self,
         pattern_template: usize,

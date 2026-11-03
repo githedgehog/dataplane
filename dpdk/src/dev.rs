@@ -1234,12 +1234,10 @@ impl PortLifecycle<'_> {
         Ok(())
     }
 
-    /// Flush before stopping, reporting rules left by forgotten handles or failed destroys.
-    /// Skips ports with no recorded rules; the count is cleared only after a successful flush.
-    /// Template rules are counted apart and reported. Under mlx5 hardware steering a flush removes
-    /// them too (`mlx5_flow_list_flush`), but only leaked synchronous rules make this flush;
-    /// otherwise they stay installed until the port closes. Their count is not cleared by a flush,
-    /// so after one it can over-count.
+    /// Flush leaked synchronous rules before stopping; clear their count only on success.
+    /// Under mlx5 hardware steering, this also removes template rules (`mlx5_flow_list_flush`).
+    /// Template rules are counted separately and do not trigger a flush themselves.
+    /// Their count is retained after a flush and may overcount until port close.
     fn flush_flows(&self) {
         let port = self.port;
         let templated = self.templates.live_rules();

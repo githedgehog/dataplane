@@ -213,28 +213,17 @@ pub struct Reconciled {
     pub refused: Vec<(Role, Error)>,
 }
 
-/// One port's rules, reconciled with plans one source VPC at a time.
+/// Reconcile a port's rules one source VPC at a time.
 ///
-/// What the port holds is known from the handles of what was created. The NIC changes
-/// through two kinds of step, each atomic for a packet:
+/// Detach by removing the VPC's switch rule, then destroy its unreachable generation.
+/// Attach by building an unreachable generation, then inserting its switch rule.
+/// A changed VPC uses software between these steps, so stale policy cannot remain active.
+/// Unchanged VPCs and meter token states are preserved; incomplete generations are never attached.
 ///
-/// - a source VPC is *detached* by removing its switch rule: its traffic then goes to software
-///   (the switch's catch-all), and its generation of rules, unreachable, is torn down;
-/// - a source VPC is *attached* by building its next generation aside, unreachable, and then
-///   inserting its switch rule.
-///
-/// A VPC whose policy changed is detached, then attached again: between the two, software alone
-/// enforces its policy, which is always safe. (Switching it in place, which mlx5 can do in a few
-/// microseconds, would keep the old policy in the NIC until the new generation is built, while
-/// software already enforces the new one.) VPCs whose policy did not change are left alone, and
-/// so are their meters' token states. A generation the NIC refuses part of is never attached.
-///
-/// If removing a rule or table fails, or an operation times out or fails on completion, what the
-/// NIC holds is no longer known: the root rule is removed (or, failing that, every VPC's switch
-/// rule, so the root leads only to the switch's catch-all), so that software alone handles
-/// everything, and the port's offload stays off until it restarts. The port's other rules (the
-/// control plane's steering) are never touched: should even that fail, the port says so
-/// ([`Port::stale`]). A group is handed out again only once its tables are known to be gone.
+/// Uncertain operations disable offload until restart: remove the root rule, or all VPC switch
+/// rules if root removal fails. This preserves control-plane steering.
+/// [`Port::stale`] reports failure of both paths.
+/// Reuse group numbers only after their tables are confirmed removed.
 #[derive(Debug)]
 pub struct Port<'t> {
     // Fields drop in order: the root first, so no packet enters what goes next.
@@ -788,12 +777,8 @@ impl<'t> Port<'t> {
         self.destroy_tables("removing a generation's tables", tables, groups)
     }
 
-    /// Keep what a generation holds in the NIC, unreachable, once the port is lost: its handles go
-    /// without removing it (the port's stop does).
-    ///
-    /// The generation is never dropped, as with `mem::forget`, but its address is kept in
-    /// [`FORGOTTEN`], so that it stays reachable: `LeakSanitizer` scans statics, and would otherwise
-    /// report a deliberate leak as an accidental one.
+    /// Retain an unreachable generation after losing the port; port stop removes its native state.
+    /// Keep its address in [`FORGOTTEN`] so `LeakSanitizer` recognizes the deliberate retention.
     fn forget(generation: Generation<'t>) {
         let raw = Box::into_raw(Box::new(generation));
         FORGOTTEN
@@ -1265,18 +1250,15 @@ pub fn with_installed<'t, R>(
     Ok(result)
 }
 
-/// What to leave to software for the rules in `refused`, which `program` has: an ingress rule that
-/// drops or polices stands for itself (it passes to software; a meter that was not made has every
-/// rule charging it refused, so they all pass); an ingress meter's color rule stands for the meter
-/// (its rules then pass to software, wherever they are); another rule of a source VPC's generation
-/// (its switch rule, passes and catch-alls too) for the whole VPC if it has ingress rules (its
-/// peerings can't be enforced without them), and else for every peering of that VPC's rules, as
-/// the whole generation was not attached; a rate limit, deny or color rule for the peerings of the
-/// rules charging its meter.
+/// Map refused rules to software exclusions:
+///
+/// - An ingress rule excludes itself; an ingress color rule excludes its meter.
+/// - A generation rule excludes the VPC if it has ingress rules, otherwise all its peerings.
+/// - Peering rate-limit, deny and color rules exclude the affected peerings.
 ///
 /// # Errors
 ///
-/// Returns the first refused rule that stands for nothing of `program`.
+/// Returns the first refused rule with no corresponding policy in `program`.
 pub(crate) fn peerings(program: &Program, refused: &[(Role, Error)]) -> Result<Exclusions, Role> {
     let mut excluded = Exclusions::default();
     let has_ingress = |vni: Vni| program.ingress.iter().any(|r| r.matches.src_vni == vni);
@@ -1627,10 +1609,9 @@ fn state(port_name: &str, port: &Port<'_>, in_software: usize) {
     metrics::gauge!("nic_offload_stale_policy", "port" => port_label).set(flag(port.stale()));
 }
 
-/// Log and export what each meter passed and dropped in hardware, and what ACL denies dropped,
-/// since the port started: counters of removed rules are kept, so the totals never go back while
-/// the policy keeps a meter's name (one it drops and gains again starts over, as a counter
-/// reset).
+/// Export cumulative hardware meter and ACL-drop counts.
+/// Counts survive rule removal while the policy retains the meter name.
+/// Removing and later re-adding a name resets its counter.
 fn report(port_name: &str, port: &Port<'_>) {
     metrics::counter!("acl_nic_dropped_packets_total", "port" => port_name.to_string())
         .absolute(port.denied_total());

@@ -236,10 +236,8 @@ fn next(plan: &Plan, vni: net::vxlan::Vni, group: Group) -> Vec<(Role, Vec<crate
         .collect()
 }
 
-/// The NIC's ingress meters pass on some of what software's drop (they are looser): a rate limit
-/// after them would be charged for it in the NIC, not in software, and run dry first. The rate
-/// limits of traffic from a VPC the NIC polices at ingress stay in software, with their peering;
-/// what the ingress rules let through goes to software.
+/// Keep peering rate limits in software for ingress-policed VPCs.
+/// Looser NIC ingress meters pass some software drops, which would exhaust downstream NIC meters.
 #[test]
 fn a_vpc_policed_at_ingress_keeps_its_rate_limits_in_software() {
     let program = compile(
@@ -560,10 +558,8 @@ fn a_refused_ingress_rule_passes_alone() {
     );
 }
 
-/// mlx5 meters a port range only with at most six words of inner IPv6 address (measured on a
-/// BlueField-3 with `install_probe`): an ingress police rule needing more passes to software
-/// alone. A drop, an exact port (even written as a range), IPv4, or shorter prefixes stay in the
-/// NIC.
+/// Port-range police rules exceeding mlx5's six-word IPv6 limit must pass to software.
+/// Drops, exact ports, IPv4 and shorter prefixes remain offloadable (BlueField-3 `install_probe`).
 #[test]
 fn a_metered_ipv6_range_mlx5_cannot_match_passes_to_software() {
     use crate::program::{IngressRule as Rule, Match, Origin, PoliceMeter, Prefix, Scope};

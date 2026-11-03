@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Synchronous counterparts of the reconciliation traits, for external systems driven from one
-//! thread with blocking calls (for instance a NIC's flow rules, programmed through a queue the
-//! thread waits on).
+//! Blocking counterparts of [`Observe`](crate::Observe), [`Create`](crate::Create),
+//! [`Update`](crate::Update), [`Remove`](crate::Remove) and [`Reconcile`](crate::Reconcile).
 //!
-//! They mirror [`Observe`](crate::Observe), [`Create`](crate::Create), [`Update`](crate::Update),
-//! [`Remove`](crate::Remove) and [`Reconcile`](crate::Reconcile), with the same contracts. One
-//! difference: the methods that act on the external system take `&mut self`. The asynchronous
-//! traits take `&self` so their futures can be shared and sent; a synchronous reconciler usually
-//! owns the handles of what it created, and acting on them is what changes them.
+//! Contracts are unchanged. Mutations take `&mut self` to manage owned resource handles;
+//! asynchronous traits use `&self` to allow shared, sendable futures.
 
 /// Observe the state of an external system; see [`Observe`](crate::Observe).
 pub trait SyncObserve {

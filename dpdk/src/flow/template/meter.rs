@@ -225,14 +225,11 @@ impl Drop for MeterProfileHandle<'_> {
     }
 }
 
-/// A meter: a `METER_MARK` indirect action rules share by handle, destroyed on drop.
+/// A shared `METER_MARK` indirect action, destroyed on drop.
+/// It colors packets; later groups act on [`Pattern::meter_color`](super::Pattern::meter_color).
 ///
-/// It colors packets and does nothing else; match the color in a later group
-/// ([`Pattern::meter_color`](super::Pattern::meter_color)).
-///
-/// Created and destroyed through the context's own flow queue, never the synchronous API: under
-/// hardware steering mlx5 serves synchronous indirect actions from an internal queue shared by the
-/// whole port.
+/// Creation and destruction use the context's flow queue because mlx5's synchronous
+/// indirect-action API shares an internal queue across the port.
 #[derive(Debug)]
 pub struct Meter<'p, D: Domain> {
     flows: &'p TemplateFlows<'p>,

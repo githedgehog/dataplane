@@ -415,24 +415,20 @@ fn within_budget(need: impl Fn(u16) -> u64, budget_mib: u64, node: &str) -> Resu
     ))
 }
 
-/// Prepare the hugepages, respecting the administrator's cgroup limits, and choose the receive
-/// descriptors of the ports that named none.
+/// Reserve hugepages within cgroup limits and choose receive ring sizes.
 ///
-/// `ports` are the NICs with each one's `/rxd=N`, if any. `scan` is `None` when hwloc could not
-/// describe the machine; the memory is then reserved on no particular node. `workers` sizes the
-/// pools.
+/// `ports` carries any explicit `/rxd=N`; `workers` sizes pools.
+/// Without an hwloc `scan`, memory is reserved without NUMA affinity.
 ///
-/// With `gib_per_node`, that many 1 GiB pages per NIC node are the budget: they must be available
-/// (there is no falling back to 2 MiB pages), the ports and workers must fit in them, and the
-/// ports without `/rxd=N` get the deepest ring of [`RX_DESCRIPTOR_CHOICES`] that leaves
-/// [`RESERVE_MIB`] free. Without it, those ports get a deeper ring only if 1 GiB pages already free
-/// hold it with the reserve to spare, and [`RX_DESCRIPTORS`] otherwise, with the requirement
-/// computed (and the pools grown) as before.
+/// `gib_per_node` sets a strict per-NIC-node budget of 1 GiB pages, with no 2 MiB fallback.
+/// Unspecified rings use the deepest [`RX_DESCRIPTOR_CHOICES`] leaving [`RESERVE_MIB`] free.
+/// Without a budget, deeper rings use only existing free 1 GiB pages with the same reserve;
+/// otherwise use [`RX_DESCRIPTORS`] and grow pools as needed.
 ///
 /// # Errors
 ///
-/// Returns an error if a NIC's NUMA affinity cannot be read, cgroup controls cannot be read,
-/// the ports do not fit the allotment, or no hugepage size satisfies the requirement.
+/// Returns an error for unreadable NUMA affinity or cgroup controls, insufficient budget,
+/// or no suitable hugepage size.
 pub fn reserve_for(
     ports: &[(PciAddress, Option<u16>)],
     scan: Option<&hardware::Node>,
