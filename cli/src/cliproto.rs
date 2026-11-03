@@ -500,7 +500,7 @@ pub enum CliAction {
     ShowRouterEvpnVrfs,
     ShowRouterEvpnRmacStore,
     ShowRouterEvpnVtep,
-    ShowAdjacencies,
+    ShowNeighCache,
     ShowRouterIpv4FibEntries,
     ShowRouterIpv6FibEntries,
     ShowRouterIpv4FibGroups,
