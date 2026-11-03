@@ -697,6 +697,7 @@ fn run_dpdk_driver(
             config.driver.num_workers(),
             config.driver.idle(),
             &ingredients.factory(),
+            eal,
             status_writer,
             bridge.as_mut(),
             control_plane,
