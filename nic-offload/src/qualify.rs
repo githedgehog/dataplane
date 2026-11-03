@@ -1,36 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Hardware qualification: a real NIC held to the [model](crate::model).
+//! Check real NIC behavior against the [model](crate::model) using two connected ports.
+//! Generated policies are installed on an isolated port; the other sends indexed frames.
+//! Received frames must be unchanged and every outcome must be allowed by the model.
+//! Bolero shrinks disagreements to smaller cases.
 //!
-//! The differential test holds the model to the software; this holds a NIC to the model. Generated
-//! rate limits are compiled and lowered as on a port, installed on a real one, and generated
-//! frames are sent to it from a second port wired to it. Every frame's fate on the hardware must be
-//! one the model allows, so a disagreement is a NIC or PMD defect, or an assumption of the model
-//! that does not hold for this NIC; bolero shrinks it to a small case.
+//! Meters pass everything to avoid timing dependence. After testing the normal plan,
+//! each meter's color group drops all colors in turn, revealing exactly which frames it charged.
+//! Hardware drop counters must agree. Ambiguous parser outcomes are tallied by frame features.
 //!
-//! - The port under test is isolated: only what the plan sends to its queue arrives there, and a
-//!   frame arrives or it does not. A frame that arrives must arrive unchanged.
-//! - Each frame carries its index in the outer IP identification, which nothing matches.
-//! - Classification is checked without timing: every meter passes everything (green). A first
-//!   phase installs the plan as it is; then, one phase per meter, that meter's color group drops
-//!   every color. What a phase drops is exactly what its meter charged. The model walks the same
-//!   rewired plan.
-//! - The hardware counters must agree with what was observed: the rules that drop count what did
-//!   not arrive because of a meter.
-//! - Where the model allows a frame either to arrive or not (how a NIC parses fragments, IPv6
-//!   extension headers and inner VLAN tags), what the NIC did is tallied by the frame's features
-//!   and reported at the end: it settles the model's assumptions for this NIC.
-//!
-//! Needs two ports wired to each other and the privileges DPDK needs for them:
+//! Run with DPDK device privileges:
 //!
 //! ```text
 //! cargo test -p dataplane-nic-offload --lib --no-run   # prints the test binary
 //! sudo NIC_OFFLOAD_QUALIFY=0000:02:00.0,0000:02:00.1 <test binary> qualify --ignored --nocapture
 //! ```
 //!
-//! The first address is the port under test, the second the one that sends.
-//! `NIC_OFFLOAD_QUALIFY_CASES` sets how many cases run (default 20).
+//! The first port is under test; the second sends.
+//! `NIC_OFFLOAD_QUALIFY_CASES` sets the case count (default 20).
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -245,11 +233,8 @@ impl Link {
     }
 }
 
-/// A meter that colors everything green.
-///
-/// Meters are not what classification is checked with: on a BlueField-3 a meter lets a packet
-/// through while its bucket holds any tokens at all (it goes into debt), so even a tiny bucket
-/// passes a first packet, and mlx5 refuses an empty one.
+/// Use an always-green meter to test classification independently of timing.
+/// Even a tiny BlueField-3 bucket passes a packet before entering debt; mlx5 rejects empty buckets.
 fn passes_everything() -> MeterProfile {
     MeterProfile {
         algorithm: MeterAlgorithm::Srtcm {
@@ -383,10 +368,9 @@ impl Case {
     }
 }
 
-/// The frames of a case: a frame no rule charges says little about the NIC, so most are aimed
-/// at a rule the NIC was given, whole and untagged. One in eight is left as generated (perhaps not
-/// aimed), and one in eight of the aimed ones keeps its fragment and inner VLAN tag: those check
-/// what the NIC must leave alone.
+/// Aim most frames at installed rules, unfragmented and untagged.
+/// Leave one in eight unmodified; retain fragments and VLAN tags on one in eight aimed frames
+/// to exercise traffic the NIC must leave to software.
 fn aimed(frames: &[RawFrame], offloaded: &[usize]) -> Vec<RawFrame> {
     (0u8..)
         .zip(&frames[..frames.len().min(32)])
@@ -749,19 +733,15 @@ fn coverage() {
     .iter()
     .map(|why| stats.get(why).copied().unwrap_or(0))
     .sum();
-    // A little over half are (54 % on average over 30 runs, with a standard deviation of 1.1
-    // points): frames aimed at a rule's destination outside its peer's exposes, and frames aimed
-    // at nothing, are neither. The inputs are not seeded, and a loaded runner reaches fewer cases
-    // in the time bolero has, so the share wanders; a bound near it failed about one run in
-    // twelve. This only has to catch a generator that stopped reaching the rules.
+    // Coverage averages ~54%, but unseeded inputs and short runs vary substantially.
+    // Use a loose bound to detect broken targeting without making CI flaky.
     assert!(
         acted * 6 >= total,
         "only {acted} of {total} generated frames are charged by a meter or denied"
     );
-    // The peering policy must not be starved by the ingress rules before it. The rate limits of
-    // traffic from a VPC the NIC polices at ingress stay in software (`Refusal::IngressPoliced`),
-    // and half the generated ingress rules are every VPC's: about one frame in nine still reaches
-    // a peering meter or deny.
+    // Check that ingress rules leave some peering coverage.
+    // Ingress-policed VPCs keep peering limits in software; about 1/9 of frames still reach
+    // an offloaded peering meter or deny.
     let peering =
         stats.get("charged").copied().unwrap_or(0) + stats.get("denied").copied().unwrap_or(0);
     assert!(
@@ -770,10 +750,8 @@ fn coverage() {
     );
 }
 
-/// [`rewire`] gives every color rule the arguments its actions template takes: none on the drop
-/// template, and its own when it goes on (an ingress color rule's jump, or the meter it chains
-/// to). mlx5 refuses a rule with arguments its template does not take, and leaves the VPC's
-/// whole generation in software, so a forced-drop phase would disagree with the model.
+/// [`rewire`] must preserve arguments for pass actions and remove them for drop actions.
+/// mlx5 rejects mismatched arguments, leaving the VPC in software and invalidating the drop phase.
 #[test]
 fn rewire_keeps_color_arguments() {
     let carried = std::panic::AssertUnwindSafe(RefCell::new(0usize));

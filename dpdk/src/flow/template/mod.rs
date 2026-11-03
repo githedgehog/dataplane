@@ -1,23 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Template rules: the `rte_flow` template API, which mlx5 serves with hardware steering
-//! (`dv_flow_en=2`).
+//! Synchronous wrappers for `rte_flow` templates (mlx5 hardware steering, `dv_flow_en=2`).
 //!
-//! Configure the device for templates before starting it
-//! ([`Dev::configure_templates`](crate::dev::Dev::configure_templates)).
-//! On the started device, a [`TemplateFlows`] context creates [`PatternTemplate`]s,
-//! [`ActionsTemplate`]s, [`TemplateTable`]s built from them, meters, and rules.
-//! Each handle borrows what it depends on: a table cannot outlive its templates, a rule its table
-//! or its meter, or anything the device.
+//! Call [`Dev::configure_templates`](crate::dev::Dev::configure_templates) before starting the port.
+//! Then use [`TemplateFlows`] to create templates, tables, meters and rules.
+//! Handles borrow their dependencies: rules cannot outlive tables or meters, nor tables their templates.
+//! All handles borrow the device.
 //!
-//! Failed cleanup retains native dependencies until port teardown, including when their Rust
-//! handles are dropped. An operation without a collected completion cannot be followed by another
-//! operation on the same handle. Close the port to reclaim abandoned native objects.
+//! Unconfirmed operations block further operations on that handle.
+//! Failed cleanup retains native dependencies until port close, even after Rust handles are dropped.
 //!
-//! The template API is asynchronous: operations are queued, pushed, and completed later.
-//! A context owns flow queue 0 of its port and waits for each operation to complete, so it is a
-//! synchronous facade; it is bound to its thread, and a port has at most one at a time.
+//! Each port has at most one thread-bound context, which owns flow queue 0 and waits for each completion.
 
 mod actions;
 mod lifetime;
@@ -97,10 +91,9 @@ pub(crate) struct PortTemplates {
     /// The tag of the last operation queued on the port, by any context: a late completion from a
     /// dropped context never matches a new one's operation.
     last_op: AtomicUsize,
-    /// Template rules whose removal has not been confirmed. Kept apart from the port's
-    /// synchronous rules, whose flush (at stop, or when an abandoned port is claimed) also removes
-    /// template rules under mlx5 hardware steering (`mlx5_flow_list_flush`) without clearing this
-    /// count: after one it can over-count.
+    /// Template rules whose removal is unconfirmed.
+    /// mlx5 also removes these when flushing synchronous rules, but leaves this count unchanged.
+    /// It may therefore overcount after a flush.
     live_rules: AtomicUsize,
 }
 
@@ -223,10 +216,8 @@ fn check(call: impl FnOnce(&mut rte_flow_error) -> i32) -> Result<(), FlowError>
 }
 
 impl Dev<'_, Configured> {
-    /// Restrict ingress to the port's flow rules ("isolated mode").
-    ///
-    /// On a bifurcated port (mlx5), everything no rule takes stays with the kernel's netdev, so a
-    /// process can install rules without receiving any traffic.
+    /// Restrict ingress to the port's flow rules (isolated mode).
+    /// Unmatched traffic on bifurcated ports such as mlx5 stays with the kernel netdev.
     ///
     /// # Errors
     ///
@@ -447,14 +438,12 @@ impl<'dev> TemplateFlows<'dev> {
         core::ptr::without_provenance_mut(tag)
     }
 
-    /// Push queued operations and wait for the one tagged `tag` to complete.
+    /// Push queued operations and wait for completion of `tag`.
+    /// A missing completion leaves the handle pending; callers must not reuse it.
+    /// Late completions from abandoned handles can be discarded.
     ///
-    /// A missing completion leaves the handle pending: callers must not enqueue another
-    /// operation on it. Later completions from abandoned handles can safely be discarded.
-    ///
-    /// The wait is counted in sleeps, not read from a clock: this runs in `Drop`, and the clock
-    /// facade's virtual time only advances while its runtime is idle, so a test under a paused
-    /// runtime would never reach a deadline. Oversleeping only lengthens the wait.
+    /// Count sleeps because this runs in `Drop`, where a paused virtual clock may never advance.
+    /// Oversleeping only lengthens the wait.
     pub(crate) fn complete(
         &self,
         what: &'static str,

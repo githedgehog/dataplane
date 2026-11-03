@@ -1,45 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! The mlx5 backend: a [`Program`] lowered onto hardware steering (`dv_flow_en=2`, template API).
+//! The mlx5 backend: lower [`Program`] to hardware steering (`dv_flow_en=2`).
 //!
 //! ```text
-//! root        eth / ipv4 / udp dst 4789                       -> jump switch
-//! switch      one rule per source VPC: eth / ipv4 dst vtep / udp / vxlan vni
-//!                                                             -> jump to its generation
-//!             last: eth                                       -> the driver's fate (software)
-//! ingress(v)  the VPC's ingress rules, one table per layer and rule shape:
-//!             ... / vxlan / eth / ip src, dst [proto] [/ udp|tcp ports, flags]
-//!                                 -> drop | meter m / jump ingress-color(v, m) | next | fate
-//!             last: eth                                       -> next: deny(v), police(v) or fate
-//! ingress-color(v, m)  meter color green, yellow              -> count / next
-//!                      meter color red                        -> count / drop
-//! deny(v)     the VPC's ACL denies, one table per rule shape:
-//!             ... / vxlan / eth / ip src, dst [proto] [/ udp|tcp ports, flags] -> drop
-//!             last: eth                                       -> jump police(v) (or the fate)
-//! police(v)   the VPC's rate limits, one table per rule shape:
-//!             ... / vxlan / eth / ip src, dst [proto] [/ udp|tcp ports, flags] -> meter m / jump color(m)
-//!             last: eth                                       -> the driver's fate
-//! color(m)    meter color green, yellow                       -> count / the driver's fate
-//!             meter color red                                 -> count / drop
+//! root       IPv4 VXLAN -> switch
+//! switch     source VNI + destination VTEP -> VPC generation; miss -> software
+//!  ingress   first match -> drop, meter, next stage or software
+//!   colors   green/yellow -> next stage; red -> drop
+//!  deny      matching ACL deny -> drop; miss -> police
+//!  police    matching rate limit -> meter + color group; miss -> software
+//!   colors   green/yellow -> software; red -> drop
 //! ```
 //!
-//! A frame goes through the ingress rules, the denies, then the rate limits, as a packet goes
-//! through the ingress stage, the ACL filter, then the rate limiter: each decides by its own first
-//! match. Groups with no rules are left out. A rule the NIC cannot match exactly passes its
-//! traffic (and perhaps more) to the fate, skipping the groups after it: software then enforces it.
+//! Each stage preserves software's first-match behavior; empty stages are omitted.
+//! Unsupported matches pass a superset of their traffic to software, skipping later NIC stages.
+//! [`Port`] detaches changed VPCs during rebuilds and preserves unchanged generations.
+//! The root stays fixed because mlx5 firmware steering is slow and cannot update it in place.
 //!
-//! Each source VPC's rules are a generation of their own, reached only through its switch rule:
-//! a change of a VPC's policy detaches it (software alone enforces it meanwhile), builds its next
-//! generation aside and attaches it, and leaves other VPCs alone ([`Port`]). The root is fixed: mlx5 steers the root group with firmware,
-//! slow to change and unable to update a rule in place.
-//!
-//! A switch rule matches the VNI's VTEP address as the outer destination, as software decapsulates
-//! only VXLAN addressed to it: other VXLAN through the gateway is transit, routed in the underlay
-//! untouched, and the NIC leaves it to software too.
-//!
-//! [`Plan`] is the layout as data, with groups named for what they are for ([`Group`]); they are
-//! numbered when installed. Limits: IPv4 underlay only.
+//! Switch rules match the destination VTEP so transit VXLAN stays in the underlay.
+//! [`Plan`] stores named [`Group`]s, numbered at installation. Only IPv4 underlay is supported.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::Ipv4Addr;
@@ -69,10 +49,8 @@ pub const RESOURCES: TemplateConfig = TemplateConfig {
 };
 
 const VXLAN_PORT: u16 = 4789;
-/// What mlx5's parser is known to do, as the hardware qualification settled it on a BlueField-3:
-/// it walks IPv6 extension headers and matches a pattern's IPv6 `proto` on the protocol after
-/// them (hop-by-hop: 239 of 239 frames). Software does the same, so a rule naming a protocol sees
-/// such packets alike in both.
+/// BlueField-3 qualification confirms that mlx5 walks IPv6 extension headers and matches
+/// `proto` against the final protocol, as software does (239/239 hop-by-hop frames).
 pub const PARSER: Parser = Parser {
     ipv6_extensions: Ipv6Extensions::WalkedToLast,
 };
@@ -284,10 +262,8 @@ impl Shape {
                 }
             };
         }
-        // Fragments are left to software: it sees a later fragment's protocol as the fragment,
-        // with no ports, and a first fragment as its protocol, which no NIC rule can tell apart
-        // alike for every rule of a peering. So no NIC rule matches any fragment, but ingress rules
-        // that may (`fragments`): they name no protocol, which every fragment satisfies alike.
+        // Software classifies first and later fragments differently, so peering rules skip both.
+        // Only eligible ingress rules with no protocol constraint may match fragments.
         if self.v6 {
             let addr = |p: Option<Prefix>, len| match p {
                 Some(Prefix::V6(a, l)) => Ipv6Prefix::prefix(a, l),
@@ -345,12 +321,9 @@ pub const BYTE_OVERHEAD: u64 = 72;
 /// The fewest bytes software bills a packet a NIC rule matches: an IPv4 header.
 const MIN_BILLED: u64 = 20;
 
-/// What the NIC's byte meters may count beyond what software bills a packet by its outer IP packet
-/// ([`Billing::OuterIp`]): the outer Ethernet header (14), an outer VLAN tag (4) and the FCS (4),
-/// whether or not a given NIC counts each. mlx5's meters are documented to count IP length (L2
-/// excluded), which would make this 0, but that is not qualified on every part and firmware, and a
-/// NIC counting more than software bills drops conforming traffic (nothing in the NIC strips the
-/// outer headers before the meter, so it never counts less).
+/// Possible L2 overhead beyond [`Billing::OuterIp`]: Ethernet (14), VLAN (4) and FCS (4).
+/// mlx5 documents IP-length billing, but this is not qualified on every part and firmware.
+/// Allowing these extra bytes prevents stricter metering on hardware that counts them.
 pub const OUTER_IP_OVERHEAD: u64 = 22;
 
 /// The fewest bytes software bills a packet a NIC rule matches by its outer IP packet: the outer
@@ -384,10 +357,9 @@ pub(crate) fn encoded_rate(rate: u64) -> u64 {
 /// The greatest rate mlx5 encodes.
 const MAX_RATE: u64 = 255 * 1_000_000_000;
 
-/// The most 32-bit words of inner IPv6 address, source and destination together, that mlx5
-/// matches in a table that meters a port range: a /96 and a /96, or a /128 and a /64, but not a
-/// /96 and a /97 ("Failed to create template table"). Without a range, or with a drop instead of
-/// a meter, both addresses fit whole. Measured on a BlueField-3 with `install_probe`.
+/// Maximum combined 32-bit IPv6 address words when metering a port range.
+/// BlueField-3 accepts /96 + /96 or /128 + /64, but rejects /96 + /97 (`install_probe`).
+/// Exact ports and drop actions support both full addresses.
 const METERED_RANGE_ADDRESS_WORDS: u32 = 6;
 
 /// Whether mlx5 can create a table that meters what `matches` matches.
@@ -402,10 +374,8 @@ fn meterable(matches: &Match) -> bool {
     !ranged || words(matches.source) + words(matches.destination) <= METERED_RANGE_ADDRESS_WORDS
 }
 
-/// What of `program` stays in software because mlx5 cannot encode its meters as permissive as
-/// software's (see `profile`): the peerings of such peering meters, and such ingress meters. And
-/// the ingress police rules whose match mlx5 cannot meter (see `meterable`): they pass to software
-/// alone, as if the NIC had refused them.
+/// Exclude meters mlx5 cannot encode permissively, and their peerings when applicable.
+/// Also exclude ingress police rules whose matches cannot be metered (see `meterable`).
 #[must_use]
 pub fn unfit(program: &Program) -> Exclusions {
     let unfit = |meter: usize| profile(&program.meters[meter]).is_none();
@@ -498,29 +468,16 @@ pub(crate) fn pmd_scale(unit: MeterUnit) -> u32 {
     }
 }
 
-/// The NIC's meter profile for `meter`, at least as permissive as the software's component,
-/// so that whatever the NIC colors red, software would too:
+/// Build a NIC profile that passes traffic within the software meter's rates and bursts.
 ///
-/// - a NIC meters the outer frame where software bills the inner IP bytes: byte rates and bursts
-///   are scaled by the most a packet's NIC count can exceed its bill,
-///   `(MIN_BILLED + BYTE_OVERHEAD) / MIN_BILLED`; for a meter billing the outer IP packet, by
-///   `(MIN_OUTER_IP_BILLED + OUTER_IP_OVERHEAD) / MIN_OUTER_IP_BILLED` (about 1.3);
-/// - a NIC meter passes a packet while any token is left, and goes into debt: bursts gain one
-///   largest frame;
-/// - software's per-worker leases let a burst exceed its bucket by one lease per worker: bursts
-///   gain that too ([`PoliceMeter::lease_slack`](crate::program::PoliceMeter::lease_slack));
-/// - the NIC encodes rates to the nearest it can, and bursts up: rates are rounded up to one it
-///   encodes exactly, bursts to one that does not wrap;
-/// - software couples the excess bucket to the committed one (MEF 10), the NIC does not
-///   (RFC 4115): its excess rate is the sum of both, the most the coupled bucket fills at.
+/// - Scale byte rates and bursts for worst-case overhead relative to the billed IP length.
+/// - Add one maximum frame for NIC token debt and [`PoliceMeter::lease_slack`](crate::program::PoliceMeter::lease_slack) for worker leases.
+/// - Round rates and bursts up to mlx5-encodable values.
+/// - Use the sum of committed and excess rates for the NIC's uncoupled excess bucket.
 ///
-/// The scaling is for the smallest packets: those get through the NIC at about the rate software
-/// allows them, and full-size ones at up to `(MIN_BILLED + BYTE_OVERHEAD) / MIN_BILLED` times it
-/// less their overhead (about 4.4 times, for 1500 bytes). The NIC stops floods, software enforces
-/// the rate.
-///
-/// `None` if a rate or burst, so scaled, is more than mlx5 encodes ([`MAX_RATE`], [`MAX_BURST`]):
-/// it can only be enforced more strictly, which a NIC may not.
+/// Overhead scaling is conservative: full-size packets can pass at about 4.4x the inner-IP rate.
+/// Software still enforces the configured limit; see `meters.rs` for the meter property test.
+/// Returns `None` if the adjusted rate or burst exceeds [`MAX_RATE`] or [`MAX_BURST`].
 pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> Option<MeterProfile> {
     let p = meter.profile;
     let (scale, least, frame) = match (meter.unit, meter.billing) {
@@ -823,10 +780,8 @@ struct Classified<'a> {
     args: Vec<Arg>,
 }
 
-/// Where a table goes in its group: rules of more specific destinations first, and of one
-/// prefix length, the rules before the passes of that length; then by shape. A pass then comes
-/// after the rules of its own peer's destination and of more specific ones inside it, and before
-/// the rules of less specific destinations it carves out of.
+/// Table order: longest destination prefix first, then rules before passes, then shape.
+/// A pass bypasses only rules for less-specific destinations.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Slot {
     level: std::cmp::Reverse<u8>,
@@ -1171,12 +1126,9 @@ impl Plan {
         }
     }
 
-    /// Source VPC `vni`'s ingress group and its meters' color groups, sending what they let
-    /// through to `next` (an actions template and its arguments). One table per layer and shape,
-    /// lower layers first (see [`IngressRule::layer`](crate::program::IngressRule::layer)): two
-    /// rules of one table that overlap (port ranges may) have the same verdict, so it does not
-    /// matter which the NIC takes (mlx5 takes the first inserted), and identical ones are left out
-    /// by `Program::compile`.
+    /// Build `vni`'s ingress and color groups, continuing to `next` on pass.
+    /// Tables are ordered by [`IngressRule::layer`](crate::program::IngressRule::layer), then shape.
+    /// Overlapping rules in one table have the same verdict; `Program::compile` removes duplicates.
     fn ingress(
         &mut self,
         program: &Program,

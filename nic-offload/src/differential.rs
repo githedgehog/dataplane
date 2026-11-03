@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! The software ACL filter and rate limiter as the oracle for the NIC: generated ACLs, exposes and
-//! rate limits are compiled and lowered onto mlx5 as they would be on a port, and every way the
-//! [model](crate::model) says the NIC may treat a generated frame is held to the cascade contract
-//! against what software does with the decapsulated packet:
+//! Check generated NIC plans against the software ingress stage, ACL filter and rate limiter.
+//! Every [model](crate::model) outcome must satisfy the cascade contract:
 //!
-//! - the NIC denies a frame only if software drops it;
-//! - the NIC charges a frame only to the meter the software charges it to;
-//! - the NIC drops a frame only as red from such a meter, and only for a meter that drops red;
-//! - every meter the NIC enforces is at least as permissive as the software component it stands
-//!   for.
+//! - Direct NIC drops must also be software drops.
+//! - NIC meters must charge the same meter as software and drop only red when configured to do so.
+//! - NIC meter profiles must be at least as permissive as software's.
 //!
-//! Frames the software could not route (no peer exposes the destination) are dropped by it
-//! anyway, so the NIC may do anything with them but change them. Transit VXLAN (to another VTEP)
-//! the NIC neither drops nor charges.
+//! After ingress, unroutable traffic may be dropped or metered, but never changed.
+//! Transit VXLAN must pass unchanged and unmetered.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -1053,16 +1048,11 @@ struct Tally {
     ingress_chained: usize,
 }
 
-/// The ways `outcome` breaks the cascade contract for a frame the software's ingress stage treats
-/// as `ingress`, and the rest of the software as `software`, if `routed` (otherwise software drops
-/// it as it cannot route it: the NIC may then do anything after the ingress stage but change it).
+/// Find cascade-contract violations against `ingress` and `software` verdicts.
+/// Unroutable frames may be dropped or metered after ingress, but never changed.
 ///
-/// One deviation is tolerated, explicitly: the NIC may charge a meter for a packet the ACL filter
-/// cannot classify, and drops before the rate limiter, which the software never charges. It is
-/// counted in [`Tally::charged_dropped`]. Packets an ACL denies are not tolerated: a peering is
-/// offloaded whole or not at all, so the NIC denies them first. Nor are packets the ingress stage
-/// drops: their source VPC's ingress rules are offloaded with its peerings, so the NIC drops them
-/// first.
+/// The NIC may charge packets the ACL filter cannot classify; [`Tally::charged_dropped`] counts these.
+/// It must not charge packets denied by an ACL or ingress rule: those drops must precede peering meters.
 fn violation(
     program: &Program,
     outcome: &Outcome,

@@ -774,10 +774,8 @@ mod tests_cli_handling {
         ctl.send_config_history(Arc::new(vec![meta])).await.unwrap();
     }
 
-    // Most ctl messages do not produce a reply.
-    // This issues a request that the router replies to, until the FRR config shows as applied:
-    // the reply means that all prior messages were processed, but the router records the config
-    // as applied only once the (fake) frr agent answers, which may come later.
+    // A ctl reply confirms prior messages were processed, but FRR application completes later.
+    // Poll until the fake FRR agent's acknowledgement is recorded.
     async fn ctl_sync(ctl: &RouterCtlSender) {
         for _ in 0..200 {
             let applied = ctl

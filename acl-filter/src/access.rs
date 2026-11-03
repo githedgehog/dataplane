@@ -56,15 +56,12 @@ impl AclFilterContext {
         self.acls.find_default_action(src, dst)
     }
 
-    /// What the first rule matching `packet` directly decides, with no flow state: `None` if no
-    /// rule matches. A packet the filter cannot classify is an error, with the reason the filter
-    /// drops it for.
-    ///
-    /// A direct match is final in the filter: flow state only decides packets no rule matches.
+    /// Return the first matching rule's verdict, or `None` if no rule matches.
+    /// Flow state only affects packets with no direct match.
     ///
     /// # Errors
     ///
-    /// Returns the reason the filter drops a packet it cannot classify.
+    /// Returns the drop reason if the packet cannot be classified.
     pub fn direct_match<Buf: PacketBufferMut>(
         &self,
         packet: &Packet<Buf>,
@@ -76,8 +73,7 @@ impl AclFilterContext {
 
 #[cfg(any(test, feature = "reference"))]
 impl AclFilterContext {
-    /// Build an EAL-free context with the reference (linear-scan) classifier, for tests here and
-    /// in crates that check against the ACL filter.
+    /// Build an EAL-free context with the linear-scan classifier for tests.
     ///
     /// # Errors
     ///

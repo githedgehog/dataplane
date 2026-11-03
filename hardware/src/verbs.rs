@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! The verbs command channel libibverbs opens for a bifurcated (mlx5) PCI function, and whether it
-//! can.
+//! Locate and check the libibverbs command channel for a bifurcated mlx5 function.
 //!
-//! libibverbs finds a function's RDMA device in sysfs (`class/infiniband`), the device's command
-//! channel under it (`infiniband_verbs/uverbsN`), and opens the channel's node in
-//! `/dev/infiniband`. In exclusive RDMA mode (`ib_core.netns_mode=0`) `class/infiniband` lists only
-//! the devices in the network namespace the sysfs was mounted in, so look from a thread that
-//! entered the datapath namespace with
-//! [`enter_with_sysfs`](crate::netns::NetworkNamespace::enter_with_sysfs).
+//! libibverbs finds the RDMA device in `class/infiniband`, its channel in `infiniband_verbs/uverbsN`,
+//! and opens `/dev/infiniband/uverbsN`.
+//! Exclusive RDMA mode (`ib_core.netns_mode=0`) exposes only the sysfs mount's network namespace.
+//! Use [`enter_with_sysfs`](crate::netns::NetworkNamespace::enter_with_sysfs) for the datapath view.
 
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};

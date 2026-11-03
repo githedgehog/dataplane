@@ -1,30 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! A software model of how a NIC matches `rte_flow` patterns, to test what is lowered into a NIC
-//! without one.
+//! Match frame bytes against the spec and mask structures passed to a PMD.
 //!
-//! The model interprets the very spec and mask structures a PMD reads, against a frame's bytes, so
-//! it checks what the NIC is told rather than a second rendering of the intent.
+//! [`views`] includes each supported parser interpretation; a pattern may match if any view matches.
+//! Hardware qualification can narrow these choices through [`Parser`] and [`views_by`]:
 //!
-//! Where the hardware's parser may reasonably go either way, the model does not guess: [`views`]
-//! returns every way a NIC might see a frame, and a pattern *may* match if it matches any of them.
-//! Each such choice is an assumption a hardware qualification run can settle:
+//! - VLAN parsing may skip tags, independently for outer and inner Ethernet headers.
+//!   `has_vlan` set matches a leading 802.1Q tag; unset matches no tag.
+//!   A leading 802.1ad tag matches neither, and service tags match no VLAN item.
+//! - Later IPv4 fragments may be parsed as transport headers.
+//! - IPv6 extension headers may be walked or left unparsed; `proto` may match the fixed header
+//!   or the final protocol. `has_frag_ext` is exact.
 //!
-//! - VLAN tags: a pattern without a VLAN item may or may not match a tagged frame, and its
-//!   Ethernet item may see the EtherType before or after the tags, at each Ethernet header (outer
-//!   and inner) independently. `has_vlan` is exact, and is about the first tag, as mlx5 hardware
-//!   steering classifies it: none, 802.1Q (customer) or 802.1ad (service). `has_vlan` set matches
-//!   a customer tag only, unset no tag only, so a frame whose first tag is a service tag matches
-//!   neither. A service tag matches no VLAN item.
-//! - IPv4 fragments after the first: the NIC may or may not parse their payload as a transport
-//!   header.
-//! - IPv6 extension headers (hop-by-hop, routing, destination options, fragment): the NIC may or
-//!   may not walk them to the transport header, and may match the IPv6 item's `proto` on the fixed
-//!   header's next header or on the protocol at the end of the chain. `has_frag_ext` is exact.
-//!
-//! Only UDP to port 4789 is parsed as VXLAN. A [`Parser`] narrows the choices a qualification
-//! settled for a NIC ([`views_by`]).
+//! Only UDP port 4789 is parsed as VXLAN.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -439,15 +428,13 @@ impl MatchItem {
 }
 
 impl<Pos> Pattern<Pos> {
-    /// Whether this pattern matches `frame` as one NIC parser saw it, with `color` the color an
-    /// earlier meter gave the packet, if any.
-    ///
-    /// Items match the frame's headers position by position, outermost first; a pattern may stop
-    /// before the frame does. A meter color item matches the color, not a header.
+    /// Match one parsed view of `frame`, using `color` from an earlier meter, if any.
+    /// Header items match in order, outermost first; the pattern may stop before the frame ends.
+    /// Meter color items match metadata.
     ///
     /// # Errors
     ///
-    /// Returns [`Unmodelled`] if the pattern constrains something the model does not parse.
+    /// Returns [`Unmodelled`] for constraints the model does not parse.
     pub fn matches(&self, frame: &Frame, color: Option<Color>) -> Result<bool, Unmodelled> {
         let mut headers = frame.headers.iter();
         for item in &self.items {

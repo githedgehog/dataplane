@@ -255,10 +255,8 @@ where
     Ok(WorkerMonitor::new(id, handle, rx_tasks).with_load(load_reader))
 }
 
-/// Program `port`'s NIC with the ACL denies and rate limits it can enforce, following them until
-/// shutdown.
-///
-/// The NIC sends what it lets through to the data queues, spread as the port's own RSS spreads.
+/// Follow policy updates and offload supported rules on `port` until shutdown.
+/// Surviving traffic uses the port's RSS distribution across data queues.
 fn spawn_offload<'p, 'scope>(
     scope: &'scope thread::Scope<'scope, '_>,
     subsystem: &Subsystem,

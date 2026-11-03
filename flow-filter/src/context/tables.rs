@@ -730,11 +730,10 @@ fn whole(addr: IpAddr, len: u8) -> Prefix {
 }
 
 impl FlowFilterContext {
-    /// The first stage's destinations, IPv4 then IPv6, each in match order: the first that matches
-    /// a lookup (its source VPC, destination, and protocol and ports if
-    /// [`Destination::partial`]) is where it goes. A [`Destination::gated`] one matches only a
-    /// lookup gated on its `dst_vni`, and an ungated one only an ordinary lookup: an ordinary
-    /// packet passes over every gated destination, whatever its place in the list.
+    /// Destinations in match order, IPv4 then IPv6; the first matching destination wins.
+    /// Matches use source VPC and destination, plus protocol and ports for [`Destination::partial`].
+    /// Gated destinations match only lookups gated on their `dst_vni`.
+    /// Ungated destinations match only ordinary lookups.
     #[must_use]
     pub fn destinations(&self) -> Vec<Destination> {
         fn route<I: FixedSize>(

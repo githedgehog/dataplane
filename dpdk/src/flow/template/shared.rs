@@ -1,19 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Template objects that own what they depend on, for rule sets that outlive the code that built
-//! them.
+//! Reference-counted template handles for independently replaced rule sets.
 //!
-//! The borrowed handles ([`TemplateTable`], [`TemplateRule`], [`Meter`]) tie each object to a
-//! borrow of what it depends on, so the compiler enforces that a rule goes before its table and
-//! meters, a table before its templates, a meter before its profile. That suits a rule set built
-//! and held in one place. A rule set that is built while another serves, and replaced while
-//! others stay (one generation of rules after another), cannot be expressed that way.
-//!
-//! These handles keep their dependencies alive instead: a [`SharedRule`] owns its table and
-//! meters, a [`SharedTable`] its templates, a [`SharedMeter`] its profile, by reference counting.
-//! Whatever the order handles are dropped in, each object is destroyed after everything that uses
-//! it. They borrow only the [`TemplateFlows`] context, and like it they stay on its thread.
+//! A [`SharedRule`] owns its table and meters, a [`SharedTable`] its templates,
+//! and a [`SharedMeter`] its profile. Dependencies outlive their users regardless of drop order.
+//! These handles borrow only [`TemplateFlows`] and stay on its thread.
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -203,16 +195,14 @@ impl<'t, D: Domain> SharedTable<'t, D> {
         })
     }
 
-    /// Replace the actions of `rule`, a rule of this table, in place; see
-    /// [`TemplateTable::update`]. The rule then keeps the new arguments' meters alive instead of
-    /// the old ones.
+    /// Replace this rule's actions in place; see [`TemplateTable::update`].
+    /// On success, the rule retains the new meters and releases the old ones.
     ///
     /// # Errors
     ///
-    /// As [`TemplateTable::update`] (including [`TemplateError::ForeignRule`] for a rule of another
-    /// table). Rejection before enqueue preserves the old actions and meters. If the update timed
-    /// out or failed on completion (including push/pull errors), the NIC may still apply it:
-    /// the rule keeps the new meters too. A missing completion prevents further operations on it.
+    /// As [`TemplateTable::update`], including [`TemplateError::ForeignRule`] for another table's rule.
+    /// Rejection before enqueue preserves the old state; failure after enqueue retains both meter sets.
+    /// Missing completions block further operations on the rule.
     pub fn update(
         &self,
         rule: &mut SharedRule<'t, D>,

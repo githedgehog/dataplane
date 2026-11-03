@@ -219,10 +219,8 @@ impl<T: FixedSize> Accepts<T> for RangeSpec<T> {
         Range::new(be_bytes(&self.min), be_bytes(&self.max)).matches(&be_bytes(value))
     }
 }
-/// Whether two predicates of the same field kind accept a common value.
-///
-/// Two rules can disagree only where every field overlaps, so this is what decides whether the
-/// order of two rules matters: rules that do not overlap can be laid out in any order.
+/// Whether two predicates accept a common value.
+/// Rules overlap only if every field overlaps; non-overlapping rules may be reordered.
 pub trait Overlaps {
     fn overlaps(&self, other: &Self) -> bool;
 }

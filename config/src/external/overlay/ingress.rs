@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Ordered gateway-wide rules on traffic as it arrives from a VPC, ahead of everything else.
+//! Gateway ingress policy, applied before flow lookup, ACLs and peering rate limits.
 //!
-//! A rule matches only what a packet carries when it arrives (its source VPC, addresses,
-//! protocol, ports and TCP flags), never where it is going or what flow it is on: the decision is
-//! the same whatever state the gateway holds, so a NIC can take it in front of software exactly.
-//! That is what makes these rules the gateway's first defence against floods: masquerade,
-//! port forwarding and stateful ACLs all depend on flow state, which no stateless NIC rule sees.
-//!
-//! The first matching rule drops the packet or charges a named meter, which drops what it colors
-//! red. Meters count the outer IP packets VPC traffic arrives in, VXLAN included, as the NIC does.
+//! Rules match source VPC, addresses, protocol, ports and TCP flags without flow state.
+//! This lets a NIC protect even masquerade, port-forwarding and stateful peerings from floods.
+//! The first match drops the packet or charges a named meter that drops red packets.
+//! Meters count outer IP bytes, including VXLAN.
 
 use super::acl::{AclPattern, ValidatedAclPattern};
 use super::ratelimit::Meter;

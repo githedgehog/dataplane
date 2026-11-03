@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Character device nodes a container's `/dev` lacks, made from the device numbers sysfs gives.
+//! Create character device nodes from sysfs device numbers.
 //!
-//! A container's `/dev` is a copy of the host's taken when the container was created. A node the
-//! kernel creates later (vfio-pci binding a group, a devlink reload registering a verbs channel)
-//! is in the host's `/dev` and not here, and a node whose device the kernel has since numbered
-//! anew still names the old number.
+//! A container's `/dev` may miss nodes created later or retain old numbers after devices reload.
+//! VFIO binding and verbs channel registration both need these repairs.
 
 use std::fmt;
 use std::fs;

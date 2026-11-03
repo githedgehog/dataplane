@@ -468,17 +468,12 @@ pub mod dpdk_memory {
     /// Deeper rings absorb longer stalls; past 4096 they only cost memory.
     pub const RX_DESCRIPTOR_CHOICES: [u16; 3] = [4096, 2048, RX_DESCRIPTORS];
 
-    /// Hugepage memory init keeps free beyond the pools and [`OVERHEAD_MIB`] before it picks a
-    /// deeper ring than [`RX_DESCRIPTORS`]: for the ACL classifiers (built again beside the old
-    /// ones on every policy change), NIC offload's hardware steering, and what else the drivers
-    /// allocate.
+    /// Memory reserved beyond pools and [`OVERHEAD_MIB`] before increasing receive ring depth.
+    /// Covers ACL rebuilds, hardware steering and other driver allocations.
     ///
-    /// Measured on a BF-3 with two ports and NIC offload (2026-11-02): beyond the pools, the heap
-    /// held about 95 MiB plus 3.6 MiB per worker (about 210 MiB at 32 workers; NIC offload's
-    /// reservation of 65,536 meters a port is 15 MiB of that), and a policy of 16,384 ACL denies
-    /// and 2,048 rate limits, all offloaded, at most 99 MiB more, through a change of every rule.
-    /// The worst case, about 310 MiB, is within [`OVERHEAD_MIB`] and this, with room for larger
-    /// policies.
+    /// On a two-port BF-3 (2026-11-02), the heap beyond pools used about 95 MiB + 3.6 MiB/worker.
+    /// Replacing 16,384 ACL denies and 2,048 offloaded rate limits added at most 99 MiB.
+    /// The 32-worker peak (~310 MiB) fits within [`OVERHEAD_MIB`] plus this reserve.
     pub const RESERVE_MIB: u64 = 512;
 
     /// Transmit descriptors per queue.

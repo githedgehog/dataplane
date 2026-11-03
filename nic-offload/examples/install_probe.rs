@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Whether an mlx5 port takes each rule shape the lowering produces.
+//! Probe mlx5 support for each generated rule shape.
 //!
-//! `install_probe <pci>` lowers one program per shape onto the port (`dv_flow_en=2`), as rate
-//! limits and then as ACL denies in front of them, installs it, removes it again, and reports
-//! what the NIC refused (whole plans, or rules it left to software). Needs the privileges DPDK
-//! needs for the device (root, or `CAP_NET_RAW` and friends).
+//! `install_probe <pci>` installs and removes rate-limit and ACL-deny plans with `dv_flow_en=2`,
+//! then reports refused plans and rules. Requires DPDK device privileges.
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::num::NonZeroU64;
