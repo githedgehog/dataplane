@@ -16,9 +16,12 @@ use std::time::Duration;
 
 use dpdk::flow::template::{MeterAlgorithm, MeterProfile};
 use policer::{Color, Profile, Rate};
-use rate_limit::Unit;
+use rate_limit::{Billing, Unit};
 
-use crate::mlx5::{BYTE_OVERHEAD, encoded_burst, encoded_rate, pmd_scale, profile};
+use crate::mlx5::{
+    BYTE_OVERHEAD, MIN_OUTER_IP_BILLED, OUTER_IP_OVERHEAD, encoded_burst, encoded_rate, pmd_scale,
+    profile,
+};
 use crate::program::PoliceMeter;
 
 /// A NIC meter as mlx5 runs one: a packet passes a bucket while the bucket holds any token, and
@@ -96,6 +99,8 @@ impl NicMeter {
 #[derive(Debug, bolero::TypeGenerator)]
 struct Run {
     packets_unit: bool,
+    /// Whether the meter bills outer IP packets ([`Billing::OuterIp`]) rather than inner IP bytes.
+    outer_ip_billing: bool,
     rate: u32,
     committed_burst: u32,
     excess: Option<(u32, u32)>,
@@ -132,9 +137,16 @@ fn conforming_traffic_is_never_red_in_the_nic() {
             .unwrap_or(std::num::NonZeroUsize::MIN);
         let shared = policer::SharedMeter::new(software, workers, start);
         let mut locals: Vec<_> = (0..workers.get()).map(|_| shared.local()).collect();
+        let billing = if run.outer_ip_billing {
+            Billing::OuterIp
+        } else {
+            Billing::Ip
+        };
         let Some(nic_profile) = profile(&PoliceMeter {
             name: "m".into(),
+            scope: crate::program::Scope::Peering,
             unit,
+            billing,
             profile: software,
             lease_slack: shared.lease_slack(),
         }) else {
@@ -145,9 +157,13 @@ fn conforming_traffic_is_never_red_in_the_nic() {
         for &(gap, bytes, overhead, worker) in run.arrivals.iter().take(400) {
             now += u64::from(gap % 1_000_000);
             // Packets of a jumbo frame at most, as the debt margin assumes.
-            let billed = (u64::from(bytes) % 9217).max(20);
+            let (least, most) = match billing {
+                Billing::Ip => (20, BYTE_OVERHEAD),
+                Billing::OuterIp => (MIN_OUTER_IP_BILLED, OUTER_IP_OVERHEAD),
+            };
+            let billed = (u64::from(bytes) % 9217).max(least);
             let (cost, nic_cost) = match unit {
-                Unit::Bytes => (billed, billed + u64::from(overhead) % (BYTE_OVERHEAD + 1)),
+                Unit::Bytes => (billed, billed + u64::from(overhead) % (most + 1)),
                 Unit::Packets => (1, 1),
             };
             let at = usize::from(worker) % locals.len();
@@ -168,6 +184,115 @@ fn conforming_traffic_is_never_red_in_the_nic() {
     });
 }
 
+/// A chained meter: a bytes component, then a packets component the bytes component's colors feed,
+/// and packets: the gap before each, its outer IP bytes, and the worker it arrives at.
+#[derive(Debug, bolero::TypeGenerator)]
+struct Chain {
+    bytes: (u32, u32, Option<(u32, u32)>),
+    packets: (u32, u32, Option<(u32, u32)>),
+    workers: u8,
+    arrivals: Vec<(u32, u16, u8)>,
+}
+
+/// Software meters a packet with both components of a meter, the packets component taking the
+/// bytes component's color (color-aware: never better); the NIC chains two color-blind meters, the
+/// second charged with what the first did not color red. Traffic the software colors nothing red
+/// in either component, the NIC colors nothing red in either: both meters see the same packets,
+/// and a color-blind meter is at least as permissive as a color-aware one fed the same packets.
+#[test]
+fn a_chained_meter_is_never_red_in_the_nic_where_software_is_not() {
+    // Runs whose packets component colored something red or yellow first, so the chain mattered.
+    let reached = std::panic::AssertUnwindSafe(std::cell::Cell::new([0usize; 3]));
+    bolero::check!().with_type::<Chain>().for_each(|chain| {
+        let rate = |r: u32| {
+            Rate::new(
+                std::num::NonZeroU64::new(u64::from(r).max(1)).unwrap_or(std::num::NonZeroU64::MIN),
+            )
+        };
+        let profile_of =
+            |(r, b, excess): (u32, u32, Option<(u32, u32)>), rates: u32, bursts: u32| {
+                let (excess_rate, excess_burst) = match excess {
+                    Some((er, eb)) => (Some(rate(er % rates)), u64::from(eb % bursts)),
+                    None => (None, 0),
+                };
+                Profile::new(
+                    rate(r % rates),
+                    u64::from(b % bursts),
+                    excess_rate,
+                    excess_burst,
+                )
+                .ok()
+            };
+        let (Some(bytes), Some(packets)) = (
+            profile_of(chain.bytes, 10_000_000, 100_000),
+            profile_of(chain.packets, 100_000, 100),
+        ) else {
+            return;
+        };
+        let start = clock::now();
+        let workers = std::num::NonZeroUsize::new(usize::from(chain.workers % 16) + 1)
+            .unwrap_or(std::num::NonZeroUsize::MIN);
+        let (shared_bytes, shared_packets) = (
+            policer::SharedMeter::new(bytes, workers, start),
+            policer::SharedMeter::new(packets, workers, start),
+        );
+        let mut locals: Vec<_> = (0..workers.get())
+            .map(|_| (shared_bytes.local(), shared_packets.local()))
+            .collect();
+        let nic_of = |unit, profile: Profile, lease_slack| {
+            crate::mlx5::profile(&PoliceMeter {
+                name: "m".into(),
+                unit,
+                billing: Billing::OuterIp,
+                scope: crate::program::Scope::Ingress,
+                profile,
+                lease_slack,
+            })
+        };
+        let (Some(nic_bytes), Some(nic_packets)) = (
+            nic_of(Unit::Bytes, bytes, shared_bytes.lease_slack()),
+            nic_of(Unit::Packets, packets, shared_packets.lease_slack()),
+        ) else {
+            return;
+        };
+        let (mut first, mut second) = (NicMeter::new(&nic_bytes), NicMeter::new(&nic_packets));
+        let mut now = 0u64;
+        for &(gap, size, worker) in chain.arrivals.iter().take(400) {
+            now += u64::from(gap % 1_000_000);
+            let cost = (u64::from(size) % 9217).max(MIN_OUTER_IP_BILLED);
+            let at = usize::from(worker) % locals.len();
+            let when = start + Duration::from_nanos(now);
+            let (software_bytes, software_packets) = &mut locals[at];
+            let colored = software_bytes.color(when, cost, Color::Green);
+            let chained = if colored == Color::Red {
+                Color::Red
+            } else {
+                software_packets.color(when, 1, colored)
+            };
+            let mut counts = reached.get();
+            counts[match (colored, chained) {
+                (Color::Red, _) => 0,
+                (_, Color::Red) => 1,
+                _ => 2,
+            }] += 1;
+            reached.set(counts);
+            if chained == Color::Red {
+                break;
+            }
+            let nic = first.color(now, cost + OUTER_IP_OVERHEAD);
+            assert!(
+                nic != Color::Red && second.color(now, 1) != Color::Red,
+                "the NIC colors red what software colors nothing red\nchain: {chain:?}"
+            );
+        }
+    });
+    let [bytes_red, packets_red, passed] = reached.0.get();
+    eprintln!(
+        "chained meters: software colored {bytes_red} packet(s) red in the bytes component, {packets_red} in the packets component, and passed {passed}"
+    );
+    assert!(packets_red > 0, "the packets component never ran dry");
+}
+
 /// A burst is encoded at least as large as software's, without wrapping, or the meter is refused
 /// (left in software): never encoded smaller, as a burst past what mlx5 takes would be.
 #[test]
@@ -183,6 +308,8 @@ fn bursts_mlx5_cannot_take_are_refused_not_wrapped() {
         let meter = PoliceMeter {
             name: "m".into(),
             unit,
+            billing: Billing::Ip,
+            scope: crate::program::Scope::Peering,
             profile: software,
             lease_slack: [0, 0],
         };
