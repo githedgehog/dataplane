@@ -8,6 +8,7 @@ pub mod acl;
 pub mod algebra;
 #[cfg(test)]
 mod completeness;
+pub mod ingress;
 pub mod ratelimit;
 pub mod tests;
 pub mod validation_tests;
@@ -16,6 +17,7 @@ pub mod vpcpeering;
 pub mod vpcrouting;
 
 use crate::{ConfigError, ConfigResult};
+use ingress::{IngressPolicy, ValidatedIngressPolicy};
 use ratelimit::{RateLimitTables, ValidatedRateLimitTables};
 use tracing::{debug, error};
 use vpc::{ValidatedVpcTable, VpcTable};
@@ -26,6 +28,8 @@ pub struct Overlay {
     pub vpc_table: VpcTable,
     pub peering_table: VpcPeeringTable,
     pub rate_limits: RateLimitTables,
+    /// Gateway-wide rules on traffic as it arrives from a VPC, ahead of everything else.
+    pub ingress: IngressPolicy,
     /// Keep the gateway's policy out of its NICs: enforce everything in software alone. Off, a
     /// capable NIC enforces what it can of the policy in front of software.
     pub disable_offloads: bool,
@@ -38,6 +42,7 @@ impl Overlay {
             vpc_table,
             peering_table,
             rate_limits: RateLimitTables::default(),
+            ingress: IngressPolicy::default(),
             disable_offloads: false,
         }
     }
@@ -49,6 +54,12 @@ impl Overlay {
             rate_limits,
             ..self
         }
+    }
+
+    /// The same overlay, with `ingress`.
+    #[must_use]
+    pub fn with_ingress(self, ingress: IngressPolicy) -> Self {
+        Self { ingress, ..self }
     }
 
     /// The same overlay, with NIC offload turned off if `disabled`.
@@ -97,10 +108,12 @@ impl Overlay {
             .validate()?;
 
         let rate_limits = self.rate_limits.validate(&vpc_table)?;
+        let ingress = self.ingress.validate(&vpc_table)?;
 
         let validated_overlay = ValidatedOverlay {
             vpc_table,
             rate_limits,
+            ingress,
             disable_offloads: self.disable_offloads,
         };
 
@@ -114,6 +127,7 @@ impl Overlay {
 pub struct ValidatedOverlay {
     vpc_table: ValidatedVpcTable,
     rate_limits: ValidatedRateLimitTables,
+    ingress: ValidatedIngressPolicy,
     disable_offloads: bool,
 }
 
@@ -126,6 +140,11 @@ impl ValidatedOverlay {
     #[must_use]
     pub fn rate_limits(&self) -> &ValidatedRateLimitTables {
         &self.rate_limits
+    }
+
+    #[must_use]
+    pub fn ingress(&self) -> &ValidatedIngressPolicy {
+        &self.ingress
     }
 
     /// Whether the gateway's policy stays out of its NICs.

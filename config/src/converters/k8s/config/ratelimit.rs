@@ -60,7 +60,7 @@ pub fn rate_limits(spec: &GatewayAgentSpec) -> Result<RateLimitTables, FromK8sCo
             if !key.starts_with(ALPHA_PREFIX) {
                 continue;
             }
-            if key == super::offload::ATTEMPT_OFFLOADS {
+            if key == super::offload::ATTEMPT_OFFLOADS || key == super::ingress::INGRESS_POLICY {
                 return Err(FromK8sConversionError::NotAllowed(format!(
                     "{key} goes on the gateway, not on peering {peering}"
                 )));
@@ -116,7 +116,7 @@ struct Policy {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MeterSpec {
+pub(super) struct MeterSpec {
     bits: Option<Component>,
     pkts: Option<Component>,
 }
@@ -168,7 +168,7 @@ struct RuleSpec {
 // Generated CRD types accept unknown fields. Keep the annotation strict, then use the ACL converter.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Match {
+pub(super) struct Match {
     src: Option<Vec<MatchEntry>>,
     dst: Option<Vec<MatchEntry>>,
     proto: Option<String>,
@@ -205,7 +205,7 @@ struct MatchEntry {
 }
 
 impl Match {
-    fn crd(&self) -> GatewayAgentPeeringsAclRulesMatch {
+    pub(super) fn crd(&self) -> GatewayAgentPeeringsAclRulesMatch {
         GatewayAgentPeeringsAclRulesMatch {
             proto: self.proto.clone(),
             tcp_filters: self.tcp_filters.as_ref().map(|filters| {
@@ -258,28 +258,9 @@ impl Policy {
         tables: &mut RateLimitTables,
     ) -> Result<(), String> {
         for (name, spec) in &self.meters {
-            if name.is_empty() {
-                return Err("meter needs a name".into());
-            }
-            if spec.bits.is_none() && spec.pkts.is_none() {
-                return Err(format!("meter {name:?} needs bits or pkts"));
-            }
-            let invalid = |e| format!("meter {name:?}: {e}");
-            let meter = Meter {
-                bytes: spec
-                    .bits
-                    .as_ref()
-                    .map(|c| c.convert(8, 9216))
-                    .transpose()
-                    .map_err(invalid)?,
-                packets: spec
-                    .pkts
-                    .as_ref()
-                    .map(|c| c.convert(1, 1))
-                    .transpose()
-                    .map_err(invalid)?,
-            };
-            tables.meters.insert(format!("{peering}/{name}"), meter);
+            tables
+                .meters
+                .insert(format!("{peering}/{name}"), spec.convert(name)?);
         }
         for (i, rule) in self.rules.iter().enumerate() {
             if !self.meters.contains_key(&rule.meter) {
@@ -323,6 +304,33 @@ impl Policy {
             }
         }
         Ok(())
+    }
+}
+
+impl MeterSpec {
+    /// The meter, both components checked.
+    pub(super) fn convert(&self, name: &str) -> Result<Meter, String> {
+        if name.is_empty() {
+            return Err("meter needs a name".into());
+        }
+        if self.bits.is_none() && self.pkts.is_none() {
+            return Err(format!("meter {name:?} needs bits or pkts"));
+        }
+        let invalid = |e| format!("meter {name:?}: {e}");
+        Ok(Meter {
+            bytes: self
+                .bits
+                .as_ref()
+                .map(|c| c.convert(8, 9216))
+                .transpose()
+                .map_err(invalid)?,
+            packets: self
+                .pkts
+                .as_ref()
+                .map(|c| c.convert(1, 1))
+                .transpose()
+                .map_err(invalid)?,
+        })
     }
 }
 

@@ -40,6 +40,13 @@ const REACH: &[(&str, Reach)] = &[
         ),
     ),
     (
+        "Overlay.ingress",
+        Reach::Fixed(
+            "empty: a gateway-wide policy from the gateway's annotations; it depends on the VPC \
+             table alone, and `ingress.rs` and `converters::k8s::config::ingress` test it.",
+        ),
+    ),
+    (
         "Overlay.disable_offloads",
         Reach::Fixed(
             "false: a gateway-wide switch from the gateway's annotations, independent of every \
@@ -224,11 +231,13 @@ fn survey(overlay: &Overlay, seen: &mut Observed) {
         vpc_table,
         peering_table,
         rate_limits,
+        ingress,
         disable_offloads,
     } = overlay;
     seen.count("Overlay.vpc_table", vpc_table.len());
     seen.count("Overlay.peering_table", peering_table.len());
     seen.count("Overlay.rate_limits", rate_limits.len());
+    seen.count("Overlay.ingress", ingress.len());
     seen.note("Overlay.disable_offloads", disable_offloads.to_string());
 
     for vpc in vpc_table.values() {

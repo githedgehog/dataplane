@@ -26,6 +26,9 @@ pub fn offloads_disabled(spec: &GatewayAgentSpec) -> Result<bool, FromK8sConvers
         if !key.starts_with(ALPHA_PREFIX) {
             continue;
         }
+        if key == super::ingress::INGRESS_POLICY {
+            continue;
+        }
         if key != ATTEMPT_OFFLOADS {
             return Err(FromK8sConversionError::NotAllowed(format!(
                 "unknown alpha gateway annotation {key} on the gateway"

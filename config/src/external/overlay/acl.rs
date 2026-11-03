@@ -191,6 +191,43 @@ impl AclPattern {
             proto: self.proto,
         })
     }
+
+    /// The pattern of a rule no peering bounds, one per IP family it matches: an empty side, and
+    /// an entry with ports but no addresses, stand for every address of the family. A pattern
+    /// naming no address matches both families.
+    pub(crate) fn validate_unbounded(&self) -> Result<Vec<ValidatedAclPattern>, ConfigError> {
+        let named = self.src.iter().chain(self.dst.iter()).next();
+        let roots = match named {
+            Some(p) if p.prefix().is_ipv4() => vec![Prefix::root_v4()],
+            Some(_) => vec![Prefix::root_v6()],
+            None => vec![Prefix::root_v4(), Prefix::root_v6()],
+        };
+        let side = |set: &PrefixPortsSet, any_ports: &[PortRange], root: Prefix| {
+            let mut set = set.clone();
+            set.extend(
+                any_ports
+                    .iter()
+                    .map(|ports| PrefixWithOptionalPorts::new(root, Some(*ports))),
+            );
+            if set.is_empty() {
+                set.insert(PrefixWithOptionalPorts::from(root));
+            }
+            set
+        };
+        roots
+            .into_iter()
+            .map(|root| {
+                AclPattern {
+                    src: side(&self.src, &self.src_any_ports, root),
+                    dst: side(&self.dst, &self.dst_any_ports, root),
+                    src_any_ports: Vec::new(),
+                    dst_any_ports: Vec::new(),
+                    proto: self.proto,
+                }
+                .validate()
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
