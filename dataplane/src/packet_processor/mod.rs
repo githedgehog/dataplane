@@ -33,15 +33,15 @@ use nat::static_nat::natrw::NatTablesReaderFactory;
 use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat};
 use net::packet::PacketStats;
 
-use arp::{ArpNfFactory, ArpSetup};
+use arp::{ArpNfFactory, ArpSetup, NeighCacheReaderFactory};
 use net::buffer::{BufferPool, PacketBufferMut};
 use net::packet::Rebuffer;
 use pipeline::sample_nfs::{PacketDumper, PacketStatsNF};
 use pipeline::{DynPipeline, PipelineData};
 
 use routing::{
-    AtableReaderFactory, CliSources, FibKey, FibTableReaderFactory, IfTableReaderFactory, Router,
-    RouterError, RouterParams,
+    CliSources, FibKey, FibTableReaderFactory, IfTableReaderFactory, Router, RouterError,
+    RouterParams,
 };
 
 use vpcmap::map::VpcMapWriter;
@@ -79,7 +79,7 @@ pub(crate) struct PipelineIngredients {
     pdata: Arc<PipelineData>,
     iftr_factory: IfTableReaderFactory,
     fibtr_factory: FibTableReaderFactory,
-    atabler_factory: AtableReaderFactory,
+    neigh_factory: NeighCacheReaderFactory,
     nattabler_factory: NatTablesReaderFactory,
     natallocator_factory: NatAllocatorReaderFactory,
     flow_filter_reader_factory: FlowFilterContextReaderFactory,
@@ -167,7 +167,7 @@ impl PipelineIngredients {
             let stage_egress = Egress::new(
                 "Egress",
                 self.iftr_factory.handle(),
-                self.atabler_factory.handle(),
+                self.neigh_factory.handle(),
             );
             let iprouter1 = IpForwarder::new("IP-Forward-1", self.fibtr_factory.handle());
             let iprouter2 = IpForwarder::new("IP-Forward-2", self.fibtr_factory.handle());
@@ -339,13 +339,12 @@ pub(crate) fn start_router(
     let router = Router::new(router, params, Some(cli_sources))?;
     let iftr_factory = router.get_iftabler_factory();
     let fibtr_factory = router.get_fibtr_factory();
-    let atabler_factory = router.get_atabler_factory();
 
     let ingredients = PipelineIngredients {
         pdata,
         iftr_factory,
         fibtr_factory,
-        atabler_factory,
+        neigh_factory: arp.neigh_cache_factory(),
         nattabler_factory,
         natallocator_factory,
         flow_filter_reader_factory,
