@@ -8,6 +8,12 @@
 //! switch      one rule per source VPC: eth / ipv4 dst vtep / udp / vxlan vni
 //!                                                             -> jump to its generation
 //!             last: eth                                       -> the driver's fate (software)
+//! ingress(v)  the VPC's ingress rules, one table per layer and rule shape:
+//!             ... / vxlan / eth / ip src, dst [proto] [/ udp|tcp ports, flags]
+//!                                 -> drop | meter m / jump ingress-color(v, m) | next | fate
+//!             last: eth                                       -> next: deny(v), police(v) or fate
+//! ingress-color(v, m)  meter color green, yellow              -> count / next
+//!                      meter color red                        -> count / drop
 //! deny(v)     the VPC's ACL denies, one table per rule shape:
 //!             ... / vxlan / eth / ip src, dst [proto] [/ udp|tcp ports, flags] -> drop
 //!             last: eth                                       -> jump police(v) (or the fate)
@@ -18,8 +24,10 @@
 //!             meter color red                                 -> count / drop
 //! ```
 //!
-//! A frame goes through the denies, then the rate limits, as a packet goes through the ACL filter,
-//! then the rate limiter: each decides by its own first match. Groups with no rules are left out.
+//! A frame goes through the ingress rules, the denies, then the rate limits, as a packet goes
+//! through the ingress stage, the ACL filter, then the rate limiter: each decides by its own first
+//! match. Groups with no rules are left out. A rule the NIC cannot match exactly passes its
+//! traffic (and perhaps more) to the fate, skipping the groups after it: software then enforces it.
 //!
 //! Each source VPC's rules are a generation of their own, reached only through its switch rule:
 //! a change of a VPC's policy detaches it (software alone enforces it meanwhile), builds its next
@@ -42,13 +50,14 @@ use dpdk::flow::template::{
     TemplateConfig, TemplateError,
 };
 use dpdk::flow::{
-    EthMatch, FlowError, FlowGroup, Ipv4Match, Ipv4Prefix, Ipv6Match, Ipv6Prefix, Priority,
-    TcpMatch, UdpMatch, VxlanMatch,
+    EthMatch, FlowError, FlowGroup, Ipv4Match, Ipv4Prefix, Ipv6Match, Ipv6Prefix,
+    PortRange as FlowPortRange, Priority, TcpMatch, UdpMatch, VxlanMatch,
 };
+use lpm::prefix::PortRange;
 use net::vxlan::Vni;
-use rate_limit::Unit;
+use rate_limit::{Billing, Unit};
 
-use crate::program::{Match, Peering, Prefix, Program};
+use crate::program::{Exclusions, IngressVerdict, Match, Origin, Peering, Prefix, Program, Scope};
 
 /// What a port reserves for this backend when it is configured; fixed until the port restarts.
 pub const RESOURCES: TemplateConfig = TemplateConfig {
@@ -140,19 +149,39 @@ fn unknown_state(error: &TemplateError) -> bool {
     )
 }
 
+/// How a port is matched: one, or a range, which takes a template of its own (a rule's range is
+/// ignored, else).
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum PortShape {
+    Exact,
+    Range,
+}
+
+impl PortShape {
+    fn of(ports: Option<PortRange>) -> Option<PortShape> {
+        ports.map(|p| {
+            if p.len() == 1 {
+                PortShape::Exact
+            } else {
+                PortShape::Range
+            }
+        })
+    }
+}
+
 /// The protocol layout of an inner match.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum L4 {
     Any,
     Proto,
     Udp {
-        src: bool,
-        dst: bool,
+        src: Option<PortShape>,
+        dst: Option<PortShape>,
     },
     /// TCP, with ports constrained or not, and the mask of flags constrained.
     Tcp {
-        src: bool,
-        dst: bool,
+        src: Option<PortShape>,
+        dst: Option<PortShape>,
         flags: u8,
     },
 }
@@ -164,6 +193,9 @@ struct Shape {
     source: u8,
     destination: u8,
     l4: L4,
+    /// Whether fragments match too (no protocol only; see
+    /// [`IngressRule::fragments`](crate::program::IngressRule::fragments)).
+    fragments: bool,
 }
 
 impl Shape {
@@ -171,13 +203,13 @@ impl Shape {
         let l4 = match (rule.proto, rule.src_port, rule.dst_port) {
             (None, ..) => L4::Any,
             (Some(17), src, dst) if src.is_some() || dst.is_some() => L4::Udp {
-                src: src.is_some(),
-                dst: dst.is_some(),
+                src: PortShape::of(src),
+                dst: PortShape::of(dst),
             },
             (Some(6), src, dst) if src.is_some() || dst.is_some() || rule.tcp_flags.is_some() => {
                 L4::Tcp {
-                    src: src.is_some(),
-                    dst: dst.is_some(),
+                    src: PortShape::of(src),
+                    dst: PortShape::of(dst),
                     flags: rule.tcp_flags.map_or(0, |(_, mask)| mask),
                 }
             }
@@ -188,6 +220,7 @@ impl Shape {
             source: rule.source.bits(),
             destination: rule.destination.bits(),
             l4,
+            fragments: false,
         }
     }
 
@@ -207,7 +240,14 @@ impl Shape {
             L4::Tcp { .. } => 6,
             _ => 17,
         });
-        let ports = |p: Option<u16>| p.unwrap_or(1);
+        // A placeholder range is a range, as the template must have one where its rules do.
+        let ports = |p: Option<PortRange>, shape| {
+            let p = p.unwrap_or_else(|| match shape {
+                PortShape::Exact => PortRange::single(1),
+                PortShape::Range => PortRange::new(1, 2).unwrap_or_else(|_| unreachable!()),
+            });
+            FlowPortRange::between(p.start(), p.end())
+        };
         let (src_port, dst_port) = (rule.and_then(|r| r.src_port), rule.and_then(|r| r.dst_port));
         macro_rules! finish {
             ($ip:expr) => {
@@ -215,21 +255,25 @@ impl Shape {
                     L4::Any | L4::Proto => $ip.complete(),
                     L4::Udp { src, dst } => {
                         let mut udp = UdpMatch::default();
-                        if src {
-                            udp = udp.src(ports(src_port));
+                        if let Some(shape) = src {
+                            let p = ports(src_port, shape);
+                            udp = udp.src_range(p);
                         }
-                        if dst {
-                            udp = udp.dst(ports(dst_port));
+                        if let Some(shape) = dst {
+                            let p = ports(dst_port, shape);
+                            udp = udp.dst_range(p);
                         }
                         $ip.udp(udp).complete()
                     }
                     L4::Tcp { src, dst, flags } => {
                         let mut tcp = TcpMatch::default();
-                        if src {
-                            tcp = tcp.src(ports(src_port));
+                        if let Some(shape) = src {
+                            let p = ports(src_port, shape);
+                            tcp = tcp.src_range(p);
                         }
-                        if dst {
-                            tcp = tcp.dst(ports(dst_port));
+                        if let Some(shape) = dst {
+                            let p = ports(dst_port, shape);
+                            tcp = tcp.dst_range(p);
                         }
                         if flags != 0 {
                             let value = rule.and_then(|r| r.tcp_flags).map_or(0, |(v, _)| v);
@@ -242,7 +286,8 @@ impl Shape {
         }
         // Fragments are left to software: it sees a later fragment's protocol as the fragment,
         // with no ports, and a first fragment as its protocol, which no NIC rule can tell apart
-        // alike for every rule of a peering. So no NIC rule matches any fragment.
+        // alike for every rule of a peering. So no NIC rule matches any fragment, but ingress rules
+        // that may (`fragments`): they name no protocol, which every fragment satisfies alike.
         if self.v6 {
             let addr = |p: Option<Prefix>, len| match p {
                 Some(Prefix::V6(a, l)) => Ipv6Prefix::prefix(a, l),
@@ -250,8 +295,10 @@ impl Shape {
             };
             let mut ip = Ipv6Match::default()
                 .src(addr(rule.map(|r| r.source), self.source))
-                .dst(addr(rule.map(|r| r.destination), self.destination))
-                .unfragmented();
+                .dst(addr(rule.map(|r| r.destination), self.destination));
+            if !self.fragments {
+                ip = ip.unfragmented();
+            }
             if self.l4 != L4::Any {
                 ip = ip.proto(proto);
             }
@@ -263,8 +310,10 @@ impl Shape {
             };
             let mut ip = Ipv4Match::default()
                 .src(addr(rule.map(|r| r.source), self.source))
-                .dst(addr(rule.map(|r| r.destination), self.destination))
-                .unfragmented();
+                .dst(addr(rule.map(|r| r.destination), self.destination));
+            if !self.fragments {
+                ip = ip.unfragmented();
+            }
             if self.l4 != L4::Any {
                 ip = ip.proto(proto);
             }
@@ -296,6 +345,18 @@ pub const BYTE_OVERHEAD: u64 = 72;
 /// The fewest bytes software bills a packet a NIC rule matches: an IPv4 header.
 const MIN_BILLED: u64 = 20;
 
+/// What the NIC's byte meters may count beyond what software bills a packet by its outer IP packet
+/// ([`Billing::OuterIp`]): the outer Ethernet header (14), an outer VLAN tag (4) and the FCS (4),
+/// whether or not a given NIC counts each. mlx5's meters are documented to count IP length (L2
+/// excluded), which would make this 0, but that is not qualified on every part and firmware, and a
+/// NIC counting more than software bills drops conforming traffic (nothing in the NIC strips the
+/// outer headers before the meter, so it never counts less).
+pub const OUTER_IP_OVERHEAD: u64 = 22;
+
+/// The fewest bytes software bills a packet a NIC rule matches by its outer IP packet: the outer
+/// IPv4, UDP and VXLAN headers (36), and the inner Ethernet and IPv4 headers (34).
+pub(crate) const MIN_OUTER_IP_BILLED: u64 = 70;
+
 /// The largest frame a NIC meter may let into debt, in bytes: a jumbo frame and its overhead.
 const MAX_FRAME: u64 = 9216 + BYTE_OVERHEAD;
 
@@ -323,16 +384,85 @@ pub(crate) fn encoded_rate(rate: u64) -> u64 {
 /// The greatest rate mlx5 encodes.
 const MAX_RATE: u64 = 255 * 1_000_000_000;
 
-/// The peerings of `program`'s meters mlx5 cannot encode as permissive as software's (see
-/// `profile`): they stay in software.
+/// The most 32-bit words of inner IPv6 address, source and destination together, that mlx5
+/// matches in a table that meters a port range: a /96 and a /96, or a /128 and a /64, but not a
+/// /96 and a /97 ("Failed to create template table"). Without a range, or with a drop instead of
+/// a meter, both addresses fit whole. Measured on a BlueField-3 with `install_probe`.
+const METERED_RANGE_ADDRESS_WORDS: u32 = 6;
+
+/// Whether mlx5 can create a table that meters what `matches` matches.
+fn meterable(matches: &Match) -> bool {
+    let ranged = [matches.src_port, matches.dst_port]
+        .into_iter()
+        .any(|ports| PortShape::of(ports) == Some(PortShape::Range));
+    let words = |prefix: Prefix| match prefix {
+        Prefix::V4(..) => 0,
+        Prefix::V6(_, len) => u32::from(len).div_ceil(32),
+    };
+    !ranged || words(matches.source) + words(matches.destination) <= METERED_RANGE_ADDRESS_WORDS
+}
+
+/// What of `program` stays in software because mlx5 cannot encode its meters as permissive as
+/// software's (see `profile`): the peerings of such peering meters, and such ingress meters. And
+/// the ingress police rules whose match mlx5 cannot meter (see `meterable`): they pass to software
+/// alone, as if the NIC had refused them.
 #[must_use]
-pub fn unfit(program: &Program) -> BTreeSet<crate::program::Peering> {
-    program
-        .rules
-        .iter()
-        .filter(|rule| profile(&program.meters[rule.meter]).is_none())
-        .map(|rule| rule.peering)
-        .collect()
+pub fn unfit(program: &Program) -> Exclusions {
+    let unfit = |meter: usize| profile(&program.meters[meter]).is_none();
+    Exclusions {
+        peerings: program
+            .rules
+            .iter()
+            .filter(|rule| unfit(rule.meter))
+            .map(|rule| rule.peering)
+            .collect(),
+        ingress_meters: program
+            .ingress
+            .iter()
+            .filter_map(|rule| match rule.verdict {
+                IngressVerdict::Police(first, then) if unfit(first) || then.is_some_and(unfit) => {
+                    Some(program.meters[first].name.clone())
+                }
+                _ => None,
+            })
+            .collect(),
+        ingress_rules: program
+            .ingress
+            .iter()
+            .filter(|rule| matches!(rule.verdict, IngressVerdict::Police(..)))
+            .filter(|rule| !meterable(&rule.matches))
+            .filter_map(|rule| match rule.origin {
+                Origin::Ingress { v6, row } => Some((v6, row)),
+                _ => None,
+            })
+            .collect(),
+        ..Exclusions::default()
+    }
+}
+
+/// What of `program` stays in software until the rest fits the meters [`RESOURCES`] reserves, if it
+/// needs more: the peerings, and ingress meter, of its last meter.
+#[must_use]
+pub fn over_meters(program: &Program) -> Option<Exclusions> {
+    let last = program.meters.len().checked_sub(1)?;
+    if program.meters.len() <= RESOURCES.meters as usize {
+        return None;
+    }
+    Some(Exclusions {
+        peerings: program
+            .rules
+            .iter()
+            .filter(|r| r.meter == last)
+            .map(|r| r.peering)
+            .collect(),
+        ingress_meters: program
+            .ingress
+            .iter()
+            .filter(|r| r.verdict.charges(last))
+            .map(|_| program.meters[last].name.clone())
+            .collect(),
+        ..Exclusions::default()
+    })
 }
 
 /// The least rate mlx5 encodes exactly at or above `rate` (the greatest it encodes, if none is).
@@ -373,7 +503,8 @@ pub(crate) fn pmd_scale(unit: MeterUnit) -> u32 {
 ///
 /// - a NIC meters the outer frame where software bills the inner IP bytes: byte rates and bursts
 ///   are scaled by the most a packet's NIC count can exceed its bill,
-///   `(MIN_BILLED + BYTE_OVERHEAD) / MIN_BILLED`;
+///   `(MIN_BILLED + BYTE_OVERHEAD) / MIN_BILLED`; for a meter billing the outer IP packet, by
+///   `(MIN_OUTER_IP_BILLED + OUTER_IP_OVERHEAD) / MIN_OUTER_IP_BILLED` (about 1.3);
 /// - a NIC meter passes a packet while any token is left, and goes into debt: bursts gain one
 ///   largest frame;
 /// - software's per-worker leases let a burst exceed its bucket by one lease per worker: bursts
@@ -392,9 +523,14 @@ pub(crate) fn pmd_scale(unit: MeterUnit) -> u32 {
 /// it can only be enforced more strictly, which a NIC may not.
 pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> Option<MeterProfile> {
     let p = meter.profile;
-    let (scale, frame) = match meter.unit {
-        Unit::Bytes => (MIN_BILLED + BYTE_OVERHEAD, MAX_FRAME),
-        Unit::Packets => (MIN_BILLED, 1),
+    let (scale, least, frame) = match (meter.unit, meter.billing) {
+        (Unit::Bytes, Billing::Ip) => (MIN_BILLED + BYTE_OVERHEAD, MIN_BILLED, MAX_FRAME),
+        (Unit::Bytes, Billing::OuterIp) => (
+            MIN_OUTER_IP_BILLED + OUTER_IP_OVERHEAD,
+            MIN_OUTER_IP_BILLED,
+            MAX_FRAME,
+        ),
+        (Unit::Packets, _) => (1, 1, 1),
     };
     let pmd = match meter.unit {
         Unit::Bytes => 0,
@@ -402,7 +538,7 @@ pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> Option<MeterProfil
     };
     // In mlx5's units, if it takes that many: scaled, plus `extra`, shifted as mlx5 shifts them.
     let scaled = |tokens: u64, extra: u64, max: u64| {
-        let wanted = (u128::from(tokens) * u128::from(scale)).div_ceil(u128::from(MIN_BILLED))
+        let wanted = (u128::from(tokens) * u128::from(scale)).div_ceil(u128::from(least))
             + u128::from(extra);
         u64::try_from(wanted << pmd).ok().filter(|&w| w <= max)
     };
@@ -445,7 +581,9 @@ pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> Option<MeterProfil
 
 mod install;
 
-pub use install::{Installed, Port, Reconciled, run, with_installed};
+#[cfg(test)]
+pub(crate) use install::peerings;
+pub use install::{Installed, MeterName, Port, Reconciled, run, with_installed};
 
 /// A group of a [`Plan`], by what it is for; numbered when installed.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -454,6 +592,10 @@ pub enum Group {
     Root,
     /// One rule per source VPC, to its generation.
     Switch,
+    /// A source VPC's ingress rules: the generation's first group, if it has any.
+    Ingress(Vni),
+    /// The colors a meter (by index into [`Plan::meters`]) gave a source VPC's ingress traffic.
+    IngressColor(Vni, usize),
     /// A source VPC's ACL denies.
     Deny(Vni),
     /// A source VPC's rate limits.
@@ -469,6 +611,10 @@ pub enum Role {
     Root,
     /// The switch rule of a source VPC.
     Switch(Vni),
+    /// An ingress rule of the program, by index into [`Program::ingress`].
+    Ingress(usize),
+    /// What a meter, by index into [`Plan::meters`], colored of a source VPC's ingress traffic.
+    IngressColor(Vni, usize, Color),
     /// An ACL deny of the program, by index into [`Program::denies`].
     Deny(usize),
     /// A rate limit of the program, by index into [`Program::rules`].
@@ -525,6 +671,8 @@ pub struct PlannedTable {
 /// installed one is kept, with its token state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeterKey {
+    /// The policy it is of: names are unique within one only.
+    pub scope: Scope,
     /// The meter's name.
     pub name: String,
     /// What the NIC enforces of it.
@@ -536,14 +684,30 @@ pub struct MeterKey {
 pub struct PlannedMeter {
     /// What identifies it.
     pub key: MeterKey,
-    /// Its color table, in [`Group::Color`] of its index.
-    pub colors: PlannedTable,
+    /// Its color table, in [`Group::Color`] of its index: a peering meter's. An ingress meter's
+    /// colors are matched in its source VPCs' [`Group::IngressColor`] groups instead.
+    pub colors: Option<PlannedTable>,
+}
+
+/// What an ingress rule of a generation does, to tell generations apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IngressSpec {
+    /// See [`IngressVerdict::Drop`].
+    Drop,
+    /// See [`IngressVerdict::Police`].
+    Police(MeterKey, Option<MeterKey>),
+    /// See [`IngressVerdict::Continue`].
+    Continue,
+    /// See [`IngressVerdict::Pass`].
+    Pass,
 }
 
 /// What a source VPC's generation enforces, to tell whether an installed one is still what is
 /// wanted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VpcSpec {
+    /// Its ingress rules, in order, with their layers and whether they match fragments.
+    pub ingress: Vec<(Match, u32, bool, IngressSpec)>,
     /// Its denies, in order, with their levels.
     pub denies: Vec<(Match, u8)>,
     /// Its rate limits, in order, with their levels and meters.
@@ -563,7 +727,7 @@ pub struct PlannedVpc {
     pub spec: VpcSpec,
     /// The group its switch rule jumps to.
     pub entry: Group,
-    /// Its tables: denies, then rate limits.
+    /// Its tables: ingress rules and their colors, denies, then rate limits.
     pub tables: Vec<PlannedTable>,
 }
 
@@ -598,6 +762,8 @@ const POLICE_RULE: usize = 2;
 const DELIVER: usize = 3;
 const PASS: usize = 4;
 const DISCARD: usize = 5;
+const COUNT_JUMP: usize = 6;
+const COUNT_POLICE: usize = 7;
 
 fn root_pattern() -> Pattern<Complete> {
     Pattern::new()
@@ -795,6 +961,12 @@ impl Plan {
                 vec![fate.clone()],
                 vec![TemplateAction::Count, fate.clone()],
                 vec![TemplateAction::Count, TemplateAction::Drop],
+                vec![TemplateAction::Count, TemplateAction::JumpPerRule],
+                vec![
+                    TemplateAction::Count,
+                    TemplateAction::Meter,
+                    TemplateAction::JumpPerRule,
+                ],
             ],
             meters: Vec::new(),
             fixed: Vec::new(),
@@ -803,28 +975,39 @@ impl Plan {
         for (index, meter) in program.meters.iter().enumerate() {
             plan.meters.push(PlannedMeter {
                 key: MeterKey {
+                    scope: meter.scope,
                     name: meter.name.clone(),
                     profile: profile(meter).ok_or_else(|| Error::Unfit(meter.name.clone()))?,
                 },
-                colors: color_table(index),
+                colors: (meter.scope == Scope::Peering).then(|| color_table(index)),
             });
         }
         // The program's rules, by source VPC.
+        let mut ingress: BTreeMap<Vni, Vec<usize>> = BTreeMap::new();
         let mut denies: BTreeMap<Vni, Vec<usize>> = BTreeMap::new();
         let mut limits: BTreeMap<Vni, Vec<usize>> = BTreeMap::new();
+        for (index, rule) in program.ingress.iter().enumerate() {
+            ingress.entry(rule.matches.src_vni).or_default().push(index);
+        }
         for (index, deny) in program.denies.iter().enumerate() {
             denies.entry(deny.matches.src_vni).or_default().push(index);
         }
         for (index, rule) in program.rules.iter().enumerate() {
             limits.entry(rule.matches.src_vni).or_default().push(index);
         }
-        let vnis: BTreeSet<Vni> = denies.keys().chain(limits.keys()).copied().collect();
+        let vnis: BTreeSet<Vni> = ingress
+            .keys()
+            .chain(denies.keys())
+            .chain(limits.keys())
+            .copied()
+            .collect();
         for vni in vnis {
             let vtep = *vteps.get(&vni).ok_or(Error::NoVtep(vni))?;
             let vpc = plan.vpc(
                 program,
                 vni,
                 vtep,
+                &ingress.remove(&vni).unwrap_or_default(),
                 &denies.remove(&vni).unwrap_or_default(),
                 &limits.remove(&vni).unwrap_or_default(),
             );
@@ -836,31 +1019,33 @@ impl Plan {
         Ok(plan)
     }
 
-    /// The generation of source VPC `vni`, from its denies and rate limits (indices into
-    /// `program`).
-    fn vpc(
-        &mut self,
+    /// What source VPC `vni`'s generation enforces, from its rules (indices into `program`).
+    fn spec(
+        &self,
         program: &Program,
         vni: Vni,
         vtep: Ipv4Addr,
+        vni_ingress: &[usize],
         vni_denies: &[usize],
         vni_limits: &[usize],
-    ) -> PlannedVpc {
-        // Identical rules are left out, as `Program::compile` does: mlx5 fails to remove the
-        // second.
-        let mut seen: HashSet<&Match> = HashSet::new();
-        let vni_denies: Vec<usize> = vni_denies
-            .iter()
-            .copied()
-            .filter(|&i| seen.insert(&program.denies[i].matches))
-            .collect();
-        let mut seen: HashSet<&Match> = HashSet::new();
-        let vni_limits: Vec<usize> = vni_limits
-            .iter()
-            .copied()
-            .filter(|&i| seen.insert(&program.rules[i].matches))
-            .collect();
-        let spec = VpcSpec {
+    ) -> VpcSpec {
+        VpcSpec {
+            ingress: vni_ingress
+                .iter()
+                .map(|&i| {
+                    let rule = &program.ingress[i];
+                    let verdict = match rule.verdict {
+                        IngressVerdict::Drop => IngressSpec::Drop,
+                        IngressVerdict::Police(m, then) => IngressSpec::Police(
+                            self.meters[m].key.clone(),
+                            then.map(|t| self.meters[t].key.clone()),
+                        ),
+                        IngressVerdict::Continue => IngressSpec::Continue,
+                        IngressVerdict::Pass => IngressSpec::Pass,
+                    };
+                    (rule.matches.clone(), rule.layer, rule.fragments, verdict)
+                })
+                .collect(),
             denies: vni_denies
                 .iter()
                 .map(|&i| (program.denies[i].matches.clone(), program.denies[i].level))
@@ -887,7 +1072,35 @@ impl Plan {
                 .map(|&i| program.denies[i].peering)
                 .chain(vni_limits.iter().map(|&i| program.rules[i].peering))
                 .collect(),
-        };
+        }
+    }
+
+    /// The generation of source VPC `vni`, from its ingress rules, denies and rate limits
+    /// (indices into `program`).
+    fn vpc(
+        &mut self,
+        program: &Program,
+        vni: Vni,
+        vtep: Ipv4Addr,
+        vni_ingress: &[usize],
+        vni_denies: &[usize],
+        vni_limits: &[usize],
+    ) -> PlannedVpc {
+        // Identical rules are left out, as `Program::compile` does: mlx5 fails to remove the
+        // second.
+        let mut seen: HashSet<&Match> = HashSet::new();
+        let vni_denies: Vec<usize> = vni_denies
+            .iter()
+            .copied()
+            .filter(|&i| seen.insert(&program.denies[i].matches))
+            .collect();
+        let mut seen: HashSet<&Match> = HashSet::new();
+        let vni_limits: Vec<usize> = vni_limits
+            .iter()
+            .copied()
+            .filter(|&i| seen.insert(&program.rules[i].matches))
+            .collect();
+        let spec = self.spec(program, vni, vtep, vni_ingress, &vni_denies, &vni_limits);
         // What another peer takes of a rule's destination passes, in both groups: a pass in the
         // deny group leaves the traffic to the police group, whose own passes deliver it.
         let passes = pass_matches(vni, &spec.passes);
@@ -931,16 +1144,116 @@ impl Plan {
                 (DELIVER, Vec::new()),
             ));
         }
-        let entry = if vni_denies.is_empty() {
+        let entry = if !vni_ingress.is_empty() {
+            Group::Ingress(vni)
+        } else if vni_denies.is_empty() {
             Group::Police(vni)
         } else {
             Group::Deny(vni)
         };
+        if !vni_ingress.is_empty() {
+            // What the ingress rules let through goes on to the peering policy, or to software.
+            let next = if !vni_denies.is_empty() {
+                (COUNT_JUMP, vec![Arg::Jump(Group::Deny(vni))])
+            } else if police {
+                (COUNT_JUMP, vec![Arg::Jump(Group::Police(vni))])
+            } else {
+                (PASS, Vec::new())
+            };
+            let mut ingress = self.ingress(program, vni, vni_ingress, &next);
+            ingress.append(&mut tables);
+            tables = ingress;
+        }
         PlannedVpc {
             spec,
             entry,
             tables,
         }
+    }
+
+    /// Source VPC `vni`'s ingress group and its meters' color groups, sending what they let
+    /// through to `next` (an actions template and its arguments). One table per layer and shape,
+    /// lower layers first (see [`IngressRule::layer`](crate::program::IngressRule::layer)): two
+    /// rules of one table that overlap (port ranges may) have the same verdict, so it does not
+    /// matter which the NIC takes (mlx5 takes the first inserted), and identical ones are left out
+    /// by `Program::compile`.
+    fn ingress(
+        &mut self,
+        program: &Program,
+        vni: Vni,
+        rules: &[usize],
+        next: &(usize, Vec<Arg>),
+    ) -> Vec<PlannedTable> {
+        let group = Group::Ingress(vni);
+        let mut slots: BTreeMap<(u32, Shape), Vec<usize>> = BTreeMap::new();
+        for &i in rules {
+            let rule = &program.ingress[i];
+            let shape = Shape {
+                fragments: rule.fragments,
+                ..Shape::of(&rule.matches)
+            };
+            slots.entry((rule.layer, shape)).or_default().push(i);
+        }
+        let mut tables = Vec::with_capacity(slots.len() + 1);
+        // The meters charged first, and the one each chains to, if any.
+        let mut colored: BTreeMap<usize, Option<usize>> = BTreeMap::new();
+        for (priority, ((_, shape), indices)) in (0u32..).zip(slots) {
+            self.patterns.push(shape.pattern(None));
+            let mut actions: Vec<usize> = Vec::new();
+            let mut planned = Vec::with_capacity(indices.len());
+            for i in indices {
+                let rule = &program.ingress[i];
+                let (template, args) = match rule.verdict {
+                    IngressVerdict::Drop => (DISCARD, Vec::new()),
+                    IngressVerdict::Police(m, then) => {
+                        colored.insert(m, then);
+                        (
+                            POLICE_RULE,
+                            vec![Arg::Meter(m), Arg::Jump(Group::IngressColor(vni, m))],
+                        )
+                    }
+                    // As the catch-all, but uncounted: an ingress rule's count is what it dropped.
+                    IngressVerdict::Continue => match next.0 {
+                        COUNT_JUMP => (JUMP, next.1.clone()),
+                        _ => (DELIVER, Vec::new()),
+                    },
+                    IngressVerdict::Pass => (DELIVER, Vec::new()),
+                };
+                let at = actions
+                    .iter()
+                    .position(|&a| a == template)
+                    .unwrap_or_else(|| {
+                        actions.push(template);
+                        actions.len() - 1
+                    });
+                planned.push(PlannedRule {
+                    pattern: shape.pattern(Some(&rule.matches)),
+                    actions: at,
+                    args,
+                    role: Role::Ingress(i),
+                });
+            }
+            tables.push(PlannedTable {
+                group,
+                priority: Priority(priority),
+                capacity: u32::try_from(planned.len()).unwrap_or(u32::MAX),
+                pattern: self.patterns.len() - 1,
+                actions,
+                rules: planned,
+            });
+        }
+        let catch_all = u32::try_from(tables.len()).unwrap_or(u32::MAX);
+        tables.push(single(
+            group,
+            catch_all,
+            ANY,
+            next.0,
+            any_pattern(),
+            next.1.clone(),
+            Role::CatchAll(group),
+        ));
+        tables.extend(ingress_colors(vni, &colored, next));
+        tables
     }
 
     /// The root, the switch with a rule per VPC, and the switch's catch-all.
@@ -990,7 +1303,7 @@ impl Plan {
         self.fixed
             .iter()
             .chain(self.vpcs.values().flat_map(|vpc| &vpc.tables))
-            .chain(self.meters.iter().map(|meter| &meter.colors))
+            .chain(self.meters.iter().filter_map(|meter| meter.colors.as_ref()))
     }
 
     /// Every table of the plan, to change it.
@@ -998,8 +1311,67 @@ impl Plan {
         self.fixed
             .iter_mut()
             .chain(self.vpcs.values_mut().flat_map(|vpc| &mut vpc.tables))
-            .chain(self.meters.iter_mut().map(|meter| &mut meter.colors))
+            .chain(
+                self.meters
+                    .iter_mut()
+                    .filter_map(|meter| meter.colors.as_mut()),
+            )
     }
+}
+
+/// Source VPC `vni`'s ingress color groups, for the meters in `colored` (charged first, and the
+/// one each chains to, if any): a first meter's green and yellow are charged to the second, whose
+/// own go to `next`, as do a meter's that chains to none; red is dropped.
+fn ingress_colors(
+    vni: Vni,
+    colored: &BTreeMap<usize, Option<usize>>,
+    next: &(usize, Vec<Arg>),
+) -> Vec<PlannedTable> {
+    let mut tables = Vec::new();
+    let mut chains: Vec<(usize, (usize, Vec<Arg>))> = Vec::new();
+    for (&meter, &then) in colored {
+        match then {
+            Some(second) => {
+                chains.push((
+                    meter,
+                    (
+                        COUNT_POLICE,
+                        vec![
+                            Arg::Meter(second),
+                            Arg::Jump(Group::IngressColor(vni, second)),
+                        ],
+                    ),
+                ));
+                chains.push((second, next.clone()));
+            }
+            None => chains.push((meter, next.clone())),
+        }
+    }
+    chains.sort_by_key(|(meter, _)| *meter);
+    chains.dedup_by_key(|(meter, _)| *meter);
+    for (meter, (on, args)) in chains {
+        tables.push(PlannedTable {
+            group: Group::IngressColor(vni, meter),
+            priority: Priority(0),
+            capacity: 3,
+            pattern: COLOR,
+            actions: vec![on, DISCARD],
+            rules: Color::ALL
+                .into_iter()
+                .map(|c| PlannedRule {
+                    pattern: Pattern::meter_color(c).complete(),
+                    actions: usize::from(c == Color::Red),
+                    args: if c == Color::Red {
+                        Vec::new()
+                    } else {
+                        args.clone()
+                    },
+                    role: Role::IngressColor(vni, meter, c),
+                })
+                .collect(),
+        });
+    }
+    tables
 }
 
 /// Meter `meter`'s color group: green and yellow are counted and passed, red counted and

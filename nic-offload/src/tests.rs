@@ -3,6 +3,8 @@
 
 //! What the program compiler offloads and refuses, from configurations like `rate-limit`'s tests.
 
+mod ingress;
+
 use std::num::{NonZeroU64, NonZeroUsize};
 
 use acl::table::Backend;
@@ -15,9 +17,9 @@ use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, 
 use config::external::overlay::{Overlay, ValidatedOverlay};
 use lpm::prefix::{Prefix as LpmPrefix, PrefixWithOptionalPorts};
 use policer::{Profile, Rate};
-use rate_limit::{PeeringRules, RateLimitWriter, RateLimits, Unit};
+use rate_limit::{IngressRules, PeeringRules, RateLimitWriter, RateLimits, Unit};
 
-use crate::program::{Origin, Peering, Prefix, Program, Refusal};
+use crate::program::{Exclusions, Origin, Peering, Prefix, Program, Refusal};
 use acl_filter::AclFilterContext;
 
 const VNI1: u32 = 3000;
@@ -89,8 +91,9 @@ fn compile_with(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>, offload: 
     Program::compile(
         &AclFilterContext::reference(&overlay).unwrap(),
         &writer.load(),
+        &RateLimits::<IngressRules>::empty(),
         &flow_filter::FlowFilterContext::reference(&overlay).destinations(),
-        &std::collections::BTreeSet::new(),
+        &Exclusions::default(),
     )
 }
 
