@@ -106,6 +106,7 @@ pub enum DoneReason {
     Filtered,             /* The packet was administratively filtered */
     AclDropped,           /* The packet was dropped by an ACL rule */
     RateLimited,          /* Dropped by a rate-limit rule */
+    IngressDropped,       /* Dropped by a drop rule of the gateway's ingress policy */
     NatOutOfResources,    /* can't do NAT due to lack of resources */
     FlowCapacityExceeded, /* could not create flow state: flow table capacity exceeded */
     NatUnsupportedProto,  /* unsupported transport protocol for NATing */
@@ -153,6 +154,7 @@ pub struct PacketMeta {
     pub vrf: Option<VrfId>,          /* for IP packet, the VRF to use to route it */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a received encapsulated packet */
+    pub outer_ip_len: Option<u16>, /* length of a decapsulated packet's outer IP packet, as received */
     pub dst_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a packet to be (or already) re-encapsulated by the gateway */
     pub flow_info: Option<Arc<FlowInfo>>, /* flow specific information that can be looked up in the flow table */
     pub dscp: Option<Dscp>,               /* Dscp to preserve for egress traffic */

@@ -3,7 +3,7 @@
 
 //! Named meter counters and their ordered rules.
 
-use crate::rules::{RateLimitReader, RateLimits, Unit};
+use crate::rules::{Action, RateLimitReader, RateLimits, Unit};
 use common::cliprovider::CliDataProvider;
 use policer::Color;
 use std::fmt::{self, Display, Formatter};
@@ -31,12 +31,15 @@ impl<C> Display for RateLimits<C> {
             }
         }
         for (index, rule) in self.rules().iter().enumerate() {
-            writeln!(
-                f,
-                "rule {index}: {} -> meter {}",
-                rule.matches(),
-                self.meters()[rule.meter()].name()
-            )?;
+            match rule.action() {
+                Action::Police(meter) => writeln!(
+                    f,
+                    "rule {index}: {} -> meter {}",
+                    rule.matches(),
+                    self.meters()[meter].name()
+                )?,
+                Action::Drop => writeln!(f, "rule {index}: {} -> drop", rule.matches())?,
+            }
         }
         Ok(())
     }
