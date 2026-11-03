@@ -8,7 +8,7 @@ use acl_filter::AclFilterContextWriter;
 use concurrency::sync::Arc;
 use config::external::overlay::ValidatedOverlay;
 use flow_entry::flow_table::FlowTable;
-use rate_limit::{Backend, PeeringRules, RateLimitWriter};
+use rate_limit::{Backend, IngressRules, PeeringRules, RateLimitWriter};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
@@ -103,6 +103,9 @@ pub struct ConfigProcessorParams {
 
     // writer for rate limits
     pub rate_limits: RateLimitWriter<PeeringRules>,
+
+    // writer for the gateway's ingress policy
+    pub ingress: RateLimitWriter<IngressRules>,
 
     // writer for port forwarding table
     pub portfw_w: PortFwTableWriter,
@@ -587,6 +590,15 @@ fn apply_rate_limit_config(
     Ok(())
 }
 
+fn apply_ingress_config(
+    overlay: &ValidatedOverlay,
+    ingress: &RateLimitWriter<IngressRules>,
+) -> ConfigResult {
+    ingress.apply(overlay, Backend::Dpdk)?;
+    debug!("Successfully updated the ingress policy");
+    Ok(())
+}
+
 /// Update the Nat tables for static NAT
 fn apply_static_nat_config(
     vpc_table: &ValidatedVpcTable,
@@ -693,6 +705,7 @@ impl ConfigProcessor {
         let flow_filter_writer = &mut self.proc_params.flow_filter_writer;
         let aclfilterw = &mut self.proc_params.aclfilterw;
         let rate_limits = &self.proc_params.rate_limits;
+        let ingress = &self.proc_params.ingress;
         let portfw_w = &mut self.proc_params.portfw_w;
         let flow_table = &self.proc_params.flow_table;
 
@@ -741,6 +754,9 @@ impl ConfigProcessor {
 
         /* apply rate limits */
         apply_rate_limit_config(overlay, rate_limits)?;
+
+        /* apply the ingress policy */
+        apply_ingress_config(overlay, ingress)?;
 
         /* apply static NAT config */
         apply_static_nat_config(overlay.vpc_table(), nattablesw)?;

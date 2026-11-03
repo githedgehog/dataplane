@@ -893,6 +893,7 @@ pub fn main() {
         config.metrics.address,
         setup.stats,
         setup.rate_limits.reader(),
+        setup.ingress.reader(),
         TelemetrySources {
             packets: setup.pkt_stats.clone(),
             flows: setup.flow_table.clone(),
@@ -1048,6 +1049,7 @@ pub fn main() {
                     flow_filter_writer: setup.flow_filter_writer,
                     aclfilterw: setup.aclfiltertablesw,
                     rate_limits: setup.rate_limits,
+                    ingress: setup.ingress,
                     portfw_w: setup.portfw_w,
                     vpc_stats_store: setup.vpc_stats_store,
                     dp_status_r: dp_status.clone(),

@@ -20,7 +20,9 @@ use concurrency::sync::Arc;
 use acl_filter::{AclFilter, AclFilterContextReaderFactory, AclFilterContextWriter};
 use flow_entry::flow_table::{FlowLookup, FlowTable, FlowTableSummary};
 use flow_filter::{FlowFilter, FlowFilterContextReaderFactory, FlowFilterContextWriter};
-use rate_limit::{PeeringRules, RateLimitReader, RateLimitWriter, RateLimiter, RateLimits};
+use rate_limit::{
+    IngressRules, PeeringRules, RateLimitReader, RateLimitWriter, RateLimiter, RateLimits,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
@@ -55,6 +57,7 @@ pub(crate) struct InternalSetup {
     pub flow_filter_writer: FlowFilterContextWriter,
     pub aclfiltertablesw: AclFilterContextWriter,
     pub rate_limits: RateLimitWriter<PeeringRules>,
+    pub ingress: RateLimitWriter<IngressRules>,
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
     pub portfw_w: PortFwTableWriter,
@@ -79,6 +82,7 @@ pub(crate) struct PipelineIngredients {
     flow_filter_reader_factory: FlowFilterContextReaderFactory,
     aclfiltertablesr_factory: AclFilterContextReaderFactory,
     rate_limits: RateLimitReader<PeeringRules>,
+    ingress: RateLimitReader<IngressRules>,
     portfw_factory: PortFwTableReaderFactory,
     stats_w: PacketStatsWriter,
     pkt_stats: Arc<PacketStats>,
@@ -162,6 +166,7 @@ impl PipelineIngredients {
                 FlowFilter::new("flow-filter", self.flow_filter_reader_factory.handle());
             let acl_filter = AclFilter::new("acl-filter", self.aclfiltertablesr_factory.handle());
             let rate_limiter = RateLimiter::new(self.rate_limits.clone());
+            let ingress = RateLimiter::new(self.ingress.clone());
             let icmp_error_handler = IcmpErrorHandler::new(self.flow_table.clone());
             let flow_lookup = FlowLookup::new("flow-lookup", self.flow_table.clone());
             let portfw = PortForwarder::new(
@@ -184,6 +189,9 @@ impl PipelineIngredients {
                 .add_stage(capture_ingress)
                 .add_stage(stage_ingress)
                 .add_stage(iprouter1)
+                // First on decapsulated packets: the ingress policy depends on nothing a later
+                // stage decides, which is what lets a NIC enforce it exactly, in front of this.
+                .add_stage(ingress)
                 .add_stage(icmp_error_handler)
                 .add_stage(flow_lookup)
                 .add_stage(flow_filter)
@@ -257,6 +265,7 @@ pub(crate) fn start_router(
     let aclfiltertablesw = AclFilterContextWriter::new();
     let aclfiltertablesr_factory = aclfiltertablesw.get_reader_factory();
     let rate_limits = RateLimitWriter::new(RateLimits::empty(), workers);
+    let ingress = RateLimitWriter::new(RateLimits::empty(), workers);
     let nattablesw = NatTablesWriter::new();
     // Workers register with this as they build their pipelines. Through it, the control plane puts
     // the reapers of mappings it carries over on a configuration change on the workers' wheels.
@@ -315,6 +324,7 @@ pub(crate) fn start_router(
         flow_filter_reader_factory,
         aclfiltertablesr_factory,
         rate_limits: rate_limits.reader(),
+        ingress: ingress.reader(),
         portfw_factory,
         stats_w,
         pkt_stats: pkt_stats.clone(),
@@ -333,6 +343,7 @@ pub(crate) fn start_router(
         flow_filter_writer,
         aclfiltertablesw,
         rate_limits,
+        ingress,
         stats,
         vpc_stats_store,
         portfw_w,
