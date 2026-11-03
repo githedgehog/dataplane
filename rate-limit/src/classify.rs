@@ -5,10 +5,11 @@
 
 use acl::table::{Backend, RuleRow, Table, build_table};
 use config::ConfigError;
+use config::external::overlay::acl::{AclProtoMatch, ValidatedAclPattern};
 use config::external::overlay::ratelimit::ValidatedRateLimitRule;
 use lpm::prefix::Prefix;
 use lpm::prefix::with_ports::{KeyPort, PORT_RANGE_WILDCARD};
-use match_action::{Erased, ExactSpec, MatchKey, PrefixSpec};
+use match_action::{Erased, ExactSpec, MatchKey, PrefixSpec, RangeSpec};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, Transport, TryHeaders, TryIp, UpperLayerProto};
 use net::ip::{IpAddress, NextHeader};
@@ -23,8 +24,32 @@ pub type RuleIndex = usize;
 
 /// Selects the first matching rule.
 pub trait Classify: Send + Sync {
+    /// What the bytes components of its rules' meters count.
+    const BILLING: Billing;
     /// The rule matching this packet, if any.
     fn classify<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<RuleIndex>;
+}
+
+/// What a byte of a meter's bytes component is: the unit its rates and bursts are in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Billing {
+    /// A byte of the IP packet, or of anything the frame carries after it, as its VPC sent it:
+    /// what a peering's rate limit is about.
+    Ip,
+    /// A byte of the outer IP packet a VPC's packet arrived in, VXLAN encapsulation included: what
+    /// reaches the gateway, and what a NIC meter counts (IP length, without L2).
+    OuterIp,
+}
+
+impl Billing {
+    /// The bytes `packet` is charged, if it can be: `None` for packets that are not IP, or, for
+    /// [`Billing::OuterIp`], were not received encapsulated.
+    pub(crate) fn bytes<Buf: PacketBufferMut>(self, packet: &Packet<Buf>) -> Option<u32> {
+        match self {
+            Billing::Ip => billed_bytes(packet),
+            Billing::OuterIp => packet.meta().outer_ip_len.map(u32::from),
+        }
+    }
 }
 
 /// What a rate-limit rule matches: the directed peering, addresses, protocol, ports and TCP flags.
@@ -93,41 +118,86 @@ impl PeeringRules {
     }
 }
 
-fn table<I: IpVersion>(
-    rules: &[ValidatedRateLimitRule],
-    backend: Backend,
-) -> Result<Table<PeeringKey<I>, RuleIndex>, ConfigError> {
-    let mut lowered = Vec::new();
+/// One row of a family's table: a pair of a rule's sources and destinations of family `I`, with
+/// their ports, and the rule's index.
+pub(crate) struct Row<'r, R, I: IpVersion> {
+    pub(crate) index: RuleIndex,
+    pub(crate) rule: &'r R,
+    pub(crate) proto: AclProtoMatch,
+    pub(crate) source: PrefixSpec<I>,
+    pub(crate) destination: PrefixSpec<I>,
+    pub(crate) src_port: RangeSpec<KeyPort>,
+    pub(crate) dst_port: RangeSpec<KeyPort>,
+}
+
+/// The rows family `I`'s table gets of `rules`, in their order: every pair of a rule's sources and
+/// destinations of the family. Both classifiers' tables are made of these.
+pub(crate) fn rows<R, I: IpVersion>(
+    rules: &[R],
+    pattern: impl Fn(&R) -> &ValidatedAclPattern,
+) -> Vec<Row<'_, R, I>> {
+    let mut rows = Vec::new();
     for (index, rule) in rules.iter().enumerate() {
-        for src in rule.pattern.src() {
+        let pattern = pattern(rule);
+        for src in pattern.src() {
             let Some(source) = I::prefix_spec(src.prefix()) else {
                 continue;
             };
-            for dst in rule.pattern.dst() {
+            for dst in pattern.dst() {
                 let Some(destination) = I::prefix_spec(dst.prefix()) else {
                     continue;
                 };
-                let key = PeeringKeyRule {
-                    proto: rule.pattern.proto().into(),
-                    src_vni: ExactSpec::new(rule.from),
-                    dst_vni: ExactSpec::new(rule.to),
+                rows.push(Row {
+                    index,
+                    rule,
+                    proto: pattern.proto(),
                     source,
                     destination,
                     src_port: src.ports().map_or(PORT_RANGE_WILDCARD, Into::into),
                     dst_port: dst.ports().map_or(PORT_RANGE_WILDCARD, Into::into),
-                    tcp_flags: rule.pattern.proto().tcp_flags().into(),
-                };
-                lowered.push((key, key.into_backend_fields::<Erased>(), index));
+                });
             }
         }
     }
+    rows
+}
+
+fn table<I: IpVersion>(
+    rules: &[ValidatedRateLimitRule],
+    backend: Backend,
+) -> Result<Table<PeeringKey<I>, RuleIndex>, ConfigError> {
+    let lowered = rows::<_, I>(rules, |r| &r.pattern)
+        .into_iter()
+        .map(|row| {
+            let key = PeeringKeyRule {
+                proto: row.proto.into(),
+                src_vni: ExactSpec::new(row.rule.from),
+                dst_vni: ExactSpec::new(row.rule.to),
+                source: row.source,
+                destination: row.destination,
+                src_port: row.src_port,
+                dst_port: row.dst_port,
+                tcp_flags: row.proto.tcp_flags().into(),
+            };
+            (key, key.into_backend_fields::<Erased>(), row.index)
+        })
+        .collect();
     build_table(backend, I::NAME, lowered).map_err(ConfigError::FailureApply)
 }
 
-impl Classify for PeeringRules {
-    fn classify<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<RuleIndex> {
-        let VpcDiscriminant::VNI(src_vni) = packet.meta().src_vpcd?;
-        let VpcDiscriminant::VNI(dst_vni) = packet.meta().dst_vpcd?;
+/// What a rule matches of a packet beyond its VPCs.
+pub(crate) struct Fields {
+    pub(crate) proto: NextHeader,
+    pub(crate) source: IpAddr,
+    pub(crate) destination: IpAddr,
+    pub(crate) src_port: KeyPort,
+    pub(crate) dst_port: KeyPort,
+    pub(crate) tcp_flags: TcpFlags,
+}
+
+impl Fields {
+    /// `None` for a packet that is not IP, or whose upper-layer protocol is indeterminate.
+    pub(crate) fn of<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<Fields> {
         let (_, net, transport) = packet
             .headers()
             .pat()
@@ -144,13 +214,35 @@ impl Classify for PeeringRules {
         // The parser may have read ports and flags from fragment payload.
         let transport = transport.filter(|_| !matches!(upper, UpperLayerProto::NonFirstFragment));
         let ports = transport.and_then(|t| t.src_port().zip(t.dst_port()));
-        let src_port = KeyPort::new(ports.map(|p| p.0));
-        let dst_port = KeyPort::new(ports.map(|p| p.1));
-        let tcp_flags = match transport {
-            Some(Transport::Tcp(tcp)) => tcp.flags(),
-            _ => TcpFlags::empty(),
-        };
-        match (net.src_addr(), net.dst_addr()) {
+        Some(Fields {
+            proto,
+            source: net.src_addr(),
+            destination: net.dst_addr(),
+            src_port: KeyPort::new(ports.map(|p| p.0)),
+            dst_port: KeyPort::new(ports.map(|p| p.1)),
+            tcp_flags: match transport {
+                Some(Transport::Tcp(tcp)) => tcp.flags(),
+                _ => TcpFlags::empty(),
+            },
+        })
+    }
+}
+
+impl Classify for PeeringRules {
+    const BILLING: Billing = Billing::Ip;
+
+    fn classify<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<RuleIndex> {
+        let VpcDiscriminant::VNI(src_vni) = packet.meta().src_vpcd?;
+        let VpcDiscriminant::VNI(dst_vni) = packet.meta().dst_vpcd?;
+        let Fields {
+            proto,
+            source,
+            destination,
+            src_port,
+            dst_port,
+            tcp_flags,
+        } = Fields::of(packet)?;
+        match (source, destination) {
             (IpAddr::V4(source), IpAddr::V4(destination)) => self.v4.lookup(&PeeringKey {
                 proto,
                 src_vni,
@@ -177,12 +269,14 @@ impl Classify for PeeringRules {
     }
 }
 
-trait IpVersion: IpAddress {
+pub(crate) trait IpVersion: IpAddress {
     const NAME: &'static str;
+    const INGRESS: &'static str;
     fn prefix_spec(prefix: Prefix) -> Option<PrefixSpec<Self>>;
 }
 impl IpVersion for Ipv4Addr {
     const NAME: &'static str = "rate_limit_v4";
+    const INGRESS: &'static str = "ingress_v4";
     fn prefix_spec(prefix: Prefix) -> Option<PrefixSpec<Self>> {
         match prefix {
             Prefix::IPV4(p) => Some(p.into()),
@@ -192,6 +286,7 @@ impl IpVersion for Ipv4Addr {
 }
 impl IpVersion for Ipv6Addr {
     const NAME: &'static str = "rate_limit_v6";
+    const INGRESS: &'static str = "ingress_v6";
     fn prefix_spec(prefix: Prefix) -> Option<PrefixSpec<Self>> {
         match prefix {
             Prefix::IPV6(p) => Some(p.into()),

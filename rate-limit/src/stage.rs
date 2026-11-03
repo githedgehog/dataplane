@@ -3,17 +3,20 @@
 
 //! The pipeline stage.
 
-use crate::classify::{Classify, billed_bytes};
+use crate::classify::Classify;
 use crate::counts::Counts;
-use crate::rules::{Enforcement, RateLimitReader, RateLimits};
+use crate::drops::Dropped;
+use crate::rules::{Action, Enforcement, RateLimitReader, RateLimits};
 use concurrency::sync::Arc;
 use config::external::overlay::ratelimit::ColorAction;
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryIpMut};
 use net::ip::dscp::Dscp;
 use net::packet::{DoneReason, Packet};
+use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use policer::{Color, LocalMeter};
+use std::collections::HashMap;
 
 /// One worker's lease on one meter component.
 #[derive(Debug)]
@@ -43,6 +46,11 @@ pub struct RateLimiter<C> {
     current: Option<Arc<RateLimits<C>>>,
     /// One lease per meter component, shared by every matching rule on this worker.
     locals: Vec<[Option<Local>; 2]>,
+    /// This worker's counts of what drop rules dropped, by source VPC, across configurations.
+    dropped: HashMap<Vni, Arc<Dropped>>,
+    /// The count each drop rule of the current configuration adds to, by rule index: resolved
+    /// when the configuration is, so a flood's drops cost no lookup.
+    rule_drops: Vec<Option<Arc<Dropped>>>,
 }
 
 impl<C> RateLimiter<C> {
@@ -53,6 +61,8 @@ impl<C> RateLimiter<C> {
             reader,
             current: None,
             locals: Vec::new(),
+            dropped: HashMap::new(),
+            rule_drops: Vec::new(),
         }
     }
 
@@ -94,6 +104,18 @@ impl<C> RateLimiter<C> {
                 })
             })
             .collect();
+        self.rule_drops = limits
+            .rules
+            .iter()
+            .map(|rule| match (rule.action, rule.from) {
+                (Action::Drop, Some(vni)) => Some(Arc::clone(
+                    self.dropped
+                        .entry(vni)
+                        .or_insert_with(|| limits.drops.counter(vni)),
+                )),
+                _ => None,
+            })
+            .collect();
         self.current = Some(Arc::clone(limits));
     }
 }
@@ -124,13 +146,22 @@ impl<Buf: PacketBufferMut, C: Classify> NetworkFunction<Buf> for RateLimiter<C> 
             .iter_mut()
             .filter(|packet| !packet.is_done() && packet.meta().is_overlay())
         {
-            let Some(bytes) = billed_bytes(packet) else {
-                continue;
-            };
             let Some(index) = limits.classifier.classify(packet) else {
                 continue;
             };
-            let meter_index = limits.rules[index].meter;
+            let meter_index = match limits.rules[index].action {
+                Action::Police(meter) => meter,
+                Action::Drop => {
+                    if let Some(Some(dropped)) = self.rule_drops.get(index) {
+                        dropped.add();
+                    }
+                    packet.done(DoneReason::IngressDropped);
+                    continue;
+                }
+            };
+            let Some(bytes) = C::BILLING.bytes(packet) else {
+                continue;
+            };
             let meter = &limits.meters[meter_index];
             let mut color = Color::Green;
             for unit in crate::rules::Unit::ALL {

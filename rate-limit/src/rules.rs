@@ -3,14 +3,19 @@
 
 //! Shared named meters and configuration publication.
 
-use crate::classify::PeeringRules;
+use crate::classify::{Classify, PeeringRules};
 use crate::counts::Counts;
+use crate::drops::Drops;
+use crate::ingress::IngressRules;
 use acl::table::Backend;
 use concurrency::slot::Slot;
 use concurrency::sync::{Arc, Mutex};
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
+use config::external::overlay::ingress::IngressAction;
+use config::external::overlay::ratelimit::Meter as ConfigMeter;
 use config::external::overlay::ratelimit::{ColorAction, ColorActions};
+use net::vxlan::Vni;
 use policer::{Color, Profile, SharedMeter};
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -142,17 +147,36 @@ impl Meter {
     }
 }
 
-/// One ordered match selecting a meter.
+/// What a rule does with the packets it matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// Charge the meter at this position in [`RateLimits::meters`], and act on its color.
+    Police(usize),
+    /// Drop them.
+    Drop,
+}
+
+/// One ordered match, policing or dropping what it matches.
 #[derive(Debug)]
 pub struct Rule {
-    pub(crate) meter: usize,
+    pub(crate) action: Action,
+    /// The source VPC it matches, if just one: what its drops are counted under.
+    pub(crate) from: Option<Vni>,
     matches: String,
 }
 impl Rule {
-    /// The selected meter's position in [`RateLimits::meters`].
+    /// What it does.
     #[must_use]
-    pub fn meter(&self) -> usize {
-        self.meter
+    pub fn action(&self) -> Action {
+        self.action
+    }
+    /// The charged meter's position in [`RateLimits::meters`], if it polices.
+    #[must_use]
+    pub fn meter(&self) -> Option<usize> {
+        match self.action {
+            Action::Police(meter) => Some(meter),
+            Action::Drop => None,
+        }
     }
     /// The validated match, for inspection.
     #[must_use]
@@ -168,6 +192,8 @@ pub struct RateLimits<C> {
     pub(crate) rules: Box<[Rule]>,
     pub(crate) meters: Box<[Meter]>,
     pub(crate) attempt_offloads: bool,
+    /// What drop rules dropped, carried from one configuration to the next.
+    pub(crate) drops: Arc<Drops>,
 }
 impl<C> RateLimits<C> {
     /// Whether a capable NIC should enforce what it can of the gateway's policy in front of
@@ -193,8 +219,97 @@ impl<C> RateLimits<C> {
         &self.rules
     }
 
-    /// Publish cumulative meter counters to the installed metrics recorder.
+    /// Packets drop rules dropped, by source VPC, since the process started.
+    #[must_use]
+    pub fn dropped(&self) -> std::collections::BTreeMap<net::vxlan::Vni, u64> {
+        self.drops.totals()
+    }
+}
+
+/// A configured rule, as [`Policy::rules`] gives it.
+#[derive(Debug, Clone, Copy)]
+pub struct Configured<'a> {
+    /// The name of the meter it charges, or `None` to drop.
+    pub meter: Option<&'a str>,
+    /// The source VPC it matches, if just one.
+    pub from: Option<Vni>,
+    /// Its description, for inspection.
+    pub description: &'a str,
+}
+
+/// What a [`RateLimits`] is built from: the part of a validated configuration it enforces, and
+/// a classifier for its rules.
+pub trait Policy: Classify + Sized {
+    /// Which policy, as the `policy` label of its metrics: meter names are only unique within one.
+    const LABEL: &'static str;
+    /// A classifier matching no traffic.
+    fn empty() -> Self;
+    /// Its meters, by name, and its rules in match order.
+    fn rules(overlay: &ValidatedOverlay) -> (&BTreeMap<String, ConfigMeter>, Vec<Configured<'_>>);
+    /// The classifier of those rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns classifier construction errors.
+    fn new(overlay: &ValidatedOverlay, backend: Backend) -> Result<Self, ConfigError>;
+}
+
+impl Policy for PeeringRules {
+    const LABEL: &'static str = "peering";
+    fn empty() -> Self {
+        PeeringRules::empty()
+    }
+    fn rules(overlay: &ValidatedOverlay) -> (&BTreeMap<String, ConfigMeter>, Vec<Configured<'_>>) {
+        let config = overlay.rate_limits();
+        let rules = config
+            .rules
+            .iter()
+            .map(|r| Configured {
+                meter: Some(r.meter.as_str()),
+                from: Some(r.from),
+                description: r.description.as_str(),
+            })
+            .collect();
+        (&config.meters, rules)
+    }
+    fn new(overlay: &ValidatedOverlay, backend: Backend) -> Result<Self, ConfigError> {
+        PeeringRules::new(&overlay.rate_limits().rules, backend)
+    }
+}
+
+impl Policy for IngressRules {
+    const LABEL: &'static str = "ingress";
+    fn empty() -> Self {
+        IngressRules::empty()
+    }
+    fn rules(overlay: &ValidatedOverlay) -> (&BTreeMap<String, ConfigMeter>, Vec<Configured<'_>>) {
+        let config = overlay.ingress();
+        let rules = config
+            .rules
+            .iter()
+            .map(|r| {
+                let meter = match &r.action {
+                    IngressAction::Drop => None,
+                    IngressAction::Police(meter) => Some(meter.as_str()),
+                };
+                Configured {
+                    meter,
+                    from: Some(r.from),
+                    description: r.description.as_str(),
+                }
+            })
+            .collect();
+        (&config.meters, rules)
+    }
+    fn new(overlay: &ValidatedOverlay, backend: Backend) -> Result<Self, ConfigError> {
+        IngressRules::new(&overlay.ingress().rules, backend)
+    }
+}
+
+impl<C: Policy> RateLimits<C> {
+    /// Publish cumulative meter and drop counters to the installed metrics recorder.
     pub fn publish_metrics(&self) {
+        self.drops.publish_metrics();
         metrics::describe_counter!(
             "rate_limit_packets_total",
             metrics::Unit::Count,
@@ -221,23 +336,23 @@ impl<C> RateLimits<C> {
                 {
                     let (packets, bytes) = counts.total(color);
                     let (old_packets, old_bytes) = counts.exported[i];
-                    metrics::counter!("rate_limit_packets_total", "meter" => meter.name.clone(), "unit" => unit.label(), "result" => result).increment(packets - old_packets);
-                    metrics::counter!("rate_limit_bytes_total", "meter" => meter.name.clone(), "unit" => unit.label(), "result" => result).increment(bytes - old_bytes);
+                    metrics::counter!("rate_limit_packets_total", "policy" => C::LABEL, "meter" => meter.name.clone(), "unit" => unit.label(), "result" => result).increment(packets - old_packets);
+                    metrics::counter!("rate_limit_bytes_total", "policy" => C::LABEL, "meter" => meter.name.clone(), "unit" => unit.label(), "result" => result).increment(bytes - old_bytes);
                     counts.exported[i] = (packets, bytes);
                 }
             }
         }
     }
-}
-impl RateLimits<PeeringRules> {
+
     /// No configured meters or rules.
     #[must_use]
     pub fn empty() -> Self {
         Self {
-            classifier: PeeringRules::empty(),
+            classifier: C::empty(),
             rules: Box::new([]),
             meters: Box::new([]),
             attempt_offloads: true,
+            drops: Arc::new(Drops::default()),
         }
     }
 
@@ -254,60 +369,81 @@ impl RateLimits<PeeringRules> {
         now: Instant,
         backend: Backend,
     ) -> Result<Self, ConfigError> {
-        let config = overlay.rate_limits();
-        let mut indices = BTreeMap::new();
-        let meters = config
-            .meters
-            .iter()
-            .enumerate()
-            .map(|(index, (name, meter))| {
-                indices.insert(name.as_str(), index);
-                let previous = previous.meters.iter().find(|m| m.name == *name);
-                let components = [meter.bytes, meter.packets];
-                let components = std::array::from_fn(|i| {
-                    components[i].map(|c| {
-                        let old = previous.and_then(|m| m.components[i].as_ref());
-                        let enforcement = match old {
-                            Some(old) if old.profile() == c.profile => Arc::clone(&old.enforcement),
-                            _ => Arc::new(Enforcement::new(
-                                c.profile,
-                                workers,
-                                now,
-                                old.map(|c| c.enforcement.as_ref()),
-                            )),
-                        };
-                        Component {
-                            actions: c.actions,
-                            enforcement,
+        let (config_meters, config_rules) = C::rules(overlay);
+        let (meters, indices) = meters(config_meters, &previous.meters, workers, now);
+        let rules = config_rules
+            .into_iter()
+            .map(
+                |Configured {
+                     meter,
+                     from,
+                     description,
+                 }| {
+                    let action = match meter {
+                        None => Action::Drop,
+                        Some(name) => {
+                            Action::Police(indices.get(name).copied().ok_or_else(|| {
+                                ConfigError::InvalidRateLimit(format!("unknown meter {name}"))
+                            })?)
                         }
+                    };
+                    Ok(Rule {
+                        action,
+                        from,
+                        matches: description.to_string(),
                     })
-                });
-                Meter {
-                    name: name.clone(),
-                    components,
-                }
-            })
-            .collect();
-        let rules = config
-            .rules
-            .iter()
-            .map(|rule| {
-                let meter = indices.get(rule.meter.as_str()).copied().ok_or_else(|| {
-                    ConfigError::InvalidRateLimit(format!("unknown meter {}", rule.meter))
-                })?;
-                Ok(Rule {
-                    meter,
-                    matches: rule.description.clone(),
-                })
-            })
+                },
+            )
             .collect::<Result<_, ConfigError>>()?;
         Ok(Self {
-            classifier: PeeringRules::new(&config.rules, backend)?,
+            classifier: C::new(overlay, backend)?,
             rules,
             meters,
             attempt_offloads: !overlay.offloads_disabled(),
+            drops: Arc::clone(&previous.drops),
         })
     }
+}
+/// meters that carry over from `previous`, and the position of each, by name.
+fn meters<'a>(
+    config_meters: &'a BTreeMap<String, ConfigMeter>,
+    previous: &[Meter],
+    workers: NonZeroUsize,
+    now: Instant,
+) -> (Box<[Meter]>, BTreeMap<&'a str, usize>) {
+    let mut indices = BTreeMap::new();
+    let meters = config_meters
+        .iter()
+        .enumerate()
+        .map(|(index, (name, meter))| {
+            indices.insert(name.as_str(), index);
+            let previous = previous.iter().find(|m| m.name == *name);
+            let components = [meter.bytes, meter.packets];
+            let components = std::array::from_fn(|i| {
+                components[i].map(|c| {
+                    let old = previous.and_then(|m| m.components[i].as_ref());
+                    let enforcement = match old {
+                        Some(old) if old.profile() == c.profile => Arc::clone(&old.enforcement),
+                        _ => Arc::new(Enforcement::new(
+                            c.profile,
+                            workers,
+                            now,
+                            old.map(|c| c.enforcement.as_ref()),
+                        )),
+                    };
+                    Component {
+                        actions: c.actions,
+                        enforcement,
+                    }
+                })
+            });
+            Meter {
+                name: name.clone(),
+                components,
+            }
+        })
+        .collect();
+    (meters, indices)
 }
 
 /// Publishes rate-limit configurations to workers.
@@ -348,7 +484,7 @@ impl<C> RateLimitWriter<C> {
         RateLimitReader(Arc::clone(&self.slot))
     }
 }
-impl RateLimitWriter<PeeringRules> {
+impl<C: Policy> RateLimitWriter<C> {
     /// Build and publish a validated configuration.
     ///
     /// # Errors

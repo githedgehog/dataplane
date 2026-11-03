@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+mod ingress;
+
 use crate::{Classify, PeeringRules, RateLimitWriter, RateLimiter, RateLimits, Unit};
 use acl::table::Backend;
 use config::external::overlay::acl::{AclPattern, AclProtoMatch, AclTcpFlagsMatch};
@@ -176,7 +178,10 @@ fn configuration(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>) -> Valid
         .unwrap()
 }
 fn writer(config: &ValidatedOverlay, workers: usize) -> RateLimitWriter<PeeringRules> {
-    let w = RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::new(workers).unwrap());
+    let w = RateLimitWriter::<PeeringRules>::new(
+        RateLimits::empty(),
+        NonZeroUsize::new(workers).unwrap(),
+    );
     w.apply(config, Backend::Reference).unwrap();
     w
 }
@@ -212,7 +217,10 @@ fn the_first_match_wins_even_when_a_later_prefix_is_longer() {
     let w = writer(&config, 1);
     let limits = w.load();
     let i = limits.classifier.classify(&packet("10.1.1.9", 80)).unwrap();
-    assert_eq!(limits.meters()[limits.rules()[i].meter()].name(), "wide");
+    assert_eq!(
+        limits.meters()[limits.rules()[i].meter().unwrap()].name(),
+        "wide"
+    );
     assert!(
         limits
             .classifier
@@ -451,7 +459,7 @@ fn ordered_acl_matches_agree_between_dpdk_and_reference() {
         ],
     );
     let build = |backend| {
-        RateLimits::build(
+        RateLimits::<PeeringRules>::build(
             &config,
             &RateLimits::empty(),
             NonZeroUsize::MIN,
@@ -500,7 +508,7 @@ fn tcp_flag_matches_agree_between_dpdk_and_reference() {
         vec![opening, tcp, rule("10.1.0.0/16", "tcp")],
     );
     let build = |backend| {
-        RateLimits::build(
+        RateLimits::<PeeringRules>::build(
             &config,
             &RateLimits::empty(),
             NonZeroUsize::MIN,
@@ -559,6 +567,7 @@ fn cli_and_prometheus_report_each_shared_meter_once() {
             })
             .unwrap_or_else(|| panic!("{scrape}"));
         assert!(line.contains("meter=\"shared\""));
+        assert!(line.contains("policy=\"peering\""), "{line}");
         assert!(line.ends_with(&format!(" {n}")), "{line}");
     }
 }

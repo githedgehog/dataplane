@@ -38,6 +38,7 @@ impl Display for DoneReason {
             Self::Filtered => f.pad("Filtered"),
             Self::AclDropped => f.pad("Dropped by ACL"),
             Self::RateLimited => f.pad("Dropped by rate limit"),
+            Self::IngressDropped => f.pad("Dropped by ingress policy"),
             Self::FlowCapacityExceeded => f.pad("Flow capacity exceeded"),
 
             Self::NatOutOfResources => f.pad("NAT: out of resources"),
