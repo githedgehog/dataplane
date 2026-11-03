@@ -75,6 +75,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 clock = { workspace = true, features = ["virtual"] }
 # internal
 config = { workspace = true, features = ["bolero"] }
+hardware = { workspace = true, features = ["test_fakes"] }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero", "builder", "checksum-audit", "test_buffer", "test_meta"] }
 routing = { workspace = true, features = ["testing"] }

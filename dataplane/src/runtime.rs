@@ -382,6 +382,26 @@ fn configured_pci_ports(
     Ok(selected)
 }
 
+/// Whether libibverbs can reach `address` from `roots`, if it is an mlx5 function; init made its
+/// command channel's node (see `hardware::verbs`). The datapath thread's own sysfs is the one
+/// mounted for its namespace.
+fn verbs_reachable(
+    roots: &hardware::verbs::Roots,
+    address: PciAddress,
+) -> Result<(), hardware::verbs::Unreachable> {
+    let driver = std::fs::read_link(
+        roots
+            .sys
+            .join("bus/pci/devices")
+            .join(address.to_string())
+            .join("driver"),
+    );
+    if !driver.is_ok_and(|d| d.file_name() == Some("mlx5_core".as_ref())) {
+        return Ok(());
+    }
+    hardware::verbs::reachable(roots, address).map(|_| ())
+}
+
 /// Probe, configure and start the selected devices. Init must prepare their kernel bindings first.
 fn bring_up_ports<'eal>(
     eal: &'eal mut Eal,
@@ -395,6 +415,17 @@ fn bring_up_ports<'eal>(
         let devargs = nic_offload::probe_args(*address);
         let devargs: Vec<&str> = devargs.iter().map(String::as_str).collect();
         let mut probed = eal.probe_pci_with(*address, &devargs);
+        // mlx5 fails a probe it cannot reach through verbs with the ENOMEM a memory shortage gives,
+        // which is no reason to drop the offload: a probe without it would fail the same way.
+        if probed.is_err()
+            && let Err(source) = verbs_reachable(&hardware::verbs::Roots::current(), *address)
+        {
+            return Err(DriverError::Verbs {
+                interface: interface.interface.to_string(),
+                address: *address,
+                source,
+            });
+        }
         // NIC offload must never cost more than the offload: a port its driver arguments fail to
         // probe (a NIC's hardware steering may need more memory than the gateway reserves) is
         // probed as it would be without offload, and the NIC then enforces nothing.
@@ -1082,6 +1113,51 @@ pub fn main() {
     }
     info!("Dataplane shutdown completed");
     std::process::exit(exit_code);
+}
+
+#[cfg(test)]
+mod verbs_tests {
+    use hardware::verbs::Unreachable;
+    use hardware::verbs::fake::Fake;
+
+    use super::verbs_reachable;
+
+    /// A failed probe of a function DPDK drives without verbs has nothing to do with verbs.
+    #[test]
+    fn a_function_without_mlx5_is_not_checked() {
+        for fake in [Fake::new(), Fake::new().driver("vfio-pci")] {
+            verbs_reachable(&fake.roots(), Fake::address()).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_mlx5_function_without_its_rdma_device_is_unreachable() {
+        let fake = Fake::new().driver("mlx5_core");
+        assert!(matches!(
+            verbs_reachable(&fake.roots(), Fake::address()),
+            Err(Unreachable::NoDevice { .. })
+        ));
+    }
+
+    /// Init makes the node; one still missing at probe time is reported, not made.
+    #[test]
+    fn an_mlx5_function_without_its_node_is_unreachable() {
+        let fake = Fake::new().driver("mlx5_core").rdma_device().channel("1:3");
+        assert!(matches!(
+            verbs_reachable(&fake.roots(), Fake::address()),
+            Err(Unreachable::NoNode { .. })
+        ));
+    }
+
+    #[test]
+    fn an_mlx5_function_with_its_node_is_reachable() {
+        let fake = Fake::new()
+            .driver("mlx5_core")
+            .rdma_device()
+            .channel("1:3")
+            .node();
+        verbs_reachable(&fake.roots(), Fake::address()).unwrap();
+    }
 }
 
 #[cfg(test)]
