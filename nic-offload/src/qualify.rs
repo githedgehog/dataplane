@@ -678,10 +678,13 @@ fn coverage() {
     }
     let acted =
         stats.get("charged").copied().unwrap_or(0) + stats.get("denied").copied().unwrap_or(0);
-    // About half are: frames aimed at a rule's destination outside its peer's exposes, and frames
-    // aimed at nothing, are neither.
+    // A little under half are (45 % on average over 300 cases, with a standard deviation of 2.4
+    // points): frames aimed at a rule's destination outside its peer's exposes, and frames aimed
+    // at nothing, are neither. The inputs are not seeded, and a loaded runner reaches fewer cases
+    // in the time bolero has, so the share wanders; a bound near it failed about one run in
+    // twelve. This only has to catch a generator that stopped reaching the rules.
     assert!(
-        acted * 5 >= total * 2,
+        acted * 6 >= total,
         "only {acted} of {total} generated frames are charged by a meter or denied"
     );
 }
