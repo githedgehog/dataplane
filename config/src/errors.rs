@@ -79,6 +79,8 @@ pub enum ConfigError {
     InvalidRateLimit(String),
     #[error("Rate limit '{limit}' refers to non-existent VPC '{vpc}'")]
     RateLimitNoSuchVpc { limit: String, vpc: String },
+    #[error("Invalid ingress policy: {0}")]
+    InvalidIngressPolicy(String),
     // NAT-specific
     #[error(
         "Mismatched sizes for static NAT: the exposed prefixes and the range they translate to \
