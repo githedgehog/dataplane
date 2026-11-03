@@ -54,6 +54,7 @@ impl From<DoneReason> for Disposition {
             | DoneReason::Filtered
             | DoneReason::AclDropped
             | DoneReason::RateLimited
+            | DoneReason::IngressDropped
             | DoneReason::NatOutOfResources
             | DoneReason::FlowCapacityExceeded
             | DoneReason::NatUnsupportedProto
@@ -133,6 +134,7 @@ mod test {
             (DoneReason::Filtered, Disposition::Drop),
             (DoneReason::AclDropped, Disposition::Drop),
             (DoneReason::RateLimited, Disposition::Drop),
+            (DoneReason::IngressDropped, Disposition::Drop),
             (DoneReason::NatOutOfResources, Disposition::Drop),
             (DoneReason::FlowCapacityExceeded, Disposition::Drop),
             (DoneReason::NatUnsupportedProto, Disposition::Drop),

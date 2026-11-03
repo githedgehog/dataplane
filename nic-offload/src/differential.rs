@@ -903,10 +903,14 @@ impl Frame {
                 }
             }
         }
-        Software::Charges(limits.classifier().classify(&packet).map(|rule| {
-            let meter = limits.rules()[rule].meter();
-            limits.meters()[meter].name().to_string()
-        }))
+        // Peering rate limits only police.
+        Software::Charges(
+            limits
+                .classifier()
+                .classify(&packet)
+                .and_then(|rule| limits.rules()[rule].meter())
+                .map(|meter| limits.meters()[meter].name().to_string()),
+        )
     }
 }
 
