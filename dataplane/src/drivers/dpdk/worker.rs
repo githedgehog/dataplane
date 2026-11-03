@@ -546,7 +546,7 @@ fn divert_verdict<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, port: Mac) -> 
 ///
 /// Control traffic of the `early` classes, which the NIC does not steer to the control queue, is
 /// moved to `diverted` before the pipeline sees it. Every other packet comes back, whatever its
-/// verdict: the caller counts and frees the drops, in bulk.
+/// verdict, except those that the stages punt: the caller counts and frees the drops, in bulk.
 fn process_burst<Buf: PacketBufferMut>(
     burst: impl ExactSizeIterator<Item = Buf>,
     rx_if: InterfaceIndex,
@@ -577,13 +577,5 @@ fn process_burst<Buf: PacketBufferMut>(
         }));
     }
 
-    let parsed = packets.len();
     pipeline.process_burst(packets);
-
-    // Stages mark packets to drop rather than removing them, so a drop is always counted.
-    debug_assert!(
-        packets.len() >= parsed,
-        "the pipeline removed {} packet(s) instead of marking them dropped",
-        parsed - packets.len()
-    );
 }
