@@ -20,4 +20,17 @@ pub enum DriverError {
     /// A packet port could not be brought up, or its queues could not be handed to workers.
     #[error("port setup failed: {0}")]
     PortSetup(String),
+    /// An mlx5 port's probe failed because libibverbs cannot reach its verbs command channel.
+    #[error(
+        "port setup failed: interface '{interface}' ({address}) is not reachable through verbs: \
+         {source}"
+    )]
+    Verbs {
+        /// The configured interface.
+        interface: String,
+        /// Its PCI function.
+        address: hardware::pci::address::PciAddress,
+        /// How far libibverbs gets.
+        source: hardware::verbs::Unreachable,
+    },
 }
