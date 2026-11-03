@@ -23,7 +23,7 @@ use crate::packet_processor::PipelineFactory;
 use concurrency::thread;
 use lifecycle::Subsystem;
 use lldp::Link;
-use net::buffer::test_buffer::TestBuffer;
+use net::buffer::test_buffer::{TestBuffer, TestBufferPool};
 use net::eth::mac::SourceMac;
 use net::interface::InterfaceName;
 use tokio::sync::watch;
@@ -55,7 +55,7 @@ impl DriverKernel {
         scope: &'scope thread::Scope<'scope, '_>,
         workers_subsystem: &Subsystem,
         num_workers: usize,
-        setup_pipeline: &PipelineFactory<'static, TestBuffer>,
+        setup_pipeline: &PipelineFactory<'static, TestBuffer, TestBufferPool>,
         interfaces: &[Kif],
         mut cp_ends: Option<&mut DatapathEnds>,
     ) -> Result<Vec<WorkerMonitor<'scope, std::io::Error>>, std::io::Error> {
@@ -128,7 +128,7 @@ impl DriverKernel {
         workers_subsystem: &Subsystem,
         args: impl IntoIterator<Item = args::InterfaceArg>,
         num_workers: usize,
-        setup_pipeline: &PipelineFactory<'static, TestBuffer>,
+        setup_pipeline: &PipelineFactory<'static, TestBuffer, TestBufferPool>,
         status_writer: DriverStatusWriter,
         mut cp_ends: Option<DatapathEnds>,
     ) -> Result<(), DriverError> {
