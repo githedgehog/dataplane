@@ -1034,6 +1034,15 @@ impl DriverConfigSection {
         }
     }
 
+    /// The hugepages init reserved for EAL; `None` for the kernel driver, or for EAL defaults.
+    #[must_use]
+    pub fn hugepages(&self) -> Option<&HugepagePlan> {
+        match self {
+            DriverConfigSection::Dpdk(dpdk) => dpdk.hugepages.as_ref(),
+            DriverConfigSection::Kernel(_) => None,
+        }
+    }
+
     /// The number of packet-processing workers to run.
     #[must_use]
     pub fn num_workers(&self) -> NonZero<u16> {

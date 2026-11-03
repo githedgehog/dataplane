@@ -240,6 +240,34 @@ impl<'eal> Pool<'eal> {
         self.config.params.size
     }
 
+    /// Pool memory in bytes, including mbuf chunks, headers, padding, and per-lcore caches.
+    /// Excludes the mempool driver's free-object storage.
+    #[must_use]
+    pub fn memory_bytes(&self) -> u64 {
+        unsafe extern "C" fn add_chunk(
+            _: *mut dpdk_sys::rte_mempool,
+            total: *mut core::ffi::c_void,
+            chunk: *mut dpdk_sys::rte_mempool_memhdr,
+            _: core::ffi::c_uint,
+        ) {
+            // SAFETY: `total` is the `u64` passed below, and DPDK passes a live chunk header.
+            unsafe { *total.cast::<u64>() += (*chunk).len as u64 };
+        }
+        let mut total = 0u64;
+        // SAFETY: a live mempool for the lifetime of this handle; the callback only reads the
+        // chunk headers and adds to `total`, which outlives the call.
+        unsafe {
+            dpdk_sys::rte_mempool_mem_iter(
+                self.pool.as_ptr(),
+                Some(add_chunk),
+                (&raw mut total).cast(),
+            );
+        }
+        // SAFETY: as above; `mz` is the memzone DPDK reserved for the pool, or null if it has none.
+        let header = unsafe { self.pool.as_ref().mz.as_ref() };
+        total + header.map_or(0, |mz| mz.len as u64)
+    }
+
     /// Allocate `num` mbufs as an owning batch.
     ///
     /// # Errors
@@ -1231,6 +1259,20 @@ mod pool_tests {
         let b = second.alloc_bulk(2).expect("alloc from second");
         assert_eq!(a.len(), 2);
         assert_eq!(b.len(), 2);
+    }
+
+    #[test]
+    #[with_eal]
+    fn a_pool_holds_at_least_its_mbufs_and_their_headroom() {
+        let pool = pool("memory_bytes", 511);
+        let per_mbuf = core::mem::size_of::<dpdk_sys::rte_mbuf>() as u64
+            + u64::from(pool.config().params.data_size);
+        assert!(
+            pool.memory_bytes() >= u64::from(pool.capacity()) * per_mbuf,
+            "{} bytes cannot hold {} mbufs of {per_mbuf} bytes",
+            pool.memory_bytes(),
+            pool.capacity()
+        );
     }
 
     #[test]
