@@ -33,7 +33,8 @@ use nat::static_nat::natrw::NatTablesReaderFactory;
 use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat};
 use net::packet::PacketStats;
 
-use net::buffer::PacketBufferMut;
+use net::buffer::{BufferPool, PacketBufferMut};
+use net::packet::Rebuffer;
 use pipeline::sample_nfs::{PacketDumper, PacketStatsNF};
 use pipeline::{DynPipeline, PipelineData};
 
@@ -117,6 +118,19 @@ impl nic_offload::Vteps for FibVteps {
     }
 }
 
+/// What a driver provides for each of the pipelines that it builds with a [`PipelineFactory`].
+pub(crate) struct WorkerContext<P> {
+    /// The buffer pool for the packets injected into the pipeline
+    pub(crate) inject_pool: P,
+}
+impl<P> WorkerContext<P> {
+    #[must_use]
+    /// Create a context object for a worker
+    pub(crate) fn new(inject_pool: P) -> Self {
+        Self { inject_pool }
+    }
+}
+
 impl PipelineIngredients {
     /// The generation counter shared with the management plane.
     pub(crate) fn data(&self) -> Arc<PipelineData> {
@@ -134,10 +148,14 @@ impl PipelineIngredients {
         }
     }
 
-    /// Create a shared factory for the driver's buffer type and lifetime.
-    /// The returned pipelines are constructed and used on their worker threads.
-    pub(crate) fn factory<'nf, Buf: PacketBufferMut + 'nf>(self) -> PipelineFactory<'nf, Buf> {
-        Arc::new(move || {
+    /// Create a pipeline factory for the driver's buffer type and type of pool that
+    /// pipelines get buffers from. Worker threads create pipelines from this factory.
+    pub(crate) fn factory<'nf, Buf, P>(self) -> PipelineFactory<'nf, Buf, P>
+    where
+        Buf: Rebuffer + 'nf,
+        P: BufferPool<Buf = Buf> + 'nf,
+    {
+        Arc::new(move |_context: WorkerContext<P>| {
             // This worker's handle on the shared flow table, for the stages that create flows.
             let flows = WorkerFlowTable::registered(self.flow_table.clone(), &self.timers);
 
@@ -240,8 +258,8 @@ pub(crate) fn expiry_budget(burst: usize, bursts: usize, behind: bool) -> usize 
 }
 
 /// Builds a worker's pipeline, on the worker's thread.
-pub(crate) type PipelineFactory<'nf, Buf> =
-    Arc<dyn Send + Sync + Fn() -> WorkerPipeline<'nf, Buf> + 'nf>;
+pub(crate) type PipelineFactory<'nf, Buf, P> =
+    Arc<dyn Send + Sync + Fn(WorkerContext<P>) -> WorkerPipeline<'nf, Buf> + 'nf>;
 
 /// Start a router and provide the ingredients for its pipeline
 pub(crate) fn start_router(
