@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use dpdk::dev::{Dev, Started};
 use dpdk::flow::template::{
-    Color, Counts, MeterProfileId, SharedActionsTemplate, SharedArg, SharedMeter,
+    Color, Counts, MeterProfileId, MeterUnit, SharedActionsTemplate, SharedArg, SharedMeter,
     SharedPatternTemplate, SharedRule, SharedTable, TableConfig, TemplateAction, TemplateError,
     TemplateFlows,
 };
@@ -20,11 +20,11 @@ use rekon::{SyncCreate, SyncObserve, SyncReconcile, SyncRemove};
 use tracing::{error, info, warn};
 
 use super::{
-    Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, RESOURCES, Role, SWITCH, VpcSpec,
+    Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, Role, SWITCH, VpcSpec,
     unknown_state,
 };
 use crate::Policy;
-use crate::program::{Origin, Peering, Program};
+use crate::program::{Exclusions, IngressVerdict, Origin, Peering, Program, Scope};
 
 #[cfg(test)]
 mod tests;
@@ -84,7 +84,12 @@ struct Switch<'t> {
 /// A source VPC's generation of rules.
 #[derive(Debug)]
 struct Generation<'t> {
+    /// Its source VPC.
+    vni: Vni,
     spec: VpcSpec,
+    /// The names of the meters its ingress color rules count, by their index in the plan it was
+    /// built from: what they counted is the meter's, by name, across plans.
+    meter_names: BTreeMap<usize, MeterName>,
     entry: FlowGroup,
     rules: Vec<(Role, Rule<'t>)>,
     tables: Vec<Table<'t>>,
@@ -95,18 +100,84 @@ struct Generation<'t> {
 #[derive(Debug)]
 struct InstalledMeter<'t> {
     key: MeterKey,
+    /// Its color group, if its plan gives it one (a peering meter's).
+    colors: Option<MeterColors<'t>>,
+    meter: SharedMeter<'t, Ingress>,
+}
+
+/// A meter's color group.
+#[derive(Debug)]
+struct MeterColors<'t> {
     // Fields drop in order: the rules before their table.
     rules: Vec<(Color, Rule<'t>)>,
     table: Table<'t>,
     group: FlowGroup,
-    meter: SharedMeter<'t, Ingress>,
+}
+
+/// A meter component, by its meter's policy and name, and what it counts (`bits` or `pkts`, as
+/// software's meters are labelled): a meter whose two components the NIC chains has one of each.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MeterName {
+    /// The policy it is of.
+    pub scope: Scope,
+    /// The meter's name.
+    pub name: String,
+    /// What it counts.
+    pub unit: &'static str,
+}
+
+impl MeterName {
+    fn of(key: &MeterKey) -> MeterName {
+        let unit = match key.profile.unit {
+            MeterUnit::Bytes => "bits",
+            MeterUnit::Packets => "pkts",
+        };
+        MeterName {
+            scope: key.scope,
+            name: key.name.clone(),
+            unit,
+        }
+    }
+}
+
+impl Generation<'_> {
+    /// What its ingress drop rules dropped so far.
+    fn ingress_dropped(&self) -> u64 {
+        self.rules
+            .iter()
+            .filter(|(role, _)| matches!(role, Role::Ingress(_)))
+            .map(|(_, rule)| rule.counts().unwrap_or_default().packets)
+            .sum()
+    }
+
+    /// What its ingress color rules counted, by meter name: passed (green and yellow), and
+    /// dropped (red).
+    fn meter_counts(&self) -> BTreeMap<MeterName, (Counts, Counts)> {
+        let mut totals: BTreeMap<MeterName, (Counts, Counts)> = BTreeMap::new();
+        for (role, rule) in &self.rules {
+            let Role::IngressColor(_, meter, color) = *role else {
+                continue;
+            };
+            let Some(name) = self.meter_names.get(&meter) else {
+                continue;
+            };
+            let total = totals.entry(name.clone()).or_default();
+            let sum = if color == Color::Red {
+                &mut total.1
+            } else {
+                &mut total.0
+            };
+            add(sum, rule.counts().unwrap_or_default());
+        }
+        totals
+    }
 }
 
 impl InstalledMeter<'_> {
     /// What it passed (green and yellow) and dropped (red) so far.
     fn counts(&self) -> (Counts, Counts) {
         let (mut passed, mut dropped) = (Counts::default(), Counts::default());
-        for (color, rule) in &self.rules {
+        for (color, rule) in self.colors.iter().flat_map(|c| &c.rules) {
             let sum = if *color == Color::Red {
                 &mut dropped
             } else {
@@ -186,7 +257,9 @@ pub struct Port<'t> {
     /// What the ACL denies of torn-down generations dropped, so the total never goes back.
     retired_denied: u64,
     /// What removed meters passed and dropped, by name, for the names the policy still has.
-    retired_meters: BTreeMap<String, (Counts, Counts)>,
+    retired_meters: BTreeMap<MeterName, (Counts, Counts)>,
+    /// What the ingress drop rules of torn-down generations dropped, by source VPC.
+    retired_ingress: BTreeMap<Vni, u64>,
 }
 
 impl<'t> Port<'t> {
@@ -212,6 +285,7 @@ impl<'t> Port<'t> {
             switch_lingers: false,
             retired_denied: 0,
             retired_meters: BTreeMap::new(),
+            retired_ingress: BTreeMap::new(),
         }
     }
 
@@ -434,8 +508,13 @@ impl<'t> Port<'t> {
         match group {
             Group::Root => Ok(FlowGroup(0)),
             Group::Switch => Ok(SWITCH),
-            Group::Color(m) => Ok(self.installed_meter(m)?.group),
-            Group::Deny(_) | Group::Police(_) => {
+            Group::Color(m) => self
+                .installed_meter(m)?
+                .colors
+                .as_ref()
+                .map(|c| c.group)
+                .ok_or(Error::NoSuchGroup(group)),
+            Group::Ingress(_) | Group::IngressColor(..) | Group::Deny(_) | Group::Police(_) => {
                 own.get(&group).copied().ok_or(Error::NoSuchGroup(group))
             }
         }
@@ -531,11 +610,18 @@ impl<'t> Port<'t> {
             Err(e) if unknown_state(&e) => return Err(self.lose("making a meter", e)),
             Err(e) => return Ok(Err(e.into())),
         };
+        let Some(planned_colors) = &planned.colors else {
+            return Ok(Ok(InstalledMeter {
+                key: planned.key.clone(),
+                colors: None,
+                meter,
+            }));
+        };
         let group = match self.groups.take() {
             Ok(group) => group,
             Err(e) => return Ok(Err(e)),
         };
-        let table = match self.table(plan, &planned.colors, group) {
+        let table = match self.table(plan, planned_colors, group) {
             Ok(table) => table,
             Err(e) => {
                 self.groups.give(group);
@@ -543,7 +629,7 @@ impl<'t> Port<'t> {
             }
         };
         let mut rules = Vec::new();
-        for rule in &planned.colors.rules {
+        for rule in &planned_colors.rules {
             let Role::Color(_, color) = rule.role else {
                 unreachable!("a color table holds color rules")
             };
@@ -562,9 +648,11 @@ impl<'t> Port<'t> {
         }
         Ok(Ok(InstalledMeter {
             key: planned.key.clone(),
-            rules,
-            table,
-            group,
+            colors: Some(MeterColors {
+                rules,
+                table,
+                group,
+            }),
             meter,
         }))
     }
@@ -575,16 +663,18 @@ impl<'t> Port<'t> {
         let (passed, dropped) = meter.counts();
         let retired = self
             .retired_meters
-            .entry(meter.key.name.clone())
+            .entry(MeterName::of(&meter.key))
             .or_default();
         add(&mut retired.0, passed);
         add(&mut retired.1, dropped);
-        let InstalledMeter {
+        let Some(MeterColors {
             rules,
             table,
             group,
-            ..
-        } = meter;
+        }) = meter.colors
+        else {
+            return Ok(());
+        };
         self.destroy_rules("removing a meter's color rules", rules)?;
         self.destroy_tables("removing a meter's color table", [table], [group])
     }
@@ -594,11 +684,21 @@ impl<'t> Port<'t> {
     fn build(
         &mut self,
         plan: &Plan,
+        vni: Vni,
         planned: &PlannedVpc,
     ) -> Result<Result<Generation<'t>, Vec<(Role, Error)>>, Error> {
         let mut own = BTreeMap::new();
         let mut generation = Generation {
+            vni,
             spec: planned.spec.clone(),
+            meter_names: planned
+                .tables
+                .iter()
+                .filter_map(|t| match t.group {
+                    Group::IngressColor(_, m) => Some((m, MeterName::of(&plan.meters.get(m)?.key))),
+                    _ => None,
+                })
+                .collect(),
             entry: FlowGroup(0),
             rules: Vec::new(),
             tables: Vec::new(),
@@ -666,17 +766,24 @@ impl<'t> Port<'t> {
 
     /// Remove a detached generation's rules, then its tables, and take its groups back.
     fn teardown(&mut self, generation: Generation<'t>) -> Result<(), Error> {
+        self.retired_denied += generation
+            .rules
+            .iter()
+            .filter(|(role, _)| matches!(role, Role::Deny(_)))
+            .map(|(_, rule)| rule.counts().unwrap_or_default().packets)
+            .sum::<u64>();
+        *self.retired_ingress.entry(generation.vni).or_default() += generation.ingress_dropped();
+        for (name, (passed, dropped)) in generation.meter_counts() {
+            let retired = self.retired_meters.entry(name).or_default();
+            add(&mut retired.0, passed);
+            add(&mut retired.1, dropped);
+        }
         let Generation {
             rules,
             tables,
             groups,
             ..
         } = generation;
-        self.retired_denied += rules
-            .iter()
-            .filter(|(role, _)| matches!(role, Role::Deny(_)))
-            .map(|(_, rule)| rule.counts().unwrap_or_default().packets)
-            .sum::<u64>();
         self.destroy_rules("removing a generation's rules", rules)?;
         self.destroy_tables("removing a generation's tables", tables, groups)
     }
@@ -741,14 +848,19 @@ impl<'t> Port<'t> {
             .vpcs
             .values()
             .flat_map(|g| &g.rules)
-            .filter(|(role, _)| matches!(role, Role::Deny(_)))
+            .filter(|(role, _)| {
+                matches!(
+                    role,
+                    Role::Deny(_) | Role::Ingress(_) | Role::IngressColor(..)
+                )
+            })
             .map(|(role, rule)| (*role, rule.counts().unwrap_or_default()))
             .collect();
         for (index, installed) in self.plan_meters.iter().enumerate() {
             let Some(meter) = installed.and_then(|i| self.meters.get(i)) else {
                 continue;
             };
-            for (color, rule) in &meter.rules {
+            for (color, rule) in meter.colors.iter().flat_map(|c| &c.rules) {
                 counts.push((
                     Role::Color(index, *color),
                     rule.counts().unwrap_or_default(),
@@ -773,13 +885,32 @@ impl<'t> Port<'t> {
     /// What each named meter passed and dropped in the NIC on this port, since the policy last
     /// gained a meter of that name (up to the counters' lag).
     #[must_use]
-    pub fn meter_totals(&self) -> BTreeMap<String, (Counts, Counts)> {
+    pub fn meter_totals(&self) -> BTreeMap<MeterName, (Counts, Counts)> {
         let mut totals = self.retired_meters.clone();
         for meter in &self.meters {
             let (passed, dropped) = meter.counts();
-            let total = totals.entry(meter.key.name.clone()).or_default();
+            let total = totals.entry(MeterName::of(&meter.key)).or_default();
             add(&mut total.0, passed);
             add(&mut total.1, dropped);
+        }
+        // Ingress meters count in their source VPCs' color groups.
+        for generation in self.vpcs.values() {
+            for (name, (passed, dropped)) in generation.meter_counts() {
+                let total = totals.entry(name).or_default();
+                add(&mut total.0, passed);
+                add(&mut total.1, dropped);
+            }
+        }
+        totals
+    }
+
+    /// What the NIC's ingress drop rules dropped on this port, by source VPC, ever (up to the
+    /// counters' lag).
+    #[must_use]
+    pub fn ingress_dropped(&self) -> BTreeMap<Vni, u64> {
+        let mut totals = self.retired_ingress.clone();
+        for (vni, generation) in &self.vpcs {
+            *totals.entry(*vni).or_default() += generation.ingress_dropped();
         }
         totals
     }
@@ -865,7 +996,7 @@ impl SyncCreate for Port<'_> {
         let Some(planned) = plan.vpcs.get(&vni) else {
             return Ok(Vec::new());
         };
-        let generation = match self.build(plan, planned)? {
+        let generation = match self.build(plan, vni, planned)? {
             Ok(generation) => generation,
             Err(refused) => return Ok(refused),
         };
@@ -997,7 +1128,8 @@ impl SyncReconcile for Port<'_> {
         self.meters = kept;
         // A removed meter's counts are kept while the policy still has a meter of its name, so
         // its totals never go back; a name the policy dropped goes with them.
-        self.retired_meters.retain(|name, _| wanted.has_name(name));
+        self.retired_meters
+            .retain(|name, _| wanted.has_name(name.scope, &name.name));
         self.fixed(plan)?;
         let mut reconciled = Reconciled::default();
         let failed = self.meters(plan)?;
@@ -1050,15 +1182,18 @@ impl Drop for Port<'_> {
 /// plans against them one by one would be quadratic.
 struct MeterIndex<'k> {
     keys: Vec<&'k MeterKey>,
-    by_name: HashMap<&'k str, Vec<usize>>,
+    by_name: HashMap<(Scope, &'k str), Vec<usize>>,
 }
 
 impl<'k> MeterIndex<'k> {
     fn new(keys: impl IntoIterator<Item = &'k MeterKey>) -> MeterIndex<'k> {
         let keys: Vec<&MeterKey> = keys.into_iter().collect();
-        let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut by_name: HashMap<(Scope, &str), Vec<usize>> = HashMap::new();
         for (index, key) in keys.iter().enumerate() {
-            by_name.entry(key.name.as_str()).or_default().push(index);
+            by_name
+                .entry((key.scope, key.name.as_str()))
+                .or_default()
+                .push(index);
         }
         MeterIndex { keys, by_name }
     }
@@ -1066,15 +1201,15 @@ impl<'k> MeterIndex<'k> {
     /// The index of `key`, if it is here.
     fn find(&self, key: &MeterKey) -> Option<usize> {
         self.by_name
-            .get(key.name.as_str())?
+            .get(&(key.scope, key.name.as_str()))?
             .iter()
             .copied()
             .find(|&index| self.keys[index] == key)
     }
 
-    /// Whether a key named `name` is here.
-    fn has_name(&self, name: &str) -> bool {
-        self.by_name.contains_key(name)
+    /// Whether a key of `scope` named `name` is here.
+    fn has_name(&self, scope: Scope, name: &str) -> bool {
+        self.by_name.contains_key(&(scope, name))
     }
 }
 
@@ -1130,17 +1265,60 @@ pub fn with_installed<'t, R>(
     Ok(result)
 }
 
-/// The peerings of the rules in `refused`, which `program` has: a rule of a source VPC's
-/// generation (its switch rule, passes and catch-alls too) stands for every peering of that VPC's
-/// rules, as the whole generation was not attached; a color rule for those of the rules charging
-/// its meter.
+/// What to leave to software for the rules in `refused`, which `program` has: an ingress rule that
+/// drops or polices stands for itself (it passes to software; a meter that was not made has every
+/// rule charging it refused, so they all pass); an ingress meter's color rule stands for the meter
+/// (its rules then pass to software, wherever they are); another rule of a source VPC's generation
+/// (its switch rule, passes and catch-alls too) for the whole VPC if it has ingress rules (its
+/// peerings can't be enforced without them), and else for every peering of that VPC's rules, as
+/// the whole generation was not attached; a rate limit, deny or color rule for the peerings of the
+/// rules charging its meter.
 ///
 /// # Errors
 ///
-/// Returns the first refused rule that stands for no peering of `program`.
-fn peerings(program: &Program, refused: &[(Role, Error)]) -> Result<BTreeSet<Peering>, Role> {
-    let mut peerings = BTreeSet::new();
+/// Returns the first refused rule that stands for nothing of `program`.
+pub(crate) fn peerings(program: &Program, refused: &[(Role, Error)]) -> Result<Exclusions, Role> {
+    let mut excluded = Exclusions::default();
+    let has_ingress = |vni: Vni| program.ingress.iter().any(|r| r.matches.src_vni == vni);
     for (role, _) in refused {
+        // Refused for its pattern or its meter: either way, passing it to software is exact.
+        if let Role::Ingress(rule) = *role
+            && let Some(r) = program.ingress.get(rule)
+            && r.verdict != IngressVerdict::Pass
+            && let Origin::Ingress { v6, row } = r.origin
+        {
+            excluded.ingress_rules.insert((v6, row));
+            continue;
+        }
+        let ingress_meter = match *role {
+            Role::IngressColor(_, meter, _) => Some(meter),
+            _ => None,
+        };
+        if let Some(meter) = ingress_meter.and_then(|m| program.meters.get(m))
+            && meter.scope == Scope::Ingress
+        {
+            excluded.ingress_meters.insert(meter.name.clone());
+            continue;
+        }
+        let generation = match *role {
+            Role::Switch(vni)
+            | Role::Pass(vni)
+            | Role::IngressColor(vni, ..)
+            | Role::CatchAll(
+                Group::Deny(vni)
+                | Group::Police(vni)
+                | Group::Ingress(vni)
+                | Group::IngressColor(vni, _),
+            ) => Some(vni),
+            Role::Ingress(rule) => program.ingress.get(rule).map(|r| r.matches.src_vni),
+            _ => None,
+        };
+        if let Some(vni) = generation
+            && has_ingress(vni)
+        {
+            excluded.vpcs.insert(vni);
+            continue;
+        }
         let of_role: Vec<Peering> = match *role {
             Role::Police(rule) => program
                 .rules
@@ -1175,16 +1353,23 @@ fn peerings(program: &Program, refused: &[(Role, Error)]) -> Result<BTreeSet<Pee
                 .filter(|r| r.meter == meter)
                 .map(|r| r.peering)
                 .collect(),
-            Role::Root | Role::CatchAll(Group::Root | Group::Switch | Group::Color(_)) => {
-                Vec::new()
-            }
+            Role::Root
+            | Role::Ingress(_)
+            | Role::IngressColor(..)
+            | Role::CatchAll(
+                Group::Root
+                | Group::Switch
+                | Group::Color(_)
+                | Group::Ingress(_)
+                | Group::IngressColor(..),
+            ) => Vec::new(),
         };
         if of_role.is_empty() {
             return Err(*role);
         }
-        peerings.extend(of_role);
+        excluded.peerings.extend(of_role);
     }
-    Ok(peerings)
+    Ok(excluded)
 }
 
 /// Program `dev` with what the published ACLs and rate limits allow, and follow them until `stop`
@@ -1199,6 +1384,7 @@ pub fn run(
     stop: &dyn Fn() -> bool,
 ) {
     let (acls, reader, routing) = (&policy.acls, &policy.rate_limits, &policy.routing);
+    let ingress_reader = &policy.ingress;
     let flows = match TemplateFlows::new(dev) {
         Ok(flows) => flows,
         Err(e) => {
@@ -1209,17 +1395,21 @@ pub fn run(
     let mut port = Port::new(&flows);
     while !stop() {
         let (filter, limits, routes) = (acls.load(), reader.load(), routing.load());
+        let ingress = ingress_reader.load();
         let destinations = routes.destinations();
-        // The VPCs flow-filter names; their VTEPs are polled for changes.
+        // The VPCs flow-filter names, and those the ingress policy has rules for (peered or not);
+        // their VTEPs are polled for changes.
         let vnis: BTreeSet<Vni> = destinations
             .iter()
             .flat_map(|d| [d.src_vni, d.dst_vni])
+            .chain(crate::program::ingress_vpcs(&ingress))
             .collect();
         let vteps = policy.vteps.vteps(&vnis);
         let changed = || {
             stop()
                 || !concurrency::sync::Arc::ptr_eq(&acls.load(), &filter)
                 || !concurrency::sync::Arc::ptr_eq(&reader.load(), &limits)
+                || !concurrency::sync::Arc::ptr_eq(&ingress_reader.load(), &ingress)
                 || !concurrency::sync::Arc::ptr_eq(&routing.load(), &routes)
                 || policy.vteps.vteps(&vnis) != vteps
         };
@@ -1231,15 +1421,19 @@ pub fn run(
         let seen = Seen {
             filter: &filter,
             limits: &limits,
+            ingress: &ingress,
             destinations: &destinations,
             vteps: &vteps,
         };
         let program = install_policy(&mut port, port_name, &seen, fate, &changed);
         if let Some(program) = &program
-            && (!program.denies.is_empty() || !program.rules.is_empty())
+            && (!program.denies.is_empty()
+                || !program.rules.is_empty()
+                || !program.ingress.is_empty())
         {
             info!(
-                "port {port_name}: NIC enforcing {} ACL deny(s) and {} rate limit(s) for {} source VPC(s)",
+                "port {port_name}: NIC enforcing {} ingress rule(s), {} ACL deny(s) and {} rate limit(s) for {} source VPC(s)",
+                port.installed(|role| matches!(role, Role::Ingress(_))),
                 port.installed(|role| matches!(role, Role::Deny(_))),
                 port.installed(|role| matches!(role, Role::Police(_))),
                 port.vpcs.len(),
@@ -1267,10 +1461,12 @@ pub fn run(
     }
 }
 
-/// The policy as seen together: the ACLs, the rate limits, where flow-filter routes, and the VTEPs.
+/// The policy as seen together: the ACLs, the rate limits, the ingress policy, where flow-filter
+/// routes, and the VTEPs.
 struct Seen<'a> {
     filter: &'a acl_filter::AclFilterContext,
     limits: &'a rate_limit::RateLimits<rate_limit::PeeringRules>,
+    ingress: &'a rate_limit::RateLimits<rate_limit::IngressRules>,
     destinations: &'a [flow_filter::Destination],
     vteps: &'a BTreeMap<Vni, Ipv4Addr>,
 }
@@ -1288,26 +1484,31 @@ fn install_policy(
     let Seen {
         filter,
         limits,
+        ingress,
         destinations,
         vteps,
     } = *seen;
-    // Peerings left in software: refused by the NIC, over its meters, or of a VPC without a VTEP.
-    let mut excluded = BTreeSet::new();
+    // What is left in software: refused by the NIC, over its meters, or of a VPC without a VTEP.
+    let mut excluded = Exclusions::default();
     loop {
-        let program = Program::compile(filter, limits, destinations, &excluded);
+        let program = Program::compile(filter, limits, ingress, destinations, &excluded);
         // Without its VTEP, a VPC's VXLAN can't be told from transit.
-        let homeless: BTreeSet<Peering> = program
+        let homeless: BTreeSet<Vni> = program
             .denies
             .iter()
-            .map(|d| d.peering)
-            .chain(program.rules.iter().map(|r| r.peering))
-            .filter(|p| p.vnis().iter().any(|vni| !vteps.contains_key(vni)))
+            .flat_map(|d| d.peering.vnis())
+            .chain(program.rules.iter().flat_map(|r| r.peering.vnis()))
+            .chain(program.ingress.iter().map(|r| r.matches.src_vni))
+            .filter(|vni| !vteps.contains_key(vni))
             .collect();
         if !homeless.is_empty() {
-            for peering in &homeless {
-                info!("port {port_name}: the {peering} stays in software: a VPC has no IPv4 VTEP");
+            for vni in &homeless {
+                info!(
+                    "port {port_name}: VPC {} stays in software, with its peerings: it has no IPv4 VTEP",
+                    vni.as_u32()
+                );
             }
-            excluded.extend(homeless);
+            excluded.vpcs.extend(homeless);
             continue;
         }
         // Meters faster than the NIC can meter stay in software, with their peerings.
@@ -1316,16 +1517,17 @@ fn install_policy(
             excluded.extend(unfit);
             continue;
         }
-        if program.meters.len() > RESOURCES.meters as usize {
-            // The peerings of the last meters stay in software until the rest fit.
-            let last = program.meters.len() - 1;
-            excluded.extend(
-                program
-                    .rules
-                    .iter()
-                    .filter(|r| r.meter == last)
-                    .map(|r| r.peering),
-            );
+        if let Some(over) = super::over_meters(&program) {
+            // Leaving nothing more out would compile the same program again.
+            if over.is_subset(&excluded) {
+                give_up(
+                    port,
+                    port_name,
+                    &"more meters than the NIC holds, of no rule",
+                );
+                break None;
+            }
+            excluded.extend(over);
             continue;
         }
         // The ACLs, the rate limits and the routing are published apart: compile only from what
@@ -1361,20 +1563,7 @@ fn install_policy(
                     give_up(port, port_name, &"the NIC refused a rule of no peering");
                     break None;
                 };
-                for (role, why) in &reconciled.refused {
-                    let origin = match *role {
-                        Role::Police(rule) => {
-                            program.rules.get(rule).map(|r| Origin::RateLimit(r.rule))
-                        }
-                        Role::Deny(deny) => program.denies.get(deny).map(|d| d.origin),
-                        _ => None,
-                    };
-                    if let Some(origin) = origin {
-                        warn!("port {port_name}: the NIC refused {origin}: {why}");
-                    } else {
-                        warn!("port {port_name}: the NIC refused {role:?}: {why}");
-                    }
-                }
+                warn_refused(port_name, &program, &reconciled.refused);
                 if refused.is_subset(&excluded) {
                     break Some(program);
                 }
@@ -1388,6 +1577,23 @@ fn install_policy(
                 give_up(port, port_name, &e);
                 break None;
             }
+        }
+    }
+}
+
+/// Log what the NIC refused of `program`, by the software rule it came from where there is one.
+fn warn_refused(port_name: &str, program: &Program, refused: &[(Role, Error)]) {
+    for (role, why) in refused {
+        let origin = match *role {
+            Role::Police(rule) => program.rules.get(rule).map(|r| Origin::RateLimit(r.rule)),
+            Role::Deny(deny) => program.denies.get(deny).map(|d| d.origin),
+            Role::Ingress(rule) => program.ingress.get(rule).map(|r| r.origin),
+            _ => None,
+        };
+        if let Some(origin) = origin {
+            warn!("port {port_name}: the NIC refused {origin}: {why}");
+        } else {
+            warn!("port {port_name}: the NIC refused {role:?}: {why}");
         }
     }
 }
@@ -1428,16 +1634,26 @@ fn state(port_name: &str, port: &Port<'_>, in_software: usize) {
 fn report(port_name: &str, port: &Port<'_>) {
     metrics::counter!("acl_nic_dropped_packets_total", "port" => port_name.to_string())
         .absolute(port.denied_total());
-    for (name, (passed, dropped)) in port.meter_totals() {
+    for (vni, dropped) in port.ingress_dropped() {
+        metrics::counter!(
+            "nic_offload_ingress_dropped_packets_total",
+            "port" => port_name.to_string(),
+            "vni" => vni.as_u32().to_string()
+        )
+        .absolute(dropped);
+    }
+    for (MeterName { scope, name, unit }, (passed, dropped)) in port.meter_totals() {
         info!(
-            "port {port_name}: meter {name} in the NIC: passed {} packets, dropped {} packets",
+            "port {port_name}: meter {name} ({unit}) in the NIC: passed {} packets, dropped {} packets",
             passed.packets, dropped.packets
         );
         for (result, counts) in [("conforming", passed), ("over_limit", dropped)] {
             metrics::counter!(
                 "rate_limit_nic_packets_total",
                 "port" => port_name.to_string(),
+                "policy" => scope.label(),
                 "meter" => name.clone(),
+                "unit" => unit,
                 "result" => result
             )
             .absolute(counts.packets);

@@ -16,7 +16,7 @@
 //! anyway, so the NIC may do anything with them but change them. Transit VXLAN (to another VTEP)
 //! the NIC neither drops nor charges.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::num::{NonZeroU64, NonZeroUsize};
 
@@ -25,6 +25,7 @@ use acl_filter::AclFilterContext;
 use config::external::overlay::acl::{
     Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope, AclTcpFlagsMatch,
 };
+use config::external::overlay::ingress::{IngressAction, IngressPolicy, IngressRule};
 use config::external::overlay::ratelimit::{
     ColorAction, ColorActions, Meter, MeterProfile, RateLimitRule, RateLimitTables,
 };
@@ -43,11 +44,11 @@ use net::tcp::TcpFlags;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use policer::{Profile, Rate};
-use rate_limit::{Classify, PeeringRules, RateLimitWriter, RateLimits, Unit};
+use rate_limit::{Action, Classify, IngressRules, PeeringRules, RateLimitWriter, RateLimits, Unit};
 
 use crate::mlx5::{Plan, Role, encoded_burst, encoded_rate, pmd_scale};
 use crate::model::{Outcome, Verdict};
-use crate::program::Program;
+use crate::program::{Exclusions, IngressVerdict, Program};
 
 /// A VPC: its name, VNI and the one prefix it exposes.
 struct VpcSpec {
@@ -282,12 +283,43 @@ pub(crate) struct RawAclRule {
     pub(crate) log: bool,
 }
 
+/// An ingress rule: what it matches (the rate-limit rule's source VPC and fields, or every VPC),
+/// and whether it drops or charges the ingress meter of the rule's.
+#[derive(Debug, Clone, bolero::TypeGenerator)]
+pub(crate) struct RawIngressRule {
+    pub(crate) rule: RawRule,
+    every_vpc: bool,
+    pub(crate) drop: bool,
+}
+
+impl RawIngressRule {
+    fn rule(&self) -> IngressRule {
+        let (_, from, _) = self.rule.direction();
+        IngressRule {
+            from: (!self.every_vpc).then(|| VPCS[from].name.to_string()),
+            pattern: self.rule.pattern(),
+            action: if self.drop {
+                IngressAction::Drop
+            } else {
+                IngressAction::Police(ingress_meter(self.rule.meter))
+            },
+        }
+    }
+}
+
+/// The name of ingress meter `i`: [`METERS`]' with a prefix, as the ingress policy names them.
+fn ingress_meter(i: u8) -> String {
+    format!("ingress/{}", METERS[usize::from(i) % METERS.len()])
+}
+
 /// The peerings' ACLs: each peering with rules has an ACL, with the default action given (deny if
-/// `Some(true)`, else allow).
+/// `Some(true)`, else allow). And the gateway's ingress policy, which comes before them.
 #[derive(Debug, Clone, Default, bolero::TypeGenerator)]
 pub(crate) struct RawAcls {
     pub(crate) defaults: [Option<bool>; 4],
     pub(crate) rules: Vec<RawAclRule>,
+    /// The ingress policy's rules, at most four of them.
+    pub(crate) ingress: Vec<RawIngressRule>,
     /// What each side of each peering exposes, left then right.
     pub(crate) exposes: [[RawExpose; 2]; 4],
 }
@@ -314,6 +346,11 @@ impl RawAcls {
     /// The rules, in first-match order, at most six.
     fn rules(&self) -> &[RawAclRule] {
         &self.rules[..self.rules.len().min(6)]
+    }
+
+    /// The ingress policy's rules, in first-match order, at most four.
+    pub(crate) fn ingress(&self) -> &[RawIngressRule] {
+        &self.ingress[..self.ingress.len().min(4)]
     }
 
     /// The ACL of `peering`, if it has one.
@@ -365,6 +402,7 @@ pub(crate) fn targets(rules: &[RawRule], acls: &RawAcls) -> Vec<RawRule> {
         .iter()
         .cloned()
         .chain(acls.rules().iter().map(|r| r.rule.clone()))
+        .chain(acls.ingress().iter().map(|r| r.rule.clone()))
         .collect()
 }
 
@@ -558,17 +596,39 @@ fn with_exposes(
         vpc_peering.acl = acls.acl(peering);
         peerings.add(vpc_peering).ok()?;
     }
-    let meters = METERS
+    let meters: BTreeMap<String, Meter> = METERS
         .iter()
         .zip(meters)
         .enumerate()
         .map(|(i, (name, raw))| Some(((*name).to_string(), meter(i, raw)?)))
         .collect::<Option<_>>()?;
+    // The ingress meters are the peering meters, but the chain drops red in both components: the
+    // NIC then chains two meters.
+    let ingress = IngressPolicy {
+        meters: meters
+            .iter()
+            .map(|(name, meter)| {
+                let meter = match (meter.bytes, meter.packets) {
+                    (Some(bytes), Some(packets)) => Meter {
+                        bytes: Some(MeterProfile {
+                            actions: packets.actions,
+                            ..bytes
+                        }),
+                        packets: Some(packets),
+                    },
+                    _ => meter.clone(),
+                };
+                (format!("ingress/{name}"), meter)
+            })
+            .collect(),
+        rules: acls.ingress().iter().map(RawIngressRule::rule).collect(),
+    };
     Overlay::new(vpcs, peerings)
         .with_rate_limits(RateLimitTables {
             meters,
             rules: rules.iter().take(6).map(RawRule::rule).collect(),
         })
+        .with_ingress(ingress)
         .validate()
         .ok()
 }
@@ -830,6 +890,7 @@ pub(crate) fn vteps(program: &Program) -> BTreeMap<Vni, Ipv4Addr> {
         .iter()
         .map(|d| d.matches.src_vni)
         .chain(program.rules.iter().map(|r| r.matches.src_vni))
+        .chain(program.ingress.iter().map(|r| r.matches.src_vni))
         .map(|vni| (vni, VTEP))
         .collect()
 }
@@ -879,8 +940,31 @@ impl Frame {
         f
     }
 
-    /// What the software does with the decapsulated packet: the ACL filter, then the rate
-    /// limiter.
+    /// What the software's ingress stage does with the decapsulated packet: drop it, or charge an
+    /// ingress meter (the meter's colors are not modelled), or neither.
+    fn ingress(&self, ingress: &RateLimits<IngressRules>) -> Ingress {
+        let Ok(mut packet) = Packet::new(TestBuffer::from_raw_data(&self.inner)) else {
+            return Ingress::Charges(None);
+        };
+        packet.meta_mut().set_overlay(true);
+        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(
+            Vni::new_checked(self.src_vni).unwrap_or_else(|_| unreachable!()),
+        ));
+        match ingress
+            .classifier()
+            .classify(&packet)
+            .map(|rule| ingress.rules()[rule].action())
+        {
+            Some(Action::Drop) => Ingress::Dropped,
+            Some(Action::Police(meter)) => {
+                Ingress::Charges(Some(ingress.meters()[meter].name().to_string()))
+            }
+            None => Ingress::Charges(None),
+        }
+    }
+
+    /// What the software does with the decapsulated packet after the ingress stage: the ACL
+    /// filter, then the rate limiter.
     fn software(&self, acls: &AclFilterContext, limits: &RateLimits<PeeringRules>) -> Software {
         let Ok(mut packet) = Packet::new(TestBuffer::from_raw_data(&self.inner)) else {
             return Software::Unclassifiable;
@@ -914,7 +998,16 @@ impl Frame {
     }
 }
 
-/// What the software does with a packet with no flow state.
+/// What the software's ingress stage does with a packet.
+#[derive(Debug, PartialEq, Eq)]
+enum Ingress {
+    /// A drop rule takes it.
+    Dropped,
+    /// It charges the named ingress meter, or none, and goes on.
+    Charges(Option<String>),
+}
+
+/// What the software does with a packet with no flow state, after the ingress stage.
 #[derive(Debug, PartialEq, Eq)]
 enum Software {
     /// The ACL filter passes it, and the rate limiter charges the named meter, or none.
@@ -948,52 +1041,107 @@ struct Tally {
     exposed: usize,
     /// Cases checked.
     cases: usize,
+    /// Outcomes an ingress rule of the NIC dropped.
+    ingress_dropped: usize,
+    /// Outcomes charging an ingress meter.
+    ingress_charged: usize,
+    /// Outcomes an ingress rule of the NIC passed to software, as it cannot enforce it.
+    ingress_passed: usize,
+    /// Outcomes of fragments an ingress rule of the NIC dropped or charged.
+    ingress_fragments: usize,
+    /// Outcomes charging both components of an ingress meter, chained.
+    ingress_chained: usize,
 }
 
-/// The ways `outcome` breaks the cascade contract for a frame `software` treats so.
+/// The ways `outcome` breaks the cascade contract for a frame the software's ingress stage treats
+/// as `ingress`, and the rest of the software as `software`, if `routed` (otherwise software drops
+/// it as it cannot route it: the NIC may then do anything after the ingress stage but change it).
 ///
 /// One deviation is tolerated, explicitly: the NIC may charge a meter for a packet the ACL filter
 /// cannot classify, and drops before the rate limiter, which the software never charges. It is
 /// counted in [`Tally::charged_dropped`]. Packets an ACL denies are not tolerated: a peering is
-/// offloaded whole or not at all, so the NIC denies them first.
+/// offloaded whole or not at all, so the NIC denies them first. Nor are packets the ingress stage
+/// drops: their source VPC's ingress rules are offloaded with its peerings, so the NIC drops them
+/// first.
 fn violation(
     program: &Program,
     outcome: &Outcome,
+    ingress: &Ingress,
     software: &Software,
+    routed: bool,
     tally: &mut Tally,
 ) -> Option<String> {
+    // Software drops what it cannot classify, routed or not.
+    let unclassifiable = *software == Software::Unclassifiable;
+    let software = routed.then_some(software);
+    let ingress_dropped = outcome.path.iter().any(|role| {
+        matches!(role, Role::Ingress(i) if program.ingress[*i].verdict == IngressVerdict::Drop)
+    });
+    tally.ingress_dropped += usize::from(ingress_dropped);
+    tally.ingress_passed += usize::from(outcome.path.iter().any(|role| {
+        matches!(role, Role::Ingress(i) if program.ingress[*i].verdict == IngressVerdict::Pass)
+    }));
+    if ingress_dropped && *ingress != Ingress::Dropped && !unclassifiable {
+        return Some(format!(
+            "the NIC's ingress rules drop what the software's do not: {ingress:?}"
+        ));
+    }
     let denied = outcome
         .path
         .iter()
         .any(|role| matches!(role, Role::Deny(_)));
-    if denied && !software.drops() {
-        return Some(format!(
-            "the NIC denies what the software does not: {software:?}"
-        ));
-    }
     if !outcome.meters.is_empty() {
         tally.charged += 1;
     }
     for &m in &outcome.meters {
         let nic = program.meters[m].name.as_str();
+        let of_ingress = program.ingress.iter().any(|r| r.verdict.charges(m));
+        if of_ingress {
+            tally.ingress_charged += 1;
+            match ingress {
+                Ingress::Charges(meter) if meter.as_deref() == Some(nic) => {}
+                _ if unclassifiable => tally.charged_dropped += 1,
+                _ => {
+                    return Some(format!(
+                        "the NIC charges ingress meter {nic}, the software {ingress:?}"
+                    ));
+                }
+            }
+            continue;
+        }
+        if *ingress == Ingress::Dropped {
+            return Some(format!(
+                "the NIC charges meter {nic} for a packet the ingress stage drops"
+            ));
+        }
         match software {
-            Software::Charges(meter) if meter.as_deref() == Some(nic) => {}
-            Software::Charges(meter) => {
+            None => {}
+            Some(Software::Charges(meter)) if meter.as_deref() == Some(nic) => {}
+            Some(Software::Charges(meter)) => {
                 return Some(format!(
                     "the NIC charges meter {nic}, the software {meter:?}"
                 ));
             }
-            Software::Unclassifiable => tally.charged_dropped += 1,
-            Software::Denied | Software::DefaultDenied => {
+            Some(Software::Unclassifiable) => tally.charged_dropped += 1,
+            Some(software @ (Software::Denied | Software::DefaultDenied)) => {
                 return Some(format!(
                     "the NIC charges meter {nic} for a packet the software denies: {software:?}"
                 ));
             }
         }
     }
+    if denied
+        && *ingress != Ingress::Dropped
+        && let Some(software) = software
+        && !software.drops()
+    {
+        return Some(format!(
+            "the NIC denies what the software does not: {software:?}"
+        ));
+    }
     match outcome.verdict {
         Verdict::Delivered | Verdict::Untouched => None,
-        Verdict::Dropped if denied => None,
+        Verdict::Dropped if denied || ingress_dropped => None,
         Verdict::Dropped if outcome.color == Some(Color::Red) && !outcome.meters.is_empty() => None,
         Verdict::Dropped => Some("the NIC drops without a deny or a red meter".to_string()),
         Verdict::Missed(group) => Some(format!("the NIC misses in group {group:?}")),
@@ -1001,7 +1149,12 @@ fn violation(
 }
 
 /// The NIC meter must be at least as permissive as the software component it stands for.
-fn check_profiles(limits: &RateLimits<PeeringRules>, program: &Program, plan: &Plan) {
+fn check_profiles(
+    limits: &RateLimits<PeeringRules>,
+    ingress: &RateLimits<IngressRules>,
+    program: &Program,
+    plan: &Plan,
+) {
     for (nic, lowered) in program
         .meters
         .iter()
@@ -1010,6 +1163,7 @@ fn check_profiles(limits: &RateLimits<PeeringRules>, program: &Program, plan: &P
         let meter = limits
             .meters()
             .iter()
+            .chain(ingress.meters())
             .find(|m| m.name() == nic.name)
             .unwrap_or_else(|| unreachable!());
         let software = meter
@@ -1101,6 +1255,26 @@ fn flow_filter(overlay: &ValidatedOverlay) -> FlowFilter {
     FlowFilter::new("flow-filter", writer.get_reader())
 }
 
+/// The program of a policy with what `excluded` leaves to software, and what mlx5 cannot encode
+/// (`mlx5::unfit`), as installing compiles it: again until nothing more is unfit, as leaving an
+/// ingress meter to software can bring its VPC's rate limits, and their meters, back.
+pub(crate) fn fitting(
+    acls: &AclFilterContext,
+    limits: &RateLimits<PeeringRules>,
+    ingress: &RateLimits<IngressRules>,
+    routes: &[flow_filter::Destination],
+    mut excluded: Exclusions,
+) -> Program {
+    loop {
+        let program = Program::compile(acls, limits, ingress, routes, &excluded);
+        let unfit = crate::mlx5::unfit(&program);
+        if unfit.is_subset(&excluded) {
+            return program;
+        }
+        excluded.extend(unfit);
+    }
+}
+
 /// Compile and lower `overlay`'s ACLs and rate limits, and hold every frame to the cascade
 /// contract, panicking at the first violation. Frames are aimed at `targets`.
 fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawFrame]) -> Tally {
@@ -1108,12 +1282,15 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
         RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
     writer.apply(overlay, Backend::Reference).unwrap();
     let limits = writer.load();
+    let ingress_writer: RateLimitWriter<IngressRules> =
+        RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
+    ingress_writer.apply(overlay, Backend::Reference).unwrap();
+    let ingress = ingress_writer.load();
     let acls = AclFilterContext::reference(overlay).unwrap();
     let routes = destinations(overlay);
     let mut routing = flow_filter(overlay);
     // As installing does: peerings of meters faster than the NIC meters stay in software.
-    let program = Program::compile(&acls, &limits, &routes, &BTreeSet::new());
-    let program = Program::compile(&acls, &limits, &routes, &crate::mlx5::unfit(&program));
+    let program = fitting(&acls, &limits, &ingress, &routes, Exclusions::default());
     let logged =
         acls.v4()
             .iter()
@@ -1128,13 +1305,22 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
         assert!(program.denies.iter().all(|d| d.peering != peering));
         assert!(program.rules.iter().all(|r| r.peering != peering));
     }
+    // Every meter is some rule's: one no rule charges, nothing would leave to software.
+    for m in 0..program.meters.len() {
+        assert!(
+            program.rules.iter().any(|r| r.meter == m)
+                || program.ingress.iter().any(|r| r.verdict.charges(m)),
+            "meter {m} charged by no rule: {program:#?}"
+        );
+    }
     let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
-    check_profiles(&limits, &program, &plan);
+    check_profiles(&limits, &ingress, &program, &plan);
     let mut tally = Tally::default();
     for raw in frames {
         let mut frame = raw.frame(targets);
         frame.route(&mut routing);
         let software = frame.software(&acls, &limits);
+        let ingress_software = frame.ingress(&ingress);
         let outcomes = plan.outcomes(&frame.wire()).unwrap();
         // Transit VXLAN is the underlay's: the NIC neither drops it nor charges a meter for it.
         for outcome in plan.outcomes(&frame.transit()).unwrap() {
@@ -1144,14 +1330,32 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
                 "transit VXLAN touched\nframe: {raw:?}\noutcome: {outcome:?}"
             );
         }
-        // Software drops what it cannot route; the NIC may too.
-        if frame.dst_vni.is_none() {
-            continue;
-        }
+        // Software drops what it cannot route, after the ingress stage; the NIC may too.
+        let deliverable = frame.dst_vni.is_some();
+        let fragment = !matches!(raw.fragment, RawFragment::Whole);
         for outcome in &outcomes {
-            if let Some(why) = violation(&program, outcome, &software, &mut tally) {
+            let taken = outcome.path.iter().any(|role| {
+                matches!(role, Role::Ingress(i) if matches!(program.ingress[*i].verdict, IngressVerdict::Drop | IngressVerdict::Police(..)))
+            });
+            tally.ingress_fragments += usize::from(fragment && taken);
+            tally.ingress_chained += usize::from(
+                outcome
+                    .meters
+                    .iter()
+                    .filter(|&&m| program.ingress.iter().any(|r| r.verdict.charges(m)))
+                    .count()
+                    > 1,
+            );
+            if let Some(why) = violation(
+                &program,
+                outcome,
+                &ingress_software,
+                &software,
+                deliverable,
+                &mut tally,
+            ) {
                 panic!(
-                    "{why}\nframe: {raw:?}\ninner: {:02x?}\nsoftware: {software:?}\noutcome: {outcome:?}\nprogram: {program:#?}",
+                    "{why}\nframe: {raw:?}\ninner: {:02x?}\ningress: {ingress_software:?}\nsoftware: {software:?}\noutcome: {outcome:?}\nprogram: {program:#?}",
                     frame.inner
                 );
             }
@@ -1180,13 +1384,26 @@ fn the_nic_only_ever_does_what_the_software_would() {
             let mut total = total.borrow_mut();
             total.charged += tally.charged;
             total.charged_dropped += tally.charged_dropped;
+            total.ingress_dropped += tally.ingress_dropped;
+            total.ingress_charged += tally.ingress_charged;
+            total.ingress_passed += tally.ingress_passed;
+            total.ingress_fragments += tally.ingress_fragments;
+            total.ingress_chained += tally.ingress_chained;
             total.cases += 1;
             total.exposed += usize::from(exposed);
         });
     let total = total.0.into_inner();
     eprintln!(
-        "differential: {} outcome(s) charged a meter, {} of them for unclassifiable packets; {} of {} cases with other exposes than the VPCs' own prefixes",
-        total.charged, total.charged_dropped, total.exposed, total.cases
+        "differential: {} outcome(s) charged a meter, {} of them for unclassifiable packets; {} of {} cases with other exposes than the VPCs' own prefixes; ingress rules dropped {}, charged {} and passed {} outcome(s), took {} of fragments, and chained meters in {}",
+        total.charged,
+        total.charged_dropped,
+        total.exposed,
+        total.cases,
+        total.ingress_dropped,
+        total.ingress_charged,
+        total.ingress_passed,
+        total.ingress_fragments,
+        total.ingress_chained
     );
 }
 
@@ -1261,7 +1478,13 @@ fn unclassifiable_packets_are_charged_by_the_nic_only() {
     let limits = writer.load();
     let filter = AclFilterContext::reference(&overlay).unwrap();
     assert_eq!(frame.software(&filter, &limits), Software::Unclassifiable);
-    let program = Program::compile(&filter, &limits, &destinations(&overlay), &BTreeSet::new());
+    let program = Program::compile(
+        &filter,
+        &limits,
+        &RateLimits::<IngressRules>::empty(),
+        &destinations(&overlay),
+        &Exclusions::default(),
+    );
     let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
     let outcomes = plan.outcomes(&frame.wire()).unwrap();
     assert!(outcomes.iter().all(|o| o.meters == [0]), "{outcomes:?}");
@@ -1284,6 +1507,7 @@ fn denies_drop_in_the_nic_unless_an_earlier_allow_overlaps() {
     ] {
         let acls = RawAcls {
             exposes: Default::default(),
+            ingress: Vec::new(),
             defaults: [Some(false), None, None, None],
             rules: acl,
         };
@@ -1295,8 +1519,9 @@ fn denies_drop_in_the_nic_unless_an_earlier_allow_overlaps() {
         let program = Program::compile(
             &filter,
             &writer.load(),
+            &RateLimits::<IngressRules>::empty(),
             &destinations(&overlay),
-            &BTreeSet::new(),
+            &Exclusions::default(),
         );
         assert_eq!(program.denies.len(), usize::from(denied), "{program:#?}");
         let tally = check_overlay(
@@ -1335,6 +1560,7 @@ fn a_default_deny_keeps_its_peering_and_only_it_in_software() {
     let rules = [limit(0), limit(1)];
     let acls = RawAcls {
         exposes: Default::default(),
+        ingress: Vec::new(),
         defaults: [Some(true), None, None, None],
         rules: vec![RawAclRule {
             rule: peering_rule(false, RawProto::Udp),
@@ -1351,8 +1577,9 @@ fn a_default_deny_keeps_its_peering_and_only_it_in_software() {
     let program = Program::compile(
         &filter,
         &writer.load(),
+        &RateLimits::<IngressRules>::empty(),
         &destinations(&overlay),
-        &BTreeSet::new(),
+        &Exclusions::default(),
     );
     // Only the second peering's rate limit is offloaded.
     assert_eq!(program.rules.len(), 1, "{program:#?}");
@@ -1377,6 +1604,7 @@ fn a_syn_deny_drops_syns_in_the_nic() {
     let rules = [peering_rule(false, RawProto::Any)];
     let acls = RawAcls {
         exposes: Default::default(),
+        ingress: Vec::new(),
         defaults: [Some(false), None, None, None],
         rules: vec![RawAclRule {
             rule: peering_rule(false, RawProto::TcpFlags(0x02, 0x12)),
@@ -1393,8 +1621,9 @@ fn a_syn_deny_drops_syns_in_the_nic() {
     let program = Program::compile(
         &filter,
         &writer.load(),
+        &RateLimits::<IngressRules>::empty(),
         &destinations(&overlay),
-        &BTreeSet::new(),
+        &Exclusions::default(),
     );
     assert_eq!(program.denies.len(), 1, "{program:#?}");
     assert_eq!(program.denies[0].matches.tcp_flags, Some((0x02, 0x12)));
@@ -1442,6 +1671,7 @@ fn traffic_a_peer_takes_only_part_of_is_left_alone() {
         exposes[2][1] = RawExpose::Default;
         let acls = RawAcls {
             exposes,
+            ingress: Vec::new(),
             defaults: [Some(false), None, None, None],
             rules: vec![RawAclRule {
                 rule: rule.clone(),
@@ -1514,6 +1744,7 @@ fn a_pass_leaves_the_rules_of_its_own_destination_in_force() {
         };
         let acls = RawAcls {
             exposes,
+            ingress: Vec::new(),
             defaults: [Some(false), Some(false), None, None],
             rules: acls
                 .into_iter()
@@ -1534,8 +1765,9 @@ fn a_pass_leaves_the_rules_of_its_own_destination_in_force() {
         let program = Program::compile(
             &filter,
             &writer.load(),
+            &RateLimits::<IngressRules>::empty(),
             &destinations(&overlay),
-            &BTreeSet::new(),
+            &Exclusions::default(),
         );
         assert!(!program.passes.is_empty(), "{program:#?}");
         let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
@@ -1590,8 +1822,9 @@ fn acl_logging_keeps_denies_and_meters_in_software() {
                 let program = Program::compile(
                     &filter,
                     &writer.load(),
+                    &RateLimits::<IngressRules>::empty(),
                     &destinations(&overlay),
-                    &BTreeSet::new(),
+                    &Exclusions::default(),
                 );
                 assert_eq!(program.denies.len(), usize::from(deny && !log));
                 assert_eq!(program.rules.len(), if log { 1 } else { 3 });

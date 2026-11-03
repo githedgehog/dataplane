@@ -50,14 +50,14 @@ use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use dpdk::socket;
 use net::buffer::Append;
-use rate_limit::{PeeringRules, RateLimitWriter, RateLimits};
+use rate_limit::{IngressRules, PeeringRules, RateLimitWriter, RateLimits};
 
 use crate::differential::{
     RawAcls, RawFragment, RawFrame, RawMeter, RawRule, overlay, targets, vteps,
 };
-use crate::mlx5::{Plan, Port, RESOURCES, Role, with_installed};
+use crate::mlx5::{Arg, Plan, Port, RESOURCES, Role, with_installed};
 use crate::model::{Outcome, Verdict};
-use crate::program::{Peering, Program};
+use crate::program::{Exclusions, IngressVerdict, Peering, Program};
 use acl_filter::AclFilterContext;
 
 /// How long frames may take to arrive after they are sent.
@@ -261,13 +261,33 @@ fn passes_everything() -> MeterProfile {
     }
 }
 
+/// The arguments of the plan's color rules, by role: what [`rewire`] gives back to a color rule
+/// that goes on rather than drops (an ingress color rule's jump, or the next meter).
+fn color_args(plan: &Plan) -> Vec<(Role, Vec<Arg>)> {
+    plan.tables()
+        .flat_map(|t| &t.rules)
+        .filter(|r| matches!(r.role, Role::Color(..) | Role::IngressColor(..)))
+        .map(|r| (r.role, r.args.clone()))
+        .collect()
+}
+
 /// Make meter `dropping`'s color group drop every color, and every other one keep its own
-/// actions: what that meter charged is then exactly what does not arrive.
-fn rewire(plan: &mut Plan, dropping: Option<usize>) {
+/// actions: what that meter charged is then exactly what does not arrive. A color rule that drops
+/// takes no arguments (the drop template has none); one that goes on, its own, from `args`.
+fn rewire(plan: &mut Plan, dropping: Option<usize>, args: &[(Role, Vec<Arg>)]) {
     for table in plan.tables_mut() {
         for rule in &mut table.rules {
-            if let Role::Color(meter, color) = rule.role {
-                rule.actions = usize::from(Some(meter) == dropping || color == Color::Red);
+            if let Role::Color(meter, color) | Role::IngressColor(_, meter, color) = rule.role {
+                let drops = Some(meter) == dropping || color == Color::Red;
+                rule.actions = usize::from(drops);
+                rule.args = if drops {
+                    Vec::new()
+                } else {
+                    args.iter()
+                        .find(|(role, _)| *role == rule.role)
+                        .map(|(_, a)| a.clone())
+                        .unwrap_or_default()
+                };
             }
         }
     }
@@ -296,7 +316,7 @@ struct Case {
 
 impl Case {
     fn new(meters: &[RawMeter; 4], rules: &[RawRule], acls: &RawAcls) -> Case {
-        Case::excluding(meters, rules, acls, &BTreeSet::new())
+        Case::excluding(meters, rules, acls, &Exclusions::default())
     }
 
     /// The case with the peerings in `excluded` left in software, as after the NIC refused them.
@@ -304,19 +324,26 @@ impl Case {
         meters: &[RawMeter; 4],
         rules: &[RawRule],
         acls: &RawAcls,
-        excluded: &BTreeSet<Peering>,
+        excluded: &Exclusions,
     ) -> Case {
         let overlay = overlay(meters, rules, acls).expect("generated configurations are valid");
         let writer: RateLimitWriter<PeeringRules> =
             RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
         writer.apply(&overlay, Backend::Reference).unwrap();
+        let ingress: RateLimitWriter<IngressRules> =
+            RateLimitWriter::new(RateLimits::empty(), NonZeroUsize::MIN);
+        ingress.apply(&overlay, Backend::Reference).unwrap();
+        let ingress = ingress.load();
         let filter = AclFilterContext::reference(&overlay).unwrap();
         let destinations = crate::differential::destinations(&overlay);
-        let program = Program::compile(&filter, &writer.load(), &destinations, excluded);
         // Meters mlx5 cannot encode stay in software with their peerings, as `run` leaves them.
-        let mut excluded = excluded.clone();
-        excluded.extend(crate::mlx5::unfit(&program));
-        let program = Program::compile(&filter, &writer.load(), &destinations, &excluded);
+        let program = crate::differential::fitting(
+            &filter,
+            &writer.load(),
+            &ingress,
+            &destinations,
+            excluded.clone(),
+        );
         let plan = Plan::new(
             &program,
             &vteps(&program),
@@ -337,6 +364,14 @@ impl Case {
             let (src, dst) = rule.rule.vnis();
             if rule.deny && offloaded_peerings.contains(&Peering::new(vni(src), vni(dst))) {
                 offloaded.push(rules.len() + i);
+            }
+        }
+        // And at the ingress rules of the VPCs the NIC took ingress rules of.
+        let ingress_vnis: BTreeSet<_> = program.ingress.iter().map(|r| r.matches.src_vni).collect();
+        let first = rules.len() + acls.rules.len().min(6);
+        for (i, rule) in acls.ingress().iter().enumerate() {
+            if ingress_vnis.contains(&vni(rule.rule.vnis().0)) {
+                offloaded.push(first + i);
             }
         }
         Case {
@@ -374,22 +409,15 @@ fn aimed(frames: &[RawFrame], offloaded: &[usize]) -> Vec<RawFrame> {
 /// The case as production installs it: peerings with a rule the NIC refuses stay in software,
 /// whole.
 fn installable(rig: &Rig, meters: &[RawMeter; 4], rules: &[RawRule], acls: &RawAcls) -> Case {
-    let mut excluded = BTreeSet::new();
+    let mut excluded = Exclusions::default();
     loop {
         let case = Case::excluding(meters, rules, acls, &excluded);
-        let refused: BTreeSet<Peering> = with_installed(&rig.flows, &case.plan, |installed| {
-            installed
-                .refused()
-                .iter()
-                .filter_map(|(role, _)| match *role {
-                    Role::Police(rule) => Some(case.program.rules[rule].peering),
-                    Role::Deny(deny) => Some(case.program.denies[deny].peering),
-                    _ => None,
-                })
-                .collect()
+        let refused = with_installed(&rig.flows, &case.plan, |installed| {
+            crate::mlx5::peerings(&case.program, installed.refused())
         })
-        .unwrap_or_else(|e| fail(&format!("the NIC refused the plan: {e}")));
-        if refused.is_empty() {
+        .unwrap_or_else(|e| fail(&format!("the NIC refused the plan: {e}")))
+        .unwrap_or_else(|role| fail(&format!("the NIC refused {role:?}, of nothing")));
+        if refused == Exclusions::default() {
             break case;
         }
         eprintln!("qualify: the NIC refused rules of {refused:?}: they stay in software");
@@ -418,11 +446,12 @@ fn qualify_case(
         meter.key.profile = passes_everything();
     }
     let started = clock::now();
+    let args = color_args(&plan);
 
     // Frames that do not arrive even when every meter passes: not the meters' doing.
     let mut unmetered = 0;
     for red in std::iter::once(None).chain((0..plan.meters.len()).map(Some)) {
-        rewire(&mut plan, red);
+        rewire(&mut plan, red, &args);
         let (arrived, counts, refused) = with_installed(&rig.flows, &plan, |installed| {
             let arrived = rig.link.exchange(&wires);
             std::thread::sleep(COUNTER_LAG);
@@ -473,7 +502,7 @@ fn qualify_case(
         let drop_counted: usize = counts
             .iter()
             .filter(
-                |(role, _)| matches!(*role, Role::Color(m, c) if Some(m) == red || c == Color::Red),
+                |(role, _)| matches!(*role, Role::Color(m, c) | Role::IngressColor(_, m, c) if Some(m) == red || c == Color::Red),
             )
             .map(|(_, c)| usize::try_from(c.packets).unwrap_or(usize::MAX))
             .sum();
@@ -482,7 +511,8 @@ fn qualify_case(
         }
         let expected = dropped - unmetered;
         eprintln!(
-            "qualify: {} rate limit(s), {} deny(s), {} matching TCP flags ({} refused), {} meter(s), meter {red:?} dropping: {} of {} frames arrived, dropping rules counted {drop_counted}",
+            "qualify: {} ingress rule(s), {} rate limit(s), {} deny(s), {} matching TCP flags ({} refused), {} meter(s), meter {red:?} dropping: {} of {} frames arrived, dropping rules counted {drop_counted}",
+            program.ingress.len(),
             program.rules.len(),
             program.denies.len(),
             flag_rules(&program),
@@ -647,7 +677,23 @@ fn coverage() {
             for raw in aimed(frames, &case.offloaded) {
                 let wire = raw.frame(&case.targets).wire_to([2, 0, 0, 0, 0, 1], 0);
                 let outcomes = case.plan.outcomes(&wire).unwrap();
-                let why = if outcomes
+                let program = &case.program;
+                let why = if outcomes.iter().any(|o| {
+                    o.path.iter().any(|r| {
+                        matches!(r, Role::Ingress(i) if program.ingress[*i].verdict == IngressVerdict::Drop)
+                    })
+                }) {
+                    "dropped by an ingress rule"
+                } else if outcomes.iter().any(|o| {
+                    o.meters.iter().any(|&m| {
+                        program
+                            .ingress
+                            .iter()
+                            .any(|r| r.verdict.charges(m))
+                    })
+                }) {
+                    "charged at ingress"
+                } else if outcomes
                     .iter()
                     .any(|o| o.path.iter().any(|r| matches!(r, Role::Deny(_))))
                 {
@@ -676,9 +722,16 @@ fn coverage() {
     for (why, n) in &stats {
         eprintln!("coverage: {why:>26}: {n:6} ({} %)", n * 100 / total.max(1));
     }
-    let acted =
-        stats.get("charged").copied().unwrap_or(0) + stats.get("denied").copied().unwrap_or(0);
-    // A little under half are (45 % on average over 300 cases, with a standard deviation of 2.4
+    let acted: usize = [
+        "charged",
+        "denied",
+        "dropped by an ingress rule",
+        "charged at ingress",
+    ]
+    .iter()
+    .map(|why| stats.get(why).copied().unwrap_or(0))
+    .sum();
+    // A little over half are (54 % on average over 30 runs, with a standard deviation of 1.1
     // points): frames aimed at a rule's destination outside its peer's exposes, and frames aimed
     // at nothing, are neither. The inputs are not seeded, and a loaded runner reaches fewer cases
     // in the time bolero has, so the share wanders; a bound near it failed about one run in
@@ -686,6 +739,70 @@ fn coverage() {
     assert!(
         acted * 6 >= total,
         "only {acted} of {total} generated frames are charged by a meter or denied"
+    );
+    // The peering policy must not be starved by the ingress rules before it. The rate limits of
+    // traffic from a VPC the NIC polices at ingress stay in software (`Refusal::IngressPoliced`),
+    // and half the generated ingress rules are every VPC's: about one frame in nine still reaches
+    // a peering meter or deny.
+    let peering =
+        stats.get("charged").copied().unwrap_or(0) + stats.get("denied").copied().unwrap_or(0);
+    assert!(
+        peering * 20 >= total,
+        "only {peering} of {total} generated frames reach a peering meter or deny"
+    );
+}
+
+/// [`rewire`] gives every color rule the arguments its actions template takes: none on the drop
+/// template, and its own when it goes on (an ingress color rule's jump, or the meter it chains
+/// to). mlx5 refuses a rule with arguments its template does not take, and leaves the VPC's
+/// whole generation in software, so a forced-drop phase would disagree with the model.
+#[test]
+fn rewire_keeps_color_arguments() {
+    let carried = std::panic::AssertUnwindSafe(RefCell::new(0usize));
+    bolero::check!()
+        .with_iterations(300)
+        .with_type::<([RawMeter; 4], Vec<RawRule>, RawAcls)>()
+        .for_each(|(meters, rules, acls)| {
+            let rules = &rules[..rules.len().min(6)];
+            let mut plan = Case::new(meters, rules, &hardware_acls(acls)).plan;
+            let args = color_args(&plan);
+            // A role names one color rule, so `rewire` can find a rule's own arguments by it.
+            let distinct: BTreeSet<_> = args.iter().map(|(role, _)| format!("{role:?}")).collect();
+            assert_eq!(distinct.len(), args.len(), "a color role names two rules");
+            for red in std::iter::once(None).chain((0..plan.meters.len()).map(Some)) {
+                rewire(&mut plan, red, &args);
+                for table in plan.tables() {
+                    for rule in &table.rules {
+                        let (Role::Color(meter, color) | Role::IngressColor(_, meter, color)) =
+                            rule.role
+                        else {
+                            continue;
+                        };
+                        let drops = Some(meter) == red || color == Color::Red;
+                        assert_eq!(rule.actions, usize::from(drops), "{:?}", rule.role);
+                        let template = &plan.actions[table.actions[rule.actions]];
+                        let takes = template
+                            .iter()
+                            .filter(|a| {
+                                matches!(a, TemplateAction::Meter | TemplateAction::JumpPerRule)
+                            })
+                            .count();
+                        assert_eq!(rule.args.len(), takes, "{:?}: {:?}", rule.role, rule.args);
+                        if !drops {
+                            let own = args.iter().find(|(role, _)| *role == rule.role);
+                            assert_eq!(Some(&rule.args), own.map(|(_, a)| a), "{:?}", rule.role);
+                            if !rule.args.is_empty() {
+                                *carried.borrow_mut() += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    // Not vacuous: color rules with arguments of their own (ingress meters) are generated.
+    assert!(
+        *carried.borrow() > 0,
+        "no generated plan has a color rule with arguments"
     );
 }
 
@@ -717,6 +834,7 @@ fn sequence(rules: &[RawRule], acls: &RawAcls, steps: &[RawStep]) -> Vec<(Vec<Ra
         rules.truncate(6);
         let mut acls = RawAcls {
             exposes: Default::default(),
+            ingress: Vec::new(),
             defaults: std::array::from_fn(|p| {
                 if kept(p) {
                     prev_acls.defaults[p]
@@ -869,7 +987,7 @@ fn allowed(plan: &Plan, wires: &[Vec<u8>]) -> Vec<(bool, bool)> {
 fn meter_counts(port: &Port<'_>, plan: &Plan) -> BTreeMap<String, u64> {
     let mut counts = BTreeMap::new();
     for (role, c) in port.counts() {
-        if let Role::Color(meter, _) = role {
+        if let Role::Color(meter, _) | Role::IngressColor(_, meter, _) = role {
             *counts
                 .entry(plan.meters[meter].key.name.clone())
                 .or_insert(0) += c.packets;
@@ -1068,6 +1186,8 @@ fn reconcile_scenarios() {
         name: name.to_string(),
         lease_slack: [0, 0],
         unit: rate_limit::Unit::Bytes,
+        billing: rate_limit::Billing::Ip,
+        scope: crate::program::Scope::Peering,
         profile: policer::Profile::new(
             policer::Rate::new(std::num::NonZeroU64::new(1_000_000).unwrap()),
             100_000,
@@ -1081,6 +1201,7 @@ fn reconcile_scenarios() {
         meters,
         rules,
         refused: Vec::new(),
+        ingress: Vec::new(),
         passes: std::collections::BTreeMap::new(),
     };
     let deny = |src: u32, dst: u8| crate::program::DenyRule {

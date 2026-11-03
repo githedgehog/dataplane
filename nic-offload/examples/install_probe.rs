@@ -21,6 +21,7 @@ use dpdk::mem::{PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::socket;
+use lpm::prefix::PortRange;
 use policer::{Profile, Rate};
 use rate_limit::Unit;
 
@@ -31,11 +32,14 @@ fn program(rules: Vec<PoliceRule>) -> Program {
             name: "probe".to_string(),
             lease_slack: [0, 0],
             unit: Unit::Bytes,
+            billing: rate_limit::Billing::Ip,
+            scope: dataplane_nic_offload::program::Scope::Peering,
             profile: Profile::new(rate, 100_000, None, 0).unwrap_or_else(|_| unreachable!()),
         }],
         rules,
         denies: Vec::new(),
         refused: Vec::new(),
+        ingress: Vec::new(),
         passes: std::collections::BTreeMap::new(),
     }
 }
@@ -80,7 +84,7 @@ fn rule(v6: bool, proto: Option<u8>, dst_port: Option<u16>) -> PoliceRule {
             destination,
             proto,
             src_port: None,
-            dst_port,
+            dst_port: dst_port.map(PortRange::single),
             tcp_flags: None,
         },
         meter: 0,
@@ -100,7 +104,7 @@ fn v6(src: u8, dst: u8, proto: Option<u8>, ports: (Option<u16>, Option<u16>)) ->
     let mut rule = rule(true, proto, ports.1);
     rule.matches.source = Prefix::V6(Ipv6Addr::new(0xfd00, 0, 0, 1, 0, 0, 0, 0), src);
     rule.matches.destination = Prefix::V6(Ipv6Addr::new(0xfd00, 0, 0, 2, 0, 0, 0, 0), dst);
-    rule.matches.src_port = ports.0;
+    rule.matches.src_port = ports.0.map(PortRange::single);
     rule
 }
 
