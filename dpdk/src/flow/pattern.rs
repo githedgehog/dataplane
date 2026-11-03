@@ -371,49 +371,121 @@ impl VxlanMatch {
     }
 }
 
+/// Ports from a first to a last, both included: never empty.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct PortRange {
+    lo: u16,
+    hi: u16,
+}
+
+impl PortRange {
+    /// `lo..=hi`, if `lo` is at most `hi`.
+    #[must_use]
+    pub fn new(lo: u16, hi: u16) -> Option<PortRange> {
+        (lo <= hi).then_some(PortRange { lo, hi })
+    }
+
+    /// The ports between `a` and `b`, both included, whichever is the larger.
+    #[must_use]
+    pub fn between(a: u16, b: u16) -> PortRange {
+        PortRange {
+            lo: a.min(b),
+            hi: a.max(b),
+        }
+    }
+}
+
+/// A port to match: one, or every port of a range.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum Ports {
+    Exact(u16),
+    /// From the first to the second, both included; the second is above the first.
+    Range(u16, u16),
+}
+
+impl Ports {
+    /// The ports of `range`: one port if it holds one.
+    fn range(range: PortRange) -> Ports {
+        if range.lo == range.hi {
+            Ports::Exact(range.lo)
+        } else {
+            Ports::Range(range.lo, range.hi)
+        }
+    }
+
+    /// The spec, mask and `last` of a port field: `last` only for a range, and zero (no range)
+    /// otherwise.
+    fn lower(ports: Option<Ports>) -> (u16, u16, u16) {
+        match ports {
+            None => (0, 0, 0),
+            Some(Ports::Exact(port)) => (port.to_be(), u16::MAX, 0),
+            Some(Ports::Range(lo, hi)) => (lo.to_be(), u16::MAX, hi.to_be()),
+        }
+    }
+}
+
 /// Match criteria for a UDP header. `default()` matches any UDP packet.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct UdpMatch {
-    src: Option<u16>,
-    dst: Option<u16>,
+    src: Option<Ports>,
+    dst: Option<Ports>,
 }
 
 impl UdpMatch {
     /// Constrain the source port.
     #[must_use]
     pub fn src(mut self, src: u16) -> UdpMatch {
-        self.src = Some(src);
+        self.src = Some(Ports::Exact(src));
         self
     }
 
     /// Constrain the destination port.
     #[must_use]
     pub fn dst(mut self, dst: u16) -> UdpMatch {
-        self.dst = Some(dst);
+        self.dst = Some(Ports::Exact(dst));
         self
     }
 
-    pub(crate) fn lower(&self) -> (rte_flow_item_udp, rte_flow_item_udp) {
+    /// Constrain the source port to `range` (one port, if it holds one).
+    ///
+    /// A range is a `last` bound, which a template table matches only if its pattern template
+    /// has a range there too: shapes tell them apart.
+    #[must_use]
+    pub fn src_range(mut self, range: PortRange) -> UdpMatch {
+        self.src = Some(Ports::range(range));
+        self
+    }
+
+    /// Constrain the destination port to `range`; see [`UdpMatch::src_range`].
+    #[must_use]
+    pub fn dst_range(mut self, range: PortRange) -> UdpMatch {
+        self.dst = Some(Ports::range(range));
+        self
+    }
+
+    pub(crate) fn lower(
+        &self,
+    ) -> (
+        rte_flow_item_udp,
+        rte_flow_item_udp,
+        Option<rte_flow_item_udp>,
+    ) {
         // SAFETY: zeroed fields are valid; a zero mask leaves fields unconstrained.
         let mut spec: rte_flow_item_udp = unsafe { core::mem::zeroed() };
         let mut mask: rte_flow_item_udp = unsafe { core::mem::zeroed() };
-        if let Some(src) = self.src {
-            spec.hdr.src_port = src.to_be();
-            mask.hdr.src_port = u16::MAX;
-        }
-        if let Some(dst) = self.dst {
-            spec.hdr.dst_port = dst.to_be();
-            mask.hdr.dst_port = u16::MAX;
-        }
-        (spec, mask)
+        let mut last: rte_flow_item_udp = unsafe { core::mem::zeroed() };
+        (spec.hdr.src_port, mask.hdr.src_port, last.hdr.src_port) = Ports::lower(self.src);
+        (spec.hdr.dst_port, mask.hdr.dst_port, last.hdr.dst_port) = Ports::lower(self.dst);
+        let ranged = last.hdr.src_port != 0 || last.hdr.dst_port != 0;
+        (spec, mask, ranged.then_some(last))
     }
 }
 
 /// Match criteria for a TCP header. `default()` matches any TCP packet.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct TcpMatch {
-    src: Option<u16>,
-    dst: Option<u16>,
+    src: Option<Ports>,
+    dst: Option<Ports>,
     /// Flag values and the mask of flags constrained.
     flags: Option<(u8, u8)>,
 }
@@ -422,14 +494,28 @@ impl TcpMatch {
     /// Constrain the source port.
     #[must_use]
     pub fn src(mut self, src: u16) -> TcpMatch {
-        self.src = Some(src);
+        self.src = Some(Ports::Exact(src));
         self
     }
 
     /// Constrain the destination port.
     #[must_use]
     pub fn dst(mut self, dst: u16) -> TcpMatch {
-        self.dst = Some(dst);
+        self.dst = Some(Ports::Exact(dst));
+        self
+    }
+
+    /// Constrain the source port to `range`; see [`UdpMatch::src_range`].
+    #[must_use]
+    pub fn src_range(mut self, range: PortRange) -> TcpMatch {
+        self.src = Some(Ports::range(range));
+        self
+    }
+
+    /// Constrain the destination port to `range`; see [`UdpMatch::src_range`].
+    #[must_use]
+    pub fn dst_range(mut self, range: PortRange) -> TcpMatch {
+        self.dst = Some(Ports::range(range));
         self
     }
 
@@ -441,23 +527,25 @@ impl TcpMatch {
         self
     }
 
-    pub(crate) fn lower(&self) -> (rte_flow_item_tcp, rte_flow_item_tcp) {
+    pub(crate) fn lower(
+        &self,
+    ) -> (
+        rte_flow_item_tcp,
+        rte_flow_item_tcp,
+        Option<rte_flow_item_tcp>,
+    ) {
         // SAFETY: zeroed fields are valid; a zero mask leaves fields unconstrained.
         let mut spec: rte_flow_item_tcp = unsafe { core::mem::zeroed() };
         let mut mask: rte_flow_item_tcp = unsafe { core::mem::zeroed() };
-        if let Some(src) = self.src {
-            spec.hdr.src_port = src.to_be();
-            mask.hdr.src_port = u16::MAX;
-        }
-        if let Some(dst) = self.dst {
-            spec.hdr.dst_port = dst.to_be();
-            mask.hdr.dst_port = u16::MAX;
-        }
+        let mut last: rte_flow_item_tcp = unsafe { core::mem::zeroed() };
+        (spec.hdr.src_port, mask.hdr.src_port, last.hdr.src_port) = Ports::lower(self.src);
+        (spec.hdr.dst_port, mask.hdr.dst_port, last.hdr.dst_port) = Ports::lower(self.dst);
         if let Some((value, flags)) = self.flags {
             spec.hdr.tcp_flags = value;
             mask.hdr.tcp_flags = flags;
         }
-        (spec, mask)
+        let ranged = last.hdr.src_port != 0 || last.hdr.dst_port != 0;
+        (spec, mask, ranged.then_some(last))
     }
 }
 
@@ -514,6 +602,8 @@ pub enum ItemShape {
         src: u16,
         /// Destination port mask.
         dst: u16,
+        /// Which ports are ranges, source then destination.
+        ranges: (bool, bool),
     },
     /// A TCP header.
     Tcp {
@@ -521,6 +611,8 @@ pub enum ItemShape {
         src: u16,
         /// Destination port mask.
         dst: u16,
+        /// Which ports are ranges, source then destination.
+        ranges: (bool, bool),
         /// Flags mask.
         flags: u8,
     },
@@ -566,13 +658,19 @@ impl MatchItem {
                 proto: mask.hdr.proto,
                 unfragmented: mask.has_frag_ext() != 0,
             },
-            MatchItem::Udp(_, mask) => ItemShape::Udp {
+            MatchItem::Udp(_, mask, last) => ItemShape::Udp {
                 src: u16::from_be(mask.hdr.src_port),
                 dst: u16::from_be(mask.hdr.dst_port),
+                ranges: last.map_or((false, false), |l| {
+                    (l.hdr.src_port != 0, l.hdr.dst_port != 0)
+                }),
             },
-            MatchItem::Tcp(_, mask) => ItemShape::Tcp {
+            MatchItem::Tcp(_, mask, last) => ItemShape::Tcp {
                 src: u16::from_be(mask.hdr.src_port),
                 dst: u16::from_be(mask.hdr.dst_port),
+                ranges: last.map_or((false, false), |l| {
+                    (l.hdr.src_port != 0, l.hdr.dst_port != 0)
+                }),
                 flags: mask.hdr.tcp_flags,
             },
             MatchItem::Vxlan(_, mask) => ItemShape::Vxlan {
