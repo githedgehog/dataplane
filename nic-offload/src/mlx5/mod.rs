@@ -318,8 +318,16 @@ const MAX_BURST: u64 = 255 << 31;
 /// header (14) and the FCS (4), whether or not a given NIC counts each.
 pub const BYTE_OVERHEAD: u64 = 72;
 
-/// The fewest bytes software bills a packet a NIC rule matches: an IPv4 header.
-const MIN_BILLED: u64 = 20;
+/// Reference packet size, in inner IP bytes, for [`Billing::Ip`] byte meters.
+/// Rates and bursts are scaled by ([`SIZED_FOR`] + [`BYTE_OVERHEAD`]) / [`SIZED_FOR`], about 1.14,
+/// to cover overhead for packets at least this large.
+///
+/// Smaller packets may hit NIC rate or burst limits before software limits, including bursts
+/// whose average rate is below the configured limit. For single-rate meters counting all of
+/// [`BYTE_OVERHEAD`], estimated steady-state limits are 1.09 times the configured rate for
+/// 1500 B packets and 0.54 times for 64 B packets, before hardware rounding.
+/// NIC drops appear in `rate_limit_nic_packets_total`, not the software rate-limit counters.
+pub(crate) const SIZED_FOR: u64 = 512;
 
 /// Possible L2 overhead beyond [`Billing::OuterIp`]: Ethernet (14), VLAN (4) and FCS (4).
 /// mlx5 documents IP-length billing, but this is not qualified on every part and firmware.
@@ -468,20 +476,23 @@ pub(crate) fn pmd_scale(unit: MeterUnit) -> u32 {
     }
 }
 
-/// Build a NIC profile that passes traffic within the software meter's rates and bursts.
+/// Build a NIC profile that passes traffic within the software meter's rates and bursts,
+/// subject to the small-packet exception for inner-IP byte meters in [`SIZED_FOR`].
 ///
-/// - Scale byte rates and bursts for worst-case overhead relative to the billed IP length.
+/// - Scale byte rates and bursts for the NIC's overhead beyond the billed IP length: for packets
+///   of at least [`SIZED_FOR`] bytes with [`Billing::Ip`], and of any size with
+///   [`Billing::OuterIp`].
 /// - Add one maximum frame for NIC token debt and [`PoliceMeter::lease_slack`](crate::program::PoliceMeter::lease_slack) for worker leases.
 /// - Round rates and bursts up to mlx5-encodable values.
 /// - Use the sum of committed and excess rates for the NIC's uncoupled excess bucket.
 ///
-/// Overhead scaling is conservative: full-size packets can pass at about 4.4x the inner-IP rate.
-/// Software still enforces the configured limit; see `meters.rs` for the meter property test.
+/// Software still enforces the configured limit; see `meters.rs` for the meter property tests.
 /// Returns `None` if the adjusted rate or burst exceeds [`MAX_RATE`] or [`MAX_BURST`].
 pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> Option<MeterProfile> {
     let p = meter.profile;
-    let (scale, least, frame) = match (meter.unit, meter.billing) {
-        (Unit::Bytes, Billing::Ip) => (MIN_BILLED + BYTE_OVERHEAD, MIN_BILLED, MAX_FRAME),
+    // Tokens are scaled by `scale / sized_for`.
+    let (scale, sized_for, frame) = match (meter.unit, meter.billing) {
+        (Unit::Bytes, Billing::Ip) => (SIZED_FOR + BYTE_OVERHEAD, SIZED_FOR, MAX_FRAME),
         (Unit::Bytes, Billing::OuterIp) => (
             MIN_OUTER_IP_BILLED + OUTER_IP_OVERHEAD,
             MIN_OUTER_IP_BILLED,
@@ -495,7 +506,7 @@ pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> Option<MeterProfil
     };
     // In mlx5's units, if it takes that many: scaled, plus `extra`, shifted as mlx5 shifts them.
     let scaled = |tokens: u64, extra: u64, max: u64| {
-        let wanted = (u128::from(tokens) * u128::from(scale)).div_ceil(u128::from(least))
+        let wanted = (u128::from(tokens) * u128::from(scale)).div_ceil(u128::from(sized_for))
             + u128::from(extra);
         u64::try_from(wanted << pmd).ok().filter(|&w| w <= max)
     };

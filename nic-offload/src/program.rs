@@ -542,7 +542,7 @@ fn component<C>(limits: &RateLimits<C>, meter: usize) -> Option<Component> {
 /// The bytes meter drops red if either software component does.
 /// Include the packets meter only if it drops red and any bytes component passes yellow;
 /// otherwise it could charge packets that software already dropped.
-/// This preserves traffic software never colors red; see the property test in `meters.rs`.
+/// For ingress meters, this preserves traffic software never colors red; see `meters.rs`.
 fn components<C>(limits: &RateLimits<C>, meter: usize) -> [Option<Component>; 2] {
     let Some(meter) = limits.meters().get(meter) else {
         return [None, None];
