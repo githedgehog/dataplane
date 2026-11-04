@@ -109,9 +109,7 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
     /// This method takes a [`NetworkFunction`] and adds it to the pipeline.
     ///
     #[must_use]
-    pub fn add_stage<NF: NetworkFunction<Buf> + 'nf>(self, mut nf: NF) -> Self {
-        nf.set_data(self.data.clone());
-        nf.set_sched_run(self.sched.clone());
+    pub fn add_stage<NF: NetworkFunction<Buf> + 'nf>(self, nf: NF) -> Self {
         self.add_stage_dyn(nf_dyn(nf))
     }
 
@@ -184,7 +182,7 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
     fn internal_add_stage_dyn_with_id(
         &mut self,
         id: StageId<'nf, Buf>,
-        nf: Box<dyn DynNetworkFunction<Buf> + 'nf>,
+        mut nf: Box<dyn DynNetworkFunction<Buf> + 'nf>,
     ) -> Result<&mut Self, PipelineError> {
         // FIXME(mvachhar): There seems to be no method to insert and error if the key already exists.
         // As a result, this does a double hash and lookup.  Probably fine here, but may need to submit
@@ -195,6 +193,8 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
         if self.nfs.get(&id).is_some() {
             Err(PipelineError::DuplicateStageId(id.to_string()))
         } else {
+            nf.set_data(self.get_data());
+            nf.set_sched_run(self.sched.clone());
             self.nfs.insert(id, nf);
             Ok(self)
         }
@@ -208,6 +208,96 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<'_, Buf> {
         for nf in self.nfs.values_mut() {
             nf.process_burst(burst);
         }
+    }
+}
+
+#[cfg(test)]
+mod sched_run {
+    use net::buffer::{PacketBufferMut, TestBuffer};
+    use net::packet::Packet;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use crate::{DynPipeline, NetworkFunction, SchedRun, StageId, nf_dyn};
+
+    /// A stage that can request a pipeline to be run immediately
+    struct SignalNF {
+        request_work: Rc<Cell<bool>>,
+        sched: SchedRun, // shared with pipeline
+    }
+    impl SignalNF {
+        #[must_use]
+        fn new(request_work: Rc<Cell<bool>>) -> Self {
+            SignalNF {
+                request_work,
+                sched: SchedRun::default(),
+            }
+        }
+    }
+
+    impl<Buf: PacketBufferMut> NetworkFunction<Buf> for SignalNF {
+        fn process_burst(&mut self, _burst: &mut Vec<Packet<Buf>>) {
+            if self.request_work.get() {
+                self.sched.asap();
+            }
+        }
+
+        fn set_sched_run(&mut self, sched: SchedRun) {
+            self.sched = sched;
+        }
+    }
+
+    /// Test that the pipeline can correctly determine if a stage
+    /// scheduled a run and that it clears the request once run
+    /// if the stage no longer requests a run.
+    fn check_signal(mut pipeline: DynPipeline<TestBuffer>, request_work: &Rc<Cell<bool>>) {
+        request_work.set(true);
+        assert!(!pipeline.must_run());
+
+        let mut burst = vec![];
+        pipeline.process_burst(&mut burst);
+
+        assert!(pipeline.must_run());
+
+        request_work.set(false);
+        pipeline.process_burst(&mut burst);
+        assert!(!pipeline.must_run());
+    }
+
+    #[test]
+    fn test_request_run() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let pipeline = DynPipeline::<TestBuffer>::new().add_stage(stage);
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_request_run_dyn() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let pipeline = DynPipeline::<TestBuffer>::new().add_stage_dyn(nf_dyn(stage));
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_request_run_with_id() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let mut pipeline = DynPipeline::<TestBuffer>::new();
+        pipeline.add_stage_with_id(StageId::new(), stage).unwrap();
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_request_run_dyn_with_id() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let mut pipeline = DynPipeline::<TestBuffer>::new();
+        pipeline
+            .add_stage_dyn_with_id(StageId::new(), nf_dyn(stage))
+            .unwrap();
+        check_signal(pipeline, &request_work);
     }
 }
 
