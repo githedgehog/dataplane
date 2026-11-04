@@ -18,7 +18,8 @@ use tokio::io::{AsyncWriteExt, Interest};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, interval};
 
-/// How often a quiet interface's reader still expires flows: the flow wheel's tick.
+/// How often a quiet interface's reader still expires flows (the flow wheel's tick) and does the
+/// pending work of its pipeline (e.g. injecting packets).
 const EXPIRY_PERIOD: Duration = Duration::from_millis(10);
 
 use concurrency::sync::Arc;
@@ -276,9 +277,16 @@ impl Worker {
                         intf.watchdog.pat();
                         Vec::new()
                     }
+                    // The pipeline owned by this worker may have pending work. We check that here.
+                    // This bounds the time that pending work may be unattended in the worst case
+                    // (a silent interface) to to `EXPIRY_PERIOD`.
                     _ = expiry.tick() => {
                         sweep(&mut expiry_behind);
-                        continue;
+                        if !pipeline.must_run() {
+                            continue;
+                        }
+                        // there is pending work, so hand off an empty vector
+                        Vec::new()
                     }
                 };
 
