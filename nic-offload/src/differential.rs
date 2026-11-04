@@ -6,7 +6,8 @@
 //!
 //! - Direct NIC drops must also be software drops.
 //! - NIC meters must charge the same meter as software and drop only red when configured to do so.
-//! - NIC meter profiles must be at least as permissive as software's.
+//! - NIC profile rates and bursts must be at least software's. This comparison excludes per-packet
+//!   overhead; see [`SIZED_FOR`](crate::mlx5::SIZED_FOR) for the inner-IP byte meter exception.
 //!
 //! After ingress, unroutable traffic may be dropped or metered, but never changed.
 //! Transit VXLAN must pass unchanged and unmetered.
@@ -1138,7 +1139,8 @@ fn violation(
     }
 }
 
-/// The NIC meter must be at least as permissive as the software component it stands for.
+/// Check NIC profile rates and bursts against software's, excluding per-packet overhead.
+/// See [`SIZED_FOR`](crate::mlx5::SIZED_FOR) for the inner-IP byte meter exception.
 fn check_profiles(
     limits: &RateLimits<PeeringRules>,
     ingress: &RateLimits<IngressRules>,

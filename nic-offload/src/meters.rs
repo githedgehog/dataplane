@@ -4,8 +4,11 @@
 //! Verify that NIC meters pass traffic within software rates and bursts.
 //!
 //! After software first colors a packet red, drop decisions may diverge:
-//! software keeps that packet's tokens, while the more permissive NIC may spend them.
+//! software keeps that packet's tokens, while the NIC may spend them.
 //! The property compares shared software meters across workers with mlx5-encoded NIC profiles.
+//!
+//! For inner-IP byte meters, the property applies to packets of at least [`SIZED_FOR`] bytes.
+//! `small_packets_may_be_policed_harder_in_the_nic` exercises the exception documented there.
 
 use std::time::Duration;
 
@@ -14,8 +17,8 @@ use policer::{Color, Profile, Rate};
 use rate_limit::{Billing, Unit};
 
 use crate::mlx5::{
-    BYTE_OVERHEAD, MIN_OUTER_IP_BILLED, OUTER_IP_OVERHEAD, encoded_burst, encoded_rate, pmd_scale,
-    profile,
+    BYTE_OVERHEAD, MIN_OUTER_IP_BILLED, OUTER_IP_OVERHEAD, SIZED_FOR, encoded_burst, encoded_rate,
+    pmd_scale, profile,
 };
 use crate::program::PoliceMeter;
 
@@ -167,12 +170,13 @@ fn conforming_traffic_is_never_red_in_the_nic() {
         // Paced runs repeat their packets: draining the NIC's debt margin (a jumbo frame) and
         // bursts at a few dozen bytes of overhead a packet takes thousands of them.
         let packets = if run.pace == Pace::Gaps { 400 } else { 4_000 };
+        // Packets of a jumbo frame at most, as the debt margin assumes, and of at least the size
+        // the NIC is scaled for.
+        let (least, most) = match billing {
+            Billing::Ip => (SIZED_FOR, BYTE_OVERHEAD),
+            Billing::OuterIp => (MIN_OUTER_IP_BILLED, OUTER_IP_OVERHEAD),
+        };
         for &(gap, bytes, overhead, worker) in run.arrivals.iter().cycle().take(packets) {
-            // Packets of a jumbo frame at most, as the debt margin assumes.
-            let (least, most) = match billing {
-                Billing::Ip => (20, BYTE_OVERHEAD),
-                Billing::OuterIp => (MIN_OUTER_IP_BILLED, OUTER_IP_OVERHEAD),
-            };
             let (billed, overhead) = if run.pace == Pace::WorstCase {
                 (least, most)
             } else {
@@ -205,6 +209,50 @@ fn conforming_traffic_is_never_red_in_the_nic() {
             );
         }
     });
+}
+
+/// The trade-off [`SIZED_FOR`] makes: sustained small packets just under software's rate, with
+/// the most overhead the NIC may count, run the NIC's meter dry while software passes them all.
+#[test]
+fn small_packets_may_be_policed_harder_in_the_nic() {
+    // 10 MB/s with a 100 kB burst, and 64 B packets at 95 % of that rate.
+    let (rate, burst, size, gap) = (10_000_000u64, 100_000, 64, 6_737);
+    let Ok(software) = Profile::new(
+        Rate::new(std::num::NonZeroU64::new(rate).unwrap_or(std::num::NonZeroU64::MIN)),
+        burst,
+        None,
+        0,
+    ) else {
+        unreachable!("a valid profile")
+    };
+    let start = clock::now();
+    let shared = policer::SharedMeter::new(software, std::num::NonZeroUsize::MIN, start);
+    let mut local = shared.local();
+    let Some(nic_profile) = profile(&PoliceMeter {
+        name: "m".into(),
+        scope: crate::program::Scope::Peering,
+        unit: Unit::Bytes,
+        billing: Billing::Ip,
+        profile: software,
+        lease_slack: shared.lease_slack(),
+    }) else {
+        unreachable!("an encodable profile")
+    };
+    let mut nic = NicMeter::new(&nic_profile);
+    let mut nic_red = 0;
+    for packet in 1..=10_000u64 {
+        let now = packet * gap;
+        let software_color = local.color(start + Duration::from_nanos(now), size, Color::Green);
+        assert_ne!(
+            software_color,
+            Color::Red,
+            "software colors packet {packet} red"
+        );
+        if nic.color(now, size + BYTE_OVERHEAD) == Color::Red {
+            nic_red += 1;
+        }
+    }
+    assert!(nic_red > 0, "the NIC passed every small packet");
 }
 
 /// A chained meter: a bytes component, then a packets component the bytes component's colors feed,
@@ -347,9 +395,19 @@ fn bursts_mlx5_cannot_take_are_refused_not_wrapped() {
                 assert!(encoded_burst(scaled) >= scaled, "{burst} wraps");
             }
             Some(other) => panic!("{other:?}"),
-            // Software's burst alone is past mlx5's maximum, but for its scaling (up to 4.6
-            // times) and one frame.
-            None => assert!(burst > (MAX_BURST >> shift) / 5, "{burst} refused"),
+            None => {
+                // Byte meters scale the burst before adding a frame; packet meters add one
+                // packet. Compare in mlx5's units, without overflowing large input bursts.
+                let required = match unit {
+                    Unit::Bytes => {
+                        (u128::from(burst) * u128::from(SIZED_FOR + BYTE_OVERHEAD))
+                            .div_ceil(u128::from(SIZED_FOR))
+                            + u128::from(9216 + BYTE_OVERHEAD)
+                    }
+                    Unit::Packets => u128::from(burst) + 1,
+                } << shift;
+                assert!(required > u128::from(MAX_BURST), "{burst} refused");
+            }
         }
     };
     for packets in [false, true] {
@@ -359,6 +417,9 @@ fn bursts_mlx5_cannot_take_are_refused_not_wrapped() {
             255 << 20,
             1 << 32,
             1 << 36,
+            // Byte bursts mlx5 takes once scaled.
+            1 << 38,
+            3 << 37,
             1 << 40,
             u64::MAX / 2,
             u64::MAX,
