@@ -6,7 +6,7 @@
 
 use crate::rate::{HashMapSmoothing, SavitzkyGolayFilter};
 use net::packet::Packet;
-use pipeline::NetworkFunction;
+use pipeline::{NetworkFunction, SchedRun};
 
 use concurrency::sync::Arc;
 use kanal::ReceiveError;
@@ -814,6 +814,7 @@ pub struct Stats {
     update: Box<BatchSummary<u64>>,
     stats: PacketStatsWriter,
     delivery_schedule: Duration,
+    sched: SchedRun,
 }
 
 /// Stage to collect packet statistics
@@ -844,6 +845,7 @@ impl Stats {
             update: Box::new(BatchSummary::new(planned_end)),
             stats,
             delivery_schedule,
+            sched: SchedRun::default(),
         }
     }
 }
@@ -856,7 +858,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
         // reallocations
         const CAPACITY_PAD: usize = 16;
         let time = clock::now();
-        if time > self.update.planned_end {
+        if time >= self.update.planned_end {
             trace!("sending stats update");
             let batch = Box::new(BatchSummary::with_capacity(
                 time + self.delivery_schedule,
@@ -948,6 +950,17 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             // Leave every packet for the driver to transmit, punt, or drop.
             // Enforcing verdicts here would discard control-plane traffic such as ARP.
         }
+
+        // An open batch with counts is sent by a later run once it is due. Set that as the
+        // deadline, so that the pipeline runs even if no more packets come; else, the counts would
+        // wait for the next one. Set again on every run, as each run clears it.
+        if !self.update.vpc.is_empty() {
+            self.sched.set_deadline(self.update.planned_end);
+        }
+    }
+
+    fn set_sched_run(&mut self, sched: SchedRun) {
+        self.sched = sched;
     }
 }
 
@@ -1127,6 +1140,7 @@ mod drop_stats_tests {
     use net::buffer::TestBuffer;
     use net::packet::test_utils::build_test_ipv4_packet;
     use net::vxlan::Vni;
+    use pipeline::DynPipeline;
     use strum::IntoEnumIterator;
 
     fn vpcd(vni: u32) -> VpcDiscriminant {
@@ -1231,6 +1245,131 @@ mod drop_stats_tests {
                     .map(|counts| counts.packets),
                 Some(1)
             );
+        });
+    }
+
+    /// A stage that requests an immediate run when told to, as PktIo does when a packet is
+    /// injected.
+    struct Injector {
+        inject: std::rc::Rc<std::cell::Cell<bool>>,
+        sched: SchedRun,
+    }
+
+    impl NetworkFunction<TestBuffer> for Injector {
+        fn process_burst(&mut self, _burst: &mut Vec<Packet<TestBuffer>>) {
+            if self.inject.replace(false) {
+                self.sched.asap();
+            }
+        }
+
+        fn set_sched_run(&mut self, sched: SchedRun) {
+            self.sched = sched;
+        }
+    }
+
+    /// A stage that keeps the [`SchedRun`] its pipeline hands it, so that a test can tell whether
+    /// a deadline is set, reached or not.
+    struct Probe(std::rc::Rc<std::cell::OnceCell<SchedRun>>);
+
+    impl NetworkFunction<TestBuffer> for Probe {
+        fn process_burst(&mut self, _burst: &mut Vec<Packet<TestBuffer>>) {}
+
+        fn set_sched_run(&mut self, sched: SchedRun) {
+            let _ = self.0.set(sched);
+        }
+    }
+
+    #[test]
+    fn a_batch_with_counts_requests_a_run_once_due() {
+        let (a, b) = (vpcd(100), vpcd(200));
+        let (sender, receiver) = kanal::bounded(4);
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let tick = Duration::from_secs(1);
+            let stats = Stats::with_delivery_schedule("test", PacketStatsWriter(sender), tick);
+            // the pipeline hands the stage its deadline and clears it before each run
+            let sched = std::rc::Rc::new(std::cell::OnceCell::new());
+            let mut pipeline = DynPipeline::<TestBuffer>::new()
+                .add_stage(Probe(sched.clone()))
+                .add_stage(stats);
+            let has_deadline = || sched.get().is_some_and(SchedRun::is_set);
+
+            let _drained: Vec<_> = pipeline.process(vec![]).collect();
+            assert!(!pipeline.must_run(), "an empty batch has nothing to send");
+            assert!(
+                !has_deadline(),
+                "an empty batch requests a run, so an idle owner runs for nothing"
+            );
+
+            let _drained: Vec<_> = pipeline
+                .process(vec![mk_packet(
+                    Some(a),
+                    Some(b),
+                    Some(DoneReason::Delivered),
+                )])
+                .collect();
+            clock::virtual_time::advance(tick / 2).await;
+            assert!(
+                !pipeline.must_run(),
+                "a run is due before the batch is, so an idle owner runs for nothing"
+            );
+            clock::virtual_time::advance(tick / 2).await;
+            assert!(
+                pipeline.must_run(),
+                "no run is due once a batch with counts is, so an idle owner holds them"
+            );
+
+            let _drained: Vec<_> = pipeline.process(vec![]).collect();
+            assert!(
+                matches!(receiver.try_recv(), Ok(Some(_))),
+                "the batch was not sent once due"
+            );
+            assert!(
+                !has_deadline(),
+                "the batch was sent, but a run is still requested"
+            );
+        });
+    }
+
+    #[test]
+    fn a_run_requested_by_another_stage_does_not_lose_the_batch() {
+        let (a, b) = (vpcd(100), vpcd(200));
+        let (sender, receiver) = kanal::bounded(4);
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let tick = Duration::from_secs(1);
+            let inject = std::rc::Rc::new(std::cell::Cell::new(false));
+            let injector = Injector {
+                inject: inject.clone(),
+                sched: SchedRun::default(),
+            };
+            let stats = Stats::with_delivery_schedule("test", PacketStatsWriter(sender), tick);
+            let mut pipeline = DynPipeline::<TestBuffer>::new()
+                .add_stage(injector)
+                .add_stage(stats);
+            let _drained: Vec<_> = pipeline
+                .process(vec![mk_packet(
+                    Some(a),
+                    Some(b),
+                    Some(DoneReason::Delivered),
+                )])
+                .collect();
+
+            // something is injected before the batch is due: the immediate run it requests
+            // replaces the later one of the batch, and that run clears it
+            inject.set(true);
+            let _drained: Vec<_> = pipeline.process(vec![]).collect();
+            assert!(pipeline.must_run());
+            let _drained: Vec<_> = pipeline.process(vec![]).collect();
+            assert!(!pipeline.must_run(), "a run is due before the batch is");
+
+            clock::virtual_time::advance(tick).await;
+            assert!(
+                pipeline.must_run(),
+                "the run for the batch was lost to the earlier one"
+            );
+            let _drained: Vec<_> = pipeline.process(vec![]).collect();
+            assert!(matches!(receiver.try_recv(), Ok(Some(_))));
         });
     }
 
