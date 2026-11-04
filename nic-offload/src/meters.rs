@@ -90,6 +90,19 @@ impl NicMeter {
     }
 }
 
+/// How packets arrive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bolero::TypeGenerator)]
+enum Pace {
+    /// After their generated gaps.
+    Gaps,
+    /// At the software's committed rate: there, only the NIC's margins keep its buckets from
+    /// running dry.
+    Committed,
+    /// At the committed rate, every packet as small as the NIC is scaled for, with the most
+    /// overhead.
+    WorstCase,
+}
+
 /// A meter and packets: the gap before each, its IP bytes, and what the NIC counts beyond them.
 #[derive(Debug, bolero::TypeGenerator)]
 struct Run {
@@ -101,6 +114,7 @@ struct Run {
     excess: Option<(u32, u32)>,
     /// How many workers share the software meter.
     workers: u8,
+    pace: Pace,
     /// Each packet's gap, IP bytes, NIC overhead, and the worker it arrives at.
     arrivals: Vec<(u32, u16, u8, u8)>,
 }
@@ -149,17 +163,31 @@ fn conforming_traffic_is_never_red_in_the_nic() {
         };
         let mut nic = NicMeter::new(&nic_profile);
         let mut now = 0u64;
-        for &(gap, bytes, overhead, worker) in run.arrivals.iter().take(400) {
-            now += u64::from(gap % 1_000_000);
+        let committed = software.committed_rate().per_second().get();
+        // Paced runs repeat their packets: draining the NIC's debt margin (a jumbo frame) and
+        // bursts at a few dozen bytes of overhead a packet takes thousands of them.
+        let packets = if run.pace == Pace::Gaps { 400 } else { 4_000 };
+        for &(gap, bytes, overhead, worker) in run.arrivals.iter().cycle().take(packets) {
             // Packets of a jumbo frame at most, as the debt margin assumes.
             let (least, most) = match billing {
                 Billing::Ip => (20, BYTE_OVERHEAD),
                 Billing::OuterIp => (MIN_OUTER_IP_BILLED, OUTER_IP_OVERHEAD),
             };
-            let billed = (u64::from(bytes) % 9217).max(least);
+            let (billed, overhead) = if run.pace == Pace::WorstCase {
+                (least, most)
+            } else {
+                (
+                    least + u64::from(bytes) % (9217 - least),
+                    u64::from(overhead) % (most + 1),
+                )
+            };
             let (cost, nic_cost) = match unit {
-                Unit::Bytes => (billed, billed + u64::from(overhead) % (most + 1)),
+                Unit::Bytes => (billed, billed + overhead),
                 Unit::Packets => (1, 1),
+            };
+            now += match run.pace {
+                Pace::Gaps => u64::from(gap % 1_000_000),
+                Pace::Committed | Pace::WorstCase => (cost * 1_000_000_000).div_ceil(committed),
             };
             let at = usize::from(worker) % locals.len();
             let software_color = locals[at].color(
