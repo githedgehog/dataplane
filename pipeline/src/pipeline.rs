@@ -212,13 +212,83 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<'_, Buf> {
 }
 
 #[cfg(test)]
+mod pipeline_data {
+    use concurrency::sync::Arc;
+    use net::buffer::{PacketBufferMut, TestBuffer};
+    use net::packet::Packet;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use crate::sample_nfs::Passthrough;
+    use crate::{DynPipeline, NetworkFunction, PipelineData, StaticChain};
+
+    /// A stage that reads the genid given by the pipeline data of the pipeline it lives in
+    /// and reports its value
+    struct DataNF {
+        report: Rc<Cell<Option<i64>>>,
+        data: Option<Arc<PipelineData>>,
+    }
+    impl DataNF {
+        #[must_use]
+        fn new(report: Rc<Cell<Option<i64>>>) -> Self {
+            Self { report, data: None }
+        }
+    }
+
+    impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DataNF {
+        fn process_burst(&mut self, _burst: &mut Vec<Packet<Buf>>) {
+            // read gen id of the pipeline data. This must succeed
+            let genid = self.data.as_ref().expect("did not get data").genid();
+
+            // report it
+            self.report.set(Some(genid));
+        }
+
+        fn set_data(&mut self, data: Arc<PipelineData>) {
+            self.data = Some(data);
+        }
+    }
+
+    /// Check that a stage added with `add` gets the pipeline's data
+    fn check_data(
+        add_stage: impl FnOnce(DataNF, DynPipeline<TestBuffer>) -> DynPipeline<TestBuffer>,
+    ) {
+        const GENID: i64 = 7;
+        let report = Rc::new(Cell::new(None));
+        let stage = DataNF::new(report.clone());
+        let pipeline = DynPipeline::new().set_data(Arc::new(PipelineData::new(GENID)));
+        let mut pipeline = add_stage(stage, pipeline);
+        pipeline.process_burst(&mut vec![]);
+
+        // reported value must match pipeline data value
+        assert_eq!(report.get(), Some(GENID));
+    }
+
+    #[test]
+    fn test_data_reaches_stage() {
+        check_data(|stage, pipeline| pipeline.add_stage(stage));
+    }
+
+    #[test]
+    fn test_data_reaches_stage_chained_first() {
+        check_data(|stage, pipeline| pipeline.add_stage(stage.chain(Passthrough)));
+    }
+
+    #[test]
+    fn test_data_reaches_stage_chained_last() {
+        check_data(|stage, pipeline| pipeline.add_stage(Passthrough.chain(stage)));
+    }
+}
+
+#[cfg(test)]
 mod sched_run {
     use net::buffer::{PacketBufferMut, TestBuffer};
     use net::packet::Packet;
     use std::cell::Cell;
     use std::rc::Rc;
 
-    use crate::{DynPipeline, NetworkFunction, SchedRun, StageId, nf_dyn};
+    use crate::sample_nfs::Passthrough;
+    use crate::{DynPipeline, NetworkFunction, SchedRun, StageId, StaticChain, nf_dyn};
 
     /// A stage that can request a pipeline to be run immediately
     struct SignalNF {
@@ -269,6 +339,22 @@ mod sched_run {
         let request_work = Rc::new(Cell::new(true));
         let stage = SignalNF::new(request_work.clone());
         let pipeline = DynPipeline::<TestBuffer>::new().add_stage(stage);
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_request_run_chained_first() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let pipeline = DynPipeline::<TestBuffer>::new().add_stage(stage.chain(Passthrough));
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_request_run_chained_last() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let pipeline = DynPipeline::<TestBuffer>::new().add_stage(Passthrough.chain(stage));
         check_signal(pipeline, &request_work);
     }
 
