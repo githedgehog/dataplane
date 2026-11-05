@@ -56,6 +56,18 @@ impl<Buf: PacketBufferMut, NF1: NetworkFunction<Buf>, NF2: NetworkFunction<Buf>>
         self.nf1.process_burst(burst);
         self.nf2.process_burst(burst);
     }
+
+    /// Forward the pipeline data to both stages
+    fn set_data(&mut self, data: Arc<PipelineData>) {
+        self.nf1.set_data(data.clone());
+        self.nf2.set_data(data);
+    }
+
+    /// Forward the pipeline's deadline to both stages
+    fn set_sched_run(&mut self, sched: SchedRun) {
+        self.nf1.set_sched_run(sched.clone());
+        self.nf2.set_sched_run(sched);
+    }
 }
 
 /// Statically chains two [`NetworkFunction`] objects together.
