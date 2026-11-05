@@ -61,6 +61,8 @@ impl PipelineData {
 /// A dynamic pipeline that can be updated at runtime.
 ///
 /// This struct is used to create a dynamic pipeline that can be updated at runtime.
+/// A [`DynPipeline`] implements [`NetworkFunction`]. Therefore, it may be nested as
+/// a stage of another one.
 ///
 /// `'nf` bounds the stages and permits buffers that borrow storage, such as DPDK mbufs.
 ///
@@ -72,6 +74,7 @@ pub struct DynPipeline<'nf, Buf: PacketBufferMut> {
     nfs: OrderMap<StageId<'nf, Buf>, Box<dyn DynNetworkFunction<Buf> + 'nf>>,
     data: Arc<PipelineData>,
     sched: SchedRun,
+    nested: bool, // true if this pipeline was nested as a stage of another
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -88,6 +91,7 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
             nfs: OrderMap::new(),
             data: Arc::from(PipelineData::default()),
             sched: SchedRun::default(),
+            nested: false,
         }
     }
 
@@ -203,11 +207,29 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<'_, Buf> {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
-        // clear the deadline: stages set one again if they still need one when run
-        self.sched.take();
+        // clear the deadline (stages set one again if they still need one when run),
+        // but ONLY if the pipeline is not nested. If it is, the outer pipeline will do so,
+        // and clearing here would drop any deadline set by stages running before.
+        if !self.nested {
+            self.sched.take();
+        }
         for nf in self.nfs.values_mut() {
             nf.process_burst(burst);
         }
+    }
+
+    /// This trait method is always called when adding a NF to a pipeline. To allow
+    /// the correct propagation of deadlines, re-set the [`SchedRun`] of all NFs
+    /// contained in this pipeline to `sched` and of the pipeline itself.
+    /// Also, mark the pipeline as nested.
+    fn set_sched_run(&mut self, sched: SchedRun) {
+        // set the deadline for all stages already contained in this pipeline
+        for nf in self.nfs.values_mut() {
+            nf.set_sched_run(sched.clone());
+        }
+        // adopt sched and recall this pipeline is nested
+        self.sched = sched;
+        self.nested = true;
     }
 }
 
@@ -356,6 +378,33 @@ mod sched_run {
         let stage = SignalNF::new(request_work.clone());
         let pipeline = DynPipeline::<TestBuffer>::new().add_stage(Passthrough.chain(stage));
         check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_request_run_nested() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let nested = DynPipeline::<TestBuffer>::new().add_stage(stage);
+        let pipeline = DynPipeline::<TestBuffer>::new().add_stage(nested);
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_nested_pipeline_preserves_signal_of_earlier_stage() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let nested = DynPipeline::<TestBuffer>::new().add_stage(Passthrough);
+        let mut pipeline = DynPipeline::<TestBuffer>::new()
+            .add_stage(stage)
+            .add_stage(nested);
+
+        // stage `stage` of outer pipeline always requests work. The nested pipeline never does and
+        // should not clear the work as it should behave as a regular stage
+        pipeline.process_burst(&mut vec![]);
+        assert!(
+            pipeline.must_run(),
+            "nested pipeline cleared the signal of stage running before it"
+        );
     }
 
     #[test]
