@@ -477,9 +477,11 @@ impl TapRegistry {
 #[cfg(test)]
 mod tests {
     use super::TapDevice;
+    use futures::StreamExt;
     use net::interface::InterfaceName;
     use nix::libc;
     use rtnetlink::LinkUnspec;
+    use rtnetlink::packet_route::link::LinkAttribute;
     use std::time::Duration;
 
     /// An experimental ethertype, so the test can tell its frame from the kernel's own traffic.
@@ -554,6 +556,66 @@ mod tests {
             .expect("the frame reached the tap");
             assert_eq!(read, frame.len());
             assert_eq!(buf[..read], frame[..]);
+        });
+    }
+
+    /// fetch the link with ifindex `index`and return the carrier as a bool
+    async fn get_carrier(handle: &rtnetlink::Handle, index: u32) -> bool {
+        let link = handle
+            .link()
+            .get()
+            .match_index(index)
+            .execute()
+            .next()
+            .await
+            .unwrap()
+            .unwrap();
+
+        let carrier = link
+            .attributes
+            .into_iter()
+            .find_map(|attr| match attr {
+                LinkAttribute::Carrier(carrier) => Some(carrier),
+                _ => None,
+            })
+            .unwrap();
+
+        carrier != 0
+    }
+
+    #[n_vm::test]
+    fn test_set_carrier() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            // taps must be open in a tokio runtime
+            let tap = TapDevice::open(&InterfaceName::try_from("tap0").unwrap()).unwrap();
+            let index = tap.index().to_u32();
+
+            let (connection, handle, _) = rtnetlink::new_connection().unwrap();
+            tokio::spawn(connection);
+
+            // need to bring tap admin up first
+            handle
+                .link()
+                .set(LinkUnspec::new_with_index(index).up().build())
+                .execute()
+                .await
+                .unwrap();
+
+            // an open tap has carrier up unless brought down
+            assert!(get_carrier(&handle, index).await);
+
+            // set carrier down
+            tap.set_carrier(false).unwrap();
+            assert!(!get_carrier(&handle, index).await);
+
+            // set carrier up
+            tap.set_carrier(true).unwrap();
+            assert!(get_carrier(&handle, index).await);
         });
     }
 }
