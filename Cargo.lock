@@ -2130,6 +2130,7 @@ dependencies = [
 name = "dataplane-pipeline"
 version = "0.38.2"
 dependencies = [
+ "dataplane-clock",
  "dataplane-concurrency",
  "dataplane-id",
  "dataplane-net",
