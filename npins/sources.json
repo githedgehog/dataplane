@@ -257,16 +257,16 @@
     },
     "flatcar-pxe-image": {
       "type": "Url",
-      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.2/flatcar_production_pxe_image.cpio.gz",
+      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.3/flatcar_production_pxe_image.cpio.gz",
       "unpack": false,
-      "hash": "sha256-fTLts3qLlotxQeNwmprskgtWYb5flKoYS2fAwlvUzNA=",
+      "hash": "sha256-C28w56Ngwz7jto9uMoPYnZqMiHuxUQc58+FquadQe7s=",
       "frozen": true
     },
     "flatcar-vmlinuz": {
       "type": "Url",
-      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.2/flatcar_production_pxe.vmlinuz",
+      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.3/flatcar_production_pxe.vmlinuz",
       "unpack": false,
-      "hash": "sha256-H5XomabnoKt6oqM8cLi+uw1GjHRulmJAwVBQef28RxQ=",
+      "hash": "sha256-7GmrUQmC1exhHVZ3cuRK8QfOsWF9LYqaBggXmsE7bSE=",
       "frozen": true
     },
     "frr": {
@@ -329,9 +329,9 @@
     },
     "linux-fancy": {
       "type": "Url",
-      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.58.tar.xz",
+      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.60.tar.xz",
       "unpack": true,
-      "hash": "sha256-XUcSKRXrNin7PYzOzzzWfZG7NqzOK5AHnf39T0SUsL0=",
+      "hash": "sha256-i0QFPjStbQOlfqW57Eq9ckYwo+s7mUOKr6AODmMW+Vo=",
       "frozen": true
     },
     "mermaid": {
@@ -354,8 +354,8 @@
       "type": "Channel",
       "name": "nixpkgs-unstable",
       "artifact": "nixexprs.tar.xz",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1100667.674a2028661e/nixexprs.tar.xz",
-      "hash": "sha256-GNxqGToDYDZH2M4YeIj5nLPEyljtn3hEdIFY1/JNm0M="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1106208.d357a2b54f0b/nixexprs.tar.xz",
+      "hash": "sha256-gh035dq/sQ/OwPltGyvjNl1zNWZgVnng2zug7xKqSu8="
     },
     "opengrep": {
       "type": "GitRelease",
@@ -368,10 +368,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v1.32.0",
-      "revision": "60ed3b3b0f2a0afada4777c459d7e80b3d304bd3",
-      "url": "https://api.github.com/repos/opengrep/opengrep/tarball/refs/tags/v1.32.0",
-      "hash": "sha256-J8gn5uXygigW6/3PKPKDSJ5zCNQj3q/kAj8WKQpEZm0="
+      "version": "v1.33.1",
+      "revision": "092c80faa0817840228349f93eff12a50fb9cf6b",
+      "url": "https://api.github.com/repos/opengrep/opengrep/tarball/refs/tags/v1.33.1",
+      "hash": "sha256-jK04nbkXRbi76SqgcXect0UP2tckI9u0GgkgxqTl1Tk="
     },
     "perftest": {
       "type": "Git",
@@ -424,29 +424,29 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "fad80eb74614f7dc37c1c83df8caae64361eda22",
-      "url": "https://github.com/oxalica/rust-overlay/archive/fad80eb74614f7dc37c1c83df8caae64361eda22.tar.gz",
-      "hash": "sha256-wjoZGhxH/Yr+OsFRpNyV9DpMGQIdNEjjAOinfzQvadk="
+      "revision": "c85ccd343087c57da6021cafa1647142ad03e32e",
+      "url": "https://github.com/oxalica/rust-overlay/archive/c85ccd343087c57da6021cafa1647142ad03e32e.tar.gz",
+      "hash": "sha256-vHPjEGxtV+StSLW9DJpa3c3gt0UD0s1q4nC98AZ0N0c="
     },
     "ubuntu-kernel-buildinfo": {
       "type": "Url",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-buildinfo-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-buildinfo-7.0.0-42-generic_7.0.0-42.42_amd64.deb",
       "unpack": false,
-      "hash": "sha256-z2QPQkc9YQlpzHxMpkkfJ34erEfaBqTDRxZXKCgP5L0=",
+      "hash": "sha256-ZWizcqCM6QRbQj1/QzY8G5DCdRnaFbWVobxvRIvVwlM=",
       "frozen": true
     },
     "ubuntu-kernel-image": {
       "type": "Url",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-image-unsigned-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-image-unsigned-7.0.0-42-generic_7.0.0-42.42_amd64.deb",
       "unpack": false,
-      "hash": "sha256-RnniLRnUgFk7W3TRD4h3h+n6x8OdyNpyMxXV1LDmU6E=",
+      "hash": "sha256-tRArmuxSZ9vJnL9KePyBsDnUFJmVslIGcGSJsJNFMrA=",
       "frozen": true
     },
     "ubuntu-kernel-modules": {
       "type": "Url",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-modules-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-modules-7.0.0-42-generic_7.0.0-42.42_amd64.deb",
       "unpack": false,
-      "hash": "sha256-rS/tacRDD+otZ/I71nKk5odzBJz5mEpjiU8JOHnsKuA=",
+      "hash": "sha256-rxc6uKmhjsb09FCWPeTHPM70xhvVwasg96CFt8oVydY=",
       "frozen": true
     }
   },
