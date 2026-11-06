@@ -115,12 +115,12 @@ impl ArpNd {
     ) {
         let Some(target) = Self::get_packet_target(&packet) else {
             warn!("Could not determine the target for packet");
-            backlog.reject_packet(packet, DoneReason::InternalDrop); // FIXME
+            backlog.reject_packet(packet, DoneReason::ArpDaemonDrop);
             return;
         };
         if !enabled_ifs.contains(&target.ifindex) {
             debug!("Target {target} is not over an enabled interface");
-            backlog.reject_packet(packet, DoneReason::InternalDrop); // FIXME
+            backlog.reject_packet(packet, DoneReason::ArpDaemonDrop);
             return;
         }
         backlog.add(target, packet);
