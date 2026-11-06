@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::num::NonZero;
+use std::os::fd::AsRawFd;
 use tokio::io::unix::AsyncFd;
 use tracing::{info, warn};
 
@@ -79,7 +80,7 @@ mod helper {
     use super::TapDevice;
     use net::interface::{InterfaceIndex, InterfaceName};
     use nix::libc;
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsRawFd, RawFd};
     use std::os::unix::fs::OpenOptionsExt;
     use std::pin::Pin;
     use tokio::io::unix::AsyncFd;
@@ -91,6 +92,21 @@ mod helper {
         libc::TUNSETIFF,
         InterfaceRequestInner
     );
+
+    nix::ioctl_write_ptr_bad!(
+        /// Set the carrier flag of a tap device
+        set_tap_carrier,
+        libc::TUNSETCARRIER,
+        libc::c_int
+    );
+
+    /// Set the carrier of the tap device on `fd` to on/off
+    pub(super) fn set_carrier(fd: RawFd, on: bool) -> Result<(), std::io::Error> {
+        let value = libc::c_int::from(on);
+        #[allow(unsafe_code)]
+        unsafe { set_tap_carrier(fd, &raw const value) }?;
+        Ok(())
+    }
 
     impl InterfaceRequestInner {
         /// Create a new `InterfaceRequestInner`.
@@ -291,6 +307,17 @@ impl TapDevice {
     #[must_use]
     pub fn index(&self) -> InterfaceIndex {
         self.index
+    }
+
+    /// Set the carrier of a tap device. While open, a tap device has carrier.
+    /// We use this so that the carrier of the tap device mimics the state of the
+    /// port that it represents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `io::Error` if the kernel refuses the change.
+    pub fn set_carrier(&self, on: bool) -> Result<(), std::io::Error> {
+        helper::set_carrier(self.fd.as_raw_fd(), on)
     }
 
     /// Wait for one frame to arrive on the tap and copy it into `buf`.
