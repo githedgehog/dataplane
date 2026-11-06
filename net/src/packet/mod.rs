@@ -731,7 +731,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             Ok(()) => Ok(self.payload),
             Err(e) => {
                 match e {
-                    SerializeError::NoHeadRoom => self.done_force(DoneReason::NoHeadRoom),
+                    SerializeError::NoHeadRoom => self.done_force(DoneReason::NoBuffRoomXmit),
                     SerializeError::DeparseError(_) => self.done_force(DoneReason::DeparseError),
                 }
                 Err(e)

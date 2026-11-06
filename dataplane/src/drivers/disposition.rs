@@ -68,7 +68,8 @@ impl From<DoneReason> for Disposition {
             | DoneReason::IcmpErrorIncomplete
             | DoneReason::InternalDrop
             | DoneReason::DeparseError
-            | DoneReason::NoHeadRoom => Disposition::Drop,
+            | DoneReason::NoBuffRoom
+            | DoneReason::NoBuffRoomXmit => Disposition::Drop,
         }
     }
 }
@@ -150,7 +151,8 @@ mod test {
             (DoneReason::IcmpErrorIncomplete, Disposition::Drop),
             (DoneReason::InternalDrop, Disposition::Drop),
             (DoneReason::DeparseError, Disposition::Drop),
-            (DoneReason::NoHeadRoom, Disposition::Drop),
+            (DoneReason::NoBuffRoom, Disposition::Drop),
+            (DoneReason::NoBuffRoomXmit, Disposition::Drop),
         ];
 
         for (verdict, expected) in table {

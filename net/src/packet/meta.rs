@@ -120,9 +120,10 @@ pub enum DoneReason {
     IcmpErrorIncomplete,  /* the packet is an ICMP error but it does not contain data it should */
     InternalDrop,         /* the packet was dropped internally due to a queue being full */
     Local,                /* the packet has to be locally consumed by kernel */
-    Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
-    DeparseError, /* the packet was processed and delivered to driver, but not be sent due to serialization issue */
-    NoHeadRoom, /* the packet was processed and delivered to driver, but not serialized due lack of headroom */
+    Delivered,            /* the packet buffer was delivered by the pipeline for xmit */
+    DeparseError, /* the packet was delivered to driver, but not sent due to serialization issue */
+    NoBuffRoomXmit, /* the packet was delivered to driver, but not serialized due to lack of buffer headroom */
+    NoBuffRoom, /* the packet had to be dropped due to lack of buffer room (e.g. when rebuffering) */
 }
 
 bitflags! {
