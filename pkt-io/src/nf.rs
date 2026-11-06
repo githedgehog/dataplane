@@ -204,7 +204,7 @@ where
                 Ok(packet) => burst.push(packet),
                 Err(mut packet) => {
                     debug!("{}: Unable to rebuffer packet to inject", self.name);
-                    packet.done(DoneReason::InternalFailure);
+                    packet.done(DoneReason::NoBuffRoom);
                     burst.push(packet);
                 }
             }
