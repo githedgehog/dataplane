@@ -410,10 +410,13 @@ impl CpBridge {
             bridge_ports.push(BridgePort {
                 name: name.clone(),
                 inject: inject_tx.clone(),
-                link: link_rx,
+                link: link_rx.clone(),
                 identity: identity_rx,
                 counters: counters.clone(),
             });
+
+            // start task to sync tap carrier to the port's link state
+            handle.spawn(sync_tap(tap.clone(), link_rx, cancel.clone()));
 
             handle.spawn(pump(
                 tap,
@@ -552,6 +555,30 @@ impl TapCounters {
             inject_drops: c.inject_drops.load(Ordering::Relaxed),
             lldp_drops: c.heard_drops.load(Ordering::Relaxed),
             read_errors: c.read_errors.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Set the carrier of a tap equal to the port.
+/// Otherwise a tap has always carrier since the bridge keeps its fd open.
+async fn sync_tap(tap: Arc<TapDevice>, mut link: watch::Receiver<Link>, cancel: CancellationToken) {
+    loop {
+        let up = *link.borrow_and_update() == Link::Up;
+        let carrier = if up { "on" } else { "off" };
+
+        // set the carrier of the tap
+        match tap.set_carrier(up) {
+            Ok(()) => debug!("tap {} carrier is {carrier}", tap.name()),
+            Err(e) => warn!(
+                "could not update the carrier of tap {} {carrier}: {e}",
+                tap.name()
+            ),
+        }
+        tokio::select! {
+            changed = link.changed() => if changed.is_err() {
+                return;
+            },
+            () = cancel.cancelled() => return,
         }
     }
 }
@@ -938,6 +965,12 @@ mod test {
                 datapath_index: None,
                 pci_address: None,
             });
+
+            // report link as up
+            let link = ends
+                .take_link(&name)
+                .expect("the bridge did not create link state for PORT_NAME");
+            link.send_replace(lldp::Link::Up);
 
             let (connection, netlink, _) = rtnetlink::new_connection().unwrap();
             tokio::spawn(connection);
