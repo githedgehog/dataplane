@@ -57,8 +57,10 @@ impl Display for DoneReason {
             Self::Local => f.pad("Locally delivered"),
             Self::Delivered => f.pad("Delivered"),
 
+            Self::NoBuffRoom => f.pad("Not enough buffer room (rebuffering)"),
+
             // these occur post delivery, prior to xmit
-            Self::NoHeadRoom => f.pad("No headroom"),
+            Self::NoBuffRoomXmit => f.pad("No headroom to serialize packet on xmit"),
             Self::DeparseError => f.pad("Deparse error"),
         }
     }
