@@ -14,7 +14,7 @@ use rtnetlink::MulticastGroup;
 use rtnetlink::packet_core::{NetlinkMessage, NetlinkPayload};
 use rtnetlink::packet_route::RouteNetlinkMessage;
 use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags, State};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 #[allow(unused)]
@@ -155,16 +155,25 @@ impl std::fmt::Display for EthEvent {
 pub struct InterfaceMonitor {
     tx: broadcast::Sender<EthEvent>,
     ct: CancellationToken,
+    // report readiness. Currently only needed for tests
+    ready: watch::Sender<bool>,
 }
 impl InterfaceMonitor {
     #[must_use]
     pub fn new(ct: CancellationToken) -> Self {
         let (tx, _) = broadcast::channel::<EthEvent>(100);
-        Self { tx, ct }
+        let (ready, _) = watch::channel(false);
+        Self { tx, ct, ready }
     }
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<EthEvent> {
         self.tx.subscribe()
+    }
+
+    /// wait until the monitor reports it is ready. This is only used in tests
+    #[cfg(test)]
+    pub async fn wait_ready(&self) {
+        let _ = self.ready.subscribe().wait_for(|is_ready| *is_ready).await;
     }
 
     /// Convert a netlink message to an `EthEvent` if it is a `NewLink` message
@@ -247,6 +256,7 @@ impl InterfaceMonitor {
             .inspect_err(|e| error!("Failed to open netlink connection: {e}"))?;
 
         tokio::spawn(conn);
+        monitor.ready.send_replace(true);
 
         let tx = monitor.tx.clone();
         let ct = monitor.ct.clone();
@@ -279,56 +289,159 @@ impl InterfaceMonitor {
 #[cfg(test)]
 mod test {
     use super::InterfaceMonitor;
-    use caps::Capability;
+    use crate::interface::TapDevice;
     use concurrency::sync::Arc;
-    use fixin::wrap;
     use net::interface::InterfaceName;
-    use rtnetlink::{LinkDummy, LinkMessageBuilder, new_connection};
-    use test_utils::with_caps;
-    use tokio::time::Duration;
+    use rtnetlink::Handle;
+    use rtnetlink::{LinkUnspec, new_connection};
+    use tokio::time::{Duration, timeout};
     use tokio_util::sync::CancellationToken;
-    use tracing::debug;
     use tracing_test::traced_test;
 
-    async fn create_dummy(name: &str) {
-        let (connection, handle, _) = new_connection().unwrap();
-        tokio::spawn(connection);
-        let msg = LinkMessageBuilder::<LinkDummy>::new(name).build();
-        handle.link().add(msg).execute().await.unwrap();
+    async fn bring_up_tap(nl_handle: &Handle, tap: &TapDevice) {
+        println!("Bringing tap {}, index {} UP...", tap.name(), tap.index());
+        nl_handle
+            .link()
+            .set(
+                LinkUnspec::new_with_index(tap.index().to_u32())
+                    .up()
+                    .build(),
+            )
+            .execute()
+            .await
+            .expect("Failed to send netlink request");
     }
 
+    async fn bring_down_tap(nl_handle: &Handle, tap: &TapDevice) {
+        println!("Bringing tap {}, index {} DOWN...", tap.name(), tap.index());
+        nl_handle
+            .link()
+            .set(
+                LinkUnspec::new_with_index(tap.index().to_u32())
+                    .down()
+                    .build(),
+            )
+            .execute()
+            .await
+            .expect("Failed to send netlink request");
+    }
+
+    /// Test that a subscriber hears the events about an interface and that the monitor shutdowns on cancel
     #[n_vm::test]
-    #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
-    #[cfg_attr(not(emulated), traced_test)]
-    #[ignore = "disabled until nv_m support is re-enabled"]
+    #[traced_test]
     async fn test_interface_monitor() {
-        const INTERFACE: &str = "test-dummy";
-        let _test_ifname = InterfaceName::try_from(INTERFACE).unwrap();
+        let name = InterfaceName::try_from("test-tap-1").unwrap();
         let ct = CancellationToken::new();
-        let ifmonitor = Arc::new(InterfaceMonitor::new(ct));
-        let mut subsc1 = ifmonitor.subscribe();
-        let mut subsc2 = ifmonitor.subscribe();
-        tokio::spawn(InterfaceMonitor::run(ifmonitor.clone()));
+        let ifmonitor = Arc::new(InterfaceMonitor::new(ct.clone()));
+        let mut events = ifmonitor.subscribe();
+        let monitor = tokio::spawn(InterfaceMonitor::run(ifmonitor.clone()));
+        timeout(Duration::from_secs(5), ifmonitor.wait_ready())
+            .await
+            .expect("monitor not ready in 5 secs");
 
-        create_dummy(INTERFACE).await;
+        let (connection, handle, _) = new_connection().unwrap();
+        tokio::spawn(connection);
 
-        // FIXME: Interface manager no longer filters by name. So here we should loop until
-        // we hear something for interface INTERFACE (or timeout) since we could otherwise
-        // get events for another interface. Fix when this test is not ignored
-        let j1 = tokio::spawn(async move {
-            let event = subsc1.recv().await.unwrap();
-            println!("listener1: {event}");
-        });
-        let j2 = tokio::spawn(async move {
-            let event = subsc2.recv().await.unwrap();
-            println!("listener2: {event}");
-        });
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        debug!("Will now cancel the interface monitor");
-        ifmonitor.ct.cancel();
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        assert!(ifmonitor.ct.is_cancelled());
-        let _ = j1.await;
-        let _ = j2.await;
+        // create tap (generates event)
+        let tap = TapDevice::open(&name).unwrap();
+
+        // listen for events
+        timeout(Duration::from_secs(5), async {
+            let mut events_seen = 0;
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.name() == Some(&name) {
+                    assert_eq!(event.ifindex(), tap.index());
+                    match events_seen {
+                        0 => {
+                            assert!(!event.ifup());
+                            bring_up_tap(&handle, &tap).await;
+                        }
+                        1 => {
+                            assert!(event.ifup());
+                            bring_down_tap(&handle, &tap).await;
+                        }
+                        2 => {
+                            assert!(!event.ifup());
+                            return;
+                        }
+                        _ => {}
+                    }
+                    events_seen += 1;
+                }
+            }
+        })
+        .await
+        .expect("no event foir the tap was heard in 5 secs");
+
+        ct.cancel();
+
+        // check that the monitor task ended successfully after cancellation
+        timeout(Duration::from_secs(5), monitor)
+            .await
+            .expect("monitor did not stop after cancellation")
+            .expect("monitor task failed")
+            .expect("monitor returned an error");
+    }
+
+    /// Test that changing the carrier in a tap produces netlink events that are propagated
+    #[n_vm::test]
+    async fn test_tap_carrier_is_seen_in_events() {
+        let name = InterfaceName::try_from("test-tap-2").unwrap();
+        let ct = CancellationToken::new();
+        let ifmonitor = Arc::new(InterfaceMonitor::new(ct.clone()));
+        let mut events = ifmonitor.subscribe();
+        let _monitor = tokio::spawn(InterfaceMonitor::run(ifmonitor.clone()));
+        timeout(Duration::from_secs(5), ifmonitor.wait_ready())
+            .await
+            .expect("monitor not ready in 5 secs");
+
+        let (connection, handle, _) = new_connection().unwrap();
+        tokio::spawn(connection);
+
+        // create tap (generates event), bring it up and then down
+        let tap = TapDevice::open(&name).unwrap();
+
+        // listen for events
+        timeout(Duration::from_secs(5), async {
+            let mut events_seen = 0;
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.name() == Some(&name) {
+                    assert_eq!(event.ifindex(), tap.index());
+                    match events_seen {
+                        0 => {
+                            assert!(!event.ifup());
+                            bring_up_tap(&handle, &tap).await;
+                        }
+                        1 => {
+                            assert!(event.ifup());
+                            assert!(event.iflowerup());
+                            assert_eq!(event.carrier(), Some(true));
+                            tap.set_carrier(false).expect("Failed to set carrier");
+                        }
+                        2 => {
+                            assert!(event.ifup());
+                            assert!(!event.iflowerup());
+                            assert_eq!(event.carrier(), Some(false));
+                            tap.set_carrier(true).expect("Failed to set carrier");
+                        }
+                        3 => {
+                            // all is up as the result of set carrier in event 2
+                            assert!(event.ifup());
+                            assert!(event.iflowerup());
+                            assert_eq!(event.carrier(), Some(true));
+                            return;
+                        }
+                        _ => {}
+                    }
+                    events_seen += 1;
+                }
+            }
+        })
+        .await
+        .expect("no event foir the tap was heard in 5 secs");
+
+        ct.cancel();
     }
 }
