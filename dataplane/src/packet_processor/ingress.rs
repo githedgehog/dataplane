@@ -5,7 +5,7 @@
 
 #![allow(clippy::collapsible_if)]
 #[allow(unused)]
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use net::buffer::PacketBufferMut;
 use net::eth::ethtype::EthType;
@@ -14,7 +14,7 @@ use net::headers::{TryEth, TryIp, TryIpv4, TryIpv6};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
-use routing::{Attachment, IfState, IfTableReader, IfType, Interface};
+use routing::{Attachment, IfState, IfTable, IfTableReader, IfType, Interface};
 
 use tracectl::trace_target;
 trace_target!("ingress", LevelFilter::WARN, &["pipeline"]);
@@ -217,31 +217,47 @@ impl Ingress {
             }
         }
     }
+
+    #[tracing::instrument(level = "trace")]
+    fn ingress_process<Buf: PacketBufferMut>(&self, iftable: &IfTable, packet: &mut Packet<Buf>) {
+        let nfi = self.name();
+        let Some(iif) = packet.meta().iif else {
+            warn!("{nfi}: no iif set in packet metadata (driver bug)");
+            packet.done(DoneReason::InternalFailure);
+            return;
+        };
+        match iftable.get_interface(iif) {
+            None => {
+                debug!("{nfi}: unknown/unconfigured incoming interface {iif}");
+                packet.done(DoneReason::InterfaceUnknown);
+            }
+            Some(interface) => {
+                self.interface_ingress(interface, packet);
+            }
+        }
+    }
+}
+
+fn drop_all<Buf: PacketBufferMut>(burst: &mut Vec<Packet<Buf>>) {
+    for packet in burst {
+        if !packet.is_done() {
+            packet.done(DoneReason::InternalFailure);
+        }
+    }
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
     #[tracing::instrument(level = "trace", skip(self, burst))]
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        let Some(iftable) = self.iftr.enter() else {
+            error!("{}: failed to read interface table", self.name());
+            drop_all(burst);
+            return;
+        };
+
         for packet in burst.iter_mut() {
-            let nfi = self.name();
             if !packet.is_done() {
-                if let Some(iftable) = self.iftr.enter() {
-                    match packet.meta().iif {
-                        None => {
-                            warn!("no iif set in packet metadata (driver bug)");
-                            packet.done(DoneReason::InternalFailure);
-                        }
-                        Some(iif) => match iftable.get_interface(iif) {
-                            None => {
-                                debug!("{nfi}: unknown/unconfigured incoming interface {iif}");
-                                packet.done(DoneReason::InterfaceUnknown);
-                            }
-                            Some(interface) => {
-                                self.interface_ingress(interface, packet);
-                            }
-                        },
-                    }
-                }
+                self.ingress_process(&iftable, packet);
             }
         }
     }
