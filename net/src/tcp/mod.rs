@@ -18,6 +18,7 @@ pub use port::*;
 pub use truncated::*;
 
 use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
+use arrayvec::ArrayVec;
 use etherparse::TcpHeader;
 use etherparse::err::tcp::{HeaderError, HeaderSliceError};
 use std::num::NonZero;
@@ -264,6 +265,37 @@ impl Tcp {
         Some(&self.0.options.as_slice()[..self.0.options.len()])
     }
 
+    /// The Maximum Segment Size option of the header, if it has a valid one.
+    #[must_use]
+    pub fn mss(&self) -> Option<TcpMss> {
+        let mut options = TcpOptionIter {
+            inner: self.0.options_iterator(),
+        };
+        options.find_map(|option| match option {
+            Ok(TcpOption::Mss(mss)) => Some(mss),
+            _ => None,
+        })
+    }
+
+    /// Replace the options of the header. The header length changes with them, but not the length
+    /// in the IP header, which is up to the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TcpOptionsLenError`] if the options do not fit in a TCP header.
+    pub fn set_options(&mut self, options: &[TcpOption]) -> Result<&mut Self, TcpOptionsLenError> {
+        // Each option takes at least one byte
+        if options.len() > TcpOptions::MAX_LEN {
+            return Err(TcpOptionsLenError { len: options.len() });
+        }
+        let elements: ArrayVec<_, { TcpOptions::MAX_LEN }> =
+            options.iter().map(TcpOption::to_etherparse).collect();
+        self.0.set_options(&elements).map_err(
+            |etherparse::TcpOptionWriteError::NotEnoughSpace(len)| TcpOptionsLenError { len },
+        )?;
+        Ok(self)
+    }
+
     /// Set the syn flag
     pub fn set_syn(&mut self, syn: bool) -> &mut Self {
         self.0.syn = syn;
@@ -384,6 +416,14 @@ impl Tcp {
     }
 }
 
+/// The options given to [`Tcp::set_options`] do not fit in a TCP header.
+#[derive(Debug, thiserror::Error, PartialEq, Eq, Clone, Copy)]
+#[error("invalid TCP options length {len}: must be at most 40 bytes")]
+pub struct TcpOptionsLenError {
+    // The length of the options, in bytes, or a lower bound if they are more than 40
+    len: usize,
+}
+
 /// Errors which can occur when attempting to parse arbitrary bytes into a [`Tcp`] header.
 #[derive(Debug, thiserror::Error)]
 pub enum TcpParseError {
@@ -501,7 +541,7 @@ mod contract {
 mod test {
     use crate::checksum::Checksum;
     use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};
-    use crate::tcp::{Tcp, TcpFlags};
+    use crate::tcp::{Tcp, TcpFlags, TcpMss, TcpOption, TcpOptionsLenError, TcpPort};
 
     const MIN_LEN: usize = Tcp::MIN_LENGTH.get() as usize;
 
@@ -544,6 +584,49 @@ mod test {
             assert_eq!(tcp, &parsed);
             assert_eq!(consumed, consumed2);
         });
+    }
+
+    // Options set on a header read back after a round trip, and the MSS is the one we set.
+    #[test]
+    fn set_options_round_trip() {
+        bolero::check!()
+            .with_type()
+            .for_each(|(tcp, mss): &(Tcp, TcpMss)| {
+                let mut tcp = tcp.clone();
+                let options = [
+                    TcpOption::Mss(*mss),
+                    TcpOption::SackPermitted,
+                    TcpOption::Noop,
+                    TcpOption::WindowScale(7),
+                ];
+                tcp.set_options(&options).unwrap();
+                assert_eq!(tcp.mss(), Some(*mss));
+                assert_eq!(tcp.header_len().get(), MIN_LEN + 12);
+
+                let mut buffer = [0u8; Tcp::MAX_LENGTH];
+                let consumed = tcp.deparse(&mut buffer).unwrap();
+                let (parsed, _) =
+                    Tcp::parse(&buffer[..consumed.into_non_zero_usize().get()]).unwrap();
+                assert_eq!(parsed, tcp);
+
+                tcp.set_options(&[]).unwrap();
+                assert_eq!(tcp.mss(), None);
+                assert_eq!(tcp.options(), None);
+                assert_eq!(tcp.header_len().get(), MIN_LEN);
+            });
+    }
+
+    #[test]
+    fn set_options_too_long() {
+        let mut tcp = Tcp::new(
+            TcpPort::new_checked(1).unwrap(),
+            TcpPort::new_checked(2).unwrap(),
+        );
+        let options = vec![TcpOption::Timestamp(1, 2); 5];
+        assert_eq!(
+            tcp.set_options(&options).unwrap_err(),
+            TcpOptionsLenError { len: 50 }
+        );
     }
 
     #[test]
