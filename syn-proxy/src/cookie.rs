@@ -126,12 +126,6 @@ impl CookieKey {
     }
 }
 
-impl Default for CookieKey {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::{CookieKey, SLOT};

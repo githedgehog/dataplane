@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 clock = { workspace = true }
 concurrency = { workspace = true }
+linkme = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 tracectl = { workspace = true }
@@ -15,4 +16,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, features = ["std"] }
+flow-entry = { workspace = true }
+nat = { workspace = true }
 net = { workspace = true, features = ["bolero", "builder", "test_buffer"] }
+tokio = { workspace = true, features = ["macros", "rt"] }

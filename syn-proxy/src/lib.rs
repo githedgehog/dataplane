@@ -19,6 +19,11 @@
 //! does the gateway open the connection to the server and create flows for it.
 
 mod control;
-pub mod cookie;
+mod cookie;
+mod stage;
 
-pub use control::{Counters, GRACE_PERIOD, SynProxyControl, SynProxyMode};
+#[cfg(test)]
+mod tests;
+
+pub use control::{Counters, SynProxyControl, SynProxyMode};
+pub use stage::{SynCookieChecker, SynProxy};

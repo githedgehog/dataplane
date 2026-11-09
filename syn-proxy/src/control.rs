@@ -128,7 +128,7 @@ impl SynProxyControl {
 
     /// The key for the cookies.
     #[must_use]
-    pub fn key(&self) -> &CookieKey {
+    pub(crate) fn key(&self) -> &CookieKey {
         &self.0.key
     }
 

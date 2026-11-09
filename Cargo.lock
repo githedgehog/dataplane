@@ -2261,9 +2261,13 @@ dependencies = [
  "bolero",
  "dataplane-clock",
  "dataplane-concurrency",
+ "dataplane-flow-entry",
+ "dataplane-nat",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-tracectl",
+ "linkme",
+ "tokio",
  "tracing",
 ]
 
