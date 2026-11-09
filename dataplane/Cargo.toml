@@ -59,6 +59,7 @@ routing = { workspace = true }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["derive"] }
 stats = { workspace = true }
+syn-proxy = { workspace = true }
 transceiver = { workspace = true, features = ["ethtool"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
