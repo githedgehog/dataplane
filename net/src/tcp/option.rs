@@ -82,7 +82,6 @@ impl TcpOption {
     }
 
     /// Convert to an etherparse option element.
-    #[cfg(any(test, feature = "bolero"))]
     pub(in crate::tcp) fn to_etherparse(&self) -> etherparse::TcpOptionElement {
         use etherparse::TcpOptionElement;
         match self {
