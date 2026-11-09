@@ -19,7 +19,11 @@ fn fixup_signed_types(raw: String) -> String {
 /// json correctly.
 fn fixup_types(raw: String) -> String {
     let raw = fixup_signed_types(raw);
-    raw.replace("asn: Option<i32>", "asn: Option<u32>")
+    // ASNs are uint32 in Go, but the CRD declares them as int64 so that the schema covers the
+    // full uint32 range.
+    raw.replace("asn: Option<u64>", "asn: Option<u32>")
+        .replace("local_as: Option<u64>", "local_as: Option<u32>")
+        .replace("peer_as: Option<u64>", "peer_as: Option<u32>")
         .replace("workers: Option<u64>", "workers: Option<u8>") // Gateway Go code says this is a u8
         .replace(
             "idle_timeout: Option<String>",
