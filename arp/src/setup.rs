@@ -3,7 +3,6 @@
 
 //! Setup utils for ARP/ND support
 
-use crate::ArpNdCtl;
 use crate::ArpNdError;
 use crate::cache::{NeighCacheReaderFactory, NeighCacheWriter};
 use crate::daemon::start_arp_nd;
@@ -99,7 +98,7 @@ impl ArpSetup {
         self,
         rt_handle: &tokio::runtime::Handle,
         subsystem: &Subsystem,
-    ) -> Result<ArpNdCtl, ArpNdError> {
+    ) -> Result<(), ArpNdError> {
         start_arp_nd(rt_handle, subsystem, self.inq, self.outq, self.cachew)
     }
 }
@@ -143,7 +142,7 @@ mod tests {
     async fn test_arp_nd_setup_and_teardown_async() {
         let arpnd = ArpSetup::new();
         let subs = test_subsystem();
-        let _ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
+        arpnd.launch(&Handle::current(), &subs).unwrap();
         subs.drain(Duration::from_secs(5))
             .await
             .expect("the ARP/ND daemon did not stop");
@@ -194,9 +193,9 @@ mod tests {
         let resolved_mac = Mac([0x02, 0xca, 0xfe, 0xba, 0xbe, 0x01]);
 
         info!("Creating taps...");
-        let (tap0_name, tap0_ifindex, _tap0) = create_tap("tap0").await;
-        let (tap1_name, tap1_ifindex, _tap1) = create_tap("tap1").await;
-        let (tap2_name, tap2_ifindex, _tap2) = create_tap("tap2").await;
+        let (_tap0_name, tap0_ifindex, _tap0) = create_tap("tap0").await;
+        let (_tap1_name, tap1_ifindex, _tap1) = create_tap("tap1").await;
+        let (_tap2_name, tap2_ifindex, _tap2) = create_tap("tap2").await;
 
         // build Arp/nd task and NF
         let arpnd = ArpSetup::new();
@@ -205,12 +204,7 @@ mod tests {
         // start ARP/ND daemon/task
         let rfactory = arpnd.neigh_cache_factory();
         let subs = test_subsystem();
-        let ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
-
-        // enable ARP/ND over the taps
-        ctl.enable(&[tap0_name, tap1_name, tap2_name])
-            .await
-            .unwrap();
+        arpnd.launch(&Handle::current(), &subs).unwrap();
 
         // input packets: only the packet to TARGET_IP over tap0 will be resolved
         let mut packets = vec![
@@ -282,31 +276,25 @@ mod tests {
             .expect("the ARP/ND daemon did not stop");
     }
 
-    /// Test that the daemon has the kernel confirm the neighbors that become stale over the
-    /// enabled interfaces, and only those. The stale mac is used meanwhile. Since nobody
-    /// answers the confirmation, the neighbor fails and its mac is no longer used.
+    /// Test that the daemon has the kernel confirm the neighbors that become stale. The stale
+    /// mac is used meanwhile. Since nobody answers the confirmation, the neighbor fails and its
+    /// mac is no longer used.
     #[n_vm::test]
     #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
     #[cfg_attr(not(emulated), traced_test)]
     async fn test_arp_nd_confirm_stale() {
         let mac = Mac([0x02, 0xca, 0xfe, 0xba, 0xbe, 0x01]);
-        let (tap0_name, tap0_ifindex, _tap0) = create_tap("tap0").await;
-        let (_tap1_name, tap1_ifindex, _tap1) = create_tap("tap1").await;
+        let (_tap0_name, tap0_ifindex, _tap0) = create_tap("tap0").await;
         let ip0 = IpAddr::from_str("10.0.0.2").unwrap();
-        let ip1 = IpAddr::from_str("10.0.1.2").unwrap();
 
-        // start the daemon, with ARP/ND enabled over tap0 only
+        // start the daemon
         let arpnd = ArpSetup::new();
         let rfactory = arpnd.neigh_cache_factory();
         let subs = test_subsystem();
-        let ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
-        ctl.enable(&[tap0_name]).await.unwrap();
+        arpnd.launch(&Handle::current(), &subs).unwrap();
 
-        // neighbors become stale over both taps
+        // the neighbor becomes stale
         set_neigh(tap0_ifindex.to_u32(), ip0, Some(mac), NeighbourState::Stale)
-            .await
-            .unwrap();
-        set_neigh(tap1_ifindex.to_u32(), ip1, Some(mac), NeighbourState::Stale)
             .await
             .unwrap();
 
@@ -323,12 +311,6 @@ mod tests {
         assert_eq!(
             cacher.get_mac(ip0, tap0_ifindex).map(|m| m.inner()),
             Some(mac)
-        );
-
-        // the neighbor over tap1 (not enabled) is left alone
-        assert_eq!(
-            get_neigh_state(tap1_ifindex.to_u32(), ip1).await,
-            Some(NeighbourState::Stale)
         );
 
         // nobody answers the probes: the neighbor fails, which the cache mirrors. This takes
@@ -362,7 +344,7 @@ mod tests {
         const TARGET_IP: &str = "10.0.0.2";
         let target_ip = IpAddr::from_str(TARGET_IP).unwrap();
         let resolved_mac = Mac([0x02, 0xca, 0xfe, 0xba, 0xbe, 0x01]);
-        let (tap0_name, tap0_ifindex, _tap0) = create_tap("tap0").await;
+        let (_tap0_name, tap0_ifindex, _tap0) = create_tap("tap0").await;
 
         // the kernel has a failed entry for the target
         set_neigh(
@@ -374,12 +356,11 @@ mod tests {
         .await
         .unwrap();
 
-        // start the daemon, with ARP/ND enabled over tap0
+        // start the daemon
         let arpnd = ArpSetup::new();
         let nf: TestPktIo = arpnd.nf_factory().nf(TestBufferPool);
         let subs = test_subsystem();
-        let ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
-        ctl.enable(&[tap0_name]).await.unwrap();
+        arpnd.launch(&Handle::current(), &subs).unwrap();
 
         // punt a packet to the target to the daemon
         let worker = punt_packet(nf, packet_to_resolve(TARGET_IP, tap0_ifindex));
@@ -425,15 +406,14 @@ mod tests {
         const TARGET_IP: &str = "10.0.0.2";
         let target_ip = IpAddr::from_str(TARGET_IP).unwrap();
         let static_mac = Mac([0x02, 0xca, 0xfe, 0xba, 0xbe, 0x01]);
-        let (tap0_name, tap0_ifindex, _tap0) = create_tap("tap0").await;
+        let (_tap0_name, tap0_ifindex, _tap0) = create_tap("tap0").await;
 
-        // start the daemon, with ARP/ND enabled over tap0
+        // start the daemon
         let arpnd = ArpSetup::new();
         let nf: TestPktIo = arpnd.nf_factory().nf(TestBufferPool);
         let cacher = arpnd.neigh_cache_factory().handle();
         let subs = test_subsystem();
-        let ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
-        ctl.enable(&[tap0_name]).await.unwrap();
+        arpnd.launch(&Handle::current(), &subs).unwrap();
 
         // the kernel gets a static entry for the target, which the daemon learns
         set_neigh(
@@ -479,16 +459,15 @@ mod tests {
         let target_ip = IpAddr::from_str(SOME_IP).unwrap();
         let peer_prefix_len = 24;
 
-        let (veth_name, veth_ifindex, peer_ifindex, peer_mac) =
+        let (_veth_name, veth_ifindex, peer_ifindex, peer_mac) =
             create_veth("veth0", "veth0p").await;
 
-        // start the daemon, with ARP/ND enabled over our side of the veth
+        // start the daemon
         let arpnd = ArpSetup::new();
         let nfs = arpnd.nf_factory();
         let cacher = arpnd.neigh_cache_factory().handle();
         let subs = test_subsystem();
-        let ctl = arpnd.launch(&Handle::current(), &subs).unwrap();
-        ctl.enable(&[veth_name]).await.unwrap();
+        arpnd.launch(&Handle::current(), &subs).unwrap();
 
         println!(" === Punt packet to {SOME_IP}: it should not be resolved as peer has no address");
         let returned = punt_packet(
