@@ -347,6 +347,12 @@ fn cmd_show_capture() -> Node {
         .action(CliAction::ShowCapture)
 }
 
+fn cmd_show_syn_proxy() -> Node {
+    Node::new("syn-proxy")
+        .desc("Show whether the SYN proxy is on, and what it did")
+        .action(CliAction::ShowSynProxy)
+}
+
 fn cmd_show_driver_status() -> Node {
     let mut root = Node::new("driver");
     root += Node::new("status")
@@ -380,6 +386,7 @@ fn cmd_show() -> Node {
     root += cmd_show_transceivers();
     root += cmd_show_link();
     root += cmd_show_rate_limits();
+    root += cmd_show_syn_proxy();
     root += cmd_show_tech();
     root
 }
@@ -468,6 +475,20 @@ fn cmd_capture() -> Node {
     root
 }
 
+fn cmd_syn_proxy() -> Node {
+    let mut root = Node::new("syn-proxy");
+    root += Node::new("on")
+        .desc(
+            "Answer the SYNs of new TCP connections with SYN cookies, and only open connections \
+             to servers for clients that complete the handshake",
+        )
+        .action(CliAction::SynProxyOn);
+    root += Node::new("off")
+        .desc("Stop answering SYNs; connections set up through the SYN proxy keep working")
+        .action(CliAction::SynProxyOff);
+    root
+}
+
 pub fn gw_cmd_tree() -> Node {
     let mut root = Node::new("");
     root += cmd_local();
@@ -475,5 +496,6 @@ pub fn gw_cmd_tree() -> Node {
     root += cmd_frrmi();
     root += cmd_cpi();
     root += cmd_capture();
+    root += cmd_syn_proxy();
     root
 }

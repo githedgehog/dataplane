@@ -321,6 +321,7 @@ pub(crate) fn start_router(
         ))),
         link: Some(Box::new(crate::phy_agent::PhyCli(phy_read))),
         rate_limits: Some(Box::new(rate_limits.reader())),
+        syn_proxy: Some(syn_proxy.clone()),
     };
 
     // create router
