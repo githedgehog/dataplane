@@ -1375,6 +1375,7 @@ dependencies = [
  "dataplane-rate-limit",
  "dataplane-routing",
  "dataplane-stats",
+ "dataplane-syn-proxy",
  "dataplane-test-utils",
  "dataplane-tracectl",
  "dataplane-traffic-control",
