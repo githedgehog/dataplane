@@ -121,12 +121,12 @@ impl NeighCacheReader {
 
     /// Build a list of `Targets` for stale entries. Only to be used by the daemon, which owns
     /// the writer of the cache.
-    pub(crate) fn stale_entries(&self, enabled_ifs: &[InterfaceIndex]) -> Vec<Target> {
+    pub(crate) fn stale_entries(&self) -> Vec<Target> {
         let Some(cache) = self.enter() else {
             unreachable!("the neighbor cache writer is dropped only when the daemon ends");
         };
         cache
-            .stale_entries(enabled_ifs)
+            .stale_entries()
             .map(|entry| Target::new(entry.ip(), entry.ifindex()))
             .collect()
     }
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(reader.get_mac(ip, ifindex), Some(mac));
     }
 
-    /// Only the stale entries over the given (enabled) interfaces are reported as stale
+    /// Only the stale entries are reported as stale, over any interface
     #[test]
     fn test_neigh_cache_reader_stale_entries() {
         let (mut writer, reader) = NeighCacheWriter::new();
@@ -181,19 +181,24 @@ mod tests {
                 state,
             )
         };
-        let enabled = [InterfaceIndex::try_new(2).unwrap()];
+        assert_eq!(reader.stale_entries(), Vec::<Target>::new());
 
-        let stale = entry("10.0.0.1", 2, NeighState::Stale);
-        writer.add_entry(stale.clone());
+        let stale2 = entry("10.0.0.1", 2, NeighState::Stale);
+        let stale3 = entry("10.0.0.5", 3, NeighState::Stale);
+        writer.add_entry(stale2.clone());
         writer.add_entry(entry("10.0.0.2", 2, NeighState::Reachable));
         writer.add_entry(entry("10.0.0.3", 2, NeighState::Delay));
         writer.add_entry(entry("10.0.0.4", 2, NeighState::Failed));
-        writer.add_entry(entry("10.0.0.5", 3, NeighState::Stale)); // over an interface not enabled
+        writer.add_entry(stale3.clone());
 
+        let mut stale = reader.stale_entries();
+        stale.sort_by_key(|target| target.ifindex);
         assert_eq!(
-            reader.stale_entries(&enabled),
-            vec![Target::new(stale.ip(), stale.ifindex())]
+            stale,
+            vec![
+                Target::new(stale2.ip(), stale2.ifindex()),
+                Target::new(stale3.ip(), stale3.ifindex()),
+            ]
         );
-        assert_eq!(reader.stale_entries(&[]), Vec::<Target>::new());
     }
 }

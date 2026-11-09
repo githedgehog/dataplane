@@ -5,7 +5,6 @@
 
 use acl_filter::AclFilterContext;
 use acl_filter::AclFilterContextWriter;
-use arp::ArpNdCtl;
 use concurrency::sync::Arc;
 use config::external::overlay::ValidatedOverlay;
 use flow_entry::flow_table::FlowTable;
@@ -80,9 +79,6 @@ pub(crate) struct ConfigProcessor {
 pub struct ConfigProcessorParams {
     // channel to router
     pub router_ctl: RouterCtlSender,
-
-    // control of the ARP/ND daemon
-    pub arp_ctl: ArpNdCtl,
 
     // access data associated to pipeline
     pub pipeline_data: Arc<PipelineData>,
@@ -690,23 +686,6 @@ fn apply_tracing_config(tracing: &Option<TracingConfig>) -> ConfigResult {
     Ok(())
 }
 
-/// Enable ARP/ND over the Ethernet interfaces of the underlay, and only over those
-async fn update_arp_config(arp_ctl: &ArpNdCtl, config: &ValidatedGwConfig) -> ConfigResult {
-    let interfaces: Vec<_> = config
-        .external()
-        .underlay()
-        .vrf
-        .interfaces
-        .values()
-        .filter(|iface| iface.is_eth())
-        .map(|iface| iface.name.clone())
-        .collect();
-    arp_ctl
-        .enable(&interfaces)
-        .await
-        .map_err(|e| ConfigError::FailureApply(e.to_string()))
-}
-
 fn apply_device_config(device: &DeviceConfig) -> ConfigResult {
     apply_tracing_config(&device.tracing)?;
     Ok(())
@@ -814,9 +793,6 @@ impl ConfigProcessor {
 
         /* apply config in router */
         apply_router_config(&kernel_vrfs, config.clone(), router_ctl).await?;
-
-        /* enable ARP/ND over the interfaces configured */
-        update_arp_config(&self.proc_params.arp_ctl, &config).await?;
 
         /* update the pipeline generation id, iff config was applied */
         self.proc_params.pipeline_data.set_genid(genid);
