@@ -35,7 +35,7 @@ use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, SourceMac};
 use crate::flows::{FlowInfo, FlowStatus};
 use crate::headers::{
-    EmbeddedHeaders, Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut,
+    EmbeddedHeaders, Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEth,
     TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryUdp, TryVxlan,
 };
 use crate::ip::{dscp::Dscp, ecn::Ecn};
@@ -201,6 +201,8 @@ pub enum SerializeError<E> {
     NoHeadRoom,
     #[error("De-parsing error: {0}")]
     DeparseError(DeParseError<E>),
+    #[error("packet is not ready for transmit: {0}")]
+    NotReadyForXmit(DoneReason),
 }
 
 /// Data read from a VXLAN packet by [`Packet::vxlan_peek`].
@@ -691,6 +693,21 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self
     }
 
+    #[inline]
+    /// Fail if a packet can be serialized for xmit
+    fn is_ready_for_xmit(&mut self) -> Result<(), SerializeError<()>> {
+        // a packet without ethernet header cannot be transmitted
+        let Some(eth) = self.try_eth() else {
+            return Err(SerializeError::NotReadyForXmit(DoneReason::Malformed));
+        };
+
+        // a packet with zero dst mac cannot be transmitted
+        if eth.has_zero_dst_mac() {
+            return Err(SerializeError::NotReadyForXmit(DoneReason::InvalidDstMac));
+        }
+        Ok(())
+    }
+
     /// Consume a [`Packet`] and update its buffer based on any changes to its [`Headers`].
     ///
     /// # Errors
@@ -699,6 +716,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// serialize or `SerializeError::DeparseError` if it does, but the de-parsing the `Packet` failed.
     #[inline]
     pub(crate) fn do_serialize(&mut self) -> Result<(), SerializeError<()>> {
+        self.is_ready_for_xmit()?;
+
         #[cfg(any(test, feature = "checksum-audit"))]
         self.assert_transport_checksum_kept();
         // IPv4 setters maintain header checksums. Refresh transport checksums only when requested
@@ -724,8 +743,10 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     ///
     /// # Errors
     ///
-    /// This method returns `SerializeError::NoHeadRoom`if the packet does not have enough headroom to
-    /// serialize or `SerializeError::DeparseError` if it does, but the de-parsing the `Packet` failed.
+    /// This method returns:
+    ///   * `SerializeError::NoHeadRoom`if the packet does not have enough headroom to serialize
+    ///   * `SerializeError::DeparseError` if it has headroom, but the de-parsing the `Packet` failed.
+    ///   * `SerializeError::NotReadyForXmit` if the packet is not transmittable as is
     pub fn serialize(mut self) -> Result<Buf, SerializeError<()>> {
         match self.do_serialize() {
             Ok(()) => Ok(self.payload),
@@ -733,6 +754,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 match e {
                     SerializeError::NoHeadRoom => self.done_force(DoneReason::NoBuffRoomXmit),
                     SerializeError::DeparseError(_) => self.done_force(DoneReason::DeparseError),
+                    SerializeError::NotReadyForXmit(reason) => self.done_force(reason),
                 }
                 Err(e)
             }
