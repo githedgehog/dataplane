@@ -4,6 +4,7 @@
 #![allow(missing_docs)] // TODO
 
 use crate::FlowKey;
+use crate::flows::conn_tracking::SynProxyState;
 use crate::flows::{FlowInfo, FlowInfoFlags};
 use crate::interface::InterfaceIndex;
 use crate::ip::dscp::Dscp;
@@ -163,6 +164,7 @@ pub struct PacketMeta {
     pub ecn: Option<Ecn>,                 /* Ecn to preserve for egress traffic */
     pub flow_key: Option<Box<FlowKey>>,   /* the flow key to use for NAT flow creation */
     pub tcp_flags: Option<TcpFlags>,      /* TCP flags seen by the ACL stage, for new flows */
+    pub syn_proxy: Option<Arc<SynProxyState>>, /* state for new flows set up by the SYN proxy */
     #[cfg(feature = "test_meta")]
     pub test: Option<Box<TestMeta>>,
 }
@@ -242,6 +244,22 @@ impl PacketMeta {
     #[must_use]
     pub fn requires_static_nat(&self) -> bool {
         self.requires_static_nat_src() || self.requires_static_nat_dst()
+    }
+
+    /// Forget the flows of the packet and what NAT and flow tracking it requires, for a packet
+    /// that a stage turns into a reply to its sender, before NAT.
+    pub fn clear_flow_state(&mut self) {
+        self.flow_info = None;
+        self.flow_key = None;
+        self.tcp_flags = None;
+        self.syn_proxy = None;
+        self.flags.remove(
+            MetaFlags::REQ_MASQUERADE
+                | MetaFlags::REQ_PORT_FORWARDING
+                | MetaFlags::REQ_STATIC_NAT_SRC
+                | MetaFlags::REQ_STATIC_NAT_DST
+                | MetaFlags::FORCE_FLOW_TRACKING,
+        );
     }
 
     #[must_use]
