@@ -892,7 +892,7 @@ pub fn main() {
     .expect("failed to start router");
 
     // start ARP/ND (netlink socks live in control netns)
-    let arp_ctl = setup
+    setup
         .arp
         .launch(&mgmt_handle, &shutdown.arp)
         .expect("Failed to start ARP/ND");
@@ -1069,7 +1069,6 @@ pub fn main() {
                     .collect(),
                 processor_params: ConfigProcessorParams {
                     router_ctl: setup.router.get_ctl_tx(),
-                    arp_ctl,
                     pipeline_data,
                     flow_table: setup.flow_table,
                     vpcmapw: setup.vpcmapw,

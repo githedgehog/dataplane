@@ -10,16 +10,12 @@
 //!      neighbors that are stale in the cache.
 
 use lifecycle::{CancellationToken, Subsystem};
-use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::DoneReason;
-use nix::net::if_::if_nametoindex;
 use pkt_io::{Injector, PuntReceiver, PuntedPacket};
 
 use concurrency::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Notify;
-use tokio::sync::mpsc::error::SendError;
-use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::time::{Duration, MissedTickBehavior, interval};
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
@@ -30,8 +26,6 @@ use crate::querier::{ArpNdQuerier, Target};
 
 #[derive(Error, Debug)]
 pub enum ArpNdError {
-    #[error("ARP/ND Control failure: {0}")]
-    ControlFailure(#[from] SendError<ArpNdCtlMsg>),
     #[error("ARP/ND Netlink failure: {0}")]
     Netlink(#[from] std::io::Error),
 }
@@ -39,40 +33,6 @@ pub enum ArpNdError {
 struct ArpNd {
     outq: Injector,
     querier: ArpNdQuerier,
-}
-
-/// Object to control the ARP/ND daemon
-#[derive(Clone)]
-pub struct ArpNdCtl(Sender<ArpNdCtlMsg>);
-impl ArpNdCtl {
-    #[must_use]
-    pub fn new(size: usize) -> (Self, Receiver<ArpNdCtlMsg>) {
-        let (ctl_tx, ctl_rx) = channel::<ArpNdCtlMsg>(size);
-        (ArpNdCtl(ctl_tx), ctl_rx)
-    }
-    pub async fn enable(&self, interfaces: &[InterfaceName]) -> Result<(), ArpNdError> {
-        self.0
-            .send(ArpNdCtlMsg::Enable(interfaces.to_vec()))
-            .await
-            .map_err(ArpNdError::ControlFailure)
-    }
-}
-
-fn resolve_interface(ifname: &InterfaceName) -> Option<InterfaceIndex> {
-    if_nametoindex(ifname.as_ref())
-        .inspect_err(|e| error!("Could not find ifindex for {ifname}: {e}"))
-        .ok()?
-        .try_into()
-        .inspect_err(|e| error!("Invalid ifindex for interface {ifname}:{e}"))
-        .ok()
-}
-fn resolve_interfaces(required: &[InterfaceName]) -> Vec<InterfaceIndex> {
-    required.iter().filter_map(resolve_interface).collect()
-}
-
-/// Control messages to control daemon: enable interfaces
-pub enum ArpNdCtlMsg {
-    Enable(Vec<InterfaceName>),
 }
 
 impl ArpNd {
@@ -104,47 +64,33 @@ impl ArpNd {
     }
 
     /// Determine the target of a packet that needs resolution and place the packet in the
-    /// backlog, under that target. Packets for which no target can be determined, or whose
-    /// target is not over an enabled interface, are rejected and sent back to the outq. The
+    /// backlog, under that target. Packets for which no target can be determined are rejected
+    /// and sent back to the outq. The
     /// backlog may reject packets too due to space constraints.
-    fn packet_resolve(
-        &self,
-        backlog: &mut Backlog,
-        packet: PuntedPacket,
-        enabled_ifs: &[InterfaceIndex],
-    ) {
+    fn packet_resolve(&self, backlog: &mut Backlog, packet: PuntedPacket) {
         let Some(target) = Self::get_packet_target(&packet) else {
             warn!("Could not determine the target for packet");
             backlog.reject_packet(packet, DoneReason::ArpDaemonDrop);
             return;
         };
-        if !enabled_ifs.contains(&target.ifindex) {
-            debug!("Target {target} is not over an enabled interface");
-            backlog.reject_packet(packet, DoneReason::ArpDaemonDrop);
-            return;
-        }
         backlog.add(target, packet);
     }
 
     /// The resolving task of the daemon which:
-    ///   - handles control messages indicating which interfaces are to be enabled / used
     ///   - processes incoming packets that require resolution, placing them in the backlog queue
     ///   - issues queries for the corresponding targets
     ///   - when targets get resolved (it gets notified by the listener), re-processes the
     ///     backlog and returns packets back to the pipeline.
     ///   - gives up the targets that the kernel fails to resolve, or that are not resolved in time
-    ///   - periodically, has the kernel confirm the neighbors that are stale in the cache, if they
-    ///     are over an enabled interface. Those that the kernel cannot confirm fail, and become
-    ///     unusable in the cache.
+    ///   - periodically, has the kernel confirm the neighbors that are stale in the cache. Those
+    ///     that the kernel cannot confirm fail, and become unusable in the cache.
     async fn resolving_task(
         &self,
         mut inq: PuntReceiver,
-        mut ctl: Receiver<ArpNdCtlMsg>,
         cacher: NeighCacheReader,
         cache_notify: Arc<Notify>,
     ) {
         let mut backlog = Backlog::new(cacher.clone(), self.outq.clone());
-        let mut enabled_ifs: Vec<InterfaceIndex> = vec![];
         let mut check = interval(Self::CHECK_PERIOD);
         check.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -155,22 +101,6 @@ impl ArpNd {
             // packets ready at the same time. Packets can't starve: they are drained every pass.
             tokio::select! {
                 biased;
-                msg = ctl.recv() => match msg {
-                    Some(ArpNdCtlMsg::Enable(required)) => {
-                        info!("Got enable request. Required interfaces are: {required:?}");
-                        let new_ifs = resolve_interfaces(&required);
-                        // give up the targets over the interfaces no longer enabled
-                        for ifindex in enabled_ifs.iter().filter(|i| !new_ifs.contains(i)) {
-                            info!("ARP/ND disabled on interface {ifindex}: giving up its targets");
-                            backlog.give_up_interface(*ifindex);
-                        }
-                        enabled_ifs = new_ifs;
-                    }
-                    None => {
-                        warn!("ARP/ND control channel closed");
-                        break;
-                    }
-                },
                 _ = check.tick() => {
                     check_stale = true;
                 }
@@ -178,14 +108,14 @@ impl ArpNd {
 
                 Some(packet) = inq.pop_async() => {
                     debug!("Got packets to resolve");
-                    self.packet_resolve(&mut backlog, packet, &enabled_ifs);
+                    self.packet_resolve(&mut backlog, packet);
                 }
             }
 
             // take the rest of the packets that need resolution. Only the packets queued at this
             // point are taken, so that the pipeline cannot prevent us from checking, querying and giving up targets.
             for packet in inq.pop_ready() {
-                self.packet_resolve(&mut backlog, packet, &enabled_ifs);
+                self.packet_resolve(&mut backlog, packet);
             }
 
             // attempt to return any packets that could not be returned before (e.g. because queue was full)
@@ -204,7 +134,7 @@ impl ArpNd {
             // check if there are stale entries in the cache (as reported by the kernel).
             // If so, let the querier ask the kernel to confirm them by probing them.
             if check_stale {
-                let stale = cacher.stale_entries(&enabled_ifs);
+                let stale = cacher.stale_entries();
                 if !stale.is_empty() {
                     self.querier.multi_query(stale.iter()).await;
                 }
@@ -219,7 +149,6 @@ impl ArpNd {
     async fn run(
         self,
         inq: PuntReceiver,
-        ctl: Receiver<ArpNdCtlMsg>,
         listener: NeighListener,
         cacher: NeighCacheReader,
         cache_notify: Arc<Notify>,
@@ -228,7 +157,7 @@ impl ArpNd {
         info!("ARP/ND daemon started");
 
         tokio::select! {
-            () = self.resolving_task(inq, ctl, cacher, cache_notify) => {
+            () = self.resolving_task(inq, cacher, cache_notify) => {
                 error!("ARP/ND main task ended");
             }
             () = listener.start() => {
@@ -254,7 +183,7 @@ pub(crate) fn start_arp_nd(
     inq: PuntReceiver,
     outq: Injector,
     cachew: NeighCacheWriter,
-) -> Result<ArpNdCtl, ArpNdError> {
+) -> Result<(), ArpNdError> {
     info!("Starting ARP/ND daemon...");
 
     // create cache reader for resolver task
@@ -271,16 +200,13 @@ pub(crate) fn start_arp_nd(
         (arpd, listener)
     };
 
-    // create ArpNd control channel
-    let (arp_ctl, ctl_rx) = ArpNdCtl::new(100);
-
     // spawn under subsystem. Failure is fatal
     let cancel = subsystem.cancel_token();
     subsystem.spawn_fatal_on_exit(
         "ARP/ND daemon",
-        arpd.run(inq, ctl_rx, listener, cacher, cache_notify, cancel),
+        arpd.run(inq, listener, cacher, cache_notify, cancel),
         rt_handle,
     );
     info!("Successfully started ARP/ND daemon...");
-    Ok(arp_ctl)
+    Ok(())
 }
