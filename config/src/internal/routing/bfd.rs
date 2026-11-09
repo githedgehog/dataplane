@@ -56,7 +56,7 @@ pub fn peers_from_bgp_neighbors(neighbors: &[BgpNeighbor]) -> Vec<BfdPeer> {
     neighbors
         .iter()
         .filter(|n| n.bfd)
-        .filter_map(|n| match &n.ntype {
+        .filter_map(|n| match n.ntype() {
             BgpNeighType::Host(addr) => {
                 let multihop = n.ebgp_multihop.is_some();
                 let source = n.update_source.as_ref().and_then(|src| match src {
