@@ -188,14 +188,11 @@ impl NeighCache {
         self.0.clear();
     }
 
-    /// Get a vector of `Targets` for all of the entries marked as stale over the indicated interfaces
-    pub(crate) fn stale_entries(
-        &self,
-        enabled_ifs: &[InterfaceIndex],
-    ) -> impl Iterator<Item = &NeighEntry> {
-        self.0.values().filter(|entry| {
-            entry.state() == NeighState::Stale && enabled_ifs.contains(&entry.ifindex())
-        })
+    /// Get a vector of `Targets` for all of the entries marked as stale over all interfaces
+    pub(crate) fn stale_entries(&self) -> impl Iterator<Item = &NeighEntry> {
+        self.0
+            .values()
+            .filter(|entry| entry.state() == NeighState::Stale)
     }
 }
 

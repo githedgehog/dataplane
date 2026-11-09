@@ -17,8 +17,8 @@ mod setup;
 pub mod testing;
 
 //re-exports
-pub use cache::{NeighCache, NeighCacheReader, NeighCacheReaderFactory};
-pub use daemon::{ArpNdCtl, ArpNdError};
+pub use cache::{NeighCache, NeighCacheReader, NeighCacheReaderFactory, NeighEntry};
+pub use daemon::ArpNdError;
 pub use setup::{ArpNfFactory, ArpSetup};
 
 use tracectl::trace_target;
