@@ -49,6 +49,7 @@ members = [
     "rekon",
     "routing",
     "stats",
+    "syn-proxy",
     "sysfs",
     "test-utils",
     "timer-wheel",
@@ -129,6 +130,7 @@ rate-limit = { path = "./rate-limit", package = "dataplane-rate-limit", features
 rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
 routing = { path = "./routing", package = "dataplane-routing", features = [] }
 stats = { path = "./stats", package = "dataplane-stats", features = [] }
+syn-proxy = { path = "./syn-proxy", package = "dataplane-syn-proxy", features = [] }
 sysfs = { path = "./sysfs", package = "dataplane-sysfs", features = [] }
 test-utils = { path = "./test-utils", package = "dataplane-test-utils", features = [] }
 timer-wheel = { path = "./timer-wheel", package = "dataplane-timer-wheel", features = [] }
@@ -245,6 +247,7 @@ serde_yaml_ng = { version = "0.10.0", default-features = false, features = [] }
 serial_test = { version = "4.0.1", default-features = false, features = [] }
 sha2 = { version = "0.11.1", default-features = false, features = [] }
 shuttle = { version = "0.9.10", default-features = false, features = [] }
+siphasher = { version = "1.0.4", default-features = false, features = [] }
 similar-asserts = { version = "2.0.0", default-features = false, features = [] }
 small-map = { version = "0.1.5", default-features = false, features = [] }
 # smallvec: held at 1.15.2 by kube (GH-#1861). kube 4.2.0 requires serde-saphyr 0.0.29 exactly, which
@@ -539,6 +542,11 @@ wasm = false # split
 package = "dataplane-stats"
 miri = true
 wasm = false # miss
+
+[workspace.metadata.package.syn-proxy]
+package = "dataplane-syn-proxy"
+miri = true
+wasm = false # split (clock)
 
 [workspace.metadata.package.sysfs]
 package = "dataplane-sysfs"
