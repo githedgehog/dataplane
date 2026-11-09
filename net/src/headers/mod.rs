@@ -1267,7 +1267,8 @@ impl Headers {
     /// fragment ([RFC 6946]).
     ///
     /// [RFC 6946]: https://datatracker.ietf.org/doc/html/rfc6946
-    fn is_fragment(&self) -> bool {
+    #[must_use]
+    pub fn is_fragment(&self) -> bool {
         let ipv4 = matches!(
             &self.net,
             Some(Net::Ipv4(ip)) if ip.more_fragments() || ip.fragment_offset().value() != 0
