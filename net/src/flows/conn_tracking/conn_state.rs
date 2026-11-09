@@ -91,6 +91,23 @@ impl AtomicConnState {
         self.0.store(status.into(), Ordering::Relaxed);
     }
 
+    /// Change the status to `new` only if it is still `current`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the status found if it is not `current`.
+    pub fn compare_exchange(&self, current: ConnState, new: ConnState) -> Result<(), ConnState> {
+        self.0
+            .compare_exchange(
+                current.into(),
+                new.into(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .map(|_| ())
+            .map_err(ConnState::from)
+    }
+
     /// Tell if `self` and `other` are the same shared status.
     #[must_use]
     pub fn is_shared_with(&self, other: &Self) -> bool {

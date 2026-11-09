@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use timer_wheel::TimerRef;
 use tracing::debug;
 
+use super::conn_tracking::SynProxyState;
 use super::{AtomicConnState, AtomicInstant, FlowInfoItem};
 use crate::FlowKey;
 use crate::tcp::TcpFlags;
@@ -204,6 +205,8 @@ pub struct FlowInfo {
     conn_state: Option<AtomicConnState>,
     // TCP flags of the segment that created the flow, see [`FlowInfo::opening_tcp_flags`]
     opening_tcp_flags: OnceLock<TcpFlags>,
+    // State of a connection set up through the SYN proxy, see [`FlowInfo::syn_proxy`]
+    syn_proxy: OnceLock<Arc<SynProxyState>>,
     pub locked: RwLock<FlowInfoLocked>,
     pub related: Option<Weak<FlowInfo>>,
     /// The expiry timer of this flow, once the flow is in a table.
@@ -224,6 +227,7 @@ impl FlowInfo {
             flags: FlowInfoFlags::default(),
             conn_state: None,
             opening_tcp_flags: OnceLock::new(),
+            syn_proxy: OnceLock::new(),
             locked: RwLock::new(FlowInfoLocked::default()),
             related: None,
             timer: Mutex::new(None),
@@ -286,6 +290,21 @@ impl FlowInfo {
     pub fn set_opening_tcp_flags(&self, flags: TcpFlags) {
         let result = self.opening_tcp_flags.set(flags);
         debug_assert!(result.is_ok(), "opening TCP flags set twice for a flow");
+    }
+
+    /// The state of the connection, if the SYN proxy set it up. Both flows of the pair share it.
+    #[must_use]
+    pub fn syn_proxy(&self) -> Option<&Arc<SynProxyState>> {
+        self.syn_proxy.get()
+    }
+
+    /// Record that the SYN proxy set up the connection of this flow, see [`FlowInfo::syn_proxy`].
+    ///
+    /// Call this at most once per flow, before inserting the flow into a flow table, so that all
+    /// lookups see the state.
+    pub fn set_syn_proxy(&self, state: Arc<SynProxyState>) {
+        let result = self.syn_proxy.set(state);
+        debug_assert!(result.is_ok(), "SYN proxy state set twice for a flow");
     }
 
     #[must_use]
