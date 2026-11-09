@@ -18,4 +18,7 @@
 //! state for them. Only when a client completes the handshake, proving that it owns its address,
 //! does the gateway open the connection to the server and create flows for it.
 
+mod control;
 pub mod cookie;
+
+pub use control::{Counters, GRACE_PERIOD, SynProxyControl, SynProxyMode};
