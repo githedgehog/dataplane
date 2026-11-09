@@ -2255,6 +2255,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-syn-proxy"
+version = "0.38.2"
+dependencies = [
+ "bolero",
+ "dataplane-clock",
+ "dataplane-concurrency",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-tracectl",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-sysfs"
 version = "0.38.2"
 dependencies = [
