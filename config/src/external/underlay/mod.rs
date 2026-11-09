@@ -81,7 +81,7 @@ impl Underlay {
         };
 
         for neigh in &bgp.neighbors {
-            match &neigh.ntype {
+            match neigh.ntype() {
                 BgpNeighType::Interface(ifname) => {
                     let iface = self.vrf.interfaces.get(ifname).ok_or_else(|| {
                         ConfigError::Invalid(format!(
@@ -107,7 +107,7 @@ impl Underlay {
                         )));
                     }
                 }
-                BgpNeighType::PeerGroup(_) | BgpNeighType::Unset => {}
+                BgpNeighType::PeerGroup(_) => {}
             }
         }
         Ok(())

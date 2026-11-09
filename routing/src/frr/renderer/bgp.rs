@@ -20,14 +20,8 @@ impl Rendered for BgpNeighType {
     /// group name for a peer group, and the interface name for an unnumbered
     /// peer. Every per-neighbor line uses it, both under `router bgp` and in the
     /// `neighbor <name> activate` lines of each address family.
-    ///
-    /// # Panics
-    ///
-    /// Panics on [`BgpNeighType::Unset`], which is a neighbor that was never
-    /// given a type and so cannot be rendered at all.
     fn rendered(&self) -> String {
         match self {
-            BgpNeighType::Unset => panic!("Bgp neighbor without type"),
             BgpNeighType::Host(address) => address.to_string(),
             BgpNeighType::PeerGroup(group) => group.clone(),
             BgpNeighType::Interface(ifname) => ifname.clone(),
@@ -145,10 +139,9 @@ impl Render for BmpOptions {
 /// # Panics
 ///
 /// Panics if a neighbor that is not a peer group has neither a peer group nor a
-/// remote ASN, leaving nothing to peer with or if the `BgpNeighType` is unset.
+/// remote ASN.
 fn bgp_neigh_minimal(neigh: &BgpNeighbor) -> String {
-    let mut out = match &neigh.ntype {
-        BgpNeighType::Unset => panic!("Bgp neighbor without type"),
+    let mut out = match neigh.ntype() {
         BgpNeighType::PeerGroup(group) => {
             let mut out = format!(" neighbor {group} peer-group");
             // remote-as is optional for peer-groups, but goes on separate line
@@ -383,12 +376,15 @@ impl Render for AfIpv4Ucast {
             .iter()
             .filter(|neigh| neigh.ipv4_unicast.is_some())
             .for_each(|neigh| {
-                cfg += format!(" neighbor {} activate", neigh.ntype.rendered());
+                cfg += format!(" neighbor {} activate", neigh.ntype().rendered());
                 if let Some(rmap) = neigh.ipv4_unicast_rmap_in() {
-                    cfg += format!(" neighbor {} route-map {rmap} in", neigh.ntype.rendered());
+                    cfg += format!(" neighbor {} route-map {rmap} in", neigh.ntype().rendered());
                 }
                 if let Some(rmap) = neigh.ipv4_unicast_rmap_out() {
-                    cfg += format!(" neighbor {} route-map {rmap} out", neigh.ntype.rendered());
+                    cfg += format!(
+                        " neighbor {} route-map {rmap} out",
+                        neigh.ntype().rendered()
+                    );
                 }
             });
 
@@ -427,12 +423,15 @@ impl Render for AfIpv6Ucast {
             .iter()
             .filter(|neigh| neigh.ipv6_unicast.is_some())
             .for_each(|neigh| {
-                cfg += format!(" neighbor {} activate", neigh.ntype.rendered());
+                cfg += format!(" neighbor {} activate", neigh.ntype().rendered());
                 if let Some(rmap) = neigh.ipv6_unicast_rmap_in() {
-                    cfg += format!(" neighbor {} route-map {rmap} in", neigh.ntype.rendered());
+                    cfg += format!(" neighbor {} route-map {rmap} in", neigh.ntype().rendered());
                 }
                 if let Some(rmap) = neigh.ipv6_unicast_rmap_out() {
-                    cfg += format!(" neighbor {} route-map {rmap} out", neigh.ntype.rendered());
+                    cfg += format!(
+                        " neighbor {} route-map {rmap} out",
+                        neigh.ntype().rendered()
+                    );
                 }
             });
 
@@ -471,12 +470,15 @@ impl Render for AfL2vpnEvpn {
             .iter()
             .filter(|neigh| neigh.l2vpn_evpn.is_some())
             .for_each(|neigh| {
-                cfg += format!(" neighbor {} activate", neigh.ntype.rendered());
+                cfg += format!(" neighbor {} activate", neigh.ntype().rendered());
                 if let Some(rmap) = neigh.l2vpn_evpn_rmap_in() {
-                    cfg += format!(" neighbor {} route-map {rmap} in", neigh.ntype.rendered());
+                    cfg += format!(" neighbor {} route-map {rmap} in", neigh.ntype().rendered());
                 }
                 if let Some(rmap) = neigh.l2vpn_evpn_rmap_out() {
-                    cfg += format!(" neighbor {} route-map {rmap} out", neigh.ntype.rendered());
+                    cfg += format!(
+                        " neighbor {} route-map {rmap} out",
+                        neigh.ntype().rendered()
+                    );
                 }
             });
 
@@ -520,7 +522,7 @@ impl Render for BgpNeighbor {
     type Output = ConfigBuilder;
     fn render(&self, (): &Self::Context) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
-        let neigh_name = self.ntype.rendered();
+        let neigh_name = self.ntype().rendered();
         cfg += bgp_neigh_minimal(self);
         let neigh_prefix = format!("neighbor {neigh_name}");
 

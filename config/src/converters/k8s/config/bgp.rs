@@ -81,7 +81,7 @@ impl TryFrom<&BgpNeighbor> for GatewayAgentGatewayNeighbors {
     /// peer groups, a neighbor with no type set, an address-valued
     /// update-source, or a neighbor with no remote ASN.
     fn try_from(neighbor: &BgpNeighbor) -> Result<Self, Self::Error> {
-        let (ip, source) = match &neighbor.ntype {
+        let (ip, source) = match neighbor.ntype() {
             BgpNeighType::Host(addr) => {
                 let source = neighbor
                     .update_source
@@ -100,11 +100,6 @@ impl TryFrom<&BgpNeighbor> for GatewayAgentGatewayNeighbors {
                 return Err(ToK8sConversionError::Unsupported(format!(
                     "Peer group type not supported in CRD: {name}"
                 )));
-            }
-            BgpNeighType::Unset => {
-                return Err(ToK8sConversionError::Unsupported(
-                    "Unset BGP neighbor type not supported in CRD".to_string(),
-                ));
             }
         };
 
@@ -152,7 +147,7 @@ mod tests {
         };
 
         let neigh = BgpNeighbor::try_from(&crd).expect("unnumbered neighbor should convert");
-        assert!(matches!(&neigh.ntype, BgpNeighType::Interface(i) if i == "enp2s1np0"));
+        assert!(matches!(&neigh.ntype(), BgpNeighType::Interface(i) if i == "enp2s1np0"));
         assert_eq!(neigh.remote_as, Some(65100));
         assert!(neigh.update_source.is_none());
 
@@ -172,7 +167,7 @@ mod tests {
         };
 
         let neigh = BgpNeighbor::try_from(&crd).expect("numbered neighbor should convert");
-        assert!(matches!(neigh.ntype, BgpNeighType::Host(_)));
+        assert!(matches!(neigh.ntype(), BgpNeighType::Host(_)));
         assert!(matches!(
             &neigh.update_source,
             Some(BgpUpdateSource::Interface(i)) if i == "enp2s1np0"
