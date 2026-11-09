@@ -564,6 +564,10 @@ pub enum CliAction {
 
     // NF: flow table, how full it is
     ShowFlowTableSummary,
+
+    SynProxyOn,
+    SynProxyOff,
+    ShowSynProxy,
 }
 impl CliAction {
     #[must_use]

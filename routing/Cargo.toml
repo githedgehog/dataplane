@@ -26,6 +26,7 @@ left-right-tlcache = { workspace = true }
 lifecycle = { workspace = true }
 lpm = { workspace = true }
 net = { workspace = true }
+syn-proxy = { workspace = true }
 tracectl = { workspace = true }
 
 # external

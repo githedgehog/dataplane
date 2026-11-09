@@ -2197,6 +2197,7 @@ dependencies = [
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-routing",
+ "dataplane-syn-proxy",
  "dataplane-tracectl",
  "derive_builder",
  "dplane-rpc",
