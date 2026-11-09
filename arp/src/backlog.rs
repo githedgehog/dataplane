@@ -64,7 +64,6 @@ use ahash::AHashMap;
 use clock::{Duration, Instant, elapsed};
 use net::eth::mac::DestinationMac;
 use net::headers::TryEthMut;
-use net::interface::InterfaceIndex;
 use net::packet::DoneReason;
 use pkt_io::{EndpointId, InjectError, Injector, PuntedPacket};
 use std::collections::VecDeque;
@@ -403,18 +402,6 @@ impl Backlog {
             }
         }
         to_query
-    }
-
-    /// Give up all of the targets using some interface: their packets are returned as unresolved
-    pub(crate) fn give_up_interface(&mut self, ifindex: InterfaceIndex) {
-        let targets: Vec<Target> = self
-            .entries
-            .keys()
-            .filter(|target| target.ifindex == ifindex)
-            .copied()
-            .collect();
-
-        self.give_up_targets(&targets, DoneReason::MissL2resolution);
     }
 }
 
@@ -948,43 +935,5 @@ mod tests {
         let back = returned(&mut endpoint);
         assert_eq!(back.len(), 1, "the packet was not output");
         assert_given_up(&back[0], DoneReason::MissL2resolution);
-    }
-
-    #[test]
-    /// Test that giving up an interface gives up all of the targets over it, and only those
-    fn test_backlog_gives_up_interface() {
-        let (_writer, reader) = NeighCacheWriter::new();
-        let (outq, mut endpoint) = endpoint(100);
-        let origin = endpoint.endpoint_id();
-        let mut backlog = Backlog::new(reader, outq);
-
-        // two targets over interface 2 (with two packets for one of them), one over interface 3
-        let (addr_a, _, if2) = mapping("10.0.0.2", "02:ca:fe:ba:be:01", 2);
-        let (addr_b, _, _) = mapping("10.0.0.3", "02:ca:fe:ba:be:02", 2);
-        let (addr_c, _, if3) = mapping("10.0.0.2", "02:ca:fe:ba:be:03", 3);
-        backlog.add(Target::new(addr_a, if2), packet(origin, addr_a, if2));
-        backlog.add(Target::new(addr_a, if2), packet(origin, addr_a, if2));
-        backlog.add(Target::new(addr_b, if2), packet(origin, addr_b, if2));
-        backlog.add(Target::new(addr_c, if3), packet(origin, addr_c, if3));
-
-        backlog.give_up_interface(if2);
-
-        assert_eq!(
-            backlog.num_targets(),
-            1,
-            "Only the target over if3 should remain"
-        );
-        assert!(backlog.entries.contains_key(&Target::new(addr_c, if3)));
-        assert_eq!(backlog.num_packets(), 1);
-        let back = returned(&mut endpoint);
-        assert_eq!(
-            back.len(),
-            3,
-            "The packets for the targets over if2 should be output"
-        );
-        for packet in &back {
-            assert_eq!(packet.meta().oif, Some(if2));
-            assert_given_up(packet, DoneReason::MissL2resolution);
-        }
     }
 }
