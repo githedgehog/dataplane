@@ -28,7 +28,7 @@ impl Rendered for BgpNeighType {
     fn rendered(&self) -> String {
         match self {
             BgpNeighType::Unset => panic!("Bgp neighbor without type"),
-            BgpNeighType::Host(address) => format!("{address}"),
+            BgpNeighType::Host(address) => address.to_string(),
             BgpNeighType::PeerGroup(group) => group.clone(),
             BgpNeighType::Interface(ifname) => ifname.clone(),
         }
@@ -37,7 +37,7 @@ impl Rendered for BgpNeighType {
 impl Rendered for BgpUpdateSource {
     fn rendered(&self) -> String {
         match self {
-            BgpUpdateSource::Address(address) => format!("{address}"),
+            BgpUpdateSource::Address(address) => address.to_string(),
             BgpUpdateSource::Interface(ifname) => ifname.clone(),
         }
     }
@@ -145,18 +145,26 @@ impl Render for BmpOptions {
 /// # Panics
 ///
 /// Panics if a neighbor that is not a peer group has neither a peer group nor a
-/// remote ASN, leaving nothing to peer with.
-fn bgp_neigh_minimal(neigh: &BgpNeighbor, name: &str) -> String {
-    if neigh.is_peer_group() {
-        return format!(" neighbor {name} peer-group");
-    }
-    let mut out = format!(" neighbor {name}");
-    /* unnumbered peers: FRR's grammar puts `interface` between the peer name
-    (an interface name here) and the peer-group / remote-as clause:
-    `neighbor <ifname> interface remote-as <asn>` */
-    if neigh.is_interface() {
-        out += " interface";
-    }
+/// remote ASN, leaving nothing to peer with or if the `BgpNeighType` is unset.
+fn bgp_neigh_minimal(neigh: &BgpNeighbor) -> String {
+    let mut out = match &neigh.ntype {
+        BgpNeighType::Unset => panic!("Bgp neighbor without type"),
+        BgpNeighType::PeerGroup(group) => {
+            let mut out = format!(" neighbor {group} peer-group");
+            // remote-as is optional for peer-groups, but goes on separate line
+            if let Some(asn) = neigh.remote_as {
+                out += format!("\n neighbor {group} remote-as {asn}").as_str();
+            }
+            return out;
+        }
+        BgpNeighType::Host(address) => {
+            format!(" neighbor {address}")
+        }
+        BgpNeighType::Interface(ifname) => {
+            format!(" neighbor {ifname} interface")
+        }
+    };
+
     if let Some(peer_group) = &neigh.peer_group {
         out += format!(" peer-group {peer_group}").as_str();
     } else if let Some(remote_as) = neigh.remote_as {
@@ -169,13 +177,6 @@ fn bgp_neigh_minimal(neigh: &BgpNeighbor, name: &str) -> String {
 #[allow(clippy::option_map_unit_fn)]
 fn bgp_neigh_options(neigh: &BgpNeighbor, prefix: &str) -> ConfigBuilder {
     let mut cfg = ConfigBuilder::new();
-
-    /* remote-as in case of a peer group */
-    if neigh.is_peer_group() {
-        neigh
-            .remote_as
-            .map(|asn| cfg += format!(" {prefix} remote-as {asn}"));
-    }
 
     /* description */
     neigh
@@ -520,7 +521,7 @@ impl Render for BgpNeighbor {
     fn render(&self, (): &Self::Context) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
         let neigh_name = self.ntype.rendered();
-        cfg += bgp_neigh_minimal(self, &neigh_name);
+        cfg += bgp_neigh_minimal(self);
         let neigh_prefix = format!("neighbor {neigh_name}");
 
         cfg += bgp_neigh_capabilities(&self.capabilities, &neigh_prefix);
