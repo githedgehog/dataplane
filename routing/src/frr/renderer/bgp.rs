@@ -24,7 +24,7 @@ impl Rendered for BgpNeighType {
         match self {
             BgpNeighType::Host(address) => address.to_string(),
             BgpNeighType::PeerGroup(group) => group.clone(),
-            BgpNeighType::Interface(ifname) => ifname.clone(),
+            BgpNeighType::Interface(ifname) => ifname.to_string(),
         }
     }
 }
@@ -639,6 +639,7 @@ pub mod tests {
     };
     use config::internal::routing::bmp::{BmpOptions, BmpSource};
     use lpm::prefix::Prefix;
+    use net::interface::InterfaceName;
     use net::tcp::TcpPort;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
@@ -652,10 +653,12 @@ pub mod tests {
     fn test_bgp_render_unnumbered_neighbor() {
         let mut bgp = BgpConfig::new(65000);
 
-        let mut neigh = BgpNeighbor::new_interface("eth0")
-            .set_remote_as(65100)
-            .set_description("Unnumbered fabric peer")
-            .set_bfd(true);
+        let mut neigh = BgpNeighbor::new_interface(
+            InterfaceName::try_from("eth0").expect("bad test interface name"),
+        )
+        .set_remote_as(65100)
+        .set_description("Unnumbered fabric peer")
+        .set_bfd(true);
         neigh.ipv4_unicast_activate(BgpNeighAF::default());
         neigh.l2vpn_evpn_activate(BgpNeighAF::with_rmap_in("RM-EVPN-IN"));
         bgp.add_neighbor(neigh);
