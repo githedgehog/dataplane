@@ -868,7 +868,7 @@ jobs:
 
     name: "${{ matrix.hybrid && 'h' || 'v' }}-${{ matrix.upgradefrom && 'up' || '' }}${{ matrix.upgradefrom }}${{ matrix.upgradefrom && '-' || '' }}${{ matrix.mesh && 'mesh-' || '' }}${{ matrix.gateway == 'dpdk' && 'gwd-' || matrix.gateway == 'kernel' && 'gwk-' || '' }}iso-${{ matrix.vpcmode }}"
 
-    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
+    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@release/v0.51
     with:
       # ci:+hlab is required to enable hybrid lab tests on PR
       # ci:+vlab is required to enable virtual lab tests on PR
@@ -899,7 +899,7 @@ jobs:
           || (github.event_name == 'push' || github.event_name == 'merge_group')
           && !!matrix.hybrid
         }}
-      fabricatorref: master
+      fabricatorref: release/v0.51
       prebuild: "just bump dataplane ${{ needs.version.outputs.version }}-release"
       fabricmode: spine-leaf
       mesh: ${{ !!matrix.mesh }}
