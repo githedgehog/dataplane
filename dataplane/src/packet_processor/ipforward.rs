@@ -82,8 +82,7 @@ impl IpForwarder {
         let vrfid = packet.meta().vrf;
 
         let fibkey = if let Some(dst_vpcd) = packet.meta().dst_vpcd {
-            let VpcDiscriminant::VNI(dst_vni) = dst_vpcd;
-            FibKey::from_vni(dst_vni)
+            FibKey::from_vpcd(dst_vpcd)
         } else if let Some(vrfid) = vrfid {
             FibKey::from_vrfid(vrfid)
         } else {
@@ -211,7 +210,7 @@ impl IpForwarder {
         match packet.vxlan_decap() {
             Some(Ok(_)) => {
                 // At this point decapsulation has already happened. `Packet` refers to the inner packet.
-                let next_vrf = fib.get_id().as_u32();
+                let next_vrf = fib.get_id();
                 tdebug!(VXLAN_D, "DECAPSULATED vxlan packet (vni={vni}):\n{packet}");
                 debug!("{nfi}: DECAPSULATED vxlan packet, vni = {vni}. Next vrf = {next_vrf}");
 
@@ -786,10 +785,8 @@ mod fib_memo_test {
         let (k1, k2) = (FibKey::from_vrfid(1), FibKey::from_vrfid(2));
         let absent = FibKey::from_vrfid(99);
 
-        let id = |memo: &mut FibMemo, key| {
-            memo.reader(key, &fibtr)
-                .and_then(|reader| reader.get_id().map(|id| id.as_u32()))
-        };
+        let id =
+            |memo: &mut FibMemo, key| memo.reader(key, &fibtr).and_then(|reader| reader.get_id());
 
         let mut memo = FibMemo::default();
         assert_eq!(id(&mut memo, k1), Some(1), "first lookup");

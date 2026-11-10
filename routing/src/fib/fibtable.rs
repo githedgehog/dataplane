@@ -144,7 +144,7 @@ impl FibTableWriter {
             return Err(RouterError::FibEntryExists(key));
         }
         if let Some(vni) = vni {
-            let key = FibKey::Vni(vni);
+            let key = FibKey::from_vni(vni);
             if self.contains_fib(key) {
                 return Err(RouterError::FibEntryExists(key));
             }
@@ -459,7 +459,7 @@ mod fibtable_properties {
                         assert!(reader.is_valid(), "{key} reaches a dead fib {}", at());
                         assert_eq!(
                             reader.get_id(),
-                            Some(FibKey::from_vrfid(want)),
+                            Some(want),
                             "{key} reaches the wrong fib {}",
                             at()
                         );
