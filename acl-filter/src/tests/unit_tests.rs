@@ -1122,7 +1122,7 @@ mod end_to_end {
         let flow_table = Arc::new(FlowTable::default());
         let pipeline_data = Arc::new(PipelineData::new(1));
 
-        let mut pipeline = DynPipeline::new().set_data(pipeline_data.clone());
+        let mut pipeline = DynPipeline::new().with_data(pipeline_data.clone());
         pipeline = pipeline.add_stage(IcmpErrorHandler::new(flow_table.clone()));
         pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", flow_table.clone()));
 
