@@ -21,7 +21,6 @@ common = { workspace = true }
 config = { workspace = true }
 concurrency = { workspace = true }
 dplane-rpc = { workspace = true }
-interface-manager = { workspace = true }
 left-right-tlcache = { workspace = true }
 lifecycle = { workspace = true }
 lpm = { workspace = true }
@@ -46,7 +45,6 @@ netgauze-bgp-pkt = { workspace = true }
 netgauze-bmp-pkt = { workspace = true, features = ["codec"] }
 nix = { workspace = true, features = ["socket"] }
 ordermap = { workspace = true }
-rtnetlink = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 strum =  { workspace = true }
 thiserror = { workspace = true }
@@ -59,6 +57,8 @@ procfs = { workspace = true }
 netdev = { workspace = true }
 
 [dev-dependencies]
+interface-manager = { workspace = true }
+rtnetlink = { workspace = true }
 dataplane-routing = { path = ".", features = ["testing"] }
 lpm = { workspace = true, features = ["testing"] }
 clock = { workspace = true, features = ["virtual"] }

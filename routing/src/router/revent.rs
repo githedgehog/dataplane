@@ -13,7 +13,6 @@ use net::interface::InterfaceName;
 
 use config::GenId;
 use config::internal::status::BgpNeighborSessionState;
-use interface_manager::monitor::EthEvent;
 use std::cell::RefCell;
 use std::fmt::Display;
 
@@ -34,7 +33,7 @@ pub enum RouterEvent {
     FrrConfigApplySuccess(GenId),
     FrrConfigApplyFailure(GenId),
 
-    IfEvent(EthEvent),
+    LinkStateObserved(usize),
 
     IfAdmChange(InterfaceName, IfChange<IfState>),
     IfOperChange(InterfaceName, IfChange<IfState>),
@@ -74,8 +73,8 @@ impl Display for RouterEvent {
             RouterEvent::FrrConfigApplyFailure(genid) => {
                 write!(f, "FRR configuration for generation {genid} FAILED")?;
             }
-            RouterEvent::IfEvent(ev) => {
-                write!(f, "ifevent: {ev}")?;
+            RouterEvent::LinkStateObserved(links) => {
+                write!(f, "observed the state of {links} links")?;
             }
             RouterEvent::IfOperChange(ifname, s) => {
                 write!(f, "{ifname}: oper state changed {} -> {}", s.old, s.new)?;

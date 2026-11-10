@@ -5,16 +5,16 @@
 
 use crate::processor::k8s_client::{K8sClient, K8sClientError};
 use crate::processor::k8s_less_client::{K8sLess, K8sLessError};
+use crate::processor::linkstate::sync_link_state;
 use crate::processor::mgmt_client::ConfigClient;
 use crate::processor::proc::ConfigProcessor;
 use crate::processor::proc::ConfigProcessorParams;
-use interface_manager::monitor::{EthEvent, InterfaceMonitor};
+use interface_manager::monitor::InterfaceMonitor;
 
 use clock::Duration;
 use concurrency::sync::Arc;
 use lifecycle::{CancellationToken, Subsystem};
 use net::interface::InterfaceName;
-use routing::RouterCtlSender;
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, thiserror::Error)]
@@ -94,32 +94,6 @@ async fn k8s_mgmt_init(
     Ok(())
 }
 
-async fn interface_event_notify(
-    mut rx: tokio::sync::broadcast::Receiver<EthEvent>,
-    rtr_ctl: RouterCtlSender,
-) {
-    use tokio::sync::broadcast::error::RecvError;
-    loop {
-        tokio::select! {
-            sig = rx.recv() => match sig {
-                Ok(ev) => {
-                    debug!("Notifying router about interface event...");
-                    if rtr_ctl.send_ifevent(ev).await.is_err() {
-                        warn!("Failed to relay interface event to router")
-                    }
-                }
-                Err(RecvError::Lagged(n)) => {
-                    warn!("Dropped {n} interface events (rx lag)");
-                }
-                Err(RecvError::Closed) => {
-                    warn!("Interface monitor channel was closed. Will no longer relay interface events");
-                    break;
-                }
-            },
-        }
-    }
-}
-
 /// Init mgmt synchronously on `handle`, then spawn the long-lived tasks
 /// (config processor, status updater, config watcher) tracked under
 /// `mgmt`. Init observes `mgmt.root_token()` so SIGINT during init returns
@@ -136,15 +110,19 @@ pub fn run_mgmt(
 ) -> Result<(), LaunchError> {
     // start interface monitor
     let ifmonitor = Arc::new(InterfaceMonitor::new(mgmt.cancel_token()));
-    let if_subsc = ifmonitor.subscribe();
+    let link_changes = ifmonitor.subscribe();
     mgmt.spawn_fatal_on_exit(
         "interface monitor",
-        InterfaceMonitor::run(ifmonitor),
+        InterfaceMonitor::run(ifmonitor.clone()),
         handle,
     );
     mgmt.spawn_fatal_on_exit(
-        "interface event relay",
-        interface_event_notify(if_subsc, params.processor_params.router_ctl.clone()),
+        "link state sync",
+        sync_link_state(
+            ifmonitor,
+            link_changes,
+            params.processor_params.router_ctl.clone(),
+        ),
         handle,
     );
 

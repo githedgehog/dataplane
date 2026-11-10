@@ -659,7 +659,7 @@ mod tests_cli_handling {
     use config::ValidatedGwConfig;
     use config::internal::status::BgpNeighborSessionState;
 
-    use interface_manager::monitor::EthEvent;
+    use crate::{LinkState, LinkStates};
     use lifecycle::{CancellationToken, Subsystem};
 
     use net::eth::mac::{Mac, SourceMac};
@@ -790,17 +790,25 @@ mod tests_cli_handling {
         panic!("the fake frr agent did not apply the FRR config within 10 s");
     }
 
-    // ctl: send events to router
+    // ctl: send link state to router
+    async fn send_link_state(ctl: &RouterCtlSender, mac: &str) {
+        let link = LinkState {
+            ifindex: InterfaceIndex::try_from(IFINDEX).expect("Bad ifindex"),
+            name: InterfaceName::try_from(IFNAME).expect("Bad ifname"),
+            mac: Some(SourceMac::try_from(mac).expect("Bad mac")),
+            mtu: None,
+            admin_state: IfState::Up,
+            oper_state: IfState::Up,
+        };
+        ctl.send_link_state(LinkStates::from_iter([link]))
+            .await
+            .unwrap();
+    }
     async fn send_if_event_ifup(ctl: &RouterCtlSender) {
-        let ifindex = InterfaceIndex::try_from(IFINDEX).expect("Bad ifindex");
-        let ev = EthEvent::new(ifindex, true, true, true);
-        ctl.send_ifevent(ev).await.unwrap();
+        send_link_state(ctl, IF_MAC).await;
     }
     async fn send_if_event_mac_change(ctl: &RouterCtlSender) {
-        let ifindex = InterfaceIndex::try_from(IFINDEX).expect("Bad ifindex");
-        let ev = EthEvent::new(ifindex, true, true, true)
-            .set_mac(Some(SourceMac::try_from(IF_NEW_MAC).expect("Bad mac")));
-        ctl.send_ifevent(ev).await.unwrap();
+        send_link_state(ctl, IF_NEW_MAC).await;
     }
     async fn send_bgp_neigh_change(ctl: &RouterCtlSender) {
         let bgp_ev = BgpNeighEvent::new(
