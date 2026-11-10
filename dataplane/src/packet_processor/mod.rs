@@ -186,7 +186,7 @@ impl PipelineIngredients {
             // currently hard-coded. Flows expire on the worker's timer wheel, which the worker
             // drives through `WorkerFlowTable::expire`; no stage is needed for it.
             let pipeline = DynPipeline::new()
-                .set_data(self.pdata.clone())
+                .with_data(self.pdata.clone())
                 .add_stage(capture_ingress)
                 .add_stage(stage_ingress)
                 .add_stage(iprouter1)

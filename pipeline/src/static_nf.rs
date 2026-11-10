@@ -35,11 +35,10 @@ pub trait NetworkFunction<Buf: PacketBufferMut> {
         burst.into_iter()
     }
 
-    /// Let NFs access some `PipelineData` if they wish on their creation
+    /// Let NFs adopt some [`PipelineData`] if they wish on their creation
     fn set_data(&mut self, _data: Arc<PipelineData>) {}
 
-    /// Let NFs get a clone of the [`SchedRun`] of their pipeline to set a deadline for it to run
-    /// by, even if no packets come.
+    /// Let NFs adopt a clone of the [`SchedRun`] of their pipeline to schedule runs even if no packets arrive.
     fn set_sched_run(&mut self, _sched: SchedRun) {}
 }
 

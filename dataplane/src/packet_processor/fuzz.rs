@@ -293,7 +293,7 @@ impl Blueprint {
 
     pub(crate) fn worker(&self) -> Worker {
         let translations = Arc::new(Mutex::new(Translations::declaring(&self.declared)));
-        let mut pipeline = DynPipeline::new().set_data(self.pipeline.clone());
+        let mut pipeline = DynPipeline::new().with_data(self.pipeline.clone());
 
         if let Some(underlay) = &self.underlay {
             pipeline = pipeline.add_stage(Ingress::new("ingress", underlay.interfaces.handle()));
