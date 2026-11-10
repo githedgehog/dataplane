@@ -4,6 +4,7 @@
 use std::net::IpAddr;
 
 use k8s_intf::gateway_agent_crd::GatewayAgentGatewayNeighbors;
+use net::interface::InterfaceName;
 
 use crate::converters::k8s::{FromK8sConversionError, ToK8sConversionError};
 use crate::internal::routing::bgp::{BgpNeighType, BgpNeighbor, BgpUpdateSource};
@@ -39,6 +40,9 @@ impl TryFrom<&GatewayAgentGatewayNeighbors> for BgpNeighbor {
                 .ok_or(FromK8sConversionError::MissingData(format!(
                     "Missing ASN in unnumbered BGP neighbor on interface {ifname}"
                 )))?;
+            let ifname = InterfaceName::try_from(ifname.as_str()).map_err(|e| {
+                FromK8sConversionError::InvalidData(format!("BGP neighbor interface {ifname}: {e}"))
+            })?;
             return Ok(BgpNeighbor::new_interface(ifname).set_remote_as(remote_as));
         };
 
@@ -95,7 +99,7 @@ impl TryFrom<&BgpNeighbor> for GatewayAgentGatewayNeighbors {
                     .transpose()?;
                 (Some(addr.to_string()), source)
             }
-            BgpNeighType::Interface(ifname) => (None, Some(ifname.clone())),
+            BgpNeighType::Interface(ifname) => (None, Some(ifname.to_string())),
             BgpNeighType::PeerGroup(name) => {
                 return Err(ToK8sConversionError::Unsupported(format!(
                     "Peer group type not supported in CRD: {name}"
@@ -147,7 +151,7 @@ mod tests {
         };
 
         let neigh = BgpNeighbor::try_from(&crd).expect("unnumbered neighbor should convert");
-        assert!(matches!(&neigh.ntype(), BgpNeighType::Interface(i) if i == "enp2s1np0"));
+        assert!(matches!(&neigh.ntype(), BgpNeighType::Interface(i) if i.as_ref() == "enp2s1np0"));
         assert_eq!(neigh.remote_as, Some(65100));
         assert!(neigh.update_source.is_none());
 

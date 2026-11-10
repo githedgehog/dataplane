@@ -83,7 +83,7 @@ impl Underlay {
         for neigh in &bgp.neighbors {
             match neigh.ntype() {
                 BgpNeighType::Interface(ifname) => {
-                    let iface = self.vrf.interfaces.get(ifname).ok_or_else(|| {
+                    let iface = self.vrf.interfaces.get(ifname.as_ref()).ok_or_else(|| {
                         ConfigError::Invalid(format!(
                             "BGP neighbor peers over interface '{ifname}', which is not configured"
                         ))
@@ -178,6 +178,10 @@ mod tests {
         Underlay { vrf, vtep: None }
     }
 
+    fn ifname(name: &str) -> InterfaceName {
+        InterfaceName::try_from(name).expect("bad test interface name")
+    }
+
     /// Parse a neighbor address written as a plain literal in a test.
     fn host(addr: &str) -> IpAddr {
         IpAddr::from_str(addr).expect("bad test address")
@@ -188,7 +192,7 @@ mod tests {
     fn test_unnumbered_over_unaddressed_interface_is_valid() {
         let underlay = underlay_with(
             &[("enp2s1np0", &[])],
-            vec![BgpNeighbor::new_interface("enp2s1np0").set_remote_as(65100)],
+            vec![BgpNeighbor::new_interface(ifname("enp2s1np0")).set_remote_as(65100)],
         );
         assert!(underlay.validate().is_ok());
     }
@@ -199,7 +203,7 @@ mod tests {
     fn test_unnumbered_over_ipv6_only_interface_is_valid() {
         let underlay = underlay_with(
             &[("enp2s1np0", &["2001:db8::1/64"])],
-            vec![BgpNeighbor::new_interface("enp2s1np0").set_remote_as(65100)],
+            vec![BgpNeighbor::new_interface(ifname("enp2s1np0")).set_remote_as(65100)],
         );
         assert!(underlay.validate().is_ok());
     }
@@ -210,7 +214,7 @@ mod tests {
     fn test_unnumbered_over_ipv4_interface_is_rejected() {
         let underlay = underlay_with(
             &[("enp2s1np0", &["172.30.128.23/31"])],
-            vec![BgpNeighbor::new_interface("enp2s1np0").set_remote_as(65100)],
+            vec![BgpNeighbor::new_interface(ifname("enp2s1np0")).set_remote_as(65100)],
         );
         let err = underlay
             .validate()
@@ -227,7 +231,7 @@ mod tests {
     fn test_unnumbered_over_non_p2p_ipv4_interface_is_rejected() {
         let underlay = underlay_with(
             &[("enp2s1np0", &["10.0.0.1/24"])],
-            vec![BgpNeighbor::new_interface("enp2s1np0").set_remote_as(65100)],
+            vec![BgpNeighbor::new_interface(ifname("enp2s1np0")).set_remote_as(65100)],
         );
         assert!(underlay.validate().is_err());
     }
@@ -238,7 +242,7 @@ mod tests {
     fn test_unnumbered_over_unknown_interface_is_rejected() {
         let underlay = underlay_with(
             &[("enp2s1np0", &[])],
-            vec![BgpNeighbor::new_interface("eth0").set_remote_as(65100)],
+            vec![BgpNeighbor::new_interface(ifname("eth0")).set_remote_as(65100)],
         );
         assert!(underlay.validate().is_err());
     }
