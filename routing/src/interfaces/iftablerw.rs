@@ -17,9 +17,6 @@ use net::interface::{InterfaceIndex, InterfaceName};
 
 use tracing::{debug, error};
 
-#[cfg(test)]
-use std::ptr::NonNull;
-
 #[allow(unused)]
 enum IfTableChange {
     Add(RouterInterfaceConfig),
@@ -104,7 +101,7 @@ pub struct IfUpdate {
 }
 impl IfUpdate {
     #[must_use]
-    fn new(ifindex: InterfaceIndex, ifname: &InterfaceName) -> Self {
+    pub(crate) fn new(ifindex: InterfaceIndex, ifname: &InterfaceName) -> Self {
         Self {
             ifindex,
             ifname: ifname.clone(),
@@ -116,25 +113,25 @@ impl IfUpdate {
     }
 
     #[must_use]
-    fn check_ifname(mut self, old: &InterfaceName, new: &InterfaceName) -> Self {
+    pub(crate) fn check_ifname(mut self, old: &InterfaceName, new: &InterfaceName) -> Self {
         self.name_change = IfChange::cloned(old, new);
         self
     }
 
     #[must_use]
-    fn check_mac(mut self, old: SourceMac, new: SourceMac) -> Self {
+    pub(crate) fn check_mac(mut self, old: SourceMac, new: SourceMac) -> Self {
         self.mac = IfChange::copied(old, new);
         self
     }
 
     #[must_use]
-    fn check_adm_state(mut self, old: IfState, new: IfState) -> Self {
+    pub(crate) fn check_adm_state(mut self, old: IfState, new: IfState) -> Self {
         self.adm_state = IfChange::copied(old, new);
         self
     }
 
     #[must_use]
-    fn check_oper_state(mut self, old: IfState, new: IfState) -> Self {
+    pub(crate) fn check_oper_state(mut self, old: IfState, new: IfState) -> Self {
         self.oper_state = IfChange::copied(old, new);
         self
     }
@@ -155,19 +152,6 @@ impl IfTableWriter {
     #[must_use]
     pub fn enter(&self) -> Option<ReadGuard<'_, IfTable>> {
         self.0.enter()
-    }
-
-    #[must_use]
-    #[cfg(test)]
-    // Not to be used outside tests; because it is unsafe to mutate with readers
-    // and, most importantly, because this API may change
-    pub(crate) fn raw_write_handle(&mut self) -> NonNull<IfTable> {
-        self.0.raw_write_handle()
-    }
-
-    #[cfg(test)]
-    pub fn publish(&mut self) {
-        self.0.publish();
     }
 
     // tell if there exists an interface with a given index
@@ -329,6 +313,7 @@ impl IfTableWriter {
     ///
     /// # Errors
     ///   Returns `RouterError` if the interface could not be found
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_iface_admin_state(
         &mut self,
         ifindex: InterfaceIndex,
@@ -404,6 +389,7 @@ impl IfTableWriter {
     ///
     /// # Errors
     ///   Returns `RouterError` if the interface could not be found
+    #[cfg(test)]
     pub fn update_name(
         &mut self,
         ifindex: InterfaceIndex,
@@ -427,43 +413,6 @@ impl IfTableWriter {
         self.0.publish();
 
         debug!("Changed the name of interface {ifindex}: {old_name} -> {new_name}");
-        Ok(update)
-    }
-
-    /// Updates the mac of an interface to `new_mac`. Returns `IfUpdate` indicating the change on success
-    ///
-    /// # Errors
-    ///   Returns `RouterError` if the interface could not be found or it is not supposed to have a mac
-    pub fn update_mac(
-        &mut self,
-        ifindex: InterfaceIndex,
-        new_mac: SourceMac,
-    ) -> Result<IfUpdate, RouterError> {
-        let (mut config, mut iftype) = self
-            .enter()
-            .unwrap_or_else(|| unreachable!())
-            .get_interface(ifindex)
-            .map(|iface| (iface.as_config(), iface.iftype.clone()))
-            .ok_or(RouterError::NoSuchInterface(ifindex))?;
-
-        let Some(mac) = iftype.get_mac() else {
-            error!("Can't update mac of interface with index {ifindex}: it has no mac");
-            return Err(RouterError::HasNoMac(ifindex));
-        };
-
-        let update = IfUpdate::new(ifindex, &config.name).check_mac(mac, new_mac);
-        if update.mac.is_none() {
-            return Ok(update);
-        }
-
-        let ifname = config.name.clone();
-        iftype.set_mac(new_mac);
-        config.set_iftype(iftype);
-
-        self.0.append(IfTableChange::Mod(config));
-        self.0.publish();
-
-        debug!("Changed the mac of interface {ifname}: {mac} -> {new_mac}");
         Ok(update)
     }
 }

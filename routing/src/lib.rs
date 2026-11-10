@@ -41,6 +41,7 @@ pub use interfaces::iftable::IfTable;
 pub use interfaces::iftablerw::{IfChange, IfTableReader, IfTableReaderFactory};
 pub use interfaces::interface::{AttachConfig, Attachment, RouterInterfaceConfig};
 pub use interfaces::interface::{IfDataEthernet, IfState, IfType, Interface};
+pub use interfaces::linkstate::{LinkState, LinkStates};
 pub use rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 pub use rib::vrf::{RouterVrfConfig, VrfId};
 

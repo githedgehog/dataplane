@@ -170,8 +170,8 @@ impl InterfaceMonitor {
         self.tx.subscribe()
     }
 
-    /// wait until the monitor reports it is ready. This is only used in tests
-    #[cfg(test)]
+    /// Wait until the monitor is listening for link changes. A change after this returns is
+    /// reported to the subscribers.
     pub async fn wait_ready(&self) {
         let _ = self.ready.subscribe().wait_for(|is_ready| *is_ready).await;
     }
