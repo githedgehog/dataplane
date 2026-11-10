@@ -143,7 +143,9 @@ pub(crate) async fn sync_link_state(monitor: Arc<InterfaceMonitor>, router: Rout
         }
 
         // Wait for a change, then consume every other change already queued: the next observation
-        // covers them all. Falling behind loses nothing either; it is just another change.
+        // covers them all. Falling behind loses nothing either; it is just another change. Nor does
+        // the kernel dropping events when the monitor's socket overruns: the monitor reports the
+        // overrun, and that is a change like any other.
         //
         // The channel does not close while `monitor` is held. If the monitor's task ends, mgmt
         // treats that as fatal (see `run_mgmt`), so there is no stale state to outlive.
