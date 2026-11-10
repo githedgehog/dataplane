@@ -96,9 +96,12 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
     }
 
     #[must_use]
-    /// Set `PipelineData` to a `DynPipeline`
-    pub fn set_data(mut self, data: Arc<PipelineData>) -> Self {
-        self.data = data;
+    /// Set `PipelineData` to a `DynPipeline` and all of its stages.
+    ///
+    /// When pipelines are nested, only the outermost one needs this: adding a pipeline
+    /// as a stage of another overwrites its data with that of the outer one.
+    pub fn with_data(mut self, data: Arc<PipelineData>) -> Self {
+        self.set_data(data); // NetworkFunction's trait method
         self
     }
 
@@ -231,6 +234,15 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<'_, Buf> {
         self.sched = sched;
         self.nested = true;
     }
+
+    /// Adopt `data` and hand it to all the stages, so that a nested pipeline's stages
+    /// see the data of the outer pipeline.
+    fn set_data(&mut self, data: Arc<PipelineData>) {
+        for nf in self.nfs.values_mut() {
+            nf.set_data(data.clone());
+        }
+        self.data = data;
+    }
 }
 
 #[cfg(test)]
@@ -278,7 +290,7 @@ mod pipeline_data {
         const GENID: i64 = 7;
         let report = Rc::new(Cell::new(None));
         let stage = DataNF::new(report.clone());
-        let pipeline = DynPipeline::new().set_data(Arc::new(PipelineData::new(GENID)));
+        let pipeline = DynPipeline::new().with_data(Arc::new(PipelineData::new(GENID)));
         let mut pipeline = add_stage(stage, pipeline);
         pipeline.process_burst(&mut vec![]);
 
@@ -299,6 +311,11 @@ mod pipeline_data {
     #[test]
     fn test_data_reaches_stage_chained_last() {
         check_data(|stage, pipeline| pipeline.add_stage(Passthrough.chain(stage)));
+    }
+
+    #[test]
+    fn test_data_reaches_stage_in_nested_pipeline() {
+        check_data(|stage, pipeline| pipeline.add_stage(DynPipeline::new().add_stage(stage)));
     }
 }
 
