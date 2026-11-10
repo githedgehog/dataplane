@@ -43,9 +43,9 @@ pub(crate) fn of_underlay(underlay: &Underlay, bfd_peers: &[BfdPeer]) -> Control
     let local = interface_addresses.chain(update_sources).chain(bfd_sources);
 
     let neighbours = bgp_neighbours
-        .filter_map(|neighbour| match neighbour.ntype {
-            BgpNeighType::Host(address) => Some(address),
-            BgpNeighType::PeerGroup(_) | BgpNeighType::Unset => None,
+        .filter_map(|neighbour| match neighbour.ntype() {
+            BgpNeighType::Host(address) => Some(*address),
+            BgpNeighType::PeerGroup(_) | BgpNeighType::Interface(_) => None,
         })
         .chain(bfd_peers.iter().map(|peer| peer.address));
 

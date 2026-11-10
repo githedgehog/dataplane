@@ -6,6 +6,7 @@
 #![allow(unused)]
 
 use lpm::prefix::Prefix;
+use net::interface::InterfaceName;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -89,12 +90,14 @@ pub enum BgpUpdateSource {
     Interface(String),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub enum BgpNeighType {
-    #[default]
-    Unset,
     Host(IpAddr),
     PeerGroup(String),
+    /// An unnumbered (interface) peer: the session is established over the
+    /// named interface, with FRR peering via IPv6 link-local addressing (ND)
+    /// instead of a configured neighbor address.
+    Interface(InterfaceName),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -119,11 +122,11 @@ impl BgpNeighAF {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 /// A BGP neighbor config
 #[allow(clippy::struct_excessive_bools)]
 pub struct BgpNeighbor {
-    pub ntype: BgpNeighType,
+    ntype: BgpNeighType,
     pub remote_as: Option<u32>,
     pub peer_group: Option<String>,
     pub description: Option<String>,
@@ -237,6 +240,7 @@ impl Redistribute {
         }
     }
 }
+
 impl VrfImports {
     #[must_use]
     pub fn new() -> Self {
@@ -251,6 +255,7 @@ impl VrfImports {
         self.from_vrf.insert(vrf.to_owned());
     }
 }
+
 impl AfIpv4Ucast {
     #[must_use]
     pub fn new() -> Self {
@@ -278,6 +283,7 @@ impl AfIpv4Ucast {
         }
     }
 }
+
 impl AfIpv6Ucast {
     #[must_use]
     pub fn new() -> Self {
@@ -304,6 +310,7 @@ impl AfIpv6Ucast {
         }
     }
 }
+
 impl AfL2vpnEvpn {
     #[must_use]
     pub fn new() -> Self {
@@ -355,6 +362,7 @@ impl AfL2vpnEvpn {
         self
     }
 }
+
 impl BgpNeighCapabilities {
     #[must_use]
     pub fn new() -> Self {
@@ -381,24 +389,79 @@ impl BgpNeighCapabilities {
         self
     }
 }
+
 impl BgpNeighbor {
     #[must_use]
-    pub fn new_host(address: IpAddr) -> Self {
+    fn with_type(ntype: BgpNeighType) -> Self {
         Self {
-            ntype: BgpNeighType::Host(address),
-            ..Default::default()
+            ntype,
+            remote_as: None,
+            peer_group: None,
+            description: None,
+            route_map_in: None,
+            route_map_out: None,
+            update_source: None,
+            weight: None,
+            capabilities: BgpNeighCapabilities::default(),
+            send_community: None,
+            ebgp_multihop: None,
+            ttl_sec_hops: None,
+            advertisement_interval: None,
+            maximum_prefix: None,
+            maximum_prefix_out: None,
+            timer_connect: None,
+            timer_delay_open: None,
+            tcp_mss: None,
+
+            /* switches */
+            passive: false,
+            as_override: false,
+            strict_capability_match: false,
+            dont_capability_negotiate: false,
+            allow_as_in: false,
+            extended_link_bandwidth: false,
+            next_hop_self: false,
+            remove_private_as: false,
+            rr_client: false,
+            default_originate: false,
+            bfd: false,
+
+            /* Address families */
+            ipv4_unicast: None,
+            ipv6_unicast: None,
+            l2vpn_evpn: None,
         }
+    }
+
+    #[must_use]
+    pub fn new_host(address: IpAddr) -> Self {
+        Self::with_type(BgpNeighType::Host(address))
     }
     #[must_use]
     pub fn new_peer_group(group: &str) -> Self {
-        Self {
-            ntype: BgpNeighType::PeerGroup(group.to_owned()),
-            ..Default::default()
-        }
+        Self::with_type(BgpNeighType::PeerGroup(group.to_owned()))
     }
+    /// Build an unnumbered (interface) neighbor peering over `ifname`.
+    #[must_use]
+    pub fn new_interface(ifname: InterfaceName) -> Self {
+        Self::with_type(BgpNeighType::Interface(ifname))
+    }
+
+    /// Provide the type of neighbor
+    #[must_use]
+    pub fn ntype(&self) -> &BgpNeighType {
+        &self.ntype
+    }
+
     #[must_use]
     pub fn is_peer_group(&self) -> bool {
         matches!(self.ntype, BgpNeighType::PeerGroup(_))
+    }
+    /// Whether this is an unnumbered peer, i.e. one identified by the interface
+    /// it peers over rather than by an address.
+    #[must_use]
+    pub fn is_interface(&self) -> bool {
+        matches!(self.ntype, BgpNeighType::Interface(_))
     }
 
     /* capabilities */
