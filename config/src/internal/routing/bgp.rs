@@ -6,6 +6,7 @@
 #![allow(unused)]
 
 use lpm::prefix::Prefix;
+use net::interface::InterfaceName;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -94,9 +95,9 @@ pub enum BgpNeighType {
     Host(IpAddr),
     PeerGroup(String),
     /// An unnumbered (interface) peer: the session is established over the
-    /// named interface, with FRR discovering the peer from its IPv6
-    /// link-local router advertisements instead of a configured address.
-    Interface(String),
+    /// named interface, with FRR peering via IPv6 link-local addressing (ND)
+    /// instead of a configured neighbor address.
+    Interface(InterfaceName),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -442,8 +443,8 @@ impl BgpNeighbor {
     }
     /// Build an unnumbered (interface) neighbor peering over `ifname`.
     #[must_use]
-    pub fn new_interface(ifname: &str) -> Self {
-        Self::with_type(BgpNeighType::Interface(ifname.to_owned()))
+    pub fn new_interface(ifname: InterfaceName) -> Self {
+        Self::with_type(BgpNeighType::Interface(ifname))
     }
 
     /// Provide the type of neighbor

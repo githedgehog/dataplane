@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use std::collections::BTreeMap;
+use std::net::Ipv4Addr;
 use std::ops::Bound;
 
 use bolero::{Driver, TypeGenerator};
@@ -28,10 +29,32 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
             );
         }
 
+        // Unnumbered peers need an interface with no IPv4 address, one peer each.
+        let mut unaddressed: Vec<String> = interfaces
+            .iter()
+            .filter(|(_, iface)| !has_ipv4(iface))
+            .map(|(name, _)| name.clone())
+            .collect();
+
         let n_neighbors = d.gen_usize(Bound::Included(&0), Bound::Included(&10))?;
         let mut neighbors = Vec::new();
         for _ in 0..n_neighbors {
-            neighbors.push(d.produce::<LegalValue<GatewayAgentGatewayNeighbors>>()?.0);
+            let mut neighbor = d.produce::<LegalValue<GatewayAgentGatewayNeighbors>>()?.0;
+            let source = neighbor.source.clone().unwrap_or_default();
+            if let Some(pos) = unaddressed.iter().position(|name| *name == source) {
+                // Sourced from an unaddressed interface: only unnumbered is valid.
+                unaddressed.swap_remove(pos);
+                neighbor.ip = None;
+            } else if neighbor.ip.is_none() {
+                if unaddressed.is_empty() {
+                    neighbor.ip = Some(d.produce::<UnicastIpv4Addr>()?.to_string());
+                } else {
+                    let last = unaddressed.len() - 1;
+                    let pick = d.gen_usize(Bound::Included(&0), Bound::Included(&last))?;
+                    neighbor.source = Some(unaddressed.swap_remove(pick));
+                }
+            }
+            neighbors.push(neighbor);
         }
 
         let n_groups = d.gen_usize(Bound::Included(&1), Bound::Included(&4))?;
@@ -66,6 +89,14 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
             workers: Some(d.gen_u8(Bound::Included(&1), Bound::Unbounded)?),
         }))
     }
+}
+
+fn has_ipv4(iface: &GatewayAgentGatewayInterfaces) -> bool {
+    iface.ips.iter().flatten().any(|ip| {
+        ip.split('/')
+            .next()
+            .is_some_and(|addr| addr.parse::<Ipv4Addr>().is_ok())
+    })
 }
 
 impl Normalize for GatewayAgentGateway {
