@@ -257,7 +257,7 @@ impl RouterConfig {
 
 #[cfg(test)]
 #[rustfmt::skip]
-mod tests {
+pub(crate) mod tests {
     use std::str::FromStr;
     use tracing_test::traced_test;
     use tracing::debug;
@@ -341,14 +341,14 @@ mod tests {
         let vtep = Vtep::new(vtep_ip, vtep_mac);
         config.set_vtep(vtep);
     }
-    fn build_router_config() -> RouterConfig {
+    pub(crate) fn build_router_config() -> RouterConfig {
         let mut config = RouterConfig::new(1);
         add_router_vrf_configs(&mut config);
         add_router_interface_configs(&mut config);
         add_router_vtep_config(&mut config);
         config
     }
-    pub(super) fn create_routing_database() -> RoutingDb {
+    pub(crate) fn create_routing_database() -> RoutingDb {
         let (iftw, _iftr) = IfTableWriter::new();
         let (fibtw, _fibtr) = FibTableWriter::new();
         let (_resolver, atabler) = AtResolver::new(false);
