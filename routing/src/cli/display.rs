@@ -18,6 +18,7 @@ use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtype::{Fib, FibKey, FibRouteV4Filter, FibRouteV6Filter};
 use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 use crate::router::cpi::{CpiStats, CpiStatus, StatsRow};
+use net::packet::VpcDiscriminant;
 
 use crate::VrfId;
 use crate::rib::VrfTable;
@@ -746,7 +747,7 @@ impl Display for FibKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             FibKey::Id(vrfid) => write!(f, "vrfid: {vrfid}")?,
-            FibKey::Vni(vni) => write!(f, "vni: {vni:?}")?,
+            FibKey::Secondary(VpcDiscriminant::VNI(vni)) => write!(f, "vni: {vni:?}")?,
         }
         Ok(())
     }
@@ -856,7 +857,7 @@ impl Display for FibRoute {
 }
 fn fmt_fib_trie<P: IpPrefix, F: Fn(&(P, &FibRoute)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
-    fibid: FibKey,
+    fibid: VrfId,
     show_string: &str,
     trie: &PrefixMapTrie<P, FibRoute>,
     group_filter: F,

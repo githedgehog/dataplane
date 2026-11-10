@@ -13,6 +13,7 @@ use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
+use net::packet::VpcDiscriminant;
 use net::vxlan::Vni;
 
 use crate::evpn::Vtep;
@@ -29,7 +30,7 @@ use tracing::{debug, error, info, trace, warn};
 // As an identifier, only the variant `FibKey::Id` is allowed.
 pub enum FibKey {
     Id(VrfId),
-    Vni(Vni),
+    Secondary(VpcDiscriminant),
 }
 impl FibKey {
     #[must_use]
@@ -38,14 +39,11 @@ impl FibKey {
     }
     #[must_use]
     pub const fn from_vni(vni: Vni) -> Self {
-        FibKey::Vni(vni)
+        FibKey::Secondary(VpcDiscriminant::VNI(vni))
     }
     #[must_use]
-    pub fn as_u32(&self) -> u32 {
-        match self {
-            FibKey::Id(value) => *value,
-            FibKey::Vni(value) => value.as_u32(),
-        }
+    pub const fn from_vpcd(vpcd: VpcDiscriminant) -> Self {
+        FibKey::Secondary(vpcd)
     }
 }
 
@@ -59,7 +57,7 @@ pub struct Fib {
 }
 impl Identity<FibKey> for Fib {
     fn identity(&self) -> FibKey {
-        self.get_id()
+        FibKey::Id(self.get_id())
     }
 }
 impl Default for Fib {
@@ -88,13 +86,10 @@ impl Fib {
 
     /// Returns this FIB's ID, panicking if it has not been set.
     #[must_use]
-    pub fn get_id(&self) -> FibKey {
-        let Some(vrfid) = self.id else {
-            unreachable!(
-                "fib has no id: a Fib reached the table without FibWriter::new setting one"
-            )
-        };
-        FibKey::Id(vrfid)
+    pub fn get_id(&self) -> VrfId {
+        // a Fib can only be created with a Fib writer which gives it an id
+        self.id
+            .unwrap_or_else(|| unreachable!("fib has no id: FibWriter::new sets it"))
     }
 
     /// Add a [`FibRoute`]
@@ -444,7 +439,7 @@ impl FibReader {
             Rc::from_raw(ptr)
         }
     }
-    pub fn get_id(&self) -> Option<FibKey> {
+    pub fn get_id(&self) -> Option<VrfId> {
         self.enter().map(|fib| fib.get_id())
     }
     #[must_use]

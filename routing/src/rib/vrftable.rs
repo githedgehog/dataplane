@@ -170,7 +170,7 @@ impl VrfTable {
         // check access from vni and that we hit a fib with the same id
         let key = FibKey::from_vni(*vni);
         if let Some(id) = fibtabler.get_fib_reader(key)?.get_id()
-            && id != fibid
+            && id != vrfid
         {
             return Err(RouterError::Internal("Inconsistent fib id found!"));
         }
@@ -735,7 +735,7 @@ mod tests {
             let fibkey = FibKey::from_vrfid(0);
             let fibr = fibtable.get_fib(fibkey).unwrap();
             let fib = fibr.enter().unwrap();
-            assert_eq!(fib.as_ref().get_id(), fibkey);
+            assert_eq!(fib.get_id(), 0);
         }
 
         let vrfid = 999;
@@ -753,7 +753,7 @@ mod tests {
             let fibkey = FibKey::from_vrfid(vrfid);
             let fibr = fibtable.get_fib(fibkey).unwrap();
             let fib = fibr.enter().unwrap();
-            assert_eq!(fib.as_ref().get_id(), fibkey);
+            assert_eq!(fib.get_id(), vrfid);
             assert_eq!(fibtable.as_ref().len(), 2);
         }
 
@@ -767,13 +767,13 @@ mod tests {
             let fibkey = FibKey::from_vrfid(vrfid);
             let fibr = fibtable.get_fib(fibkey).unwrap();
             let fib = fibr.enter().unwrap();
-            assert_eq!(fib.as_ref().get_id(), fibkey);
+            assert_eq!(fib.get_id(), vrfid);
 
             // check that fib is accessible from vni
             let fibkey = FibKey::from_vni(vni);
             let fibr = fibtable.get_fib(fibkey).unwrap();
             let fib = fibr.enter().unwrap();
-            assert_eq!(fib.as_ref().get_id(), FibKey::from_vrfid(vrfid));
+            assert_eq!(fib.get_id(), vrfid);
         }
 
         debug!("━━━━Test: deleting removed VRFs: nothing should be removed");
@@ -1183,7 +1183,7 @@ mod vrftable_properties {
             assert!(fib.is_valid(), "fib for vrf {id} is dead {at}");
             assert_eq!(
                 fib.get_id(),
-                Some(key),
+                Some(*id),
                 "fib for vrf {id} is not its own {at}"
             );
         }
@@ -1197,7 +1197,7 @@ mod vrftable_properties {
             assert!(fib.is_valid(), "fib aliased by vni {vni} is dead {at}");
             assert_eq!(
                 fib.get_id(),
-                Some(FibKey::from_vrfid(owner)),
+                Some(owner),
                 "vni {vni} reaches the wrong fib {at}"
             );
         }
