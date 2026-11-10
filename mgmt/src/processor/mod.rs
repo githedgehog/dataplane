@@ -10,5 +10,6 @@ pub(crate) mod gwconfigdb;
 pub(crate) mod k8s_client;
 pub(crate) mod k8s_less_client;
 pub(crate) mod launch;
+pub(crate) mod linkstate;
 pub(crate) mod mgmt_client;
 pub(crate) mod proc;

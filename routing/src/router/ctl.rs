@@ -5,9 +5,7 @@
 
 use concurrency::sync::Arc;
 use config::{GwConfigMeta, ValidatedGwConfig};
-use interface_manager::monitor::EthEvent;
 use mio::{Interest, Waker};
-use rtnetlink::packet_route::link::State;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::oneshot;
@@ -20,8 +18,7 @@ use crate::RouterError;
 use crate::bmp::bmp_render::BgpNeighEvent;
 use crate::config::RouterConfig;
 use crate::frr::frrmi::FrrAppliedConfig;
-use crate::interfaces::iftablerw::IfTableWriter;
-use crate::interfaces::interface::IfState;
+use crate::interfaces::linkstate::LinkStates;
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::router::rio::{CPSOCK, Rio};
 use crate::routingdb::RoutingDb;
@@ -61,7 +58,7 @@ pub(crate) enum RouterCtlMsg {
     GetFrrAppliedConfig(RouterCtlReplyTx),
     Config(Arc<ValidatedGwConfig>),
     ConfigHistory(Arc<Vec<GwConfigMeta>>),
-    IfEvent(EthEvent),
+    LinkState(LinkStates),
     BgpNeighStatus(BgpNeighEvent),
 }
 
@@ -167,8 +164,9 @@ impl RouterCtlSender {
         let msg = RouterCtlMsg::ConfigHistory(history);
         self.send_and_wake(msg).await
     }
-    pub async fn send_ifevent(&self, ev: EthEvent) -> Result<(), RouterError> {
-        let msg = RouterCtlMsg::IfEvent(ev);
+    /// Hand the router a complete observation of the kernel's links, replacing the last one.
+    pub async fn send_link_state(&self, links: LinkStates) -> Result<(), RouterError> {
+        let msg = RouterCtlMsg::LinkState(links);
         self.send_and_wake(msg).await
     }
     pub async fn send_bgp_neigh_change(&self, ev: BgpNeighEvent) -> Result<(), RouterError> {
@@ -255,58 +253,21 @@ fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
     rio.cfg_history = history;
 }
 
-fn determine_oper_state(ev: &EthEvent) -> IfState {
-    match ev.oper_state() {
-        Some(State::Up) => IfState::Up,
-        Some(State::Down | State::LowerLayerDown | State::Dormant | State::NotPresent) => {
-            IfState::Down
+/// Take `links` as the router's view of the kernel's links, and bring the configured interfaces to
+/// it.
+///
+/// The observation is kept whether or not there is a configuration yet: the first configuration
+/// takes its link state from it, rather than from whatever the kernel showed when that
+/// configuration was built.
+fn handle_link_state(db: &mut RoutingDb, links: LinkStates) {
+    revent!(RouterEvent::LinkStateObserved(links.len()));
+    db.links = links;
+    if let Some(config) = db.config.take() {
+        if let Err(e) = config.apply_link_state(db) {
+            warn!("Failed to apply link state: {e}");
         }
-        Some(_) | None => {
-            // kernel oper state may not always be reported (None case)
-            // and the other states don't actually tell us. So, fallback
-            // to the ifrunning flag. We don't consider iflowerup flag nor carrier here.
-            IfState::from(ev.ifrunning())
-        }
+        db.config = Some(config);
     }
-}
-pub(crate) fn handle_ifevent(ev: &EthEvent, iftw: &mut IfTableWriter) -> Result<(), RouterError> {
-    let ifindex = ev.ifindex();
-
-    // register event
-    revent!(RouterEvent::IfEvent(ev.clone()));
-
-    // determine reported oper and admin state
-    let adm_state = IfState::from(ev.ifup());
-    let oper_state = determine_oper_state(ev);
-
-    // did admin state change ?
-    let update = iftw.set_iface_admin_state(ifindex, adm_state)?;
-    if let Some(state) = update.adm_state {
-        revent!(RouterEvent::IfAdmChange(update.ifname, state));
-    }
-
-    // did oper state change ?
-    let update = iftw.set_iface_oper_state(ifindex, oper_state)?;
-    if let Some(state) = update.oper_state {
-        revent!(RouterEvent::IfOperChange(update.ifname, state));
-    }
-
-    // did interface name change?
-    if let Some(ifname) = ev.name() {
-        let update = iftw.update_name(ifindex, ifname)?;
-        if let Some(name) = update.name_change {
-            revent!(RouterEvent::IfNameChange(update.ifname, name));
-        }
-    }
-
-    // did mac change ?
-    if let Some(mac) = ev.mac() {
-        let update = iftw.update_mac(ifindex, mac)?;
-        if let Some(mac) = update.mac {
-            revent!(RouterEvent::IfMacChange(update.ifname, mac));
-        }
-    }
-    Ok(())
 }
 
 fn handle_bgp_peer_status_change(bgp_ev: BgpNeighEvent) {
@@ -333,28 +294,268 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
             }
             Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
             Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
-            Ok(RouterCtlMsg::IfEvent(ev)) => {
-                debug!("Got interface event: {ev}");
-                let ifconfig = db
-                    .config
-                    .as_ref()
-                    .and_then(|c| c.get_interface(ev.ifindex()));
-
-                if let Some(config) = &ifconfig {
-                    debug!("Ifindex matches configured interface {}", config.name);
-                    if let Err(e) = handle_ifevent(&ev, &mut db.iftw) {
-                        warn!("Failed to process event {ev}: {e}");
-                    }
-                } else {
-                    debug!("No interface is configured with ifindex {}", ev.ifindex());
-                }
-            }
+            Ok(RouterCtlMsg::LinkState(links)) => handle_link_state(db, links),
             Ok(RouterCtlMsg::BgpNeighStatus(bgp_ev)) => handle_bgp_peer_status_change(bgp_ev),
             Err(TryRecvError::Empty) => break,
             Err(e) => {
                 error!("Error receiving from ctl channel {e:?}");
                 break;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+/// The router's interfaces must end up with the link state of the latest observation, whatever
+/// order observations and configurations arrive in.
+mod link_state {
+    use super::handle_link_state;
+    use crate::config::RouterConfig;
+    use crate::config::tests::{build_router_config, create_routing_database};
+    use crate::interfaces::interface::IfState;
+    use crate::interfaces::linkstate::{LinkState, LinkStates};
+    use crate::routingdb::RoutingDb;
+    use interface_manager::interface::TryFromLinkMessage;
+    use net::eth::mac::{Mac, SourceMac};
+    use net::interface::{Interface, InterfaceIndex, InterfaceName, Mtu};
+    use rtnetlink::packet_route::link::State;
+    use rtnetlink::packet_route::link::{
+        InfoKind, LinkAttribute, LinkFlags, LinkInfo, LinkMessage,
+    };
+
+    /// Ethernet interfaces of `build_router_config`, and an index it does not configure.
+    const CONFIGURED: [u32; 2] = [10, 11];
+    const UNCONFIGURED: u32 = 99;
+
+    fn ifindex(raw: u32) -> InterfaceIndex {
+        InterfaceIndex::try_new(raw).unwrap()
+    }
+
+    /// What `handle_configure` does to the routing database.
+    fn configure(db: &mut RoutingDb) {
+        let config = build_router_config();
+        config.apply(db).unwrap();
+        db.set_config(config);
+    }
+
+    fn interface(db: &RoutingDb, ifindex: InterfaceIndex) -> crate::Interface {
+        let iftable = db.iftw.enter().unwrap();
+        iftable.get_interface(ifindex).unwrap().clone()
+    }
+
+    /// The link state the kernel would report for a configured interface, with `mac`.
+    fn link(config: &RouterConfig, raw: u32, mac: SourceMac) -> LinkState {
+        let ifindex = ifindex(raw);
+        LinkState {
+            ifindex,
+            name: config.get_interface(ifindex).unwrap().name.clone(),
+            mac: Some(mac),
+            mtu: None,
+            admin_state: IfState::Up,
+            oper_state: IfState::Up,
+        }
+    }
+
+    /// githedgehog/fabricator#2268: the driver gave a tap its port's MAC after the first
+    /// configuration had read the tap's random one, and before the router had that configuration.
+    #[test]
+    fn a_link_state_observed_before_the_first_config_replaces_the_one_it_was_built_with() {
+        let mut db = create_routing_database();
+        let config = build_router_config();
+        let port = ifindex(CONFIGURED[1]);
+        let stale = config
+            .get_interface(port)
+            .unwrap()
+            .iftype
+            .get_mac()
+            .unwrap();
+        let real = SourceMac::try_from("0c:20:12:fe:01:02").unwrap();
+        assert_ne!(stale, real);
+
+        handle_link_state(
+            &mut db,
+            LinkStates::from_iter([link(&config, CONFIGURED[1], real)]),
+        );
+        configure(&mut db);
+
+        assert_eq!(interface(&db, port).get_mac(), Some(real));
+    }
+
+    /// The same, the other way around: the observation comes after the configuration.
+    #[test]
+    fn a_link_state_observed_after_the_config_replaces_the_one_it_was_built_with() {
+        let mut db = create_routing_database();
+        let config = build_router_config();
+        let port = ifindex(CONFIGURED[1]);
+        let real = SourceMac::try_from("0c:20:12:fe:01:02").unwrap();
+
+        configure(&mut db);
+        handle_link_state(
+            &mut db,
+            LinkStates::from_iter([link(&config, CONFIGURED[1], real)]),
+        );
+
+        assert_eq!(interface(&db, port).get_mac(), Some(real));
+    }
+
+    /// One generated link: which interface, whether it is up, its MAC, and which MTU if any.
+    type GenLink = (u8, bool, [u8; 6], u8);
+
+    fn generated_link(config: &RouterConfig, &(which, up, raw, mtu): &GenLink) -> LinkState {
+        let raw_ifindex = match which % 3 {
+            0 => CONFIGURED[0],
+            1 => CONFIGURED[1],
+            _ => UNCONFIGURED,
+        };
+        let mut raw = raw;
+        raw[0] = (raw[0] & 0xfc) | 0x02;
+        let ifindex = ifindex(raw_ifindex);
+        let name = config.get_interface(ifindex).map_or_else(
+            || InterfaceName::try_from("unconfigured").unwrap(),
+            |ifconfig| ifconfig.name.clone(),
+        );
+        LinkState {
+            ifindex,
+            name,
+            mac: Some(SourceMac::new(Mac::from(raw)).unwrap()),
+            mtu: match mtu % 3 {
+                0 => None,
+                1 => Some(Mtu::try_from(1500u32).unwrap()),
+                _ => Some(Mtu::try_from(9100u32).unwrap()),
+            },
+            admin_state: IfState::from(up),
+            oper_state: IfState::from(up),
+        }
+    }
+
+    #[test]
+    fn the_latest_observation_wins_wherever_the_configs_fall() {
+        bolero::check!()
+            .with_type::<(Vec<Vec<GenLink>>, u8, u8)>()
+            .for_each(|(observations, first, second)| {
+                let config = build_router_config();
+                let observations: Vec<LinkStates> = observations
+                    .iter()
+                    .map(|links| links.iter().map(|l| generated_link(&config, l)).collect())
+                    .collect();
+                let at_first = usize::from(*first) % (observations.len() + 1);
+                let at_second = at_first.max(usize::from(*second) % (observations.len() + 1));
+
+                let mut db = create_routing_database();
+                for (i, links) in observations.iter().enumerate() {
+                    if i == at_first {
+                        configure(&mut db);
+                    }
+                    if i == at_second {
+                        configure(&mut db);
+                    }
+                    handle_link_state(&mut db, links.clone());
+                }
+                if at_first == observations.len() {
+                    configure(&mut db);
+                }
+                if at_second == observations.len() {
+                    configure(&mut db);
+                }
+
+                // an interface the latest observation leaves out has its configuration's state
+                let latest = observations.last().cloned().unwrap_or_default();
+                for raw in CONFIGURED {
+                    let port = ifindex(raw);
+                    let configured = config.get_interface(port).unwrap();
+                    let got = interface(&db, port);
+                    let (mac, mtu, admin) = match latest.get(port) {
+                        Some(link) => (link.mac, link.mtu.or(configured.mtu), link.admin_state),
+                        None => (
+                            configured.iftype.get_mac(),
+                            configured.mtu,
+                            configured.admin_state,
+                        ),
+                    };
+                    assert_eq!(got.get_mac(), mac, "mac of ifindex {port}");
+                    assert_eq!(got.mtu, mtu, "mtu of ifindex {port}");
+                    assert_eq!(got.admin_state, admin, "admin state of ifindex {port}");
+                    if let Some(link) = latest.get(port) {
+                        assert_eq!(got.oper_state, link.oper_state, "oper state of {port}");
+                    }
+                }
+            });
+    }
+
+    /// A `RTM_NEWLINK` for a tap, as the kernel sends it.
+    fn tap_message(
+        ifindex: InterfaceIndex,
+        name: &str,
+        flags: LinkFlags,
+        oper_state: State,
+        mac: &str,
+    ) -> LinkMessage {
+        let mut message = LinkMessage::default();
+        message.header.index = ifindex.to_u32();
+        message.header.flags = flags;
+        message.attributes = vec![
+            LinkAttribute::IfName(name.to_string()),
+            LinkAttribute::OperState(oper_state),
+            LinkAttribute::Address(Mac::try_from(mac).unwrap().as_ref().to_vec()),
+            LinkAttribute::Mtu(9100),
+            LinkAttribute::LinkInfo(vec![LinkInfo::Kind(InfoKind::Tun)]),
+        ];
+        message
+    }
+
+    /// Link messages, parsed as the link state observer parses them, land in the interface table.
+    #[test]
+    fn a_parsed_link_message_reaches_the_interface_table() {
+        let mut db = create_routing_database();
+        configure(&mut db);
+        let port = ifindex(CONFIGURED[0]);
+
+        // (flags, oper state, name, mac) -> (admin, oper)
+        let cases = [
+            (
+                LinkFlags::Up | LinkFlags::Running,
+                State::Up,
+                "Eth0",
+                "02:0a:0b:0c:0d:01",
+                IfState::Up,
+                IfState::Up,
+            ),
+            (
+                LinkFlags::empty(),
+                State::Down,
+                "Eth0",
+                "02:0a:0b:0c:0d:02",
+                IfState::Down,
+                IfState::Down,
+            ),
+            (
+                LinkFlags::Up,
+                State::Dormant,
+                "mod-Eth0",
+                "02:0a:0b:0c:0d:03",
+                IfState::Up,
+                IfState::Down,
+            ),
+            (
+                LinkFlags::Up,
+                State::Unknown,
+                "mod-Eth0",
+                "02:0a:0b:0c:0d:04",
+                IfState::Up,
+                IfState::Unknown,
+            ),
+        ];
+        for (flags, oper, name, mac, admin_state, oper_state) in cases {
+            let message = tap_message(port, name, flags, oper, mac);
+            let parsed = Interface::try_from_link_message(&message).unwrap();
+            handle_link_state(&mut db, LinkStates::from_iter([LinkState::from(&parsed)]));
+
+            let got = interface(&db, port);
+            assert_eq!(got.name.as_ref(), name);
+            assert_eq!(got.get_mac(), Some(SourceMac::try_from(mac).unwrap()));
+            assert_eq!(got.mtu, Some(Mtu::try_from(9100u32).unwrap()));
+            assert_eq!(got.admin_state, admin_state, "{flags:?} {oper:?}");
+            assert_eq!(got.oper_state, oper_state, "{flags:?} {oper:?}");
         }
     }
 }
