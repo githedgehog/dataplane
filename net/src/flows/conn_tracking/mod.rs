@@ -12,7 +12,7 @@ mod state_machine;
 mod test_state_machine;
 
 pub use conn_state::{AtomicConnState, ConnState};
-pub use refresh::advance_flow;
+pub use refresh::{advance_flow, cap_pair_expiry};
 pub use state_machine::{next_status, transport_proto};
 
 use crate::flows::FlowInfoFlags;

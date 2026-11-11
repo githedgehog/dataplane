@@ -445,11 +445,32 @@ impl FlowInfo {
     ///
     pub fn reset_expiry_unchecked(&self, duration: Duration) -> Result<(), FlowInfoError> {
         let new = clock::deadline(duration);
-        let previous = self.expires_at.fetch_max(new, Ordering::Relaxed);
+        // Acquire: see cap_expiry().
+        let previous = self.expires_at.fetch_max(new, Ordering::Acquire);
         if previous > new {
             return Err(FlowInfoError::TimeoutUnchanged);
         }
         Ok(())
+    }
+
+    /// Bring the expiry of the flow in to at most `duration` from now. Never moves it later.
+    ///
+    /// The flow's timer reads the deadline when its bucket comes due on the wheel, so an earlier
+    /// deadline is noticed within one revolution of the wheel at the latest. A deadline cannot be
+    /// brought in to before the first one the flow was given.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe. A caller that brings the expiry in because of something it
+    /// stored first (a closing connection status, say) can rely on this: a later
+    /// [`FlowInfo::reset_expiry_unchecked`] that extends the expiry past this cap sees that store,
+    /// so it can tell it has to bring the expiry in again.
+    pub fn cap_expiry(&self, duration: Duration) {
+        // Release, paired with the Acquire in reset_expiry_unchecked(): the extension and the cap
+        // are read-modify-writes of the one deadline, so whichever lands second sees the first,
+        // and the extender sees what the capper stored before capping.
+        self.expires_at
+            .fetch_min(clock::deadline(duration), Ordering::Release);
     }
 
     /// Get the `FlowStatus` of a `FlowInfo` object

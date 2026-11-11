@@ -18,11 +18,12 @@ use flow_entry::flow_table::table::FlowTable;
 use net::buffer::PacketBufferMut;
 use net::flow_key::{FlowAddrs, IcmpProtoKey};
 use net::flows::ConnState;
-use net::flows::conn_tracking::{advance_flow, transport_proto};
+use net::flows::conn_tracking::{FlowSide, advance_flow, cap_pair_expiry, transport_proto};
 use net::flows::{FlowInfo, FlowInfoError};
 use net::headers::{TryHeaders, TryIp, TryTcp};
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
+use net::tcp::Tcp;
 use net::{FlowKey, IpProtoKey};
 use pipeline::{NetworkFunction, PipelineData};
 use std::fmt::Debug;
@@ -87,7 +88,8 @@ impl Masquerade {
 
     // Internal flow timeouts for masquerading
     //= https://www.rfc-editor.org/rfc/rfc5382#section-5
-    //= type=todo
+    //= type=exception
+    //= reason=the established idle timeout is the operator's to configure, and defaults to 2 minutes, well below the 2 hours 4 minutes floor; the transitory (closing) timeout is the 4 minutes asked for, but never longer than the configured idle timeout, so it is shorter too when that is
     //# REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
     //# connection are active, it MAY abandon the session if it has been
     //# idle for some time.  In such cases, the value of the "established
@@ -104,7 +106,21 @@ impl Masquerade {
     //# timer is RECOMMENDED.
     pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3 * Self::TIMEOUT_SCALE);
-    pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2 * Self::TIMEOUT_SCALE);
+    /// How long a TCP flow is kept without a packet once its connection is closing (a FIN was seen,
+    /// and the close is not complete), or the idle timeout if that is shorter. A close that never
+    /// completes (the peer is gone, say) ends the flow after this long, and not after the rest of
+    /// the idle timeout. Not shorter: a half-closed connection is still open the other way, and
+    /// its peer may take a while to answer (a client that sends its request and shuts down its
+    /// side, say, then waits for the reply); RFC 5382 REQ-5 asks for at least 4 minutes for such
+    /// a "transitory" connection.
+    pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_mins(4 * Self::TIMEOUT_SCALE);
+
+    /// How long, at most, a TCP mapping is kept once the last flow on it is gone (its connection
+    /// closed or reset, by either side, or idle past the flow's own timeout), instead of for the
+    /// rest of its idle timeout. Long enough for a `TIME_WAIT` on either end (2 MSL, at most 4
+    /// minutes) to pass before the public port is handed out again. Not scaled for emulation:
+    /// mappings' idle timeouts are not either.
+    pub const MASQUERADE_CLOSED_HOLD: Duration = Duration::from_mins(4);
 
     /// Return the VPC identities required for masquerading, or drop malformed input.
     fn discriminants<Buf: PacketBufferMut>(
@@ -179,6 +195,25 @@ impl Masquerade {
         )
     }
 
+    /// Tell if `packet` opens a new connection on the tuple of `flow_info`, whose connection is
+    /// closing. The private host may reuse a port while the flow of its last connection from it is
+    /// still kept: a half-closed connection whose peer never closes in turn, say, and that the
+    /// private host has given up on. The state machine knows nothing of a new connection on a
+    /// closing one: left to it, the new connection would be tracked as closing, and its flow kept
+    /// only for the closing timeout. Only a SYN from the private host, which is trusted, so that
+    /// nobody outside can end a connection this way.
+    fn reopens<Buf: PacketBufferMut>(packet: &Packet<Buf>, flow_info: &FlowInfo) -> bool {
+        packet.try_tcp().is_some_and(Tcp::is_first_segment)
+            && FlowSide::from(flow_info.get_flags()) == FlowSide::Initiator
+            && flow_info
+                .conn_state()
+                .is_some_and(|status| status.load().is_closing())
+    }
+
+    fn closing_timeout(state: &MasqueradeState) -> Duration {
+        state.idle_timeout().min(Self::MASQUERADE_CLOSING_TIMEOUT)
+    }
+
     /// Update the `FlowStatus` of a masqueraded flow with a packet, depending on the direction of the
     /// communication and the protocol and extend the lifetime of the flow (or invalidate it) accordingly.
     fn refresh_masquerade_state<Buf: PacketBufferMut>(
@@ -195,7 +230,7 @@ impl Masquerade {
             | ConnState::SClosing
             | ConnState::CHalfClose
             | ConnState::SHalfClose
-            | ConnState::LastAck => Some(Self::MASQUERADE_CLOSING_TIMEOUT),
+            | ConnState::LastAck => Some(Self::closing_timeout(state)),
             //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
             //= type=implementation
             //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
@@ -204,6 +239,21 @@ impl Masquerade {
                 Self::refreshes_while_unanswered(packet).then_some(Self::MASQUERADE_ONEWAY_TIMEOUT)
             }
         });
+
+        // advance_flow() only moves a flow's deadline later, and the flow of an established
+        // connection has the whole idle timeout ahead of it. Once the connection is closing, bring
+        // the deadline in: otherwise a close that never completes keeps the flow, and with it the
+        // mapping, for the rest of the idle timeout. Go by the status as it is now, not by the one
+        // this packet led to: another worker, with a packet of the other direction, may have seen
+        // the FIN while this one was extending the flow for an established connection. If this
+        // extension landed after that worker's cap, the load below sees its status (see
+        // FlowInfo::cap_expiry); if before, its cap brings this extension in.
+        if flow_info
+            .conn_state()
+            .is_some_and(|status| status.load().is_closing())
+        {
+            cap_pair_expiry(flow_info, Self::closing_timeout(state));
+        }
 
         //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
         //= type=implementation
@@ -214,7 +264,8 @@ impl Masquerade {
         // flow's own idle timer. Not a packet that tears the flow down, though: the flow declines
         // to extend its own expiry there, and extending the mapping's would hold the public tuple
         // for a further idle timeout past the close, which is how a pool ends up exhausted by churn
-        // rather than by concurrent flows.
+        // rather than by concurrent flows. For TCP, the mapping is cut short once the last flow
+        // on it is gone, too: see MASQUERADE_CLOSED_HOLD.
         if new_status.is_some_and(|status| !status.is_terminal())
             && let Some(allocation) = state.allocation()
         {
@@ -258,6 +309,17 @@ impl Masquerade {
             debug!("Unable to access masquerade state");
             return None;
         };
+        // Only once the flow is known to be masquerade's own: a flow another NF keeps is not ours
+        // to end.
+        if Self::reopens(packet, flow_info) {
+            drop(locked);
+            debug!(
+                "SYN from the private host on closing flow {}: a new connection, ending the old one",
+                flow_info.logfmt()
+            );
+            flow_info.invalidate_pair();
+            return None;
+        }
         let xlate = state.as_translate();
         Self::refresh_masquerade_state(packet, flow_info, state);
         Some(xlate)
@@ -984,6 +1046,50 @@ mod race {
             (next.allocation.ip(), next.allocation.port()),
             shared_tuple,
             "the mapping did not survive the race intact"
+        );
+    }
+
+    /// A SYN from the private host on a closing flow ends the old connection only if the flow is
+    /// masquerade's own. A flow without masquerade state belongs to another NF, which this one has
+    /// no business ending.
+    #[test]
+    fn a_syn_leaves_a_closing_flow_of_another_nf_alone() {
+        use net::flows::{FlowInfoFlags, FlowStatus};
+        use net::headers::TryTcpMut;
+        use net::tcp::TcpFlags;
+
+        let source: IpAddr = "10.0.0.1".parse().unwrap_or_else(|_| unreachable!());
+        let destination: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+        let mut packet: Packet<TestBuffer> = build(source, destination, true, 4000, 80);
+        packet
+            .try_tcp_mut()
+            .unwrap_or_else(|| unreachable!())
+            .set_flags(TcpFlags::SYN);
+        let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!("the probe keys"));
+        let (forward, reverse) = FlowInfo::related_pair(
+            clock::deadline(Duration::from_secs(60)),
+            key,
+            FlowInfoFlags::INITIATOR,
+            key.reverse(None),
+            FlowInfoFlags::empty(),
+        )
+        .unwrap_or_else(|e| unreachable!("{e}"));
+        for flow in [&forward, &reverse] {
+            flow.update_status(FlowStatus::Active);
+        }
+        forward
+            .conn_state()
+            .unwrap_or_else(|| unreachable!("a pair tracks its connection"))
+            .store(ConnState::CClosing);
+        assert!(
+            Masquerade::reopens(&packet, &forward),
+            "the SYN would reopen a masquerade flow"
+        );
+
+        assert!(Masquerade::masquerade_state_of(&packet, &forward).is_none());
+        assert!(
+            forward.is_active() && reverse.is_active(),
+            "a SYN ended a flow that is not masquerade's"
         );
     }
 }
