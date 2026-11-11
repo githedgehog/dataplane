@@ -142,7 +142,7 @@ pub struct RouterInterfaceConfig {
     pub iftype: IfType,              /* type of interface */
     pub admin_state: IfState,        /* admin state */
     pub attach_cfg: Option<AttachConfig>, /* attach config */
-    pub mtu: Option<Mtu>,
+    pub mtu: Mtu,
 }
 impl RouterInterfaceConfig {
     #[must_use]
@@ -154,7 +154,7 @@ impl RouterInterfaceConfig {
             iftype: IfType::Unknown,
             admin_state: IfState::Up,
             attach_cfg: None,
-            mtu: None,
+            mtu: Mtu::default(),
         }
     }
     pub fn set_name(&mut self, name: &InterfaceName) {
@@ -172,7 +172,7 @@ impl RouterInterfaceConfig {
     pub fn set_attach_cfg(&mut self, attach_cfg: Option<AttachConfig>) {
         self.attach_cfg = attach_cfg;
     }
-    pub fn set_mtu(&mut self, mtu: Option<Mtu>) {
+    pub fn set_mtu(&mut self, mtu: Mtu) {
         self.mtu = mtu;
     }
 }
@@ -185,7 +185,7 @@ pub struct Interface {
     pub ifindex: InterfaceIndex,
     pub iftype: IfType,
     pub admin_state: IfState,
-    pub mtu: Option<Mtu>,
+    pub mtu: Mtu,
     /* -- state -- */
     pub oper_state: IfState,
     pub addresses: HashSet<IfAddr>,
@@ -207,6 +207,11 @@ impl Interface {
             addresses: HashSet::new(),
             attachment: None,
         }
+    }
+
+    /// Set the mtu of an [`Interface`]
+    pub fn set_mtu(&mut self, mtu: Mtu) {
+        self.mtu = mtu;
     }
 
     /// Set the description of an [`Interface`]

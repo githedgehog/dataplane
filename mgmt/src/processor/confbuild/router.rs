@@ -74,7 +74,7 @@ fn build_router_interface_config(
     if let Some(mtu) = kiface.mtu
         && let Ok(mtu) = Mtu::try_from(mtu)
     {
-        new.set_mtu(Some(mtu));
+        new.set_mtu(mtu);
     }
 
     // set properties -- this is needed for us to know macs

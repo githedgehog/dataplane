@@ -13,7 +13,7 @@ use left_right::ReadHandleFactory;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use net::eth::mac::SourceMac;
 use net::interface::address::IfAddr;
-use net::interface::{InterfaceIndex, InterfaceName};
+use net::interface::{InterfaceIndex, InterfaceName, Mtu};
 
 use tracing::{debug, error};
 
@@ -101,6 +101,7 @@ pub struct IfUpdate {
     pub mac: Option<IfChange<SourceMac>>,
     pub adm_state: Option<IfChange<IfState>>,
     pub oper_state: Option<IfChange<IfState>>,
+    pub mtu: Option<IfChange<Mtu>>,
 }
 impl IfUpdate {
     #[must_use]
@@ -112,6 +113,7 @@ impl IfUpdate {
             mac: None,
             adm_state: None,
             oper_state: None,
+            mtu: None,
         }
     }
 
@@ -136,6 +138,12 @@ impl IfUpdate {
     #[must_use]
     fn check_oper_state(mut self, old: IfState, new: IfState) -> Self {
         self.oper_state = IfChange::copied(old, new);
+        self
+    }
+
+    #[must_use]
+    fn check_mtu(mut self, old: Mtu, new: Mtu) -> Self {
+        self.mtu = IfChange::copied(old, new);
         self
     }
 }
@@ -464,6 +472,29 @@ impl IfTableWriter {
         self.0.publish();
 
         debug!("Changed the mac of interface {ifname}: {mac} -> {new_mac}");
+        Ok(update)
+    }
+
+    pub fn set_mtu(
+        &mut self,
+        ifindex: InterfaceIndex,
+        new_mtu: Mtu,
+    ) -> Result<IfUpdate, RouterError> {
+        let mut config = self
+            .enter()
+            .unwrap_or_else(|| unreachable!())
+            .get_interface(ifindex)
+            .map(Interface::as_config)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        let update = IfUpdate::new(ifindex, &config.name).check_mtu(config.mtu, new_mtu);
+        if update.mtu.is_none() {
+            return Ok(update);
+        }
+        config.set_mtu(new_mtu);
+        self.0.append(IfTableChange::Mod(config));
+        self.0.publish();
+
         Ok(update)
     }
 }

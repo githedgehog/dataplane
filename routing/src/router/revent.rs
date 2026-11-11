@@ -9,7 +9,7 @@ use crate::router::cpi::CpiStatus;
 use crate::{IfChange, IfState};
 use common::cliprovider::PrettyDuration;
 use net::eth::mac::SourceMac;
-use net::interface::InterfaceName;
+use net::interface::{InterfaceName, Mtu};
 
 use config::GenId;
 use config::internal::status::BgpNeighborSessionState;
@@ -40,6 +40,7 @@ pub enum RouterEvent {
     IfOperChange(InterfaceName, IfChange<IfState>),
     IfNameChange(InterfaceName, IfChange<InterfaceName>),
     IfMacChange(InterfaceName, IfChange<SourceMac>),
+    IfMtuChange(InterfaceName, IfChange<Mtu>),
 
     BgpNeighStateChange(BgpNeighEvent),
 }
@@ -88,6 +89,9 @@ impl Display for RouterEvent {
             }
             RouterEvent::IfMacChange(ifname, mac) => {
                 write!(f, "{ifname}: Mac changed {} -> {}", mac.old, mac.new)?;
+            }
+            RouterEvent::IfMtuChange(ifname, mtu) => {
+                write!(f, "{ifname}: Mtu changed {} -> {}", mtu.old, mtu.new)?;
             }
             RouterEvent::BgpNeighStateChange(bgp_ev) => {
                 let peer_key = &bgp_ev.peer_key;

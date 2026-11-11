@@ -8,7 +8,7 @@ use crate::errors::RouterError;
 use crate::interfaces::interface::{IfState, Interface, RouterInterfaceConfig};
 use ahash::RandomState;
 use net::interface::address::IfAddr;
-use net::interface::{InterfaceIndex, InterfaceName};
+use net::interface::{InterfaceIndex, InterfaceName, Mtu};
 use std::collections::HashMap;
 
 #[allow(unused)]
@@ -212,6 +212,17 @@ impl IfTable {
             .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
         iface.set_admin_state(state);
+        Ok(())
+    }
+
+    /// Set the mtu of an [`Interface`], if found
+    #[allow(dead_code)]
+    pub(super) fn set_mtu(&mut self, ifindex: InterfaceIndex, mtu: Mtu) -> Result<(), RouterError> {
+        let iface = self
+            .get_interface_mut(ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        iface.set_mtu(mtu);
         Ok(())
     }
 

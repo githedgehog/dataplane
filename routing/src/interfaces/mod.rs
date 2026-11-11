@@ -135,7 +135,7 @@ pub mod tests {
         let mut config = build_test_interface_cfg(IF_NAME, ifindex);
         let ifindex = config.ifindex;
         config.set_description(IF_DESC);
-        config.set_mtu(Some(Mtu::MIN));
+        config.set_mtu(Mtu::MIN);
         config.set_admin_state(IfState::Up);
         config.set_iftype(IfType::Ethernet(IfDataEthernet::new(
             SourceMac::try_from(IF_MAC).unwrap(),
@@ -239,7 +239,7 @@ pub mod tests {
         let mut config = build_test_interface_cfg(IF_NAME, ifindex);
         let ifindex = config.ifindex;
         config.set_description(IF_DESC);
-        config.set_mtu(Some(Mtu::MIN));
+        config.set_mtu(Mtu::MIN);
         config.set_admin_state(IfState::Up);
         config.set_iftype(IfType::Ethernet(IfDataEthernet::new(
             SourceMac::try_from(IF_MAC).unwrap(),
@@ -262,7 +262,7 @@ pub mod tests {
 
         // test modify interface config or properties
         config.set_description("modified config");
-        config.set_mtu(Some(Mtu::MAX));
+        config.set_mtu(Mtu::MAX);
         config.set_iftype(IfType::Ethernet(IfDataEthernet::new(
             SourceMac::try_from(IF_MAC_MOD).unwrap(),
         )));
@@ -297,6 +297,12 @@ pub mod tests {
         // test set admin state
         iftable.set_admin_state(ifindex, IfState::Down).unwrap();
         iftw.set_iface_admin_state(ifindex, IfState::Down).unwrap();
+        compare(&iftable, &iftr);
+
+        // test set mtu
+        let mtu = Mtu::try_from(1685).expect("Bad mtu");
+        iftable.set_mtu(ifindex, mtu).unwrap();
+        iftw.set_mtu(ifindex, mtu).unwrap();
         compare(&iftable, &iftr);
 
         // test set oper state
@@ -554,6 +560,7 @@ mod netlink_generator {
         flags: LinkFlags,
         oper_state: Option<State>,
         mac: Option<Mac>,
+        mtu: Option<u32>,
     ) -> LinkMessage {
         let mut link_msg = LinkMessage::default();
         link_msg.header = build_link_header(ifindex, flags);
@@ -568,7 +575,9 @@ mod netlink_generator {
                 .attributes
                 .push(LinkAttribute::Address(mac.as_ref().into()));
         }
-
+        if let Some(mtu) = mtu {
+            link_msg.attributes.push(LinkAttribute::Mtu(mtu));
+        }
         link_msg
     }
 
@@ -580,8 +589,9 @@ mod netlink_generator {
         flags: LinkFlags,
         oper_state: Option<State>,
         mac: Option<Mac>,
+        mtu: Option<u32>,
     ) -> NetlinkMessage<RouteNetlinkMessage> {
-        let link_msg = build_link_message(ifindex, ifname, flags, oper_state, mac);
+        let link_msg = build_link_message(ifindex, ifname, flags, oper_state, mac, mtu);
         let rnlink_newlink = RouteNetlinkMessage::NewLink(link_msg);
         let payload = NetlinkPayload::InnerMessage(rnlink_newlink);
         NetlinkMessage::new(NetlinkHeader::default(), payload)
@@ -598,7 +608,7 @@ mod test_netlink_event_handling {
     use crate::{IfState, Interface};
     use interface_manager::monitor::InterfaceMonitor;
     use net::eth::mac::{Mac, SourceMac};
-    use net::interface::InterfaceName;
+    use net::interface::{InterfaceName, Mtu};
     use rtnetlink::packet_core::NetlinkMessage;
     use rtnetlink::packet_route::RouteNetlinkMessage;
     use rtnetlink::packet_route::link::{LinkFlags, State};
@@ -618,6 +628,7 @@ mod test_netlink_event_handling {
             LinkFlags::Up | LinkFlags::Running,
             None,
             None,
+            None,
         );
         iface.set_admin_state(IfState::Up); // have if up
         iface.set_oper_state(IfState::Up); // have running flag
@@ -631,6 +642,7 @@ mod test_netlink_event_handling {
             LinkFlags::Up,
             Some(State::Up),
             None,
+            None,
         );
         iface.set_admin_state(IfState::Up); // have if up
         iface.set_oper_state(IfState::Up); // no ifrunning but have oper state
@@ -641,6 +653,7 @@ mod test_netlink_event_handling {
             iface.ifindex.to_u32(),
             iface.name.as_ref(),
             LinkFlags::empty(),
+            None,
             None,
             None,
         );
@@ -655,6 +668,7 @@ mod test_netlink_event_handling {
             LinkFlags::Up,
             None,
             None,
+            None,
         );
         iface.set_admin_state(IfState::Up); // if up
         iface.set_oper_state(IfState::Down); // have only up, no running
@@ -666,6 +680,7 @@ mod test_netlink_event_handling {
             iface.name.as_ref(),
             LinkFlags::Up | LinkFlags::LowerUp,
             Some(State::Down),
+            None,
             None,
         );
         iface.set_admin_state(IfState::Up); // if up
@@ -682,11 +697,27 @@ mod test_netlink_event_handling {
             LinkFlags::Up,
             Some(State::Dormant),
             Some(mac),
+            None,
         );
         iface.set_admin_state(IfState::Up); // if up
         iface.set_oper_state(IfState::Down); // oper_state wins but it is dormant
         iface.set_mac(SourceMac::try_from(mac).expect("should meet the source mac requirements"));
         iface.name = new_name;
+        MsgAndExpectation { msg, iface }
+    }
+
+    fn if_mtu_change(mut iface: Interface) -> MsgAndExpectation {
+        let msg = build_netlink_msg(
+            iface.ifindex.to_u32(),
+            iface.name.as_ref(),
+            LinkFlags::Up | LinkFlags::LowerUp,
+            Some(State::Up),
+            None,
+            Some(1714),
+        );
+        iface.set_admin_state(IfState::Up);
+        iface.set_oper_state(IfState::Up);
+        iface.set_mtu(Mtu::try_from(1714).unwrap());
         MsgAndExpectation { msg, iface }
     }
 
@@ -722,13 +753,22 @@ mod test_netlink_event_handling {
 
         // generate misc events for the existing interfaces and check that the
         // interfaces are updated as we expect
-        for iface in iftable.values() {
-            netlink_ev_process(&mut iftw, ifup(iface.clone()));
-            netlink_ev_process(&mut iftw, ifup_with_opstate(iface.clone()));
-            netlink_ev_process(&mut iftw, ifdown(iface.clone()));
-            netlink_ev_process(&mut iftw, ifup_lower_down(iface.clone()));
-            netlink_ev_process(&mut iftw, ifup_oper_down(iface.clone()));
-            netlink_ev_process(&mut iftw, ifup_mac_and_name_change(iface.clone()));
+        for ifindex in iftable.values().map(|iface| iface.ifindex) {
+            let events: [fn(Interface) -> MsgAndExpectation; 7] = [
+                ifup,
+                ifup_with_opstate,
+                ifdown,
+                ifup_lower_down,
+                ifup_oper_down,
+                ifup_mac_and_name_change,
+                if_mtu_change,
+            ];
+            // execute each of the events, providing each the latest state of the interface,
+            // since the events update it
+            for event in events {
+                let iface = get_interface(&iftw, ifindex);
+                netlink_ev_process(&mut iftw, event(iface));
+            }
         }
     }
 }

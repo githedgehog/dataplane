@@ -306,6 +306,15 @@ pub(crate) fn handle_ifevent(ev: &EthEvent, iftw: &mut IfTableWriter) -> Result<
             revent!(RouterEvent::IfMacChange(update.ifname, mac));
         }
     }
+
+    // did mtu change?
+    if let Some(mtu) = ev.mtu() {
+        let update = iftw.set_mtu(ifindex, mtu)?;
+        if let Some(mtu) = update.mtu {
+            revent!(RouterEvent::IfMtuChange(update.ifname, mtu));
+        }
+    }
+
     Ok(())
 }
 

@@ -547,7 +547,6 @@ impl Display for Interface {
         } else {
             "---".to_string()
         };
-        let mtu = self.mtu.map_or_else(|| "--".to_string(), |m| m.to_string());
         write!(
             f,
             "{}",
@@ -555,7 +554,7 @@ impl Display for Interface {
                 INTERFACE_TBL_FMT!(),
                 self.name,
                 format!("{:>4}", self.ifindex),
-                mtu,
+                self.mtu,
                 self.admin_state,
                 self.oper_state,
                 attachment,
