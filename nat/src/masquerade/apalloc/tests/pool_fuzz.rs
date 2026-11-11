@@ -636,3 +636,163 @@ fn a_shared_region_honours_the_claims_of_every_owner() {
         .reserve(address, free_port)
         .expect("an unclaimed port of a shared region is still available");
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// Churn across workers
+///////////////////////////////////////////////////////////////////////////////
+
+/// Worker threads drawing from one pool.
+const WORKERS: usize = 3;
+
+/// One step of a churn scenario.
+#[derive(Debug, Clone)]
+enum Step {
+    /// A worker draws up to `count` ports, stopping at the first refusal.
+    Allocate { worker: usize, count: usize },
+    /// Every held port is freed but one in `keep_every`, leaving stragglers across the blocks they
+    /// came from.
+    Free { keep_every: usize, offset: usize },
+}
+
+/// A pool of a few addresses, each kept to a few blocks by claiming the rest for port forwarding,
+/// and the steps run against it.
+#[derive(Debug, Clone)]
+struct Churn {
+    addresses: u8,
+    blocks: u8,
+    steps: Vec<Step>,
+}
+
+impl TypeGenerator for Churn {
+    fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+        let addresses = driver.produce::<u8>()? % 2 + 1;
+        let blocks = driver.produce::<u8>()? % 3 + 1;
+        let capacity = usize::from(addresses) * usize::from(blocks) * 256;
+        let step_count = usize::from(driver.produce::<u8>()? % 8 + 1);
+        let mut steps = Vec::with_capacity(step_count);
+        for _ in 0..step_count {
+            steps.push(if driver.produce::<bool>()? {
+                Step::Allocate {
+                    worker: usize::from(driver.produce::<u8>()?) % WORKERS,
+                    count: usize::from(driver.produce::<u16>()?) % (capacity + 64) + 1,
+                }
+            } else {
+                Step::Free {
+                    keep_every: usize::from(driver.produce::<u8>()? % 15 + 2),
+                    offset: usize::from(driver.produce::<u8>()?),
+                }
+            });
+        }
+        Some(Self {
+            addresses,
+            blocks,
+            steps,
+        })
+    }
+}
+
+impl Churn {
+    fn capacity(&self) -> usize {
+        usize::from(self.addresses) * usize::from(self.blocks) * 256
+    }
+
+    fn pool_set(&self) -> PoolSet<Ipv4Addr> {
+        let last = BASE + u128::from(self.addresses) - 1;
+        // Claim everything below the top `blocks` blocks, on every address of the pool.
+        let claimed_up_to = 65535 - u16::from(self.blocks) * 256;
+        let claims = PrefixPortsSet::from([PrefixWithOptionalPorts::new(
+            "10.1.0.0/31".into(),
+            Some(PortRange::new(1024, claimed_up_to).unwrap_or_else(|_| unreachable!())),
+        )]);
+        let specs =
+            vec![PoolSpec::new(vec![AddrInterval::new(BASE, last)], IDLE_TIMEOUT).claiming(claims)];
+        pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false)
+            .pop()
+            .unwrap_or_else(|| unreachable!())
+    }
+}
+
+/// However ports are taken and freed, and by whichever worker, a pool refuses a port only when it
+/// has none left. Ports freed inside a block that is still handed out are ports the pool has.
+///
+/// The workers are threads so that each has its own current block, but they take turns: a step
+/// runs on one worker and ends before the next one starts. What this covers is the state churn
+/// leaves behind, not workers racing for the same ports; for those, see the shuttle models in
+/// `concurrent_fuzz`.
+#[test]
+#[cfg_attr(miri, ignore = "hundreds of allocations per case, across threads")]
+#[cfg_attr(emulated, ignore = "too slow to emulate")]
+fn a_pool_refuses_a_port_only_when_it_has_none_left() {
+    bolero::check!()
+        .with_type()
+        .cloned()
+        .for_each(|churn: Churn| {
+            let pool_set = churn.pool_set();
+            let capacity = churn.capacity();
+            std::thread::scope(|scope| {
+                // Each worker is one thread for the whole case, as a gateway's workers are.
+                let workers: Vec<_> = (0..WORKERS)
+                    .map(|_| {
+                        let (requests, received) = std::sync::mpsc::channel::<usize>();
+                        let (answer, answers) = std::sync::mpsc::channel();
+                        let pool_set = &pool_set;
+                        scope.spawn(move || {
+                            for count in received {
+                                let mut drawn = Vec::with_capacity(count);
+                                let mut refused = None;
+                                for _ in 0..count {
+                                    match pool_set.allocate(false) {
+                                        Ok(port) => drawn.push(port),
+                                        Err(e) => {
+                                            refused = Some(e);
+                                            break;
+                                        }
+                                    }
+                                }
+                                if answer.send((drawn, refused)).is_err() {
+                                    return;
+                                }
+                            }
+                        });
+                        (requests, answers)
+                    })
+                    .collect();
+
+                let mut held: Vec<AllocatedPort<Ipv4Addr>> = Vec::new();
+                for step in &churn.steps {
+                    match *step {
+                        Step::Allocate { worker, count } => {
+                            let (requests, answers) = &workers[worker];
+                            requests.send(count).unwrap_or_else(|_| unreachable!());
+                            let (drawn, refused) =
+                                answers.recv().unwrap_or_else(|_| unreachable!());
+                            held.extend(drawn);
+                            if let Some(error) = refused {
+                                assert_eq!(
+                                    held.len(),
+                                    capacity,
+                                    "worker {worker} was refused ({error}) with {} of {capacity} \
+                                     ports free",
+                                    capacity - held.len()
+                                );
+                            }
+                        }
+                        Step::Free { keep_every, offset } => {
+                            let mut index = offset;
+                            held.retain(|_| {
+                                index += 1;
+                                index % keep_every == 0
+                            });
+                        }
+                    }
+                    let tuples: BTreeSet<_> = held
+                        .iter()
+                        .map(|port| (port.ip(), port.port().as_u16()))
+                        .collect();
+                    assert_eq!(tuples.len(), held.len(), "a tuple was handed out twice");
+                }
+                // Hang up, so the workers end and the scope can join them.
+                drop(workers);
+            });
+        });
+}
