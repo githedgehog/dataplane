@@ -96,8 +96,8 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
                         outcome = Ok(port);
                         break;
                     }
-                    // If there is no free port left, loop again to try another IP address
-                    Err(AllocatorError::NoFreePort(_)) => {}
+                    // If this address has no room left, loop again to try another IP address
+                    Err(e) if e.is_exhaustion() => {}
                     Err(e) => {
                         outcome = Err(e);
                         break;
