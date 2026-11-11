@@ -78,9 +78,78 @@ mod std_tests {
         assert!(allocator.allocate(false).is_err());
     }
 
-    /// Two addresses. The first is filled, then one port is freed in every block but the worker's
-    /// current one, so every block stays handed out; the second is in use with nearly all of its
-    /// blocks still free. Asking for a port must not stop at the first address.
+    /// One worker filled an address and then most of the ports were freed, one per block, leaving
+    /// every block handed out. A second worker, which has never drawn from the address, asks for a
+    /// port: there are 252 free ones.
+    #[test]
+    #[cfg_attr(miri, ignore = "fills a whole address, 64k allocations")]
+    fn a_second_worker_gets_a_port_freed_inside_a_handed_out_block() {
+        let allocator = pool_of(1);
+        let held = drain(&allocator);
+        let ip = held[0].ip();
+        let blocks = by_block(held, ip);
+        // Leave no block untouched, so no block can be handed out afresh.
+        let held = free_one_per_block_except(blocks, u16::MAX);
+        assert_eq!(held.len(), 252 * 255);
+
+        let other = std::thread::scope(|s| s.spawn(|| allocator.allocate(false)).join().unwrap());
+
+        let port = other.expect("252 ports are free on the address");
+        assert_eq!(port.ip(), ip);
+        drop(held);
+    }
+
+    /// The same, for the worker that filled the address: its current block is still full, but
+    /// every other block has a free port.
+    #[test]
+    #[cfg_attr(miri, ignore = "fills a whole address, 64k allocations")]
+    fn a_worker_whose_block_is_full_gets_a_port_freed_in_another_block() {
+        let allocator = pool_of(1);
+        let held = drain(&allocator);
+        let ip = held[0].ip();
+        let current = held.last().unwrap().port().as_u16() / 256;
+        let blocks = by_block(held, ip);
+        let held = free_one_per_block_except(blocks, current);
+        assert_eq!(held.len(), 252 * 256 - 251);
+
+        let port = allocator
+            .allocate(false)
+            .expect("251 ports are free on the address");
+        assert_eq!(port.ip(), ip);
+        assert_ne!(port.port().as_u16() / 256, current);
+        drop(held);
+    }
+
+    /// A port caller drawing from a block opened for an identifier, where port 0 is free, gets a
+    /// port rather than port 0's failure. Production pools serve one or the other, but a block
+    /// another caller opened is now one any caller may draw from, and an error other than "full"
+    /// ends the search.
+    #[test]
+    fn a_port_caller_skips_port_0_of_an_identifier_block() {
+        let start = u128::from(addr_v4_bits("10.1.0.0"));
+        let allocator = IpAllocator::<Ipv4Addr>::new(
+            NatPool::for_range(
+                AddrInterval::new(start, start),
+                ReservedPorts::default(),
+                false,
+            ),
+            false,
+        );
+        let zero = allocator.allocate(true).unwrap();
+        let one = allocator.allocate(true).unwrap();
+        assert_eq!([zero.port().as_u16(), one.port().as_u16()], [0, 1]);
+        // Block 0 stays handed out, with identifier 0 free again.
+        drop(zero);
+
+        let port = allocator
+            .allocate(false)
+            .expect("block 0 has 254 free ports");
+        assert_eq!(port.port().as_u16(), 2);
+        drop(one);
+    }
+
+    /// Two addresses. The first is filled, then fragmented as above; the second is in use with
+    /// nearly all of its blocks still free. Asking for a port must not stop at the first address.
     #[test]
     #[cfg_attr(miri, ignore = "fills a whole address, 64k allocations")]
     fn a_fragmented_address_does_not_hide_the_next_one() {
@@ -110,8 +179,7 @@ mod std_tests {
         drop((port, first, second));
     }
 
-    /// As above, from a worker new to both addresses, with a port freed in every block of the
-    /// first.
+    /// As above, from a worker new to both addresses.
     #[test]
     #[cfg_attr(miri, ignore = "fills a whole address, 64k allocations")]
     fn a_second_worker_is_not_stopped_by_a_fragmented_address() {
@@ -134,5 +202,60 @@ mod std_tests {
 
         other.expect("both addresses have room");
         drop((first, second));
+    }
+}
+
+/// The same state reached the way a gateway reaches it: mappings created through the allocator,
+/// most of them reaped once idle, a few kept alive by flows that are still running.
+#[concurrency_mode(std)]
+mod mapping_tests {
+    use crate::masquerade::apalloc::tests::alloc::context::*;
+    use net::ip::NextHeader;
+    use std::time::Duration;
+
+    /// One public address. A worker opened a mapping on every one of its ports; all but one per
+    /// block went idle and were reaped, the others are held by long-running flows. The flow table
+    /// would now hold 252 flows. A second worker opens a new mapping.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore = "fills a whole address, 64k allocations")]
+    async fn a_few_long_lived_flows_do_not_starve_a_second_worker() {
+        let timers = TestTimers::default();
+        tokio::time::pause();
+        let idle = Duration::from_secs(120);
+        let allocator = build_allocator_short_timeout(idle);
+        let open = |src_port: u16, timers: &TestTimers| {
+            allocator.allocate_typed(
+                vpcd1(),
+                vpcd2(),
+                PrivateTuple::new(addr_v4("1.1.0.1"), port(src_port), dst_v4(), None),
+                NextHeader::TCP,
+                timers,
+            )
+        };
+
+        let mut seen_blocks = std::collections::BTreeSet::new();
+        let mut long_lived = Vec::new();
+        for src_port in 1..=252 * 256 {
+            let mapping = open(src_port, &timers)
+                .expect("the address has room")
+                .allocation;
+            // The first mapping of each block is the one whose flow keeps running.
+            if seen_blocks.insert(mapping.port().as_u16() / 256) {
+                long_lived.push(mapping);
+            }
+        }
+        assert_eq!(long_lived.len(), 252);
+        assert!(open(252 * 256 + 1, &timers).is_err(), "the address is full");
+
+        // Everything else idles out and is reaped. The long-lived flows hold their mappings.
+        timers.advance(idle * 2).await;
+
+        let other = std::thread::scope(|s| {
+            s.spawn(|| open(60_000, &TestTimers::default()))
+                .join()
+                .unwrap()
+        });
+        other.expect("all but 252 ports of the address are free");
+        drop(long_lived);
     }
 }
