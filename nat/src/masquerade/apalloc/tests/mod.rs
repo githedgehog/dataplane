@@ -5,4 +5,5 @@
 
 pub(super) mod alloc;
 mod concurrent_fuzz;
+mod fragmentation;
 mod pool_fuzz;
