@@ -4,7 +4,7 @@
 //! Display implementations for allocator types
 
 use super::alloc::{AllocatedIp, IpAllocator, PoolSet};
-use super::mapping::Mapping;
+use super::mapping::{FlowMapping, Mapping};
 use super::port_alloc::{AllocatedPort, PortAllocator};
 use super::{Allocation, IpAddress, NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
 use common::cliprovider::{CliSource, Heading};
@@ -89,6 +89,12 @@ where
 impl<I: NatIpWithBitmap> Display for Mapping<I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         write!(f, "{}", self.allocation())
+    }
+}
+
+impl<I: NatIpWithBitmap> Display for FlowMapping<I> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "{}", **self)
     }
 }
 

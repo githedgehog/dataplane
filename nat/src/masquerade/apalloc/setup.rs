@@ -296,7 +296,11 @@ pub(crate) fn pool_sets_for_specs<J: NatIpWithBitmap>(
         .iter()
         .enumerate()
         .map(|(owner, spec)| {
-            let mut pool_set = PoolSet::new(spec.idle_timeout, spec.mapping_policy);
+            let mut pool_set = PoolSet::new(
+                spec.idle_timeout,
+                super::closed_hold(protocol),
+                spec.mapping_policy,
+            );
             for &region_index in by_owner.get(&owner).map_or(&[][..], Vec::as_slice) {
                 pool_set.push_region(
                     regions[region_index].range,
