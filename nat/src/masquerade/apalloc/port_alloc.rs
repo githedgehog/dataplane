@@ -293,10 +293,39 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         }
 
         // If we didn't find a port, allocate and use a new block
-        let block = Arc::new(self.allocate_block(ip, allow_null)?);
+        let block = match self.allocate_block(ip, allow_null) {
+            Ok(block) => Arc::new(block),
+            // Every block is handed out, but a block stays handed out while any one of its ports
+            // is live: the others may have ports freed since.
+            Err(AllocatorError::NoPortBlock) => {
+                return self.allocate_from_handed_out_block(allow_null);
+            }
+            Err(e) => return Err(e),
+        };
         self.allocated_blocks
             .insert(block.index, Arc::downgrade(&block));
         block.allocate_port_from_block(allow_null)
+    }
+
+    /// Allocate from a block another thread (or an earlier block of this one) holds, and make it
+    /// this thread's block.
+    fn allocate_from_handed_out_block(
+        &self,
+        allow_null: bool,
+    ) -> Result<AllocatedPort<I>, AllocatorError> {
+        for block in self.allocated_blocks.with_free_ports() {
+            let index = block.index;
+            match block.allocate_port_from_block(allow_null) {
+                Ok(port) => {
+                    self.thread_blocks.set(Some(index));
+                    return Ok(port);
+                }
+                // Filled by another thread since it was found.
+                Err(AllocatorError::NoFreePort(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Err(AllocatorError::NoPortBlock)
     }
 
     fn try_to_reserve_block(&self, port: NatPort) -> Result<(bool, usize), AllocatorError> {
@@ -473,11 +502,19 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
         self: Arc<Self>,
         allow_null: bool,
     ) -> Result<AllocatedPort<I>, AllocatorError> {
-        let bitmap_offset = self
-            .usage_bitmap
-            .lock()
-            .allocate_port_from_bitmap()
-            .ok_or(AllocatorError::NoFreePort(self.base_port_idx))?;
+        let bitmap_offset = {
+            let mut bitmap = self.usage_bitmap.lock();
+            // A block opened for an identifier leaves port 0 free, and a port caller can now draw
+            // from any handed-out block. Port 0 is no port: mark it used rather than hand it out
+            // and fail with its bit set, which would also stop the caller's scan of the blocks.
+            // Nothing gives the bit back, but the block's lifetime goes by its ports, not its bits.
+            if !allow_null && self.base_port_idx == 0 {
+                bitmap.reserve_offset_range(0, 0);
+            }
+            bitmap
+                .allocate_port_from_bitmap()
+                .ok_or(AllocatorError::NoFreePort(self.base_port_idx))?
+        };
 
         if allow_null {
             Ok(AllocatedPort::new(
@@ -485,8 +522,8 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
                 self.clone(),
             ))
         } else {
-            // We can't have picked 0 in first port block because we marked port 0 as used in the
-            // bitmap at bitmap creation time.
+            // We can't have picked 0 in the first port block: it was marked used above, if not
+            // when the bitmap was created.
             NatPort::new_port_checked(self.base_port_idx + bitmap_offset)
                 .map_err(AllocatorError::PortAllocationFailed)
                 .map(|port| AllocatedPort::new(port, self.clone()))
@@ -679,6 +716,17 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
             .read()
             .values()
             .any(|block| block.upgrade().is_some_and(|block| !block.is_full()))
+    }
+
+    /// The live blocks that have a free port, as of now. They are upgraded under the read lock but
+    /// returned, so that whichever of them is dropped last is dropped after the lock is gone.
+    fn with_free_ports(&self) -> Vec<Arc<AllocatedPortBlock<I>>> {
+        self.0
+            .read()
+            .values()
+            .filter_map(Weak::upgrade)
+            .filter(|block| !block.is_full())
+            .collect()
     }
 
     fn search_for_block(&self, port: NatPort) -> Option<Arc<AllocatedPortBlock<I>>> {
