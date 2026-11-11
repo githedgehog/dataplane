@@ -16,7 +16,7 @@ use super::alloc::{AllocatedIp, PoolSet};
 use super::port_alloc::AllocatedPort;
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
-use concurrency::sync::atomic::{AtomicBool, Ordering};
+use concurrency::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use concurrency::sync::{Arc, Mutex, RwLock};
 use config::external::overlay::vpcpeering::MappingPolicy;
 use flow_entry::flow_table::{Schedule, SideTimer, TimerRef};
@@ -25,6 +25,7 @@ use net::flows::atomic_instant::AtomicInstant;
 use shuttle_dashmap::DashMap;
 use smallvec::SmallVec;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::time::{Duration, Instant};
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -116,17 +117,32 @@ pub struct Mapping<I: NatIpWithBitmap> {
     allocation: AllocatedPort<I>,
     expires_at: AtomicInstant,
     idle_timeout: Duration,
+    /// How long, at most, the mapping is kept once the last flow on it is gone, if not for the
+    /// rest of its idle timeout (see [`FlowMapping`]). It depends on the protocol only, as the pool
+    /// the mapping comes from does.
+    hold: Option<Duration>,
     /// The reaper's timer, once it is on a worker's wheel.
     timer: Mutex<Option<TimerRef>>,
+    /// The flows holding this mapping, through a [`FlowMapping`] each.
+    flows: AtomicUsize,
 }
 
 impl<I: NatIpWithBitmap> Mapping<I> {
-    fn new(allocation: AllocatedPort<I>, idle_timeout: Duration) -> Self {
+    fn new(allocation: AllocatedPort<I>, idle_timeout: Duration, hold: Option<Duration>) -> Self {
+        // An AtomicInstant cannot go below the instant it starts from: an earlier one is stored as
+        // that instant. The last flow going brings the deadline forward, so start from now. Nor
+        // can it go more than usize::MAX nanoseconds (some 584 years) past it, where it panics:
+        // the pool caps the idle timeout well short of that (see MAX_IDLE_TIMEOUT).
+        debug_assert!(idle_timeout <= super::alloc::MAX_IDLE_TIMEOUT);
+        let expires_at = AtomicInstant::new(clock::now());
+        expires_at.store(clock::deadline(idle_timeout), Ordering::Relaxed);
         Self {
             allocation,
-            expires_at: AtomicInstant::new(clock::deadline(idle_timeout)),
+            expires_at,
             idle_timeout,
+            hold,
             timer: Mutex::new(None),
+            flows: AtomicUsize::new(0),
         }
     }
 
@@ -172,6 +188,94 @@ impl<I: NatIpWithBitmap> Mapping<I> {
     pub(crate) fn refresh(&self) {
         let new = clock::deadline(self.idle_timeout);
         self.expires_at.fetch_max(new, Ordering::Relaxed);
+    }
+}
+
+/// A [`Mapping`] as one flow holds it. The mapping counts these, so that it can tell when the last
+/// flow using it is gone. When it is, the mapping is kept for at most its hold after it (if it has
+/// one) rather than for whatever is left of its idle timeout: a flow goes once its connection is
+/// closed, reset, or idle past its own (short) timeout.
+#[derive(Debug)]
+pub struct FlowMapping<I: NatIpWithBitmap> {
+    mapping: Arc<Mapping<I>>,
+}
+
+impl<I: NatIpWithBitmap> FlowMapping<I> {
+    /// Count a flow on `mapping`, and refresh it.
+    ///
+    /// A mapping in its subscriber's table is attached to with that table's lock held (read or
+    /// write): the reaper takes the write lock to check that the mapping expired and remove it,
+    /// so a mapping found live under the lock is refreshed before the reaper can look again, and
+    /// the flow never holds a mapping that is no longer in the table.
+    pub(crate) fn attach(mapping: Arc<Mapping<I>>) -> Self {
+        mapping.flows.fetch_add(1, Ordering::SeqCst);
+        // Refreshing after counting is what keeps the last flow going concurrently from leaving
+        // this one on the hold: see `Drop`.
+        mapping
+            .expires_at
+            .fetch_max(clock::deadline(mapping.idle_timeout), Ordering::SeqCst);
+        Self { mapping }
+    }
+
+    /// Count the first flow on a mapping just made, before anyone else can see it: it has the
+    /// whole idle timeout ahead of it already.
+    fn first(mapping: Arc<Mapping<I>>) -> Self {
+        mapping.flows.fetch_add(1, Ordering::SeqCst);
+        Self { mapping }
+    }
+
+    /// The mapping itself, beyond this flow's hold on it.
+    #[cfg(test)]
+    pub(crate) fn shared(&self) -> Arc<Mapping<I>> {
+        self.mapping.clone()
+    }
+}
+
+impl<I: NatIpWithBitmap> Deref for FlowMapping<I> {
+    type Target = Mapping<I>;
+
+    fn deref(&self) -> &Mapping<I> {
+        &self.mapping
+    }
+}
+
+impl<I: NatIpWithBitmap> Drop for FlowMapping<I> {
+    fn drop(&mut self) {
+        let mapping = &self.mapping;
+        if mapping.flows.fetch_sub(1, Ordering::SeqCst) != 1 {
+            return;
+        }
+        let Some(hold) = mapping.hold else {
+            return;
+        };
+        // The last flow on the mapping is gone: keep the mapping at most `hold` longer, never longer
+        // than it would have been kept anyway. The reaper waiting on its wheel needs no telling: it
+        // reads the deadline again at least once per revolution of the wheel, which is shorter than
+        // any hold worth having.
+        loop {
+            mapping
+                .expires_at
+                .fetch_min(clock::deadline(hold), Ordering::SeqCst);
+            // A flow attaching meanwhile counts itself before it refreshes the deadline: either
+            // its refresh lands after the line above, or its count is seen here. In the second
+            // case, redo the refresh: the one it made may have landed before the line above, which
+            // then replaced it.
+            if mapping.flows.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            // As `Mapping::refresh`, but SeqCst: the reasoning here and in the attach path rests
+            // on one total order of these operations and the count's.
+            mapping
+                .expires_at
+                .fetch_max(clock::deadline(mapping.idle_timeout), Ordering::SeqCst);
+            // That flow may have gone in turn, and brought the deadline in, before the refresh
+            // above: the refresh then left a mapping without a flow on its whole idle timeout,
+            // with nobody left to bring it in. So look again. A flow still counted here brings the
+            // deadline in when it goes (or the last one after it does), after this refresh.
+            if mapping.flows.load(Ordering::SeqCst) != 0 {
+                return;
+            }
+        }
     }
 }
 
@@ -237,12 +341,12 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         Ok(port)
     }
 
-    fn live_mapping(&self, key: &MappingKey<I>) -> Option<Arc<Mapping<I>>> {
-        self.mappings
-            .read()
-            .get(key)
-            .filter(|m| !m.is_expired())
-            .cloned()
+    // Attach to the live mapping for `key`, if there is one. Under the read lock: see
+    // FlowMapping::attach.
+    fn live_mapping(&self, key: &MappingKey<I>) -> Option<FlowMapping<I>> {
+        let mappings = self.mappings.read();
+        let mapping = mappings.get(key).filter(|m| !m.is_expired())?;
+        Some(FlowMapping::attach(mapping.clone()))
     }
 
     fn get_or_insert_with(
@@ -259,20 +363,23 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         // subscriber's mappings, so we'd risk a deadlock.
         draw: impl FnOnce() -> Result<AllocatedPort<I>, AllocatorError>,
         timers: &dyn Schedule,
-    ) -> Result<Arc<Mapping<I>>, AllocatorError> {
+    ) -> Result<FlowMapping<I>, AllocatorError> {
         // Lazy staleness check (common path)
         if let Some(existing) = self.live_mapping(&key) {
-            existing.refresh();
             return Ok(existing);
         }
         let mut guard = self.mappings.write();
         // Now that we grabbed the write lock, check again in case a racing thread created an entry
         // in the meantime
         if let Some(existing) = guard.get(&key).filter(|m| !m.is_expired()) {
-            existing.refresh();
-            return Ok(existing.clone());
+            return Ok(FlowMapping::attach(existing.clone()));
         }
-        let mapping = Arc::new(Mapping::new(draw()?, pool.idle_timeout()));
+        let mapping = Arc::new(Mapping::new(
+            draw()?,
+            pool.idle_timeout(),
+            pool.closed_hold(),
+        ));
+        let flow = FlowMapping::first(mapping.clone());
         guard.insert(key, mapping.clone());
         drop(guard);
         timers.schedule(Box::new(MappingReaper {
@@ -283,7 +390,7 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
             subscribers: pool.subscribers().clone(),
             retired: pool.reapers_retired(),
         }));
-        Ok(mapping)
+        Ok(flow)
     }
 
     // Get mapping for the given key, or create one allocating a fresh port if none exists (or if
@@ -295,7 +402,7 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         pool: &PoolSet<I>,
         allow_null: bool,
         timers: &dyn Schedule,
-    ) -> Result<Arc<Mapping<I>>, AllocatorError> {
+    ) -> Result<FlowMapping<I>, AllocatorError> {
         self.get_or_insert_with(
             src_ip,
             key,
@@ -315,7 +422,7 @@ impl<I: NatIpWithBitmap> Subscriber<I> {
         ip: I,
         port: NatPort,
         timers: &dyn Schedule,
-    ) -> Result<Arc<Mapping<I>>, AllocatorError> {
+    ) -> Result<FlowMapping<I>, AllocatorError> {
         let mapping = self.get_or_insert_with(
             src_ip,
             key,
@@ -745,7 +852,7 @@ mod tests {
                     &registry,
                 )
                 .unwrap();
-            let weak = Arc::downgrade(&mapping);
+            let weak = Arc::downgrade(&mapping.shared());
             drop(mapping);
             drop(pool);
             assert!(
@@ -791,6 +898,158 @@ mod tests {
         worker.expire_all(clock::now());
         assert_eq!(worker.timers(), 0);
         drop(mapping);
+    }
+
+    // A flow's hold on the mapping for one fixed private tuple of `pool`.
+    fn a_mapping(pool: &PoolSet<Ipv4Addr>, timers: &dyn Schedule) -> FlowMapping<Ipv4Addr> {
+        let subscriber_ip = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+        pool.get_or_create_mapping(
+            subscriber_ip,
+            MappingKey::new(port(1), MappingScope::Independent),
+            false,
+            timers,
+        )
+        .unwrap_or_else(|e| unreachable!("the pool has room: {e}"))
+    }
+
+    // The mapping is kept for the hold once the last flow on it goes, and not before.
+    #[test]
+    fn the_last_flow_going_brings_the_mapping_in_to_the_hold() {
+        const HOLD: Duration = Duration::from_secs(1);
+        let timers = TestTimers::default();
+        let pool = narrow_budget_pool().with_closed_hold(Some(HOLD));
+        assert!(
+            pool.idle_timeout() > HOLD * 10,
+            "sanity: the idle timeout must be well past the hold to tell them apart"
+        );
+        let first = a_mapping(&pool, &timers);
+        let second = a_mapping(&pool, &timers);
+        let mapping = first.shared();
+        assert!(
+            Arc::ptr_eq(&mapping, &second.shared()),
+            "sanity: two flows from one private tuple should share a mapping"
+        );
+
+        drop(first);
+        assert!(
+            mapping.expires_at() > clock::deadline(HOLD * 10),
+            "the mapping was cut short while a flow still used it"
+        );
+        drop(second);
+        assert!(
+            mapping.expires_at() <= clock::deadline(HOLD),
+            "the mapping was kept past the hold once the last flow on it went"
+        );
+    }
+
+    // The hold only ever brings a deadline in: with an idle timeout shorter than the hold, or no
+    // hold at all (UDP), the last flow going leaves the mapping as it was.
+    #[test]
+    fn the_last_flow_going_never_extends_the_mapping() {
+        let timers = TestTimers::default();
+        let idle_timeout = narrow_budget_pool().idle_timeout();
+        for hold in [Some(idle_timeout * 2), None] {
+            let pool = narrow_budget_pool().with_closed_hold(hold);
+            let flow = a_mapping(&pool, &timers);
+            let mapping = flow.shared();
+            let before = mapping.expires_at();
+            drop(flow);
+            assert_eq!(
+                mapping.expires_at(),
+                before,
+                "the last flow going with a hold of {hold:?} moved the mapping's deadline"
+            );
+        }
+    }
+
+    // A flow attaching to a mapping while the only other flow on it goes: either the going flow
+    // sees the new one and leaves the mapping alone, or the new flow's refresh lands after the
+    // hold. Either way, the new flow is not left on a mapping kept only for the hold.
+    #[cfg(not(feature = "loom"))]
+    #[concurrency::test]
+    fn a_flow_attaching_while_the_last_other_one_goes_keeps_the_mapping() {
+        use flow_entry::flow_table::{FlowTable, WorkerFlowTable};
+
+        const HOLD: Duration = Duration::from_secs(1);
+        let worker = WorkerFlowTable::new(Arc::new(FlowTable::default()));
+        let pool = narrow_budget_pool().with_closed_hold(Some(HOLD));
+        let going = a_mapping(&pool, &worker);
+        let mapping = going.shared();
+
+        let attaching = {
+            let mapping = mapping.clone();
+            concurrency::thread::spawn(move || FlowMapping::attach(mapping))
+        };
+        drop(going);
+        let attached = attaching.join().unwrap_or_else(|_| unreachable!());
+
+        assert!(
+            attached.expires_at() > clock::deadline(HOLD),
+            "a flow that attached while the last other flow on the mapping went was left on the \
+             hold"
+        );
+        drop((attached, mapping, pool));
+    }
+
+    // A new flow finding the mapping for its private tuple live, while the last other flow on it
+    // goes and its reaper comes: with no hold to speak of, the mapping is expired the moment that
+    // flow goes. Either the reaper removes the mapping before the lookup, and the new flow gets a
+    // mapping of its own, or the new flow attaches to it before the reaper looks, and it stays.
+    // Never both: a flow holding a mapping that is no longer in its subscriber's table, with no
+    // reaper left, while the next flow from that private tuple is given another (RFC 4787 REQ-1).
+    #[cfg(not(feature = "loom"))]
+    #[concurrency::test]
+    fn a_flow_never_attaches_to_a_mapping_its_reaper_removed() {
+        use flow_entry::flow_table::{FlowTable, WorkerFlowTable};
+
+        let worker = WorkerFlowTable::new(Arc::new(FlowTable::default()));
+        let pool = narrow_budget_pool().with_closed_hold(Some(Duration::ZERO));
+        let subscriber_ip = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+        let key = MappingKey::new(port(1), MappingScope::Independent);
+        let going = a_mapping(&pool, &worker);
+        // Another mapping keeps the subscriber from being reaped with this one: a new flow would
+        // then go to a subscriber of its own, a race reap_expired_mapping() accepts.
+        let other = pool
+            .get_or_create_mapping(
+                subscriber_ip,
+                MappingKey::new(port(2), MappingScope::Independent),
+                false,
+                &worker,
+            )
+            .unwrap_or_else(|e| unreachable!("the pool has room: {e}"));
+        let subscriber = pool
+            .subscribers()
+            .get(subscriber_ip)
+            .unwrap_or_else(|| unreachable!("a subscriber row exists after the first mapping"));
+
+        let reaping = {
+            let (subscriber, subscribers) = (subscriber.clone(), pool.subscribers().clone());
+            let mapping = going.shared();
+            concurrency::thread::spawn(move || {
+                drop(going);
+                reap_expired_mapping(&subscriber, subscriber_ip, key, &mapping, &subscribers);
+            })
+        };
+        let looking_up = {
+            let pool = pool.clone();
+            concurrency::thread::spawn(move || {
+                let timers = TestTimers::default();
+                pool.get_or_create_mapping(subscriber_ip, key, false, &timers)
+                    .unwrap_or_else(|e| unreachable!("the pool has room: {e}"))
+            })
+        };
+        reaping.join().unwrap_or_else(|_| unreachable!());
+        let attached = looking_up.join().unwrap_or_else(|_| unreachable!());
+
+        assert!(
+            subscriber
+                .mappings
+                .read()
+                .get(&key)
+                .is_some_and(|in_table| Arc::ptr_eq(in_table, &attached.shared())),
+            "a flow attached to a mapping that its reaper removed from the subscriber's table"
+        );
+        drop((attached, other, subscriber, pool, worker));
     }
 
     // A configured idle timeout has no upper bound (see GH 1854), and deadlines are computed as
@@ -864,7 +1123,7 @@ mod tests {
             &subscriber,
             subscriber_ip,
             key,
-            &mapping,
+            &mapping.shared(),
             pool.subscribers(),
         );
 
@@ -896,7 +1155,13 @@ mod tests {
             .get(subscriber_ip)
             .expect("a subscriber row exists after the first mapping");
         assert!(
-            reap_expired_mapping(&owner, subscriber_ip, key2, &doomed, expired.subscribers()),
+            reap_expired_mapping(
+                &owner,
+                subscriber_ip,
+                key2,
+                &doomed.shared(),
+                expired.subscribers()
+            ),
             "an expired mapping should be reaped, and its reaper told it is done"
         );
         assert!(owner.live_mapping(&key2).is_none());

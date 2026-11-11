@@ -81,7 +81,6 @@ use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
 use crate::masquerade::MasqueradeConfig;
 pub use crate::masquerade::apalloc::natip_with_bitmap::NatIpWithBitmap;
-use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicI64, Ordering};
 use config::GenId;
 use flow_entry::flow_table::Schedule;
@@ -107,7 +106,7 @@ mod setup;
 #[cfg(test)]
 pub(super) mod tests;
 
-pub use mapping::Mapping;
+pub use mapping::FlowMapping;
 #[cfg(test)]
 pub(crate) use setup::DEFAULT_MASQUERADE_IDLE_TIMEOUT;
 
@@ -243,11 +242,12 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
 // NatAllocator
 ///////////////////////////////////////////////////////////////////////////////
 
-/// [`Allocation`] is the non-generic object representing an allocation, be it IPv4 or IPv6
+/// [`Allocation`] is the non-generic object representing an allocation, be it IPv4 or IPv6: one
+/// flow's hold on its mapping.
 #[derive(Debug)]
 pub enum Allocation {
-    V4(Arc<Mapping<Ipv4Addr>>),
-    V6(Arc<Mapping<Ipv6Addr>>),
+    V4(FlowMapping<Ipv4Addr>),
+    V6(FlowMapping<Ipv6Addr>),
 }
 
 impl Allocation {
@@ -283,16 +283,24 @@ impl Allocation {
     }
 }
 
+// How long a mapping is kept once the last flow on it is gone, if not for the rest of its idle
+// timeout. TCP only: a TCP flow goes when its connection closes, so the mapping outliving it by a
+// whole idle timeout holds a public port per closed connection, and churn exhausts the pool. A UDP
+// flow has no close to go by, and keeps the idle timeout it was configured with.
+pub(crate) fn closed_hold(protocol: NextHeader) -> Option<std::time::Duration> {
+    (protocol == NextHeader::TCP).then_some(crate::Masquerade::MASQUERADE_CLOSED_HOLD)
+}
+
 trait MasqueradePools: NatIpWithBitmap {
     fn pools(allocator: &NatAllocator) -> &PoolTable<Self, Self>;
-    fn into_allocation(port: Arc<Mapping<Self>>) -> Allocation;
+    fn into_allocation(port: FlowMapping<Self>) -> Allocation;
 }
 
 impl MasqueradePools for Ipv4Addr {
     fn pools(allocator: &NatAllocator) -> &PoolTable<Self, Self> {
         &allocator.pools_src44
     }
-    fn into_allocation(port: Arc<Mapping<Self>>) -> Allocation {
+    fn into_allocation(port: FlowMapping<Self>) -> Allocation {
         Allocation::V4(port)
     }
 }
@@ -301,7 +309,7 @@ impl MasqueradePools for Ipv6Addr {
     fn pools(allocator: &NatAllocator) -> &PoolTable<Self, Self> {
         &allocator.pools_src66
     }
-    fn into_allocation(port: Arc<Mapping<Self>>) -> Allocation {
+    fn into_allocation(port: FlowMapping<Self>) -> Allocation {
         Allocation::V6(port)
     }
 }
@@ -445,7 +453,7 @@ impl NatAllocator {
         tuple: PrivateTuple<I>,
         next_header: NextHeader,
         timers: &dyn Schedule,
-    ) -> Result<AllocationResult<Arc<Mapping<I>>>, AllocatorError> {
+    ) -> Result<AllocationResult<FlowMapping<I>>, AllocatorError> {
         Self::allocate_from_tables(
             src_vpcd,
             dst_vpcd,
@@ -515,7 +523,7 @@ impl NatAllocator {
         next_header: NextHeader,
         pools_src: &PoolTable<I, I>,
         timers: &dyn Schedule,
-    ) -> Result<AllocationResult<Arc<Mapping<I>>>, AllocatorError> {
+    ) -> Result<AllocationResult<FlowMapping<I>>, AllocatorError> {
         let PrivateTuple {
             src_ip,
             src_port,
@@ -723,6 +731,7 @@ mod bolero_tests {
                     ),
                     alloc::PoolSet::new(
                         Duration::from_secs(u64::from(marker(start, end))),
+                        None,
                         MappingPolicy::default(),
                     ),
                 );
@@ -793,6 +802,7 @@ mod unit_tests {
     fn marked_pool_set(marker: u64) -> alloc::PoolSet<Ipv4Addr> {
         alloc::PoolSet::new(
             std::time::Duration::from_secs(marker),
+            None,
             MappingPolicy::default(),
         )
     }

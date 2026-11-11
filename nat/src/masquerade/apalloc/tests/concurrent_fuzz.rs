@@ -535,7 +535,7 @@ fn reaping_a_subscriber_races_a_fresh_mapping_on_it_without_corruption() {
         let reaper = {
             let subscriber = subscriber.clone();
             let subscribers = pool.subscribers().clone();
-            let mapping1 = mapping1.clone();
+            let mapping1 = mapping1.shared();
             thread::spawn(move || {
                 reap_expired_mapping(&subscriber, subscriber_ip, key1, &mapping1, &subscribers);
             })

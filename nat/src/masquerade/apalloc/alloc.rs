@@ -3,7 +3,7 @@
 
 //! Masquerade IP allocation. See the architecture diagram in `mod.rs`.
 
-use super::mapping::{Mapping, MappingKey, PoolReapers, Subscriber, SubscribersTable};
+use super::mapping::{FlowMapping, MappingKey, PoolReapers, Subscriber, SubscribersTable};
 use super::region::AddrInterval;
 use super::reserved::{ReservedForAddr, ReservedPorts};
 use super::{NatIpWithBitmap, port_alloc};
@@ -213,18 +213,31 @@ impl<I: NatIpWithBitmap> PoolRegion<I> {
 pub(crate) struct PoolSet<I: NatIpWithBitmap> {
     regions: Vec<PoolRegion<I>>,
     idle_timeout: Duration,
+    // How long a mapping is kept once the last flow on it is gone: see FlowMapping.
+    closed_hold: Option<Duration>,
     mapping_policy: MappingPolicy,
     subscribers: SubscribersTable<I>,
     // retires this pool's reapers when the last copy of the pool is dropped
     reapers: Arc<PoolReapers<I>>,
 }
 
+/// A hundred years: as good as never, and representable in a deadline. A flow's or a mapping's
+/// deadline is an `AtomicInstant`, which panics more than `usize::MAX` nanoseconds (some 584 years)
+/// past the instant it starts from; and a configured idle timeout has no upper bound (see GH 1854).
+pub(crate) const MAX_IDLE_TIMEOUT: Duration = Duration::from_hours(100 * 365 * 24);
+
 impl<I: NatIpWithBitmap> PoolSet<I> {
-    pub(crate) fn new(idle_timeout: Duration, mapping_policy: MappingPolicy) -> Self {
+    pub(crate) fn new(
+        idle_timeout: Duration,
+        closed_hold: Option<Duration>,
+        mapping_policy: MappingPolicy,
+    ) -> Self {
         let subscribers = SubscribersTable::new();
         Self {
             regions: Vec::new(),
-            idle_timeout,
+            // Every idle timeout a mapping or a flow is given comes from here: cap it once.
+            idle_timeout: idle_timeout.min(MAX_IDLE_TIMEOUT),
+            closed_hold,
             mapping_policy,
             subscribers: subscribers.clone(),
             reapers: Arc::new(PoolReapers::new(subscribers)),
@@ -241,6 +254,18 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
 
     pub(crate) fn idle_timeout(&self) -> Duration {
         self.idle_timeout
+    }
+
+    pub(crate) fn closed_hold(&self) -> Option<Duration> {
+        self.closed_hold
+    }
+
+    /// The same pool, with mappings kept for at most `hold` once the last flow on them is gone.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_closed_hold(mut self, hold: Option<Duration>) -> Self {
+        self.closed_hold = hold;
+        self
     }
 
     pub(crate) fn mapping_policy(&self) -> MappingPolicy {
@@ -301,8 +326,8 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
     fn with_subscriber(
         &self,
         src_ip: I,
-        insert: impl FnOnce(&Arc<Subscriber<I>>) -> Result<Arc<Mapping<I>>, AllocatorError>,
-    ) -> Result<Arc<Mapping<I>>, AllocatorError> {
+        insert: impl FnOnce(&Arc<Subscriber<I>>) -> Result<FlowMapping<I>, AllocatorError>,
+    ) -> Result<FlowMapping<I>, AllocatorError> {
         let subscriber = self.subscribers.get_or_default(src_ip);
         insert(&subscriber).inspect_err(|_| self.reap_if_still_empty(src_ip, &subscriber))
     }
@@ -313,7 +338,7 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
         key: MappingKey<I>,
         allow_null: bool,
         timers: &dyn Schedule,
-    ) -> Result<Arc<Mapping<I>>, AllocatorError> {
+    ) -> Result<FlowMapping<I>, AllocatorError> {
         self.with_subscriber(src_ip, |subscriber| {
             subscriber.get_or_create(src_ip, key, self, allow_null, timers)
         })
@@ -326,7 +351,7 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
         ip: I,
         port: NatPort,
         timers: &dyn Schedule,
-    ) -> Result<Arc<Mapping<I>>, AllocatorError> {
+    ) -> Result<FlowMapping<I>, AllocatorError> {
         self.with_subscriber(src_ip, |subscriber| {
             subscriber.get_or_reserve(src_ip, key, self, ip, port, timers)
         })
