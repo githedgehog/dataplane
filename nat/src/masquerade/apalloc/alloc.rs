@@ -87,9 +87,8 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
                     continue;
                 };
                 examined.push(ip.clone());
-                if !ip.has_free_ports() {
-                    continue;
-                }
+                // No `has_free_ports` check first: it walks the handed-out blocks, and so does the
+                // allocation, which also draws while it walks and says so when there is no room.
                 match ip.allocate_port_for_ip(allow_null) {
                     Ok(port) => {
                         debug!("Allocated port {port}");
@@ -382,10 +381,6 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
         &self.port_allocator
     }
 
-    fn has_free_ports(&self) -> bool {
-        self.port_allocator.has_free_ports()
-    }
-
     pub(crate) fn deallocate_block_for_ip(&self, index: usize) {
         self.port_allocator.deallocate_block(index);
     }
@@ -394,9 +389,7 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
         self: Arc<Self>,
         allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        let alloc_port = self
-            .port_allocator
-            .allocate_port(self.clone(), allow_null)?;
+        let alloc_port = self.port_allocator.allocate_port(&self, allow_null)?;
 
         debug!(
             "Allocated port {} for ip {}",
