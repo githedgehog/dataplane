@@ -1007,7 +1007,7 @@ impl<'eal> Rebuffer for Mbuf<'eal> {
     fn from_test_buffer(
         packet: Packet<TestBuffer>,
         buf: Self,
-    ) -> Result<Packet<Self>, Packet<TestBuffer>> {
+    ) -> Result<Packet<Self>, Packet<Self>> {
         packet.rebuffer(buf)
     }
 }

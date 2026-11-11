@@ -20,12 +20,14 @@ pub trait Rebuffer: PacketBufferMut + Sized {
     ///
     /// # Errors
     ///
-    /// Gives `packet` back if it does not fit in `buf`.
-    #[allow(clippy::result_large_err)] // Preserve packet ownership on failure.
+    /// This method may fail if the packet does not fit in the provided buffer `buf`.
+    /// If that happens, the packet is returned anyway with the new buffer so that the
+    /// packet can be returned to a pipeline and get accounted.
+    #[allow(clippy::result_large_err)]
     fn from_test_buffer(
         packet: Packet<TestBuffer>,
         buf: Self,
-    ) -> Result<Packet<Self>, Packet<TestBuffer>>;
+    ) -> Result<Packet<Self>, Packet<Self>>;
 }
 
 impl Rebuffer for TestBuffer {
@@ -35,7 +37,7 @@ impl Rebuffer for TestBuffer {
     fn from_test_buffer(
         packet: Packet<TestBuffer>,
         _buf: Self,
-    ) -> Result<Packet<Self>, Packet<TestBuffer>> {
+    ) -> Result<Packet<Self>, Packet<Self>> {
         Ok(packet)
     }
 }
