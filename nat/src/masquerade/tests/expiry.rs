@@ -13,6 +13,7 @@ use config::external::overlay::vpcpeering::contract::{LOCAL_VNI, REMOTE_VNI};
 use flow_entry::flow_table::FlowLookup;
 use net::buffer::TestBuffer;
 use net::packet::Packet;
+use net::tcp::TcpFlags;
 use net::vxlan::Vni;
 use std::net::IpAddr;
 
@@ -20,8 +21,8 @@ const ONEWAY: u64 = crate::Masquerade::MASQUERADE_ONEWAY_TIMEOUT.as_secs();
 
 const PAST_EXPIRY: Duration = Duration::from_secs(ONEWAY * 6);
 
-const WITHIN_LIFETIME: Duration =
-    Duration::from_secs(crate::Masquerade::MASQUERADE_CLOSING_TIMEOUT.as_secs() / 2);
+// A second, scaled like the flow timeouts: well within a one-way UDP flow's lifetime.
+const WITHIN_LIFETIME: Duration = Duration::from_secs(crate::common::TIMEOUT_SCALE);
 
 const NEARLY_ESTABLISHED: Duration = Duration::from_secs(100);
 
@@ -474,6 +475,503 @@ fn a_live_flows_tuple_is_never_reissued() {
             other, held,
             "{held:?} is held by a live flow from {first} and was reissued to {second}; replies \
              for {first} will be delivered to {second}"
+        );
+    });
+}
+
+// The idle timeout the gateway that ran out of ports was configured with: long enough that a
+// mapping held for it past every close exhausts an address at a few dozen new connections a
+// second. Scaled for emulation as the closing timeout is, so that it stays the longer of the two.
+const LONG_IDLE_TIMEOUT: Duration = Duration::from_mins(30 * crate::common::TIMEOUT_SCALE);
+
+const CLOSED_HOLD: Duration = crate::Masquerade::MASQUERADE_CLOSED_HOLD;
+
+const CLOSING: Duration = crate::Masquerade::MASQUERADE_CLOSING_TIMEOUT;
+
+fn tcp_fabric() -> Fabric {
+    tcp_fabric_idle(LONG_IDLE_TIMEOUT)
+}
+
+fn tcp_fabric_idle(idle_timeout: Duration) -> Fabric {
+    let exposes = vec![
+        VpcExpose::empty()
+            .make_masquerade(Some(idle_timeout))
+            .unwrap_or_else(|e| unreachable!("{e}"))
+            .ip(lpm::prefix::PrefixWithOptionalPorts::new(
+                "10.0.0.0/24".parse().unwrap_or_else(|_| unreachable!()),
+                None,
+            ))
+            .as_range(lpm::prefix::PrefixWithOptionalPorts::new(
+                "172.16.0.0/24".parse().unwrap_or_else(|_| unreachable!()),
+                None,
+            ))
+            .unwrap_or_else(|e| unreachable!("{e}")),
+    ];
+    Fabric::build(&exposes).unwrap_or_else(|| unreachable!("a fixed expose builds"))
+}
+
+const SYN: TcpFlags = TcpFlags::SYN;
+const SYN_ACK: TcpFlags = TcpFlags::SYN.union(TcpFlags::ACK);
+const ACK: TcpFlags = TcpFlags::ACK;
+const FIN_ACK: TcpFlags = TcpFlags::FIN.union(TcpFlags::ACK);
+const RST: TcpFlags = TcpFlags::RST;
+
+fn tcp(
+    source: IpAddr,
+    destination: IpAddr,
+    sport: u16,
+    dport: u16,
+    flags: TcpFlags,
+) -> Packet<TestBuffer> {
+    use net::headers::TryTcpMut;
+    let mut packet = build(source, destination, true, sport, dport);
+    packet
+        .try_tcp_mut()
+        .unwrap_or_else(|| unreachable!())
+        .set_flags(flags);
+    packet
+}
+
+// A TCP segment from a private host, and the public tuple it left with, if it was translated.
+fn tcp_out(
+    lookup: &mut FlowLookup,
+    masq: &mut Masquerade,
+    (source, sport): (IpAddr, u16),
+    peer: IpAddr,
+    flags: TcpFlags,
+) -> Option<(IpAddr, u16)> {
+    let mut packet = tcp(source, peer, sport, 80, flags);
+    Arrival::outbound().stamp(&mut packet);
+    let out = run(lookup, masq, vec![packet], Some(vni(REMOTE_VNI)));
+    if out[0].is_done() {
+        return None;
+    }
+    Some((out[0].ip_source()?, out[0].transport_src_port()?.get()))
+}
+
+// A TCP segment from the peer to a public tuple; whether it was let through.
+fn tcp_in(
+    lookup: &mut FlowLookup,
+    masq: &mut Masquerade,
+    peer: IpAddr,
+    translated: (IpAddr, u16),
+    flags: TcpFlags,
+) -> bool {
+    let mut packet = tcp(peer, translated.0, 80, translated.1, flags);
+    Arrival::inbound().stamp(&mut packet);
+    let out = run(lookup, masq, vec![packet], Some(vni(LOCAL_VNI)));
+    !out[0].is_done()
+}
+
+fn establish(
+    lookup: &mut FlowLookup,
+    masq: &mut Masquerade,
+    private: (IpAddr, u16),
+    peer: IpAddr,
+) -> (IpAddr, u16) {
+    let translated = tcp_out(lookup, masq, private, peer, SYN)
+        .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+    assert!(
+        tcp_in(lookup, masq, peer, translated, SYN_ACK),
+        "the SYN-ACK was not delivered"
+    );
+    assert_eq!(
+        tcp_out(lookup, masq, private, peer, ACK),
+        Some(translated),
+        "the handshake's last ACK changed its translation"
+    );
+    translated
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Close {
+    // The private host resets the connection.
+    Reset,
+    // The peer resets the connection.
+    PeerReset,
+    // The private host closes first, the peer closes in turn, and the private host acknowledges.
+    Fin,
+}
+
+fn close(
+    lookup: &mut FlowLookup,
+    masq: &mut Masquerade,
+    private: (IpAddr, u16),
+    peer: IpAddr,
+    translated: (IpAddr, u16),
+    how: Close,
+) {
+    match how {
+        Close::Reset => {
+            tcp_out(lookup, masq, private, peer, RST);
+        }
+        Close::PeerReset => {
+            tcp_in(lookup, masq, peer, translated, RST);
+        }
+        Close::Fin => {
+            tcp_out(lookup, masq, private, peer, FIN_ACK);
+            tcp_in(lookup, masq, peer, translated, FIN_ACK);
+            tcp_out(lookup, masq, private, peer, ACK);
+        }
+    }
+}
+
+// Open, then close, a connection from `first`, let `after` pass, and open one from `second`:
+// return both public tuples. The allocator hands out the lowest free port, so the second
+// connection gets the first one's port exactly when that port has been given back.
+fn reuse_after_close(how: Close, after: Duration) -> ((IpAddr, u16), (IpAddr, u16)) {
+    let mut tuples = None;
+    with_paused_clock(|| async {
+        let fabric = tcp_fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let first = ("10.0.0.7".parse().unwrap_or_else(|_| unreachable!()), 1234);
+        let second = ("10.0.0.9".parse().unwrap_or_else(|_| unreachable!()), 4321);
+
+        let closed = establish(&mut lookup, &mut masq, first, peer);
+        close(&mut lookup, &mut masq, first, peer, closed, how);
+        // The worker sweeps the closed flow away straight after; the hold starts there.
+        pass(&masq, Duration::ZERO).await;
+        pass(&masq, after).await;
+        let next = tcp_out(&mut lookup, &mut masq, second, peer, SYN)
+            .unwrap_or_else(|| unreachable!("a second private source is masqueraded"));
+        tuples = Some((closed, next));
+    });
+    tuples.unwrap_or_else(|| unreachable!("the body ran"))
+}
+
+/// A closed connection gives its public port back once the closed hold has passed, not a whole
+/// idle timeout later; and not before. Whichever side closed it.
+#[test]
+fn a_closed_connection_gives_its_port_back_after_the_hold() {
+    assert!(
+        CLOSED_HOLD < LONG_IDLE_TIMEOUT,
+        "the hold must be shorter than the idle timeout for this test to tell them apart"
+    );
+    let a_little = Duration::from_secs(1);
+    for how in [Close::Reset, Close::PeerReset, Close::Fin] {
+        let (closed, next) = reuse_after_close(how, CLOSED_HOLD + a_little);
+        assert_eq!(
+            next,
+            closed,
+            "after a {how:?} close, the port was not given back {}s later, well short of the \
+             {}s idle timeout",
+            (CLOSED_HOLD + a_little).as_secs(),
+            LONG_IDLE_TIMEOUT.as_secs()
+        );
+
+        let (closed, next) = reuse_after_close(how, CLOSED_HOLD.saturating_sub(a_little));
+        assert_ne!(
+            next, closed,
+            "after a {how:?} close, the port was handed out again before the hold had passed"
+        );
+    }
+}
+
+/// Under endpoint-independent mapping, two connections from one private port share a mapping.
+/// One closing must not cut the other's mapping short: the open one would keep its own tuple, but
+/// the next connection from that port would be given another (RFC 5382 REQ-1).
+#[test]
+fn closing_one_connection_keeps_a_shared_mapping() {
+    with_paused_clock(|| async {
+        let fabric = tcp_fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let (peer, other_peer) = (fabric.peer[0], fabric.peer[1]);
+        let private = ("10.0.0.7".parse().unwrap_or_else(|_| unreachable!()), 1234);
+
+        let closed = establish(&mut lookup, &mut masq, private, peer);
+        let open = establish(&mut lookup, &mut masq, private, other_peer);
+        assert_eq!(
+            open, closed,
+            "sanity: two connections from one private port should share a mapping"
+        );
+
+        close(&mut lookup, &mut masq, private, peer, closed, Close::Reset);
+        pass(&masq, CLOSED_HOLD + Duration::from_secs(1)).await;
+        assert!(
+            tcp_in(&mut lookup, &mut masq, other_peer, open, ACK),
+            "the connection still open lost its mapping when the other one closed"
+        );
+        assert_eq!(
+            tcp_out(&mut lookup, &mut masq, private, other_peer, ACK),
+            Some(open),
+            "the connection still open was moved to another public tuple"
+        );
+        assert_eq!(
+            tcp_out(&mut lookup, &mut masq, private, peer, SYN),
+            Some(open),
+            "a new connection from the private port was given another public tuple while one \
+             from it was still open: closing the other connection cut the mapping short"
+        );
+    });
+}
+
+/// A connection half-closed by the private host, with the peer still sending, keeps its mapping for
+/// as long as the private host keeps acknowledging: the hold starts when the connection is gone,
+/// not at the first FIN. Otherwise the next connection from that private port would be given
+/// another public tuple while this one is still in use.
+#[test]
+fn a_half_closed_connection_keeps_its_mapping_while_in_use() {
+    with_paused_clock(|| async {
+        let fabric = tcp_fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let (peer, other_peer) = (fabric.peer[0], fabric.peer[1]);
+        let private = ("10.0.0.7".parse().unwrap_or_else(|_| unreachable!()), 1234);
+
+        let translated = establish(&mut lookup, &mut masq, private, peer);
+        tcp_out(&mut lookup, &mut masq, private, peer, FIN_ACK);
+        let step = Duration::from_secs(1);
+        let mut passed = Duration::ZERO;
+        while passed <= CLOSED_HOLD + step {
+            assert!(
+                tcp_in(&mut lookup, &mut masq, peer, translated, ACK),
+                "the peer's data was dropped {}s into the half-close",
+                passed.as_secs()
+            );
+            assert_eq!(
+                tcp_out(&mut lookup, &mut masq, private, peer, ACK),
+                Some(translated),
+                "the half-closed connection's ACK changed its translation"
+            );
+            pass(&masq, step).await;
+            passed += step;
+        }
+        assert_eq!(
+            tcp_out(&mut lookup, &mut masq, private, other_peer, SYN),
+            Some(translated),
+            "a new connection from the private port was given another public tuple while a \
+             half-closed one from it was still in use"
+        );
+    });
+}
+
+/// A close that never completes: the private host sends its FIN and the peer never answers. The
+/// flow goes once the closing timeout has passed without a packet, and the mapping after the hold
+/// that starts there: the port is given back well short of the idle timeout. Retransmitted FINs
+/// keep the flow, and so the port, for as long as they come.
+#[test]
+fn an_unanswered_close_gives_its_port_back() {
+    assert!(
+        CLOSING + CLOSED_HOLD < LONG_IDLE_TIMEOUT / 2,
+        "the closing timeout and the hold must be well short of the idle timeout for this test to \
+         tell them apart"
+    );
+    with_paused_clock(|| async {
+        let fabric = tcp_fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let first = ("10.0.0.7".parse().unwrap_or_else(|_| unreachable!()), 1234);
+        let second = ("10.0.0.9".parse().unwrap_or_else(|_| unreachable!()), 4321);
+        let third = ("10.0.0.11".parse().unwrap_or_else(|_| unreachable!()), 5678);
+        let a_little = CLOSING / 4;
+
+        let closing = establish(&mut lookup, &mut masq, first, peer);
+        tcp_out(&mut lookup, &mut masq, first, peer, FIN_ACK);
+        // The FIN again, just short of the closing timeout: the flow is kept from there.
+        pass(&masq, CLOSING.saturating_sub(a_little)).await;
+        assert_eq!(
+            tcp_out(&mut lookup, &mut masq, first, peer, FIN_ACK),
+            Some(closing),
+            "a retransmitted FIN, inside the closing timeout, changed its translation"
+        );
+        pass(&masq, CLOSING.saturating_sub(a_little)).await;
+        assert!(
+            tcp_in(&mut lookup, &mut masq, peer, closing, FIN_ACK),
+            "the peer's answer was dropped inside the closing timeout of the last FIN"
+        );
+
+        // Nothing more: the private host never acknowledges. The flow goes, then the mapping.
+        pass(&masq, CLOSING + a_little).await;
+        assert!(
+            !tcp_in(&mut lookup, &mut masq, peer, closing, FIN_ACK),
+            "the flow of a close left unfinished outlived the closing timeout"
+        );
+        pass(&masq, CLOSED_HOLD.saturating_sub(a_little * 2)).await;
+        assert_ne!(
+            tcp_out(&mut lookup, &mut masq, second, peer, SYN),
+            Some(closing),
+            "the port was handed out again before the hold had passed"
+        );
+        pass(&masq, a_little * 2).await;
+        assert_eq!(
+            tcp_out(&mut lookup, &mut masq, third, peer, SYN),
+            Some(closing),
+            "the port of a close left unfinished was not given back after the closing timeout \
+             and the hold, well short of the idle timeout"
+        );
+    });
+}
+
+// Send a SYN from `first`, and again `retry` later, with no answer; let its flow time out and be
+// swept away, then `after` pass, and open a connection from `second`: return both public tuples,
+// as `reuse_after_close` does.
+fn reuse_after_unanswered_syn(retry: Duration, after: Duration) -> ((IpAddr, u16), (IpAddr, u16)) {
+    let mut tuples = None;
+    with_paused_clock(|| async {
+        let fabric = tcp_fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let first = ("10.0.0.7".parse().unwrap_or_else(|_| unreachable!()), 1234);
+        let second = ("10.0.0.9".parse().unwrap_or_else(|_| unreachable!()), 4321);
+
+        let unanswered = tcp_out(&mut lookup, &mut masq, first, peer, SYN)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+        pass(&masq, retry).await;
+        assert_eq!(
+            tcp_out(&mut lookup, &mut masq, first, peer, SYN),
+            Some(unanswered),
+            "sanity: a retransmitted SYN should keep its translation"
+        );
+        // The unanswered flow times out a few seconds after the first SYN, and the worker sweeps
+        // it away; the hold starts there.
+        pass(&masq, Masquerade::MASQUERADE_ONEWAY_TIMEOUT).await;
+        pass(&masq, after).await;
+        let next = tcp_out(&mut lookup, &mut masq, second, peer, SYN)
+            .unwrap_or_else(|| unreachable!("a second private source is masqueraded"));
+        tuples = Some((unanswered, next));
+    });
+    tuples.unwrap_or_else(|| unreachable!("the body ran"))
+}
+
+/// A SYN nobody answers gives its public port back once its flow has timed out and the hold has
+/// passed, not a whole idle timeout after the last SYN; and not before the hold. A retransmitted
+/// SYN refreshes the mapping for the idle timeout, so this also checks the hold brings that in.
+#[test]
+fn an_unanswered_syn_gives_its_port_back_after_the_hold() {
+    assert!(
+        CLOSED_HOLD < LONG_IDLE_TIMEOUT,
+        "the hold must be shorter than the idle timeout for this test to tell them apart"
+    );
+    let (retry, a_little) = (Duration::from_secs(1), Duration::from_secs(1));
+    let (unanswered, next) = reuse_after_unanswered_syn(retry, CLOSED_HOLD + a_little);
+    assert_eq!(
+        next,
+        unanswered,
+        "an unanswered SYN's port was not given back {}s after its flow went, well short of the \
+         {}s idle timeout",
+        (CLOSED_HOLD + a_little).as_secs(),
+        LONG_IDLE_TIMEOUT.as_secs()
+    );
+
+    let (unanswered, next) =
+        reuse_after_unanswered_syn(retry, CLOSED_HOLD.saturating_sub(a_little));
+    assert_ne!(
+        next, unanswered,
+        "an unanswered SYN's port was handed out again before the hold had passed"
+    );
+}
+
+/// A half-closed connection whose peer is slow to answer: the private host sends its request and
+/// shuts down its side, the peer acknowledges the FIN and only answers well after that. The
+/// connection is still open the other way, so the answer gets through, and with the translation the
+/// connection always had. The peer here takes most of the 4 minutes RFC 5382 REQ-5 sets as the
+/// least a NAT may wait on such a "transitory" connection; a fixed time, not the closing timeout,
+/// so that this fails if that timeout is ever made short again.
+#[test]
+fn a_half_closed_connection_waits_for_a_slow_peer() {
+    with_paused_clock(|| async {
+        let fabric = tcp_fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let (peer, other_peer) = (fabric.peer[0], fabric.peer[1]);
+        let private = ("10.0.0.7".parse().unwrap_or_else(|_| unreachable!()), 1234);
+
+        let translated = establish(&mut lookup, &mut masq, private, peer);
+        tcp_out(&mut lookup, &mut masq, private, peer, FIN_ACK);
+        assert!(
+            tcp_in(&mut lookup, &mut masq, peer, translated, ACK),
+            "the peer's acknowledgement of the FIN was dropped"
+        );
+        let slow = Duration::from_mins(4) - Duration::from_secs(30);
+        pass(&masq, slow).await;
+        assert!(
+            tcp_in(&mut lookup, &mut masq, peer, translated, ACK),
+            "the peer's answer, {}s into the half-close, was dropped",
+            slow.as_secs()
+        );
+        assert_eq!(
+            tcp_out(&mut lookup, &mut masq, private, peer, ACK),
+            Some(translated),
+            "the private host's acknowledgement of the late answer changed its translation"
+        );
+        assert_eq!(
+            tcp_out(&mut lookup, &mut masq, private, other_peer, SYN),
+            Some(translated),
+            "a new connection from the private port was given another public tuple while a \
+             half-closed one from it was still in use"
+        );
+    });
+}
+
+/// A configured idle timeout has no upper bound (see GH 1854). An established connection
+/// extends its flows to that timeout from now, and a flow's deadline only reaches so far (some
+/// 584 years) past the one it started with: past that, extending it would panic, on a worker.
+#[test]
+fn an_absurd_idle_timeout_never_breaks_an_established_connection() {
+    with_paused_clock(|| async {
+        let fabric = tcp_fabric_idle(Duration::MAX);
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let private = ("10.0.0.7".parse().unwrap_or_else(|_| unreachable!()), 1234);
+
+        let translated = establish(&mut lookup, &mut masq, private, peer);
+        pass(&masq, LONG_IDLE_TIMEOUT).await;
+        assert!(
+            tcp_in(&mut lookup, &mut masq, peer, translated, ACK),
+            "the established connection lost its flow well inside its (absurd) idle timeout"
+        );
+        assert_eq!(
+            tcp_out(&mut lookup, &mut masq, private, peer, ACK),
+            Some(translated),
+            "the established connection changed its translation"
+        );
+    });
+}
+
+/// A connection half-closed by the private host whose peer never closes in turn: the private
+/// host gives up on it (Linux drops an orphaned `FIN_WAIT_2` after a minute) and opens a new
+/// connection from the same port, to the same peer, while the old one's flow is still kept. The
+/// new connection is open, not closing: it keeps its flow for the idle timeout, not the closing
+/// timeout. A SYN from outside does not get to end the old connection that way.
+#[test]
+fn a_new_connection_on_a_closing_ones_tuple_is_not_closing() {
+    assert!(
+        CLOSING * 2 < LONG_IDLE_TIMEOUT,
+        "the closing timeout must be well short of the idle timeout for this test to tell them \
+         apart"
+    );
+    with_paused_clock(|| async {
+        let fabric = tcp_fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let private = ("10.0.0.7".parse().unwrap_or_else(|_| unreachable!()), 1234);
+
+        let translated = establish(&mut lookup, &mut masq, private, peer);
+        tcp_out(&mut lookup, &mut masq, private, peer, FIN_ACK);
+        assert!(
+            tcp_in(&mut lookup, &mut masq, peer, translated, ACK),
+            "the peer's acknowledgement of the FIN was dropped"
+        );
+        // A SYN from outside, on the public tuple, is not the private host's to reuse its port:
+        // it must not end the connection.
+        tcp_in(&mut lookup, &mut masq, peer, translated, SYN);
+        assert!(
+            tcp_in(&mut lookup, &mut masq, peer, translated, ACK),
+            "a SYN from outside ended a half-closed connection"
+        );
+        pass(&masq, Duration::from_mins(1)).await;
+        assert_eq!(
+            establish(&mut lookup, &mut masq, private, peer),
+            translated,
+            "sanity: the new connection should go through the old one's flow"
+        );
+
+        let silence = CLOSING * 2;
+        pass(&masq, silence).await;
+        assert!(
+            tcp_in(&mut lookup, &mut masq, peer, translated, ACK),
+            "the new connection's flow went after {}s of silence: it was kept for the closing \
+             timeout, as the old connection's would have been, not for the idle timeout",
+            silence.as_secs()
         );
     });
 }
