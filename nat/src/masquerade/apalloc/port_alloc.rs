@@ -20,7 +20,7 @@ use concurrency::thread::{self, ThreadId};
 use lpm::prefix::PortRange;
 use std::collections::{BTreeSet, HashMap};
 
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 #[concurrency_mode(std)]
 use rand::seq::SliceRandom;
@@ -198,11 +198,21 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
     }
 
     /// The address's port blocks handed out and still free, as of now. A block handed out counts
-    /// whole, however few of its ports are in use.
+    /// whole, however few of its ports are in use, and so does one a thread has taken but not yet
+    /// put in the map.
     pub(crate) fn block_usage(&self) -> (u16, u16) {
+        // The free flags, not `usable_blocks`: that goes on counting a block taken until it is in
+        // the map (see `Self::insert_block`).
         let free = self
-            .usable_blocks
-            .load(concurrency::sync::atomic::Ordering::Relaxed);
+            .blocks
+            .iter()
+            .filter(|block| {
+                block
+                    .free
+                    .load(concurrency::sync::atomic::Ordering::Relaxed)
+            })
+            .count();
+        let free = u16::try_from(free).unwrap_or_else(|_| unreachable!());
         (self.total_blocks.saturating_sub(free), free)
     }
 
@@ -233,6 +243,16 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
 
     // Find an available block to allocate ports from, and mark it as non-free.
     fn pick_available_block(&self) -> Result<(usize, u16), AllocatorError> {
+        // On a fragmented address every block is handed out: say so without trying each one.
+        // `usable_blocks` overcounts (see `Self::insert_block`) but does not undercount, except
+        // while a block being given back is between its two stores in `Self::deallocate_block`.
+        if self
+            .usable_blocks
+            .load(concurrency::sync::atomic::Ordering::Relaxed)
+            == 0
+        {
+            return Err(AllocatorError::NoPortBlock);
+        }
         // Find the first free block in the list, starting from the current self.current_alloc_index
         let (index, block) = self
             .cycle_blocks()
@@ -258,16 +278,14 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
     ) -> Result<AllocatedPortBlock<I>, AllocatorError> {
         // Pick an available block to allocate ports from. This is thread-safe because we atomically
         // compare and exchange the block status. We can then update the other items
-        // (current_alloc_index, thread_blocks, usable_blocks) in the rest of the function.
+        // (current_alloc_index, thread_blocks) in the rest of the function. The caller takes the
+        // block off usable_blocks once it is in allocated_blocks: see `Self::insert_block`.
         let (index, base_port_index) = self.pick_available_block()?;
 
         self.thread_blocks.set(Some(index));
 
         self.current_alloc_index
             .store(index, concurrency::sync::atomic::Ordering::Relaxed);
-
-        self.usable_blocks
-            .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
 
         Ok(AllocatedPortBlock::new(
             ip,
@@ -279,53 +297,101 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
 
     pub(crate) fn allocate_port(
         &self,
-        ip: Arc<AllocatedIp<I>>,
+        ip: &Arc<AllocatedIp<I>>,
         allow_null: bool,
     ) -> Result<AllocatedPort<I>, AllocatorError> {
-        let thread_block_index = self.thread_blocks.get();
-
-        // Try to allocate a port from the block currently used by this thread
-        if let Some(index) = thread_block_index
+        // Try to allocate a port from the block currently used by this thread. Other threads may
+        // use it too (see `allocate_from_handed_out_block`), so it can fill up between any check
+        // and the allocation: only the allocation itself can tell whether there was room.
+        if let Some(index) = self.thread_blocks.get()
             && let Some(current_block) = self.allocated_blocks.get(index)
-            && !current_block.is_full()
         {
-            return current_block.allocate_port_from_block(allow_null);
-        }
-
-        // If we didn't find a port, allocate and use a new block
-        let block = match self.allocate_block(ip, allow_null) {
-            Ok(block) => Arc::new(block),
-            // Every block is handed out, but a block stays handed out while any one of its ports
-            // is live: the others may have ports freed since.
-            Err(AllocatorError::NoPortBlock) => {
-                return self.allocate_from_handed_out_block(allow_null);
-            }
-            Err(e) => return Err(e),
-        };
-        self.allocated_blocks
-            .insert(block.index, Arc::downgrade(&block));
-        block.allocate_port_from_block(allow_null)
-    }
-
-    /// Allocate from a block another thread (or an earlier block of this one) holds, and make it
-    /// this thread's block.
-    fn allocate_from_handed_out_block(
-        &self,
-        allow_null: bool,
-    ) -> Result<AllocatedPort<I>, AllocatorError> {
-        for block in self.allocated_blocks.with_free_ports() {
-            let index = block.index;
-            match block.allocate_port_from_block(allow_null) {
-                Ok(port) => {
-                    self.thread_blocks.set(Some(index));
-                    return Ok(port);
-                }
-                // Filled by another thread since it was found.
+            match current_block.allocate_port_from_block(allow_null) {
+                Ok(port) => return Ok(port),
                 Err(AllocatorError::NoFreePort(_)) => {}
                 Err(e) => return Err(e),
             }
         }
+
+        // Blocks change hands while we look: one can be given back after `allocate_block` found
+        // none free, and another thread can take the port we found in a handed-out block.
+        for attempt in 1..=BLOCK_LOOKUP_ATTEMPTS {
+            match self.allocate_block(Arc::clone(ip), allow_null) {
+                Ok(block) => {
+                    let block = Arc::new(block);
+                    self.insert_block(&block);
+                    match block.allocate_port_from_block(allow_null) {
+                        Ok(port) => return Ok(port),
+                        // The block was in the map before we drew from it, so other threads may
+                        // have filled it (port forwarding may have left it few ports): fall back
+                        // to the other blocks.
+                        Err(AllocatorError::NoFreePort(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                // Every block is handed out, but a block stays handed out while any one of its
+                // ports is live: the others may have been freed since.
+                Err(AllocatorError::NoPortBlock) => {}
+                Err(e) => return Err(e),
+            }
+            if let Some(found) = self.allocate_from_handed_out_block(allow_null) {
+                return found;
+            }
+            // Every handed-out block was full when we drew from it. A block taken by another
+            // thread but not yet in the map (see `Self::insert_block`) still counts as usable, and
+            // so does one given back since, once its `Drop` has run: give the other thread time to
+            // finish, then look again.
+            if self
+                .usable_blocks
+                .load(concurrency::sync::atomic::Ordering::Relaxed)
+                == 0
+                || attempt == BLOCK_LOOKUP_ATTEMPTS
+            {
+                trace!("No free port for {} after {attempt} attempt(s)", ip.ip());
+                break;
+            }
+            thread::yield_now();
+        }
         Err(AllocatorError::NoPortBlock)
+    }
+
+    /// Make a block just taken visible to other threads, then stop counting it as usable.
+    ///
+    /// In that order, a block taken by another thread counts as usable until it can be found in
+    /// the map, so a thread that finds every handed-out block full does not give up because the
+    /// block is in neither. A block can still be in neither, and the thread give up, in two
+    /// windows:
+    /// - the block is both added to the map and taken off the count between the thread's scan of
+    ///   the map and its read of the count; a generation count read before the scan would close
+    ///   this one;
+    /// - a block being given back: its map entry stops upgrading when its last reference goes, but
+    ///   it counts as usable only once its `Drop` reaches [`Self::deallocate_block`].
+    fn insert_block(&self, block: &Arc<AllocatedPortBlock<I>>) {
+        self.allocated_blocks
+            .insert(block.index, Arc::downgrade(block));
+        self.usable_blocks
+            .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Allocate from a block another thread (or an earlier block of this one) holds, and make it
+    /// this thread's block.
+    ///
+    /// Returns `None` if every handed-out block was full when we drew from it.
+    fn allocate_from_handed_out_block(
+        &self,
+        allow_null: bool,
+    ) -> Option<Result<AllocatedPort<I>, AllocatorError>> {
+        let found = self
+            .allocated_blocks
+            .allocate_from_first_with_free_port(allow_null)?;
+        // The map is shared by every worker, and a write to it stalls them all: on a fragmented
+        // address this runs for most new flows, mostly from the block the thread already has.
+        if let Ok(port) = &found
+            && self.thread_blocks.get() != Some(port.block_allocator.index)
+        {
+            self.thread_blocks.set(Some(port.block_allocator.index));
+        }
+        Some(found)
     }
 
     fn try_to_reserve_block(&self, port: NatPort) -> Result<(bool, usize), AllocatorError> {
@@ -360,16 +426,13 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         port: NatPort,
         allow_null: bool,
     ) -> Arc<AllocatedPortBlock<I>> {
-        self.usable_blocks
-            .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
         let block = Arc::new(AllocatedPortBlock::new(
             ip,
             index,
             (port.as_u16() / 256) * 256, // port block base index, discard offset within block
             allow_null,
         ));
-        self.allocated_blocks
-            .insert(block.index, Arc::downgrade(&block));
+        self.insert_block(&block);
         block
     }
 
@@ -711,6 +774,10 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
         self.0.write().insert(index, block);
     }
 
+    /// Whether a live block has a free port, as of now; another thread may fill it next.
+    ///
+    /// Blocks are dropped under the read lock here as in
+    /// [`Self::allocate_from_first_with_free_port`], and for the same reasons.
     fn has_entries_with_free_ports(&self) -> bool {
         self.0
             .read()
@@ -718,15 +785,45 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
             .any(|block| block.upgrade().is_some_and(|block| !block.is_full()))
     }
 
-    /// The live blocks that have a free port, as of now. They are upgraded under the read lock but
-    /// returned, so that whichever of them is dropped last is dropped after the lock is gone.
-    fn with_free_ports(&self) -> Vec<Arc<AllocatedPortBlock<I>>> {
-        self.0
-            .read()
-            .values()
-            .filter_map(Weak::upgrade)
-            .filter(|block| !block.is_full())
-            .collect()
+    /// Draw a port from the first live block that has one, checking and drawing in one step so
+    /// that another thread filling a block only moves us on to the next. `None` if every block
+    /// was full when we drew from it.
+    ///
+    /// Blocks found full on the way are dropped under the read lock, and if one of them was the
+    /// last reference to its block, [`AllocatedPortBlock`]'s `Drop` runs under it too. That is
+    /// sound because giving a block back does not touch this map:
+    /// [`PortAllocator::deallocate_block`] leaves the expired entry for [`Self::get`] to remove.
+    /// The block's `Drop` also drops its [`AllocatedIp`], whose own `Drop` takes the pool's write
+    /// lock: callers must hold their own reference to the address, as `allocate_port` does, so
+    /// that this is never the last one.
+    ///
+    /// Each thread starts at its own place in the map, so that threads falling back at once do not
+    /// all take the same block and then contend on it.
+    fn allocate_from_first_with_free_port(
+        &self,
+        allow_null: bool,
+    ) -> Option<Result<AllocatedPort<I>, AllocatorError>> {
+        let blocks = self.0.read();
+        let start = Self::thread_offset() % blocks.len().max(1);
+        let values = blocks.values();
+        let mut rotated = values.clone().skip(start).chain(values.take(start));
+        rotated.find_map(
+            |block| match block.upgrade()?.allocate_port_from_block(allow_null) {
+                Err(AllocatorError::NoFreePort(_)) => None,
+                found => Some(found),
+            },
+        )
+    }
+
+    /// Where the current thread starts its scans: fixed per thread, and spread across threads.
+    /// The hasher is unkeyed so that shuttle replays stay deterministic.
+    fn thread_offset() -> usize {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        thread::current().id().hash(&mut hasher);
+        #[allow(clippy::cast_possible_truncation)] // any of the bits will do
+        let offset = hasher.finish() as usize;
+        offset
     }
 
     fn search_for_block(&self, port: NatPort) -> Option<Arc<AllocatedPortBlock<I>>> {
@@ -1136,6 +1233,24 @@ mod tests {
         let (index, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(index, 0);
         assert_eq!(base_port, 0);
+    }
+
+    // A block counts as used from the moment a thread takes it, before it is in the map: the
+    // port-block gauges would otherwise report blocks in flight as free.
+    #[test]
+    fn a_block_counts_as_used_as_soon_as_it_is_taken() {
+        bolero::check!()
+            .with_type()
+            .for_each(|&(taken, exclude_wellknown_ports): &(u16, bool)| {
+                let allocator =
+                    PortAllocator::<Ipv4Addr>::new_no_randomness(exclude_wellknown_ports);
+                let total = allocator.total_blocks;
+                let taken = taken % (total + 1);
+                for _ in 0..taken {
+                    allocator.pick_available_block().unwrap();
+                }
+                assert_eq!(allocator.block_usage(), (taken, total - taken));
+            });
     }
 
     fn port_range(start: u16, end: u16) -> PortRange {
