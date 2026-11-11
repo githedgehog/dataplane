@@ -559,3 +559,59 @@ fn reaping_a_subscriber_races_a_fresh_mapping_on_it_without_corruption() {
         );
     });
 }
+
+/// Two workers new to an address whose every block is handed out, with one port free in each, both
+/// get a port, and not the same one.
+#[concurrency::model_test]
+fn workers_share_the_free_ports_of_handed_out_blocks() {
+    use crate::masquerade::apalloc::alloc::{IpAllocator, NatPool};
+    use crate::masquerade::apalloc::reserved::ReservedPorts;
+    use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
+
+    concurrency::stress(|| {
+        // Port forwarding claims all but the top two blocks, keeping the model small.
+        let claims = PrefixPortsSet::from([PrefixWithOptionalPorts::new(
+            "10.1.0.0/32".into(),
+            Some(PortRange::new(1024, 65023).unwrap_or_else(|_| unreachable!())),
+        )]);
+        let start = u128::from(u32::from(Ipv4Addr::new(10, 1, 0, 0)));
+        let allocator = IpAllocator::<Ipv4Addr>::new(
+            NatPool::for_range(
+                AddrInterval::new(start, start),
+                ReservedPorts::from_set(&claims),
+                true,
+            ),
+            false,
+        );
+        let mut held: Vec<_> = (0..512)
+            .map(|_| allocator.allocate(false).expect("two blocks have room"))
+            .collect();
+        assert!(allocator.allocate(false).is_err(), "both blocks are full");
+        // Free one port in each block; both blocks stay handed out.
+        drop(held.swap_remove(0));
+        drop(held.pop());
+
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let allocator = allocator.clone();
+                thread::spawn(move || allocator.allocate(false))
+            })
+            .collect();
+        let drawn: Vec<_> = workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .expect("the worker panicked")
+                    .expect("a port was free for each worker")
+            })
+            .collect();
+        let ports: BTreeSet<u16> = drawn.iter().map(|port| port.port().as_u16()).collect();
+        assert_eq!(ports.len(), 2, "two workers were handed the same port");
+        assert!(
+            allocator.allocate(false).is_err(),
+            "the address is full again"
+        );
+        drop((drawn, held));
+    });
+}
