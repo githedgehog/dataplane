@@ -440,7 +440,7 @@ fn packet_burst(len: usize) -> Vec<Packet<TestBuffer>> {
 }
 
 #[test]
-/// Test that a packet that does not fit in an mbuf is handed back, and the mbuf returned
+/// Test that a packet that does not fit in an mbuf is handed back in it, without its payload
 fn test_rebuffer_rejects_a_packet_that_does_not_fit() {
     use net::headers::TryHeaders;
     use net::packet::Rebuffer;
@@ -451,13 +451,12 @@ fn test_rebuffer_rejects_a_packet_that_does_not_fit() {
     let mbuf = pool.alloc_bulk(1).unwrap().into_iter().next().unwrap();
 
     let mut rejected = Mbuf::from_test_buffer(packet, mbuf).unwrap_err();
-    assert_eq!(
-        rejected.headers(),
-        &headers,
-        "the packet is handed back intact"
-    );
-    assert_eq!(available(&pool), 1, "the mbuf goes back to the pool");
+    assert_eq!(rejected.headers(), &headers, "the packet keeps its headers");
+    assert_eq!(rejected.payload_len(), 0, "the payload is not kept");
+    assert_eq!(available(&pool), 0, "the packet holds the mbuf");
     rejected.done(net::packet::DoneReason::InternalDrop);
+    drop(rejected);
+    assert_eq!(available(&pool), 1, "the mbuf goes back to the pool");
 }
 
 #[test]
