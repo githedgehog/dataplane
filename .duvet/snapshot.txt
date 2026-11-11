@@ -324,13 +324,13 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5382
     TEXT[!MUST]:          response violates the security policy of the NAT.
 
   SECTION: [NAT Session Refresh](#section-5)
-    TEXT[!MAY,todo]:    REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
-    TEXT[!MAY,todo]:       connection are active, it MAY abandon the session if it has been
-    TEXT[!MAY,todo]:       idle for some time.
-    TEXT[!MUST,todo]: In such cases, the value of the "established
-    TEXT[!MUST,todo]:       connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
-    TEXT[!MUST,todo]:       The value of the "transitory connection idle-timeout" MUST NOT be
-    TEXT[!MUST,todo]:       less than 4 minutes.
+    TEXT[!MAY,exception]:    REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+    TEXT[!MAY,exception]:       connection are active, it MAY abandon the session if it has been
+    TEXT[!MAY,exception]:       idle for some time.
+    TEXT[!MUST,exception]: In such cases, the value of the "established
+    TEXT[!MUST,exception]:       connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+    TEXT[!MUST,exception]:       The value of the "transitory connection idle-timeout" MUST NOT be
+    TEXT[!MUST,exception]:       less than 4 minutes.
     TEXT[!MAY]:       a) The value of the NAT idle-timeouts MAY be configurable.
     TEXT[!MAY]: A NAT MAY hold state for a connection in
     TEXT[!MAY]:    TIME_WAIT state to accommodate retransmissions of the last ACK.

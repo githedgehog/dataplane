@@ -698,7 +698,7 @@ mod std_tests {
                     &timers,
                 )
                 .unwrap();
-            let weak = Arc::downgrade(&mapping.allocation);
+            let weak = Arc::downgrade(&mapping.allocation.shared());
             drop(mapping);
             drop(allocator);
             assert!(
@@ -1796,7 +1796,7 @@ mod std_tests {
             )
             .unwrap();
         // Simulates a flow's MasqueradeState holding its own reference, independent of the table
-        let held_by_flow = alloc.allocation.clone();
+        let held_by_flow = alloc.allocation.shared();
         let tuple = (held_by_flow.ip(), held_by_flow.port());
         drop(alloc);
 

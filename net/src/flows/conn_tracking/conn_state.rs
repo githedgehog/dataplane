@@ -31,6 +31,24 @@ impl ConnState {
     pub fn is_terminal(self) -> bool {
         matches!(self, ConnState::Closed | ConnState::Reset)
     }
+
+    /// Tell if the connection is being closed: one end at least has sent a FIN, and the
+    /// connection is not over yet.
+    #[must_use]
+    pub fn is_closing(self) -> bool {
+        match self {
+            ConnState::CClosing
+            | ConnState::SClosing
+            | ConnState::CHalfClose
+            | ConnState::SHalfClose
+            | ConnState::LastAck => true,
+            ConnState::OneWay
+            | ConnState::TwoWay
+            | ConnState::Established
+            | ConnState::Reset
+            | ConnState::Closed => false,
+        }
+    }
 }
 
 impl From<u8> for ConnState {
