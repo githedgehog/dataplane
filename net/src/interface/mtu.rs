@@ -75,7 +75,7 @@ impl From<Mtu> for u32 {
 
 impl Display for Mtu {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.get())
+        Display::fmt(&self.0, f)
     }
 }
 
