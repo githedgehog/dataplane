@@ -37,14 +37,15 @@ pub use netdevsim::*;
 
 use crate::{Manager, manager_of};
 use derive_builder::Builder;
+use futures::TryStreamExt;
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
 use net::eth::mac::SourceMac;
 use net::interface::switch::SwitchId;
 use net::interface::{
     AdminState, BridgePropertiesBuilder, Interface, InterfaceBuilder, InterfaceBuilderError,
-    InterfaceIndex, InterfaceName, InterfaceProperties, Mtu, OperationalState,
-    PciNetdevPropertiesBuilder, VrfPropertiesBuilder, VtepPropertiesBuilder,
+    InterfaceIndex, InterfaceName, InterfaceProperties, Mtu, MultiIndexInterfaceMap,
+    OperationalState, PciNetdevPropertiesBuilder, VrfPropertiesBuilder, VtepPropertiesBuilder,
 };
 use net::ipv4::addr::UnicastIpv4Addr;
 use net::pci::PciEbdf;
@@ -127,6 +128,30 @@ impl AsRequirement<InterfaceSpec> for Interface {
             controller: self.controller,
             properties: self.properties.as_requirement()?,
         })
+    }
+}
+impl Manager<Interface> {
+    /// Get ALL of the interfaces from the kernel in a single shot indexed by name and index.
+    /// Links that cannot be converted into an [`Interface`] are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the netlink request fails.
+    pub async fn get_kernel_interfaces(&self) -> Result<MultiIndexInterfaceMap, rtnetlink::Error> {
+        let mut req = self.handle.link().get().execute();
+        let mut interfaces = MultiIndexInterfaceMap::default();
+
+        while let Some(message) = req.try_next().await? {
+            match Interface::try_from_link_message(&message) {
+                Ok(interface) => {
+                    if let Err(e) = interfaces.try_insert(interface) {
+                        error!("Skipping link {}: {e:?}", message.header.index);
+                    }
+                }
+                Err(e) => debug!("Skipping link {}: {e}", message.header.index),
+            }
+        }
+        Ok(interfaces)
     }
 }
 
