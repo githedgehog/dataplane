@@ -58,7 +58,6 @@ pub struct InterfaceConfig {
     pub name: InterfaceName, /* key */
     pub iftype: InterfaceType,
     pub description: Option<String>,
-    pub vrf: Option<String>,
     pub addresses: BTreeSet<InterfaceAddress>,
     pub mtu: Option<Mtu>,
     pub ospf: Option<OspfInterface>,
@@ -111,7 +110,6 @@ impl InterfaceConfig {
             name,
             iftype,
             description: None,
-            vrf: None,
             addresses: BTreeSet::new(),
             mtu: None,
             ospf: None,
@@ -132,11 +130,6 @@ impl InterfaceConfig {
     pub fn add_address(mut self, address: IpAddr, mask_len: u8) -> Self {
         self.addresses
             .insert(InterfaceAddress::new(address, mask_len));
-        self
-    }
-    #[must_use]
-    pub fn set_vrf(mut self, vrfname: &str) -> Self {
-        self.vrf = Some(vrfname.to_owned());
         self
     }
     #[must_use]

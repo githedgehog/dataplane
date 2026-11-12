@@ -86,8 +86,7 @@ pub mod tests {
         .set_description("Intf to spine 2")
         .set_mtu(Mtu::try_from(9000).expect("Bad MTU"))
         .add_address(IpAddr::from_str("10.0.1.1").expect("Bad address"), 24)
-        .add_address(IpAddr::from_str("2001:1:2:3::6").expect("Bad address"), 96)
-        .set_vrf("default");
+        .add_address(IpAddr::from_str("2001:1:2:3::6").expect("Bad address"), 96);
 
         iface_table.add_interface_config(interface);
 
@@ -95,8 +94,8 @@ pub mod tests {
         let interface = InterfaceConfig::new(ifname("lo"), InterfaceType::Loopback)
             .set_description("Main loopback interface")
             .set_mtu(Mtu::try_from(9000).expect("Bad MTU"))
-            .add_address(IpAddr::from_str("7.0.0.10").expect("Bad address"), 32)
-            .set_vrf("default");
+            .add_address(IpAddr::from_str("7.0.0.10").expect("Bad address"), 32);
+
         iface_table.add_interface_config(interface);
 
         println!("{}", iface_table.render(&()));
