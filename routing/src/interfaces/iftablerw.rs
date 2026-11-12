@@ -447,14 +447,14 @@ impl IfTableWriter {
         ifindex: InterfaceIndex,
         new_mac: SourceMac,
     ) -> Result<IfUpdate, RouterError> {
-        let (mut config, mut iftype) = self
+        let mut config = self
             .enter()
             .unwrap_or_else(|| unreachable!())
             .get_interface(ifindex)
-            .map(|iface| (iface.as_config(), iface.iftype.clone()))
+            .map(Interface::as_config)
             .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
-        let Some(mac) = iftype.get_mac() else {
+        let Some(mac) = config.mac else {
             error!("Can't update mac of interface with index {ifindex}: it has no mac");
             return Err(RouterError::HasNoMac(ifindex));
         };
@@ -465,8 +465,7 @@ impl IfTableWriter {
         }
 
         let ifname = config.name.clone();
-        iftype.set_mac(new_mac);
-        config.set_iftype(iftype);
+        config.set_mac(new_mac);
 
         self.0.append(IfTableChange::Mod(config));
         self.0.publish();

@@ -277,7 +277,6 @@ mod tests {
     use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::AttachConfig, rib::vrf::RouterVrfConfig};
     use crate::interfaces::interface::IfState;
     use crate::interfaces::interface::IfType;
-    use crate::interfaces::interface::IfDataEthernet;
     use crate::interfaces::tests::build_test_interface_cfg;
 
     use crate::RouterError;
@@ -329,18 +328,16 @@ mod tests {
         let mut ifconfig = build_test_interface_cfg("Eth0", 10);
         ifconfig.set_description("Interface to Spine-1");
         ifconfig.set_admin_state(IfState::Up);
-        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet::new(
-            SourceMac::try_from("00:aa:00:00:00:02").unwrap()
-        )));
+        ifconfig.set_iftype(IfType::Ethernet);
+        ifconfig.set_mac(SourceMac::try_from("00:aa:00:00:00:02").unwrap());
         ifconfig.set_attach_cfg(Some(AttachConfig::Vrf(100)));
         config.add_interface(ifconfig);
 
         let mut ifconfig = build_test_interface_cfg("Eth1", 11);
         ifconfig.set_description("Interface to Spine-2");
         ifconfig.set_admin_state(IfState::Up);
-        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet::new(
-            SourceMac::try_from("00:bb:00:00:00:02").unwrap()
-        )));
+        ifconfig.set_iftype(IfType::Ethernet);
+        ifconfig.set_mac(SourceMac::try_from("00:bb:00:00:00:02").unwrap());
         config.add_interface(ifconfig);
 
     }
@@ -481,9 +478,8 @@ mod tests {
         ifconfig.set_name(&InterfaceName::try_from("CHANGED-NAME").unwrap());
         ifconfig.set_description("Interface with changed config");
         ifconfig.set_admin_state(IfState::Down);
-        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet::new(
-            SourceMac::try_from("00:ff:aa:bb:cc:dd").unwrap()
-        )));
+        ifconfig.set_iftype(IfType::Ethernet);
+        ifconfig.set_mac(SourceMac::try_from("00:ff:aa:bb:cc:dd").unwrap());
         ifconfig.set_attach_cfg(Some(AttachConfig::Vrf(101)));
         test_apply_config(&config, &mut db).expect("Should succeed");
 

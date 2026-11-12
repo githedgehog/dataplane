@@ -20,7 +20,7 @@ use crate::evpn::Vtep;
 
 use crate::fib::fibtable::{FibTableReader, FibTableReaderFactory, FibTableWriter};
 use crate::interfaces::iftablerw::{IfTableReader, IfTableReaderFactory, IfTableWriter};
-use crate::interfaces::interface::{IfDataEthernet, IfState, IfType, RouterInterfaceConfig};
+use crate::interfaces::interface::{IfState, IfType, RouterInterfaceConfig};
 use crate::rib::vrf::VrfId;
 
 pub struct RouterTables {
@@ -106,7 +106,8 @@ impl RouterTables {
         mac: SourceMac,
     ) -> &mut Self {
         let mut config = RouterInterfaceConfig::new(name, ifindex);
-        config.set_iftype(IfType::Ethernet(IfDataEthernet::new(mac)));
+        config.set_iftype(IfType::Ethernet);
+        config.set_mac(mac);
         config.set_admin_state(IfState::Up);
         self.interfaces
             .add_interface(config)

@@ -13,7 +13,7 @@ use config::internal::routing::vrf::VrfConfig;
 use config::{ConfigError, InternalConfig, ValidatedGwConfig};
 use net::interface::{Interface, InterfaceProperties, MultiIndexInterfaceMap};
 
-use routing::{AttachConfig, IfDataEthernet, IfState, IfType};
+use routing::{AttachConfig, IfState, IfType};
 use routing::{Render, RouterConfig, RouterInterfaceConfig, RouterVrfConfig, VrfId, Vtep};
 
 // Add the config for the VTEP for the router
@@ -97,7 +97,8 @@ fn build_router_interface_config(
                 error!("{msg}");
                 return Err(ConfigError::InternalFailure(msg));
             };
-            new.set_iftype(IfType::Ethernet(IfDataEthernet::new(mac)));
+            new.set_iftype(IfType::Ethernet);
+            new.set_mac(mac);
         }
     }
 

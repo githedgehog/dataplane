@@ -81,6 +81,9 @@ impl IfTable {
         if iface.iftype != config.iftype {
             iface.iftype = config.iftype.clone();
         }
+        if iface.mac != config.mac {
+            iface.mac = config.mac;
+        }
         if iface.admin_state != config.admin_state {
             iface.admin_state = config.admin_state;
         }

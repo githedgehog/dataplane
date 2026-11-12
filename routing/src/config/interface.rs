@@ -131,6 +131,7 @@ impl Interface {
             name: self.name.clone(),
             description: self.description.clone(),
             iftype: self.iftype.clone(),
+            mac: self.mac,
             admin_state: self.admin_state,
             mtu: self.mtu,
             attach_cfg: self.attachment.as_ref().map(Attachment::as_config),
