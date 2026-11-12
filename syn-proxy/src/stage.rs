@@ -180,6 +180,9 @@ impl SynCookieChecker {
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for SynCookieChecker {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
         let now = clock::now();
+        if !self.proxy.may_accept_cookies(now) {
+            return;
+        }
         for packet in burst.iter_mut() {
             if !packet.is_done()
                 && packet.meta().is_overlay()
@@ -338,12 +341,12 @@ impl SynProxy {
         now: clock::Instant,
         extra: &mut Vec<Packet<Buf>>,
     ) -> Result<(), DoneReason> {
-        // The SYN that the cookie stage built from the client's ACK: make sure it gets flows, or we
-        // cannot translate its sequence numbers later. Masquerade and port forwarding create flows
-        // anyway; for other packets, as in the flow filter, force flow tracking.
+        // The SYN that the cookie stage built from the client's ACK. The proxy only answers SYNs
+        // of connections that get flows, but the configuration may have changed since: make sure
+        // this one gets flows, or we cannot translate its sequence numbers later.
         if packet.meta().syn_proxy.is_some() {
             let meta = packet.meta_mut();
-            if !meta.requires_masquerade() && !meta.requires_port_forwarding() {
+            if !meta.gets_flows() {
                 meta.set_forced_flow_tracking(true);
             }
             self.proxy

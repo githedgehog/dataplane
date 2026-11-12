@@ -42,8 +42,11 @@ fn server_vpcd() -> VpcDiscriminant {
     vpcd(200)
 }
 
-// Stand-in for the flow filter: route packets of the client to the server's VPC and back.
-struct Peering;
+// Stand-in for the flow filter: route packets of the client to the server's VPC and back, and
+// request flow tracking if the peering is tracked.
+struct Peering {
+    tracked: Arc<AtomicBool>,
+}
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Peering {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
@@ -55,6 +58,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Peering {
                 } else {
                     Some(client_vpcd())
                 };
+                meta.set_forced_flow_tracking(self.tracked.load(Ordering::Relaxed));
             }
         }
     }
@@ -78,6 +82,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Acl {
 struct Gateway {
     proxy: SynProxyControl,
     table: Arc<FlowTable>,
+    tracked: Arc<AtomicBool>,
     acl_drops: Arc<AtomicBool>,
     pipeline: DynPipeline<'static, TestBuffer>,
 }
@@ -87,11 +92,14 @@ impl Gateway {
         let proxy = SynProxyControl::new();
         proxy.set_mode(SynProxyMode::On);
         let table = Arc::new(FlowTable::default());
+        let tracked = Arc::new(AtomicBool::new(true));
         let acl_drops = Arc::new(AtomicBool::new(false));
         let pipeline = DynPipeline::new()
             .add_stage(IcmpErrorHandler::new(table.clone()))
             .add_stage(FlowLookup::new("flow-lookup", table.clone()))
-            .add_stage(Peering)
+            .add_stage(Peering {
+                tracked: tracked.clone(),
+            })
             .add_stage(SynCookieChecker::new("syn-cookie-checker", proxy.clone()))
             .add_stage(Acl {
                 drops: acl_drops.clone(),
@@ -104,9 +112,15 @@ impl Gateway {
         Self {
             proxy,
             table,
+            tracked,
             acl_drops,
             pipeline,
         }
+    }
+
+    // Change whether the peering between the client and the server is tracked.
+    fn set_tracked(&self, tracked: bool) {
+        self.tracked.store(tracked, Ordering::Relaxed);
     }
 
     // Process a packet, and return what the gateway sends, without dropped packets.
@@ -392,11 +406,40 @@ async fn proxy_off() {
     let mut gw = Gateway::new();
     let cookie = handshake_with_client(&mut gw);
     gw.proxy.set_mode(SynProxyMode::Off);
+    handshake_with_server(&mut gw, cookie);
 
+    // The flow tracker creates flows for the SYN, as without the proxy
+    let mut gw = Gateway::new();
+    gw.proxy.set_mode(SynProxyMode::Off);
     let syn = gw.process_one(client_syn());
     assert_segment(&syn, false, TcpFlags::SYN, CLIENT_ISN, 0, 64000);
+    assert_eq!(gw.flows(), 2);
+}
 
-    handshake_with_server(&mut gw, cookie);
+// The proxy leaves alone connections that get no flows: they put no pressure on the flow table.
+#[tokio::test]
+async fn untracked_peering() {
+    let mut gw = Gateway::new();
+    gw.set_tracked(false);
+    let syn = gw.process_one(client_syn());
+    assert_segment(&syn, false, TcpFlags::SYN, CLIENT_ISN, 0, 64000);
+    assert_eq!(gw.flows(), 0);
+    let sent = gw.proxy.counters().cookies_sent.load(Ordering::Relaxed);
+    assert_eq!(sent, 0);
+}
+
+// If the peering stops being tracked between the SYN and the ACK, the proxy no longer checks the
+// cookie: the ACK goes to the server, which resets the connection, and the client tries again.
+#[tokio::test]
+async fn peering_untracked_after_the_syn() {
+    let mut gw = Gateway::new();
+    let cookie = handshake_with_client(&mut gw);
+    gw.set_tracked(false);
+    let out = gw.process_one(client_ack(cookie));
+    assert_segment(&out, false, TcpFlags::ACK, CLIENT_ISN + 1, cookie + 1, 512);
+    assert_eq!(gw.flows(), 0);
+    let accepted = gw.proxy.counters().cookies_accepted.load(Ordering::Relaxed);
+    assert_eq!(accepted, 0);
 }
 
 // Cookies count as accepted only once the ACL and rate-limit stages let the connection through.

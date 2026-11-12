@@ -262,6 +262,15 @@ impl PacketMeta {
         );
     }
 
+    /// Tell if the NAT or flow-tracking stages will create flows for the connection of the
+    /// packet: if it requires masquerade or port forwarding, or if flow tracking is forced.
+    #[must_use]
+    pub fn gets_flows(&self) -> bool {
+        self.requires_masquerade()
+            || self.requires_port_forwarding()
+            || self.has_forced_flow_tracking()
+    }
+
     #[must_use]
     pub fn has_forced_flow_tracking(&self) -> bool {
         self.flags.contains(MetaFlags::FORCE_FLOW_TRACKING)
