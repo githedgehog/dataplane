@@ -102,28 +102,42 @@ impl SynProxyControl {
         self.0.mode.store(mode as u8, Ordering::Release);
     }
 
-    /// Tell if the proxy answers the SYNs of new connections: when it is on, and if the SYN is not
-    /// a fragment.
+    /// Tell if the proxy answers the SYN of a new connection: when it is on, if the connection
+    /// gets flows, and if the SYN is not a fragment.
     ///
-    /// The proxy is on or off for all traffic for now. Asking per packet will let us turn it on
-    /// for some peerings only.
+    /// The proxy protects the flow table, by creating flows only for clients that complete the
+    /// handshake. Connections that get no flows put no pressure on the table: proxying them would
+    /// only create flows for them, and lose the TCP options that the proxy does not negotiate.
     ///
     /// The proxy cannot answer a fragment: it would answer with the fragmentation fields of the
     /// SYN. Such SYNs carry data, and are rare enough to let through.
     #[must_use]
     pub fn answers_syns<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> bool {
-        self.mode() == SynProxyMode::On && !packet.headers().is_fragment()
+        self.mode() == SynProxyMode::On
+            && packet.meta().gets_flows()
+            && !packet.headers().is_fragment()
     }
 
-    /// Tell if the proxy validates the cookies of ACKs without a flow: when it is on, or during
-    /// the grace period after turning it off.
+    /// Tell if the proxy validates the cookie of an ACK without a flow: if the connection gets
+    /// flows, when the proxy is on or during the grace period after turning it off.
+    ///
+    /// The cookie stage runs before the ACL stage, which may still clear the request for flow
+    /// tracking. So the ACKs it checks are a superset of the connections whose SYNs the proxy
+    /// answered, as long as the configuration does not change in between.
     #[must_use]
     pub fn accepts_cookies<Buf: PacketBufferMut>(
         &self,
         packet: &Packet<Buf>,
         now: Instant,
     ) -> bool {
-        self.answers_syns(packet) || now < self.0.accept_cookies_until.load(Ordering::Relaxed)
+        packet.meta().gets_flows() && self.may_accept_cookies(now)
+    }
+
+    /// Tell if the proxy may accept any cookie: when it is on, or during the grace period after
+    /// turning it off. Stages can skip whole bursts otherwise.
+    #[must_use]
+    pub(crate) fn may_accept_cookies(&self, now: Instant) -> bool {
+        self.mode() == SynProxyMode::On || now < self.0.accept_cookies_until.load(Ordering::Relaxed)
     }
 
     /// The key for the cookies.
@@ -180,8 +194,11 @@ mod test {
     use net::packet::Packet;
     use net::packet::test_utils::build_test_tcp_ipv4_packet;
 
+    // A packet of a connection that gets flows
     fn packet() -> Packet<TestBuffer> {
-        build_test_tcp_ipv4_packet("10.0.0.1", "10.0.0.2", 1234, 80)
+        let mut packet = build_test_tcp_ipv4_packet("10.0.0.1", "10.0.0.2", 1234, 80);
+        packet.meta_mut().set_forced_flow_tracking(true);
+        packet
     }
 
     #[test]
@@ -209,5 +226,25 @@ mod test {
             proxy.0.accept_cookies_until.load(super::Ordering::Relaxed),
             until
         );
+    }
+
+    // Connections that get no flows put no pressure on the flow table: leave them alone
+    #[test]
+    fn only_connections_with_flows() {
+        let proxy = SynProxyControl::new();
+        proxy.set_mode(SynProxyMode::On);
+        let now = clock::now();
+        let mut packet = build_test_tcp_ipv4_packet("10.0.0.1", "10.0.0.2", 1234, 80);
+        assert!(!proxy.answers_syns(&packet));
+        assert!(!proxy.accepts_cookies(&packet, now));
+
+        packet.meta_mut().set_masquerade(true);
+        assert!(proxy.answers_syns(&packet));
+        assert!(proxy.accepts_cookies(&packet, now));
+
+        packet.meta_mut().set_masquerade(false);
+        packet.meta_mut().set_port_forwarding(true);
+        assert!(proxy.answers_syns(&packet));
+        assert!(proxy.accepts_cookies(&packet, now));
     }
 }
