@@ -62,7 +62,6 @@ impl Render for InterfaceConfigTable {
 #[allow(dead_code)]
 pub mod tests {
     use super::*;
-    use config::internal::interfaces::interface::IfEthConfig;
     use config::internal::interfaces::interface::InterfaceType;
     use net::interface::InterfaceName;
     use net::interface::Mtu;
@@ -79,14 +78,11 @@ pub mod tests {
         let mut iface_table = InterfaceConfigTable::new();
 
         /* eth0: Ethernet */
-        let interface = InterfaceConfig::new(
-            ifname("eth0"),
-            InterfaceType::Ethernet(IfEthConfig { mac: None }),
-        )
-        .set_description("Intf to spine 2")
-        .set_mtu(Mtu::try_from(9000).expect("Bad MTU"))
-        .add_address(IpAddr::from_str("10.0.1.1").expect("Bad address"), 24)
-        .add_address(IpAddr::from_str("2001:1:2:3::6").expect("Bad address"), 96);
+        let interface = InterfaceConfig::new(ifname("eth0"), InterfaceType::Ethernet)
+            .set_description("Intf to spine 2")
+            .set_mtu(Mtu::try_from(9000).expect("Bad MTU"))
+            .add_address(IpAddr::from_str("10.0.1.1").expect("Bad address"), 24)
+            .add_address(IpAddr::from_str("2001:1:2:3::6").expect("Bad address"), 96);
 
         iface_table.add_interface_config(interface);
 

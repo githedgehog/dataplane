@@ -267,7 +267,7 @@ mod test {
                 // Check configured interfaces
                 let converted_interfaces = underlay_interfaces
                     .values()
-                    .filter(|intf| matches!(intf.iftype, InterfaceType::Ethernet(_)))
+                    .filter(|intf| matches!(intf.iftype, InterfaceType::Ethernet))
                     .map(|intf| {
                         (
                             intf.name.as_ref().to_string(),

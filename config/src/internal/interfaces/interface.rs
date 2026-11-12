@@ -28,12 +28,7 @@ pub struct InterfaceAddress {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IfVlanConfig {
-    pub mac: Option<Mac>,
     pub vlan_id: Vid,
-}
-#[derive(Clone, Debug, PartialEq)]
-pub struct IfEthConfig {
-    pub mac: Option<Mac>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct IfVtepConfig {
@@ -46,7 +41,7 @@ pub struct IfVtepConfig {
 #[derive(Clone, Debug, PartialEq)]
 pub enum InterfaceType {
     Loopback,
-    Ethernet(IfEthConfig),
+    Ethernet,
     Vlan(IfVlanConfig),
     Vtep(IfVtepConfig),
 }
