@@ -327,6 +327,8 @@ pub enum InterfaceProperties {
     Pci(PciNetdevProperties),
     /// Tap device properties
     Tap,
+    /// Loopback device
+    Loopback,
     /// Properties of something we don't currently support manipulating
     Other,
 }
@@ -397,10 +399,11 @@ mod contract {
     impl TypeGenerator for InterfaceProperties {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             match driver.produce::<u8>()? {
-                x if x % 4 == 0 => Some(InterfaceProperties::Bridge(driver.produce()?)),
-                x if x % 4 == 1 => Some(InterfaceProperties::Vtep(driver.produce()?)),
-                x if x % 4 == 2 => Some(InterfaceProperties::Vrf(driver.produce()?)),
-                x if x % 4 == 3 => Some(InterfaceProperties::Other),
+                x if x % 5 == 0 => Some(InterfaceProperties::Bridge(driver.produce()?)),
+                x if x % 5 == 1 => Some(InterfaceProperties::Vtep(driver.produce()?)),
+                x if x % 5 == 2 => Some(InterfaceProperties::Vrf(driver.produce()?)),
+                x if x % 5 == 3 => Some(InterfaceProperties::Loopback),
+                x if x % 5 == 4 => Some(InterfaceProperties::Other),
                 _ => unreachable!(),
             }
         }
