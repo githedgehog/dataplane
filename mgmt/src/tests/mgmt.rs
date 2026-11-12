@@ -322,7 +322,7 @@ pub mod test {
         /* configure loopback interface */
         let ospf =
             OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area")).set_passive(true);
-        let lo = InterfaceConfig::new(ifname("lo"), InterfaceType::Loopback, false)
+        let lo = InterfaceConfig::new(ifname("lo"), InterfaceType::Loopback)
             .set_description("Main loopback interface")
             .add_address(loopback, 32)
             .set_ospf(ospf);
@@ -340,7 +340,6 @@ pub mod test {
                 ttl: None,
                 vni: None,
             }),
-            false,
         );
         vrf_cfg.add_interface_config(vtep);
 
@@ -351,7 +350,6 @@ pub mod test {
         let eth0 = InterfaceConfig::new(
             ifname("eth0"),
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
-            false,
         )
         .set_description("Link to spine")
         .add_address(IpAddr::from_str("10.0.0.14").expect("Bad address"), 30)
@@ -362,7 +360,6 @@ pub mod test {
         let eth1 = InterfaceConfig::new(
             ifname("eth1"),
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
-            false,
         )
         .set_description("Link to external device ext-1")
         .add_address(IpAddr::from_str("172.16.0.1").expect("Bad address"), 24)
@@ -376,7 +373,6 @@ pub mod test {
         let eth2 = InterfaceConfig::new(
             ifname("eth2"),
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
-            false,
         )
         .set_description("Link to spine")
         .add_address(IpAddr::from_str("10.0.1.14").expect("Bad address"), 30)

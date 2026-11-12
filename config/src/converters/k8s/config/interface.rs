@@ -26,7 +26,7 @@ impl TryFrom<(&str, &GatewayAgentGatewayInterfaces)> for InterfaceConfig {
         let ifname = InterfaceName::try_from(name)
             .map_err(|e| FromK8sConversionError::InvalidData(e.to_string()))?;
 
-        let mut interface_config: InterfaceConfig = InterfaceConfig::new(ifname, iftype, false);
+        let mut interface_config: InterfaceConfig = InterfaceConfig::new(ifname, iftype);
 
         if let Some(ips) = iface.ips.as_ref() {
             for ip in ips {

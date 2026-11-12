@@ -53,10 +53,7 @@ impl Render for InterfaceConfigTable {
     type Output = ConfigBuilder;
     fn render(&self, _ctx: &Self::Context) -> Self::Output {
         let mut config = ConfigBuilder::new();
-        // we only render config if interfaces are not marked internal
-        self.values()
-            .filter(|iface| !iface.internal)
-            .for_each(|iface| config += iface.render(&()));
+        self.values().for_each(|iface| config += iface.render(&()));
         config
     }
 }
@@ -85,7 +82,6 @@ pub mod tests {
         let interface = InterfaceConfig::new(
             ifname("eth0"),
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
-            false,
         )
         .set_description("Intf to spine 2")
         .set_mtu(Mtu::try_from(9000).expect("Bad MTU"))
@@ -96,7 +92,7 @@ pub mod tests {
         iface_table.add_interface_config(interface);
 
         /* lo: Loopback */
-        let interface = InterfaceConfig::new(ifname("lo"), InterfaceType::Loopback, false)
+        let interface = InterfaceConfig::new(ifname("lo"), InterfaceType::Loopback)
             .set_description("Main loopback interface")
             .set_mtu(Mtu::try_from(9000).expect("Bad MTU"))
             .add_address(IpAddr::from_str("7.0.0.10").expect("Bad address"), 32)

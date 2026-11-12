@@ -39,7 +39,7 @@ fn add_hardcoded_interfaces(
 
     // Loopback
     let ifname = checked_ifname("lo")?;
-    let mut lo = InterfaceConfig::new(ifname, InterfaceType::Loopback, false);
+    let mut lo = InterfaceConfig::new(ifname, InterfaceType::Loopback);
     lo = lo.add_address(vtep_ip.address, vtep_ip.mask_len);
     vrf.add_interface_config(lo);
 
@@ -70,7 +70,7 @@ fn add_hardcoded_interfaces(
     });
 
     let ifname = checked_ifname("vtep")?;
-    let vtep = InterfaceConfig::new(ifname, vtep_iftype, false);
+    let vtep = InterfaceConfig::new(ifname, vtep_iftype);
     vrf.add_interface_config(vtep);
 
     Ok(())

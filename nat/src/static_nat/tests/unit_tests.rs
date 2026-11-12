@@ -583,7 +583,6 @@ pub(crate) fn build_gwconfig_from_overlay(overlay: Overlay) -> ExternalConfig {
             ttl: None,
             vni: None,
         }),
-        false,
     );
     let mut vrf_config = VrfConfig::new("default", None, true);
     vrf_config.add_interface_config(vtep);

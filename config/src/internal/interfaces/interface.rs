@@ -52,8 +52,8 @@ pub enum InterfaceType {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-/// A network interface configuration. An interface can be user-specified or internal. This config object
-/// includes data to create the interface in the kernel and configure it for routing (e.g. FRR)
+/// A network interface configuration. This config object includes data to
+/// configure an interface for routing (e.g. FRR)
 pub struct InterfaceConfig {
     pub name: InterfaceName, /* key */
     pub iftype: InterfaceType,
@@ -61,7 +61,6 @@ pub struct InterfaceConfig {
     pub vrf: Option<String>,
     pub addresses: BTreeSet<InterfaceAddress>,
     pub mtu: Option<Mtu>,
-    pub internal: bool, /* true if automatically created */
     pub ospf: Option<OspfInterface>,
     pub pci: Option<net::pci::PciEbdf>,
 }
@@ -107,7 +106,7 @@ impl FromStr for InterfaceAddress {
 
 impl InterfaceConfig {
     #[must_use]
-    pub fn new(name: InterfaceName, iftype: InterfaceType, internal: bool) -> Self {
+    pub fn new(name: InterfaceName, iftype: InterfaceType) -> Self {
         Self {
             name,
             iftype,
@@ -115,7 +114,6 @@ impl InterfaceConfig {
             vrf: None,
             addresses: BTreeSet::new(),
             mtu: None,
-            internal,
             ospf: None,
             pci: None,
         }
