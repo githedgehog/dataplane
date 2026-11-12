@@ -41,7 +41,12 @@ impl AsRequirement<InterfacePropertiesSpec> for InterfaceProperties {
             // control-plane bridge, which creates them from the driver rather than from a
             // configuration, and anything else wearing a tap's clothes is a stray to be removed.
             // Reporting `None` is what puts both on the "not part of the plan" path.
-            InterfaceProperties::Tap | InterfaceProperties::Other => return None,
+            // We never create loopbacks either.
+            InterfaceProperties::Tap
+            | InterfaceProperties::Loopback
+            | InterfaceProperties::Other => {
+                return None;
+            }
         })
     }
 }

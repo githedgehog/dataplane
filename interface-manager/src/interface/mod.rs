@@ -866,7 +866,9 @@ impl TryFromLinkMessage for Interface {
                         debug!("{e}");
                     }
                 },
-                _ => {}
+                _ => {
+                    builder.properties(InterfaceProperties::Other);
+                }
             },
             (None, Ok(props)) => {
                 builder.properties(InterfaceProperties::Pci(props));
@@ -874,7 +876,12 @@ impl TryFromLinkMessage for Interface {
             (Some(kind), Ok(pci)) => {
                 warn!("pci and info kind data are mutually exclusive: {kind:#?}, {pci:#?}");
             }
-            (None, Err(_)) => {}
+            (None, Err(_)) => {
+                builder.properties(InterfaceProperties::Other);
+            }
+        }
+        if message.header.flags.contains(LinkFlags::Loopback) {
+            builder.properties(InterfaceProperties::Loopback);
         }
         builder.build()
     }
@@ -892,7 +899,10 @@ mod tests {
             .with_type()
             .with_test_time(std::time::Duration::from_secs(5))
             .for_each(|interface: &Interface| {
-                if interface.properties == InterfaceProperties::Other {
+                if matches!(
+                    interface.properties,
+                    InterfaceProperties::Other | InterfaceProperties::Loopback
+                ) {
                     assert!(interface.as_requirement().is_none());
                     return;
                 }
