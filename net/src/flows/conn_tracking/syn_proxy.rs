@@ -8,7 +8,12 @@
 //! picks another initial sequence number, so the proxy shifts the sequence numbers of the server
 //! for the whole connection. Both flows of the pair share this state.
 
-use crate::tcp::TcpMss;
+use crate::buffer::PacketBufferMut;
+use crate::checksum::Checksum;
+use crate::flows::conn_tracking::FlowSide;
+use crate::headers::{EmbeddedTransport, TryEmbeddedTransportMut};
+use crate::packet::Packet;
+use crate::tcp::{TcpFlags, TcpMss, TruncatedTcp};
 use concurrency::sync::OnceLock;
 
 /// The shift between the sequence numbers that the server uses and the ones the client expects.
@@ -23,13 +28,15 @@ impl SeqOffset {
         SeqOffset(cookie.wrapping_sub(server_isn))
     }
 
-    /// Translate a sequence number of the server, on a segment going to the client.
+    /// Translate a number from the sequence space of the server to the one the client sees: the
+    /// sequence number of a segment from the server, for example.
     #[must_use]
     pub fn server_to_client(self, seq: u32) -> u32 {
         seq.wrapping_add(self.0)
     }
 
-    /// Translate an acknowledgment number of the client, on a segment going to the server.
+    /// Translate a number from the sequence space that the client sees to the one of the server:
+    /// the acknowledgment number of a segment from the client, for example.
     #[must_use]
     pub fn client_to_server(self, ack: u32) -> u32 {
         ack.wrapping_sub(self.0)
@@ -100,6 +107,67 @@ impl SynProxyState {
             .offset
             .get_or_init(|| SeqOffset::new(self.cookie, server_isn))
     }
+
+    /// Translate back the TCP segment that an ICMP error quotes, if the proxy translated it.
+    ///
+    /// The quoted segment is one that the proxy forwarded, so it carries the numbers that the
+    /// proxy wrote. The ICMP error goes to the sender of this segment, which looks for its own
+    /// numbers in the quote. `receiver` is the side to which the segment went: the side of the
+    /// flow that the reverse of the quoted segment hits.
+    pub fn translate_icmp_quote<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        receiver: FlowSide,
+    ) {
+        // Before the server answers, the proxy translates nothing
+        let Some(offset) = self.offset() else {
+            return;
+        };
+        let Some(EmbeddedTransport::Tcp(tcp)) = packet.try_embedded_transport_mut() else {
+            return;
+        };
+        if translate_quoted_tcp(tcp, offset, receiver).is_some() {
+            // The checksum of the ICMP error covers the quote
+            packet.meta_mut().set_checksum_refresh(true);
+        }
+    }
+}
+
+// Translate back the numbers of a quoted TCP header, see [`SynProxyState::translate_icmp_quote`].
+fn translate_quoted_tcp(
+    tcp: &mut TruncatedTcp,
+    offset: SeqOffset,
+    receiver: FlowSide,
+) -> Option<()> {
+    let (old, new) = match receiver {
+        // A segment from the server, with a sequence number moved to the client's space
+        FlowSide::Initiator => {
+            let old = tcp.sequence_number()?;
+            let new = offset.client_to_server(old);
+            tcp.set_sequence_number(new)?;
+            (old, new)
+        }
+        // A segment from the client, with an acknowledgment number moved to the server's space.
+        // Without the flags, we cannot tell whether the field holds a number.
+        FlowSide::Responder => {
+            if !tcp.flags()?.contains(TcpFlags::ACK) {
+                return None;
+            }
+            let old = tcp.ack_number()?;
+            let new = offset.server_to_client(old);
+            tcp.set_ack_number(new)?;
+            (old, new)
+        }
+    };
+    // A partial header has no checksum we can keep valid
+    if let Some(mut checksum) = tcp.checksum() {
+        #[allow(clippy::cast_possible_truncation)] // split each number into two 16-bit words
+        for (old, new) in [(old >> 16, new >> 16), (old, new)] {
+            checksum = tcp.increment_update_checksum(checksum, old as u16, new as u16);
+        }
+        let _ = tcp.set_checksum(checksum);
+    }
+    Some(())
 }
 
 #[cfg(test)]

@@ -1,25 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Connections through the SYN proxy stages, with the flow lookup and flow tracking stages around
-//! them, as in the gateway's pipeline.
+//! Connections through the SYN proxy stages, with the ICMP error handler, flow lookup and flow
+//! tracking stages around them, as in the gateway's pipeline.
 
 use crate::{SynCookieChecker, SynProxy, SynProxyControl, SynProxyMode};
 use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicBool, Ordering};
 use flow_entry::flow_table::{FlowLookup, FlowTable, WorkerFlowTable};
-use nat::FlowTracker;
+use nat::{FlowTracker, IcmpErrorHandler};
 use net::buffer::{PacketBufferMut, TestBuffer};
+use net::checksum::Checksum;
 use net::headers::builder::HeaderStack;
-use net::headers::{TryIpv4Mut, TryTcp};
+use net::headers::{EmbeddedTransport, TryEmbeddedTransport, TryIpv4Mut, TryTcp};
+use net::icmp4::Icmp4DestUnreachable;
 use net::packet::test_utils::assert_checksum_current_or_refresh_requested;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
-use net::tcp::{Tcp, TcpFlags, TcpMss, TcpOption};
+use net::tcp::{Tcp, TcpFlags, TcpMss, TcpOption, TcpPort, TruncatedTcp};
 use net::vxlan::Vni;
 use pipeline::{DynPipeline, NetworkFunction};
 
 const CLIENT: &str = "10.0.0.1";
 const SERVER: &str = "10.1.0.2";
+const CLIENT_ROUTER: &str = "10.0.0.254";
+const SERVER_ROUTER: &str = "10.1.0.254";
 const CLIENT_PORT: u16 = 40000;
 const SERVER_PORT: u16 = 80;
 const CLIENT_ISN: u32 = 1000;
@@ -85,6 +89,7 @@ impl Gateway {
         let table = Arc::new(FlowTable::default());
         let acl_drops = Arc::new(AtomicBool::new(false));
         let pipeline = DynPipeline::new()
+            .add_stage(IcmpErrorHandler::new(table.clone()))
             .add_stage(FlowLookup::new("flow-lookup", table.clone()))
             .add_stage(Peering)
             .add_stage(SynCookieChecker::new("syn-cookie-checker", proxy.clone()))
@@ -238,13 +243,8 @@ fn handshake_with_server(gw: &mut Gateway, cookie: u32) {
     assert_eq!(gw.flows(), 2);
 }
 
-#[tokio::test]
-async fn connection_through_the_proxy() {
-    let mut gw = Gateway::new();
-    let cookie = handshake_with_client(&mut gw);
-    handshake_with_server(&mut gw, cookie);
-
-    // The server accepts: the proxy acknowledges its SYN-ACK, and gives its window to the client
+// The server accepts: the proxy acknowledges its SYN-ACK, and gives its window to the client.
+fn server_accepts(gw: &mut Gateway, cookie: u32) {
     let syn_ack = segment(
         false,
         TcpFlags::SYN | TcpFlags::ACK,
@@ -261,6 +261,16 @@ async fn connection_through_the_proxy() {
     let server_ack = SERVER_ISN.wrapping_add(1);
     assert_segment(&out[1], false, TcpFlags::ACK, ack, server_ack, 512);
     assert_eq!(gw.proxy.counters().connections.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn connection_through_the_proxy() {
+    let mut gw = Gateway::new();
+    let cookie = handshake_with_client(&mut gw);
+    handshake_with_server(&mut gw, cookie);
+    server_accepts(&mut gw, cookie);
+    let ack = CLIENT_ISN + 1;
+    let server_ack = SERVER_ISN.wrapping_add(1);
 
     // Data from the client: its acknowledgment number moves to the server's sequence space
     let data = segment(true, TcpFlags::ACK, ack, cookie + 1, 512, &[], b"GET /");
@@ -416,4 +426,110 @@ async fn fragmented_syn() {
     assert_segment(&syn, false, TcpFlags::SYN, CLIENT_ISN, 0, 64000);
     let sent = gw.proxy.counters().cookies_sent.load(Ordering::Relaxed);
     assert_eq!(sent, 0);
+}
+
+// An ICMP error from a router next to the receiver of a quoted segment, which carries `seq`, `ack`
+// and `flags`.
+fn icmp_error(quoted_from_client: bool, flags: TcpFlags, seq: u32, ack: u32) -> Packet<TestBuffer> {
+    let (src, dst, sport, dport) = if quoted_from_client {
+        (CLIENT, SERVER, CLIENT_PORT, SERVER_PORT)
+    } else {
+        (SERVER, CLIENT, SERVER_PORT, CLIENT_PORT)
+    };
+    let (router, vpcd) = if quoted_from_client {
+        (SERVER_ROUTER, server_vpcd())
+    } else {
+        (CLIENT_ROUTER, client_vpcd())
+    };
+    let mut packet = HeaderStack::new()
+        .eth_macs([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2])
+        .ipv4_addrs(router, src)
+        .icmp4(|_| {})
+        .dest_unreachable(|unreachable| *unreachable = Icmp4DestUnreachable::Host)
+        .embedded(|inner| {
+            inner
+                .ipv4(|ip| {
+                    ip.set_source(src.parse().unwrap())
+                        .set_destination(dst.parse().unwrap());
+                })
+                .tcp(
+                    TcpPort::new_checked(sport).unwrap(),
+                    TcpPort::new_checked(dport).unwrap(),
+                    |tcp| {
+                        tcp.set_flags(flags)
+                            .set_sequence_number(seq)
+                            .set_ack_number(ack);
+                    },
+                )
+        })
+        .build_packet()
+        .unwrap();
+    packet.meta_mut().src_vpcd = Some(vpcd);
+    packet.meta_mut().set_overlay(true);
+    packet
+}
+
+fn quoted_tcp(packet: &Packet<TestBuffer>) -> &Tcp {
+    match packet.try_embedded_transport() {
+        Some(EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp))) => tcp,
+        other => panic!("no quoted TCP header: {other:?}"),
+    }
+}
+
+// Process an ICMP error quoting a segment with `seq` and `ack`, and check that its sender gets the
+// quote back with `expected_seq` and `expected_ack`, with a valid checksum.
+fn check_icmp_error(
+    gw: &mut Gateway,
+    quoted_from_client: bool,
+    flags: TcpFlags,
+    (seq, ack): (u32, u32),
+    (expected_seq, expected_ack): (u32, u32),
+) {
+    let out = gw.process_one(icmp_error(quoted_from_client, flags, seq, ack));
+    let quoted = quoted_tcp(&out);
+    assert_eq!(quoted.sequence_number(), expected_seq, "{quoted:?}");
+    assert_eq!(quoted.ack_number(), expected_ack, "{quoted:?}");
+    let expected = icmp_error(quoted_from_client, flags, expected_seq, expected_ack);
+    assert_eq!(quoted.checksum(), quoted_tcp(&expected).checksum());
+}
+
+// ICMP errors quote segments with the numbers that the proxy wrote: the proxy translates them back,
+// for the sender of each segment to recognize it.
+#[tokio::test]
+async fn icmp_errors_quote_the_senders_numbers() {
+    let mut gw = Gateway::new();
+    let cookie = handshake_with_client(&mut gw);
+    handshake_with_server(&mut gw, cookie);
+    server_accepts(&mut gw, cookie);
+    let client_seq = CLIENT_ISN + 1;
+    let server_seq = SERVER_ISN.wrapping_add(1);
+
+    // About a segment from the server, which the proxy moved to the client's sequence space
+    let flags = TcpFlags::ACK | TcpFlags::PSH;
+    let numbers = (cookie + 1, client_seq);
+    check_icmp_error(&mut gw, false, flags, numbers, (server_seq, client_seq));
+
+    // About a segment from the client, whose acknowledgment the proxy moved to the server's space
+    let numbers = (client_seq, server_seq);
+    check_icmp_error(
+        &mut gw,
+        true,
+        TcpFlags::ACK,
+        numbers,
+        (client_seq, cookie + 1),
+    );
+
+    // Without the ACK flag, the acknowledgment field holds no number to translate
+    let numbers = (client_seq, 12345);
+    check_icmp_error(&mut gw, true, TcpFlags::RST, numbers, numbers);
+}
+
+// Before the server answers, the proxy translates nothing, in quotes either.
+#[tokio::test]
+async fn icmp_error_on_pending_connection() {
+    let mut gw = Gateway::new();
+    let cookie = handshake_with_client(&mut gw);
+    handshake_with_server(&mut gw, cookie);
+    let numbers = (CLIENT_ISN, 0);
+    check_icmp_error(&mut gw, true, TcpFlags::SYN, numbers, numbers);
 }
