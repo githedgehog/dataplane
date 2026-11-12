@@ -11,7 +11,7 @@ use tracing::{debug, error};
 use config::internal::interfaces::interface::{InterfaceConfig, InterfaceType};
 use config::internal::routing::vrf::VrfConfig;
 use config::{ConfigError, InternalConfig, ValidatedGwConfig};
-use net::interface::{Interface, InterfaceProperties, MultiIndexInterfaceMap};
+use net::interface::{Interface, InterfaceProperties, MultiIndexInterfaceMap, OperationalState};
 
 use routing::{AttachConfig, IfState, IfType};
 use routing::{Render, RouterConfig, RouterInterfaceConfig, RouterVrfConfig, VrfId, Vtep};
@@ -67,7 +67,14 @@ fn build_router_interface_config(
     // therefore, it is always up
     new.set_admin_state(IfState::Up);
 
-    // set mtu -- this is informational
+    // initial oper state
+    new.set_oper_state(match kiface.operational_state {
+        OperationalState::Up => IfState::Up,
+        OperationalState::Down | OperationalState::Complex => IfState::Down,
+        OperationalState::Unknown => IfState::Unknown,
+    });
+
+    // set mtu -- this is informational atm because it has already been set by cmd line
     if let Some(mtu) = kiface.mtu {
         new.set_mtu(mtu);
     }

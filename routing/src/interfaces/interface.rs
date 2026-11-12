@@ -76,6 +76,7 @@ pub struct RouterInterfaceConfig {
     pub iftype: IfType,              /* type of interface */
     pub mac: Option<SourceMac>,      /* mac address, if any */
     pub admin_state: IfState,        /* admin state */
+    pub oper_state: IfState,         /* initial oper state: only used when adding */
     pub attach_cfg: Option<AttachConfig>, /* attach config */
     pub mtu: Mtu,
 }
@@ -89,6 +90,7 @@ impl RouterInterfaceConfig {
             iftype: IfType::Unknown,
             mac: None,
             admin_state: IfState::Up,
+            oper_state: IfState::Unknown,
             attach_cfg: None,
             mtu: Mtu::default(),
         }
@@ -107,6 +109,9 @@ impl RouterInterfaceConfig {
     }
     pub fn set_admin_state(&mut self, state: IfState) {
         self.admin_state = state;
+    }
+    pub fn set_oper_state(&mut self, state: IfState) {
+        self.oper_state = state;
     }
     pub fn set_attach_cfg(&mut self, attach_cfg: Option<AttachConfig>) {
         self.attach_cfg = attach_cfg;
@@ -144,7 +149,7 @@ impl Interface {
             mac: config.mac,
             admin_state: config.admin_state,
             mtu: config.mtu,
-            oper_state: IfState::Unknown,
+            oper_state: config.oper_state,
             addresses: HashSet::new(),
             attachment: None,
         }
