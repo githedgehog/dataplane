@@ -33,13 +33,15 @@ use nat::static_nat::natrw::NatTablesReaderFactory;
 use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat};
 use net::packet::PacketStats;
 
-use net::buffer::PacketBufferMut;
+use arp::{ArpNfFactory, ArpSetup, NeighCacheReaderFactory};
+use net::buffer::{BufferPool, PacketBufferMut};
+use net::packet::Rebuffer;
 use pipeline::sample_nfs::{PacketDumper, PacketStatsNF};
 use pipeline::{DynPipeline, PipelineData};
 
 use routing::{
-    AtableReaderFactory, CliSources, FibKey, FibTableReaderFactory, IfTableReaderFactory, Router,
-    RouterError, RouterParams,
+    CliSources, FibKey, FibTableReaderFactory, IfTableReaderFactory, Router, RouterError,
+    RouterParams,
 };
 
 use vpcmap::map::VpcMapWriter;
@@ -69,6 +71,7 @@ pub(crate) struct InternalSetup {
     pub phy: tokio::sync::watch::Sender<crate::phy_agent::PhySnapshot>,
     /// Packets the pipeline finished with, by reason, for telemetry.
     pub pkt_stats: Arc<PacketStats>,
+    pub arp: ArpSetup,
 }
 
 /// Shared inputs for building a separate pipeline on each worker thread.
@@ -76,7 +79,7 @@ pub(crate) struct PipelineIngredients {
     pdata: Arc<PipelineData>,
     iftr_factory: IfTableReaderFactory,
     fibtr_factory: FibTableReaderFactory,
-    atabler_factory: AtableReaderFactory,
+    neigh_factory: NeighCacheReaderFactory,
     nattabler_factory: NatTablesReaderFactory,
     natallocator_factory: NatAllocatorReaderFactory,
     flow_filter_reader_factory: FlowFilterContextReaderFactory,
@@ -90,6 +93,7 @@ pub(crate) struct PipelineIngredients {
     /// Every worker's timer queue; each worker's pipeline registers its own.
     timers: TimerRegistry,
     capture: CaptureController,
+    arpnd_factory: ArpNfFactory,
 }
 
 /// The VTEPs software decapsulates VXLAN for: each VNI's FIB's.
@@ -117,6 +121,19 @@ impl nic_offload::Vteps for FibVteps {
     }
 }
 
+/// What a driver provides for each of the pipelines that it builds with a [`PipelineFactory`].
+pub(crate) struct WorkerContext<P> {
+    /// The buffer pool for the packets injected into the pipeline
+    pub(crate) inject_pool: P,
+}
+impl<P> WorkerContext<P> {
+    #[must_use]
+    /// Create a context object for a worker
+    pub(crate) fn new(inject_pool: P) -> Self {
+        Self { inject_pool }
+    }
+}
+
 impl PipelineIngredients {
     /// The generation counter shared with the management plane.
     pub(crate) fn data(&self) -> Arc<PipelineData> {
@@ -134,82 +151,117 @@ impl PipelineIngredients {
         }
     }
 
-    /// Create a shared factory for the driver's buffer type and lifetime.
-    /// The returned pipelines are constructed and used on their worker threads.
-    pub(crate) fn factory<'nf, Buf: PacketBufferMut + 'nf>(self) -> PipelineFactory<'nf, Buf> {
-        Arc::new(move || {
-            // This worker's handle on the shared flow table, for the stages that create flows.
+    /// The OVERLAY pipeline to process VPC traffic
+    fn overlay_pipeline<'nf, Buf>(&self, flows: &WorkerFlowTable) -> DynPipeline<'nf, Buf>
+    where
+        Buf: Rebuffer + 'nf,
+    {
+        let static_nat =
+            StaticNat::with_reader("static-NAT", self.nattabler_factory.handle(), flows.clone());
+
+        let masquerade = Masquerade::new(
+            "masquerade",
+            flows.clone(),
+            self.natallocator_factory.handle(),
+        );
+        let portfw = PortForwarder::new(
+            "port-forwarder",
+            self.portfw_factory.handle(),
+            flows.clone(),
+        );
+
+        let flow_tracker = FlowTracker::new("flow-tracker", flows.clone());
+        let flow_filter = FlowFilter::new("flow-filter", self.flow_filter_reader_factory.handle());
+        let acl_filter = AclFilter::new("acl-filter", self.aclfiltertablesr_factory.handle());
+        let egress_rate_limit = RateLimiter::new(self.rate_limits.clone());
+        let ingress_rate_limit = RateLimiter::new(self.ingress.clone());
+        let icmp_error_handler = IcmpErrorHandler::new(self.flow_table.clone());
+        let flow_lookup = FlowLookup::new("flow-lookup", self.flow_table.clone());
+
+        // Build pipeline for overlay packet processing.
+        // Flows expire on the worker's timer wheel, which the worker
+        // drives through `WorkerFlowTable::expire`; no stage is needed for it.
+        DynPipeline::new()
+            // First on decapsulated packets: the ingress policy depends on nothing a later
+            // stage decides, which is what lets a NIC enforce it exactly, in front of this.
+            .add_stage(ingress_rate_limit)
+            .add_stage(icmp_error_handler)
+            .add_stage(flow_lookup)
+            .add_stage(flow_filter)
+            .add_stage(acl_filter)
+            // After the ACLs, so that denied packets are not charged; before NAT, so that rate
+            // limits see destinations as the source VPC addresses them.
+            .add_stage(egress_rate_limit)
+            .add_stage(static_nat)
+            .add_stage(portfw)
+            .add_stage(masquerade)
+            .add_stage(flow_tracker)
+    }
+
+    /// The MAIN pipeline that contains the OVERLAY one
+    fn main_pipeline<'nf, Buf, P>(
+        &self,
+        context: WorkerContext<P>,
+        flows: &WorkerFlowTable,
+    ) -> DynPipeline<'nf, Buf>
+    where
+        Buf: Rebuffer + 'nf,
+        P: BufferPool<Buf = Buf> + 'nf,
+    {
+        // Build network functions
+        let ingress = Ingress::new("Ingress", self.iftr_factory.handle());
+        let egress = Egress::new(
+            "Egress",
+            self.iftr_factory.handle(),
+            self.neigh_factory.handle(),
+        );
+        let ipforward1 = IpForwarder::new("IP-Forward-1", self.fibtr_factory.handle());
+        let ipforward2 = IpForwarder::new("IP-Forward-2", self.fibtr_factory.handle());
+        let arpnd_nf = self.arpnd_factory.nf(context.inject_pool);
+        let pktdump = PacketDumper::new("pipeline-end", true, None);
+
+        let stats_stage = Stats::new("stats", self.stats_w.clone());
+        let pkt_stats = PacketStatsNF::new(self.pkt_stats.clone());
+
+        // First and right after egress, so the two views of a packet can be compared.
+        let capture_ingress =
+            CaptureStage::new(Direction::Ingress, self.capture.sink(Direction::Ingress));
+        let capture_egress =
+            CaptureStage::new(Direction::Egress, self.capture.sink(Direction::Egress));
+
+        // Build OVERLAY pipeline, handing off the worker flow table
+        let overlay = self.overlay_pipeline(flows);
+
+        // Build the MAIN pipeline for a router
+        DynPipeline::new()
+            .with_data(self.pdata.clone())
+            .add_stage(capture_ingress)
+            .add_stage(ingress)
+            .add_stage(ipforward1)
+            .add_stage(overlay)
+            .add_stage(ipforward2)
+            .add_stage(egress)
+            .add_stage(arpnd_nf)
+            .add_stage(capture_egress)
+            .add_stage(pktdump)
+            .add_stage(pkt_stats)
+            .add_stage(stats_stage)
+    }
+
+    /// Create a pipeline factory for the driver's buffer type and type of pool that
+    /// pipelines get buffers from. Worker threads create pipelines from this factory.
+    pub(crate) fn factory<'nf, Buf, P>(self) -> PipelineFactory<'nf, Buf, P>
+    where
+        Buf: Rebuffer + 'nf,
+        P: BufferPool<Buf = Buf> + 'nf,
+    {
+        Arc::new(move |context: WorkerContext<P>| {
+            // This worker's handle on the shared flow table, for the stages that create flows (overlay)
             let flows = WorkerFlowTable::registered(self.flow_table.clone(), &self.timers);
 
-            // Build network functions
-            let stage_ingress = Ingress::new("Ingress", self.iftr_factory.handle());
-            let stage_egress = Egress::new(
-                "Egress",
-                self.iftr_factory.handle(),
-                self.atabler_factory.handle(),
-            );
-            let iprouter1 = IpForwarder::new("IP-Forward-1", self.fibtr_factory.handle());
-            let iprouter2 = IpForwarder::new("IP-Forward-2", self.fibtr_factory.handle());
-            let static_nat = StaticNat::with_reader(
-                "static-NAT",
-                self.nattabler_factory.handle(),
-                flows.clone(),
-            );
-            let masquerade = Masquerade::new(
-                "masquerade",
-                flows.clone(),
-                self.natallocator_factory.handle(),
-            );
-            let flow_tracker = FlowTracker::new("flow-tracker", flows.clone());
-            let pktdump = PacketDumper::new("pipeline-end", true, None);
-            let stats_stage = Stats::new("stats", self.stats_w.clone());
-            let flow_filter =
-                FlowFilter::new("flow-filter", self.flow_filter_reader_factory.handle());
-            let acl_filter = AclFilter::new("acl-filter", self.aclfiltertablesr_factory.handle());
-            let rate_limiter = RateLimiter::new(self.rate_limits.clone());
-            let ingress = RateLimiter::new(self.ingress.clone());
-            let icmp_error_handler = IcmpErrorHandler::new(self.flow_table.clone());
-            let flow_lookup = FlowLookup::new("flow-lookup", self.flow_table.clone());
-            let portfw = PortForwarder::new(
-                "port-forwarder",
-                self.portfw_factory.handle(),
-                flows.clone(),
-            );
-            let pkt_stats_nf = PacketStatsNF::new(self.pkt_stats.clone());
-            // First and right after egress, so the two views of a packet can be compared.
-            let capture_ingress =
-                CaptureStage::new(Direction::Ingress, self.capture.sink(Direction::Ingress));
-            let capture_egress =
-                CaptureStage::new(Direction::Egress, self.capture.sink(Direction::Egress));
+            // Build the main pipeline, with a nested overlay pipeline
+            let pipeline = self.main_pipeline(context, &flows);
 
-            // Build the pipeline for a router. The composition of the pipeline (in stages) is
-            // currently hard-coded. Flows expire on the worker's timer wheel, which the worker
-            // drives through `WorkerFlowTable::expire`; no stage is needed for it.
-            let pipeline = DynPipeline::new()
-                .set_data(self.pdata.clone())
-                .add_stage(capture_ingress)
-                .add_stage(stage_ingress)
-                .add_stage(iprouter1)
-                // First on decapsulated packets: the ingress policy depends on nothing a later
-                // stage decides, which is what lets a NIC enforce it exactly, in front of this.
-                .add_stage(ingress)
-                .add_stage(icmp_error_handler)
-                .add_stage(flow_lookup)
-                .add_stage(flow_filter)
-                .add_stage(acl_filter)
-                // After the ACLs, so that denied packets are not charged; before NAT, so that rate
-                // limits see destinations as the source VPC addresses them.
-                .add_stage(rate_limiter)
-                .add_stage(static_nat)
-                .add_stage(portfw)
-                .add_stage(masquerade)
-                .add_stage(flow_tracker)
-                .add_stage(iprouter2)
-                .add_stage(stage_egress)
-                .add_stage(capture_egress)
-                .add_stage(pktdump)
-                .add_stage(pkt_stats_nf)
-                .add_stage(stats_stage);
             WorkerPipeline { pipeline, flows }
         })
     }
@@ -240,8 +292,8 @@ pub(crate) fn expiry_budget(burst: usize, bursts: usize, behind: bool) -> usize 
 }
 
 /// Builds a worker's pipeline, on the worker's thread.
-pub(crate) type PipelineFactory<'nf, Buf> =
-    Arc<dyn Send + Sync + Fn() -> WorkerPipeline<'nf, Buf> + 'nf>;
+pub(crate) type PipelineFactory<'nf, Buf, P> =
+    Arc<dyn Send + Sync + Fn(WorkerContext<P>) -> WorkerPipeline<'nf, Buf> + 'nf>;
 
 /// Start a router and provide the ingredients for its pipeline
 pub(crate) fn start_router(
@@ -284,6 +336,7 @@ pub(crate) fn start_router(
     let (transceivers, transceivers_read) =
         tokio::sync::watch::channel(crate::transceiver_agent::ModuleSnapshot::default());
     let (phy, phy_read) = tokio::sync::watch::channel(crate::phy_agent::PhySnapshot::default());
+    let arp = ArpSetup::new();
 
     // collect readers and the like for cli
     let cli_sources = CliSources {
@@ -307,19 +360,21 @@ pub(crate) fn start_router(
         ))),
         link: Some(Box::new(crate::phy_agent::PhyCli(phy_read))),
         rate_limits: Some(Box::new(rate_limits.reader())),
+        neigh_cache: Some(Box::new(arp.neigh_cache_factory().handle().inner())),
     };
 
     // create router
     let router = Router::new(router, params, Some(cli_sources))?;
     let iftr_factory = router.get_iftabler_factory();
     let fibtr_factory = router.get_fibtr_factory();
-    let atabler_factory = router.get_atabler_factory();
+    let arpnd_factory = arp.nf_factory();
+    let neigh_factory = arp.neigh_cache_factory();
 
     let ingredients = PipelineIngredients {
         pdata,
         iftr_factory,
         fibtr_factory,
-        atabler_factory,
+        neigh_factory,
         nattabler_factory,
         natallocator_factory,
         flow_filter_reader_factory,
@@ -332,6 +387,7 @@ pub(crate) fn start_router(
         flow_table: flow_table.clone(),
         timers,
         capture,
+        arpnd_factory,
     };
 
     Ok(InternalSetup {
@@ -352,6 +408,7 @@ pub(crate) fn start_router(
         transceivers,
         phy,
         pkt_stats,
+        arp,
     })
 }
 

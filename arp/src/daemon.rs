@@ -1,0 +1,208 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! This module contains the ARP/ND "daemon" for ARP and ND.
+//! The daemon runs as a single tokio task, made of two parts:
+//!    - the netlink listener, which updates the ARP/ND cache from netlink messages
+//!    - the resolving task, which handles control messages, takes in the packets that need
+//!      resolution, keeps them in the backlog until their targets get resolved (or are given
+//!      up) and queries for those targets via netlink. It also has the kernel confirm the
+//!      neighbors that are stale in the cache.
+
+use lifecycle::{CancellationToken, Subsystem};
+use net::packet::DoneReason;
+use pkt_io::{Injector, PuntReceiver, PuntedPacket};
+
+use concurrency::sync::Arc;
+use thiserror::Error;
+use tokio::sync::Notify;
+use tokio::time::{Duration, MissedTickBehavior, interval};
+#[allow(unused)]
+use tracing::{debug, error, info, trace, warn};
+
+use crate::backlog::Backlog;
+use crate::cache::{NeighCacheReader, NeighCacheWriter, NeighListener};
+use crate::querier::{ArpNdQuerier, Target};
+
+#[derive(Error, Debug)]
+pub enum ArpNdError {
+    #[error("ARP/ND Netlink failure: {0}")]
+    Netlink(#[from] std::io::Error),
+}
+
+struct ArpNd {
+    outq: Injector,
+    querier: ArpNdQuerier,
+}
+
+impl ArpNd {
+    // Time interval at which the resolving task will be woken up (unless something else
+    // wakes it up) to do housekeeping: 1) retry targets or 2) give up targets 3) let the
+    // kernel confirm targets.
+    const CHECK_PERIOD: Duration = Duration::from_secs(2);
+
+    /// Create `ArpNd`. This spawns the netlink connection of its querier on the current
+    /// tokio runtime.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the netlink connection for the querier cannot be created.
+    pub fn new(outq: Injector) -> Result<Self, ArpNdError> {
+        let querier = ArpNdQuerier::new()?;
+        Ok(Self { outq, querier })
+    }
+
+    /// Get the target for a packet
+    fn get_packet_target(packet: &PuntedPacket) -> Option<Target> {
+        let oif = packet.meta().oif?;
+        let addr = if let Some(nh_addr) = packet.meta().nh_addr {
+            Some(nh_addr)
+        } else {
+            packet.ip_destination()
+        }?;
+        Some(Target::new(addr, oif))
+    }
+
+    /// Determine the target of a packet that needs resolution and place the packet in the
+    /// backlog, under that target. Packets for which no target can be determined are rejected
+    /// and sent back to the outq. The
+    /// backlog may reject packets too due to space constraints.
+    fn packet_resolve(&self, backlog: &mut Backlog, packet: PuntedPacket) {
+        let Some(target) = Self::get_packet_target(&packet) else {
+            warn!("Could not determine the target for packet");
+            backlog.reject_packet(packet, DoneReason::ArpDaemonDrop);
+            return;
+        };
+        backlog.add(target, packet);
+    }
+
+    /// The resolving task of the daemon which:
+    ///   - processes incoming packets that require resolution, placing them in the backlog queue
+    ///   - issues queries for the corresponding targets
+    ///   - when targets get resolved (it gets notified by the listener), re-processes the
+    ///     backlog and returns packets back to the pipeline.
+    ///   - gives up the targets that the kernel fails to resolve, or that are not resolved in time
+    ///   - periodically, has the kernel confirm the neighbors that are stale in the cache. Those
+    ///     that the kernel cannot confirm fail, and become unusable in the cache.
+    async fn resolving_task(
+        &self,
+        mut inq: PuntReceiver,
+        cacher: NeighCacheReader,
+        cache_notify: Arc<Notify>,
+    ) {
+        let mut backlog = Backlog::new(cacher.clone(), self.outq.clone());
+        let mut check = interval(Self::CHECK_PERIOD);
+        check.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        info!("ARP/ND resolving task started...");
+        loop {
+            let mut check_stale = false;
+            tokio::select! {
+                _ = check.tick() => {
+                    check_stale = true;
+                }
+                () = cache_notify.notified() => debug!("ARP/ND cache was updated."),
+                Some(packet) = inq.pop_async() => {
+                    debug!("Got packets to resolve");
+                    self.packet_resolve(&mut backlog, packet);
+                }
+            }
+
+            // take the rest of the packets that need resolution. Only the packets queued at this
+            // point are taken, so that the pipeline cannot prevent us from checking, querying and giving up targets.
+            for packet in inq.pop_ready() {
+                self.packet_resolve(&mut backlog, packet);
+            }
+
+            // attempt to return any packets that could not be returned before (e.g. because queue was full)
+            backlog.return_pending();
+
+            // resolve backloged packets if their target got resolved (mac is in cache), and
+            // give up those whose target the kernel failed to resolve
+            backlog.check_targets();
+
+            // query the new targets, and give up those not resolved in time
+            let targets = backlog.targets_to_query();
+            if !targets.is_empty() {
+                self.querier.multi_query(targets.iter()).await;
+            }
+
+            // check if there are stale entries in the cache (as reported by the kernel).
+            // If so, let the querier ask the kernel to confirm them by probing them.
+            if check_stale {
+                let stale = cacher.stale_entries();
+                if !stale.is_empty() {
+                    self.querier.multi_query(stale.iter()).await;
+                }
+            }
+        }
+    }
+
+    /// Run the daemon: the main task and the netlink listener, concurrently. The daemon ends if
+    /// `cancel` is cancelled or any of its tasks end.
+    /// Any end that was not requested (by cancelling) is fatal: it is reported as such, as is a
+    /// panic, by the task that runs the daemon (see [`start_arp_nd`]).
+    async fn run(
+        self,
+        inq: PuntReceiver,
+        listener: NeighListener,
+        cacher: NeighCacheReader,
+        cache_notify: Arc<Notify>,
+        cancel: CancellationToken,
+    ) {
+        info!("ARP/ND daemon started");
+
+        tokio::select! {
+            () = self.resolving_task(inq, cacher, cache_notify) => {
+                error!("ARP/ND main task ended");
+            }
+            () = listener.start() => {
+                error!("ARP/ND netlink listener ended");
+            }
+            () = cancel.cancelled() => info!("ARP/ND daemon cancelled"),
+        }
+        info!("ARP/ND daemon stopped");
+    }
+}
+
+/// Spawn the ARP/ND daemon on `handle`, tracked under the given `subsystem`. The daemon
+/// becomes the writer of the ARP/ND cache `cachew`. If the daemon ends without `subsystem`
+/// being cancelled, or panics, a fatal error is reported to `subsystem`.
+///
+/// # Errors
+///
+/// Fails if the netlink connections used to issue ARP/ND queries or to listen to neighbor
+/// changes cannot be created.
+pub(crate) fn start_arp_nd(
+    rt_handle: &tokio::runtime::Handle,
+    subsystem: &Subsystem,
+    inq: PuntReceiver,
+    outq: Injector,
+    cachew: NeighCacheWriter,
+) -> Result<(), ArpNdError> {
+    info!("Starting ARP/ND daemon...");
+
+    // create cache reader for resolver task
+    let cacher = cachew.factory().handle();
+
+    // create notifier: listener will notify of cache changes to daemon
+    let cache_notify = Arc::new(Notify::new());
+
+    // enter the runtime so that the netlink sockets are created there
+    let (arpd, listener) = {
+        let _guard = rt_handle.enter();
+        let arpd = ArpNd::new(outq)?;
+        let listener = NeighListener::new(cachew, cache_notify.clone())?;
+        (arpd, listener)
+    };
+
+    // spawn under subsystem. Failure is fatal
+    let cancel = subsystem.cancel_token();
+    subsystem.spawn_fatal_on_exit(
+        "ARP/ND daemon",
+        arpd.run(inq, listener, cacher, cache_notify, cancel),
+        rt_handle,
+    );
+    info!("Successfully started ARP/ND daemon...");
+    Ok(())
+}

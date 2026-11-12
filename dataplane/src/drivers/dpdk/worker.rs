@@ -13,7 +13,7 @@ use args::IdleConfig;
 use dpdk::lcore::LCore;
 use dpdk::mem::{Mbuf, MbufArray};
 use lifecycle::Subsystem;
-use net::buffer::PacketBufferMut;
+use net::buffer::{BufferPool, PacketBufferMut};
 use net::eth::mac::Mac;
 use net::headers::{TryEth, TryHeaders};
 use net::interface::InterfaceIndex;
@@ -26,7 +26,7 @@ use crate::drivers::load::{Load, LoadMeter, Spent};
 use crate::drivers::sparse_log::log_sparsely;
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
-use crate::packet_processor::{PipelineFactory, WorkerPipeline, expiry_budget};
+use crate::packet_processor::{PipelineFactory, WorkerContext, WorkerPipeline, expiry_budget};
 
 use super::classes::SoftwareClasses;
 use super::control::addressed_to;
@@ -85,11 +85,12 @@ impl<'p> Worker<'p> {
         }
     }
 
-    /// Run until cancelled, constructing the non-Send pipeline on this thread.
-    pub(crate) fn run(
+    /// Run until cancelled, constructing the non-Send pipeline on this thread, with `context`.
+    pub(crate) fn run<P: BufferPool<Buf = Mbuf<'p>>>(
         mut self,
         subsystem: &Subsystem,
-        setup_pipeline: &PipelineFactory<'p, Mbuf<'p>>,
+        setup_pipeline: &PipelineFactory<'p, Mbuf<'p>, P>,
+        context: WorkerContext<P>,
     ) {
         // No tokio here: flows and NAT mappings expire on this worker's own wheel, which this loop
         // sweeps (see `expire` below).
@@ -110,7 +111,7 @@ impl<'p> Worker<'p> {
         let WorkerPipeline {
             mut pipeline,
             flows,
-        } = setup_pipeline();
+        } = setup_pipeline(context);
 
         // Map pipeline output ifindices to this worker's transmit queues.
         let tx_by_if: HashMap<InterfaceIndex, usize> = self
@@ -172,21 +173,15 @@ impl<'p> Worker<'p> {
                 meter.flush(&self.load, idle.mode());
             }
 
-            let mut saw_frames = false;
-            // The queue to watch first if the worker sleeps: one that received, else one whose
-            // port only had frames from the kernel to send.
-            let mut received = None;
-            let mut injected = None;
-            for (slot, counters) in counters.iter_mut().enumerate() {
-                let had_frames = self.inject(slot, counters);
-                if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut scratch, counters) {
-                    saw_frames = true;
-                    received = Some(slot);
-                } else if had_frames && injected.is_none() {
-                    injected = Some(slot);
-                }
+            // poll the port queues this worker is responsible for. Return whether frames were received,
+            // whether the pipeline ran for pending work, and the queue to watch first
+            let (saw_frames, ran_pending, busy) =
+                self.poll_ports(&tx_by_if, &mut pipeline, &mut scratch, &mut counters);
+
+            if ran_pending {
+                // No buffer was received, but the pipeline was run as it had pending work.
+                meter.lap(Spent::Busy);
             }
-            let busy = received.or(injected);
 
             // Expire flows after bursts, after long sleeps, and periodically while idle.
             // Drain expiry backlogs a budget per poll before sleeping again, so expired flows
@@ -217,6 +212,51 @@ impl<'p> Worker<'p> {
             worker = self.id,
             sleeps, interrupt_sleeps, "DPDK worker stopping"
         );
+    }
+
+    /// Poll every port once. If no port received anything and the pipeline
+    /// reports pending work, run it with an empty burst and transmit the output.
+    ///
+    /// Returns whether any port received frames, whether the pipeline ran for pending work, and
+    /// the queue to watch first if the worker sleeps: one that received, else one whose port only
+    /// had frames from the kernel to send, else the first if the run without packets returned some.
+    fn poll_ports(
+        &mut self,
+        tx_by_if: &HashMap<InterfaceIndex, usize>,
+        pipeline: &mut DynPipeline<'p, Mbuf<'p>>,
+        scratch: &mut Scratch<'p>,
+        counters: &mut [RxCounters],
+    ) -> (bool, bool, Option<usize>) {
+        let mut received = None;
+        let mut injected = None;
+        for (slot, counters) in counters.iter_mut().enumerate() {
+            let had_frames = self.inject(slot, counters);
+            if self.poll_one(slot, tx_by_if, pipeline, scratch, counters) {
+                received = Some(slot);
+            } else if had_frames && injected.is_none() {
+                injected = Some(slot);
+            }
+        }
+
+        // If nothing was received and a run of the pipeline is due, run it with an empty burst.
+        // Transmit any packet produced by the pipeline. Report whether it ran, which is work, apart
+        // from whether it produced any packet, which is what resets the backoff.
+        let mut ran_pending = false;
+        let mut produced = false;
+        if received.is_none()
+            && pipeline.must_run()
+            && let Some(counters) = counters.first_mut()
+        {
+            debug_assert!(scratch.burst.is_empty());
+            ran_pending = true;
+            produced = self.run_pipeline(0, tx_by_if, pipeline, scratch, counters);
+        }
+
+        (
+            received.is_some(),
+            ran_pending,
+            received.or(injected).or(produced.then_some(0)),
+        )
     }
 
     /// Tell `idle` how the pass went -- traffic on queue `busy`, an expiry backlog, or nothing --
@@ -263,8 +303,35 @@ impl<'p> Worker<'p> {
     ///
     /// Transmit outcomes are counted against the receiving port, as the kernel driver does.
     /// Returns whether there was anything to do, which is what paces the idle backoff.
-    #[allow(clippy::too_many_arguments)] // the reused burst storage is threaded through, not owned
     fn poll_one(
+        &mut self,
+        slot: usize,
+        tx_by_if: &HashMap<InterfaceIndex, usize>,
+        pipeline: &mut DynPipeline<'p, Mbuf<'p>>,
+        scratch: &mut Scratch<'p>,
+        counters: &mut RxCounters,
+    ) -> bool {
+        let rx_mbufs = &mut scratch.rx_mbufs;
+        self.ports[slot].queues.rx.receive_into(rx_mbufs);
+        if rx_mbufs.is_empty() {
+            return false;
+        }
+        counters.burst(rx_mbufs.len(), dpdk::mem::MBUF_BURST);
+        for mbuf in rx_mbufs.iter() {
+            mbuf.prefetch_head();
+        }
+        self.run_pipeline(slot, tx_by_if, pipeline, scratch, counters);
+        true
+    }
+
+    /// Get the frames received from port `slot` from the scratch receive array and:
+    ///    * feed the pipeline with the burst
+    ///    * divert packets taken off the data path
+    ///    * transmit, punt to kernel or drop the packets
+    ///    * account in `counters`
+    ///
+    /// Returns whether the pipeline returned packets.
+    fn run_pipeline(
         &mut self,
         slot: usize,
         tx_by_if: &HashMap<InterfaceIndex, usize>,
@@ -278,19 +345,11 @@ impl<'p> Worker<'p> {
             rx_mbufs,
             tx_batches,
         } = scratch;
-        self.ports[slot].queues.rx.receive_into(rx_mbufs);
-        if rx_mbufs.is_empty() {
-            return false;
-        }
-        counters.burst(rx_mbufs.len(), dpdk::mem::MBUF_BURST);
-        let rx_if = self.ports[slot].queues.if_index;
-        for mbuf in rx_mbufs.iter() {
-            mbuf.prefetch_head();
-        }
-        let fallback = self.ports[slot].queues.fallback.load();
+        let queues = &self.ports[slot].queues;
+        let fallback = queues.fallback.load();
         process_burst(
             rx_mbufs.drain_all(),
-            rx_if,
+            queues.if_index,
             pipeline,
             burst,
             fallback.as_deref(),
@@ -298,7 +357,21 @@ impl<'p> Worker<'p> {
             counters,
         );
         self.punt_diverted(slot, diverted, counters);
+        let produced = !burst.is_empty();
+        self.transmit(slot, tx_by_if, burst, tx_batches, counters);
+        produced
+    }
 
+    /// Transmit, punt or drop the packets in the `burst` returned by a pipeline.
+    /// Packets for the kernel are punted on the tap of the port in `slot`.
+    fn transmit(
+        &mut self,
+        slot: usize,
+        tx_by_if: &HashMap<InterfaceIndex, usize>,
+        burst: &mut Vec<Packet<Mbuf<'p>>>,
+        tx_batches: &mut [MbufArray<'p>],
+        counters: &mut RxCounters,
+    ) {
         // Freed in one `rte_pktmbuf_free_bulk` when this goes out of scope.
         let mut dropped: MbufArray<'p> = MbufArray::new_empty();
         // Borrowed for the packet loop rather than cloned per poll: an `mpsc::Sender` clone is an
@@ -383,8 +456,6 @@ impl<'p> Worker<'p> {
                 );
             }
         }
-
-        true
     }
 
     /// Hand the kernel the control traffic taken off the data path, if addressed to the port, on
@@ -471,11 +542,11 @@ fn divert_verdict<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, port: Mac) -> 
     addressed_to_us
 }
 
-/// Parse a burst and run it through the pipeline.
+/// Parse a burst of buffers and run it through the pipeline.
 ///
 /// Control traffic of the `early` classes, which the NIC does not steer to the control queue, is
 /// moved to `diverted` before the pipeline sees it. Every other packet comes back, whatever its
-/// verdict: the caller counts and frees the drops, in bulk.
+/// verdict, except those that the stages punt: the caller counts and frees the drops, in bulk.
 fn process_burst<Buf: PacketBufferMut>(
     burst: impl ExactSizeIterator<Item = Buf>,
     rx_if: InterfaceIndex,
@@ -506,12 +577,5 @@ fn process_burst<Buf: PacketBufferMut>(
         }));
     }
 
-    let parsed = packets.len();
     pipeline.process_burst(packets);
-    // Stages mark packets to drop rather than removing them, so a drop is always counted.
-    debug_assert!(
-        packets.len() >= parsed,
-        "the pipeline removed {} packet(s) instead of marking them dropped",
-        parsed - packets.len()
-    );
 }

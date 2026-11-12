@@ -48,6 +48,8 @@ impl From<DoneReason> for Disposition {
             | DoneReason::RouteDrop
             | DoneReason::HopLimitExceeded
             | DoneReason::MissL2resolution
+            | DoneReason::ArpOutOfResources
+            | DoneReason::ArpDaemonDrop
             | DoneReason::VxlanDecapFailure
             | DoneReason::VxlanEncapFailure
             | DoneReason::VxlanNotForUs
@@ -66,7 +68,8 @@ impl From<DoneReason> for Disposition {
             | DoneReason::IcmpErrorIncomplete
             | DoneReason::InternalDrop
             | DoneReason::DeparseError
-            | DoneReason::NoHeadRoom => Disposition::Drop,
+            | DoneReason::NoBuffRoom
+            | DoneReason::NoBuffRoomXmit => Disposition::Drop,
         }
     }
 }
@@ -128,6 +131,8 @@ mod test {
             (DoneReason::RouteDrop, Disposition::Drop),
             (DoneReason::HopLimitExceeded, Disposition::Drop),
             (DoneReason::MissL2resolution, Disposition::Drop),
+            (DoneReason::ArpOutOfResources, Disposition::Drop),
+            (DoneReason::ArpDaemonDrop, Disposition::Drop),
             (DoneReason::VxlanDecapFailure, Disposition::Drop),
             (DoneReason::VxlanEncapFailure, Disposition::Drop),
             (DoneReason::VxlanNotForUs, Disposition::Drop),
@@ -146,7 +151,8 @@ mod test {
             (DoneReason::IcmpErrorIncomplete, Disposition::Drop),
             (DoneReason::InternalDrop, Disposition::Drop),
             (DoneReason::DeparseError, Disposition::Drop),
-            (DoneReason::NoHeadRoom, Disposition::Drop),
+            (DoneReason::NoBuffRoom, Disposition::Drop),
+            (DoneReason::NoBuffRoomXmit, Disposition::Drop),
         ];
 
         for (verdict, expected) in table {

@@ -27,6 +27,8 @@ impl Display for DoneReason {
             Self::InvalidDstMac => f.pad("Eth: Invalid dst MAC"),
 
             Self::NotIp => f.pad("IP:  packet is not IP"),
+            Self::ArpOutOfResources => f.pad("ARP/ND: out of resources"),
+            Self::ArpDaemonDrop => f.pad("ARP/ND: could not handle"),
             Self::RouteFailure => f.pad("IP:  missing routing info"),
             Self::RouteDrop => f.pad("IP:  route drop"),
             Self::HopLimitExceeded => f.pad("IP:  TTL exceeded"),
@@ -55,8 +57,10 @@ impl Display for DoneReason {
             Self::Local => f.pad("Locally delivered"),
             Self::Delivered => f.pad("Delivered"),
 
+            Self::NoBuffRoom => f.pad("Not enough buffer room (rebuffering)"),
+
             // these occur post delivery, prior to xmit
-            Self::NoHeadRoom => f.pad("No headroom"),
+            Self::NoBuffRoomXmit => f.pad("No headroom to serialize packet on xmit"),
             Self::DeparseError => f.pad("Deparse error"),
         }
     }

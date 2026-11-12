@@ -15,6 +15,7 @@ shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
 acl-filter = { workspace = true }
+arp = { workspace = true }
 rate-limit = { workspace = true }
 afpacket = { workspace = true, features = ["async-tokio"] }
 args = { workspace = true }
@@ -74,6 +75,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 [dev-dependencies]
 clock = { workspace = true, features = ["virtual"] }
 # internal
+arp = { workspace = true, features = ["testing"] }
 config = { workspace = true, features = ["bolero"] }
 hardware = { workspace = true, features = ["test_fakes"] }
 lpm = { workspace = true, features = ["testing"] }

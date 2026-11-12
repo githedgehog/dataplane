@@ -402,15 +402,12 @@ fn verbs_reachable(
     hardware::verbs::reachable(roots, address).map(|_| ())
 }
 
-/// Probe, configure and start the selected devices. Init must prepare their kernel bindings first.
-fn bring_up_ports<'eal>(
-    eal: &'eal mut Eal,
-    config: &LaunchConfiguration,
-) -> Result<Vec<Port<'eal>>, DriverError> {
-    let num_workers = config.driver.num_workers().get();
+/// Probe the configured devices
+fn probe_ports<'c>(
+    eal: &mut Eal,
+    config: &'c LaunchConfiguration,
+) -> Result<Vec<(&'c InterfaceArg, PciAddress)>, DriverError> {
     let selected = configured_pci_ports(config)?;
-    // Every port's pool backs its packets in every port's transmit rings.
-    let num_ports = u32::try_from(selected.len()).unwrap_or(u32::MAX);
     for (interface, address) in &selected {
         let devargs = nic_offload::probe_args(*address);
         let devargs: Vec<&str> = devargs.iter().map(String::as_str).collect();
@@ -445,6 +442,18 @@ fn bring_up_ports<'eal>(
             DriverError::PortSetup(format!("interface '{}': {e}", interface.interface))
         })?;
     }
+    Ok(selected)
+}
+
+/// Probe, configure and start the selected devices. Init must prepare their kernel bindings first.
+fn bring_up_ports<'eal>(
+    eal: &'eal Eal,
+    config: &LaunchConfiguration,
+    selected: Vec<(&InterfaceArg, PciAddress)>,
+) -> Result<Vec<Port<'eal>>, DriverError> {
+    let num_workers = config.driver.num_workers().get();
+    // Every port's pool backs its packets in every port's transmit rings.
+    let num_ports = u32::try_from(selected.len()).unwrap_or(u32::MAX);
 
     // Index probed ports whose ethdev names parse as PCI addresses.
     let mut probed: Vec<(PciAddress, DevInfo<'eal>)> = Vec::new();
@@ -638,7 +647,18 @@ fn run_dpdk_driver(
     mut bridge: Option<DatapathEnds>,
     control_plane: watch::Receiver<ControlPlane>,
 ) {
-    let ports = match bring_up_ports(eal, config) {
+    // Probe the ports passed in the config
+    let probed = match probe_ports(eal, config) {
+        Ok(ports) => ports,
+        Err(e) => {
+            error!("Failed to probe DPDK ports: {e}");
+            workers.report_fatal("DPDK ports could not be probed");
+            return;
+        }
+    };
+
+    // Bring up all the probed ports
+    let ports = match bring_up_ports(eal, config, probed) {
         Ok(ports) => ports,
         Err(e) => {
             error!("Failed to bring up DPDK ports: {e}");
@@ -677,6 +697,7 @@ fn run_dpdk_driver(
             config.driver.num_workers(),
             config.driver.idle(),
             &ingredients.factory(),
+            eal,
             status_writer,
             bridge.as_mut(),
             control_plane,
@@ -869,6 +890,12 @@ pub fn main() {
         workers,
     )
     .expect("failed to start router");
+
+    // start ARP/ND (netlink socks live in control netns)
+    setup
+        .arp
+        .launch(&mgmt_handle, &shutdown.arp)
+        .expect("Failed to start ARP/ND");
 
     // start bmp server if indicated via cmd line. It is fine to start it after the router since no bgp session may be up
     // until a configuration is applied, and the mgmt is not yet up.

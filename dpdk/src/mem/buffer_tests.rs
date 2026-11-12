@@ -373,6 +373,9 @@ fn packets_reject_chained_mbufs_without_leaking() {
 }
 
 fn vxlan_lengths<B: net::buffer::PacketBufferMut>(buffer: B, frame_len: usize, ipv6: bool) {
+    use net::eth::Eth;
+    use net::eth::ethtype::EthType;
+    use net::eth::mac::{DestinationMac, Mac, SourceMac};
     use net::headers::{HeadersBuilder, Net, TryUdp};
     use net::packet::Packet;
     use net::udp::UdpEncap;
@@ -393,7 +396,13 @@ fn vxlan_lengths<B: net::buffer::PacketBufferMut>(buffer: B, frame_len: usize, i
     } else {
         Net::Ipv4(ipv4)
     };
+    let eth = Eth::new(
+        SourceMac::new(Mac([0x02, 0, 0, 0, 0, 1])).unwrap(),
+        DestinationMac::new(Mac([0x02, 0, 0, 0, 0, 2])).unwrap(),
+        if ipv6 { EthType::IPV6 } else { EthType::IPV4 },
+    );
     let headers = HeadersBuilder::default()
+        .eth(Some(eth))
         .net(Some(outer))
         .udp_encap(Some(UdpEncap::Vxlan(Vxlan::new(
             Vni::new_checked(200).unwrap(),
@@ -410,9 +419,9 @@ fn vxlan_lengths<B: net::buffer::PacketBufferMut>(buffer: B, frame_len: usize, i
     );
     let wire = packet.serialize().unwrap();
     let (field, expected, overhead) = if ipv6 {
-        (&wire.as_ref()[4..6], frame_len + 16, 56)
+        (&wire.as_ref()[18..20], frame_len + 16, 70)
     } else {
-        (&wire.as_ref()[2..4], frame_len + 36, 36)
+        (&wire.as_ref()[16..18], frame_len + 36, 50)
     };
     assert_eq!(
         u16::from_be_bytes(field.try_into().unwrap()) as usize,
@@ -440,7 +449,7 @@ fn packet_burst(len: usize) -> Vec<Packet<TestBuffer>> {
 }
 
 #[test]
-/// Test that a packet that does not fit in an mbuf is handed back, and the mbuf returned
+/// Test that a packet that does not fit in an mbuf is handed back in it, without its payload
 fn test_rebuffer_rejects_a_packet_that_does_not_fit() {
     use net::headers::TryHeaders;
     use net::packet::Rebuffer;
@@ -451,13 +460,12 @@ fn test_rebuffer_rejects_a_packet_that_does_not_fit() {
     let mbuf = pool.alloc_bulk(1).unwrap().into_iter().next().unwrap();
 
     let mut rejected = Mbuf::from_test_buffer(packet, mbuf).unwrap_err();
-    assert_eq!(
-        rejected.headers(),
-        &headers,
-        "the packet is handed back intact"
-    );
-    assert_eq!(available(&pool), 1, "the mbuf goes back to the pool");
+    assert_eq!(rejected.headers(), &headers, "the packet keeps its headers");
+    assert_eq!(rejected.payload_len(), 0, "the payload is not kept");
+    assert_eq!(available(&pool), 0, "the packet holds the mbuf");
     rejected.done(net::packet::DoneReason::InternalDrop);
+    drop(rejected);
+    assert_eq!(available(&pool), 1, "the mbuf goes back to the pool");
 }
 
 #[test]

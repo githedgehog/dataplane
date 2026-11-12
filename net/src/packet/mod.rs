@@ -35,7 +35,7 @@ use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, SourceMac};
 use crate::flows::{FlowInfo, FlowStatus};
 use crate::headers::{
-    EmbeddedHeaders, Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut,
+    EmbeddedHeaders, Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEth,
     TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryUdp, TryVxlan,
 };
 use crate::ip::{dscp::Dscp, ecn::Ecn};
@@ -94,15 +94,14 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Note:
     ///    * The headers and metadata of the original packet are transferred to the
     ///      new packet and its payload is copied into the target buffer `buf`.
-    ///    * On success, the prior buffer of the provided packet is released.
-    ///    * On failure, the target `buf` is released (e.g. returned to its pool).
+    ///    * The prior buffer of the provided packet is released.
     ///
     /// # Errors
     ///
-    /// The original packet is returned if the target `buf` lacks the room to
-    /// store the headers and payload of the original packet. If the headroom
-    /// of the target `buf` is too small for the headers, it is enlarged at the
-    /// expense of its tailroom.
+    /// If the target `buf` lacks the room to store the headers and payload of the original
+    /// packet, the packet is returned in `buf`, with its headers and metadata but without its
+    /// payload, so that it can still be accounted for. If the headroom of the target `buf` is
+    /// too small for the headers, it is enlarged at the expense of its tailroom.
     ///
     /// # Panics
     ///
@@ -111,7 +110,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     pub fn rebuffer<Target: PacketBufferMut + Append>(
         self,
         mut buf: Target,
-    ) -> Result<Packet<Target>, Packet<Buf>> {
+    ) -> Result<Packet<Target>, Packet<Target>> {
         // sanities
         assert!(!buf.is_chained(), "buf is chained");
         assert_eq!(buf.packet_len(), 0, "buf is dirty");
@@ -121,7 +120,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         let need_headroom = self.header_len().get().saturating_sub(buf.headroom());
         if need_headroom != 0 {
             if buf.append(need_headroom).is_err() {
-                return Err(self);
+                return Err(self.with_buffer(buf));
             }
             buf.trim_from_start(need_headroom)
                 .unwrap_or_else(|_| unreachable!("trimming what was just appended"));
@@ -129,17 +128,22 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 
         let len = self.payload_len();
         let Ok(segment) = buf.append(len) else {
-            return Err(self);
+            return Err(self.with_buffer(buf));
         };
         let start = segment.len() - usize::from(len);
         segment[start..].copy_from_slice(self.payload.as_ref());
-        Ok(Packet {
+        Ok(self.with_buffer(buf))
+    }
+
+    /// Move the headers and metadata of this packet onto `payload`
+    fn with_buffer<Target: PacketBufferMut>(self, payload: Target) -> Packet<Target> {
+        Packet {
             headers: self.headers,
-            payload: buf,
+            payload,
             meta: self.meta,
             #[cfg(any(test, feature = "checksum-audit"))]
             transport_checksum_error: self.transport_checksum_error,
-        })
+        }
     }
 
     /// Convert a `Packet` into one that uses a [`TestBuffer`] as backing store.
@@ -197,6 +201,8 @@ pub enum SerializeError<E> {
     NoHeadRoom,
     #[error("De-parsing error: {0}")]
     DeparseError(DeParseError<E>),
+    #[error("packet is not ready for transmit: {0}")]
+    NotReadyForXmit(DoneReason),
 }
 
 /// Data read from a VXLAN packet by [`Packet::vxlan_peek`].
@@ -687,6 +693,21 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self
     }
 
+    #[inline]
+    /// Fail if a packet can be serialized for xmit
+    fn is_ready_for_xmit(&mut self) -> Result<(), SerializeError<()>> {
+        // a packet without ethernet header cannot be transmitted
+        let Some(eth) = self.try_eth() else {
+            return Err(SerializeError::NotReadyForXmit(DoneReason::Malformed));
+        };
+
+        // a packet with zero dst mac cannot be transmitted
+        if eth.has_zero_dst_mac() {
+            return Err(SerializeError::NotReadyForXmit(DoneReason::InvalidDstMac));
+        }
+        Ok(())
+    }
+
     /// Consume a [`Packet`] and update its buffer based on any changes to its [`Headers`].
     ///
     /// # Errors
@@ -695,6 +716,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// serialize or `SerializeError::DeparseError` if it does, but the de-parsing the `Packet` failed.
     #[inline]
     pub(crate) fn do_serialize(&mut self) -> Result<(), SerializeError<()>> {
+        self.is_ready_for_xmit()?;
+
         #[cfg(any(test, feature = "checksum-audit"))]
         self.assert_transport_checksum_kept();
         // IPv4 setters maintain header checksums. Refresh transport checksums only when requested
@@ -720,15 +743,18 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     ///
     /// # Errors
     ///
-    /// This method returns `SerializeError::NoHeadRoom`if the packet does not have enough headroom to
-    /// serialize or `SerializeError::DeparseError` if it does, but the de-parsing the `Packet` failed.
+    /// This method returns:
+    ///   * `SerializeError::NoHeadRoom`if the packet does not have enough headroom to serialize
+    ///   * `SerializeError::DeparseError` if it has headroom, but the de-parsing the `Packet` failed.
+    ///   * `SerializeError::NotReadyForXmit` if the packet is not transmittable as is
     pub fn serialize(mut self) -> Result<Buf, SerializeError<()>> {
         match self.do_serialize() {
             Ok(()) => Ok(self.payload),
             Err(e) => {
                 match e {
-                    SerializeError::NoHeadRoom => self.done_force(DoneReason::NoHeadRoom),
+                    SerializeError::NoHeadRoom => self.done_force(DoneReason::NoBuffRoomXmit),
                     SerializeError::DeparseError(_) => self.done_force(DoneReason::DeparseError),
+                    SerializeError::NotReadyForXmit(reason) => self.done_force(reason),
                 }
                 Err(e)
             }
@@ -2711,7 +2737,7 @@ mod rebuffer_tests {
                         .unwrap_err(),
                 );
                 assert_eq!(returned.headers(), expected.headers());
-                assert_eq!(returned.payload().as_ref(), expected.payload().as_ref());
+                assert_eq!(returned.payload_len(), 0, "the payload is not kept");
             });
     }
 }

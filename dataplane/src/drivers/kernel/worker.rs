@@ -18,7 +18,8 @@ use tokio::io::{AsyncWriteExt, Interest};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, interval};
 
-/// How often a quiet interface's reader still expires flows: the flow wheel's tick.
+/// How often a quiet interface's reader still expires flows (the flow wheel's tick) and does the
+/// pending work of its pipeline (e.g. injecting packets).
 const EXPIRY_PERIOD: Duration = Duration::from_millis(10);
 
 use concurrency::sync::Arc;
@@ -26,7 +27,7 @@ use concurrency::thread;
 #[allow(unused_imports)] // used under loom/shuttle backends
 use concurrency::thread::BuilderExt;
 use lifecycle::{CancellationToken, Subsystem};
-use net::buffer::test_buffer::TestBuffer;
+use net::buffer::test_buffer::{TestBuffer, TestBufferPool};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
@@ -42,7 +43,7 @@ use crate::drivers::sparse_log::log_sparsely;
 use crate::drivers::status::{RxQueue, WorkerId};
 use crate::drivers::supervisor::{RxTaskMonitor, TASK_PAT_PERIOD, WorkerMonitor};
 use crate::drivers::watchdog::{RxCounters, Watchdog};
-use crate::packet_processor::{PipelineFactory, WorkerPipeline, expiry_budget};
+use crate::packet_processor::{PipelineFactory, WorkerContext, WorkerPipeline, expiry_budget};
 
 use tracing::{debug, error, info, trace, warn};
 
@@ -192,7 +193,7 @@ fn create_worker_interface(
 pub struct Worker {
     id: WorkerId,
     total_workers: usize,
-    setup_pipeline: PipelineFactory<'static, TestBuffer>,
+    setup_pipeline: PipelineFactory<'static, TestBuffer, TestBufferPool>,
     subsystem: Subsystem,
 }
 
@@ -200,7 +201,7 @@ impl Worker {
     pub fn new(
         id: WorkerId,
         total_workers: usize,
-        setup_pipeline: &PipelineFactory<'static, TestBuffer>,
+        setup_pipeline: &PipelineFactory<'static, TestBuffer, TestBufferPool>,
         subsystem: Subsystem,
     ) -> Self {
         Worker {
@@ -221,7 +222,7 @@ impl Worker {
         id: WorkerId,
         intf: WorkerInterfaceReader,
         reader_handles: &mut tokio::task::JoinSet<()>,
-        setup: PipelineFactory<'static, TestBuffer>,
+        setup: PipelineFactory<'static, TestBuffer, TestBufferPool>,
         if_table: Arc<HashMap<InterfaceIndex, Arc<Mutex<WorkerInterfaceWriter>>>>,
         cancel: CancellationToken,
     ) {
@@ -233,7 +234,8 @@ impl Worker {
             let WorkerPipeline {
                 mut pipeline,
                 flows,
-            } = setup();
+            } = setup(WorkerContext::new(TestBufferPool));
+
             let mut ticker = interval(pat_period);
             // Flows created by this pipeline expire on its handle's wheel, driven from here: after
             // every burst, and on this tick while the interface is quiet.
@@ -276,9 +278,16 @@ impl Worker {
                         intf.watchdog.pat();
                         Vec::new()
                     }
+                    // The pipeline owned by this worker may have pending work. We check that here.
+                    // This bounds the time that pending work may be unattended in the worst case
+                    // (a silent interface) to to `EXPIRY_PERIOD`.
                     _ = expiry.tick() => {
                         sweep(&mut expiry_behind);
-                        continue;
+                        if !pipeline.must_run() {
+                            continue;
+                        }
+                        // there is pending work, so hand off an empty vector
+                        Vec::new()
                     }
                 };
 

@@ -3,7 +3,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use crate::{DynNetworkFunction, NetworkFunction, nf_dyn};
+use crate::{DynNetworkFunction, NetworkFunction, SchedRun, nf_dyn};
 use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicI64, Ordering};
 use id::Id;
@@ -61,6 +61,8 @@ impl PipelineData {
 /// A dynamic pipeline that can be updated at runtime.
 ///
 /// This struct is used to create a dynamic pipeline that can be updated at runtime.
+/// A [`DynPipeline`] implements [`NetworkFunction`]. Therefore, it may be nested as
+/// a stage of another one.
 ///
 /// `'nf` bounds the stages and permits buffers that borrow storage, such as DPDK mbufs.
 ///
@@ -71,6 +73,8 @@ impl PipelineData {
 pub struct DynPipeline<'nf, Buf: PacketBufferMut> {
     nfs: OrderMap<StageId<'nf, Buf>, Box<dyn DynNetworkFunction<Buf> + 'nf>>,
     data: Arc<PipelineData>,
+    sched: SchedRun,
+    nested: bool, // true if this pipeline was nested as a stage of another
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -86,13 +90,18 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
         Self {
             nfs: OrderMap::new(),
             data: Arc::from(PipelineData::default()),
+            sched: SchedRun::default(),
+            nested: false,
         }
     }
 
     #[must_use]
-    /// Set `PipelineData` to a `DynPipeline`
-    pub fn set_data(mut self, data: Arc<PipelineData>) -> Self {
-        self.data = data;
+    /// Set `PipelineData` to a `DynPipeline` and all of its stages.
+    ///
+    /// When pipelines are nested, only the outermost one needs this: adding a pipeline
+    /// as a stage of another overwrites its data with that of the outer one.
+    pub fn with_data(mut self, data: Arc<PipelineData>) -> Self {
+        self.set_data(data); // NetworkFunction's trait method
         self
     }
 
@@ -107,9 +116,14 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
     /// This method takes a [`NetworkFunction`] and adds it to the pipeline.
     ///
     #[must_use]
-    pub fn add_stage<NF: NetworkFunction<Buf> + 'nf>(self, mut nf: NF) -> Self {
-        nf.set_data(self.data.clone());
+    pub fn add_stage<NF: NetworkFunction<Buf> + 'nf>(self, nf: NF) -> Self {
         self.add_stage_dyn(nf_dyn(nf))
+    }
+
+    /// Tell if the deadline set by some stage is reached.
+    #[must_use]
+    pub fn must_run(&self) -> bool {
+        self.sched.must_run()
     }
 
     /// Add a static network function to the pipeline using a specific stage id.
@@ -175,7 +189,7 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
     fn internal_add_stage_dyn_with_id(
         &mut self,
         id: StageId<'nf, Buf>,
-        nf: Box<dyn DynNetworkFunction<Buf> + 'nf>,
+        mut nf: Box<dyn DynNetworkFunction<Buf> + 'nf>,
     ) -> Result<&mut Self, PipelineError> {
         // FIXME(mvachhar): There seems to be no method to insert and error if the key already exists.
         // As a result, this does a double hash and lookup.  Probably fine here, but may need to submit
@@ -186,6 +200,8 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
         if self.nfs.get(&id).is_some() {
             Err(PipelineError::DuplicateStageId(id.to_string()))
         } else {
+            nf.set_data(self.get_data());
+            nf.set_sched_run(self.sched.clone());
             self.nfs.insert(id, nf);
             Ok(self)
         }
@@ -194,9 +210,246 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<'_, Buf> {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        // clear the deadline (stages set one again if they still need one when run),
+        // but ONLY if the pipeline is not nested. If it is, the outer pipeline will do so,
+        // and clearing here would drop any deadline set by stages running before.
+        if !self.nested {
+            self.sched.take();
+        }
         for nf in self.nfs.values_mut() {
             nf.process_burst(burst);
         }
+    }
+
+    /// This trait method is always called when adding a NF to a pipeline. To allow
+    /// the correct propagation of deadlines, re-set the [`SchedRun`] of all NFs
+    /// contained in this pipeline to `sched` and of the pipeline itself.
+    /// Also, mark the pipeline as nested.
+    fn set_sched_run(&mut self, sched: SchedRun) {
+        // set the deadline for all stages already contained in this pipeline
+        for nf in self.nfs.values_mut() {
+            nf.set_sched_run(sched.clone());
+        }
+        // adopt sched and recall this pipeline is nested
+        self.sched = sched;
+        self.nested = true;
+    }
+
+    /// Adopt `data` and hand it to all the stages, so that a nested pipeline's stages
+    /// see the data of the outer pipeline.
+    fn set_data(&mut self, data: Arc<PipelineData>) {
+        for nf in self.nfs.values_mut() {
+            nf.set_data(data.clone());
+        }
+        self.data = data;
+    }
+}
+
+#[cfg(test)]
+mod pipeline_data {
+    use concurrency::sync::Arc;
+    use net::buffer::{PacketBufferMut, TestBuffer};
+    use net::packet::Packet;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use crate::sample_nfs::Passthrough;
+    use crate::{DynPipeline, NetworkFunction, PipelineData, StaticChain};
+
+    /// A stage that reads the genid given by the pipeline data of the pipeline it lives in
+    /// and reports its value
+    struct DataNF {
+        report: Rc<Cell<Option<i64>>>,
+        data: Option<Arc<PipelineData>>,
+    }
+    impl DataNF {
+        #[must_use]
+        fn new(report: Rc<Cell<Option<i64>>>) -> Self {
+            Self { report, data: None }
+        }
+    }
+
+    impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DataNF {
+        fn process_burst(&mut self, _burst: &mut Vec<Packet<Buf>>) {
+            // read gen id of the pipeline data. This must succeed
+            let genid = self.data.as_ref().expect("did not get data").genid();
+
+            // report it
+            self.report.set(Some(genid));
+        }
+
+        fn set_data(&mut self, data: Arc<PipelineData>) {
+            self.data = Some(data);
+        }
+    }
+
+    /// Check that a stage added with `add` gets the pipeline's data
+    fn check_data(
+        add_stage: impl FnOnce(DataNF, DynPipeline<TestBuffer>) -> DynPipeline<TestBuffer>,
+    ) {
+        const GENID: i64 = 7;
+        let report = Rc::new(Cell::new(None));
+        let stage = DataNF::new(report.clone());
+        let pipeline = DynPipeline::new().with_data(Arc::new(PipelineData::new(GENID)));
+        let mut pipeline = add_stage(stage, pipeline);
+        pipeline.process_burst(&mut vec![]);
+
+        // reported value must match pipeline data value
+        assert_eq!(report.get(), Some(GENID));
+    }
+
+    #[test]
+    fn test_data_reaches_stage() {
+        check_data(|stage, pipeline| pipeline.add_stage(stage));
+    }
+
+    #[test]
+    fn test_data_reaches_stage_chained_first() {
+        check_data(|stage, pipeline| pipeline.add_stage(stage.chain(Passthrough)));
+    }
+
+    #[test]
+    fn test_data_reaches_stage_chained_last() {
+        check_data(|stage, pipeline| pipeline.add_stage(Passthrough.chain(stage)));
+    }
+
+    #[test]
+    fn test_data_reaches_stage_in_nested_pipeline() {
+        check_data(|stage, pipeline| pipeline.add_stage(DynPipeline::new().add_stage(stage)));
+    }
+}
+
+#[cfg(test)]
+mod sched_run {
+    use net::buffer::{PacketBufferMut, TestBuffer};
+    use net::packet::Packet;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use crate::sample_nfs::Passthrough;
+    use crate::{DynPipeline, NetworkFunction, SchedRun, StageId, StaticChain, nf_dyn};
+
+    /// A stage that can request a pipeline to be run immediately
+    struct SignalNF {
+        request_work: Rc<Cell<bool>>,
+        sched: SchedRun, // shared with pipeline
+    }
+    impl SignalNF {
+        #[must_use]
+        fn new(request_work: Rc<Cell<bool>>) -> Self {
+            SignalNF {
+                request_work,
+                sched: SchedRun::default(),
+            }
+        }
+    }
+
+    impl<Buf: PacketBufferMut> NetworkFunction<Buf> for SignalNF {
+        fn process_burst(&mut self, _burst: &mut Vec<Packet<Buf>>) {
+            if self.request_work.get() {
+                self.sched.asap();
+            }
+        }
+
+        fn set_sched_run(&mut self, sched: SchedRun) {
+            self.sched = sched;
+        }
+    }
+
+    /// Test that the pipeline can correctly determine if a stage
+    /// scheduled a run and that it clears the request once run
+    /// if the stage no longer requests a run.
+    fn check_signal(mut pipeline: DynPipeline<TestBuffer>, request_work: &Rc<Cell<bool>>) {
+        request_work.set(true);
+        assert!(!pipeline.must_run());
+
+        let mut burst = vec![];
+        pipeline.process_burst(&mut burst);
+
+        assert!(pipeline.must_run());
+
+        request_work.set(false);
+        pipeline.process_burst(&mut burst);
+        assert!(!pipeline.must_run());
+    }
+
+    #[test]
+    fn test_request_run() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let pipeline = DynPipeline::<TestBuffer>::new().add_stage(stage);
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_request_run_chained_first() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let pipeline = DynPipeline::<TestBuffer>::new().add_stage(stage.chain(Passthrough));
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_request_run_chained_last() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let pipeline = DynPipeline::<TestBuffer>::new().add_stage(Passthrough.chain(stage));
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_request_run_nested() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let nested = DynPipeline::<TestBuffer>::new().add_stage(stage);
+        let pipeline = DynPipeline::<TestBuffer>::new().add_stage(nested);
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_nested_pipeline_preserves_signal_of_earlier_stage() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let nested = DynPipeline::<TestBuffer>::new().add_stage(Passthrough);
+        let mut pipeline = DynPipeline::<TestBuffer>::new()
+            .add_stage(stage)
+            .add_stage(nested);
+
+        // stage `stage` of outer pipeline always requests work. The nested pipeline never does and
+        // should not clear the work as it should behave as a regular stage
+        pipeline.process_burst(&mut vec![]);
+        assert!(
+            pipeline.must_run(),
+            "nested pipeline cleared the signal of stage running before it"
+        );
+    }
+
+    #[test]
+    fn test_request_run_dyn() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let pipeline = DynPipeline::<TestBuffer>::new().add_stage_dyn(nf_dyn(stage));
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_request_run_with_id() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let mut pipeline = DynPipeline::<TestBuffer>::new();
+        pipeline.add_stage_with_id(StageId::new(), stage).unwrap();
+        check_signal(pipeline, &request_work);
+    }
+
+    #[test]
+    fn test_request_run_dyn_with_id() {
+        let request_work = Rc::new(Cell::new(true));
+        let stage = SignalNF::new(request_work.clone());
+        let mut pipeline = DynPipeline::<TestBuffer>::new();
+        pipeline
+            .add_stage_dyn_with_id(StageId::new(), nf_dyn(stage))
+            .unwrap();
+        check_signal(pipeline, &request_work);
     }
 }
 

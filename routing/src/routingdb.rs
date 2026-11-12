@@ -3,7 +3,6 @@
 
 //! Routing database keeps most of the routing information in memory
 
-use crate::atable::atablerw::AtableReader;
 use crate::config::RouterConfig;
 use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibtable::FibTableWriter;
@@ -16,7 +15,6 @@ pub(crate) struct RoutingDb {
     pub vrftable: VrfTable,
     pub rmac_store: RmacStore,
     pub vtep: Option<Vtep>,
-    pub atabler: AtableReader,
     pub iftw: IfTableWriter,
     pub config: Option<RouterConfig>,
 }
@@ -24,12 +22,11 @@ pub(crate) struct RoutingDb {
 #[allow(clippy::new_without_default)]
 impl RoutingDb {
     #[must_use]
-    pub fn new(fibtable: FibTableWriter, iftw: IfTableWriter, atabler: AtableReader) -> Self {
+    pub fn new(fibtable: FibTableWriter, iftw: IfTableWriter) -> Self {
         Self {
             vrftable: VrfTable::new(fibtable),
             rmac_store: RmacStore::new(),
             vtep: None,
-            atabler,
             iftw,
             config: None,
         }

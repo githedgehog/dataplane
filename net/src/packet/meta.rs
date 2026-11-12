@@ -96,6 +96,8 @@ pub enum DoneReason {
     InvalidDstMac,        /* dropped the packet since it had to have an invalid destination mac */
     MissingEtherType,     /* couldn't determine ethertype to use */
     NotIp,                /* could not get IP header or packet is not IP */
+    ArpOutOfResources,    /* required ARP/ND resolution but had no resources to admit packet */
+    ArpDaemonDrop,        /* the packet reached the ARP/ND daemon, which dropped it */
     RouteFailure,         /* missing routing information */
     RouteDrop,            /* routing explicitly requests pkts to be dropped */
     HopLimitExceeded,     /* TTL / Hop count was exceeded */
@@ -118,9 +120,10 @@ pub enum DoneReason {
     IcmpErrorIncomplete,  /* the packet is an ICMP error but it does not contain data it should */
     InternalDrop,         /* the packet was dropped internally due to a queue being full */
     Local,                /* the packet has to be locally consumed by kernel */
-    Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
-    DeparseError, /* the packet was processed and delivered to driver, but not be sent due to serialization issue */
-    NoHeadRoom, /* the packet was processed and delivered to driver, but not serialized due lack of headroom */
+    Delivered,            /* the packet buffer was delivered by the pipeline for xmit */
+    DeparseError, /* the packet was delivered to driver, but not sent due to serialization issue */
+    NoBuffRoomXmit, /* the packet was delivered to driver, but not serialized due to lack of buffer headroom */
+    NoBuffRoom, /* the packet had to be dropped due to lack of buffer room (e.g. when rebuffering) */
 }
 
 bitflags! {
@@ -137,6 +140,7 @@ bitflags! {
         const REQ_STATIC_NAT_SRC  = 1 << 6; /* Packet requires static NAT (source) */
         const REQ_STATIC_NAT_DST  = 1 << 7; /* Packet requires static NAT (destination) */
         const FORCE_FLOW_TRACKING = 1 << 8; /* We need to track this flow, e.g. to apply stateful user ACLs */
+        const NEED_ARPND          = 1 << 9; /* Need ARP/ND resolution */
     }
 }
 
@@ -293,6 +297,14 @@ impl PacketMeta {
             flags |= FlowInfoFlags::REQ_STATIC_NAT_SRC;
         }
         flags
+    }
+
+    #[must_use]
+    pub fn need_arp_nd(&self) -> bool {
+        self.flags.contains(MetaFlags::NEED_ARPND)
+    }
+    pub fn set_need_arp_nd(&mut self, value: bool) {
+        self.set_flag(MetaFlags::NEED_ARPND, value);
     }
 }
 impl Drop for PacketMeta {

@@ -109,25 +109,6 @@ fn drop_verdicts_come_back_to_the_caller() {
     assert_eq!(counters.tx_drops, 0);
 }
 
-/// Stages mark packets dropped; one that removes them instead would hide the drop.
-#[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "removed 1 packet(s)")]
-fn a_pipeline_that_removes_packets_is_a_bug() {
-    let mut pipeline = DynPipeline::new().add_stage(ReturnVerdicts(&[Some(DoneReason::Delivered)]));
-    let mut counters = RxCounters::default();
-    let mut packets = Vec::new();
-    process_burst(
-        (0..2).map(|_| frame()),
-        InterfaceIndex::try_new(1).unwrap(),
-        &mut pipeline,
-        &mut packets,
-        None,
-        &mut Vec::new(),
-        &mut counters,
-    );
-}
-
 /// Only `Local` reaches the control plane: the verdicts that used to be punted when the frame was
 /// addressed to us are now drops, since the ingress stage marks `Local` whatever the control plane
 /// should see.
@@ -187,6 +168,16 @@ fn key(port: u16) -> FlowKey {
     )
 }
 
+/// A pool with no mbufs, for pipelines that inject nothing: it needs no EAL.
+struct NoMbufs;
+impl BufferPool for NoMbufs {
+    type Buf = Mbuf<'static>;
+    const MAX_ALLOC: usize = 0;
+    fn alloc(&self, _num: usize) -> impl Iterator<Item = Self::Buf> {
+        std::iter::empty()
+    }
+}
+
 /// The worker expires the flows its pipeline created, on its own thread, while it polls: one pair
 /// by deadline, one by invalidation from another thread.
 #[test]
@@ -195,9 +186,9 @@ fn flows_expire_on_the_worker_while_it_polls() {
     let shutdown = lifecycle::Shutdown::new();
     let table = Arc::new(FlowTable::new(2));
     let (created_tx, created_rx) = std::sync::mpsc::channel();
-    let setup: PipelineFactory<'static, Mbuf<'static>> = {
+    let setup: PipelineFactory<'static, Mbuf<'static>, NoMbufs> = {
         let table = table.clone();
-        Arc::new(move || {
+        Arc::new(move |_context| {
             let flows = WorkerFlowTable::new(table.clone());
             let pairs = [
                 (1001, Duration::from_millis(100)),
@@ -228,8 +219,12 @@ fn flows_expire_on_the_worker_while_it_polls() {
     thread::scope(|scope| {
         let _stop_on_failure = shutdown.workers.cancel_token().drop_guard();
         let worker = scope.spawn(|| {
-            Worker::new(0, Vec::new(), args::IdleConfig::default(), load)
-                .run(&shutdown.workers, &setup);
+            let context = WorkerContext::new(NoMbufs);
+            Worker::new(0, Vec::new(), args::IdleConfig::default(), load).run(
+                &shutdown.workers,
+                &setup,
+                context,
+            );
         });
         let [(forward, reverse), (cancelled, _)] =
             created_rx.recv_timeout(Duration::from_secs(5)).unwrap();
