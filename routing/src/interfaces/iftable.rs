@@ -5,7 +5,10 @@
 
 use crate::VrfId;
 use crate::errors::RouterError;
-use crate::interfaces::interface::{IfState, Interface, RouterInterfaceConfig};
+use crate::interfaces::iftablerw::IfUpdateRequest;
+#[cfg(test)]
+use crate::interfaces::interface::IfState;
+use crate::interfaces::interface::{Interface, RouterInterfaceConfig};
 use ahash::RandomState;
 use net::interface::address::IfAddr;
 use net::interface::{InterfaceIndex, InterfaceName, Mtu};
@@ -191,6 +194,7 @@ impl IfTable {
     }
 
     /// Set the operational state of an [`Interface`], if found
+    #[cfg(test)]
     pub(super) fn set_oper_state(
         &mut self,
         ifindex: InterfaceIndex,
@@ -205,6 +209,7 @@ impl IfTable {
     }
 
     /// Set the admin state of an [`Interface`], if found
+    #[cfg(test)]
     pub(super) fn set_admin_state(
         &mut self,
         ifindex: InterfaceIndex,
@@ -226,6 +231,34 @@ impl IfTable {
             .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
         iface.set_mtu(mtu);
+        Ok(())
+    }
+
+    /// Apply the changes in `req` to an [`Interface`], if found
+    pub(super) fn update_interface(
+        &mut self,
+        ifindex: InterfaceIndex,
+        req: &IfUpdateRequest,
+    ) -> Result<(), RouterError> {
+        let iface = self
+            .get_interface_mut(ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        if let Some(name) = &req.name {
+            iface.name.clone_from(name);
+        }
+        if let Some(mac) = req.mac {
+            iface.set_mac(mac);
+        }
+        if let Some(mtu) = req.mtu {
+            iface.set_mtu(mtu);
+        }
+        if let Some(state) = req.admin_state {
+            iface.set_admin_state(state);
+        }
+        if let Some(state) = req.oper_state {
+            iface.set_oper_state(state);
+        }
         Ok(())
     }
 

@@ -15,7 +15,7 @@ pub mod tests {
     use crate::VrfId;
     use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftable::IfTable;
-    use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
+    use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter, IfUpdateRequest};
     use crate::interfaces::interface::{IfDataDot1q, IfState, IfType, RouterInterfaceConfig};
     use crate::rib::VrfTable;
     use net::eth::mac::SourceMac;
@@ -206,6 +206,7 @@ pub mod tests {
 
     #[test]
     /// Test that an iftable writer behaves like an iftable
+    #[allow(clippy::too_many_lines)]
     fn test_iftable_writer() {
         const VRFID: VrfId = 123;
         const IF_NAME: &str = "ethernet-1";
@@ -284,18 +285,30 @@ pub mod tests {
 
         // test set admin state
         iftable.set_admin_state(ifindex, IfState::Down).unwrap();
-        iftw.set_iface_admin_state(ifindex, IfState::Down).unwrap();
+        let req = IfUpdateRequest {
+            admin_state: Some(IfState::Down),
+            ..Default::default()
+        };
+        iftw.update_interface(ifindex, req).unwrap();
         compare(&iftable, &iftr);
 
         // test set mtu
         let mtu = Mtu::try_from(1685).expect("Bad mtu");
         iftable.set_mtu(ifindex, mtu).unwrap();
-        iftw.set_mtu(ifindex, mtu).unwrap();
+        let req = IfUpdateRequest {
+            mtu: Some(mtu),
+            ..Default::default()
+        };
+        iftw.update_interface(ifindex, req).unwrap();
         compare(&iftable, &iftr);
 
         // test set oper state
         iftable.set_oper_state(ifindex, IfState::Up).unwrap();
-        iftw.set_iface_oper_state(ifindex, IfState::Up).unwrap();
+        let req = IfUpdateRequest {
+            oper_state: Some(IfState::Up),
+            ..Default::default()
+        };
+        iftw.update_interface(ifindex, req).unwrap();
         compare(&iftable, &iftr);
 
         // test detach from vrf
@@ -309,7 +322,11 @@ pub mod tests {
         let mut config = iftable.get_interface(ifindex).unwrap().as_config();
         config.set_name(&new_name);
         iftable.mod_interface(&config).unwrap();
-        iftw.update_name(ifindex, &new_name).unwrap();
+        let req = IfUpdateRequest {
+            name: Some(new_name),
+            ..Default::default()
+        };
+        iftw.update_interface(ifindex, req).unwrap();
         compare(&iftable, &iftr);
 
         // test detach non-existing interface

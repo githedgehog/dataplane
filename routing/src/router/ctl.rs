@@ -20,7 +20,7 @@ use crate::RouterError;
 use crate::bmp::bmp_render::BgpNeighEvent;
 use crate::config::RouterConfig;
 use crate::frr::frrmi::FrrAppliedConfig;
-use crate::interfaces::iftablerw::IfTableWriter;
+use crate::interfaces::iftablerw::{IfTableWriter, IfUpdateRequest};
 use crate::interfaces::interface::IfState;
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::router::rio::{CPSOCK, Rio};
@@ -279,40 +279,31 @@ pub(crate) fn handle_ifevent(ev: &EthEvent, iftw: &mut IfTableWriter) -> Result<
     let adm_state = IfState::from(ev.ifup());
     let oper_state = determine_oper_state(ev);
 
-    // did admin state change ?
-    let update = iftw.set_iface_admin_state(ifindex, adm_state)?;
+    // apply all changes at once
+    let req = IfUpdateRequest {
+        name: ev.name().cloned(),
+        mac: ev.mac(),
+        mtu: ev.mtu(),
+        admin_state: Some(adm_state),
+        oper_state: Some(oper_state),
+    };
+    let update = iftw.update_interface(ifindex, req)?;
+
+    // generate events
     if let Some(state) = update.adm_state {
-        revent!(RouterEvent::IfAdmChange(update.ifname, state));
+        revent!(RouterEvent::IfAdmChange(update.ifname.clone(), state));
     }
-
-    // did oper state change ?
-    let update = iftw.set_iface_oper_state(ifindex, oper_state)?;
     if let Some(state) = update.oper_state {
-        revent!(RouterEvent::IfOperChange(update.ifname, state));
+        revent!(RouterEvent::IfOperChange(update.ifname.clone(), state));
     }
-
-    // did interface name change?
-    if let Some(ifname) = ev.name() {
-        let update = iftw.update_name(ifindex, ifname)?;
-        if let Some(name) = update.name_change {
-            revent!(RouterEvent::IfNameChange(update.ifname, name));
-        }
+    if let Some(name) = update.name_change {
+        revent!(RouterEvent::IfNameChange(update.ifname.clone(), name));
     }
-
-    // did mac change ?
-    if let Some(mac) = ev.mac() {
-        let update = iftw.update_mac(ifindex, mac)?;
-        if let Some(mac) = update.mac {
-            revent!(RouterEvent::IfMacChange(update.ifname, mac));
-        }
+    if let Some(mac) = update.mac {
+        revent!(RouterEvent::IfMacChange(update.ifname.clone(), mac));
     }
-
-    // did mtu change?
-    if let Some(mtu) = ev.mtu() {
-        let update = iftw.set_mtu(ifindex, mtu)?;
-        if let Some(mtu) = update.mtu {
-            revent!(RouterEvent::IfMtuChange(update.ifname, mtu));
-        }
+    if let Some(mtu) = update.mtu {
+        revent!(RouterEvent::IfMtuChange(update.ifname, mtu));
     }
 
     Ok(())

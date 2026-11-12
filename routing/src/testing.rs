@@ -19,7 +19,9 @@ use crate::atable::atablerw::{AtableReader, AtableReaderFactory, AtableWriter};
 use crate::evpn::Vtep;
 
 use crate::fib::fibtable::{FibTableReader, FibTableReaderFactory, FibTableWriter};
-use crate::interfaces::iftablerw::{IfTableReader, IfTableReaderFactory, IfTableWriter};
+use crate::interfaces::iftablerw::{
+    IfTableReader, IfTableReaderFactory, IfTableWriter, IfUpdateRequest,
+};
 use crate::interfaces::interface::{IfState, IfType, RouterInterfaceConfig};
 use crate::rib::vrf::VrfId;
 
@@ -112,7 +114,11 @@ impl RouterTables {
         self.interfaces
             .add_interface(config)
             .expect("interface index is already in use");
-        let _ = self.interfaces.set_iface_oper_state(ifindex, IfState::Up);
+        let req = IfUpdateRequest {
+            oper_state: Some(IfState::Up),
+            ..Default::default()
+        };
+        let _ = self.interfaces.update_interface(ifindex, req);
         self
     }
 
@@ -122,8 +128,12 @@ impl RouterTables {
         admin: IfState,
         oper: IfState,
     ) -> &mut Self {
-        let _ = self.interfaces.set_iface_admin_state(ifindex, admin);
-        let _ = self.interfaces.set_iface_oper_state(ifindex, oper);
+        let req = IfUpdateRequest {
+            admin_state: Some(admin),
+            oper_state: Some(oper),
+            ..Default::default()
+        };
+        let _ = self.interfaces.update_interface(ifindex, req);
         self
     }
 
