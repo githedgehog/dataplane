@@ -99,7 +99,7 @@ impl Egress {
             packet.done(DoneReason::InterfaceOperDown);
         } else {
             match interface.iftype {
-                IfType::Ethernet(_) | IfType::Dot1q(_) => {
+                IfType::Ethernet | IfType::Dot1q(_) => {
                     self.interface_egress_ethernet(interface, dst_mac, packet);
                 }
                 _ => packet.done(DoneReason::InterfaceUnsupported),

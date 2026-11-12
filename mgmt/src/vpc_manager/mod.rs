@@ -47,6 +47,10 @@ impl<R> VpcManager<R> {
             _marker: PhantomData,
         }
     }
+    #[must_use]
+    pub fn handle(&self) -> Arc<Handle> {
+        self.handle.clone()
+    }
 }
 
 impl<T, U> From<&VpcManager<T>> for VpcManager<U> {
@@ -170,6 +174,7 @@ impl Observe for VpcManager<RequiredInformationBase> {
                     }
                 }
                 InterfaceProperties::Other
+                | InterfaceProperties::Loopback
                 | InterfaceProperties::Tap
                 | InterfaceProperties::Pci(_)
                 | InterfaceProperties::Bridge(_) => { /* nothing to index */ }

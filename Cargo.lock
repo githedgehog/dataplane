@@ -1936,7 +1936,6 @@ dependencies = [
  "ipnet",
  "linkme",
  "multi_index_map",
- "netdev",
  "nix",
  "pretty_assertions",
  "rtnetlink",

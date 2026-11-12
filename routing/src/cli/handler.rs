@@ -647,7 +647,7 @@ pub(crate) fn handle_cli_request(
 mod tests_cli_handling {
     use crate::AttachConfig;
     use crate::bmp::bmp_render::BgpNeighEvent;
-    use crate::interfaces::interface::{IfDataEthernet, IfType, RouterInterfaceConfig};
+    use crate::interfaces::interface::{IfType, RouterInterfaceConfig};
     use crate::rib::vrf::RouterVrfConfig;
     use crate::{
         CliSources, Router, RouterConfig, RouterCtlSender, RouterParams, RouterParamsBuilder,
@@ -734,10 +734,10 @@ mod tests_cli_handling {
     fn build_router_interface_config() -> RouterInterfaceConfig {
         let name = InterfaceName::try_from(IFNAME).expect("Bad ifname");
         let ifindex = InterfaceIndex::try_from(IFINDEX).expect("Bad ifindex");
-        let eth = IfDataEthernet::new(SourceMac::try_from(IF_MAC).expect("Bad mac"));
-        let iftype = IfType::Ethernet(eth);
+
         let mut ifconfig = RouterInterfaceConfig::new(name, ifindex);
-        ifconfig.set_iftype(iftype);
+        ifconfig.set_iftype(IfType::Ethernet);
+        ifconfig.set_mac(SourceMac::try_from(IF_MAC).expect("Bad mac"));
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_attach_cfg(Some(AttachConfig::Vrf(VRFID)));
         ifconfig

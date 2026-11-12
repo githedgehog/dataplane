@@ -82,7 +82,6 @@ mod tests {
             InterfaceConfig::new(
                 "eth0".try_into().expect("Bad ifname"),
                 InterfaceType::Loopback,
-                false,
             )
             .add_address(v4(10, 0, 0, 1), 31),
         );

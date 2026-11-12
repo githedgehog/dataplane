@@ -39,7 +39,10 @@ impl ReconfigInterfacePlan {
         for iface in iftable.values() {
             let ifindex = iface.ifindex;
             if let Some(cfg) = config.get_interface(ifindex) {
-                if iface.as_config() == *cfg {
+                // oper state is not config. We piggy back it here.
+                let mut current = iface.as_config();
+                current.oper_state = cfg.oper_state;
+                if current == *cfg {
                     to_keep.push(ifindex);
                 } else {
                     to_modify.push(cfg.clone());
@@ -131,7 +134,9 @@ impl Interface {
             name: self.name.clone(),
             description: self.description.clone(),
             iftype: self.iftype.clone(),
+            mac: self.mac,
             admin_state: self.admin_state,
+            oper_state: self.oper_state,
             mtu: self.mtu,
             attach_cfg: self.attachment.as_ref().map(Attachment::as_config),
         }

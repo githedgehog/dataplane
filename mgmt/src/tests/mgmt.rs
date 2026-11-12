@@ -68,9 +68,7 @@ pub mod test {
 
     use config::ExternalConfig;
     use config::internal::device::DeviceConfig;
-    use config::internal::interfaces::interface::{
-        IfEthConfig, IfVtepConfig, InterfaceConfig, InterfaceType,
-    };
+    use config::internal::interfaces::interface::{IfVtepConfig, InterfaceConfig, InterfaceType};
     use config::internal::routing::bgp::*;
     use config::internal::routing::ospf::{Ospf, OspfInterface, OspfNetwork};
     use config::internal::routing::vrf::VrfConfig;
@@ -322,7 +320,7 @@ pub mod test {
         /* configure loopback interface */
         let ospf =
             OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area")).set_passive(true);
-        let lo = InterfaceConfig::new(ifname("lo"), InterfaceType::Loopback, false)
+        let lo = InterfaceConfig::new(ifname("lo"), InterfaceType::Loopback)
             .set_description("Main loopback interface")
             .add_address(loopback, 32)
             .set_ospf(ospf);
@@ -340,7 +338,6 @@ pub mod test {
                 ttl: None,
                 vni: None,
             }),
-            false,
         );
         vrf_cfg.add_interface_config(vtep);
 
@@ -348,39 +345,27 @@ pub mod test {
         let ospf = OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area"))
             .set_passive(false)
             .set_network(OspfNetwork::Point2Point);
-        let eth0 = InterfaceConfig::new(
-            ifname("eth0"),
-            InterfaceType::Ethernet(IfEthConfig { mac: None }),
-            false,
-        )
-        .set_description("Link to spine")
-        .add_address(IpAddr::from_str("10.0.0.14").expect("Bad address"), 30)
-        .set_ospf(ospf);
+        let eth0 = InterfaceConfig::new(ifname("eth0"), InterfaceType::Ethernet)
+            .set_description("Link to spine")
+            .add_address(IpAddr::from_str("10.0.0.14").expect("Bad address"), 30)
+            .set_ospf(ospf);
         vrf_cfg.add_interface_config(eth0);
 
         /* configure eth1 interface */
-        let eth1 = InterfaceConfig::new(
-            ifname("eth1"),
-            InterfaceType::Ethernet(IfEthConfig { mac: None }),
-            false,
-        )
-        .set_description("Link to external device ext-1")
-        .add_address(IpAddr::from_str("172.16.0.1").expect("Bad address"), 24)
-        .set_mtu(Mtu::try_from(1500).expect("Bad MTU"));
+        let eth1 = InterfaceConfig::new(ifname("eth1"), InterfaceType::Ethernet)
+            .set_description("Link to external device ext-1")
+            .add_address(IpAddr::from_str("172.16.0.1").expect("Bad address"), 24)
+            .set_mtu(Mtu::try_from(1500).expect("Bad MTU"));
         vrf_cfg.add_interface_config(eth1);
 
         /* configure eth2 interface */
         let ospf = OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area"))
             .set_passive(false)
             .set_network(OspfNetwork::Point2Point);
-        let eth2 = InterfaceConfig::new(
-            ifname("eth2"),
-            InterfaceType::Ethernet(IfEthConfig { mac: None }),
-            false,
-        )
-        .set_description("Link to spine")
-        .add_address(IpAddr::from_str("10.0.1.14").expect("Bad address"), 30)
-        .set_ospf(ospf);
+        let eth2 = InterfaceConfig::new(ifname("eth2"), InterfaceType::Ethernet)
+            .set_description("Link to spine")
+            .add_address(IpAddr::from_str("10.0.1.14").expect("Bad address"), 30)
+            .set_ospf(ospf);
         vrf_cfg.add_interface_config(eth2);
     }
 

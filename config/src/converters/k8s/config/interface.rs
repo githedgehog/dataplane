@@ -5,9 +5,7 @@ use k8s_intf::gateway_agent_crd::GatewayAgentGatewayInterfaces;
 use net::interface::{InterfaceName, Mtu};
 
 use crate::converters::k8s::{FromK8sConversionError, ToK8sConversionError};
-use crate::internal::interfaces::interface::{
-    IfEthConfig, InterfaceAddress, InterfaceConfig, InterfaceType,
-};
+use crate::internal::interfaces::interface::{InterfaceAddress, InterfaceConfig, InterfaceType};
 
 impl TryFrom<(&str, &GatewayAgentGatewayInterfaces)> for InterfaceConfig {
     type Error = FromK8sConversionError;
@@ -20,13 +18,13 @@ impl TryFrom<(&str, &GatewayAgentGatewayInterfaces)> for InterfaceConfig {
         //
         // The Gateway agent CRD also does not support specifying the source mac
         // address.
-        let iftype = InterfaceType::Ethernet(IfEthConfig { mac: None });
+        let iftype = InterfaceType::Ethernet;
 
         // admit only kernel-compatible interface names
         let ifname = InterfaceName::try_from(name)
             .map_err(|e| FromK8sConversionError::InvalidData(e.to_string()))?;
 
-        let mut interface_config: InterfaceConfig = InterfaceConfig::new(ifname, iftype, false);
+        let mut interface_config: InterfaceConfig = InterfaceConfig::new(ifname, iftype);
 
         if let Some(ips) = iface.ips.as_ref() {
             for ip in ips {
@@ -59,14 +57,7 @@ impl TryFrom<&InterfaceConfig> for GatewayAgentGatewayInterfaces {
     type Error = ToK8sConversionError;
 
     fn try_from(if_config: &InterfaceConfig) -> Result<Self, Self::Error> {
-        if let InterfaceType::Ethernet(IfEthConfig { mac }) = if_config.iftype {
-            if mac.is_some() {
-                return Err(ToK8sConversionError::Unsupported(format!(
-                    "Explicit mac addresses not supported by CRD {}",
-                    if_config.name
-                )));
-            }
-        } else {
+        if if_config.iftype != InterfaceType::Ethernet {
             return Err(ToK8sConversionError::Unsupported(format!(
                 "Unsupported interface type on interface {}, only Ethernet is supported in CRD",
                 if_config.name
