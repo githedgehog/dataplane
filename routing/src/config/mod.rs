@@ -104,6 +104,15 @@ impl RouterConfig {
         self.vrfs.get(&vrfid)
     }
 
+    /// Get the vrfId of the vrf config with the given name
+    #[must_use]
+    pub fn get_vrfid(&self, name: &str) -> Option<VrfId> {
+        self.vrfs
+            .values()
+            .find(|vrf_cfg| vrf_cfg.name == name)
+            .map(|v| v.vrfid)
+    }
+
     //////////////////////////////////////////////////////////////////////////////////
     /// Mutably get the config for a Vrf with a given [`VrfId`]
     //////////////////////////////////////////////////////////////////////////////////

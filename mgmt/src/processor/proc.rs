@@ -8,6 +8,7 @@ use acl_filter::AclFilterContextWriter;
 use concurrency::sync::Arc;
 use config::external::overlay::ValidatedOverlay;
 use flow_entry::flow_table::FlowTable;
+use interface_manager::Manager;
 use rate_limit::{Backend, IngressRules, PeeringRules, RateLimitWriter};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
@@ -45,7 +46,7 @@ use tracing::{debug, error, info, warn};
 use traffic_control::ControlPlane;
 
 use net::interface::display::MultiIndexInterfaceMapView;
-use net::interface::{Interface, InterfaceName};
+use net::interface::{Interface, MultiIndexInterfaceMap};
 use routing::{FrrAppliedConfig, RouterCtlSender};
 
 use stats::VpcMapName;
@@ -496,35 +497,18 @@ impl VpcManager<RequiredInformationBase> {
 
         Ok(())
     }
-
-    /// Get the current set of kernel interfaces of type VRF keyed by name
-    async fn get_kernel_vrfs(&self) -> Result<HashMap<InterfaceName, Interface>, ConfigError> {
-        let obs_rib = self.observe().await.map_err(|_| {
-            ConfigError::InternalFailure("Failed to retrieve kernel interfaces".to_string())
-        })?;
-
-        let vrfs: HashMap<InterfaceName, Interface> = obs_rib
-            .interfaces
-            .iter_by_name()
-            .filter(|intf| intf.is_vrf())
-            .cloned()
-            .map(|intf| (intf.name.clone(), intf))
-            .collect();
-
-        Ok(vrfs)
-    }
 }
 
 /// Build router config and apply it over the router control channel
 async fn apply_router_config(
-    kernel_vrfs: &HashMap<InterfaceName, Interface>,
+    kernel_ifaces: &MultiIndexInterfaceMap,
     config: Arc<ValidatedGwConfig>,
     router_ctl: &RouterCtlSender,
 ) -> ConfigResult {
     let genid = config.genid();
 
     // build the router config
-    let router_config = generate_router_config(kernel_vrfs, config)?;
+    let router_config = generate_router_config(kernel_ifaces, config)?;
 
     // request router to apply it
     router_ctl
@@ -739,9 +723,6 @@ impl ConfigProcessor {
         /* apply config with VPC manager */
         vpc_mgr.apply_config(internal, genid).await?;
 
-        /* get vrf interfaces from kernel and build a hashmap keyed by name */
-        let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
-
         let overlay = config.external().overlay();
 
         precheck_port_forwarding_config(overlay.vpc_table())?;
@@ -791,8 +772,14 @@ impl ConfigProcessor {
         /* update stats mappings and seed names to the stats store */
         let _ = update_stats_vpc_mappings(&config, vpcmapw);
 
+        /* snapshot the kernel interfaces */
+        let if_manager = Manager::<Interface>::new(vpc_mgr.handle());
+        let kernel_ifaces = if_manager.get_kernel_interfaces().await.map_err(|e| {
+            ConfigError::InternalFailure(format!("Failed to retrieve kernel interfaces: {e}"))
+        })?;
+
         /* apply config in router */
-        apply_router_config(&kernel_vrfs, config.clone(), router_ctl).await?;
+        apply_router_config(&kernel_ifaces, config.clone(), router_ctl).await?;
 
         /* update the pipeline generation id, iff config was applied */
         self.proc_params.pipeline_data.set_genid(genid);
