@@ -126,7 +126,12 @@ impl Gateway {
 
     // Process a packet, and return what the gateway sends, without dropped packets.
     fn process(&mut self, packet: Packet<TestBuffer>) -> Vec<Packet<TestBuffer>> {
-        let out: Vec<_> = self.pipeline.process([packet]).collect();
+        self.process_burst(vec![packet])
+    }
+
+    // Process packets in one burst, and return what the gateway sends, without dropped packets.
+    fn process_burst(&mut self, packets: Vec<Packet<TestBuffer>>) -> Vec<Packet<TestBuffer>> {
+        let out: Vec<_> = self.pipeline.process(packets).collect();
         for packet in &out {
             assert_checksum_current_or_refresh_requested(packet);
         }
@@ -465,6 +470,47 @@ async fn peering_untracked_after_the_syn() {
     assert_eq!(gw.flows(), 0);
     let accepted = gw.proxy.counters().cookies_accepted.load(Ordering::Relaxed);
     assert_eq!(accepted, 0);
+}
+
+// If the flow table is full, the proxy cannot keep the state of the connection: it drops the SYN
+// for the server, and the client tries again while its cookie is valid.
+#[tokio::test]
+async fn flow_table_full() {
+    let mut gw = Gateway::new();
+    let cookie = handshake_with_client(&mut gw);
+    gw.table.set_capacity(0);
+    assert!(gw.process(client_ack(cookie)).is_empty());
+    assert_eq!(gw.flows(), 0);
+
+    gw.table.set_capacity(FlowTable::DEFAULT_CAPACITY);
+    handshake_with_server(&mut gw, cookie);
+}
+
+// Two handshakes for one 5-tuple, with different initial sequence numbers, complete in the same
+// burst. The first one opens the connection, the second one cannot use its flows.
+#[tokio::test]
+async fn two_handshakes_in_one_burst() {
+    let mut gw = Gateway::new();
+    let cookie = handshake_with_client(&mut gw);
+    let isn = CLIENT_ISN + 1000;
+    let options = [TcpOption::Mss(TcpMss::new(MSS).unwrap())];
+    let syn = segment(true, TcpFlags::SYN, isn, 0, 64000, &options, &[]);
+    let other_cookie = tcp(&gw.process_one(syn)).sequence_number();
+    let other_ack = segment(
+        true,
+        TcpFlags::ACK,
+        isn + 1,
+        other_cookie + 1,
+        512,
+        &[],
+        &[],
+    );
+
+    let out = gw.process_burst(vec![client_ack(cookie), other_ack]);
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_segment(&out[0], false, TcpFlags::SYN, CLIENT_ISN, 0, 512);
+    assert_eq!(gw.flows(), 2);
+    server_accepts(&mut gw, cookie);
 }
 
 // Cookies count as accepted only once the ACL and rate-limit stages let the connection through.

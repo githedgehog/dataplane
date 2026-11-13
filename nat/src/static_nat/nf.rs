@@ -481,7 +481,7 @@ impl StaticNat {
     }
 
     /// Refresh the tracked flow that a translated packet hit, or create a pair of tracked flows.
-    fn track_flow<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>, initial_key: FlowKey) {
+    fn track_flow<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, initial_key: FlowKey) {
         if let Some(flow) = packet.meta().flow_info.as_ref()
             && flow.is_active()
         {

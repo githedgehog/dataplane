@@ -43,8 +43,9 @@ impl Display for SynProxyMode {
 pub struct Counters {
     /// SYNs answered with a cookie.
     pub cookies_sent: AtomicU64,
-    /// ACKs with a valid cookie that the ACL and rate-limit stages let through, for which the
-    /// proxy opened a connection to the server.
+    /// ACKs with a valid cookie that the ACL and rate-limit stages let through, and for which the
+    /// proxy sent a SYN towards the server. The connection may still fail to open, for example if
+    /// the flow table is full: see [`Counters::connections`] for those that did.
     pub cookies_accepted: AtomicU64,
     /// Connections that the server accepted, and that the proxy now translates.
     pub connections: AtomicU64,

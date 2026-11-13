@@ -355,6 +355,9 @@ impl Masquerade {
                 InstallError::NotAdmitted => MasqueradeError::AllocatorReplaced,
                 InstallError::ReverseOccupied => MasqueradeError::ReverseTupleInUse,
                 InstallError::CapacityExceeded => MasqueradeError::CapacityExceeded,
+                InstallError::SynProxyConflict => {
+                    MasqueradeError::IntendedDrop("another proxied handshake holds the flow")
+                }
                 InstallError::Flow(e) => MasqueradeError::FlowError(e),
             },
         )
