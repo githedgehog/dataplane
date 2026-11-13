@@ -151,6 +151,10 @@ impl PortForwarder {
                 packet.done(DoneReason::NatNotPortForwarded);
                 return;
             }
+            Err(InstallError::SynProxyConflict) => {
+                packet.done(DoneReason::Filtered);
+                return;
+            }
             Err(e @ InstallError::CapacityExceeded) => {
                 warn!("Failed to insert port-forwarding flow pair: {e}");
                 packet.done(DoneReason::FlowCapacityExceeded);

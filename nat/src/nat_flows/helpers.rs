@@ -80,6 +80,8 @@ pub(crate) enum InstallError {
     ReverseOccupied,
     #[error("flow table capacity exceeded")]
     CapacityExceeded,
+    #[error("another handshake through the SYN proxy holds the flow")]
+    SynProxyConflict,
     #[error("failed to build the flow pair: {0}")]
     Flow(#[from] FlowInfoError),
 }
@@ -142,6 +144,15 @@ pub(crate) fn install_pair<S: NatData>(
     match insertion {
         PairInsertion::Installed => Ok(NewFlow::Installed(forward_flow)),
         PairInsertion::ForwardOccupied(held) => {
+            // A SYN from the proxy that does not belong to the handshake of the held pair would
+            // reach the server, while the flows translate the numbers of the other handshake
+            if let Some(state) = &meta.syn_proxy
+                && !held.syn_proxy().is_some_and(|held| {
+                    held.client_isn() == state.client_isn() && held.cookie() == state.cookie()
+                })
+            {
+                return Err(InstallError::SynProxyConflict);
+            }
             debug!(
                 "Lost the race to create flow {}; using the winner's flow",
                 forward_flow.flowkey()
