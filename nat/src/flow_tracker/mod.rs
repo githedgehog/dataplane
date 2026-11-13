@@ -26,7 +26,7 @@ use net::flows::conn_tracking::{ConnState, advance_flow, transport_proto};
 use net::flows::{FlowInfo, FlowInfoLocked};
 use net::headers::TryTcp;
 use net::ip::NextHeader;
-use net::packet::Packet;
+use net::packet::{DoneReason, Packet};
 use net::tcp::Tcp;
 use net::{FlowKey, IpProtoKey};
 use pipeline::{NetworkFunction, PipelineData};
@@ -76,13 +76,18 @@ fn can_open_flow<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
 /// Create a pair of tracked flows for `packet`, with `state` in both flows, if the packet can
 /// open a connection.
 ///
+/// Most packets go through untracked if creating the flows fails. Drop the SYNs that the SYN proxy
+/// sends to the server instead: the proxy keeps the state of the connection in its flows, and
+/// cannot translate its sequence numbers without them. The client retries while its cookie is
+/// valid.
+///
 /// `initial_key` is the key of the packet before any translation: the next packets of the
 /// connection hit the flow table with this key. Replies carry the current headers of the packet,
 /// after translation, reversed.
 pub(crate) fn track_new_flow<Buf: PacketBufferMut, S: NatData>(
     nfi: &str,
     flow_table: &WorkerFlowTable,
-    packet: &Packet<Buf>,
+    packet: &mut Packet<Buf>,
     initial_key: FlowKey,
     state: impl Fn() -> S,
     genid: i64,
@@ -95,7 +100,7 @@ pub(crate) fn track_new_flow<Buf: PacketBufferMut, S: NatData>(
         debug!("{nfi}: Packet lacks a VPC discriminant, not tracking its flow");
         return;
     };
-    let Ok(current_key) = FlowKey::try_from(packet) else {
+    let Ok(current_key) = FlowKey::try_from(&*packet) else {
         debug!("{nfi}: Packet has no flow key, not tracking its flow");
         return;
     };
@@ -119,14 +124,26 @@ pub(crate) fn track_new_flow<Buf: PacketBufferMut, S: NatData>(
 
     // Stamp with the generation being installed, which may not yet be published.
     let admit = || Some(genid);
-    match install_pair(flow_table, meta, INITIAL_TIMEOUT, forward, reverse, admit) {
-        Ok(NewFlow::Installed(flow)) => debug!("{nfi}: Tracking new flow {}", flow.flowkey()),
-        Ok(NewFlow::Held(_)) => {}
-        // Processing this packet does not depend on the flow: let it through untracked
+    let error = match install_pair(flow_table, meta, INITIAL_TIMEOUT, forward, reverse, admit) {
+        Ok(NewFlow::Installed(flow)) => {
+            debug!("{nfi}: Tracking new flow {}", flow.flowkey());
+            return;
+        }
+        Ok(NewFlow::Held(_)) => return,
         Err(e @ InstallError::CapacityExceeded) => {
             warn!("{nfi}: Cannot track flow {initial_key}: {e}");
+            e
         }
-        Err(e) => debug!("{nfi}: Cannot track flow {initial_key}: {e}"),
+        Err(e) => {
+            debug!("{nfi}: Cannot track flow {initial_key}: {e}");
+            e
+        }
+    };
+    if meta.syn_proxy.is_some() {
+        packet.done(match error {
+            InstallError::CapacityExceeded => DoneReason::FlowCapacityExceeded,
+            _ => DoneReason::InternalFailure,
+        });
     }
 }
 
@@ -162,7 +179,7 @@ impl FlowTracker {
         }
     }
 
-    fn process_packet<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) {
+    fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         if let Some(flow) = packet.meta().flow_info.as_ref()
             && flow.is_active()
         {
@@ -171,7 +188,7 @@ impl FlowTracker {
             }
             return;
         }
-        let Ok(key) = FlowKey::try_from(packet) else {
+        let Ok(key) = FlowKey::try_from(&*packet) else {
             debug!(
                 "{}: Packet has no flow key, not tracking its flow",
                 self.name
@@ -192,7 +209,7 @@ impl FlowTracker {
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowTracker {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
-        for packet in burst.iter() {
+        for packet in burst.iter_mut() {
             // The static NAT stage tracks the flows of static NAT traffic
             if needs_tracking(packet) && !packet.meta().requires_static_nat() {
                 self.process_packet(packet);

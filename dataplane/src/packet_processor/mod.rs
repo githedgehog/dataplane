@@ -33,7 +33,7 @@ use nat::static_nat::natrw::NatTablesReaderFactory;
 use nat::{FlowTracker, IcmpErrorHandler, Masquerade, StaticNat};
 use net::packet::PacketStats;
 
-use net::buffer::PacketBufferMut;
+use net::buffer::{DeepCopy, PacketBufferMut};
 use pipeline::sample_nfs::{PacketDumper, PacketStatsNF};
 use pipeline::{DynPipeline, PipelineData};
 
@@ -45,6 +45,7 @@ use routing::{
 use vpcmap::map::VpcMapWriter;
 
 use stats::{PacketStatsWriter, Stats, StatsCollector, VpcMapName, VpcStatsStore};
+use syn_proxy::{SynCookieChecker, SynProxy, SynProxyControl};
 
 pub(crate) struct InternalSetup {
     pub router: Router,
@@ -90,6 +91,7 @@ pub(crate) struct PipelineIngredients {
     /// Every worker's timer queue; each worker's pipeline registers its own.
     timers: TimerRegistry,
     capture: CaptureController,
+    syn_proxy: SynProxyControl,
 }
 
 /// The VTEPs software decapsulates VXLAN for: each VNI's FIB's.
@@ -136,7 +138,9 @@ impl PipelineIngredients {
 
     /// Create a shared factory for the driver's buffer type and lifetime.
     /// The returned pipelines are constructed and used on their worker threads.
-    pub(crate) fn factory<'nf, Buf: PacketBufferMut + 'nf>(self) -> PipelineFactory<'nf, Buf> {
+    pub(crate) fn factory<'nf, Buf: PacketBufferMut + DeepCopy + 'nf>(
+        self,
+    ) -> PipelineFactory<'nf, Buf> {
         Arc::new(move || {
             // This worker's handle on the shared flow table, for the stages that create flows.
             let flows = WorkerFlowTable::registered(self.flow_table.clone(), &self.timers);
@@ -176,6 +180,9 @@ impl PipelineIngredients {
                 flows.clone(),
             );
             let pkt_stats_nf = PacketStatsNF::new(self.pkt_stats.clone());
+            let cookie_checker =
+                SynCookieChecker::new("syn-cookie-checker", self.syn_proxy.clone());
+            let syn_proxy = SynProxy::new("syn-proxy", self.syn_proxy.clone());
             // First and right after egress, so the two views of a packet can be compared.
             let capture_ingress =
                 CaptureStage::new(Direction::Ingress, self.capture.sink(Direction::Ingress));
@@ -196,10 +203,16 @@ impl PipelineIngredients {
                 .add_stage(icmp_error_handler)
                 .add_stage(flow_lookup)
                 .add_stage(flow_filter)
+                // Before the ACLs, so that they see the SYN built from a client's ACK echoing a
+                // cookie, as they would see the client's own SYN without the proxy.
+                .add_stage(cookie_checker)
                 .add_stage(acl_filter)
                 // After the ACLs, so that denied packets are not charged; before NAT, so that rate
                 // limits see destinations as the source VPC addresses them.
                 .add_stage(rate_limiter)
+                // After the ACLs and rate limits, so as not to answer SYNs that the gateway drops;
+                // before NAT, where answering either end only takes swapping the addresses.
+                .add_stage(syn_proxy)
                 .add_stage(static_nat)
                 .add_stage(portfw)
                 .add_stage(masquerade)
@@ -279,6 +292,7 @@ pub(crate) fn start_router(
     let pdata = Arc::from(PipelineData::new(0));
     let pkt_stats = Arc::from(PacketStats::new());
     let capture = CaptureController::new();
+    let syn_proxy = SynProxyControl::new();
     let (lldp_neighbors, lldp_heard) =
         tokio::sync::watch::channel(crate::lldp_agent::NeighborSnapshot::default());
     let (transceivers, transceivers_read) =
@@ -307,6 +321,7 @@ pub(crate) fn start_router(
         ))),
         link: Some(Box::new(crate::phy_agent::PhyCli(phy_read))),
         rate_limits: Some(Box::new(rate_limits.reader())),
+        syn_proxy: Some(syn_proxy.clone()),
     };
 
     // create router
@@ -332,6 +347,7 @@ pub(crate) fn start_router(
         flow_table: flow_table.clone(),
         timers,
         capture,
+        syn_proxy,
     };
 
     Ok(InternalSetup {

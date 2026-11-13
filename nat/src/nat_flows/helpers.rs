@@ -119,6 +119,11 @@ pub(crate) fn install_pair<S: NatData>(
     if let Some(flags) = meta.tcp_flags {
         forward_flow.set_opening_tcp_flags(flags);
     }
+    // Both flows of a connection set up by the SYN proxy translate its sequence numbers
+    if let Some(state) = &meta.syn_proxy {
+        forward_flow.set_syn_proxy(state.clone());
+        reverse_flow.set_syn_proxy(state.clone());
+    }
 
     // Claim both keys before exposing either half to lookups or competing creators.
     let insertion = table

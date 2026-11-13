@@ -52,7 +52,7 @@ impl TcpOptions {
 
 /// Iterator over the [`TcpOption`] elements in a [`TcpOptions`].
 pub struct TcpOptionIter<'a> {
-    inner: etherparse::TcpOptionsIterator<'a>,
+    pub(in crate::tcp) inner: etherparse::TcpOptionsIterator<'a>,
 }
 
 impl Iterator for TcpOptionIter<'_> {

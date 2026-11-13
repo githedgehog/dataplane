@@ -1375,6 +1375,7 @@ dependencies = [
  "dataplane-rate-limit",
  "dataplane-routing",
  "dataplane-stats",
+ "dataplane-syn-proxy",
  "dataplane-test-utils",
  "dataplane-tracectl",
  "dataplane-traffic-control",
@@ -2196,6 +2197,7 @@ dependencies = [
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-routing",
+ "dataplane-syn-proxy",
  "dataplane-tracectl",
  "derive_builder",
  "dplane-rpc",
@@ -2250,6 +2252,23 @@ dependencies = [
  "small-map",
  "strum",
  "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dataplane-syn-proxy"
+version = "0.38.2"
+dependencies = [
+ "bolero",
+ "dataplane-clock",
+ "dataplane-concurrency",
+ "dataplane-flow-entry",
+ "dataplane-nat",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-tracectl",
+ "linkme",
  "tokio",
  "tracing",
 ]

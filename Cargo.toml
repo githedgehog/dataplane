@@ -49,6 +49,7 @@ members = [
     "rekon",
     "routing",
     "stats",
+    "syn-proxy",
     "sysfs",
     "test-utils",
     "timer-wheel",
@@ -129,6 +130,7 @@ rate-limit = { path = "./rate-limit", package = "dataplane-rate-limit", features
 rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
 routing = { path = "./routing", package = "dataplane-routing", features = [] }
 stats = { path = "./stats", package = "dataplane-stats", features = [] }
+syn-proxy = { path = "./syn-proxy", package = "dataplane-syn-proxy", features = [] }
 sysfs = { path = "./sysfs", package = "dataplane-sysfs", features = [] }
 test-utils = { path = "./test-utils", package = "dataplane-test-utils", features = [] }
 timer-wheel = { path = "./timer-wheel", package = "dataplane-timer-wheel", features = [] }
@@ -539,6 +541,11 @@ wasm = false # split
 package = "dataplane-stats"
 miri = true
 wasm = false # miss
+
+[workspace.metadata.package.syn-proxy]
+package = "dataplane-syn-proxy"
+miri = true
+wasm = false # split (clock)
 
 [workspace.metadata.package.sysfs]
 package = "dataplane-sysfs"

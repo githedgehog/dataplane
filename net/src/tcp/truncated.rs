@@ -6,7 +6,7 @@
 use std::num::NonZero;
 
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError};
-use crate::tcp::{Tcp, TcpParseError, TcpPort};
+use crate::tcp::{Tcp, TcpFlags, TcpParseError, TcpPort};
 
 /// A truncated TCP header.
 ///
@@ -20,6 +20,11 @@ pub struct TruncatedTcpHeader {
     // The rest of the header, as a byte vector, for de-parsing
     everything_else: Vec<u8>,
 }
+
+// Offsets of fields in the bytes that follow the ports
+const SEQ_OFFSET: usize = 0;
+const ACK_OFFSET: usize = 4;
+const FLAGS_OFFSET: usize = 9;
 
 impl TruncatedTcpHeader {
     pub(crate) const MIN_HEADER_LEN: usize = 4;
@@ -61,6 +66,17 @@ impl TruncatedTcpHeader {
     pub fn set_destination(&mut self, destination_port: TcpPort) -> &mut Self {
         self.destination_port = destination_port;
         self
+    }
+
+    fn word(&self, offset: usize) -> Option<u32> {
+        let bytes = self.everything_else.get(offset..offset + 4)?;
+        Some(u32::from_be_bytes(bytes.try_into().ok()?))
+    }
+
+    fn set_word(&mut self, offset: usize, value: u32) -> Option<()> {
+        let bytes = self.everything_else.get_mut(offset..offset + 4)?;
+        bytes.copy_from_slice(&value.to_be_bytes());
+        Some(())
     }
 }
 
@@ -180,6 +196,60 @@ impl TruncatedTcp {
             }
         }
     }
+
+    /// Get the sequence number, if the header is long enough to hold it
+    #[must_use]
+    pub fn sequence_number(&self) -> Option<u32> {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => Some(tcp.sequence_number()),
+            TruncatedTcp::PartialHeader(tcp) => tcp.word(SEQ_OFFSET),
+        }
+    }
+
+    /// Set the sequence number, if the header is long enough to hold it. The checksum is left
+    /// unchanged.
+    pub fn set_sequence_number(&mut self, seq: u32) -> Option<()> {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => {
+                tcp.set_sequence_number(seq);
+                Some(())
+            }
+            TruncatedTcp::PartialHeader(tcp) => tcp.set_word(SEQ_OFFSET, seq),
+        }
+    }
+
+    /// Get the acknowledgment number, if the header is long enough to hold it
+    #[must_use]
+    pub fn ack_number(&self) -> Option<u32> {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => Some(tcp.ack_number()),
+            TruncatedTcp::PartialHeader(tcp) => tcp.word(ACK_OFFSET),
+        }
+    }
+
+    /// Set the acknowledgment number, if the header is long enough to hold it. The checksum is
+    /// left unchanged.
+    pub fn set_ack_number(&mut self, ack: u32) -> Option<()> {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => {
+                tcp.set_ack_number(ack);
+                Some(())
+            }
+            TruncatedTcp::PartialHeader(tcp) => tcp.set_word(ACK_OFFSET, ack),
+        }
+    }
+
+    /// Get the control bits, if the header is long enough to hold them
+    #[must_use]
+    pub fn flags(&self) -> Option<TcpFlags> {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => Some(tcp.flags()),
+            TruncatedTcp::PartialHeader(tcp) => tcp
+                .everything_else
+                .get(FLAGS_OFFSET)
+                .map(|&bits| TcpFlags::from_bits_retain(bits)),
+        }
+    }
 }
 
 /// Errors which can occur when attempting to parse arbitrary bytes into a `TruncatedTcp` header.
@@ -271,5 +341,53 @@ mod contract {
                 Some(TruncatedTcp::PartialHeader(tcp))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{TruncatedTcp, TruncatedTcpHeader};
+    use crate::parse::{DeParse, Parse};
+    use crate::tcp::TcpFlags;
+
+    // The first `len` bytes of a TCP header from port 1234 to port 80, with sequence number
+    // 0x01020304, acknowledgment number 0x05060708 and flags ACK and PSH.
+    fn partial(len: usize) -> TruncatedTcp {
+        let header = [
+            0x04, 0xd2, 0x00, 0x50, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x50, 0x18,
+            0xff, 0xff, 0x00, 0x00,
+        ];
+        let (parsed, _) = TruncatedTcpHeader::parse(&header[..len]).unwrap();
+        TruncatedTcp::PartialHeader(parsed)
+    }
+
+    #[test]
+    fn partial_header_fields() {
+        let tcp = partial(18);
+        assert_eq!(tcp.sequence_number(), Some(0x0102_0304));
+        assert_eq!(tcp.ack_number(), Some(0x0506_0708));
+        assert_eq!(tcp.flags(), Some(TcpFlags::ACK | TcpFlags::PSH));
+
+        // ICMPv4 errors may quote only 8 bytes of the transport header
+        let tcp = partial(8);
+        assert_eq!(tcp.sequence_number(), Some(0x0102_0304));
+        assert_eq!(tcp.ack_number(), None);
+        assert_eq!(tcp.flags(), None);
+    }
+
+    #[test]
+    fn partial_header_set_numbers() {
+        let mut tcp = partial(18);
+        assert_eq!(tcp.set_sequence_number(0x1111_1111), Some(()));
+        assert_eq!(tcp.set_ack_number(0x2222_2222), Some(()));
+        let mut buf = [0u8; 18];
+        tcp.deparse(&mut buf).unwrap();
+        assert_eq!(buf[4..12], [0x11, 0x11, 0x11, 0x11, 0x22, 0x22, 0x22, 0x22]);
+        assert_eq!(buf[12..14], [0x50, 0x18]);
+
+        let mut tcp = partial(8);
+        assert_eq!(tcp.set_sequence_number(0x1111_1111), Some(()));
+        assert_eq!(tcp.set_ack_number(0x2222_2222), None);
+        assert_eq!(tcp.sequence_number(), Some(0x1111_1111));
     }
 }

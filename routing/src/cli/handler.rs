@@ -31,6 +31,7 @@ use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use net::eth::mac::SourceMac;
 use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
+use syn_proxy::{SynProxyControl, SynProxyMode};
 
 use common::cliprovider::{CliDataProvider, Heading};
 
@@ -328,6 +329,20 @@ fn show_provider(
     CliResponse::from_request_ok(request, data)
 }
 
+// Turn the SYN proxy on or off, and show its state.
+fn syn_proxy(
+    request: CliRequest,
+    proxy: Option<&SynProxyControl>,
+) -> Result<CliResponse, CliError> {
+    let proxy = proxy.ok_or_else(|| CliError::NotSupported("no SYN proxy".to_string()))?;
+    match request.action {
+        CliAction::SynProxyOn => proxy.set_mode(SynProxyMode::On),
+        CliAction::SynProxyOff => proxy.set_mode(SynProxyMode::Off),
+        _ => {}
+    }
+    Ok(CliResponse::from_request_ok(request, format!("\n{proxy}")))
+}
+
 fn show_config(request: CliRequest, config: Option<&Arc<ValidatedGwConfig>>) -> CliResponse {
     let Some(config) = config else {
         return CliResponse::from_request_ok(request, "No configuration is applied".to_string());
@@ -615,6 +630,10 @@ fn do_handle_cli_request(
 
         CliAction::CaptureStart | CliAction::CaptureStop | CliAction::ShowCapture => {
             crate::cli::capture::handle(request, db, gwconfig, sources.capture.as_ref())?
+        }
+
+        CliAction::SynProxyOn | CliAction::SynProxyOff | CliAction::ShowSynProxy => {
+            syn_proxy(request, sources.syn_proxy.as_ref())?
         }
 
         _ => Err(CliError::NotSupported("Not implemented yet".to_string()))?,
@@ -1196,6 +1215,46 @@ mod tests_cli_handling {
             [IFNAME],
             "the file names the interface as the router does"
         );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    async fn test_cli_syn_proxy() {
+        use syn_proxy::{SynProxyControl, SynProxyMode};
+
+        let dir = SockDir::new("cli-syn-proxy");
+        let subsystem = rio_subsystem();
+        let proxy = SynProxyControl::new();
+        let sources = CliSources {
+            syn_proxy: Some(proxy.clone()),
+            ..Default::default()
+        };
+        let router =
+            Router::new(&subsystem, router_params(&dir), Some(sources)).expect("No reason to fail");
+        let cpi_path = router.get_cpi_sock_path().clone();
+        let cli_path = router.get_cli_sock_path().clone();
+        let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
+        let frr_agent = fake_frr_agent(frr_agent_path).await;
+        let _guard = RouterGuard { router, frr_agent };
+        let (_cpi, cli) = open_socks(&dir, &cpi_path, &cli_path);
+
+        println!(" * Testing that the SYN proxy turns on and off");
+        let r = send_cli(&cli, CliAction::ShowSynProxy, None);
+        has(
+            &r,
+            &["SYN proxy: off", "cookies sent"],
+            "the proxy starts off",
+        );
+        let r = send_cli(&cli, CliAction::SynProxyOn, None);
+        has(&r, &["SYN proxy: on"], "the proxy is on");
+        assert_eq!(proxy.mode(), SynProxyMode::On);
+        let r = send_cli(&cli, CliAction::SynProxyOff, None);
+        has(
+            &r,
+            &["SYN proxy: off", "accepting cookies for"],
+            "the proxy is off, and accepts cookies for a while",
+        );
+        assert_eq!(proxy.mode(), SynProxyMode::Off);
     }
 
     #[track_caller]

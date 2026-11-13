@@ -9,11 +9,13 @@
 mod conn_state;
 mod refresh;
 mod state_machine;
+mod syn_proxy;
 mod test_state_machine;
 
 pub use conn_state::{AtomicConnState, ConnState};
 pub use refresh::advance_flow;
 pub use state_machine::{next_status, transport_proto};
+pub use syn_proxy::{SeqOffset, SynProxyState};
 
 use crate::flows::FlowInfoFlags;
 use std::fmt::Display;

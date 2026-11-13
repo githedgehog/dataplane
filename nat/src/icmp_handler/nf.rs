@@ -2,7 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 //! A network function to process icmp error packets in the overlay
-//! if those correspond to port-forwarding or masquerading
+//! if those correspond to port-forwarding or masquerading, or to connections set up by the SYN
+//! proxy
 
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
@@ -23,6 +24,7 @@ use crate::icmp_handler::flow_state::translate_icmp_error;
 use crate::masquerade::MasqueradeState;
 use crate::portfw::PortFwState;
 use net::flows::ConnState;
+use net::flows::conn_tracking::FlowSide;
 
 trace_target!("icmp-errors", LevelFilter::INFO, &["nat", "pipeline"]);
 
@@ -141,6 +143,13 @@ impl IcmpErrorHandler {
             debug!("Matched flow is not active. Dropping ICMP error packet");
             packet.done(DoneReason::Filtered);
             return;
+        }
+
+        // The SYN proxy shifts the sequence numbers of the connections it set up, with or without
+        // NAT: shift them back in the quote, for the sender of the quoted segment to recognize it.
+        // The flow we found is the one of the replies to the quoted segment.
+        if let Some(state) = flow.syn_proxy() {
+            state.translate_icmp_quote(packet, FlowSide::from(flow.get_flags()));
         }
 
         let (dst_vpcd, masquerading, port_forwarding) = {
