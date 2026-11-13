@@ -442,6 +442,20 @@ async fn peering_untracked_after_the_syn() {
     assert_eq!(accepted, 0);
 }
 
+// If the flow table is full, the proxy cannot keep the state of the connection: it drops the SYN
+// for the server, and the client tries again while its cookie is valid.
+#[tokio::test]
+async fn flow_table_full() {
+    let mut gw = Gateway::new();
+    let cookie = handshake_with_client(&mut gw);
+    gw.table.set_capacity(0);
+    assert!(gw.process(client_ack(cookie)).is_empty());
+    assert_eq!(gw.flows(), 0);
+
+    gw.table.set_capacity(FlowTable::DEFAULT_CAPACITY);
+    handshake_with_server(&mut gw, cookie);
+}
+
 // Cookies count as accepted only once the ACL and rate-limit stages let the connection through.
 #[tokio::test]
 async fn cookie_dropped_by_acl() {
