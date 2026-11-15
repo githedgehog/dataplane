@@ -223,6 +223,7 @@ let
       skopeo
       static-web-server
       valgrind
+      verus
       wasmtime
       wget
       yq

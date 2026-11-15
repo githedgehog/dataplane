@@ -25,6 +25,7 @@ in
   opengrep = final.callPackage ../pkgs/opengrep {
     src = sources.opengrep;
   };
+  verus = final.callPackage ../pkgs/verus { };
   # Keep the runner version aligned with the iai-callgrind crate.
   iai-callgrind-runner = final.callPackage ../pkgs/iai-callgrind-runner {
     inherit (override-packages) rustPlatform;
