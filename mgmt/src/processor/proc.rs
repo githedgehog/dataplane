@@ -178,8 +178,8 @@ impl ConfigProcessor {
         result: &ConfigResult,
         is_rollback: bool,
     ) {
-        let guard = config.meta().load();
-        let mut meta = guard.as_ref().clone();
+        // A temporary, so the arc-swap guard is gone before the await below.
+        let mut meta = config.meta().load().as_ref().clone();
         meta.apply_time();
         meta.error(result);
         meta.is_rollback = is_rollback;
