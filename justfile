@@ -1025,7 +1025,7 @@ codeql_cargo_target := justfile_directory() / "target" / "codeql"
 
 # CodeQL lints (.codeql/). Builds a database, runs the blocking suite
 # (.codeql/queries) and the advisory suite (.codeql/advisory), prints both, and
-# fails on any blocking finding (~6 min cold). `codeql` comes from devroot,
+# fails on any blocking finding (~6.5 min cold). `codeql` comes from devroot,
 # pinned to the workspace toolchain; see .codeql/README.md.
 #
 # Default features, not the extractor's default of all features: with `loom`

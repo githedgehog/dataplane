@@ -24,7 +24,7 @@ suppressions, so both tools can run side by side. Every query accepts
 
 ```sh
 just codeql-lint-test   # health check: run this first (~1 min)
-just codeql-lint        # build the database, run both suites (~6 min cold)
+just codeql-lint        # build the database, run both suites (~6.5 min cold)
 ```
 
 `codeql` comes from devroot (`nix/pkgs/codeql`): the codeql-action bundle,
@@ -104,18 +104,16 @@ turned off, and comparing line by line.
 
 ## Cost
 
-The opengrep ports alone, measured cold in a CI-shaped sandbox (20 GiB cgroup,
-10 CPUs, no rustup):
+Measured cold (fresh database, empty extractor cargo target) in a CI-shaped
+sandbox: 20 GiB cgroup without swap, 10 CPUs, no rustup.
 
-| Step | Time | Peak memory |
-|---|---|---|
-| Database build | 151 s | 5.3 GiB |
-| Queries | 74 s | 8.8 GiB |
+| Run | Database build | Queries | Total | Peak memory (charged) |
+|---|---|---|---|---|
+| opengrep ports only | 151 s | 74 s | ~225 s | 9.9 GiB |
+| all nine queries | ~170 s | 223 s | 396 s | 12.5 GiB |
 
-With the semantic queries, on the workstation (cold database): 366 s in all,
-about 150 s of build and 215 s of queries. The three ports finish at 72 s; the
-rest is type inference (paid once, shared by all six) and then 10-25 s per
-query. Not yet re-measured in the sandbox.
+The three ports still finish at ~78 s. The rest is type inference (~110 s,
+paid once and shared by the six semantic queries), then 2-15 s per query.
 
 **Always pass `--ram`.** In a memory-limited cgroup CodeQL sizes itself at
 about 4 GB (`codeql resolve ram`: a 2.1 GB heap plus 1.9 GB of off-heap cache),
