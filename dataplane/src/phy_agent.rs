@@ -281,8 +281,7 @@ fn render_port(
         troubleshooting
             .group_opcode
             .as_deref()
-            .map(|group| format!(" ({group})"))
-            .unwrap_or_default(),
+            .map_or_default(|group| format!(" ({group})")),
         or_dash(troubleshooting.recommendation.as_deref()),
     )?;
     if let Some(counters) = &report.counters {

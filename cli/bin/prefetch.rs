@@ -29,7 +29,5 @@ fn do_prefetch(sock: &UnixDatagram, selector: PrefetchSelector) -> Option<Prefet
 
 /// Send a prefetch request and pull the vectors out of the `PrefetchedData` in the response
 pub fn prefetch(sock: &UnixDatagram, selector: PrefetchSelector) -> Vec<String> {
-    do_prefetch(sock, selector)
-        .map(|prefetched| prefetched.data)
-        .unwrap_or_default()
+    do_prefetch(sock, selector).map_or_default(|prefetched| prefetched.data)
 }

@@ -297,8 +297,7 @@ fn render_module(
     )?;
     let wavelength = inventory
         .wavelength
-        .map(|wavelength| format!("  wavelength {:.2} nm", wavelength.nanometres()))
-        .unwrap_or_default();
+        .map_or_default(|wavelength| format!("  wavelength {:.2} nm", wavelength.nanometres()));
     writeln!(
         out,
         "   serial {}  revision {}  date {}  connector {}{wavelength}",

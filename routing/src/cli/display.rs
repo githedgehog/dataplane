@@ -1064,11 +1064,8 @@ impl Display for FrrmiStats {
         let last_disconn_time = &self
             .last_disconn_time
             .map_or_else(|| "never".to_string(), |t| fmt_time(&t));
-        let last_ok_t = &self.last_ok_time.map(|t| fmt_time(&t)).unwrap_or_default();
-        let last_fail_t = &self
-            .last_fail_time
-            .map(|t| fmt_time(&t))
-            .unwrap_or_default();
+        let last_ok_t = &self.last_ok_time.map_or_default(|t| fmt_time(&t));
+        let last_fail_t = &self.last_fail_time.map_or_default(|t| fmt_time(&t));
         let last_ok_genid = self
             .last_ok_genid
             .map_or_else(|| "none".to_string(), |genid| genid.to_string());

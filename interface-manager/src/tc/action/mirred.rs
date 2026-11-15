@@ -186,7 +186,7 @@ impl AsRequirement<MultiIndexMirredSpecMap> for MultiIndexMirredMap {
 
     fn as_requirement<'a>(&self) -> Self::Requirement<'a> {
         let mut db = MultiIndexMirredSpecMap::default();
-        for (_, mirred) in self.iter() {
+        for (_, mirred) in self {
             match mirred.as_requirement() {
                 None => {}
                 Some(spec) => {
