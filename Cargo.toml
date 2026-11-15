@@ -208,7 +208,7 @@ multi_index_map = { version = "0.16.0", default-features = false, features = [] 
 netdev = { version = "0.47.0", default-features = false, features = [] }
 netgauze-bgp-pkt = { version = "0.14.0", features = [] }
 netgauze-bmp-pkt = { version = "0.14.0", features = [] }
-nix = { version = "0.31.3", default-features = false, features = [] }
+nix = { version = "0.32.0", default-features = false, features = [] }
 num-derive = { version = "0.5.1", default-features = false, features = [] }
 num-bigint = { version = "0.5.1", default-features = false, features = ["std"] }
 num-traits = { version = "0.2.19", default-features = false, features = [] }
