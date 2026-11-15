@@ -468,7 +468,7 @@ dependencies = [
  "regex",
  "rustc-hash",
  "shlex 2.0.1",
- "syn 3.0.10",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -998,7 +998,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1017,7 +1017,7 @@ version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b60b5124979fccd9addd89d8b97a1d6eebb4950694520c75ddd722535ea443f"
 dependencies = [
- "nix",
+ "nix 0.31.3",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -1389,7 +1389,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "netdev",
- "nix",
+ "nix 0.32.0",
  "once_cell",
  "ordermap",
  "parking_lot 0.13.0",
@@ -1457,7 +1457,7 @@ dependencies = [
  "dataplane-net",
  "memmap2",
  "miette",
- "nix",
+ "nix 0.32.0",
  "rkyv",
  "serde",
  "serde_yaml_ng",
@@ -1481,7 +1481,7 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-net",
  "dataplane-pipeline",
- "nix",
+ "nix 0.32.0",
  "pcap-file",
  "strum",
  "thiserror 2.0.21",
@@ -1496,7 +1496,7 @@ dependencies = [
  "colored",
  "dataplane-clock",
  "dataplane-concurrency",
- "nix",
+ "nix 0.32.0",
  "rand 0.10.3",
  "reedline",
  "regex",
@@ -1597,7 +1597,7 @@ dependencies = [
  "dataplane-hardware",
  "dataplane-id",
  "dataplane-net",
- "nix",
+ "nix 0.32.0",
  "serde",
  "thiserror 2.0.21",
  "tracing",
@@ -1700,7 +1700,7 @@ dependencies = [
  "dataplane-test-utils",
  "fixin",
  "hwlocality",
- "nix",
+ "nix 0.32.0",
  "num-derive",
  "num-traits",
  "pci-ids",
@@ -1742,7 +1742,7 @@ dependencies = [
  "fixin",
  "futures",
  "libc",
- "nix",
+ "nix 0.32.0",
  "procfs",
  "rtnetlink",
  "strum",
@@ -1769,7 +1769,7 @@ dependencies = [
  "futures",
  "libc",
  "multi_index_map",
- "nix",
+ "nix 0.32.0",
  "rtnetlink",
  "serde",
  "static_assertions",
@@ -1937,7 +1937,7 @@ dependencies = [
  "linkme",
  "multi_index_map",
  "netdev",
- "nix",
+ "nix 0.32.0",
  "pretty_assertions",
  "rtnetlink",
  "serde",
@@ -1963,7 +1963,7 @@ name = "dataplane-n-it"
 version = "0.38.2"
 dependencies = [
  "dataplane-n-vm-protocol",
- "nix",
+ "nix 0.32.0",
  "parking_lot 0.13.0",
  "thiserror 2.0.21",
  "tokio",
@@ -1978,7 +1978,7 @@ name = "dataplane-n-preinit"
 version = "0.38.2"
 dependencies = [
  "dataplane-n-vm-protocol",
- "nix",
+ "nix 0.32.0",
 ]
 
 [[package]]
@@ -1993,7 +1993,7 @@ dependencies = [
  "dataplane-n-vm-protocol",
  "futures",
  "miette",
- "nix",
+ "nix 0.32.0",
  "qapi-qmp",
  "qapi-spec",
  "rand 0.10.3",
@@ -2114,7 +2114,7 @@ dependencies = [
  "dataplane-rate-limit",
  "dataplane-rekon",
  "metrics",
- "nix",
+ "nix 0.32.0",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
@@ -2209,7 +2209,7 @@ dependencies = [
  "netdev",
  "netgauze-bgp-pkt",
  "netgauze-bmp-pkt",
- "nix",
+ "nix 0.32.0",
  "ordermap",
  "pcap-file",
  "procfs",
@@ -2260,7 +2260,7 @@ version = "0.38.2"
 dependencies = [
  "dataplane-concurrency",
  "dataplane-n-vm",
- "nix",
+ "nix 0.32.0",
  "procfs",
  "thiserror 2.0.21",
  "tracing",
@@ -2271,7 +2271,7 @@ name = "dataplane-test-utils"
 version = "0.38.2"
 dependencies = [
  "caps",
- "nix",
+ "nix 0.32.0",
  "rtnetlink",
  "tokio",
  "tracing",
@@ -2679,7 +2679,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2745,7 +2745,7 @@ dependencies = [
  "libafl_core",
  "libc",
  "log",
- "nix",
+ "nix 0.31.3",
  "num_enum",
  "rustversion",
  "windows",
@@ -4065,7 +4065,7 @@ dependencies = [
  "ll_mp",
  "log",
  "meminterval",
- "nix",
+ "nix 0.31.3",
  "no_std_time",
  "num-traits",
  "postcard",
@@ -4106,7 +4106,7 @@ dependencies = [
  "mach2",
  "minibsod",
  "miniz_oxide",
- "nix",
+ "nix 0.31.3",
  "no_std_time",
  "nonzero_macros",
  "ownedref",
@@ -4134,7 +4134,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "500f095e2ded36a365006c5c0b1af91df9fa1db8eb1d8bf09e0519110051bf18"
 dependencies = [
  "backtrace",
- "nix",
+ "nix 0.31.3",
  "nonzero_macros",
  "postcard",
  "rustversion",
@@ -4168,7 +4168,7 @@ dependencies = [
  "libafl_core",
  "libc",
  "log",
- "nix",
+ "nix 0.31.3",
  "ownedref",
  "rangemap",
  "rustversion",
@@ -4259,7 +4259,7 @@ dependencies = [
  "libafl_core",
  "log",
  "miniz_oxide",
- "nix",
+ "nix 0.31.3",
  "no_std_time",
  "postcard",
  "rustversion",
@@ -4783,6 +4783,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nix"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77730ed34f01f4990cb2ea67fec715ecebc6fab9a6396cf83c5529b13f581bdc"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+ "memoffset",
+]
+
+[[package]]
 name = "no_std_time"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4819,7 +4832,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5508,7 +5521,7 @@ dependencies = [
  "libc",
  "log",
  "memmap2",
- "nix",
+ "nix 0.31.3",
  "object",
  "once_cell",
  "prost",
@@ -5944,7 +5957,7 @@ dependencies = [
  "netlink-packet-route 0.33.0 (git+https://github.com/githedgehog/netlink-packet-route.git?branch=hh%2Ftc-blocks-and-gact)",
  "netlink-proto 0.13.0",
  "netlink-sys 0.9.0",
- "nix",
+ "nix 0.31.3",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -5980,7 +5993,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6037,7 +6050,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6395,7 +6408,7 @@ dependencies = [
  "libafl_core",
  "libc",
  "log",
- "nix",
+ "nix 0.31.3",
  "postcard",
  "rustversion",
  "serde",
@@ -6810,10 +6823,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand 2.5.0",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6832,7 +6845,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7484,7 +7497,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b7d4dba01e366e2ffbdf0700b1876f747c548db72dced534de41c54945c0148"
 dependencies = [
  "libc",
- "nix",
+ "nix 0.31.3",
 ]
 
 [[package]]
@@ -7651,7 +7664,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
