@@ -1,9 +1,10 @@
-# Install a prebuilt opengrep binary from upstream GitHub releases.  The
-# project ships statically-linked musllinux / manylinux binaries per release;
-# we fetch the manylinux build and patch its interpreter so it runs in our
-# dev shell and CI environments.
+# Install a prebuilt opengrep binary from upstream GitHub releases.  Since
+# v2.0.0 the project ships one statically-linked binary per platform
+# (opengrep_linux_x86; the manylinux / musllinux assets are gone).
+# autoPatchelfHook is kept so that a dynamically-linked asset would still
+# run in our dev shell and CI environments.
 #
-# Versioning: the tag name (e.g. "v1.19.0") comes from the npins `opengrep`
+# Versioning: the tag name (e.g. "v2.0.0") comes from the npins `opengrep`
 # pin, so a plain `npins update` (i.e. `just bump pins`) bumps the version.
 # The release asset is a raw ELF binary (no archive), which npins' tarball
 # pin type rejects, so the binary's content hash is carried in ./binary.sri
@@ -17,12 +18,12 @@
 }:
 stdenvNoCC.mkDerivation {
   pname = "opengrep";
-  # src.version carries the tag (e.g. "v1.19.0"); strip the leading "v" so
+  # src.version carries the tag (e.g. "v2.0.0"); strip the leading "v" so
   # the derivation name reads as a plain version.
   version = lib.removePrefix "v" src.version;
 
   src = fetchurl {
-    url = "https://github.com/opengrep/opengrep/releases/download/${src.version}/opengrep_manylinux_x86";
+    url = "https://github.com/opengrep/opengrep/releases/download/${src.version}/opengrep_linux_x86";
     hash = lib.removeSuffix "\n" (builtins.readFile ./binary.sri);
   };
 

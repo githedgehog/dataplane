@@ -15,11 +15,15 @@ npins update
 # doesn't change for a given tag, so re-running is a no-op unless the
 # opengrep pin has moved during `npins update` above, or upstream has
 # mutated the asset.
+#
+# The asset name must match nix/pkgs/opengrep/default.nix.  Prefetch into a
+# variable first: a failing command substitution used as an argument does not
+# trip `set -e`, so a missing asset would otherwise surface as a confusing
+# empty-hash error from nix-hash.
 opengrep_version="$(jq --exit-status --raw-output '.pins.opengrep.version' npins/sources.json)"
-opengrep_url="https://github.com/opengrep/opengrep/releases/download/${opengrep_version}/opengrep_manylinux_x86"
-nix-hash --to-sri --type sha256 \
-    "$(nix-prefetch-url --type sha256 "$opengrep_url")" \
-    > nix/pkgs/opengrep/binary.sri
+opengrep_url="https://github.com/opengrep/opengrep/releases/download/${opengrep_version}/opengrep_linux_x86"
+opengrep_hash="$(nix-prefetch-url --type sha256 "$opengrep_url")"
+nix-hash --to-sri --type sha256 "$opengrep_hash" > nix/pkgs/opengrep/binary.sri
 
 # The guest kernel pins are frozen, so `npins update` above leaves them alone: npins can hash a URL but cannot
 # discover a new kernel release.  Re-pin each at the newest release its script tracks.  A no-op when that is the

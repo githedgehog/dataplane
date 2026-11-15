@@ -368,10 +368,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v1.33.1",
-      "revision": "092c80faa0817840228349f93eff12a50fb9cf6b",
-      "url": "https://api.github.com/repos/opengrep/opengrep/tarball/refs/tags/v1.33.1",
-      "hash": "sha256-jK04nbkXRbi76SqgcXect0UP2tckI9u0GgkgxqTl1Tk="
+      "version": "v2.0.0",
+      "revision": "526deafe6f0519c272bbee316fea8df26dd85dfa",
+      "url": "https://api.github.com/repos/opengrep/opengrep/tarball/refs/tags/v2.0.0",
+      "hash": "sha256-5ZEbfqaK6N/mICVhdGG9guThsL/P9kMD5KYMPqRLfBs="
     },
     "perftest": {
       "type": "Git",
