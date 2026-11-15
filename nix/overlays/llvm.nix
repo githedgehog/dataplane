@@ -29,7 +29,20 @@ let
     ];
   }) final.llvmPackages'.stdenv;
   # note: rust-bin comes from oxa's overlay, not nixpkgs.  This overlay only works if you have a rust overlay as well.
-  rust-toolchain = final.pkgsBuildHost.rust-bin.fromRustupToolchain {
+  #
+  # nixpkgs' own rustc carries `passthru.llvmPackages` (the LLVM it was built
+  # against), and nixpkgs packages have started reading it through
+  # `rustPlatform.rust.rustc.llvmPackages` (cargo-llvm-cov does as of
+  # nixpkgs 26.11pre1118975).  rust-overlay's toolchain has no such attribute,
+  # so provide it, pointing at `llvmPackages'` -- by construction the LLVM
+  # major our rustc reports (see `llvm-version` below).  passthru does not
+  # enter the derivation, so the toolchain's store path is unchanged.
+  rust-toolchain = rust-toolchain-unwrapped.overrideAttrs (orig: {
+    passthru = (orig.passthru or { }) // {
+      llvmPackages = final.llvmPackages';
+    };
+  });
+  rust-toolchain-unwrapped = final.pkgsBuildHost.rust-bin.fromRustupToolchain {
     # `components` are extensions *on top of* a profile, and the profile
     # defaults to rustup's `default`, which already carries rust-docs.  Deleting
     # "rust-docs" from the list below therefore removes nothing by itself -- the
