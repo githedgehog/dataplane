@@ -468,7 +468,7 @@ dependencies = [
  "regex",
  "rustc-hash",
  "shlex 2.0.1",
- "syn 2.0.119",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -2207,7 +2207,7 @@ dependencies = [
  "linkme",
  "mio",
  "netdev",
- "netgauze-bgp-pkt",
+ "netgauze-bgp-pkt 0.14.0",
  "netgauze-bmp-pkt",
  "nix",
  "ordermap",
@@ -4598,8 +4598,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "15235fb499f3e2e3c7d681965f3a06a2eac1c282431215e8bd4b76f206a02703"
 dependencies = [
  "ipnet",
- "netgauze-iana",
- "netgauze-parse-utils",
+ "netgauze-iana 0.13.0",
+ "netgauze-parse-utils 0.13.0",
+ "serde",
+ "strum_macros",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "netgauze-bgp-pkt"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9dbf9c74c1e13e9306151ce80263a61e58a91f6cd5c55947dd0216c449bc9960"
+dependencies = [
+ "ipnet",
+ "netgauze-iana 0.14.0",
+ "netgauze-parse-utils 0.14.0",
  "serde",
  "strum_macros",
  "thiserror 2.0.21",
@@ -4616,9 +4630,9 @@ dependencies = [
  "chrono",
  "either",
  "ipnet",
- "netgauze-bgp-pkt",
- "netgauze-iana",
- "netgauze-parse-utils",
+ "netgauze-bgp-pkt 0.13.0",
+ "netgauze-iana 0.13.0",
+ "netgauze-parse-utils 0.13.0",
  "serde",
  "strum_macros",
  "thiserror 2.0.21",
@@ -4636,10 +4650,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "netgauze-iana"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e1ba065e09d00ba541213a5e8463e501c5e05ff48cece216f246094d4760a8c"
+dependencies = [
+ "serde",
+ "strum_macros",
+]
+
+[[package]]
 name = "netgauze-parse-utils"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4bf8cf641ca45eef8e65ec23bd48e8ed28eeee5a558f41066d66cca06c8e3ee"
+dependencies = [
+ "ipnet",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "netgauze-parse-utils"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42ae850ad30eb4d84ea0135ca3fef1c02abb343a4ba6d3701ee0c3192966eacf"
 dependencies = [
  "ipnet",
  "serde",
