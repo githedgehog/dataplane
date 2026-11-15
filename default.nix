@@ -107,6 +107,13 @@ let
       overlays.dataplane-dev
       overlays.frr
     ];
+    config = {
+      # CodeQL is not free software. Its terms permit use on open-source
+      # codebases, which this repository is; running it against proprietary
+      # code needs a GitHub Advanced Security licence. Scoped to this one
+      # package on purpose -- do not widen this to `allowUnfree`.
+      allowUnfreePredicate = p: builtins.elem (lib.getName p) [ "codeql" ];
+    };
   };
   pkgs =
     if platform != "wasm32-wasip1" then
@@ -196,6 +203,7 @@ let
       cargo-mutants
       cargo-nextest
       cargo-show-asm
+      codeql
       commitlint-rs
       deno
       direnv

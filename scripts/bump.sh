@@ -21,6 +21,13 @@ nix-hash --to-sri --type sha256 \
     "$(nix-prefetch-url --type sha256 "$opengrep_url")" \
     > nix/pkgs/opengrep/binary.sri
 
+# Same for the CodeQL bundle: the `codeql-bundle` pin tracks the release tag,
+# and the bundle asset is hashed into nix/pkgs/codeql/bundle.sri.
+codeql_version="$(jq --exit-status --raw-output '.pins["codeql-bundle"].version' npins/sources.json)"
+codeql_url="https://github.com/github/codeql-action/releases/download/${codeql_version}/codeql-bundle-linux64.tar.zst"
+codeql_hash="$(nix-prefetch-url --type sha256 "$codeql_url")"
+nix-hash --to-sri --type sha256 "$codeql_hash" > nix/pkgs/codeql/bundle.sri
+
 # The guest kernel pins are frozen, so `npins update` above leaves them alone: npins can hash a URL but cannot
 # discover a new kernel release.  Re-pin each at the newest release its script tracks.  A no-op when that is the
 # pinned one.

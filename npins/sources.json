@@ -16,6 +16,22 @@
       "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.19.1",
       "hash": "sha256-Pp+2YTmIZX39Qiu0bLKAxhFiybnwkHP5qJMACISg6tA="
     },
+    "codeql-bundle": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "github",
+        "repo": "codeql-action"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": "codeql-bundle-v",
+      "submodules": false,
+      "version": "codeql-bundle-v2.27.4",
+      "revision": "52cf1852265d99e9bea071b03366fc777a602909",
+      "url": "https://api.github.com/repos/github/codeql-action/tarball/refs/tags/codeql-bundle-v2.27.4",
+      "hash": "sha256-yfWDCNyQ6PC0F3aQ7q6QLCHKkEKUup2TVaH9oxwmWbw="
+    },
     "crane": {
       "type": "GitRelease",
       "repository": {
