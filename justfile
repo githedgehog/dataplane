@@ -1009,6 +1009,22 @@ opengrep:
     {{ _just_debuggable_ }}
     opengrep scan --experimental --verbose --error --config .semgrep/rules
 
+# Check the Verus proofs: every crate whose Cargo.toml sets
+# `[package.metadata.verus] verify = true` (see nix/pkgs/verus).  Ordinary
+# builds erase the proofs, so nothing else checks them.
+[script]
+verus *args:
+    {{ _just_debuggable_ }}
+    mapfile -t crates < <(
+      cargo metadata --no-deps --format-version 1 \
+        | jq --raw-output '.packages[] | select(.metadata.verus.verify == true) | "--package=" + .name'
+    )
+    if [ "${#crates[@]}" -eq 0 ]; then
+      echo "error: no crate sets [package.metadata.verus] verify = true" >&2
+      exit 1
+    fi
+    cargo verus verify "${crates[@]}" {{ args }}
+
 [script]
 pinact *args="--check --verify":
     {{ _just_debuggable_ }}

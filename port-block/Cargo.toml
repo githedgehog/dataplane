@@ -1,0 +1,27 @@
+[package]
+name = "dataplane-port-block"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+verus_state_machines_macros = { workspace = true }
+vstd = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+bolero = { workspace = true, features = ["std"] }
+
+# `cargo verus verify` checks the proofs in this crate.  Ordinary cargo builds
+# erase them and compile the executable code as usual.
+[package.metadata.verus]
+verify = true
+
+[lints.rust]
+# Verus sets these while verifying (see the Verus guide on ghost erasure); its
+# macros expand to code that tests them.
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(verus_only)',
+  'cfg(verus_keep_ghost)',
+  'cfg(verus_keep_ghost_body)',
+] }
