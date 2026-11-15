@@ -107,8 +107,7 @@ impl Session {
         let sock = &self.sock;
         self.prefetched.entry(selector).or_insert_with(|| {
             sock.as_ref()
-                .map(|sock| prefetch(sock, selector))
-                .unwrap_or_default()
+                .map_or_default(|sock| prefetch(sock, selector))
         })
     }
 
@@ -257,7 +256,7 @@ impl Terminal {
                         return c;
                     }
                 }
-                Ok(Signal::CtrlD | Signal::CtrlC) => {
+                Ok(Signal::CtrlD | Signal::CtrlC(_)) => {
                     self.run = false;
                     return TermInput::empty();
                 }

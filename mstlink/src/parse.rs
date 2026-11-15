@@ -332,13 +332,10 @@ fn numbers<T: std::str::FromStr>(section: &Map<String, Value>, key: &str) -> Vec
     section
         .get(key)
         .and_then(list)
-        .map(|values| {
-            values
-                .iter()
-                .map(|value| value.as_str()?.trim().parse().ok())
-                .collect()
-        })
-        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .map(|value| value.as_str()?.trim().parse().ok())
+        .collect()
 }
 
 /// Drop ANSI escape sequences, which `mstlink` prints around its errors.

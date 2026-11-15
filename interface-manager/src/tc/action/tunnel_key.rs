@@ -297,7 +297,7 @@ impl AsRequirement<MultiIndexTunnelKeySpecMap> for MultiIndexTunnelKeyMap {
 
     fn as_requirement<'a>(&self) -> Self::Requirement<'a> {
         let mut ret = MultiIndexTunnelKeySpecMap::default();
-        for (_, spec) in self.iter() {
+        for (_, spec) in self {
             ret.insert(spec.as_requirement());
         }
         ret

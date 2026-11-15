@@ -307,7 +307,7 @@ fn convert_rule(
         None => AclPattern::default(),
     };
 
-    let scope = rule.scope.as_ref().map(AclScope::from).unwrap_or_default();
+    let scope = rule.scope.as_ref().map_or_default(AclScope::from);
 
     Ok(AclRule::new(
         rule_name,
