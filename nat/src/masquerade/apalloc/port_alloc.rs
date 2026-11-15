@@ -218,13 +218,17 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         // finding a weak reference that won't upgrade. Removing here would require an additional
         // lookup in the list.
         //
-        // TODO: Should we move usable_blocks and blocks into a lock-protected struct? Or adjust the
-        // ordering for the atomic operations?
-        self.blocks[index]
-            .free
-            .store(true, concurrency::sync::atomic::Ordering::Relaxed);
+        // Count the block free *before* making it claimable. Claiming clears the flag and then
+        // decrements, so setting the flag first would let a claim decrement before this increment
+        // lands, wrapping `usable_blocks` below zero (port-block/src/pool.rs proves this order;
+        // port-block/counterexample has the failed proof of the other one). The release store
+        // pairs with the claim's acquire, so the increment is ordered before the claim's
+        // decrement.
         self.usable_blocks
             .fetch_add(1, concurrency::sync::atomic::Ordering::Relaxed);
+        self.blocks[index]
+            .free
+            .store(true, concurrency::sync::atomic::Ordering::Release);
     }
 
     fn has_allocated_blocks_with_free_ports(&self) -> bool {
@@ -242,7 +246,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
                     .compare_exchange(
                         true,
                         false,
-                        concurrency::sync::atomic::Ordering::Relaxed,
+                        concurrency::sync::atomic::Ordering::Acquire,
                         concurrency::sync::atomic::Ordering::Relaxed,
                     )
                     .is_ok()
@@ -312,7 +316,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             .compare_exchange(
                 true,
                 false,
-                concurrency::sync::atomic::Ordering::Relaxed,
+                concurrency::sync::atomic::Ordering::Acquire,
                 concurrency::sync::atomic::Ordering::Relaxed,
             )
             .is_ok()

@@ -1977,6 +1977,58 @@ mod concurrency_tests {
         tests::concurrent_allocations();
     }
 
+    // Releasing a block used to set its free flag before counting it free, so a reservation that
+    // claimed the block in between decremented the count first, and the count -- a `u16` --
+    // wrapped (found by port-block's Verus proof).  One usable block makes the window reachable.
+    #[cfg(feature = "shuttle")]
+    #[test]
+    fn free_block_count_never_exceeds_the_blocks_shuttle() {
+        // The default `stress` budget (16 schedules per scheduler) is too small for a
+        // three-step window; give PCT a real one.
+        let scheduler = shuttle::scheduler::PctScheduler::new(3, 20_000);
+        shuttle::Runner::new(scheduler, concurrency::shuttle_config()).run(free_block_count_body);
+    }
+
+    #[cfg(feature = "shuttle")]
+    fn free_block_count_body() {
+        use crate::masquerade::apalloc::alloc::{IpAllocator, NatPool};
+        use crate::masquerade::apalloc::region::AddrInterval;
+        use crate::masquerade::apalloc::reserved::ReservedPorts;
+        use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
+
+        let address = addr_v4("10.1.0.0");
+        let bits = u128::from(addr_v4_bits("10.1.0.0"));
+        // Well-known ports are excluded (blocks 0-3) and port forwarding claims 1280 and up:
+        // only the 1024-1279 block is left.
+        let claims = PrefixPortsSet::from([PrefixWithOptionalPorts::new(
+            "10.1.0.0/32".into(),
+            Some(PortRange::new(1280, 65535).unwrap()),
+        )]);
+        let pool = NatPool::for_range(
+            AddrInterval::new(bits, bits),
+            ReservedPorts::from_set(&claims),
+            true,
+        );
+        let allocator = IpAllocator::new(pool, false);
+
+        let first = allocator.reserve(address, port(1024)).unwrap();
+        // Keep the address, and so its port allocator, alive across the release.
+        let ip = first.allocated_ip().clone();
+        let releaser = thread::spawn(move || drop(first));
+        let claimer = {
+            let allocator = allocator.clone();
+            thread::spawn(move || drop(allocator.reserve(address, port(1025))))
+        };
+        let (_, used, free) = allocator.usage();
+        assert!(
+            used + free <= 1,
+            "one block, but {used} in use and {free} free"
+        );
+        releaser.join().unwrap();
+        claimer.join().unwrap();
+        drop(ip);
+    }
+
     // One-shot std execution is nondeterministic; model checkers make the race reachable.
     #[cfg(any(feature = "loom", feature = "shuttle"))]
     #[concurrency::test]
