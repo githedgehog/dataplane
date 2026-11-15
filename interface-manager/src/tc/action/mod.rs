@@ -134,7 +134,7 @@ impl AsRequirement<MultiIndexGenericActionSpecMap> for MultiIndexGenericActionMa
         Self: 'a,
     {
         let mut map = MultiIndexGenericActionSpecMap::default();
-        for (_, action) in self.iter() {
+        for (_, action) in self {
             map.insert(action.as_requirement());
         }
         map

@@ -1030,8 +1030,7 @@ impl Plan {
             passes: program
                 .passes
                 .get(&vni)
-                .map(|p| p.iter().copied().collect())
-                .unwrap_or_default(),
+                .map_or_default(|p| p.iter().copied().collect()),
             vtep,
             peerings: vni_denies
                 .iter()

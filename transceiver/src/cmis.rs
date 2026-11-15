@@ -245,7 +245,7 @@ pub(crate) fn decode(image: &Image) -> Result<Module, DecodeError> {
     let per_lane = |count: u8| {
         (0..count).map_while(move |lane| page11(lane / LANES_PER_BANK).map(|page| (page, lane)))
     };
-    let advertised = page01.map(Advertised::of).unwrap_or_default();
+    let advertised = page01.map_or_default(Advertised::of);
     let applications = applications(lower, page01);
     let media_lanes = media_lane_count(page00, &layout);
     let host_lanes = host_lane_count(&applications, &layout);

@@ -324,8 +324,7 @@ impl<'t> Port<'t> {
         let rules = self
             .switch
             .as_mut()
-            .map(|s| std::mem::take(&mut s.rules))
-            .unwrap_or_default();
+            .map_or_default(|s| std::mem::take(&mut s.rules));
         for (vni, rule) in rules {
             if let Err(e) = rule.destroy() {
                 error!(

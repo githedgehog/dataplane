@@ -270,8 +270,7 @@ fn rewire(plan: &mut Plan, dropping: Option<usize>, args: &[(Role, Vec<Arg>)]) {
                 } else {
                     args.iter()
                         .find(|(role, _)| *role == rule.role)
-                        .map(|(_, a)| a.clone())
-                        .unwrap_or_default()
+                        .map_or_default(|(_, a)| a.clone())
                 };
             }
         }
