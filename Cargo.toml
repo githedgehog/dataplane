@@ -328,6 +328,12 @@ codegen-units = 8
 # No LTO, to match the linker flags of the `checked` profile in `nix/profiles.nix`.
 lto = false
 
+# `cargo kani` reads this table when run from the workspace root (each package's own table when run
+# from its directory). Proofs may stub a function with a model they prove it matches, which needs
+# `-Z stubbing`.
+[workspace.metadata.kani]
+unstable = { stubbing = true }
+
 # Some packages have either hardware or os level interactions which make them impossible to test on miri or use in wasm
 # We encode exclusions for our wasm and miri builds into the metadata here.
 # I have tried to divide the packages into miri/wasm enabled and disabled categories.

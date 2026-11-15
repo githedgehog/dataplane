@@ -953,3 +953,154 @@ mod options_preserve_payload_len {
         );
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use crate::checksum::{incremental_update, model};
+    use crate::ip::NextHeader;
+    use crate::ip::dscp::Dscp;
+    use crate::ip::ecn::Ecn;
+    use crate::ipv4::frag_offset::FragOffset;
+    use crate::ipv4::{Ipv4, UnicastIpv4Addr};
+    use etherparse::IpNumber;
+    use std::net::Ipv4Addr;
+    use std::ops::Range;
+
+    fn any_dscp() -> Dscp {
+        let dscp = Dscp::new(kani::any());
+        kani::assume(dscp.is_ok());
+        dscp.unwrap_or_else(|_| unreachable!())
+    }
+
+    fn any_ecn() -> Ecn {
+        let ecn = Ecn::new(kani::any());
+        kani::assume(ecn.is_ok());
+        ecn.unwrap_or_else(|_| unreachable!())
+    }
+
+    fn any_frag_offset() -> FragOffset {
+        let offset = FragOffset::new(kani::any());
+        kani::assume(offset.is_ok());
+        offset.unwrap_or_else(|_| unreachable!())
+    }
+
+    fn any_source() -> UnicastIpv4Addr {
+        let source = UnicastIpv4Addr::new(Ipv4Addr::from(kani::any::<u32>()));
+        kani::assume(source.is_ok());
+        source.unwrap_or_else(|_| unreachable!())
+    }
+
+    /// Any header without options, as it might arrive: every field arbitrary (within its range),
+    /// checksum included, so it need not be valid.
+    fn any_header() -> Ipv4 {
+        Ipv4 {
+            source: any_source().inner().octets(),
+            destination: kani::any(),
+            options: None,
+            total_len: kani::any(),
+            identification: kani::any(),
+            fragment_offset: any_frag_offset().0,
+            header_checksum: kani::any(),
+            dscp: any_dscp().0,
+            ecn: any_ecn().0,
+            time_to_live: kani::any(),
+            protocol: IpNumber(kani::any()),
+            dont_fragment: kani::any(),
+            more_fragments: kani::any(),
+            reserved_flag: kani::any(),
+        }
+    }
+
+    fn wire(header: &Ipv4) -> [u8; Ipv4::MIN_LEN.get() as usize] {
+        let mut buf = [0u8; Ipv4::MIN_LEN.get() as usize];
+        header.write_header(&mut buf);
+        buf
+    }
+
+    /// Where the checksum sits in the header.
+    const CHECKSUM: Range<usize> = 10..12;
+
+    /// A setter keeps the header's checksum error exactly as it was (a valid header stays valid, an
+    /// invalid one stays exactly as invalid) if, on the wire,
+    ///
+    /// 1. it changes nothing outside the words of its `field` and the checksum,
+    /// 2. it folds the change in the field's words into the checksum, by [`incremental_update`]
+    ///    on their one's-complement sums (or leaves the checksum alone if the sums are equal), and
+    /// 3. the header is never all zero (the version nibble is always 4).
+    ///
+    /// Given those, the sum over the header is `add(rest, add(field, checksum))` before and after,
+    /// reordered by `checksum::proofs::add_is_a_commutative_monoid`, and
+    /// `checksum::proofs::incremental_update_carries_the_checksum_error` says it does not change.
+    ///
+    /// Checking the whole-header sum directly instead does not scale: the solver does not see the
+    /// reordering, and a setter of one 16-bit word (`set_identification`) does not finish in two
+    /// minutes.
+    fn folds_into_the_checksum(before: &Ipv4, after: &Ipv4, field: Range<usize>) {
+        let (before, after) = (wire(before), wire(after));
+        for i in 0..before.len() {
+            if !field.contains(&i) && !CHECKSUM.contains(&i) {
+                assert_eq!(
+                    before[i], after[i],
+                    "a setter changed a byte outside its field"
+                );
+            }
+        }
+        let (old, new) = (
+            model::sum(&before[field.clone()]),
+            model::sum(&after[field]),
+        );
+        let checksum =
+            |wire: &[u8; 20]| u16::from_be_bytes([wire[CHECKSUM.start], wire[CHECKSUM.end - 1]]);
+        let expected = if old == new {
+            checksum(&before)
+        } else {
+            incremental_update(checksum(&before), old, new)
+        };
+        assert_eq!(
+            checksum(&after),
+            expected,
+            "a setter did not fold its change into the checksum"
+        );
+        assert_eq!(before[0] >> 4, 4);
+        assert_eq!(after[0] >> 4, 4);
+    }
+
+    /// `ones_complement_sum` is stubbed with the model it is proven to match
+    /// (`checksum::proofs::ones_complement_sum_matches_model`, up to 8 bytes; the setters sum
+    /// 4-byte addresses), to keep etherparse's 64-bit accumulator away from the solver.
+    macro_rules! folds_into_the_checksum {
+        ($($name:ident($field:expr): |$header:ident| $set:expr;)*) => {$(
+            #[kani::proof]
+            #[kani::unwind(21)]
+            #[kani::stub(crate::checksum::ones_complement_sum, crate::checksum::model::sum)]
+            fn $name() {
+                let before = any_header();
+                let mut $header = before.clone();
+                $set;
+                folds_into_the_checksum(&before, &$header, $field);
+            }
+        )*};
+    }
+
+    folds_into_the_checksum! {
+        set_source(12..16): |header| header.set_source(any_source());
+        set_destination(16..20): |header| header.set_destination(Ipv4Addr::from(kani::any::<u32>()));
+        set_ttl(8..10): |header| header.set_ttl(kani::any());
+        decrement_ttl(8..10): |header| { let _ = header.decrement_ttl(); };
+        set_next_header(8..10): |header| header.set_next_header(NextHeader(IpNumber(kani::any())));
+        set_ecn(0..2): |header| header.set_ecn(any_ecn());
+        set_dscp(0..2): |header| header.set_dscp(any_dscp());
+        set_identification(4..6): |header| header.set_identification(kani::any());
+        set_dont_fragment(6..8): |header| header.set_dont_fragment(kani::any());
+        set_more_fragments(6..8): |header| header.set_more_fragments(kani::any());
+        set_fragment_offset(6..8): |header| header.set_fragment_offset(any_frag_offset());
+        set_payload_len(2..4): |header| { let _ = header.set_payload_len(kani::any()); };
+    }
+
+    /// The default header is valid, so every header built from it through the setters is too.
+    #[kani::proof]
+    #[kani::unwind(11)]
+    fn default_is_valid() {
+        assert_eq!(model::sum(&wire(&Ipv4::default())), 0xffff);
+    }
+}

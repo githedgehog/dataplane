@@ -51,3 +51,12 @@ ahash = { workspace = true, features = ["no-rng"] }
 bolero = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# For `cargo kani` run from this directory (the workspace root has the same table): the IPv4 setter
+# proofs stub `ones_complement_sum` with the reference model it is proven to match (see
+# `checksum::proofs`).
+[package.metadata.kani]
+unstable = { stubbing = true }
