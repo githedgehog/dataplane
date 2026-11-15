@@ -125,12 +125,9 @@ fn ifproperty_to_str(properties: &InterfaceProperties) -> &'static str {
 
 impl Display for Interface {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mac = self.mac.map(|mac| mac.to_string()).unwrap_or_default();
-        let ctl = self
-            .controller
-            .map(|mac| mac.to_string())
-            .unwrap_or_default();
-        let mtu = self.mtu.map(|mtu| mtu.to_string()).unwrap_or_default();
+        let mac = self.mac.map_or_default(|mac| mac.to_string());
+        let ctl = self.controller.map_or_default(|mac| mac.to_string());
+        let mtu = self.mtu.map_or_default(|mtu| mtu.to_string());
         writeln!(
             f,
             "{}",

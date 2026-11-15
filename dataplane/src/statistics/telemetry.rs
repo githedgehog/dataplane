@@ -146,8 +146,7 @@ impl Telemetry {
             .sources
             .masquerade
             .get()
-            .map(|allocator| allocator.usage())
-            .unwrap_or_default();
+            .map_or_default(|allocator| allocator.usage());
         let labels: Vec<(String, String)> = usage
             .iter()
             .map(|u| {
