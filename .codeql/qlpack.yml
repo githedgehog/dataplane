@@ -1,0 +1,6 @@
+name: hedgehog/dataplane-lints
+version: 0.1.0
+library: false
+dependencies:
+  codeql/rust-all: "*"
+extractor: rust

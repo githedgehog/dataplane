@@ -1,0 +1,11 @@
+# Passed to `codeql database create --codescanning-config`.
+#
+# Without these exclusions the extractor crawls agent worktrees and cargo target
+# directories, which triples the file count and drags in bindgen output that has
+# no manifest ("semantic analyzer unavailable" noise).
+paths-ignore:
+  - .claude
+  - .codeql
+  - .scratch
+  - target
+  - "**/target"

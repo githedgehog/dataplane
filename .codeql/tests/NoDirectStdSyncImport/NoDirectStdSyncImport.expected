@@ -1,0 +1,13 @@
+| test.rs:7:5:7:18 | ...::Arc | `std::sync::Arc` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:8:5:8:21 | ...::atomic | `std::sync::atomic` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:9:17:9:21 | Mutex | `std::sync::Mutex` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:12:12:12:17 | atomic | `std::sync::atomic` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:12:30:12:35 | RwLock | `std::sync::RwLock` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:21:5:21:22 | ...::Condvar | `std::sync::Condvar` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:25:17:25:30 | ...::Arc | `std::sync::Arc` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:31:13:31:26 | ...::Arc | `std::sync::Arc` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:32:13:32:31 | ...::LazyLock | `std::sync::LazyLock` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:33:13:33:29 | ...::atomic | `std::sync::atomic` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:49:12:49:32 | ...::RwLock::<...> | `std::sync::RwLock` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:53:13:53:26 | ...::Arc | `std::sync::Arc` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |
+| test.rs:53:43:53:56 | ...::Arc | `std::sync::Arc` bypasses the `concurrency::sync` facade; import it from `concurrency::sync` instead. |

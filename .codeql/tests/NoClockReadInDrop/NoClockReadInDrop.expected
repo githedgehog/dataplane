@@ -1,0 +1,5 @@
+| test.rs:19:17:19:28 | ...::now(...) | Clock read in `Drop`; take the reading before the value is dropped. |
+| test.rs:20:17:20:35 | ...::system_now(...) | Clock read in `Drop`; take the reading before the value is dropped. |
+| test.rs:21:20:21:31 | ...::now(...) | Clock read in `Drop`; take the reading before the value is dropped. |
+| test.rs:22:17:22:21 | now(...) | Clock read in `Drop`; take the reading before the value is dropped. |
+| test.rs:30:17:30:28 | ...::now(...) | Clock read in `Drop`; take the reading before the value is dropped. |

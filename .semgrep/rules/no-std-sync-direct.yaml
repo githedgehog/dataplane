@@ -13,6 +13,8 @@ rules:
       from `std::sync` bypasses that backend swap.
     paths:
       exclude:
+        # The CodeQL fixture for this rule contains its violations on purpose.
+        - .codeql/tests/
         - concurrency/src/sync/
         - concurrency/src/quiescent.rs
         - concurrency/src/slot.rs

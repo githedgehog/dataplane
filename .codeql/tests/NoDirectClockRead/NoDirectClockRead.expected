@@ -1,0 +1,9 @@
+| test.rs:11:9:11:22 | ...::now(...) | `Instant::now()` reads the clock directly; use `clock::now()`, `clock::system_now()` or `clock::elapsed(anchor)`. |
+| test.rs:23:13:23:26 | ...::now(...) | `Instant::now()` reads the clock directly; use `clock::now()`, `clock::system_now()` or `clock::elapsed(anchor)`. |
+| test.rs:24:13:24:37 | ...::now(...) | `std::time::Instant::now()` reads the clock directly; use `clock::now()`, `clock::system_now()` or `clock::elapsed(anchor)`. |
+| test.rs:25:13:25:29 | ...::now(...) | `SystemTime::now()` reads the clock directly; use `clock::now()`, `clock::system_now()` or `clock::elapsed(anchor)`. |
+| test.rs:26:13:26:40 | ...::now(...) | `std::time::SystemTime::now()` reads the clock directly; use `clock::now()`, `clock::system_now()` or `clock::elapsed(anchor)`. |
+| test.rs:27:13:27:23 | a.elapsed() | `.elapsed()` reads the clock directly; use `clock::now()`, `clock::system_now()` or `clock::elapsed(anchor)`. |
+| test.rs:28:13:28:31 | Stopwatch.elapsed() | `.elapsed()` reads the clock directly; use `clock::now()`, `clock::system_now()` or `clock::elapsed(anchor)`. |
+| test.rs:30:13:30:33 | ...::now(...) | a call resolving to `<std::time::Instant>::now` reads the clock directly; use `clock::now()`, `clock::system_now()` or `clock::elapsed(anchor)`. |
+| test.rs:38:13:38:26 | ...::now(...) | `Instant::now()` reads the clock directly; use `clock::now()`, `clock::system_now()` or `clock::elapsed(anchor)`. |

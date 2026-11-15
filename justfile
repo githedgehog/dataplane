@@ -1009,6 +1009,60 @@ opengrep:
     {{ _just_debuggable_ }}
     opengrep scan --experimental --verbose --error --config .semgrep/rules
 
+codeql_db := "/tmp/dataplane-codeql"
+
+# Memory for CodeQL's evaluator, in MB. Do not leave this to CodeQL: inside a
+# memory-limited cgroup (our CI runners are 20 GiB) its default is ~4 GB of a
+# 20 GiB budget, and the evaluator spills to disk -- the analysis took 12+ min
+# instead of 3. 16000 peaks at ~10 GiB charged.
+codeql_ram := "16000"
+
+# Where the extractor builds build scripts and proc macros (it runs them so
+# rust-analyzer can expand macros). By default it uses a fresh scratch
+# directory each run; a persistent one saves ~15 s on later runs (~750 MB).
+# Under target/, which the database config excludes from extraction.
+codeql_cargo_target := justfile_directory() / "target" / "codeql"
+
+# The CodeQL port of the opengrep rules (.codeql/queries). Builds a database
+# and fails on any finding (~4 min cold). `codeql` comes from devroot, pinned to the
+# workspace toolchain; see .codeql/README.md.
+#
+# Default features, not the extractor's default of all features: with `loom`
+# on, `dataplane/src/main.rs` drops `mod drivers` and the whole datapath falls
+# out of the analysis.
+[script]
+codeql-lint:
+    {{ _just_debuggable_ }}
+    codeql database create "{{ codeql_db }}" \
+        --language=rust --build-mode=none --source-root=. --overwrite \
+        --codescanning-config=.codeql/config/db-config.yml -j0 \
+        -O rust.cargo_features=default -O rust.cargo_target_dir="{{ codeql_cargo_target }}" \
+        --ram={{ codeql_ram }}
+    declare -r out="{{ codeql_db }}.sarif"
+    codeql database analyze "{{ codeql_db }}" .codeql/lints.qls \
+        --format=sarif-latest --output="${out}" --threads=0 --ram={{ codeql_ram }}
+    # A suite that resolves to nothing only warns and reports a clean run, so
+    # check that every query ran before trusting a zero.
+    declare -i rules findings
+    rules="$(jq '[.runs[].tool.driver.rules[]] | length' "${out}")"
+    findings="$(jq '[.runs[].results[]] | length' "${out}")"
+    if [ "${rules}" -lt 3 ]; then
+        printf 'codeql-lint: expected 3 queries, %d ran\n' "${rules}" >&2
+        exit 1
+    fi
+    jq -r '.runs[].results[] | "\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine): [\(.ruleId)] \(.message.text)"' "${out}"
+    if [ "${findings}" -ne 0 ]; then
+        printf 'codeql-lint: %d finding(s)\n' "${findings}" >&2
+        exit 1
+    fi
+
+# Run the CodeQL lint tests (each pins positive results, so a query that has
+# gone blind fails here instead of reporting a clean tree)
+[script]
+codeql-lint-test *args:
+    {{ _just_debuggable_ }}
+    codeql test run .codeql/tests --threads=0 {{ args }}
+
 [script]
 pinact *args="--check --verify":
     {{ _just_debuggable_ }}

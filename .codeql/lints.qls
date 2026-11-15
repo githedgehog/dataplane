@@ -1,0 +1,6 @@
+# The blocking lints. `just codeql-lint` fails if any of these report.
+#
+# A `.qls` that resolves to nothing only WARNS and exits 0 with no results, so
+# `just codeql-lint` checks the number of queries that ran as well.
+- description: Dataplane blocking lints
+- queries: queries
