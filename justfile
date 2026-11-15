@@ -1023,9 +1023,10 @@ codeql_ram := "16000"
 # Under target/, which the database config excludes from extraction.
 codeql_cargo_target := justfile_directory() / "target" / "codeql"
 
-# The CodeQL port of the opengrep rules (.codeql/queries). Builds a database
-# and fails on any finding (~4 min cold). `codeql` comes from devroot, pinned to the
-# workspace toolchain; see .codeql/README.md.
+# CodeQL lints (.codeql/). Builds a database, runs the blocking suite
+# (.codeql/queries) and the advisory suite (.codeql/advisory), prints both, and
+# fails on any blocking finding (~6 min cold). `codeql` comes from devroot,
+# pinned to the workspace toolchain; see .codeql/README.md.
 #
 # Default features, not the extractor's default of all features: with `loom`
 # on, `dataplane/src/main.rs` drops `mod drivers` and the whole datapath falls
@@ -1039,20 +1040,28 @@ codeql-lint:
         -O rust.cargo_features=default -O rust.cargo_target_dir="{{ codeql_cargo_target }}" \
         --ram={{ codeql_ram }}
     declare -r out="{{ codeql_db }}.sarif"
-    codeql database analyze "{{ codeql_db }}" .codeql/lints.qls \
+    # One run for both suites: they share the type inference (~2 min).
+    codeql database analyze "{{ codeql_db }}" .codeql/lints.qls .codeql/advisory.qls \
         --format=sarif-latest --output="${out}" --threads=0 --ram={{ codeql_ram }}
     # A suite that resolves to nothing only warns and reports a clean run, so
     # check that every query ran before trusting a zero.
-    declare -i rules findings
+    declare -ri expected=9
+    declare -i rules blocking
     rules="$(jq '[.runs[].tool.driver.rules[]] | length' "${out}")"
-    findings="$(jq '[.runs[].results[]] | length' "${out}")"
-    if [ "${rules}" -lt 3 ]; then
-        printf 'codeql-lint: expected 3 queries, %d ran\n' "${rules}" >&2
+    if [ "${rules}" -ne "${expected}" ]; then
+        printf 'codeql-lint: expected %d queries, %d ran\n' "${expected}" "${rules}" >&2
         exit 1
     fi
-    jq -r '.runs[].results[] | "\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine): [\(.ruleId)] \(.message.text)"' "${out}"
-    if [ "${findings}" -ne 0 ]; then
-        printf 'codeql-lint: %d finding(s)\n' "${findings}" >&2
+    # Queries tagged `advisory` report without failing the run; their details
+    # are in the SARIF.
+    declare -r adv='[.runs[].tool.driver.rules[] | select(.properties.tags | index("advisory")) | .id] as $adv'
+    jq -r "${adv}"' | [.runs[].results[] | select(.ruleId as $id | $adv | index($id))]
+        | group_by(.ruleId)[] | "advisory: \(length) \(.[0].ruleId)"' "${out}" >&2
+    jq -r "${adv}"' | .runs[].results[] | select(.ruleId as $id | $adv | index($id) | not)
+        | "\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine): [\(.ruleId)] \(.message.text)"' "${out}"
+    blocking="$(jq "${adv}"' | [.runs[].results[] | select(.ruleId as $id | $adv | index($id) | not)] | length' "${out}")"
+    printf 'codeql-lint: %d blocking finding(s); advisory details in %s\n' "${blocking}" "${out}" >&2
+    if [ "${blocking}" -ne 0 ]; then
         exit 1
     fi
 

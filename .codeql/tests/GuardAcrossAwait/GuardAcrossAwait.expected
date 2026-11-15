@@ -1,0 +1,3 @@
+| fixture.rs:17:9:17:20 | await ... | `S.m` (taken $@) is held across this await. | fixture.rs:16:17:16:29 | ... .lock() | here |
+| fixture.rs:36:9:36:20 | await ... | `<test::fixture::S>::read_table` (taken $@) is held across this await. | fixture.rs:35:17:35:33 | self.read_table() | here |
+| fixture.rs:40:9:40:20 | await ... | `S.m` (taken $@) is held across this await. | fixture.rs:39:22:39:34 | ... .lock() | here |

@@ -1,0 +1,67 @@
+edges
+| fixture.rs:16:14:16:23 | ...: ... | fixture.rs:17:17:17:19 | buf | provenance |  |
+| fixture.rs:17:13:17:13 | n | fixture.rs:18:32:18:32 | n | provenance |  |
+| fixture.rs:17:17:17:19 | buf | fixture.rs:17:17:17:22 | buf[0] | provenance | Config |
+| fixture.rs:17:17:17:19 | buf | fixture.rs:17:17:17:22 | buf[0] | provenance | MaD:418 |
+| fixture.rs:17:17:17:22 | buf[0] | fixture.rs:17:13:17:13 | n | provenance |  |
+| fixture.rs:18:32:18:32 | n | fixture.rs:18:28:18:32 | ... + ... | provenance | Config |
+| fixture.rs:18:32:18:32 | n | fixture.rs:18:28:18:32 | ... + ... | provenance | MaD:424 |
+| fixture.rs:25:14:25:23 | ...: ... | fixture.rs:26:17:26:19 | buf | provenance |  |
+| fixture.rs:26:13:26:13 | i | fixture.rs:27:21:27:21 | i | provenance |  |
+| fixture.rs:26:17:26:19 | buf | fixture.rs:26:17:26:22 | buf[0] | provenance | Config |
+| fixture.rs:26:17:26:19 | buf | fixture.rs:26:17:26:22 | buf[0] | provenance | MaD:418 |
+| fixture.rs:26:17:26:22 | buf[0] | fixture.rs:26:13:26:13 | i | provenance |  |
+| fixture.rs:34:14:34:23 | ...: ... | fixture.rs:35:18:35:20 | buf | provenance |  |
+| fixture.rs:35:13:35:14 | hl | fixture.rs:36:32:36:33 | hl | provenance |  |
+| fixture.rs:35:18:35:20 | buf | fixture.rs:35:18:35:23 | buf[1] | provenance | Config |
+| fixture.rs:35:18:35:20 | buf | fixture.rs:35:18:35:23 | buf[1] | provenance | MaD:418 |
+| fixture.rs:35:18:35:23 | buf[1] | fixture.rs:35:13:35:14 | hl | provenance |  |
+| fixture.rs:43:14:43:23 | ...: ... | fixture.rs:44:45:44:47 | buf | provenance |  |
+| fixture.rs:44:45:44:47 | buf | fixture.rs:44:45:44:50 | buf[2] | provenance | Config |
+| fixture.rs:44:45:44:47 | buf | fixture.rs:44:45:44:50 | buf[2] | provenance | MaD:418 |
+| fixture.rs:44:45:44:50 | buf[2] | fixture.rs:44:45:44:59 | ... as usize | provenance |  |
+| fixture.rs:44:45:44:59 | ... as usize | fixture.rs:44:45:44:66 | ... * ... | provenance | Config |
+| fixture.rs:44:45:44:59 | ... as usize | fixture.rs:44:45:44:66 | ... * ... | provenance | MaD:428 |
+| fixture.rs:44:45:44:66 | ... * ... | fixture.rs:44:45:44:66 | ... * ... | provenance | Sink:MaD:14111 |
+| fixture.rs:51:14:51:23 | ...: ... | fixture.rs:52:33:52:35 | buf | provenance |  |
+| fixture.rs:52:13:52:13 | n | fixture.rs:53:27:53:27 | n | provenance |  |
+| fixture.rs:52:26:52:39 | opaque(...) | fixture.rs:52:13:52:13 | n | provenance |  |
+| fixture.rs:52:33:52:35 | buf | fixture.rs:52:33:52:38 | buf[0] | provenance | Config |
+| fixture.rs:52:33:52:35 | buf | fixture.rs:52:33:52:38 | buf[0] | provenance | MaD:418 |
+| fixture.rs:52:33:52:38 | buf[0] | fixture.rs:52:26:52:39 | opaque(...) | provenance | Config |
+nodes
+| fixture.rs:16:14:16:23 | ...: ... | semmle.label | ...: ... |
+| fixture.rs:17:13:17:13 | n | semmle.label | n |
+| fixture.rs:17:17:17:19 | buf | semmle.label | buf |
+| fixture.rs:17:17:17:22 | buf[0] | semmle.label | buf[0] |
+| fixture.rs:18:28:18:32 | ... + ... | semmle.label | ... + ... |
+| fixture.rs:18:32:18:32 | n | semmle.label | n |
+| fixture.rs:25:14:25:23 | ...: ... | semmle.label | ...: ... |
+| fixture.rs:26:13:26:13 | i | semmle.label | i |
+| fixture.rs:26:17:26:19 | buf | semmle.label | buf |
+| fixture.rs:26:17:26:22 | buf[0] | semmle.label | buf[0] |
+| fixture.rs:27:21:27:21 | i | semmle.label | i |
+| fixture.rs:34:14:34:23 | ...: ... | semmle.label | ...: ... |
+| fixture.rs:35:13:35:14 | hl | semmle.label | hl |
+| fixture.rs:35:18:35:20 | buf | semmle.label | buf |
+| fixture.rs:35:18:35:23 | buf[1] | semmle.label | buf[1] |
+| fixture.rs:36:32:36:33 | hl | semmle.label | hl |
+| fixture.rs:43:14:43:23 | ...: ... | semmle.label | ...: ... |
+| fixture.rs:44:45:44:47 | buf | semmle.label | buf |
+| fixture.rs:44:45:44:50 | buf[2] | semmle.label | buf[2] |
+| fixture.rs:44:45:44:59 | ... as usize | semmle.label | ... as usize |
+| fixture.rs:44:45:44:66 | ... * ... | semmle.label | ... * ... |
+| fixture.rs:44:45:44:66 | ... * ... | semmle.label | ... * ... |
+| fixture.rs:51:14:51:23 | ...: ... | semmle.label | ...: ... |
+| fixture.rs:52:13:52:13 | n | semmle.label | n |
+| fixture.rs:52:26:52:39 | opaque(...) | semmle.label | opaque(...) |
+| fixture.rs:52:33:52:35 | buf | semmle.label | buf |
+| fixture.rs:52:33:52:38 | buf[0] | semmle.label | buf[0] |
+| fixture.rs:53:27:53:27 | n | semmle.label | n |
+subpaths
+#select
+| fixture.rs:18:28:18:32 | ... + ... | fixture.rs:16:14:16:23 | ...: ... | fixture.rs:18:28:18:32 | ... + ... | slice-bound: packet bytes from $@ reach this unchecked. | fixture.rs:16:14:16:23 | ...: ... | a parser input |
+| fixture.rs:27:21:27:21 | i | fixture.rs:25:14:25:23 | ...: ... | fixture.rs:27:21:27:21 | i | index: packet bytes from $@ reach this unchecked. | fixture.rs:25:14:25:23 | ...: ... | a parser input |
+| fixture.rs:36:32:36:33 | hl | fixture.rs:34:14:34:23 | ...: ... | fixture.rs:36:32:36:33 | hl | subtract: packet bytes from $@ reach this unchecked. | fixture.rs:34:14:34:23 | ...: ... | a parser input |
+| fixture.rs:44:45:44:66 | ... * ... | fixture.rs:43:14:43:23 | ...: ... | fixture.rs:44:45:44:66 | ... * ... | alloc-size: packet bytes from $@ reach this unchecked. | fixture.rs:43:14:43:23 | ...: ... | a parser input |
+| fixture.rs:53:27:53:27 | n | fixture.rs:51:14:51:23 | ...: ... | fixture.rs:53:27:53:27 | n | slice-bound: packet bytes from $@ reach this unchecked. | fixture.rs:51:14:51:23 | ...: ... | a parser input |

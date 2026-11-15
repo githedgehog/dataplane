@@ -1,0 +1,3 @@
+| fixture.rs:12:18:12:30 | ... .lock() | `Bank.b` taken while `Bank.a` is held; elsewhere the order is reversed. |
+| fixture.rs:16:9:16:21 | self.take_a() | `Bank.a` taken while `Bank.b` is held; elsewhere the order is reversed. |
+| fixture.rs:22:9:22:21 | self.take_a() | `Bank.a` taken while a `Bank.a` guard is held (re-entrant, or two instances). |

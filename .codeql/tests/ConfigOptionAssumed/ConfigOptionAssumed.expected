@@ -1,0 +1,7 @@
+| fixture.rs:9:13:9:39 | ... .expect(...) | `CfgVrf.vni` is assumed present (.expect()); encode the invariant in the validated type. |
+| fixture.rs:10:13:10:26 | ... .unwrap() | `CfgVrf.vni` is assumed present (.unwrap()); encode the invariant in the validated type. |
+| fixture.rs:11:13:11:38 | ... .unwrap() | `CfgVrf.vpc_id` is assumed present (.unwrap()); encode the invariant in the validated type. |
+| fixture.rs:12:13:12:55 | ... .unwrap_or_else(...) | `CfgVrf.tableid` is assumed present (.unwrap_or_else(panic)); encode the invariant in the validated type. |
+| fixture.rs:14:9:14:36 | ... => ... | `CfgVrf.vpc_id` is assumed present (`None =>` arm that panics); encode the invariant in the validated type. |
+| fixture.rs:18:9:18:31 | ... => ... | `CfgVrf.tableid` is assumed present (`None =>` arm that panics); encode the invariant in the validated type. |
+| fixture.rs:21:5:21:52 | let ... = ... else {...} | `CfgVrf.tableid` is assumed present (`let ... else` that panics); encode the invariant in the validated type. |

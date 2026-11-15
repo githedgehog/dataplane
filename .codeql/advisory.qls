@@ -1,0 +1,4 @@
+# The advisory queries. `just codeql-lint` reports what they find but does not
+# fail on it.
+- description: Dataplane advisory queries
+- queries: advisory

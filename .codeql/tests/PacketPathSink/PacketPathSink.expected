@@ -1,0 +1,6 @@
+| fixture.rs:17:17:17:33 | ... .lock() | lock: `<std::sync::poison::mutex::Mutex>::lock` on the packet path. |
+| fixture.rs:17:17:17:42 | ... .unwrap() | panic: `<core::result::Result>::unwrap` on the packet path. |
+| fixture.rs:21:21:21:41 | ...::with_capacity(...) | alloc: `<alloc::vec::Vec>::with_capacity` on the packet path. |
+| fixture.rs:22:9:22:17 | v.push(...) | alloc: `<alloc::vec::Vec>::push` on the packet path. |
+| fixture.rs:26:9:26:41 | ... .expect(...) | panic: `<core::option::Option>::expect` on the packet path. |
+| fixture.rs:41:17:41:30 | unreachable!... | panic: `unreachable!` on the packet path. |

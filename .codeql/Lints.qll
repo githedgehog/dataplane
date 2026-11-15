@@ -223,3 +223,65 @@ string resolvedCallee(CallExpr c) {
   firstParty(c.getLocation().getFile()) and
   result = resolvePath(c.getFunction().(PathExpr).getPath()).(Addressable).getCanonicalPath()
 }
+
+/** Holds if `n` is in workspace source. */
+predicate inWorkspace(Locatable n) { firstParty(n.getLocation().getFile()) }
+
+/** The last path segment of an attribute, e.g. `test` for `#[tokio::test]`. */
+string attrName(Attr a) {
+  result =
+    [a.getMeta().(PathMeta).getPath(), a.getMeta().(TokenTreeMeta).getPath()]
+        .getSegment()
+        .getIdentifier()
+        .getText()
+}
+
+/**
+ * Holds if `n` is test-only code, by heuristic: test, bench, example and fuzz
+ * files, `mod test(s)`-style modules, and `#[test]`/`#[bench]` functions.
+ *
+ * A heuristic because CodeQL does not expose the arguments of `#[cfg(...)]`,
+ * so `#[cfg(test)]` itself cannot be read.
+ */
+predicate testOnly(AstNode n) {
+  n.getLocation()
+      .getFile()
+      .getRelativePath()
+      .regexpMatch("(.*/)?(tests|benches|examples|bolero)/.*|(.*/)?([a-z_]*_)?(tests?|fuzz)\\.rs")
+  or
+  exists(Module m |
+    n.getParentNode+() = m and
+    m.getName().getText().regexpMatch("tests?|.*_tests?|fuzz|test_.*|bolero")
+  )
+  or
+  exists(Function f | n.getParentNode*() = f and attrName(f.getAnAttr()) = ["test", "bench"])
+}
+
+/**
+ * Holds if `n` is in the host-side in-VM test harness, which the opengrep
+ * rules exclude as well: it depends on no dataplane crate by design.
+ */
+predicate harness(AstNode n) {
+  n.getLocation()
+      .getFile()
+      .getRelativePath()
+      .regexpMatch("(n-vm|n-vm-macros|n-vm-protocol|n-it|n-preinit)/.*")
+}
+
+/**
+ * Holds if `b` starts after `a` ends, in the same file.
+ *
+ * Only ever evaluated for given pairs: without the binding annotations it is
+ * a cartesian product over every node in the database.
+ */
+bindingset[a, b]
+pragma[inline_late]
+predicate after(AstNode a, AstNode b) {
+  exists(Location la, Location lb |
+    la = a.getLocation() and lb = b.getLocation() and la.getFile() = lb.getFile()
+  |
+    lb.getStartLine() > la.getEndLine()
+    or
+    lb.getStartLine() = la.getEndLine() and lb.getStartColumn() > la.getEndColumn()
+  )
+}

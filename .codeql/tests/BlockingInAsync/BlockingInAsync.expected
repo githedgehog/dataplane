@@ -1,0 +1,3 @@
+| fixture.rs:13:15:13:47 | ...::read_to_string(...) | fs: `std::fs::read_to_string` blocks the executor thread (in async code). |
+| fixture.rs:14:5:14:59 | ...::sleep(...) | thread: `std::thread::functions::sleep` blocks the executor thread (in async code). |
+| fixture.rs:19:5:19:37 | ...::read_to_string(...) | fs: `std::fs::read_to_string` blocks the executor thread (in a function async code calls). |
