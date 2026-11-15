@@ -329,9 +329,9 @@
     },
     "linux-fancy": {
       "type": "Url",
-      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.62.tar.xz",
+      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.63.tar.xz",
       "unpack": true,
-      "hash": "sha256-DPKqYQnB9ge8rOAuv6CmKBdPD51ChH2tfgofx76v54w=",
+      "hash": "sha256-/TkmAwQkBX5uC5aaiPcQl7IuqjitVx1MFOWCGwJOt3A=",
       "frozen": true
     },
     "mermaid": {
@@ -354,8 +354,8 @@
       "type": "Channel",
       "name": "nixpkgs-unstable",
       "artifact": "nixexprs.tar.xz",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1109744.4fe25e12eb9f/nixexprs.tar.xz",
-      "hash": "sha256-4/Yzr1fWTh/zBAR1tR84ZQ1Zhmor8AXwgD4AS7sPn60="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1118975.2074cc672349/nixexprs.tar.xz",
+      "hash": "sha256-QG/HY0t5t3sfT2ozW/Ikis5Klqf0X4nfTuLvFaBpNno="
     },
     "opengrep": {
       "type": "GitRelease",
@@ -382,9 +382,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "06cd45ad28a66ef02783932399f71346f0d13fae",
-      "url": "https://github.com/linux-rdma/perftest/archive/06cd45ad28a66ef02783932399f71346f0d13fae.tar.gz",
-      "hash": "sha256-yuv8oiL9efxjEw9iiWDhEcwAY/FVI/vB4e/2GYAGAqg="
+      "revision": "6417f9b68ae564640c58e2523cfb2099db16d722",
+      "url": "https://github.com/linux-rdma/perftest/archive/6417f9b68ae564640c58e2523cfb2099db16d722.tar.gz",
+      "hash": "sha256-4oLbIkS39KzaF0a8ZOXFRUpHvPDUiciqvYz8m3g+1Fo="
     },
     "rdma-core": {
       "type": "Git",
@@ -410,10 +410,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "1.99.1",
-      "revision": "213cfbe66a6da4e4b41bde365643286371af6e5a",
-      "url": "https://api.github.com/repos/rust-lang/rust/tarball/refs/tags/1.99.1",
-      "hash": "sha256-C9ZjE57R4DLTrpRGJh51CcJg2Wz+Gc2EXXsF9tXU79E="
+      "version": "1.100.0",
+      "revision": "6b503e798d0cc01ca1052eeefaccee43893b0ff6",
+      "url": "https://api.github.com/repos/rust-lang/rust/tarball/refs/tags/1.100.0",
+      "hash": "sha256-iI5kQSSc66EAB736f0mvecZqd0CChMJXbTgkgk31JK4="
     },
     "rust-overlay": {
       "type": "Git",
@@ -424,9 +424,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "51c6dc40d18552701f7c5c62e3f7a5fc899f7132",
-      "url": "https://github.com/oxalica/rust-overlay/archive/51c6dc40d18552701f7c5c62e3f7a5fc899f7132.tar.gz",
-      "hash": "sha256-QhZ104DwHvvMxWxmI13zdppISE27UmdqhRI2VwBg/yU="
+      "revision": "5b87ee0513c29127a01ad06e9cb362ea5ce91e78",
+      "url": "https://github.com/oxalica/rust-overlay/archive/5b87ee0513c29127a01ad06e9cb362ea5ce91e78.tar.gz",
+      "hash": "sha256-rpqDyUM/d5fACYB8W+wKxxO57ICWjjalzb2X25oFFkY="
     },
     "ubuntu-kernel-buildinfo": {
       "type": "Url",
