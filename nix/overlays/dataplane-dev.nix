@@ -22,6 +22,13 @@ in
       src = sources.kopium;
     }
   );
+  # Built with the nightly named in kani's own rust-toolchain.toml, not ours.
+  kani = final.callPackage ../pkgs/kani {
+    src = sources.kani;
+    charon-src = sources.kani-charon;
+    crane = (import sources.crane { pkgs = final; }).craneLib;
+    inherit (final.pkgsBuildHost) rust-bin;
+  };
   opengrep = final.callPackage ../pkgs/opengrep {
     src = sources.opengrep;
   };

@@ -311,6 +311,36 @@
       "url": "https://github.com/githedgehog/frr/archive/0a0a0973c972431abe6e48008b57f11ffffd8ffe.tar.gz",
       "hash": "sha256-qcJsfEpbllbWAGBBjrfMR9PdHM6vGkk5ZD/WBnlRhQI="
     },
+    "kani": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "model-checking",
+        "repo": "kani"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": "kani-",
+      "submodules": false,
+      "version": "kani-0.68.0",
+      "revision": "0d2328a93f0e0ff66132d6bfa1a7d884877cf862",
+      "url": "https://api.github.com/repos/model-checking/kani/tarball/refs/tags/kani-0.68.0",
+      "hash": "sha256-6BT2BGgrkeZ5yoLj6ra01kECqbGVJfbkoch1ns7HXH0="
+    },
+    "kani-charon": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "AeneasVerif",
+        "repo": "charon"
+      },
+      "branch": "main",
+      "submodules": false,
+      "revision": "b250680abd40ff1aaa07081d0497dc2755ed112e",
+      "url": "https://github.com/AeneasVerif/charon/archive/b250680abd40ff1aaa07081d0497dc2755ed112e.tar.gz",
+      "hash": "sha256-J/of5Bdj3fUFud7XPxVZXNtdUx1rMDiqS8fsptQVfQg=",
+      "frozen": true
+    },
     "kopium": {
       "type": "GitRelease",
       "repository": {

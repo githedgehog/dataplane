@@ -205,6 +205,7 @@ let
       iai-callgrind-runner
       jq
       just
+      kani
       kopium
       llvmPackages'.clang # you need the host compiler in order to link proc macros
       llvmPackages'.llvm # needed for coverage
