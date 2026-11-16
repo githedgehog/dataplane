@@ -578,6 +578,82 @@ impl CliAction {
             Self::Clear | Self::Connect | Self::Disconnect | Self::Help | Self::Quit
         )
     }
+
+    /// Tell if the action can be run as part of `show tech`.
+    ///
+    /// This match lists all variants to make sure every new action is explicitly classified.
+    #[must_use]
+    pub const fn is_show_tech_compatible(&self) -> bool {
+        match self {
+            // Do not run the action recursively
+            Self::ShowTech => false,
+
+            // Client-side actions
+            Self::Clear | Self::Connect | Self::Disconnect | Self::Help | Self::Quit => false,
+
+            // Internal: for completion data
+            Self::Prefetch => false,
+
+            // These actions are not read-only: they change the state of the gateway, or start work
+            // that outlives the request
+            Self::CpiRequestRefresh
+            | Self::FrrmiApplyLastConfig
+            | Self::CaptureStart
+            | Self::CaptureStop
+            | Self::SynProxyOn
+            | Self::SynProxyOff => false,
+
+            // Views
+            Self::ShowSynProxy
+            | Self::ShowCapture
+            | Self::ShowFlowTableSummary
+            | Self::ShowConfigSummary
+            | Self::ShowGatewayGroups
+            | Self::ShowGatewayCommunities
+            | Self::ShowTracingTargets
+            | Self::ShowTracingTagGroups
+            | Self::ShowVpc
+            | Self::ShowVpcPeerings
+            | Self::ShowVpcRouting
+            | Self::ShowRouterInterfaces
+            | Self::ShowRouterInterfaceAddresses
+            | Self::ShowRouterVrfs
+            | Self::ShowRouterIpv4Routes
+            | Self::ShowRouterIpv6Routes
+            | Self::ShowRouterIpv4NextHops
+            | Self::ShowRouterIpv6NextHops
+            | Self::ShowRouterEvpnVrfs
+            | Self::ShowRouterEvpnRmacStore
+            | Self::ShowRouterEvpnVtep
+            | Self::ShowAdjacencies
+            | Self::ShowRouterIpv4FibEntries
+            | Self::ShowRouterIpv6FibEntries
+            | Self::ShowRouterIpv4FibGroups
+            | Self::ShowRouterIpv6FibGroups
+            | Self::ShowPortForwarding
+            | Self::ShowStaticNat
+            | Self::ShowMasquerading
+            | Self::ShowFlowTable
+            | Self::ShowFlowFilter
+            | Self::ShowPacketStats
+            | Self::ShowConfigInternal
+            | Self::ShowDriverStatus
+            | Self::ShowPipeline
+            | Self::ShowPipelineStages
+            | Self::ShowPipelineStats
+            | Self::ShowKernelInterfaces
+            | Self::ShowDpdkPort
+            | Self::ShowDpdkPortStats
+            | Self::ShowLldpNeighbors
+            | Self::ShowTransceivers
+            | Self::ShowLink
+            | Self::ShowRateLimits
+            | Self::ShowFrrmiStats
+            | Self::ShowFrrmiLastConfig
+            | Self::ShowCpiStats
+            | Self::RouterEventLog => true,
+        }
+    }
 }
 
 #[cfg(test)]
