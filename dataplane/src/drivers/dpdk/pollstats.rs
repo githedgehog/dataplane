@@ -23,6 +23,7 @@ pub(crate) const RX_STORAGE: usize = MBUF_BURST;
 
 /// How a worker polls.
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)] // bench knobs, one per switch
 pub(crate) struct Knobs {
     /// The most packets one receive may take, at most [`RX_STORAGE`].
     pub(crate) burst: usize,

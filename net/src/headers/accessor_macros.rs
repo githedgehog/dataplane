@@ -103,6 +103,7 @@ macro_rules! define_field_accessor {
 
         impl $TraitMut for $Struct {
             fn $method_mut(&mut self) -> Option<&mut $T> {
+                $crate::headers::track::MarkDirty::mark_field(self, stringify!($field));
                 self.$field.as_mut()
             }
         }
@@ -180,6 +181,7 @@ macro_rules! define_variant_accessor {
 
         impl $TraitMut for $Struct {
             fn $method_mut(&mut self) -> Option<&mut $T> {
+                $crate::headers::track::MarkDirty::mark_field(self, stringify!($field));
                 match &mut self.$field {
                     Some($Variant(header)) => Some(header),
                     _ => None,

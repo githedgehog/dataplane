@@ -596,7 +596,7 @@ fn assemble_quoted(headers: &HeadersBuilder, quote: &[u8]) -> Option<Packet<Test
 /// Panics if no refresh was requested and recomputation changes the transport checksum.
 pub fn assert_checksum_current_or_refresh_requested(packet: &Packet<TestBuffer>) {
     fn transport_checksum(packet: &Packet<TestBuffer>) -> Option<u16> {
-        match packet.headers.transport.as_ref()? {
+        match packet.headers.transport()? {
             Transport::Tcp(tcp) => tcp.checksum().map(u16::from),
             Transport::Udp(udp) => udp.checksum().map(u16::from),
             Transport::Icmp4(icmp) => icmp.checksum().map(u16::from),

@@ -311,22 +311,22 @@ impl Display for EmbeddedHeaders {
 impl Display for Headers {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f)?;
-        if let Some(eth) = &self.eth {
+        if let Some(eth) = self.eth() {
             write!(f, "{eth}")?;
         }
-        for vlan in &self.vlan {
+        for vlan in self.vlan() {
             write!(f, "{vlan}")?;
         }
-        if let Some(net) = &self.net {
+        if let Some(net) = self.net() {
             write!(f, "{net}")?;
         }
-        if let Some(transport) = &self.transport {
+        if let Some(transport) = self.transport() {
             write!(f, "{transport}")?;
         }
-        if let Some(udp_encap) = &self.udp_encap {
+        if let Some(udp_encap) = self.udp_encap() {
             write!(f, "{udp_encap}")?;
         }
-        if let Some(embedded) = &self.embedded_ip {
+        if let Some(embedded) = self.embedded_ip() {
             write!(f, "{embedded}")?;
         }
         Ok(())

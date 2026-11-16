@@ -828,6 +828,11 @@ impl Headers {
     /// Like [`pat()`](Headers::pat), but yields `&mut` references for all
     /// matched headers.
     pub fn pat_mut(&mut self) -> MatcherMut<'_, (), ()> {
+        // Every layer may be handed out; embedded headers have no dirty bit of their own.
+        self.track.mark(super::track::slot::ALL);
+        if self.embedded_ip.is_some() {
+            self.track.mark(super::track::slot::SHAPE);
+        }
         MatcherMut {
             fields: Fields {
                 eth: Some(&mut self.eth),

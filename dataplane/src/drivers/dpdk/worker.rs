@@ -89,6 +89,7 @@ impl<'p> Worker<'p> {
     }
 
     /// Run until cancelled, constructing the non-Send pipeline on this thread.
+    #[allow(clippy::too_many_lines)] // bench measurements sit beside the loop they measure
     pub(crate) fn run(
         mut self,
         subsystem: &Subsystem,

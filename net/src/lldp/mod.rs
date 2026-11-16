@@ -231,7 +231,7 @@ mod test {
                 if headers.net().is_none() {
                     return;
                 }
-                headers.lldp = lldp_headers.lldp.clone();
+                headers.set_lldp_for_tests(lldp_headers.lldp().cloned().map(Box::new));
                 let mut buf = vec![0u8; headers.size().get() as usize];
                 assert!(
                     headers.deparse(&mut buf).is_err(),

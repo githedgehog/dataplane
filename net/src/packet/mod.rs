@@ -133,8 +133,11 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         };
         let start = segment.len() - usize::from(len);
         segment[start..].copy_from_slice(self.payload.as_ref());
+        // The headers' original bytes stayed behind in the old buffer.
+        let mut headers = self.headers;
+        headers.forget_layout();
         Ok(Packet {
-            headers: self.headers,
+            headers,
             payload: buf,
             meta: self.meta,
             #[cfg(any(test, feature = "checksum-audit"))]
@@ -324,11 +327,11 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         if self.headers.try_vxlan().is_some() {
             return None;
         }
-        let stored = self.headers.transport.as_ref()?.checksum_for_increment()?;
+        let stored = self.headers.transport()?.checksum_for_increment()?;
         let mut computed = self.headers.clone();
         let covered = computed.transport_payload_len();
         computed.compute_transport_checksum(self.payload.as_ref(), covered);
-        let computed = computed.transport.as_ref()?.checksum_for_increment()?;
+        let computed = computed.transport()?.checksum_for_increment()?;
         let sum = u32::from(stored) + u32::from(!computed);
         #[allow(clippy::cast_possible_truncation)] // one fold of two 16-bit words fits 16 bits
         let difference = ((sum & 0xffff) + (sum >> 16)) as u16;
@@ -423,7 +426,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 
     #[inline]
     fn underlay_qos_from_outer_headers(headers: &Headers) -> (Option<Dscp>, Option<Ecn>) {
-        match &headers.net {
+        match headers.net() {
             Some(Net::Ipv4(ipv4)) => (Some(Dscp::from(ipv4.dscp())), Some(Ecn::from(ipv4.ecn()))),
             Some(Net::Ipv6(ipv6)) => (Some(Dscp::from(ipv6.dscp())), Some(Ecn::from(ipv6.ecn()))),
             None => (None, None),
@@ -627,12 +630,19 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         }
         #[cfg(any(test, feature = "checksum-audit"))]
         self.assert_transport_checksum_kept();
-        //compute room required
-        let needed = self.headers.size().get();
-        let buf = self.payload.prepend(needed)?;
-        self.headers
-            .deparse(buf)
-            .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+        // Write the inner headers back in front of their payload; in place when that is enough.
+        if let Some(len) = self.headers.in_place_len() {
+            let buf = self.payload.prepend(len)?;
+            self.headers
+                .rewrite_in_place(buf)
+                .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+        } else {
+            let needed = self.headers.size().get();
+            let buf = self.payload.prepend(needed)?;
+            self.headers
+                .deparse(buf)
+                .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+        }
 
         let len =
             self.payload.packet_len() + (Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()) as usize;
@@ -661,10 +671,10 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             .unwrap_or_else(|()| unreachable!()); // setting UDP checksum never fails
 
         let mut headers = params.headers().clone();
-        headers.transport = Some(Transport::Udp(udp));
+        headers.set_transport(Some(Transport::Udp(udp)));
 
         Self::apply_outer_qos_to_ip_headers(&mut headers, &self.meta, udp_len.get());
-        if matches!(headers.net, Some(Net::Ipv6(_))) {
+        if matches!(headers.net(), Some(Net::Ipv6(_))) {
             Self::checksum_ipv6_vxlan(&mut headers, self.payload.as_ref());
         }
 
@@ -685,7 +695,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// [RFC 6936]: https://datatracker.ietf.org/doc/html/rfc6936
     fn checksum_ipv6_vxlan(headers: &mut Headers, inner: &[u8]) {
         let (Some(net), Some(Transport::Udp(udp)), Some(UdpEncap::Vxlan(vxlan))) =
-            (&headers.net, &mut headers.transport, &headers.udp_encap)
+            headers.net_transport_mut_encap()
         else {
             unreachable!("VXLAN headers without IP, UDP or VXLAN");
         };
@@ -760,6 +770,23 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         if self.meta().checksum_refresh() {
             self.refresh_transport_checksum();
         }
+        self.write_headers()
+    }
+
+    /// Write the headers into the buffer in front of the payload: in place over the bytes they
+    /// were parsed from, rewriting only what changed, when that is enough (see
+    /// [`Headers::in_place_len`]); from scratch otherwise.
+    fn write_headers(&mut self) -> Result<(), SerializeError<()>> {
+        if let Some(len) = self.headers.in_place_len() {
+            let buf = self
+                .payload
+                .prepend(len)
+                .map_err(|_| SerializeError::NoHeadRoom)?;
+            return self
+                .headers
+                .rewrite_in_place(buf)
+                .map_err(SerializeError::DeparseError);
+        }
         let needed = self.headers.size().get();
         let buf = self
             .payload
@@ -768,7 +795,6 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self.headers
             .deparse(buf)
             .map_err(SerializeError::DeparseError)?;
-
         Ok(())
     }
 
@@ -816,13 +842,13 @@ impl<Buf: PacketBufferMut> TryHeadersMut for Packet<Buf> {
 
 impl<Buf: PacketBufferMut> TryEmbeddedHeaders for Packet<Buf> {
     fn embedded_headers(&self) -> Option<&EmbeddedHeaders> {
-        self.headers.embedded_ip.as_deref()
+        self.headers.embedded_ip()
     }
 }
 
 impl<Buf: PacketBufferMut> TryEmbeddedHeadersMut for Packet<Buf> {
     fn embedded_headers_mut(&mut self) -> Option<&mut EmbeddedHeaders> {
-        self.headers.embedded_ip.as_deref_mut()
+        self.headers.embedded_ip_mut()
     }
 }
 
@@ -830,6 +856,8 @@ impl<Buf: PacketBufferMut> TrimFromStart for Packet<Buf> {
     type Error = <Buf as TrimFromStart>::Error;
 
     fn trim_from_start(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
+        // The header bytes in front of the payload are no longer where the layout says.
+        self.headers.forget_layout();
         self.payload.trim_from_start(len)
     }
 }
@@ -945,7 +973,7 @@ pub mod contract {
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let common_headers = CommonHeaders;
             let headers = common_headers.generate(driver)?;
-            let mut net = headers.net.clone();
+            let mut net = headers.net().cloned();
             #[allow(unsafe_code)]
             match &mut net {
                 None => {}
@@ -999,16 +1027,13 @@ pub mod contract {
                     let icmp4 = error_msg_generator.generate(driver).unwrap();
                     let inner_ip_generator = Icmp4EmbeddedHeadersGenerator;
                     let embedded_ip = inner_ip_generator.generate(driver).unwrap();
-                    Headers {
-                        eth: Some(eth),
-                        vlan: crate::headers::Stack::default(),
-                        net: Some(Net::Ipv4(ipv4)),
-                        net_ext: crate::headers::Stack::default(),
-                        transport: Some(Transport::Icmp4(icmp4)),
-                        udp_encap: None,
-                        embedded_ip: Some(Box::new(embedded_ip)),
-                        lldp: None,
-                    }
+                    crate::headers::HeadersBuilder::default()
+                        .eth(Some(eth))
+                        .net(Some(Net::Ipv4(ipv4)))
+                        .transport(Some(Transport::Icmp4(icmp4)))
+                        .embedded_ip(Some(Box::new(embedded_ip)))
+                        .build()
+                        .unwrap_or_else(|e| unreachable!("{e}"))
                 }
                 CommonEthType::Ipv6 => {
                     let ipv6 = ipv6::GenWithNextHeader(NextHeader::ICMP6)
@@ -1018,16 +1043,13 @@ pub mod contract {
                     let icmp6 = error_msg_generator.generate(driver).unwrap();
                     let inner_ip_generator = Icmp6EmbeddedHeadersGenerator;
                     let embedded_ip = inner_ip_generator.generate(driver).unwrap();
-                    Headers {
-                        eth: Some(eth),
-                        vlan: crate::headers::Stack::default(),
-                        net: Some(Net::Ipv6(ipv6)),
-                        net_ext: crate::headers::Stack::default(),
-                        transport: Some(Transport::Icmp6(icmp6)),
-                        udp_encap: None,
-                        embedded_ip: Some(Box::new(embedded_ip)),
-                        lldp: None,
-                    }
+                    crate::headers::HeadersBuilder::default()
+                        .eth(Some(eth))
+                        .net(Some(Net::Ipv6(ipv6)))
+                        .transport(Some(Transport::Icmp6(icmp6)))
+                        .embedded_ip(Some(Box::new(embedded_ip)))
+                        .build()
+                        .unwrap_or_else(|e| unreachable!("{e}"))
                 }
             };
 
@@ -1036,7 +1058,7 @@ pub mod contract {
             let headers_size = headers.size().get() as usize;
             let mut payload_size = 0;
             let mut extensions = None;
-            if let Some(ref inner_ip) = headers.embedded_ip
+            if let Some(inner_ip) = headers.embedded_ip()
                 && let Some(
                     EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(_))
                     | EmbeddedTransport::Udp(TruncatedUdp::FullHeader(_)),
@@ -1045,7 +1067,7 @@ pub mod contract {
                 // The length of the resulting ICMP datagram cannot exceed 576 bytes (RFC 5508)
                 payload_size = driver.produce::<usize>()? % (576 - headers_size);
                 if payload_size > 0 {
-                    extensions = match &headers.transport {
+                    extensions = match headers.transport() {
                         Some(Transport::Icmp4(icmp)) => {
                             if icmp.supports_extensions() {
                                 driver
@@ -1090,14 +1112,12 @@ pub mod contract {
                 icmp_header_size + payload_size + padding_size + extensions_size;
             // Payload size for inner IP header
             let inner_network_header_size = headers
-                .embedded_ip
-                .as_deref()
+                .embedded_ip()
                 .map_or(0, EmbeddedHeaders::net_headers_len)
                 as usize;
             // Payload size for inner TCP/UDP header
             let inner_transport_header_size = headers
-                .embedded_ip
-                .as_deref()
+                .embedded_ip()
                 .map_or(0, EmbeddedHeaders::transport_headers_len)
                 as usize;
             // Theoretical payload size for inner TCP/UDP (inner packet may be truncated)
@@ -1115,14 +1135,8 @@ pub mod contract {
                 theoretical_inner_payload_size + inner_transport_header_size;
             // Offset of ICMP header in packet
             let icmp_header_offset = headers_size
-                - headers
-                    .eth
-                    .as_ref()
-                    .map_or(0, |eth| eth.size().get() as usize)
-                - headers
-                    .net
-                    .as_ref()
-                    .map_or(0, |net| net.size().get() as usize);
+                - headers.eth().map_or(0, |eth| eth.size().get() as usize)
+                - headers.net().map_or(0, |net| net.size().get() as usize);
             // Payload size for ICMP header, only used in conjunction with ICMP extensions
             let icmp_payload_size = inner_network_header_size
                 + inner_transport_header_size
@@ -1135,12 +1149,12 @@ pub mod contract {
             // Update headers
 
             // Set outer IP payload/total length
-            match headers.net {
-                Some(Net::Ipv4(ref mut ipv4)) => {
+            match headers.net_mut() {
+                Some(Net::Ipv4(ipv4)) => {
                     #[allow(clippy::cast_possible_truncation)] // bounded size
                     ipv4.set_payload_len(outer_payload_size as u16).unwrap();
                 }
-                Some(Net::Ipv6(ref mut ipv6)) => {
+                Some(Net::Ipv6(ipv6)) => {
                     #[allow(clippy::cast_possible_truncation)] // bounded size
                     ipv6.set_payload_length(outer_payload_size as u16);
                 }
@@ -1148,12 +1162,12 @@ pub mod contract {
             }
             // Set inner IP payload/total length
             #[allow(clippy::cast_possible_truncation)] // bounded size
-            headers.embedded_ip.as_deref_mut().map(|embedded_ip| {
+            headers.embedded_ip_mut().map(|embedded_ip| {
                 embedded_ip.set_network_payload_length(theoretical_inner_net_payload_size as u16)
             });
             // Set inner transport length
             #[allow(clippy::cast_possible_truncation)] // bounded size
-            headers.embedded_ip.as_deref_mut().map(|embedded_ip| {
+            headers.embedded_ip_mut().map(|embedded_ip| {
                 embedded_ip.set_transport_payload_length(theoretical_inner_payload_size as u16)
             });
 
@@ -1190,7 +1204,7 @@ pub mod contract {
             // FIXME: We don't have header fields to do that without writing directly to the buffer.
             if extensions_size > 0 {
                 #[allow(clippy::cast_possible_truncation)] // bounded sizes
-                match headers.transport {
+                match headers.transport() {
                     Some(Transport::Icmp4(_)) => {
                         data[icmp_header_offset + 5] = (icmp_payload_size / 4) as u8;
                     }
@@ -1318,7 +1332,7 @@ mod vxlan_peek_tests {
 
 #[cfg(test)]
 mod qos_roundtrip_tests {
-    use crate::headers::{Headers, Net};
+    use crate::headers::Net;
     use crate::ip::dscp::Dscp;
     use crate::ip::ecn::Ecn;
     use crate::packet::test_utils::{
@@ -1336,16 +1350,14 @@ mod qos_roundtrip_tests {
         ip.set_ttl(64);
         ip.set_next_header(crate::ip::NextHeader::UDP);
 
-        let headers = Headers {
-            eth: None,
-            vlan: crate::headers::Stack::default(),
-            net: Some(Net::Ipv4(ip)),
-            net_ext: crate::headers::Stack::default(),
-            transport: None,
-            udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(200).unwrap()))),
-            embedded_ip: None,
-            lldp: None,
-        };
+        let headers = crate::headers::HeadersBuilder::default()
+            .eth(None)
+            .net(Some(Net::Ipv4(ip)))
+            .udp_encap(Some(UdpEncap::Vxlan(Vxlan::new(
+                Vni::new_checked(200).unwrap(),
+            ))))
+            .build()
+            .unwrap_or_else(|e| unreachable!("{e}"));
         VxlanEncap::new(headers).unwrap()
     }
 
@@ -1359,16 +1371,14 @@ mod qos_roundtrip_tests {
         ip.set_hop_limit(64);
         ip.set_next_header(crate::ip::NextHeader::UDP);
 
-        let headers = Headers {
-            eth: None,
-            vlan: crate::headers::Stack::default(),
-            net: Some(Net::Ipv6(ip)),
-            net_ext: crate::headers::Stack::default(),
-            transport: None,
-            udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(200).unwrap()))),
-            embedded_ip: None,
-            lldp: None,
-        };
+        let headers = crate::headers::HeadersBuilder::default()
+            .eth(None)
+            .net(Some(Net::Ipv6(ip)))
+            .udp_encap(Some(UdpEncap::Vxlan(Vxlan::new(
+                Vni::new_checked(200).unwrap(),
+            ))))
+            .build()
+            .unwrap_or_else(|e| unreachable!("{e}"));
         VxlanEncap::new(headers).unwrap()
     }
 
@@ -1438,7 +1448,7 @@ mod qos_roundtrip_tests {
         let params = make_vxlan_encap_headers_ipv4();
         p.vxlan_encap(&params).unwrap();
 
-        match &p.get_headers().net {
+        match p.get_headers().net() {
             Some(Net::Ipv4(ipv4)) => {
                 assert_eq!(Dscp::from(ipv4.dscp()), in_dscp);
                 assert_eq!(Ecn::from(ipv4.ecn()), in_ecn);
@@ -1459,7 +1469,7 @@ mod qos_roundtrip_tests {
         let params = make_vxlan_encap_headers_ipv6();
         p.vxlan_encap(&params).unwrap();
 
-        match &p.get_headers().net {
+        match p.get_headers().net() {
             Some(Net::Ipv6(ipv6)) => {
                 assert_eq!(Dscp::from(ipv6.dscp()), in_dscp);
                 assert_eq!(Ecn::from(ipv6.ecn()), in_ecn);
@@ -1474,7 +1484,7 @@ mod padding_tests {
     use crate::buffer::TestBuffer;
     use crate::checksum::Checksum;
     use crate::eth::ethtype::EthType;
-    use crate::headers::{Headers, Net, TryHeaders, TryIcmp4, TryIp, TryTcp, TryUdp};
+    use crate::headers::{Net, TryHeaders, TryIcmp4, TryIp, TryTcp, TryUdp};
     use crate::packet::Packet;
     use crate::packet::test_utils::make_default_for_eth;
     use crate::parse::ParseError;
@@ -1628,16 +1638,14 @@ mod padding_tests {
         ip.set_ttl(64);
         ip.set_next_header(crate::ip::NextHeader::UDP);
 
-        let headers = Headers {
-            eth: Some(make_default_for_eth(EthType::IPV4)),
-            vlan: crate::headers::Stack::default(),
-            net: Some(Net::Ipv4(ip)),
-            net_ext: crate::headers::Stack::default(),
-            transport: None,
-            udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(42).unwrap()))),
-            embedded_ip: None,
-            lldp: None,
-        };
+        let headers = crate::headers::HeadersBuilder::default()
+            .eth(Some(make_default_for_eth(EthType::IPV4)))
+            .net(Some(Net::Ipv4(ip)))
+            .udp_encap(Some(UdpEncap::Vxlan(Vxlan::new(
+                Vni::new_checked(42).unwrap(),
+            ))))
+            .build()
+            .unwrap_or_else(|e| unreachable!("{e}"));
         VxlanEncap::new(headers).unwrap_or_else(|e| unreachable!("{e:?}"))
     }
 
@@ -1852,16 +1860,14 @@ mod padding_tests {
         ip.set_destination(crate::ipv6_doc!("::2").parse().unwrap());
         ip.set_hop_limit(64);
         ip.set_next_header(crate::ip::NextHeader::UDP);
-        let headers = Headers {
-            eth: Some(make_default_for_eth(EthType::IPV6)),
-            vlan: crate::headers::Stack::default(),
-            net: Some(Net::Ipv6(ip)),
-            net_ext: crate::headers::Stack::default(),
-            transport: None,
-            udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(42).unwrap()))),
-            embedded_ip: None,
-            lldp: None,
-        };
+        let headers = crate::headers::HeadersBuilder::default()
+            .eth(Some(make_default_for_eth(EthType::IPV6)))
+            .net(Some(Net::Ipv6(ip)))
+            .udp_encap(Some(UdpEncap::Vxlan(Vxlan::new(
+                Vni::new_checked(42).unwrap(),
+            ))))
+            .build()
+            .unwrap_or_else(|e| unreachable!("{e}"));
         VxlanEncap::new(headers).unwrap_or_else(|e| unreachable!("{e:?}"))
     }
 
@@ -2785,7 +2791,7 @@ mod parse_into_equivalence {
         // checksum audit in both constructors calls: a known parser bug, parked for its own fix
         // (notes/kani/PARSING-BUGS.md #1). Skip those frames rather than trip over it.
         if let Ok((headers, _)) = Headers::parse(frame)
-            && let Some(Transport::Udp(udp)) = &headers.transport
+            && let Some(Transport::Udp(udp)) = headers.transport()
             && udp.raw_length() < crate::udp::Udp::MIN_LENGTH.get()
         {
             return;
@@ -2863,5 +2869,240 @@ mod parse_into_equivalence {
         bolero::check!()
             .with_generator((CommonHeaders, bolero::produce::<Vec<u8>>()))
             .for_each(|(h, tail)| same(&frame_of(h, tail)));
+    }
+}
+
+/// Serializing in place gives exactly the bytes a full rewrite does, after any sequence of
+/// changes. Bench branch only, until the shape of the tests settles.
+#[cfg(test)]
+mod in_place_equivalence {
+    use super::*;
+    use crate::buffer::TestBuffer;
+    use crate::eth::mac::Mac;
+    use crate::headers::{
+        CommonHeaders, TryEthMut, TryIpv4Mut, TryTcpMut, TryUdpMut, serializable,
+    };
+    use crate::ip::dscp::Dscp;
+    use crate::ipv4::UnicastIpv4Addr;
+    use crate::tcp::{Tcp, TcpPort};
+    use crate::udp::UdpPort;
+    use crate::vlan::Vid;
+    use bolero::TypeGenerator;
+
+    /// One change a stage might make.
+    #[derive(Debug, Clone, TypeGenerator)]
+    enum Op {
+        EthSource([u8; 6]),
+        EthDestination([u8; 6]),
+        DecrementTtl,
+        Dscp(u8),
+        Identification(u16),
+        /// IPv4 options of `4 * (n % 11)` octets: the header changes length in place.
+        Ipv4Options(u8),
+        Ipv4Source(u32),
+        TcpSource(u16),
+        TcpWindow(u16),
+        /// Replace the TCP header with a bare 20-octet one: a length change in place.
+        TcpBare,
+        UdpSource(u16),
+        PushVlan(u16),
+        PopVlan,
+        DropTransport,
+        TouchNet,
+        TouchTransport,
+        TouchEverything,
+        TrimNothing,
+        Refresh,
+    }
+
+    #[allow(clippy::too_many_lines)] // one arm per operation
+    fn apply(packet: &mut Packet<TestBuffer>, op: &Op) {
+        match op {
+            Op::EthSource(mac) => {
+                if let (Some(eth), Ok(mac)) = (
+                    packet.headers_mut().try_eth_mut(),
+                    SourceMac::new(Mac(*mac)),
+                ) {
+                    eth.set_source(mac);
+                }
+            }
+            Op::EthDestination(mac) => {
+                if let (Some(eth), Ok(mac)) = (
+                    packet.headers_mut().try_eth_mut(),
+                    DestinationMac::new(Mac(*mac)),
+                ) {
+                    eth.set_destination(mac);
+                }
+            }
+            Op::DecrementTtl => {
+                if let Some(ip) = packet.headers_mut().try_ipv4_mut() {
+                    let _ = ip.decrement_ttl();
+                }
+            }
+            Op::Dscp(d) => {
+                if let (Some(ip), Ok(d)) =
+                    (packet.headers_mut().try_ipv4_mut(), Dscp::new(d & 0x3f))
+                {
+                    ip.set_dscp(d);
+                }
+            }
+            Op::Identification(id) => {
+                if let Some(ip) = packet.headers_mut().try_ipv4_mut() {
+                    ip.set_identification(*id);
+                }
+            }
+            Op::Ipv4Options(n) => {
+                let options = vec![1u8; 4 * usize::from(n % 11)];
+                if let Some(ip) = packet.headers_mut().try_ipv4_mut() {
+                    let _ = ip.set_options(&options);
+                }
+                packet.meta_mut().set_checksum_refresh(true);
+            }
+            Op::Ipv4Source(addr) => {
+                if let (Some(ip), Ok(addr)) = (
+                    packet.headers_mut().try_ipv4_mut(),
+                    UnicastIpv4Addr::new(std::net::Ipv4Addr::from(*addr)),
+                ) {
+                    ip.set_source(addr);
+                }
+                packet.meta_mut().set_checksum_refresh(true);
+            }
+            Op::TcpSource(port) => {
+                if let (Some(tcp), Ok(port)) = (
+                    packet.headers_mut().try_tcp_mut(),
+                    TcpPort::new_checked(*port),
+                ) {
+                    tcp.set_source(port);
+                }
+                packet.meta_mut().set_checksum_refresh(true);
+            }
+            Op::TcpWindow(w) => {
+                if let Some(tcp) = packet.headers_mut().try_tcp_mut() {
+                    tcp.set_window_size(*w);
+                }
+                packet.meta_mut().set_checksum_refresh(true);
+            }
+            Op::TcpBare => {
+                if let Some(tcp) = packet.headers_mut().try_tcp_mut() {
+                    *tcp = Tcp::new(tcp.source(), tcp.destination());
+                }
+                packet.meta_mut().set_checksum_refresh(true);
+            }
+            Op::UdpSource(port) => {
+                if let (Some(udp), Ok(port)) = (
+                    packet.headers_mut().try_udp_mut(),
+                    UdpPort::new_checked(*port),
+                ) {
+                    udp.set_source(port);
+                }
+                packet.meta_mut().set_checksum_refresh(true);
+            }
+            Op::PushVlan(vid) => {
+                if let Ok(vid) = Vid::new(vid % 4094 + 1) {
+                    let _ = packet.headers_mut().push_vlan(vid);
+                }
+            }
+            Op::PopVlan => {
+                let _ = packet.headers_mut().pop_vlan();
+            }
+            Op::DropTransport => {
+                packet.headers_mut().set_transport(None);
+            }
+            Op::TouchNet => {
+                let _ = packet.headers_mut().net_mut();
+            }
+            Op::TouchTransport => {
+                let _ = packet.headers_mut().transport_mut();
+            }
+            Op::TouchEverything => {
+                let _ = packet.headers_mut().pat_mut().done();
+            }
+            Op::TrimNothing => {
+                let _ = packet.trim_from_start(0);
+            }
+            Op::Refresh => packet.meta_mut().set_checksum_refresh(true),
+        }
+    }
+
+    fn serialized(mut packet: Packet<TestBuffer>) -> Option<Vec<u8>> {
+        packet.done(DoneReason::Delivered);
+        packet.serialize().ok().map(|buf| buf.as_ref().to_vec())
+    }
+
+    fn same(headers: &Headers, payload: &[u8], ops: &[Op]) {
+        if !serializable(headers) {
+            return;
+        }
+        let len = usize::from(headers.size().get());
+        let mut frame = vec![0u8; len + payload.len()];
+        if headers.deparse(&mut frame).is_err() {
+            return;
+        }
+        frame[len..].copy_from_slice(payload);
+        // Parsed twice: the two must see the same changes.
+        let parse = || Packet::new(TestBuffer::from_raw_data_with_room(&frame, 256, 0)).ok();
+        let (Some(mut fast), Some(mut full)) = (parse(), parse()) else {
+            return;
+        };
+        // A UDP length below 8 trips the parked `Udp::length` bug (see `parse_into_equivalence`).
+        if let Some(Transport::Udp(udp)) = fast.headers().transport()
+            && udp.raw_length() < crate::udp::Udp::MIN_LENGTH.get()
+        {
+            fast.done(DoneReason::Delivered);
+            full.done(DoneReason::Delivered);
+            return;
+        }
+        for op in ops {
+            apply(&mut fast, op);
+            apply(&mut full, op);
+        }
+        // The reference never takes the in-place path.
+        full.headers.forget_layout();
+        assert_eq!(serialized(fast), serialized(full), "after {ops:?}");
+    }
+
+    #[test]
+    fn in_place_matches_a_full_rewrite() {
+        bolero::check!()
+            .with_generator((
+                CommonHeaders,
+                bolero::produce::<Vec<u8>>(),
+                bolero::produce::<Vec<Op>>(),
+            ))
+            .for_each(|(headers, payload, ops)| same(headers, payload, ops));
+    }
+
+    /// The in-place path is taken at all: an unchanged and a forwarded packet keep their bytes.
+    #[test]
+    fn untouched_and_forwarded_packets_take_the_in_place_path() {
+        bolero::check!()
+            .with_generator(CommonHeaders)
+            .for_each(|headers| {
+                if !serializable(headers) {
+                    return;
+                }
+                let mut frame = vec![0u8; usize::from(headers.size().get())];
+                headers.deparse(&mut frame).unwrap();
+                let Ok(mut packet) =
+                    Packet::new(TestBuffer::from_raw_data_with_room(&frame, 64, 0))
+                else {
+                    return;
+                };
+                if let Some(Transport::Udp(udp)) = packet.headers().transport()
+                    && udp.raw_length() < crate::udp::Udp::MIN_LENGTH.get()
+                {
+                    packet.done(DoneReason::Delivered);
+                    return;
+                }
+                assert!(packet.headers.in_place_len().is_some(), "untouched");
+                if let Some(ip) = packet.headers_mut().try_ipv4_mut() {
+                    let _ = ip.decrement_ttl();
+                }
+                assert!(
+                    packet.headers.in_place_len().is_some(),
+                    "after a TTL decrement"
+                );
+                packet.done(DoneReason::Delivered);
+            });
     }
 }
