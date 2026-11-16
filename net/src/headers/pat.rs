@@ -794,7 +794,7 @@ pub struct Fields<'a> {
     net_ext: Option<&'a mut [NetExt]>,
     transport: Option<&'a mut Option<Transport>>,
     udp_encap: Option<&'a mut Option<UdpEncap>>,
-    embedded: Option<&'a mut Option<Box<EmbeddedHeaders>>>,
+    embedded: Option<&'a mut EmbeddedHeaders>,
 }
 
 impl Fields<'_> {
@@ -830,7 +830,7 @@ impl Headers {
     pub fn pat_mut(&mut self) -> MatcherMut<'_, (), ()> {
         // Every layer may be handed out; embedded headers have no dirty bit of their own.
         self.track.mark(super::track::slot::ALL);
-        if self.embedded_ip.is_some() {
+        if self.tail.is_some() {
             self.track.mark(super::track::slot::SHAPE);
         }
         MatcherMut {
@@ -841,7 +841,10 @@ impl Headers {
                 net_ext: Some(self.net_ext.as_mut_slice()),
                 transport: Some(&mut self.transport),
                 udp_encap: Some(&mut self.udp_encap),
-                embedded: Some(&mut self.embedded_ip),
+                embedded: match self.tail.as_deref_mut() {
+                    Some(super::Tail::Embedded(e)) => Some(e),
+                    _ => None,
+                },
             },
             acc: Some(()),
             _pos: core::marker::PhantomData,
@@ -1753,11 +1756,7 @@ where
     /// not -- if the ICMP message is not an error (e.g. echo request),
     /// `embedded_ip` will be `None` and the match simply fails.
     pub fn embedded(mut self) -> EmbeddedMatcherMut<'a, EmbeddedStart, Acc, ()> {
-        let embedded = self
-            .fields
-            .embedded
-            .take()
-            .and_then(|opt| opt.as_deref_mut());
+        let embedded = self.fields.embedded.take();
         match embedded {
             Some(e) => EmbeddedMatcherMut {
                 outer_acc: self.acc,

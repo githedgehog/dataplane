@@ -34,6 +34,18 @@ use super::idle::Idle;
 use super::port::PortQueues;
 use crate::drivers::disposition::Disposition;
 
+// Packets move by value through the burst (drained out of it to transmit). The compiler copies up
+// to 256 bytes inline and calls `memmove` beyond that: 8 bytes more (264) cost some 7 % per packet
+// on the local BF-3 (2026-11-15), in the call and in the store-to-load forwarding stalls of reading
+// a packet just copied that way. `PacketMeta::syn_proxy` has since taken those 8 bytes; the limit
+// stands at 264 until transmit stops moving packets, and must not grow. Test-only metadata does
+// not count.
+const _: () = assert!(
+    core::mem::size_of::<net::packet::Packet<Mbuf<'static>>>() - net::packet::TEST_ONLY_BYTES
+        <= 264,
+    "Packet<Mbuf> outgrew 264 bytes; see the comment above this assert"
+);
+
 #[cfg(all(test, not(feature = "shuttle")))]
 mod tests;
 

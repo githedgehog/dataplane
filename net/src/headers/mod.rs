@@ -79,18 +79,71 @@ pub struct Headers {
     pub(in crate::headers) net_ext: Stack<NetExt, MAX_NET_EXTENSIONS>,
     pub(in crate::headers) transport: Option<Transport>,
     pub(in crate::headers) udp_encap: Option<UdpEncap>,
-    /// Boxed to keep packets without ICMP errors small.
-    pub(in crate::headers) embedded_ip: Option<Box<EmbeddedHeaders>>,
-    /// The LLDP data unit which follows the link layer headers, if this is an
-    /// LLDP frame.
+    /// The headers quoted by an ICMP error, or the LLDP data unit of an LLDP frame: never both.
     ///
-    /// Boxed because an LLDPDU is an order of magnitude larger than the headers
-    /// it sits behind and appears on a handful of frames per port per minute;
-    /// a forwarded packet should not carry the cost of a field it never uses.
-    pub(in crate::headers) lldp: Option<Box<Lldpdu>>,
+    /// Rare, and much larger than the headers in front of them, so boxed, and in one box: a
+    /// forwarded packet should not carry the cost of fields it never uses. Sharing the slot also
+    /// keeps a [`Packet`](crate::packet::Packet) at 256 bytes, the most the compiler copies
+    /// inline; one byte more and every move of a packet becomes a call to `memmove`.
+    #[builder(setter(custom))]
+    pub(in crate::headers) tail: Option<Box<Tail>>,
     /// What changed since parsing; see [`track`].
     #[builder(setter(skip))]
     pub(in crate::headers) track: Track,
+}
+
+/// What can follow the rest of the headers; see [`Headers::tail`](Headers).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Tail {
+    /// The headers quoted by an ICMP error message.
+    Embedded(EmbeddedHeaders),
+    /// The LLDP data unit of an LLDP frame.
+    Lldp(Box<Lldpdu>),
+}
+
+impl HeadersBuilder {
+    /// Set the headers quoted by an ICMP error message.
+    pub fn embedded_ip(&mut self, embedded: Option<Box<EmbeddedHeaders>>) -> &mut Self {
+        self.tail = Some(embedded.map(|e| Box::new(Tail::Embedded(*e))));
+        self
+    }
+
+    /// Set the LLDP data unit of an LLDP frame.
+    pub fn lldp(&mut self, lldp: Option<Box<Lldpdu>>) -> &mut Self {
+        self.tail = Some(lldp.map(|l| Box::new(Tail::Lldp(l))));
+        self
+    }
+}
+
+impl Headers {
+    fn embedded(&self) -> Option<&EmbeddedHeaders> {
+        match self.tail.as_deref() {
+            Some(Tail::Embedded(e)) => Some(e),
+            _ => None,
+        }
+    }
+
+    fn embedded_raw_mut(&mut self) -> Option<&mut EmbeddedHeaders> {
+        match self.tail.as_deref_mut() {
+            Some(Tail::Embedded(e)) => Some(e),
+            _ => None,
+        }
+    }
+
+    fn lldp_ref(&self) -> Option<&Lldpdu> {
+        match self.tail.as_deref() {
+            Some(Tail::Lldp(l)) => Some(l),
+            _ => None,
+        }
+    }
+
+    fn set_embedded(&mut self, embedded: EmbeddedHeaders) {
+        self.tail = Some(Box::new(Tail::Embedded(embedded)));
+    }
+
+    fn set_lldp_raw(&mut self, lldp: Option<Box<Lldpdu>>) {
+        self.tail = lldp.map(|l| Box::new(Tail::Lldp(l)));
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -725,7 +778,7 @@ impl Headers {
                 Parsed::Ipv6
             }
             EthNext::Lldp(lldp) => {
-                self.lldp = Some(lldp);
+                self.set_lldp_raw(Some(lldp));
                 Parsed::Done
             }
         }
@@ -816,11 +869,11 @@ impl Headers {
                 Parsed::Done
             }
             Header::EmbeddedIp(embedded) => {
-                self.embedded_ip = Some(Box::new(embedded));
+                self.set_embedded(embedded);
                 Parsed::Done
             }
             Header::Lldp(lldp) => {
-                self.lldp = Some(lldp);
+                self.set_lldp_raw(Some(lldp));
                 Parsed::Done
             }
         }
@@ -880,7 +933,7 @@ impl Headers {
                 if let Some(Transport::Icmp4(icmp)) = &self.transport
                     && let Some(embedded) = icmp.parse_payload(cursor)
                 {
-                    self.embedded_ip = Some(Box::new(embedded));
+                    self.set_embedded(embedded);
                 }
                 Parsed::Done
             }
@@ -888,7 +941,7 @@ impl Headers {
                 if let Some(Transport::Icmp6(icmp)) = &self.transport
                     && let Some(embedded) = icmp.parse_payload(cursor)
                 {
-                    self.embedded_ip = Some(Box::new(embedded));
+                    self.set_embedded(embedded);
                 }
                 Parsed::Done
             }
@@ -1020,8 +1073,8 @@ impl Headers {
         for vlan in &self.vlan {
             put(vlan, span(1), buf, &mut at)?;
         }
-        if let Some(lldp) = &self.lldp {
-            put(lldp.as_ref(), first <= 1 && last >= 2, buf, &mut at)?;
+        if let Some(lldp) = self.lldp_ref() {
+            put(lldp, first <= 1 && last >= 2, buf, &mut at)?;
         }
         if let Some(net) = &self.net {
             put(net, span(2), buf, &mut at)?;
@@ -1081,10 +1134,9 @@ impl DeParse for Headers {
             Some(UdpEncap::Vxlan(vx)) => vx.size().get(),
         };
         let embedded_ip = self
-            .embedded_ip
-            .as_deref()
+            .embedded()
             .map_or(0, |embedded_header| embedded_header.size().get());
-        let lldp = self.lldp.as_ref().map_or(0, |pdu| pdu.size().get());
+        let lldp = self.lldp_ref().map_or(0, |pdu| pdu.size().get());
         NonZero::new(eth + vlan + lldp + net + net_ext + transport + encap + embedded_ip)
             .unwrap_or_else(|| unreachable!())
     }
@@ -1109,14 +1161,14 @@ impl DeParse for Headers {
             cursor.write(vlan)?;
         }
 
-        if let Some(ref lldp) = self.lldp {
+        if let Some(lldp) = self.lldp_ref() {
             // An LLDP frame is link local and carries no network header.  The
             // parser can never produce both, so this only catches a `Headers`
             // assembled by hand.
             if self.net.is_some() {
                 return Err(DeParseError::Invalid(()));
             }
-            cursor.write(lldp.as_ref())?;
+            cursor.write(lldp)?;
         }
 
         match self.net {
@@ -1158,7 +1210,7 @@ impl DeParse for Headers {
             }
         }
 
-        if let Some(embedded_ip) = self.embedded_ip.as_deref() {
+        if let Some(embedded_ip) = self.embedded() {
             if matches!(
                 self.transport,
                 Some(Transport::Icmp4(_) | Transport::Icmp6(_))
@@ -1219,14 +1271,17 @@ impl Headers {
     /// Get a reference to the LLDP data unit, if this is an LLDP frame.
     #[must_use]
     pub fn lldp(&self) -> Option<&Lldpdu> {
-        self.lldp.as_deref()
+        self.lldp_ref()
     }
 
     /// Get a mutable reference to the LLDP data unit, if this is an LLDP frame.
     #[must_use]
     pub fn lldp_mut(&mut self) -> Option<&mut Lldpdu> {
         self.track.mark(slot::SHAPE);
-        self.lldp.as_deref_mut()
+        match self.tail.as_deref_mut() {
+            Some(Tail::Lldp(l)) => Some(l),
+            _ => None,
+        }
     }
 
     /// Put an LLDP data unit behind these headers, which no parse can give a routed packet. For
@@ -1234,7 +1289,7 @@ impl Headers {
     #[cfg(test)]
     pub(crate) fn set_lldp_for_tests(&mut self, lldp: Option<Box<Lldpdu>>) {
         self.track.mark(slot::SHAPE);
-        self.lldp = lldp;
+        self.set_lldp_raw(lldp);
     }
 
     /// Take the LLDP data unit out of these headers, if this is an LLDP frame.
@@ -1244,7 +1299,13 @@ impl Headers {
     #[must_use]
     pub fn take_lldp(&mut self) -> Option<Box<Lldpdu>> {
         self.track.mark(slot::SHAPE);
-        self.lldp.take()
+        match self.tail.take().map(|t| *t) {
+            Some(Tail::Lldp(l)) => Some(l),
+            other => {
+                self.tail = other.map(Box::new);
+                None
+            }
+        }
     }
 
     /// Get a mutable reference to the Ethernet header, if present.
@@ -1417,14 +1478,14 @@ impl Headers {
     /// (potentially truncated) copy of the original offending packet.
     #[must_use]
     pub fn embedded_ip(&self) -> Option<&EmbeddedHeaders> {
-        self.embedded_ip.as_deref()
+        self.embedded()
     }
 
     /// Get a mutable reference to the embedded IP headers, if present.
     #[must_use]
     pub fn embedded_ip_mut(&mut self) -> Option<&mut EmbeddedHeaders> {
         self.track.mark(slot::SHAPE);
-        self.embedded_ip.as_deref_mut()
+        self.embedded_raw_mut()
     }
 
     /// Push a VLAN header to the top of the stack.
@@ -1630,7 +1691,7 @@ impl Headers {
             Some(Transport::Icmp6(icmp)) => icmp.is_error_message(),
             _ => false,
         };
-        let after_header = match self.embedded_ip.as_deref() {
+        let after_header = match self.embedded() {
             Some(quoted) if is_error => {
                 Cow::Owned(get_payload_for_checksum(Some(quoted), payload.as_ref()))
             }
@@ -1666,7 +1727,7 @@ impl Headers {
         covered: Option<usize>,
     ) {
         self.track.mark(slot::NET);
-        if self.embedded_ip.is_some() {
+        if self.tail.is_some() {
             self.track.mark(slot::SHAPE);
         }
         let Some(net) = self.net.as_mut() else {
@@ -1678,11 +1739,7 @@ impl Headers {
         // Update inner IP header checksum, if any, before updating transport checksum.
         // This is because the inner headers are part of transport header's payload, so updating
         // them later would invalidate transport's payload.
-        if let Some(inner_ip) = self
-            .embedded_ip
-            .as_deref_mut()
-            .and_then(|ip| ip.try_inner_ip_mut())
-        {
+        if let Some(inner_ip) = self.embedded_raw_mut().and_then(|ip| ip.try_inner_ip_mut()) {
             inner_ip.update_checksum();
 
             // WARNING: We do NOT update ICMP Error message inner transport checksum here!
@@ -2180,13 +2237,14 @@ mod contract {
                 net_ext: Stack::default(),
                 transport: Some(transport),
                 udp_encap: None,
-                embedded_ip: Some(Box::new(EmbeddedHeaders::new(
-                    Some(quoted_net),
-                    Some(quoted_transport),
-                    quoted_ext,
-                    None,
+                tail: Some(Box::new(crate::headers::Tail::Embedded(
+                    EmbeddedHeaders::new(
+                        Some(quoted_net),
+                        Some(quoted_transport),
+                        quoted_ext,
+                        None,
+                    ),
                 ))),
-                lldp: None,
                 track: crate::headers::track::Track::default(),
             })
         }
@@ -2237,8 +2295,7 @@ mod contract {
                 net_ext: ext_run(driver, outer_v4)?,
                 transport: Some(transport),
                 udp_encap: None,
-                embedded_ip,
-                lldp: None,
+                tail: embedded_ip.map(|e| Box::new(crate::headers::Tail::Embedded(*e))),
                 track: crate::headers::track::Track::default(),
             })
         }
@@ -2309,8 +2366,7 @@ mod contract {
                                 net_ext: Stack::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
-                                embedded_ip: None,
-                                lldp: None,
+                                tail: None,
                                 track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
@@ -2330,8 +2386,7 @@ mod contract {
                                 net_ext: Stack::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
-                                embedded_ip: None,
-                                lldp: None,
+                                tail: None,
                                 track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
@@ -2345,8 +2400,7 @@ mod contract {
                                 net_ext: Stack::default(),
                                 transport: Some(Transport::Icmp4(icmp)),
                                 udp_encap: None,
-                                embedded_ip: None,
-                                lldp: None,
+                                tail: None,
                                 track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
@@ -2367,8 +2421,7 @@ mod contract {
                                 net_ext: Stack::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
-                                embedded_ip: None,
-                                lldp: None,
+                                tail: None,
                                 track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
@@ -2388,8 +2441,7 @@ mod contract {
                                 net_ext: Stack::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
-                                embedded_ip: None,
-                                lldp: None,
+                                tail: None,
                                 track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
@@ -2403,8 +2455,7 @@ mod contract {
                                 net_ext: Stack::default(),
                                 transport: Some(Transport::Icmp6(icmp6)),
                                 udp_encap: None,
-                                embedded_ip: None,
-                                lldp: None,
+                                tail: None,
                                 track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
@@ -4104,11 +4155,9 @@ pub(crate) fn serializable(headers: &Headers) -> bool {
         || headers.net.is_some()
         || headers.transport.is_some()
         || headers.udp_encap.is_some()
-        || headers.embedded_ip.is_some()
-        || headers.lldp.is_some();
+        || headers.tail.is_some();
     let embedded = headers
-        .embedded_ip
-        .as_deref()
+        .embedded()
         .is_none_or(|e| e.net.is_some() || e.transport.is_some());
     any && embedded
 }
@@ -4151,8 +4200,7 @@ mod legacy_parse_equivalence {
             vlan: Stack::default(),
             net_ext: Stack::default(),
             udp_encap: None,
-            embedded_ip: None,
-            lldp: None,
+            tail: None,
             track: crate::headers::track::Track::default(),
         };
         // TODO: after parsing, validate RFC 8200 section 4.1 extension header
@@ -4247,8 +4295,8 @@ mod legacy_parse_equivalence {
                         break;
                     }
                 }
-                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(Box::new(embedded)),
-                Header::Lldp(lldp) => this.lldp = Some(lldp),
+                Header::EmbeddedIp(embedded) => this.set_embedded(embedded),
+                Header::Lldp(lldp) => this.set_lldp_raw(Some(lldp)),
             }
             match header {
                 None => {
