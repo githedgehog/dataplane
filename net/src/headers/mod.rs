@@ -32,6 +32,7 @@ use derive_builder::Builder;
 use std::net::IpAddr;
 use std::num::NonZero;
 use tracing::{debug, trace};
+use track::{Track, slot};
 
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
@@ -39,6 +40,7 @@ pub use contract::*;
 #[macro_use]
 mod accessor_macros;
 pub mod stack;
+pub(crate) mod track;
 pub use stack::Stack;
 
 mod embedded;
@@ -63,27 +65,32 @@ const MAX_NET_EXTENSIONS: usize = 3;
 
 /// A parsed set of network packet headers.
 ///
-/// Fields are crate-private to restrict direct external construction.
+/// Fields are private to the `headers` module: every mutation goes through an accessor that
+/// records it (in a private `Track`, see the `headers::track` module), so serializing knows what
+/// it must rewrite.
 /// Use the [`HeadersBuilder`] (via `derive_builder`) for construction
 /// and the public accessor methods for reading.
 #[derive(Debug, PartialEq, Eq, Clone, Default, Builder)]
 #[builder(default)]
 pub struct Headers {
-    pub(crate) eth: Option<Eth>,
-    pub(crate) vlan: Stack<Vlan, MAX_VLANS>,
-    pub(crate) net: Option<Net>,
-    pub(crate) net_ext: Stack<NetExt, MAX_NET_EXTENSIONS>,
-    pub(crate) transport: Option<Transport>,
-    pub(crate) udp_encap: Option<UdpEncap>,
+    pub(in crate::headers) eth: Option<Eth>,
+    pub(in crate::headers) vlan: Stack<Vlan, MAX_VLANS>,
+    pub(in crate::headers) net: Option<Net>,
+    pub(in crate::headers) net_ext: Stack<NetExt, MAX_NET_EXTENSIONS>,
+    pub(in crate::headers) transport: Option<Transport>,
+    pub(in crate::headers) udp_encap: Option<UdpEncap>,
     /// Boxed to keep packets without ICMP errors small.
-    pub(crate) embedded_ip: Option<Box<EmbeddedHeaders>>,
+    pub(in crate::headers) embedded_ip: Option<Box<EmbeddedHeaders>>,
     /// The LLDP data unit which follows the link layer headers, if this is an
     /// LLDP frame.
     ///
     /// Boxed because an LLDPDU is an order of magnitude larger than the headers
     /// it sits behind and appears on a handful of frames per port per minute;
     /// a forwarded packet should not carry the cost of a field it never uses.
-    pub(crate) lldp: Option<Box<Lldpdu>>,
+    pub(in crate::headers) lldp: Option<Box<Lldpdu>>,
+    /// What changed since parsing; see [`track`].
+    #[builder(setter(skip))]
+    pub(in crate::headers) track: Track,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -942,7 +949,96 @@ impl Headers {
         let consumed = unsafe {
             NonZero::new_unchecked((cursor.inner.len() - cursor.remaining as usize) as u16)
         };
+        self.track = Track::parsed(consumed.get());
         Ok(consumed)
+    }
+}
+
+/// Write `header` into `buf` at `at` if `write`, and step `at` past it either way.
+fn put<T: DeParse>(
+    header: &T,
+    write: bool,
+    buf: &mut [u8],
+    at: &mut usize,
+) -> Result<(), DeParseError<()>> {
+    let len = header.size().into_non_zero_usize().get();
+    if write {
+        let end = *at + len;
+        let Some(dst) = buf.get_mut(*at..end) else {
+            return Err(DeParseError::Invalid(()));
+        };
+        header.deparse(dst).map_err(|_| DeParseError::Invalid(()))?;
+    }
+    *at += len;
+    Ok(())
+}
+
+impl Headers {
+    /// The layout no longer describes the buffer these headers sit in front of: it moved, or the
+    /// headers moved to another buffer.
+    pub(crate) fn forget_layout(&mut self) {
+        self.track.forget();
+    }
+
+    /// How many header bytes to take back from in front of the payload to rewrite these headers in
+    /// place, over the bytes they were parsed from: `None` when that will not do and they must be
+    /// written from scratch (no layout, a change of shape, or a change of length).
+    ///
+    /// When only clean layers sit before the first changed one and after the last, and the total
+    /// length is unchanged, every clean layer is still where it was parsed; see [`track`].
+    pub(crate) fn in_place_len(&self) -> Option<u16> {
+        let (len, dirty) = self.track.in_place()?;
+        if dirty != 0 && self.size().get() != len {
+            return None;
+        }
+        Some(len)
+    }
+
+    /// Rewrite, in `buf` (the bytes [`Self::in_place_len`] said to take back), every layer from
+    /// the first changed one to the last; the others already hold what they say.
+    ///
+    /// # Errors
+    ///
+    /// Only if `buf` is not as long as these headers, which [`Self::in_place_len`] rules out.
+    pub(crate) fn rewrite_in_place(&mut self, buf: &mut [u8]) -> Result<(), DeParseError<()>> {
+        let Some((_, dirty)) = self.track.in_place() else {
+            return Err(DeParseError::Invalid(()));
+        };
+        if dirty == 0 {
+            return Ok(());
+        }
+        // Slot ranks follow the bits in `track::slot`: eth 0, vlan 1, net 2, net_ext 3,
+        // transport 4, udp_encap 5. LLDP sits between the VLAN tags and where a network header
+        // would be; embedded headers after the transport and any encapsulation.
+        let first = dirty.trailing_zeros();
+        let last = dirty.ilog2();
+        let span = |rank: u32| first <= rank && rank <= last;
+        let mut at = 0usize;
+        if let Some(eth) = &self.eth {
+            put(eth, span(0), buf, &mut at)?;
+        }
+        for vlan in &self.vlan {
+            put(vlan, span(1), buf, &mut at)?;
+        }
+        if let Some(lldp) = &self.lldp {
+            put(lldp.as_ref(), first <= 1 && last >= 2, buf, &mut at)?;
+        }
+        if let Some(net) = &self.net {
+            put(net, span(2), buf, &mut at)?;
+        }
+        for ext in &self.net_ext {
+            put(ext, span(3), buf, &mut at)?;
+        }
+        if let Some(transport) = &self.transport {
+            put(transport, span(4), buf, &mut at)?;
+        }
+        if let Some(UdpEncap::Vxlan(vxlan)) = &self.udp_encap {
+            put(vxlan, span(5), buf, &mut at)?;
+        }
+        // Embedded headers come after everything with a dirty bit, so they are never inside the
+        // span; a change to them marks the shape bit instead.
+        self.track.clean();
+        Ok(())
     }
 }
 
@@ -1104,6 +1200,11 @@ impl Headers {
 
     /// Add / Replace Ethernet header
     pub fn set_eth(&mut self, eth: Eth) {
+        self.track.mark(if self.eth.is_some() {
+            slot::ETH
+        } else {
+            slot::SHAPE
+        });
         self.eth = Some(eth);
     }
 
@@ -1124,7 +1225,16 @@ impl Headers {
     /// Get a mutable reference to the LLDP data unit, if this is an LLDP frame.
     #[must_use]
     pub fn lldp_mut(&mut self) -> Option<&mut Lldpdu> {
+        self.track.mark(slot::SHAPE);
         self.lldp.as_deref_mut()
+    }
+
+    /// Put an LLDP data unit behind these headers, which no parse can give a routed packet. For
+    /// tests that check such a stack is refused.
+    #[cfg(test)]
+    pub(crate) fn set_lldp_for_tests(&mut self, lldp: Option<Box<Lldpdu>>) {
+        self.track.mark(slot::SHAPE);
+        self.lldp = lldp;
     }
 
     /// Take the LLDP data unit out of these headers, if this is an LLDP frame.
@@ -1133,12 +1243,14 @@ impl Headers {
     /// plane and the headers it arrived behind stay where they are.
     #[must_use]
     pub fn take_lldp(&mut self) -> Option<Box<Lldpdu>> {
+        self.track.mark(slot::SHAPE);
         self.lldp.take()
     }
 
     /// Get a mutable reference to the Ethernet header, if present.
     #[must_use]
     pub fn eth_mut(&mut self) -> Option<&mut Eth> {
+        self.track.mark(slot::ETH);
         self.eth.as_mut()
     }
 
@@ -1157,6 +1269,7 @@ impl Headers {
     /// Get a mutable reference to the network (IP) header, if present.
     #[must_use]
     pub fn net_mut(&mut self) -> Option<&mut Net> {
+        self.track.mark(slot::NET);
         self.net.as_mut()
     }
 
@@ -1165,6 +1278,7 @@ impl Headers {
     /// Borrowing both at once lets an address change fold into the transport checksum.
     #[must_use]
     pub fn net_and_transport_mut(&mut self) -> Option<(&mut Net, Option<&mut Transport>)> {
+        self.track.mark(slot::NET | slot::TRANSPORT);
         Some((self.net.as_mut()?, self.transport.as_mut()))
     }
 
@@ -1246,24 +1360,41 @@ impl Headers {
         self.transport.as_ref()
     }
 
+    /// The network header and UDP encapsulation, with the transport header by mutable reference:
+    /// what giving an outer VXLAN UDP header its checksum takes.
+    pub(crate) fn net_transport_mut_encap(
+        &mut self,
+    ) -> (Option<&Net>, Option<&mut Transport>, Option<&UdpEncap>) {
+        self.track.mark(slot::TRANSPORT);
+        (
+            self.net.as_ref(),
+            self.transport.as_mut(),
+            self.udp_encap.as_ref(),
+        )
+    }
+
     /// Get a mutable reference to the transport header, if present.
     #[must_use]
     pub fn transport_mut(&mut self) -> Option<&mut Transport> {
+        self.track.mark(slot::TRANSPORT);
         self.transport.as_mut()
     }
 
     /// Replace the network (IP) header, returning the previous value.
     pub fn set_net(&mut self, net: Option<Net>) -> Option<Net> {
+        self.track.mark(slot::SHAPE);
         std::mem::replace(&mut self.net, net)
     }
 
     /// Replace the transport header, returning the previous value.
     pub fn set_transport(&mut self, transport: Option<Transport>) -> Option<Transport> {
+        self.track.mark(slot::SHAPE);
         std::mem::replace(&mut self.transport, transport)
     }
 
     /// Replace the UDP encapsulation header, returning the previous value.
     pub fn set_udp_encap(&mut self, udp_encap: Option<UdpEncap>) -> Option<UdpEncap> {
+        self.track.mark(slot::SHAPE);
         std::mem::replace(&mut self.udp_encap, udp_encap)
     }
 
@@ -1276,6 +1407,7 @@ impl Headers {
     /// Get a mutable reference to the UDP encapsulation header, if present.
     #[must_use]
     pub fn udp_encap_mut(&mut self) -> Option<&mut UdpEncap> {
+        self.track.mark(slot::UDP_ENCAP);
         self.udp_encap.as_mut()
     }
 
@@ -1291,6 +1423,7 @@ impl Headers {
     /// Get a mutable reference to the embedded IP headers, if present.
     #[must_use]
     pub fn embedded_ip_mut(&mut self) -> Option<&mut EmbeddedHeaders> {
+        self.track.mark(slot::SHAPE);
         self.embedded_ip.as_deref_mut()
     }
 
@@ -1313,6 +1446,7 @@ impl Headers {
     #[allow(unsafe_code)]
     #[allow(dead_code)]
     unsafe fn push_vlan_header_unchecked(&mut self, vlan: Vlan) -> Result<(), PushVlanError> {
+        self.track.mark(slot::SHAPE);
         if self.vlan.len() < MAX_VLANS {
             self.vlan.insert(0, vlan);
             Ok(())
@@ -1332,6 +1466,7 @@ impl Headers {
     /// stack.
     /// Returns [`PushVlanError::NoEthernetHeader`] if no Ethernet header is present.
     pub fn push_vlan(&mut self, vid: Vid) -> Result<(), PushVlanError> {
+        self.track.mark(slot::SHAPE);
         if self.vlan.len() >= MAX_VLANS {
             return Err(PushVlanError::TooManyVlans);
         }
@@ -1360,6 +1495,7 @@ impl Headers {
     ///
     /// Returns [`PopVlanError::NoEthernetHeader`] if no Ethernet header is present.
     pub fn pop_vlan(&mut self) -> Result<Option<Vlan>, PopVlanError> {
+        self.track.mark(slot::SHAPE);
         match &mut self.eth {
             None => Err(PopVlanError::NoEthernetHeader),
             Some(eth) => {
@@ -1483,6 +1619,7 @@ impl Headers {
         payload: impl AsRef<[u8]>,
         covered: Option<usize>,
     ) {
+        self.track.mark(slot::TRANSPORT);
         // Locally generated VXLAN uses a zero UDP checksum. Preserve received VXLAN checksums,
         // including nonzero values.
         if self.try_vxlan().is_some() {
@@ -1528,6 +1665,10 @@ impl Headers {
         payload: impl AsRef<[u8]>,
         covered: Option<usize>,
     ) {
+        self.track.mark(slot::NET);
+        if self.embedded_ip.is_some() {
+            self.track.mark(slot::SHAPE);
+        }
         let Some(net) = self.net.as_mut() else {
             trace!("no network header: can't update checksum");
             return;
@@ -1594,6 +1735,7 @@ impl TryIcmpAny for Headers {
 
 impl TryIcmpAnyMut for Headers {
     fn try_icmp_any_mut(&mut self) -> Option<IcmpAnyMut<'_>> {
+        self.track.mark(slot::TRANSPORT);
         match &mut self.transport {
             Some(Transport::Icmp4(header)) => Some(IcmpAnyMut::V4(header)),
             Some(Transport::Icmp6(header)) => Some(IcmpAnyMut::V6(header)),
@@ -1624,6 +1766,7 @@ impl TryTcpUdp for Headers {
 
 impl TryTcpUdpMut for Headers {
     fn try_tcp_udp_mut(&mut self) -> Option<TcpUdpMut<'_>> {
+        self.track.mark(slot::TRANSPORT);
         match &mut self.transport {
             Some(Transport::Tcp(header)) => Some(TcpUdpMut::Tcp(header)),
             Some(Transport::Udp(header)) => Some(TcpUdpMut::Udp(header)),
@@ -2044,6 +2187,7 @@ mod contract {
                     None,
                 ))),
                 lldp: None,
+                track: crate::headers::track::Track::default(),
             })
         }
     }
@@ -2095,6 +2239,7 @@ mod contract {
                 udp_encap: None,
                 embedded_ip,
                 lldp: None,
+                track: crate::headers::track::Track::default(),
             })
         }
     }
@@ -2166,6 +2311,7 @@ mod contract {
                                 udp_encap: None,
                                 embedded_ip: None,
                                 lldp: None,
+                                track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
                         }
@@ -2186,6 +2332,7 @@ mod contract {
                                 udp_encap,
                                 embedded_ip: None,
                                 lldp: None,
+                                track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
                         }
@@ -2200,6 +2347,7 @@ mod contract {
                                 udp_encap: None,
                                 embedded_ip: None,
                                 lldp: None,
+                                track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
                         }
@@ -2221,6 +2369,7 @@ mod contract {
                                 udp_encap: None,
                                 embedded_ip: None,
                                 lldp: None,
+                                track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
                         }
@@ -2241,6 +2390,7 @@ mod contract {
                                 udp_encap,
                                 embedded_ip: None,
                                 lldp: None,
+                                track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
                         }
@@ -2255,6 +2405,7 @@ mod contract {
                                 udp_encap: None,
                                 embedded_ip: None,
                                 lldp: None,
+                                track: crate::headers::track::Track::default(),
                             };
                             Some(headers)
                         }
@@ -3988,6 +4139,7 @@ mod legacy_parse_equivalence {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // kept verbatim from the old loop
     fn legacy_parse(buf: &[u8]) -> Result<(Headers, NonZero<u16>), ParseError<EthError>> {
         let mut cursor =
             Reader::new(buf).map_err(|IllegalBufferLength(len)| ParseError::BufferTooLong(len))?;
@@ -4001,6 +4153,7 @@ mod legacy_parse_equivalence {
             udp_encap: None,
             embedded_ip: None,
             lldp: None,
+            track: crate::headers::track::Track::default(),
         };
         // TODO: after parsing, validate RFC 8200 section 4.1 extension header
         // ordering constraints (e.g. HopByHop must be first and appear at most

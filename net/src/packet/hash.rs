@@ -62,7 +62,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             eth.ether_type().hash(state);
         }
         // vlan tags - we don't include PCP/DEI
-        for tag in &self.headers.vlan {
+        for tag in self.headers.vlan() {
             tag.vid().hash(state);
         }
         // Ip and transport
