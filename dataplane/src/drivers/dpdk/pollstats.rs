@@ -26,9 +26,24 @@ pub(crate) const RX_STORAGE: usize = MBUF_BURST;
 pub(crate) struct Knobs {
     /// The most packets one receive may take, at most [`RX_STORAGE`].
     pub(crate) burst: usize,
-    /// Receive the next burst halfway through the pipeline and prefetch its heads, so they are in
-    /// cache when that burst is parsed.
+    /// Receive the next burst early (see [`Knobs::ahead_at`]) and prefetch its heads, so they are
+    /// in cache when that burst is parsed.
     pub(crate) prefetch_ahead: bool,
+    /// Where the early receive happens: halfway through the stages, or just before transmit.
+    pub(crate) ahead_at_tx: bool,
+    /// Prefetch the heads of a burst right after receiving it (the normal path). Off: no head
+    /// prefetch at all on the normal path (a control).
+    pub(crate) prefetch_head: bool,
+    /// The hint for the normal-path head prefetch.
+    pub(crate) hint: dpdk::mem::PrefetchHint,
+    /// The hint for the early (ahead) head prefetch.
+    pub(crate) ahead_hint: dpdk::mem::PrefetchHint,
+    /// Also prefetch a burst received early again, with `hint`, right before parsing it.
+    pub(crate) near_too: bool,
+    /// Cache lines per head.
+    pub(crate) lines: usize,
+    /// Spread the mid-pipeline (ahead) prefetch over this many stage boundaries.
+    pub(crate) ahead_chunks: usize,
 }
 
 impl Knobs {
@@ -36,20 +51,46 @@ impl Knobs {
     const DEFAULT: Knobs = Knobs {
         burst: MBUF_BURST,
         prefetch_ahead: false,
+        ahead_at_tx: false,
+        prefetch_head: true,
+        hint: dpdk::mem::PrefetchHint::T0,
+        ahead_hint: dpdk::mem::PrefetchHint::T0,
+        near_too: false,
+        lines: dpdk::mem::PREFETCH_HEAD_LINES,
+        ahead_chunks: 1,
     };
 
-    /// The knobs from `DP_BENCH_RX_BURST` and `DP_BENCH_PREFETCH_AHEAD` (`1` to enable), or the
-    /// defaults where unset or unreadable.
+    /// The knobs from the environment, or the defaults where unset or unreadable:
+    /// `DP_BENCH_RX_BURST`, `DP_BENCH_PREFETCH_AHEAD=1`, `DP_BENCH_AHEAD_AT=mid|tx`,
+    /// `DP_BENCH_PREFETCH_HEAD=0|1`, `DP_BENCH_PREFETCH_HINT` and `DP_BENCH_AHEAD_HINT`
+    /// (`t0|t1|t2|nta`), `DP_BENCH_NEAR_TOO=1`, `DP_BENCH_PREFETCH_LINES`, `DP_BENCH_AHEAD_CHUNKS`.
     #[cfg(feature = "pollstats")]
     pub(crate) fn from_env() -> Knobs {
-        let burst = std::env::var("DP_BENCH_RX_BURST")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .map_or(Self::DEFAULT.burst, |b| b.clamp(1, RX_STORAGE));
-        let prefetch_ahead = std::env::var("DP_BENCH_PREFETCH_AHEAD").is_ok_and(|v| v == "1");
+        let var = |k: &str| std::env::var(k).ok();
+        let hint = |k: &str, d| match var(k).as_deref() {
+            Some("t0") => dpdk::mem::PrefetchHint::T0,
+            Some("t1") => dpdk::mem::PrefetchHint::T1,
+            Some("t2") => dpdk::mem::PrefetchHint::T2,
+            Some("nta") => dpdk::mem::PrefetchHint::Nta,
+            _ => d,
+        };
+        let d = Self::DEFAULT;
         Knobs {
-            burst,
-            prefetch_ahead,
+            burst: var("DP_BENCH_RX_BURST")
+                .and_then(|v| v.parse::<usize>().ok())
+                .map_or(d.burst, |b| b.clamp(1, RX_STORAGE)),
+            prefetch_ahead: var("DP_BENCH_PREFETCH_AHEAD").is_some_and(|v| v == "1"),
+            ahead_at_tx: var("DP_BENCH_AHEAD_AT").is_some_and(|v| v == "tx"),
+            prefetch_head: var("DP_BENCH_PREFETCH_HEAD").is_none_or(|v| v != "0"),
+            hint: hint("DP_BENCH_PREFETCH_HINT", d.hint),
+            ahead_hint: hint("DP_BENCH_AHEAD_HINT", d.ahead_hint),
+            near_too: var("DP_BENCH_NEAR_TOO").is_some_and(|v| v == "1"),
+            lines: var("DP_BENCH_PREFETCH_LINES")
+                .and_then(|v| v.parse::<usize>().ok())
+                .map_or(d.lines, |l| l.clamp(1, 4)),
+            ahead_chunks: var("DP_BENCH_AHEAD_CHUNKS")
+                .and_then(|v| v.parse::<usize>().ok())
+                .map_or(d.ahead_chunks, |c| c.max(1)),
         }
     }
 
@@ -129,9 +170,10 @@ impl PollStats {
         tracing::info!(
             target: "pollstats",
             worker,
-            "polling with burst {} and prefetch-ahead {}",
+            "polling with burst {} and prefetch-ahead {} knobs {:?}",
             knobs.burst,
-            knobs.prefetch_ahead
+            knobs.prefetch_ahead,
+            knobs
         );
         PollStats::new_quiet(worker, knobs)
     }

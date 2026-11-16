@@ -349,6 +349,46 @@ pub const CACHE_LINE_BYTES: usize = 64;
 /// See [`Mbuf::prefetch_head`].
 pub const PREFETCH_HEAD_LINES: usize = 2;
 
+/// An x86 software prefetch locality hint. Bench only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefetchHint {
+    /// `prefetcht0`
+    T0,
+    /// `prefetcht1`
+    T1,
+    /// `prefetcht2`
+    T2,
+    /// `prefetchnta`
+    Nta,
+}
+
+/// Prefetch the line holding `addr` with `hint` (x86 only; the others fall back to
+/// [`prefetch_line`]).
+///
+/// # Safety
+///
+/// As [`prefetch_line`].
+#[inline(always)]
+unsafe fn prefetch_line_hint(hint: PrefetchHint, addr: *const u8) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: `_mm_prefetch` is a hint and cannot fault.
+    unsafe {
+        use core::arch::x86_64::{_MM_HINT_NTA, _MM_HINT_T0, _MM_HINT_T1, _MM_HINT_T2, _mm_prefetch};
+        match hint {
+            PrefetchHint::T0 => _mm_prefetch::<_MM_HINT_T0>(addr.cast()),
+            PrefetchHint::T1 => _mm_prefetch::<_MM_HINT_T1>(addr.cast()),
+            PrefetchHint::T2 => _mm_prefetch::<_MM_HINT_T2>(addr.cast()),
+            PrefetchHint::Nta => _mm_prefetch::<_MM_HINT_NTA>(addr.cast()),
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = hint;
+        // SAFETY: forwarded.
+        unsafe { prefetch_line(addr) }
+    }
+}
+
 /// Prefetch the cache line holding `addr` into every cache level (`_MM_HINT_T0`, `PLDL1KEEP`).
 /// A no-op on architectures without a stable prefetch.
 ///
@@ -924,6 +964,19 @@ impl<'eal> Mbuf<'eal> {
                 .offset(self.raw.as_ref().annon1.annon1.data_off as isize);
             for line in 0..PREFETCH_HEAD_LINES {
                 prefetch_line(head.wrapping_add(line * CACHE_LINE_BYTES));
+            }
+        }
+    }
+
+    /// [`Self::prefetch_head`] with a chosen x86 locality hint and line count. Bench only.
+    #[inline(always)]
+    pub fn prefetch_head_hint(&self, hint: PrefetchHint, lines: usize) {
+        // SAFETY: as in `prefetch_head`: a prefetch neither faults nor reads.
+        unsafe {
+            let head = (self.raw.as_ref().buf_addr as *const u8)
+                .offset(self.raw.as_ref().annon1.annon1.data_off as isize);
+            for line in 0..lines {
+                prefetch_line_hint(hint, head.wrapping_add(line * CACHE_LINE_BYTES));
             }
         }
     }

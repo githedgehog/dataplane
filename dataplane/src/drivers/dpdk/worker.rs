@@ -324,17 +324,22 @@ impl<'p> Worker<'p> {
         let processing = pollstats::stamp();
         if !from_ahead {
             stats.phase(Phase::Rx, received_at, processing);
+        }
+        if knobs.prefetch_head && (!from_ahead || knobs.near_too) {
             for mbuf in rx_mbufs.iter() {
-                mbuf.prefetch_head();
+                mbuf.prefetch_head_hint(knobs.hint, knobs.lines);
             }
         }
         let rx_if = self.ports[slot].queues.if_index;
         let fallback = self.ports[slot].queues.fallback.load();
-        if knobs.prefetch_ahead {
+        if knobs.prefetch_ahead && !knobs.ahead_at_tx {
             // Halfway through the stages, take the next burst and start its heads on their way
             // from DRAM, so they arrive while this burst finishes rather than when that one starts.
             let rx = &mut self.ports[slot].queues.rx;
             let split = pipeline.stages() / 2;
+            // Calls to the split closure: one per stage from `split`, plus one after the last.
+            let stages_left = pipeline.stages() - split + 1;
+            let chunks = knobs.ahead_chunks.clamp(1, stages_left);
             let mut mid_rx = None;
             process_burst_with(
                 rx_mbufs.drain_all(),
@@ -344,15 +349,26 @@ impl<'p> Worker<'p> {
                 diverted,
                 counters,
                 |packets| {
-                    pipeline.process_burst_split(packets, split, || {
-                        let at = pollstats::stamp();
-                        rx.receive_up_to(ahead, knobs.burst);
-                        for mbuf in ahead.iter() {
-                            mbuf.prefetch_head();
+                    pipeline.process_burst_split(packets, split, |i| {
+                        // Receive at the split, then prefetch the heads in `chunks` pieces, one
+                        // per stage boundary from there; whatever is left goes after the last
+                        // stage.
+                        if i == 0 {
+                            let at = pollstats::stamp();
+                            rx.receive_up_to(ahead, knobs.burst);
+                            let done = pollstats::stamp();
+                            mid_rx = Some((at, done));
+                            stats.received(at, ahead.len(), true, || rx.pending());
                         }
-                        let done = pollstats::stamp();
-                        mid_rx = Some((at, done));
-                        stats.received(at, ahead.len(), true, || rx.pending());
+                        let per = ahead.len().div_ceil(chunks).max(1);
+                        let (from, to) = if i + 1 >= stages_left {
+                            (i * per, ahead.len())
+                        } else {
+                            (i * per, ((i + 1) * per).min(ahead.len()))
+                        };
+                        for mbuf in ahead.iter().skip(from).take(to.saturating_sub(from)) {
+                            mbuf.prefetch_head_hint(knobs.ahead_hint, knobs.lines);
+                        }
                     });
                 },
             );
@@ -371,6 +387,19 @@ impl<'p> Worker<'p> {
             );
         }
         self.punt_diverted(slot, diverted, counters);
+        if knobs.prefetch_ahead && knobs.ahead_at_tx {
+            // Take the next burst before serializing and transmitting this one, and start its
+            // heads on their way while this burst's transmit runs.
+            let at = pollstats::stamp();
+            let rx = &mut self.ports[slot].queues.rx;
+            rx.receive_up_to(ahead, knobs.burst);
+            for mbuf in ahead.iter() {
+                mbuf.prefetch_head_hint(knobs.ahead_hint, knobs.lines);
+            }
+            let done = pollstats::stamp();
+            stats.received(at, ahead.len(), true, || rx.pending());
+            stats.moved(Phase::Process, Phase::Rx, at, done);
+        }
         let transmitting = pollstats::stamp();
         stats.phase(Phase::Process, processing, transmitting);
 

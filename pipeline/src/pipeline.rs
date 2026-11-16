@@ -114,20 +114,19 @@ impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
         &mut self,
         burst: &mut Vec<Packet<Buf>>,
         split: usize,
-        mid: impl FnOnce(),
+        mut mid: impl FnMut(usize),
     ) {
-        let mut mid = Some(mid);
+        // `mid(i)` runs before stage `split + i`, for every stage from `split` on, and once more
+        // after the last stage (with the next index). Stages before `split` see no call.
+        let mut next = 0;
         for (stage, nf) in self.nfs.values_mut().enumerate() {
-            if stage == split
-                && let Some(mid) = mid.take()
-            {
-                mid();
+            if stage >= split {
+                mid(next);
+                next += 1;
             }
             nf.process_burst(burst);
         }
-        if let Some(mid) = mid {
-            mid();
-        }
+        mid(next);
     }
 
     /// Add a static network function to the pipeline.
