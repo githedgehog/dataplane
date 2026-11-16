@@ -8,15 +8,15 @@ use std::borrow::Cow;
 
 use crate::checksum::Checksum;
 use crate::eth::ethtype::EthType;
-use crate::eth::{Eth, EthError};
+use crate::eth::{Eth, EthError, EthNext};
 use crate::icmp_any::{IcmpAny, IcmpAnyMut, get_payload_for_checksum};
 use crate::icmp4::{Icmp4, Icmp4Checksum};
 use crate::icmp6::{Icmp6, Icmp6Checksum, Icmp6ChecksumPayload};
 use crate::impl_from_for_enum;
 use crate::ip::{IpAddress, NextHeader, UnicastIpAddr};
 use crate::ip_auth::{Ipv4Auth, Ipv6Auth};
-use crate::ipv4::Ipv4;
-use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Routing};
+use crate::ipv4::{Ipv4, Ipv4Next};
+use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Ipv6Next, Routing};
 use crate::lldp::Lldpdu;
 use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
@@ -660,23 +660,232 @@ pub enum Header {
     Lldp(Box<Lldpdu>),
 }
 
-impl Header {
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<Header> {
-        match self {
-            Header::Eth(eth) => eth.parse_payload(cursor).map(Header::from),
-            Header::Vlan(vlan) => vlan.parse_payload(cursor).map(Header::from),
-            Header::Ipv4(ipv4) => ipv4.parse_payload(cursor).map(Header::from),
-            Header::Ipv6(ipv6) => ipv6.parse_payload(cursor).map(Header::from),
-            Header::Ipv4Auth(auth) => auth.parse_payload(cursor),
-            Header::Ipv6Auth(auth) => auth.parse_payload(cursor),
-            Header::HopByHop(h) => h.parse_payload(cursor),
-            Header::DestOpts(h) => h.parse_payload(cursor),
-            Header::Routing(h) => h.parse_payload(cursor),
-            Header::Fragment(h) => h.parse_payload(cursor),
-            Header::Icmp4(icmp4) => icmp4.parse_payload(cursor).map(Header::from),
-            Header::Icmp6(icmp6) => icmp6.parse_payload(cursor).map(Header::from),
-            Header::Udp(udp) => udp.parse_payload(cursor).map(Header::from),
-            Header::Encap(_) | Header::Tcp(_) | Header::EmbeddedIp(_) | Header::Lldp(_) => None,
+/// What [`Headers::parse`] parsed last, without its value: that is already in place in the
+/// [`Headers`] being filled, which is where the next step reads it from.
+///
+/// Carrying the kind rather than the header keeps each header where it was first written. Passing
+/// the parsed header itself along (as a [`Header`], which an inline [`EmbeddedHeaders`] makes some
+/// 140 bytes) cost three or four copies of it per layer, and the store-to-load forwarding stalls
+/// that come with copying a value in pieces of one width and reading it back in another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Parsed {
+    Eth,
+    Vlan,
+    Ipv4,
+    Ipv6,
+    /// The last entry of `net_ext`.
+    Ext,
+    Udp,
+    Icmp4,
+    Icmp6,
+    /// Nothing follows (TCP, an encapsulation, embedded headers, LLDP), or parsing stopped.
+    Done,
+}
+
+impl Headers {
+    /// Push `vlan` if there is room; otherwise put the cursor back at its start (`start`) and stop,
+    /// so that the tag and everything after it stay in the payload.
+    fn place_vlan(&mut self, vlan: Vlan, start: usize, cursor: &mut Reader) -> Parsed {
+        if self.vlan.len() < MAX_VLANS {
+            self.vlan.push(vlan);
+            Parsed::Vlan
+        } else {
+            cursor.rewind_to(start);
+            Parsed::Done
+        }
+    }
+
+    /// As [`Self::place_vlan`], for an extension header.
+    fn place_ext(&mut self, ext: NetExt, start: usize, cursor: &mut Reader) -> Parsed {
+        if self.net_ext.len() < MAX_NET_EXTENSIONS {
+            self.net_ext.push(ext);
+            Parsed::Ext
+        } else {
+            cursor.rewind_to(start);
+            Parsed::Done
+        }
+    }
+
+    fn place_eth_next(&mut self, next: EthNext, start: usize, cursor: &mut Reader) -> Parsed {
+        match next {
+            EthNext::Vlan(vlan) => self.place_vlan(vlan, start, cursor),
+            EthNext::Ipv4(ip) => {
+                self.net = Some(Net::Ipv4(ip));
+                Parsed::Ipv4
+            }
+            EthNext::Ipv6(ip) => {
+                self.net = Some(Net::Ipv6(ip));
+                Parsed::Ipv6
+            }
+            EthNext::Lldp(lldp) => {
+                self.lldp = Some(lldp);
+                Parsed::Done
+            }
+        }
+    }
+
+    fn place_ipv4_next(&mut self, next: Ipv4Next, start: usize, cursor: &mut Reader) -> Parsed {
+        match next {
+            Ipv4Next::Tcp(tcp) => {
+                self.transport = Some(Transport::Tcp(tcp));
+                Parsed::Done
+            }
+            Ipv4Next::Udp(udp) => {
+                self.transport = Some(Transport::Udp(udp));
+                Parsed::Udp
+            }
+            Ipv4Next::Icmp4(icmp) => {
+                self.transport = Some(Transport::Icmp4(icmp));
+                Parsed::Icmp4
+            }
+            Ipv4Next::Ipv4Auth(auth) => self.place_ext(NetExt::Ipv4Auth(auth), start, cursor),
+        }
+    }
+
+    fn place_ipv6_next(&mut self, next: Ipv6Next, start: usize, cursor: &mut Reader) -> Parsed {
+        match next {
+            Ipv6Next::Tcp(tcp) => {
+                self.transport = Some(Transport::Tcp(tcp));
+                Parsed::Done
+            }
+            Ipv6Next::Udp(udp) => {
+                self.transport = Some(Transport::Udp(udp));
+                Parsed::Udp
+            }
+            Ipv6Next::Icmp6(icmp) => {
+                self.transport = Some(Transport::Icmp6(icmp));
+                Parsed::Icmp6
+            }
+            Ipv6Next::Ipv6Auth(h) => self.place_ext(NetExt::Ipv6Auth(h), start, cursor),
+            Ipv6Next::HopByHop(h) => self.place_ext(NetExt::HopByHop(h), start, cursor),
+            Ipv6Next::DestOpts(h) => self.place_ext(NetExt::DestOpts(h), start, cursor),
+            Ipv6Next::Routing(h) => self.place_ext(NetExt::Routing(h), start, cursor),
+            Ipv6Next::Fragment(h) => self.place_ext(NetExt::Fragment(h), start, cursor),
+        }
+    }
+
+    /// Store what an extension header's successor parsed as. Extension headers hand back a
+    /// [`Header`]; they are rare enough that its size does not matter here.
+    #[cold]
+    fn place_header(&mut self, next: Header, start: usize, cursor: &mut Reader) -> Parsed {
+        match next {
+            Header::Eth(eth) => {
+                self.eth = Some(eth);
+                Parsed::Eth
+            }
+            Header::Vlan(vlan) => self.place_vlan(vlan, start, cursor),
+            Header::Ipv4(ip) => {
+                self.net = Some(Net::Ipv4(ip));
+                Parsed::Ipv4
+            }
+            Header::Ipv6(ip) => {
+                self.net = Some(Net::Ipv6(ip));
+                Parsed::Ipv6
+            }
+            Header::Tcp(tcp) => {
+                self.transport = Some(Transport::Tcp(tcp));
+                Parsed::Done
+            }
+            Header::Udp(udp) => {
+                self.transport = Some(Transport::Udp(udp));
+                Parsed::Udp
+            }
+            Header::Icmp4(icmp) => {
+                self.transport = Some(Transport::Icmp4(icmp));
+                Parsed::Icmp4
+            }
+            Header::Icmp6(icmp) => {
+                self.transport = Some(Transport::Icmp6(icmp));
+                Parsed::Icmp6
+            }
+            Header::HopByHop(h) => self.place_ext(NetExt::HopByHop(h), start, cursor),
+            Header::DestOpts(h) => self.place_ext(NetExt::DestOpts(h), start, cursor),
+            Header::Routing(h) => self.place_ext(NetExt::Routing(h), start, cursor),
+            Header::Fragment(h) => self.place_ext(NetExt::Fragment(h), start, cursor),
+            Header::Ipv4Auth(h) => self.place_ext(NetExt::Ipv4Auth(h), start, cursor),
+            Header::Ipv6Auth(h) => self.place_ext(NetExt::Ipv6Auth(h), start, cursor),
+            Header::Encap(encap) => {
+                self.udp_encap = Some(encap);
+                Parsed::Done
+            }
+            Header::EmbeddedIp(embedded) => {
+                self.embedded_ip = Some(Box::new(embedded));
+                Parsed::Done
+            }
+            Header::Lldp(lldp) => {
+                self.lldp = Some(lldp);
+                Parsed::Done
+            }
+        }
+    }
+
+    /// Parse what follows the header `last` names, which is already in place, and put it in place
+    /// too. Returns what was parsed, or [`Parsed::Done`] when nothing (more) could be.
+    fn parse_next(&mut self, last: Parsed, cursor: &mut Reader) -> Parsed {
+        let start = cursor.position();
+        match last {
+            Parsed::Eth => match self.eth.as_ref().and_then(|eth| eth.parse_payload(cursor)) {
+                Some(next) => self.place_eth_next(next, start, cursor),
+                None => Parsed::Done,
+            },
+            Parsed::Vlan => match self.vlan.last().and_then(|vlan| vlan.parse_payload(cursor)) {
+                Some(next) => self.place_eth_next(next, start, cursor),
+                None => Parsed::Done,
+            },
+            Parsed::Ipv4 => match &self.net {
+                Some(Net::Ipv4(ip)) => match ip.parse_payload(cursor) {
+                    Some(next) => self.place_ipv4_next(next, start, cursor),
+                    None => Parsed::Done,
+                },
+                _ => Parsed::Done,
+            },
+            Parsed::Ipv6 => match &self.net {
+                Some(Net::Ipv6(ip)) => match ip.parse_payload(cursor) {
+                    Some(next) => self.place_ipv6_next(next, start, cursor),
+                    None => Parsed::Done,
+                },
+                _ => Parsed::Done,
+            },
+            Parsed::Ext => {
+                let next = match self.net_ext.last() {
+                    Some(NetExt::HopByHop(h)) => h.parse_payload(cursor),
+                    Some(NetExt::DestOpts(h)) => h.parse_payload(cursor),
+                    Some(NetExt::Routing(h)) => h.parse_payload(cursor),
+                    Some(NetExt::Fragment(h)) => h.parse_payload(cursor),
+                    Some(NetExt::Ipv4Auth(h)) => h.parse_payload(cursor),
+                    Some(NetExt::Ipv6Auth(h)) => h.parse_payload(cursor),
+                    None => None,
+                };
+                match next {
+                    Some(next) => self.place_header(next, start, cursor),
+                    None => Parsed::Done,
+                }
+            }
+            Parsed::Udp => {
+                if let Some(Transport::Udp(udp)) = &self.transport
+                    && let Some(encap) = udp.parse_payload(cursor)
+                {
+                    self.udp_encap = Some(encap);
+                }
+                Parsed::Done
+            }
+            Parsed::Icmp4 => {
+                if let Some(Transport::Icmp4(icmp)) = &self.transport
+                    && let Some(embedded) = icmp.parse_payload(cursor)
+                {
+                    self.embedded_ip = Some(Box::new(embedded));
+                }
+                Parsed::Done
+            }
+            Parsed::Icmp6 => {
+                if let Some(Transport::Icmp6(icmp)) = &self.transport
+                    && let Some(embedded) = icmp.parse_payload(cursor)
+                {
+                    self.embedded_ip = Some(Box::new(embedded));
+                }
+                Parsed::Done
+            }
+            Parsed::Done => Parsed::Done,
         }
     }
 }
@@ -684,13 +893,12 @@ impl Header {
 impl Parse for Headers {
     type Error = EthError;
 
-    #[allow(clippy::too_many_lines)] // one arm per header
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
         let mut cursor =
             Reader::new(buf).map_err(|IllegalBufferLength(len)| ParseError::BufferTooLong(len))?;
         let (eth, _) = cursor.parse::<Eth>()?;
         let mut this = Headers {
-            eth: Some(eth.clone()),
+            eth: Some(eth),
             net: None,
             transport: None,
             vlan: Stack::default(),
@@ -719,90 +927,13 @@ impl Parse for Headers {
         // `transport()`; static NAT and `FlowKey` did not, until they were fixed.
         // Stopping here would change what tests such as
         // `fragment_offsets_are_checked_before_following_extensions` expect.
-        let mut prior = Header::Eth(eth);
-        // Offset of `prior` from the Ethernet header. When the header stack is full, rewind here
-        // so this header and all following bytes remain in the payload, including any parsed ahead.
-        let mut prior_start = 0;
-        loop {
-            let next_start = cursor.position();
-            let header = prior.parse_payload(&mut cursor);
-            match prior {
-                Header::Eth(eth) => this.eth = Some(eth),
-                Header::Ipv4(ip) => this.net = Some(Net::Ipv4(ip)),
-                Header::Ipv6(ip) => this.net = Some(Net::Ipv6(ip)),
-                Header::Tcp(tcp) => this.transport = Some(Transport::Tcp(tcp)),
-                Header::Udp(udp) => this.transport = Some(Transport::Udp(udp)),
-                Header::Icmp4(icmp4) => this.transport = Some(Transport::Icmp4(icmp4)),
-                Header::Icmp6(icmp6) => this.transport = Some(Transport::Icmp6(icmp6)),
-                Header::Encap(encap) => this.udp_encap = Some(encap),
-                Header::Vlan(vlan) => {
-                    if this.vlan.len() < MAX_VLANS {
-                        this.vlan.push(vlan);
-                    } else {
-                        cursor.rewind_to(prior_start);
-                        break;
-                    }
-                }
-                Header::HopByHop(h) => {
-                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
-                        this.net_ext.push(NetExt::HopByHop(h));
-                    } else {
-                        cursor.rewind_to(prior_start);
-                        break;
-                    }
-                }
-                Header::DestOpts(h) => {
-                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
-                        this.net_ext.push(NetExt::DestOpts(h));
-                    } else {
-                        cursor.rewind_to(prior_start);
-                        break;
-                    }
-                }
-                Header::Routing(h) => {
-                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
-                        this.net_ext.push(NetExt::Routing(h));
-                    } else {
-                        cursor.rewind_to(prior_start);
-                        break;
-                    }
-                }
-                Header::Fragment(h) => {
-                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
-                        this.net_ext.push(NetExt::Fragment(h));
-                    } else {
-                        cursor.rewind_to(prior_start);
-                        break;
-                    }
-                }
-                Header::Ipv4Auth(h) => {
-                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
-                        this.net_ext.push(NetExt::Ipv4Auth(h));
-                    } else {
-                        cursor.rewind_to(prior_start);
-                        break;
-                    }
-                }
-                Header::Ipv6Auth(h) => {
-                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
-                        this.net_ext.push(NetExt::Ipv6Auth(h));
-                    } else {
-                        cursor.rewind_to(prior_start);
-                        break;
-                    }
-                }
-                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(Box::new(embedded)),
-                Header::Lldp(lldp) => this.lldp = Some(lldp),
-            }
-            match header {
-                None => {
-                    break;
-                }
-                Some(next) => {
-                    prior = next;
-                    prior_start = next_start;
-                }
-            }
+        // Each header is parsed straight into its place in `this`; only its kind is carried to the
+        // next step, which reads the header back from there. When a stack is full, the header that
+        // did not fit is given back: the cursor returns to its start, so it and everything after it
+        // stay in the payload.
+        let mut last = Parsed::Eth;
+        while last != Parsed::Done {
+            last = this.parse_next(last, &mut cursor);
         }
         #[allow(unsafe_code, clippy::cast_possible_truncation)] // Non zero checked by parse impl
         let consumed = unsafe {
@@ -3796,5 +3927,240 @@ mod datagram_end_tests {
         assert_eq!(headers.net_ext(), []);
         assert!(headers.transport().is_none());
         assert_eq!(usize::from(consumed.get()), ETH + IPV6);
+    }
+}
+
+/// The parse loop as it was before headers were placed directly, kept to check that the new one
+/// gives the same answer on every input. Bench branch only: drop before anything is merged.
+#[cfg(test)]
+mod legacy_parse_equivalence {
+    use super::*;
+    use crate::parse::IllegalBufferLength;
+
+    fn legacy_next(this: &Header, cursor: &mut Reader) -> Option<Header> {
+        match this {
+            Header::Eth(eth) => eth.parse_payload(cursor).map(Header::from),
+            Header::Vlan(vlan) => vlan.parse_payload(cursor).map(Header::from),
+            Header::Ipv4(ipv4) => ipv4.parse_payload(cursor).map(Header::from),
+            Header::Ipv6(ipv6) => ipv6.parse_payload(cursor).map(Header::from),
+            Header::Ipv4Auth(auth) => auth.parse_payload(cursor),
+            Header::Ipv6Auth(auth) => auth.parse_payload(cursor),
+            Header::HopByHop(h) => h.parse_payload(cursor),
+            Header::DestOpts(h) => h.parse_payload(cursor),
+            Header::Routing(h) => h.parse_payload(cursor),
+            Header::Fragment(h) => h.parse_payload(cursor),
+            Header::Icmp4(icmp4) => icmp4.parse_payload(cursor).map(Header::from),
+            Header::Icmp6(icmp6) => icmp6.parse_payload(cursor).map(Header::from),
+            Header::Udp(udp) => udp.parse_payload(cursor).map(Header::from),
+            Header::Encap(_) | Header::Tcp(_) | Header::EmbeddedIp(_) | Header::Lldp(_) => None,
+        }
+    }
+
+    fn legacy_parse(buf: &[u8]) -> Result<(Headers, NonZero<u16>), ParseError<EthError>> {
+        let mut cursor =
+            Reader::new(buf).map_err(|IllegalBufferLength(len)| ParseError::BufferTooLong(len))?;
+        let (eth, _) = cursor.parse::<Eth>()?;
+        let mut this = Headers {
+            eth: Some(eth.clone()),
+            net: None,
+            transport: None,
+            vlan: Stack::default(),
+            net_ext: Stack::default(),
+            udp_encap: None,
+            embedded_ip: None,
+            lldp: None,
+        };
+        // TODO: after parsing, validate RFC 8200 section 4.1 extension header
+        // ordering constraints (e.g. HopByHop must be first and appear at most
+        // once, DestOpts may appear at most twice, etc.).  The parser currently
+        // accepts any ordering from the wire.  A validate() method or post-parse
+        // check would catch malformed chains without rejecting packets outright.
+        //
+        // TODO: consider returning a parse error instead of silently stopping
+        // when MAX_NET_EXTENSIONS is exceeded.  The current `break` exits the
+        // entire parse loop, so transport and embedded headers that follow the
+        // overflow point are also not parsed: they stay in the payload, with
+        // the header that did not fit.  This matches the MAX_VLANS handling but
+        // the caller has no way to detect a partial parse.
+        //
+        // TODO: stop at a non-first fragment.  Its payload is body octets, but
+        // the parser reads a transport header (and, for IPv6, extension headers)
+        // out of it all the same.  Every consumer has to know to check
+        // `is_non_first_fragment` or `upper_layer_proto` before trusting
+        // `transport()`; static NAT and `FlowKey` did not, until they were fixed.
+        // Stopping here would change what tests such as
+        // `fragment_offsets_are_checked_before_following_extensions` expect.
+        let mut prior = Header::Eth(eth);
+        // Offset of `prior` from the Ethernet header. When the header stack is full, rewind here
+        // so this header and all following bytes remain in the payload, including any parsed ahead.
+        let mut prior_start = 0;
+        loop {
+            let next_start = cursor.position();
+            let header = legacy_next(&prior, &mut cursor);
+            match prior {
+                Header::Eth(eth) => this.eth = Some(eth),
+                Header::Ipv4(ip) => this.net = Some(Net::Ipv4(ip)),
+                Header::Ipv6(ip) => this.net = Some(Net::Ipv6(ip)),
+                Header::Tcp(tcp) => this.transport = Some(Transport::Tcp(tcp)),
+                Header::Udp(udp) => this.transport = Some(Transport::Udp(udp)),
+                Header::Icmp4(icmp4) => this.transport = Some(Transport::Icmp4(icmp4)),
+                Header::Icmp6(icmp6) => this.transport = Some(Transport::Icmp6(icmp6)),
+                Header::Encap(encap) => this.udp_encap = Some(encap),
+                Header::Vlan(vlan) => {
+                    if this.vlan.len() < MAX_VLANS {
+                        this.vlan.push(vlan);
+                    } else {
+                        cursor.rewind_to(prior_start);
+                        break;
+                    }
+                }
+                Header::HopByHop(h) => {
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::HopByHop(h));
+                    } else {
+                        cursor.rewind_to(prior_start);
+                        break;
+                    }
+                }
+                Header::DestOpts(h) => {
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::DestOpts(h));
+                    } else {
+                        cursor.rewind_to(prior_start);
+                        break;
+                    }
+                }
+                Header::Routing(h) => {
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Routing(h));
+                    } else {
+                        cursor.rewind_to(prior_start);
+                        break;
+                    }
+                }
+                Header::Fragment(h) => {
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Fragment(h));
+                    } else {
+                        cursor.rewind_to(prior_start);
+                        break;
+                    }
+                }
+                Header::Ipv4Auth(h) => {
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Ipv4Auth(h));
+                    } else {
+                        cursor.rewind_to(prior_start);
+                        break;
+                    }
+                }
+                Header::Ipv6Auth(h) => {
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Ipv6Auth(h));
+                    } else {
+                        cursor.rewind_to(prior_start);
+                        break;
+                    }
+                }
+                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(Box::new(embedded)),
+                Header::Lldp(lldp) => this.lldp = Some(lldp),
+            }
+            match header {
+                None => {
+                    break;
+                }
+                Some(next) => {
+                    prior = next;
+                    prior_start = next_start;
+                }
+            }
+        }
+        #[allow(unsafe_code, clippy::cast_possible_truncation)] // Non zero checked by parse impl
+        let consumed = unsafe {
+            NonZero::new_unchecked((cursor.inner.len() - cursor.remaining as usize) as u16)
+        };
+        Ok((this, consumed))
+    }
+
+    fn same(buf: &[u8]) {
+        match (Headers::parse(buf), legacy_parse(buf)) {
+            (Ok(new), Ok(old)) => assert_eq!(new, old, "parse differs on {buf:02x?}"),
+            (Err(new), Err(old)) => {
+                assert_eq!(
+                    format!("{new:?}"),
+                    format!("{old:?}"),
+                    "errors differ on {buf:02x?}"
+                );
+            }
+            (new, old) => panic!("one parse failed on {buf:02x?}: new {new:?}, old {old:?}"),
+        }
+    }
+
+    #[test]
+    fn arbitrary_bytes_parse_the_same() {
+        bolero::check!()
+            .with_type::<Vec<u8>>()
+            .for_each(|bytes| same(bytes));
+    }
+
+    #[test]
+    fn arbitrary_bytes_behind_a_valid_eth_parse_the_same() {
+        bolero::check!()
+            .with_type::<(Eth, Vec<u8>)>()
+            .for_each(|(eth, tail)| {
+                let mut buf = vec![0u8; usize::from(eth.size().get()) + tail.len()];
+                eth.deparse(&mut buf).unwrap();
+                buf[usize::from(eth.size().get())..].copy_from_slice(tail);
+                same(&buf);
+            });
+    }
+
+    fn deparsed_parse_the_same(headers: &Headers, tail: &[u8]) {
+        // Some generated values have nothing to serialize, and `size` refuses those.
+        let Ok(size) = std::panic::catch_unwind(|| headers.size()) else {
+            return;
+        };
+        let len = usize::from(size.get());
+        let mut buf = vec![0u8; len + tail.len()];
+        if headers.deparse(&mut buf).is_err() {
+            return;
+        }
+        buf[len..].copy_from_slice(tail);
+        same(&buf);
+        // and every truncation of it
+        for cut in 0..buf.len() {
+            same(&buf[..cut]);
+        }
+    }
+
+    #[test]
+    fn generated_headers_parse_the_same() {
+        bolero::check!()
+            .with_generator((bolero::produce::<Headers>(), bolero::produce::<Vec<u8>>()))
+            .for_each(|(h, tail)| deparsed_parse_the_same(h, tail));
+    }
+
+    #[test]
+    fn shaped_headers_parse_the_same() {
+        bolero::check!()
+            .with_generator((ShapedHeaders, bolero::produce::<Vec<u8>>()))
+            .for_each(|(h, tail)| deparsed_parse_the_same(h, tail));
+    }
+
+    #[test]
+    fn icmp_errors_parse_the_same() {
+        bolero::check!()
+            .with_generator((ShapedIcmpError, bolero::produce::<Vec<u8>>()))
+            .for_each(|(h, tail)| deparsed_parse_the_same(h, tail));
+    }
+
+    #[test]
+    fn thin_and_headless_parse_the_same() {
+        bolero::check!()
+            .with_generator((ThinHeaders, SometimesHeadless, bolero::produce::<Vec<u8>>()))
+            .for_each(|(a, b, tail)| {
+                deparsed_parse_the_same(a, tail);
+                deparsed_parse_the_same(b, tail);
+            });
     }
 }
