@@ -13,11 +13,14 @@ fn main() {
 
 #[cfg(not(feature = "loom"))]
 fn main() {
+    huge_text::remap_if_asked();
     runtime::main();
 }
 
 #[cfg(not(feature = "loom"))]
 mod drivers;
+#[cfg(not(feature = "loom"))]
+mod huge_text;
 #[cfg(not(feature = "loom"))]
 mod lldp_agent;
 #[cfg(not(feature = "loom"))]
