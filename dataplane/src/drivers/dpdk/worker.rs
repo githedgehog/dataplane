@@ -558,17 +558,16 @@ fn process_burst<Buf: PacketBufferMut>(
 ) {
     counters.rx += burst.len() as u64;
     packets.clear();
-    packets.extend(burst.filter_map(|buffer| match Packet::new(buffer) {
-        Ok(mut packet) => {
-            packet.meta_mut().iif = Some(rx_if);
-            Some(packet)
+    // Each packet is parsed in its slot rather than built and then moved into one.
+    for buffer in burst {
+        match Packet::parse_into(packets, buffer) {
+            Ok(packet) => packet.meta_mut().iif = Some(rx_if),
+            Err(e) => {
+                counters.parse_errors += 1;
+                trace!("failed to parse a received frame: {e:?}");
+            }
         }
-        Err(e) => {
-            counters.parse_errors += 1;
-            trace!("failed to parse a received frame: {e:?}");
-            None
-        }
-    }));
+    }
 
     diverted.clear();
     if let Some(early) = early {
