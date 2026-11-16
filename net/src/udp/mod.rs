@@ -87,6 +87,13 @@ impl Udp {
         }
     }
 
+    /// The length field as it arrived, unchecked. Bench-branch test aid: [`Udp::length`] assumes a
+    /// nonzero value that [`Udp::parse`] does not yet ensure (see notes/kani/PARSING-BUGS.md).
+    #[cfg(test)]
+    pub(crate) fn raw_length(&self) -> u16 {
+        self.0.length
+    }
+
     /// The length of the packet (including the 8-byte udp header).
     ///
     /// No attempt is made to ensure this value is correct (you can't always trust the packet).

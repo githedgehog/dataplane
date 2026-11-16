@@ -890,23 +890,26 @@ impl Headers {
     }
 }
 
-impl Parse for Headers {
-    type Error = EthError;
-
-    fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+impl Headers {
+    /// Parse `buf` into `self`, which must be empty (as [`Headers::default`] makes it), and return
+    /// how much of `buf` the headers took.
+    ///
+    /// [`Headers::parse`] does this into a fresh value. Parsing into one that already sits where it
+    /// is wanted (a [`Packet`](crate::packet::Packet) already in its burst) saves moving the
+    /// result there afterwards.
+    ///
+    /// # Errors
+    ///
+    /// As [`Headers::parse`]. `self` is then left partly filled.
+    pub(crate) fn parse_into(&mut self, buf: &[u8]) -> Result<NonZero<u16>, ParseError<EthError>> {
+        debug_assert!(
+            *self == Headers::default(),
+            "parsing into headers that are not empty"
+        );
         let mut cursor =
             Reader::new(buf).map_err(|IllegalBufferLength(len)| ParseError::BufferTooLong(len))?;
         let (eth, _) = cursor.parse::<Eth>()?;
-        let mut this = Headers {
-            eth: Some(eth),
-            net: None,
-            transport: None,
-            vlan: Stack::default(),
-            net_ext: Stack::default(),
-            udp_encap: None,
-            embedded_ip: None,
-            lldp: None,
-        };
+        self.eth = Some(eth);
         // TODO: after parsing, validate RFC 8200 section 4.1 extension header
         // ordering constraints (e.g. HopByHop must be first and appear at most
         // once, DestOpts may appear at most twice, etc.).  The parser currently
@@ -927,18 +930,28 @@ impl Parse for Headers {
         // `transport()`; static NAT and `FlowKey` did not, until they were fixed.
         // Stopping here would change what tests such as
         // `fragment_offsets_are_checked_before_following_extensions` expect.
-        // Each header is parsed straight into its place in `this`; only its kind is carried to the
+        // Each header is parsed straight into its place in `self`; only its kind is carried to the
         // next step, which reads the header back from there. When a stack is full, the header that
         // did not fit is given back: the cursor returns to its start, so it and everything after it
         // stay in the payload.
         let mut last = Parsed::Eth;
         while last != Parsed::Done {
-            last = this.parse_next(last, &mut cursor);
+            last = self.parse_next(last, &mut cursor);
         }
         #[allow(unsafe_code, clippy::cast_possible_truncation)] // Non zero checked by parse impl
         let consumed = unsafe {
             NonZero::new_unchecked((cursor.inner.len() - cursor.remaining as usize) as u16)
         };
+        Ok(consumed)
+    }
+}
+
+impl Parse for Headers {
+    type Error = EthError;
+
+    fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        let mut this = Headers::default();
+        let consumed = this.parse_into(buf)?;
         Ok((this, consumed))
     }
 }
@@ -3929,6 +3942,25 @@ mod datagram_end_tests {
     }
 }
 
+/// Whether `headers` has something to serialize. Some generated values do not, and
+/// [`DeParse::size`] refuses those with a panic, which a fuzzer would report as a crash.
+/// Bench branch only.
+#[cfg(test)]
+pub(crate) fn serializable(headers: &Headers) -> bool {
+    let any = headers.eth.is_some()
+        || !headers.vlan.is_empty()
+        || headers.net.is_some()
+        || headers.transport.is_some()
+        || headers.udp_encap.is_some()
+        || headers.embedded_ip.is_some()
+        || headers.lldp.is_some();
+    let embedded = headers
+        .embedded_ip
+        .as_deref()
+        .is_none_or(|e| e.net.is_some() || e.transport.is_some());
+    any && embedded
+}
+
 /// The parse loop as it was before headers were placed directly, kept to check that the new one
 /// gives the same answer on every input. Bench branch only: drop before anything is merged.
 #[cfg(test)]
@@ -4115,11 +4147,10 @@ mod legacy_parse_equivalence {
     }
 
     fn deparsed_parse_the_same(headers: &Headers, tail: &[u8]) {
-        // Some generated values have nothing to serialize, and `size` refuses those.
-        let Ok(size) = std::panic::catch_unwind(|| headers.size()) else {
+        if !serializable(headers) {
             return;
-        };
-        let len = usize::from(size.get());
+        }
+        let len = usize::from(headers.size().get());
         let mut buf = vec![0u8; len + tail.len()];
         if headers.deparse(&mut buf).is_err() {
             return;

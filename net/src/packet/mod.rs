@@ -259,6 +259,63 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         Ok(packet)
     }
 
+    /// Parse `mbuf` into a new [`Packet`] at the end of `into`, and return it.
+    ///
+    /// [`Packet::new`] builds the packet and hands it back by value; a caller collecting a burst
+    /// then moves all of it (some 280 bytes) into the vector, and on through the `Result` and
+    /// whatever wraps it on the way. Here the packet is set up in its slot first and the headers
+    /// are parsed straight into it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Packet::new`]; `into` is then as it was.
+    pub fn parse_into(
+        into: &mut Vec<Packet<Buf>>,
+        mbuf: Buf,
+    ) -> Result<&mut Packet<Buf>, InvalidPacket<Buf>> {
+        if mbuf.is_chained() {
+            return Err(InvalidPacket {
+                mbuf,
+                error: InvalidPacketError::Chained,
+            });
+        }
+        into.push(Packet {
+            headers: Headers::default(),
+            payload: mbuf,
+            meta: PacketMeta::new(),
+            #[cfg(any(test, feature = "checksum-audit"))]
+            transport_checksum_error: None,
+        });
+        let parsed = {
+            let packet = into
+                .last_mut()
+                .unwrap_or_else(|| unreachable!("just pushed"));
+            packet.headers.parse_into(packet.payload.as_ref())
+        };
+        let consumed = match parsed {
+            Ok(consumed) => consumed,
+            Err(error) => {
+                let mut packet = into.pop().unwrap_or_else(|| unreachable!("just pushed"));
+                // It never was a packet; say so, rather than have its metadata complain on drop.
+                packet.meta.done = Some(DoneReason::Malformed);
+                return Err(InvalidPacket {
+                    mbuf: packet.payload,
+                    error: error.into(),
+                });
+            }
+        };
+        let packet = into
+            .last_mut()
+            .unwrap_or_else(|| unreachable!("just pushed"));
+        packet
+            .payload
+            .trim_from_start(consumed.get())
+            .unwrap_or_else(|e| unreachable!("{:?}", e));
+        #[cfg(any(test, feature = "checksum-audit"))]
+        packet.note_transport_checksum();
+        Ok(packet)
+    }
+
     /// How far the transport checksum is from valid: the one's-complement difference between it
     /// and what a computation from scratch over the same octets gives. `None` without one to
     /// compare: no transport header, a disabled UDP checksum, or VXLAN.
@@ -2713,5 +2770,98 @@ mod rebuffer_tests {
                 assert_eq!(returned.headers(), expected.headers());
                 assert_eq!(returned.payload().as_ref(), expected.payload().as_ref());
             });
+    }
+}
+
+/// [`Packet::parse_into`] against [`Packet::new`]. Bench branch only.
+#[cfg(test)]
+mod parse_into_equivalence {
+    use super::*;
+    use crate::buffer::TestBuffer;
+    use crate::headers::{CommonHeaders, ShapedHeaders, ShapedIcmpError, serializable};
+
+    fn same(frame: &[u8]) {
+        // A UDP length below 8 reaches `NonZero::new_unchecked(0)` in `Udp::length`, which the
+        // checksum audit in both constructors calls: a known parser bug, parked for its own fix
+        // (notes/kani/PARSING-BUGS.md #1). Skip those frames rather than trip over it.
+        if let Ok((headers, _)) = Headers::parse(frame)
+            && let Some(Transport::Udp(udp)) = &headers.transport
+            && udp.raw_length() < crate::udp::Udp::MIN_LENGTH.get()
+        {
+            return;
+        }
+        let mut burst: Vec<Packet<TestBuffer>> = Vec::with_capacity(4);
+        // Give every packet a verdict before comparing anything, so that a failed assertion does
+        // not drop verdict-less packets while unwinding.
+        let new = Packet::new(TestBuffer::from_raw_data(frame)).map(|mut p| {
+            p.done(DoneReason::Delivered);
+            (p.headers.clone(), p.payload.as_ref().to_vec())
+        });
+        let into = Packet::parse_into(&mut burst, TestBuffer::from_raw_data(frame))
+            .map(|p| (p.headers.clone(), p.payload.as_ref().to_vec()));
+        let into_len = burst.len();
+        for p in &mut burst {
+            p.done(DoneReason::Delivered);
+        }
+        drop(burst);
+        match (new, into) {
+            (Ok(a), Ok(b)) => {
+                assert_eq!(a, b, "disagree on {frame:02x?}");
+                assert_eq!(into_len, 1);
+            }
+            (Err(_), Err(_)) => assert_eq!(into_len, 0),
+            (a, b) => panic!(
+                "disagree on {frame:02x?}: new ok={} into ok={}",
+                a.is_ok(),
+                b.is_ok()
+            ),
+        }
+    }
+
+    fn frame_of(headers: &Headers, tail: &[u8]) -> Vec<u8> {
+        let len = usize::from(headers.size().get());
+        let mut buf = vec![0u8; len + tail.len()];
+        headers.deparse(&mut buf).unwrap();
+        buf[len..].copy_from_slice(tail);
+        buf
+    }
+
+    #[test]
+    fn arbitrary_frames() {
+        bolero::check!()
+            .with_type::<Vec<u8>>()
+            .for_each(|f| same(f));
+    }
+
+    #[test]
+    fn arbitrary_bytes_behind_a_valid_eth() {
+        bolero::check!()
+            .with_type::<(crate::eth::Eth, Vec<u8>)>()
+            .for_each(|(eth, tail)| {
+                let mut buf = vec![0u8; usize::from(eth.size().get()) + tail.len()];
+                eth.deparse(&mut buf).unwrap();
+                buf[usize::from(eth.size().get())..].copy_from_slice(tail);
+                same(&buf);
+            });
+    }
+
+    #[test]
+    fn shaped_frames() {
+        bolero::check!()
+            .with_generator((ShapedHeaders, ShapedIcmpError, bolero::produce::<Vec<u8>>()))
+            .for_each(|(a, b, tail)| {
+                for h in [a, b] {
+                    if serializable(h) {
+                        same(&frame_of(h, tail));
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn generated_frames() {
+        bolero::check!()
+            .with_generator((CommonHeaders, bolero::produce::<Vec<u8>>()))
+            .for_each(|(h, tail)| same(&frame_of(h, tail)));
     }
 }

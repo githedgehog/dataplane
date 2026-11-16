@@ -189,7 +189,8 @@ impl PollStats {
         pending: impl FnOnce() -> Result<u32, errno::Errno>,
     ) {
         if let Some(last) = self.last_rx {
-            let gap = u64::try_from(at.saturating_duration_since(last).as_nanos()).unwrap_or(u64::MAX);
+            let gap =
+                u64::try_from(at.saturating_duration_since(last).as_nanos()).unwrap_or(u64::MAX);
             let bucket = gap.checked_ilog2().map_or(0, |b| b as usize);
             self.gaps[bucket.min(GAP_BUCKETS - 1)] += 1;
             self.gap_max_ns = self.gap_max_ns.max(gap);
@@ -269,7 +270,8 @@ impl PollStats {
             }
             0
         };
-        let range = |lo: usize, hi: usize| -> u64 { self.sizes[lo..=hi.min(RX_STORAGE)].iter().sum() };
+        let range =
+            |lo: usize, hi: usize| -> u64 { self.sizes[lo..=hi.min(RX_STORAGE)].iter().sum() };
         tracing::info!(
             target: "pollstats",
             worker = self.worker,
@@ -359,7 +361,8 @@ impl PollStats {
     pub(crate) fn phase(&mut self, _phase: Phase, _from: Stamp, _to: Stamp) {}
 
     #[inline]
-    pub(crate) fn moved(&mut self, _from_phase: Phase, _to_phase: Phase, _from: Stamp, _to: Stamp) {}
+    pub(crate) fn moved(&mut self, _from_phase: Phase, _to_phase: Phase, _from: Stamp, _to: Stamp) {
+    }
 
     #[inline]
     pub(crate) fn maybe_report(&mut self) {}
