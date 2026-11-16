@@ -35,6 +35,15 @@ use super::pollstats::{self, Knobs, Phase, PollStats, RX_STORAGE};
 use super::port::PortQueues;
 use crate::drivers::disposition::Disposition;
 
+// Packets move by value through the burst (parsed into it, drained out of it to transmit). The
+// compiler copies up to 256 bytes inline and calls `memmove` beyond that: 8 bytes more (264) cost
+// some 7 % per packet on the local BF-3 (2026-11-15), in the call and in the store-to-load
+// forwarding stalls of reading a packet just copied that way. Keep it within the limit.
+const _: () = assert!(
+    core::mem::size_of::<net::packet::Packet<Mbuf<'static>>>() <= 256,
+    "Packet<Mbuf> outgrew the 256 bytes the compiler copies inline"
+);
+
 #[cfg(all(test, not(feature = "shuttle")))]
 mod tests;
 

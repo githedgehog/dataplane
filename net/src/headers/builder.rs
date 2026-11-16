@@ -1130,7 +1130,7 @@ macro_rules! impl_embedded {
                 f: impl FnOnce(EmbeddedAssembler) -> EmbeddedAssembler,
             ) -> Self {
                 let assembler = f(EmbeddedAssembler::new());
-                self.headers.embedded_ip = Some(Box::new(assembler.finish()));
+                self.headers.set_embedded(assembler.finish());
                 self
             }
         }
@@ -1159,7 +1159,7 @@ impl_embedded!(Icmp6ParamProblem);
 /// [`Headers::update_checksums`] separately.
 pub(crate) fn fixup_lengths(headers: &mut Headers, payload: &[u8]) -> Result<(), BuildError> {
     let transport_size: u16 = headers.transport.as_ref().map_or(0, |t| t.size().get());
-    let embedded_size: u16 = headers.embedded_ip.as_deref().map_or(0, |e| e.size().get());
+    let embedded_size: u16 = headers.embedded().map_or(0, |e| e.size().get());
     let encap_size: u16 = match &headers.udp_encap {
         Some(UdpEncap::Vxlan(v)) => v.size().get(),
         None => 0,
@@ -1870,7 +1870,7 @@ mod fuzz {
         fn generate_chain<D: Driver>(&self, driver: &mut D) -> Option<(Headers, Self::Top)> {
             let (mut headers, top) = self.layer.generate_chain(driver)?;
             let net = N::generate_and_wrap(driver, &self.net_mutate)?;
-            headers.embedded_ip = Some(Box::new(fixup_embedded(Some(net), None)));
+            headers.set_embedded(fixup_embedded(Some(net), None));
             Some((headers, top))
         }
     }
@@ -1965,7 +1965,7 @@ mod fuzz {
             let (mut headers, top) = self.layer.generate_chain(driver)?;
             let net = N::generate_and_wrap(driver, &self.net_mutate)?;
             let transport = T::generate_and_wrap(driver, &self.transport_mutate)?;
-            headers.embedded_ip = Some(Box::new(fixup_embedded(Some(net), Some(transport))));
+            headers.set_embedded(fixup_embedded(Some(net), Some(transport)));
             Some((headers, top))
         }
     }
