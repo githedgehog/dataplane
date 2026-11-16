@@ -72,7 +72,9 @@ tracing-subscriber = { workspace = true, default-features = true }
 vpcmap = { workspace = true }
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+# `profile_generate` is set by `instrumentation=pgo` in nix/profiles.nix, which is the only build
+# that links the profiling runtime the on-demand counter dump calls into.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(profile_generate)'] }
 
 [dev-dependencies]
 clock = { workspace = true, features = ["virtual"] }
@@ -100,8 +102,3 @@ tracing-subscriber = { workspace = true }
 
 [target.'cfg(not(miri))'.dev-dependencies]
 dpdk = { workspace = true, features = ["test"] }
-
-[lints.rust]
-# Set by `instrumentation=pgo` in nix/profiles.nix, which is the only build that links the
-# profiling runtime the on-demand counter dump calls into.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(profile_generate)'] }
