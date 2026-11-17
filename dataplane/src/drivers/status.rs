@@ -12,7 +12,7 @@ use concurrency::slot::Slot;
 use concurrency::sync::Arc;
 
 use std::fmt::Display;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use crate::drivers::load::{LoadReader, LoadTotals, Spent};
 use crate::drivers::supervisor;
@@ -161,11 +161,53 @@ pub struct PortReport {
     pub counters: Option<stats::PortCounters>,
     /// Frames the driver meant to send on the port but its transmit queues would not take.
     pub tx_discards: u64,
+    /// How fast the counters went up since the previous reading, if there were two readings.
+    pub rates: Option<PortRates>,
+    /// When the counters started from zero, by the wall clock.
+    pub counters_since: Option<SystemTime>,
     /// Mbufs in use, and the size, of its rx and control pools.
     pub rx_pool: (u32, u32),
     pub control_pool: (u32, u32),
     /// The extended statistics it publishes, by its PMD's names.
     pub xstats: Vec<(String, u64)>,
+}
+
+/// How fast a port's counters went up between two readings.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PortRates {
+    pub rx_bps: f64,
+    pub tx_bps: f64,
+    pub rx_pps: f64,
+    pub tx_pps: f64,
+}
+
+/// Turns successive readings of a port's counters into rates.
+#[derive(Debug, Default)]
+pub struct RateMeter {
+    last: Option<(Instant, stats::PortCounters)>,
+}
+
+impl RateMeter {
+    /// The rates since the previous reading, given `counters` read at `now`.
+    ///
+    /// Returns `None` for the first reading, and when no time passed. A counter that went down
+    /// (the device reset it) counts as no traffic.
+    pub fn update(&mut self, counters: stats::PortCounters, now: Instant) -> Option<PortRates> {
+        let previous = self.last.replace((now, counters));
+        let (then, before) = previous?;
+        let seconds = now.checked_duration_since(then)?.as_secs_f64();
+        if seconds <= 0.0 {
+            return None;
+        }
+        #[allow(clippy::cast_precision_loss)] // rates need no more than f64's 53 bits
+        let rate = |after: u64, before: u64| after.saturating_sub(before) as f64 / seconds;
+        Some(PortRates {
+            rx_bps: rate(counters.rx_bytes, before.rx_bytes) * 8.0,
+            tx_bps: rate(counters.tx_bytes, before.tx_bytes) * 8.0,
+            rx_pps: rate(counters.rx_packets, before.rx_packets),
+            tx_pps: rate(counters.tx_packets, before.tx_packets),
+        })
+    }
 }
 
 /// `show dpdk port`: what each port is, and its link and pools.
@@ -297,6 +339,31 @@ impl CliDataProvider for DpdkPortStatsCli {
                     let _ = writeln!(f, "   {:<16}  (counters unavailable)", port.name);
                 }
             }
+        }
+        let _ = writeln!(
+            f,
+            "\n   {:<16}  {:>14}  {:>14}  {:>12}  {:>12}  {:>12}",
+            "port", "rx-bps", "tx-bps", "rx-pps", "tx-pps", "counting"
+        );
+        for port in &status.ports {
+            let rate =
+                |value: Option<f64>| value.map_or_else(|| "-".to_string(), |v| format!("{v:.0}"));
+            let rates = port.rates;
+            let _ = writeln!(
+                f,
+                "   {:<16}  {:>14}  {:>14}  {:>12}  {:>12}  {:>12}",
+                port.name,
+                rate(rates.map(|r| r.rx_bps)),
+                rate(rates.map(|r| r.tx_bps)),
+                rate(rates.map(|r| r.rx_pps)),
+                rate(rates.map(|r| r.tx_pps)),
+                port.counters_since
+                    .and_then(|at| clock::system_now().duration_since(at).ok())
+                    .map_or_else(
+                        || "-".to_string(),
+                        |ago| PrettyDuration::new(ago).to_string()
+                    ),
+            );
         }
         for port in &status.ports {
             let _ = writeln!(f, "\n {} extended statistics", port.name);
@@ -601,6 +668,10 @@ mod tests {
             }),
             rx_pool: (12, 4095),
             tx_discards: 8765,
+            rates: Some(PortRates {
+                rx_bps: 123_456.0,
+                ..PortRates::default()
+            }),
             xstats: vec![("rx_discards_phy".to_string(), 77)],
             ..PortReport::default()
         }]);
@@ -609,9 +680,41 @@ mod tests {
             assert!(ports.contains(shown), "{shown} missing from:\n{ports}");
         }
         let stats = DpdkPortStatsCli(reader).provide();
-        for shown in ["4321", "8765", "rx_discards_phy", "77"] {
+        for shown in ["4321", "8765", "123456", "rx_discards_phy", "77"] {
             assert!(stats.contains(shown), "{shown} missing from:\n{stats}");
         }
+    }
+
+    /// Rates come from the difference between two readings, over the time between them.
+    #[test]
+    fn rates_come_from_successive_readings() {
+        let start = clock::now();
+        let mut meter = RateMeter::default();
+        let reading = |bytes, packets| stats::PortCounters {
+            rx_bytes: bytes,
+            tx_bytes: 2 * bytes,
+            rx_packets: packets,
+            tx_packets: 2 * packets,
+            ..stats::PortCounters::default()
+        };
+        assert_eq!(meter.update(reading(1000, 10), start), None);
+        let rates = meter
+            .update(reading(3000, 30), start + std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(
+            rates,
+            PortRates {
+                rx_bps: 8000.0,
+                tx_bps: 16000.0,
+                rx_pps: 10.0,
+                tx_pps: 20.0,
+            }
+        );
+        // A reset counter does not make a negative rate.
+        let rates = meter
+            .update(reading(0, 0), start + std::time::Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(rates, PortRates::default());
     }
 
     /// Speeds that are not whole gigabits keep their fraction, and slow links show megabits.
