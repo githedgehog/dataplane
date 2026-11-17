@@ -41,6 +41,10 @@ pub struct Outcome {
     pub color: Option<Color>,
     /// The rules taken, in order.
     pub path: Vec<Role>,
+    /// The MARK it arrives with, if any.
+    pub mark: Option<u32>,
+    /// Whether its outer headers were removed: software receives the inner frame.
+    pub decapped: bool,
     /// Where it ended up.
     pub verdict: Verdict,
 }
@@ -64,6 +68,8 @@ struct State {
     meters: Vec<usize>,
     color: Option<Color>,
     path: Vec<Role>,
+    mark: Option<u32>,
+    decapped: bool,
 }
 
 impl Plan {
@@ -97,6 +103,8 @@ impl Plan {
                 meters: Vec::new(),
                 color: None,
                 path: Vec::new(),
+                mark: None,
+                decapped: false,
             };
             for outcome in model.group(&view, Group::Root, start, 0)? {
                 if !outcomes.contains(&outcome) {
@@ -178,8 +186,27 @@ impl Walk<'_> {
         let mut states = vec![state];
         for action in actions {
             match action {
+                TemplateAction::Count => {}
                 // A mark is metadata for software; the packet is unchanged.
-                TemplateAction::Count | TemplateAction::Mark(_) => {}
+                TemplateAction::Mark(id) => {
+                    for s in &mut states {
+                        s.mark = Some(*id);
+                    }
+                }
+                TemplateAction::MarkPerRule => {
+                    let Some(&Arg::Mark(id)) = args.next() else {
+                        return Err(ModelError::Arguments);
+                    };
+                    for s in &mut states {
+                        s.mark = Some(id);
+                    }
+                }
+                // No later pattern of the same rule looks at the frame: only its fate follows.
+                TemplateAction::VxlanDecap => {
+                    for s in &mut states {
+                        s.decapped = true;
+                    }
+                }
                 TemplateAction::Meter => {
                     let Some(&Arg::Meter(meter)) = args.next() else {
                         return Err(ModelError::Arguments);
@@ -214,10 +241,6 @@ impl Walk<'_> {
                         .into_iter()
                         .map(|s| s.end(Verdict::Delivered))
                         .collect());
-                }
-                // No plan uses them yet.
-                TemplateAction::MarkPerRule | TemplateAction::VxlanDecap => {
-                    return Err(ModelError::Arguments);
                 }
                 TemplateAction::Drop => {
                     return Ok(states
@@ -255,6 +278,8 @@ impl State {
             meters: self.meters,
             color: self.color,
             path: self.path,
+            mark: self.mark,
+            decapped: self.decapped,
             verdict,
         }
     }

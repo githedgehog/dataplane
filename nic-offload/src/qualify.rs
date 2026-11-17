@@ -333,6 +333,7 @@ impl Case {
             &program,
             &vteps(&program),
             &TemplateAction::Queue(RxQueueIndex(0)),
+            false,
         )
         .unwrap();
         // Aim at the rate limits the NIC took, and the denies of the peerings it took.
@@ -1315,7 +1316,7 @@ fn reconcile_scenarios() {
                 let mut port = Port::new(&rig.flows);
                 let mut result = "ok".to_string();
                 for (step, program) in programs.iter().enumerate() {
-                    let plan = Plan::new(program, &vteps(program), &fate).unwrap();
+                    let plan = Plan::new(program, &vteps(program), &fate, false).unwrap();
                     let observed = port.observe();
                     if let Err(e) = port.reconcile(&plan, observed) {
                         result = format!("step {step}: {e}");

@@ -3,6 +3,7 @@
 
 //! What the program compiler offloads and refuses, from configurations like `rate-limit`'s tests.
 
+mod decap;
 mod ingress;
 
 use std::num::{NonZeroU64, NonZeroUsize};
