@@ -10,6 +10,7 @@
 use common::cliprovider::{CliDataProvider, Heading, PrettyDuration, PrettySpeed};
 use concurrency::slot::Slot;
 use concurrency::sync::Arc;
+use config::internal::status::PortRates;
 
 use std::fmt::Display;
 use std::time::{Duration, Instant, SystemTime};
@@ -169,15 +170,6 @@ pub struct PortReport {
     pub control_pool: Option<(u32, u32)>,
     /// The extended statistics it publishes, by its PMD's names.
     pub xstats: Vec<(String, u64)>,
-}
-
-/// How fast a port's counters went up between two readings.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct PortRates {
-    pub rx_bps: f64,
-    pub tx_bps: f64,
-    pub rx_pps: f64,
-    pub tx_pps: f64,
 }
 
 /// How long a burst takes to fade from the rates, by a factor e.

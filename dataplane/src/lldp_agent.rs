@@ -282,6 +282,11 @@ pub(crate) struct NeighborSnapshot {
 }
 
 impl NeighborSnapshot {
+    /// Every neighbour heard, with the port it was heard on.
+    pub(crate) fn neighbors(&self) -> &[(InterfaceName, Neighbor)] {
+        &self.neighbors
+    }
+
     /// How many neighbours are known.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {

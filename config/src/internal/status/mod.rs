@@ -8,7 +8,8 @@
 mod ports;
 
 pub use ports::{
-    LaneStatus, LldpNeighborStatus, PortCounters, PortRates, PortStatus, TransceiverStatus,
+    LaneStatus, LldpNeighborStatus, PortCounters, PortRates, PortStatus, PortsSnapshot,
+    TransceiverStatus,
 };
 
 use std::collections::{BTreeMap, HashMap};
