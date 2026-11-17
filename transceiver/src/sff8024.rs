@@ -108,6 +108,11 @@ impl fmt::Display for Identifier {
 pub struct Connector(u8);
 
 impl Connector {
+    /// The connector of BASE-T modules.
+    pub const RJ45: Self = Self(0x22);
+    /// No separable connector: a cable assembly, whose cable is part of the module.
+    pub const NO_SEPARABLE: Self = Self(0x23);
+
     /// A connector from its code.
     #[must_use]
     pub const fn from_raw(raw: u8) -> Self {

@@ -722,24 +722,48 @@ fn an_unreadable_bank_does_not_renumber_lanes() {
 /// What switches would report about each fixture's module.
 #[test]
 fn fixtures_summarize_as_switches_would() {
-    for (name, form_factor, connector) in [
-        ("sfp-10g-t-port0", "SFP_PLUS", Some("LC_CONNECTOR")),
-        ("qsfp28-cwdm4-intel-port0", "QSFP28", Some("LC_CONNECTOR")),
+    for (name, form_factor, connector, cable, metres) in [
+        (
+            "sfp-10g-t-port0",
+            "SFP_PLUS",
+            Some("LC_CONNECTOR"),
+            "FIBER",
+            None,
+        ),
+        (
+            "qsfp28-cwdm4-intel-port0",
+            "QSFP28",
+            Some("LC_CONNECTOR"),
+            "FIBER",
+            None,
+        ),
         (
             "qsfp28-sr4-mellanox-port0",
             "QSFP28",
             Some("NO_SEPARABLE_CONNECTOR"),
+            "AOC",
+            Some(50.0),
         ),
         (
             "qsfp28-dac-port0",
             "QSFP_PLUS",
             Some("NO_SEPARABLE_CONNECTOR"),
+            "DAC",
+            Some(7.0),
         ),
-        ("qsfp112-sr4-fs-port0", "QSFP112", Some("MPOx12_CONNECTOR")),
+        (
+            "qsfp112-sr4-fs-port0",
+            "QSFP112",
+            Some("MPOx12_CONNECTOR"),
+            "FIBER",
+            None,
+        ),
         (
             "qsfp112-dac-port0",
             "QSFP112",
             Some("NO_SEPARABLE_CONNECTOR"),
+            "DAC",
+            Some(1.5),
         ),
     ] {
         let mut fixture = Fixture::new(name);
@@ -747,5 +771,15 @@ fn fixtures_summarize_as_switches_would() {
         let summary = module.summary();
         assert_eq!(summary.form_factor, form_factor, "{name}");
         assert_eq!(summary.connector_type, connector, "{name}");
+        assert_eq!(
+            summary.cable.map(|cable| cable.name()),
+            Some(cable),
+            "{name}"
+        );
+        assert_eq!(
+            summary.cable_length.map(|length| length.metres()),
+            metres,
+            "{name}"
+        );
     }
 }

@@ -24,9 +24,6 @@ use crate::units::{BiasMultiplier, Current, Power, Temperature, Voltage};
 /// Every SFF-8636 module has four lanes (channels); the memory map has room for no more.
 const LANES: u8 = 4;
 
-/// The connector code of a cable assembly with no separable connector (SFF-8024 Table 4-3).
-const NO_SEPARABLE_CONNECTOR: u8 = 0x23;
-
 /// What only SFF-8636 says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Detail {
@@ -804,7 +801,7 @@ fn nominal_megabaud(page00: Upper<'_>) -> Option<u32> {
 fn link_lengths(page00: Upper<'_>, transmitter: TransmitterTechnology) -> LinkLengths {
     let length = |at: u8, scale: u16| Some(u16::from(page00.u8(at)) * scale).filter(|m| *m != 0);
     // 00h:146, 6.3.12: OM4 for a separable 850 nm VCSEL module, a cable length otherwise.
-    let om4 = page00.u8(130) != NO_SEPARABLE_CONNECTOR && transmitter.raw() == 0b0000;
+    let om4 = page00.u8(130) != Connector::NO_SEPARABLE.raw() && transmitter.raw() == 0b0000;
     LinkLengths {
         smf_km: length(142, 1),
         om3_metres: length(143, 2),
