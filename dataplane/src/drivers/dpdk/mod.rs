@@ -18,6 +18,7 @@ mod classes;
 mod control;
 mod idle;
 mod inject;
+mod modules;
 mod placement;
 mod port;
 mod worker;
@@ -45,6 +46,8 @@ use tokio::sync::watch;
 use tracectl::trace_target;
 use tracing::{info, warn};
 use traffic_control::ControlPlane;
+
+pub(crate) use modules::spawn_module_reader;
 
 use super::DriverError;
 use super::load::Load;
