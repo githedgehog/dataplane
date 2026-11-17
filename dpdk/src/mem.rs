@@ -373,7 +373,9 @@ unsafe fn prefetch_line_hint(hint: PrefetchHint, addr: *const u8) {
     #[cfg(target_arch = "x86_64")]
     // SAFETY: `_mm_prefetch` is a hint and cannot fault.
     unsafe {
-        use core::arch::x86_64::{_MM_HINT_NTA, _MM_HINT_T0, _MM_HINT_T1, _MM_HINT_T2, _mm_prefetch};
+        use core::arch::x86_64::{
+            _MM_HINT_NTA, _MM_HINT_T0, _MM_HINT_T1, _MM_HINT_T2, _mm_prefetch,
+        };
         match hint {
             PrefetchHint::T0 => _mm_prefetch::<_MM_HINT_T0>(addr.cast()),
             PrefetchHint::T1 => _mm_prefetch::<_MM_HINT_T1>(addr.cast()),
@@ -836,6 +838,18 @@ impl<'eal> Mbuf<'eal> {
         }
         // SAFETY: the flag certifies a valid FDIR id, and `self.raw` remains live.
         Some(unsafe { self.raw.as_ref().annon2.annon1.annon2.hash.fdir.hi })
+    }
+
+    /// Set the transmit metadata, which egress flow rules can match (`META`).
+    ///
+    /// The field is the one registered for receive metadata ([`Self::rx_meta`]); its flag marks it
+    /// valid for transmit too.
+    pub fn set_tx_meta(&mut self, value: u32) {
+        // SAFETY: EAL registered the field before any mbuf existed; `self` owns this mbuf.
+        unsafe {
+            dpdk_sys::rte_flow_dynf_metadata_set(self.raw.as_ptr(), value);
+            self.raw.as_mut().ol_flags |= dpdk_sys::rte_flow_dynf_metadata_mask;
+        }
     }
 
     /// The flow `META` value when its validity flag is set, including a reported zero.

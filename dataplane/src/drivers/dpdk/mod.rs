@@ -18,6 +18,7 @@ mod classes;
 mod control;
 mod idle;
 mod inject;
+pub(crate) mod nic_encap;
 mod placement;
 pub(crate) mod pollstats;
 mod port;
@@ -256,6 +257,26 @@ where
     Ok(WorkerMonitor::new(id, handle, rx_tasks).with_load(load_reader))
 }
 
+/// Bench proof of concept: learn and install NIC encap contexts on `port` until shutdown.
+fn spawn_nic_encap<'p, 'scope>(
+    scope: &'scope thread::Scope<'scope, '_>,
+    subsystem: &Subsystem,
+    port: &'p Port<'_>,
+) -> Result<(), DriverError>
+where
+    'p: 'scope,
+{
+    let subsystem = subsystem.clone();
+    let name = port.name.to_string();
+    thread::Builder::new()
+        .name(format!("nic-encap-{name}"))
+        .spawn_scoped(scope, move || {
+            nic_encap::run(&port.dev, &name, &|| subsystem.is_cancelled());
+        })
+        .map_err(|e| DriverError::PortSetup(format!("nic encap thread: {e}")))?;
+    Ok(())
+}
+
 /// Follow policy updates and offload supported rules on `port` until shutdown.
 /// Surviving traffic uses the port's RSS distribution across data queues.
 fn spawn_offload<'p, 'scope>(
@@ -274,6 +295,9 @@ where
         }),
         None => TemplateAction::Queue(RxQueueIndex(0)),
     };
+    if nic_encap::enabled() {
+        spawn_nic_encap(scope, subsystem, port)?;
+    }
     let subsystem = subsystem.clone();
     let name = port.name.to_string();
     thread::Builder::new()

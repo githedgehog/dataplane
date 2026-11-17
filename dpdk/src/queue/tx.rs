@@ -170,10 +170,7 @@ impl<'dev> TxQueue<'dev> {
     /// The PMD owns accepted packets. Stop when the queue makes no progress.
     #[must_use = "retry or drop the unsent packets"]
     #[tracing::instrument(level = "trace", skip(packets))]
-    pub fn transmit<const N: usize>(
-        &mut self,
-        packets: MbufArray<'dev, N>,
-    ) -> MbufArray<'dev, N> {
+    pub fn transmit<const N: usize>(&mut self, packets: MbufArray<'dev, N>) -> MbufArray<'dev, N> {
         let len = packets.len();
         if len == 0 {
             return MbufArray::new_empty();

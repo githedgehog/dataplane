@@ -172,6 +172,19 @@ impl Egress {
             return;
         };
 
+        // Bench PoC: the NIC encapsulates it, with the underlay MACs of its encap context; the
+        // frame's own Ethernet header is the inner one, which the IP forwarder set.
+        if packet.meta().nic_encap().is_some() {
+            let reason = match iftable.get_interface(oif) {
+                Some(i) if i.admin_state == IfState::Down => DoneReason::InterfaceAdmDown,
+                Some(i) if i.oper_state == IfState::Down => DoneReason::InterfaceOperDown,
+                Some(_) => DoneReason::Delivered,
+                None => DoneReason::InterfaceUnknown,
+            };
+            packet.done(reason);
+            return;
+        }
+
         /* resolve destination mac */
         let Some(dst_mac) = self.resolve_next_mac(oif, packet) else {
             // we could not figure out the destination MAC.

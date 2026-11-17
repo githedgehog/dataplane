@@ -489,9 +489,26 @@ impl<'p> Worker<'p> {
                 continue;
             };
 
+            // Bench PoC: the NIC encapsulates a packet tagged with a context; one software
+            // encapsulated reports its outer headers for the NIC to learn.
+            let nic_id = packet.meta().nic_encap();
+            let learned = if nic_id.is_none()
+                && super::nic_encap::enabled()
+                && packet.meta().dst_vpcd.is_some()
+            {
+                nic_encap_outer(&packet)
+            } else {
+                None
+            };
             // Serialize rewritten headers into the original mbuf.
             match packet.serialize() {
-                Ok(mbuf) => {
+                Ok(mut mbuf) => {
+                    if let Some(id) = nic_id {
+                        mbuf.set_tx_meta(super::nic_encap::FLAG | u32::from(id));
+                    }
+                    if let Some(outer) = learned {
+                        super::nic_encap::learn(outer);
+                    }
                     if tx_batches[out_slot].try_push(mbuf).is_err() {
                         // A pipeline that duplicates packets can exceed one transmit burst.
                         log_sparsely!(error!(
@@ -621,6 +638,23 @@ fn divert_verdict<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, port: Mac) -> 
 /// Control traffic of the `early` classes, which the NIC does not steer to the control queue, is
 /// moved to `diverted` before the pipeline sees it. Every other packet comes back, whatever its
 /// verdict: the caller counts and frees the drops, in bulk.
+/// Bench proof of concept: the outer headers of a packet software encapsulated in VXLAN, as built.
+fn nic_encap_outer<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<super::nic_encap::Outer> {
+    use net::headers::{TryIpv4, TryVxlan};
+    let eth = packet.try_eth()?;
+    let ip = packet.try_ipv4()?;
+    let vxlan = packet.try_vxlan()?;
+    Some(super::nic_encap::Outer {
+        key: super::nic_encap::Key {
+            vni: vxlan.vni().as_u32(),
+            remote: ip.destination(),
+        },
+        eth_src: eth.source().inner(),
+        eth_dst: eth.destination().inner(),
+        ip_src: ip.source().inner(),
+    })
+}
+
 /// What the NIC tells about a received frame beyond its bytes.
 pub(crate) trait RxContext {
     /// The VNI of the VXLAN the NIC decapsulated, as its MARK: only the NIC's decapsulating rules

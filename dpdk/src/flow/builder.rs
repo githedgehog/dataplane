@@ -17,8 +17,8 @@ use dpdk_sys::{
     rte_flow_action_queue, rte_flow_action_set_ipv4, rte_flow_action_set_tp,
     rte_flow_action_type as at, rte_flow_action_vxlan_encap, rte_flow_attr, rte_flow_create,
     rte_flow_error, rte_flow_field_id, rte_flow_item, rte_flow_item_eth, rte_flow_item_ipv4,
-    rte_flow_item_type as it, rte_flow_item_udp, rte_flow_item_vxlan, rte_flow_modify_op,
-    rte_flow_validate,
+    rte_flow_item_meta, rte_flow_item_type as it, rte_flow_item_udp, rte_flow_item_vxlan,
+    rte_flow_modify_op, rte_flow_validate,
 };
 
 use net::eth::Eth;
@@ -294,6 +294,9 @@ pub struct FlowBuilder<'dev, D: Domain, Pos> {
     group: u32,
     priority: u32,
     items: Vec<MatchItem>,
+    /// A `META` item (value, mask), matched ahead of the headers: on egress, what software wrote
+    /// into the transmit metadata.
+    meta: Option<Box<(rte_flow_item_meta, rte_flow_item_meta)>>,
     actions: Vec<Action>,
     domain: PhantomData<D>,
     position: PhantomData<Pos>,
@@ -307,6 +310,7 @@ impl<'dev, D: Domain> FlowBuilder<'dev, D, ()> {
             group: 0,
             priority: 0,
             items: Vec::new(),
+            meta: None,
             actions: Vec::new(),
             domain: PhantomData,
             position: PhantomData,
@@ -323,10 +327,23 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
             group: self.group,
             priority: self.priority,
             items: self.items,
+            meta: self.meta,
             actions: self.actions,
             domain: PhantomData,
             position: PhantomData,
         }
+    }
+
+    /// Match the flow metadata: its bits under `mask` equal `value`'s (on egress, the transmit
+    /// metadata software set; see [`Mbuf::set_tx_meta`](crate::mem::Mbuf::set_tx_meta)).
+    pub fn match_meta(mut self, value: u32, mask: u32) -> Self {
+        // SAFETY: zero is valid for this C struct.
+        let (mut spec, mut m): (rte_flow_item_meta, rte_flow_item_meta) =
+            unsafe { (core::mem::zeroed(), core::mem::zeroed()) };
+        spec.data = value;
+        m.data = mask;
+        self.meta = Some(Box::new((spec, m)));
+        self
     }
 
     /// Set the group (table) this rule lives in. Group 0 is the root; reach other groups via a
@@ -596,7 +613,18 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
         attr.priority = self.priority;
         attr.set_direction(D::DIRECTION);
 
-        let items = item::lower(&self.items);
+        let mut items = item::lower(&self.items);
+        if let Some(meta) = &self.meta {
+            items.insert(
+                0,
+                rte_flow_item {
+                    type_: dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_META,
+                    spec: core::ptr::from_ref(&meta.0).cast(),
+                    last: null(),
+                    mask: core::ptr::from_ref(&meta.1).cast(),
+                },
+            );
+        }
 
         // Preserve insertion order within each action rank.
         let mut ordered: Vec<&Action> = self.actions.iter().collect();
@@ -730,6 +758,7 @@ mod tests {
             group: 0,
             priority: 0,
             items: Vec::new(),
+            meta: None,
             actions: Vec::new(),
             domain: PhantomData,
             position: PhantomData,

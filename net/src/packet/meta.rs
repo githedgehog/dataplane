@@ -137,6 +137,7 @@ bitflags! {
         const REQ_STATIC_NAT_SRC  = 1 << 6; /* Packet requires static NAT (source) */
         const REQ_STATIC_NAT_DST  = 1 << 7; /* Packet requires static NAT (destination) */
         const FORCE_FLOW_TRACKING = 1 << 8; /* We need to track this flow, e.g. to apply stateful user ACLs */
+        const NIC_ENCAP           = 1 << 10; /* Bench PoC: the NIC encapsulates it; `outer_ip_len` holds the context */
         const NIC_DECAP           = 1 << 9; /* The NIC decapsulated it; `src_vpcd` is its VNI, until the first IP forwarder takes it */
     }
 }
@@ -275,6 +276,24 @@ impl PacketMeta {
         let vni = self.nic_decap();
         self.set_flag(MetaFlags::NIC_DECAP, false);
         vni
+    }
+
+    /// Bench proof of concept: the NIC encapsulates this packet in VXLAN, with its encap context `id`. The id is
+    /// kept in `outer_ip_len`, which nothing reads by the time a packet is encapsulated: a packet's
+    /// size has no room for another field.
+    pub fn set_nic_encap(&mut self, id: u16) {
+        self.outer_ip_len = Some(id);
+        self.set_flag(MetaFlags::NIC_ENCAP, true);
+    }
+
+    /// Bench proof of concept: the encap context the NIC encapsulates this packet with, if any.
+    #[must_use]
+    pub fn nic_encap(&self) -> Option<u16> {
+        if self.flags.contains(MetaFlags::NIC_ENCAP) {
+            self.outer_ip_len
+        } else {
+            None
+        }
     }
 
     #[must_use]

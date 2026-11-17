@@ -442,6 +442,20 @@ impl IpForwarder {
             packet.refresh_transport_checksum();
         }
 
+        // Bench PoC: the NIC encapsulates for a context it has, from the transmit metadata.
+        if crate::drivers::dpdk::nic_encap::enabled()
+            && let (UnicastIpAddr::V4(_), IpAddr::V4(remote)) = (vtep.ip(), &vxlan.remote)
+            && let Some(id) =
+                crate::drivers::dpdk::nic_encap::lookup(crate::drivers::dpdk::nic_encap::Key {
+                    vni: vxlan.vni.as_u32(),
+                    remote: *remote,
+                })
+        {
+            packet.meta_mut().set_nic_encap(id);
+            packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::from_vni(vxlan.vni));
+            return;
+        }
+
         // build vxlan headers for encapsulation
         match Self::build_vxlan_headers(vxlan, vtep) {
             Err(e) => {
@@ -570,6 +584,9 @@ impl IpForwarder {
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
     #[tracing::instrument(level = "trace", skip(self, burst))]
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        if crate::drivers::dpdk::nic_encap::enabled() {
+            crate::drivers::dpdk::nic_encap::refresh();
+        }
         let mut memo = FibMemo::default();
         for packet in burst.iter_mut() {
             if !packet.is_done() {

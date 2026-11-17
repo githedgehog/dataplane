@@ -151,7 +151,10 @@ fn empty_rx_and_tx_leave_the_pool_untouched() {
     let pool = port.pool();
     let (mut rx, mut tx) = port.queues();
     assert!(rx.receive().is_empty());
-    assert!(tx.transmit(MbufArray::<'_, MBUF_BURST>::new_empty()).is_empty());
+    assert!(
+        tx.transmit(MbufArray::<'_, MBUF_BURST>::new_empty())
+            .is_empty()
+    );
     assert!(rx.receive().is_empty());
     assert_eq!(available(&pool), 127);
 }
