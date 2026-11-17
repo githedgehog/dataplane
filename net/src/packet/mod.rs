@@ -55,6 +55,19 @@ use std::num::NonZero;
 
 pub mod utils;
 
+/// What test-only parts (`test_meta` metadata, the `checksum-audit` record) add to every packet:
+/// checks of the size packets have in production discount it (feature unification can enable them
+/// in a production build made alongside tests).
+pub const TEST_ONLY_BYTES: usize = if cfg!(feature = "test_meta") {
+    size_of::<usize>()
+} else {
+    0
+} + if cfg!(any(test, feature = "checksum-audit")) {
+    size_of::<Option<u16>>().next_multiple_of(align_of::<usize>())
+} else {
+    0
+};
+
 /// A parsed Ethernet packet. Use [`Packet::deep_copy`] to copy its buffer.
 #[derive(Debug)]
 pub struct Packet<Buf: PacketBufferMut> {

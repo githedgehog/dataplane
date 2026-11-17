@@ -38,11 +38,11 @@ use crate::drivers::disposition::Disposition;
 // Packets move by value through the burst (parsed into it, drained out of it to transmit). The
 // compiler copies up to 256 bytes inline and calls `memmove` beyond that: 8 bytes more (264) cost
 // some 7 % per packet on the local BF-3 (2026-11-15), in the call and in the store-to-load
-// forwarding stalls of reading a packet just copied that way. Keep it within the limit. Test
-// builds enable test-only parts of `net` that make it larger.
-#[cfg(not(test))]
+// forwarding stalls of reading a packet just copied that way. Keep it within the limit; test-only
+// metadata does not count.
 const _: () = assert!(
-    core::mem::size_of::<net::packet::Packet<Mbuf<'static>>>() <= 256,
+    core::mem::size_of::<net::packet::Packet<Mbuf<'static>>>() - net::packet::TEST_ONLY_BYTES
+        <= 256,
     "Packet<Mbuf> outgrew the 256 bytes the compiler copies inline"
 );
 
