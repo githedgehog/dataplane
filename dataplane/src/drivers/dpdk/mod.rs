@@ -18,16 +18,18 @@ mod classes;
 mod control;
 mod idle;
 mod inject;
+mod modules;
 mod placement;
 mod port;
 mod worker;
 mod xstats;
 
 use crate::packet_processor::{PipelineFactory, WorkerContext};
+use crate::transceiver_agent::ModuleSnapshot;
 use concurrency::sync::atomic::Ordering;
 use std::convert::Infallible;
 use std::num::NonZero;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use args::IdleConfig;
 
@@ -45,6 +47,8 @@ use tokio::sync::watch;
 use tracectl::trace_target;
 use tracing::{info, warn};
 use traffic_control::ControlPlane;
+
+use modules::ModuleReaders;
 
 use super::DriverError;
 use super::load::Load;
@@ -74,6 +78,9 @@ impl DriverDpdk {
     /// `control_plane` is what the control-plane classes are built from; the control worker steers
     /// them to the control queues and follows its changes.
     ///
+    /// With a `transceiver_interval`, the supervisor also reads the pluggable modules of the ports
+    /// without a kernel netdev, and publishes them to `transceivers`.
+    ///
     /// # Errors
     ///
     /// Returns an error for missing ports or queues, or thread spawn failures.
@@ -90,6 +97,8 @@ impl DriverDpdk {
         bridge: Option<&mut DatapathEnds>,
         control_plane: watch::Receiver<ControlPlane>,
         offload: &nic_offload::Policy,
+        transceiver_interval: Option<Duration>,
+        transceivers: watch::Sender<ModuleSnapshot>,
     ) -> Result<(), DriverError>
     where
         'p: 'scope,
@@ -159,6 +168,9 @@ impl DriverDpdk {
             .zip(links)
             .map(|(port, link)| PortTelemetry::new(port, link))
             .collect();
+        let mut modules = transceiver_interval
+            .and_then(|interval| ModuleReaders::new(ports, interval, transceivers));
+        let stopping = workers_subsystem.clone();
         spawn_supervisor(
             scope,
             "dpdk",
@@ -169,7 +181,14 @@ impl DriverDpdk {
             move || {
                 publish_heaps(ports);
                 let counters = publish_port_counters(&port_metrics, &mut counters_unavailable);
-                publish_port_states(&mut port_states, counters)
+                let reports = publish_port_states(&mut port_states, counters);
+                // Not on the last call, once the workers have stopped.
+                if let Some(modules) = &mut modules
+                    && !stopping.is_cancelled()
+                {
+                    modules.poll(&reports);
+                }
+                reports
             },
         )?;
         for (node, heap) in heaps(ports) {
