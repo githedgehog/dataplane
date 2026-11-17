@@ -7,7 +7,7 @@
 
 use net::buffer::PacketBufferMut;
 use net::eth::mac::DestinationMac;
-use net::headers::{Headers, Net, TryIp};
+use net::headers::{Headers, Net, TryEth, TryHeaders, TryIp};
 use net::headers::{TryIpv4Mut, TryIpv6Mut};
 use net::interface::InterfaceIndex;
 use net::ip::NextHeader;
@@ -81,6 +81,12 @@ impl IpForwarder {
     /// Forward a [`Packet`]
     #[allow(clippy::collapsible_else_if)]
     fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, memo: &mut FibMemo) {
+        // Decapsulated by the NIC: annotate it as decapsulating it here would have, and route it
+        // in the next forwarder, as one decapsulated here.
+        if let Some(vni) = packet.meta_mut().take_nic_decap() {
+            self.handle_nic_decap(packet, vni, memo);
+            return;
+        }
         let nfi = &self.name;
         let vrfid = packet.meta().vrf;
 
@@ -213,15 +219,8 @@ impl IpForwarder {
         match packet.vxlan_decap() {
             Some(Ok(_)) => {
                 // At this point decapsulation has already happened. `Packet` refers to the inner packet.
-                let next_vrf = fib.get_id();
                 tdebug!(VXLAN_D, "DECAPSULATED vxlan packet (vni={vni}):\n{packet}");
-                debug!("{nfi}: DECAPSULATED vxlan packet, vni = {vni}. Next vrf = {next_vrf}");
-
-                // Annotate the incoming vni and the corresponding vrf, so that lookups are made in that vrf
-                packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni));
-                packet.meta_mut().outer_ip_len = outer_ip_len;
-                packet.meta_mut().vrf = Some(next_vrf);
-                packet.meta_mut().set_overlay(true);
+                Self::annotate_decapsulated(packet, vni, fib.get_id(), outer_ip_len);
             }
             Some(Err(bad)) => {
                 // this should not happen: vxlan_peek() succeeded, and it fails when decapsulation would.
@@ -234,6 +233,70 @@ impl IpForwarder {
                 packet.done(DoneReason::InternalFailure);
             }
         }
+    }
+
+    /// Annotate a decapsulated packet with its VNI and that VNI's VRF, so that lookups are made
+    /// there, and with its outer IP length, which ingress meters bill.
+    fn annotate_decapsulated<Buf: PacketBufferMut>(
+        packet: &mut Packet<Buf>,
+        vni: Vni,
+        vrf: net::packet::VrfId,
+        outer_ip_len: Option<u16>,
+    ) {
+        debug!("DECAPSULATED vxlan packet, vni = {vni}. Next vrf = {vrf}");
+        let meta = packet.meta_mut();
+        meta.src_vpcd = Some(VpcDiscriminant::VNI(vni));
+        meta.outer_ip_len = outer_ip_len;
+        meta.vrf = Some(vrf);
+        meta.set_overlay(true);
+    }
+
+    /// A packet the NIC decapsulated (VXLAN of `vni` to our VTEP: the NIC matched that much),
+    /// held to what [`Self::handle_vxlan`] checks of the inner frame, and annotated alike.
+    fn handle_nic_decap<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        vni: Vni,
+        memo: &mut FibMemo,
+    ) {
+        let nfi = &self.name;
+        if !packet.headers().vlan().is_empty() {
+            debug!(
+                "{nfi}: Inner frame carries VLAN tag(s), which nothing downstream is equipped to carry"
+            );
+            packet.done(DoneReason::Unhandled);
+            return;
+        }
+        let Some(fibr) = self.get_fib_for_vni(memo, vni) else {
+            debug!("{nfi}: Failed to find fib associated to vni {vni}");
+            packet.done(DoneReason::Unroutable);
+            return;
+        };
+        let Some(fib) = fibr.enter() else {
+            error!("{nfi}: Failed to access fib for vni {vni}");
+            packet.done(DoneReason::InternalFailure);
+            return;
+        };
+        let Some(vtep) = fib.get_vtep() else {
+            error!("{nfi}: Fib for {vni} has no VTEP. This is a bug");
+            packet.done(DoneReason::InternalFailure);
+            return;
+        };
+        let inner_dst_mac = packet.try_eth().map(|eth| eth.destination().inner());
+        if inner_dst_mac != Some(vtep.mac().into()) {
+            debug!("{nfi}: Inner frame is not for us but {inner_dst_mac:?}");
+            packet.done(DoneReason::VxlanNotForUs);
+            return;
+        }
+        // The NIC matches an IPv4 underlay only: outer IPv4 (20) + UDP (8) + VXLAN (8) + the
+        // inner Ethernet header (14) come before the inner IP packet.
+        let inner_ip_len = match packet.try_ip() {
+            Some(Net::Ipv4(ip)) => Some(ip.total_len()),
+            Some(Net::Ipv6(ip)) => Ipv6::MIN_LEN.get().checked_add(ip.payload_length()),
+            None => None,
+        };
+        let outer_ip_len = inner_ip_len.and_then(|len| len.checked_add(50));
+        Self::annotate_decapsulated(packet, vni, fib.get_id(), outer_ip_len);
     }
 
     /// Execute a local packet instruction
@@ -746,6 +809,62 @@ mod test {
         exec_local(&forwarder, &mut packet);
 
         assert_eq!(packet.get_done(), Some(DoneReason::VxlanDecapFailure));
+    }
+
+    /// What the NIC delivers for `packet`: the inner frame, with the VNI it marked, as the worker
+    /// and the ingress stage leave it.
+    fn as_nic_decapsulates(mut packet: Packet<TestBuffer>, vni: Vni) -> Packet<TestBuffer> {
+        packet.vxlan_decap().unwrap().unwrap();
+        let mut inner = Packet::new(packet.serialize().unwrap()).unwrap();
+        inner.meta_mut().set_nic_decap(vni);
+        inner
+    }
+
+    /// The NIC's decapsulation ends where software's does: same verdict and annotations, and
+    /// the outer IP length derived from the inner packet.
+    #[test]
+    fn nic_decapsulation_is_annotated_as_software_decapsulation() {
+        let tables = tables_with_vtep();
+        let forwarder = IpForwarder::new("test", tables.fibs());
+        let other_mac = DestinationMac::new(Mac([0x02, 0, 0, 0, 0, 0x99])).unwrap();
+        let other_vni = Vni::new_checked(our_vni().as_u32() + 1).unwrap();
+        let cases = [
+            ("ours", our_vni(), vtep_mac(), None),
+            ("another inner MAC", our_vni(), other_mac, None),
+            (
+                "an inner VLAN tag",
+                our_vni(),
+                vtep_mac(),
+                Some(Vid::new(7).unwrap()),
+            ),
+            ("a VNI without FIB", other_vni, vtep_mac(), None),
+        ];
+        for (case, vni, inner_mac, vlan) in cases {
+            let mut software = vxlan_packet(vni, vtep_ip(), inner_mac, vlan);
+            let mut nic = as_nic_decapsulates(vxlan_packet(vni, vtep_ip(), inner_mac, vlan), vni);
+            exec_local(&forwarder, &mut software);
+            forwarder.forward_packet(&mut nic, &mut FibMemo::default());
+            assert_eq!(nic.get_done(), software.get_done(), "{case}");
+            assert_eq!(
+                nic.meta().nic_decap(),
+                None,
+                "{case}: taken by the first forwarder"
+            );
+            if software.get_done().is_none() {
+                assert_eq!(nic.meta().src_vpcd, software.meta().src_vpcd, "{case}");
+                assert_eq!(nic.meta().vrf, software.meta().vrf, "{case}");
+                assert_eq!(
+                    nic.meta().is_overlay(),
+                    software.meta().is_overlay(),
+                    "{case}"
+                );
+                assert_eq!(
+                    nic.meta().outer_ip_len,
+                    software.meta().outer_ip_len,
+                    "{case}"
+                );
+            }
+        }
     }
 
     /// A packet without VXLAN encapsulation is for local consumption

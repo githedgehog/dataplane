@@ -552,12 +552,32 @@ fn divert_verdict<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, port: Mac) -> 
     addressed_to_us
 }
 
+/// What the NIC tells about a received frame beyond its bytes.
+pub(crate) trait RxContext {
+    /// The VNI of the VXLAN the NIC decapsulated, as its MARK: only the NIC's decapsulating rules
+    /// mark (see `nic_offload::mlx5`).
+    fn nic_decap(&self) -> Option<u32>;
+}
+
+impl RxContext for Mbuf<'_> {
+    fn nic_decap(&self) -> Option<u32> {
+        self.rx_mark()
+    }
+}
+
+#[cfg(test)]
+impl RxContext for net::buffer::TestBuffer {
+    fn nic_decap(&self) -> Option<u32> {
+        None
+    }
+}
+
 /// Parse a burst of buffers and run it through the pipeline.
 ///
 /// Control traffic of the `early` classes, which the NIC does not steer to the control queue, is
 /// moved to `diverted` before the pipeline sees it. Every other packet comes back, whatever its
 /// verdict, except those that the stages punt: the caller counts and frees the drops, in bulk.
-fn process_burst<Buf: PacketBufferMut>(
+fn process_burst<Buf: PacketBufferMut + RxContext>(
     burst: impl ExactSizeIterator<Item = Buf>,
     rx_if: InterfaceIndex,
     pipeline: &mut impl NetworkFunction<Buf>,
@@ -570,8 +590,18 @@ fn process_burst<Buf: PacketBufferMut>(
     packets.clear();
     // Each packet is parsed in its slot rather than built and then moved into one.
     for buffer in burst {
+        let decapped = buffer.nic_decap();
         match Packet::parse_into(packets, buffer) {
-            Ok(packet) => packet.meta_mut().iif = Some(rx_if),
+            Ok(packet) => {
+                packet.meta_mut().iif = Some(rx_if);
+                if let Some(mark) = decapped {
+                    // The NIC took the outer headers off: the frame is the inner one, of this VNI.
+                    match net::vxlan::Vni::new_checked(mark) {
+                        Ok(vni) => packet.meta_mut().set_nic_decap(vni),
+                        Err(_) => packet.done(DoneReason::VxlanDecapFailure),
+                    }
+                }
+            }
             Err(e) => {
                 counters.parse_errors += 1;
                 trace!("failed to parse a received frame: {e:?}");

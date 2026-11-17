@@ -142,6 +142,7 @@ bitflags! {
         const REQ_STATIC_NAT_DST  = 1 << 7; /* Packet requires static NAT (destination) */
         const FORCE_FLOW_TRACKING = 1 << 8; /* We need to track this flow, e.g. to apply stateful user ACLs */
         const NEED_ARPND          = 1 << 9; /* Need ARP/ND resolution */
+        const NIC_DECAP           = 1 << 10; /* The NIC decapsulated it; `src_vpcd` is its VNI, until the first IP forwarder takes it */
     }
 }
 
@@ -281,6 +282,30 @@ impl PacketMeta {
     }
     pub fn set_forced_flow_tracking(&mut self, value: bool) {
         self.set_flag(MetaFlags::FORCE_FLOW_TRACKING, value);
+    }
+
+    /// Mark the packet as one the NIC decapsulated from VXLAN of `vni`: the frame is the inner one.
+    /// The VNI is its `src_vpcd`, as for a packet decapsulated in software; the mark costs a flag,
+    /// not a field (`Packet<Mbuf>` is kept within what the compiler copies inline).
+    pub fn set_nic_decap(&mut self, vni: Vni) {
+        self.src_vpcd = Some(VpcDiscriminant::VNI(vni));
+        self.set_flag(MetaFlags::NIC_DECAP, true);
+    }
+
+    /// The VNI of the VXLAN the NIC decapsulated, until [`Self::take_nic_decap`].
+    #[must_use]
+    pub fn nic_decap(&self) -> Option<Vni> {
+        if !self.flags.contains(MetaFlags::NIC_DECAP) {
+            return None;
+        }
+        self.src_vpcd.map(|VpcDiscriminant::VNI(vni)| vni)
+    }
+
+    /// [`Self::nic_decap`], and forget that the NIC decapsulated it (its `src_vpcd` stays).
+    pub fn take_nic_decap(&mut self) -> Option<Vni> {
+        let vni = self.nic_decap();
+        self.set_flag(MetaFlags::NIC_DECAP, false);
+        vni
     }
 
     #[must_use]

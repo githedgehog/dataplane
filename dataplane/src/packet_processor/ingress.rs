@@ -111,6 +111,26 @@ impl Ingress {
         }
     }
 
+    /// A frame the NIC decapsulated: its outer frame was unicast IPv4 VXLAN to our VTEP (the NIC
+    /// matched that), which software would have taken as local unicast. Only the interface's
+    /// attachment matters; the inner frame is the IP forwarder's to judge, as after decapsulating
+    /// in software.
+    fn interface_ingress_nic_decapped<Buf: PacketBufferMut>(
+        &self,
+        interface: &Interface,
+        packet: &mut Packet<Buf>,
+    ) {
+        let nfi = self.name();
+        match &interface.attachment {
+            Some(Attachment::Vrf(vrfid)) => {
+                debug!("{nfi}: NIC-decapsulated packet for FIB {vrfid}");
+                packet.meta_mut().vrf = Some(*vrfid);
+            }
+            Some(Attachment::BridgeDomain) => packet.done(DoneReason::InterfaceUnsupported),
+            None => packet.done(DoneReason::InterfaceDetached),
+        }
+    }
+
     #[tracing::instrument(level = "trace")]
     fn interface_ingress_eth_non_local<Buf: PacketBufferMut>(
         &self,
@@ -180,6 +200,11 @@ impl Ingress {
             );
             match packet.try_eth() {
                 None => packet.done(DoneReason::NotEthernet),
+                // The NIC decapsulated it: the frame is the inner one, addressed to our VTEP's
+                // MAC, and judged as the outer one was (see `interface_ingress_nic_decapped`).
+                Some(_) if packet.meta().nic_decap().is_some() => {
+                    self.interface_ingress_nic_decapped(interface, packet);
+                }
                 Some(eth) => {
                     let dmac = eth.destination().inner();
                     if dmac.is_broadcast() {
@@ -344,6 +369,25 @@ mod test {
         let packet = ingress(ip_packet_to(PORT_MAC));
         assert_eq!(packet.get_done(), None);
         assert_eq!(packet.meta().vrf, Some(VRF));
+    }
+
+    /// The NIC decapsulated it: the inner frame is addressed to our VTEP's MAC, not the port's,
+    /// and continues in the port's VRF for the IP forwarder to judge, as after decapsulating in
+    /// software. Unmarked, the same frame is not for us.
+    #[test]
+    fn a_frame_the_nic_decapsulated_continues_whatever_its_mac() {
+        let vtep_mac = Mac([0x02, 0, 0, 0x99, 0, 0x01]);
+        let mut decapped = ip_packet_to(vtep_mac);
+        decapped
+            .meta_mut()
+            .set_nic_decap(net::vxlan::Vni::new_checked(300).unwrap());
+        let decapped = ingress(decapped);
+        assert_eq!(decapped.get_done(), None);
+        assert_eq!(decapped.meta().vrf, Some(VRF));
+        assert_eq!(
+            ingress(ip_packet_to(vtep_mac)).get_done(),
+            Some(DoneReason::MacNotForUs)
+        );
     }
 
     #[test]
