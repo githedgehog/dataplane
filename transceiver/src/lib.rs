@@ -32,6 +32,7 @@ mod module;
 pub mod sff8024;
 pub mod sff8472;
 pub mod sff8636;
+mod summary;
 mod units;
 
 pub use capture::{Capture, DecodeError, Eeprom, ReadError, decode, read};
@@ -40,4 +41,5 @@ pub use module::{
     Bounds, Crossings, Detail, Flags, Inventory, LaneFlags, LaneMonitors, Length, Module, Monitors,
     Reach, RxPowerKind, Thresholds, Wavelength,
 };
+pub use summary::Summary;
 pub use units::{BiasMultiplier, Current, Power, Temperature, Voltage};

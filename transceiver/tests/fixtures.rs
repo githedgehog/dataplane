@@ -718,3 +718,34 @@ fn an_unreadable_bank_does_not_renumber_lanes() {
     );
     assert_eq!(module.monitors.lanes[..original.len()], original[..]);
 }
+
+/// What switches would report about each fixture's module.
+#[test]
+fn fixtures_summarize_as_switches_would() {
+    for (name, form_factor, connector) in [
+        ("sfp-10g-t-port0", "SFP_PLUS", Some("LC_CONNECTOR")),
+        ("qsfp28-cwdm4-intel-port0", "QSFP28", Some("LC_CONNECTOR")),
+        (
+            "qsfp28-sr4-mellanox-port0",
+            "QSFP28",
+            Some("NO_SEPARABLE_CONNECTOR"),
+        ),
+        (
+            "qsfp28-dac-port0",
+            "QSFP_PLUS",
+            Some("NO_SEPARABLE_CONNECTOR"),
+        ),
+        ("qsfp112-sr4-fs-port0", "QSFP112", Some("MPOx12_CONNECTOR")),
+        (
+            "qsfp112-dac-port0",
+            "QSFP112",
+            Some("NO_SEPARABLE_CONNECTOR"),
+        ),
+    ] {
+        let mut fixture = Fixture::new(name);
+        let (module, _) = read(&mut fixture, Capture::new()).unwrap();
+        let summary = module.summary();
+        assert_eq!(summary.form_factor, form_factor, "{name}");
+        assert_eq!(summary.connector_type, connector, "{name}");
+    }
+}
