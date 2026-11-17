@@ -502,6 +502,8 @@ fn publish_port_states(
             mtu: port.mtu,
             link_up: state.link_up,
             speed_mbps: state.speed_mbps,
+            autoneg: link.map(|link| link.autoneg),
+            full_duplex: link.map(|link| link.full_duplex),
             link_changes: state.link_changes,
             counters,
             rx_pool: state.rx_pool,

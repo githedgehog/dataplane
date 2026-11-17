@@ -148,6 +148,10 @@ pub struct PortReport {
     pub link_up: bool,
     /// Its negotiated speed in Mbit/s, if known.
     pub speed_mbps: Option<u32>,
+    /// Whether the link speed was autonegotiated, if known.
+    pub autoneg: Option<bool>,
+    /// Whether the link is full duplex, if known.
+    pub full_duplex: Option<bool>,
     /// Times the link went up or down, as seen once a second.
     pub link_changes: u64,
     /// Its counters, if it would report them.
@@ -186,14 +190,29 @@ impl CliDataProvider for DpdkPortsCli {
         }
         let _ = writeln!(
             f,
-            "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:>7}  {:>17}  {:>17}  {:<8}",
-            "port", "mac", "mtu", "link", "speed", "changes", "rx-pool", "control-pool", "hardware"
+            "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:<6}  {:<4}  {:>7}  {:>17}  {:>17}  {:<8}",
+            "port",
+            "mac",
+            "mtu",
+            "link",
+            "speed",
+            "duplex",
+            "auto",
+            "changes",
+            "rx-pool",
+            "control-pool",
+            "hardware"
         );
         let pool = |(used, size): (u32, u32)| format!("{used}/{size}");
+        let flag = |value: Option<bool>, yes, no| match value {
+            Some(true) => yes,
+            Some(false) => no,
+            None => "-",
+        };
         for port in &status.ports {
             let _ = writeln!(
                 f,
-                "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:>7}  {:>17}  {:>17}  {:<8}",
+                "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:<6}  {:<4}  {:>7}  {:>17}  {:>17}  {:<8}",
                 port.name,
                 port.mac,
                 port.mtu,
@@ -201,6 +220,8 @@ impl CliDataProvider for DpdkPortsCli {
                 port.speed_mbps
                     .filter(|_| port.link_up)
                     .map_or_else(|| "-".to_string(), speed),
+                flag(port.full_duplex.filter(|_| port.link_up), "full", "half"),
+                flag(port.autoneg, "on", "off"),
                 port.link_changes,
                 pool(port.rx_pool),
                 pool(port.control_pool),
@@ -551,6 +572,8 @@ mod tests {
             mtu: 9000,
             link_up: true,
             speed_mbps: Some(100_000),
+            autoneg: Some(true),
+            full_duplex: Some(true),
             link_changes: 2,
             counters: Some(stats::PortCounters {
                 rx_missed: 4321,
@@ -561,7 +584,7 @@ mod tests {
             ..PortReport::default()
         }]);
         let ports = DpdkPortsCli(reader.clone()).provide();
-        for shown in ["eth7", "9000", "up", "100G", "12/4095"] {
+        for shown in ["eth7", "9000", "up", "100G", "full", "on", "12/4095"] {
             assert!(ports.contains(shown), "{shown} missing from:\n{ports}");
         }
         let stats = DpdkPortStatsCli(reader).provide();
