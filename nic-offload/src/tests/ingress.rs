@@ -212,7 +212,7 @@ fn ingress_comes_first_in_a_generation() {
     );
     let vni = net::vxlan::Vni::new_checked(VNI1).unwrap();
     let vteps: BTreeMap<_, _> = [(vni, std::net::Ipv4Addr::new(192, 0, 2, 1))].into();
-    let plan = Plan::new(&program, &vteps, &crate::differential::fate()).unwrap();
+    let plan = Plan::new(&program, &vteps, &crate::differential::fate(), false).unwrap();
     let vpc = &plan.vpcs[&vni];
     assert_eq!(vpc.entry, Group::Ingress(vni));
     assert_eq!(
@@ -260,7 +260,7 @@ fn a_vpc_policed_at_ingress_keeps_its_rate_limits_in_software() {
     );
     let vni = net::vxlan::Vni::new_checked(VNI1).unwrap();
     let vteps: BTreeMap<_, _> = [(vni, std::net::Ipv4Addr::new(192, 0, 2, 1))].into();
-    let plan = Plan::new(&program, &vteps, &crate::differential::fate()).unwrap();
+    let plan = Plan::new(&program, &vteps, &crate::differential::fate(), false).unwrap();
     assert_eq!(
         next(&plan, vni, Group::Ingress(vni)),
         [(Role::CatchAll(Group::Ingress(vni)), vec![])]
@@ -323,7 +323,7 @@ fn both_components_of_a_meter_chain_in_the_nic() {
     assert_eq!(program.meters[second].unit, rate_limit::Unit::Packets);
     let vni = net::vxlan::Vni::new_checked(VNI1).unwrap();
     let vteps: BTreeMap<_, _> = [(vni, std::net::Ipv4Addr::new(192, 0, 2, 1))].into();
-    let plan = Plan::new(&program, &vteps, &crate::differential::fate()).unwrap();
+    let plan = Plan::new(&program, &vteps, &crate::differential::fate(), false).unwrap();
     let green = |meter| {
         plan.vpcs[&vni]
             .tables
@@ -430,7 +430,7 @@ fn equal_names_of_two_policies_are_two_meters() {
     let vni = |n| net::vxlan::Vni::new_checked(n).unwrap();
     let vtep = std::net::Ipv4Addr::new(192, 0, 2, 1);
     let vteps: BTreeMap<_, _> = [(vni(VNI1), vtep), (vni(super::VNI2), vtep)].into();
-    let plan = Plan::new(&program, &vteps, &crate::differential::fate()).unwrap();
+    let plan = Plan::new(&program, &vteps, &crate::differential::fate(), false).unwrap();
     assert_eq!(plan.meters[0].key.name, plan.meters[1].key.name);
     assert_ne!(plan.meters[0].key, plan.meters[1].key);
     // Only the peering meter has a color group of its own; the ingress meter's colors are
@@ -475,7 +475,7 @@ fn a_shadowed_rule_makes_no_meter() {
     assert_eq!(program.meters, []);
     let vni = net::vxlan::Vni::new_checked(VNI1).unwrap();
     let vteps: BTreeMap<_, _> = [(vni, std::net::Ipv4Addr::new(192, 0, 2, 1))].into();
-    assert!(Plan::new(&program, &vteps, &crate::differential::fate()).is_ok());
+    assert!(Plan::new(&program, &vteps, &crate::differential::fate(), false).is_ok());
 }
 
 /// Rules of different source VPCs never overlap, so never layer on each other.

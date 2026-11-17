@@ -90,6 +90,9 @@ pub struct Policy {
     pub ingress: RateLimitReader<IngressRules>,
     /// The VTEP each VPC's VXLAN is addressed to.
     pub vteps: Arc<dyn Vteps>,
+    /// Whether the NIC decapsulates the VXLAN of every VPC with a VTEP, delivering the inner frame
+    /// marked with the VNI (MARK). Fixed for the life of a port: the switch is never rebuilt.
+    pub decap: bool,
 }
 
 /// Where software takes in each VPC's VXLAN: it decapsulates only VXLAN addressed to the VTEP of

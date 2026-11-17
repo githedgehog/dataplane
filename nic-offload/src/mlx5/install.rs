@@ -75,10 +75,13 @@ impl Groups {
 /// The switch table, its catch-all, and the switch rule of each attached VPC.
 #[derive(Debug)]
 struct Switch<'t> {
-    // Fields drop in order: the switch rules before the catch-all.
+    // Fields drop in order: the switch rules before the catch-all, rules before their tables.
     rules: BTreeMap<Vni, Rule<'t>>,
     catch_all: Rule<'t>,
+    /// The rules delivering exceptions encapsulated, ahead of the switch rules (decapsulation).
+    exceptions: Vec<Rule<'t>>,
     table: Table<'t>,
+    exception_tables: Vec<Table<'t>>,
 }
 
 /// A source VPC's generation of rules.
@@ -469,6 +472,7 @@ impl<'t> Port<'t> {
             .map(|&arg| match arg {
                 Arg::Jump(g) => group(g).map(SharedArg::Jump),
                 Arg::Meter(m) => Ok(SharedArg::Meter(self.installed_meter(m)?.meter.clone())),
+                Arg::Mark(id) => Ok(SharedArg::Mark(id)),
             })
             .collect()
     }
@@ -503,15 +507,17 @@ impl<'t> Port<'t> {
                 .as_ref()
                 .map(|c| c.group)
                 .ok_or(Error::NoSuchGroup(group)),
-            Group::Ingress(_) | Group::IngressColor(..) | Group::Deny(_) | Group::Police(_) => {
-                own.get(&group).copied().ok_or(Error::NoSuchGroup(group))
-            }
+            Group::Ingress(_)
+            | Group::IngressColor(..)
+            | Group::Deny(_)
+            | Group::Police(_)
+            | Group::Exit(_) => own.get(&group).copied().ok_or(Error::NoSuchGroup(group)),
         }
     }
 
     /// Make sure of the switch table, its catch-all and the root, in that order.
     fn fixed(&mut self, plan: &Plan) -> Result<(), Error> {
-        let [root, switch, catch_all] = plan.fixed.as_slice() else {
+        let [root, switch, catch_all, exceptions @ ..] = plan.fixed.as_slice() else {
             return Ok(());
         };
         if self.switch.is_none() {
@@ -523,10 +529,24 @@ impl<'t> Port<'t> {
                 &catch_all.rules[0],
                 &[],
             )??;
+            let mut exception_rules = Vec::with_capacity(exceptions.len());
+            let mut exception_tables = Vec::with_capacity(exceptions.len());
+            for planned in exceptions {
+                let table = self.table(plan, planned, SWITCH)?;
+                exception_rules.push(self.insert(
+                    "inserting a switch exception",
+                    &table,
+                    &planned.rules[0],
+                    &[],
+                )??);
+                exception_tables.push(table);
+            }
             self.switch = Some(Switch {
                 rules: BTreeMap::new(),
                 catch_all,
+                exceptions: exception_rules,
                 table,
+                exception_tables,
             });
         }
         if self.root.is_none() {
@@ -803,14 +823,18 @@ impl<'t> Port<'t> {
             let Switch {
                 rules,
                 catch_all,
+                exceptions,
                 table,
+                exception_tables,
             } = switch;
             let rules = rules
                 .into_iter()
                 .map(|(vni, rule)| (Some(vni), rule))
-                .chain([(None, catch_all)]);
+                .chain([(None, catch_all)])
+                .chain(exceptions.into_iter().map(|rule| (None, rule)));
             self.destroy_rules("removing the switch rules", rules)?;
             drop(table);
+            drop(exception_tables);
         }
         for meter in std::mem::take(&mut self.meters) {
             self.unmake(meter)?;
@@ -994,15 +1018,30 @@ impl SyncCreate for Port<'_> {
             return Ok(Vec::new());
         };
         let entry = generation.entry;
+        // The planned arguments, with the generation's entry for its jump.
+        let args: Result<Vec<SharedArg<'_, Ingress>>, Error> = rule
+            .args
+            .iter()
+            .map(|arg| match *arg {
+                Arg::Mark(id) => Ok(SharedArg::Mark(id)),
+                Arg::Jump(_) => Ok(SharedArg::Jump(entry)),
+                // A switch rule charges no meter.
+                Arg::Meter(_) => Err(Error::MeterNotMade),
+            })
+            .collect();
+        let args = match args {
+            Ok(args) => args,
+            Err(e) => {
+                self.teardown(generation)?;
+                return Err(e);
+            }
+        };
         let Some(switch) = self.switch.as_mut() else {
             self.teardown(generation)?;
             return Err(Error::NoSwitch);
         };
         // Leave every existing switch rule reachable by lose()/detach_all() if insertion fails.
-        let inserted =
-            switch
-                .table
-                .insert(0, &rule.pattern, rule.actions, &[SharedArg::Jump(entry)]);
+        let inserted = switch.table.insert(0, &rule.pattern, rule.actions, &args);
         match inserted {
             Ok(installed) => {
                 switch.rules.insert(vni, installed);
@@ -1338,15 +1377,22 @@ pub(crate) fn peerings(program: &Program, refused: &[(Role, Error)]) -> Result<E
             Role::Root
             | Role::Ingress(_)
             | Role::IngressColor(..)
+            | Role::Exception(_)
             | Role::CatchAll(
                 Group::Root
                 | Group::Switch
                 | Group::Color(_)
                 | Group::Ingress(_)
-                | Group::IngressColor(..),
+                | Group::IngressColor(..)
+                | Group::Exit(_),
             ) => Vec::new(),
         };
         if of_role.is_empty() {
+            // A VPC the NIC only decapsulates for: software decapsulates it instead.
+            if let Role::Switch(vni) | Role::CatchAll(Group::Exit(vni)) = *role {
+                excluded.vpcs.insert(vni);
+                continue;
+            }
             return Err(*role);
         }
         excluded.peerings.extend(of_role);
@@ -1406,6 +1452,7 @@ pub fn run(
             ingress: &ingress,
             destinations: &destinations,
             vteps: &vteps,
+            decap: policy.decap,
         };
         let program = install_policy(&mut port, port_name, &seen, fate, &changed);
         if let Some(program) = &program
@@ -1419,6 +1466,12 @@ pub fn run(
                 port.installed(|role| matches!(role, Role::Deny(_))),
                 port.installed(|role| matches!(role, Role::Police(_))),
                 port.vpcs.len(),
+            );
+        }
+        if policy.decap && program.is_some() && !port.vpcs.is_empty() {
+            info!(
+                "port {port_name}: NIC decapsulating the VXLAN of {} VPC(s)",
+                port.vpcs.len()
             );
         }
         // Every peering the flow filter routes, but those an attached VPC's rules are of: what
@@ -1451,6 +1504,23 @@ struct Seen<'a> {
     ingress: &'a rate_limit::RateLimits<rate_limit::IngressRules>,
     destinations: &'a [flow_filter::Destination],
     vteps: &'a BTreeMap<Vni, Ipv4Addr>,
+    /// Whether the NIC decapsulates what it delivers of switched VPCs.
+    decap: bool,
+}
+
+/// The VTEPs of the VPCs not left in software.
+fn planned_vteps(
+    vteps: &BTreeMap<Vni, Ipv4Addr>,
+    excluded: &Exclusions,
+    offloading: bool,
+) -> BTreeMap<Vni, Ipv4Addr> {
+    // Offload turned off leaves decapsulation to software too: no VPC is switched.
+    vteps
+        .iter()
+        .filter(|_| offloading)
+        .filter(|(vni, _)| !excluded.vpcs.contains(vni))
+        .map(|(&vni, &vtep)| (vni, vtep))
+        .collect()
 }
 
 /// Compile the policy into a program, and reconcile `port` with it: the program installed, or
@@ -1469,6 +1539,7 @@ fn install_policy(
         ingress,
         destinations,
         vteps,
+        decap,
     } = *seen;
     // What is left in software: refused by the NIC, over its meters, or of a VPC without a VTEP.
     let mut excluded = Exclusions::default();
@@ -1518,7 +1589,12 @@ fn install_policy(
             // Software may already enforce a policy newer than the NIC's: detach the VPCs this
             // program changes before compiling again, so that a policy republished faster than
             // it compiles never leaves the NIC enforcing an old one.
-            let detached = match super::Plan::new(&program, vteps, fate) {
+            let detached = match super::Plan::new(
+                &program,
+                &planned_vteps(vteps, &excluded, limits.attempt_offloads()),
+                fate,
+                decap,
+            ) {
                 Ok(plan) => port.detach_changed(&plan),
                 Err(_) => port.clear(),
             };
@@ -1533,7 +1609,13 @@ fn install_policy(
                 info!("port {port_name}: the {peering} stays in software: {origin}: {refusal:?}");
             }
         }
-        let outcome = super::Plan::new(&program, vteps, fate).and_then(|plan| {
+        let outcome = super::Plan::new(
+            &program,
+            &planned_vteps(vteps, &excluded, limits.attempt_offloads()),
+            fate,
+            decap,
+        )
+        .and_then(|plan| {
             let observed = port.observe();
             port.reconcile(&plan, observed)
         });

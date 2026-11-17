@@ -290,7 +290,7 @@ fn main() {
                 .chain(program.rules.iter().map(|r| r.matches.src_vni))
                 .map(|vni| (vni, Ipv4Addr::new(192, 0, 2, 2)))
                 .collect();
-            let plan = Plan::new(&program, &vteps, &fate).unwrap();
+            let plan = Plan::new(&program, &vteps, &fate, false).unwrap();
             let refusals = |installed: &dataplane_nic_offload::mlx5::Installed<'_, '_>| {
                 installed
                     .refused()

@@ -42,7 +42,13 @@ fn plan(sources: &[u32]) -> Plan {
         .iter()
         .map(|&v| (vni(v), Ipv4Addr::new(192, 0, 2, 1)))
         .collect();
-    Plan::new(&program, &vteps, &TemplateAction::Queue(RxQueueIndex(0))).unwrap()
+    Plan::new(
+        &program,
+        &vteps,
+        &TemplateAction::Queue(RxQueueIndex(0)),
+        false,
+    )
+    .unwrap()
 }
 
 fn any_to(destination: Prefix, source: u32) -> Match {
@@ -87,7 +93,13 @@ fn policed(name: &str, rate: u64) -> Program {
 
 fn planned(program: &Program) -> Plan {
     let vteps = [(vni(100), Ipv4Addr::new(192, 0, 2, 1))].into();
-    Plan::new(program, &vteps, &TemplateAction::Queue(RxQueueIndex(0))).unwrap()
+    Plan::new(
+        program,
+        &vteps,
+        &TemplateAction::Queue(RxQueueIndex(0)),
+        false,
+    )
+    .unwrap()
 }
 
 /// Meters the next plan does not want are removed before its new ones are made, so a port near

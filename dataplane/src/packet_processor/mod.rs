@@ -131,6 +131,9 @@ impl PipelineIngredients {
             rate_limits: self.rate_limits.clone(),
             ingress: self.ingress.clone(),
             vteps: Arc::new(FibVteps(self.fibtr_factory.handle().factory())),
+            // Software takes the VNI from the MARK (see the DPDK worker's `RxContext`), and handles
+            // whatever arrives encapsulated as before.
+            decap: true,
         }
     }
 

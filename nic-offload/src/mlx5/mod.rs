@@ -19,6 +19,12 @@
 //! The root stays fixed because mlx5 firmware steering is slow and cannot update it in place.
 //!
 //! Switch rules match the destination VTEP so transit VXLAN stays in the underlay.
+//!
+//! With decapsulation ([`Plan::new`]'s `decap`), every VPC with a VTEP gets a switch rule, which
+//! marks its packets with the VNI (MARK survives jumps), and whatever its generation delivers
+//! arrives decapsulated: software reads the VNI from the MARK. A VPC with no NIC rules gets a
+//! generation of one catch-all ([`Group::Exit`]). VXLAN with an outer TTL of 0 or a multicast
+//! source, and VPCs the switch does not know, still arrive encapsulated, for software to judge.
 //! [`Plan`] stores named [`Group`]s, numbered at installation. Only IPv4 underlay is supported.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -570,6 +576,17 @@ pub enum Group {
     Police(Vni),
     /// A meter's colors, by index into [`Plan::meters`].
     Color(usize),
+    /// A source VPC with no NIC rules, decapsulated and delivered: its catch-all alone.
+    Exit(Vni),
+}
+
+/// VXLAN the switch delivers encapsulated, ahead of the VPCs' switch rules, for software to drop.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Exception {
+    /// An outer TTL of zero.
+    TtlZero,
+    /// A multicast outer source.
+    MulticastSource,
 }
 
 /// What a rule is for, to report its counts and refusals.
@@ -594,6 +611,8 @@ pub enum Role {
     CatchAll(Group),
     /// What a meter, by index into [`Plan::meters`], colored.
     Color(usize, Color),
+    /// An exception the switch delivers encapsulated.
+    Exception(Exception),
 }
 
 /// A per-rule argument, by reference into the plan.
@@ -603,6 +622,8 @@ pub enum Arg {
     Meter(usize),
     /// Jump to this group.
     Jump(Group),
+    /// Mark with this value.
+    Mark(u32),
 }
 
 /// A rule of a [`PlannedTable`].
@@ -715,6 +736,8 @@ pub struct Plan {
     pub fixed: Vec<PlannedTable>,
     /// The source VPCs' generations.
     pub vpcs: BTreeMap<Vni, PlannedVpc>,
+    /// Whether what the NIC delivers of a switched VPC arrives decapsulated, marked with its VNI.
+    pub decap: bool,
 }
 
 /// Pattern templates every plan has, by index.
@@ -722,6 +745,8 @@ const ROOT: usize = 0;
 const ANY: usize = 1;
 const COLOR: usize = 2;
 const SWITCHED: usize = 3;
+const TTL_ZERO: usize = 4;
+const MULTICAST_SOURCE: usize = 5;
 
 /// Actions templates every plan has, by index.
 const TO_SWITCH: usize = 0;
@@ -732,6 +757,34 @@ const PASS: usize = 4;
 const DISCARD: usize = 5;
 const COUNT_JUMP: usize = 6;
 const COUNT_POLICE: usize = 7;
+/// Mark with the VNI and jump to the generation: a switch rule, with decapsulation.
+const SWITCH_TO: usize = 8;
+/// Deliver as it is, encapsulated: the switch's catch-all and exceptions, with decapsulation.
+const RAW: usize = 9;
+
+/// The largest VNI a MARK carries: mlx5 delivers 24 bits, and `0xffffff` arrives as no mark.
+pub const MAX_MARKED_VNI: u32 = 0x00ff_fffe;
+
+/// VXLAN with an outer TTL of zero: software drops it, so it must see the outer header.
+fn ttl_zero_pattern() -> Pattern<Complete> {
+    Pattern::new()
+        .eth(EthMatch::default())
+        .ipv4(Ipv4Match::default().ttl(0))
+        .udp(UdpMatch::default().dst(VXLAN_PORT))
+        .complete()
+}
+
+/// VXLAN from a multicast source: software drops it, so it must see the outer header.
+fn multicast_source_pattern() -> Pattern<Complete> {
+    Pattern::new()
+        .eth(EthMatch::default())
+        .ipv4(Ipv4Match::default().src(Ipv4Prefix::masked(
+            Ipv4Addr::new(224, 0, 0, 0),
+            Ipv4Addr::new(240, 0, 0, 0),
+        )))
+        .udp(UdpMatch::default().dst(VXLAN_PORT))
+        .complete()
+}
 
 fn root_pattern() -> Pattern<Complete> {
     Pattern::new()
@@ -825,6 +878,31 @@ fn single(
     }
 }
 
+/// The generation of source VPC `vni`, with no NIC rules: decapsulated and delivered.
+fn exit(vni: Vni, vtep: Ipv4Addr) -> PlannedVpc {
+    let group = Group::Exit(vni);
+    PlannedVpc {
+        spec: VpcSpec {
+            ingress: Vec::new(),
+            denies: Vec::new(),
+            limits: Vec::new(),
+            passes: Vec::new(),
+            vtep,
+            peerings: BTreeSet::new(),
+        },
+        entry: group,
+        tables: vec![single(
+            group,
+            0,
+            ANY,
+            DELIVER,
+            any_pattern(),
+            Vec::new(),
+            Role::CatchAll(group),
+        )],
+    }
+}
+
 /// The most source VPCs one port's switch holds.
 const SWITCH_CAPACITY: u32 = 4096;
 
@@ -909,6 +987,7 @@ impl Plan {
         program: &Program,
         vteps: &BTreeMap<Vni, Ipv4Addr>,
         fate: &TemplateAction,
+        decap: bool,
     ) -> Result<Plan, Error> {
         if program.meters.len() > RESOURCES.meters as usize {
             return Err(Error::TooManyMeters(program.meters.len()));
@@ -919,13 +998,28 @@ impl Plan {
                 any_pattern(),
                 Pattern::meter_color(Color::Green).complete(),
                 switch_pattern(None),
+                ttl_zero_pattern(),
+                multicast_source_pattern(),
             ],
             actions: vec![
                 vec![TemplateAction::Jump(SWITCH)],
                 vec![TemplateAction::JumpPerRule],
                 vec![TemplateAction::Meter, TemplateAction::JumpPerRule],
-                vec![fate.clone()],
-                vec![TemplateAction::Count, fate.clone()],
+                if decap {
+                    vec![TemplateAction::VxlanDecap, fate.clone()]
+                } else {
+                    vec![fate.clone()]
+                },
+                // mlx5 orders a decapsulation before the count.
+                if decap {
+                    vec![
+                        TemplateAction::VxlanDecap,
+                        TemplateAction::Count,
+                        fate.clone(),
+                    ]
+                } else {
+                    vec![TemplateAction::Count, fate.clone()]
+                },
                 vec![TemplateAction::Count, TemplateAction::Drop],
                 vec![TemplateAction::Count, TemplateAction::JumpPerRule],
                 vec![
@@ -933,10 +1027,13 @@ impl Plan {
                     TemplateAction::Meter,
                     TemplateAction::JumpPerRule,
                 ],
+                vec![TemplateAction::MarkPerRule, TemplateAction::JumpPerRule],
+                vec![fate.clone()],
             ],
             meters: Vec::new(),
             fixed: Vec::new(),
             vpcs: BTreeMap::new(),
+            decap,
         };
         for (index, meter) in program.meters.iter().enumerate() {
             plan.meters.push(PlannedMeter {
@@ -967,6 +1064,12 @@ impl Plan {
             .chain(limits.keys())
             .copied()
             .collect();
+        // A VPC whose VNI no MARK carries stays in software: its packets could not be told apart
+        // once decapsulated.
+        let vnis: BTreeSet<Vni> = vnis
+            .into_iter()
+            .filter(|vni| !decap || vni.as_u32() <= MAX_MARKED_VNI)
+            .collect();
         for vni in vnis {
             let vtep = *vteps.get(&vni).ok_or(Error::NoVtep(vni))?;
             let vpc = plan.vpc(
@@ -978,6 +1081,13 @@ impl Plan {
                 &limits.remove(&vni).unwrap_or_default(),
             );
             plan.vpcs.insert(vni, vpc);
+        }
+        if decap {
+            for (&vni, &vtep) in vteps {
+                if vni.as_u32() <= MAX_MARKED_VNI && !plan.vpcs.contains_key(&vni) {
+                    plan.vpcs.insert(vni, exit(vni, vtep));
+                }
+            }
         }
         if !plan.vpcs.is_empty() {
             plan.fixed = plan.fixed_tables();
@@ -1227,11 +1337,17 @@ impl Plan {
             .map(|(&vni, vpc)| PlannedRule {
                 pattern: switch_pattern(Some((vni, vpc.spec.vtep))),
                 actions: 0,
-                args: vec![Arg::Jump(vpc.entry)],
+                args: if self.decap {
+                    vec![Arg::Mark(vni.as_u32()), Arg::Jump(vpc.entry)]
+                } else {
+                    vec![Arg::Jump(vpc.entry)]
+                },
                 role: Role::Switch(vni),
             })
             .collect();
-        vec![
+        // With decapsulation, the exceptions go first, encapsulated, and so does the catch-all.
+        let (first, deliver) = if self.decap { (2, RAW) } else { (0, DELIVER) };
+        let mut tables = vec![
             single(
                 Group::Root,
                 0,
@@ -1243,22 +1359,43 @@ impl Plan {
             ),
             PlannedTable {
                 group: Group::Switch,
-                priority: Priority(0),
+                priority: Priority(first),
                 capacity: SWITCH_CAPACITY,
                 pattern: SWITCHED,
-                actions: vec![JUMP],
+                actions: vec![if self.decap { SWITCH_TO } else { JUMP }],
                 rules: switch_rules,
             },
             single(
                 Group::Switch,
-                1,
+                first + 1,
                 ANY,
-                DELIVER,
+                deliver,
                 any_pattern(),
                 Vec::new(),
                 Role::CatchAll(Group::Switch),
             ),
-        ]
+        ];
+        if self.decap {
+            tables.push(single(
+                Group::Switch,
+                0,
+                TTL_ZERO,
+                RAW,
+                ttl_zero_pattern(),
+                Vec::new(),
+                Role::Exception(Exception::TtlZero),
+            ));
+            tables.push(single(
+                Group::Switch,
+                1,
+                MULTICAST_SOURCE,
+                RAW,
+                multicast_source_pattern(),
+                Vec::new(),
+                Role::Exception(Exception::MulticastSource),
+            ));
+        }
+        tables
     }
 
     /// Every table of the plan.
