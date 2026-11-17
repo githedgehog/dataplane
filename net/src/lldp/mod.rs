@@ -51,9 +51,10 @@
 //! Every TLV [IEEE Std 802.1AB][ieee8021ab] defines is modelled: the mandatory
 //! three, the optional ones ([`OptionalTlv`]), and the IEEE 802.1 and IEEE
 //! 802.3 extensions carried inside the organizationally specific TLV
-//! ([`Dot1Tlv`], [`Dot3Tlv`]).  Within the 802.1 and 802.3 sets the subtypes
-//! this dataplane has a use for are decoded and the rest are kept verbatim, as
-//! is any TLV type or OUI the standard does not define.
+//! ([`Dot1Tlv`], [`Dot3Tlv`]).  The LLDP-MED inventory TLVs of ANSI/TIA-1057
+//! are decoded too ([`MedTlv`]).  Within these sets the subtypes this dataplane
+//! has a use for are decoded and the rest are kept verbatim, as is any TLV type
+//! or OUI the standards do not define.
 //!
 //! Nothing here is byte-lossy: a value parsed from a frame always deparses back
 //! to the octets it came from, whether or not this library understands what
@@ -88,8 +89,8 @@ pub use management::{
 pub use octets::{Octets, OctetsError};
 pub use optional::{OptionalTlv, OptionalTlvError, RecognizedTlvType, Text, UnrecognizedTlv};
 pub use org::{
-    Dot1Tlv, Dot3Tlv, LinkAggregationStatus, ModelledOrgTlv, OrgInfo, OrgTlvError,
-    OrganizationallySpecific, Oui, VlanId, VlanNameOctets,
+    Dot1Tlv, Dot3Tlv, InventoryOctets, LinkAggregationStatus, MedTlv, ModelledOrgTlv, OrgInfo,
+    OrgTlvError, OrganizationallySpecific, Oui, VlanId, VlanNameOctets,
 };
 pub use pdu::{Lldpdu, LldpduError, LldpduTooLong};
 pub use port_id::{PortId, PortIdError, PortIdSubtype, ReservedPortIdSubtype};
