@@ -159,6 +159,8 @@ pub struct PortReport {
     pub last_change: Option<SystemTime>,
     /// Its counters, if it would report them.
     pub counters: Option<stats::PortCounters>,
+    /// Frames the driver meant to send on the port but its transmit queues would not take.
+    pub tx_discards: u64,
     /// Mbufs in use, and the size, of its rx and control pools.
     pub rx_pool: (u32, u32),
     pub control_pool: (u32, u32),
@@ -265,22 +267,30 @@ impl CliDataProvider for DpdkPortStatsCli {
         }
         let _ = writeln!(
             f,
-            "   {:<16}  {:>16}  {:>16}  {:>12}  {:>10}  {:>10}  {:>10}",
-            "port", "rx-packets", "tx-packets", "rx-missed", "rx-errors", "tx-errors", "rx-nombuf"
+            "   {:<16}  {:>16}  {:>16}  {:>12}  {:>10}  {:>10}  {:>10}  {:>12}",
+            "port",
+            "rx-packets",
+            "tx-packets",
+            "rx-missed",
+            "rx-errors",
+            "tx-errors",
+            "rx-nombuf",
+            "tx-discards"
         );
         for port in &status.ports {
             match &port.counters {
                 Some(c) => {
                     let _ = writeln!(
                         f,
-                        "   {:<16}  {:>16}  {:>16}  {:>12}  {:>10}  {:>10}  {:>10}",
+                        "   {:<16}  {:>16}  {:>16}  {:>12}  {:>10}  {:>10}  {:>10}  {:>12}",
                         port.name,
                         c.rx_packets,
                         c.tx_packets,
                         c.rx_missed,
                         c.rx_errors,
                         c.tx_errors,
-                        c.rx_no_mbuf
+                        c.rx_no_mbuf,
+                        port.tx_discards
                     );
                 }
                 None => {
@@ -590,6 +600,7 @@ mod tests {
                 ..stats::PortCounters::default()
             }),
             rx_pool: (12, 4095),
+            tx_discards: 8765,
             xstats: vec![("rx_discards_phy".to_string(), 77)],
             ..PortReport::default()
         }]);
@@ -598,7 +609,7 @@ mod tests {
             assert!(ports.contains(shown), "{shown} missing from:\n{ports}");
         }
         let stats = DpdkPortStatsCli(reader).provide();
-        for shown in ["4321", "rx_discards_phy", "77"] {
+        for shown in ["4321", "8765", "rx_discards_phy", "77"] {
             assert!(stats.contains(shown), "{shown} missing from:\n{stats}");
         }
     }
