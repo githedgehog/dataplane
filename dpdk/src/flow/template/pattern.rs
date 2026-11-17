@@ -279,6 +279,51 @@ mod tests {
             });
     }
 
+    /// Two IPv4 items share a shape exactly when they lower to the same mask: a field missing from
+    /// the shape would let one template serve a pattern it does not match (an outer TTL of zero
+    /// matched every TTL through the root's template).
+    #[test]
+    fn ipv4_shapes_differ_exactly_where_masks_do() {
+        bolero::check!()
+            .with_type::<(u8, u8)>()
+            .for_each(|&(a, b)| {
+                let item = |bits: u8| {
+                    let mut m = Ipv4Match::default();
+                    if bits & 1 != 0 {
+                        m = m.src(Ipv4Prefix::host(Ipv4Addr::new(10, 0, 0, 1)));
+                    }
+                    if bits & 2 != 0 {
+                        m = m.dst(Ipv4Prefix::host(Ipv4Addr::new(10, 0, 0, 2)));
+                    }
+                    if bits & 4 != 0 {
+                        m = m.proto(17);
+                    }
+                    if bits & 8 != 0 {
+                        m = m.ttl(0);
+                    }
+                    if bits & 16 != 0 {
+                        m = m.unfragmented();
+                    }
+                    Pattern::new().eth(EthMatch::default()).ipv4(m)
+                };
+                let (x, y) = (item(a), item(b));
+                let mask = |p: &Pattern<_>| match &p.items[1] {
+                    MatchItem::Ipv4(_, mask) => {
+                        // SAFETY: the header is plain bytes.
+                        unsafe {
+                            core::slice::from_raw_parts(
+                                core::ptr::from_ref(&mask.hdr).cast::<u8>(),
+                                size_of_val(&mask.hdr),
+                            )
+                        }
+                        .to_vec()
+                    }
+                    _ => unreachable!("the second item is IPv4"),
+                };
+                assert_eq!(x.shapes == y.shapes, mask(&x) == mask(&y));
+            });
+    }
+
     /// A zero-length prefix lowers to the same all-zero mask as no prefix, so the PMD sees one shape.
     #[test]
     fn a_zero_length_prefix_has_the_shape_of_no_prefix() {

@@ -134,6 +134,7 @@ pub struct Ipv4Match {
     src: Option<Ipv4Prefix>,
     dst: Option<Ipv4Prefix>,
     proto: Option<u8>,
+    ttl: Option<u8>,
     unfragmented: bool,
 }
 
@@ -156,6 +157,13 @@ impl Ipv4Match {
     #[must_use]
     pub fn proto(mut self, proto: u8) -> Ipv4Match {
         self.proto = Some(proto);
+        self
+    }
+
+    /// Constrain the time to live.
+    #[must_use]
+    pub fn ttl(mut self, ttl: u8) -> Ipv4Match {
+        self.ttl = Some(ttl);
         self
     }
 
@@ -184,6 +192,10 @@ impl Ipv4Match {
         if let Some(proto) = self.proto {
             spec.hdr.next_proto_id = proto;
             mask.hdr.next_proto_id = u8::MAX;
+        }
+        if let Some(ttl) = self.ttl {
+            spec.hdr.time_to_live = ttl;
+            mask.hdr.time_to_live = u8::MAX;
         }
         if self.unfragmented {
             // More fragments and the offset; not don't-fragment.
@@ -573,6 +585,8 @@ pub enum ItemShape {
         dst: Ipv4Addr,
         /// Protocol mask.
         proto: u8,
+        /// Time to live mask.
+        ttl: u8,
         /// Flags and fragment offset mask; set to exclude fragments.
         fragment_offset: u16,
     },
@@ -641,6 +655,7 @@ impl MatchItem {
                 src: Ipv4Addr::from(u32::from_be(mask.hdr.src_addr)),
                 dst: Ipv4Addr::from(u32::from_be(mask.hdr.dst_addr)),
                 proto: mask.hdr.next_proto_id,
+                ttl: mask.hdr.time_to_live,
                 fragment_offset: u16::from_be(mask.hdr.fragment_offset),
             },
             MatchItem::Ipv6(_, mask) => ItemShape::Ipv6 {
