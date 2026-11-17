@@ -1469,6 +1469,42 @@ pub struct PortStats {
     pub rx_nombuf: u64,
 }
 
+/// The memory layout of a port's pluggable module, as the PMD reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModuleKind {
+    /// SFF-8079: an SFP without diagnostics, A0h only.
+    Sff8079,
+    /// SFF-8472: an SFP, A0h then A2h.
+    Sff8472,
+    /// SFF-8636: a QSFP28.
+    Sff8636,
+    /// SFF-8436: a QSFP+.
+    Sff8436,
+    /// A code DPDK does not define.
+    Other(u32),
+}
+
+impl ModuleKind {
+    const fn from_raw(raw: u32) -> Self {
+        match raw {
+            dpdk_sys::RTE_ETH_MODULE_SFF_8079 => Self::Sff8079,
+            dpdk_sys::RTE_ETH_MODULE_SFF_8472 => Self::Sff8472,
+            dpdk_sys::RTE_ETH_MODULE_SFF_8636 => Self::Sff8636,
+            dpdk_sys::RTE_ETH_MODULE_SFF_8436 => Self::Sff8436,
+            other => Self::Other(other),
+        }
+    }
+}
+
+/// What a PMD says about a port's pluggable module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModuleInfo {
+    /// How the module's memory is laid out.
+    pub kind: ModuleKind,
+    /// How many bytes of it the PMD exposes.
+    pub len: u32,
+}
+
 /// Why a port's flow control could not be turned off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum FlowControlError {
@@ -1650,6 +1686,55 @@ impl<'eal, S: Open> Dev<'eal, S> {
             oerrors: raw.oerrors,
             rx_nombuf: raw.rx_nombuf,
         })
+    }
+
+    /// What kind of pluggable module the port holds, and how much of its memory the PMD exposes.
+    ///
+    /// # Errors
+    /// Returns the driver's [`ErrorCode`]: `ENOTSUP` for a PMD that cannot read modules, and
+    /// typically `EIO` for an empty cage.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn module_info(&self) -> Result<ModuleInfo, ErrorCode> {
+        let mut raw: dpdk_sys::rte_eth_dev_module_info = unsafe { core::mem::zeroed() };
+        // SAFETY: `raw` is live for the call and the port index belongs to an open device.
+        let ret = unsafe {
+            dpdk_sys::rte_eth_dev_get_module_info(self.info.index().as_u16(), &raw mut raw)
+        };
+        if ret != 0 {
+            return Err(ErrorCode::parse_i32(ret));
+        }
+        Ok(ModuleInfo {
+            kind: ModuleKind::from_raw(raw.type_),
+            len: raw.eeprom_len,
+        })
+    }
+
+    /// Read the port's module memory, starting `offset` bytes into the flat image the PMD
+    /// exposes, into `buf`.
+    ///
+    /// The read is a transaction on the module's bus, which may take milliseconds: call it off the
+    /// packet path.
+    ///
+    /// # Errors
+    /// Returns the driver's [`ErrorCode`], or `EINVAL` if the read does not fit a `u32`.
+    #[tracing::instrument(level = "trace", skip(self, buf))]
+    pub fn module_eeprom(&self, offset: u32, buf: &mut [u8]) -> Result<(), ErrorCode> {
+        let length =
+            u32::try_from(buf.len()).map_err(|_| ErrorCode::parse_i32(errno::NEG_EINVAL))?;
+        let mut info: dpdk_sys::rte_dev_eeprom_info = unsafe { core::mem::zeroed() };
+        info.data = buf.as_mut_ptr().cast();
+        info.offset = offset;
+        info.length = length;
+        // SAFETY: `info.data` points to `length` writable bytes that live for the call, and the
+        // port index belongs to an open device.
+        let ret = unsafe {
+            dpdk_sys::rte_eth_dev_get_module_eeprom(self.info.index().as_u16(), &raw mut info)
+        };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(ErrorCode::parse_i32(ret))
+        }
     }
 
     /// Enable or disable promiscuous mode.
