@@ -18,6 +18,15 @@ use crate::queue::rx::RxQueueIndex;
 
 use super::meter::Meter;
 
+/// The largest per-rule mark ([`RuleArg::Mark`]) that arrives as itself.
+///
+/// mlx5 stores `id + 1` in a 24-bit register, so that zero can mean "no mark", and reports
+/// `0xffffff` there as no mark: an `id` of `0xfffffe` or `0xffffff` arrives unmarked, and wider
+/// values are truncated. The PMD reserves the ids from `0xfffff0` (`MLX5_FLOW_MARK_MAX`) up and
+/// rejects them in a template, but does not check per-rule values. Measured on BlueField-3 and
+/// ConnectX-8 with DPDK 26.07: `0..=0xfffffd` arrive, `0xfffffe` and `0xffffff` do not.
+pub const MAX_MARK: u32 = 0x00ff_ffef;
+
 /// An action in an [`ActionsTemplate`](super::ActionsTemplate).
 ///
 /// [`Meter`](TemplateAction::Meter) and [`JumpPerRule`](TemplateAction::JumpPerRule) are chosen
@@ -34,6 +43,16 @@ pub enum TemplateAction {
     Rss(RssTarget),
     /// Mark the packet with a value, which arrives with it ([`Mbuf::rx_mark`](crate::mem::Mbuf::rx_mark)).
     Mark(u32),
+    /// Mark the packet with the value each rule names with [`RuleArg::Mark`].
+    ///
+    /// A rule's mark must be at most [`MAX_MARK`]: mlx5 would install a larger one without error,
+    /// and deliver it as no mark, or truncated.
+    MarkPerRule,
+    /// Remove the outer Ethernet, IP, UDP and VXLAN headers: the inner frame is what arrives.
+    ///
+    /// mlx5 orders it after a mark and before counting and the fate; the pattern must match the
+    /// VXLAN header.
+    VxlanDecap,
     /// Count the rule's packets and bytes; see [`TemplateRule::counts`](super::TemplateRule::counts).
     Count,
     /// Drop.
@@ -56,7 +75,10 @@ pub struct RssTarget {
 impl TemplateAction {
     /// Whether a rule supplies this action's configuration.
     pub(crate) fn per_rule(&self) -> bool {
-        matches!(self, TemplateAction::Meter | TemplateAction::JumpPerRule)
+        matches!(
+            self,
+            TemplateAction::Meter | TemplateAction::JumpPerRule | TemplateAction::MarkPerRule
+        )
     }
 }
 
@@ -67,6 +89,8 @@ pub enum RuleArg<'a, D: Domain> {
     Meter(&'a Meter<'a, D>),
     /// The group for a [`TemplateAction::JumpPerRule`].
     Jump(FlowGroup),
+    /// The value for a [`TemplateAction::MarkPerRule`].
+    Mark(u32),
 }
 
 /// The configuration an action points at.
@@ -165,6 +189,10 @@ fn fixed(action: &TemplateAction) -> OwnedAction {
         // The rule names the meter or group: no configuration in the template.
         TemplateAction::Meter => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_INDIRECT, Conf::None),
         TemplateAction::JumpPerRule => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_JUMP, Conf::None),
+        TemplateAction::MarkPerRule => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_MARK, Conf::None),
+        TemplateAction::VxlanDecap => {
+            OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_VXLAN_DECAP, Conf::None)
+        }
     }
 }
 
@@ -220,6 +248,16 @@ pub enum ArgumentError {
         /// The per-rule action in that position.
         action: TemplateAction,
     },
+    /// A per-rule mark would not arrive as itself; see [`MAX_MARK`].
+    #[error(
+        "per-rule argument {index} marks {id:#x}, above the largest deliverable mark {MAX_MARK:#x}"
+    )]
+    Mark {
+        /// The argument's position.
+        index: usize,
+        /// The mark the rule gave.
+        id: u32,
+    },
 }
 
 /// A rule's actions: the template's, with each per-rule action taken from `args` in order.
@@ -253,6 +291,13 @@ pub(crate) fn rule<D: Domain>(
                 (TemplateAction::JumpPerRule, RuleArg::Jump(group)) => Ok(OwnedAction::new(
                     at::RTE_FLOW_ACTION_TYPE_JUMP,
                     Conf::Jump(rte_flow_action_jump { group: group.0 }),
+                )),
+                (TemplateAction::MarkPerRule, RuleArg::Mark(id)) if *id > MAX_MARK => {
+                    Err(ArgumentError::Mark { index, id: *id })
+                }
+                (TemplateAction::MarkPerRule, RuleArg::Mark(id)) => Ok(OwnedAction::new(
+                    at::RTE_FLOW_ACTION_TYPE_MARK,
+                    Conf::Mark(rte_flow_action_mark { id: *id }),
                 )),
                 _ => Err(ArgumentError::Kind {
                     index,
@@ -326,6 +371,33 @@ mod tests {
                 action: TemplateAction::Meter
             })
         );
+    }
+
+    /// A per-rule mark lowers exactly when it would arrive as itself, and then carries it.
+    #[test]
+    fn a_per_rule_mark_lowers_only_if_deliverable() {
+        bolero::check!().with_type::<u32>().for_each(|&id| {
+            let lowered = rule::<crate::flow::Ingress>(
+                &[TemplateAction::Count, TemplateAction::MarkPerRule],
+                &[RuleArg::Mark(id)],
+            );
+            if id > MAX_MARK {
+                assert_eq!(lowered.err(), Some(ArgumentError::Mark { index: 0, id }));
+                return;
+            }
+            let actions = lowered.unwrap_or_else(|e| panic!("mark {id:#x}: {e}"));
+            assert_eq!(
+                types(&actions),
+                [
+                    at::RTE_FLOW_ACTION_TYPE_COUNT,
+                    at::RTE_FLOW_ACTION_TYPE_MARK
+                ]
+            );
+            let Conf::Mark(mark) = &actions[1].conf else {
+                panic!("a mark action without a mark: {:?}", actions[1].conf)
+            };
+            assert_eq!(mark.id, id);
+        });
     }
 
     #[test]

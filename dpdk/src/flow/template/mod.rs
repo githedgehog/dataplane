@@ -25,7 +25,7 @@ pub mod testing;
 #[cfg(any(test, feature = "template-test"))]
 use testing::ffi as dpdk_sys;
 
-pub use actions::{ArgumentError, RssTarget, RuleArg, TemplateAction};
+pub use actions::{ArgumentError, MAX_MARK, RssTarget, RuleArg, TemplateAction};
 pub use meter::{
     Meter, MeterAlgorithm, MeterError, MeterProfile, MeterProfileHandle, MeterProfileId, MeterUnit,
 };
