@@ -10,7 +10,7 @@
 
 use crate::cmis::{self, Application};
 use crate::module::{Detail, Length, Module, Reach};
-use crate::sff8024::{HostInterface, MediaType};
+use crate::sff8024::{ExtendedCompliance, HostInterface, MediaInterface, MediaType};
 use crate::sff8472::{CableKind, Links, SignalingRate};
 
 /// What kind of cable or module a port has, as switches classify it.
@@ -64,6 +64,9 @@ pub struct Summary {
     pub cable: Option<CableClass>,
     /// How long a cable assembly is; [`None`] for separable media.
     pub cable_length: Option<Length>,
+    /// A human-readable description in the style switches use, e.g. `QSFP28 100GBASE-CWDM4` or
+    /// `QSFP112 400GBASE-CR4-DAC-1.5M`.
+    pub description: String,
 }
 
 impl Module {
@@ -71,14 +74,169 @@ impl Module {
     #[must_use]
     pub fn summary(&self) -> Summary {
         let lane_gbps = lane_gbps(self);
+        let form_factor = form_factor(self.identifier.raw(), lane_gbps);
+        let cable = cable_class(self);
+        let cable_length = cable_length(self);
         Summary {
-            form_factor: form_factor(self.identifier.raw(), lane_gbps),
+            form_factor,
             connector_type: connector_type(self.inventory.connector.raw()),
             lane_gbps,
-            cable: cable_class(self),
-            cable_length: cable_length(self),
+            cable,
+            cable_length,
+            description: description(form_factor, media(self).as_ref(), cable, cable_length),
         }
     }
+}
+
+/// What a module runs: the name of its medium, and how many instances of it share the module
+/// (four for a module split into four ports, say).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Media {
+    name: &'static str,
+    instances: u8,
+}
+
+/// The medium of a module, from its compliance codes or, for CMIS, from its application.
+fn media(module: &Module) -> Option<Media> {
+    let single = |name| Media { name, instances: 1 };
+    match &module.detail {
+        Detail::Sff8472(sff) => ExtendedCompliance::from_raw(sff.extended_compliance)
+            .name(false)
+            .or_else(|| sff8472_compliance(sff.compliance))
+            .map(single),
+        Detail::Sff8636(sff) => sff
+            .extended_compliance
+            .and_then(|code| ExtendedCompliance::from_raw(code).name(true))
+            .or_else(|| sff8636_compliance(sff.compliance[0]))
+            .map(single),
+        Detail::Cmis(cmis) => {
+            let app = application(cmis)?;
+            let media_type = MediaType::from_raw(cmis.media_type);
+            // A cable's application is named by its host interface (400GBASE-CR4, say).
+            let name = match media_type {
+                MediaType::PassiveCopper | MediaType::ActiveCable => {
+                    HostInterface::from_raw(app.host_interface).name()
+                }
+                _ => MediaInterface {
+                    media_type,
+                    code: app.media_interface,
+                }
+                .name(),
+            }?;
+            Some(Media {
+                name,
+                instances: instances(cmis, *app),
+            })
+        }
+    }
+}
+
+/// The Ethernet compliance bits of SFF-8472 (A0h:3 and A0h:6, Table 5-3).
+fn sff8472_compliance(compliance: [u8; 8]) -> Option<&'static str> {
+    const TEN_GIGABIT: [(u8, &str); 4] = [
+        (7, "10GBASE-ER"),
+        (6, "10GBASE-LRM"),
+        (5, "10GBASE-LR"),
+        (4, "10GBASE-SR"),
+    ];
+    const GIGABIT: [(u8, &str); 4] = [
+        (0, "1000BASE-SX"),
+        (1, "1000BASE-LX"),
+        (2, "1000BASE-CX"),
+        (3, "1000BASE-T"),
+    ];
+    let set = |byte: u8, bit: u8| byte & (1 << bit) != 0;
+    TEN_GIGABIT
+        .iter()
+        .find(|(bit, _)| set(compliance[0], *bit))
+        .or_else(|| GIGABIT.iter().find(|(bit, _)| set(compliance[3], *bit)))
+        .map(|(_, name)| *name)
+}
+
+/// The Ethernet compliance bits of SFF-8636 (00h:131, Table 6-17).
+fn sff8636_compliance(byte: u8) -> Option<&'static str> {
+    const NAMES: [(u8, &str); 7] = [
+        (6, "10GBASE-LRM"),
+        (5, "10GBASE-LR"),
+        (4, "10GBASE-SR"),
+        (3, "40GBASE-CR4"),
+        (2, "40GBASE-SR4"),
+        (1, "40GBASE-LR4"),
+        (0, "40G-AOC"),
+    ];
+    NAMES
+        .iter()
+        .find(|(bit, _)| byte & (1 << bit) != 0)
+        .map(|(_, name)| *name)
+}
+
+/// How many instances of `app` share a CMIS module: those the module runs, if it says, else those
+/// it could run.
+fn instances(cmis: &cmis::Detail, app: Application) -> u8 {
+    let running = cmis
+        .active_applications
+        .iter()
+        .filter(|code| **code != 0)
+        .filter(|code| {
+            cmis.applications
+                .get(usize::from(**code) - 1)
+                .is_some_and(|other| *other == app)
+        })
+        .count();
+    let instances = match (running, app.host_lanes) {
+        (0, _) | (_, 0) => app.host_lane_options.count_ones() as usize,
+        (lanes, per_instance) => lanes / usize::from(per_instance),
+    };
+    u8::try_from(instances).unwrap_or(u8::MAX).max(1)
+}
+
+/// The name switches give a form factor in their descriptions.
+fn form_factor_display(form_factor: &str) -> &str {
+    match form_factor {
+        "SFP_PLUS" => "SFP+",
+        "QSFP_PLUS" => "QSFP+",
+        "QSFP28_DD" => "QSFP28-DD",
+        "QSFP56_DD_TYPE1" | "QSFP56_DD_TYPE2" => "QSFP-DD",
+        "SFP56_DD" => "SFP-DD",
+        "NON_PLUGGABLE" | "OTHER" => "",
+        other => other,
+    }
+}
+
+/// A description in the style switches use: the form factor, the medium (with the instance count
+/// for split modules), the cable class for cable assemblies, and their length.
+fn description(
+    form_factor: &str,
+    media: Option<&Media>,
+    cable: Option<CableClass>,
+    length: Option<Length>,
+) -> String {
+    let assembly = match cable {
+        Some(class @ (CableClass::Dac | CableClass::Aoc)) => Some(class.name()),
+        _ => None,
+    };
+    // An active cable's medium may already say so ("100G-AOC").
+    let suffix = assembly.filter(|class| !media.is_some_and(|m| m.name.ends_with(class)));
+    let mut medium = match (media, suffix) {
+        (Some(media), Some(class)) => format!("{}-{class}", media.name),
+        (Some(media), None) => media.name.to_owned(),
+        (None, Some(class)) => class.to_owned(),
+        (None, None) => String::new(),
+    };
+    if let Some(media) = media.filter(|media| media.instances > 1) {
+        medium = format!("{}x({medium})", media.instances);
+    }
+    if let Some(length) = length.filter(|_| assembly.is_some() || media.is_none()) {
+        medium = format!("{medium}-{:.1}M", length.metres());
+    }
+    [
+        form_factor_display(form_factor),
+        medium.trim_start_matches('-'),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 /// What kind of cable or module this is.
@@ -233,7 +391,46 @@ fn connector_type(connector: u8) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{connector_type, form_factor};
+    use super::{CableClass, Media, connector_type, description, form_factor};
+    use crate::module::Length;
+
+    #[test]
+    fn descriptions_look_like_the_switches_ones() {
+        let media = |name, instances| Some(Media { name, instances });
+        let metres = |m: u32| Some(Length::from_decimetres(m * 10));
+        assert_eq!(
+            description(
+                "QSFP28",
+                media("100GBASE-CWDM4", 1).as_ref(),
+                Some(CableClass::Fiber),
+                None
+            ),
+            "QSFP28 100GBASE-CWDM4"
+        );
+        assert_eq!(
+            description(
+                "OSFP112",
+                media("200GBASE-CR2", 4).as_ref(),
+                Some(CableClass::Dac),
+                metres(2)
+            ),
+            "OSFP112 4x(200GBASE-CR2-DAC)-2.0M"
+        );
+        assert_eq!(
+            description(
+                "QSFP28",
+                media("100G-AOC", 1).as_ref(),
+                Some(CableClass::Aoc),
+                metres(3)
+            ),
+            "QSFP28 100G-AOC-3.0M"
+        );
+        assert_eq!(
+            description("QSFP_PLUS", None, Some(CableClass::Dac), metres(7)),
+            "QSFP+ DAC-7.0M"
+        );
+        assert_eq!(description("OTHER", None, None, None), "");
+    }
 
     #[test]
     fn sfp_form_factors_follow_the_rate() {
