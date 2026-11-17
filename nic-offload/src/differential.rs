@@ -1321,14 +1321,26 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
             "meter {m} charged by no rule: {program:#?}"
         );
     }
-    let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
+    let plan = Plan::new(&program, &vteps(&program), &fate(), false).unwrap();
     check_profiles(&limits, &ingress, &program, &plan);
+    // The same program with decapsulation, for every VPC the routes name as well.
+    let all_vteps: BTreeMap<Vni, Ipv4Addr> = vteps(&program)
+        .into_iter()
+        .chain(
+            routes
+                .iter()
+                .flat_map(|d| [d.src_vni, d.dst_vni])
+                .map(|vni| (vni, VTEP)),
+        )
+        .collect();
+    let decap = Plan::new(&program, &all_vteps, &fate(), true).unwrap();
     let mut tally = Tally::default();
     for raw in frames {
         let mut frame = raw.frame(targets);
         frame.route(&mut routing);
         let software = frame.software(&acls, &limits);
         let ingress_software = frame.ingress(&ingress);
+        check_decap(&plan, &decap, &frame, raw);
         let outcomes = plan.outcomes(&frame.wire()).unwrap();
         // Transit VXLAN is the underlay's: the NIC neither drops it nor charges a meter for it.
         for outcome in plan.outcomes(&frame.transit()).unwrap() {
@@ -1370,6 +1382,74 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
         }
     }
     tally
+}
+
+/// Decapsulation changes no verdict, and what arrives decapsulated carries its source VNI: a frame
+/// the switch took is delivered decapsulated and marked, any other one as it was, unmarked; and
+/// transit VXLAN is never decapsulated.
+fn check_decap(plain: &Plan, decap: &Plan, frame: &Frame, raw: &RawFrame) {
+    let verdicts = |outcomes: &[crate::model::Outcome]| {
+        let mut v: Vec<_> = outcomes
+            .iter()
+            .map(|o| (o.meters.clone(), o.color, o.verdict))
+            .collect();
+        v.sort_by_key(|(m, c, v)| format!("{m:?}{c:?}{v:?}"));
+        v.dedup();
+        v
+    };
+    let before = plain.outcomes(&frame.wire()).unwrap();
+    let after = decap.outcomes(&frame.wire()).unwrap();
+    // Without rules the plain plan installs nothing (untouched), where decapsulation installs the
+    // root and a generation per VPC: the frame reaches the driver's queues either way.
+    let as_before = |v: Vec<(Vec<usize>, Option<Color>, Verdict)>| {
+        v.into_iter()
+            .map(|(m, c, v)| {
+                (
+                    m,
+                    c,
+                    if v == Verdict::Untouched {
+                        Verdict::Delivered
+                    } else {
+                        v
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        as_before(verdicts(&before)),
+        as_before(verdicts(&after)),
+        "decapsulation changed a verdict\nframe: {raw:?}"
+    );
+    for outcome in &after {
+        let switched = outcome.path.iter().find_map(|role| match role {
+            Role::Switch(vni) => Some(vni.as_u32()),
+            _ => None,
+        });
+        match (outcome.verdict, switched) {
+            (Verdict::Delivered, Some(vni)) => {
+                assert_eq!(
+                    vni, frame.src_vni,
+                    "switched by another VNI\nframe: {raw:?}"
+                );
+                assert!(
+                    outcome.decapped && outcome.mark == Some(vni),
+                    "a switched frame delivered encapsulated or unmarked\nframe: {raw:?}\noutcome: {outcome:?}"
+                );
+            }
+            (_, None) => assert!(
+                !outcome.decapped && outcome.mark.is_none(),
+                "an unswitched frame decapsulated or marked\nframe: {raw:?}\noutcome: {outcome:?}"
+            ),
+            (_, Some(_)) => {}
+        }
+    }
+    for outcome in decap.outcomes(&frame.transit()).unwrap() {
+        assert!(
+            !outcome.decapped && outcome.mark.is_none() && outcome.meters.is_empty(),
+            "transit VXLAN touched\nframe: {raw:?}\noutcome: {outcome:?}"
+        );
+    }
 }
 
 #[test]
@@ -1493,7 +1573,7 @@ fn unclassifiable_packets_are_charged_by_the_nic_only() {
         &destinations(&overlay),
         &Exclusions::default(),
     );
-    let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
+    let plan = Plan::new(&program, &vteps(&program), &fate(), false).unwrap();
     let outcomes = plan.outcomes(&frame.wire()).unwrap();
     assert!(outcomes.iter().all(|o| o.meters == [0]), "{outcomes:?}");
 }
@@ -1541,7 +1621,7 @@ fn denies_drop_in_the_nic_unless_an_earlier_allow_overlaps() {
         assert_eq!(tally.charged_dropped, 0);
         assert_eq!(program.rules.len(), usize::from(denied), "{program:#?}");
         let frame = aimed(0, RawL4::Udp, RawFragment::Whole).frame(&rules);
-        let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
+        let plan = Plan::new(&program, &vteps(&program), &fate(), false).unwrap();
         let outcomes = plan.outcomes(&frame.wire()).unwrap();
         assert_eq!(
             outcomes
@@ -1635,7 +1715,7 @@ fn a_syn_deny_drops_syns_in_the_nic() {
     );
     assert_eq!(program.denies.len(), 1, "{program:#?}");
     assert_eq!(program.denies[0].matches.tcp_flags, Some((0x02, 0x12)));
-    let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
+    let plan = Plan::new(&program, &vteps(&program), &fate(), false).unwrap();
     let targets = targets(&rules, &acls);
     for (flags, dropped) in [(0x02, true), (0x12, false), (0x10, false)] {
         let mut raw = aimed(0, RawL4::Tcp, RawFragment::Whole);
@@ -1778,7 +1858,7 @@ fn a_pass_leaves_the_rules_of_its_own_destination_in_force() {
             &Exclusions::default(),
         );
         assert!(!program.passes.is_empty(), "{program:#?}");
-        let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
+        let plan = Plan::new(&program, &vteps(&program), &fate(), false).unwrap();
         let targets = targets(&limits, &acls);
         // Aimed at B's prefix: by A's deny or B's meter, never C's.
         let frame = aimed(1, RawL4::Udp, RawFragment::Whole).frame(&targets);
@@ -1844,7 +1924,7 @@ fn acl_logging_keeps_denies_and_meters_in_software() {
                     log
                 );
                 if log {
-                    let plan = Plan::new(&program, &vteps(&program), &fate()).unwrap();
+                    let plan = Plan::new(&program, &vteps(&program), &fate(), false).unwrap();
                     for aim in [0, 1] {
                         let frame = aimed(aim, RawL4::Udp, RawFragment::Whole).frame(&rules);
                         assert!(plan.outcomes(&frame.wire()).unwrap().iter().all(|outcome| {
