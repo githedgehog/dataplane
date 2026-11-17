@@ -16,6 +16,7 @@ mod fanout;
 mod kif;
 mod multicast;
 mod offload;
+mod report;
 mod sockstats;
 mod worker;
 
@@ -201,6 +202,9 @@ impl DriverKernel {
         }
         debug_assert_eq!(worker_monitors.len(), num_workers);
 
+        // Opened here, in the datapath namespace, which the supervisor shares.
+        let mut ports = report::KernelPorts::new(&interfaces);
+
         spawn_supervisor(
             scope,
             "kernel",
@@ -210,8 +214,7 @@ impl DriverKernel {
             status_writer,
             move || {
                 publish_links(&links);
-                // The kernel's ports are the kernel's to report on.
-                Vec::new()
+                ports.report()
             },
         )?;
         info!("Kernel driver started successfully");

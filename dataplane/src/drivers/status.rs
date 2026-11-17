@@ -132,8 +132,7 @@ pub struct DriverStatus {
     /// The most frames one receive call can return, which differs between drivers.
     pub max_rx_batch: usize,
     pub workers: Vec<WorkerStatus>,
-    /// The driver's ports, as of the supervisor's last poll; none for a driver whose ports are the
-    /// kernel's to report on.
+    /// The driver's ports, as of the supervisor's last poll.
     pub ports: Vec<PortReport>,
 }
 
@@ -220,7 +219,7 @@ pub struct DpdkPortStatsCli(pub DriverStatusReader);
 fn ports_or(f: &mut String, status: &DriverStatus) -> bool {
     use std::fmt::Write;
     if status.ports.is_empty() {
-        let _ = writeln!(f, " (no DPDK ports: the driver in use does not report any)");
+        let _ = writeln!(f, " (no ports: the driver in use does not report any)");
         false
     } else {
         true
@@ -231,7 +230,7 @@ impl CliDataProvider for DpdkPortsCli {
     fn provide(&self) -> String {
         use std::fmt::Write;
         let status = self.0.load();
-        let mut f = Heading("DPDK ports").to_string();
+        let mut f = Heading("Driver ports").to_string();
         if !ports_or(&mut f, &status) {
             return f;
         }
@@ -251,7 +250,11 @@ impl CliDataProvider for DpdkPortsCli {
             "control-pool",
             "hardware"
         );
-        let pool = |(used, size): (u32, u32)| format!("{used}/{size}");
+        // Kernel ports have no pools of ours.
+        let pool = |(used, size): (u32, u32)| match size {
+            0 => "-".to_string(),
+            _ => format!("{used}/{size}"),
+        };
         let flag = |value: Option<bool>, yes, no| match value {
             Some(true) => yes,
             Some(false) => no,
@@ -303,7 +306,7 @@ impl CliDataProvider for DpdkPortStatsCli {
     fn provide(&self) -> String {
         use std::fmt::Write;
         let status = self.0.load();
-        let mut f = Heading("DPDK port counters").to_string();
+        let mut f = Heading("Driver port counters").to_string();
         if !ports_or(&mut f, &status) {
             return f;
         }
@@ -642,12 +645,8 @@ mod tests {
     #[test]
     fn no_ports_is_said() {
         let reader = status_with(Vec::new());
-        assert!(
-            DpdkPortsCli(reader.clone())
-                .provide()
-                .contains("no DPDK ports")
-        );
-        assert!(DpdkPortStatsCli(reader).provide().contains("no DPDK ports"));
+        assert!(DpdkPortsCli(reader.clone()).provide().contains("no ports"));
+        assert!(DpdkPortStatsCli(reader).provide().contains("no ports"));
     }
 
     /// Each port shows its link and pools, and its counters and extended statistics.
