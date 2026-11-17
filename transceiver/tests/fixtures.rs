@@ -722,64 +722,68 @@ fn an_unreadable_bank_does_not_renumber_lanes() {
 /// What switches would report about each fixture's module.
 #[test]
 fn fixtures_summarize_as_switches_would() {
-    for (name, form_factor, connector, cable, metres) in [
+    struct Expected {
+        form_factor: &'static str,
+        connector: Option<&'static str>,
+        cable: &'static str,
+        metres: Option<f64>,
+        description: &'static str,
+    }
+    let fibre = |form_factor, connector, description| Expected {
+        form_factor,
+        connector: Some(connector),
+        cable: "FIBER",
+        metres: None,
+        description,
+    };
+    let assembly = |form_factor, cable, metres, description| Expected {
+        form_factor,
+        connector: Some("NO_SEPARABLE_CONNECTOR"),
+        cable,
+        metres: Some(metres),
+        description,
+    };
+    for (name, expected) in [
         (
             "sfp-10g-t-port0",
-            "SFP_PLUS",
-            Some("LC_CONNECTOR"),
-            "FIBER",
-            None,
+            fibre("SFP_PLUS", "LC_CONNECTOR", "SFP+ 10GBASE-SR"),
         ),
         (
             "qsfp28-cwdm4-intel-port0",
-            "QSFP28",
-            Some("LC_CONNECTOR"),
-            "FIBER",
-            None,
+            fibre("QSFP28", "LC_CONNECTOR", "QSFP28 100GBASE-CWDM4"),
         ),
         (
             "qsfp28-sr4-mellanox-port0",
-            "QSFP28",
-            Some("NO_SEPARABLE_CONNECTOR"),
-            "AOC",
-            Some(50.0),
+            assembly("QSFP28", "AOC", 50.0, "QSFP28 100GBASE-SR4-AOC-50.0M"),
         ),
         (
             "qsfp28-dac-port0",
-            "QSFP_PLUS",
-            Some("NO_SEPARABLE_CONNECTOR"),
-            "DAC",
-            Some(7.0),
+            assembly("QSFP_PLUS", "DAC", 7.0, "QSFP+ DAC-7.0M"),
         ),
         (
             "qsfp112-sr4-fs-port0",
-            "QSFP112",
-            Some("MPOx12_CONNECTOR"),
-            "FIBER",
-            None,
+            fibre("QSFP112", "MPOx12_CONNECTOR", "QSFP112 400G-VR4"),
         ),
         (
             "qsfp112-dac-port0",
-            "QSFP112",
-            Some("NO_SEPARABLE_CONNECTOR"),
-            "DAC",
-            Some(1.5),
+            assembly("QSFP112", "DAC", 1.5, "QSFP112 400GBASE-CR4-DAC-1.5M"),
         ),
     ] {
         let mut fixture = Fixture::new(name);
         let (module, _) = read(&mut fixture, Capture::new()).unwrap();
         let summary = module.summary();
-        assert_eq!(summary.form_factor, form_factor, "{name}");
-        assert_eq!(summary.connector_type, connector, "{name}");
+        assert_eq!(summary.form_factor, expected.form_factor, "{name}");
+        assert_eq!(summary.connector_type, expected.connector, "{name}");
         assert_eq!(
             summary.cable.map(|cable| cable.name()),
-            Some(cable),
+            Some(expected.cable),
             "{name}"
         );
         assert_eq!(
             summary.cable_length.map(|length| length.metres()),
-            metres,
+            expected.metres,
             "{name}"
         );
+        assert_eq!(summary.description, expected.description, "{name}");
     }
 }
