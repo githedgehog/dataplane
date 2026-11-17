@@ -221,6 +221,13 @@ fn qsfp112_matches_ethtool() {
         assert_eq!(cmis.data_path.len(), 4);
         assert!(!cmis.applications.is_empty());
         assert_eq!(cmis.applications[0].media_lanes, 4);
+        assert_eq!(
+            cmis.active_applications,
+            [4, 4, 4, 4],
+            "{name}: 11h:206-209"
+        );
+        assert_eq!(cmis.active_application(), Some(4));
+        assert!(cmis.active().is_some());
     }
 }
 
@@ -313,6 +320,7 @@ fn qsfp112_dac_matches_ethtool() {
             copper_attenuation,
             media_technology,
             data_path,
+            active_applications,
             ..
         }) = &module.detail
         else {
@@ -320,6 +328,10 @@ fn qsfp112_dac_matches_ethtool() {
         };
         assert!(flat_memory);
         assert!(data_path.is_empty());
+        assert!(
+            active_applications.is_empty(),
+            "{name}: flat memory has no page 11h"
+        );
         assert_eq!(
             u64::from(*power_class),
             ethtool["power_class"].as_u64().unwrap()
