@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! The organizationally specific TLV, and the IEEE 802.1 and IEEE 802.3
-//! extensions carried inside it.
+//! The organizationally specific TLV, and the IEEE 802.1, IEEE 802.3 and
+//! LLDP-MED extensions carried inside it.
 //!
 //! TLV type 127 is the extension point of LLDP.  Its value begins with a three
 //! octet [OUI] naming the organization which defined the rest, followed by a
@@ -28,6 +28,9 @@ pub type OrgInfo = Octets<0, 507>;
 /// The name of a VLAN, as carried in an IEEE 802.1 VLAN name TLV.
 pub type VlanNameOctets = Octets<0, 32>;
 
+/// One LLDP-MED inventory string, such as a serial number or a model name.
+pub type InventoryOctets = Octets<0, 32>;
+
 /// An [IEEE Organizationally Unique Identifier][oui].
 ///
 /// [oui]: https://standards.ieee.org/products-programs/regauth/oui/
@@ -45,6 +48,9 @@ impl Oui {
     /// The OUI under which IEEE Std 802.3 defines its LLDP extensions.
     pub const IEEE_802_3: Oui = Oui([0x00, 0x12, 0x0f]);
 
+    /// The OUI under which ANSI/TIA-1057 defines the LLDP-MED extensions.
+    pub const TIA_TR41: Oui = Oui([0x00, 0x12, 0xbb]);
+
     /// The three octets of this OUI, in wire order.
     #[must_use]
     pub const fn octets(self) -> [u8; 3] {
@@ -54,7 +60,7 @@ impl Oui {
     /// True if this library models the TLVs defined under this OUI.
     #[must_use]
     pub const fn is_modelled(self) -> bool {
-        matches!(self, Oui::IEEE_802_1 | Oui::IEEE_802_3)
+        matches!(self, Oui::IEEE_802_1 | Oui::IEEE_802_3 | Oui::TIA_TR41)
     }
 }
 
@@ -420,6 +426,167 @@ impl serde::Serialize for Dot3Tlv {
     }
 }
 
+/// The TLVs ANSI/TIA-1057 (LLDP-MED) defines under [`Oui::TIA_TR41`].
+///
+/// Only the inventory TLVs (subtypes 5 to 11) are decoded.  Each carries a
+/// string of at most 32 octets, with no length prefix: the string is the whole
+/// rest of the TLV.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(remote = "Self")]
+pub enum MedTlv {
+    /// The hardware revision of the device (subtype 5).
+    HardwareRevision(InventoryOctets),
+    /// The firmware revision of the device (subtype 6).
+    FirmwareRevision(InventoryOctets),
+    /// The software revision of the device (subtype 7).
+    SoftwareRevision(InventoryOctets),
+    /// The serial number of the device (subtype 8).
+    SerialNumber(InventoryOctets),
+    /// The manufacturer of the device (subtype 9).
+    Manufacturer(InventoryOctets),
+    /// The model name of the device (subtype 10).
+    Model(InventoryOctets),
+    /// The asset identifier of the device (subtype 11).
+    AssetId(InventoryOctets),
+    /// A subtype this library does not model.
+    ///
+    /// Build one with [`MedTlv::other`], which refuses the subtypes that have
+    /// a dedicated variant.
+    #[non_exhaustive]
+    Other {
+        /// The LLDP-MED subtype.
+        subtype: u8,
+        /// The octets which follow the subtype.
+        info: OrgInfo,
+    },
+}
+
+impl MedTlv {
+    /// The subtype of an LLDP-MED hardware revision TLV.
+    pub const HARDWARE_REVISION: u8 = 5;
+    /// The subtype of an LLDP-MED firmware revision TLV.
+    pub const FIRMWARE_REVISION: u8 = 6;
+    /// The subtype of an LLDP-MED software revision TLV.
+    pub const SOFTWARE_REVISION: u8 = 7;
+    /// The subtype of an LLDP-MED serial number TLV.
+    pub const SERIAL_NUMBER: u8 = 8;
+    /// The subtype of an LLDP-MED manufacturer name TLV.
+    pub const MANUFACTURER: u8 = 9;
+    /// The subtype of an LLDP-MED model name TLV.
+    pub const MODEL: u8 = 10;
+    /// The subtype of an LLDP-MED asset ID TLV.
+    pub const ASSET_ID: u8 = 11;
+
+    /// Build an LLDP-MED TLV of a subtype this library does not model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelledOrgTlv`] if `subtype` is one with a dedicated variant.
+    pub fn other(subtype: u8, info: OrgInfo) -> Result<MedTlv, ModelledOrgTlv> {
+        if (MedTlv::HARDWARE_REVISION..=MedTlv::ASSET_ID).contains(&subtype) {
+            return Err(ModelledOrgTlv::Subtype {
+                oui: Oui::TIA_TR41,
+                subtype,
+            });
+        }
+        Ok(MedTlv::Other { subtype, info })
+    }
+
+    /// The LLDP-MED subtype of this TLV.
+    #[must_use]
+    pub const fn subtype(&self) -> u8 {
+        match self {
+            MedTlv::HardwareRevision(_) => MedTlv::HARDWARE_REVISION,
+            MedTlv::FirmwareRevision(_) => MedTlv::FIRMWARE_REVISION,
+            MedTlv::SoftwareRevision(_) => MedTlv::SOFTWARE_REVISION,
+            MedTlv::SerialNumber(_) => MedTlv::SERIAL_NUMBER,
+            MedTlv::Manufacturer(_) => MedTlv::MANUFACTURER,
+            MedTlv::Model(_) => MedTlv::MODEL,
+            MedTlv::AssetId(_) => MedTlv::ASSET_ID,
+            MedTlv::Other { subtype, .. } => *subtype,
+        }
+    }
+
+    /// The inventory string this TLV carries, if it is an inventory TLV.
+    #[must_use]
+    pub const fn inventory(&self) -> Option<&InventoryOctets> {
+        match self {
+            MedTlv::HardwareRevision(s)
+            | MedTlv::FirmwareRevision(s)
+            | MedTlv::SoftwareRevision(s)
+            | MedTlv::SerialNumber(s)
+            | MedTlv::Manufacturer(s)
+            | MedTlv::Model(s)
+            | MedTlv::AssetId(s) => Some(s),
+            MedTlv::Other { .. } => None,
+        }
+    }
+
+    /// The octets which follow the subtype.
+    fn info(&self) -> &[u8] {
+        match self {
+            MedTlv::Other { info, .. } => info.as_bytes(),
+            MedTlv::HardwareRevision(s)
+            | MedTlv::FirmwareRevision(s)
+            | MedTlv::SoftwareRevision(s)
+            | MedTlv::SerialNumber(s)
+            | MedTlv::Manufacturer(s)
+            | MedTlv::Model(s)
+            | MedTlv::AssetId(s) => s.as_bytes(),
+        }
+    }
+
+    /// The number of octets which follow the subtype.
+    fn info_len(&self) -> usize {
+        self.info().len()
+    }
+
+    fn write_info(&self, buf: &mut [u8]) {
+        buf.copy_from_slice(self.info());
+    }
+
+    /// Parse the octets after the subtype.
+    ///
+    /// An inventory string longer than 32 octets is reported as
+    /// [`OrgTlvError::Info`], so that a lenient receiver discards this TLV
+    /// rather than the whole LLDPDU.
+    fn from_info(subtype: u8, info: &[u8]) -> Result<MedTlv, OrgTlvError> {
+        let inventory = || InventoryOctets::new(info).map_err(OrgTlvError::Info);
+        Ok(match subtype {
+            MedTlv::HARDWARE_REVISION => MedTlv::HardwareRevision(inventory()?),
+            MedTlv::FIRMWARE_REVISION => MedTlv::FirmwareRevision(inventory()?),
+            MedTlv::SOFTWARE_REVISION => MedTlv::SoftwareRevision(inventory()?),
+            MedTlv::SERIAL_NUMBER => MedTlv::SerialNumber(inventory()?),
+            MedTlv::MANUFACTURER => MedTlv::Manufacturer(inventory()?),
+            MedTlv::MODEL => MedTlv::Model(inventory()?),
+            MedTlv::ASSET_ID => MedTlv::AssetId(inventory()?),
+            other => MedTlv::Other {
+                subtype: other,
+                info: OrgInfo::new(info).map_err(OrgTlvError::Info)?,
+            },
+        })
+    }
+}
+
+/// Deserialization goes through the derived shape and then re-checks that an
+/// `Other` variant does not carry a subtype which has a dedicated variant.
+impl<'de> serde::Deserialize<'de> for MedTlv {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<MedTlv, D::Error> {
+        match MedTlv::deserialize(deserializer)? {
+            MedTlv::Other { subtype, info } => {
+                MedTlv::other(subtype, info).map_err(serde::de::Error::custom)
+            }
+            checked => Ok(checked),
+        }
+    }
+}
+
+impl serde::Serialize for MedTlv {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        MedTlv::serialize(self, serializer)
+    }
+}
+
 /// The organizationally specific TLV (type 127).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(remote = "Self")]
@@ -428,6 +595,8 @@ pub enum OrganizationallySpecific {
     Dot1(Dot1Tlv),
     /// A TLV defined by IEEE Std 802.3.
     Dot3(Dot3Tlv),
+    /// A TLV defined by ANSI/TIA-1057 (LLDP-MED).
+    Med(MedTlv),
     /// A TLV defined by some other organization.
     ///
     /// Build one with [`OrganizationallySpecific::other`], which refuses the
@@ -472,6 +641,7 @@ impl OrganizationallySpecific {
         match self {
             OrganizationallySpecific::Dot1(_) => Oui::IEEE_802_1,
             OrganizationallySpecific::Dot3(_) => Oui::IEEE_802_3,
+            OrganizationallySpecific::Med(_) => Oui::TIA_TR41,
             OrganizationallySpecific::Other { oui, .. } => *oui,
         }
     }
@@ -482,6 +652,7 @@ impl OrganizationallySpecific {
         match self {
             OrganizationallySpecific::Dot1(tlv) => tlv.subtype(),
             OrganizationallySpecific::Dot3(tlv) => tlv.subtype(),
+            OrganizationallySpecific::Med(tlv) => tlv.subtype(),
             OrganizationallySpecific::Other { subtype, .. } => *subtype,
         }
     }
@@ -494,6 +665,7 @@ impl OrganizationallySpecific {
         let info_len = match self {
             OrganizationallySpecific::Dot1(tlv) => tlv.info_len(),
             OrganizationallySpecific::Dot3(tlv) => tlv.info_len(),
+            OrganizationallySpecific::Med(tlv) => tlv.info_len(),
             OrganizationallySpecific::Other { info, .. } => info.len(),
         };
         #[allow(clippy::cast_possible_truncation)] // bounded by 511
@@ -598,6 +770,9 @@ impl Parse for OrganizationallySpecific {
             Oui::IEEE_802_3 => OrganizationallySpecific::Dot3(
                 Dot3Tlv::from_info(*subtype, info).map_err(ParseError::Invalid)?,
             ),
+            Oui::TIA_TR41 => OrganizationallySpecific::Med(
+                MedTlv::from_info(*subtype, info).map_err(ParseError::Invalid)?,
+            ),
             other => OrganizationallySpecific::Other {
                 oui: other,
                 subtype: *subtype,
@@ -627,6 +802,7 @@ impl DeParse for OrganizationallySpecific {
                 match self {
                     OrganizationallySpecific::Dot1(tlv) => tlv.write_info(info),
                     OrganizationallySpecific::Dot3(tlv) => tlv.write_info(info),
+                    OrganizationallySpecific::Med(tlv) => tlv.write_info(info),
                     OrganizationallySpecific::Other { info: octets, .. } => {
                         info.copy_from_slice(octets.as_bytes());
                     }
@@ -638,7 +814,7 @@ impl DeParse for OrganizationallySpecific {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use super::{Dot1Tlv, Dot3Tlv, LinkAggregationStatus, OrganizationallySpecific, Oui};
+    use super::{Dot1Tlv, Dot3Tlv, LinkAggregationStatus, MedTlv, OrganizationallySpecific, Oui};
     use bolero::{Driver, TypeGenerator};
 
     impl TypeGenerator for LinkAggregationStatus {
@@ -676,11 +852,27 @@ mod contract {
         }
     }
 
+    impl TypeGenerator for MedTlv {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            match u.produce::<u8>()? % 8 {
+                0 => Some(MedTlv::HardwareRevision(u.produce()?)),
+                1 => Some(MedTlv::FirmwareRevision(u.produce()?)),
+                2 => Some(MedTlv::SoftwareRevision(u.produce()?)),
+                3 => Some(MedTlv::SerialNumber(u.produce()?)),
+                4 => Some(MedTlv::Manufacturer(u.produce()?)),
+                5 => Some(MedTlv::Model(u.produce()?)),
+                6 => Some(MedTlv::AssetId(u.produce()?)),
+                _ => MedTlv::other(u.produce::<u8>()? | 0x80, u.produce()?).ok(),
+            }
+        }
+    }
+
     impl TypeGenerator for OrganizationallySpecific {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            match u.produce::<u8>()? % 3 {
+            match u.produce::<u8>()? % 4 {
                 0 => Some(OrganizationallySpecific::Dot1(u.produce()?)),
                 1 => Some(OrganizationallySpecific::Dot3(u.produce()?)),
+                2 => Some(OrganizationallySpecific::Med(u.produce()?)),
                 _ => {
                     let mut oui: Oui = u.produce()?;
                     if oui.is_modelled() {
@@ -696,9 +888,10 @@ mod contract {
 #[cfg(test)]
 mod test {
     use super::{
-        Dot1Tlv, Dot3Tlv, LinkAggregationStatus, ModelledOrgTlv, OrgInfo, OrgTlvError,
-        OrganizationallySpecific, Oui, VlanId, VlanNameOctets,
+        Dot1Tlv, Dot3Tlv, InventoryOctets, LinkAggregationStatus, MedTlv, ModelledOrgTlv, OrgInfo,
+        OrgTlvError, OrganizationallySpecific, Oui, VlanId, VlanNameOctets,
     };
+    use crate::lldp::octets::OctetsError;
     use crate::lldp::tlv::{RawTlv, TlvType, TlvValue};
     use crate::parse::{DeParse, Parse, ParseError};
 
@@ -778,6 +971,49 @@ mod test {
     }
 
     #[test]
+    fn a_med_serial_number_encodes_as_expected() {
+        let tlv = OrganizationallySpecific::Med(MedTlv::SerialNumber(
+            InventoryOctets::new(b"ABC").unwrap(),
+        ));
+        assert_eq!(
+            deparse(&tlv),
+            vec![0xfe, 0x07, 0x00, 0x12, 0xbb, 0x08, b'A', b'B', b'C']
+        );
+        let (parsed, _) = OrganizationallySpecific::parse(&deparse(&tlv)).unwrap();
+        let OrganizationallySpecific::Med(med) = parsed else {
+            unreachable!("expected an LLDP-MED TLV, got {parsed:?}");
+        };
+        assert_eq!(
+            med.inventory().map(InventoryOctets::as_bytes),
+            Some(&b"ABC"[..])
+        );
+    }
+
+    #[test]
+    fn a_med_inventory_string_over_32_octets_is_rejected() {
+        let mut value = vec![0x00, 0x12, 0xbb, MedTlv::MODEL];
+        value.extend_from_slice(&[b'x'; 33]);
+        match OrganizationallySpecific::parse(&tlv_bytes(&value)) {
+            Err(ParseError::Invalid(OrgTlvError::Info(OctetsError::TooLong { .. }))) => {}
+            other => unreachable!("expected a too long error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_med_tlv_without_inventory_is_kept_verbatim() {
+        // A network policy TLV (subtype 2).
+        let value = [0x00, 0x12, 0xbb, 0x02, 0x01, 0x80, 0x00, 0x00];
+        let buf = tlv_bytes(&value);
+        let (parsed, _) = OrganizationallySpecific::parse(&buf).unwrap();
+        let OrganizationallySpecific::Med(med) = &parsed else {
+            unreachable!("expected an LLDP-MED TLV, got {parsed:?}");
+        };
+        assert_eq!(med.subtype(), 2);
+        assert!(med.inventory().is_none());
+        assert_eq!(deparse(&parsed), buf);
+    }
+
+    #[test]
     fn link_aggregation_reserved_bits_are_preserved() {
         let tlv = OrganizationallySpecific::Dot3(Dot3Tlv::LinkAggregation {
             status: LinkAggregationStatus::from_bits_retain(0xfc),
@@ -813,14 +1049,25 @@ mod test {
                 subtype: 4
             }
         );
+        for subtype in MedTlv::HARDWARE_REVISION..=MedTlv::ASSET_ID {
+            assert_eq!(
+                MedTlv::other(subtype, info.clone()).unwrap_err(),
+                ModelledOrgTlv::Subtype {
+                    oui: Oui::TIA_TR41,
+                    subtype
+                }
+            );
+        }
         assert!(Dot1Tlv::other(2, info.clone()).is_ok());
-        assert!(Dot3Tlv::other(1, info).is_ok());
+        assert!(Dot3Tlv::other(1, info.clone()).is_ok());
+        // Subtypes 1 to 4 (capabilities, network policy, location, power) are not decoded.
+        assert!(MedTlv::other(1, info).is_ok());
     }
 
     #[test]
     fn modelled_ouis_are_refused_by_the_escape_hatch() {
         let info = OrgInfo::new(&[]).unwrap();
-        for oui in [Oui::IEEE_802_1, Oui::IEEE_802_3] {
+        for oui in [Oui::IEEE_802_1, Oui::IEEE_802_3, Oui::TIA_TR41] {
             assert_eq!(
                 OrganizationallySpecific::other(oui, 1, info.clone()).unwrap_err(),
                 ModelledOrgTlv::Oui(oui)
@@ -876,5 +1123,6 @@ mod test {
     fn oui_displays_as_dashed_hex() {
         assert_eq!(Oui::IEEE_802_1.to_string(), "00-80-c2");
         assert_eq!(Oui::IEEE_802_3.to_string(), "00-12-0f");
+        assert_eq!(Oui::TIA_TR41.to_string(), "00-12-bb");
     }
 }
