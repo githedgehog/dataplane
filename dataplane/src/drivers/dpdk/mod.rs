@@ -525,8 +525,8 @@ fn publish_port_states(
             tx_discards: port.tx_discards.load(Ordering::Relaxed),
             rates: read.and_then(|(counters, at)| telemetry.rates.update(counters, at)),
             counters_since: Some(telemetry.counters_since),
-            rx_pool: state.rx_pool,
-            control_pool: state.control_pool,
+            rx_pool: Some(state.rx_pool),
+            control_pool: Some(state.control_pool),
             xstats: if telemetry.xstats_failed {
                 Vec::new()
             } else {
