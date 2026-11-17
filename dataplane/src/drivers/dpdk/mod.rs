@@ -19,7 +19,7 @@ mod control;
 mod idle;
 mod inject;
 mod placement;
-mod pollstats;
+pub(crate) mod pollstats;
 mod port;
 mod worker;
 mod xstats;

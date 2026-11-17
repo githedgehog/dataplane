@@ -38,7 +38,9 @@ use crate::drivers::disposition::Disposition;
 // Packets move by value through the burst (parsed into it, drained out of it to transmit). The
 // compiler copies up to 256 bytes inline and calls `memmove` beyond that: 8 bytes more (264) cost
 // some 7 % per packet on the local BF-3 (2026-11-15), in the call and in the store-to-load
-// forwarding stalls of reading a packet just copied that way. Keep it within the limit.
+// forwarding stalls of reading a packet just copied that way. Keep it within the limit. Test
+// builds enable test-only parts of `net` that make it larger.
+#[cfg(not(test))]
 const _: () = assert!(
     core::mem::size_of::<net::packet::Packet<Mbuf<'static>>>() <= 256,
     "Packet<Mbuf> outgrew the 256 bytes the compiler copies inline"
@@ -335,7 +337,35 @@ impl<'p> Worker<'p> {
         if !from_ahead {
             stats.phase(Phase::Rx, received_at, processing);
         }
-        if knobs.prefetch_head && (!from_ahead || knobs.near_too) {
+        let slide = pollstats::postime::slide();
+        if slide > 0 {
+            pollstats::postime::set_heads(rx_mbufs.iter().map(|m| m.raw_data().as_ptr()));
+            for mbuf in rx_mbufs.iter().take(slide) {
+                mbuf.prefetch_head_hint(knobs.hint, knobs.lines);
+            }
+        } else if pollstats::postime::touch() {
+            let mut acc = 0u8;
+            if pollstats::postime::touch_mode() == 2 {
+                // Line 1 first, as a hint: its fetch overlaps the loads of every line 0.
+                for mbuf in rx_mbufs.iter() {
+                    let head = mbuf.raw_data().as_ptr();
+                    for line in 1..knobs.lines {
+                        pollstats::postime::prefetch_t1(head.wrapping_add(line * 64));
+                    }
+                }
+                for mbuf in rx_mbufs.iter() {
+                    acc ^= pollstats::postime::touch_line(mbuf.raw_data().as_ptr());
+                }
+            } else {
+                for mbuf in rx_mbufs.iter() {
+                    let head = mbuf.raw_data().as_ptr();
+                    for line in 0..knobs.lines {
+                        acc ^= pollstats::postime::touch_line(head.wrapping_add(line * 64));
+                    }
+                }
+            }
+            core::hint::black_box(acc);
+        } else if knobs.prefetch_head && (!from_ahead || knobs.near_too) {
             for mbuf in rx_mbufs.iter() {
                 mbuf.prefetch_head_hint(knobs.hint, knobs.lines);
             }
@@ -625,14 +655,23 @@ fn process_burst_with<Buf: PacketBufferMut>(
 ) {
     counters.rx += burst.len() as u64;
     packets.clear();
+    let timed = pollstats::postime::on();
+    let slide = pollstats::postime::slide();
     // Each packet is parsed in its slot rather than built and then moved into one.
-    for buffer in burst {
+    for (pos, buffer) in burst.enumerate() {
+        if slide > 0 {
+            pollstats::postime::slide_at(pos, slide);
+        }
+        let t0 = if timed { pollstats::postime::tsc() } else { 0 };
         match Packet::parse_into(packets, buffer) {
             Ok(packet) => packet.meta_mut().iif = Some(rx_if),
             Err(e) => {
                 counters.parse_errors += 1;
                 trace!("failed to parse a received frame: {e:?}");
             }
+        }
+        if timed {
+            pollstats::postime::parsed(pos, pollstats::postime::tsc() - t0);
         }
     }
 
@@ -644,7 +683,11 @@ fn process_burst_with<Buf: PacketBufferMut>(
     }
 
     let parsed = packets.len();
+    let t0 = if timed { pollstats::postime::tsc() } else { 0 };
     run(packets);
+    if timed {
+        pollstats::postime::ran(parsed, pollstats::postime::tsc() - t0);
+    }
     // Stages mark packets to drop rather than removing them, so a drop is always counted.
     debug_assert!(
         packets.len() >= parsed,

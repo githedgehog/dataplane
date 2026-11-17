@@ -368,3 +368,191 @@ impl PollStats {
     #[inline]
     pub(crate) fn maybe_report(&mut self) {}
 }
+
+/// Bench only: parse cost by position in the burst, and the pipeline's cost per packet, in TSC
+/// cycles. On with `DP_BENCH_POSTIME=1`; logged about once a second per worker.
+#[allow(clippy::cast_precision_loss, clippy::inline_always)] // bench-only timing
+pub(crate) mod postime {
+    use std::cell::RefCell;
+
+    /// Positions tracked; later ones share the last slot.
+    pub(crate) const SLOTS: usize = 64;
+
+    pub(crate) struct Acc {
+        extra: [(u64, u64); 2],
+        cyc: [u64; SLOTS],
+        n: [u64; SLOTS],
+        run_cyc: u64,
+        pkts: u64,
+        bursts: u64,
+        since: Option<std::time::Instant>,
+    }
+
+    thread_local! {
+        static ACC: RefCell<Acc> = const { RefCell::new(Acc {
+            extra: [(0, 0); 2], cyc: [0; SLOTS], n: [0; SLOTS], run_cyc: 0, pkts: 0, bursts: 0, since: None,
+        }) };
+    }
+
+    thread_local! {
+        static HEADS: RefCell<([usize; 256], usize)> = const { RefCell::new(([0; 256], 0)) };
+    }
+
+    /// `DP_BENCH_TOUCH=1`: load a byte of each head instead of prefetching it.
+    /// `DP_BENCH_TOUCH=2`: load line 0 only, prefetch the other lines with the head hint.
+    pub(crate) fn touch() -> bool {
+        touch_mode() != 0
+    }
+
+    /// 0 off, 1 load every line, 2 load line 0 and prefetch the rest.
+    pub(crate) fn touch_mode() -> u8 {
+        static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+        *M.get_or_init(|| {
+            std::env::var("DP_BENCH_TOUCH")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0)
+        })
+    }
+
+    /// `DP_BENCH_SLIDE=k`: prefetch packet `i + k` (T1) while parsing packet `i`; 0 is off.
+    pub(crate) fn slide() -> usize {
+        static K: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *K.get_or_init(|| {
+            std::env::var("DP_BENCH_SLIDE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0)
+        })
+    }
+
+    /// Remember this burst's head addresses for [`slide_at`].
+    pub(crate) fn set_heads(heads: impl Iterator<Item = *const u8>) {
+        HEADS.with_borrow_mut(|(h, n)| {
+            *n = 0;
+            for p in heads.take(256) {
+                h[*n] = p as usize;
+                *n += 1;
+            }
+        });
+    }
+
+    /// Prefetch the head `k` packets after `pos`.
+    #[inline(always)]
+    pub(crate) fn slide_at(pos: usize, k: usize) {
+        HEADS.with_borrow(|(h, n)| {
+            if pos + k < *n {
+                // SAFETY: a prefetch neither faults nor reads.
+                #[allow(unsafe_code, unused_unsafe)]
+                unsafe {
+                    core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T1 }>(
+                        h[pos + k] as *const i8,
+                    );
+                }
+            }
+        });
+    }
+
+    /// Prefetch `p` into L2 (T1).
+    #[inline(always)]
+    pub(crate) fn prefetch_t1(p: *const u8) {
+        // SAFETY: a prefetch neither faults nor reads.
+        #[allow(unsafe_code, unused_unsafe)]
+        unsafe {
+            core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T1 }>(p.cast());
+        }
+    }
+
+    /// Load a byte of `p` (a real load, not a hint).
+    #[inline(always)]
+    pub(crate) fn touch_line(p: *const u8) -> u8 {
+        // SAFETY: `p` is the start of a received frame's data.
+        #[allow(unsafe_code)]
+        unsafe {
+            core::ptr::read_volatile(p)
+        }
+    }
+
+    /// Whether to measure.
+    pub(crate) fn on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("DP_BENCH_POSTIME").is_ok_and(|v| v == "1"))
+    }
+
+    /// The time stamp counter.
+    #[inline(always)]
+    pub(crate) fn tsc() -> u64 {
+        #[allow(unsafe_code, unused_unsafe)] // reading the TSC has no preconditions
+        unsafe {
+            core::arch::x86_64::_rdtsc()
+        }
+    }
+
+    /// Slot 0 (decap) or 1 (encap) took `cyc`.
+    #[inline(always)]
+    pub(crate) fn extra(slot: usize, cyc: u64) {
+        ACC.with_borrow_mut(|a| {
+            a.extra[slot].0 += cyc;
+            a.extra[slot].1 += 1;
+        });
+    }
+
+    /// One parse at `pos` took `cyc`.
+    #[inline(always)]
+    pub(crate) fn parsed(pos: usize, cyc: u64) {
+        ACC.with_borrow_mut(|a| {
+            let s = pos.min(SLOTS - 1);
+            a.cyc[s] += cyc;
+            a.n[s] += 1;
+        });
+    }
+
+    /// The pipeline took `cyc` for `pkts` packets; report if a second has passed.
+    pub(crate) fn ran(pkts: usize, cyc: u64) {
+        ACC.with_borrow_mut(|a| {
+            a.run_cyc += cyc;
+            a.pkts += pkts as u64;
+            a.bursts += 1;
+            if a.bursts % 1024 != 0 {
+                return;
+            }
+            let now = std::time::Instant::now();
+            let since = *a.since.get_or_insert(now);
+            if now.duration_since(since).as_secs_f64() < 1.0 {
+                return;
+            }
+            let avg = |lo: usize, hi: usize| {
+                let (c, n) = (lo..hi).fold((0, 0), |(c, n), i| (c + a.cyc[i], n + a.n[i]));
+                if n == 0 { 0.0 } else { c as f64 / n as f64 }
+            };
+            let first: Vec<String> = (0..8).map(|i| format!("{:.0}", avg(i, i + 1))).collect();
+            let groups: Vec<String> = (0..SLOTS / 8)
+                .map(|g| format!("{:.0}", avg(g * 8, g * 8 + 8)))
+                .collect();
+            tracing::info!(
+                target: "pollstats",
+                "postime: bursts={} pkts={} run_cyc_per_pkt={:.0} parse_cyc_per_pkt={:.0} \
+                 decap_cyc={:.0} (n={}) encap_cyc={:.0} (n={}) pos0-7=[{}] by8=[{}]",
+                a.bursts,
+                a.pkts,
+                a.run_cyc as f64 / a.pkts.max(1) as f64,
+                avg(0, SLOTS),
+                a.extra[0].0 as f64 / a.extra[0].1.max(1) as f64,
+                a.extra[0].1,
+                a.extra[1].0 as f64 / a.extra[1].1.max(1) as f64,
+                a.extra[1].1,
+                first.join(","),
+                groups.join(","),
+            );
+            *a = Acc {
+                extra: [(0, 0); 2],
+                cyc: [0; SLOTS],
+                n: [0; SLOTS],
+                run_cyc: 0,
+                pkts: 0,
+                bursts: 0,
+                since: Some(now),
+            };
+        });
+    }
+}

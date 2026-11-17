@@ -207,7 +207,20 @@ impl IpForwarder {
             Some(Net::Ipv6(ip)) => Ipv6::MIN_LEN.get().checked_add(ip.payload_length()),
             None => None,
         };
-        match packet.vxlan_decap() {
+        let timed = crate::drivers::dpdk::pollstats::postime::on();
+        let t0 = if timed {
+            crate::drivers::dpdk::pollstats::postime::tsc()
+        } else {
+            0
+        };
+        let decapped = packet.vxlan_decap();
+        if timed {
+            crate::drivers::dpdk::pollstats::postime::extra(
+                0,
+                crate::drivers::dpdk::pollstats::postime::tsc() - t0,
+            );
+        }
+        match decapped {
             Some(Ok(_)) => {
                 // At this point decapsulation has already happened. `Packet` refers to the inner packet.
                 let next_vrf = fib.get_id();
@@ -317,6 +330,27 @@ impl IpForwarder {
     //# a) If the packet has DF=0, the NAT MUST fragment the packet and
     //# SHOULD send the fragments in order.
     fn vxlan_encap<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        vxlan: &VxlanEncapsulation,
+        vtep: &Vtep,
+    ) {
+        let timed = crate::drivers::dpdk::pollstats::postime::on();
+        let t0 = if timed {
+            crate::drivers::dpdk::pollstats::postime::tsc()
+        } else {
+            0
+        };
+        self.vxlan_encap_timed(packet, vxlan, vtep);
+        if timed {
+            crate::drivers::dpdk::pollstats::postime::extra(
+                1,
+                crate::drivers::dpdk::pollstats::postime::tsc() - t0,
+            );
+        }
+    }
+
+    fn vxlan_encap_timed<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
         vxlan: &VxlanEncapsulation,
