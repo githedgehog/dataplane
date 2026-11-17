@@ -7,7 +7,7 @@
 
 #![allow(clippy::unwrap_used, clippy::float_cmp, clippy::panic)]
 
-use dataplane_mstlink::{FecHistogram, ParseError, Pcie, PortReport};
+use dataplane_mstlink::{FecHistogram, Operational, ParseError, Pcie, PortReport};
 
 /// The crate's directory, read at run time rather than with `env!`: test archives built in the nix
 /// sandbox run on the host, where the build path does not exist. nextest's `--workspace-remap` (and
@@ -32,6 +32,7 @@ fn a_400g_pam4_port() {
         operational.fec.as_deref(),
         Some("Standard_RS-FEC - (544,514)")
     );
+    assert_eq!(operational.fec_mode(), Some("rs544"));
     assert_eq!(report.troubleshooting.status_opcode, Some(0));
     assert_eq!(
         report.troubleshooting.recommendation.as_deref(),
@@ -70,6 +71,7 @@ fn a_10g_nrz_port() {
     let report = PortReport::parse(&fixture("sfp-10g", "port.json")).unwrap();
     assert_eq!(report.operational.speed.as_deref(), Some("10G"));
     assert_eq!(report.operational.fec.as_deref(), Some("No FEC"));
+    assert_eq!(report.operational.fec_mode(), Some("disabled"));
     let counters = report.counters.unwrap();
     assert_eq!(counters.raw_ber_per_lane.len(), 1);
     let eye = report.eye.unwrap();
@@ -137,4 +139,19 @@ fn arbitrary_output_never_panics() {
         let _ = FecHistogram::parse(output);
         let _ = Pcie::parse(output);
     });
+}
+
+#[test]
+fn fec_modes_are_named_as_switches_name_them() {
+    let mode = |fec: &str| {
+        Operational {
+            fec: Some(fec.to_owned()),
+            ..Operational::default()
+        }
+        .fec_mode()
+    };
+    assert_eq!(mode("Standard_RS-FEC - (528,514)"), Some("rs528"));
+    assert_eq!(mode("Firecode_FEC"), Some("fc"));
+    assert_eq!(mode("Something new"), Some("enabled"));
+    assert_eq!(Operational::default().fec_mode(), None);
 }
