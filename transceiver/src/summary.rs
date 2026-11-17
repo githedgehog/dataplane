@@ -9,9 +9,47 @@
 //! can report its modules the same way.
 
 use crate::cmis::{self, Application};
-use crate::module::{Detail, Module};
-use crate::sff8024::HostInterface;
-use crate::sff8472::SignalingRate;
+use crate::module::{Detail, Length, Module, Reach};
+use crate::sff8024::{HostInterface, MediaType};
+use crate::sff8472::{CableKind, Links, SignalingRate};
+
+/// What kind of cable or module a port has, as switches classify it.
+///
+/// Switches have been seen reporting `DAC` and `FIBER`; the other names are the obvious ones, but
+/// no switch has been checked to use them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CableClass {
+    /// A copper cable assembly, passive or active.
+    Dac,
+    /// An active optical cable assembly.
+    Aoc,
+    /// An optical module, for separable fibre.
+    Fiber,
+    /// A BASE-T module, for twisted pair cabling.
+    BaseT,
+}
+
+impl CableClass {
+    /// The name switches give the class.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            CableClass::Dac => "DAC",
+            CableClass::Aoc => "AOC",
+            CableClass::Fiber => "FIBER",
+            CableClass::BaseT => "RJ45",
+        }
+    }
+}
+
+/// SFF-8024 Table 4-4 extended compliance codes for active cables.
+const ACTIVE_COPPER_CABLES: [u8; 4] = [0x08, 0x19, 0x30, 0x32];
+
+/// SFF-8024 connector code of cable assemblies (Table 4-3).
+const NO_SEPARABLE_CONNECTOR: u8 = 0x23;
+
+/// SFF-8024 connector code of BASE-T modules (Table 4-3).
+const RJ45: u8 = 0x22;
 
 /// What switches would say about a module.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +60,10 @@ pub struct Summary {
     pub connector_type: Option<&'static str>,
     /// The rate of each host lane in Gb/s, if the module says.
     pub lane_gbps: Option<u16>,
+    /// What kind of cable or module this is, if the module says.
+    pub cable: Option<CableClass>,
+    /// How long a cable assembly is; [`None`] for separable media.
+    pub cable_length: Option<Length>,
 }
 
 impl Module {
@@ -33,7 +75,63 @@ impl Module {
             form_factor: form_factor(self.identifier.raw(), lane_gbps),
             connector_type: connector_type(self.inventory.connector.raw()),
             lane_gbps,
+            cable: cable_class(self),
+            cable_length: cable_length(self),
         }
+    }
+}
+
+/// What kind of cable or module this is.
+fn cable_class(module: &Module) -> Option<CableClass> {
+    let connector = module.inventory.connector.raw();
+    match &module.detail {
+        Detail::Sff8472(sff) => Some(match sff.links {
+            Links::Cable(cable) => match cable.kind {
+                CableKind::Passive => CableClass::Dac,
+                CableKind::Active if ACTIVE_COPPER_CABLES.contains(&sff.extended_compliance) => {
+                    CableClass::Dac
+                }
+                CableKind::Active => CableClass::Aoc,
+            },
+            Links::Optical(_) if connector == RJ45 => CableClass::BaseT,
+            Links::Optical(_) => CableClass::Fiber,
+        }),
+        Detail::Sff8636(sff) => Some(if sff.technology.transmitter.is_copper() {
+            CableClass::Dac
+        } else if connector == NO_SEPARABLE_CONNECTOR {
+            CableClass::Aoc
+        } else {
+            CableClass::Fiber
+        }),
+        Detail::Cmis(cmis) => match MediaType::from_raw(cmis.media_type) {
+            MediaType::PassiveCopper => Some(CableClass::Dac),
+            // 00h:212 (Table 8-36) uses the SFF-8636 transmitter codes: 0Ah and up are copper.
+            MediaType::ActiveCable if (0x0a..=0x0f).contains(&cmis.media_technology) => {
+                Some(CableClass::Dac)
+            }
+            MediaType::ActiveCable => Some(CableClass::Aoc),
+            MediaType::MultimodeFibre | MediaType::SingleModeFibre => Some(CableClass::Fiber),
+            MediaType::BaseT => Some(CableClass::BaseT),
+            MediaType::Other(_) => None,
+        },
+    }
+}
+
+/// How long a cable assembly is.
+fn cable_length(module: &Module) -> Option<Length> {
+    let reach = |reach: Reach| match reach {
+        Reach::UpTo(length) | Reach::Beyond(length) => length,
+    };
+    match &module.detail {
+        Detail::Sff8472(sff) => match sff.links {
+            Links::Cable(cable) => cable.length_additional.or(cable.length.map(reach)),
+            Links::Optical(_) => None,
+        },
+        Detail::Sff8636(sff) => sff
+            .lengths
+            .cable_metres
+            .map(|metres| Length::from_decimetres(u32::from(metres) * 10)),
+        Detail::Cmis(cmis) => cmis.cable_length.map(reach),
     }
 }
 

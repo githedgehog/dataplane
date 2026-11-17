@@ -41,5 +41,5 @@ pub use module::{
     Bounds, Crossings, Detail, Flags, Inventory, LaneFlags, LaneMonitors, Length, Module, Monitors,
     Reach, RxPowerKind, Thresholds, Wavelength,
 };
-pub use summary::Summary;
+pub use summary::{CableClass, Summary};
 pub use units::{BiasMultiplier, Current, Power, Temperature, Voltage};
