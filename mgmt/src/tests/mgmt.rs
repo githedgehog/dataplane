@@ -592,6 +592,7 @@ pub mod test {
             bmp_options: None,
             gateway_name,
             control_plane,
+            ports: tokio::sync::watch::channel(Default::default()).1,
         };
 
         let rth = tokio::runtime::Handle::current();

@@ -6,7 +6,16 @@
 //! The dataplane fills these from what its drivers and agents read; the k8s converters turn them
 //! into the `GatewayAgent` status, in the form switches report their own interfaces.
 
+use std::collections::BTreeMap;
 use std::time::SystemTime;
+
+/// The state of every port and of its pluggable module, by interface name, as the dataplane
+/// last gathered it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PortsSnapshot {
+    pub ports: BTreeMap<String, PortStatus>,
+    pub transceivers: BTreeMap<String, TransceiverStatus>,
+}
 
 /// One port's link and counters, and its neighbours.
 #[derive(Clone, Debug, Default, PartialEq)]

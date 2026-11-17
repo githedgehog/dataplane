@@ -187,6 +187,16 @@ pub(crate) struct PhySnapshot {
     ports: BTreeMap<InterfaceName, PortPhy>,
 }
 
+impl PhySnapshot {
+    /// The FEC `mstlink` last saw on `port`, as switches name it.
+    pub(crate) fn fec(&self, port: &InterfaceName) -> Option<&'static str> {
+        match self.ports.get(port)? {
+            PortPhy::Read { report, .. } => report.operational.fec_mode(),
+            PortPhy::Unread(_) => None,
+        }
+    }
+}
+
 /// What `mstlink` last said about one port.
 #[derive(Debug)]
 enum PortPhy {

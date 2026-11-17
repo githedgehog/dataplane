@@ -937,7 +937,7 @@ pub fn main() {
         TelemetrySources {
             packets: setup.pkt_stats.clone(),
             flows: setup.flow_table.clone(),
-            driver: driver_status_reader,
+            driver: driver_status_reader.clone(),
             masquerade: setup.natallocatorw.get_reader(),
             taps: cp_bridge
                 .ports()
@@ -1015,6 +1015,18 @@ pub fn main() {
             setup.lldp_neighbors.clone(),
         );
     }
+
+    // What management publishes about the ports, gathered from the driver and the agents.
+    let ports = crate::port_status::start(
+        &mgmt_handle,
+        &shutdown.mgmt,
+        crate::port_status::Sources {
+            driver: driver_status_reader,
+            modules: setup.transceivers.subscribe(),
+            phy: setup.phy.subscribe(),
+            neighbors: setup.lldp_neighbors.subscribe(),
+        },
+    );
 
     concurrency::thread::scope(|scope| {
         // Management waits for the datapath to be ready, then releases it after its own startup.
@@ -1099,6 +1111,7 @@ pub fn main() {
                     bmp_options: bmp_client_opts,
                     gateway_name,
                     control_plane,
+                    ports,
                 },
             },
         );

@@ -235,6 +235,16 @@ pub(crate) struct ModuleSnapshot {
 }
 
 impl ModuleSnapshot {
+    /// The modules that could be read, by port.
+    pub(crate) fn modules(&self) -> impl Iterator<Item = (&InterfaceName, &Module)> {
+        self.ports
+            .iter()
+            .filter_map(|(port, reading)| match reading {
+                PortModule::Read { module, .. } => Some((port, &**module)),
+                PortModule::Unread(_) => None,
+            })
+    }
+
     /// Publish what reading the module of `port` found: the module, or why there is none.
     pub(crate) fn record(
         publish: &watch::Sender<ModuleSnapshot>,

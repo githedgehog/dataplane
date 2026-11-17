@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use config::external::overlay::vpc::ValidatedVpcTable;
 use config::internal::device::tracecfg::TracingConfig;
 use config::internal::status::{
-    DataplaneStatus, FrrStatus, VpcCounters, VpcPeeringCounters, VpcStatus,
+    DataplaneStatus, FrrStatus, PortsSnapshot, VpcCounters, VpcPeeringCounters, VpcStatus,
 };
 use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, InternalConfig, ValidatedGwConfig};
@@ -126,6 +126,9 @@ pub struct ConfigProcessorParams {
     /// The addresses and peers the control-plane traffic classes are built from, as of the last
     /// config applied.
     pub control_plane: tokio::sync::watch::Sender<ControlPlane>,
+
+    /// The state of the ports and their pluggable modules, as the dataplane last gathered it.
+    pub ports: tokio::sync::watch::Receiver<PortsSnapshot>,
 }
 
 impl ConfigProcessor {
@@ -413,6 +416,14 @@ impl ConfigProcessor {
                 },
             );
         }
+
+        // The ports, their pluggable modules and their LLDP neighbours
+        let PortsSnapshot {
+            ports,
+            transceivers,
+        } = self.proc_params.ports.borrow().clone();
+        status.ports = ports;
+        status.transceivers = transceivers;
 
         // FRR minimal info
         populate_status_with_frr(&mut status, &self.proc_params.router_ctl).await;
