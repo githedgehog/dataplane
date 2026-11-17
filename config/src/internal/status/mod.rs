@@ -5,7 +5,13 @@
 
 #![allow(clippy::module_name_repetitions)]
 
-use std::collections::HashMap;
+mod ports;
+
+pub use ports::{
+    LaneStatus, LldpNeighborStatus, PortCounters, PortRates, PortStatus, TransceiverStatus,
+};
+
+use std::collections::{BTreeMap, HashMap};
 
 #[cfg(test)]
 use bolero::TypeGenerator;
@@ -246,6 +252,10 @@ pub struct DataplaneStatus {
     pub vpcs: HashMap<String, VpcStatus>,
     pub vpc_peering_counters: HashMap<String, VpcPeeringCounters>,
     pub vpc_counters: HashMap<String, VpcCounters>,
+    /// The state of each port, by interface name.
+    pub ports: BTreeMap<String, PortStatus>,
+    /// The pluggable module of each port that has one, by interface name.
+    pub transceivers: BTreeMap<String, TransceiverStatus>,
 }
 
 impl DataplaneStatus {
@@ -414,6 +424,22 @@ pub(crate) mod contract {
                 vpc_counters,
                 vpc_peering_counters,
                 vpcs: HashMap::new(), // FIXME implement when tests need this field
+                ports: (0..d.gen_usize(Bound::Included(&0), Bound::Included(&4))?)
+                    .map(|i| {
+                        Some((
+                            format!("eth{i}"),
+                            d.produce::<LegalValue<PortStatus>>()?.take(),
+                        ))
+                    })
+                    .collect::<Option<_>>()?,
+                transceivers: (0..d.gen_usize(Bound::Included(&0), Bound::Included(&4))?)
+                    .map(|i| {
+                        Some((
+                            format!("eth{i}"),
+                            d.produce::<LegalValue<TransceiverStatus>>()?.take(),
+                        ))
+                    })
+                    .collect::<Option<_>>()?,
             }))
         }
     }
