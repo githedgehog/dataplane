@@ -34,6 +34,16 @@ pub enum TemplateAction {
     Rss(RssTarget),
     /// Mark the packet with a value, which arrives with it ([`Mbuf::rx_mark`](crate::mem::Mbuf::rx_mark)).
     Mark(u32),
+    /// Mark the packet with the value each rule names with [`RuleArg::Mark`].
+    ///
+    /// mlx5 delivers 24 bits; `0xffffff` arrives as no mark at all, and wider values are truncated
+    /// without error, so rules must stay within `0..=0xfffffe`.
+    MarkPerRule,
+    /// Remove the outer Ethernet, IP, UDP and VXLAN headers: the inner frame is what arrives.
+    ///
+    /// mlx5 orders it after a mark and before counting and the fate; the pattern must match the
+    /// VXLAN header.
+    VxlanDecap,
     /// Count the rule's packets and bytes; see [`TemplateRule::counts`](super::TemplateRule::counts).
     Count,
     /// Drop.
@@ -56,7 +66,10 @@ pub struct RssTarget {
 impl TemplateAction {
     /// Whether a rule supplies this action's configuration.
     pub(crate) fn per_rule(&self) -> bool {
-        matches!(self, TemplateAction::Meter | TemplateAction::JumpPerRule)
+        matches!(
+            self,
+            TemplateAction::Meter | TemplateAction::JumpPerRule | TemplateAction::MarkPerRule
+        )
     }
 }
 
@@ -67,6 +80,8 @@ pub enum RuleArg<'a, D: Domain> {
     Meter(&'a Meter<'a, D>),
     /// The group for a [`TemplateAction::JumpPerRule`].
     Jump(FlowGroup),
+    /// The value for a [`TemplateAction::MarkPerRule`].
+    Mark(u32),
 }
 
 /// The configuration an action points at.
@@ -165,6 +180,10 @@ fn fixed(action: &TemplateAction) -> OwnedAction {
         // The rule names the meter or group: no configuration in the template.
         TemplateAction::Meter => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_INDIRECT, Conf::None),
         TemplateAction::JumpPerRule => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_JUMP, Conf::None),
+        TemplateAction::MarkPerRule => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_MARK, Conf::None),
+        TemplateAction::VxlanDecap => {
+            OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_VXLAN_DECAP, Conf::None)
+        }
     }
 }
 
@@ -253,6 +272,10 @@ pub(crate) fn rule<D: Domain>(
                 (TemplateAction::JumpPerRule, RuleArg::Jump(group)) => Ok(OwnedAction::new(
                     at::RTE_FLOW_ACTION_TYPE_JUMP,
                     Conf::Jump(rte_flow_action_jump { group: group.0 }),
+                )),
+                (TemplateAction::MarkPerRule, RuleArg::Mark(id)) => Ok(OwnedAction::new(
+                    at::RTE_FLOW_ACTION_TYPE_MARK,
+                    Conf::Mark(rte_flow_action_mark { id: *id }),
                 )),
                 _ => Err(ArgumentError::Kind {
                     index,

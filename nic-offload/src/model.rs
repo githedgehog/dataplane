@@ -215,6 +215,10 @@ impl Walk<'_> {
                         .map(|s| s.end(Verdict::Delivered))
                         .collect());
                 }
+                // No plan uses them yet.
+                TemplateAction::MarkPerRule | TemplateAction::VxlanDecap => {
+                    return Err(ModelError::Arguments);
+                }
                 TemplateAction::Drop => {
                     return Ok(states
                         .into_iter()
