@@ -24,6 +24,7 @@ mod worker;
 mod xstats;
 
 use crate::packet_processor::{PipelineFactory, WorkerContext};
+use concurrency::sync::atomic::Ordering;
 use std::convert::Infallible;
 use std::num::NonZero;
 use std::time::SystemTime;
@@ -515,6 +516,7 @@ fn publish_port_states(
             link_changes: state.link_changes,
             last_change: telemetry.last_change,
             counters,
+            tx_discards: port.tx_discards.load(Ordering::Relaxed),
             rx_pool: state.rx_pool,
             control_pool: state.control_pool,
             xstats: if telemetry.xstats_failed {

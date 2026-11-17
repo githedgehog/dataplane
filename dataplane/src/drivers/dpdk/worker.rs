@@ -428,6 +428,7 @@ impl<'p> Worker<'p> {
                             "transmit batch for interface {oif} overflowed one burst; dropping"
                         ));
                         counters.tx_drops += 1;
+                        self.ports[out_slot].queues.discarded(1);
                     }
                 }
                 Err(e) => {
@@ -449,6 +450,7 @@ impl<'p> Worker<'p> {
             if refused > 0 {
                 // Dropping the unsent batch frees packets refused under backpressure.
                 counters.tx_drops += refused;
+                self.ports[out_slot].queues.discarded(refused);
                 trace!(
                     worker = self.id,
                     "tx queue on {} refused {refused} of {attempted} packets",
