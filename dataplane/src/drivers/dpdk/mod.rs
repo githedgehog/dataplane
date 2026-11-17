@@ -26,6 +26,7 @@ mod xstats;
 use crate::packet_processor::{PipelineFactory, WorkerContext};
 use std::convert::Infallible;
 use std::num::NonZero;
+use std::time::SystemTime;
 
 use args::IdleConfig;
 
@@ -364,6 +365,8 @@ struct PortTelemetry<'p, 'eal> {
     up: Option<bool>,
     /// Times the link went up or down between readings.
     changes: u64,
+    /// When the link last went up or down, or was first read, by the wall clock.
+    last_change: Option<SystemTime>,
     /// The ids and names of the extended statistics published, and where they are read into.
     xstat_ids: Vec<u64>,
     xstat_names: Vec<String>,
@@ -413,6 +416,7 @@ impl<'p, 'eal> PortTelemetry<'p, 'eal> {
             ),
             up: None,
             changes: 0,
+            last_change: None,
             xstat_ids: wanted.iter().map(|x| x.id).collect(),
             xstat_names: wanted.iter().map(|x| x.name.clone()).collect(),
             xstat_values: vec![0; wanted.len()],
@@ -449,8 +453,12 @@ fn publish_port_states(
             }
         };
         let up = link.is_some_and(|link| link.up);
-        if telemetry.up.is_some_and(|was| was != up) {
-            telemetry.changes += 1;
+        // The first reading stamps the time, but is no change.
+        if telemetry.up != Some(up) {
+            if telemetry.up.is_some() {
+                telemetry.changes += 1;
+            }
+            telemetry.last_change = Some(clock::system_now());
         }
         telemetry.up = Some(up);
         if let Some(tap_link) = &telemetry.tap_link {
@@ -505,6 +513,7 @@ fn publish_port_states(
             autoneg: link.map(|link| link.autoneg),
             full_duplex: link.map(|link| link.full_duplex),
             link_changes: state.link_changes,
+            last_change: telemetry.last_change,
             counters,
             rx_pool: state.rx_pool,
             control_pool: state.control_pool,

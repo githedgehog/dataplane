@@ -7,11 +7,12 @@
 //! The supervisor is the sole writer: once per check it builds a fresh
 //! [`DriverStatus`] and publishes it through a [`DriverStatusWriter`].
 
-use common::cliprovider::{CliDataProvider, Heading};
+use common::cliprovider::{CliDataProvider, Heading, PrettyDuration};
 use concurrency::slot::Slot;
 use concurrency::sync::Arc;
 
 use std::fmt::Display;
+use std::time::SystemTime;
 
 use crate::drivers::load::{LoadReader, LoadTotals, Spent};
 use crate::drivers::supervisor;
@@ -154,6 +155,8 @@ pub struct PortReport {
     pub full_duplex: Option<bool>,
     /// Times the link went up or down, as seen once a second.
     pub link_changes: u64,
+    /// When the link last went up or down, by the wall clock, or when the driver first read it.
+    pub last_change: Option<SystemTime>,
     /// Its counters, if it would report them.
     pub counters: Option<stats::PortCounters>,
     /// Mbufs in use, and the size, of its rx and control pools.
@@ -190,7 +193,7 @@ impl CliDataProvider for DpdkPortsCli {
         }
         let _ = writeln!(
             f,
-            "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:<6}  {:<4}  {:>7}  {:>17}  {:>17}  {:<8}",
+            "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:<6}  {:<4}  {:>7}  {:>12}  {:>17}  {:>17}  {:<8}",
             "port",
             "mac",
             "mtu",
@@ -199,6 +202,7 @@ impl CliDataProvider for DpdkPortsCli {
             "duplex",
             "auto",
             "changes",
+            "since",
             "rx-pool",
             "control-pool",
             "hardware"
@@ -212,7 +216,7 @@ impl CliDataProvider for DpdkPortsCli {
         for port in &status.ports {
             let _ = writeln!(
                 f,
-                "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:<6}  {:<4}  {:>7}  {:>17}  {:>17}  {:<8}",
+                "   {:<16}  {:<17}  {:>5}  {:<5}  {:>8}  {:<6}  {:<4}  {:>7}  {:>12}  {:>17}  {:>17}  {:<8}",
                 port.name,
                 port.mac,
                 port.mtu,
@@ -223,6 +227,7 @@ impl CliDataProvider for DpdkPortsCli {
                 flag(port.full_duplex.filter(|_| port.link_up), "full", "half"),
                 flag(port.autoneg, "on", "off"),
                 port.link_changes,
+                ago(port.last_change),
                 pool(port.rx_pool),
                 pool(port.control_pool),
                 port.hardware.as_deref().unwrap_or("-")
@@ -230,6 +235,15 @@ impl CliDataProvider for DpdkPortsCli {
         }
         f
     }
+}
+
+/// How long ago `at` was, for the tables, or "-" if unknown or in the future.
+fn ago(at: Option<SystemTime>) -> String {
+    at.and_then(|at| clock::system_now().duration_since(at).ok())
+        .map_or_else(
+            || "-".to_string(),
+            |ago| PrettyDuration::new(ago).to_string(),
+        )
 }
 
 /// A link speed in Mbit/s as the ports table shows it: whole or fractional gigabits, or megabits
