@@ -1644,6 +1644,7 @@ version = "0.38.2"
 dependencies = [
  "ahash",
  "bolero",
+ "crossbeam-utils",
  "dashmap",
  "dataplane-clock",
  "dataplane-common",

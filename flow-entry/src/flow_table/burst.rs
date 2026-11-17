@@ -73,7 +73,9 @@ fn lookup_chunk(table: &Table, keys: &[Option<FlowKey>], out: &mut Vec<Option<Ar
     }
     let guard_of = |shard: usize| {
         let j = held_shard[..n_held].partition_point(|&s| s < shard);
-        held[j].as_ref().unwrap_or_else(|| unreachable!("every key's shard is held"))
+        held[j]
+            .as_ref()
+            .unwrap_or_else(|| unreachable!("every key's shard is held"))
     };
     for (i, key) in keys.iter().enumerate() {
         if key.is_some() {

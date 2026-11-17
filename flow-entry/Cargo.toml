@@ -19,6 +19,7 @@ bolero = { workspace = true, optional = true }
 clock = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true }
+crossbeam-utils = { workspace = true, features = ["std"] }
 dashmap = { workspace = true, features = ["raw-api"] }
 etherparse = { workspace = true }
 linkme = { workspace = true }

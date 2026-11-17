@@ -3,13 +3,15 @@
 
 use ahash::RandomState;
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
-use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
+use concurrency::sync::{Arc, Weak};
+
 use dashmap::DashMap;
 use net::FlowKey;
 use net::flows::{FlowInfo, FlowStatus};
 use std::borrow::Borrow;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
+use table_lock::{ReadGuard as RwLockReadGuard, TableLock};
 use tracing::debug;
 
 use super::expiry::FlowTimers;
@@ -62,10 +64,56 @@ impl Drop for SlotReservation<'_> {
     }
 }
 
+/// The outer lock of the flow table. Bench proof of concept: a sharded lock (crossbeam's
+/// `ShardedLock`, one cache-padded lock per shard of threads), so readers on different cores do not
+/// bounce one cache line between them; writers take every shard. Model checks (loom, shuttle) keep
+/// the plain lock, which they can see into.
+mod table_lock {
+    #[cfg(not(any(feature = "loom", feature = "shuttle")))]
+    mod imp {
+        use std::sync::{PoisonError, TryLockError};
+
+        pub(crate) use crossbeam_utils::sync::ShardedLockReadGuard as ReadGuard;
+        use crossbeam_utils::sync::{ShardedLock, ShardedLockWriteGuard};
+
+        #[derive(Debug)]
+        pub(crate) struct TableLock<T>(ShardedLock<T>);
+
+        impl<T> TableLock<T> {
+            pub(crate) fn new(value: T) -> Self {
+                Self(ShardedLock::new(value))
+            }
+
+            pub(crate) fn read(&self) -> ReadGuard<'_, T> {
+                self.0.read().unwrap_or_else(PoisonError::into_inner)
+            }
+
+            pub(crate) fn write(&self) -> ShardedLockWriteGuard<'_, T> {
+                self.0.write().unwrap_or_else(PoisonError::into_inner)
+            }
+
+            pub(crate) fn try_read(&self) -> Option<ReadGuard<'_, T>> {
+                match self.0.try_read() {
+                    Ok(guard) => Some(guard),
+                    Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                    Err(TryLockError::WouldBlock) => None,
+                }
+            }
+        }
+    }
+
+    #[cfg(any(feature = "loom", feature = "shuttle"))]
+    mod imp {
+        pub(crate) use concurrency::sync::RwLock as TableLock;
+        pub(crate) use concurrency::sync::RwLockReadGuard as ReadGuard;
+    }
+
+    pub(crate) use imp::{ReadGuard, TableLock};
+}
+
 #[derive(Debug)]
 pub struct FlowTable {
-    // TODO(mvachhar) move this to a cross beam sharded lock
-    pub(crate) table: Arc<RwLock<Table>>,
+    pub(crate) table: Arc<TableLock<Table>>,
     capacity: AtomicUsize,
     live: Arc<AtomicUsize>,
 }
@@ -107,7 +155,7 @@ impl FlowTable {
     #[must_use]
     pub fn new(num_shards: usize) -> Self {
         Self {
-            table: Arc::new(RwLock::new(Table::with_hasher_and_shard_amount(
+            table: Arc::new(TableLock::new(Table::with_hasher_and_shard_amount(
                 hasher_state().clone(),
                 num_shards,
             ))),
