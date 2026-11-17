@@ -93,8 +93,10 @@ pub(crate) fn build_init_status() -> GatewayAgentStatus {
                 version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
             }),
             frr: None,
+            interfaces: None,
             last_collected_time: None,
             peerings: None,
+            transceivers: None,
             vpcs: None,
         }),
     }

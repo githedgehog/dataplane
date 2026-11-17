@@ -97,8 +97,10 @@ impl TryFrom<&DataplaneStatusForK8sConversion<'_>> for GatewayAgentStatus {
                     version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
                 }),
                 frr: frr_status,
+                interfaces: None,
                 last_collected_time: status.last_collected_time.map(to_k8s_time),
                 peerings: peerings.filter(|c| !c.is_empty()),
+                transceivers: None,
                 vpcs: vpcs.filter(|c| !c.is_empty()),
             }),
         })

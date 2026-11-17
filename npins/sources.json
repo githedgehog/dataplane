@@ -239,20 +239,17 @@
       "hash": "sha256-+f1ws/2oQ3+P3eiDHCuFyIHRn+5E/uHR+clpN0tyl3o="
     },
     "fabric": {
-      "type": "GitRelease",
+      "type": "Git",
       "repository": {
         "type": "GitHub",
         "owner": "githedgehog",
         "repo": "fabric"
       },
-      "pre_releases": false,
-      "version_upper_bound": null,
-      "release_prefix": null,
+      "branch": "dev/edipascale/gw-iface-status",
       "submodules": false,
-      "version": "v0.145.0",
-      "revision": "1ac00210e7d74911b12fc15843c70ce686cbac46",
-      "url": "https://api.github.com/repos/githedgehog/fabric/tarball/refs/tags/v0.145.0",
-      "hash": "sha256-gLohhC7EJ+azzVD63N12C6dyybuub9qTYCTWb3sPIXM=",
+      "revision": "c0a23efd4390e39d91cd38c948c74255fae88470",
+      "url": "https://github.com/githedgehog/fabric/archive/c0a23efd4390e39d91cd38c948c74255fae88470.tar.gz",
+      "hash": "sha256-DkcCujBw2OOxFZDC5gT925KnxSCfYTbJTJJUdxrw4kg=",
       "frozen": true
     },
     "flatcar-pxe-image": {
