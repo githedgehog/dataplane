@@ -20,9 +20,7 @@ use clock::Duration;
 use concurrency::sync::Arc;
 use futures::StreamExt;
 use net::eth::mac::SourceMac;
-use net::interface::{
-    IllegalInterfaceName, InterfaceIndex, InterfaceIndexError, InterfaceName, Mtu,
-};
+use net::interface::{InterfaceIndex, InterfaceIndexError, InterfaceName, Mtu};
 use routing::{IfState, LinkState, LinkStates, RouterCtlSender};
 use rtnetlink::packet_core::{
     NLM_F_DUMP, NLM_F_DUMP_INTR, NLM_F_REQUEST, NetlinkMessage, NetlinkPayload,
@@ -38,15 +36,11 @@ const RETRY: Duration = Duration::from_millis(100);
 /// Why a link was left out of an observation.
 ///
 /// Leaving such a link out loses nothing: a router configuration cannot name an interface without
-/// a valid index and name (an [`InterfaceName`] is stricter than the kernel's names).
+/// a valid index.
 #[derive(Debug, thiserror::Error)]
 enum NotObserved {
     #[error("invalid interface index: {0}")]
     Index(#[from] InterfaceIndexError),
-    #[error("no name")]
-    NoName,
-    #[error("invalid name: {0:?}")]
-    Name(#[from] IllegalInterfaceName),
 }
 
 /// The link state in a `RTM_NEWLINK`.
@@ -58,7 +52,10 @@ enum NotObserved {
 /// configuration was built with, which is how a port kept a stale MAC in #2268.
 ///
 /// An address that is not a usable source MAC (the loopback's zeros, a tunnel's IPv4 address) is
-/// observed as no MAC; the router only takes a MAC for interface types that have one anyway.
+/// observed as no MAC; the router only takes a MAC for interface types that have one anyway. A
+/// name the kernel accepts but an [`InterfaceName`] does not (`port+blue`) is observed as no name,
+/// and the rest of the link's state is observed all the same: the link is still there, under its
+/// index. An MTU outside the range of an [`Mtu`] is observed as no MTU.
 fn link_state(message: &LinkMessage) -> Result<LinkState, NotObserved> {
     let ifindex = InterfaceIndex::try_new(message.header.index)?;
     let mut name = None;
@@ -67,7 +64,11 @@ fn link_state(message: &LinkMessage) -> Result<LinkState, NotObserved> {
     let mut kernel_oper_state = None;
     for attribute in &message.attributes {
         match attribute {
-            LinkAttribute::IfName(raw) => name = Some(InterfaceName::try_from(raw.as_str())?),
+            LinkAttribute::IfName(raw) => {
+                name = InterfaceName::try_from(raw.as_str())
+                    .inspect_err(|e| debug!("Link {ifindex} has a name the router can't take: {e}"))
+                    .ok();
+            }
             LinkAttribute::Address(raw) => mac = SourceMac::try_from(raw).ok(),
             LinkAttribute::Mtu(raw) => mtu = Mtu::try_from(*raw).ok(),
             LinkAttribute::OperState(state) => kernel_oper_state = Some(*state),
@@ -77,7 +78,7 @@ fn link_state(message: &LinkMessage) -> Result<LinkState, NotObserved> {
     let flags = message.header.flags;
     Ok(LinkState {
         ifindex,
-        name: name.ok_or(NotObserved::NoName)?,
+        name,
         mac,
         mtu,
         admin_state: IfState::from(flags.contains(LinkFlags::Up)),
@@ -111,6 +112,12 @@ enum ObserveError {
     /// leave out or repeat links. Look again.
     #[error("the link dump was interrupted by a change")]
     Interrupted,
+    /// The dump ended without a successful `NLMSG_DONE`: the connection went away, or the kernel
+    /// reported an error at the end of it. It may leave out links.
+    #[error("the link dump ended without a successful NLMSG_DONE")]
+    Incomplete,
+    #[error("failed to open a netlink connection: {0}")]
+    Connection(#[from] std::io::Error),
 }
 
 /// The links of one link dump, as its messages come.
@@ -118,6 +125,7 @@ enum ObserveError {
 struct LinkDump {
     links: Vec<LinkState>,
     interrupted: bool,
+    done: bool,
 }
 
 impl LinkDump {
@@ -125,7 +133,9 @@ impl LinkDump {
     ///
     /// The kernel flags a dump that links changed during, on any of its messages (`NLM_F_DUMP_INTR`,
     /// see `nl_dump_check_consistent`). rtnetlink's link request drops the headers that carry the
-    /// flag, which is why the dump is read here.
+    /// flag, which is why the dump is read here. A dump is only complete with its `NLMSG_DONE`,
+    /// which netlink-proto only hands over with `set_forward_done(true)` (see [`observe`]); the
+    /// flag may be on that message alone.
     fn read(&mut self, message: NetlinkMessage<RouteNetlinkMessage>) -> Result<(), ObserveError> {
         self.interrupted |= message.header.flags & NLM_F_DUMP_INTR != 0;
         match message.payload {
@@ -135,26 +145,39 @@ impl LinkDump {
                     Err(e) => debug!("Not observing link {}: {e}", message.header.index),
                 }
             }
+            NetlinkPayload::Done(done) => self.done = done.code == 0,
             NetlinkPayload::Error(e) => return Err(rtnetlink::Error::NetlinkError(e).into()),
             _ => {}
         }
         Ok(())
     }
 
-    /// The complete observation, unless links changed during the dump.
+    /// The complete observation, unless the dump did not end with a successful `NLMSG_DONE`, or
+    /// links changed during it.
     fn finish(self) -> Result<LinkStates, ObserveError> {
         if self.interrupted {
             return Err(ObserveError::Interrupted);
+        }
+        if !self.done {
+            return Err(ObserveError::Incomplete);
         }
         Ok(self.links.into_iter().collect())
     }
 }
 
 /// Observe all of the kernel's links.
-async fn observe(handle: &rtnetlink::Handle) -> Result<LinkStates, ObserveError> {
+///
+/// Each observation has a connection of its own: one that went away (its task ended) cannot leave
+/// every later observation failing. The connection ends with the observation, when its handle is
+/// dropped.
+async fn observe() -> Result<LinkStates, ObserveError> {
+    let (mut connection, mut handle, _) = rtnetlink::new_connection()?;
+    connection.set_forward_done(true);
+    tokio::spawn(connection);
+
     let mut request = NetlinkMessage::from(RouteNetlinkMessage::GetLink(LinkMessage::default()));
     request.header.flags = NLM_F_REQUEST | NLM_F_DUMP;
-    let mut messages = handle.clone().request(request)?;
+    let mut messages = handle.request(request)?;
     let mut dump = LinkDump::default();
     while let Some(message) = messages.next().await {
         dump.read(message)?;
@@ -164,22 +187,13 @@ async fn observe(handle: &rtnetlink::Handle) -> Result<LinkStates, ObserveError>
 
 /// Hand the router a fresh observation of the kernel's links whenever they change.
 pub(crate) async fn sync_link_state(monitor: Arc<InterfaceMonitor>, router: RouterCtlSender) {
-    let (connection, handle, _) = match rtnetlink::new_connection() {
-        Ok(connection) => connection,
-        Err(e) => {
-            error!("Failed to open a netlink connection to observe links: {e}");
-            return;
-        }
-    };
-    tokio::spawn(connection);
-
     // Watch first, then look: a change after the monitor is listening is a cue for another
     // observation, and the first observation is taken after that, so it covers every change
     // before.
     let mut changes = monitor.subscribe();
     monitor.wait_ready().await;
     loop {
-        match observe(&handle).await {
+        match observe().await {
             Ok(links) => {
                 debug!("Observed the state of {} links", links.len());
                 if router.send_link_state(links).await.is_err() {
@@ -218,6 +232,7 @@ mod test {
     use interface_manager::interface::TryFromLinkMessage;
     use net::eth::mac::{Mac, SourceMac};
     use net::interface::{Interface, InterfaceIndex, InterfaceName, Mtu};
+    use routing::LinkStates;
     use routing::{IfState, LinkState};
     use rtnetlink::packet_core::{
         DoneMessage, ErrorMessage, NLM_F_DUMP_INTR, NLM_F_MULTIPART, NetlinkHeader, NetlinkMessage,
@@ -288,7 +303,7 @@ mod test {
                 link_state(&tap).unwrap(),
                 LinkState {
                     ifindex: InterfaceIndex::try_new(10).unwrap(),
-                    name: InterfaceName::try_from("Eth0").unwrap(),
+                    name: Some(InterfaceName::try_from("Eth0").unwrap()),
                     mac: Some(SourceMac::try_from("02:0a:0b:0c:0d:01").unwrap()),
                     mtu: Some(Mtu::try_from(9100u32).unwrap()),
                     admin_state,
@@ -385,24 +400,61 @@ mod test {
     }
 
     #[test]
-    fn a_link_without_a_valid_index_or_name_is_not_observed() {
+    fn a_link_without_a_valid_index_is_not_observed() {
         let name = || LinkAttribute::IfName("Eth0".to_string());
         assert!(matches!(
             link_state(&message(0, LinkFlags::Up, vec![name()])),
             Err(NotObserved::Index(_))
         ));
-        assert!(matches!(
-            link_state(&message(10, LinkFlags::Up, vec![])),
-            Err(NotObserved::NoName)
-        ));
-        assert!(matches!(
-            link_state(&message(
-                10,
-                LinkFlags::Up,
-                vec![LinkAttribute::IfName("eth0:1".to_string())]
-            )),
-            Err(NotObserved::Name(_))
-        ));
+    }
+
+    /// Linux takes names an `InterfaceName` does not (`port+blue`; a rename keeps the index). The
+    /// link is still there under its index, and the rest of its state is observed all the same.
+    #[test]
+    fn a_link_with_a_name_the_router_cannot_take_is_observed_without_one() {
+        let up = LinkFlags::Up | LinkFlags::Running;
+        let attributes = |name: Option<&str>| {
+            let mut attributes = vec![
+                LinkAttribute::OperState(State::Up),
+                LinkAttribute::Address(mac("02:0a:0b:0c:0d:01")),
+                LinkAttribute::Mtu(9100),
+            ];
+            attributes.extend(name.map(|name| LinkAttribute::IfName(name.to_string())));
+            attributes
+        };
+        for name in [Some("port+blue"), Some("eth0:1"), None] {
+            let observed = link_state(&message(10, up, attributes(name))).unwrap();
+            assert_eq!(
+                observed,
+                LinkState {
+                    ifindex: InterfaceIndex::try_new(10).unwrap(),
+                    name: None,
+                    mac: Some(SourceMac::try_from("02:0a:0b:0c:0d:01").unwrap()),
+                    mtu: Some(Mtu::try_from(9100u32).unwrap()),
+                    admin_state: IfState::Up,
+                    oper_state: IfState::Up,
+                },
+                "{name:?}"
+            );
+        }
+    }
+
+    /// An MTU outside the range of an `Mtu` is no MTU (Linux takes 1200 on a port).
+    #[test]
+    fn an_mtu_out_of_range_is_no_mtu() {
+        let link = message(
+            10,
+            LinkFlags::Up,
+            vec![
+                LinkAttribute::IfName("Eth0".to_string()),
+                LinkAttribute::Mtu(1200),
+            ],
+        );
+        assert!(
+            Mtu::try_from(1200u32).is_err(),
+            "1200 is in range now; pick another"
+        );
+        assert_eq!(link_state(&link).unwrap().mtu, None);
     }
 
     fn dump_message(
@@ -422,49 +474,60 @@ mod test {
         )))
     }
 
-    #[test]
-    fn a_dump_is_the_links_it_lists() {
+    fn done(code: i32) -> NetlinkMessage<RouteNetlinkMessage> {
+        let mut done = DoneMessage::default();
+        done.code = code;
+        dump_message(NLM_F_MULTIPART, NetlinkPayload::Done(done))
+    }
+
+    fn read_all(
+        messages: Vec<NetlinkMessage<RouteNetlinkMessage>>,
+    ) -> Result<LinkStates, ObserveError> {
         let mut dump = LinkDump::default();
-        for message in [
+        for message in messages {
+            dump.read(message)?;
+        }
+        dump.finish()
+    }
+
+    fn links() -> Vec<NetlinkMessage<RouteNetlinkMessage>> {
+        vec![
             dump_message(NLM_F_MULTIPART, new_link(1, "lo")),
             dump_message(NLM_F_MULTIPART, new_link(10, "Eth0")),
-            dump_message(
-                NLM_F_MULTIPART,
-                NetlinkPayload::Done(DoneMessage::default()),
-            ),
-        ] {
-            dump.read(message).unwrap();
-        }
-        let links = dump.finish().unwrap();
+        ]
+    }
+
+    #[test]
+    fn a_dump_is_the_links_it_lists() {
+        let mut messages = links();
+        messages.push(done(0));
+        let links = read_all(messages).unwrap();
         assert_eq!(links.len(), 2);
         assert!(links.get(InterfaceIndex::try_new(10).unwrap()).is_some());
     }
 
-    /// A dump links changed during may leave links out: an interface it left out would then keep
-    /// stale link state, so it is no observation at all. The kernel may flag any of the dump's
+    /// A dump only ends with its `NLMSG_DONE`. Without one (the connection went away mid-dump,
+    /// which ends the response stream like a dump that is over), or with an error in it, the dump
+    /// may leave links out, and the router would take those as gone.
+    #[test]
+    fn a_dump_without_a_successful_done_is_no_observation() {
+        assert!(matches!(read_all(links()), Err(ObserveError::Incomplete)));
+        let mut messages = links();
+        messages.push(done(-16)); // EBUSY
+        assert!(matches!(read_all(messages), Err(ObserveError::Incomplete)));
+    }
+
+    /// A dump links changed during may leave links out: an interface it left out would then be
+    /// taken as gone, so it is no observation at all. The kernel may flag any of the dump's
     /// messages, the final `NLMSG_DONE` included.
     #[test]
     fn an_interrupted_dump_is_no_observation() {
-        let messages = || {
-            [
-                dump_message(NLM_F_MULTIPART, new_link(1, "lo")),
-                dump_message(NLM_F_MULTIPART, new_link(10, "Eth0")),
-                dump_message(
-                    NLM_F_MULTIPART,
-                    NetlinkPayload::Done(DoneMessage::default()),
-                ),
-            ]
-        };
         for flagged in 0..3 {
-            let mut dump = LinkDump::default();
-            for (i, mut message) in messages().into_iter().enumerate() {
-                if i == flagged {
-                    message.header.flags |= NLM_F_DUMP_INTR;
-                }
-                dump.read(message).unwrap();
-            }
+            let mut messages = links();
+            messages.push(done(0));
+            messages[flagged].header.flags |= NLM_F_DUMP_INTR;
             assert!(
-                matches!(dump.finish(), Err(ObserveError::Interrupted)),
+                matches!(read_all(messages), Err(ObserveError::Interrupted)),
                 "flag on message {flagged}"
             );
         }
@@ -472,17 +535,17 @@ mod test {
 
     #[test]
     fn an_error_fails_the_dump() {
-        let mut dump = LinkDump::default();
         let mut error = ErrorMessage::default();
         error.code = std::num::NonZeroI32::new(-16); // EBUSY
         assert!(matches!(
-            dump.read(dump_message(0, NetlinkPayload::Error(error))),
+            read_all(vec![dump_message(0, NetlinkPayload::Error(error))]),
             Err(ObserveError::Netlink(_))
         ));
     }
 
-    /// The dump against a real kernel: every link is in it, the loopback included, and a change
-    /// is in the next one.
+    /// The dump against a real kernel and netlink-proto: it ends with its `NLMSG_DONE` (or
+    /// `observe` would fail), every link is in it, the loopback included, and changes are in the
+    /// next one, a rename to a name the router cannot take included.
     #[n_vm::test]
     async fn observe_sees_the_kernels_links_and_their_changes() {
         use super::observe;
@@ -491,13 +554,14 @@ mod test {
 
         let (connection, handle, _) = rtnetlink::new_connection().unwrap();
         tokio::spawn(connection);
+        let name = |raw: &str| Some(InterfaceName::try_from(raw).unwrap());
 
         let lo = InterfaceIndex::try_new(1).unwrap();
         let tap = TapDevice::open(&InterfaceName::try_from("observe-tap").unwrap()).unwrap();
-        let links = observe(&handle).await.unwrap();
-        assert_eq!(links.get(lo).unwrap().name.as_ref(), "lo");
+        let links = observe().await.unwrap();
+        assert_eq!(links.get(lo).unwrap().name, name("lo"));
         let observed = links.get(tap.index()).unwrap();
-        assert_eq!(observed.name.as_ref(), "observe-tap");
+        assert_eq!(observed.name, name("observe-tap"));
         assert_eq!(observed.admin_state, IfState::Down);
 
         let mac = SourceMac::try_from("02:0a:0b:0c:0d:0e").unwrap();
@@ -512,8 +576,37 @@ mod test {
             .execute()
             .await
             .unwrap();
-        let links = observe(&handle).await.unwrap();
+        let links = observe().await.unwrap();
         let observed = links.get(tap.index()).unwrap();
+        assert_eq!(observed.mac, Some(mac));
+        assert_eq!(observed.admin_state, IfState::Up);
+
+        handle
+            .link()
+            .set(
+                LinkUnspec::new_with_index(tap.index().to_u32())
+                    .down()
+                    .build(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        handle
+            .link()
+            .set(
+                LinkUnspec::new_with_index(tap.index().to_u32())
+                    .name("observe+tap".to_string())
+                    .up()
+                    .build(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let links = observe().await.unwrap();
+        let observed = links
+            .get(tap.index())
+            .expect("a link renamed to a name the router cannot take is still observed");
+        assert_eq!(observed.name, None);
         assert_eq!(observed.mac, Some(mac));
         assert_eq!(observed.admin_state, IfState::Up);
     }

@@ -22,7 +22,8 @@ use tracing::warn;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkState {
     pub ifindex: InterfaceIndex,
-    pub name: InterfaceName,
+    /// The link's name, unless it is one the kernel takes but an [`InterfaceName`] does not.
+    pub name: Option<InterfaceName>,
     pub mac: Option<SourceMac>,
     pub mtu: Option<Mtu>,
     pub admin_state: IfState,
@@ -64,19 +65,21 @@ impl RouterInterfaceConfig {
     /// This configuration with `link`'s state overlaid.
     ///
     /// The MAC is only taken for interface types that have one; the router has no use for a MAC on
-    /// a loopback.
+    /// a loopback. A name the router cannot take leaves the name as it is. The MTU is taken as
+    /// observed, so one outside the range of an [`Mtu`] shows as unavailable rather than as the
+    /// last one that was in range.
     #[must_use]
     pub(crate) fn with_link_state(&self, link: &LinkState) -> Self {
         let mut observed = self.clone();
-        observed.name.clone_from(&link.name);
+        if let Some(name) = &link.name {
+            observed.name.clone_from(name);
+        }
         if let Some(mac) = link.mac
             && observed.iftype.get_mac().is_some()
         {
             observed.iftype.set_mac(mac);
         }
-        if link.mtu.is_some() {
-            observed.mtu = link.mtu;
-        }
+        observed.mtu = link.mtu;
         observed.admin_state = link.admin_state;
         observed
     }
@@ -101,6 +104,7 @@ impl RouterInterfaceConfig {
         }
         let mut kept = self.clone();
         if let Some(current) = current {
+            kept.name.clone_from(&current.name);
             if let Some(mac) = current.get_mac()
                 && kept.iftype.get_mac().is_some()
             {

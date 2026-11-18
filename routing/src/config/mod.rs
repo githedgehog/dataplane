@@ -137,7 +137,10 @@ impl RouterConfig {
     //////////////////////////////////////////////////////////////////////////////////
     #[cfg(test)]
     #[must_use]
-    fn get_interface_mut(&mut self, ifindex: InterfaceIndex) -> Option<&mut RouterInterfaceConfig> {
+    pub(crate) fn get_interface_mut(
+        &mut self,
+        ifindex: InterfaceIndex,
+    ) -> Option<&mut RouterInterfaceConfig> {
         self.interfaces.get_mut(&ifindex)
     }
 
@@ -194,18 +197,22 @@ impl RouterConfig {
         let reconfig_ifaces = ReconfigInterfacePlan::generate(&interfaces.0, &iftable);
         let changes = reconfig_ifaces.link_changes(&iftable);
         drop(iftable);
-        reconfig_ifaces.apply(&mut db.iftw, &db.vrftable)?;
-        changes.into_iter().for_each(report_link_changes);
+        let applied = reconfig_ifaces.apply(&mut db.iftw, &db.vrftable);
+        if applied.is_ok() {
+            changes.into_iter().for_each(report_link_changes);
+        }
 
         // The operational state is not something a configuration can ask for; it is only observed.
-        // The rest of the link state is already in `interfaces`, so this only sets that.
+        // The rest of the link state is already in `interfaces`, so this only sets that. It is set
+        // even when the plan failed part way: the interfaces it added before failing are in the
+        // table, and egress forwards on one whose operational state is unknown.
         if let Some(links) = &db.links {
             db.iftw
                 .apply_link_state(links)
                 .into_iter()
                 .for_each(report_link_changes);
         }
-        Ok(())
+        applied
     }
 }
 

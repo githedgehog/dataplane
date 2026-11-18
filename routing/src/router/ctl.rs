@@ -312,7 +312,7 @@ mod link_state {
     use super::handle_link_state;
     use crate::config::RouterConfig;
     use crate::config::tests::{build_router_config, create_routing_database};
-    use crate::interfaces::interface::{IfState, RouterInterfaceConfig};
+    use crate::interfaces::interface::{AttachConfig, IfState, RouterInterfaceConfig};
     use crate::interfaces::linkstate::{LinkState, LinkStates};
     use crate::routingdb::RoutingDb;
     use net::eth::mac::{Mac, SourceMac};
@@ -344,7 +344,7 @@ mod link_state {
         let ifindex = ifindex(raw);
         LinkState {
             ifindex,
-            name: config.get_interface(ifindex).unwrap().name.clone(),
+            name: Some(config.get_interface(ifindex).unwrap().name.clone()),
             mac: Some(mac),
             mtu: None,
             admin_state: IfState::Up,
@@ -412,7 +412,7 @@ mod link_state {
         );
         LinkState {
             ifindex,
-            name,
+            name: Some(name),
             mac: Some(SourceMac::new(Mac::from(raw)).unwrap()),
             mtu: match mtu % 3 {
                 0 => None,
@@ -594,5 +594,113 @@ mod link_state {
         );
 
         assert_eq!(interface(&db, port).get_mac(), Some(real));
+    }
+
+    /// A configuration that fails part way leaves the interfaces it added before failing in the
+    /// table. Their operational state must still be the observed one: egress forwards on an
+    /// interface whose operational state is unknown, the state a new interface starts with.
+    #[test]
+    fn interfaces_a_failed_config_added_take_the_observed_oper_state() {
+        let mut db = create_routing_database();
+        let mut config = build_router_config();
+        let port = ifindex(CONFIGURED[0]);
+        let mac = config
+            .get_interface(port)
+            .unwrap()
+            .iftype
+            .get_mac()
+            .unwrap();
+        let mut down = link(&config, CONFIGURED[0], mac);
+        down.oper_state = IfState::Down;
+        handle_link_state(&mut db, LinkStates::from_iter([down]));
+
+        // the interface after it attaches to a VRF there is none of: adding it fails
+        config
+            .get_interface_mut(ifindex(CONFIGURED[1]))
+            .unwrap()
+            .set_attach_cfg(Some(AttachConfig::Vrf(999)));
+        assert!(config.apply(&mut db).is_err());
+
+        let added = interface(&db, port);
+        assert_eq!(added.admin_state, IfState::Up);
+        assert_eq!(
+            added.oper_state,
+            IfState::Down,
+            "left as it started, Unknown"
+        );
+    }
+
+    /// A link renamed to a name the router cannot take is observed without a name: the interface
+    /// keeps its name, and takes the rest of the link state.
+    #[test]
+    fn a_link_observed_without_a_name_keeps_the_interface_name() {
+        let mut db = create_routing_database();
+        let config = build_router_config();
+        let port = ifindex(CONFIGURED[1]);
+        let real = SourceMac::try_from("0c:20:12:fe:01:02").unwrap();
+        let mut unnamed = link(&config, CONFIGURED[1], real);
+        unnamed.name = None;
+
+        configure(&mut db);
+        handle_link_state(&mut db, LinkStates::from_iter([unnamed]));
+
+        let got = interface(&db, port);
+        assert_eq!(got.name, config.get_interface(port).unwrap().name);
+        assert_eq!(got.get_mac(), Some(real));
+        assert_eq!(got.oper_state, IfState::Up, "the link is not gone");
+    }
+
+    /// An interface renamed and then gone keeps its last observed name through a later
+    /// configuration, which would otherwise report a rename back that never happened.
+    #[test]
+    fn an_interface_gone_after_a_rename_keeps_its_last_name() {
+        let mut db = create_routing_database();
+        let config = build_router_config();
+        let port = ifindex(CONFIGURED[0]);
+        let mac = config
+            .get_interface(port)
+            .unwrap()
+            .iftype
+            .get_mac()
+            .unwrap();
+        let renamed = InterfaceName::try_from("renamed0").unwrap();
+        let mut link = link(&config, CONFIGURED[0], mac);
+        link.name = Some(renamed.clone());
+
+        configure(&mut db);
+        handle_link_state(&mut db, LinkStates::from_iter([link]));
+        assert_eq!(interface(&db, port).name, renamed);
+        handle_link_state(&mut db, LinkStates::default());
+        configure(&mut db);
+
+        assert_eq!(interface(&db, port).name, renamed);
+    }
+
+    /// An MTU the observer could not take (outside the range of an `Mtu`) shows as unavailable,
+    /// not as the last one in range.
+    #[test]
+    fn an_unavailable_mtu_replaces_the_last_one() {
+        let mut db = create_routing_database();
+        let config = build_router_config();
+        let port = ifindex(CONFIGURED[1]);
+        let mac = config
+            .get_interface(port)
+            .unwrap()
+            .iftype
+            .get_mac()
+            .unwrap();
+        let mut jumbo = link(&config, CONFIGURED[1], mac);
+        jumbo.mtu = Some(Mtu::try_from(9000u32).unwrap());
+        let mut unavailable = jumbo.clone();
+        unavailable.mtu = None;
+
+        configure(&mut db);
+        handle_link_state(&mut db, LinkStates::from_iter([jumbo]));
+        assert_eq!(
+            interface(&db, port).mtu,
+            Some(Mtu::try_from(9000u32).unwrap())
+        );
+        handle_link_state(&mut db, LinkStates::from_iter([unavailable]));
+        assert_eq!(interface(&db, port).mtu, None);
     }
 }

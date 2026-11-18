@@ -815,7 +815,7 @@ mod tests_cli_handling {
     async fn send_link_state(ctl: &RouterCtlSender, mac: &str) {
         let link = LinkState {
             ifindex: InterfaceIndex::try_from(IFINDEX).expect("Bad ifindex"),
-            name: InterfaceName::try_from(IFNAME).expect("Bad ifname"),
+            name: Some(InterfaceName::try_from(IFNAME).expect("Bad ifname")),
             mac: Some(SourceMac::try_from(mac).expect("Bad mac")),
             mtu: None,
             admin_state: IfState::Up,
