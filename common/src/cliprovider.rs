@@ -3,7 +3,6 @@
 
 //! A trait for a type that can provide CLI data
 
-use chrono::TimeDelta;
 use clock::{Duration, Instant};
 use concurrency::slot::{Slot, SlotOption};
 use concurrency::sync::Arc;
@@ -111,20 +110,21 @@ pub fn line(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     Heading("─").fmt(f)
 }
 
-pub struct PrettyDuration(TimeDelta);
+pub struct PrettyDuration(Duration);
 impl PrettyDuration {
     #[must_use]
     pub fn new(d: Duration) -> Self {
-        Self(TimeDelta::from_std(d).unwrap_or(TimeDelta::MAX))
+        Self(d)
     }
 }
 impl Display for PrettyDuration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let weeks = self.0.num_weeks();
-        let days = self.0.num_days() % 7;
-        let hours = self.0.num_hours() % 24;
-        let minutes = self.0.num_minutes() % 60;
-        let seconds = self.0.num_seconds() % 60;
+        let secs = self.0.as_secs();
+        let weeks = secs / (7 * 24 * 3600);
+        let days = secs / (24 * 3600) % 7;
+        let hours = secs / 3600 % 24;
+        let minutes = secs / 60 % 60;
+        let seconds = secs % 60;
 
         if weeks > 0 {
             write!(f, "{weeks:02}w")?;
