@@ -149,6 +149,27 @@ fn a_capture_ends_on_its_budget_and_another_can_follow() {
 }
 
 #[concurrency::test]
+fn a_status_request_does_not_take_the_report_from_the_next_stop() {
+    let controller = CaptureController::new();
+    controller
+        .start(
+            request(CaptureFilter::Everything, 1, 2, 8),
+            SharedFile::default(),
+            CaptureNames::default(),
+        )
+        .unwrap();
+    worker(&controller, Direction::Ingress, 5).join().unwrap();
+
+    // Whether or not the writer has finished by now, and so whether or not this collects it, the
+    // stop which follows reports the capture.
+    let _ = controller.status();
+    let report = controller.stop().unwrap();
+    assert!(matches!(report.end, CaptureEnd::Budget), "{report}");
+    assert_eq!(report.admitted, 2, "{report}");
+    assert!(controller.stop().is_none(), "a report was returned twice");
+}
+
+#[concurrency::test]
 fn a_capture_ignores_directions_it_was_not_asked_for() {
     let controller = CaptureController::new();
     controller
@@ -166,7 +187,7 @@ fn a_capture_ignores_directions_it_was_not_asked_for() {
 #[cfg(not(feature = "shuttle"))]
 mod real_time {
     use super::*;
-    use crate::CaptureStatus;
+    use crate::{CaptureReport, CaptureStatus};
 
     #[test]
     fn sampling_keeps_one_packet_in_n() {
@@ -184,23 +205,85 @@ mod real_time {
         assert_eq!(controller.stop().unwrap().admitted, 4);
     }
 
-    #[test]
-    fn a_capture_ends_at_its_deadline() {
-        let controller = CaptureController::new();
+    /// A capture file which refuses every write.
+    struct FailingFile;
+
+    impl Write for FailingFile {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("no space left"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Start a capture which ends on its deadline almost at once.
+    fn start_short(controller: &CaptureController) {
         let mut request = request(CaptureFilter::Everything, 1, 100, 8);
         request.duration = Duration::from_millis(20);
         controller
             .start(request, SharedFile::default(), CaptureNames::default())
             .unwrap();
+    }
+
+    /// Ask for the status until it reports the capture finished, which collects its writer.
+    fn wait_until_finished(controller: &CaptureController) -> Arc<CaptureReport> {
         let give_up = clock::deadline(Duration::from_secs(10));
         loop {
             if let CaptureStatus::Finished(report) = controller.status() {
-                assert!(matches!(report.end, CaptureEnd::Deadline), "{report}");
-                break;
+                return report;
             }
             assert!(clock::now() < give_up, "the capture outlived its deadline");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn a_capture_ends_at_its_deadline() {
+        let controller = CaptureController::new();
+        start_short(&controller);
+        let report = wait_until_finished(&controller);
+        assert!(matches!(report.end, CaptureEnd::Deadline), "{report}");
+        // The status request above collected the writer; the first stop still gets its report.
+        let report = controller.stop().unwrap();
+        assert!(matches!(report.end, CaptureEnd::Deadline), "{report}");
+        assert!(controller.stop().is_none(), "a report was returned twice");
+        assert!(matches!(controller.status(), CaptureStatus::Finished(_)));
+    }
+
+    #[test]
+    fn a_stop_after_a_new_start_reports_the_new_capture() {
+        let controller = CaptureController::new();
+        start_short(&controller);
+        wait_until_finished(&controller);
+        controller
+            .start(
+                request(CaptureFilter::Everything, 1, 100, 8),
+                SharedFile::default(),
+                CaptureNames::default(),
+            )
+            .unwrap();
+        let report = controller.stop().unwrap();
+        assert!(matches!(report.end, CaptureEnd::Stopped), "{report}");
+        assert!(controller.stop().is_none(), "a report was returned twice");
+    }
+
+    #[test]
+    fn a_failed_start_leaves_the_last_report_to_the_next_stop() {
+        let controller = CaptureController::new();
+        start_short(&controller);
+        wait_until_finished(&controller);
+        assert!(matches!(
+            controller.start(
+                request(CaptureFilter::Everything, 1, 100, 8),
+                FailingFile,
+                CaptureNames::default()
+            ),
+            Err(CaptureStartError::Write(_))
+        ));
+        let report = controller.stop().unwrap();
+        assert!(matches!(report.end, CaptureEnd::Deadline), "{report}");
     }
 
     #[test]
