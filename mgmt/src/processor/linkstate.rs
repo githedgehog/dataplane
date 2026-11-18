@@ -18,12 +18,16 @@ use interface_manager::monitor::InterfaceMonitor;
 
 use clock::Duration;
 use concurrency::sync::Arc;
-use futures::TryStreamExt;
+use futures::StreamExt;
 use net::eth::mac::SourceMac;
 use net::interface::{
     IllegalInterfaceName, InterfaceIndex, InterfaceIndexError, InterfaceName, Mtu,
 };
 use routing::{IfState, LinkState, LinkStates, RouterCtlSender};
+use rtnetlink::packet_core::{
+    NLM_F_DUMP, NLM_F_DUMP_INTR, NLM_F_REQUEST, NetlinkMessage, NetlinkPayload,
+};
+use rtnetlink::packet_route::RouteNetlinkMessage;
 use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags, LinkMessage, State};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tracing::{debug, error, warn};
@@ -98,17 +102,64 @@ fn oper_state(kernel: Option<State>, flags: LinkFlags) -> IfState {
     }
 }
 
-/// Observe all of the kernel's links.
-async fn observe(handle: &rtnetlink::Handle) -> Result<LinkStates, rtnetlink::Error> {
-    let mut messages = handle.link().get().execute();
-    let mut links = vec![];
-    while let Some(message) = messages.try_next().await? {
-        match link_state(&message) {
-            Ok(link) => links.push(link),
-            Err(e) => debug!("Not observing link {}: {e}", message.header.index),
+/// Why an observation of the kernel's links failed.
+#[derive(Debug, thiserror::Error)]
+enum ObserveError {
+    #[error(transparent)]
+    Netlink(#[from] rtnetlink::Error),
+    /// The links changed while the kernel was dumping them (`NLM_F_DUMP_INTR`), so the dump may
+    /// leave out or repeat links. Look again.
+    #[error("the link dump was interrupted by a change")]
+    Interrupted,
+}
+
+/// The links of one link dump, as its messages come.
+#[derive(Default)]
+struct LinkDump {
+    links: Vec<LinkState>,
+    interrupted: bool,
+}
+
+impl LinkDump {
+    /// Take one message of the dump's response.
+    ///
+    /// The kernel flags a dump that links changed during, on any of its messages (`NLM_F_DUMP_INTR`,
+    /// see `nl_dump_check_consistent`). rtnetlink's link request drops the headers that carry the
+    /// flag, which is why the dump is read here.
+    fn read(&mut self, message: NetlinkMessage<RouteNetlinkMessage>) -> Result<(), ObserveError> {
+        self.interrupted |= message.header.flags & NLM_F_DUMP_INTR != 0;
+        match message.payload {
+            NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewLink(message)) => {
+                match link_state(&message) {
+                    Ok(link) => self.links.push(link),
+                    Err(e) => debug!("Not observing link {}: {e}", message.header.index),
+                }
+            }
+            NetlinkPayload::Error(e) => return Err(rtnetlink::Error::NetlinkError(e).into()),
+            _ => {}
         }
+        Ok(())
     }
-    Ok(links.into_iter().collect())
+
+    /// The complete observation, unless links changed during the dump.
+    fn finish(self) -> Result<LinkStates, ObserveError> {
+        if self.interrupted {
+            return Err(ObserveError::Interrupted);
+        }
+        Ok(self.links.into_iter().collect())
+    }
+}
+
+/// Observe all of the kernel's links.
+async fn observe(handle: &rtnetlink::Handle) -> Result<LinkStates, ObserveError> {
+    let mut request = NetlinkMessage::from(RouteNetlinkMessage::GetLink(LinkMessage::default()));
+    request.header.flags = NLM_F_REQUEST | NLM_F_DUMP;
+    let mut messages = handle.clone().request(request)?;
+    let mut dump = LinkDump::default();
+    while let Some(message) = messages.next().await {
+        dump.read(message)?;
+    }
+    dump.finish()
 }
 
 /// Hand the router a fresh observation of the kernel's links whenever they change.
@@ -135,6 +186,11 @@ pub(crate) async fn sync_link_state(monitor: Arc<InterfaceMonitor>, router: Rout
                     warn!("Failed to hand the router the state of the links");
                 }
             }
+            Err(ObserveError::Interrupted) => {
+                // the change that interrupted it is in the kernel now: the next dump sees it
+                debug!("The kernel's links changed while observing them. Looking again");
+                continue;
+            }
             Err(e) => {
                 error!("Failed to observe the kernel's links: {e}. Will try again.");
                 tokio::time::sleep(RETRY).await;
@@ -158,11 +214,16 @@ pub(crate) async fn sync_link_state(monitor: Arc<InterfaceMonitor>, router: Rout
 
 #[cfg(test)]
 mod test {
-    use super::{NotObserved, link_state};
+    use super::{LinkDump, NotObserved, ObserveError, link_state};
     use interface_manager::interface::TryFromLinkMessage;
     use net::eth::mac::{Mac, SourceMac};
     use net::interface::{Interface, InterfaceIndex, InterfaceName, Mtu};
     use routing::{IfState, LinkState};
+    use rtnetlink::packet_core::{
+        DoneMessage, ErrorMessage, NLM_F_DUMP_INTR, NLM_F_MULTIPART, NetlinkHeader, NetlinkMessage,
+        NetlinkPayload,
+    };
+    use rtnetlink::packet_route::RouteNetlinkMessage;
     use rtnetlink::packet_route::link::{
         InfoKind, LinkAttribute, LinkFlags, LinkInfo, LinkMessage, State,
     };
@@ -342,5 +403,118 @@ mod test {
             )),
             Err(NotObserved::Name(_))
         ));
+    }
+
+    fn dump_message(
+        flags: u16,
+        payload: NetlinkPayload<RouteNetlinkMessage>,
+    ) -> NetlinkMessage<RouteNetlinkMessage> {
+        let mut message = NetlinkMessage::new(NetlinkHeader::default(), payload);
+        message.header.flags = flags;
+        message
+    }
+
+    fn new_link(index: u32, name: &str) -> NetlinkPayload<RouteNetlinkMessage> {
+        NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewLink(message(
+            index,
+            LinkFlags::Up,
+            vec![LinkAttribute::IfName(name.to_string())],
+        )))
+    }
+
+    #[test]
+    fn a_dump_is_the_links_it_lists() {
+        let mut dump = LinkDump::default();
+        for message in [
+            dump_message(NLM_F_MULTIPART, new_link(1, "lo")),
+            dump_message(NLM_F_MULTIPART, new_link(10, "Eth0")),
+            dump_message(
+                NLM_F_MULTIPART,
+                NetlinkPayload::Done(DoneMessage::default()),
+            ),
+        ] {
+            dump.read(message).unwrap();
+        }
+        let links = dump.finish().unwrap();
+        assert_eq!(links.len(), 2);
+        assert!(links.get(InterfaceIndex::try_new(10).unwrap()).is_some());
+    }
+
+    /// A dump links changed during may leave links out: an interface it left out would then keep
+    /// stale link state, so it is no observation at all. The kernel may flag any of the dump's
+    /// messages, the final `NLMSG_DONE` included.
+    #[test]
+    fn an_interrupted_dump_is_no_observation() {
+        let messages = || {
+            [
+                dump_message(NLM_F_MULTIPART, new_link(1, "lo")),
+                dump_message(NLM_F_MULTIPART, new_link(10, "Eth0")),
+                dump_message(
+                    NLM_F_MULTIPART,
+                    NetlinkPayload::Done(DoneMessage::default()),
+                ),
+            ]
+        };
+        for flagged in 0..3 {
+            let mut dump = LinkDump::default();
+            for (i, mut message) in messages().into_iter().enumerate() {
+                if i == flagged {
+                    message.header.flags |= NLM_F_DUMP_INTR;
+                }
+                dump.read(message).unwrap();
+            }
+            assert!(
+                matches!(dump.finish(), Err(ObserveError::Interrupted)),
+                "flag on message {flagged}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_error_fails_the_dump() {
+        let mut dump = LinkDump::default();
+        let mut error = ErrorMessage::default();
+        error.code = std::num::NonZeroI32::new(-16); // EBUSY
+        assert!(matches!(
+            dump.read(dump_message(0, NetlinkPayload::Error(error))),
+            Err(ObserveError::Netlink(_))
+        ));
+    }
+
+    /// The dump against a real kernel: every link is in it, the loopback included, and a change
+    /// is in the next one.
+    #[n_vm::test]
+    async fn observe_sees_the_kernels_links_and_their_changes() {
+        use super::observe;
+        use interface_manager::interface::TapDevice;
+        use rtnetlink::LinkUnspec;
+
+        let (connection, handle, _) = rtnetlink::new_connection().unwrap();
+        tokio::spawn(connection);
+
+        let lo = InterfaceIndex::try_new(1).unwrap();
+        let tap = TapDevice::open(&InterfaceName::try_from("observe-tap").unwrap()).unwrap();
+        let links = observe(&handle).await.unwrap();
+        assert_eq!(links.get(lo).unwrap().name.as_ref(), "lo");
+        let observed = links.get(tap.index()).unwrap();
+        assert_eq!(observed.name.as_ref(), "observe-tap");
+        assert_eq!(observed.admin_state, IfState::Down);
+
+        let mac = SourceMac::try_from("02:0a:0b:0c:0d:0e").unwrap();
+        handle
+            .link()
+            .set(
+                LinkUnspec::new_with_index(tap.index().to_u32())
+                    .address(mac.inner().0.to_vec())
+                    .up()
+                    .build(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let links = observe(&handle).await.unwrap();
+        let observed = links.get(tap.index()).unwrap();
+        assert_eq!(observed.mac, Some(mac));
+        assert_eq!(observed.admin_state, IfState::Up);
     }
 }
