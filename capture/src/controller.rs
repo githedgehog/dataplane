@@ -214,6 +214,8 @@ struct Control {
     next_id: u64,
     running: Option<Running>,
     last: Option<Arc<CaptureReport>>,
+    /// Whether no stop has returned the report in `last` yet.
+    unclaimed: bool,
 }
 
 struct Running {
@@ -241,6 +243,7 @@ impl Control {
                 .join()
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
             self.last = Some(Arc::new(report));
+            self.unclaimed = true;
         }
     }
 }
@@ -336,16 +339,24 @@ impl CaptureController {
 
     /// Stop the running capture and wait until its file is complete.
     ///
-    /// Returns the report of the capture which was running, or `None` if none was.
+    /// Returns the report of the capture which was running, or of the last capture if it ended on
+    /// its own and no stop has returned it yet; `None` otherwise.
     #[must_use]
     pub fn stop(&self) -> Option<Arc<CaptureReport>> {
         let mut control = self.inner.control.lock();
-        let running = control.running.as_ref()?;
-        running.session.stop.store(true, Ordering::Release);
-        // The writer may be waiting for a record; this wakes it. If it has already exited the send fails,
-        // which is fine: it has nothing left to notice.
-        let _ = running.session.queue.send(Message::Wake);
-        control.join();
+        if let Some(running) = control.running.as_ref() {
+            running.session.stop.store(true, Ordering::Release);
+            // The writer may be waiting for a record; this wakes it. If it has already exited the
+            // send fails, which is fine: it has nothing left to notice.
+            let _ = running.session.queue.send(Message::Wake);
+            control.join();
+        }
+        // A capture which ended on its own may have been collected already by a status request.
+        // Its report goes to the first stop all the same, so that what a stop returns does not
+        // depend on whether someone looked at the status before.
+        if !std::mem::take(&mut control.unclaimed) {
+            return None;
+        }
         control.last.clone()
     }
 

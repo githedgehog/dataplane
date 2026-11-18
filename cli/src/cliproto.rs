@@ -605,7 +605,6 @@ impl CliAction {
 
             // Views
             Self::ShowSynProxy
-            | Self::ShowCapture
             | Self::ShowFlowTableSummary
             | Self::ShowConfigSummary
             | Self::ShowGatewayGroups
@@ -652,6 +651,11 @@ impl CliAction {
             | Self::ShowFrrmiLastConfig
             | Self::ShowCpiStats
             | Self::RouterEventLog => true,
+
+            // Not strictly read-only: it may collect a capture writer that has finished, but that's
+            // acceptable; in particular, CaptureStop still returns its report even if we ran
+            // ShowCapture as part of "show tech"
+            Self::ShowCapture => true,
         }
     }
 }

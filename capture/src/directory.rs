@@ -131,7 +131,11 @@ impl CaptureDirectory {
         Ok(path)
     }
 
-    /// Stop the running capture, returning its report and file, or `None` if none was running.
+    /// Stop the running capture, returning its report and file.
+    ///
+    /// If no capture is running, returns the report and file of the last capture if it ended on its
+    /// own and no stop has returned it yet, and `None` otherwise.
+    /// See [`CaptureController::stop`].
     #[must_use]
     pub fn stop(&self) -> Option<(Arc<CaptureReport>, PathBuf)> {
         let report = self.controller.stop()?;
