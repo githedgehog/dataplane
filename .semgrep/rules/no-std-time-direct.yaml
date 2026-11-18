@@ -4,7 +4,8 @@ rules:
     severity: ERROR
     message: |
       Read the clock via `clock::now()` (or `clock::system_now()` for wall
-      time), not `Instant::now()` / `SystemTime::now()`. The workspace's
+      time), not `Instant::now()` / `SystemTime::now()`. For a jiff
+      `Timestamp`, use `clock::system_timestamp()`, not jiff's `now()`. The workspace's
       `clock` facade reads `std` in production and tokio's pausable clock
       under the `virtual` feature; reading `std` directly pins the deadline
       to the wall clock while the timer waiting on it follows tokio's, so a
@@ -29,4 +30,8 @@ rules:
       - pattern: SystemTime::now()
       - pattern: std::time::SystemTime::now()
       - pattern: tokio::time::Instant::now()
+      - pattern: Timestamp::now()
+      - pattern: jiff::Timestamp::now()
+      - pattern: Zoned::now()
+      - pattern: jiff::Zoned::now()
       - pattern: $ANCHOR.elapsed()
