@@ -6,10 +6,12 @@
 use concurrency::sync::Arc;
 use std::time::SystemTime;
 
-use chrono::{TimeZone, Utc};
+use jiff::Timestamp;
 
 use config::ExternalConfig;
-use config::converters::k8s::status::dataplane_status::DataplaneStatusForK8sConversion;
+use config::converters::k8s::status::dataplane_status::{
+    DataplaneStatusForK8sConversion, to_k8s_time,
+};
 use k8s_intf::client::{ReplaceStatusError, replace_gateway_status, watch_gateway_agent_crd};
 use k8s_intf::gateway_agent_crd::{
     GatewayAgentStatus, GatewayAgentStatusState, GatewayAgentStatusStateDataplane,
@@ -24,11 +26,10 @@ pub enum K8sClientError {
     ReplaceStatusError(#[from] ReplaceStatusError),
 }
 
-fn to_datetime(opt_time: Option<&SystemTime>) -> chrono::DateTime<Utc> {
-    match opt_time {
-        Some(time) => chrono::DateTime::<Utc>::from(*time),
-        None => Utc.timestamp_opt(0, 0).unwrap(),
-    }
+fn to_timestamp(opt_time: Option<&SystemTime>) -> Timestamp {
+    opt_time
+        .and_then(|time| clock::to_timestamp(*time))
+        .unwrap_or(Timestamp::UNIX_EPOCH)
 }
 
 /// Main function to create a `GatewayAgentStatus` object
@@ -50,7 +51,7 @@ pub(crate) async fn build_gateway_status(
     let (last_applied_gen, last_applied_time) = match config_client.get_current_config().await {
         Ok(config) => (
             config.genid(),
-            to_datetime(config.meta().load().apply_t.as_ref()),
+            to_timestamp(config.meta().load().apply_t.as_ref()),
         ),
         Err(e) => {
             error!("Failed to get current config, skipping status update: {e}");
@@ -58,11 +59,16 @@ pub(crate) async fn build_gateway_status(
         }
     };
 
+    let Some(now) = clock::system_timestamp() else {
+        error!("System clock out of range, skipping status update");
+        return None;
+    };
+
     let k8s_status = match GatewayAgentStatus::try_from(&DataplaneStatusForK8sConversion {
         last_applied_gen: Some(last_applied_gen),
         last_applied_time: Some(&last_applied_time),
-        last_collected_time: Some(&chrono::Utc::now()),
-        last_heartbeat: Some(&chrono::Utc::now()),
+        last_collected_time: Some(&now),
+        last_heartbeat: Some(&now),
         status: Some(&status),
     }) {
         Ok(status) => status,
@@ -79,14 +85,8 @@ pub(crate) fn build_init_status() -> GatewayAgentStatus {
     GatewayAgentStatus {
         agent_version: None,
         last_applied_gen: Some(0),
-        last_applied_time: Some(
-            Utc.timestamp_opt(0, 0)
-                .unwrap()
-                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-        ),
-        last_heartbeat: Some(
-            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-        ),
+        last_applied_time: Some(to_k8s_time(&Timestamp::UNIX_EPOCH)),
+        last_heartbeat: clock::system_timestamp().as_ref().map(to_k8s_time),
         state: Some(GatewayAgentStatusState {
             bgp: None,
             dataplane: Some(GatewayAgentStatusStateDataplane {

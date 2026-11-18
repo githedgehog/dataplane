@@ -6,6 +6,7 @@
 #![allow(clippy::manual_string_new)]
 
 use std::fmt::Display;
+use std::time::SystemTime;
 
 use crate::GwConfigMeta;
 use crate::external::overlay::vpc::{
@@ -19,7 +20,6 @@ use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering, VpcPeeringTa
 use crate::external::overlay::vpcrouting::{ExposeAction, VpcRoute, VpcRouteTable};
 use crate::external::overlay::{Overlay, ValidatedOverlay};
 
-use chrono::{DateTime, Utc};
 use net::vxlan::Vni;
 
 use common::cliprovider::Heading;
@@ -584,15 +584,18 @@ fn fmt_configdb_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Re
         )
     )
 }
+fn fmt_system_time(time: SystemTime) -> String {
+    clock::to_timestamp(time).map_or_else(
+        || "?".to_string(),
+        |t| t.strftime("%Y/%m/%d %H:%M:%S").to_string(),
+    )
+}
 impl Display for GwConfigMeta {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let created = DateTime::<Utc>::from(self.create_t).format("%Y/%m/%d %H:%M:%S");
-        let apply_time = if let Some(time) = self.apply_t {
-            let time = DateTime::<Utc>::from(time).format("%Y/%m/%d %H:%M:%S");
-            format!("{time}")
-        } else {
-            "--".to_string()
-        };
+        let created = fmt_system_time(self.create_t);
+        let apply_time = self
+            .apply_t
+            .map_or_else(|| "--".to_string(), fmt_system_time);
 
         let error = self
             .error

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use k8s_intf::gateway_agent_crd::{
     GatewayAgentStatus, GatewayAgentStatusState, GatewayAgentStatusStateBgp,
@@ -14,11 +14,17 @@ use k8s_intf::gateway_agent_crd::{
 use crate::converters::k8s::ToK8sConversionError;
 use crate::internal::status::DataplaneStatus;
 
+/// RFC 3339 in UTC, always with nanoseconds, e.g. "2026-10-11T15:30:12.000000000Z"
+#[must_use]
+pub fn to_k8s_time(time: &Timestamp) -> String {
+    format!("{time:.9}")
+}
+
 pub struct DataplaneStatusForK8sConversion<'a> {
     pub last_applied_gen: Option<i64>,
-    pub last_applied_time: Option<&'a DateTime<Utc>>,
-    pub last_collected_time: Option<&'a DateTime<Utc>>,
-    pub last_heartbeat: Option<&'a DateTime<Utc>>,
+    pub last_applied_time: Option<&'a Timestamp>,
+    pub last_collected_time: Option<&'a Timestamp>,
+    pub last_heartbeat: Option<&'a Timestamp>,
     pub status: Option<&'a DataplaneStatus>,
 }
 
@@ -83,21 +89,15 @@ impl TryFrom<&DataplaneStatusForK8sConversion<'_>> for GatewayAgentStatus {
         Ok(GatewayAgentStatus {
             agent_version: None,
             last_applied_gen: status.last_applied_gen,
-            last_applied_time: status
-                .last_applied_time
-                .map(|lat| lat.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
-            last_heartbeat: status
-                .last_heartbeat
-                .map(|lhb| lhb.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
+            last_applied_time: status.last_applied_time.map(to_k8s_time),
+            last_heartbeat: status.last_heartbeat.map(to_k8s_time),
             state: status.status.map(|_| GatewayAgentStatusState {
                 bgp,
                 dataplane: Some(GatewayAgentStatusStateDataplane {
                     version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
                 }),
                 frr: frr_status,
-                last_collected_time: status
-                    .last_collected_time
-                    .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
+                last_collected_time: status.last_collected_time.map(to_k8s_time),
                 peerings: peerings.filter(|c| !c.is_empty()),
                 vpcs: vpcs.filter(|c| !c.is_empty()),
             }),
@@ -111,21 +111,30 @@ mod tests {
 
     use bolero::generator::*;
     use bolero::{Driver, TypeGenerator};
-    use chrono::TimeZone;
 
     use crate::internal::status::DataplaneStatus;
     use crate::internal::status::contract::LegalValue;
 
-    fn datetime_gen() -> impl ValueGenerator<Output = DateTime<Utc>> {
-        (0..=i64::from(i32::MAX)).map_gen(|ts| Utc.timestamp_opt(ts, 0).unwrap())
+    fn datetime_gen() -> impl ValueGenerator<Output = Timestamp> {
+        (0..=i64::from(i32::MAX)).map_gen(|ts| Timestamp::from_second(ts).unwrap())
+    }
+
+    #[test]
+    fn k8s_time_format() {
+        let time: Timestamp = "2026-10-11T15:30:12.5Z".parse().unwrap();
+        assert_eq!(to_k8s_time(&time), "2026-10-11T15:30:12.500000000Z");
+        assert_eq!(
+            to_k8s_time(&Timestamp::UNIX_EPOCH),
+            "1970-01-01T00:00:00.000000000Z"
+        );
     }
 
     #[derive(Debug)]
     struct DataplaneStatusForK8sConversionOwned {
         last_applied_gen: Option<i64>,
-        last_applied_time: Option<DateTime<Utc>>,
-        last_collected_time: Option<DateTime<Utc>>,
-        last_heartbeat: Option<DateTime<Utc>>,
+        last_applied_time: Option<Timestamp>,
+        last_collected_time: Option<Timestamp>,
+        last_heartbeat: Option<Timestamp>,
         status: Option<DataplaneStatus>,
     }
 
@@ -173,18 +182,14 @@ mod tests {
                 );
                 assert_eq!(
                     gateway_agent_status.last_applied_time,
-                    conv_status
-                        .last_applied_time
-                        .map(|lat| lat.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                    conv_status.last_applied_time.map(to_k8s_time)
                 );
                 assert_eq!(
                     gateway_agent_status
                         .state
                         .as_ref()
                         .and_then(|s| s.last_collected_time.clone()),
-                    conv_status
-                        .last_collected_time
-                        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                    conv_status.last_collected_time.map(to_k8s_time)
                 );
 
                 assert_eq!(
