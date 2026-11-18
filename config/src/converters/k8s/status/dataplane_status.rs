@@ -161,6 +161,38 @@ mod tests {
     }
 
     #[test]
+    fn status_times() {
+        let applied: Timestamp = "2026-10-11T15:30:12Z".parse().unwrap();
+        let collected: Timestamp = "2026-10-11T15:31:00.25Z".parse().unwrap();
+        let heartbeat: Timestamp = "2026-10-11T15:31:05.000000001Z".parse().unwrap();
+        let status = DataplaneStatus::default();
+        let k8s_status = GatewayAgentStatus::try_from(&DataplaneStatusForK8sConversion {
+            last_applied_gen: Some(1),
+            last_applied_time: Some(&applied),
+            last_collected_time: Some(&collected),
+            last_heartbeat: Some(&heartbeat),
+            status: Some(&status),
+        })
+        .unwrap();
+
+        assert_eq!(
+            k8s_status.last_applied_time.as_deref(),
+            Some("2026-10-11T15:30:12.000000000Z")
+        );
+        assert_eq!(
+            k8s_status
+                .state
+                .and_then(|state| state.last_collected_time)
+                .as_deref(),
+            Some("2026-10-11T15:31:00.250000000Z")
+        );
+        assert_eq!(
+            k8s_status.last_heartbeat.as_deref(),
+            Some("2026-10-11T15:31:05.000000001Z")
+        );
+    }
+
+    #[test]
     fn test_dataplane_status_conversion() {
         bolero::check!()
             .with_type::<LegalValue<DataplaneStatusForK8sConversionOwned>>()
@@ -190,6 +222,10 @@ mod tests {
                         .as_ref()
                         .and_then(|s| s.last_collected_time.clone()),
                     conv_status.last_collected_time.map(to_k8s_time)
+                );
+                assert_eq!(
+                    gateway_agent_status.last_heartbeat,
+                    conv_status.last_heartbeat.map(to_k8s_time)
                 );
 
                 assert_eq!(
