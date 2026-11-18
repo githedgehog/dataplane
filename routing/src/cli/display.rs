@@ -38,8 +38,9 @@ use crate::interfaces::interface::{IfState, IfType, Interface};
 use crate::evpn::rmac::RmacFilter;
 use crate::evpn::{RmacEntry, RmacStore, Vtep};
 
-use chrono::DateTime;
 use common::cliprovider::{Age, Heading, PrettyDuration};
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 
 use lpm::prefix::IpPrefix;
 use lpm::trie::{PrefixMapTrie, TrieMap};
@@ -994,15 +995,20 @@ impl Display for FibGroups<'_> {
 }
 
 // ===================== Time utilities ====================== //
-use chrono::Local;
-pub(crate) fn fmt_time(time: &DateTime<Local>) -> String {
+/// Format `time` in the local time zone. We look up the zone when displaying the time, so a change
+/// of the host's time zone also changes how we show past times.
+pub(crate) fn fmt_local(time: &Timestamp) -> String {
+    time.to_zoned(TimeZone::system())
+        .strftime("%Y-%m-%dT %H:%M:%S")
+        .to_string()
+}
+
+pub(crate) fn fmt_time(time: &Timestamp) -> String {
     // a time in the future (e.g. after the clock was set back) is shown as no time ago
-    let elapsed = (Local::now() - *time).to_std().unwrap_or_default();
-    format!(
-        "{} ({} ago)",
-        time.format("%Y-%m-%dT %H:%M:%S"),
-        PrettyDuration::new(elapsed)
-    )
+    let elapsed = clock::system_timestamp()
+        .and_then(|now| now.duration_since(*time).try_into().ok())
+        .unwrap_or_default();
+    format!("{} ({} ago)", fmt_local(time), PrettyDuration::new(elapsed))
 }
 
 // =========================== CPI =========================== //

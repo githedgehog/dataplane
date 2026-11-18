@@ -11,7 +11,6 @@ use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::router::rio::Rio;
 
 use bytes::Bytes;
-use chrono::{DateTime, Local};
 use dplane_rpc::msg::{
     ConnectInfo, IfAddress, IpRoute, NextHopEncap, Rmac, RouteType, RpcControl, RpcMsg,
     RpcNotification, RpcObject, RpcOp, RpcRequest, RpcResponse, RpcResultCode, VER_DP_MAJOR,
@@ -20,6 +19,7 @@ use dplane_rpc::msg::{
 use dplane_rpc::socks::Pretty;
 use dplane_rpc::socks::RpcCachedSock;
 use dplane_rpc::wire::Wire;
+use jiff::Timestamp;
 
 use net::interface::InterfaceIndex;
 use net::interface::address::IfAddr;
@@ -77,13 +77,13 @@ pub(crate) struct CpiStats {
     pub(crate) last_pid: Option<u32>,
 
     // last connect time
-    pub(crate) connect_time: Option<DateTime<Local>>,
+    pub(crate) connect_time: Option<Timestamp>,
 
     // last address
     pub(crate) peer: Option<SocketAddr>,
 
     // last time a message was received
-    pub(crate) last_msg_rx: Option<DateTime<Local>>,
+    pub(crate) last_msg_rx: Option<Timestamp>,
 
     // decoding failures
     pub(crate) decode_failures: u64,
@@ -150,7 +150,7 @@ impl RpcOperation for ConnectInfo {
         }
         if self.verinfo == VerInfo::default() {
             stats.last_pid = Some(self.pid);
-            stats.connect_time = Some(Local::now());
+            stats.connect_time = clock::system_timestamp();
             stats.peer = Some(peer.clone());
             stats.status.change(CpiStatus::Connected);
 
@@ -478,7 +478,7 @@ fn handle_rpc_msg(rio: &mut Rio, peer: &SocketAddr, msg: &RpcMsg, db: &mut Routi
 /* process data from CPI */
 pub fn process_cpi_data(rio: &mut Rio, peer: &SocketAddr, data: &mut Bytes, db: &mut RoutingDb) {
     trace!("CPI: recvd {} bytes from {}...", data.len(), peer.pretty());
-    rio.cpistats.last_msg_rx = Some(Local::now());
+    rio.cpistats.last_msg_rx = clock::system_timestamp();
 
     match RpcMsg::decode(data) {
         Ok(msg) => handle_rpc_msg(rio, peer, &msg, db),
