@@ -12,9 +12,9 @@ shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
 arrayvec = { workspace = true }
-chrono = { workspace = true, features = ["alloc", "std"] }
 clock = { workspace = true }
 concurrency = { workspace = true }
+jiff = { workspace = true, features = ["alloc", "std"] }
 net = { workspace = true }
 nix = { workspace = true, features = ["fs"] }
 pcap-file = { workspace = true }

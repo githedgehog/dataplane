@@ -7,8 +7,8 @@ use crate::controller::{
     CaptureController, CaptureReport, CaptureRequest, CaptureStartError, CaptureStatus,
 };
 use crate::names::CaptureNames;
-use chrono::{DateTime, Utc};
 use concurrency::sync::{Arc, Mutex};
+use jiff::Timestamp;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -48,6 +48,9 @@ pub enum CaptureFileError {
         "no capture location: give file=PATH or dir=PATH, or start the dataplane with --capture-dir"
     )]
     NoLocation,
+    /// The system clock is out of range, so the file cannot be named after the start time.
+    #[error("cannot name the capture file: the system clock is out of range")]
+    ClockOutOfRange,
 }
 
 /// Runs captures into files, by default in one directory and named by their start time.
@@ -99,7 +102,7 @@ impl CaptureDirectory {
                 (dir, path)
             }
             CaptureTarget::Dir(dir) => {
-                let path = dir.join(file_name(clock::system_now().into()));
+                let path = dir.join(file_name(start_time()?));
                 (dir, path)
             }
             CaptureTarget::Default => {
@@ -107,7 +110,7 @@ impl CaptureDirectory {
                     .default_dir
                     .clone()
                     .ok_or(CaptureFileError::NoLocation)?;
-                let path = dir.join(file_name(clock::system_now().into()));
+                let path = dir.join(file_name(start_time()?));
                 (dir, path)
             }
         };
@@ -176,19 +179,23 @@ fn warn_if_memory_backed(dir: &Path) {
     }
 }
 
+fn start_time() -> Result<Timestamp, CaptureFileError> {
+    clock::system_timestamp().ok_or(CaptureFileError::ClockOutOfRange)
+}
+
 /// `capture-<UTC start time>.pcapng`, sortable and free of characters that need quoting in a shell.
-fn file_name(start: DateTime<Utc>) -> String {
-    format!("capture-{}.pcapng", start.format("%Y%m%dT%H%M%S%.3fZ"))
+fn file_name(start: Timestamp) -> String {
+    format!("capture-{}.pcapng", start.strftime("%Y%m%dT%H%M%S%.3fZ"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::file_name;
-    use chrono::{TimeZone, Utc};
+    use jiff::Timestamp;
 
     #[test]
     fn file_names_sort_by_start_time() {
-        let start = Utc.with_ymd_and_hms(2026, 10, 11, 15, 30, 12).unwrap();
+        let start: Timestamp = "2026-10-11T15:30:12Z".parse().unwrap();
         assert_eq!(file_name(start), "capture-20261011T153012.000Z.pcapng");
     }
 }
