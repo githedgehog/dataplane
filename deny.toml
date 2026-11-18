@@ -33,6 +33,9 @@ ignore = [
     # parse CRDs in k8s-intf and validator. Remove once we have migrated to a
     # maintained YAML crate.
     "RUSTSEC-2024-0449",
+    # chrono is unmaintained but is needed by reedline (cli) and netgauze-bmp-pkt (routing).
+    # Remove once both have migrated away from it.
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]
