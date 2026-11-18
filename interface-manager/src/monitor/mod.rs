@@ -9,11 +9,12 @@
 
 use concurrency::sync::Arc;
 use net::eth::mac::SourceMac;
-use net::interface::{InterfaceIndex, InterfaceName};
+use net::interface::{InterfaceIndex, InterfaceName, Mtu};
 use rtnetlink::MulticastGroup;
 use rtnetlink::packet_core::{NetlinkMessage, NetlinkPayload};
 use rtnetlink::packet_route::RouteNetlinkMessage;
 use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags, State};
+use std::fmt::Display;
 use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -34,6 +35,7 @@ pub struct EthEvent {
     carrierup: Option<u32>,   // stats
     carrierdown: Option<u32>, // stats
     mac: Option<SourceMac>,
+    mtu: Option<Mtu>,
 }
 impl EthEvent {
     #[must_use]
@@ -49,6 +51,7 @@ impl EthEvent {
             carrierup: None,
             carrierdown: None,
             mac: None,
+            mtu: None,
         }
     }
     #[must_use]
@@ -81,7 +84,13 @@ impl EthEvent {
         self.name = name;
         self
     }
+    #[must_use]
+    pub fn set_mtu(mut self, mtu: Option<Mtu>) -> Self {
+        self.mtu = mtu;
+        self
+    }
 
+    // ==  Getters == //
     #[must_use]
     pub fn ifindex(&self) -> InterfaceIndex {
         self.ifindex
@@ -122,8 +131,12 @@ impl EthEvent {
     pub fn mac(&self) -> Option<SourceMac> {
         self.mac
     }
+    #[must_use]
+    pub fn mtu(&self) -> Option<Mtu> {
+        self.mtu
+    }
 }
-impl std::fmt::Display for EthEvent {
+impl Display for EthEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let ifup = if self.ifup { "yes" } else { "no" };
         let ifloup = if self.iflowerup { "yes" } else { "no" };
@@ -146,6 +159,12 @@ impl std::fmt::Display for EthEvent {
         }
         if let Some(opstate) = self.oper_state {
             write!(f, " opstate:{opstate:?}")?;
+        }
+        if let Some(mac) = self.mac {
+            write!(f, " mac:{mac}")?;
+        }
+        if let Some(mtu) = self.mtu {
+            write!(f, " mtu:{mtu}")?;
         }
         Ok(())
     }
@@ -231,6 +250,16 @@ impl InterfaceMonitor {
             },
             _ => None,
         });
+        let mtu = link_msg.attributes.iter().find_map(|a| match a {
+            LinkAttribute::Mtu(value) => match Mtu::try_from(*value) {
+                Ok(mtu) => Some(mtu),
+                Err(e) => {
+                    warn!("Got invalid mtu {value}: {e}");
+                    None
+                }
+            },
+            _ => None,
+        });
 
         // build `EthEvent` object
         let event = EthEvent::new(ifindex, ifup, iflowerup, ifrunning)
@@ -239,7 +268,8 @@ impl InterfaceMonitor {
             .set_carrier(carrier)
             .set_carrierdown(carrierdown)
             .set_carrierup(carrierup)
-            .set_mac(mac);
+            .set_mac(mac)
+            .set_mtu(mtu);
 
         debug!("Got event for {event}");
         Some(event)

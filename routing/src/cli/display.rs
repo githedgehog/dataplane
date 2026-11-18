@@ -32,7 +32,7 @@ use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::Attachment;
-use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet};
+use crate::interfaces::interface::IfDataDot1q;
 use crate::interfaces::interface::{IfState, IfType, Interface};
 
 use crate::evpn::rmac::RmacFilter;
@@ -509,14 +509,9 @@ impl Display for IfState {
         f.pad(s)
     }
 }
-impl Display for IfDataEthernet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "mac:{}", self.mac)
-    }
-}
 impl Display for IfDataDot1q {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "mac:{} vlanid:{}", self.mac, self.vlanid)
+        write!(f, "vlanid:{}", self.vlanid)
     }
 }
 
@@ -529,10 +524,7 @@ impl Display for IfType {
         match self {
             IfType::Unknown => fmt_iftype_name(f, "Unknown"),
             IfType::Loopback => fmt_iftype_name(f, "Loopback"),
-            IfType::Ethernet(e) => {
-                fmt_iftype_name(f, "Ethernet")?;
-                e.fmt(f)
-            }
+            IfType::Ethernet => fmt_iftype_name(f, "Ethernet"),
             IfType::Dot1q(e) => {
                 fmt_iftype_name(f, "802.1q")?;
                 e.fmt(f)
@@ -547,19 +539,22 @@ impl Display for Interface {
         } else {
             "---".to_string()
         };
-        let mtu = self.mtu.map_or_else(|| "--".to_string(), |m| m.to_string());
+        let iftype = match self.mac {
+            Some(mac) => format!("{}mac:{mac}", self.iftype),
+            None => self.iftype.to_string(),
+        };
         write!(
             f,
             "{}",
             format_args!(
                 INTERFACE_TBL_FMT!(),
                 self.name,
-                format!("{:>4}", self.ifindex),
-                mtu,
+                self.ifindex,
+                self.mtu,
                 self.admin_state,
                 self.oper_state,
                 attachment,
-                self.iftype,
+                iftype,
             )
         )?;
 

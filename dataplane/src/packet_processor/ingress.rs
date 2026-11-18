@@ -208,7 +208,7 @@ impl Ingress {
             packet.done(DoneReason::InterfaceAdmDown);
         } else {
             match interface.iftype {
-                IfType::Ethernet(_) | IfType::Dot1q(_) => {
+                IfType::Ethernet | IfType::Dot1q(_) => {
                     self.interface_ingress_eth(interface, packet);
                 }
                 _ => {

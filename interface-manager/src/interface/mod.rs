@@ -37,14 +37,15 @@ pub use netdevsim::*;
 
 use crate::{Manager, manager_of};
 use derive_builder::Builder;
+use futures::TryStreamExt;
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
 use net::eth::mac::SourceMac;
 use net::interface::switch::SwitchId;
 use net::interface::{
     AdminState, BridgePropertiesBuilder, Interface, InterfaceBuilder, InterfaceBuilderError,
-    InterfaceIndex, InterfaceName, InterfaceProperties, Mtu, OperationalState,
-    PciNetdevPropertiesBuilder, VrfPropertiesBuilder, VtepPropertiesBuilder,
+    InterfaceIndex, InterfaceName, InterfaceProperties, Mtu, MultiIndexInterfaceMap,
+    OperationalState, PciNetdevPropertiesBuilder, VrfPropertiesBuilder, VtepPropertiesBuilder,
 };
 use net::ipv4::addr::UnicastIpv4Addr;
 use net::pci::PciEbdf;
@@ -127,6 +128,30 @@ impl AsRequirement<InterfaceSpec> for Interface {
             controller: self.controller,
             properties: self.properties.as_requirement()?,
         })
+    }
+}
+impl Manager<Interface> {
+    /// Get ALL of the interfaces from the kernel in a single shot indexed by name and index.
+    /// Links that cannot be converted into an [`Interface`] are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the netlink request fails.
+    pub async fn get_kernel_interfaces(&self) -> Result<MultiIndexInterfaceMap, rtnetlink::Error> {
+        let mut req = self.handle.link().get().execute();
+        let mut interfaces = MultiIndexInterfaceMap::default();
+
+        while let Some(message) = req.try_next().await? {
+            match Interface::try_from_link_message(&message) {
+                Ok(interface) => {
+                    if let Err(e) = interfaces.try_insert(interface) {
+                        error!("Skipping link {}: {e:?}", message.header.index);
+                    }
+                }
+                Err(e) => debug!("Skipping link {}: {e}", message.header.index),
+            }
+        }
+        Ok(interfaces)
     }
 }
 
@@ -841,7 +866,9 @@ impl TryFromLinkMessage for Interface {
                         debug!("{e}");
                     }
                 },
-                _ => {}
+                _ => {
+                    builder.properties(InterfaceProperties::Other);
+                }
             },
             (None, Ok(props)) => {
                 builder.properties(InterfaceProperties::Pci(props));
@@ -849,7 +876,12 @@ impl TryFromLinkMessage for Interface {
             (Some(kind), Ok(pci)) => {
                 warn!("pci and info kind data are mutually exclusive: {kind:#?}, {pci:#?}");
             }
-            (None, Err(_)) => {}
+            (None, Err(_)) => {
+                builder.properties(InterfaceProperties::Other);
+            }
+        }
+        if message.header.flags.contains(LinkFlags::Loopback) {
+            builder.properties(InterfaceProperties::Loopback);
         }
         builder.build()
     }
@@ -867,7 +899,10 @@ mod tests {
             .with_type()
             .with_test_time(std::time::Duration::from_secs(5))
             .for_each(|interface: &Interface| {
-                if interface.properties == InterfaceProperties::Other {
+                if matches!(
+                    interface.properties,
+                    InterfaceProperties::Other | InterfaceProperties::Loopback
+                ) {
                     assert!(interface.as_requirement().is_none());
                     return;
                 }

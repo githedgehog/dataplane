@@ -18,27 +18,14 @@ use net::ip::UnicastIpAddr;
 use tracing::{debug, error, info, warn};
 
 #[derive(Clone, Debug, PartialEq)]
-/// Specific data for ethernet interfaces
-pub struct IfDataEthernet {
-    pub(crate) mac: SourceMac,
-}
-impl IfDataEthernet {
-    #[must_use]
-    pub fn new(mac: SourceMac) -> Self {
-        Self { mac }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
 /// Specific data for vlan (sub)interfaces
 pub struct IfDataDot1q {
-    pub(crate) mac: SourceMac,
     pub(crate) vlanid: Vid,
 }
 impl IfDataDot1q {
     #[must_use]
-    pub fn new(mac: SourceMac, vlanid: Vid) -> Self {
-        Self { mac, vlanid }
+    pub fn new(vlanid: Vid) -> Self {
+        Self { vlanid }
     }
     #[allow(dead_code)]
     pub fn vid(&self) -> Vid {
@@ -46,66 +33,13 @@ impl IfDataDot1q {
     }
 }
 
-/// Trait that interfaces having a mac address should implement.
-/// FIXME(fredi): consider removing this trait and letting interface
-/// have Option<SourceMac>
-trait HasMac {
-    fn get_mac(&self) -> &SourceMac;
-    fn set_mac(&mut self, mac: SourceMac);
-    #[allow(clippy::unused_self)]
-    fn has_mac(&self) -> bool {
-        true
-    }
-}
-
-impl HasMac for IfDataEthernet {
-    fn get_mac(&self) -> &SourceMac {
-        &self.mac
-    }
-    fn set_mac(&mut self, mac: SourceMac) {
-        self.mac = mac;
-    }
-}
-impl HasMac for IfDataDot1q {
-    fn get_mac(&self) -> &SourceMac {
-        &self.mac
-    }
-    fn set_mac(&mut self, mac: SourceMac) {
-        self.mac = mac;
-    }
-}
-
 /// Type that contains data specific to the type of interface
 #[derive(Clone, Debug, PartialEq)]
 pub enum IfType {
     Unknown,
-    Ethernet(IfDataEthernet),
+    Ethernet,
     Dot1q(IfDataDot1q),
     Loopback,
-}
-impl IfType {
-    #[must_use]
-    pub fn get_mac(&self) -> Option<SourceMac> {
-        match self {
-            IfType::Ethernet(inner) => Some(*inner.get_mac()),
-            IfType::Dot1q(inner) => Some(*inner.get_mac()),
-            _ => None,
-        }
-    }
-    pub fn set_mac(&mut self, mac: SourceMac) {
-        match self {
-            IfType::Ethernet(inner) => inner.set_mac(mac),
-            IfType::Dot1q(inner) => inner.set_mac(mac),
-            _ => {}
-        }
-    }
-    pub fn has_mac(&mut self) -> bool {
-        match self {
-            IfType::Ethernet(inner) => inner.has_mac(),
-            IfType::Dot1q(inner) => inner.has_mac(),
-            _ => false,
-        }
-    }
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -140,9 +74,11 @@ pub struct RouterInterfaceConfig {
     pub name: InterfaceName,         /* name of interface */
     pub description: Option<String>, /* description - informational */
     pub iftype: IfType,              /* type of interface */
+    pub mac: Option<SourceMac>,      /* mac address, if any */
     pub admin_state: IfState,        /* admin state */
+    pub oper_state: IfState,         /* initial oper state: only used when adding */
     pub attach_cfg: Option<AttachConfig>, /* attach config */
-    pub mtu: Option<Mtu>,
+    pub mtu: Mtu,
 }
 impl RouterInterfaceConfig {
     #[must_use]
@@ -152,9 +88,11 @@ impl RouterInterfaceConfig {
             name,
             description: None,
             iftype: IfType::Unknown,
+            mac: None,
             admin_state: IfState::Up,
+            oper_state: IfState::Unknown,
             attach_cfg: None,
-            mtu: None,
+            mtu: Mtu::default(),
         }
     }
     pub fn set_name(&mut self, name: &InterfaceName) {
@@ -166,13 +104,19 @@ impl RouterInterfaceConfig {
     pub fn set_iftype(&mut self, iftype: IfType) {
         self.iftype = iftype;
     }
+    pub fn set_mac(&mut self, mac: SourceMac) {
+        self.mac = Some(mac);
+    }
     pub fn set_admin_state(&mut self, state: IfState) {
         self.admin_state = state;
+    }
+    pub fn set_oper_state(&mut self, state: IfState) {
+        self.oper_state = state;
     }
     pub fn set_attach_cfg(&mut self, attach_cfg: Option<AttachConfig>) {
         self.attach_cfg = attach_cfg;
     }
-    pub fn set_mtu(&mut self, mtu: Option<Mtu>) {
+    pub fn set_mtu(&mut self, mtu: Mtu) {
         self.mtu = mtu;
     }
 }
@@ -184,8 +128,9 @@ pub struct Interface {
     pub description: Option<String>,
     pub ifindex: InterfaceIndex,
     pub iftype: IfType,
+    pub mac: Option<SourceMac>,
     pub admin_state: IfState,
-    pub mtu: Option<Mtu>,
+    pub mtu: Mtu,
     /* -- state -- */
     pub oper_state: IfState,
     pub addresses: HashSet<IfAddr>,
@@ -201,12 +146,18 @@ impl Interface {
             ifindex: config.ifindex,
             description: config.description.clone(),
             iftype: config.iftype.clone(),
+            mac: config.mac,
             admin_state: config.admin_state,
             mtu: config.mtu,
-            oper_state: IfState::Unknown,
+            oper_state: config.oper_state,
             addresses: HashSet::new(),
             attachment: None,
         }
+    }
+
+    /// Set the mtu of an [`Interface`]
+    pub fn set_mtu(&mut self, mtu: Mtu) {
+        self.mtu = mtu;
     }
 
     /// Set the description of an [`Interface`]
@@ -284,14 +235,11 @@ impl Interface {
     /// Get the MAC address of an [`Interface`], if it has one
     #[must_use]
     pub fn get_mac(&self) -> Option<SourceMac> {
-        self.iftype.get_mac()
+        self.mac
     }
 
-    /// Set the MAC address of an [`Interface`], if it has one
+    /// Set the MAC address of an [`Interface`]
     pub fn set_mac(&mut self, mac: SourceMac) {
-        if !self.iftype.has_mac() {
-            warn!("Attempted to set mac on interface without mac");
-        }
-        self.iftype.set_mac(mac);
+        self.mac = Some(mac);
     }
 }

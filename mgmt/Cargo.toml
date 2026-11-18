@@ -49,7 +49,6 @@ derive_builder = { workspace = true, default-features = false, features = ["defa
 futures = { workspace = true, features = ["default"] }
 linkme = { workspace = true }
 multi_index_map = { workspace = true, features = ["serde"] }
-netdev = { workspace = true }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["rc", "derive"] }
 thiserror = { workspace = true }

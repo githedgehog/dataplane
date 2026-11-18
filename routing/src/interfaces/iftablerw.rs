@@ -13,7 +13,7 @@ use left_right::ReadHandleFactory;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use net::eth::mac::SourceMac;
 use net::interface::address::IfAddr;
-use net::interface::{InterfaceIndex, InterfaceName};
+use net::interface::{InterfaceIndex, InterfaceName, Mtu};
 
 use tracing::{debug, error};
 
@@ -30,8 +30,7 @@ enum IfTableChange {
     DetachFromVrf(VrfId),
     AddIpAddress((InterfaceIndex, IfAddr)),
     DelIpAddress((InterfaceIndex, IfAddr)),
-    UpdateOpState((InterfaceIndex, IfState)),
-    UpdateAdmState((InterfaceIndex, IfState)),
+    Update((InterfaceIndex, IfUpdateRequest)),
 }
 impl Absorb<IfTableChange> for IfTable {
     fn absorb_first(&mut self, change: &mut IfTableChange, _: &Self) {
@@ -44,10 +43,7 @@ impl Absorb<IfTableChange> for IfTable {
             IfTableChange::DetachFromVrf(vrfid) => self.detach_all_from_vrf(*vrfid),
             IfTableChange::AddIpAddress((ifindex, ifaddr)) => self.add_ifaddr(*ifindex, *ifaddr),
             IfTableChange::DelIpAddress((ifindex, ifaddr)) => self.del_ifaddr(*ifindex, *ifaddr),
-            IfTableChange::UpdateOpState((ifindex, state)) => self.set_oper_state(*ifindex, *state),
-            IfTableChange::UpdateAdmState((ifindex, state)) => {
-                self.set_admin_state(*ifindex, *state)
-            }
+            IfTableChange::Update((ifindex, req)) => self.update_interface(*ifindex, req),
         };
         if let Err(e) = apply_result {
             error!("Updating the interface table caused error: {e}. This is a bug");
@@ -56,6 +52,17 @@ impl Absorb<IfTableChange> for IfTable {
     fn sync_with(&mut self, first: &Self) {
         *self = first.clone();
     }
+}
+
+/// The changes to apply to an interface with [`IfTableWriter::update_interface`].
+/// Fields left as `None` are not modified.
+#[derive(Clone, Debug, Default)]
+pub struct IfUpdateRequest {
+    pub name: Option<InterfaceName>,
+    pub mac: Option<SourceMac>,
+    pub mtu: Option<Mtu>,
+    pub admin_state: Option<IfState>,
+    pub oper_state: Option<IfState>,
 }
 
 /// A struct representing some field or property that may change
@@ -101,6 +108,7 @@ pub struct IfUpdate {
     pub mac: Option<IfChange<SourceMac>>,
     pub adm_state: Option<IfChange<IfState>>,
     pub oper_state: Option<IfChange<IfState>>,
+    pub mtu: Option<IfChange<Mtu>>,
 }
 impl IfUpdate {
     #[must_use]
@@ -112,7 +120,18 @@ impl IfUpdate {
             mac: None,
             adm_state: None,
             oper_state: None,
+            mtu: None,
         }
+    }
+
+    /// Tell if nothing changed
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.name_change.is_none()
+            && self.mac.is_none()
+            && self.adm_state.is_none()
+            && self.oper_state.is_none()
+            && self.mtu.is_none()
     }
 
     #[must_use]
@@ -136,6 +155,12 @@ impl IfUpdate {
     #[must_use]
     fn check_oper_state(mut self, old: IfState, new: IfState) -> Self {
         self.oper_state = IfChange::copied(old, new);
+        self
+    }
+
+    #[must_use]
+    fn check_mtu(mut self, old: Mtu, new: Mtu) -> Self {
+        self.mtu = IfChange::copied(old, new);
         self
     }
 }
@@ -296,64 +321,6 @@ impl IfTableWriter {
         Ok(())
     }
 
-    /// Set the operational state to `state`. Returns `IfUpdate` indicating the change on success
-    ///
-    /// # Errors
-    ///   Returns `RouterError` if the interface could not be found
-    pub fn set_iface_oper_state(
-        &mut self,
-        ifindex: InterfaceIndex,
-        state: IfState,
-    ) -> Result<IfUpdate, RouterError> {
-        let (ifname, op_state) = self
-            .enter()
-            .unwrap_or_else(|| unreachable!())
-            .get_interface(ifindex)
-            .map(|iface| (iface.name.clone(), iface.oper_state))
-            .ok_or(RouterError::NoSuchInterface(ifindex))?;
-
-        let update = IfUpdate::new(ifindex, &ifname).check_oper_state(op_state, state);
-        if update.oper_state.is_none() {
-            return Ok(update);
-        }
-
-        self.0
-            .append(IfTableChange::UpdateOpState((ifindex, state)));
-        self.0.publish();
-
-        debug!("Updated oper state of interface {ifname} ({ifindex}): {op_state} -> {state}");
-        Ok(update)
-    }
-
-    /// Set the admin state of an interface to `state`. Returns `IfUpdate` indicating the change on success
-    ///
-    /// # Errors
-    ///   Returns `RouterError` if the interface could not be found
-    pub fn set_iface_admin_state(
-        &mut self,
-        ifindex: InterfaceIndex,
-        state: IfState,
-    ) -> Result<IfUpdate, RouterError> {
-        let (ifname, adm_state) = self
-            .enter()
-            .unwrap_or_else(|| unreachable!())
-            .get_interface(ifindex)
-            .map(|iface| (iface.name.clone(), iface.admin_state))
-            .ok_or(RouterError::NoSuchInterface(ifindex))?;
-
-        let update = IfUpdate::new(ifindex, &ifname).check_adm_state(adm_state, state);
-        if update.adm_state.is_none() {
-            return Ok(update);
-        }
-
-        self.0
-            .append(IfTableChange::UpdateAdmState((ifindex, state)));
-        self.0.publish();
-
-        debug!("Updated admin state of interface {ifname} ({ifindex}): {adm_state} -> {state}");
-        Ok(update)
-    }
-
     /// Attach an interface to a vrf
     ///
     /// # Errors
@@ -400,70 +367,53 @@ impl IfTableWriter {
         self.0.publish();
     }
 
-    /// Updates the name of an interface to `new_name`. Returns `IfUpdate` indicating the change on success
+    /// Apply the changes in `req` to the interface with index `ifindex`.
+    /// Returns an `IfUpdate` reporting the fields that changed.
     ///
     /// # Errors
-    ///   Returns `RouterError` if the interface could not be found
-    pub fn update_name(
+    ///   Returns `RouterError` if the interface could not be found, or if a mac is requested
+    ///   for an interface that has none. Nothing is modified in that case.
+    pub fn update_interface(
         &mut self,
         ifindex: InterfaceIndex,
-        new_name: &InterfaceName,
+        req: IfUpdateRequest,
     ) -> Result<IfUpdate, RouterError> {
-        let mut ifconfig = self
-            .enter()
-            .unwrap_or_else(|| unreachable!())
-            .get_interface(ifindex)
-            .map(Interface::as_config)
-            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+        let update = {
+            let iftable = self.enter().unwrap_or_else(|| unreachable!());
+            let iface = iftable
+                .get_interface(ifindex)
+                .ok_or(RouterError::NoSuchInterface(ifindex))?;
 
-        let old_name = ifconfig.name.clone();
-        let update = IfUpdate::new(ifindex, &old_name).check_ifname(&old_name, new_name);
-        if update.name_change.is_none() {
-            return Ok(update);
-        }
-
-        ifconfig.set_name(new_name);
-        self.0.append(IfTableChange::Mod(ifconfig));
-        self.0.publish();
-
-        debug!("Changed the name of interface {ifindex}: {old_name} -> {new_name}");
-        Ok(update)
-    }
-
-    /// Updates the mac of an interface to `new_mac`. Returns `IfUpdate` indicating the change on success
-    ///
-    /// # Errors
-    ///   Returns `RouterError` if the interface could not be found or it is not supposed to have a mac
-    pub fn update_mac(
-        &mut self,
-        ifindex: InterfaceIndex,
-        new_mac: SourceMac,
-    ) -> Result<IfUpdate, RouterError> {
-        let (mut config, mut iftype) = self
-            .enter()
-            .unwrap_or_else(|| unreachable!())
-            .get_interface(ifindex)
-            .map(|iface| (iface.as_config(), iface.iftype.clone()))
-            .ok_or(RouterError::NoSuchInterface(ifindex))?;
-
-        let Some(mac) = iftype.get_mac() else {
-            error!("Can't update mac of interface with index {ifindex}: it has no mac");
-            return Err(RouterError::HasNoMac(ifindex));
+            let mut update = IfUpdate::new(ifindex, &iface.name);
+            if let Some(name) = &req.name {
+                update = update.check_ifname(&iface.name, name);
+            }
+            if let Some(mac) = req.mac {
+                let Some(old) = iface.mac else {
+                    error!("Can't update mac of interface with index {ifindex}: it has no mac");
+                    return Err(RouterError::HasNoMac(ifindex));
+                };
+                update = update.check_mac(old, mac);
+            }
+            if let Some(mtu) = req.mtu {
+                update = update.check_mtu(iface.mtu, mtu);
+            }
+            if let Some(state) = req.admin_state {
+                update = update.check_adm_state(iface.admin_state, state);
+            }
+            if let Some(state) = req.oper_state {
+                update = update.check_oper_state(iface.oper_state, state);
+            }
+            update
         };
-
-        let update = IfUpdate::new(ifindex, &config.name).check_mac(mac, new_mac);
-        if update.mac.is_none() {
+        if update.is_empty() {
             return Ok(update);
         }
 
-        let ifname = config.name.clone();
-        iftype.set_mac(new_mac);
-        config.set_iftype(iftype);
-
-        self.0.append(IfTableChange::Mod(config));
+        self.0.append(IfTableChange::Update((ifindex, req)));
         self.0.publish();
 
-        debug!("Changed the mac of interface {ifname}: {mac} -> {new_mac}");
+        debug!("Updated interface {} ({ifindex})", update.ifname);
         Ok(update)
     }
 }
@@ -771,17 +721,21 @@ mod iftable_properties {
                 }
             }
             Change::SetOperState { iface, state } => {
-                let _ = world
-                    .iftw
-                    .set_iface_oper_state(ifaces[*iface], states()[*state]);
+                let req = IfUpdateRequest {
+                    oper_state: Some(states()[*state]),
+                    ..Default::default()
+                };
+                let _ = world.iftw.update_interface(ifaces[*iface], req);
                 if let Some(entry) = model.interfaces.get_mut(iface) {
                     entry.oper = states()[*state];
                 }
             }
             Change::SetAdminState { iface, state } => {
-                let _ = world
-                    .iftw
-                    .set_iface_admin_state(ifaces[*iface], states()[*state]);
+                let req = IfUpdateRequest {
+                    admin_state: Some(states()[*state]),
+                    ..Default::default()
+                };
+                let _ = world.iftw.update_interface(ifaces[*iface], req);
                 if let Some(entry) = model.interfaces.get_mut(iface) {
                     entry.admin = states()[*state];
                 }
