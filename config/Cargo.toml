@@ -22,9 +22,9 @@ policer = { workspace = true }
 # external
 arc-swap = { workspace = true }
 bolero = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
-chrono = { workspace = true, features = ["alloc", "std"] }
 derive_builder = { workspace = true, features = [] }
 ipnet = { workspace = true }
+jiff = { workspace = true, features = ["alloc", "std"] }
 k8s-openapi = { workspace = true, features = ["latest"] }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
