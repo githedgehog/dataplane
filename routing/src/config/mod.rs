@@ -144,11 +144,18 @@ impl RouterConfig {
     //////////////////////////////////////////////////////////////////////////////////
     /// The interfaces of this configuration, with the link state in `links` where it covers them
     //////////////////////////////////////////////////////////////////////////////////
-    fn observed_interfaces(&self, links: &LinkStates) -> ObservedInterfaces {
+    fn observed_interfaces(
+        &self,
+        links: Option<&LinkStates>,
+        iftable: &IfTable,
+    ) -> ObservedInterfaces {
         ObservedInterfaces(
             self.interfaces
                 .iter()
-                .map(|(ifindex, ifconfig)| (*ifindex, ifconfig.observed(links)))
+                .map(|(ifindex, ifconfig)| {
+                    let current = iftable.get_interface(*ifindex);
+                    (*ifindex, ifconfig.observed(links, current))
+                })
                 .collect(),
         )
     }
@@ -166,7 +173,9 @@ impl RouterConfig {
         ReconfigVrfPlan::generate(self, &db.vrftable).apply(&mut db.vrftable, &mut db.iftw)?;
 
         // build and apply interface reconfiguration
-        let interfaces = self.observed_interfaces(&db.links);
+        let iftable = db.iftw.enter().unwrap_or_else(|| unreachable!());
+        let interfaces = self.observed_interfaces(db.links.as_ref(), &iftable);
+        drop(iftable);
         Self::apply_interfaces(&interfaces, db)?;
 
         // store and apply vtep configuration (infallible)
@@ -190,10 +199,12 @@ impl RouterConfig {
 
         // The operational state is not something a configuration can ask for; it is only observed.
         // The rest of the link state is already in `interfaces`, so this only sets that.
-        db.iftw
-            .apply_link_state(&db.links)
-            .into_iter()
-            .for_each(report_link_changes);
+        if let Some(links) = &db.links {
+            db.iftw
+                .apply_link_state(links)
+                .into_iter()
+                .for_each(report_link_changes);
+        }
         Ok(())
     }
 }

@@ -267,7 +267,7 @@ fn handle_link_state(db: &mut RoutingDb, links: LinkStates) {
         .apply_link_state(&links)
         .into_iter()
         .for_each(report_link_changes);
-    db.links = links;
+    db.links = Some(links);
 }
 
 fn handle_bgp_peer_status_change(bgp_ev: BgpNeighEvent) {
@@ -424,15 +424,19 @@ mod link_state {
         }
     }
 
-    /// Every interface ends up with the link state of the latest observation that covers it,
-    /// wherever the configurations fall among the observations.
+    /// Every interface ends up with the link state of the latest observation, wherever the
+    /// configurations fall among the observations.
     ///
-    /// The model: a configuration is applied with the latest observation overlaid on it (an
-    /// interface the observation leaves out gets the configuration's link state, since the router
-    /// knows nothing newer). An observation then overlays itself on each interface the router has,
-    /// and leaves alone those it does not cover.
+    /// The model, per configured interface:
+    /// - a configuration is applied with the latest observation overlaid on it; before any
+    ///   observation it is applied as it is;
+    /// - an interface an observation covers takes its link state from it;
+    /// - an interface an observation does not cover is gone: it is operationally down and keeps the
+    ///   rest of its link state, a later configuration included (unless the interface was not in
+    ///   the table yet, when the configuration's is all there is).
     #[test]
     fn the_latest_observation_wins_wherever_the_configs_fall() {
+        type Expected = BTreeMap<InterfaceIndex, (RouterInterfaceConfig, Option<IfState>)>;
         bolero::check!()
             .with_type::<(Vec<Vec<GenLink>>, u8, u8)>()
             .for_each(|(observations, first, second)| {
@@ -445,50 +449,60 @@ mod link_state {
                 let at_second = at_first.max(usize::from(*second) % (observations.len() + 1));
 
                 let mut db = create_routing_database();
-                // per configured interface: its expected link state and oper state, once configured
-                let mut expected: BTreeMap<
-                    InterfaceIndex,
-                    (RouterInterfaceConfig, Option<IfState>),
-                > = BTreeMap::new();
-                let mut latest = LinkStates::default();
-                let configure_and_model = |db: &mut RoutingDb,
-                                           latest: &LinkStates,
-                                           expected: &mut BTreeMap<
-                    _,
-                    (RouterInterfaceConfig, Option<IfState>),
-                >| {
-                    configure(db);
-                    for raw in CONFIGURED {
-                        let port = ifindex(raw);
-                        let configured = config.get_interface(port).unwrap();
-                        let oper = latest
-                            .get(port)
-                            .map(|link| link.oper_state)
-                            .or(expected.get(&port).and_then(|(_, oper)| *oper));
-                        expected.insert(port, (configured.observed(latest), oper));
-                    }
-                };
+                // per configured interface, once configured: its link state and oper state
+                let mut expected = Expected::new();
+                let mut latest: Option<LinkStates> = None;
+                let configure_and_model =
+                    |db: &mut RoutingDb, latest: Option<&LinkStates>, expected: &mut Expected| {
+                        configure(db);
+                        for raw in CONFIGURED {
+                            let port = ifindex(raw);
+                            let configured = config.get_interface(port).unwrap();
+                            let before = expected.get(&port).cloned();
+                            let model = match latest.map(|links| links.get(port)) {
+                                None => (configured.clone(), before.and_then(|(_, oper)| oper)),
+                                Some(Some(link)) => {
+                                    (configured.with_link_state(link), Some(link.oper_state))
+                                }
+                                Some(None) => {
+                                    let mut kept = configured.clone();
+                                    if let Some((ifconfig, _)) = before {
+                                        if let Some(mac) = ifconfig.iftype.get_mac() {
+                                            kept.iftype.set_mac(mac);
+                                        }
+                                        kept.mtu = ifconfig.mtu;
+                                        kept.admin_state = ifconfig.admin_state;
+                                    }
+                                    (kept, Some(IfState::Down))
+                                }
+                            };
+                            expected.insert(port, model);
+                        }
+                    };
                 for (i, links) in observations.iter().enumerate() {
                     if i == at_first {
-                        configure_and_model(&mut db, &latest, &mut expected);
+                        configure_and_model(&mut db, latest.as_ref(), &mut expected);
                     }
                     if i == at_second {
-                        configure_and_model(&mut db, &latest, &mut expected);
+                        configure_and_model(&mut db, latest.as_ref(), &mut expected);
                     }
                     handle_link_state(&mut db, links.clone());
                     for (port, (ifconfig, oper)) in &mut expected {
-                        if let Some(link) = links.get(*port) {
-                            *ifconfig = ifconfig.observed(links);
-                            *oper = Some(link.oper_state);
+                        match links.get(*port) {
+                            Some(link) => {
+                                *ifconfig = ifconfig.with_link_state(link);
+                                *oper = Some(link.oper_state);
+                            }
+                            None => *oper = Some(IfState::Down),
                         }
                     }
-                    latest = links.clone();
+                    latest = Some(links.clone());
                 }
                 if at_first == observations.len() {
-                    configure_and_model(&mut db, &latest, &mut expected);
+                    configure_and_model(&mut db, latest.as_ref(), &mut expected);
                 }
                 if at_second == observations.len() {
-                    configure_and_model(&mut db, &latest, &mut expected);
+                    configure_and_model(&mut db, latest.as_ref(), &mut expected);
                 }
 
                 assert_eq!(expected.len(), CONFIGURED.len());
@@ -502,25 +516,64 @@ mod link_state {
             });
     }
 
-    /// An observation that leaves an interface out says nothing new about it: the interface keeps
-    /// the link state last observed, not the one its configuration was built with
-    /// (githedgehog/fabricator#2268 again, if it did).
+    /// An interface gone from an observation is unavailable (operationally down). It does not go
+    /// back to the link state its configuration was built with (githedgehog/fabricator#2268 again,
+    /// for the MAC), neither on that observation nor on a later configuration.
     #[test]
-    fn an_observation_that_leaves_an_interface_out_leaves_it_as_it_is() {
+    fn an_interface_gone_from_an_observation_is_down_and_keeps_its_link_state() {
         let mut db = create_routing_database();
         let config = build_router_config();
         let port = ifindex(CONFIGURED[1]);
         let real = SourceMac::try_from("0c:20:12:fe:01:02").unwrap();
+        let mut down = link(&config, CONFIGURED[1], real);
+        down.admin_state = IfState::Down;
+        down.oper_state = IfState::Down;
+        let mut up = down.clone();
+        up.oper_state = IfState::Up;
+        assert_eq!(config.get_interface(port).unwrap().admin_state, IfState::Up);
 
         configure(&mut db);
-        handle_link_state(
-            &mut db,
-            LinkStates::from_iter([link(&config, CONFIGURED[1], real)]),
-        );
-        handle_link_state(&mut db, LinkStates::default());
-
-        assert_eq!(interface(&db, port).get_mac(), Some(real));
+        handle_link_state(&mut db, LinkStates::from_iter([up]));
         assert_eq!(interface(&db, port).oper_state, IfState::Up);
+
+        handle_link_state(&mut db, LinkStates::default());
+        let gone = interface(&db, port);
+        assert_eq!(gone.get_mac(), Some(real));
+        assert_eq!(
+            gone.admin_state,
+            IfState::Down,
+            "admin state went back to the config's"
+        );
+        assert_eq!(
+            gone.oper_state,
+            IfState::Down,
+            "a gone interface is still up"
+        );
+
+        configure(&mut db);
+        let gone = interface(&db, port);
+        assert_eq!(gone.get_mac(), Some(real));
+        assert_eq!(
+            gone.admin_state,
+            IfState::Down,
+            "a config brought back its admin state"
+        );
+        assert_eq!(gone.oper_state, IfState::Down);
+    }
+
+    /// Before any observation, the configuration's link state is all the router knows, and is
+    /// applied as it is (operational state included: nothing sets it).
+    #[test]
+    fn before_any_observation_the_config_is_applied_as_it_is() {
+        let mut db = create_routing_database();
+        let config = build_router_config();
+        configure(&mut db);
+        for raw in CONFIGURED {
+            let port = ifindex(raw);
+            let got = interface(&db, port);
+            assert_eq!(&got.as_config(), config.get_interface(port).unwrap());
+            assert_eq!(got.oper_state, IfState::Unknown);
+        }
     }
 
     /// Link state is applied to the interfaces the router has, whether or not the configuration

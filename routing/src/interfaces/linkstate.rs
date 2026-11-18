@@ -8,7 +8,8 @@
 //! attached to; what it says about link state is only what the kernel showed when the
 //! configuration was built. The router takes link state from the latest [`LinkStates`] instead:
 //! a configuration is applied with the latest observation overlaid on it, and each new observation
-//! is applied to the interfaces the router has, one by one.
+//! is applied to the interfaces the router has, one by one. Until the first observation, the
+//! configuration's link state is all the router has.
 
 use crate::interfaces::iftablerw::{IfTableWriter, IfUpdate};
 use crate::interfaces::interface::{IfState, Interface, RouterInterfaceConfig};
@@ -60,16 +61,13 @@ impl FromIterator<LinkState> for LinkStates {
 }
 
 impl RouterInterfaceConfig {
-    /// This configuration with the link state the kernel reported for its interface, if it did.
+    /// This configuration with `link`'s state overlaid.
     ///
     /// The MAC is only taken for interface types that have one; the router has no use for a MAC on
     /// a loopback.
     #[must_use]
-    pub(crate) fn observed(&self, links: &LinkStates) -> Self {
+    pub(crate) fn with_link_state(&self, link: &LinkState) -> Self {
         let mut observed = self.clone();
-        let Some(link) = links.get(self.ifindex) else {
-            return observed;
-        };
         observed.name.clone_from(&link.name);
         if let Some(mac) = link.mac
             && observed.iftype.get_mac().is_some()
@@ -82,6 +80,37 @@ impl RouterInterfaceConfig {
         observed.admin_state = link.admin_state;
         observed
     }
+
+    /// What the interface table must hold for this configured interface, given the latest
+    /// observation and the interface the table holds now, if any.
+    ///
+    /// - Before any observation, the configuration's link state is all the router knows.
+    /// - An interface the latest observation covers takes its link state from it.
+    /// - An interface the latest observation does not cover is gone from the kernel (an observation
+    ///   is complete). It keeps the link state the table holds for it rather than the one its
+    ///   configuration was built with, which may well be older; its operational state is set down
+    ///   apart from this (see [`IfTableWriter::apply_link_state`]). An interface the table does not
+    ///   hold yet has nothing else to go by than its configuration.
+    #[must_use]
+    pub(crate) fn observed(&self, links: Option<&LinkStates>, current: Option<&Interface>) -> Self {
+        let Some(links) = links else {
+            return self.clone();
+        };
+        if let Some(link) = links.get(self.ifindex) {
+            return self.with_link_state(link);
+        }
+        let mut kept = self.clone();
+        if let Some(current) = current {
+            if let Some(mac) = current.get_mac()
+                && kept.iftype.get_mac().is_some()
+            {
+                kept.iftype.set_mac(mac);
+            }
+            kept.mtu = current.mtu;
+            kept.admin_state = current.admin_state;
+        }
+        kept
+    }
 }
 
 impl IfTableWriter {
@@ -90,8 +119,11 @@ impl IfTableWriter {
     /// This only changes link state (name, MAC, MTU, admin and operational state) of the interfaces
     /// the table holds, whatever configuration put them there; it adds, removes and attaches
     /// nothing. Each interface is taken on its own, so one that cannot be updated does not hold back
-    /// the others. An interface `links` does not cover is left as it is: an observation that
-    /// leaves out an interface the router has says nothing new about it.
+    /// the others.
+    ///
+    /// An observation is complete, so an interface it does not cover is gone from the kernel: it is
+    /// set operationally down, and the rest of its link state is left as it is (an interface that
+    /// is gone has no new MAC, MTU or admin state to report).
     pub(crate) fn apply_link_state(&mut self, links: &LinkStates) -> Vec<IfUpdate> {
         let current: Vec<RouterInterfaceConfig> = self
             .enter()
@@ -102,23 +134,28 @@ impl IfTableWriter {
         let mut updates = vec![];
         for config in current {
             let ifindex = config.ifindex;
-            let Some(link) = links.get(ifindex) else {
-                continue;
+            let (mut update, oper_state) = match links.get(ifindex) {
+                Some(link) => {
+                    let observed = config.with_link_state(link);
+                    let mut update = IfUpdate::new(ifindex, &observed.name)
+                        .check_ifname(&config.name, &observed.name)
+                        .check_adm_state(config.admin_state, observed.admin_state);
+                    if let (Some(old), Some(new)) =
+                        (config.iftype.get_mac(), observed.iftype.get_mac())
+                    {
+                        update = update.check_mac(old, new);
+                    }
+                    if observed != config
+                        && let Err(e) = self.mod_interface(observed)
+                    {
+                        warn!("Failed to apply the link state of interface {ifindex}: {e}");
+                        continue;
+                    }
+                    (update, link.oper_state)
+                }
+                None => (IfUpdate::new(ifindex, &config.name), IfState::Down),
             };
-            let observed = config.observed(links);
-            let mut update = IfUpdate::new(ifindex, &observed.name)
-                .check_ifname(&config.name, &observed.name)
-                .check_adm_state(config.admin_state, observed.admin_state);
-            if let (Some(old), Some(new)) = (config.iftype.get_mac(), observed.iftype.get_mac()) {
-                update = update.check_mac(old, new);
-            }
-            if observed != config
-                && let Err(e) = self.mod_interface(observed)
-            {
-                warn!("Failed to apply the link state of interface {ifindex}: {e}");
-                continue;
-            }
-            match self.set_iface_oper_state(ifindex, link.oper_state) {
+            match self.set_iface_oper_state(ifindex, oper_state) {
                 Ok(oper) => update.oper_state = oper.oper_state,
                 Err(e) => warn!("Failed to set the oper state of interface {ifindex}: {e}"),
             }

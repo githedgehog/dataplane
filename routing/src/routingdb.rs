@@ -20,8 +20,8 @@ pub(crate) struct RoutingDb {
     pub atabler: AtableReader,
     pub iftw: IfTableWriter,
     pub config: Option<RouterConfig>,
-    /// The latest observation of the kernel's links
-    pub links: LinkStates,
+    /// The latest observation of the kernel's links, once there is one
+    pub links: Option<LinkStates>,
 }
 
 #[allow(clippy::new_without_default)]
@@ -35,7 +35,7 @@ impl RoutingDb {
             atabler,
             iftw,
             config: None,
-            links: LinkStates::default(),
+            links: None,
         }
     }
     pub fn set_config(&mut self, config: RouterConfig) {
