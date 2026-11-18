@@ -1477,11 +1477,11 @@ version = "0.38.2"
 dependencies = [
  "arrayvec",
  "bolero",
- "chrono",
  "dataplane-clock",
  "dataplane-concurrency",
  "dataplane-net",
  "dataplane-pipeline",
+ "jiff",
  "nix",
  "pcap-file",
  "strum",
