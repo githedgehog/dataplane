@@ -10,6 +10,7 @@ default = []
 virtual = ["dep:tokio"]
 
 [dependencies]
+jiff = { workspace = true, features = ["std"] }
 tokio = { workspace = true, optional = true, features = ["test-util", "time"] }
 
 [dev-dependencies]

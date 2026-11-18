@@ -114,6 +114,23 @@ pub fn system_now() -> SystemTime {
     SystemTime::now()
 }
 
+/// Convert `time` to a [`jiff::Timestamp`]
+///
+/// Returns `None` for times out of the range that jiff supports, years -9999 to 9999.
+#[must_use]
+pub fn to_timestamp(time: SystemTime) -> Option<jiff::Timestamp> {
+    jiff::Timestamp::try_from(time).ok()
+}
+
+/// Read the wall clock as a [`jiff::Timestamp`], see [`system_now`] and [`to_timestamp`]
+///
+/// Prefer this over `jiff::Timestamp::now()`, which bypasses this crate and panics when the clock
+/// is out of range.
+#[must_use]
+pub fn system_timestamp() -> Option<jiff::Timestamp> {
+    to_timestamp(system_now())
+}
+
 #[cfg(test)]
 pub(crate) fn serially() -> concurrency::sync::MutexGuard<'static, ()> {
     // Lazily, not `static SERIAL: Mutex<()> = Mutex::new(())`. The facade's
@@ -131,7 +148,7 @@ pub(crate) fn serially() -> concurrency::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::serially;
-    use super::{Duration, now, saturating_add, system_now};
+    use super::{Duration, SystemTime, now, saturating_add, system_now, to_timestamp};
 
     #[test]
     fn now_is_monotonic() {
@@ -146,6 +163,15 @@ mod tests {
         let _serial = serially();
         let _ = now();
         let _ = system_now();
+    }
+
+    #[test]
+    fn to_timestamp_out_of_range() {
+        let epoch = SystemTime::UNIX_EPOCH;
+        assert_eq!(to_timestamp(epoch), Some(jiff::Timestamp::UNIX_EPOCH));
+        // More than 10,000 years after 1970, past what jiff supports
+        let far = epoch + Duration::from_hours(10_000 * 366 * 24);
+        assert_eq!(to_timestamp(far), None);
     }
 
     /// The claim every paused-clock test in the workspace rests on.
