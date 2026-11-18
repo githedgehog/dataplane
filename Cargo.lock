@@ -2181,7 +2181,6 @@ dependencies = [
  "bitflags",
  "bolero",
  "bytes",
- "chrono",
  "criterion",
  "dataplane-args",
  "dataplane-capture",
@@ -2205,6 +2204,7 @@ dependencies = [
  "iai-callgrind",
  "inotify",
  "ipnet",
+ "jiff",
  "left-right",
  "linkme",
  "mio",
@@ -3769,6 +3769,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "windows-link 0.2.1",
 ]
 
 [[package]]

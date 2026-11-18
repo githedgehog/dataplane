@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use chrono::{DateTime, Local};
 use clock::Duration;
 use clock::Instant;
+use jiff::Timestamp;
 use mio::net::UnixStream;
 use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read, Write};
@@ -72,12 +72,12 @@ impl FrrAppliedConfig {
 /// Stats for the `Frrmi`
 #[derive(Default)]
 pub(crate) struct FrrmiStats {
-    pub(crate) last_conn_time: Option<DateTime<Local>>, /* the last time that connecting to frr-agent succeeded */
-    pub(crate) last_disconn_time: Option<DateTime<Local>>, /* the time when the last disconnect happened */
-    pub(crate) last_ok_genid: Option<GenId>,               /* genid of the last applied config */
+    pub(crate) last_conn_time: Option<Timestamp>, /* the last time that connecting to frr-agent succeeded */
+    pub(crate) last_disconn_time: Option<Timestamp>, /* the time when the last disconnect happened */
+    pub(crate) last_ok_genid: Option<GenId>,         /* genid of the last applied config */
     pub(crate) last_fail_genid: Option<GenId>, /* genid of the most recent config that failed (excluding communication errors) */
-    pub(crate) last_ok_time: Option<DateTime<Local>>, /* time when last config succeeded */
-    pub(crate) last_fail_time: Option<DateTime<Local>>, /* time when last config failed */
+    pub(crate) last_ok_time: Option<Timestamp>, /* time when last config succeeded */
+    pub(crate) last_fail_time: Option<Timestamp>, /* time when last config failed */
     pub(crate) apply_oks: u64,                 /* number of configs applied successfully */
     pub(crate) apply_failures: u64,            /* number of times applying a config failed */
 }
@@ -132,7 +132,7 @@ impl Frrmi {
     pub(crate) fn connect(&mut self) {
         self.sock = UnixStream::connect(&self.remote).ok();
         if self.sock.is_some() {
-            self.stats.last_conn_time = Some(Local::now());
+            self.stats.last_conn_time = clock::system_timestamp();
             info!("Successfully connected to frr-agent at {}", self.remote);
             revent!(RouterEvent::FrrmiConnectSucceeded);
         }
@@ -151,7 +151,7 @@ impl Frrmi {
             }
         }
         debug!("Frrmi is now disconnected");
-        self.stats.last_disconn_time = Some(Local::now());
+        self.stats.last_disconn_time = clock::system_timestamp();
         revent!(RouterEvent::FrrmiDisconnected);
     }
     pub(crate) fn timeout(&mut self) {
@@ -376,13 +376,13 @@ impl Frrmi {
 
         if response.is_success() {
             info!("Frr configuration successfully applied for gen {respgen}");
-            self.stats.last_ok_time = Some(Local::now());
+            self.stats.last_ok_time = clock::system_timestamp();
             self.stats.last_ok_genid = Some(response.genid);
             self.stats.apply_oks += 1;
             self.applied_cfg = Some(FrrAppliedConfig::new(request.genid, request.cfg));
             revent!(RouterEvent::FrrConfigApplySuccess(response.genid));
         } else {
-            self.stats.last_fail_time = Some(Local::now());
+            self.stats.last_fail_time = clock::system_timestamp();
             self.stats.last_fail_genid = Some(response.genid);
             self.stats.apply_failures += 1;
             let out = response.get_response_data();

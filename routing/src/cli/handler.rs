@@ -20,13 +20,13 @@ use crate::router::revent::ROUTER_EVENTS;
 use crate::router::rio::Rio;
 use crate::routingdb::RoutingDb;
 
-use chrono::Local;
 use cli::cliproto::{
     CliAction, CliError, CliRequest, CliResponse, PrefetchSelector, PrefetchedData, RequestArgs,
     RouteProtocol,
 };
 use concurrency::sync::Arc;
 use config::{ConfigSummary, GwConfigMeta, ValidatedGwConfig};
+use jiff::tz::TimeZone;
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use net::eth::mac::SourceMac;
 use net::vxlan::Vni;
@@ -447,8 +447,15 @@ fn show_tech(
     rio: &mut Rio,
     sources: &CliSources,
 ) -> CliResponse {
-    let time = Local::now();
-    let mut data = format!("time: {}\n", time.format("%Y-%m-%d %H:%M:%S"));
+    let time = clock::system_timestamp().map_or_else(
+        || "?".to_string(),
+        |t| {
+            t.to_zoned(TimeZone::system())
+                .strftime("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        },
+    );
+    let mut data = format!("time: {time}\n");
 
     for action in CliAction::iter().filter(CliAction::is_show_tech_compatible) {
         let request = CliRequest::new(action, RequestArgs::default());

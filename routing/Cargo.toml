@@ -35,11 +35,11 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true, features = ["serde"] }
-chrono = { workspace = true, features = ["clock"] }
 derive_builder = { workspace = true, features = ["default", "std"] }
 futures-util = { workspace = true }
 ipnet = { workspace = true }
 inotify = { workspace = true, features = ["stream"] }
+jiff = { workspace = true, features = ["alloc", "std", "tz-system", "tzdb-zoneinfo"] }
 left-right = { workspace = true }
 linkme = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }

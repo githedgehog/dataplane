@@ -3,9 +3,9 @@
 
 //! Generic thread-local event logs. See the tests for sample usage
 
-use chrono::DateTime;
-use chrono::Local;
+use crate::cli::display::fmt_local;
 use common::cliprovider::Heading;
+use jiff::Timestamp;
 use std::fmt::Display;
 
 /// An `Event` is a wrapper over a generic type T that represents something that happened.
@@ -13,14 +13,14 @@ use std::fmt::Display;
 pub(crate) struct Event<T> {
     code: T,
     ord: usize,
-    time: DateTime<Local>,
+    time: Option<Timestamp>,
 }
 impl<T: Display> Event<T> {
     pub(crate) fn new(code: T, ord: usize) -> Self {
         Self {
             code,
             ord,
-            time: Local::now(),
+            time: clock::system_timestamp(),
         }
     }
 }
@@ -63,8 +63,10 @@ impl<T: Display> EventLog<T> {
 }
 impl<T: Display> Display for Event<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let fmt_simple = "%Y-%m-%dT %H:%M:%S";
-        let time = self.time.format(fmt_simple).to_string();
+        let time = self
+            .time
+            .as_ref()
+            .map_or_else(|| "?".to_string(), fmt_local);
         write!(f, " {:<4} {}: {}", self.ord, time, self.code)
     }
 }
