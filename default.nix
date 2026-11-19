@@ -1055,7 +1055,29 @@ let
               )
             else
               "";
-        };
+        }
+        // lib.optionalAttrs (rustc-target != "wasm32-wasip1") (
+          let
+            # The `cc` crate reads `CC_<target>`, `CFLAGS_<target>` and `AR_<target>`.
+            target = builtins.replaceStrings [ "-" ] [ "_" ] rustc-target;
+          in
+          {
+            # The C that crates compile in their build scripts (mimalloc, aws-lc, ...): without
+            # these the `cc` crate takes the stdenv's `cc`, which is GCC with a generic `-march`
+            # and no LTO. Give it the clang and the flags the sysroot's C (DPDK and the rest) is
+            # built with, so that it joins the cross-language ThinLTO as well. Target only: the
+            # build scripts themselves still link with the stdenv's toolchain.
+            "CC_${target}" = "${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cc}";
+            "CXX_${target}" = "${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cc}++";
+            "AR_${target}" = "${pkgs.pkgsBuildHost.llvmPackages'.bintools-unwrapped}/bin/llvm-ar";
+            "CFLAGS_${target}" = builtins.concatStringsSep " " (
+              profile.NIX_CFLAGS_COMPILE ++ (platform'.override.stdenv.env.NIX_CFLAGS_COMPILE or [ ])
+            );
+            "CXXFLAGS_${target}" = builtins.concatStringsSep " " (
+              profile.NIX_CXXFLAGS_COMPILE ++ (platform'.override.stdenv.env.NIX_CXXFLAGS_COMPILE or [ ])
+            );
+          }
+        );
       }
       // args
     )).overrideAttrs
