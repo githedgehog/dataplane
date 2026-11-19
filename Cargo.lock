@@ -1425,6 +1425,7 @@ dependencies = [
 name = "dataplane-acl-filter"
 version = "0.38.2"
 dependencies = [
+ "arrayvec",
  "bolero",
  "dataplane-acl",
  "dataplane-clock",

@@ -27,7 +27,9 @@ mod tests;
 pub use access::{
     AclFilterContext, AclFilterContextReader, AclFilterContextReaderFactory, AclFilterContextWriter,
 };
+use acl::dpdk::lookup::MAX_BATCH;
 pub use acl::table::RuleRow;
+use context::AclTables;
 pub use context::{AclKey, AclKeyRule, LookupResult};
 
 pub struct AclFilter {
@@ -46,21 +48,60 @@ impl AclFilter {
         }
     }
 
-    fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
-        let nfi = &self.name;
+    /// Filter up to [`MAX_BATCH`] packets, looking up those that need it in one classify per IP
+    /// version: `rte_acl` takes its vector paths for a batch, but its scalar one for a single key.
+    fn process_chunk<Buf: PacketBufferMut>(&self, chunk: &mut [Packet<Buf>], tables: &AclTables) {
+        debug_assert!(chunk.len() <= MAX_BATCH);
         let genid = self.pipeline_data.genid();
 
-        let summary = match PacketSummary::try_from(&*packet) {
-            Ok(summary) => summary,
-            Err(reason) => {
-                packet.done(reason);
-                return;
+        // 1. Summarize the packets this stage handles; drop those it cannot summarize. Only the
+        //    packets of a VPC pair with an ACL (one with a default action) need a lookup.
+        let mut summaries: [Option<PacketSummary>; MAX_BATCH] = [const { None }; MAX_BATCH];
+        let mut defaults: [Option<AclAction>; MAX_BATCH] = [None; MAX_BATCH];
+        for (i, packet) in chunk.iter_mut().enumerate() {
+            if packet.is_done() || !packet.meta().is_overlay() {
+                continue;
             }
-        };
+            match PacketSummary::try_from(&*packet) {
+                Ok(summary) => {
+                    defaults[i] = tables.find_default_action(summary.src_vni, summary.dst_vni);
+                    summaries[i] = Some(summary);
+                }
+                Err(reason) => packet.done(reason),
+            }
+        }
+
+        // 2. Look up the packets with an ACL, all at once.
+        let mut wanted: [Option<&PacketSummary>; MAX_BATCH] = [None; MAX_BATCH];
+        for (want, (summary, default)) in wanted.iter_mut().zip(summaries.iter().zip(&defaults)) {
+            *want = summary.as_ref().filter(|_| default.is_some());
+        }
+        let mut direct = [None; MAX_BATCH];
+        tables.lookup_batch(&wanted[..chunk.len()], &mut direct[..chunk.len()]);
+
+        // 3. Apply each packet's verdict.
+        for (i, packet) in chunk.iter_mut().enumerate() {
+            if let Some(summary) = &summaries[i] {
+                self.apply_verdict(packet, summary, defaults[i], direct[i], tables, genid);
+            }
+        }
+    }
+
+    fn apply_verdict<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        summary: &PacketSummary,
+        default_action: Option<AclAction>,
+        direct: Option<&LookupResult>,
+        tables: &AclTables,
+        genid: i64,
+    ) {
+        let nfi = &self.name;
         let valid_flow = self.packet_has_valid_flow(packet.meta(), genid);
         let has_valid_flow = valid_flow.is_some();
 
-        let (verdict, flow_scoped_allow) = self.lookup(&summary, valid_flow);
+        let (verdict, flow_scoped_allow) =
+            Self::verdict(summary, default_action, direct, valid_flow, tables);
         if verdict == AclAction::Deny {
             debug!("{nfi}: Packet rejected by ACLs, dropping packet");
             packet.invalidate_flows();
@@ -108,27 +149,25 @@ impl AclFilter {
     }
 
     // Return the verdict for the packet, and whether it comes from an Allow rule of scope "flow"
-    // matching the packet itself.
-    fn lookup(
-        &self,
+    // matching the packet itself. `default_action` is the packet's VPC pair's, and `direct` the
+    // result of looking up the packet itself (batched, see `process_chunk`).
+    fn verdict(
         summary: &PacketSummary,
+        default_action: Option<AclAction>,
+        direct: Option<&LookupResult>,
         flow_info: Option<&Arc<FlowInfo>>,
+        tables: &AclTables,
     ) -> (AclAction, bool) {
-        let guard = self.tablesr.load();
-        let tables = &guard.acls;
-
         // Every peering with an ACL has a default action registered for both directions, and only
         // such a peering has rules. Without one, nothing can match either way: allow the packet
         // without the lookups, and without reaching the reverse flow (a cold cache line, and an
         // atomic on it, for every packet of every flow).
-        let Some(default_action) = tables.find_default_action(summary.src_vni, summary.dst_vni)
-        else {
+        let Some(default_action) = default_action else {
             return (AclAction::Allow, false);
         };
 
-        // Look up for an ACL directly matching the packet
-        let lookup_result = tables.lookup(summary);
-        if let Some(result) = lookup_result {
+        // An ACL directly matching the packet
+        if let Some(result) = direct {
             let verdict = result.action;
             if result.log {
                 info!("ACL filtering: {summary} -> {verdict:?}")
@@ -166,10 +205,11 @@ impl AclFilter {
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for AclFilter {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
-        for packet in burst.iter_mut() {
-            if !packet.is_done() && packet.meta().is_overlay() {
-                self.process_packet(packet);
-            }
+        // Load the tables once per burst, not once per packet: a load takes a reference to them,
+        // an atomic read-modify-write each way.
+        let guard = self.tablesr.load();
+        for chunk in burst.chunks_mut(MAX_BATCH) {
+            self.process_chunk(chunk, &guard.acls);
         }
     }
 
