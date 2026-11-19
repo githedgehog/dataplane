@@ -5,7 +5,7 @@
 
 use crate::dpdk::dyn_table::predicate_to_chunks;
 use crate::dpdk::install::install_table;
-use crate::dpdk::lookup::DpdkAclLookup;
+use crate::dpdk::lookup::{DpdkAclLookup, MAX_BATCH};
 use crate::dpdk::rule::{AclFieldChunks, RuleSpec};
 #[cfg(feature = "reference")]
 use crate::reference::table::{RefRule, ReferenceTable};
@@ -69,6 +69,37 @@ impl<K: MatchKey, A> Table<K, A> {
             Classifier::Dpdk(table) => table.lookup(key),
             #[cfg(feature = "reference")]
             Classifier::Reference(table) => table.lookup(key),
+        }
+    }
+
+    /// Look up a batch of keys using first-match precedence, writing one result per key to `out`.
+    ///
+    /// Same results as calling [`Table::lookup`] for each key. The `Dpdk` backend classifies up to
+    /// [`MAX_BATCH`] keys per `rte_acl` call, which takes `rte_acl`'s vector paths: a single-key
+    /// classify always runs its scalar one.
+    ///
+    /// # Panics
+    ///
+    /// If `out` and `keys` differ in length.
+    pub fn lookup_batch<'a>(&'a self, keys: &[K], out: &mut [Option<&'a A>]) {
+        assert_eq!(keys.len(), out.len(), "one output slot per key");
+        match &self.classifier {
+            Classifier::Empty => out.fill(None),
+            Classifier::Dpdk(table) => {
+                for (keys, out) in keys.chunks(MAX_BATCH).zip(out.chunks_mut(MAX_BATCH)) {
+                    // Lengths match and chunks fit, so only the classify itself can fail. Like
+                    // `lookup`, treat that as no match.
+                    if table.lookup_batch(keys, out).is_err() {
+                        out.fill(None);
+                    }
+                }
+            }
+            #[cfg(feature = "reference")]
+            Classifier::Reference(table) => {
+                for (key, slot) in keys.iter().zip(out.iter_mut()) {
+                    *slot = table.lookup(key);
+                }
+            }
         }
     }
 

@@ -200,6 +200,48 @@ fn the_stage_agrees_with_the_configuration() {
     tally.report("stage verdict");
 }
 
+/// Every packet of a burst gets the verdict it gets alone, whatever the burst's size: the stage
+/// filters a burst in chunks, with one batched lookup per chunk.
+#[test]
+fn a_burst_judges_each_packet_as_if_alone() {
+    bolero::check!()
+        .with_type::<(OverlaySpec, Vec<ProbeSpec>, u8)>()
+        .for_each(|(overlay_spec, probe_specs, size)| {
+            if probe_specs.is_empty() {
+                return;
+            }
+            let built = overlay_spec.build();
+            let mut acl = filter(&built);
+            // Up to 80 packets: more than two chunks, and rarely a multiple of one.
+            let summaries: Vec<PacketSummary> = probe_specs
+                .iter()
+                .cycle()
+                .take(1 + usize::from(*size) % 80)
+                .map(|spec| spec.resolve(&built))
+                .collect();
+
+            let alone: Vec<Option<DoneReason>> = summaries
+                .iter()
+                .filter_map(packet_for)
+                .map(|packet| {
+                    let out: Vec<_> = acl.process(std::iter::once(packet)).collect();
+                    out[0].get_done()
+                })
+                .collect();
+            let burst: Vec<Option<DoneReason>> = acl
+                .process(summaries.iter().filter_map(packet_for))
+                .map(|packet| packet.get_done())
+                .collect();
+            assert_eq!(
+                burst,
+                alone,
+                "a burst of {} packets judged them differently than one at a time\n\
+                 spec: {overlay_spec:?}",
+                alone.len(),
+            );
+        });
+}
+
 #[test]
 fn the_summary_survives_the_round_trip_through_a_packet() {
     let tally = Tally::default();

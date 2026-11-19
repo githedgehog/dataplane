@@ -4,8 +4,10 @@
 //! Context table build (ACLs)
 
 use super::PacketSummary;
+use acl::dpdk::lookup::MAX_BATCH;
 use acl::table::build_table;
 pub(super) use acl::table::{Backend, RuleRow, Table};
+use arrayvec::ArrayVec;
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, ValidatedAclRule};
@@ -387,6 +389,60 @@ impl AclTables {
                 error!("Found packet with different IP versions for source and destination!");
                 None
             }
+        }
+    }
+
+    /// Look up a batch of packets, writing one result per entry of `summaries` to `out` (`None`
+    /// for a `None` entry).
+    ///
+    /// Same results as [`AclTables::lookup`] on each summary, but the keys of each IP version are
+    /// classified together, in one `rte_acl` call per table (see [`Table::lookup_batch`]).
+    ///
+    /// # Panics
+    ///
+    /// If `summaries` and `out` differ in length, or are longer than [`MAX_BATCH`].
+    pub(super) fn lookup_batch<'a>(
+        &'a self,
+        summaries: &[Option<&PacketSummary>],
+        out: &mut [Option<&'a LookupResult>],
+    ) {
+        assert_eq!(summaries.len(), out.len(), "one output slot per summary");
+        assert!(summaries.len() <= MAX_BATCH, "at most MAX_BATCH summaries");
+
+        // Each key, with the index of the summary it came from.
+        let mut v4: ArrayVec<AclKey<Ipv4Addr>, MAX_BATCH> = ArrayVec::new();
+        let mut v4_at: ArrayVec<usize, MAX_BATCH> = ArrayVec::new();
+        let mut v6: ArrayVec<AclKey<Ipv6Addr>, MAX_BATCH> = ArrayVec::new();
+        let mut v6_at: ArrayVec<usize, MAX_BATCH> = ArrayVec::new();
+        for (i, (summary, slot)) in summaries.iter().zip(out.iter_mut()).enumerate() {
+            *slot = None;
+            let Some(p) = summary else {
+                continue;
+            };
+            // Capacity cannot run out: there are at most MAX_BATCH summaries.
+            match (p.src_ip, p.dst_ip) {
+                (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
+                    v4.push(AclKey::new(p, src_ip, dst_ip));
+                    v4_at.push(i);
+                }
+                (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
+                    v6.push(AclKey::new(p, src_ip, dst_ip));
+                    v6_at.push(i);
+                }
+                _ => {
+                    error!("Found packet with different IP versions for source and destination!");
+                }
+            }
+        }
+
+        let mut found = [None; MAX_BATCH];
+        self.v4.lookup_batch(&v4, &mut found[..v4.len()]);
+        for (&i, &result) in v4_at.iter().zip(&found) {
+            out[i] = result;
+        }
+        self.v6.lookup_batch(&v6, &mut found[..v6.len()]);
+        for (&i, &result) in v6_at.iter().zip(&found) {
+            out[i] = result;
         }
     }
 

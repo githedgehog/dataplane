@@ -11,6 +11,7 @@ reference = ["acl/reference"]
 
 [dependencies]
 acl = { workspace = true }
+arrayvec = { workspace = true }
 clock = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true }

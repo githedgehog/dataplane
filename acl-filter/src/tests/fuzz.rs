@@ -11,6 +11,7 @@
 use crate::PacketSummary;
 use crate::context::{AclTables, Backend, LookupResult};
 use crate::tests::fuzz_gen::{OverlaySpec, ProbeSpec, vni};
+use acl::dpdk::lookup::MAX_BATCH;
 use concurrency::sync::LazyLock;
 use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
@@ -351,6 +352,42 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
         });
 
     COVERAGE.assert_reached("dpdk vs reference");
+}
+
+/// A batched lookup gives each packet what looking it up alone does, on both backends.
+///
+/// Batches mix packets to look up with skipped (`None`) entries, and may hold both IP versions.
+#[test]
+#[dpdk::with_eal]
+fn batched_lookup_matches_single_lookups() {
+    bolero::check!()
+        .with_type::<(OverlaySpec, Vec<Option<ProbeSpec>>)>()
+        .for_each(|(overlay_spec, probe_specs)| {
+            let built = overlay_spec.build();
+            let probes: Vec<Option<PacketSummary>> = probe_specs
+                .iter()
+                .take(MAX_BATCH)
+                .map(|spec| spec.map(|spec| spec.resolve(&built)))
+                .collect();
+            let wanted: Vec<Option<&PacketSummary>> = probes.iter().map(Option::as_ref).collect();
+
+            for backend in [Backend::Dpdk, Backend::Reference] {
+                let tables = AclTables::build(&built.overlay, backend)
+                    .expect("validated overlay must lower");
+                let mut got = vec![None; wanted.len()];
+                tables.lookup_batch(&wanted, &mut got);
+                for (i, (probe, got)) in wanted.iter().zip(&got).enumerate() {
+                    let want = probe.and_then(|probe| tables.lookup(probe));
+                    assert_eq!(
+                        got.map(OracleVerdict::from),
+                        want.map(OracleVerdict::from),
+                        "{backend:?}: batched lookup disagrees with a single lookup for entry {i} \
+                         ({probe:?}) of {}\nspec: {overlay_spec:?}",
+                        wanted.len(),
+                    );
+                }
+            }
+        });
 }
 
 /// A default exists exactly when the directed peering has an ACL.
