@@ -43,12 +43,33 @@ pub struct Detail {
     pub events: ModuleEvents,
     /// The data path state of each host lane (11h:128-131), when the module pages.
     pub data_path: Vec<DataPathState>,
+    /// The `AppSel` code each host lane runs, from the Active Control Set (11h:206-213), when
+    /// the module pages; 0 for a lane no application uses.
+    pub active_applications: Vec<u8>,
     /// How long a cable assembly is (00h:202, Table 8-29); [`None`] for separable media.
     pub cable_length: Option<Reach>,
     /// What a passive copper cable loses (00h:204-207, Table 8-31), for media type 03h only.
     pub copper_attenuation: Option<CopperAttenuation>,
     /// The media side device or cable technology (00h:212, Table 8-36).
     pub media_technology: u8,
+}
+
+impl Detail {
+    /// The `AppSel` code the first host lane runs, if any application is active.
+    #[must_use]
+    pub fn active_application(&self) -> Option<u8> {
+        self.active_applications
+            .first()
+            .copied()
+            .filter(|code| *code != 0)
+    }
+
+    /// The application the first host lane runs, if any.
+    #[must_use]
+    pub fn active(&self) -> Option<&Application> {
+        let code = self.active_application()?;
+        self.applications.get(usize::from(code) - 1)
+    }
 }
 
 /// The attenuation of a passive copper cable assembly, in whole decibels (Table 8-31).
@@ -295,6 +316,11 @@ pub(crate) fn decode(image: &Image) -> Result<Module, DecodeError> {
         })
         .collect();
 
+    // 11h:206-213, DPConfigLane: AppSel in bits 7-4.
+    let active_applications = per_lane(host_lanes)
+        .map(|(page, lane)| page.u8(206 + lane % LANES_PER_BANK) >> 4)
+        .collect();
+
     let inventory = Inventory {
         vendor: page00.text(129, 16),
         oui: [page00.u8(145), page00.u8(146), page00.u8(147)],
@@ -310,7 +336,14 @@ pub(crate) fn decode(image: &Image) -> Result<Module, DecodeError> {
             .map(|twentieths| Wavelength::from_twentieths(u32::from(twentieths))),
     };
 
-    let detail = detail(lower, page00, &layout, applications, data_path);
+    let detail = detail(
+        lower,
+        page00,
+        &layout,
+        applications,
+        data_path,
+        active_applications,
+    );
 
     Ok(Module {
         identifier: Identifier::from_raw(lower.u8(0)),
@@ -329,6 +362,7 @@ fn detail(
     layout: &Layout,
     applications: Vec<Application>,
     data_path: Vec<DataPathState>,
+    active_applications: Vec<u8>,
 ) -> Detail {
     Detail {
         revision: Version {
@@ -356,6 +390,7 @@ fn detail(
             }
         },
         data_path,
+        active_applications,
         cable_length: cable_length(page00.u8(202)),
         copper_attenuation: (lower.u8(85) == PASSIVE_COPPER).then(|| CopperAttenuation {
             at_5_ghz: page00.u8(204),

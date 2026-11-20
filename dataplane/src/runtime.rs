@@ -11,10 +11,13 @@ use args::{
 };
 
 use crate::drivers::DriverError;
-use crate::drivers::dpdk::{CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity, report_links};
+use crate::drivers::dpdk::{
+    CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity, report_links, spawn_module_reader,
+};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::{DriverStatusWriter, driver_status_access};
 use crate::packet_processor::PipelineIngredients;
+use crate::transceiver_agent::ModuleSnapshot;
 use concurrency::thread;
 #[allow(unused_imports)] // used under the loom/shuttle backends
 use concurrency::thread::BuilderExt;
@@ -571,6 +574,7 @@ fn run_datapath(
     status_writer: DriverStatusWriter,
     bridge: Option<DatapathEnds>,
     control_plane: watch::Receiver<ControlPlane>,
+    transceivers: watch::Sender<ModuleSnapshot>,
     handoff: &DatapathHandoff,
 ) {
     if let Err(detail) = enter_datapath_netns(netns) {
@@ -599,6 +603,7 @@ fn run_datapath(
                 status_writer,
                 bridge,
                 control_plane,
+                transceivers,
             ),
             None => run_kernel_driver(config, workers, ingredients, status_writer, bridge),
         }
@@ -646,6 +651,7 @@ fn run_dpdk_driver(
     status_writer: DriverStatusWriter,
     mut bridge: Option<DatapathEnds>,
     control_plane: watch::Receiver<ControlPlane>,
+    transceivers: watch::Sender<ModuleSnapshot>,
 ) {
     // Probe the ports passed in the config
     let probed = match probe_ports(eal, config) {
@@ -708,6 +714,13 @@ fn run_dpdk_driver(
                 // shutdown. The ports have claimed their taps once `start` returns.
                 if let Some(bridge) = &bridge {
                     bridge.report_unclaimed();
+                }
+                if let Some(interval) = config.metrics.transceiver_interval
+                    && let Err(e) =
+                        spawn_module_reader(scope, workers, &ports, interval, transceivers)
+                {
+                    // Telemetry, not forwarding: carry on without it.
+                    warn!("{e}; no transceiver readings for ports without a kernel netdev");
                 }
             }
             Err(e) => {
@@ -924,7 +937,7 @@ pub fn main() {
         TelemetrySources {
             packets: setup.pkt_stats.clone(),
             flows: setup.flow_table.clone(),
-            driver: driver_status_reader,
+            driver: driver_status_reader.clone(),
             masquerade: setup.natallocatorw.get_reader(),
             taps: cp_bridge
                 .ports()
@@ -1003,6 +1016,18 @@ pub fn main() {
         );
     }
 
+    // What management publishes about the ports, gathered from the driver and the agents.
+    let ports = crate::port_status::start(
+        &mgmt_handle,
+        &shutdown.mgmt,
+        crate::port_status::Sources {
+            driver: driver_status_reader,
+            modules: setup.transceivers.subscribe(),
+            phy: setup.phy.subscribe(),
+            neighbors: setup.lldp_neighbors.subscribe(),
+        },
+    );
+
     concurrency::thread::scope(|scope| {
         // Management waits for the datapath to be ready, then releases it after its own startup.
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -1014,6 +1039,7 @@ pub fn main() {
             release: release_rx,
         };
 
+        let transceivers = setup.transceivers.clone();
         let spawned = thread::Builder::new()
             .name("datapath".to_string())
             .spawn_scoped(scope, {
@@ -1029,6 +1055,7 @@ pub fn main() {
                         driver_status_writer,
                         Some(cp_ends),
                         control_planes,
+                        transceivers,
                         &handoff,
                     );
                 }
@@ -1084,6 +1111,7 @@ pub fn main() {
                     bmp_options: bmp_client_opts,
                     gateway_name,
                     control_plane,
+                    ports,
                 },
             },
         );

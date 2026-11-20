@@ -5,7 +5,14 @@
 
 #![allow(clippy::module_name_repetitions)]
 
-use std::collections::HashMap;
+mod ports;
+
+pub use ports::{
+    LaneStatus, LldpNeighborStatus, PortCounters, PortRates, PortStatus, PortsSnapshot,
+    TransceiverStatus,
+};
+
+use std::collections::{BTreeMap, HashMap};
 
 #[cfg(test)]
 use bolero::TypeGenerator;
@@ -77,122 +84,6 @@ impl std::fmt::Display for BgpNeighborSessionState {
             Self::Open => f.pad("Open"),
             Self::Established => f.pad("Established"),
         }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct InterfaceStatus {
-    pub ifname: String,
-    pub oper_status: InterfaceOperStatusType,
-    pub admin_status: InterfaceAdminStatusType,
-}
-
-impl InterfaceStatus {
-    #[must_use]
-    pub fn new(ifname: impl Into<String>) -> Self {
-        Self {
-            ifname: ifname.into(),
-            ..Self::default()
-        }
-    }
-    #[must_use]
-    pub fn set_oper_status(mut self, s: InterfaceOperStatusType) -> Self {
-        self.oper_status = s;
-        self
-    }
-    #[must_use]
-    pub fn set_admin_status(mut self, s: InterfaceAdminStatusType) -> Self {
-        self.admin_status = s;
-        self
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-#[cfg_attr(test, derive(TypeGenerator))]
-pub struct InterfaceCounters {
-    pub tx_bits: u64,
-    pub tx_bps: f64,
-    pub tx_errors: u64,
-    pub rx_bits: u64,
-    pub rx_bps: f64,
-    pub rx_errors: u64,
-}
-
-impl InterfaceCounters {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-    #[must_use]
-    pub fn set_tx_bits(mut self, v: u64) -> Self {
-        self.tx_bits = v;
-        self
-    }
-    #[must_use]
-    pub fn set_tx_bps(mut self, v: f64) -> Self {
-        self.tx_bps = v;
-        self
-    }
-    #[must_use]
-    pub fn set_tx_errors(mut self, v: u64) -> Self {
-        self.tx_errors = v;
-        self
-    }
-    #[must_use]
-    pub fn set_rx_bits(mut self, v: u64) -> Self {
-        self.rx_bits = v;
-        self
-    }
-    #[must_use]
-    pub fn set_rx_bps(mut self, v: f64) -> Self {
-        self.rx_bps = v;
-        self
-    }
-    #[must_use]
-    pub fn set_rx_errors(mut self, v: u64) -> Self {
-        self.rx_errors = v;
-        self
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct InterfaceRuntimeStatus {
-    pub admin_status: InterfaceAdminStatusType,
-    pub oper_status: InterfaceOperStatusType,
-    pub mac: String,
-    pub mtu: u32,
-    pub counters: Option<InterfaceCounters>,
-}
-
-impl InterfaceRuntimeStatus {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-    #[must_use]
-    pub fn set_admin_status(mut self, s: InterfaceAdminStatusType) -> Self {
-        self.admin_status = s;
-        self
-    }
-    #[must_use]
-    pub fn set_oper_status(mut self, s: InterfaceOperStatusType) -> Self {
-        self.oper_status = s;
-        self
-    }
-    #[must_use]
-    pub fn set_mac(mut self, mac: impl Into<String>) -> Self {
-        self.mac = mac.into();
-        self
-    }
-    #[must_use]
-    pub fn set_mtu(mut self, mtu: u32) -> Self {
-        self.mtu = mtu;
-        self
-    }
-    #[must_use]
-    pub fn set_counters(mut self, c: InterfaceCounters) -> Self {
-        self.counters = Some(c);
-        self
     }
 }
 
@@ -356,26 +247,22 @@ pub struct VpcPeeringCounters {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DataplaneStatus {
-    pub interface_statuses: Vec<InterfaceStatus>,
     pub frr_status: Option<FrrStatus>,
     pub dataplane_status: Option<DataplaneStatusInfo>,
-    pub interface_runtime: HashMap<String, InterfaceRuntimeStatus>,
     pub bgp: Option<BgpStatus>,
     pub vpcs: HashMap<String, VpcStatus>,
     pub vpc_peering_counters: HashMap<String, VpcPeeringCounters>,
     pub vpc_counters: HashMap<String, VpcCounters>,
+    /// The state of each port, by interface name.
+    pub ports: BTreeMap<String, PortStatus>,
+    /// The pluggable module of each port that has one, by interface name.
+    pub transceivers: BTreeMap<String, TransceiverStatus>,
 }
 
 impl DataplaneStatus {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-    pub fn add_interface_status(&mut self, s: InterfaceStatus) {
-        self.interface_statuses.push(s);
-    }
-    pub fn add_interface_runtime(&mut self, ifname: String, s: InterfaceRuntimeStatus) {
-        self.interface_runtime.insert(ifname, s);
     }
     pub fn add_vpc(&mut self, name: String, v: VpcStatus) {
         self.vpcs.insert(name, v);
@@ -537,9 +424,23 @@ pub(crate) mod contract {
                 frr_status: Some(d.produce::<LegalValue<FrrStatus>>()?.take()),
                 vpc_counters,
                 vpc_peering_counters,
-                interface_runtime: HashMap::new(), // FIXME implement when tests need this field
-                interface_statuses: Vec::new(),    // FIXME implement when tests need this field
-                vpcs: HashMap::new(),              // FIXME implement when tests need this field
+                vpcs: HashMap::new(), // FIXME implement when tests need this field
+                ports: (0..d.gen_usize(Bound::Included(&0), Bound::Included(&4))?)
+                    .map(|i| {
+                        Some((
+                            format!("eth{i}"),
+                            d.produce::<LegalValue<PortStatus>>()?.take(),
+                        ))
+                    })
+                    .collect::<Option<_>>()?,
+                transceivers: (0..d.gen_usize(Bound::Included(&0), Bound::Included(&4))?)
+                    .map(|i| {
+                        Some((
+                            format!("eth{i}"),
+                            d.produce::<LegalValue<TransceiverStatus>>()?.take(),
+                        ))
+                    })
+                    .collect::<Option<_>>()?,
             }))
         }
     }

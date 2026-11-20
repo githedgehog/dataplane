@@ -18,14 +18,17 @@ mod classes;
 mod control;
 mod idle;
 mod inject;
+mod modules;
 mod placement;
 mod port;
 mod worker;
 mod xstats;
 
 use crate::packet_processor::{PipelineFactory, WorkerContext};
+use concurrency::sync::atomic::Ordering;
 use std::convert::Infallible;
 use std::num::NonZero;
+use std::time::SystemTime;
 
 use args::IdleConfig;
 
@@ -44,9 +47,11 @@ use tracectl::trace_target;
 use tracing::{info, warn};
 use traffic_control::ControlPlane;
 
+pub(crate) use modules::spawn_module_reader;
+
 use super::DriverError;
 use super::load::Load;
-use super::status::{DriverStatusWriter, PortReport, RxQueue};
+use super::status::{DriverStatusWriter, PortReport, RateMeter, RxQueue};
 use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 
 pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
@@ -364,6 +369,11 @@ struct PortTelemetry<'p, 'eal> {
     up: Option<bool>,
     /// Times the link went up or down between readings.
     changes: u64,
+    /// When the link last went up or down, or was first read, by the wall clock.
+    last_change: Option<SystemTime>,
+    /// When the port's counters started, about when the port did.
+    counters_since: SystemTime,
+    rates: RateMeter,
     /// The ids and names of the extended statistics published, and where they are read into.
     xstat_ids: Vec<u64>,
     xstat_names: Vec<String>,
@@ -413,6 +423,9 @@ impl<'p, 'eal> PortTelemetry<'p, 'eal> {
             ),
             up: None,
             changes: 0,
+            last_change: None,
+            counters_since: clock::system_now(),
+            rates: RateMeter::default(),
             xstat_ids: wanted.iter().map(|x| x.id).collect(),
             xstat_names: wanted.iter().map(|x| x.name.clone()).collect(),
             xstat_values: vec![0; wanted.len()],
@@ -451,6 +464,10 @@ fn publish_port_states(
         let up = link.is_some_and(|link| link.up);
         if telemetry.up.is_some_and(|was| was != up) {
             telemetry.changes += 1;
+            telemetry.last_change = Some(clock::system_now());
+        }
+        if telemetry.up.is_none() {
+            telemetry.last_change = Some(clock::system_now());
         }
         telemetry.up = Some(up);
         if let Some(tap_link) = &telemetry.tap_link {
@@ -502,8 +519,14 @@ fn publish_port_states(
             mtu: port.mtu,
             link_up: state.link_up,
             speed_mbps: state.speed_mbps,
+            autoneg: link.map(|link| link.autoneg),
+            full_duplex: link.map(|link| link.full_duplex),
             link_changes: state.link_changes,
+            last_change: telemetry.last_change,
             counters,
+            tx_discards: port.tx_discards.load(Ordering::Relaxed),
+            rates: counters.and_then(|counters| telemetry.rates.update(counters, clock::now())),
+            counters_since: Some(telemetry.counters_since),
             rx_pool: state.rx_pool,
             control_pool: state.control_pool,
             xstats: if telemetry.xstats_failed {
