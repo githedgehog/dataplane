@@ -368,13 +368,13 @@ impl<'p> Worker<'p> {
             if batch.is_empty() {
                 continue;
             }
-            let batch = core::mem::replace(batch, MbufArray::new_empty());
             let attempted = batch.len() as u64;
-            let unsent = self.ports[out_slot].queues.tx.transmit(batch);
-            let refused = unsent.len() as u64;
-            counters.tx += attempted - refused;
+            let sent = self.ports[out_slot].queues.tx.transmit_from(batch) as u64;
+            let refused = attempted - sent;
+            counters.tx += sent;
             if refused > 0 {
-                // Dropping the unsent batch frees packets refused under backpressure.
+                // Free the packets refused under backpressure; the batch is reused next burst.
+                batch.clear();
                 counters.tx_drops += refused;
                 trace!(
                     worker = self.id,
