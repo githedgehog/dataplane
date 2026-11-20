@@ -212,7 +212,7 @@ fn handle_configure(
     revent!(RouterEvent::GotConfigRequest(config.genid()));
 
     /* apply router config */
-    let result = config.apply(db);
+    let result = apply_config(&config, db);
     if result.is_err() {
         revent!(RouterEvent::ConfigFailed(config.genid()));
         let _ = reply_to.send(RouterCtlReply::Result(result)).map_err(|e| {
@@ -236,6 +236,15 @@ fn handle_configure(
 
     /* store the config */
     db.set_config(config);
+}
+
+/// Apply `config` to the routing database, and the latest link state to the interfaces it names.
+fn apply_config(config: &RouterConfig, db: &mut RoutingDb) -> Result<(), RouterError> {
+    config.apply(db)?;
+    // after `apply`, not in it: `apply` verifies the result against `config`, and the link state
+    // can differ from what `config` says
+    replay_link_events(config, db);
+    Ok(())
 }
 
 /// Handle get applied FRR config
@@ -309,6 +318,50 @@ pub(crate) fn handle_ifevent(ev: &EthEvent, iftw: &mut IfTableWriter) -> Result<
     Ok(())
 }
 
+/// Handle a link event from the interface monitor.
+///
+/// The event is remembered even when no interface is configured with its index, so that
+/// [`replay_link_events`] can apply it once a configuration adds one.
+fn handle_link_event(db: &mut RoutingDb, ev: &EthEvent) {
+    debug!("Got interface event: {ev}");
+    db.link_events.record(ev);
+
+    let ifconfig = db
+        .config
+        .as_ref()
+        .and_then(|c| c.get_interface(ev.ifindex()));
+    if let Some(config) = ifconfig {
+        debug!("Ifindex matches configured interface {}", config.name);
+        if let Err(e) = handle_ifevent(ev, &mut db.iftw) {
+            warn!("Failed to process event {ev}: {e}");
+        }
+    } else {
+        debug!(
+            "No interface is configured with ifindex {}; keeping the event until one is",
+            ev.ifindex()
+        );
+    }
+}
+
+/// Bring the interfaces in `config`, just applied, to the link state the kernel last reported.
+///
+/// A configuration describes each interface as the kernel showed it when the configuration was
+/// built. A link event may have been newer than that, and dropped because the interface was not
+/// configured yet; without this, the interface keeps the stale state until the next configuration.
+/// Re-applying an event that is older than the configuration is harmless: whatever changed since
+/// produced an event of its own, which the router handles after this.
+fn replay_link_events(config: &RouterConfig, db: &mut RoutingDb) {
+    for ev in db.link_events.configured_in(config) {
+        debug!(
+            "Applying the last link event for ifindex {}: {ev}",
+            ev.ifindex()
+        );
+        if let Err(e) = handle_ifevent(ev, &mut db.iftw) {
+            warn!("Failed to apply the last link event {ev}: {e}");
+        }
+    }
+}
+
 fn handle_bgp_peer_status_change(bgp_ev: BgpNeighEvent) {
     info!(
         "BGP session with {} (id:{} ASN:{}) changed {} -> {}",
@@ -333,22 +386,7 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
             }
             Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
             Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
-            Ok(RouterCtlMsg::IfEvent(ev)) => {
-                debug!("Got interface event: {ev}");
-                let ifconfig = db
-                    .config
-                    .as_ref()
-                    .and_then(|c| c.get_interface(ev.ifindex()));
-
-                if let Some(config) = &ifconfig {
-                    debug!("Ifindex matches configured interface {}", config.name);
-                    if let Err(e) = handle_ifevent(&ev, &mut db.iftw) {
-                        warn!("Failed to process event {ev}: {e}");
-                    }
-                } else {
-                    debug!("No interface is configured with ifindex {}", ev.ifindex());
-                }
-            }
+            Ok(RouterCtlMsg::IfEvent(ev)) => handle_link_event(db, &ev),
             Ok(RouterCtlMsg::BgpNeighStatus(bgp_ev)) => handle_bgp_peer_status_change(bgp_ev),
             Err(TryRecvError::Empty) => break,
             Err(e) => {
@@ -356,5 +394,133 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+/// The router must end up with the link state the kernel reported last, whether the report came
+/// before or after the configuration that names the interface.
+mod link_event_replay {
+    use super::{apply_config, handle_link_event};
+    use crate::config::tests::{build_router_config, create_routing_database};
+    use crate::interfaces::interface::IfState;
+    use crate::routingdb::RoutingDb;
+    use interface_manager::monitor::EthEvent;
+    use net::eth::mac::{Mac, SourceMac};
+    use net::interface::InterfaceIndex;
+    use std::collections::HashMap;
+
+    /// Ethernet interfaces of `build_router_config`, and an index it does not configure.
+    const CONFIGURED: [u32; 2] = [10, 11];
+    const UNCONFIGURED: u32 = 99;
+
+    fn ifindex(raw: u32) -> InterfaceIndex {
+        InterfaceIndex::try_new(raw).unwrap()
+    }
+
+    /// A unicast, locally administered MAC from arbitrary bytes.
+    fn mac(mut raw: [u8; 6]) -> SourceMac {
+        raw[0] = (raw[0] & 0xfc) | 0x02;
+        SourceMac::new(Mac::from(raw)).unwrap()
+    }
+
+    fn link_event(ifindex: InterfaceIndex, up: bool, mac: SourceMac) -> EthEvent {
+        EthEvent::new(ifindex, up, up, up).set_mac(Some(mac))
+    }
+
+    /// What `handle_configure` does to the routing database.
+    fn configure(db: &mut RoutingDb) {
+        let config = build_router_config();
+        apply_config(&config, db).unwrap();
+        db.set_config(config);
+    }
+
+    fn mac_of(db: &RoutingDb, ifindex: InterfaceIndex) -> SourceMac {
+        let iftable = db.iftw.enter().unwrap();
+        iftable.get_interface(ifindex).unwrap().get_mac().unwrap()
+    }
+
+    fn admin_state_of(db: &RoutingDb, ifindex: InterfaceIndex) -> IfState {
+        let iftable = db.iftw.enter().unwrap();
+        iftable.get_interface(ifindex).unwrap().admin_state
+    }
+
+    /// githedgehog/fabricator#2268: the driver gave a tap its port's MAC after the first
+    /// configuration had read the tap's random one, and before the router had that configuration.
+    #[test]
+    fn a_mac_reported_before_the_first_config_replaces_the_one_it_was_built_with() {
+        let mut db = create_routing_database();
+        let port = ifindex(CONFIGURED[1]);
+        let stale = build_router_config()
+            .get_interface(port)
+            .unwrap()
+            .iftype
+            .get_mac()
+            .unwrap();
+        let real = SourceMac::try_from("0c:20:12:fe:01:02").unwrap();
+        assert_ne!(stale, real);
+
+        handle_link_event(&mut db, &link_event(port, true, real));
+        configure(&mut db);
+
+        assert_eq!(mac_of(&db, port), real);
+    }
+
+    #[test]
+    fn the_last_reported_link_state_wins_wherever_the_configs_fall() {
+        bolero::check!()
+            .with_type::<(Vec<(u8, bool, [u8; 6])>, u8, u8)>()
+            .for_each(|(events, first, second)| {
+                let at_first = usize::from(*first) % (events.len() + 1);
+                let at_second = at_first.max(usize::from(*second) % (events.len() + 1));
+                let events: Vec<EthEvent> = events
+                    .iter()
+                    .map(|&(which, up, raw)| {
+                        let raw_ifindex = match which % 3 {
+                            0 => CONFIGURED[0],
+                            1 => CONFIGURED[1],
+                            _ => UNCONFIGURED,
+                        };
+                        link_event(ifindex(raw_ifindex), up, mac(raw))
+                    })
+                    .collect();
+
+                // the router hears every event, with a configuration arriving between any two of
+                // them; the second one is built from the same stale view as the first
+                let mut db = create_routing_database();
+                for (i, event) in events.iter().enumerate() {
+                    if i == at_first {
+                        configure(&mut db);
+                    }
+                    if i == at_second {
+                        configure(&mut db);
+                    }
+                    handle_link_event(&mut db, event);
+                }
+                if at_first == events.len() {
+                    configure(&mut db);
+                }
+                if at_second == events.len() {
+                    configure(&mut db);
+                }
+
+                let last: HashMap<InterfaceIndex, &EthEvent> =
+                    events.iter().map(|ev| (ev.ifindex(), ev)).collect();
+                let config = build_router_config();
+                for raw in CONFIGURED {
+                    let port = ifindex(raw);
+                    let configured = config.get_interface(port).unwrap();
+                    let (want_mac, want_admin) = match last.get(&port) {
+                        Some(ev) => (ev.mac().unwrap(), IfState::from(ev.ifup())),
+                        None => (configured.iftype.get_mac().unwrap(), configured.admin_state),
+                    };
+                    assert_eq!(mac_of(&db, port), want_mac, "mac of ifindex {port}");
+                    assert_eq!(
+                        admin_state_of(&db, port),
+                        want_admin,
+                        "admin of ifindex {port}"
+                    );
+                }
+            });
     }
 }
