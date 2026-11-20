@@ -4,11 +4,10 @@
 //! Transmit queue configuration and management.
 
 use crate::dev::DevIndex;
-use crate::mem::{MBUF_BURST, MbufArray};
+use crate::mem::MbufArray;
 use crate::socket::SocketId;
 use crate::{dev, socket};
 use core::marker::PhantomData;
-use core::ptr::null_mut;
 use errno::ErrorCode;
 use std::cmp::min;
 use tracing::trace;
@@ -167,47 +166,49 @@ impl<'dev> TxQueue<'dev> {
 
     /// Transmit a batch, returning unsent packets for retry or disposal.
     ///
-    /// The PMD owns accepted packets. Stop when the queue makes no progress.
+    /// The PMD owns accepted packets. Stop when the queue makes no progress. See
+    /// [`TxQueue::transmit_from`], which keeps the batch in place.
     #[must_use = "retry or drop the unsent packets"]
+    pub fn transmit(&mut self, mut packets: MbufArray<'dev>) -> MbufArray<'dev> {
+        self.transmit_from(&mut packets);
+        packets
+    }
+
+    /// Transmit the packets in `packets`, returning how many the queue accepted.
+    ///
+    /// The PMD owns accepted packets; they leave `packets` from the front. Refused packets stay
+    /// in `packets`, in order, for retry or disposal. Stop when the queue makes no progress.
+    ///
+    /// The queue reads the batch's own storage, so a caller that keeps its batch (a worker's
+    /// per-port transmit batch) moves no mbuf pointers unless the queue refuses some.
     #[tracing::instrument(level = "trace", skip(packets))]
-    pub fn transmit(&mut self, packets: MbufArray<'dev>) -> MbufArray<'dev> {
-        let len = packets.len();
-        if len == 0 {
-            return MbufArray::new_empty();
+    pub fn transmit_from<const N: usize>(&mut self, packets: &mut MbufArray<'dev, N>) -> usize {
+        let dev = self.dev.as_u16();
+        let queue = self.config.queue_index.as_u16();
+        // SAFETY: `rte_eth_tx_burst` takes ownership of the first `nb_tx` mbufs it is offered and
+        // does not write the array; each call is offered only mbufs no earlier call took, and
+        // `sent` never exceeds `len`.
+        unsafe {
+            packets.send_from_front(|mbufs, len| {
+                let mut sent = 0;
+                while sent < len {
+                    trace!("Transmitting packets to tx queue {queue} on dev {dev}");
+                    let burst = u16::try_from(min(Self::PKT_BURST_SIZE, len - sent)).unwrap_or(0);
+                    let nb_tx = usize::from(dpdk_sys::rte_eth_tx_burst(
+                        dev,
+                        queue,
+                        mbufs.add(sent),
+                        burst,
+                    ));
+                    trace!("Transmitted {nb_tx} packets from tx queue {queue} on dev {dev}");
+                    if nb_tx == 0 {
+                        break;
+                    }
+                    sent += nb_tx;
+                }
+                sent
+            })
         }
-        // The batch fits in `raw`; `into_raw` transfers ownership without freeing.
-        let mut raw = [null_mut::<dpdk_sys::rte_mbuf>(); MBUF_BURST];
-        for (slot, mbuf) in raw.iter_mut().zip(packets) {
-            *slot = mbuf.into_raw();
-        }
-        let mut offset = 0;
-        while offset < len {
-            trace!(
-                "Transmitting packets to tx queue {queue} on dev {dev}",
-                queue = self.config.queue_index.as_u16(),
-                dev = self.dev.as_u16()
-            );
-            let nb_tx = unsafe {
-                dpdk_sys::rte_eth_tx_burst(
-                    self.dev.as_u16(),
-                    self.config.queue_index.as_u16(),
-                    raw.as_mut_ptr().add(offset),
-                    min(Self::PKT_BURST_SIZE, len - offset) as u16,
-                )
-            } as usize;
-            trace!(
-                "Transmitted {nb_tx} packets from tx queue {queue} on dev {dev}",
-                queue = self.config.queue_index.as_u16(),
-                dev = self.dev.as_u16()
-            );
-            if nb_tx == 0 {
-                break;
-            }
-            offset += nb_tx;
-        }
-        // SAFETY: the PMD owns [0, offset). The tail remains live and exclusively
-        // ours, and its length is at most MBUF_BURST.
-        unsafe { MbufArray::from_raw_ptrs(&raw[offset..len]) }
     }
 }
 

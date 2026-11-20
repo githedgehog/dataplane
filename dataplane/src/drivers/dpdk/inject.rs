@@ -88,7 +88,7 @@ impl<'p> Injector<'p> {
         // Filled and pushed in one pass, so an mbuf whose frame could not be copied is simply not
         // pushed -- and being owned by this loop, it is freed when the iteration drops it rather
         // than transmitted empty.
-        let mut batch = MbufArray::new_empty();
+        let mut batch: MbufArray<'_> = MbufArray::new_empty();
         for (mut mbuf, frame) in mbufs.into_iter().zip(frames) {
             let Ok(len) = u16::try_from(frame.len()) else {
                 counters.inject_drops += 1;
@@ -124,8 +124,8 @@ impl<'p> Injector<'p> {
         if attempted == 0 {
             return;
         }
-        let unsent = tx.transmit(batch);
-        let refused = unsent.len() as u64;
+        // Refused frames stay in `batch`, which frees them when it drops.
+        let refused = attempted - tx.transmit_from(&mut batch) as u64;
         counters.injected += attempted - refused;
         if refused > 0 {
             counters.inject_drops += refused;

@@ -1130,6 +1130,45 @@ impl<'eal, const N: usize> MbufArray<'eal, N> {
         unsafe { self.bufs.set_len(written) };
     }
 
+    /// Free every held mbuf and leave the array empty.
+    pub fn clear(&mut self) {
+        self.free_all();
+    }
+
+    /// Offer the held mbufs to `send` as a C array of `len` pointers. `send` returns how many,
+    /// from the front, it took ownership of; the rest move to the front, in order.
+    ///
+    /// The mbufs are offered in place: nothing is copied unless `send` leaves some behind.
+    ///
+    /// # Safety
+    /// `send` must return at most `len`, must have taken ownership of exactly the first `n` mbufs
+    /// it returns, and must not write to the array.
+    pub(crate) unsafe fn send_from_front(
+        &mut self,
+        send: impl FnOnce(*mut *mut dpdk_sys::rte_mbuf, usize) -> usize,
+    ) -> usize {
+        let len = self.bufs.len();
+        if len == 0 {
+            return 0;
+        }
+        // `Mbuf` is `repr(transparent)` over a `NonNull<rte_mbuf>` plus a zero-sized brand, so
+        // the array's storage has the layout of `[*mut rte_mbuf; N]` and can be handed to C.
+        let slots = self.bufs.as_mut_ptr().cast::<*mut dpdk_sys::rte_mbuf>();
+        let sent = send(slots, len);
+        debug_assert!(sent <= len, "sender took {sent} of {len} mbufs");
+        let left = len - sent;
+        // SAFETY: the caller's contract is that `send` now owns the first `sent` mbufs, so those
+        // slots must leave the array without running `Mbuf::drop`: move the `left` live mbufs
+        // over them, then shorten the array to those.
+        unsafe {
+            if left > 0 && sent > 0 {
+                core::ptr::copy(slots.add(sent), slots, left);
+            }
+            self.bufs.set_len(left);
+        }
+        sent
+    }
+
     /// Build an array from raw mbuf pointers.
     ///
     /// # Safety
@@ -1280,6 +1319,53 @@ mod pool_tests {
         let a = pool("distinct_a", 511);
         let b = pool("distinct_b", 511);
         assert_ne!(a, b);
+    }
+
+    /// Sending from the front, for every split a queue can make: the taken mbufs leave the array
+    /// without being freed, and the rest stay live, in order.
+    #[test]
+    #[with_eal]
+    fn sending_from_the_front_keeps_the_refused_mbufs_in_order() {
+        const LEN: usize = 8;
+        let pool = pool("send_from_front", 63);
+        let baseline = pool.in_use();
+        for take in 0..=LEN {
+            let mut burst = pool.alloc_bulk(LEN).expect("alloc_bulk failed");
+            let before: Vec<_> = burst.iter().map(|mbuf| mbuf.raw.as_ptr()).collect();
+            let mut taken = Vec::new();
+            // SAFETY: the sender takes ownership of exactly the first `take` mbufs (freed below,
+            // standing in for the PMD) and does not write the array.
+            let sent = unsafe {
+                burst.send_from_front(|mbufs, len| {
+                    assert_eq!(len, LEN);
+                    taken.extend((0..take).map(|i| *mbufs.add(i)));
+                    take
+                })
+            };
+            assert_eq!(sent, take);
+            assert_eq!(
+                taken,
+                before[..take],
+                "the sender is offered the array in order"
+            );
+            let after: Vec<_> = burst.iter().map(|mbuf| mbuf.raw.as_ptr()).collect();
+            assert_eq!(after, before[take..], "the refused mbufs stay, in order");
+            assert_eq!(
+                pool.in_use(),
+                baseline + LEN as u32,
+                "nothing is freed by sending"
+            );
+            for raw in taken {
+                // SAFETY: the sender owns these, and nothing else frees them.
+                unsafe { dpdk_sys::rte_pktmbuf_free(raw) };
+            }
+            drop(burst);
+            assert_eq!(
+                pool.in_use(),
+                baseline,
+                "taken and refused mbufs are each freed once -- higher means a leak"
+            );
+        }
     }
 
     // Occupancy detects leaks here, but detecting double frees requires DPDK debug checks.
