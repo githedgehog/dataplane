@@ -13,7 +13,7 @@ use std::sync::Arc; // nosemgrep: rust-no-direct-std-sync-import
 
 use arrayvec::ArrayVec;
 use lookup::Lookup;
-use match_action::MatchKey;
+use match_action::{FieldSpec, MatchKey};
 
 use crate::dpdk::dyn_table::DynClassifier;
 use crate::dpdk::layout::DpdkLayout;
@@ -41,6 +41,8 @@ where
     classifier: Arc<dyn DynClassifier>,
     actions: Vec<A>,
     layout: DpdkLayout,
+    /// See [`direct_pack_shift`].
+    pack_shift: Option<usize>,
     _key: PhantomData<fn(K)>,
 }
 
@@ -86,10 +88,12 @@ where
                 limit: MAX_USER_KEY_BYTES,
             });
         }
+        let pack_shift = direct_pack_shift(K::field_specs(), K::KEY_SIZE, &layout);
         Ok(Self {
             classifier,
             actions,
             layout,
+            pack_shift,
             _key: PhantomData,
         })
     }
@@ -133,7 +137,7 @@ where
             let _ = arena.try_extend_from_slice(&ZEROS[..stride]);
         }
         for (i, key) in keys.iter().enumerate() {
-            pack_user_to_dpdk(key, &self.layout, &mut arena[i * stride..(i + 1) * stride]);
+            self.pack(key, &mut arena[i * stride..(i + 1) * stride]);
         }
         let mut ptrs: ArrayVec<*const u8, MAX_BATCH> = ArrayVec::new();
         for i in 0..keys.len() {
@@ -155,6 +159,31 @@ where
     }
 }
 
+impl<K, A> DpdkAclLookup<K, A>
+where
+    K: MatchKey,
+{
+    fn pack(&self, key: &K, dst: &mut [u8]) {
+        pack_key(key, &self.layout, self.pack_shift, dst);
+    }
+}
+
+/// Pack `key` into `dst` (`layout.stride` zeroed bytes). Same bytes as [`pack_user_to_dpdk`];
+/// `shift` must come from [`direct_pack_shift`] for this key type and layout.
+fn pack_key<K: MatchKey>(key: &K, layout: &DpdkLayout, shift: Option<usize>, dst: &mut [u8]) {
+    match shift {
+        Some(shift) => {
+            // Write the key `shift` bytes in: that puts every field but the first where rte_acl
+            // reads it. Then move the first field's byte to 0. Its byte at `shift` falls in the
+            // unused bytes between field 0 and field 1, so clear it.
+            key.as_key_into(&mut dst[shift..shift + K::KEY_SIZE]);
+            dst[0] = dst[shift];
+            dst[shift] = 0;
+        }
+        None => pack_user_to_dpdk(key, layout, dst),
+    }
+}
+
 impl<K, A> Lookup<K, A> for DpdkAclLookup<K, A>
 where
     K: MatchKey,
@@ -164,7 +193,7 @@ where
         let mut buf: ArrayVec<u8, MAX_USER_KEY_BYTES> = ArrayVec::new();
         // Touch only `stride` bytes, zeroed from rodata.
         let _ = buf.try_extend_from_slice(&ZEROS[..stride]);
-        pack_user_to_dpdk(key, &self.layout, &mut buf);
+        self.pack(key, &mut buf);
         // SAFETY: `buf` holds `stride >= min_input_size` valid bytes (invariant
         // established in `new`).
         let user_data = unsafe { self.classifier.classify_one(&buf).ok()? };
@@ -224,6 +253,41 @@ where
     }
 }
 
+/// The offset at which a key's own encoding can be written straight into a lookup buffer, if the
+/// layout allows it.
+///
+/// Packing field by field costs a bounds-checked, runtime-length copy per field. Keys usually
+/// have their fields back to back, and the planner then keeps fields 1.. back to back too, behind
+/// the 1-byte field 0 and the 3 unused bytes after it. Every field but the first then sits at
+/// the same distance, `shift`, from its place in the key, and packing is one `as_key_into` at
+/// `shift` plus a byte move for field 0 (see [`DpdkAclLookup::pack`]). Returns `None` for any
+/// other shape, which packs field by field.
+fn direct_pack_shift(specs: &[FieldSpec], key_size: usize, layout: &DpdkLayout) -> Option<usize> {
+    let (first, rest) = specs.split_first()?;
+    let dpdk_offset = |user_idx: usize| {
+        let slot = *layout.user_to_dpdk.get(user_idx)?;
+        Some(layout.field_defs.get(slot)?.offset() as usize)
+    };
+    if first.offset != 0 || first.size != 1 || dpdk_offset(0)? != 0 {
+        return None;
+    }
+    let shift = match rest.first() {
+        Some(second) => dpdk_offset(1)?.checked_sub(second.offset)?,
+        None => 1,
+    };
+    // Field 0's byte lands at `shift`. It must not be a byte rte_acl reads (offsets 1..4 are
+    // never field bytes: field 1 starts at 4) nor clobber byte 0 before it is moved.
+    if !(1..4).contains(&shift) {
+        return None;
+    }
+    let same_shift = rest
+        .iter()
+        .enumerate()
+        .all(|(i, spec)| dpdk_offset(i + 1).is_some_and(|off| off == spec.offset + shift));
+    // The key's own bytes past its last field (if any) must still fit the buffer.
+    (same_shift && shift + key_size <= layout.stride).then_some(shift)
+}
+
 /// A planned layout whose stride cannot back a sound lookup. See [`DpdkAclLookup::new`].
 #[derive(Debug, thiserror::Error)]
 pub enum StrideError {
@@ -234,4 +298,113 @@ pub enum StrideError {
     TooSmall { stride: usize, required: usize },
     #[error("DpdkAclLookup layout stride={stride} exceeds MAX_USER_KEY_BYTES={limit}")]
     TooLarge { stride: usize, limit: usize },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dpdk::layout::plan_layout;
+    use core::net::{Ipv4Addr, Ipv6Addr};
+
+    #[derive(MatchKey, Debug, Clone, Copy)]
+    struct BackToBack<I> {
+        #[mask]
+        proto: u8,
+        #[exact]
+        src_vni: u32,
+        #[exact]
+        dst_vni: u32,
+        #[prefix]
+        src: I,
+        #[prefix]
+        dst: I,
+        #[range]
+        sport: u16,
+        #[range]
+        dport: u16,
+        #[mask]
+        flags: u8,
+    }
+
+    /// The planner pads before the `u32`, so fields 1.. do not keep one shift.
+    #[derive(MatchKey, Debug, Clone, Copy)]
+    struct Padded {
+        #[exact]
+        proto: u8,
+        #[range]
+        port: u16,
+        #[exact]
+        tag: u32,
+    }
+
+    fn packed<K: MatchKey>(key: &K, shift: Option<usize>) -> Vec<u8> {
+        let layout = plan_layout(K::field_specs()).expect("plan");
+        let mut dst = vec![0; layout.stride];
+        pack_key(key, &layout, shift, &mut dst);
+        dst
+    }
+
+    fn shift_of<K: MatchKey>() -> Option<usize> {
+        let layout = plan_layout(K::field_specs()).expect("plan");
+        direct_pack_shift(K::field_specs(), K::KEY_SIZE, &layout)
+    }
+
+    #[test]
+    fn back_to_back_keys_pack_directly() {
+        assert_eq!(shift_of::<BackToBack<Ipv4Addr>>(), Some(3));
+        assert_eq!(shift_of::<BackToBack<Ipv6Addr>>(), Some(3));
+    }
+
+    #[test]
+    fn padded_keys_pack_field_by_field() {
+        assert_eq!(shift_of::<Padded>(), None);
+    }
+
+    /// Direct packing writes the same bytes as packing field by field.
+    #[test]
+    fn direct_packing_matches_field_by_field() {
+        type Fields<I> = (u8, u32, u32, I, I, u16, u16, u8);
+        fn check<I: Copy>(f: Fields<I>)
+        where
+            BackToBack<I>: MatchKey,
+        {
+            let key = BackToBack {
+                proto: f.0,
+                src_vni: f.1,
+                dst_vni: f.2,
+                src: f.3,
+                dst: f.4,
+                sport: f.5,
+                dport: f.6,
+                flags: f.7,
+            };
+            let shift = shift_of::<BackToBack<I>>();
+            assert!(shift.is_some());
+            assert_eq!(packed(&key, shift), packed(&key, None));
+        }
+        bolero::check!().with_type::<Fields<u32>>().for_each(|&f| {
+            check((
+                f.0,
+                f.1,
+                f.2,
+                Ipv4Addr::from(f.3),
+                Ipv4Addr::from(f.4),
+                f.5,
+                f.6,
+                f.7,
+            ));
+        });
+        bolero::check!().with_type::<Fields<u128>>().for_each(|&f| {
+            check((
+                f.0,
+                f.1,
+                f.2,
+                Ipv6Addr::from(f.3),
+                Ipv6Addr::from(f.4),
+                f.5,
+                f.6,
+                f.7,
+            ));
+        });
+    }
 }
