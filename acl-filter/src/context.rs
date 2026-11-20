@@ -45,7 +45,7 @@ struct PeeringAclRuleSet {
     v4: Vec<PeeringAclRule>,
     v6: Vec<PeeringAclRule>,
 
-    default_actions: HashMap<(Vni, Vni), AclAction>,
+    default_actions: DefaultActions,
 }
 
 impl PeeringAclRuleSet {
@@ -332,11 +332,17 @@ impl LookupResult {
     }
 }
 
+/// Default action per (source, destination) VNI pair: the VPC pairs that have an ACL.
+///
+/// Looked up for every overlay packet. The keys come from the configuration, so a fast hasher is
+/// enough: packets can choose which key to look up, but not add colliding keys.
+type DefaultActions = HashMap<(Vni, Vni), AclAction, ahash::RandomState>;
+
 #[derive(Debug)]
 pub(super) struct AclTables {
     pub(super) v4: Table<AclKey<Ipv4Addr>, LookupResult>,
     pub(super) v6: Table<AclKey<Ipv6Addr>, LookupResult>,
-    pub(super) default_actions: HashMap<(Vni, Vni), AclAction>,
+    pub(super) default_actions: DefaultActions,
 }
 
 impl Default for AclTables {
@@ -344,7 +350,7 @@ impl Default for AclTables {
         Self {
             v4: Table::empty(),
             v6: Table::empty(),
-            default_actions: HashMap::new(),
+            default_actions: DefaultActions::default(),
         }
     }
 }

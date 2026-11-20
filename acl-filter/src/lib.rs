@@ -58,13 +58,23 @@ impl AclFilter {
         //    packets of a VPC pair with an ACL (one with a default action) need a lookup.
         let mut summaries: [Option<PacketSummary>; MAX_BATCH] = [const { None }; MAX_BATCH];
         let mut defaults: [Option<AclAction>; MAX_BATCH] = [None; MAX_BATCH];
+        // A burst rarely spans more than a VPC pair or two: reuse the last pair's lookup.
+        let mut last: Option<((Vni, Vni), Option<AclAction>)> = None;
         for (i, packet) in chunk.iter_mut().enumerate() {
             if packet.is_done() || !packet.meta().is_overlay() {
                 continue;
             }
             match PacketSummary::try_from(&*packet) {
                 Ok(summary) => {
-                    defaults[i] = tables.find_default_action(summary.src_vni, summary.dst_vni);
+                    let pair = (summary.src_vni, summary.dst_vni);
+                    defaults[i] = match last {
+                        Some((seen, default)) if seen == pair => default,
+                        _ => {
+                            let default = tables.find_default_action(pair.0, pair.1);
+                            last = Some((pair, default));
+                            default
+                        }
+                    };
                     summaries[i] = Some(summary);
                 }
                 Err(reason) => packet.done(reason),
