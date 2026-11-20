@@ -44,6 +44,16 @@ pub fn advance_flow<Buf: PacketBufferMut>(
     Some(next)
 }
 
+/// Bring the expiry of both halves of the pair that `flow` is part of in to at most `duration`
+/// from now. [`advance_flow`] only ever moves an expiry later; this is for a status that calls for
+/// a shorter lifetime than the one before it.
+pub fn cap_pair_expiry(flow: &FlowInfo, duration: Duration) {
+    flow.cap_expiry(duration);
+    if let Some(related) = flow.related.as_ref().and_then(Weak::upgrade) {
+        related.cap_expiry(duration);
+    }
+}
+
 fn reset_pair_expiry(flow: &FlowInfo, duration: Duration) {
     // An error means the expiry was already later, which is fine.
     let _ = flow.reset_expiry_unchecked(duration);

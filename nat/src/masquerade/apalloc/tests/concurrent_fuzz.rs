@@ -535,7 +535,7 @@ fn reaping_a_subscriber_races_a_fresh_mapping_on_it_without_corruption() {
         let reaper = {
             let subscriber = subscriber.clone();
             let subscribers = pool.subscribers().clone();
-            let mapping1 = mapping1.clone();
+            let mapping1 = mapping1.shared();
             thread::spawn(move || {
                 reap_expired_mapping(&subscriber, subscriber_ip, key1, &mapping1, &subscribers);
             })
@@ -558,4 +558,216 @@ fn reaping_a_subscriber_races_a_fresh_mapping_on_it_without_corruption() {
             "the racing reap and fresh-mapping calls handed out the same tuple twice"
         );
     });
+}
+
+/// Two workers new to an address whose every block is handed out, with one port free in each, both
+/// get a port, and not the same one.
+#[concurrency::model_test]
+fn workers_share_the_free_ports_of_handed_out_blocks() {
+    use crate::masquerade::apalloc::alloc::{IpAllocator, NatPool};
+    use crate::masquerade::apalloc::reserved::ReservedPorts;
+    use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
+
+    concurrency::stress(|| {
+        // Port forwarding claims all but the top two blocks, keeping the model small.
+        let claims = PrefixPortsSet::from([PrefixWithOptionalPorts::new(
+            "10.1.0.0/32".into(),
+            Some(PortRange::new(1024, 65023).unwrap_or_else(|_| unreachable!())),
+        )]);
+        let start = u128::from(u32::from(Ipv4Addr::new(10, 1, 0, 0)));
+        let allocator = IpAllocator::<Ipv4Addr>::new(
+            NatPool::for_range(
+                AddrInterval::new(start, start),
+                ReservedPorts::from_set(&claims),
+                true,
+            ),
+            false,
+        );
+        let mut held: Vec<_> = (0..512)
+            .map(|_| allocator.allocate(false).expect("two blocks have room"))
+            .collect();
+        assert!(allocator.allocate(false).is_err(), "both blocks are full");
+        // Free one port in each block; both blocks stay handed out.
+        drop(held.swap_remove(0));
+        drop(held.pop());
+
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let allocator = allocator.clone();
+                thread::spawn(move || allocator.allocate(false))
+            })
+            .collect();
+        let drawn: Vec<_> = workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .expect("the worker panicked")
+                    .expect("a port was free for each worker")
+            })
+            .collect();
+        let ports: BTreeSet<u16> = drawn.iter().map(|port| port.port().as_u16()).collect();
+        assert_eq!(ports.len(), 2, "two workers were handed the same port");
+        assert!(
+            allocator.allocate(false).is_err(),
+            "the address is full again"
+        );
+        drop((drawn, held));
+    });
+}
+
+/// Two workers whose current block is the same handed-out block, with one port left in it, both
+/// ask for another port. Whichever loses the race for that port must find one in the other block,
+/// not give up on the address.
+///
+/// Each address in the pool is in use, so giving up on it fails the allocation outright.
+#[concurrency::model_test]
+fn the_worker_that_loses_a_shared_block_finds_another() {
+    use crate::masquerade::apalloc::alloc::{IpAllocator, NatPool};
+    use crate::masquerade::apalloc::reserved::ReservedPorts;
+    use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
+
+    concurrency::stress(|| {
+        // Port forwarding claims all but the top two blocks, keeping the model small.
+        let claims = PrefixPortsSet::from([PrefixWithOptionalPorts::new(
+            "10.1.0.0/32".into(),
+            Some(PortRange::new(1024, 65023).unwrap_or_else(|_| unreachable!())),
+        )]);
+        let start = u128::from(u32::from(Ipv4Addr::new(10, 1, 0, 0)));
+        let allocator = IpAllocator::<Ipv4Addr>::new(
+            NatPool::for_range(
+                AddrInterval::new(start, start),
+                ReservedPorts::from_set(&claims),
+                true,
+            ),
+            false,
+        );
+        let held: Vec<_> = (0..512)
+            .map(|_| allocator.allocate(false).expect("two blocks have room"))
+            .collect();
+        // Free three ports in each block. Both blocks stay handed out, so the workers below both
+        // take whichever comes first in the block map, and it has room for three: one port each,
+        // then one for whichever worker is quicker.
+        let (mut low, mut high): (Vec<_>, Vec<_>) = held
+            .into_iter()
+            .partition(|port| port.port().as_u16() < 65280);
+        low.truncate(low.len() - 3);
+        high.truncate(high.len() - 3);
+
+        // Both workers draw their first port before either draws its second.
+        let first_drawn = Arc::new(concurrency::sync::Barrier::new(2));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let allocator = allocator.clone();
+                let first_drawn = first_drawn.clone();
+                thread::spawn(move || {
+                    let first = allocator.allocate(false);
+                    first_drawn.wait();
+                    let second = allocator.allocate(false);
+                    (first, second)
+                })
+            })
+            .collect();
+        let drawn: Vec<_> = workers
+            .into_iter()
+            .flat_map(|worker| {
+                let (first, second) = worker.join().expect("the worker panicked");
+                [first, second]
+            })
+            .map(|port| port.expect("the address had six free ports for four requests"))
+            .collect();
+        let ports: BTreeSet<u16> = drawn.iter().map(|port| port.port().as_u16()).collect();
+        assert_eq!(ports.len(), 4, "two requests were handed the same port");
+        drop((drawn, low, high));
+    });
+}
+
+/// Eight workers new to an address whose every block is handed out, with one port free in each,
+/// all ask at once. They all try the same block first, and each one that loses it must try the
+/// next, until every one has a port: none may give up on the address while a port is free.
+///
+/// Under shuttle this also runs round-robin, which keeps the workers in lockstep: the random and
+/// PCT schedules rarely make more than one or two of them lose.
+#[concurrency::model_test]
+fn workers_racing_for_the_last_ports_all_get_one() {
+    concurrency::stress(workers_race_for_the_last_ports);
+    #[cfg(feature = "shuttle")]
+    shuttle::Runner::new(
+        shuttle::scheduler::RoundRobinScheduler::new(1),
+        concurrency::shuttle_config(),
+    )
+    .run(workers_race_for_the_last_ports);
+}
+
+fn workers_race_for_the_last_ports() {
+    use crate::masquerade::apalloc::alloc::{IpAllocator, NatPool};
+    use crate::masquerade::apalloc::reserved::ReservedPorts;
+    use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
+
+    const WORKERS: u16 = 8;
+
+    {
+        // Port forwarding claims every block below the top WORKERS, and all but the first two
+        // ports of each of those.
+        let first = 256 - WORKERS;
+        let address = Ipv4Addr::new(10, 1, 0, 0);
+        let claim = |start, end| {
+            PrefixWithOptionalPorts::new(
+                "10.1.0.0/32".into(),
+                Some(PortRange::new(start, end).unwrap_or_else(|_| unreachable!())),
+            )
+        };
+        let claims: PrefixPortsSet = std::iter::once(claim(1024, first * 256 - 1))
+            .chain((first..256).map(|block| claim(block * 256 + 2, block * 256 + 255)))
+            .collect();
+        let start = u128::from(u32::from(address));
+        let allocator = IpAllocator::<Ipv4Addr>::new(
+            NatPool::for_range(
+                AddrInterval::new(start, start),
+                ReservedPorts::from_set(&claims),
+                true,
+            ),
+            false,
+        );
+        // Holding the first port of each block hands it out and leaves it one port free.
+        let held: Vec<_> = (first..256)
+            .map(|block| {
+                allocator
+                    .reserve(address, port(block * 256))
+                    .expect("the port is not claimed")
+            })
+            .collect();
+
+        let ready = Arc::new(concurrency::sync::Barrier::new(usize::from(WORKERS)));
+        let workers: Vec<_> = (0..WORKERS)
+            .map(|_| {
+                let allocator = allocator.clone();
+                let ready = ready.clone();
+                thread::spawn(move || {
+                    ready.wait();
+                    allocator.allocate(false)
+                })
+            })
+            .collect();
+        let drawn: Vec<_> = workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .expect("the worker panicked")
+                    .expect("a port was free for each worker")
+            })
+            .collect();
+        let ports: BTreeSet<u16> = drawn.iter().map(|port| port.port().as_u16()).collect();
+        assert_eq!(
+            ports.len(),
+            usize::from(WORKERS),
+            "two workers were handed the same port"
+        );
+        assert!(
+            allocator.allocate(false).is_err(),
+            "the address is full again"
+        );
+        drop((drawn, held));
+    }
 }
