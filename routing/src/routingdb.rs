@@ -7,6 +7,7 @@ use crate::config::RouterConfig;
 use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibtable::FibTableWriter;
 use crate::interfaces::iftablerw::IfTableWriter;
+use crate::interfaces::linkstate::LinkStates;
 use crate::rib::vrftable::VrfTable;
 use tracing::debug;
 
@@ -17,6 +18,8 @@ pub(crate) struct RoutingDb {
     pub vtep: Option<Vtep>,
     pub iftw: IfTableWriter,
     pub config: Option<RouterConfig>,
+    /// The latest observation of the kernel's links, once there is one
+    pub links: Option<LinkStates>,
 }
 
 #[allow(clippy::new_without_default)]
@@ -29,6 +32,7 @@ impl RoutingDb {
             vtep: None,
             iftw,
             config: None,
+            links: None,
         }
     }
     pub fn set_config(&mut self, config: RouterConfig) {
