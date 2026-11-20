@@ -150,9 +150,49 @@ impl Display for Age {
     }
 }
 
+/// A link speed, given in Mbit/s, the way switches write it: whole or fractional gigabits
+/// ("25G", "2.5G"), or megabits below one ("100M").
+pub struct PrettySpeed(u32);
+impl PrettySpeed {
+    #[must_use]
+    pub fn new(mbps: u32) -> Self {
+        Self(mbps)
+    }
+}
+impl Display for PrettySpeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mbps = self.0;
+        if mbps < 1000 {
+            write!(f, "{mbps}M")
+        } else if mbps.is_multiple_of(1000) {
+            write!(f, "{}G", mbps / 1000)
+        } else {
+            let fraction = format!("{:03}", mbps % 1000);
+            write!(f, "{}.{}G", mbps / 1000, fraction.trim_end_matches('0'))
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use super::{Frame, Heading};
+    use super::{Frame, Heading, PrettySpeed};
+
+    /// Speeds that are not whole gigabits keep their fraction, and slow links show megabits.
+    #[test]
+    fn speeds_are_not_truncated() {
+        for (mbps, shown) in [
+            (10, "10M"),
+            (100, "100M"),
+            (1_000, "1G"),
+            (2_500, "2.5G"),
+            (1_250, "1.25G"),
+            (25_000, "25G"),
+            (400_000, "400G"),
+        ] {
+            assert_eq!(PrettySpeed::new(mbps).to_string(), shown);
+        }
+    }
+
     #[test]
     fn test_heading() {
         println!("{}", Heading("Hi there!"));

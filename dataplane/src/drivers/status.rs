@@ -7,7 +7,7 @@
 //! The supervisor is the sole writer: once per check it builds a fresh
 //! [`DriverStatus`] and publishes it through a [`DriverStatusWriter`].
 
-use common::cliprovider::{CliDataProvider, Heading, PrettyDuration};
+use common::cliprovider::{CliDataProvider, Heading, PrettyDuration, PrettySpeed};
 use concurrency::slot::Slot;
 use concurrency::sync::Arc;
 
@@ -290,9 +290,10 @@ impl CliDataProvider for DpdkPortsCli {
                 port.mac,
                 port.mtu,
                 if port.link_up { "up" } else { "down" },
-                port.speed_mbps
-                    .filter(|_| port.link_up)
-                    .map_or_else(|| "-".to_string(), speed),
+                port.speed_mbps.filter(|_| port.link_up).map_or_else(
+                    || "-".to_string(),
+                    |mbps| PrettySpeed::new(mbps).to_string()
+                ),
                 flag(port.full_duplex.filter(|_| port.link_up), "full", "half"),
                 flag(port.autoneg, "on", "off"),
                 port.link_changes,
@@ -313,19 +314,6 @@ fn ago(at: Option<SystemTime>) -> String {
             || "-".to_string(),
             |ago| PrettyDuration::new(ago).to_string(),
         )
-}
-
-/// A link speed in Mbit/s as the ports table shows it: whole or fractional gigabits, or megabits
-/// below one.
-fn speed(mbps: u32) -> String {
-    if mbps < 1000 {
-        format!("{mbps}M")
-    } else if mbps.is_multiple_of(1000) {
-        format!("{}G", mbps / 1000)
-    } else {
-        let fraction = format!("{:03}", mbps % 1000);
-        format!("{}.{}G", mbps / 1000, fraction.trim_end_matches('0'))
-    }
 }
 
 impl CliDataProvider for DpdkPortStatsCli {
@@ -762,21 +750,5 @@ mod tests {
             (quiet - burst / std::f64::consts::E).abs() < 1e-6,
             "{quiet} after {burst}"
         );
-    }
-
-    /// Speeds that are not whole gigabits keep their fraction, and slow links show megabits.
-    #[test]
-    fn speeds_are_not_truncated() {
-        for (mbps, shown) in [
-            (10, "10M"),
-            (100, "100M"),
-            (1_000, "1G"),
-            (2_500, "2.5G"),
-            (1_250, "1.25G"),
-            (25_000, "25G"),
-            (400_000, "400G"),
-        ] {
-            assert_eq!(speed(mbps), shown);
-        }
     }
 }
