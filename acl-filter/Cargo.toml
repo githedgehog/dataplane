@@ -11,6 +11,7 @@ reference = ["acl/reference"]
 
 [dependencies]
 acl = { workspace = true }
+ahash = { workspace = true, features = ["no-rng"] }
 arrayvec = { workspace = true }
 clock = { workspace = true }
 common = { workspace = true }
