@@ -59,6 +59,15 @@ stdenv.mkDerivation {
     sed -i 's/#define RTE_TRACE 1/#undef RTE_TRACE/g' config/rte_config.h
     # We have no use for receive or transmit callbacks at this time so disable them
     sed -i 's/#define RTE_ETHDEV_RXTX_CALLBACKS 1/#undef RTE_ETHDEV_RXTX_CALLBACKS/g' config/rte_config.h
+    # DPDK disables AVX-512 for the whole build (-mno-avx512f, and the AVX-512 rte_acl classify
+    # becomes a stub) unless a check passes. The check works around a GNU as bug
+    # (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=90028): it assembles one gather and greps GNU
+    # objdump's rendering of it. It always fails for us: our cc adds -flto, so the object is
+    # bitcode, and our objdump is llvm-objdump, which renders the instruction differently. Clang
+    # assembles with its integrated assembler, which never had the bug, so run the check only for
+    # GCC.
+    substituteInPlace config/x86/meson.build \
+      --replace-fail "if is_linux or cc.get_id() == 'gcc'" "if cc.get_id() == 'gcc'"
   '';
 
   mesonFlags =
