@@ -41,7 +41,8 @@ use net::buffer::Append;
 use rate_limit::{IngressRules, PeeringRules, RateLimitWriter, RateLimits};
 
 use crate::differential::{
-    RawAcls, RawFragment, RawFrame, RawMeter, RawRule, overlay, targets, vteps,
+    RawAcls, RawFragment, RawFrame, RawIngressRule, RawMeter, RawRule, meters, overlay, targets,
+    vteps,
 };
 use crate::mlx5::{Arg, Plan, Port, RESOURCES, Role, with_installed};
 use crate::model::{Outcome, Verdict};
@@ -754,20 +755,23 @@ fn coverage() {
 /// mlx5 rejects mismatched arguments, leaving the VPC in software and invalidating the drop phase.
 #[test]
 fn rewire_keeps_color_arguments() {
-    let carried = std::panic::AssertUnwindSafe(RefCell::new(0usize));
     bolero::check!()
         .with_iterations(300)
         .with_type::<([RawMeter; 4], Vec<RawRule>, RawAcls)>()
         .for_each(|(meters, rules, acls)| {
             let rules = &rules[..rules.len().min(6)];
-            *carried.borrow_mut() +=
-                check_rewire(Case::new(meters, rules, &hardware_acls(acls)).plan);
+            check_rewire(Case::new(meters, rules, &hardware_acls(acls)).plan);
         });
-    // Not vacuous: color rules with arguments of their own (ingress meters) are generated.
-    assert!(
-        *carried.borrow() > 0,
-        "no generated plan has a color rule with arguments"
-    );
+    // Not vacuous: a chained ingress meter gives its color rules arguments of their own (the next
+    // meter, and the jump to it). Bolero may stop after a handful of cases on emulated targets
+    // (BOLERO_RANDOM_TEST_TIME_MS), too few to reliably draw one, so check a policy with one.
+    let acls = RawAcls {
+        // Meter 3 is the chained one; see differential::meter().
+        ingress: vec![RawIngressRule::police(0, 3)],
+        ..RawAcls::default()
+    };
+    let carried = check_rewire(Case::new(&meters(), &[], &acls).plan);
+    assert!(carried > 0, "no color rule with arguments of its own");
 }
 
 /// Check [`rewire`] on `plan` for each choice of dropping meter, and return how many times a
