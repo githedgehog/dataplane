@@ -506,93 +506,114 @@ where
 
     layer_method!(
         /// Push an `Eth` layer.
-        eth, Eth
+        eth,
+        Eth
     );
     layer_method!(
         /// Push a `Vlan` layer.
-        vlan, Vlan
+        vlan,
+        Vlan
     );
     layer_method!(
         /// Push an `Ipv4` layer.
-        ipv4, Ipv4
+        ipv4,
+        Ipv4
     );
     layer_method!(
         /// Push an `Ipv6` layer.
-        ipv6, Ipv6
+        ipv6,
+        Ipv6
     );
     layer_method!(
         /// Push a `Tcp` layer.
-        tcp, Tcp
+        tcp,
+        Tcp
     );
     layer_method!(
         /// Push a `Udp` layer.
-        udp, Udp
+        udp,
+        Udp
     );
     layer_method!(
         /// Push an `Icmp4` layer.
-        icmp4, Icmp4
+        icmp4,
+        Icmp4
     );
     layer_method!(
         /// Push an `Icmp6` layer.
-        icmp6, Icmp6
+        icmp6,
+        Icmp6
     );
     layer_method!(
         /// Push a `Vxlan` layer.
-        vxlan, Vxlan
+        vxlan,
+        Vxlan
     );
 
     // IPv6 extension header layers
 
     layer_method!(
         /// Push a `HopByHop` extension header (RFC 8200 section 4.3).
-        hop_by_hop, HopByHop
+        hop_by_hop,
+        HopByHop
     );
     layer_method!(
         /// Push a `DestOpts` extension header (RFC 8200 section 4.6).
-        dest_opts, DestOpts
+        dest_opts,
+        DestOpts
     );
     layer_method!(
         /// Push a `Routing` extension header (RFC 8200 section 4.4).
-        routing, Routing
+        routing,
+        Routing
     );
     layer_method!(
         /// Push a `Fragment` extension header (RFC 8200 section 4.5).
-        fragment, Fragment
+        fragment,
+        Fragment
     );
     layer_method!(
         /// Push an `Ipv4Auth` extension header (RFC 4302, IPv4 context).
-        ipv4_auth, Ipv4Auth
+        ipv4_auth,
+        Ipv4Auth
     );
     layer_method!(
         /// Push an `Ipv6Auth` extension header (RFC 4302, IPv6 context).
-        ipv6_auth, Ipv6Auth
+        ipv6_auth,
+        Ipv6Auth
     );
 
     // ICMPv4 subtype layers -- available after `.icmp4()`
 
     layer_method!(
         /// Specialize as `Icmp4` Destination Unreachable (type 3).
-        dest_unreachable, Icmp4DestUnreachable
+        dest_unreachable,
+        Icmp4DestUnreachable
     );
     layer_method!(
         /// Specialize as `ICMPv4` Redirect (type 5).
-        redirect, Icmp4Redirect
+        redirect,
+        Icmp4Redirect
     );
     layer_method!(
         /// Specialize as `ICMPv4` Time Exceeded (type 11).
-        time_exceeded, Icmp4TimeExceeded
+        time_exceeded,
+        Icmp4TimeExceeded
     );
     layer_method!(
         /// Specialize as `ICMPv4` Parameter Problem (type 12).
-        param_problem, Icmp4ParamProblem
+        param_problem,
+        Icmp4ParamProblem
     );
     layer_method!(
         /// Specialize as `ICMPv4` Echo Request (type 8).
-        echo_request, Icmp4EchoRequest
+        echo_request,
+        Icmp4EchoRequest
     );
     layer_method!(
         /// Specialize as `ICMPv4` Echo Reply (type 0).
-        echo_reply, Icmp4EchoReply
+        echo_reply,
+        Icmp4EchoReply
     );
 
     // ICMPv6 subtype layers -- available after `.icmp6()`
@@ -604,27 +625,33 @@ where
 
     layer_method!(
         /// Specialize as `ICMPv6` Destination Unreachable (type 1).
-        dest_unreachable6, Icmp6DestUnreachable
+        dest_unreachable6,
+        Icmp6DestUnreachable
     );
     layer_method!(
         /// Specialize as `ICMPv6` Packet Too Big (type 2).
-        packet_too_big6, Icmp6PacketTooBig
+        packet_too_big6,
+        Icmp6PacketTooBig
     );
     layer_method!(
         /// Specialize as `ICMPv6` Time Exceeded (type 3).
-        time_exceeded6, Icmp6TimeExceeded
+        time_exceeded6,
+        Icmp6TimeExceeded
     );
     layer_method!(
         /// Specialize as `ICMPv6` Parameter Problem (type 4).
-        param_problem6, Icmp6ParamProblem
+        param_problem6,
+        Icmp6ParamProblem
     );
     layer_method!(
         /// Specialize as `ICMPv6` Echo Request (type 128).
-        echo_request6, Icmp6EchoRequest
+        echo_request6,
+        Icmp6EchoRequest
     );
     layer_method!(
         /// Specialize as `ICMPv6` Echo Reply (type 129).
-        echo_reply6, Icmp6EchoReply
+        echo_reply6,
+        Icmp6EchoReply
     );
 }
 
@@ -1493,53 +1520,65 @@ mod fuzz {
         // ICMPv4 subtype layers
         fuzz_layer_method!(
             /// Specialize as `ICMPv4` Destination Unreachable.
-            dest_unreachable, super::Icmp4DestUnreachable
+            dest_unreachable,
+            super::Icmp4DestUnreachable
         );
         fuzz_layer_method!(
             /// Specialize as `ICMPv4` Redirect.
-            redirect, super::Icmp4Redirect
+            redirect,
+            super::Icmp4Redirect
         );
         fuzz_layer_method!(
             /// Specialize as `ICMPv4` Time Exceeded.
-            time_exceeded, super::Icmp4TimeExceeded
+            time_exceeded,
+            super::Icmp4TimeExceeded
         );
         fuzz_layer_method!(
             /// Specialize as `ICMPv4` Parameter Problem.
-            param_problem, super::Icmp4ParamProblem
+            param_problem,
+            super::Icmp4ParamProblem
         );
         fuzz_layer_method!(
             /// Specialize as `ICMPv4` Echo Request.
-            echo_request, super::Icmp4EchoRequest
+            echo_request,
+            super::Icmp4EchoRequest
         );
         fuzz_layer_method!(
             /// Specialize as `ICMPv4` Echo Reply.
-            echo_reply, super::Icmp4EchoReply
+            echo_reply,
+            super::Icmp4EchoReply
         );
 
         // ICMPv6 subtype layers
         fuzz_layer_method!(
             /// Specialize as `ICMPv6` Destination Unreachable.
-            dest_unreachable6, super::Icmp6DestUnreachable
+            dest_unreachable6,
+            super::Icmp6DestUnreachable
         );
         fuzz_layer_method!(
             /// Specialize as `ICMPv6` Packet Too Big.
-            packet_too_big6, super::Icmp6PacketTooBig
+            packet_too_big6,
+            super::Icmp6PacketTooBig
         );
         fuzz_layer_method!(
             /// Specialize as `ICMPv6` Time Exceeded.
-            time_exceeded6, super::Icmp6TimeExceeded
+            time_exceeded6,
+            super::Icmp6TimeExceeded
         );
         fuzz_layer_method!(
             /// Specialize as `ICMPv6` Parameter Problem.
-            param_problem6, super::Icmp6ParamProblem
+            param_problem6,
+            super::Icmp6ParamProblem
         );
         fuzz_layer_method!(
             /// Specialize as `ICMPv6` Echo Request.
-            echo_request6, super::Icmp6EchoRequest
+            echo_request6,
+            super::Icmp6EchoRequest
         );
         fuzz_layer_method!(
             /// Specialize as `ICMPv6` Echo Reply.
-            echo_reply6, super::Icmp6EchoReply
+            echo_reply6,
+            super::Icmp6EchoReply
         );
     }
 
