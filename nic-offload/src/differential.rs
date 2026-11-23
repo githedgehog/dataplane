@@ -289,6 +289,22 @@ pub(crate) struct RawIngressRule {
 }
 
 impl RawIngressRule {
+    /// A rule charging any traffic from the first VPC of `peering` to ingress meter `meter`.
+    pub(crate) fn police(peering: u8, meter: u8) -> RawIngressRule {
+        RawIngressRule {
+            rule: RawRule {
+                peering,
+                reverse: false,
+                src: vec![],
+                dst: vec![],
+                proto: RawProto::Any,
+                meter,
+            },
+            every_vpc: false,
+            drop: false,
+        }
+    }
+
     fn rule(&self) -> IngressRule {
         let (_, from, _) = self.rule.direction();
         IngressRule {
@@ -1399,7 +1415,7 @@ fn the_nic_only_ever_does_what_the_software_would() {
     );
 }
 
-fn meters() -> [RawMeter; 4] {
+pub(crate) fn meters() -> [RawMeter; 4] {
     std::array::from_fn(|_| RawMeter {
         rate: 1000,
         committed_burst: 1500,
