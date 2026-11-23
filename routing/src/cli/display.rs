@@ -958,7 +958,7 @@ impl Display for FibGroups<'_> {
 /// Format `time` in the local time zone. We look up the zone when displaying the time, so a change
 /// of the host's time zone also changes how we show past times.
 pub(crate) fn fmt_local(time: &Timestamp) -> String {
-    time.to_zoned(TimeZone::system())
+    time.to_zoned_datetime(TimeZone::system())
         .strftime("%Y-%m-%dT %H:%M:%S")
         .to_string()
 }
