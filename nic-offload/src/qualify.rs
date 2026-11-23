@@ -760,46 +760,51 @@ fn rewire_keeps_color_arguments() {
         .with_type::<([RawMeter; 4], Vec<RawRule>, RawAcls)>()
         .for_each(|(meters, rules, acls)| {
             let rules = &rules[..rules.len().min(6)];
-            let mut plan = Case::new(meters, rules, &hardware_acls(acls)).plan;
-            let args = color_args(&plan);
-            // A role names one color rule, so `rewire` can find a rule's own arguments by it.
-            let distinct: BTreeSet<_> = args.iter().map(|(role, _)| format!("{role:?}")).collect();
-            assert_eq!(distinct.len(), args.len(), "a color role names two rules");
-            for red in std::iter::once(None).chain((0..plan.meters.len()).map(Some)) {
-                rewire(&mut plan, red, &args);
-                for table in plan.tables() {
-                    for rule in &table.rules {
-                        let (Role::Color(meter, color) | Role::IngressColor(_, meter, color)) =
-                            rule.role
-                        else {
-                            continue;
-                        };
-                        let drops = Some(meter) == red || color == Color::Red;
-                        assert_eq!(rule.actions, usize::from(drops), "{:?}", rule.role);
-                        let template = &plan.actions[table.actions[rule.actions]];
-                        let takes = template
-                            .iter()
-                            .filter(|a| {
-                                matches!(a, TemplateAction::Meter | TemplateAction::JumpPerRule)
-                            })
-                            .count();
-                        assert_eq!(rule.args.len(), takes, "{:?}: {:?}", rule.role, rule.args);
-                        if !drops {
-                            let own = args.iter().find(|(role, _)| *role == rule.role);
-                            assert_eq!(Some(&rule.args), own.map(|(_, a)| a), "{:?}", rule.role);
-                            if !rule.args.is_empty() {
-                                *carried.borrow_mut() += 1;
-                            }
-                        }
-                    }
-                }
-            }
+            *carried.borrow_mut() +=
+                check_rewire(Case::new(meters, rules, &hardware_acls(acls)).plan);
         });
     // Not vacuous: color rules with arguments of their own (ingress meters) are generated.
     assert!(
         *carried.borrow() > 0,
         "no generated plan has a color rule with arguments"
     );
+}
+
+/// Check [`rewire`] on `plan` for each choice of dropping meter, and return how many times a
+/// color rule that goes on got non-empty arguments back.
+fn check_rewire(mut plan: Plan) -> usize {
+    let args = color_args(&plan);
+    // A role names one color rule, so `rewire` can find a rule's own arguments by it.
+    let distinct: BTreeSet<_> = args.iter().map(|(role, _)| format!("{role:?}")).collect();
+    assert_eq!(distinct.len(), args.len(), "a color role names two rules");
+    let mut carried = 0;
+    for red in std::iter::once(None).chain((0..plan.meters.len()).map(Some)) {
+        rewire(&mut plan, red, &args);
+        for table in plan.tables() {
+            for rule in &table.rules {
+                let (Role::Color(meter, color) | Role::IngressColor(_, meter, color)) = rule.role
+                else {
+                    continue;
+                };
+                let drops = Some(meter) == red || color == Color::Red;
+                assert_eq!(rule.actions, usize::from(drops), "{:?}", rule.role);
+                let template = &plan.actions[table.actions[rule.actions]];
+                let takes = template
+                    .iter()
+                    .filter(|a| matches!(a, TemplateAction::Meter | TemplateAction::JumpPerRule))
+                    .count();
+                assert_eq!(rule.args.len(), takes, "{:?}: {:?}", rule.role, rule.args);
+                if !drops {
+                    let own = args.iter().find(|(role, _)| *role == rule.role);
+                    assert_eq!(Some(&rule.args), own.map(|(_, a)| a), "{:?}", rule.role);
+                    if !rule.args.is_empty() {
+                        carried += 1;
+                    }
+                }
+            }
+        }
+    }
+    carried
 }
 
 /// One step of a sequence of policies: a configuration, and the peerings (bits of `keep`) that
