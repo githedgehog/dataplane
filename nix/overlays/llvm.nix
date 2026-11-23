@@ -54,15 +54,21 @@ let
       "wasm32-wasip1"
     ];
   };
+  # Some nixpkgs packages (cargo-llvm-cov, for example) look up the LLVM that rustc was built
+  # against through rustPlatform.rust.rustc.llvmPackages. The rust-overlay toolchain does not
+  # carry that attribute, so attach the matching LLVM package set here.
+  rustc' = rust-toolchain // {
+    llvmPackages = final.llvmPackages';
+  };
   rustPlatform' = final.makeRustPlatform {
     stdenv = stdenv';
     cargo = rust-toolchain;
-    rustc = rust-toolchain;
+    rustc = rustc';
   };
   rustPlatform'-dev = final.makeRustPlatform {
     stdenv = final.llvmPackages'.stdenv;
     cargo = rust-toolchain;
-    rustc = rust-toolchain;
+    rustc = rustc';
   };
   # It is essential that we always use the same version of llvm that our rustc is backed by.
   # To minimize maintenance burden, we explicitly compute the version of LLVM we need by asking rustc
