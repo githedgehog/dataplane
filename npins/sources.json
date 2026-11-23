@@ -329,9 +329,9 @@
     },
     "linux-fancy": {
       "type": "Url",
-      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.62.tar.xz",
+      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.65.tar.xz",
       "unpack": true,
-      "hash": "sha256-DPKqYQnB9ge8rOAuv6CmKBdPD51ChH2tfgofx76v54w=",
+      "hash": "sha256-inFOLlK1ezLidzIKWLE6RNWJZK/p+UzpZJ8/3i3p9cI=",
       "frozen": true
     },
     "mermaid": {
@@ -354,8 +354,8 @@
       "type": "Channel",
       "name": "nixpkgs-unstable",
       "artifact": "nixexprs.tar.xz",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1109744.4fe25e12eb9f/nixexprs.tar.xz",
-      "hash": "sha256-4/Yzr1fWTh/zBAR1tR84ZQ1Zhmor8AXwgD4AS7sPn60="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1126808.619c39f6eac5/nixexprs.tar.xz",
+      "hash": "sha256-3Xq+XlDu5l+UJ0cc+Jigs84+tz7Qu92NgXVHgJwC52M="
     },
     "opengrep": {
       "type": "GitRelease",
@@ -383,9 +383,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "06cd45ad28a66ef02783932399f71346f0d13fae",
-      "url": "https://github.com/linux-rdma/perftest/archive/06cd45ad28a66ef02783932399f71346f0d13fae.tar.gz",
-      "hash": "sha256-yuv8oiL9efxjEw9iiWDhEcwAY/FVI/vB4e/2GYAGAqg="
+      "revision": "9ced63795a71849b80c134d79d3238ee3e291b60",
+      "url": "https://github.com/linux-rdma/perftest/archive/9ced63795a71849b80c134d79d3238ee3e291b60.tar.gz",
+      "hash": "sha256-Tz+Ejy/Xo2KmKARaWzWAK+YlH+QlkSW3nvvAFYuWvkk="
     },
     "rdma-core": {
       "type": "Git",
@@ -411,10 +411,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "1.99.1",
-      "revision": "213cfbe66a6da4e4b41bde365643286371af6e5a",
-      "url": "https://api.github.com/repos/rust-lang/rust/tarball/refs/tags/1.99.1",
-      "hash": "sha256-C9ZjE57R4DLTrpRGJh51CcJg2Wz+Gc2EXXsF9tXU79E="
+      "version": "1.100.0",
+      "revision": "6b503e798d0cc01ca1052eeefaccee43893b0ff6",
+      "url": "https://api.github.com/repos/rust-lang/rust/tarball/refs/tags/1.100.0",
+      "hash": "sha256-iI5kQSSc66EAB736f0mvecZqd0CChMJXbTgkgk31JK4="
     },
     "rust-overlay": {
       "type": "Git",
@@ -425,29 +425,29 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "51c6dc40d18552701f7c5c62e3f7a5fc899f7132",
-      "url": "https://github.com/oxalica/rust-overlay/archive/51c6dc40d18552701f7c5c62e3f7a5fc899f7132.tar.gz",
-      "hash": "sha256-QhZ104DwHvvMxWxmI13zdppISE27UmdqhRI2VwBg/yU="
+      "revision": "ea2084066e0f3fed86a76a2654658ed2eb998046",
+      "url": "https://github.com/oxalica/rust-overlay/archive/ea2084066e0f3fed86a76a2654658ed2eb998046.tar.gz",
+      "hash": "sha256-MJVmTxxAm87tT7yxH5BU8EnKGza32SQ2pqYsHWpJ1H4="
     },
     "ubuntu-kernel-buildinfo": {
       "type": "Url",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-buildinfo-7.0.0-43-generic_7.0.0-43.43_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-buildinfo-7.0.0-44-generic_7.0.0-44.44_amd64.deb",
       "unpack": false,
-      "hash": "sha256-ZDfLwrLC99u2zVsi/kxqLD+Mz4WuwYmLkrujUVwKfsU=",
+      "hash": "sha256-tVls2+Q2KGwpkjtqGaXb3WF0xkvC43GuhN0ZpQBYWKQ=",
       "frozen": true
     },
     "ubuntu-kernel-image": {
       "type": "Url",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-image-unsigned-7.0.0-43-generic_7.0.0-43.43_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-image-unsigned-7.0.0-44-generic_7.0.0-44.44_amd64.deb",
       "unpack": false,
-      "hash": "sha256-1lZ3arBu1vBT7lg5LEtbm0cLe8ri0w6o7hBBLo08XSY=",
+      "hash": "sha256-FPdqFa3jCMdnvnm/KDPwpKlGC15PwHfO4YrJmQLuBtU=",
       "frozen": true
     },
     "ubuntu-kernel-modules": {
       "type": "Url",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-modules-7.0.0-43-generic_7.0.0-43.43_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-modules-7.0.0-44-generic_7.0.0-44.44_amd64.deb",
       "unpack": false,
-      "hash": "sha256-4Q2+ac8tljj4NUHkKXlFJOOXZxywDkv5x/Ja6pwqCtg=",
+      "hash": "sha256-8zfACJ5c99y5vIvV/UK6+sCaJM/fJLaz7evg/YJxTfI=",
       "frozen": true
     }
   },
