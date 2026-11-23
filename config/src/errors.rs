@@ -5,11 +5,11 @@
 //! Any result returned by the validation or configuration builder methods returned
 //! in this crate is a `ConfigError`.
 
-use std::net::IpAddr;
-
 use crate::external::GenId;
 use crate::external::overlay::vpc::VpcId;
 use crate::external::overlay::vpcpeering::VpcExpose;
+use net::ip::UnicastIpAddr;
+use std::net::IpAddr;
 
 use lpm::prefix::{Prefix, PrefixWithOptionalPorts, PrefixWithPortsSize};
 use net::eth::mac::Mac;
@@ -33,7 +33,7 @@ pub enum ConfigError {
     #[error("Duplicated gateway group member {0}")]
     DuplicateMember(String),
     #[error("Duplicated gateway group member address {0}")]
-    DuplicateMemberAddress(IpAddr),
+    DuplicateMemberAddress(UnicastIpAddr),
     #[error("A VPC peering object refers to non-existent VPC '{0}'")]
     NoSuchVpc(String),
     #[error("'{0}' is not a valid VNI")]
