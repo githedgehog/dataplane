@@ -371,7 +371,8 @@
       "version": "v1.33.1",
       "revision": "092c80faa0817840228349f93eff12a50fb9cf6b",
       "url": "https://api.github.com/repos/opengrep/opengrep/tarball/refs/tags/v1.33.1",
-      "hash": "sha256-jK04nbkXRbi76SqgcXect0UP2tckI9u0GgkgxqTl1Tk="
+      "hash": "sha256-jK04nbkXRbi76SqgcXect0UP2tckI9u0GgkgxqTl1Tk=",
+      "frozen": true
     },
     "perftest": {
       "type": "Git",
