@@ -10,9 +10,12 @@ mod vtep;
 use crate::RouterError;
 use crate::evpn::Vtep;
 use crate::interfaces::iftable::IfTable;
+use crate::interfaces::iftablerw::IfUpdate;
 use crate::interfaces::interface::RouterInterfaceConfig;
+use crate::interfaces::linkstate::LinkStates;
 use crate::rib::VrfTable;
 use crate::rib::vrf::{RouterVrfConfig, VrfId};
+use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::routingdb::RoutingDb;
 use config::GenId;
 use net::interface::InterfaceIndex;
@@ -123,6 +126,7 @@ impl RouterConfig {
     //////////////////////////////////////////////////////////////////////////////////
     /// Get the config for an interface with a given [`IfIndex`]
     //////////////////////////////////////////////////////////////////////////////////
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn get_interface(&self, ifindex: InterfaceIndex) -> Option<&RouterInterfaceConfig> {
         self.interfaces.get(&ifindex)
@@ -133,15 +137,30 @@ impl RouterConfig {
     //////////////////////////////////////////////////////////////////////////////////
     #[cfg(test)]
     #[must_use]
-    fn get_interface_mut(&mut self, ifindex: InterfaceIndex) -> Option<&mut RouterInterfaceConfig> {
+    pub(crate) fn get_interface_mut(
+        &mut self,
+        ifindex: InterfaceIndex,
+    ) -> Option<&mut RouterInterfaceConfig> {
         self.interfaces.get_mut(&ifindex)
     }
 
     //////////////////////////////////////////////////////////////////////////////////
-    /// Iterate over the [`RouterInterfaceConfig`]s in this [`RouterConfig`]
+    /// The interfaces of this configuration, with the link state in `links` where it covers them
     //////////////////////////////////////////////////////////////////////////////////
-    fn interfaces(&self) -> impl Iterator<Item = &RouterInterfaceConfig> {
-        self.interfaces.values()
+    fn observed_interfaces(
+        &self,
+        links: Option<&LinkStates>,
+        iftable: &IfTable,
+    ) -> ObservedInterfaces {
+        ObservedInterfaces(
+            self.interfaces
+                .iter()
+                .map(|(ifindex, ifconfig)| {
+                    let current = iftable.get_interface(*ifindex);
+                    (*ifindex, ifconfig.observed(links, current))
+                })
+                .collect(),
+        )
     }
 
     //////////////////////////////////////////////////////////////////////////////////
@@ -158,18 +177,64 @@ impl RouterConfig {
 
         // build and apply interface reconfiguration
         let iftable = db.iftw.enter().unwrap_or_else(|| unreachable!());
-        let reconfig_ifaces = ReconfigInterfacePlan::generate(self, &iftable);
+        let interfaces = self.observed_interfaces(db.links.as_ref(), &iftable);
         drop(iftable);
-        reconfig_ifaces.apply(&mut db.iftw, &db.vrftable)?;
+        Self::apply_interfaces(&interfaces, db)?;
 
         // store and apply vtep configuration (infallible)
         apply_vtep_config(self.vtep.as_ref(), db);
 
         debug!("Successfully applied router config for generation {genid}");
-        self.verify(db)?;
+        self.verify(db, &interfaces)?;
         Ok(())
     }
+
+    fn apply_interfaces(
+        interfaces: &ObservedInterfaces,
+        db: &mut RoutingDb,
+    ) -> Result<(), RouterError> {
+        let iftable = db.iftw.enter().unwrap_or_else(|| unreachable!());
+        let reconfig_ifaces = ReconfigInterfacePlan::generate(&interfaces.0, &iftable);
+        let changes = reconfig_ifaces.link_changes(&iftable);
+        drop(iftable);
+        let applied = reconfig_ifaces.apply(&mut db.iftw, &db.vrftable);
+        if applied.is_ok() {
+            changes.into_iter().for_each(report_link_changes);
+        }
+
+        // The operational state is not something a configuration can ask for; it is only observed.
+        // The rest of the link state is already in `interfaces`, so this only sets that. It is set
+        // even when the plan failed part way: the interfaces it added before failing are in the
+        // table, and egress forwards on one whose operational state is unknown.
+        if let Some(links) = &db.links {
+            db.iftw
+                .apply_link_state(links)
+                .into_iter()
+                .for_each(report_link_changes);
+        }
+        applied
+    }
 }
+
+/// Report what changed about an interface's link state.
+pub(crate) fn report_link_changes(update: IfUpdate) {
+    if let Some(name) = update.name_change {
+        revent!(RouterEvent::IfNameChange(name.old.clone(), name));
+    }
+    if let Some(mac) = update.mac {
+        revent!(RouterEvent::IfMacChange(update.ifname.clone(), mac));
+    }
+    if let Some(state) = update.adm_state {
+        revent!(RouterEvent::IfAdmChange(update.ifname.clone(), state));
+    }
+    if let Some(state) = update.oper_state {
+        revent!(RouterEvent::IfOperChange(update.ifname, state));
+    }
+}
+
+/// The interfaces of a [`RouterConfig`] with the observed link state applied: what the interface
+/// table must hold.
+struct ObservedInterfaces(BTreeMap<InterfaceIndex, RouterInterfaceConfig>);
 
 /// Verification
 impl RouterConfig {
@@ -215,9 +280,12 @@ impl RouterConfig {
         }
         Ok(())
     }
-    fn verify_interfaces(&self, db: &RoutingDb) -> Result<(), RouterError> {
+    fn verify_interfaces(
+        interfaces: &ObservedInterfaces,
+        db: &RoutingDb,
+    ) -> Result<(), RouterError> {
         let iftable = &*db.iftw.enter().unwrap_or_else(|| unreachable!());
-        for ifconfig in self.interfaces() {
+        for ifconfig in interfaces.0.values() {
             Self::verify_interface(ifconfig, iftable)?;
         }
         Ok(())
@@ -244,11 +312,11 @@ impl RouterConfig {
         debug!("Vtep information is consistent in all VRFs");
         Ok(())
     }
-    fn verify(&self, db: &RoutingDb) -> Result<(), RouterError> {
+    fn verify(&self, db: &RoutingDb, interfaces: &ObservedInterfaces) -> Result<(), RouterError> {
         let genid = self.genid;
         debug!("Verifying router config for config generation {genid}...");
         self.verify_vrfs(db)?;
-        self.verify_interfaces(db)?;
+        Self::verify_interfaces(interfaces, db)?;
         self.verify_vteps(db)?;
         debug!("Successfully verified router config for generation {genid}");
         Ok(())
@@ -257,7 +325,7 @@ impl RouterConfig {
 
 #[cfg(test)]
 #[rustfmt::skip]
-mod tests {
+pub(crate) mod tests {
     use std::str::FromStr;
     use tracing_test::traced_test;
     use tracing::debug;
@@ -340,14 +408,14 @@ mod tests {
         let vtep = Vtep::new(vtep_ip, vtep_mac);
         config.set_vtep(vtep);
     }
-    fn build_router_config() -> RouterConfig {
+    pub(crate) fn build_router_config() -> RouterConfig {
         let mut config = RouterConfig::new(1);
         add_router_vrf_configs(&mut config);
         add_router_interface_configs(&mut config);
         add_router_vtep_config(&mut config);
         config
     }
-    pub(super) fn create_routing_database() -> RoutingDb {
+    pub(crate) fn create_routing_database() -> RoutingDb {
         let (iftw, _iftr) = IfTableWriter::new();
         let (fibtw, _fibtr) = FibTableWriter::new();
         RoutingDb::new(fibtw, iftw)

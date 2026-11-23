@@ -4,13 +4,13 @@
 //! Router interface configuration
 
 use crate::RouterError;
-use crate::config::RouterConfig;
 use crate::interfaces::iftable::IfTable;
 use net::interface::InterfaceIndex;
+use std::collections::BTreeMap;
 #[allow(unused)]
 use tracing::debug;
 
-use crate::interfaces::iftablerw::IfTableWriter;
+use crate::interfaces::iftablerw::{IfTableWriter, IfUpdate};
 use crate::interfaces::interface::{AttachConfig, Attachment};
 use crate::interfaces::interface::{Interface, RouterInterfaceConfig};
 use crate::rib::VrfTable;
@@ -27,10 +27,14 @@ pub(crate) struct ReconfigInterfacePlan {
 
 impl ReconfigInterfacePlan {
     ///////////////////////////////////////////////////////////////////////////////////
-    /// Build a [`ReconfigInterfacePlan`] given a [`RouterConfig`] and an [`IfTable`]
+    /// Build a [`ReconfigInterfacePlan`] given the interfaces a [`RouterConfig`] requires and an
+    /// [`IfTable`]
     ///////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn generate(config: &RouterConfig, iftable: &IfTable) -> Self {
+    pub(crate) fn generate(
+        config: &BTreeMap<InterfaceIndex, RouterInterfaceConfig>,
+        iftable: &IfTable,
+    ) -> Self {
         let mut to_delete: Vec<InterfaceIndex> = vec![];
         let mut to_keep: Vec<InterfaceIndex> = vec![];
         let mut to_modify: Vec<RouterInterfaceConfig> = vec![];
@@ -38,7 +42,7 @@ impl ReconfigInterfacePlan {
 
         for iface in iftable.values() {
             let ifindex = iface.ifindex;
-            if let Some(cfg) = config.get_interface(ifindex) {
+            if let Some(cfg) = config.get(&ifindex) {
                 if iface.as_config() == *cfg {
                     to_keep.push(ifindex);
                 } else {
@@ -48,7 +52,7 @@ impl ReconfigInterfacePlan {
                 to_delete.push(ifindex);
             }
         }
-        for cfg in config.interfaces() {
+        for cfg in config.values() {
             if !iftable.contains(cfg.ifindex) {
                 to_add.push(cfg.clone());
             }
@@ -59,6 +63,24 @@ impl ReconfigInterfacePlan {
             to_modify,
             to_add,
         }
+    }
+
+    /// What this plan changes in the link state of interfaces already in `iftable`.
+    pub(crate) fn link_changes(&self, iftable: &IfTable) -> Vec<IfUpdate> {
+        let mut changes = vec![];
+        for new in &self.to_modify {
+            let Some(old) = iftable.get_interface(new.ifindex) else {
+                continue;
+            };
+            let mut update = IfUpdate::new(new.ifindex, &new.name)
+                .check_ifname(&old.name, &new.name)
+                .check_adm_state(old.admin_state, new.admin_state);
+            if let (Some(old_mac), Some(new_mac)) = (old.get_mac(), new.iftype.get_mac()) {
+                update = update.check_mac(old_mac, new_mac);
+            }
+            changes.push(update);
+        }
+        changes
     }
 
     fn enforce_deletions(&self, iftw: &mut IfTableWriter) {
