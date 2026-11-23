@@ -998,7 +998,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2255,7 +2255,7 @@ dependencies = [
  "left-right",
  "linkme",
  "mio",
- "netgauze-bgp-pkt",
+ "netgauze-bgp-pkt 0.14.0",
  "netgauze-bmp-pkt",
  "nix",
  "ordermap",
@@ -2745,7 +2745,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4700,8 +4700,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "15235fb499f3e2e3c7d681965f3a06a2eac1c282431215e8bd4b76f206a02703"
 dependencies = [
  "ipnet",
- "netgauze-iana",
- "netgauze-parse-utils",
+ "netgauze-iana 0.13.0",
+ "netgauze-parse-utils 0.13.0",
+ "serde",
+ "strum_macros",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "netgauze-bgp-pkt"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9dbf9c74c1e13e9306151ce80263a61e58a91f6cd5c55947dd0216c449bc9960"
+dependencies = [
+ "ipnet",
+ "netgauze-iana 0.14.0",
+ "netgauze-parse-utils 0.14.0",
  "serde",
  "strum_macros",
  "thiserror 2.0.21",
@@ -4718,9 +4732,9 @@ dependencies = [
  "chrono",
  "either",
  "ipnet",
- "netgauze-bgp-pkt",
- "netgauze-iana",
- "netgauze-parse-utils",
+ "netgauze-bgp-pkt 0.13.0",
+ "netgauze-iana 0.13.0",
+ "netgauze-parse-utils 0.13.0",
  "serde",
  "strum_macros",
  "thiserror 2.0.21",
@@ -4738,10 +4752,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "netgauze-iana"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e1ba065e09d00ba541213a5e8463e501c5e05ff48cece216f246094d4760a8c"
+dependencies = [
+ "serde",
+ "strum_macros",
+]
+
+[[package]]
 name = "netgauze-parse-utils"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4bf8cf641ca45eef8e65ec23bd48e8ed28eeee5a558f41066d66cca06c8e3ee"
+dependencies = [
+ "ipnet",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "netgauze-parse-utils"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42ae850ad30eb4d84ea0135ca3fef1c02abb343a4ba6d3701ee0c3192966eacf"
 dependencies = [
  "ipnet",
  "serde",
@@ -4921,7 +4956,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6082,7 +6117,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6139,7 +6174,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6300,7 +6335,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "969cde0349344dbbf58b5f9badbfb8f806db13969364eb8007c057ef687007d9"
 dependencies = [
  "annotate-snippets 0.12.18",
- "base64 0.22.1",
+ "base64 0.23.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",
@@ -6915,7 +6950,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6934,7 +6969,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7753,7 +7788,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
