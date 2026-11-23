@@ -446,7 +446,7 @@ fn show_tech(
     let time = clock::system_timestamp().map_or_else(
         || "?".to_string(),
         |t| {
-            t.to_zoned(TimeZone::system())
+            t.to_zoned_datetime(TimeZone::system())
                 .strftime("%Y-%m-%d %H:%M:%S")
                 .to_string()
         },
