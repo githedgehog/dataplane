@@ -4,10 +4,11 @@
 //! Dataplane configuration model: gateway groups
 
 use crate::ConfigError;
+use common::cliprovider::Heading;
+use net::ip::UnicastIpAddr;
 use ordermap::OrderMap;
 use std::cmp::Ordering;
 use std::fmt::Display;
-use std::net::IpAddr;
 
 /// A [`GwGroupMember`] represents a gateway within a [`GwGroup`].
 /// Gateways are uniquely identified by their name. Within a group, each
@@ -16,15 +17,15 @@ use std::net::IpAddr;
 pub struct GwGroupMember {
     pub name: String,
     pub priority: u32,
-    pub ipaddress: IpAddr,
+    pub ipaddress: UnicastIpAddr,
 }
 impl GwGroupMember {
     #[must_use]
-    pub fn new(name: &str, priority: u32, address: IpAddr) -> Self {
+    pub fn new(name: &str, priority: u32, ipaddress: UnicastIpAddr) -> Self {
         Self {
             name: name.to_owned(),
             priority,
-            ipaddress: address,
+            ipaddress,
         }
     }
 }
@@ -102,7 +103,7 @@ impl GwGroup {
             .map(|v| v as _)
     }
     #[must_use]
-    pub fn get_member_by_addr(&self, ipaddress: IpAddr) -> Option<&GwGroupMember> {
+    pub fn get_member_by_addr(&self, ipaddress: UnicastIpAddr) -> Option<&GwGroupMember> {
         self.members
             .iter()
             .find(|&m| m.ipaddress == ipaddress)
@@ -185,7 +186,7 @@ impl Display for GwGroup {
 }
 impl Display for GwGroupTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, " ━━━━━━━━━━ Gateway groups ━━━━━━━━━━")?;
+        Heading("Gateway groups").fmt(f)?;
         for g in self.iter() {
             write!(f, "{g}")?;
         }
@@ -196,11 +197,15 @@ impl Display for GwGroupTable {
 #[cfg(test)]
 #[rustfmt::skip]
 mod test {
+    use net::ip::UnicastIpAddr;
     use super::{GwGroup, GwGroupMember, GwGroupTable};
     use crate::ConfigError;
     use crate::external::PriorityCommunityTable;
-    use std::net::IpAddr;
     use std::str::FromStr;
+
+    fn ip(a:&str) -> UnicastIpAddr {
+        UnicastIpAddr::from_str(a).expect("Bad ip")
+    }
 
     #[test]
     fn test_gw_groups() {
@@ -208,14 +213,14 @@ mod test {
 
         // first group
         let mut group = GwGroup::new("gw-group-1");
-        group.add_member(GwGroupMember::new("gw1", 1, IpAddr::from_str("172.128.0.1").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 2, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw3", 3, IpAddr::from_str("172.128.0.3").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw1", 1, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new("gw2", 2, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new("gw3", 3, ip("172.128.0.3"))).unwrap();
 
         // err on duplicate member names or ip addresses
-        let r = group.add_member(GwGroupMember::new("gw1", 99, IpAddr::from_str("172.128.0.4").unwrap()));
+        let r = group.add_member(GwGroupMember::new("gw1", 99, ip("172.128.0.4")));
         assert!(r.is_err_and(|e| matches!(e, ConfigError::DuplicateMember(_))));
-        let r = group.add_member(GwGroupMember::new("gw4", 99, IpAddr::from_str("172.128.0.1").unwrap()));
+        let r = group.add_member(GwGroupMember::new("gw4", 99, ip("172.128.0.1")));
         assert!(r.is_err_and(|e| matches!(e, ConfigError::DuplicateMemberAddress(_))));
         gwtable.add_group(group).unwrap();
 
@@ -226,8 +231,8 @@ mod test {
 
         // second group
         let mut group = GwGroup::new("gw-group-2");
-        group.add_member(GwGroupMember::new("gw2", 0, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw3", 2, IpAddr::from_str("172.128.0.3").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw2", 0, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new("gw3", 2, ip("172.128.0.3"))).unwrap();
         gwtable.add_group(group).unwrap();
         println!("{gwtable}");
 
@@ -235,17 +240,17 @@ mod test {
         let member = gwtable.get_group_member("gw-group-1", "gw1").unwrap();
         assert_eq!(member.name, "gw1");
         assert_eq!(member.priority, 1);
-        assert_eq!(member.ipaddress, IpAddr::from_str("172.128.0.1").unwrap());
+        assert_eq!(member.ipaddress, ip("172.128.0.1"));
     }
 
     #[test]
     fn test_gw_group_ordering() {
         let mut group = GwGroup::new("gw-group-1");
-        group.add_member(GwGroupMember::new("gw1", 100, IpAddr::from_str("172.128.0.1").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 90, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw3", 300, IpAddr::from_str("172.128.0.3").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw4", 0, IpAddr::from_str("172.128.0.4").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw5", 100, IpAddr::from_str("172.128.0.5").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw1", 100, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new("gw2", 90, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new("gw3", 300, ip("172.128.0.3"))).unwrap();
+        group.add_member(GwGroupMember::new("gw4", 0, ip("172.128.0.4"))).unwrap();
+        group.add_member(GwGroupMember::new("gw5", 100, ip("172.128.0.5"))).unwrap();
         group.sort_members();
 
         let mut prio = group.members[0].priority;
@@ -261,11 +266,11 @@ mod test {
 
     #[test]
     fn test_gw_group_member_ord() {
-        let m1 = GwGroupMember::new("gw1", 10, IpAddr::from_str("172.128.0.1").unwrap());
-        let m2 = GwGroupMember::new("gw2", 1, IpAddr::from_str("172.128.1.2").unwrap());
-        let m3 = GwGroupMember::new("gw3", 1, IpAddr::from_str("172.128.1.3").unwrap());
-        let m4 = GwGroupMember::new("gw4", 20, IpAddr::from_str("172.128.0.4").unwrap());
-        let m5 = GwGroupMember::new("gw5", 20, IpAddr::from_str("172.128.0.5").unwrap());
+        let m1 = GwGroupMember::new("gw1", 10, ip("172.128.0.1"));
+        let m2 = GwGroupMember::new("gw2", 1, ip("172.128.1.2"));
+        let m3 = GwGroupMember::new("gw3", 1, ip("172.128.1.3"));
+        let m4 = GwGroupMember::new("gw4", 20, ip("172.128.0.4"));
+        let m5 = GwGroupMember::new("gw5", 20, ip("172.128.0.5"));
 
         assert!(m1 > m2);
         assert!(m2 > m3);
@@ -295,19 +300,19 @@ mod test {
         let mut gwtable = GwGroupTable::new();
 
         let mut group = GwGroup::new("gw-group-1");
-        group.add_member(GwGroupMember::new("gw1", 1, IpAddr::from_str("172.128.0.1").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 2, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw3", 3, IpAddr::from_str("172.128.0.3").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw1", 1, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new("gw2", 2, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new("gw3", 3, ip("172.128.0.3"))).unwrap();
         gwtable.add_group(group).unwrap();
 
         let mut group = GwGroup::new("gw-group-2");
-        group.add_member(GwGroupMember::new("gw1", 2, IpAddr::from_str("172.128.0.1").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 3, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw1", 2, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new("gw2", 3, ip("172.128.0.2"))).unwrap();
         gwtable.add_group(group).unwrap();
 
         let mut group = GwGroup::new("gw-group-3");
-        group.add_member(GwGroupMember::new("gw1", 3, IpAddr::from_str("172.128.0.1").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 1, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw1", 3, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new("gw2", 1, ip("172.128.0.2"))).unwrap();
         gwtable.add_group(group).unwrap();
         gwtable
     }

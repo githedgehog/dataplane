@@ -40,11 +40,6 @@ const ENOUGH_CASES: usize = if cfg!(instrumented) || cfg!(emulated) || cfg!(sani
 #[allow(dead_code)]
 pub mod test {
     use acl_filter::AclFilterContextWriter;
-    use config::external::communities::PriorityCommunityTable;
-    use config::external::gwgroup::GwGroup;
-    use config::external::gwgroup::GwGroupMember;
-    use config::external::gwgroup::GwGroupTable;
-
     use flow_entry::flow_table::FlowTable;
     use lpm::prefix::Prefix;
     use net::eth::mac::Mac;
@@ -55,6 +50,10 @@ pub mod test {
     use std::str::FromStr;
 
     use config::external::ExternalConfigBuilder;
+    use config::external::communities::PriorityCommunityTable;
+    use config::external::gwgroup::GwGroup;
+    use config::external::gwgroup::GwGroupMember;
+    use config::external::gwgroup::GwGroupTable;
     use config::external::overlay::Overlay;
     use config::external::overlay::ratelimit::{
         ColorActions, Meter, MeterProfile, RateLimitRule, RateLimitTables,
@@ -85,6 +84,7 @@ pub mod test {
     use nat::masquerade::NatAllocatorWriter;
     use nat::portfw::PortFwTableWriter;
     use nat::static_nat::NatTablesWriter;
+    use net::ip::UnicastIpAddr;
     use routing::{Router, RouterParamsBuilder};
     use stats::VpcMapName;
     use stats::VpcStatsStore;
@@ -97,6 +97,11 @@ pub mod test {
     #[track_caller]
     fn ifname(name: &str) -> InterfaceName {
         name.try_into().expect("Bad ifname")
+    }
+
+    #[track_caller]
+    fn ip(a: &str) -> UnicastIpAddr {
+        UnicastIpAddr::from_str(a).expect("Bad ip")
     }
 
     /* OVERLAY config sample builders */
@@ -427,14 +432,14 @@ pub mod test {
     pub(super) fn sample_gw_groups() -> GwGroupTable {
         let mut gwt = GwGroupTable::new();
         let mut group = GwGroup::new("gw-group-1");
-        group.add_member(GwGroupMember::new("gw1", 1, IpAddr::from_str("172.128.0.1").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 2, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw3", 3, IpAddr::from_str("172.128.0.3").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw1", 1, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new("gw2", 2, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new("gw3", 3, ip("172.128.0.3"))).unwrap();
         gwt.add_group(group).unwrap();
 
         let mut group = GwGroup::new("gw-group-2");
-        group.add_member(GwGroupMember::new("gw2", 2, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw3", 1, IpAddr::from_str("172.128.0.3").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw2", 2, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new("gw3", 1, ip("172.128.0.3"))).unwrap();
         gwt.add_group(group).unwrap();
         gwt
     }
@@ -650,8 +655,8 @@ mod peering_chain {
         Family, LOCAL_VNI, MasqueradeExpose, PortForwardingExpose, REMOTE_VNI, StaticNatExpose,
         overlay_with_exposes, overlay_with_exposes_in_group,
     };
+    use net::ip::UnicastIpAddr;
     use routing::Render;
-    use std::net::IpAddr;
     use std::ops::Bound::Included;
     use std::str::FromStr;
 
@@ -659,6 +664,11 @@ mod peering_chain {
         sample_community_table, sample_device_config, sample_gw_groups, sample_underlay_config,
     };
     use crate::processor::confbuild::internal::{EVPN_RMAP_NO_ADV_COMM, build_internal_config};
+
+    #[track_caller]
+    fn ip(a: &str) -> UnicastIpAddr {
+        UnicastIpAddr::from_str(a).expect("Bad ip")
+    }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Flavour {
@@ -720,11 +730,7 @@ mod peering_chain {
         let mut groups = sample_gw_groups();
         let mut default = GwGroup::new("default");
         default
-            .add_member(GwGroupMember::new(
-                GW_NAME,
-                1,
-                IpAddr::from_str("172.128.0.9").unwrap_or_else(|_| unreachable!()),
-            ))
+            .add_member(GwGroupMember::new(GW_NAME, 1, ip("172.128.0.9")))
             .unwrap_or_else(|e| unreachable!("{e}"));
         groups
             .add_group(default)

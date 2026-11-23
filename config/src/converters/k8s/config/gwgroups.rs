@@ -3,16 +3,18 @@
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::strings::parse_address;
-use k8s_intf::gateway_agent_crd::{GatewayAgentGroupsMembers, GatewayAgentSpec};
-
 use crate::external::gwgroup::{GwGroup, GwGroupMember, GwGroupTable};
+use k8s_intf::gateway_agent_crd::{GatewayAgentGroupsMembers, GatewayAgentSpec};
+use net::ip::UnicastIpAddr;
 
 impl TryFrom<&GatewayAgentGroupsMembers> for GwGroupMember {
     type Error = FromK8sConversionError;
 
     fn try_from(value: &GatewayAgentGroupsMembers) -> Result<Self, Self::Error> {
         let address = value.vtep_ip.as_str();
-        let ipaddress = parse_address(address)
+        let ipaddr = parse_address(address)
+            .map_err(|e| Self::Error::InvalidData(format!("ip address {address}: {e}")))?;
+        let ipaddress = UnicastIpAddr::try_from(ipaddr)
             .map_err(|e| Self::Error::InvalidData(format!("ip address {address}: {e}")))?;
 
         Ok(Self {
