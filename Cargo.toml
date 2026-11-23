@@ -287,7 +287,7 @@ tracing-test = { version = "0.2.6", default-features = false, features = [] }
 # `codegen-units = 8` serialize as `{"$serde_json::private::Number" = "8"}` tables, which cargo rejects.  Lift the pin
 # once trybuild serializes profiles without going through serde_json numbers.
 trybuild = { version = "=1.0.122", default-features = false, features = [] }
-ureq = { version = "3.5.1", default-features = false, features = [] }
+ureq = { version = "3.5.2", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
 uuid = { version = "1.29.2", default-features = false, features = [] }
 vsock = { version = "0.5.5", default-features = false, features = [] }
