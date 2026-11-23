@@ -25,12 +25,12 @@ mod tests {
     use lpm::prefix::{IpAddr, Prefix};
 
     use concurrency::sync::Arc;
-    use concurrency::sync::atomic::AtomicU16;
+    use concurrency::sync::atomic::{AtomicU16, Ordering};
     use concurrency::thread::Builder;
     use rand::RngExt;
     use rand::rngs::ThreadRng;
+    use std::collections::{HashMap, HashSet};
     use std::str::FromStr;
-    use std::{collections::HashMap, collections::HashSet, sync::atomic::Ordering};
 
     use crate::fib::fibgroupstore::tests::build_fib_entry_egress;
     use crate::fib::fibgroupstore::tests::build_fibgroup;
