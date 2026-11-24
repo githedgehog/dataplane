@@ -16,6 +16,7 @@ use crate::{ConfigError, ConfigResult};
 use communities::PriorityCommunityTable;
 use derive_builder::Builder;
 use gwgroup::GwGroupTable;
+use ids::GatewayId;
 use overlay::{Overlay, ValidatedOverlay};
 use std::num::NonZero;
 use tracing::debug;
@@ -63,7 +64,7 @@ impl ExternalConfig {
         for group in self.gwgroups.iter() {
             for member in group.iter() {
                 let rank = group
-                    .get_member_pos(member.name.as_str())
+                    .get_member_pos(&member.name)
                     .unwrap_or_else(|| unreachable!());
 
                 self.communities
@@ -87,7 +88,7 @@ impl ExternalConfig {
     /// Returns [`ConfigError::Unsupported`] if a peering this gateway renders carries
     /// IPv6 prefixes.
     fn check_rendered_peerings_are_ipv4(
-        gwname: &str,
+        gwname: &GatewayId,
         overlay: &ValidatedOverlay,
         underlay: &Underlay,
         gwgroups: &GwGroupTable,
@@ -124,12 +125,13 @@ impl ExternalConfig {
     /// Returns a [`ConfigError`] if validation fails.
     pub fn validate(mut self) -> Result<ValidatedGwConfig, ConfigError> {
         debug!("Validating external config with genid {} ..", self.genid);
+        let gwname = GatewayId::new(&self.gwname)?;
         self.device.validate()?;
         self.validate_gw_groups()?;
         let underlay = self.underlay.validate()?;
         let overlay = self.overlay.validate()?;
         Self::check_rendered_peerings_are_ipv4(
-            &self.gwname,
+            &gwname,
             &overlay,
             &underlay,
             &self.gwgroups,
@@ -143,7 +145,7 @@ impl ExternalConfig {
             ));
         }
         let validated_external = ValidatedExternalConfig {
-            gwname: self.gwname,
+            gwname,
             genid: self.genid,
             device: self.device,
             underlay,
@@ -160,7 +162,7 @@ impl ExternalConfig {
 
 #[derive(Debug)]
 pub struct ValidatedExternalConfig {
-    gwname: String,                              /* name of gateway */
+    gwname: GatewayId,                           /* name of gateway */
     genid: GenId,                                /* configuration generation id (version) */
     device: DeviceConfig,                        /* goes as-is into the internal config */
     underlay: Underlay,                          /* goes as-is into the internal config */
@@ -172,9 +174,9 @@ pub struct ValidatedExternalConfig {
 
 impl ValidatedExternalConfig {
     #[must_use]
-    pub(crate) fn blank() -> Self {
+    pub(crate) fn blank(gwname: GatewayId) -> Self {
         Self {
-            gwname: String::new(),
+            gwname,
             genid: ExternalConfig::BLANK_GENID,
             device: DeviceConfig::new(),
             underlay: Underlay::default(),
@@ -186,7 +188,8 @@ impl ValidatedExternalConfig {
     }
 
     #[must_use]
-    pub fn gwname(&self) -> &str {
+    /// Returns a reference to the `GatewayId` for this gateway (its name)
+    pub fn gwname(&self) -> &GatewayId {
         &self.gwname
     }
 

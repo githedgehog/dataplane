@@ -695,6 +695,7 @@ mod tests_cli_handling {
     use dplane_rpc::wire::Wire;
 
     use crate::frr::test::fake_frr_agent::fake_frr_agent;
+    use config::external::ids::GatewayId;
 
     // max time to wait for a response from the router, over the CPI or the CLI
     const RECV_TIMEOUT: Duration = Duration::from_secs(5);
@@ -779,7 +780,7 @@ mod tests_cli_handling {
         ctl.unlock().await.expect("cpi should unlock");
     }
     async fn send_gw_config(ctl: &RouterCtlSender) {
-        let config = ValidatedGwConfig::blank();
+        let config = ValidatedGwConfig::blank(GatewayId::new("gw").unwrap());
         let mut meta = config.meta().load().as_ref().clone();
         meta.genid = GENID_CFG_META;
         ctl.send_config(config.into()).await.unwrap();

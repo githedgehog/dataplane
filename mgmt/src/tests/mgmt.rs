@@ -596,6 +596,7 @@ pub mod test {
             vpc_stats_store,
             dp_status_r,
             bmp_options: None,
+            gwname: GatewayId::new("test-gw").unwrap(),
             gateway_name,
             control_plane,
         };
