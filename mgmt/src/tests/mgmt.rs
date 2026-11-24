@@ -579,7 +579,6 @@ pub mod test {
         let flow_table = Arc::from(FlowTable::new(16));
 
         /* build configuration of mgmt config processor */
-        let (gateway_name, named) = tokio::sync::watch::channel(None);
         let (control_plane, _) = tokio::sync::watch::channel(ControlPlane::default());
         let processor_config = ConfigProcessorParams {
             router_ctl,
@@ -597,7 +596,6 @@ pub mod test {
             dp_status_r,
             bmp_options: None,
             gwname: GatewayName::new("test-gw").unwrap(),
-            gateway_name,
             control_plane,
         };
 
@@ -615,11 +613,6 @@ pub mod test {
                 panic!("{e}");
             }
         }
-        assert_eq!(
-            named.borrow().as_deref(),
-            Some("test-gw"),
-            "an applied config tells its watchers the gateway's name"
-        );
         let enforced = enforced.load();
         assert_eq!(
             enforced

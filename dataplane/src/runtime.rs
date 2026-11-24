@@ -940,9 +940,8 @@ pub fn main() {
     let ingredients = setup.pipeline;
     let pipeline_data = ingredients.data();
 
-    // What LLDP needs from outside the datapath: the gateway's name, once a config has named it, and
-    // the host's management address, which only the host namespace can see.
-    let (gateway_name, gateway_named) = tokio::sync::watch::channel(None);
+    // What LLDP needs from outside the datapath: the host's management address, which only the host
+    // namespace can see.
     let (management_address, management_addressed) = tokio::sync::watch::channel(None);
     // The addresses and peers that decide which traffic is the control plane's, from the config.
     let (control_plane, control_planes) = watch::channel(ControlPlane::default());
@@ -991,7 +990,6 @@ pub fn main() {
         &shutdown.protocols,
         cp_bridge.ports(),
         gwname.as_str(),
-        &gateway_named,
         &management_addressed,
     );
     if let Some(heard) = cp_bridge.take_heard() {
@@ -1085,7 +1083,6 @@ pub fn main() {
                     dp_status_r: dp_status.clone(),
                     bmp_options: bmp_client_opts,
                     gwname: gwname.clone(),
-                    gateway_name,
                     control_plane,
                 },
             },

@@ -1184,7 +1184,7 @@ mod test {
     /// gateway, and stopping retracts them.
     #[n_vm::test]
     #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
-    fn a_gateway_advertises_on_a_port_that_is_up_and_names_itself_once_configured() {
+    fn a_gateway_advertises_on_a_port_that_is_up() {
         use lldp::Link;
         use net::headers::Headers;
         use net::lldp::{ChassisId, IdOctets, Lldpdu, OptionalTlv, PortId, Text};
@@ -1222,14 +1222,12 @@ mod test {
             let mut inject = ends.take(&name).unwrap().inject.take().unwrap();
             let link = ends.take_link(&name).unwrap();
 
-            let (gateway_name, named) = watch::channel(None);
             let (_management, management) = watch::channel(None);
             let _new_neighbors = crate::lldp_agent::start(
                 &handle,
                 &shutdown.mgmt,
                 bridge.ports(),
                 "dp-test",
-                &named,
                 &management,
             );
 
@@ -1243,24 +1241,12 @@ mod test {
             });
             link.send_replace(Link::Up);
 
-            // Advertised before any configuration, under the dataplane's own name.
+            // Advertised under the dataplane's own name.
             let pdu = next_lldpdu(&mut inject).await;
             assert!(
                 pdu.optional()
                     .contains(&OptionalTlv::SystemName(Text::new(b"dp-test").unwrap()))
             );
-
-            // A configuration names the gateway; the chassis stays the same.
-            gateway_name.send_replace(Some("gw-test".to_string()));
-            let pdu = loop {
-                let pdu = next_lldpdu(&mut inject).await;
-                if pdu
-                    .optional()
-                    .contains(&OptionalTlv::SystemName(Text::new(b"gw-test").unwrap()))
-                {
-                    break pdu;
-                }
-            };
             assert_eq!(
                 *pdu.chassis_id(),
                 ChassisId::LocallyAssigned(IdOctets::new(b"dp-test").unwrap())
