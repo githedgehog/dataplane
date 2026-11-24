@@ -329,9 +329,7 @@ impl<'p> Worker<'p> {
             return false;
         }
         counters.burst(rx_mbufs.len(), dpdk::mem::MBUF_BURST);
-        for mbuf in rx_mbufs.iter() {
-            mbuf.prefetch_head();
-        }
+        dpdk::mem::HeadFetch::DEFAULT.fetch(rx_mbufs.iter(), dpdk::mem::HEAD_LINES);
         self.run_pipeline(slot, tx_by_if, pipeline, scratch, counters);
         true
     }

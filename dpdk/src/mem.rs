@@ -343,11 +343,56 @@ pub struct PoolParams {
 /// Bytes per cache line on every CPU this runs on (x86-64 and aarch64 alike).
 pub const CACHE_LINE_BYTES: usize = 64;
 
-/// Cache lines of packet head that [`Mbuf::prefetch_head`] fetches.
+/// Cache lines of packet head that [`HeadFetch::fetch`] brings in.
 ///
-/// Two, because VXLAN pushes the inner IPv4 header to byte 64 -- exactly past the first line.
-/// See [`Mbuf::prefetch_head`].
-pub const PREFETCH_HEAD_LINES: usize = 2;
+/// Two, because VXLAN pushes the inner IPv4 header to byte 64 -- exactly past the first line --
+/// and an IPv4/TCP header with options (Linux sends timestamps) crosses it too.
+pub const HEAD_LINES: usize = 2;
+
+/// How a worker brings the heads of a received burst into cache before parsing them.
+///
+/// The NIC's writes land in DRAM, so the first read of every head misses. A hint lets the burst's
+/// misses overlap without waiting for them, but the CPU may drop it: on the local BF-3 bench
+/// (Zen 4, 2026-11-24) a single worker sat in a state where every T1 hint was dropped and every
+/// parse waited on DRAM, one line or two alike. A touch waits for the lines, but in parallel and
+/// once per burst, and is never dropped: it was 16 % faster than T1 with one worker and as fast
+/// with four. Which is best depends on the CPU, hence the choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadFetch {
+    /// Prefetch hints into every cache level (`_MM_HINT_T0`, `PLDL1KEEP`).
+    Prefetch,
+    /// Load a byte of each line.
+    Touch,
+}
+
+impl HeadFetch {
+    /// What a worker uses unless told otherwise.
+    pub const DEFAULT: HeadFetch = HeadFetch::Touch;
+
+    /// Bring in the first `lines` cache lines of every frame in `burst`, in this way.
+    #[inline(always)]
+    pub fn fetch<'a, 'eal: 'a>(
+        self,
+        burst: impl IntoIterator<Item = &'a Mbuf<'eal>>,
+        lines: usize,
+    ) {
+        match self {
+            HeadFetch::Prefetch => {
+                for mbuf in burst {
+                    mbuf.prefetch_head(lines);
+                }
+            }
+            HeadFetch::Touch => {
+                // All the loads first, then one use of their sum: they overlap, and none is elided.
+                let mut sum = 0u8;
+                for mbuf in burst {
+                    sum ^= mbuf.touch_head(lines);
+                }
+                core::hint::black_box(sum);
+            }
+        }
+    }
+}
 
 /// Prefetch the cache line holding `addr` into every cache level (`_MM_HINT_T0`, `PLDL1KEEP`).
 /// A no-op on architectures without a stable prefetch.
@@ -910,22 +955,36 @@ impl<'eal> Mbuf<'eal> {
         raw
     }
 
-    /// Prefetch two cache lines at the packet head before parsing a burst.
-    ///
-    /// VXLAN places the inner IPv4 header at byte 64, so it needs the second line.
-    /// The temporal hint keeps headers cached for serialization later in the pipeline.
+    /// Prefetch the first `lines` cache lines at the packet head. The temporal hint keeps the
+    /// headers cached for serialization later in the pipeline.
     #[inline(always)]
-    pub fn prefetch_head(&self) {
+    fn prefetch_head(&self, lines: usize) {
         // SAFETY: `self.raw` is live. The prefetch hints do not dereference their addresses.
         // Use wrapping arithmetic because a small or trimmed buffer may end before the
         // second hint. This needs no packet-length load or bounds check.
         unsafe {
             let head = (self.raw.as_ref().buf_addr as *const u8)
                 .offset(self.raw.as_ref().annon1.annon1.data_off as isize);
-            for line in 0..PREFETCH_HEAD_LINES {
+            for line in 0..lines {
                 prefetch_line(head.wrapping_add(line * CACHE_LINE_BYTES));
             }
         }
+    }
+
+    /// Load the first byte of each of the first `lines` cache lines of the frame that start
+    /// inside it, and return their sum, so that the loads are not elided.
+    #[inline(always)]
+    fn touch_head(&self, lines: usize) -> u8 {
+        let data = self.raw_data();
+        let mut sum = 0u8;
+        for line in 0..lines {
+            // Only bytes of the frame: what follows it in the buffer may never have been written.
+            if let Some(byte) = data.get(line * CACHE_LINE_BYTES) {
+                // SAFETY: a valid reference to an initialized byte of the frame.
+                sum ^= unsafe { core::ptr::read_volatile(byte) };
+            }
+        }
+        sum
     }
 
     /// Get the contiguous bytes of the head segment.
@@ -1473,7 +1532,7 @@ mod pool_tests {
 }
 #[cfg(test)]
 mod prefetch_budget {
-    use super::{CACHE_LINE_BYTES, PREFETCH_HEAD_LINES};
+    use super::{CACHE_LINE_BYTES, HEAD_LINES};
     use net::eth::Eth;
     use net::ipv4::Ipv4;
     use net::udp::Udp;
@@ -1492,12 +1551,12 @@ mod prefetch_budget {
             INNER_IP_OFFSET, 64,
             "VXLAN inner IP is expected to land exactly on the second cache line"
         );
-        let span = PREFETCH_HEAD_LINES * CACHE_LINE_BYTES;
+        let span = HEAD_LINES * CACHE_LINE_BYTES;
         let needed = INNER_IP_OFFSET + Ipv4::MIN_LEN.get() as usize;
         assert!(
             span >= needed,
-            "prefetch covers {span} B but the inner IPv4 header ends at {needed} B; raise \
-             PREFETCH_HEAD_LINES"
+            "the head fetch covers {span} B but the inner IPv4 header ends at {needed} B; raise \
+             HEAD_LINES"
         );
     }
 }
