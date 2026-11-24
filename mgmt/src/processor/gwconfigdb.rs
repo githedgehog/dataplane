@@ -5,6 +5,7 @@
 
 use crate::processor::confbuild::internal::build_internal_config;
 use concurrency::sync::Arc;
+use config::external::ids::GatewayId;
 use config::{ConfigSummary, GenId, GwConfigMeta, ValidatedGwConfig};
 use tracing::{debug, info};
 
@@ -16,9 +17,9 @@ pub(crate) struct GwConfigDatabase {
 
 impl GwConfigDatabase {
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(gwname: GatewayId) -> Self {
         debug!("Building config database...");
-        let mut blank = ValidatedGwConfig::blank();
+        let mut blank = ValidatedGwConfig::blank(gwname);
         let internal = build_internal_config(&blank, None).unwrap_or_else(|_| unreachable!());
         blank.set_internal_config(internal);
         GwConfigDatabase {

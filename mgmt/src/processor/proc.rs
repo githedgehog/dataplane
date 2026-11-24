@@ -6,6 +6,7 @@
 use acl_filter::AclFilterContext;
 use acl_filter::AclFilterContextWriter;
 use concurrency::sync::Arc;
+use config::external::ids::GatewayId;
 use config::external::overlay::ValidatedOverlay;
 use flow_entry::flow_table::FlowTable;
 use rate_limit::{Backend, IngressRules, PeeringRules, RateLimitWriter};
@@ -119,6 +120,9 @@ pub struct ConfigProcessorParams {
     // BMP options to inject into InternalConfig
     pub bmp_options: Option<BmpOptions>,
 
+    /// The name of this gateway, for the blank config
+    pub gwname: GatewayId,
+
     /// The gateway's name, as of the last config applied: what this gateway calls itself to its
     /// neighbours. `None` until a config naming it has been applied.
     pub gateway_name: tokio::sync::watch::Sender<Option<String>>,
@@ -155,7 +159,7 @@ impl ConfigProcessor {
         // create processor
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
         let processor = ConfigProcessor {
-            config_db: GwConfigDatabase::new(),
+            config_db: GwConfigDatabase::new(proc_params.gwname.clone()),
             rx,
             vpc_mgr,
             proc_params,
@@ -209,13 +213,8 @@ impl ConfigProcessor {
     }
 
     /// Tell whoever is watching the name of the gateway an applied config describes.
-    ///
-    /// The blank config names nothing, so it leaves the last name in place.
     fn publish_gateway_name(&self, config: &ValidatedGwConfig) {
-        let name = config.external().gwname();
-        if name.is_empty() {
-            return;
-        }
+        let name = config.external().gwname().as_str();
         self.proc_params.gateway_name.send_if_modified(|current| {
             if current.as_deref() == Some(name) {
                 return false;

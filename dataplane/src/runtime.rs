@@ -24,6 +24,7 @@ use lifecycle::{
 };
 use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 
+use config::external::ids::GatewayId;
 use dpdk::dev::DevInfo;
 use dpdk::eal::Eal;
 use hardware::pci::address::PciAddress;
@@ -53,17 +54,18 @@ custom_target!("tower", LevelFilter::WARN, &["third-party"]);
 
 const PYROSCOPE_APP_NAME: &str = "hedgehog-dataplane";
 
-fn init_name(config: &LaunchConfiguration) -> Result<String, String> {
-    if let Some(name) = &config.general.name {
-        Ok(name.clone())
+fn init_name(config: &LaunchConfiguration) -> Result<GatewayId, String> {
+    let hostname;
+    let name = if let Some(name) = &config.general.name {
+        name.as_str()
     } else {
-        let hostname =
+        hostname =
             gethostname().map_err(|errno| format!("Failed to get hostname: {}", errno.desc()))?;
-        let name = hostname
+        hostname
             .to_str()
-            .ok_or_else(|| format!("Failed to convert hostname {}", hostname.display()))?;
-        Ok(name.to_string())
-    }
+            .ok_or_else(|| format!("Failed to convert hostname {}", hostname.display()))?
+    };
+    GatewayId::new(name).map_err(|e| format!("Invalid gateway name '{name}': {e}"))
 }
 fn init_logging(config: &LaunchConfiguration, gwname: &str) {
     // Log throttling is on by default; a missing --tracing-rate-limit uses the
@@ -764,7 +766,7 @@ pub fn main() {
             std::process::exit(1);
         }
     };
-    init_logging(&config, &gwname);
+    init_logging(&config, gwname.as_str());
     process_tracing_cmds(
         config.tracing.config.as_deref(),
         config.tracing.show.tags == TracingDisplayOption::Show,
@@ -988,7 +990,7 @@ pub fn main() {
         &mgmt_handle,
         &shutdown.protocols,
         cp_bridge.ports(),
-        &gwname,
+        gwname.as_str(),
         &gateway_named,
         &management_addressed,
     );
@@ -1061,7 +1063,7 @@ pub fn main() {
                     .config_server
                     .as_ref()
                     .and_then(|c| c.config_dir.clone()),
-                hostname: gwname.clone(),
+                hostname: gwname.to_string(),
                 interfaces: config
                     .driver
                     .interfaces()
@@ -1082,6 +1084,7 @@ pub fn main() {
                     vpc_stats_store: setup.vpc_stats_store,
                     dp_status_r: dp_status.clone(),
                     bmp_options: bmp_client_opts,
+                    gwname: gwname.clone(),
                     gateway_name,
                     control_plane,
                 },

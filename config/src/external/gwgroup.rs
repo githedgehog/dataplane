@@ -111,8 +111,8 @@ impl GwGroup {
             .map(|v| v as _)
     }
     #[must_use]
-    pub fn get_member_pos(&self, name: &str) -> Option<usize> {
-        self.members.iter().position(|m| m.name.as_str() == name)
+    pub fn get_member_pos(&self, name: &GatewayId) -> Option<usize> {
+        self.members.iter().position(|m| m.name == *name)
     }
 }
 
@@ -151,7 +151,7 @@ impl GwGroupTable {
             .map(|group| group.get_member_by_name(name))?
     }
     #[must_use]
-    pub fn get_group_member_rank(&self, group: &GroupId, name: &str) -> Option<usize> {
+    pub fn get_group_member_rank(&self, group: &GroupId, name: &GatewayId) -> Option<usize> {
         self.get_group(group)
             .map(|group| group.get_member_pos(name))?
     }
@@ -349,15 +349,15 @@ mod test {
         println!("{gwtable}");
         println!("{comtable}");
 
-        let rank = gwtable.get_group_member_rank(&gid("gw-group-1"), "gw1").unwrap();
+        let rank = gwtable.get_group_member_rank(&gid("gw-group-1"), &id("gw1")).unwrap();
         let com = comtable.get_community(rank).unwrap();
         assert_eq!(com, "65000:802");
 
-        let rank = gwtable.get_group_member_rank(&gid("gw-group-2"), "gw1").unwrap();
+        let rank = gwtable.get_group_member_rank(&gid("gw-group-2"), &id("gw1")).unwrap();
         let com = comtable.get_community(rank).unwrap();
         assert_eq!(com, "65000:801");
 
-        let rank =  gwtable.get_group_member_rank(&gid("gw-group-3"), "gw1").unwrap();
+        let rank =  gwtable.get_group_member_rank(&gid("gw-group-3"), &id("gw1")).unwrap();
         let com = comtable.get_community(rank).unwrap();
         assert_eq!(com, "65000:800");
     }
