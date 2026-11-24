@@ -21,10 +21,19 @@ impl TypeGenerator for LegalValue<GatewayAgentGatewayGroups> {
     }
 }
 
+/// The longest legal gateway name is 64 bytes: `GatewayAgentGroups` appends `-{i}` (up to 2 bytes)
+const MAX_MEMBER_NAME_LEN: usize = 62;
+
 impl TypeGenerator for GatewayAgentGroupsMembers {
     fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+        let mut name = driver.produce::<String>()?;
+        let mut len = name.len().min(MAX_MEMBER_NAME_LEN);
+        while !name.is_char_boundary(len) {
+            len -= 1;
+        }
+        name.truncate(len);
         let gmember = GatewayAgentGroupsMembers {
-            name: driver.produce::<String>()?,
+            name,
             priority: driver.gen_u32(Bound::Included(&0), Bound::Included(&10))?,
             vtep_ip: driver.produce::<UnicastIpv4Addr>()?.to_string(),
         };

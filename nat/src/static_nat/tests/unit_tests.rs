@@ -8,6 +8,7 @@
 use config::external::ExternalConfigBuilder;
 use config::external::communities::PriorityCommunityTable;
 use config::external::gwgroup::{GwGroup, GwGroupTable};
+use config::external::ids::GroupId;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
@@ -595,7 +596,9 @@ pub(crate) fn build_gwconfig_from_overlay(overlay: Overlay) -> ExternalConfig {
     };
 
     let mut group_table = GwGroupTable::new();
-    group_table.add_group(GwGroup::new("default")).unwrap();
+    group_table
+        .add_group(GwGroup::new(GroupId::new("default").unwrap()))
+        .unwrap();
 
     let mut external_builder = ExternalConfigBuilder::default();
     external_builder.gwname("test-gw".to_string());

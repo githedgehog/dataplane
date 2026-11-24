@@ -3,6 +3,7 @@
 
 //! Dataplane configuration model: gateway groups
 
+use super::ids::{GatewayId, GroupId};
 use crate::ConfigError;
 use common::cliprovider::Heading;
 use net::ip::UnicastIpAddr;
@@ -15,15 +16,15 @@ use std::fmt::Display;
 /// gateway has a priority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GwGroupMember {
-    pub name: String,
+    pub name: GatewayId,
     pub priority: u32,
     pub ipaddress: UnicastIpAddr,
 }
 impl GwGroupMember {
     #[must_use]
-    pub fn new(name: &str, priority: u32, ipaddress: UnicastIpAddr) -> Self {
+    pub fn new(name: GatewayId, priority: u32, ipaddress: UnicastIpAddr) -> Self {
         Self {
-            name: name.to_owned(),
+            name,
             priority,
             ipaddress,
         }
@@ -56,14 +57,14 @@ impl PartialOrd for GwGroupMember {
 /// A [`GwGroup`] is a named set of gateways. Each gateway is represented by  a [`GwGroupMember`].
 #[derive(Clone, Debug)]
 pub struct GwGroup {
-    name: String,
+    name: GroupId,
     members: Vec<GwGroupMember>,
 }
 impl GwGroup {
     #[must_use]
-    pub fn new(name: &str) -> Self {
+    pub fn new(name: GroupId) -> Self {
         Self {
-            name: name.to_owned(),
+            name,
             members: vec![],
         }
     }
@@ -80,7 +81,7 @@ impl GwGroup {
     /// Returns [`ConfigError::DuplicateMemberAddress`] if a member with the same IP address already exists.
     pub fn add_member(&mut self, member: GwGroupMember) -> Result<(), ConfigError> {
         if self.get_member_by_name(&member.name).is_some() {
-            return Err(ConfigError::DuplicateMember(member.name.clone()));
+            return Err(ConfigError::DuplicateMember(member.name));
         }
         if self.get_member_by_addr(member.ipaddress).is_some() {
             return Err(ConfigError::DuplicateMemberAddress(member.ipaddress));
@@ -92,14 +93,14 @@ impl GwGroup {
         self.members.iter()
     }
     #[must_use]
-    pub fn name(&self) -> &str {
-        self.name.as_str()
+    pub fn name(&self) -> &GroupId {
+        &self.name
     }
     #[must_use]
-    pub fn get_member_by_name(&self, name: &str) -> Option<&GwGroupMember> {
+    pub fn get_member_by_name(&self, name: &GatewayId) -> Option<&GwGroupMember> {
         self.members
             .iter()
-            .find(|&m| m.name == name)
+            .find(|&m| m.name == *name)
             .map(|v| v as _)
     }
     #[must_use]
@@ -116,7 +117,7 @@ impl GwGroup {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct GwGroupTable(OrderMap<String, GwGroup>);
+pub struct GwGroupTable(OrderMap<GroupId, GwGroup>);
 impl GwGroupTable {
     #[must_use]
     pub fn new() -> Self {
@@ -129,9 +130,9 @@ impl GwGroupTable {
     /// Returns [`ConfigError::DuplicateGroup`] if a group with the same name already exists.
     pub fn add_group(&mut self, group: GwGroup) -> Result<(), ConfigError> {
         if self.0.contains_key(group.name()) {
-            return Err(ConfigError::DuplicateGroup(group.name().to_owned()));
+            return Err(ConfigError::DuplicateGroup(group.name().clone()));
         }
-        self.0.insert(group.name().to_owned(), group);
+        self.0.insert(group.name().clone(), group);
         Ok(())
     }
     #[must_use]
@@ -145,7 +146,7 @@ impl GwGroupTable {
         self.0.values_mut()
     }
     #[must_use]
-    pub fn get_group_member(&self, group: &str, name: &str) -> Option<&GwGroupMember> {
+    pub fn get_group_member(&self, group: &str, name: &GatewayId) -> Option<&GwGroupMember> {
         self.get_group(group)
             .map(|group| group.get_member_by_name(name))?
     }
@@ -201,6 +202,7 @@ mod test {
     use super::{GwGroup, GwGroupMember, GwGroupTable};
     use crate::ConfigError;
     use crate::external::PriorityCommunityTable;
+    use crate::external::ids::{GatewayId, GroupId};
     use std::str::FromStr;
 
     #[track_caller]
@@ -208,50 +210,60 @@ mod test {
         UnicastIpAddr::from_str(a).expect("Bad ip")
     }
 
+    #[track_caller]
+    fn id(name: &str) -> GatewayId {
+        GatewayId::new(name).expect("Invalid name")
+    }
+
+    #[track_caller]
+    fn gid(name: &str) -> GroupId {
+        GroupId::new(name).expect("Invalid name")
+    }
+
     #[test]
     fn test_gw_groups() {
         let mut gwtable = GwGroupTable::new();
 
         // first group
-        let mut group = GwGroup::new("gw-group-1");
-        group.add_member(GwGroupMember::new("gw1", 1, ip("172.128.0.1"))).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 2, ip("172.128.0.2"))).unwrap();
-        group.add_member(GwGroupMember::new("gw3", 3, ip("172.128.0.3"))).unwrap();
+        let mut group = GwGroup::new(gid("gw-group-1"));
+        group.add_member(GwGroupMember::new(id("gw1"), 1, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new(id("gw2"), 2, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new(id("gw3"), 3, ip("172.128.0.3"))).unwrap();
 
         // err on duplicate member names or ip addresses
-        let r = group.add_member(GwGroupMember::new("gw1", 99, ip("172.128.0.4")));
+        let r = group.add_member(GwGroupMember::new(id("gw1"), 99, ip("172.128.0.4")));
         assert!(r.is_err_and(|e| matches!(e, ConfigError::DuplicateMember(_))));
-        let r = group.add_member(GwGroupMember::new("gw4", 99, ip("172.128.0.1")));
+        let r = group.add_member(GwGroupMember::new(id("gw4"), 99, ip("172.128.0.1")));
         assert!(r.is_err_and(|e| matches!(e, ConfigError::DuplicateMemberAddress(_))));
         gwtable.add_group(group).unwrap();
 
         // err on duplicate group
-        let duped = GwGroup::new("gw-group-1");
+        let duped = GwGroup::new(gid("gw-group-1"));
         let r = gwtable.add_group(duped);
         assert!(r.is_err_and(|e| matches!(e, ConfigError::DuplicateGroup(_))));
 
         // second group
-        let mut group = GwGroup::new("gw-group-2");
-        group.add_member(GwGroupMember::new("gw2", 0, ip("172.128.0.2"))).unwrap();
-        group.add_member(GwGroupMember::new("gw3", 2, ip("172.128.0.3"))).unwrap();
+        let mut group = GwGroup::new(gid("gw-group-2"));
+        group.add_member(GwGroupMember::new(id("gw2"), 0, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new(id("gw3"), 2, ip("172.128.0.3"))).unwrap();
         gwtable.add_group(group).unwrap();
         println!("{gwtable}");
 
         // lookup
-        let member = gwtable.get_group_member("gw-group-1", "gw1").unwrap();
-        assert_eq!(member.name, "gw1");
+        let member = gwtable.get_group_member("gw-group-1", &id("gw1")).unwrap();
+        assert_eq!(member.name.as_str(), "gw1");
         assert_eq!(member.priority, 1);
         assert_eq!(member.ipaddress, ip("172.128.0.1"));
     }
 
     #[test]
     fn test_gw_group_ordering() {
-        let mut group = GwGroup::new("gw-group-1");
-        group.add_member(GwGroupMember::new("gw1", 100, ip("172.128.0.1"))).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 90, ip("172.128.0.2"))).unwrap();
-        group.add_member(GwGroupMember::new("gw3", 300, ip("172.128.0.3"))).unwrap();
-        group.add_member(GwGroupMember::new("gw4", 0, ip("172.128.0.4"))).unwrap();
-        group.add_member(GwGroupMember::new("gw5", 100, ip("172.128.0.5"))).unwrap();
+        let mut group = GwGroup::new(gid("gw-group-1"));
+        group.add_member(GwGroupMember::new(id("gw1"), 100, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new(id("gw2"), 90, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new(id("gw3"), 300, ip("172.128.0.3"))).unwrap();
+        group.add_member(GwGroupMember::new(id("gw4"), 0, ip("172.128.0.4"))).unwrap();
+        group.add_member(GwGroupMember::new(id("gw5"), 100, ip("172.128.0.5"))).unwrap();
         group.sort_members();
 
         let mut prio = group.members[0].priority;
@@ -267,11 +279,11 @@ mod test {
 
     #[test]
     fn test_gw_group_member_ord() {
-        let m1 = GwGroupMember::new("gw1", 10, ip("172.128.0.1"));
-        let m2 = GwGroupMember::new("gw2", 1, ip("172.128.1.2"));
-        let m3 = GwGroupMember::new("gw3", 1, ip("172.128.1.3"));
-        let m4 = GwGroupMember::new("gw4", 20, ip("172.128.0.4"));
-        let m5 = GwGroupMember::new("gw5", 20, ip("172.128.0.5"));
+        let m1 = GwGroupMember::new(id("gw1"), 10, ip("172.128.0.1"));
+        let m2 = GwGroupMember::new(id("gw2"), 1, ip("172.128.1.2"));
+        let m3 = GwGroupMember::new(id("gw3"), 1, ip("172.128.1.3"));
+        let m4 = GwGroupMember::new(id("gw4"), 20, ip("172.128.0.4"));
+        let m5 = GwGroupMember::new(id("gw5"), 20, ip("172.128.0.5"));
 
         assert!(m1 > m2);
         assert!(m2 > m3);
@@ -279,7 +291,7 @@ mod test {
         assert!(m4 > m1);
         assert!(m4 > m5);
 
-        let mut group = GwGroup::new("test");
+        let mut group = GwGroup::new(gid("test"));
         group.add_member(m1).unwrap();
         group.add_member(m2).unwrap();
         group.add_member(m3).unwrap();
@@ -300,20 +312,20 @@ mod test {
     fn build_sample_gw_groups() -> GwGroupTable {
         let mut gwtable = GwGroupTable::new();
 
-        let mut group = GwGroup::new("gw-group-1");
-        group.add_member(GwGroupMember::new("gw1", 1, ip("172.128.0.1"))).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 2, ip("172.128.0.2"))).unwrap();
-        group.add_member(GwGroupMember::new("gw3", 3, ip("172.128.0.3"))).unwrap();
+        let mut group = GwGroup::new(gid("gw-group-1"));
+        group.add_member(GwGroupMember::new(id("gw1"), 1, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new(id("gw2"), 2, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new(id("gw3"), 3, ip("172.128.0.3"))).unwrap();
         gwtable.add_group(group).unwrap();
 
-        let mut group = GwGroup::new("gw-group-2");
-        group.add_member(GwGroupMember::new("gw1", 2, ip("172.128.0.1"))).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 3, ip("172.128.0.2"))).unwrap();
+        let mut group = GwGroup::new(gid("gw-group-2"));
+        group.add_member(GwGroupMember::new(id("gw1"), 2, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new(id("gw2"), 3, ip("172.128.0.2"))).unwrap();
         gwtable.add_group(group).unwrap();
 
-        let mut group = GwGroup::new("gw-group-3");
-        group.add_member(GwGroupMember::new("gw1", 3, ip("172.128.0.1"))).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 1, ip("172.128.0.2"))).unwrap();
+        let mut group = GwGroup::new(gid("gw-group-3"));
+        group.add_member(GwGroupMember::new(id("gw1"), 3, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new(id("gw2"), 1, ip("172.128.0.2"))).unwrap();
         gwtable.add_group(group).unwrap();
         gwtable
     }
