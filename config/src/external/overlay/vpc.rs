@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
+use crate::external::ids::GroupId;
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
 use crate::external::overlay::acl::{Acl, ValidatedAcl};
@@ -33,7 +34,7 @@ pub struct Peering {
     pub remote: VpcManifest, /* remote manifest */
     pub remote_id: VpcId,    /* Id of peer */
     pub remote_vni: Vni,     /* Vni of peer -- should be vpc discriminant in future */
-    pub gwgroup: String,     /* gateway group serving this peering */
+    pub gwgroup: GroupId,    /* gateway group serving this peering */
     pub acl: Option<Acl>,    /* optional ACL for this peering */
     pub no_multipath: bool,
 }
@@ -83,7 +84,7 @@ pub struct ValidatedPeering {
     remote: ValidatedManifest, /* remote manifest */
     remote_id: VpcId,          /* Id of peer */
     remote_vni: Vni,           /* Vni of peer -- should be vpc discriminant in future */
-    gwgroup: String,           /* gateway group serving this peering */
+    gwgroup: GroupId,          /* gateway group serving this peering */
     acl: Option<ValidatedAcl>, /* optional ACL for this peering */
     no_multipath: bool,
 }
@@ -115,7 +116,7 @@ impl ValidatedPeering {
     }
 
     #[must_use]
-    pub fn gwgroup(&self) -> &String {
+    pub fn gwgroup(&self) -> &GroupId {
         &self.gwgroup
     }
 

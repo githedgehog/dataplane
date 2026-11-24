@@ -265,7 +265,7 @@ fn survey(overlay: &Overlay, seen: &mut Observed) {
             no_multipath,
         } = peering;
         seen.note("VpcPeering.name", name.clone());
-        seen.note("VpcPeering.gwgroup", gwgroup.clone());
+        seen.note("VpcPeering.gwgroup", gwgroup.to_string());
         seen.note(
             "VpcPeering.acl",
             if acl.is_some() { "present" } else { "absent" },

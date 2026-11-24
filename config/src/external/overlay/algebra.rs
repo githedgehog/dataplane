@@ -13,6 +13,7 @@ use lpm::prefix::{
 };
 
 use crate::ConfigError;
+use crate::external::ids::GroupId;
 use crate::external::overlay::Overlay;
 use crate::external::overlay::acl::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope};
 use crate::external::overlay::vpc::{Vpc, VpcTable};
@@ -638,7 +639,7 @@ impl Draft {
                 &handle.name(),
                 spec.manifest(handle, Side::Left),
                 spec.manifest(handle, Side::Right),
-                handle.group(),
+                GroupId::new(&handle.group())?,
             );
             peering.acl = spec.guard.acl(handle, spec);
             peerings.add(peering)?;

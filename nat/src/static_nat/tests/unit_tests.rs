@@ -243,7 +243,7 @@ fn build_context() -> NatTables {
         remote: manifest2.clone(),
         remote_id: "12345".try_into().expect("Failed to create VPC ID"),
         remote_vni: vpc2.vni,
-        gwgroup: "default".into(),
+        gwgroup: GroupId::default_group(),
         acl: None,
         no_multipath: false,
     };
@@ -253,7 +253,7 @@ fn build_context() -> NatTables {
         remote: manifest1,
         remote_id: "67890".try_into().expect("Failed to create VPC ID"),
         remote_vni: vpc1.vni,
-        gwgroup: "default".into(),
+        gwgroup: GroupId::default_group(),
         acl: None,
         no_multipath: false,
     };
@@ -597,7 +597,7 @@ pub(crate) fn build_gwconfig_from_overlay(overlay: Overlay) -> ExternalConfig {
 
     let mut group_table = GwGroupTable::new();
     group_table
-        .add_group(GwGroup::new(GroupId::new("default").unwrap()))
+        .add_group(GwGroup::new(GroupId::default_group()))
         .unwrap();
 
     let mut external_builder = ExternalConfigBuilder::default();

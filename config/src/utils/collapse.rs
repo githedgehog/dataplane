@@ -52,6 +52,7 @@ fn collapse_prefix_lists(prefixes: &PrefixPortsSet, excludes: &PrefixPortsSet) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::external::ids::GroupId;
     use crate::external::overlay::vpc::Peering;
     use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use ipnet::IpNet;
@@ -237,7 +238,7 @@ mod tests {
             remote: manifest_empty.clone(),
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
             remote_vni: 100.try_into().unwrap(),
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         };

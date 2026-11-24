@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
 use acl::table::Backend;
+use config::external::ids::GroupId;
 use config::external::overlay::acl::{AclPattern, AclProtoMatch};
 use config::external::overlay::ingress::{IngressAction, IngressPolicy, IngressRule};
 use config::external::overlay::ratelimit::{ColorAction, RateLimitTables};
@@ -84,7 +85,7 @@ fn compile_named(
     right.add_expose(VpcExpose::empty().ip("10.1.0.0/16".parse::<LpmPrefix>().unwrap().into()));
     let mut peerings = VpcPeeringTable::new();
     peerings
-        .add(VpcPeering::new("p", left, right, "default".into()))
+        .add(VpcPeering::new("p", left, right, GroupId::default_group()))
         .unwrap();
     let overlay: ValidatedOverlay = Overlay::new(vpcs, peerings)
         .with_rate_limits(RateLimitTables {
@@ -509,7 +510,7 @@ fn ingress_vpcs_name_unpeered_vpcs_too() {
     right.add_expose(VpcExpose::empty().ip("10.1.0.0/16".parse::<LpmPrefix>().unwrap().into()));
     let mut peerings = VpcPeeringTable::new();
     peerings
-        .add(VpcPeering::new("p", left, right, "default".into()))
+        .add(VpcPeering::new("p", left, right, GroupId::default_group()))
         .unwrap();
     let overlay: ValidatedOverlay = Overlay::new(vpcs, peerings)
         .with_ingress(IngressPolicy {
