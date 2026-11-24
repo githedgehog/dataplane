@@ -129,6 +129,12 @@ pub enum ConfigError {
 
     #[error("Failed to apply port-forwarding configuration: {0}")]
     PortForwarding(String),
+
+    #[error("Name {0} exceeds the maximum length allowed ({1} chars)")]
+    NameTooLong(String, usize),
+
+    #[error("Missing name")]
+    NoName,
 }
 
 /// Result-like type for configurations

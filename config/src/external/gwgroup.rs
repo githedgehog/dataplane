@@ -203,6 +203,7 @@ mod test {
     use crate::external::PriorityCommunityTable;
     use std::str::FromStr;
 
+    #[track_caller]
     fn ip(a:&str) -> UnicastIpAddr {
         UnicastIpAddr::from_str(a).expect("Bad ip")
     }
