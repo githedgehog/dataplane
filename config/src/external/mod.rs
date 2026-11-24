@@ -63,7 +63,7 @@ impl ExternalConfig {
         for group in self.gwgroups.iter() {
             for member in group.iter() {
                 let rank = group
-                    .get_member_pos(&member.name)
+                    .get_member_pos(member.name.as_str())
                     .unwrap_or_else(|| unreachable!());
 
                 self.communities
