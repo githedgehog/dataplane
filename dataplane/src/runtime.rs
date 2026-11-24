@@ -24,7 +24,7 @@ use lifecycle::{
 };
 use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 
-use config::external::ids::GatewayId;
+use config::external::names::GatewayName;
 use dpdk::dev::DevInfo;
 use dpdk::eal::Eal;
 use hardware::pci::address::PciAddress;
@@ -54,7 +54,7 @@ custom_target!("tower", LevelFilter::WARN, &["third-party"]);
 
 const PYROSCOPE_APP_NAME: &str = "hedgehog-dataplane";
 
-fn init_name(config: &LaunchConfiguration) -> Result<GatewayId, String> {
+fn init_name(config: &LaunchConfiguration) -> Result<GatewayName, String> {
     let hostname;
     let name = if let Some(name) = &config.general.name {
         name.as_str()
@@ -65,7 +65,7 @@ fn init_name(config: &LaunchConfiguration) -> Result<GatewayId, String> {
             .to_str()
             .ok_or_else(|| format!("Failed to convert hostname {}", hostname.display()))?
     };
-    GatewayId::new(name).map_err(|e| format!("Invalid gateway name '{name}': {e}"))
+    GatewayName::new(name).map_err(|e| format!("Invalid gateway name '{name}': {e}"))
 }
 fn init_logging(config: &LaunchConfiguration, gwname: &str) {
     // Log throttling is on by default; a missing --tracing-rate-limit uses the

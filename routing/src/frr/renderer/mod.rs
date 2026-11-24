@@ -71,7 +71,7 @@ impl Render for InternalConfig {
 mod renderer_properties {
     use super::*;
     use bolero::{Driver, ValueGenerator};
-    use config::external::ids::GatewayId;
+    use config::external::names::GatewayName;
     use config::external::overlay::vpc::VpcId;
     use config::internal::device::DeviceConfig;
     use config::internal::routing::bfd::{
@@ -208,7 +208,8 @@ mod renderer_properties {
     }
 
     fn internal_config(fabric: &Fabric) -> InternalConfig {
-        let mut config = InternalConfig::new(&GatewayId::new("GW1").unwrap(), DeviceConfig::new());
+        let mut config =
+            InternalConfig::new(&GatewayName::new("GW1").unwrap(), DeviceConfig::new());
         config.bfd_peers = fabric.peers.iter().copied().map(peer).collect();
 
         let mut vrfs = VrfConfigTable::new();

@@ -18,7 +18,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 use acl::table::Backend;
 use acl_filter::AclFilterContext;
-use config::external::ids::GroupId;
+use config::external::names::GroupName;
 use config::external::overlay::acl::{
     Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope, AclTcpFlagsMatch,
 };
@@ -604,7 +604,7 @@ fn with_exposes(
             &peering_name(peering),
             manifest(l, left)?,
             manifest(r, right)?,
-            GroupId::default_group(),
+            GroupName::default_group(),
         );
         vpc_peering.acl = acls.acl(peering);
         peerings.add(vpc_peering).ok()?;

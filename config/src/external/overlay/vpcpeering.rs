@@ -3,7 +3,7 @@
 
 //! Dataplane configuration model: vpc peering
 
-use crate::external::ids::GroupId;
+use crate::external::names::GroupName;
 use crate::external::overlay::acl::Acl;
 use crate::utils::{
     check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap, collapse_prefixes,
@@ -1048,13 +1048,13 @@ pub struct VpcPeering {
     pub name: String,       /* name of peering (key in table) */
     pub left: VpcManifest,  /* manifest for one side of the peering */
     pub right: VpcManifest, /* manifest for the other side */
-    pub gwgroup: GroupId,   /* name of gateway group */
+    pub gwgroup: GroupName, /* name of gateway group */
     pub acl: Option<Acl>,   /* optional peering-scoped ACL */
     pub no_multipath: bool, /* disable multipath if it would be possible (stateless peering) */
 }
 impl VpcPeering {
     #[must_use]
-    pub fn new(name: &str, left: VpcManifest, right: VpcManifest, gwgroup: GroupId) -> Self {
+    pub fn new(name: &str, left: VpcManifest, right: VpcManifest, gwgroup: GroupName) -> Self {
         Self {
             name: name.to_owned(),
             left,
@@ -1073,7 +1073,7 @@ impl VpcPeering {
             name: name.to_owned(),
             left,
             right,
-            gwgroup: GroupId::default_group(),
+            gwgroup: GroupName::default_group(),
             acl: None,
             no_multipath: false,
         }
@@ -1168,7 +1168,7 @@ pub mod contract {
 
     use super::{VpcExpose, VpcExposeNatConfig, VpcManifest, VpcPeering, VpcPeeringTable};
     use crate::ConfigError;
-    use crate::external::ids::GroupId;
+    use crate::external::names::GroupName;
     use crate::external::overlay::acl::{
         Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
     };
@@ -1692,7 +1692,7 @@ pub mod contract {
             "VPC-1--VPC-2",
             local,
             remote,
-            GroupId::new(gwgroup)?,
+            GroupName::new(gwgroup)?,
         ))?;
 
         Ok(Overlay::new(vpc_table, peerings))

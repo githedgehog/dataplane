@@ -6,7 +6,7 @@
 use acl_filter::AclFilterContext;
 use acl_filter::AclFilterContextWriter;
 use concurrency::sync::Arc;
-use config::external::ids::GatewayId;
+use config::external::names::GatewayName;
 use config::external::overlay::ValidatedOverlay;
 use flow_entry::flow_table::FlowTable;
 use rate_limit::{Backend, IngressRules, PeeringRules, RateLimitWriter};
@@ -121,7 +121,7 @@ pub struct ConfigProcessorParams {
     pub bmp_options: Option<BmpOptions>,
 
     /// The name of this gateway, for the blank config
-    pub gwname: GatewayId,
+    pub gwname: GatewayName,
 
     /// The gateway's name, as of the last config applied: what this gateway calls itself to its
     /// neighbours. `None` until a config naming it has been applied.

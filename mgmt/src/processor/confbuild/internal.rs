@@ -18,7 +18,7 @@ const IMPORT_VRFS: bool = false;
 
 use config::external::communities::PriorityCommunityTable;
 use config::external::gwgroup::GwGroupTable;
-use config::external::ids::GatewayId;
+use config::external::names::GatewayName;
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc};
 use config::external::overlay::vpcpeering::ValidatedManifest;
@@ -209,7 +209,7 @@ impl VpcRoutingConfigIpv4 {
         &mut self,
         vpc: &ValidatedVpc,
         peer: &ValidatedPeering,
-        gwname: &GatewayId,
+        gwname: &GatewayName,
         grouptable: &GwGroupTable,
         commtable: &PriorityCommunityTable,
     ) -> ConfigResult {
@@ -298,7 +298,7 @@ impl VpcRoutingConfigIpv4 {
     /// Build the routing config for a VPC
     fn build_routing_config_vpc(
         &mut self,
-        gwname: &GatewayId,
+        gwname: &GatewayName,
         vpc: &ValidatedVpc,
         grouptable: &GwGroupTable,
         commtable: &PriorityCommunityTable,

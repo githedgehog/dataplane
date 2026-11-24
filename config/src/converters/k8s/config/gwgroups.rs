@@ -4,7 +4,7 @@
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::strings::parse_address;
 use crate::external::gwgroup::{GwGroup, GwGroupMember, GwGroupTable};
-use crate::external::ids::{GatewayId, GroupId};
+use crate::external::names::{GatewayName, GroupName};
 use k8s_intf::gateway_agent_crd::{GatewayAgentGroupsMembers, GatewayAgentSpec};
 use net::ip::UnicastIpAddr;
 
@@ -18,7 +18,7 @@ impl TryFrom<&GatewayAgentGroupsMembers> for GwGroupMember {
         let ipaddress = UnicastIpAddr::try_from(ipaddr)
             .map_err(|e| Self::Error::InvalidData(format!("ip address {address}: {e}")))?;
 
-        let name = GatewayId::new(value.name.as_str())?;
+        let name = GatewayName::new(value.name.as_str())?;
         Ok(Self {
             name,
             priority: value.priority,
@@ -37,7 +37,7 @@ impl TryFrom<&GatewayAgentSpec> for GwGroupTable {
             None => Ok(group_table),
             Some(map) => {
                 for (name, gagroups) in map {
-                    let mut group = GwGroup::new(GroupId::new(name.as_str())?);
+                    let mut group = GwGroup::new(GroupName::new(name.as_str())?);
                     if let Some(members) = gagroups.members.as_ref() {
                         for m in members {
                             let member = GwGroupMember::try_from(m)?;

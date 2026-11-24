@@ -5,7 +5,7 @@ mod ingress;
 
 use crate::{Classify, PeeringRules, RateLimitWriter, RateLimiter, RateLimits, Unit};
 use acl::table::Backend;
-use config::external::ids::GroupId;
+use config::external::names::GroupName;
 use config::external::overlay::acl::{AclPattern, AclProtoMatch, AclTcpFlagsMatch};
 use config::external::overlay::ratelimit::{
     ColorAction, ColorActions, Meter, MeterProfile, RateLimitRule, RateLimitTables,
@@ -164,7 +164,12 @@ fn configuration(meters: Vec<(&str, Meter)>, rules: Vec<RateLimitRule>) -> Valid
         left.add_expose(VpcExpose::empty().ip(source.parse::<Prefix>().unwrap().into()));
         right.add_expose(VpcExpose::empty().ip(dest.parse::<Prefix>().unwrap().into()));
         peerings
-            .add(VpcPeering::new(name, left, right, GroupId::default_group()))
+            .add(VpcPeering::new(
+                name,
+                left,
+                right,
+                GroupName::default_group(),
+            ))
             .unwrap();
     }
     Overlay::new(vpcs, peerings)

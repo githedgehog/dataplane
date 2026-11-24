@@ -9,7 +9,7 @@ use std::fmt::Display;
 const MAX_NAME_LEN: usize = 64;
 
 // validate the name of a gateway or a gateway group
-fn validate_id(name: &str) -> Result<(), ConfigError> {
+fn validate_name(name: &str) -> Result<(), ConfigError> {
     if name.is_empty() {
         return Err(ConfigError::NoName);
     }
@@ -19,14 +19,14 @@ fn validate_id(name: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// The type to identify a gateway
+/// The type to name a gateway
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct GatewayId(String);
-impl GatewayId {
+pub struct GatewayName(String);
+impl GatewayName {
     /// # Errors
     /// Fails if the name is empty or longer than `MAX_NAME_LEN`.
     pub fn new(name: &str) -> Result<Self, ConfigError> {
-        validate_id(name)?;
+        validate_name(name)?;
         Ok(Self(name.to_owned()))
     }
     #[must_use]
@@ -35,20 +35,20 @@ impl GatewayId {
     }
 }
 
-impl Display for GatewayId {
+impl Display for GatewayName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.pad(&self.0)
     }
 }
 
-/// The type to identify a gateway group
+/// The type to name a gateway group
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct GroupId(String);
-impl GroupId {
+pub struct GroupName(String);
+impl GroupName {
     /// # Errors
     /// Fails if the name is empty or longer than `MAX_NAME_LEN`.
     pub fn new(name: &str) -> Result<Self, ConfigError> {
-        validate_id(name)?;
+        validate_name(name)?;
         Ok(Self(name.to_owned()))
     }
 
@@ -63,7 +63,7 @@ impl GroupId {
     }
 }
 
-impl Display for GroupId {
+impl Display for GroupName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.pad(&self.0)
     }
@@ -71,16 +71,16 @@ impl Display for GroupId {
 
 #[cfg(test)]
 mod tests {
-    use super::{GatewayId, MAX_NAME_LEN};
+    use super::{GatewayName, MAX_NAME_LEN};
     use crate::ConfigError;
 
     #[test]
     fn name_validation() {
-        assert_eq!(GatewayId::new(""), Err(ConfigError::NoName));
-        assert!(GatewayId::new(&"x".repeat(MAX_NAME_LEN)).is_ok());
+        assert_eq!(GatewayName::new(""), Err(ConfigError::NoName));
+        assert!(GatewayName::new(&"x".repeat(MAX_NAME_LEN)).is_ok());
         let long = "x".repeat(MAX_NAME_LEN + 1);
         assert_eq!(
-            GatewayId::new(&long),
+            GatewayName::new(&long),
             Err(ConfigError::NameTooLong(long, MAX_NAME_LEN))
         );
     }

@@ -3,7 +3,7 @@
 
 //! Dataplane configuration model: gateway groups
 
-use super::ids::{GatewayId, GroupId};
+use super::names::{GatewayName, GroupName};
 use crate::ConfigError;
 use common::cliprovider::Heading;
 use net::ip::UnicastIpAddr;
@@ -16,13 +16,13 @@ use std::fmt::Display;
 /// gateway has a priority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GwGroupMember {
-    pub name: GatewayId,
+    pub name: GatewayName,
     pub priority: u32,
     pub ipaddress: UnicastIpAddr,
 }
 impl GwGroupMember {
     #[must_use]
-    pub fn new(name: GatewayId, priority: u32, ipaddress: UnicastIpAddr) -> Self {
+    pub fn new(name: GatewayName, priority: u32, ipaddress: UnicastIpAddr) -> Self {
         Self {
             name,
             priority,
@@ -57,12 +57,12 @@ impl PartialOrd for GwGroupMember {
 /// A [`GwGroup`] is a named set of gateways. Each gateway is represented by  a [`GwGroupMember`].
 #[derive(Clone, Debug)]
 pub struct GwGroup {
-    name: GroupId,
+    name: GroupName,
     members: Vec<GwGroupMember>,
 }
 impl GwGroup {
     #[must_use]
-    pub fn new(name: GroupId) -> Self {
+    pub fn new(name: GroupName) -> Self {
         Self {
             name,
             members: vec![],
@@ -93,11 +93,11 @@ impl GwGroup {
         self.members.iter()
     }
     #[must_use]
-    pub fn name(&self) -> &GroupId {
+    pub fn name(&self) -> &GroupName {
         &self.name
     }
     #[must_use]
-    pub fn get_member_by_name(&self, name: &GatewayId) -> Option<&GwGroupMember> {
+    pub fn get_member_by_name(&self, name: &GatewayName) -> Option<&GwGroupMember> {
         self.members
             .iter()
             .find(|&m| m.name == *name)
@@ -111,13 +111,13 @@ impl GwGroup {
             .map(|v| v as _)
     }
     #[must_use]
-    pub fn get_member_pos(&self, name: &GatewayId) -> Option<usize> {
+    pub fn get_member_pos(&self, name: &GatewayName) -> Option<usize> {
         self.members.iter().position(|m| m.name == *name)
     }
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct GwGroupTable(OrderMap<GroupId, GwGroup>);
+pub struct GwGroupTable(OrderMap<GroupName, GwGroup>);
 impl GwGroupTable {
     #[must_use]
     pub fn new() -> Self {
@@ -136,7 +136,7 @@ impl GwGroupTable {
         Ok(())
     }
     #[must_use]
-    pub fn get_group(&self, name: &GroupId) -> Option<&GwGroup> {
+    pub fn get_group(&self, name: &GroupName) -> Option<&GwGroup> {
         self.0.get(name)
     }
     pub fn iter(&self) -> impl Iterator<Item = &GwGroup> {
@@ -146,12 +146,16 @@ impl GwGroupTable {
         self.0.values_mut()
     }
     #[must_use]
-    pub fn get_group_member(&self, group: &GroupId, name: &GatewayId) -> Option<&GwGroupMember> {
+    pub fn get_group_member(
+        &self,
+        group: &GroupName,
+        name: &GatewayName,
+    ) -> Option<&GwGroupMember> {
         self.get_group(group)
             .map(|group| group.get_member_by_name(name))?
     }
     #[must_use]
-    pub fn get_group_member_rank(&self, group: &GroupId, name: &GatewayId) -> Option<usize> {
+    pub fn get_group_member_rank(&self, group: &GroupName, name: &GatewayName) -> Option<usize> {
         self.get_group(group)
             .map(|group| group.get_member_pos(name))?
     }
@@ -202,7 +206,7 @@ mod test {
     use super::{GwGroup, GwGroupMember, GwGroupTable};
     use crate::ConfigError;
     use crate::external::PriorityCommunityTable;
-    use crate::external::ids::{GatewayId, GroupId};
+    use crate::external::names::{GatewayName, GroupName};
     use std::str::FromStr;
 
     #[track_caller]
@@ -211,13 +215,13 @@ mod test {
     }
 
     #[track_caller]
-    fn id(name: &str) -> GatewayId {
-        GatewayId::new(name).expect("Invalid name")
+    fn id(name: &str) -> GatewayName {
+        GatewayName::new(name).expect("Invalid name")
     }
 
     #[track_caller]
-    fn gid(name: &str) -> GroupId {
-        GroupId::new(name).expect("Invalid name")
+    fn gid(name: &str) -> GroupName {
+        GroupName::new(name).expect("Invalid name")
     }
 
     #[test]

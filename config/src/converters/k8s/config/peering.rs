@@ -6,7 +6,7 @@ use k8s_intf::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentPeeringsPeer
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::{SubnetMap, VpcSubnetMap};
-use crate::external::ids::GroupId;
+use crate::external::names::GroupName;
 use crate::external::overlay::acl::Acl;
 use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering};
 
@@ -42,7 +42,7 @@ impl TryFrom<(&VpcSubnetMap, &str, &GatewayAgentPeerings)> for VpcPeering {
             .ok_or(FromK8sConversionError::MissingData(format!(
                 "Peering {peering_name} is not mapped to any gateway group",
             )))?;
-        let gwgroup = GroupId::new(gwgroup)?;
+        let gwgroup = GroupName::new(gwgroup)?;
 
         let acl_spec = peering.acl.as_ref();
         if let Some(pentry) = peering.peering.as_ref() {
