@@ -12,7 +12,6 @@ testing = []
 # internal
 concurrency = { workspace = true }
 common = { workspace = true }
-interface-manager = { workspace = true }
 lifecycle = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
 pipeline = { workspace = true }
@@ -34,6 +33,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 # internal
+interface-manager = { workspace = true }
 net = { workspace = true, features = ["builder"] }
 test-utils = { workspace = true }
 
