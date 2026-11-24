@@ -5,6 +5,7 @@
 
 pub mod communities;
 pub mod gwgroup;
+pub mod ids;
 pub mod overlay;
 pub mod underlay;
 
