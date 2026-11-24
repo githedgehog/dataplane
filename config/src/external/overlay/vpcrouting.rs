@@ -5,6 +5,7 @@
 
 use crate::ConfigError;
 use crate::external::ValidatedPeering;
+use crate::external::ids::GroupId;
 use crate::external::overlay::vpcpeering::ValidatedExpose;
 use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::vxlan::Vni;
@@ -41,7 +42,7 @@ pub struct VpcRoute {
     dstvpc: String,               // destination VPC
     dstvni: Vni,                  // data path discriminant towards destination
     rem_action: ExposeAction,     // action required by remote VPC
-    gwgroup: String,              // gateway group handling the peering this route corresponds to
+    gwgroup: GroupId,             // gateway group handling the peering this route corresponds to
 }
 
 /// A type representing a set of routes to the same destination.
@@ -99,7 +100,7 @@ impl VpcRoute {
         self.dstvni
     }
     #[must_use]
-    pub fn gw_group(&self) -> &str {
+    pub fn gw_group(&self) -> &GroupId {
         &self.gwgroup
     }
 }

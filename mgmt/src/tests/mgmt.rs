@@ -198,7 +198,7 @@ pub mod test {
                 "VPC-1--VPC-2",
                 man_vpc1_with_vpc2(),
                 man_vpc2_with_vpc1(),
-                "gw-group-1".to_string(),
+                GroupId::new("gw-group-1").unwrap(),
             ))
             .expect("Should succeed");
 
@@ -207,7 +207,7 @@ pub mod test {
                 "VPC-1--VPC-3",
                 man_vpc1_with_vpc3(),
                 man_vpc3_with_vpc1(),
-                "gw-group-1".to_string(),
+                GroupId::new("gw-group-1").unwrap(),
             ))
             .expect("Should succeed");
 
@@ -730,7 +730,7 @@ mod peering_chain {
     /// reached any routing code.
     fn gw_groups_with_default() -> GwGroupTable {
         let mut groups = sample_gw_groups();
-        let mut default = GwGroup::new(GroupId::new("default").unwrap());
+        let mut default = GwGroup::new(GroupId::default_group());
         default
             .add_member(GwGroupMember::new(
                 GatewayId::new(GW_NAME).unwrap(),

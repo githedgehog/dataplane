@@ -13,6 +13,7 @@ pub(crate) mod context {
     use crate::masquerade::apalloc::alloc::{IpAllocator, PoolSet};
     pub(crate) use crate::masquerade::apalloc::mapping::PrivateTuple;
     use crate::masquerade::apalloc::{NatAllocator, PoolTable, PoolTableKey};
+    use config::external::ids::GroupId;
     use config::external::overlay::vpc::{Peering, ValidatedVpcTable, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use lpm::prefix::{L4Protocol, PortRange, PrefixWithOptionalPorts};
@@ -182,7 +183,7 @@ pub(crate) mod context {
             remote: manifest2.clone(),
             remote_id: "12345".try_into().unwrap(),
             remote_vni: vpc2.vni,
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         };
@@ -192,7 +193,7 @@ pub(crate) mod context {
             remote: manifest1,
             remote_id: "67890".try_into().unwrap(),
             remote_vni: vpc1.vni,
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         };
@@ -237,7 +238,7 @@ pub(crate) mod context {
             remote: manifest2,
             remote_id: "12345".try_into().unwrap(),
             remote_vni: vpc2.vni,
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         });
@@ -284,7 +285,7 @@ pub(crate) mod context {
             remote,
             remote_id: "12345".try_into().unwrap(),
             remote_vni: vpc2.vni,
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         });
@@ -330,7 +331,7 @@ pub(crate) mod context {
             remote: remote.clone(),
             remote_id: "11111".try_into().unwrap(),
             remote_vni: vpc3.vni,
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         });
@@ -340,7 +341,7 @@ pub(crate) mod context {
             remote,
             remote_id: "11111".try_into().unwrap(),
             remote_vni: vpc3.vni,
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         });
@@ -390,7 +391,7 @@ pub(crate) mod context {
                 ),
                 remote_id: remote.id.clone(),
                 remote_vni: remote.vni,
-                gwgroup: "default".into(),
+                gwgroup: GroupId::default_group(),
                 acl: None,
                 no_multipath: false,
             });
@@ -435,7 +436,7 @@ pub(crate) mod context {
             remote: remote.clone(),
             remote_id: "11111".try_into().unwrap(),
             remote_vni: vpc3.vni,
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         });
@@ -445,7 +446,7 @@ pub(crate) mod context {
             remote,
             remote_id: "11111".try_into().unwrap(),
             remote_vni: vpc3.vni,
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         });
@@ -496,7 +497,7 @@ pub(crate) mod context {
             remote: remote.clone(),
             remote_id: "11111".try_into().unwrap(),
             remote_vni: vpc3.vni,
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         });
@@ -506,7 +507,7 @@ pub(crate) mod context {
             remote,
             remote_id: "11111".try_into().unwrap(),
             remote_vni: vpc3.vni,
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         });
@@ -547,7 +548,7 @@ pub(crate) mod context {
             remote,
             remote_id: "12345".try_into().unwrap(),
             remote_vni: vpc2.vni,
-            gwgroup: "default".into(),
+            gwgroup: GroupId::default_group(),
             acl: None,
             no_multipath: false,
         });

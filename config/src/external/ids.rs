@@ -4,7 +4,6 @@
 //! Gateway and gateway group identifying types and constraints
 
 use crate::ConfigError;
-use std::borrow::Borrow;
 use std::fmt::Display;
 
 const MAX_NAME_LEN: usize = 64;
@@ -52,16 +51,15 @@ impl GroupId {
         validate_id(name)?;
         Ok(Self(name.to_owned()))
     }
+
+    /// The group named "default" (this is mostly for tests)
+    #[must_use]
+    pub fn default_group() -> Self {
+        Self("default".to_owned())
+    }
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-}
-
-/// Groups are looked up by name, e.g. from peerings
-impl Borrow<str> for GroupId {
-    fn borrow(&self) -> &str {
-        self.as_str()
     }
 }
 
