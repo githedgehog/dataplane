@@ -123,10 +123,6 @@ pub struct ConfigProcessorParams {
     /// The name of this gateway, for the blank config
     pub gwname: GatewayName,
 
-    /// The gateway's name, as of the last config applied: what this gateway calls itself to its
-    /// neighbours. `None` until a config naming it has been applied.
-    pub gateway_name: tokio::sync::watch::Sender<Option<String>>,
-
     /// The addresses and peers the control-plane traffic classes are built from, as of the last
     /// config applied.
     pub control_plane: tokio::sync::watch::Sender<ControlPlane>,
@@ -203,26 +199,12 @@ impl ConfigProcessor {
         let result = self.apply_gw_config(config.clone()).await;
         self.update_history(&config, &result, false).await;
         if result.is_ok() {
-            self.publish_gateway_name(&config);
             self.publish_control_plane(&config);
             self.config_db.store(config);
         } else {
             self.rollback().await;
         }
         result
-    }
-
-    /// Tell whoever is watching the name of the gateway an applied config describes.
-    fn publish_gateway_name(&self, config: &ValidatedGwConfig) {
-        let name = config.external().gwname().as_str();
-        self.proc_params.gateway_name.send_if_modified(|current| {
-            if current.as_deref() == Some(name) {
-                return false;
-            }
-            info!("this gateway is named {name}");
-            *current = Some(name.to_owned());
-            true
-        });
     }
 
     /// Tell whoever is watching the addresses and peers an applied config gives the gateway, if
@@ -251,7 +233,6 @@ impl ConfigProcessor {
         let result = self.apply_gw_config(active.clone()).await.map(drop);
         self.update_history(&active, &result, true).await;
         if result.is_ok() {
-            self.publish_gateway_name(&active);
             self.publish_control_plane(&active);
         }
         match &result {
