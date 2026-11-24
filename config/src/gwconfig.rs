@@ -4,7 +4,7 @@
 //! Top-level configuration object for the dataplane
 
 use crate::errors::{ConfigError, ConfigResult};
-use crate::external::ids::GatewayId;
+use crate::external::names::GatewayName;
 use crate::external::{GenId, ValidatedExternalConfig};
 use crate::internal::InternalConfig;
 use concurrency::slot::Slot;
@@ -79,7 +79,7 @@ impl ValidatedGwConfig {
     }
 
     #[must_use]
-    pub fn blank(gwname: GatewayId) -> Self {
+    pub fn blank(gwname: GatewayName) -> Self {
         // The blank config has no overlay, peerings, or VPCs, so it trivially passes validation.
         // A unit test verifies this invariant.
         let external = ValidatedExternalConfig::blank(gwname);

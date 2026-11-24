@@ -121,7 +121,7 @@ pub fn build_nat_configuration(vpc_table: &ValidatedVpcTable) -> Result<NatTable
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::external::ids::GroupId;
+    use config::external::names::GroupName;
     use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use net::vxlan::Vni;
@@ -192,7 +192,7 @@ mod tests {
             remote: manifest2,
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
             remote_vni: dst_vni,
-            gwgroup: GroupId::default_group(),
+            gwgroup: GroupName::default_group(),
             acl: None,
             no_multipath: false,
         };

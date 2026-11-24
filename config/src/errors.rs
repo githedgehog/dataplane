@@ -6,7 +6,7 @@
 //! in this crate is a `ConfigError`.
 
 use crate::external::GenId;
-use crate::external::ids::{GatewayId, GroupId};
+use crate::external::names::{GatewayName, GroupName};
 use crate::external::overlay::vpc::VpcId;
 use crate::external::overlay::vpcpeering::VpcExpose;
 
@@ -31,9 +31,9 @@ pub enum ConfigError {
     #[error("Peering '{0}' refers to a VPC for which a peering already exists")]
     DuplicateVpcPeerings(String),
     #[error("Duplicated gateway group {0}")]
-    DuplicateGroup(GroupId),
+    DuplicateGroup(GroupName),
     #[error("Duplicated gateway group member {0}")]
-    DuplicateMember(GatewayId),
+    DuplicateMember(GatewayName),
     #[error("Duplicated gateway group member address {0}")]
     DuplicateMemberAddress(UnicastIpAddr),
     #[error("A VPC peering object refers to non-existent VPC '{0}'")]

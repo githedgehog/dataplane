@@ -54,7 +54,7 @@ pub mod test {
     use config::external::gwgroup::GwGroup;
     use config::external::gwgroup::GwGroupMember;
     use config::external::gwgroup::GwGroupTable;
-    use config::external::ids::{GatewayId, GroupId};
+    use config::external::names::{GatewayName, GroupName};
     use config::external::overlay::Overlay;
     use config::external::overlay::ratelimit::{
         ColorActions, Meter, MeterProfile, RateLimitRule, RateLimitTables,
@@ -198,7 +198,7 @@ pub mod test {
                 "VPC-1--VPC-2",
                 man_vpc1_with_vpc2(),
                 man_vpc2_with_vpc1(),
-                GroupId::new("gw-group-1").unwrap(),
+                GroupName::new("gw-group-1").unwrap(),
             ))
             .expect("Should succeed");
 
@@ -207,7 +207,7 @@ pub mod test {
                 "VPC-1--VPC-3",
                 man_vpc1_with_vpc3(),
                 man_vpc3_with_vpc1(),
-                GroupId::new("gw-group-1").unwrap(),
+                GroupName::new("gw-group-1").unwrap(),
             ))
             .expect("Should succeed");
 
@@ -432,15 +432,15 @@ pub mod test {
     #[rustfmt::skip]
     pub(super) fn sample_gw_groups() -> GwGroupTable {
         let mut gwt = GwGroupTable::new();
-        let mut group = GwGroup::new(GroupId::new("gw-group-1").unwrap());
-        group.add_member(GwGroupMember::new(GatewayId::new("gw1").unwrap(), 1, ip("172.128.0.1"))).unwrap();
-        group.add_member(GwGroupMember::new(GatewayId::new("gw2").unwrap(), 2, ip("172.128.0.2"))).unwrap();
-        group.add_member(GwGroupMember::new(GatewayId::new("gw3").unwrap(), 3, ip("172.128.0.3"))).unwrap();
+        let mut group = GwGroup::new(GroupName::new("gw-group-1").unwrap());
+        group.add_member(GwGroupMember::new(GatewayName::new("gw1").unwrap(), 1, ip("172.128.0.1"))).unwrap();
+        group.add_member(GwGroupMember::new(GatewayName::new("gw2").unwrap(), 2, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new(GatewayName::new("gw3").unwrap(), 3, ip("172.128.0.3"))).unwrap();
         gwt.add_group(group).unwrap();
 
-        let mut group = GwGroup::new(GroupId::new("gw-group-2").unwrap());
-        group.add_member(GwGroupMember::new(GatewayId::new("gw2").unwrap(), 2, ip("172.128.0.2"))).unwrap();
-        group.add_member(GwGroupMember::new(GatewayId::new("gw3").unwrap(), 1, ip("172.128.0.3"))).unwrap();
+        let mut group = GwGroup::new(GroupName::new("gw-group-2").unwrap());
+        group.add_member(GwGroupMember::new(GatewayName::new("gw2").unwrap(), 2, ip("172.128.0.2"))).unwrap();
+        group.add_member(GwGroupMember::new(GatewayName::new("gw3").unwrap(), 1, ip("172.128.0.3"))).unwrap();
         gwt.add_group(group).unwrap();
         gwt
     }
@@ -596,7 +596,7 @@ pub mod test {
             vpc_stats_store,
             dp_status_r,
             bmp_options: None,
-            gwname: GatewayId::new("test-gw").unwrap(),
+            gwname: GatewayName::new("test-gw").unwrap(),
             gateway_name,
             control_plane,
         };
@@ -652,7 +652,7 @@ mod peering_chain {
     use config::ExternalConfig;
     use config::external::ExternalConfigBuilder;
     use config::external::gwgroup::{GwGroup, GwGroupMember, GwGroupTable};
-    use config::external::ids::{GatewayId, GroupId};
+    use config::external::names::{GatewayName, GroupName};
     use config::external::overlay::vpcpeering::VpcExpose;
     use config::external::overlay::vpcpeering::contract::{
         Family, LOCAL_VNI, MasqueradeExpose, PortForwardingExpose, REMOTE_VNI, StaticNatExpose,
@@ -731,10 +731,10 @@ mod peering_chain {
     /// reached any routing code.
     fn gw_groups_with_default() -> GwGroupTable {
         let mut groups = sample_gw_groups();
-        let mut default = GwGroup::new(GroupId::default_group());
+        let mut default = GwGroup::new(GroupName::default_group());
         default
             .add_member(GwGroupMember::new(
-                GatewayId::new(GW_NAME).unwrap(),
+                GatewayName::new(GW_NAME).unwrap(),
                 1,
                 ip("172.128.0.9"),
             ))

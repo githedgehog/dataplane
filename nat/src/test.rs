@@ -15,7 +15,7 @@ use crate::portfw::{PortForwarder, PortFwTableWriter};
 use crate::static_nat::NatTablesWriter;
 use crate::static_nat::setup::build_nat_configuration;
 use concurrency::sync::Arc;
-use config::external::ids::GroupId;
+use config::external::names::GroupName;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
 use config::external::overlay::{Overlay, ValidatedOverlay};
@@ -182,7 +182,7 @@ fn build_overlapping_masquerade_and_port_forward() -> ValidatedOverlay {
             "external--internal",
             VpcManifest::with_exposes("external", vec![VpcExpose::empty().ip("1.2.3.0/24".into())]),
             VpcManifest::with_exposes("internal", vec![masquerade, port_forward]),
-            GroupId::default_group(),
+            GroupName::default_group(),
         ))
         .unwrap();
 
@@ -318,7 +318,7 @@ async fn test_nat_combination_static_masquerade() {
                         .unwrap(),
                 ],
             ),
-            GroupId::default_group(),
+            GroupName::default_group(),
         ))
         .unwrap();
     let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
@@ -429,7 +429,7 @@ async fn test_nat_combination_static_portfw() {
                         .unwrap(),
                 ],
             ),
-            GroupId::default_group(),
+            GroupName::default_group(),
         ))
         .unwrap();
     let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
@@ -551,7 +551,7 @@ async fn test_nat_combination_static_masq_icmp_error() {
                         .unwrap(),
                 ],
             ),
-            GroupId::default_group(),
+            GroupName::default_group(),
         ))
         .unwrap();
     let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
@@ -682,7 +682,7 @@ async fn test_nat_combination_static_portfwd_icmp_error() {
                         .unwrap(),
                 ],
             ),
-            GroupId::default_group(),
+            GroupName::default_group(),
         ))
         .unwrap();
     let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
