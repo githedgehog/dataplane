@@ -59,18 +59,10 @@ fn lookup_chunk(table: &Table, keys: &[Option<FlowKey>], out: &mut Vec<Option<Ar
     // 2. Read-lock each shard the chunk needs, once, in shard order (so that two bursts can never
     //    wait on each other), and keep the guards for the rest of the chunk. Prefetch the group of
     //    control bytes each key's probe starts at.
-    let mut order = shard_of;
-    order[..keys.len()].sort_unstable();
-    let mut held: [Option<_>; CHUNK] = std::array::from_fn(|_| None);
     let mut held_shard = [usize::MAX; CHUNK];
-    let mut n_held = 0;
-    for &shard in order[..keys.len()].iter().filter(|&&s| s != usize::MAX) {
-        if n_held == 0 || held_shard[n_held - 1] != shard {
-            held_shard[n_held] = shard;
-            held[n_held] = Some(shards[shard].read());
-            n_held += 1;
-        }
-    }
+    let n_held = shards_in_order(&shard_of[..keys.len()], shards.len(), &mut held_shard);
+    let held: [Option<_>; CHUNK] =
+        std::array::from_fn(|j| (j < n_held).then(|| shards[held_shard[j]].read()));
     let guard_of = |shard: usize| {
         let j = held_shard[..n_held].partition_point(|&s| s < shard);
         held[j]
@@ -133,6 +125,46 @@ fn lookup_chunk(table: &Table, keys: &[Option<FlowKey>], out: &mut Vec<Option<Ar
     }
 }
 
+/// Tables of up to this many shards (the default number) take their lock order from a bitmap
+/// rather than a sort. Small enough to zero inline: a bigger bitmap would cost a `memset` call.
+const BITMAP_SHARDS: usize = 1024;
+
+/// Write the distinct shards of `shard_of` (skipping `usize::MAX`, a key not looked up) into
+/// `order` in ascending order, the order to lock them in, and return how many there are.
+///
+/// A bitmap of the table's shards, walked a word at a time: a set bit per key, then one pass over
+/// the table's words. Sorting the chunk instead (as for larger tables) costs more, and a small
+/// sort calls `memmove`.
+fn shards_in_order(shard_of: &[usize], n_shards: usize, order: &mut [usize; CHUNK]) -> usize {
+    debug_assert!(shard_of.len() <= CHUNK);
+    let mut n = 0;
+    if n_shards <= BITMAP_SHARDS {
+        let mut bits = [0u64; BITMAP_SHARDS / 64];
+        for &shard in shard_of.iter().filter(|&&s| s != usize::MAX) {
+            bits[shard / 64] |= 1 << (shard % 64);
+        }
+        for (w, &word) in bits[..n_shards.div_ceil(64)].iter().enumerate() {
+            let mut word = word;
+            while word != 0 {
+                order[n] = w * 64 + word.trailing_zeros() as usize;
+                n += 1;
+                word &= word - 1;
+            }
+        }
+    } else {
+        let mut sorted = [usize::MAX; CHUNK];
+        sorted[..shard_of.len()].copy_from_slice(shard_of);
+        sorted.sort_unstable();
+        for &shard in sorted.iter().take_while(|&&s| s != usize::MAX) {
+            if n == 0 || order[n - 1] != shard {
+                order[n] = shard;
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 #[cfg(all(test, not(any(feature = "shuttle", feature = "loom"))))]
 mod tests {
     use super::*;
@@ -158,6 +190,35 @@ mod tests {
         )
     }
 
+    /// The lock order is the distinct shards of the chunk's keys, ascending, from the bitmap and
+    /// from the sort alike.
+    #[test]
+    fn shards_are_locked_in_ascending_order_once_each() {
+        bolero::check!()
+            .with_type::<(Vec<u16>, u8)>()
+            .for_each(|(picks, size)| {
+                let n_shards = 1usize << (size % 14);
+                let shard_of: Vec<usize> = picks
+                    .iter()
+                    .take(CHUNK)
+                    .map(|&p| match p % 8 {
+                        0 => usize::MAX,
+                        _ => usize::from(p) % n_shards,
+                    })
+                    .collect();
+                let mut want: Vec<usize> = shard_of
+                    .iter()
+                    .copied()
+                    .filter(|&s| s != usize::MAX)
+                    .collect();
+                want.sort_unstable();
+                want.dedup();
+                let mut order = [usize::MAX; CHUNK];
+                let n = shards_in_order(&shard_of, n_shards, &mut order);
+                assert_eq!(order[..n], want[..]);
+            });
+    }
+
     /// A burst lookup finds exactly what one lookup per key finds: the same flow (by identity) or
     /// nothing, for present keys, missing keys, skipped (`None`) slots and duplicates, across
     /// chunk boundaries.
@@ -166,7 +227,8 @@ mod tests {
         bolero::check!()
             .with_type::<(Vec<u16>, Vec<Option<u16>>, u8)>()
             .for_each(|(present, queried, shards)| {
-                let table = FlowTable::new(2usize << (shards % 6));
+                // Up to 8192 shards: past `BITMAP_SHARDS`, the lock order comes from a sort.
+                let table = FlowTable::new(2usize << (shards % 13));
                 for port in present {
                     let _ = table.insert(FlowInfo::new(
                         key(*port),
