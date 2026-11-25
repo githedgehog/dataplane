@@ -6,6 +6,7 @@
 #![cfg(unix)]
 
 mod display;
+mod drain;
 mod hash;
 mod meta;
 mod rebuffer;
@@ -14,6 +15,7 @@ mod stats_display;
 
 pub mod icmp_err;
 
+pub use drain::{DrainInPlace, PacketSlot};
 #[cfg(any(doc, test, feature = "test_buffer"))]
 pub use rebuffer::Rebuffer;
 pub use stats::PacketStats;
@@ -847,17 +849,21 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     ///   * `SerializeError::DeparseError` if it has headroom, but the de-parsing the `Packet` failed.
     ///   * `SerializeError::NotReadyForXmit` if the packet is not transmittable as is
     pub fn serialize(mut self) -> Result<Buf, SerializeError<()>> {
-        match self.do_serialize() {
-            Ok(()) => Ok(self.payload),
-            Err(e) => {
-                match e {
-                    SerializeError::NoHeadRoom => self.done_force(DoneReason::NoBuffRoomXmit),
-                    SerializeError::DeparseError(_) => self.done_force(DoneReason::DeparseError),
-                    SerializeError::NotReadyForXmit(reason) => self.done_force(reason),
-                }
-                Err(e)
-            }
+        self.serialize_or_mark()?;
+        Ok(self.payload)
+    }
+
+    /// Write the headers into the buffer, or mark the packet with why that failed.
+    fn serialize_or_mark(&mut self) -> Result<(), SerializeError<()>> {
+        let result = self.do_serialize();
+        if let Err(e) = &result {
+            self.done_force(match e {
+                SerializeError::NoHeadRoom => DoneReason::NoBuffRoomXmit,
+                SerializeError::DeparseError(_) => DoneReason::DeparseError,
+                SerializeError::NotReadyForXmit(reason) => *reason,
+            });
         }
+        result
     }
 
     /// Consume a [`Packet`] that is being dropped and give back its buffer, without writing its

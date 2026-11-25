@@ -17,7 +17,7 @@ use net::buffer::{BufferPool, PacketBufferMut};
 use net::eth::mac::Mac;
 use net::headers::{TryEth, TryHeaders};
 use net::interface::InterfaceIndex;
-use net::packet::{DoneReason, Packet};
+use net::packet::{DoneReason, Packet, PacketSlot};
 use pipeline::{DynPipeline, NetworkFunction};
 use tracing::{debug, error, info, trace, warn};
 use traffic_control::Key;
@@ -34,12 +34,13 @@ use super::idle::Idle;
 use super::port::PortQueues;
 use crate::drivers::disposition::Disposition;
 
-// Packets move by value through the burst (drained out of it to transmit). The compiler copies up
-// to 256 bytes inline and calls `memmove` beyond that: 8 bytes more (264) cost some 7 % per packet
-// on the local BF-3 (2026-11-15), in the call and in the store-to-load forwarding stalls of reading
-// a packet just copied that way. `PacketMeta::syn_proxy` has since taken those 8 bytes; the limit
-// stands at 264 until transmit stops moving packets, and must not grow. Test-only metadata does
-// not count.
+// The compiler copies up to 256 bytes inline and calls `memmove` beyond that: when packets moved by
+// value out of the burst to transmit, 8 bytes more (264) cost some 7 % per packet on the local BF-3
+// (2026-11-15), in the call and in the store-to-load forwarding stalls of reading a packet just
+// copied that way. `PacketMeta::syn_proxy` has since taken those 8 bytes, but packets no longer
+// move on the hot path: they are parsed in their slot and transmitted from it
+// (`Packet::drain_in_place`). The limit stays at 264, as a ceiling on what a packet costs in cache
+// and on any move still to come. Test-only metadata does not count.
 const _: () = assert!(
     core::mem::size_of::<net::packet::Packet<Mbuf<'static>>>() - net::packet::TEST_ONLY_BYTES
         <= 264,
@@ -387,7 +388,8 @@ impl<'p> Worker<'p> {
         // Borrowed for the packet loop rather than cloned per poll: an `mpsc::Sender` clone is an
         // atomic increment, which is not free at burst rates and buys nothing here.
         let punt = self.ports[slot].queues.punt.as_ref();
-        for packet in burst.drain(..) {
+        // In place: moving a packet out of the burst copies all of it to get at its buffer.
+        for packet in Packet::drain_in_place(burst) {
             match Disposition::of(&packet) {
                 Disposition::Transmit => {}
                 Disposition::Punt => {
@@ -477,7 +479,7 @@ impl<'p> Worker<'p> {
         counters: &mut RxCounters,
     ) {
         let queues = &self.ports[slot].queues;
-        for mut packet in diverted.drain(..) {
+        for mut packet in Packet::drain_in_place(diverted) {
             if divert_verdict(&mut packet, queues.mac.inner()) {
                 Self::punt(
                     self.id,
@@ -502,7 +504,7 @@ impl<'p> Worker<'p> {
         id: WorkerId,
         port: &str,
         punt: Option<&tokio::sync::mpsc::Sender<crate::drivers::cpbridge::Frame>>,
-        packet: Packet<Mbuf<'p>>,
+        packet: PacketSlot<'_, Mbuf<'p>>,
         counters: &mut RxCounters,
     ) {
         // No bridge means no tap to punt to, which is every configuration that did not ask for one.
