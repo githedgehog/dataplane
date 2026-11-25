@@ -526,6 +526,11 @@ impl<B: HypervisorBackend> VmTestOutput<B> {
     #[must_use]
     pub fn failure_summary(&self) -> String {
         let mut summary = String::new();
+        // The first panic is usually the cause, the others its consequences.
+        if let Some(panic) = first_panic(&self.test.stderr) {
+            summary.push_str("\nfirst panic in the guest: ");
+            summary.push_str(&panic);
+        }
         // A test process killed by the OOM killer only reports SIGKILL: say where it came from.
         for kill in oom_kills(&self.console) {
             summary.push_str("\nguest kernel ran out of memory: ");
@@ -834,6 +839,36 @@ async fn drain_or_fallback(handle: JoinHandle<String>, label: &str, timeout: Dur
             )
         }
     }
+}
+
+/// Maximum number of lines of a panic message to keep in the failure summary.
+const PANIC_MESSAGE_MAX_LINES: usize = 20;
+
+/// Returns the first panic reported in the output of a test process: the line naming the thread
+/// and the location, and the panic message.
+///
+/// This relies on the format of the default panic hook of the standard library, which is not
+/// stable: "thread '<name>' (<id>) panicked at <file>:<line>:<column>:", the message on the next
+/// lines, then a backtrace or a note on how to get one.
+fn first_panic(stderr: &str) -> Option<String> {
+    let is_header = |line: &str| {
+        line.starts_with("thread '") && line.contains(" panicked at ") && line.ends_with(':')
+    };
+    let mut lines = stderr.lines().skip_while(|line| !is_header(line));
+    let header = lines.next()?;
+    let mut panic = header.to_string();
+    let message = lines.take_while(|line| {
+        !is_header(line) && !line.starts_with("stack backtrace:") && !line.starts_with("note: ")
+    });
+    for (i, line) in message.enumerate() {
+        if i == PANIC_MESSAGE_MAX_LINES {
+            panic.push_str("\n...");
+            break;
+        }
+        panic.push('\n');
+        panic.push_str(line);
+    }
+    Some(panic.trim_end().to_string())
 }
 
 /// Returns the reports of processes killed by the guest kernel's OOM killer, found in the kernel
@@ -1298,5 +1333,119 @@ mod oom_tests {
 [    1.000000] Killed process 42 (foo) for some other reason
 ";
         assert!(oom_kills(console).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod panic_tests {
+    use super::first_panic;
+
+    /// The stderr of a test that failed in CI, trimmed.
+    const PANIC_STDERR: &str = "\
+thread 'tokio-rt-worker' (80) panicked at ./arp/src/setup.rs:171:13:
+the packet should have been punted
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+thread 'setup::tests::test_arp_nd_static_neighbor' (78) panicked at ./arp/src/setup.rs:436:14:
+called `Result::unwrap()` on an `Err` value: JoinError::Panic(Id(7), \"the packet should have been punted\", ...)
+stack backtrace:
+";
+
+    #[test]
+    fn the_first_panic_is_reported_without_its_backtrace() {
+        assert_eq!(
+            first_panic(PANIC_STDERR).as_deref(),
+            Some(
+                "thread 'tokio-rt-worker' (80) panicked at ./arp/src/setup.rs:171:13:\n\
+                 the packet should have been punted"
+            ),
+        );
+    }
+
+    #[test]
+    fn a_message_ends_at_the_note_on_backtraces() {
+        let stderr = "\
+thread 'main' (1) panicked at src/main.rs:2:5:
+assertion `left == right` failed
+  left: 1
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+";
+        assert_eq!(
+            first_panic(stderr).as_deref(),
+            Some(
+                "thread 'main' (1) panicked at src/main.rs:2:5:\n\
+                 assertion `left == right` failed\n  left: 1\n right: 2"
+            ),
+        );
+    }
+
+    #[test]
+    fn a_long_message_is_cut() {
+        let mut stderr = String::from("thread 'main' (1) panicked at src/main.rs:2:5:\n");
+        for i in 0..100 {
+            stderr.push_str(&format!("line {i}\n"));
+        }
+        let panic = first_panic(&stderr).unwrap();
+        assert_eq!(
+            panic.lines().count(),
+            1 + super::PANIC_MESSAGE_MAX_LINES + 1
+        );
+        assert!(panic.ends_with("\n..."), "{panic}");
+    }
+
+    #[test]
+    fn an_output_without_panic_reports_nothing() {
+        assert_eq!(first_panic("running 1 test\ntest result: ok\n"), None);
+    }
+
+    const ENV_PANIC_NOW: &str = "N_VM_PANIC_TESTS_PANIC_NOW";
+    const PANIC_MESSAGE: &str = "this panic is expected\non two lines";
+
+    /// Panics when [`the_panic_of_the_standard_library_is_found`] runs it, passes otherwise.
+    #[test]
+    fn panic_when_asked() {
+        assert!(std::env::var_os(ENV_PANIC_NOW).is_none(), "{PANIC_MESSAGE}");
+    }
+
+    /// The format of the panics of the standard library is not stable. Check that we still find
+    /// them, by running a test that panics in a separate process, like in a guest.
+    #[test]
+    fn the_panic_of_the_standard_library_is_found() {
+        // libtest names the tests without the crate name
+        let module = module_path!().split_once("::").unwrap().1;
+        let test = format!("{module}::panic_when_asked");
+        for backtrace in ["0", "1"] {
+            // Under a cross test the binary runs in an emulator, which scripts/test-runner.sh
+            // names.
+            let exe = std::env::current_exe().unwrap();
+            let mut command = match std::env::var_os("DATAPLANE_TEST_EMULATOR") {
+                Some(emulator) => {
+                    let mut command = std::process::Command::new(emulator);
+                    command.arg(exe);
+                    command
+                }
+                None => std::process::Command::new(exe),
+            };
+            let output = command
+                .args(["--exact", &test, "--nocapture", "--test-threads=1"])
+                .env(ENV_PANIC_NOW, "1")
+                .env("RUST_BACKTRACE", backtrace)
+                .output()
+                .unwrap();
+            assert!(!output.status.success(), "{test} did not fail");
+
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let panic = first_panic(&stderr)
+                .unwrap_or_else(|| panic!("no panic found in the output of {test}:\n{stderr}"));
+            let (header, message) = panic.split_once('\n').unwrap();
+            assert!(
+                header.starts_with(&format!("thread '{test}'")) && header.contains("src/vm.rs:"),
+                "unexpected header: {header}"
+            );
+            assert_eq!(message, PANIC_MESSAGE, "RUST_BACKTRACE={backtrace}");
+        }
     }
 }
