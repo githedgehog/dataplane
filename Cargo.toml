@@ -106,7 +106,6 @@ flow-entry = { path = "./flow-entry", package = "dataplane-flow-entry", features
 flow-filter = { path = "./flow-filter", package = "dataplane-flow-filter", features = [] }
 hardware = { path = "./hardware", package = "dataplane-hardware", features = [] }
 id = { path = "./id", package = "dataplane-id", features = [] }
-init = { path = "./init", package = "dataplane-init", features = [] }
 interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager", features = [] }
 k8s-intf = { path = "./k8s-intf", package = "dataplane-k8s-intf", default-features = false, features = [] }
 k8s-less = { path = "./k8s-less", package = "dataplane-k8s-less", features = [] }
@@ -119,8 +118,6 @@ match-action = { path = "./match-action", package = "dataplane-match-action", fe
 match-action-derive = { path = "./match-action-derive", package = "dataplane-match-action-derive", features = [] }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
 mstlink = { path = "./mstlink", package = "dataplane-mstlink", features = [] }
-n-it = { path = "./n-it", package = "dataplane-n-it", features = [] }
-n-preinit = { path = "./n-preinit", package = "dataplane-n-preinit", features = [] }
 n-vm = { path = "./n-vm", package = "dataplane-n-vm", features = [] }
 n-vm-macros = { path = "./n-vm-macros", package = "dataplane-n-vm-macros", features = [] }
 n-vm-protocol = { path = "./n-vm-protocol", package = "dataplane-n-vm-protocol", features = [] }
@@ -141,7 +138,6 @@ timer-wheel = { path = "./timer-wheel", package = "dataplane-timer-wheel", featu
 tracectl = { path = "./tracectl", package = "dataplane-tracectl", features = [] }
 traffic-control = { path = "./traffic-control", package = "dataplane-traffic-control", features = [] }
 transceiver = { path = "./transceiver", package = "dataplane-transceiver", features = [] }
-validator = { path = "./validator", package = "dataplane-validator", features = [] }
 vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap", features = [] }
 
 # External
