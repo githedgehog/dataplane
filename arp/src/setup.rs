@@ -160,6 +160,11 @@ mod tests {
     /// punted to the daemon. This blocks, so it runs on a blocking thread, to not keep the daemon
     /// (on the runtime of the test) from running. Returns the packets returned by the daemon
     /// within 10 seconds.
+    ///
+    /// The burst is not checked for being empty after the first run: the NF punts the packet,
+    /// then injects those that the daemon returned, in the same run. When the daemon resolves
+    /// the packet from its cache, it may already be back by then. Callers check the packets
+    /// returned instead: one that was never punted comes back unresolved and not done.
     fn punt_packet(
         nf: TestPktIo,
         packet: Packet<TestBuffer>,
@@ -168,7 +173,6 @@ mod tests {
             let mut pipeline = DynPipeline::new().add_stage(nf);
             let mut burst = vec![packet];
             pipeline.process_burst(&mut burst);
-            assert!(burst.is_empty(), "the packet should have been punted");
 
             let deadline = clock::now() + Duration::from_secs(10);
             while burst.is_empty() && clock::now() < deadline {
@@ -222,12 +226,13 @@ mod tests {
         let worker = tokio::task::spawn_blocking(move || {
             let mut pipeline = DynPipeline::new().add_stage(nf);
             pipeline.process_burst(&mut packets);
-            assert!(packets.is_empty(), "ALL packets should have been punted");
             injected_tx.send(()).unwrap();
 
-            // collect the packets returned by the daemon, resolved or not
+            // collect the packets returned by the daemon, resolved or not. Like in punt_packet(),
+            // some may come back in the same run that punted them: keep them, the checks below
+            // catch any packet that was not punted.
             let deadline = clock::now() + Duration::from_secs(30);
-            let mut returned = vec![];
+            let mut returned = packets;
             let mut burst = vec![];
             while returned.len() < injected && clock::now() < deadline {
                 pipeline.process_burst(&mut burst);
