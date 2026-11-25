@@ -369,24 +369,25 @@ impl HeadFetch {
     /// What a worker uses unless told otherwise.
     pub const DEFAULT: HeadFetch = HeadFetch::Touch;
 
-    /// Bring in the first `lines` cache lines of every frame in `burst`, in this way.
+    /// Bring in the cache lines `lines` says of each frame in `burst` (`0..HEAD_LINES` for the
+    /// whole head, an empty range for none), in this way.
     #[inline(always)]
     pub fn fetch<'a, 'eal: 'a>(
         self,
         burst: impl IntoIterator<Item = &'a Mbuf<'eal>>,
-        lines: usize,
+        lines: impl Fn(&Mbuf<'eal>) -> core::ops::Range<usize>,
     ) {
         match self {
             HeadFetch::Prefetch => {
                 for mbuf in burst {
-                    mbuf.prefetch_head(lines);
+                    mbuf.prefetch_head(lines(mbuf));
                 }
             }
             HeadFetch::Touch => {
                 // All the loads first, then one use of their sum: they overlap, and none is elided.
                 let mut sum = 0u8;
                 for mbuf in burst {
-                    sum ^= mbuf.touch_head(lines);
+                    sum ^= mbuf.touch_head(lines(mbuf));
                 }
                 core::hint::black_box(sum);
             }
@@ -970,29 +971,29 @@ impl<'eal> Mbuf<'eal> {
         raw
     }
 
-    /// Prefetch the first `lines` cache lines at the packet head. The temporal hint keeps the
-    /// headers cached for serialization later in the pipeline.
+    /// Prefetch the cache lines `lines` of the packet head. The temporal hint keeps the headers
+    /// cached for serialization later in the pipeline.
     #[inline(always)]
-    fn prefetch_head(&self, lines: usize) {
+    fn prefetch_head(&self, lines: core::ops::Range<usize>) {
         // SAFETY: `self.raw` is live. The prefetch hints do not dereference their addresses.
         // Use wrapping arithmetic because a small or trimmed buffer may end before the
         // second hint. This needs no packet-length load or bounds check.
         unsafe {
             let head = (self.raw.as_ref().buf_addr as *const u8)
                 .offset(self.raw.as_ref().annon1.annon1.data_off as isize);
-            for line in 0..lines {
+            for line in lines {
                 prefetch_line(head.wrapping_add(line * CACHE_LINE_BYTES));
             }
         }
     }
 
-    /// Load the first byte of each of the first `lines` cache lines of the frame that start
-    /// inside it, and return their sum, so that the loads are not elided.
+    /// Load the first byte of each of the cache lines `lines` of the frame that start inside it,
+    /// and return their sum, so that the loads are not elided.
     #[inline(always)]
-    fn touch_head(&self, lines: usize) -> u8 {
+    fn touch_head(&self, lines: core::ops::Range<usize>) -> u8 {
         let data = self.raw_data();
         let mut sum = 0u8;
-        for line in 0..lines {
+        for line in lines {
             // Only bytes of the frame: what follows it in the buffer may never have been written.
             if let Some(byte) = data.get(line * CACHE_LINE_BYTES) {
                 // SAFETY: a valid reference to an initialized byte of the frame.

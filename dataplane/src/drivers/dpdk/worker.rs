@@ -330,7 +330,13 @@ impl<'p> Worker<'p> {
             return false;
         }
         counters.burst(rx_mbufs.len(), dpdk::mem::MBUF_BURST);
-        dpdk::mem::HeadFetch::DEFAULT.fetch(rx_mbufs.iter(), dpdk::mem::HEAD_LINES);
+        let how = dpdk::mem::HeadFetch::DEFAULT;
+        how.fetch(rx_mbufs.iter(), |mbuf| {
+            head_lines(mbuf.nic_decap().is_some())
+        });
+        how.fetch(rx_mbufs.iter(), |mbuf| {
+            more_head_lines(mbuf.nic_decap().is_some(), mbuf.raw_data())
+        });
         self.run_pipeline(slot, tx_by_if, pipeline, scratch, counters);
         true
     }
@@ -554,6 +560,31 @@ fn divert_verdict<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, port: Mac) -> 
     addressed_to_us
 }
 
+/// The cache lines of a received frame to bring in before parsing it: all of the head, except for
+/// a frame the NIC decapsulated, which starts at its inner Ethernet header. An IPv4 header and the
+/// fixed part of a TCP or UDP header end within its first line (TCP options stay unread, see
+/// `net::tcp::Tcp`). Without decapsulation, a VXLAN frame's inner IPv4 header starts at byte 64.
+fn head_lines(decapsulated: bool) -> core::ops::Range<usize> {
+    if decapsulated {
+        0..1
+    } else {
+        0..dpdk::mem::HEAD_LINES
+    }
+}
+
+/// The rest of the head of a decapsulated frame whose first line, in by now, says it is not IPv4
+/// (IPv6, or a VLAN tag): taken after [`head_lines`] for the whole burst, so that the burst's
+/// first lines still arrive together.
+fn more_head_lines(decapsulated: bool, frame: &[u8]) -> core::ops::Range<usize> {
+    const ETHERTYPE: core::ops::Range<usize> = 12..14;
+    let ipv4 = net::eth::ethtype::EthType::IPV4.as_u16().to_be_bytes();
+    if decapsulated && frame.get(ETHERTYPE) != Some(&ipv4[..]) {
+        1..dpdk::mem::HEAD_LINES
+    } else {
+        0..0
+    }
+}
+
 /// What the NIC tells about a received frame beyond its bytes.
 pub(crate) trait RxContext {
     /// The VNI of the VXLAN the NIC decapsulated, as its MARK: only the NIC's decapsulating rules
@@ -619,4 +650,134 @@ fn process_burst<Buf: PacketBufferMut + RxContext>(
     }
 
     pipeline.process_burst(packets);
+}
+
+#[cfg(test)]
+mod head_line_tests {
+    use super::{head_lines, more_head_lines};
+    use dpdk::mem::CACHE_LINE_BYTES;
+    use net::buffer::TestBuffer;
+    use net::headers::{TryHeaders, TryTcp};
+    use net::packet::{DoneReason, Packet};
+    use net::parse::DeParse;
+
+    const TIMESTAMPS: [u8; 12] = [1, 1, 8, 10, 0, 0, 0, 1, 0, 0, 0, 0];
+
+    fn eth(ethertype: u16) -> Vec<u8> {
+        let mut frame = vec![0x02, 0, 0, 0, 0, 1, 0x02, 0, 0, 0, 0, 2];
+        frame.extend_from_slice(&ethertype.to_be_bytes());
+        frame
+    }
+
+    fn tcp(options: &[u8]) -> Vec<u8> {
+        let words = u8::try_from((20 + options.len()) / 4).unwrap();
+        let mut tcp = vec![
+            0x30,
+            0x39,
+            0,
+            80,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            words << 4,
+            0x10,
+            0xff,
+            0xff,
+        ];
+        tcp.extend_from_slice(&[0, 0, 0, 0]);
+        tcp.extend_from_slice(options);
+        tcp
+    }
+
+    fn udp() -> Vec<u8> {
+        vec![0x30, 0x39, 0, 53, 0, 8, 0, 0]
+    }
+
+    fn ipv4(protocol: u8, payload: &[u8]) -> Vec<u8> {
+        let len = u16::try_from(20 + payload.len()).unwrap().to_be_bytes();
+        let mut ip = vec![0x45, 0, len[0], len[1], 0, 1, 0x40, 0, 64, protocol, 0, 0];
+        ip.extend_from_slice(&[10, 0, 0, 1, 10, 0, 0, 2]);
+        ip.extend_from_slice(payload);
+        ip
+    }
+
+    fn ipv6(next: u8, payload: &[u8]) -> Vec<u8> {
+        let len = u16::try_from(payload.len()).unwrap().to_be_bytes();
+        let mut ip = vec![0x60, 0, 0, 0, len[0], len[1], next, 64];
+        ip.extend_from_slice(&[0xfd; 16]);
+        ip.extend_from_slice(&[0xfe; 16]);
+        ip.extend_from_slice(payload);
+        ip
+    }
+
+    /// The bytes of `frame` that parsing it on the fast path reads: its headers, less the TCP
+    /// options it leaves unread.
+    fn read_by_parse(frame: &[u8]) -> usize {
+        let mut burst = Vec::with_capacity(1);
+        let packet = Packet::parse_into(&mut burst, TestBuffer::from_raw_data(frame)).unwrap();
+        packet.done(DoneReason::Delivered);
+        let unread = packet
+            .headers()
+            .try_tcp()
+            .filter(|tcp| tcp.options_unread())
+            .map_or(0, |tcp| {
+                usize::from(tcp.size().get() - net::tcp::Tcp::MIN_LENGTH.get())
+            });
+        usize::from(packet.headers().size().get()) - unread
+    }
+
+    /// The bytes of `frame` that the two passes over a burst bring in, as if the NIC had
+    /// decapsulated it.
+    fn fetched_after_decap(frame: &[u8]) -> usize {
+        let lines = head_lines(true).end.max(more_head_lines(true, frame).end);
+        lines * CACHE_LINE_BYTES
+    }
+
+    /// Behind a NIC decapsulation, the head fetch covers everything the parse reads: in one line
+    /// for IPv4, Linux's TCP timestamps included, and in two for IPv6 or a VLAN tag.
+    #[test]
+    fn a_decapsulated_head_is_fetched_whole() {
+        let mut vlan = eth(0x8100);
+        vlan.extend_from_slice(&[0, 7, 0x08, 0x00]);
+        vlan.extend_from_slice(&ipv4(6, &tcp(&TIMESTAMPS)));
+        let cases = [
+            ("ipv4 tcp", [eth(0x0800), ipv4(6, &tcp(&[]))].concat(), 1),
+            (
+                "ipv4 tcp timestamps",
+                [eth(0x0800), ipv4(6, &tcp(&TIMESTAMPS))].concat(),
+                1,
+            ),
+            ("ipv4 udp", [eth(0x0800), ipv4(17, &udp())].concat(), 1),
+            (
+                "ipv6 tcp timestamps",
+                [eth(0x86dd), ipv6(6, &tcp(&TIMESTAMPS))].concat(),
+                2,
+            ),
+            ("vlan ipv4 tcp", vlan, 2),
+        ];
+        for (name, frame, lines) in cases {
+            assert_eq!(
+                fetched_after_decap(&frame),
+                lines * CACHE_LINE_BYTES,
+                "{name}"
+            );
+            assert!(
+                read_by_parse(&frame) <= fetched_after_decap(&frame),
+                "{name}"
+            );
+        }
+    }
+
+    /// A frame the NIC did not decapsulate gets its whole head in the first pass, nothing more.
+    #[test]
+    fn other_frames_get_the_whole_head_at_once() {
+        let frame = [eth(0x86dd), ipv6(6, &tcp(&TIMESTAMPS))].concat();
+        assert_eq!(head_lines(false), 0..dpdk::mem::HEAD_LINES);
+        assert!(more_head_lines(false, &frame).is_empty());
+    }
 }
