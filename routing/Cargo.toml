@@ -60,7 +60,7 @@ dataplane-routing = { path = ".", features = ["testing"] }
 lpm = { workspace = true, features = ["testing"] }
 clock = { workspace = true, features = ["virtual"] }
 criterion = { workspace = true }
-iai-callgrind = { workspace = true }
+gungraun = { workspace = true }
 bolero = { workspace = true, features = ["std"] }
 concurrency = { workspace = true }
 net = { workspace = true, features = ["builder"] }

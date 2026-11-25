@@ -25,12 +25,12 @@ in
   opengrep = final.callPackage ../pkgs/opengrep {
     src = sources.opengrep;
   };
-  # Keep the runner version aligned with the iai-callgrind crate.
-  iai-callgrind-runner = final.callPackage ../pkgs/iai-callgrind-runner {
+  # Keep the runner version aligned with the gungraun crate.
+  gungraun-runner = final.callPackage ../pkgs/gungraun-runner {
     inherit (override-packages) rustPlatform;
     version =
       (builtins.fromTOML (builtins.readFile ../../Cargo.toml))
-      .workspace.dependencies.iai-callgrind.version;
+      .workspace.dependencies.gungraun.version;
   };
   cargo-bolero =
     (prev.cargo-bolero.override { inherit (override-packages) rustPlatform; }).overrideAttrs

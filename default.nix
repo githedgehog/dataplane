@@ -202,7 +202,7 @@ let
       duvet
       gateway-crd
       gettext
-      iai-callgrind-runner
+      gungraun-runner
       jq
       just
       kopium
