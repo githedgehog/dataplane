@@ -257,16 +257,16 @@
     },
     "flatcar-pxe-image": {
       "type": "Url",
-      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.3/flatcar_production_pxe_image.cpio.gz",
+      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.4/flatcar_production_pxe_image.cpio.gz",
       "unpack": false,
-      "hash": "sha256-C28w56Ngwz7jto9uMoPYnZqMiHuxUQc58+FquadQe7s=",
+      "hash": "sha256-IXY5n3mulOxEx6ofbDHIIA/+w1oCvgMaqD97dBGEsqQ=",
       "frozen": true
     },
     "flatcar-vmlinuz": {
       "type": "Url",
-      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.3/flatcar_production_pxe.vmlinuz",
+      "url": "https://flatcar.cdn.cncf.io/stable/amd64-usr/4757.2.4/flatcar_production_pxe.vmlinuz",
       "unpack": false,
-      "hash": "sha256-7GmrUQmC1exhHVZ3cuRK8QfOsWF9LYqaBggXmsE7bSE=",
+      "hash": "sha256-KBqR4cgFH586mhQKXoMe85gkKGmGlBrdhu2w0pQlZXc=",
       "frozen": true
     },
     "frr": {
@@ -425,9 +425,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "ea2084066e0f3fed86a76a2654658ed2eb998046",
-      "url": "https://github.com/oxalica/rust-overlay/archive/ea2084066e0f3fed86a76a2654658ed2eb998046.tar.gz",
-      "hash": "sha256-MJVmTxxAm87tT7yxH5BU8EnKGza32SQ2pqYsHWpJ1H4="
+      "revision": "639e209cc8eecd0c307fd95c8aabc011bf047c41",
+      "url": "https://github.com/oxalica/rust-overlay/archive/639e209cc8eecd0c307fd95c8aabc011bf047c41.tar.gz",
+      "hash": "sha256-2UgrrjTeYt4UMmsjdcUjhxSnCGYOlzMuGuk7dRB5Kq4="
     },
     "ubuntu-kernel-buildinfo": {
       "type": "Url",
