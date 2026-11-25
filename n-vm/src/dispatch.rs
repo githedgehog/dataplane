@@ -129,7 +129,11 @@ fn run_container_tier_for<B: HypervisorBackend, F: FnOnce()>(
             });
 
         eprintln!("{output}");
-        assert!(output.success, "VM test failed (see output above)");
+        assert!(
+            output.success,
+            "VM test failed (see output above){}",
+            output.failure_summary()
+        );
     });
 }
 
