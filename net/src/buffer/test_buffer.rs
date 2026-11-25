@@ -146,6 +146,11 @@ impl Headroom for TestBuffer {
     fn headroom(&self) -> u16 {
         self.headroom
     }
+
+    fn headroom_bytes(&self, len: u16) -> Option<&[u8]> {
+        let start = self.headroom.checked_sub(len)?;
+        Some(&self.buffer[usize::from(start)..usize::from(self.headroom)])
+    }
 }
 
 impl Tailroom for TestBuffer {

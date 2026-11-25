@@ -34,8 +34,17 @@ pub use contract::*;
 ///
 /// The second field holds the three reserved bits between the data offset and the flags, which
 /// etherparse does not keep. A header must leave as it arrived, or its checksum stops matching it.
+///
+/// The third says whether the options are the header's own. A header parsed into a packet on the
+/// fast path (see [`Packet::parse_into`](crate::packet::Packet::parse_into)) leaves its options
+/// *unread* in the buffer: they would cost a cache line of their own on every packet, and almost
+/// nothing reads them. It then holds zeros of the same length in their place, and the offset of the
+/// real ones among the header bytes it was parsed from. Its packet reads them in on demand (see
+/// [`Packet::tcp_mss`](crate::packet::Packet::tcp_mss)) and before anything that would lose them.
+/// An unread header can be written back in place, over its own options, but not anywhere else:
+/// [`DeParse::deparse`] refuses it rather than write the zeros.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Tcp(TcpHeader, ReservedBits);
+pub struct Tcp(TcpHeader, ReservedBits, Option<NonZero<u16>>);
 
 /// The reserved bits of a TCP header (RFC 9293 section 3.1), shifted down to the low three bits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -76,10 +85,15 @@ impl Tcp {
                 ..TcpHeader::default()
             },
             ReservedBits::default(),
+            None,
         )
     }
 
     fn compute_checksum_ipv4(&self, net: &Ipv4, payload: impl AsRef<[u8]>) -> TcpChecksum {
+        debug_assert!(
+            !self.options_unread(),
+            "the checksum covers options left unread"
+        );
         #[allow(clippy::expect_used)] // DPDK should exclude payload greater than 2^16 bytes
         let checksum = self
             .0
@@ -101,6 +115,10 @@ impl Tcp {
     }
 
     fn compute_checksum_ipv6(&self, net: &Ipv6, payload: impl AsRef<[u8]>) -> TcpChecksum {
+        debug_assert!(
+            !self.options_unread(),
+            "the checksum covers options left unread"
+        );
         #[allow(clippy::expect_used)] // DPDK should exclude payload greater than 2^16 bytes
         let checksum = self
             .0
@@ -257,24 +275,125 @@ impl Tcp {
     /// Returns any tcp options present in this header as a slice.
     ///
     /// Returns `None` if no such options exist.
+    ///
+    /// Also `None` if the options were left unread in the buffer (see [`Tcp`]): ask the packet.
     #[must_use]
     pub fn options(&self) -> Option<&[u8]> {
-        if self.0.options.is_empty() {
+        if self.options_unread() || self.0.options.is_empty() {
+            debug_assert!(
+                !self.options_unread(),
+                "TCP options left unread: ask the packet"
+            );
             return None;
         }
         Some(&self.0.options.as_slice()[..self.0.options.len()])
     }
 
     /// The Maximum Segment Size option of the header, if it has a valid one.
+    ///
+    /// Also `None` if the options were left unread in the buffer (see [`Tcp`]): ask the packet,
+    /// with [`Packet::tcp_mss`](crate::packet::Packet::tcp_mss).
     #[must_use]
     pub fn mss(&self) -> Option<TcpMss> {
-        let mut options = TcpOptionIter {
-            inner: self.0.options_iterator(),
+        if self.options_unread() {
+            debug_assert!(false, "TCP options left unread: ask the packet");
+            return None;
+        }
+        mss_in(self.0.options.as_slice())
+    }
+
+    /// Whether the options were left unread in the buffer; see [`Tcp`].
+    #[must_use]
+    pub fn options_unread(&self) -> bool {
+        self.2.is_some()
+    }
+
+    /// Where the options left unread start, among the header bytes the packet was parsed from.
+    pub(crate) fn unread_options_at(&self) -> Option<NonZero<u16>> {
+        self.2
+    }
+
+    /// Take `options`, the bytes the options were left unread in, as the header's own. Changes
+    /// nothing the header says.
+    pub(crate) fn read_options(&mut self, options: &[u8]) {
+        debug_assert_eq!(options.len(), self.0.options.len());
+        if let Ok(read) = etherparse::TcpOptions::try_from_slice(options) {
+            self.0.options = read;
+            self.2 = None;
+        }
+    }
+
+    /// Parse the header at the start of `buf` but not its options, which start at `at` among the
+    /// header bytes of the packet; see [`Tcp`]. The same checks as [`Parse::parse`].
+    pub(crate) fn parse_leaving_options(
+        buf: &[u8],
+        at: NonZero<u16>,
+    ) -> Result<(Self, NonZero<u16>), ParseError<TcpParseError>> {
+        if buf.len() > u16::MAX as usize {
+            return Err(ParseError::BufferTooLong(buf.len()));
+        }
+        // Checks the lengths only: the options stay unread.
+        let slice = etherparse::TcpHeaderSlice::from_slice(buf).map_err(|e| slice_error(e, buf))?;
+        let header_len = slice.slice().len();
+        let options_len = header_len - usize::from(Tcp::MIN_LENGTH.get());
+        let placeholder =
+            etherparse::TcpOptions::try_from_slice(&[0; TcpOptions::MAX_LEN][..options_len])
+                .unwrap_or_else(|_| unreachable!("a data offset of at most 15 words"));
+        let inner = TcpHeader {
+            source_port: slice.source_port(),
+            destination_port: slice.destination_port(),
+            sequence_number: slice.sequence_number(),
+            acknowledgment_number: slice.acknowledgment_number(),
+            ns: slice.ns(),
+            fin: slice.fin(),
+            syn: slice.syn(),
+            rst: slice.rst(),
+            psh: slice.psh(),
+            ack: slice.ack(),
+            urg: slice.urg(),
+            ece: slice.ece(),
+            cwr: slice.cwr(),
+            window_size: slice.window_size(),
+            checksum: slice.checksum(),
+            urgent_pointer: slice.urgent_pointer(),
+            options: placeholder,
         };
-        options.find_map(|option| match option {
-            Ok(TcpOption::Mss(mss)) => Some(mss),
-            _ => None,
-        })
+        Self::checked(inner, buf, (options_len != 0).then_some(at))
+    }
+
+    /// Reject the ports [`Parse::parse`] rejects, and make the header.
+    fn checked(
+        inner: TcpHeader,
+        buf: &[u8],
+        unread_at: Option<NonZero<u16>>,
+    ) -> Result<(Self, NonZero<u16>), ParseError<TcpParseError>> {
+        if inner.source_port == 0 {
+            return Err(ParseError::Invalid(TcpParseError::ZeroSourcePort));
+        }
+        if inner.destination_port == 0 {
+            return Err(ParseError::Invalid(TcpParseError::ZeroDestinationPort));
+        }
+        #[allow(clippy::cast_possible_truncation)] // a TCP header is at most 60 bytes
+        let consumed = NonZero::new(inner.header_len() as u16).unwrap_or_else(|| unreachable!());
+        Ok((
+            Self(inner, ReservedBits::from_header_octet(buf[12]), unread_at),
+            consumed,
+        ))
+    }
+
+    /// Write the first [`Tcp::MIN_LENGTH`] bytes of the header into `buf`: everything but the
+    /// options, which an in-place rewrite leaves where they are.
+    pub(crate) fn deparse_fixed(&self, buf: &mut [u8]) -> Result<(), DeParseError<()>> {
+        let fixed = usize::from(Tcp::MIN_LENGTH.get());
+        let Some(dst) = buf.get_mut(..fixed) else {
+            return Err(DeParseError::Length(LengthError {
+                expected: Tcp::MIN_LENGTH.into_non_zero_usize(),
+                actual: buf.len(),
+            }));
+        };
+        dst.copy_from_slice(&self.0.to_bytes()[..fixed]);
+        dst[12] |= self.1.header_octet();
+        Ok(())
     }
 
     /// Replace the options of the header. The header length changes with them, but not the length
@@ -293,6 +412,8 @@ impl Tcp {
         self.0.set_options(&elements).map_err(
             |etherparse::TcpOptionWriteError::NotEnoughSpace(len)| TcpOptionsLenError { len },
         )?;
+        // New options are the header's own, whatever was left unread.
+        self.2 = None;
         Ok(self)
     }
 
@@ -446,35 +567,43 @@ impl Parse for Tcp {
         if buf.len() > u16::MAX as usize {
             return Err(ParseError::BufferTooLong(buf.len()));
         }
-        let (inner, rest) = TcpHeader::from_slice(buf).map_err(|e| match e {
-            HeaderSliceError::Len(len) => ParseError::Length(LengthError {
-                expected: NonZero::new(len.required_len).unwrap_or_else(|| unreachable!()),
-                actual: buf.len(),
-            }),
-            HeaderSliceError::Content(content) => match content {
-                HeaderError::DataOffsetTooSmall { data_offset } => {
-                    ParseError::Invalid(TcpParseError::DataOffsetTooSmall(data_offset))
-                }
-            },
-        })?;
+        let (inner, rest) = TcpHeader::from_slice(buf).map_err(|e| slice_error(e, buf))?;
         assert!(
             rest.len() < buf.len(),
             "rest.len() >= buf.len() ({rest} >= {buf})",
             rest = rest.len(),
             buf = buf.len()
         );
-        #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
-        let consumed =
-            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
-        if inner.source_port == 0 {
-            return Err(ParseError::Invalid(TcpParseError::ZeroSourcePort));
-        }
-        if inner.destination_port == 0 {
-            return Err(ParseError::Invalid(TcpParseError::ZeroDestinationPort));
-        }
-        let parsed = Self(inner, ReservedBits::from_header_octet(buf[12]));
-        Ok((parsed, consumed))
+        Self::checked(inner, buf, None)
     }
+}
+
+/// The [`ParseError`] for an etherparse TCP header error on `buf`.
+fn slice_error(e: HeaderSliceError, buf: &[u8]) -> ParseError<TcpParseError> {
+    match e {
+        HeaderSliceError::Len(len) => ParseError::Length(LengthError {
+            expected: NonZero::new(len.required_len).unwrap_or_else(|| unreachable!()),
+            actual: buf.len(),
+        }),
+        HeaderSliceError::Content(content) => match content {
+            HeaderError::DataOffsetTooSmall { data_offset } => {
+                ParseError::Invalid(TcpParseError::DataOffsetTooSmall(data_offset))
+            }
+        },
+    }
+}
+
+/// The Maximum Segment Size option among `options`, the bytes of a TCP header's options, if they
+/// hold a valid one.
+pub(crate) fn mss_in(options: &[u8]) -> Option<TcpMss> {
+    let options = etherparse::TcpOptions::try_from_slice(options).ok()?;
+    TcpOptionIter {
+        inner: options.elements_iter(),
+    }
+    .find_map(|option| match option {
+        Ok(TcpOption::Mss(mss)) => Some(mss),
+        _ => None,
+    })
 }
 
 impl DeParse for Tcp {
@@ -486,6 +615,11 @@ impl DeParse for Tcp {
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        // Its options are still in the buffer it was parsed from: written anywhere, the header
+        // would carry zeros instead. See `Tcp`.
+        if self.options_unread() {
+            return Err(DeParseError::Invalid(()));
+        }
         let len = buf.len();
         if len < self.size().into_non_zero_usize().get() {
             return Err(DeParseError::Length(LengthError {
@@ -510,7 +644,7 @@ mod contract {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             // Any reserved bits: they must survive a round trip, and count in the checksum.
             let reserved = ReservedBits::from_header_octet(u.produce()?);
-            let mut header = Tcp(TcpHeader::default(), reserved);
+            let mut header = Tcp(TcpHeader::default(), reserved, None);
             header
                 .set_source(u.produce()?)
                 .set_destination(u.produce()?)

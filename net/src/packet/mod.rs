@@ -38,7 +38,7 @@ use crate::eth::mac::{DestinationMac, SourceMac};
 use crate::flows::{FlowInfo, FlowStatus};
 use crate::headers::{
     EmbeddedHeaders, Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEth,
-    TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryUdp, TryVxlan,
+    TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryTcp, TryUdp, TryVxlan,
 };
 use crate::ip::{dscp::Dscp, ecn::Ecn};
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError};
@@ -90,7 +90,7 @@ impl<Buf: PacketBufferMut + DeepCopy> Packet<Buf> {
     /// Returns [`DeepCopy::Error`] if the buffer cannot be copied.
     pub fn deep_copy(&self) -> Result<Packet<Buf>, <Buf as DeepCopy>::Error> {
         Ok(Packet {
-            headers: self.headers.clone(),
+            headers: self.headers_with_tcp_options_read(),
             payload: self.payload.deep_copy()?,
             meta: self.meta.clone(),
             #[cfg(any(test, feature = "checksum-audit"))]
@@ -151,8 +151,9 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     }
 
     /// Move the headers and metadata of this packet onto `payload`
-    fn with_buffer<Target: PacketBufferMut>(self, payload: Target) -> Packet<Target> {
+    fn with_buffer<Target: PacketBufferMut>(mut self, payload: Target) -> Packet<Target> {
         // The headers' original bytes stayed behind in the old buffer.
+        self.read_tcp_options_in();
         let mut headers = self.headers;
         headers.forget_layout();
         Packet {
@@ -177,7 +178,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// inherits the headers and metadata.
     #[must_use]
     #[cfg(any(doc, test, feature = "test_buffer"))]
-    pub fn into_test_buffer(self) -> Packet<TestBuffer> {
+    pub fn into_test_buffer(mut self) -> Packet<TestBuffer> {
+        self.read_tcp_options_in();
         let payload = TestBuffer::from_raw_data_with_room(
             self.payload.as_ref(),
             self.payload.headroom(),
@@ -317,7 +319,10 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             let packet = into
                 .last_mut()
                 .unwrap_or_else(|| unreachable!("just pushed"));
-            packet.headers.parse_into(packet.payload.as_ref())
+            // The fast path: TCP options stay unread until wanted, see `Tcp`.
+            packet
+                .headers
+                .parse_into_leaving_tcp_options(packet.payload.as_ref())
         };
         let consumed = match parsed {
             Ok(consumed) => consumed,
@@ -352,7 +357,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             return None;
         }
         let stored = self.headers.transport()?.checksum_for_increment()?;
-        let mut computed = self.headers.clone();
+        let mut computed = self.headers_with_tcp_options_read();
         let covered = computed.transport_payload_len();
         computed.compute_transport_checksum(self.payload.as_ref(), covered);
         let computed = computed.transport()?.checksum_for_increment()?;
@@ -391,6 +396,48 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 self.headers
             );
         }
+    }
+
+    /// The bytes of the options the TCP header left unread (see [`Tcp`](crate::tcp::Tcp)), still in
+    /// front of the payload with the rest of the header bytes as parsed. `None` if it read them, or
+    /// if they are gone.
+    fn unread_tcp_option_bytes(&self) -> Option<&[u8]> {
+        let range = self.headers.unread_tcp_options()?;
+        let parsed = self.payload.headroom_bytes(self.headers.layout_len()?)?;
+        parsed.get(range)
+    }
+
+    /// Read in the options the TCP header left unread, while they are still in the buffer: before
+    /// anything that writes the headers anywhere else, moves them, or needs what the options say.
+    fn read_tcp_options_in(&mut self) {
+        let mut options = [0; crate::tcp::TcpOptions::MAX_LEN];
+        let Some(len) = self.unread_tcp_option_bytes().map(|bytes| {
+            options[..bytes.len()].copy_from_slice(bytes);
+            bytes.len()
+        }) else {
+            return;
+        };
+        self.headers.read_tcp_options(&options[..len]);
+    }
+
+    /// A copy of the headers, with the TCP options read in if the header left them unread.
+    fn headers_with_tcp_options_read(&self) -> Headers {
+        let mut headers = self.headers.clone();
+        if let Some(options) = self.unread_tcp_option_bytes() {
+            headers.read_tcp_options(options);
+        }
+        headers
+    }
+
+    /// The Maximum Segment Size option of the TCP header, if it has a valid one. Unlike
+    /// [`Tcp::mss`](crate::tcp::Tcp::mss), reads options the header left unread.
+    #[must_use]
+    pub fn tcp_mss(&self) -> Option<crate::tcp::TcpMss> {
+        let tcp = self.headers.try_tcp()?;
+        if tcp.options_unread() {
+            return crate::tcp::mss_in(self.unread_tcp_option_bytes()?);
+        }
+        tcp.mss()
     }
 
     /// Get a reference to the payload of this packet
@@ -661,6 +708,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 .rewrite_in_place(buf)
                 .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
         } else {
+            // Before the prepend: written from scratch, the headers need their own options.
+            self.read_tcp_options_in();
             let needed = self.headers.size().get();
             let buf = self.payload.prepend(needed)?;
             self.headers
@@ -748,6 +797,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// A forwarded packet should not need this: computing a checksum from scratch makes a packet
     /// that arrived corrupt look intact. See [`Self::refresh_transport_checksum`].
     pub fn update_checksums(&mut self) -> &mut Self {
+        // The transport checksum covers the TCP options.
+        self.read_tcp_options_in();
         let covered = self.headers.transport_payload_len();
         self.headers
             .update_checksums_covering(self.payload.as_ref(), covered);
@@ -766,6 +817,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// including when VXLAN, missing headers, or a datagram that ends inside its transport header
     /// prevent an update.
     pub fn refresh_transport_checksum(&mut self) -> &mut Self {
+        // The transport checksum covers the TCP options.
+        self.read_tcp_options_in();
         let covered = self.headers.transport_payload_len();
         if self
             .headers
@@ -828,6 +881,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 .rewrite_in_place(buf)
                 .map_err(SerializeError::DeparseError);
         }
+        // Before the prepend: written from scratch, the headers need their own options.
+        self.read_tcp_options_in();
         let needed = self.headers.size().get();
         let buf = self
             .payload
@@ -905,6 +960,7 @@ impl<Buf: PacketBufferMut> TrimFromStart for Packet<Buf> {
 
     fn trim_from_start(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
         // The header bytes in front of the payload are no longer where the layout says.
+        self.read_tcp_options_in();
         self.headers.forget_layout();
         self.payload.trim_from_start(len)
     }
@@ -913,6 +969,10 @@ impl<Buf: PacketBufferMut> TrimFromStart for Packet<Buf> {
 impl<Buf: PacketBufferMut> Headroom for Packet<Buf> {
     fn headroom(&self) -> u16 {
         self.payload.headroom()
+    }
+
+    fn headroom_bytes(&self, len: u16) -> Option<&[u8]> {
+        self.payload.headroom_bytes(len)
     }
 }
 
@@ -2849,10 +2909,24 @@ mod parse_into_equivalence {
         // not drop verdict-less packets while unwinding.
         let new = Packet::new(TestBuffer::from_raw_data(frame)).map(|mut p| {
             p.done(DoneReason::Delivered);
-            (p.headers.clone(), p.payload.as_ref().to_vec())
+            (p.headers.clone(), p.payload.as_ref().to_vec(), p.tcp_mss())
         });
-        let into = Packet::parse_into(&mut burst, TestBuffer::from_raw_data(frame))
-            .map(|p| (p.headers.clone(), p.payload.as_ref().to_vec()));
+        // `parse_into` leaves TCP options unread (see `Tcp`): compare with them read in from the
+        // buffer, which is what every path that needs them does.
+        let into = Packet::parse_into(&mut burst, TestBuffer::from_raw_data(frame)).map(|p| {
+            if let Some(tcp) = p.headers.try_tcp() {
+                assert_eq!(
+                    tcp.options_unread(),
+                    tcp.size() > crate::tcp::Tcp::MIN_LENGTH,
+                    "options are left unread exactly when there are some"
+                );
+            }
+            (
+                p.headers_with_tcp_options_read(),
+                p.payload.as_ref().to_vec(),
+                p.tcp_mss(),
+            )
+        });
         let into_len = burst.len();
         for p in &mut burst {
             p.done(DoneReason::Delivered);
@@ -3087,9 +3161,15 @@ mod in_place_equivalence {
             return;
         }
         frame[len..].copy_from_slice(payload);
-        // Parsed twice: the two must see the same changes.
-        let parse = || Packet::new(TestBuffer::from_raw_data_with_room(&frame, 256, 0)).ok();
-        let (Some(mut fast), Some(mut full)) = (parse(), parse()) else {
+        // Parsed twice: the two must see the same changes. The fast one as the worker parses,
+        // leaving TCP options unread (see `Tcp`); the reference reads everything.
+        let buffer = || TestBuffer::from_raw_data_with_room(&frame, 256, 0);
+        let mut burst = Vec::with_capacity(1);
+        let fast = Packet::parse_into(&mut burst, buffer())
+            .is_ok()
+            .then(|| burst.pop())
+            .flatten();
+        let (Some(mut fast), Some(mut full)) = (fast, Packet::new(buffer()).ok()) else {
             return;
         };
         // A UDP length below 8 trips the parked `Udp::length` bug (see `parse_into_equivalence`).
@@ -3118,6 +3198,81 @@ mod in_place_equivalence {
                 bolero::produce::<Vec<Op>>(),
             ))
             .for_each(|(headers, payload, ops)| same(headers, payload, ops));
+    }
+
+    /// A packet parsed leaving its TCP options unread keeps them through everything that takes
+    /// its headers away from the bytes they were parsed from: a copy, a move to a test buffer, a
+    /// rebuffer. Each serializes as the same packet parsed reading everything.
+    #[test]
+    fn moved_packets_keep_options_left_unread() {
+        bolero::check!()
+            .with_generator((CommonHeaders, bolero::produce::<Vec<u8>>()))
+            .for_each(|(headers, payload)| {
+                if !serializable(headers) {
+                    return;
+                }
+                let len = usize::from(headers.size().get());
+                let mut frame = vec![0u8; len + payload.len().min(64)];
+                headers.deparse(&mut frame).unwrap();
+                frame[len..].copy_from_slice(&payload[..payload.len().min(64)]);
+                let buffer = || TestBuffer::from_raw_data_with_room(&frame, 256, 0);
+                let mut burst = Vec::with_capacity(1);
+                let (Ok(_), Ok(mut eager)) = (
+                    Packet::parse_into(&mut burst, buffer()),
+                    Packet::new(buffer()),
+                ) else {
+                    return;
+                };
+                let mut lazy = burst.pop().unwrap_or_else(|| unreachable!());
+                if let Some(Transport::Udp(udp)) = lazy.headers().transport()
+                    && udp.raw_length() < crate::udp::Udp::MIN_LENGTH.get()
+                {
+                    lazy.done(DoneReason::Delivered);
+                    eager.done(DoneReason::Delivered);
+                    return;
+                }
+                let want = serialized(eager.deep_copy().unwrap());
+                assert_eq!(serialized(lazy.deep_copy().unwrap()), want, "deep copy");
+                let rebuffered = lazy
+                    .deep_copy()
+                    .unwrap()
+                    .rebuffer(TestBuffer::from_raw_data_with_room(&[], 1024, 1024))
+                    .ok();
+                if let Some(rebuffered) = rebuffered {
+                    assert_eq!(serialized(rebuffered), want, "rebuffer");
+                }
+                assert_eq!(
+                    serialized(lazy.into_test_buffer()),
+                    want,
+                    "into_test_buffer"
+                );
+                eager.done(DoneReason::Delivered);
+            });
+    }
+
+    /// Headers whose TCP options were left unread cannot be written anywhere but in place: they
+    /// would carry zeros where the options were.
+    #[test]
+    fn unread_options_are_never_written_as_zeros() {
+        bolero::check!()
+            .with_generator(CommonHeaders)
+            .for_each(|headers| {
+                if !serializable(headers) {
+                    return;
+                }
+                let mut frame = vec![0u8; usize::from(headers.size().get())];
+                headers.deparse(&mut frame).unwrap();
+                let mut burst = Vec::with_capacity(1);
+                let Ok(packet) = Packet::parse_into(&mut burst, TestBuffer::from_raw_data(&frame))
+                else {
+                    return;
+                };
+                packet.done(DoneReason::Delivered);
+                let unread = packet.headers.try_tcp().is_some_and(Tcp::options_unread);
+                let copy = packet.headers().clone();
+                let mut out = vec![0u8; frame.len()];
+                assert_eq!(copy.deparse(&mut out).is_err(), unread);
+            });
     }
 
     /// Headers that move to another buffer leave their parsed bytes behind, so they must not be

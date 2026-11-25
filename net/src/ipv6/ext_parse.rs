@@ -16,7 +16,6 @@ use crate::ipv6::fragment::Fragment;
 use crate::ipv6::hop_by_hop::HopByHop;
 use crate::ipv6::routing::Routing;
 use crate::parse::{ParseHeader, Reader};
-use crate::tcp::Tcp;
 use crate::udp::Udp;
 use etherparse::IpNumber;
 use tracing::trace;
@@ -27,7 +26,7 @@ use tracing::trace;
 /// type.  The `nh` parameter is the extension header's `next_header` field.
 pub(crate) fn parse_ext_payload(nh: NextHeader, cursor: &mut Reader) -> Option<Header> {
     match nh.into() {
-        IpNumber::TCP => cursor.parse_header::<Tcp, Header>(),
+        IpNumber::TCP => cursor.parse_tcp::<Header>(),
         IpNumber::UDP => cursor.parse_header::<Udp, Header>(),
         IpNumber::IPV6_ICMP => cursor.parse_header::<Icmp6, Header>(),
         IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<Ipv6Auth, Header>(),

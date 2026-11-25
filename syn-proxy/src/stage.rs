@@ -228,7 +228,7 @@ impl SynProxy {
         now: clock::Instant,
     ) -> Result<(), DoneReason> {
         let client_isn = segment.seq;
-        let mss = packet.try_tcp().and_then(Tcp::mss);
+        let mss = packet.tcp_mss();
         let Ok(conn) = FlowKey::try_from(&*packet) else {
             return Ok(());
         };

@@ -874,6 +874,21 @@ impl Headroom for Mbuf<'_> {
     fn headroom(&self) -> u16 {
         unsafe { rte_pktmbuf_headroom(self.raw.as_ptr()) }
     }
+
+    fn headroom_bytes(&self, len: u16) -> Option<&[u8]> {
+        let headroom = self.headroom();
+        let start = headroom.checked_sub(len)?;
+        // SAFETY: the headroom is the start of the mbuf's own buffer, `data_off` bytes long, so
+        // its last `len` bytes are in bounds. Pool memory is initialized (hugepages come zeroed),
+        // and `self` keeps the mbuf alive and unwritten for as long as the slice is borrowed.
+        unsafe {
+            let base = self.raw.as_ref().buf_addr.cast::<u8>().cast_const();
+            Some(core::slice::from_raw_parts(
+                base.add(usize::from(start)),
+                usize::from(len),
+            ))
+        }
+    }
 }
 
 impl Tailroom for Mbuf<'_> {

@@ -53,6 +53,8 @@ pub trait ParseWith {
 pub trait ParseHeader {
     fn parse_header<T: Parse, O: From<T>>(&mut self) -> Option<O>;
     fn parse_header_with<T: ParseWith, O: From<T>>(&mut self, param: T::Param) -> Option<O>;
+    /// [`ParseHeader::parse_header`] for a TCP header, which may leave its options unread.
+    fn parse_tcp<O: From<crate::tcp::Tcp>>(&mut self) -> Option<O>;
 }
 
 impl ParseHeader for Reader<'_> {
@@ -70,6 +72,29 @@ impl ParseHeader for Reader<'_> {
                 trace!("failed to parse {}: {e:?}", core::any::type_name::<T>());
             })
             .map(|v| O::from(v.0))
+            .ok()
+    }
+
+    fn parse_tcp<O: From<crate::tcp::Tcp>>(&mut self) -> Option<O> {
+        use crate::tcp::Tcp;
+        if !self.leave_tcp_options {
+            return self.parse_header::<Tcp, O>();
+        }
+        let current = self.position();
+        // The options start after the fixed part, which is past the first byte of the buffer.
+        let at = u16::try_from(current + usize::from(Tcp::MIN_LENGTH.get()))
+            .ok()
+            .and_then(NonZero::new)?;
+        let parsed =
+            Tcp::parse_leaving_options(&self.inner[current..], at).and_then(|(tcp, consumed)| {
+                match self.consume(consumed) {
+                    Ok(()) => Ok(tcp),
+                    Err(e) => Err(ParseError::Length(e)),
+                }
+            });
+        parsed
+            .map_err(|e| trace!("failed to parse {}: {e:?}", core::any::type_name::<Tcp>()))
+            .map(O::from)
             .ok()
     }
 }
@@ -127,6 +152,9 @@ pub struct LengthError {
 pub(crate) struct Reader<'buf> {
     pub(crate) inner: &'buf [u8],
     pub(crate) remaining: u16,
+    /// Leave TCP options unread (see [`Tcp`](crate::tcp::Tcp)): only for headers parsed into a
+    /// packet, which can read them in later.
+    pub(crate) leave_tcp_options: bool,
 }
 
 #[derive(Debug)]
@@ -144,6 +172,7 @@ impl Reader<'_> {
             inner: buf,
             #[allow(clippy::cast_possible_truncation)] // checked above
             remaining: buf.len() as u16,
+            leave_tcp_options: false,
         })
     }
 

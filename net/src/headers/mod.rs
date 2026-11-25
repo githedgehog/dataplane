@@ -962,12 +962,31 @@ impl Headers {
     ///
     /// As [`Headers::parse`]. `self` is then left partly filled.
     pub(crate) fn parse_into(&mut self, buf: &[u8]) -> Result<NonZero<u16>, ParseError<EthError>> {
+        self.parse_into_with(buf, false)
+    }
+
+    /// [`Headers::parse_into`], leaving the options of a TCP header unread in `buf`: see
+    /// [`Tcp`]. Only for headers that stay in front of the bytes they were parsed from, in a
+    /// packet that reads the options in when they are wanted.
+    pub(crate) fn parse_into_leaving_tcp_options(
+        &mut self,
+        buf: &[u8],
+    ) -> Result<NonZero<u16>, ParseError<EthError>> {
+        self.parse_into_with(buf, true)
+    }
+
+    fn parse_into_with(
+        &mut self,
+        buf: &[u8],
+        leave_tcp_options: bool,
+    ) -> Result<NonZero<u16>, ParseError<EthError>> {
         debug_assert!(
             *self == Headers::default(),
             "parsing into headers that are not empty"
         );
         let mut cursor =
             Reader::new(buf).map_err(|IllegalBufferLength(len)| ParseError::BufferTooLong(len))?;
+        cursor.leave_tcp_options = leave_tcp_options;
         let (eth, _) = cursor.parse::<Eth>()?;
         self.eth = Some(eth);
         // TODO: after parsing, validate RFC 8200 section 4.1 extension header
@@ -1028,9 +1047,35 @@ fn put<T: DeParse>(
 
 impl Headers {
     /// The layout no longer describes the buffer these headers sit in front of: it moved, or the
-    /// headers moved to another buffer.
+    /// headers moved to another buffer. Options left unread must be read in first, see
+    /// [`Headers::unread_tcp_options`].
     pub(crate) fn forget_layout(&mut self) {
         self.track.forget();
+    }
+
+    /// Length of the header bytes as parsed, still in front of the payload, if the layout still
+    /// describes the buffer.
+    pub(crate) fn layout_len(&self) -> Option<u16> {
+        self.track.original_len()
+    }
+
+    /// Where among the header bytes as parsed the options left unread of the TCP header are, if
+    /// it left them unread: their start and length.
+    pub(crate) fn unread_tcp_options(&self) -> Option<core::ops::Range<usize>> {
+        let Some(Transport::Tcp(tcp)) = &self.transport else {
+            return None;
+        };
+        let at = usize::from(tcp.unread_options_at()?.get());
+        let len = usize::from(tcp.size().get() - Tcp::MIN_LENGTH.get());
+        Some(at..at + len)
+    }
+
+    /// Take `options` as the TCP header's own, where it left them unread. Changes nothing the
+    /// headers say, so marks nothing.
+    pub(crate) fn read_tcp_options(&mut self, options: &[u8]) {
+        if let Some(Transport::Tcp(tcp)) = &mut self.transport {
+            tcp.read_options(options);
+        }
     }
 
     /// How many header bytes to take back from in front of the payload to rewrite these headers in
@@ -1082,8 +1127,18 @@ impl Headers {
         for ext in &self.net_ext {
             put(ext, span(3), buf, &mut at)?;
         }
-        if let Some(transport) = &self.transport {
-            put(transport, span(4), buf, &mut at)?;
+        match &self.transport {
+            // Unread options are still in place: write the rest of the header around them.
+            Some(Transport::Tcp(tcp)) if tcp.options_unread() => {
+                if span(4) {
+                    let rest = buf.get_mut(at..).ok_or(DeParseError::Invalid(()))?;
+                    tcp.deparse_fixed(rest)
+                        .map_err(|_| DeParseError::Invalid(()))?;
+                }
+                at += usize::from(tcp.size().get());
+            }
+            Some(transport) => put(transport, span(4), buf, &mut at)?,
+            None => {}
         }
         if let Some(UdpEncap::Vxlan(vxlan)) = &self.udp_encap {
             put(vxlan, span(5), buf, &mut at)?;

@@ -46,13 +46,12 @@ impl Ipv4Auth {
         use crate::headers::Header;
         use crate::icmp4::Icmp4;
         use crate::parse::ParseHeader;
-        use crate::tcp::Tcp;
         use crate::udp::Udp;
         use etherparse::IpNumber;
         use tracing::trace;
 
         match self.next_header().into() {
-            IpNumber::TCP => cursor.parse_header::<Tcp, Header>(),
+            IpNumber::TCP => cursor.parse_tcp::<Header>(),
             IpNumber::UDP => cursor.parse_header::<Udp, Header>(),
             IpNumber::ICMP => cursor.parse_header::<Icmp4, Header>(),
             IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<Ipv4Auth, Header>(),

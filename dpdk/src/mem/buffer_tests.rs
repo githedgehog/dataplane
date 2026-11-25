@@ -4,7 +4,7 @@
 use super::{Mbuf, Pool};
 use crate::test_support::{available, packet_pool};
 use net::buffer::{
-    Append, DeepCopy, PacketLength, Tailroom, TestBuffer, TrimFromEnd, TrimFromStart,
+    Append, DeepCopy, Headroom, PacketLength, Tailroom, TestBuffer, TrimFromEnd, TrimFromStart,
 };
 use net::packet::Packet;
 
@@ -65,6 +65,41 @@ fn chain_views_and_tail_edits_address_the_correct_segment() {
     assert_eq!(mbuf.packet_len(), 7);
     assert_eq!(mbuf.trim_from_end(1).unwrap(), &[3, 4, 5, 6]);
     assert_eq!(segments(&mbuf), [vec![1, 2], vec![3, 4, 5, 6]]);
+}
+
+/// The bytes trimmed off the front of an mbuf stay readable as the end of its headroom, as they
+/// do in a test buffer; past the headroom there is nothing.
+#[test]
+fn trimmed_bytes_are_the_end_of_the_headroom() {
+    let pool = packet_pool(4);
+    let frame: Vec<u8> = (0..=99).collect();
+    let mut mbuf = chain(&pool, &[&frame]);
+    let mut test = TestBuffer::from_raw_data(&frame);
+    for buf in [&mut mbuf as &mut dyn TrimFromStartAndRead, &mut test] {
+        buf.trim(40);
+        assert_eq!(buf.last_headroom(40), Some(&frame[..40]));
+        assert_eq!(buf.last_headroom(0), Some(&[][..]));
+        let headroom = buf.room();
+        assert!(buf.last_headroom(headroom + 1).is_none());
+    }
+}
+
+trait TrimFromStartAndRead {
+    fn trim(&mut self, len: u16);
+    fn last_headroom(&self, len: u16) -> Option<&[u8]>;
+    fn room(&self) -> u16;
+}
+
+impl<T: TrimFromStart + Headroom> TrimFromStartAndRead for T {
+    fn trim(&mut self, len: u16) {
+        self.trim_from_start(len).unwrap();
+    }
+    fn last_headroom(&self, len: u16) -> Option<&[u8]> {
+        self.headroom_bytes(len)
+    }
+    fn room(&self) -> u16 {
+        self.headroom()
+    }
 }
 
 #[test]

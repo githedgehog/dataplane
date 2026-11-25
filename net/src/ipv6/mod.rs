@@ -252,7 +252,7 @@ impl Ipv6 {
         // included.
         cursor.end_after(usize::from(self.0.payload_length));
         match self.0.next_header {
-            IpNumber::TCP => cursor.parse_header::<Tcp, Ipv6Next>(),
+            IpNumber::TCP => cursor.parse_tcp::<Ipv6Next>(),
             IpNumber::UDP => cursor.parse_header::<Udp, Ipv6Next>(),
             IpNumber::IPV6_ICMP => cursor.parse_header::<Icmp6, Ipv6Next>(),
             IpNumber::AUTHENTICATION_HEADER => {

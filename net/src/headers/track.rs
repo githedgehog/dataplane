@@ -63,6 +63,11 @@ impl Track {
         self.bits |= bits;
     }
 
+    /// Length of the header bytes as parsed, if the layout still describes the buffer.
+    pub(crate) fn original_len(&self) -> Option<u16> {
+        (self.original_len != 0).then_some(self.original_len)
+    }
+
     /// The layout no longer describes the buffer (it moved, or was replaced).
     pub(crate) fn forget(&mut self) {
         self.original_len = 0;

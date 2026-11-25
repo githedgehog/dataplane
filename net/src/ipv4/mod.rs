@@ -568,7 +568,7 @@ impl Ipv4 {
         // its own header carries nothing.
         cursor.end_after(self.payload_len().map_or(0, usize::from));
         match self.protocol {
-            IpNumber::TCP => cursor.parse_header::<Tcp, Ipv4Next>(),
+            IpNumber::TCP => cursor.parse_tcp::<Ipv4Next>(),
             IpNumber::UDP => cursor.parse_header::<Udp, Ipv4Next>(),
             IpNumber::ICMP => cursor.parse_header::<Icmp4, Ipv4Next>(),
             IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<Ipv4Auth, Ipv4Next>(),

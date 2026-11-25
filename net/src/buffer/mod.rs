@@ -71,6 +71,11 @@ pub trait DeepCopy: Sized {
 pub trait Headroom {
     /// Get the (unused) headroom in a packet buffer.
     fn headroom(&self) -> u16;
+
+    /// The last `len` bytes of the headroom, just in front of the data, or `None` if the headroom
+    /// is shorter. They hold whatever was last written there: after trimming headers off the
+    /// front of the data, those headers.
+    fn headroom_bytes(&self, len: u16) -> Option<&[u8]>;
 }
 
 /// Trait representing the ability to get the unused tailroom in a packet buffer.
