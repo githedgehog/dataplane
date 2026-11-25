@@ -519,6 +519,22 @@ impl<B: HypervisorBackend> std::fmt::Display for VmTestOutput<B> {
     }
 }
 
+impl<B: HypervisorBackend> VmTestOutput<B> {
+    /// Returns what the output says about the failure of the test, if anything, as lines to
+    /// append to the failure message. The full output is hundreds of lines long, and the
+    /// failure message is what gets read first.
+    #[must_use]
+    pub fn failure_summary(&self) -> String {
+        let mut summary = String::new();
+        // A test process killed by the OOM killer only reports SIGKILL: say where it came from.
+        for kill in oom_kills(&self.console) {
+            summary.push_str("\nguest kernel ran out of memory: ");
+            summary.push_str(kill);
+        }
+        summary
+    }
+}
+
 /// Owns all long-lived resources for a running test VM.
 pub struct TestVm<B: HypervisorBackend> {
     /// The hypervisor child process.
@@ -818,6 +834,32 @@ async fn drain_or_fallback(handle: JoinHandle<String>, label: &str, timeout: Dur
             )
         }
     }
+}
+
+/// Returns the reports of processes killed by the guest kernel's OOM killer, found in the kernel
+/// console output, without their timestamps.
+///
+/// The guest reports a test process killed this way as a mere "signal: 9 (SIGKILL)": nothing in
+/// the guest sends that signal, so this is where the reason is to be found.
+fn oom_kills(console: &str) -> Vec<&str> {
+    // The kernel reports a kill as "<reason>: Killed process <pid> (<comm>) ...", where the reason
+    // is "Out of memory" or "Memory cgroup out of memory", possibly followed by details.
+    console
+        .lines()
+        .filter(|line| {
+            line.contains(": Killed process ") && line.to_lowercase().contains("out of memory")
+        })
+        .map(|line| {
+            let line = line.trim();
+            match line
+                .strip_prefix('[')
+                .and_then(|rest| rest.split_once("] "))
+            {
+                Some((_timestamp, message)) => message.trim_start(),
+                None => line,
+            }
+        })
+        .collect()
 }
 
 /// Allocates a random CID and four consecutive vsock ports.
@@ -1205,5 +1247,56 @@ mod tests {
         let err = connect_to_socket(&path).await.expect_err("refused");
         assert!(matches!(err, VmError::SocketTimeout { .. }), "{err:?}");
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod oom_tests {
+    use super::oom_kills;
+
+    /// The console lines of an actual OOM kill of a test process, in CI.
+    const OOM_CONSOLE: &str = "\
+[   30.408764]  __alloc_pages_may_oom+0x109/0x190
+[   30.444865] [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+[   30.451084] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/,task=dataplane_arp-8,pid=77,uid=0
+[   30.454389] Out of memory: Killed process 77 (dataplane_arp-8) total-vm:833488kB, anon-rss:430804kB, file-rss:16kB, shmem-rss:0kB, UID:0 pgtables:1288kB oom_score_adj:0
+";
+
+    #[test]
+    fn an_oom_kill_is_reported_without_its_timestamp() {
+        assert_eq!(
+            oom_kills(OOM_CONSOLE),
+            vec![
+                "Out of memory: Killed process 77 (dataplane_arp-8) total-vm:833488kB, \
+                 anon-rss:430804kB, file-rss:16kB, shmem-rss:0kB, UID:0 pgtables:1288kB \
+                 oom_score_adj:0"
+            ],
+        );
+    }
+
+    #[test]
+    fn a_cgroup_oom_kill_is_reported() {
+        let console = "[    5.000000] Memory cgroup out of memory: Killed process 42 (foo) \
+                       total-vm:1kB";
+        assert_eq!(
+            oom_kills(console),
+            vec!["Memory cgroup out of memory: Killed process 42 (foo) total-vm:1kB"],
+        );
+    }
+
+    #[test]
+    fn a_line_without_timestamp_is_reported_whole() {
+        let console = "Out of memory: Killed process 42 (foo) total-vm:1kB";
+        assert_eq!(oom_kills(console), vec![console]);
+    }
+
+    #[test]
+    fn a_console_without_oom_kill_reports_nothing() {
+        let console = "\
+[    0.000000] Linux version 6.18.65
+[    0.003506] tsc: Detected 4192.104 MHz processor
+[    1.000000] Killed process 42 (foo) for some other reason
+";
+        assert!(oom_kills(console).is_empty());
     }
 }
