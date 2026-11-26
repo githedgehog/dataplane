@@ -14,7 +14,7 @@ use net::headers::{TryEth, TryIp, TryIpv4, TryIpv6};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
-use routing::{Attachment, IfState, IfTable, IfTableReader, IfType, Interface};
+use crate::{Attachment, IfState, IfTable, IfTableReader, IfType, Interface};
 
 use tracectl::trace_target;
 trace_target!("ingress", LevelFilter::WARN, &["pipeline"]);
@@ -62,6 +62,7 @@ pub struct Ingress {
 #[allow(dead_code)]
 impl Ingress {
     /// Creates a new [`Ingress`] stage
+    #[must_use]
     pub fn new(name: &str, iftr: IfTableReader) -> Self {
         Self {
             name: name.to_owned(),
@@ -266,6 +267,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
 #[cfg(test)]
 mod test {
     use super::Ingress;
+    use crate::testing::RouterTables;
     use net::buffer::TestBuffer;
     use net::eth::mac::{DestinationMac, Mac, SourceMac};
     use net::headers::builder::HeaderStack;
@@ -277,7 +279,6 @@ mod test {
     use net::packet::{DoneReason, Packet};
     use net::parse::DeParse;
     use pipeline::NetworkFunction;
-    use routing::testing::RouterTables;
 
     const PORT_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0x01]);
     const VRF: u32 = 1;

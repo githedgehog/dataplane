@@ -23,7 +23,7 @@ use net::headers::{TryIpv4, TryIpv6};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
-use routing::{IfState, IfTable, IfTableReader, IfType};
+use crate::{IfState, IfTable, IfTableReader, IfType};
 
 use tracectl::trace_target;
 trace_target!("egress", LevelFilter::WARN, &["pipeline"]);
@@ -168,13 +168,13 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::testing::RouterTables;
     use arp::testing::NeighTable;
     use net::buffer::TestBuffer;
     use net::eth::mac::Mac;
     use net::headers::TryEth;
     use net::interface::{InterfaceIndex, InterfaceName};
     use net::packet::test_utils::build_test_ipv4_packet;
-    use routing::testing::RouterTables;
     use std::net::IpAddr;
 
     const PORT_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0x01]);

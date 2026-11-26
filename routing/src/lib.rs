@@ -21,6 +21,7 @@ mod evpn;
 mod fib;
 mod frr;
 mod interfaces;
+mod nfs;
 mod rib;
 mod router;
 mod routingdb;
@@ -41,6 +42,10 @@ pub use interfaces::interface::{AttachConfig, Attachment, RouterInterfaceConfig}
 pub use interfaces::interface::{IfDataEthernet, IfState, IfType, Interface};
 pub use rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 pub use rib::vrf::{RouterVrfConfig, VrfId};
+
+pub use nfs::egress::Egress;
+pub use nfs::ingress::Ingress;
+pub use nfs::ipforward::IpForwarder;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

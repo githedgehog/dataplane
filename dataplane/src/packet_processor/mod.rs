@@ -2,17 +2,12 @@
 // Copyright Open Network Fabric Authors
 
 use flow_entry::flow_table::{TimerRegistry, WorkerFlowTable};
-mod egress;
 #[cfg(test)]
 mod fuzz;
-mod ingress;
-mod ipforward;
 
 use super::drivers::status::{DpdkPortStatsCli, DpdkPortsCli, DriverStatusReader};
 #[allow(unused)]
-use super::packet_processor::egress::Egress;
-use super::packet_processor::ingress::Ingress;
-use super::packet_processor::ipforward::IpForwarder;
+use routing::{Egress, Ingress, IpForwarder};
 
 use capture::{CaptureController, CaptureDirectory, CaptureStage, Direction};
 use concurrency::sync::Arc;

@@ -59,9 +59,7 @@ pub(crate) enum Enact {
     Everything,
 }
 
-use super::egress::Egress;
-use super::ingress::Ingress;
-use super::ipforward::IpForwarder;
+use routing::{Egress, Ingress, IpForwarder};
 
 pub(crate) struct Fleet {
     flow_filter: FlowFilterContextWriter,
