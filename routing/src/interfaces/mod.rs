@@ -371,10 +371,11 @@ pub mod tests {
 /// and check if we correctly set the state of interfaces from `EthEvent`s
 mod event_processing {
     use super::tests::build_test_iftable_left_right;
+    use crate::RouterError;
     use crate::interfaces::iftablerw::IfTableWriter;
     use crate::interfaces::interface::IfState;
+    use crate::interfaces::interface::Interface;
     use crate::router::ctl::handle_ifevent;
-    use crate::{Interface, RouterError};
     use interface_manager::monitor::EthEvent;
     use net::eth::mac::{Mac, SourceMac};
     use net::interface::InterfaceIndex;
@@ -593,9 +594,10 @@ mod test_netlink_event_handling {
     use super::event_processing::get_interface;
     use super::netlink_generator::build_netlink_msg;
     use super::tests::{build_interface_configs, sample_iftable};
+    use crate::IfState;
     use crate::interfaces::iftablerw::IfTableWriter;
+    use crate::interfaces::interface::Interface;
     use crate::router::ctl::handle_ifevent;
-    use crate::{IfState, Interface};
     use interface_manager::monitor::InterfaceMonitor;
     use net::eth::mac::{Mac, SourceMac};
     use net::interface::InterfaceName;
