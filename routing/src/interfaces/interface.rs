@@ -133,7 +133,7 @@ pub enum AttachConfig {
     BridgeDomain,
 }
 
-/// An object representing the configuration for an [`Interface`]
+/// An object representing the configuration for an interface
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouterInterfaceConfig {
     pub ifindex: InterfaceIndex,     /* ifindex of kernel interface (key) */

@@ -14,7 +14,10 @@ use net::headers::{TryEth, TryIp, TryIpv4, TryIpv6};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
-use crate::{Attachment, IfState, IfTable, IfTableReader, IfType, Interface};
+use crate::interfaces::iftable::IfTable;
+use crate::interfaces::iftablerw::IfTableReader;
+use crate::interfaces::interface::{Attachment, Interface};
+use crate::{IfState, IfType};
 
 use tracectl::trace_target;
 trace_target!("ingress", LevelFilter::WARN, &["pipeline"]);

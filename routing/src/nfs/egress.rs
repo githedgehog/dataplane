@@ -23,7 +23,9 @@ use net::headers::{TryIpv4, TryIpv6};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
-use crate::{IfState, IfTable, IfTableReader, IfType};
+use crate::interfaces::iftable::IfTable;
+use crate::interfaces::iftablerw::IfTableReader;
+use crate::{IfState, IfType};
 
 use tracectl::trace_target;
 trace_target!("egress", LevelFilter::WARN, &["pipeline"]);

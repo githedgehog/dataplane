@@ -24,9 +24,10 @@ use std::net::IpAddr;
 use std::rc::Rc;
 use tracing::{debug, error, warn};
 
+use crate::fib::fibtable::FibTableReader;
+use crate::fib::fibtype::FibReader;
 use crate::{
-    EgressObject, Encapsulation, FibEntry, FibKey, FibReader, FibTableReader, PktInstruction, Vtep,
-    VxlanEncapsulation,
+    EgressObject, Encapsulation, FibEntry, FibKey, PktInstruction, Vtep, VxlanEncapsulation,
 };
 
 use tracectl::{custom_target, tdebug, trace_target};
@@ -66,7 +67,7 @@ impl FibMemo {
 }
 
 impl IpForwarder {
-    /// Build a new IP forwarding stage to use the indicated [`FibTableReader`]
+    /// Build an IP forwarding stage using the given fib reader
     #[must_use]
     pub fn new(name: &str, fibtr: FibTableReader) -> Self {
         Self {

@@ -26,23 +26,23 @@ mod rib;
 mod router;
 mod routingdb;
 
-// re-exports
+// re-exports: config
 pub use config::RouterConfig;
 pub use errors::RouterError;
 pub use evpn::Vtep;
-pub use fib::fibgroupstore::FibRoute;
-pub use fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
-pub use fib::fibtable::{FibTableReader, FibTableReaderFactory};
-pub use fib::fibtype::{Fib, FibKey, FibReader};
-pub use frr::frrmi::FrrAppliedConfig;
-pub use frr::renderer::builder::Render;
-pub use interfaces::iftable::IfTable;
-pub use interfaces::iftablerw::{IfChange, IfTableReader, IfTableReaderFactory};
-pub use interfaces::interface::{AttachConfig, Attachment, RouterInterfaceConfig};
-pub use interfaces::interface::{IfDataEthernet, IfState, IfType, Interface};
-pub use rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 pub use rib::vrf::{RouterVrfConfig, VrfId};
 
+pub use fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
+pub use fib::fibtable::FibTableReaderFactory;
+pub use fib::fibtype::FibKey;
+pub use frr::frrmi::FrrAppliedConfig;
+pub use frr::renderer::builder::Render;
+pub use interfaces::iftablerw::IfTableReaderFactory;
+pub use interfaces::interface::{AttachConfig, RouterInterfaceConfig};
+pub use interfaces::interface::{IfDataEthernet, IfState, IfType};
+pub use rib::encapsulation::{Encapsulation, VxlanEncapsulation};
+
+// re-expors: NFs for pipeline
 pub use nfs::egress::Egress;
 pub use nfs::ingress::Ingress;
 pub use nfs::ipforward::IpForwarder;
