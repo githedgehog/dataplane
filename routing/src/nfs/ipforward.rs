@@ -24,7 +24,7 @@ use std::net::IpAddr;
 use std::rc::Rc;
 use tracing::{debug, error, warn};
 
-use routing::{
+use crate::{
     EgressObject, Encapsulation, FibEntry, FibKey, FibReader, FibTableReader, PktInstruction, Vtep,
     VxlanEncapsulation,
 };
@@ -486,6 +486,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
 mod test {
     use super::FibMemo;
     use super::IpForwarder;
+    use crate::testing::RouterTables;
+    use crate::{EgressObject, Encapsulation, FibEntry, PktInstruction, Vtep, VxlanEncapsulation};
+
     use net::buffer::TestBuffer;
     use net::eth::mac::{DestinationMac, Mac, SourceMac};
     use net::headers::{TryEthMut, TryHeaders, TryHeadersMut, TryIpv4Mut, TryVxlan};
@@ -500,10 +503,6 @@ mod test {
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
     use net::vlan::Vid;
     use net::vxlan::Vni;
-    use routing::testing::RouterTables;
-    use routing::{
-        EgressObject, Encapsulation, FibEntry, PktInstruction, Vtep, VxlanEncapsulation,
-    };
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
@@ -774,7 +773,7 @@ mod test {
 #[cfg(test)]
 mod fib_memo_test {
     use super::{FibKey, FibMemo};
-    use routing::testing::RouterTables;
+    use crate::testing::RouterTables;
 
     #[test]
     fn memo_answers_as_the_table_would() {
