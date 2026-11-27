@@ -144,7 +144,7 @@ fn random_tables_plan_exactly() {
             .iter()
             .map(|&width| Field { name: "f", width })
             .collect();
-        let mut set = |rng: &mut Lcg, width: u8| -> Set {
+        let set = |rng: &mut Lcg, width: u8| -> Set {
             let max = crate::rules::max_of(width);
             let v =
                 |rng: &mut Lcg| u128::from(rng.below(u64::try_from(max).unwrap_or(u64::MAX))) & max;
@@ -187,6 +187,8 @@ fn random_tables_plan_exactly() {
         for dense in [usize::MAX, 0] {
             let options = Options {
                 dense,
+                expand: 1 << 12,
+                fuse: true,
                 ..Options::default()
             };
             let (plan, _) = plan(&table, &options).expect("a plan");
@@ -199,6 +201,111 @@ fn random_tables_plan_exactly() {
                 );
             }
             assert!(plan.worst_path().is_some(), "seed {seed}: the plan loops");
+        }
+    }
+}
+
+mod guarded {
+    use crate::backend::{Backend, Mlx5, Software, closed};
+    use crate::generate::{Family, Lcg, Verdict, probes, tenants};
+    use crate::guard::{Placed, plan};
+    use crate::rfc::Options;
+
+    const GUARD: [usize; 2] = [0, 1];
+
+    /// Every packet of a tenant planned here gets the table's action; every packet of a tenant
+    /// that fell back goes to software.
+    fn check<B: Backend>(specs: &[(Family, usize)], backend: &B) -> (usize, usize) {
+        let table = tenants(specs, 3);
+        let guarded = plan(&table, &GUARD, backend, &Options::default()).expect("a plan");
+        assert!(closed(&guarded.plan));
+        let software: Vec<Vec<u128>> = guarded
+            .tenants
+            .iter()
+            .filter(|t| t.outcome.is_err())
+            .filter_map(|t| t.key.clone())
+            .collect();
+        for key in probes(&table, &mut Lcg::new(11), 20_000) {
+            let got = guarded.plan.run(&key).action;
+            if software.contains(&key[..2].to_vec()) {
+                assert_eq!(got, Placed::Software, "key {key:x?}");
+            } else {
+                assert_eq!(got, Placed::Here(*table.first_match(&key)), "key {key:x?}");
+            }
+        }
+        let here = guarded.tenants.iter().filter(|t| t.outcome.is_ok()).count();
+        (here, guarded.tenants.len() - here)
+    }
+
+    #[test]
+    fn tenants_plan_exactly_or_fall_back_alone() {
+        let specs = [
+            (Family::Exact, 30),
+            (Family::Mixed, 60),
+            (Family::Ranges, 40),
+            (Family::Prefixes, 50),
+        ];
+        // Software takes every plan.
+        let (here, software) = check(&specs, &Software);
+        assert_eq!(software, 0);
+        assert_eq!(here, specs.len() + 1);
+        // A budget of 3 tables: the tenants that need more fall back, and only they.
+        let tight = Mlx5 {
+            tables_per_packet: 3,
+            ..Mlx5::at(44e6)
+        };
+        let (here, software) = check(&specs, &tight);
+        assert!(software > 0 && here > 0, "here={here} software={software}");
+    }
+
+    /// Many ordinary tenants and two pathological ones, at two design points. Run with
+    /// `cargo test -p dataplane-planner --release guarded_sizes -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement"]
+    fn guarded_sizes() {
+        let mut specs = vec![(Family::Exact, 100); 40];
+        specs.extend([(Family::Prefixes, 100); 40]);
+        specs.extend([(Family::Mixed, 100); 20]);
+        specs.push((Family::Mixed, 10_000));
+        specs.push((Family::Ranges, 10_000));
+        let table = tenants(&specs, 5);
+        for (name, backend) in [("120 Mpps", Mlx5::at(120e6)), ("44 Mpps", Mlx5::at(44e6))] {
+            let started = std::time::Instant::now();
+            let guarded = plan(&table, &GUARD, &backend, &Options::default()).expect("a plan");
+            let here: Vec<_> = guarded
+                .tenants
+                .iter()
+                .filter(|t| t.outcome.is_ok())
+                .collect();
+            let worst = here
+                .iter()
+                .filter_map(|t| t.outcome.as_ref().ok().map(|c| c.worst_path))
+                .max();
+            eprintln!(
+                "{name} (budget {} tables): {} tenants, {} in NIC, worst path {:?} (+1 guard), entries {}, in {:?}",
+                backend.tables_per_packet,
+                guarded.tenants.len(),
+                here.len(),
+                worst,
+                guarded.plan.entries(),
+                started.elapsed()
+            );
+            for t in guarded.tenants.iter().filter(|t| t.outcome.is_err()) {
+                eprintln!(
+                    "    software: {:?} ({} rules): {:?}",
+                    t.key, t.rules, t.outcome
+                );
+            }
+            let mut rng = Lcg::new(1);
+            let mismatches = probes(&table, &mut rng, 20_000)
+                .iter()
+                .filter(|key| match guarded.plan.run(key).action {
+                    Placed::Here(a) => a != *table.first_match(key),
+                    Placed::Software => false,
+                })
+                .count();
+            eprintln!("    mismatches: {mismatches}");
+            let _ = Verdict::Allow;
         }
     }
 }

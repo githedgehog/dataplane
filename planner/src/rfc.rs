@@ -92,6 +92,12 @@ pub struct Options {
     /// Up to this product, a combination enumerates every pair and makes the most common result
     /// the miss; beyond it, only pairs sharing a non-core rule, with the core as the miss.
     pub dense: usize,
+    /// The entries a wide field's levels may expand to, to take fewer levels (controlled prefix
+    /// expansion).
+    pub expand: usize,
+    /// Fuse the narrowest field with another narrow one into one exact level over both (at most
+    /// 24 bits of key together), saving a level and a combination.
+    pub fuse: bool,
 }
 
 impl Default for Options {
@@ -100,6 +106,8 @@ impl Default for Options {
             narrow: 16,
             max_product: 4_000_000,
             dense: 1_000_000,
+            expand: 1 << 20,
+            fuse: true,
         }
     }
 }
@@ -306,6 +314,130 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
         }
     }
 
+    /// Phase 0 for fields `f` and `g` together: one exact level over both values, into `reg`.
+    /// Entries are the value pairs whose class isn't the most common one, enumerated class pair
+    /// by class pair.
+    fn fused(&mut self, f: usize, g: usize, reg: Reg) -> Group {
+        let covered = 1u32 << f | 1u32 << g;
+        let (cf, ivf) = self.elementary(f);
+        let (cg, ivg) = self.elementary(g);
+        let span = |iv: &Interval| iv.hi - iv.lo + 1;
+        // Values per class, per field.
+        let mut vf: Vec<Vec<Interval>> = vec![Vec::new(); cf.len()];
+        for (iv, id) in &ivf {
+            vf[*id as usize].push(*iv);
+        }
+        let mut vg: Vec<Vec<Interval>> = vec![Vec::new(); cg.len()];
+        for (iv, id) in &ivg {
+            vg[*id as usize].push(*iv);
+        }
+        let size = |ivs: &Vec<Interval>| ivs.iter().map(span).sum::<u128>();
+        let mut ids: HashMap<Bits, u32> = HashMap::new();
+        let mut classes: Vec<Bits> = Vec::new();
+        let mut cross: Vec<(usize, usize, u32, u128)> = Vec::new();
+        for (a, ba) in cf.iter().enumerate() {
+            for (b, bb) in cg.iter().enumerate() {
+                let bits = self.truncate(and(ba, bb), covered);
+                let id = *ids.entry(bits.clone()).or_insert_with(|| {
+                    classes.push(bits);
+                    u32::try_from(classes.len() - 1).unwrap_or(u32::MAX)
+                });
+                cross.push((a, b, id, size(&vf[a]) * size(&vg[b])));
+            }
+        }
+        let mut weight: HashMap<u32, u128> = HashMap::new();
+        for (_, _, id, n) in &cross {
+            *weight.entry(*id).or_default() += n;
+        }
+        let common = weight
+            .iter()
+            .max_by_key(|(id, w)| (**w, std::cmp::Reverse(**id)))
+            .map_or(0, |(id, _)| *id);
+        let mut entries = HashMap::new();
+        for (a, b, id, _) in cross.iter().filter(|c| c.2 != common) {
+            for x in vf[*a].iter().flat_map(|iv| iv.lo..=iv.hi) {
+                for y in vg[*b].iter().flat_map(|iv| iv.lo..=iv.hi) {
+                    entries.insert(vec![x, y], Step::write_goto(reg, *id, CONTINUE));
+                }
+            }
+        }
+        let (wf, wg) = (self.table.fields[f], self.table.fields[g]);
+        let n = entries.len();
+        let id = self.push_level(Level {
+            name: format!("{}+{} (exact)", wf.name, wg.name),
+            key: vec![
+                Part::Field {
+                    field: f,
+                    len: wf.width,
+                },
+                Part::Field {
+                    field: g,
+                    len: wg.width,
+                },
+            ],
+            entries,
+            miss: Step::write_goto(reg, common, CONTINUE),
+        });
+        self.stages.push(Some(id));
+        self.report.push(Stage {
+            name: format!("{}+{}", wf.name, wg.name),
+            classes: classes.len(),
+            levels: 1,
+            entries: n,
+        });
+        Group {
+            covered,
+            classes,
+            reg: Some(reg),
+        }
+    }
+
+    /// The entries [`Planner::fused`] would make for `f` and `g`, without making them.
+    fn fused_entries(&mut self, f: usize, g: usize) -> u128 {
+        let covered = 1u32 << f | 1u32 << g;
+        let (cf, ivf) = self.elementary(f);
+        let (cg, ivg) = self.elementary(g);
+        let mut sf = vec![0u128; cf.len()];
+        for (iv, id) in &ivf {
+            sf[*id as usize] += iv.hi - iv.lo + 1;
+        }
+        let mut sg = vec![0u128; cg.len()];
+        for (iv, id) in &ivg {
+            sg[*id as usize] += iv.hi - iv.lo + 1;
+        }
+        let mut weight: HashMap<Bits, u128> = HashMap::new();
+        for (a, ba) in cf.iter().enumerate() {
+            for (b, bb) in cg.iter().enumerate() {
+                let bits = self.truncate(and(ba, bb), covered);
+                *weight.entry(bits).or_default() += sf[a] * sg[b];
+            }
+        }
+        let total: u128 = weight.values().sum();
+        total - weight.values().max().copied().unwrap_or(0)
+    }
+
+    /// The pair of fields to fuse, if any: the narrowest field with the other narrow field
+    /// (at most 24 bits of key together) that takes the fewest entries, if that is within the
+    /// expansion cap.
+    fn fusion(&mut self) -> Option<(usize, usize)> {
+        let fields = self.table.fields.clone();
+        let narrow: Vec<usize> = (0..fields.len())
+            .filter(|&f| fields[f].width <= self.options.narrow)
+            .collect();
+        let &first = narrow.iter().min_by_key(|&&f| fields[f].width)?;
+        let cap = self.options.expand as u128;
+        narrow
+            .iter()
+            .copied()
+            .filter(|&g| {
+                g != first && u32::from(fields[first].width) + u32::from(fields[g].width) <= 24
+            })
+            .map(|g| (self.fused_entries(first, g), g))
+            .filter(|(n, _)| *n <= cap)
+            .min()
+            .map(|(_, g)| (first.min(g), first.max(g)))
+    }
+
     /// The levels classifying field `f` into `reg`, all but the `default` class's values:
     /// how many levels, and entries.
     fn field_levels(
@@ -336,19 +468,37 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
             });
             (1, n)
         } else {
-            let mut by_len: BTreeMap<std::cmp::Reverse<u8>, HashMap<Vec<u128>, Step<A>>> =
-                BTreeMap::new();
+            // The pieces, by length; then the lengths to key levels on (controlled prefix
+            // expansion: a piece goes to the shortest chosen length at least its own, as
+            // 2^(target - length) entries).
+            let mut by_len: BTreeMap<u8, Vec<(u128, u32)>> = BTreeMap::new();
             for (iv, id) in intervals.iter().filter(|(_, id)| *id != default) {
                 for (lo, len) in pieces(iv.lo, iv.hi, field.width) {
-                    by_len
-                        .entry(std::cmp::Reverse(len))
-                        .or_default()
-                        .insert(vec![lo], Step::write_goto(reg, *id, CONTINUE));
+                    by_len.entry(len).or_default().push((lo, *id));
                 }
             }
-            let count = by_len.len();
+            let counts: Vec<(u8, usize)> = by_len.iter().map(|(l, v)| (*l, v.len())).collect();
+            let targets = expansion_targets(&counts, self.options.expand);
+            let mut levels: BTreeMap<std::cmp::Reverse<u8>, HashMap<Vec<u128>, Step<A>>> =
+                BTreeMap::new();
+            for (len, pieces) in by_len {
+                let target = targets
+                    .iter()
+                    .copied()
+                    .find(|&t| t >= len)
+                    .unwrap_or_else(|| unreachable!("the longest length is a target"));
+                let step = 1u128 << (field.width - target);
+                let copies = 1u128 << (target - len);
+                let level = levels.entry(std::cmp::Reverse(target)).or_default();
+                for (lo, id) in pieces {
+                    for k in 0..copies {
+                        level.insert(vec![lo + k * step], Step::write_goto(reg, id, CONTINUE));
+                    }
+                }
+            }
+            let count = levels.len();
             let mut n = 0;
-            for (k, (std::cmp::Reverse(len), entries)) in by_len.into_iter().enumerate() {
+            for (k, (std::cmp::Reverse(len), entries)) in levels.into_iter().enumerate() {
                 n += entries.len();
                 let next = first_level + k + 1;
                 let miss = if k + 1 == count {
@@ -583,6 +733,66 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
     }
 }
 
+/// The prefix lengths to key a wide field's levels on: the fewest that keep the entries
+/// within `cap`, and among those the fewest entries. `counts` is the pieces per length, sorted
+/// by length. The longest length is always a target. A piece of length `l` costs
+/// `2^(t - l)` entries at the shortest target `t >= l`.
+fn expansion_targets(counts: &[(u8, usize)], cap: usize) -> Vec<u8> {
+    let k = counts.len();
+    if k == 0 {
+        return Vec::new();
+    }
+    // cost(p, i): pieces of lengths p+1..=i expanded to length i. Saturating: anything past
+    // the cap is as bad as infinite.
+    let cost = |p: usize, i: usize| -> usize {
+        counts[p + 1..=i].iter().fold(0usize, |sum, &(len, n)| {
+            let shift = u32::from(counts[i].0 - len);
+            let each = 1usize.checked_shl(shift).unwrap_or(usize::MAX);
+            sum.saturating_add(n.saturating_mul(each))
+        })
+    };
+    // best[m][i]: least entries covering lengths 0..=i with m targets, the last at i; and the
+    // previous target.
+    let mut best = vec![vec![(usize::MAX, usize::MAX); k]; k + 1];
+    for i in 0..k {
+        let all = counts[..=i].iter().fold(0usize, |sum, &(len, n)| {
+            let each = 1usize
+                .checked_shl(u32::from(counts[i].0 - len))
+                .unwrap_or(usize::MAX);
+            sum.saturating_add(n.saturating_mul(each))
+        });
+        best[1][i] = (all, usize::MAX);
+    }
+    for m in 2..=k {
+        for i in m - 1..k {
+            for p in m - 2..i {
+                let (before, _) = best[m - 1][p];
+                if before == usize::MAX {
+                    continue;
+                }
+                let total = before.saturating_add(cost(p, i));
+                if total < best[m][i].0 {
+                    best[m][i] = (total, p);
+                }
+            }
+        }
+    }
+    let m = (1..=k).find(|&m| best[m][k - 1].0 <= cap).unwrap_or(k);
+    let mut targets = Vec::with_capacity(m);
+    let (mut at, mut left) = (k - 1, m);
+    while left > 0 {
+        targets.push(counts[at].0);
+        let (_, previous) = best[left][at];
+        left -= 1;
+        if left == 0 {
+            break;
+        }
+        at = previous;
+    }
+    targets.sort_unstable();
+    targets
+}
+
 /// Disjoint aligned prefixes covering `lo..=hi` of a `width`-bit field: `(value, length)`.
 #[must_use]
 pub fn pieces(mut lo: u128, hi: u128, width: u8) -> Vec<(u128, u8)> {
@@ -662,9 +872,16 @@ pub fn plan<A: Clone + Eq + Hash>(
         universal: HashMap::new(),
         ended: false,
     };
-    let mut groups: Vec<Group> = (0..fields.len())
-        .map(|f| planner.field(f, u8::try_from(f).unwrap_or(u8::MAX)))
-        .collect();
+    let fusion = if options.fuse { planner.fusion() } else { None };
+    let mut groups: Vec<Group> = Vec::new();
+    for f in 0..fields.len() {
+        let reg = u8::try_from(f).unwrap_or(u8::MAX);
+        match fusion {
+            Some((a, b)) if f == a => groups.push(planner.fused(a, b, reg)),
+            Some((_, b)) if f == b => {}
+            _ => groups.push(planner.field(f, reg)),
+        }
+    }
     // Combine, smallest product first.
     while groups.len() > 1 {
         let mut best = (usize::MAX, 0, 1);

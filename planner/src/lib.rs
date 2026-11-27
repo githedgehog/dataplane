@@ -19,9 +19,13 @@
 //! - [`plan`]: the output, levels of exact tables over masked fields and class registers, and
 //!   its reference semantics ([`plan::Plan::run`]).
 //! - [`rfc`]: the first strategy, recursive flow classification with verdict-aware truncation.
+//! - [`backend`]: what a plan costs on a backend, and whether it fits (mlx5, software).
+//! - [`guard`]: a plan per tenant behind a guard level, each tenant falling back alone.
 //! - [`generate`]: seeded ACLs of the hardware spike's families, and probe keys.
 
+pub mod backend;
 pub mod generate;
+pub mod guard;
 pub mod plan;
 pub mod rfc;
 pub mod rules;

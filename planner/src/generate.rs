@@ -240,3 +240,41 @@ pub fn probes<A>(table: &Table<A>, rng: &mut Lcg, count: usize) -> Vec<Vec<u128>
         })
         .collect()
 }
+
+/// Several tenants' ACLs in one table, each behind its own VNI pair (two 24-bit exact fields
+/// before [`FIELDS`]): tenant `i` is `specs[i]`, from VNI `100 + i` to VNI `200 + i`.
+#[must_use]
+pub fn tenants(specs: &[(Family, usize)], seed: u64) -> Table<Verdict> {
+    let vni = Field {
+        name: "vni",
+        width: 24,
+    };
+    let mut fields = vec![
+        Field {
+            name: "src-vni",
+            ..vni
+        },
+        Field {
+            name: "dst-vni",
+            ..vni
+        },
+    ];
+    fields.extend(FIELDS);
+    let mut rules = Vec::new();
+    for (n_th, &(family, n)) in specs.iter().enumerate() {
+        let i = n_th as u128;
+        for rule in acl(family, n, seed + n_th as u64).rules {
+            let mut matches = vec![Set::exact(100 + i), Set::exact(200 + i)];
+            matches.extend(rule.matches);
+            rules.push(Rule {
+                matches,
+                action: rule.action,
+            });
+        }
+    }
+    Table {
+        fields,
+        rules,
+        default: Verdict::Allow,
+    }
+}
