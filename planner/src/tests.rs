@@ -478,3 +478,264 @@ mod shared {
         }
     }
 }
+
+mod banks {
+    use crate::backend::{Backend, Mlx5, Software, closed};
+    use crate::banks::merge;
+    use crate::generate::{Family, Lcg, probes, tenants};
+    use crate::guard::Placed;
+    use crate::rfc::Options;
+    use crate::rules::Table;
+    use crate::shared::plan;
+
+    const GUARD: [usize; 2] = [0, 1];
+
+    /// `old` and `new` merged: bank 0 means what `old` means, bank 1 what `new` means, on probes
+    /// of both tables.
+    fn check<B: Backend>(
+        old: &Table<crate::generate::Verdict>,
+        new: &Table<crate::generate::Verdict>,
+        backend: &B,
+    ) -> crate::banks::TwoBank<Placed<crate::generate::Verdict>> {
+        let a = plan(old, &GUARD, backend, &Options::default())
+            .expect("a plan")
+            .plan;
+        let b = plan(new, &GUARD, backend, &Options::default())
+            .expect("a plan")
+            .plan;
+        let two = merge(&a, &b);
+        assert!(closed(&two.plan));
+        let mut rng = Lcg::new(5);
+        let keys = probes(old, &mut rng, 15_000)
+            .into_iter()
+            .chain(probes(new, &mut rng, 15_000));
+        for key in keys {
+            for (bank, plan) in [(0, &a), (1, &b)] {
+                let mut banked = key.clone();
+                banked.push(bank);
+                assert_eq!(
+                    two.plan.run(&banked).action,
+                    plan.run(&key).action,
+                    "bank {bank}, key {key:x?}"
+                );
+            }
+        }
+        two
+    }
+
+    fn specs() -> Vec<(Family, usize)> {
+        vec![
+            (Family::Exact, 30),
+            (Family::Mixed, 60),
+            (Family::Ranges, 40),
+            (Family::Prefixes, 50),
+            (Family::Exact, 20),
+        ]
+    }
+
+    #[test]
+    fn each_bank_means_its_generation() {
+        let old = tenants(&specs(), 3);
+        // Nothing changed: everything shared, no dispatch.
+        let same = check(&old, &old, &Software);
+        assert_eq!(same.copied, 0);
+        assert_eq!(same.dispatches, 0);
+        // One tenant's ACL changed.
+        let mut changed = specs();
+        changed[3] = (Family::Prefixes, 55);
+        let new = tenants(&changed, 3);
+        let two = check(&old, &new, &Software);
+        assert!(two.copied > 0);
+        // A tenant added.
+        let mut more = specs();
+        more.push((Family::Exact, 25));
+        let _ = check(&old, &tenants(&more, 3), &Software);
+        // Under a budget, too (tenants falling back in either generation).
+        let tight = Mlx5 {
+            tables_per_packet: 4,
+            ..Mlx5::at(44e6)
+        };
+        let _ = check(&old, &new, &tight);
+    }
+
+    /// What updates copy, on the 103-tenant set at 44 Mpps. Run with
+    /// `cargo test -p dataplane-planner --release bank_sizes -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement"]
+    fn bank_sizes() {
+        let mut specs = vec![(Family::Exact, 100); 40];
+        specs.extend([(Family::Prefixes, 100); 40]);
+        specs.extend([(Family::Mixed, 100); 20]);
+        specs.push((Family::Mixed, 10_000));
+        specs.push((Family::Ranges, 10_000));
+        let backend = Mlx5::at(44e6);
+        let old = tenants(&specs, 5);
+        let base = plan(&old, &GUARD, &backend, &Options::default())
+            .expect("a plan")
+            .plan;
+        let mut cases: Vec<(&str, Vec<(Family, usize)>)> = Vec::new();
+        let mut one = specs.clone();
+        one[3] = (Family::Exact, 101);
+        cases.push(("one exact tenant edited", one));
+        let mut mixed = specs.clone();
+        mixed[85] = (Family::Mixed, 101);
+        cases.push(("one mixed tenant edited", mixed));
+        let mut added = specs.clone();
+        added.push((Family::Exact, 100));
+        cases.push(("a tenant added", added));
+        for (name, changed) in cases {
+            let new = tenants(&changed, 5);
+            let next = plan(&new, &GUARD, &backend, &Options::default())
+                .expect("a plan")
+                .plan;
+            let two = merge(&base, &next);
+            let both: usize = two.plan.entries();
+            eprintln!(
+                "{name}: levels {} + {} -> {} ({} shared, {} copied, {} dispatches); entries {} + {} -> {}; worst path {:?}",
+                base.levels.len(),
+                next.levels.len(),
+                two.plan.levels.len(),
+                two.shared,
+                two.copied,
+                two.dispatches,
+                base.entries(),
+                next.entries(),
+                both,
+                two.plan.worst_path(),
+            );
+            let fits = backend.assess(&two.plan);
+            eprintln!(
+                "    as one plan on mlx5: {:?}",
+                fits.map(|c| (c.groups, c.worst_path))
+            );
+        }
+    }
+}
+
+mod versioned {
+    use crate::backend::{Backend, Mlx5, Software, closed};
+    use crate::generate::{Family, Lcg, Verdict, probes, tenants};
+    use crate::guard::{Placed, Tenant};
+    use crate::rfc::Options;
+    use crate::rules::Table;
+    use crate::shared::{generations, plan};
+
+    const GUARD: [usize; 2] = [0, 1];
+
+    /// What generation `table`'s plan must do with `key`, given its tenants' outcomes.
+    fn expect(table: &Table<Verdict>, tenants: &[Tenant], key: &[u128]) -> Placed<Verdict> {
+        let guard = key[..2].to_vec();
+        let mine = tenants
+            .iter()
+            .find(|t| t.key.as_ref() == Some(&guard))
+            .or_else(|| tenants.iter().find(|t| t.key.is_none()));
+        match mine {
+            Some(t) if t.outcome.is_err() => Placed::Software,
+            _ => Placed::Here(*table.first_match(key)),
+        }
+    }
+
+    fn check<B: Backend>(old: &Table<Verdict>, new: &Table<Verdict>, backend: &B) -> usize {
+        let v = generations(old, new, &GUARD, backend, &Options::default()).expect("a plan");
+        assert!(closed(&v.plan));
+        let mut rng = Lcg::new(9);
+        let keys = probes(old, &mut rng, 15_000)
+            .into_iter()
+            .chain(probes(new, &mut rng, 15_000));
+        for key in keys {
+            for (bank, table) in [(0u128, old), (1, new)] {
+                let mut banked = key.clone();
+                banked.push(bank);
+                assert_eq!(
+                    v.plan.run(&banked).action,
+                    expect(table, &v.tenants[usize::from(bank == 1)], &key),
+                    "bank {bank}, key {key:x?}"
+                );
+            }
+        }
+        v.fresh
+    }
+
+    fn specs() -> Vec<(Family, usize)> {
+        vec![
+            (Family::Exact, 30),
+            (Family::Mixed, 60),
+            (Family::Ranges, 40),
+            (Family::Prefixes, 50),
+            (Family::Exact, 20),
+        ]
+    }
+
+    #[test]
+    fn each_bank_means_its_generation_by_tenant_id() {
+        let old = tenants(&specs(), 3);
+        assert_eq!(
+            check(&old, &old, &Software),
+            0,
+            "nothing changed, nothing fresh"
+        );
+        let mut edited = specs();
+        edited[3] = (Family::Prefixes, 55);
+        assert_eq!(check(&old, &tenants(&edited, 3), &Software), 1);
+        let mut added = specs();
+        added.push((Family::Exact, 25));
+        assert!(check(&old, &tenants(&added, 3), &Software) >= 1);
+        let removed: Vec<_> = specs()[..3].to_vec();
+        let _ = check(&old, &tenants(&removed, 3), &Software);
+        let tight = Mlx5 {
+            tables_per_packet: 5,
+            ..Mlx5::at(44e6)
+        };
+        let _ = check(&old, &tenants(&edited, 3), &tight);
+    }
+
+    /// What updates cost when versioned by tenant id, on the 103-tenant set at 44 Mpps. Run with
+    /// `cargo test -p dataplane-planner --release versioned_sizes -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement"]
+    fn versioned_sizes() {
+        let mut specs = vec![(Family::Exact, 100); 40];
+        specs.extend([(Family::Prefixes, 100); 40]);
+        specs.extend([(Family::Mixed, 100); 20]);
+        specs.push((Family::Mixed, 10_000));
+        specs.push((Family::Ranges, 10_000));
+        let backend = Mlx5::at(44e6);
+        let old = tenants(&specs, 5);
+        let alone = plan(&old, &GUARD, &backend, &Options::default())
+            .expect("a plan")
+            .plan;
+        let mut cases: Vec<(&str, Vec<(Family, usize)>)> = Vec::new();
+        let mut one = specs.clone();
+        one[3] = (Family::Exact, 101);
+        cases.push(("one exact tenant edited", one));
+        let mut mixed = specs.clone();
+        mixed[85] = (Family::Mixed, 101);
+        cases.push(("one mixed tenant edited", mixed));
+        let mut added = specs.clone();
+        added.push((Family::Exact, 100));
+        cases.push(("a tenant added", added));
+        for (name, changed) in cases {
+            let new = tenants(&changed, 5);
+            let v = generations(&old, &new, &GUARD, &backend, &Options::default()).expect("a plan");
+            let here = |b: usize| v.tenants[b].iter().filter(|t| t.outcome.is_ok()).count();
+            eprintln!(
+                "{name}: fresh tenants {}; levels {} (alone {}); entries {} (alone {}, +{}); worst path {:?}; in NIC {} -> {}",
+                v.fresh,
+                v.plan.levels.len(),
+                alone.levels.len(),
+                v.plan.entries(),
+                alone.entries(),
+                v.plan.entries().saturating_sub(alone.entries()),
+                v.plan.worst_path(),
+                here(0),
+                here(1),
+            );
+            eprintln!(
+                "    as one plan on mlx5: {:?}",
+                backend
+                    .assess(&v.plan)
+                    .map(|c| (c.groups, c.worst_path, c.largest_level))
+            );
+        }
+    }
+}

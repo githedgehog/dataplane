@@ -167,6 +167,49 @@ impl<A> Entries<A> {
         self.map.is_empty()
     }
 
+    /// Whether `other` holds the same entries: the same key shape, and every key with an equal
+    /// step.
+    #[must_use]
+    pub fn same(&self, other: &Entries<A>) -> bool
+    where
+        A: PartialEq,
+    {
+        self.parts == other.parts
+            && self.map.len() == other.map.len()
+            && self.map.iter().all(|(k, &i)| {
+                other
+                    .map
+                    .get(k)
+                    .is_some_and(|&j| self.steps[i as usize] == other.steps[j as usize])
+            })
+    }
+
+    /// The entries, as packed keys and their steps.
+    pub fn iter(&self) -> impl Iterator<Item = (u128, &Step<A>)> {
+        self.map.iter().map(|(&k, &i)| (k, &self.steps[i as usize]))
+    }
+
+    /// Add (or replace) the entry for an already packed key.
+    pub fn insert_packed(&mut self, key: u128, step: Step<A>)
+    where
+        A: Clone + Eq + std::hash::Hash,
+    {
+        if self.index.is_empty() && !self.steps.is_empty() {
+            self.index = self
+                .steps
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.clone(), u32::try_from(i).unwrap_or(u32::MAX)))
+                .collect();
+        }
+        let next = u32::try_from(self.steps.len()).unwrap_or(u32::MAX);
+        let i = *self.index.entry(step.clone()).or_insert_with(|| {
+            self.steps.push(step);
+            next
+        });
+        self.map.insert(key, i);
+    }
+
     /// The distinct steps the entries take.
     pub fn steps(&self) -> impl Iterator<Item = &Step<A>> {
         self.steps.iter()

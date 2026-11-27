@@ -127,36 +127,16 @@ pub fn plan<A: Clone + Eq + Hash, B: Backend>(
         tenant_reg,
     );
     // The guard: tenant -> write its id, go to its chain; or software.
-    let mut tenants = Vec::with_capacity(plans.len());
-    for (t, ((key, sub), plan)) in parts.tenants.iter().zip(&plans).enumerate() {
-        let id = u32::try_from(t).unwrap_or(u32::MAX);
-        let step = match starts[t] {
-            Some(start) => Step::write_goto(tenant_reg, id, start),
-            None => Step::done(Placed::Software),
-        };
-        match key {
-            Some(key) => levels[0].entries.insert(key, step),
-            None => levels[0].miss = step,
-        }
-        tenants.push(Tenant {
-            key: key.clone(),
-            rules: sub.rules.len(),
-            outcome: match &plan.finish {
-                Finish::Software(why) => Err(why.clone()),
-                _ => Ok(chains
-                    .iter()
-                    .find(|(n, _, _)| {
-                        n == if matches!(plan.finish, Finish::Join(_)) {
-                            "join"
-                        } else {
-                            "pairwise"
-                        }
-                    })
-                    .and_then(|(_, _, c)| c.clone().ok())
-                    .unwrap_or_else(|| unreachable!("a planned tenant's chain fits"))),
-            },
-        });
-    }
+    let ids: Vec<usize> = (0..parts.tenants.len()).collect();
+    let tenants = fill_guard(
+        &mut levels[0],
+        &parts.tenants,
+        &ids,
+        &plans,
+        &starts,
+        &chains,
+        tenant_reg,
+    );
     Ok(Shared {
         plan: Plan {
             fields: table.fields.clone(),
@@ -247,6 +227,182 @@ fn guard_level<A: Clone>(table: &Table<A>, guard: &[usize]) -> Level<Placed<A>> 
         key,
         miss: Step::done(Placed::Software),
     }
+}
+
+/// Fill `guard` with each tenant's entry (`ids[n]`: the id of `tenants[n]`), and say what came
+/// of each.
+fn fill_guard<A: Clone + Eq + Hash>(
+    guard: &mut Level<Placed<A>>,
+    tenants: &[(Option<Vec<u128>>, Table<A>)],
+    ids: &[usize],
+    plans: &[TenantPlan<A>],
+    starts: &[Option<LevelId>],
+    chains: &[(String, usize, Result<Cost, Unfit>)],
+    tenant_reg: Reg,
+) -> Vec<Tenant> {
+    let mut out = Vec::with_capacity(tenants.len());
+    for ((key, sub), &t) in tenants.iter().zip(ids) {
+        let id = u32::try_from(t).unwrap_or(u32::MAX);
+        let step = match starts[t] {
+            Some(start) => Step::write_goto(tenant_reg, id, start),
+            None => Step::done(Placed::Software),
+        };
+        match key {
+            Some(key) => guard.entries.insert(key, step),
+            None => guard.miss = step,
+        }
+        let plan = &plans[t];
+        out.push(Tenant {
+            key: key.clone(),
+            rules: sub.rules.len(),
+            outcome: match &plan.finish {
+                Finish::Software(why) => Err(why.clone()),
+                _ => Ok(chains
+                    .iter()
+                    .find(|(n, _, _)| {
+                        n == if matches!(plan.finish, Finish::Join(_)) {
+                            "join"
+                        } else {
+                            "pairwise"
+                        }
+                    })
+                    .and_then(|(_, _, c)| c.clone().ok())
+                    .unwrap_or_else(|| unreachable!("a planned tenant's chain fits"))),
+            },
+        });
+    }
+    out
+}
+
+/// Two generations in one shared plan, versioned by tenant id.
+#[derive(Clone, Debug)]
+pub struct Versioned<A> {
+    /// The plan: its fields are the table's plus a last one-bit field, the packet's bank (0: the
+    /// old generation, 1: the new).
+    pub plan: Plan<Placed<A>>,
+    /// Per generation, per tenant.
+    pub tenants: [Vec<Tenant>; 2],
+    /// Tenants new or changed in the new generation: those with entries of their own in it.
+    pub fresh: usize,
+    /// Per chain: its tenants (ids of both generations) and what it costs.
+    pub chains: Vec<(String, usize, Result<Cost, Unfit>)>,
+}
+
+/// Plan two generations of `table` in one shared plan, versioned by tenant id (the train
+/// track's two banks, GENERATIONS.md §3): a selector on the packet's bank, a guard per
+/// generation, and the chains shared. A tenant unchanged between them keeps its id and entries;
+/// a new or changed one gets a fresh id, and its entries join the same levels. Only the guard is
+/// versioned, so an update costs the changed tenants' entries, not copies of shared levels.
+/// Retiring the old generation drops its guard and the ids only it uses.
+///
+/// The layout is chosen over both generations' tenants, so both fit it.
+///
+/// # Errors
+///
+/// If a table can't be split by tenant, or the two are over different fields.
+pub fn generations<A: Clone + Eq + Hash, B: Backend>(
+    old: &Table<A>,
+    new: &Table<A>,
+    guard: &[usize],
+    backend: &B,
+    options: &Options,
+) -> Result<Versioned<A>, Refusal> {
+    if old.fields != new.fields {
+        return Err(Refusal::Malformed(
+            "two generations of different keys".to_string(),
+        ));
+    }
+    let po = partition(old, guard)?;
+    let pn = partition(new, guard)?;
+    let rest = po.rest.clone();
+    let tenant_reg = Reg::try_from(rest.len()).unwrap_or(Reg::MAX);
+    // Ids: the old generation's tenants, then the new generation's new or changed ones.
+    let mut subs: Vec<&Table<A>> = po.tenants.iter().map(|(_, t)| t).collect();
+    let old_ids: Vec<usize> = (0..subs.len()).collect();
+    let mut new_ids = Vec::with_capacity(pn.tenants.len());
+    for (key, sub) in &pn.tenants {
+        if let Some(i) = po.tenants.iter().position(|(k, t)| k == key && t == sub) {
+            new_ids.push(i);
+        } else {
+            subs.push(sub);
+            new_ids.push(subs.len() - 1);
+        }
+    }
+    let fresh = subs.len() - po.tenants.len();
+    let mut planners: Vec<Planner<'_, A>> = subs.iter().map(|t| Planner::new(t, options)).collect();
+    let sub_fields = subs.first().map_or_else(Vec::new, |t| t.fields.clone());
+    let layout = layout(&mut planners, &sub_fields, options);
+    let mut plans: Vec<TenantPlan<A>> = planners
+        .iter_mut()
+        .map(|p| tenant_plan(p, &layout, options))
+        .collect();
+    let mut fields = old.fields.clone();
+    let bank = fields.len();
+    fields.push(crate::rules::Field {
+        name: "bank",
+        width: 1,
+    });
+    let selector_key = vec![Part::Field {
+        field: bank,
+        len: 1,
+    }];
+    let mut entries = Entries::for_key(&selector_key, &fields);
+    entries.insert(&[0], Step::goto(1));
+    let mut levels = vec![
+        Level {
+            name: "selector".to_string(),
+            key: selector_key,
+            entries,
+            miss: Step::goto(2),
+        },
+        Level {
+            name: "guard (old)".to_string(),
+            ..guard_level(old, guard)
+        },
+        Level {
+            name: "guard (new)".to_string(),
+            ..guard_level(new, guard)
+        },
+    ];
+    // Every chain comes after the selector and a guard.
+    let (chains, starts) = chains(
+        old,
+        &rest,
+        &layout,
+        &mut plans,
+        &mut levels,
+        &backend.reserving(2),
+        tenant_reg,
+    );
+    let old_tenants = fill_guard(
+        &mut levels[1],
+        &po.tenants,
+        &old_ids,
+        &plans,
+        &starts,
+        &chains,
+        tenant_reg,
+    );
+    let new_tenants = fill_guard(
+        &mut levels[2],
+        &pn.tenants,
+        &new_ids,
+        &plans,
+        &starts,
+        &chains,
+        tenant_reg,
+    );
+    Ok(Versioned {
+        plan: Plan {
+            fields,
+            levels,
+            entry: Step::goto(0),
+            registers: vec![24; rest.len() + 1],
+        },
+        tenants: [old_tenants, new_tenants],
+        fresh,
+        chains,
+    })
 }
 
 /// The layout: the fused pair and each wide field's prefix lengths, chosen over every tenant.
